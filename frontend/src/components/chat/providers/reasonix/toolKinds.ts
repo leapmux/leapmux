@@ -6,7 +6,7 @@ import type { ToolKind } from '../../ir/toolKind'
  *
  * The kind table below keys on these, so one spelling serves both halves. A branch
  * that retyped the string kept compiling after a rename and simply stopped firing,
- * which `providerLayering.test.ts` states the rule against: a provider's tokens live
+ * which the wire-token selectors in `eslint.config.ts` state the rule against: a provider's tokens live
  * as named tables so a call site reads a constant instead of retyping a string.
  *
  * Not in `contracts/reasonix-protocol.json`, which holds the identifiers BOTH programs

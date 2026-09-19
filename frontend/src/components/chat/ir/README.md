@@ -9,10 +9,13 @@ Nothing here knows a provider, and nothing here draws.
 result slot, and the shared envelope. `tools/` holds the request/result type
 table, total over `ToolKind`; `row.ts` wraps a call with where its row sits in
 the span. There is no second, row-shaped tool IR -- the migration that ran
-beside it is finished, and these modules are what remains.
+beside it is finished, and these modules are what remains. The lifecycle's
+illegal status/result pairs are compile-time contracts: `toolCall.typecheck.ts`
+holds each one as an `@ts-expect-error` with its legal counterpart beside it,
+so a pair the union refuses fails `tsc`, not a runtime walk.
 
 **Where a shape lives.** `tools/<kind>.ts` is one kind's home, and
-`irLayering.test.ts` pins that one-to-one. A shape that SEVERAL kinds compose sits
+`chatLayerStructure.test.ts` pins that one-to-one. A shape that SEVERAL kinds compose sits
 one directory up instead, at `ir/` top level, and the kind files alias it:
 `fileEditDiff.ts` under the four file-change kinds, `commandResult.ts` under
 `execute`, `searchResult.ts` under the three search kinds and `list`,
@@ -32,8 +35,8 @@ and the three pure diff modules `../diff/diffBuilder`, `../diff/diffTypes` and
 `../diff/unifiedDiffParser`. It takes a TYPE import from the same roots.
 
 It imports a provider, a component, a store, a stylesheet and an icon library in
-NO form -- not even as a type. Two rules with two reasons, and
-`src/test-support/irLayering.test.ts` fails the suite for either:
+NO form -- not even as a type. Two rules with two reasons, and the scoped blocks
+in `eslint.config.ts` fail lint for either:
 
 - A VALUE import of a component closes an import cycle, which the bundler reports
   as an unrelated module failing to load.

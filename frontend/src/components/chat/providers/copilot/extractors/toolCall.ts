@@ -992,7 +992,7 @@ export const COPILOT_TOOL_READERS: { [P in ToolKind]: (facts: CopilotToolFacts) 
  * GENERIC over the kind, which is what keeps `kind` and the payload it answers one
  * correlated pair. The caller's `ToolKind` satisfies the parameter member by member,
  * so no assertion stands between the table and the result --
- * `toolCallIrIsUnasserted.test.ts` refuses exactly that assertion.
+ * the assertion ban in `eslint.config.ts` refuses exactly that assertion.
  */
 function copilotPayloadFor<K extends ToolKind>(facts: CopilotToolFacts, kind: K): ToolCallPayloadOf<K> {
   return COPILOT_TOOL_READERS[kind](facts)

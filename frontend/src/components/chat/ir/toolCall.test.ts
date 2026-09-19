@@ -1,6 +1,3 @@
-import type { ReadFileResult } from './readFileResult'
-import type { ToolCallOf } from './toolCall'
-import type { ImageResultSource } from '~/lib/imageBlocks'
 import { describe, expect, it } from 'vitest'
 import { failedResult, isFailedResult, isUnparsedResult, proseResult, toolCall, typedResult, unparsedResult } from './toolCall'
 import { TOOL_KINDS } from './toolKind'
@@ -97,79 +94,11 @@ describe('the kind-discriminated tool call IR', () => {
 })
 
 /**
- * The ILLEGAL status/result pairs, refused by the compiler instead of a runtime walk.
- *
- * Every `@ts-expect-error` below is the test: the lifecycle union states each rule as
- * a member that does not exist, so a pair the rule refuses fails to compile here
- * first -- and if a refactor loosens one, its directive stops matching an error and
- * `tsc` fails on THIS line rather than in the provider that quietly builds the pair.
- * Each block keeps the legal counterpart beside it, so a directive cannot pass by
- * refusing the legal pairs too.
+ * The ILLEGAL status/result pairs live in `toolCall.typecheck.ts`, a compile-only
+ * module under this directory: every rule is a `@ts-expect-error` the TypeScript
+ * configurations read, so a lifecycle the union refuses fails `tsc` rather than
+ * a runtime walk.
  */
-describe('the lifecycle types refuse the illegal status/result pairs', () => {
-  const think = { text: 'thought' }
-  const readResult: ReadFileResult = { lines: null, fallbackContent: 'body' }
-  const picture: ImageResultSource = { mimeType: 'image/png', data: 'aGk=' }
-
-  it('refuses the result of a call that has not answered (I1)', () => {
-    const queued: ToolCallOf<'think'> = { id: 'q', name: 'Think', kind: 'think', request: think, status: 'pending', images: [] }
-    expect(queued.status).toBe('pending')
-    // @ts-expect-error I1: '' | 'pending' | 'in_progress' pair with no result.
-    const early: ToolCallOf<'think'> = { id: 'q', name: 'Think', kind: 'think', request: think, status: 'in_progress', images: [], result: proseResult('early') }
-    void early
-  })
-
-  it('requires a completed call to carry a typed or unparsed result, never a failure (I2)', () => {
-    const done: ToolCallOf<'think'> = { id: 'd', name: 'Think', kind: 'think', request: think, status: 'completed', images: [], result: proseResult('done') }
-    expect(done.result.text).toBe('done')
-    // @ts-expect-error I2: 'completed' requires a result.
-    const silent: ToolCallOf<'think'> = { id: 'd', name: 'Think', kind: 'think', request: think, status: 'completed', images: [] }
-    void silent
-    // @ts-expect-error I2: a completed call did not fail, so the failure brand is not its result.
-    const failedDone: ToolCallOf<'think'> = { id: 'd', name: 'Think', kind: 'think', request: think, status: 'completed', images: [], result: failedResult('boom') }
-    void failedDone
-  })
-
-  it('refuses the unparsed payload of a failed call (I4)', () => {
-    const failed: ToolCallOf<'read'> = { id: 'f', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'failed', images: [], result: failedResult('boom') }
-    expect(failed.status).toBe('failed')
-    const failedWithRecord: ToolCallOf<'read'> = { id: 'f', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'failed', images: [], result: readResult }
-    expect(failedWithRecord.status).toBe('failed')
-    // @ts-expect-error I4: the unparsed brand states the call completed, which a failed call did not.
-    const failedUnparsed: ToolCallOf<'read'> = { id: 'f', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'failed', images: [], result: unparsedResult('raw') }
-    void failedUnparsed
-  })
-
-  it('a declined call carries words or a failure, never a produced payload', () => {
-    const declinedWords: ToolCallOf<'switch_mode'> = { id: 'x', name: 'ExitPlanMode', kind: 'switch_mode', request: { mode: 'plan' }, status: 'declined', images: [], result: proseResult('Not yet') }
-    expect(declinedWords.status).toBe('declined')
-    const declinedFailure: ToolCallOf<'read'> = { id: 'x', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'declined', images: [], result: failedResult('refused') }
-    expect(declinedFailure.status).toBe('declined')
-    // @ts-expect-error Declined: a read that never ran produced no file body.
-    const declinedRead: ToolCallOf<'read'> = { id: 'x', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'declined', images: [], result: readResult }
-    void declinedRead
-    // @ts-expect-error Declined: the unparsed brand states the call completed, which a refused one did not.
-    const declinedUnparsed: ToolCallOf<'read'> = { id: 'x', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'declined', images: [], result: unparsedResult('raw') }
-    void declinedUnparsed
-  })
-
-  it('a cancelled call keeps whatever partial body it printed, in any of the three shapes', () => {
-    const partialTyped: ToolCallOf<'read'> = { id: 'c', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'cancelled', images: [], result: readResult }
-    const partialFailed: ToolCallOf<'read'> = { id: 'c', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'cancelled', images: [], result: failedResult('cut') }
-    const partialUnparsed: ToolCallOf<'read'> = { id: 'c', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'cancelled', images: [], result: unparsedResult('raw') }
-    expect([partialTyped, partialFailed, partialUnparsed].every(call => call.status === 'cancelled')).toBe(true)
-  })
-
-  it('refuses the own pictures of a generic kind (I6)', () => {
-    const bare: ToolCallOf<'mcp'> = { id: 'g', name: 'Tool', kind: 'mcp', request: { server: 's', tool: 't', args: {} }, status: 'completed', images: [], result: { content: [] } }
-    expect(bare.images).toEqual([])
-    const pictured: ToolCallOf<'read'> = { id: 'g', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'completed', images: [picture], result: readResult }
-    expect(pictured.images).toHaveLength(1)
-    // @ts-expect-error I6: a generic kind's pictures ride in its result content, never on the call.
-    const withPictures: ToolCallOf<'mcp'> = { id: 'g', name: 'Tool', kind: 'mcp', request: { server: 's', tool: 't', args: {} }, status: 'completed', images: [picture], result: { content: [] } }
-    void withPictures
-  })
-})
 
 /**
  * A predicate promises the WHOLE type, and every caller here reads `.text` with no

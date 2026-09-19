@@ -162,12 +162,15 @@ around each member.
 
 ## The guards
 
-- `src/test-support/providerLayering.test.ts` — no plugin draws, no plugin imports
-  `results/`, and no shared module identifies one provider or its wire words.
-- `src/test-support/chatLayerModuleNames.test.ts` — the module-name rules above: a PascalCase
-  `.tsx` carries its component's name, and no `renderers/` directory comes back. It also
-  resolves each `classify` hook to the module it arrives from, and that module must be a
-  `classification.ts`. It reads that one property, so a sub-hook such as
-  `classifyToolCallUpdate` stays out of scope.
-- `src/test-support/toolCallIrIsUnasserted.test.ts` — no producer pairs a `ToolKind`
-  with another kind's request or result by assertion.
+- The scoped blocks in `eslint.config.ts` — no plugin draws (JSX outside the four
+  control components), no plugin imports `results/`, no shared module identifies
+  one provider or its wire words, and no producer pairs a `ToolKind` with another
+  kind's request or result by assertion.
+- `src/test-support/chatLayerStructure.test.ts` — the structure those lint rules
+  assume: the module-name rules above (a PascalCase `.tsx` carries its
+  component's name, and no `renderers/` directory comes back), every `classify`
+  hook arriving from a `classification.ts` module, one `ir/tools/<kind>.ts` file
+  per `ToolKind`, and every exception path the lint config carves out pinned to
+  a file that exists. It resolves each `classify` hook to the module it arrives
+  from, and that module must be a `classification.ts`. It reads that one
+  property, so a sub-hook such as `classifyToolCallUpdate` stays out of scope.

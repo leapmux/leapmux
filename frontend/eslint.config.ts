@@ -18,6 +18,136 @@ import antfu from '@antfu/eslint-config'
  */
 const ANTFU_RESTRICTED_SYNTAX = ['TSEnumDeclaration[const=true]', 'TSExportAssignment'] as const
 
+/**
+ * The DOM-`title` ban, factored so every scoped block that sets
+ * `no-restricted-syntax` can spread it beside the antfu selectors above.
+ *
+ * A bare `title` on a DOM element renders the unthemed OS tooltip and silently
+ * becomes the element's accessible name when no `aria-label` sits beside it.
+ */
+const DOM_TITLE_RESTRICTED_SYNTAX = {
+  selector: 'JSXOpeningElement[name.type="JSXIdentifier"][name.name=/^[a-z]/] > JSXAttribute[name.name="title"]',
+  message: 'Do not put `title` on a DOM element: it renders the unthemed OS tooltip, and it silently becomes the element\'s accessible name. Wrap the element in <Tooltip text={...}> instead -- it works on a disabled control too.',
+} as const
+
+/**
+ * Every `no-restricted-syntax` option list in this file starts from these.
+ * ESLint replaces rule options rather than merging them, so a scoped block
+ * that omits one of these deletes it for exactly the tree it matches.
+ */
+const BASE_RESTRICTED_SYNTAX = [...ANTFU_RESTRICTED_SYNTAX, DOM_TITLE_RESTRICTED_SYNTAX]
+
+/**
+ * The Dexie import ban the storage block puts on all of `src/`, factored for
+ * the same reason: the chat layer blocks below restate `ts/no-restricted-imports`
+ * for their trees and must keep it.
+ */
+const BASE_RESTRICTED_IMPORT_PATHS = [{
+  name: 'dexie',
+  message: 'Open IndexedDB through ~/lib/idb (createIdbConnection).',
+  allowTypeImports: true,
+}] as const
+
+/**
+ * Selectors that keep shared code provider-neutral: no decision by one
+ * `AgentProvider`, and none of the curated provider wire literals.
+ *
+ * The forms a decision takes: a comparison, a `case`, a computed key, an index
+ * read at one member, and a total `Record<AgentProvider, T>` table. Deliberately
+ * NOT matched: a fallback (`provider ?? AgentProvider.CLAUDE_CODE`), a runtime
+ * `Map<AgentProvider, T>` cache, and a list of providers -- none of them decides
+ * anything about the provider in hand.
+ *
+ * `src/components/common/AgentProviderIcon.tsx` is the one display surface that
+ * may identify a provider (an icon is a per-provider asset); its block below
+ * lifts the decision selectors alone.
+ */
+const PROVIDER_NEUTRALITY_SYNTAX = [
+  {
+    selector: 'BinaryExpression[operator=/^[!=]==$/][left.type=\'MemberExpression\'][left.object.name=\'AgentProvider\']',
+    message: 'Shared code must not decide by provider. Add a method to the `Provider` plugin interface in `components/chat/providers/registry.ts` and let each plugin answer it.',
+  },
+  {
+    selector: 'BinaryExpression[operator=/^[!=]==$/][right.type=\'MemberExpression\'][right.object.name=\'AgentProvider\']',
+    message: 'Shared code must not decide by provider. Add a method to the `Provider` plugin interface in `components/chat/providers/registry.ts` and let each plugin answer it.',
+  },
+  {
+    selector: 'SwitchCase[test.type=\'MemberExpression\'][test.object.name=\'AgentProvider\']',
+    message: 'Shared code must not decide by provider. Add a method to the `Provider` plugin interface in `components/chat/providers/registry.ts` and let each plugin answer it.',
+  },
+  {
+    selector: 'Property[computed=true][key.type=\'MemberExpression\'][key.object.name=\'AgentProvider\']',
+    message: 'A hand-written entry for one provider drifts the moment another is added. Fill the provider plugin instead.',
+  },
+  {
+    selector: 'MemberExpression[computed=true][property.type=\'MemberExpression\'][property.object.name=\'AgentProvider\']',
+    message: 'A shared module reading one member of a provider-keyed table is deciding by provider. Fill the provider plugin instead.',
+  },
+  {
+    selector: 'TSTypeReference[typeName.name=\'Record\'] TSTypeReference[typeName.name=\'AgentProvider\']',
+    message: 'A total `Record<AgentProvider, T>` is a second registry beside the plugin one and holds one hand-written entry per provider. Fill the provider plugin instead.',
+  },
+] as const
+
+/**
+ * The wire words that belong to ONE provider and to no shared vocabulary.
+ *
+ * Curated rather than exhaustive, and every entry earns its place by being
+ * unambiguous. `tool_use` and `tool_result` are deliberately ABSENT:
+ * LeapMux's own `MessageCategory` spells its kinds with the same two words, so
+ * a rule that matched them would report every classifier in the chat view.
+ * Each pattern is anchored to the WHOLE literal, which is what the quoted form
+ * of the same rule stated: a token, not a substring of a longer sentence.
+ */
+const WIRE_TOKEN_REGEXPS = [
+  String.raw`^(?:cursor|_goose|mcp)\/[a-z_/]+$`,
+  String.raw`^_reasonix\.io\/[a-z_/]+$`,
+  String.raw`^session\/(?:update|request_permission|new|prompt|load)$`,
+  String.raw`^interaction\/requestUserInput$`,
+  String.raw`^(?:tool_call_update|agent_message_chunk|agent_thought_chunk|available_commands_update|session_info_update|config_option_update)$`,
+  String.raw`^(?:commandExecution|fileChange|mcpToolCall|dynamicToolCall|collabAgentToolCall)$`,
+  String.raw`^(?:entry_appended|tool_execution_start|tool_execution_end|agent_settled|compaction_start|compaction_end)$`,
+  String.raw`^(?:tool_use_result|compact_boundary)$`,
+] as const
+
+/** The wire-token selectors, over string literals and template elements alike. */
+const WIRE_TOKEN_SYNTAX = WIRE_TOKEN_REGEXPS.flatMap(pattern => [
+  { selector: `Literal[value=/${pattern}/]`, message: 'A provider wire word belongs in a named table inside that provider plugin, which a call site reads as a constant.' },
+  { selector: `TemplateElement[value.cooked=/${pattern}/]`, message: 'A provider wire word belongs in a named table inside that provider plugin, which a call site reads as a constant.' },
+]) as const
+
+/**
+ * The assertions that re-pair a `ToolKind` with a request, a payload or a
+ * result the kind does not declare. The renderers read those fields without a
+ * guard, so the row does not draw wrong -- it throws, and the error boundary
+ * replaces the whole message.
+ *
+ * `ir/toolCall.ts` is the one exemption: `buildToolCall` checks the lifecycle
+ * rules at runtime, over a draft whose status came from the wire, and no
+ * narrowing carries a runtime answer back into the type system. The assertion
+ * there stands on the check immediately above it.
+ */
+const TOOL_CALL_ASSERTION_SYNTAX = [
+  {
+    selector: 'TSAsExpression[typeAnnotation.typeName.name=/^(ToolCallIR|ToolCallPayloadIR|ToolCallPayloadOf|ToolCallPayload|ToolCallOf|ToolCallOfKinds|ToolResultOf|ParsedCall|ResolvedCall)$/]',
+    message: 'An assertion to a tool-call type re-pairs a kind with a request or a result the kind does not declare. Build the payload at a LITERAL kind instead: narrow with `if (kind === ...)` and return inside the branch, or answer from a mapped table. Hand the finished payload to `toolCall`, which is the one function allowed to state the pairing.',
+  },
+  {
+    selector: 'TSAsExpression[typeAnnotation.objectType.typeName.name=/^(ToolRequests|ToolResults)$/]',
+    message: 'An assertion to `ToolRequests[...]`/`ToolResults[...]` re-pairs a kind with a payload the kind does not declare. Build the payload at a LITERAL kind instead and hand it to `toolCall`.',
+  },
+] as const
+
+/** The chat pipeline's implementation trees: never a test, a fixture or a harness. */
+const CHAT_IMPLEMENTATION_IGNORES = [
+  '**/*.test.ts',
+  '**/*.test.tsx',
+  '**/*.fixtures.ts',
+  '**/testUtils.ts',
+  '**/testUtils.tsx',
+  '**/testMocks.ts',
+] as const
+
 export default antfu({
   stylistic: {
     indent: 2,
@@ -83,11 +213,7 @@ export default antfu({
     // TypeScript-aware rule: a store still has to name `Table<Row>` to type the
     // tables its connection hands back, and a type cannot open a database.
     'ts/no-restricted-imports': ['error', {
-      paths: [{
-        name: 'dexie',
-        message: 'Open IndexedDB through ~/lib/idb (createIdbConnection).',
-        allowTypeImports: true,
-      }],
+      paths: [...BASE_RESTRICTED_IMPORT_PATHS],
     }],
   },
 }, {
@@ -135,10 +261,7 @@ export default antfu({
   // do.
   files: ['src/**/*.ts', 'src/**/*.tsx', 'tests/**/*.ts', 'tests/**/*.tsx'],
   rules: {
-    'no-restricted-syntax': ['error', ...ANTFU_RESTRICTED_SYNTAX, {
-      selector: 'JSXOpeningElement[name.type="JSXIdentifier"][name.name=/^[a-z]/] > JSXAttribute[name.name="title"]',
-      message: 'Do not put `title` on a DOM element: it renders the unthemed OS tooltip, and it silently becomes the element\'s accessible name. Wrap the element in <Tooltip text={...}> instead -- it works on a disabled control too.',
-    }],
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX],
   },
 }, {
   // A `describe` identifies the SYMBOL under test, so it must be free to spell that
@@ -167,6 +290,165 @@ export default antfu({
   rules: {
     'unused-imports/no-unused-vars': ['error', {
       argsIgnorePattern: '^(authenticatedWorkspace|workspace|leapmuxServer|separateHubWorker)$',
+    }],
+  },
+}, {
+  // Shared code stays provider-neutral. The plugin layer and the generated
+  // contracts own the provider vocabulary; everything else decides through the
+  // `Provider` interface. Tests are exempt because a unit test builds one
+  // fixture per provider, and `test-support/` holds corpus bytes captured
+  // verbatim from the installed runtimes.
+  files: ['src/**/*.ts', 'src/**/*.tsx'],
+  ignores: ['src/components/chat/providers/**', 'src/generated/**', 'src/test-support/**', 'src/**/*.test.ts', 'src/**/*.test.tsx', 'src/**/*.d.ts'],
+  rules: {
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...PROVIDER_NEUTRALITY_SYNTAX, ...WIRE_TOKEN_SYNTAX],
+  },
+}, {
+  // The provider-icon exception: an icon is a per-provider asset and no shared
+  // shape can supply one, so this display surface may identify a provider. It
+  // keeps the wire-token selectors; only the decision selectors lift.
+  files: ['src/components/common/AgentProviderIcon.tsx'],
+  rules: {
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...WIRE_TOKEN_SYNTAX],
+  },
+}, {
+  // No producer pairs a `ToolKind` with another kind's request, payload or
+  // result by assertion; `ir/toolCall.ts` (the checked builder) is exempted
+  // further below. The plugin layer joins this rule through its own block,
+  // which carries the assertion selectors alone.
+  files: ['src/components/chat/**/*.ts', 'src/components/chat/**/*.tsx'],
+  ignores: [...CHAT_IMPLEMENTATION_IGNORES, '**/*.css.ts', 'src/components/chat/providers/**'],
+  rules: {
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...PROVIDER_NEUTRALITY_SYNTAX, ...WIRE_TOKEN_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX],
+  },
+}, {
+  // Layer 2 of the chat render pipeline: `ir/` describes a row and never draws
+  // one, so it may not reach a provider, a renderer, a store, a stylesheet, a
+  // component or an icon library in ANY form -- a type from one of them makes a
+  // render-layer decision part of what a row MEANS.
+  files: ['src/components/chat/ir/**/*.ts', 'src/components/chat/ir/**/*.tsx'],
+  ignores: CHAT_IMPLEMENTATION_IGNORES,
+  rules: {
+    'ts/no-restricted-imports': ['error', {
+      paths: [
+        ...BASE_RESTRICTED_IMPORT_PATHS,
+        { name: 'lucide-solid', message: 'The IR states what a row means; which glyph draws it is a render-layer decision. Declare a `ToolIconHint` and map it onto the icon in `results/`.' },
+      ],
+      patterns: [{
+        group: ['~/components/**', '~/stores/**', '**/providers/**', '../providers', '../results', '../results/**', '../../results', '../../results/**', 'lucide-solid/**', '**/*.tsx', '**/*.css', '**/*.css.ts'],
+        message: 'The IR is layer 2: it depends on no provider, renderer, store, stylesheet, component or icon library, not even as a type. A neutral shape both layers share belongs in `~/models/`.',
+        allowTypeImports: false,
+      }],
+    }],
+  },
+}, {
+  // The IR's own escape hatch: a VALUE import may come from `~/lib`, `~/generated`,
+  // `~/models`, a module `ir/` itself owns, or the three pure diff modules. The
+  // regexes below state the two boundaries that `ts/no-restricted-imports`
+  // patterns cannot: which `~/` roots a value import may take, and how far a
+  // relative specifier may climb. From `ir/` itself the three diff modules sit
+  // one level up; a `type` import (which `importKind` reads) may come from a
+  // sibling shape such as `../controls/types`.
+  files: ['src/components/chat/ir/**/*.ts', 'src/components/chat/ir/**/*.tsx'],
+  ignores: [...CHAT_IMPLEMENTATION_IGNORES, 'src/components/chat/ir/*.ts'],
+  rules: {
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...PROVIDER_NEUTRALITY_SYNTAX, ...WIRE_TOKEN_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX, {
+      selector: 'ImportDeclaration[importKind=\'value\'][source.value=/^~\\/(?!lib\\/|generated\\/|models\\/)/]',
+      message: 'A value import into `ir/` comes from `~/lib`, `~/generated`, `~/models` or a module `ir/` owns. Move the pure helper beside the type it serves, or make the import type-only.',
+    }, {
+      selector: 'ImportDeclaration[importKind=\'value\'][source.value=/^\\.\\.\\/(?![^/]+$|\\.\\.\\/diff\\/(diffBuilder|diffTypes|unifiedDiffParser)$)/]',
+      message: 'From `ir/tools/`, a value import may climb to a sibling in `ir/` (one name) or to the three pure diff modules. Anything else leaves the layer.',
+    }],
+  },
+}, {
+  // The same boundary one directory up: from `ir/` itself, the three diff
+  // modules are `../diff/<name>` and every other `../` specifier leaves `ir/`.
+  files: ['src/components/chat/ir/*.ts', 'src/components/chat/ir/*.tsx'],
+  ignores: CHAT_IMPLEMENTATION_IGNORES,
+  rules: {
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...PROVIDER_NEUTRALITY_SYNTAX, ...WIRE_TOKEN_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX, {
+      selector: 'ImportDeclaration[importKind=\'value\'][source.value=/^~\\/(?!lib\\/|generated\\/|models\\/)/]',
+      message: 'A value import into `ir/` comes from `~/lib`, `~/generated`, `~/models` or a module `ir/` owns. Move the pure helper beside the type it serves, or make the import type-only.',
+    }, {
+      selector: 'ImportDeclaration[importKind=\'value\'][source.value=/^\\.\\.\\/(?!diff\\/(diffBuilder|diffTypes|unifiedDiffParser)$)/]',
+      message: 'A value import from `ir/` may reach the three pure diff modules and nothing else above the directory.',
+    }],
+  },
+}, {
+  // The one checked assertion. `buildToolCall` verifies the lifecycle rules at
+  // runtime over a draft whose status came from the wire; this file may state
+  // the pairing the check earned, and it is the only one that may.
+  files: ['src/components/chat/ir/toolCall.ts'],
+  rules: {
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...PROVIDER_NEUTRALITY_SYNTAX, ...WIRE_TOKEN_SYNTAX, {
+      selector: 'ImportDeclaration[importKind=\'value\'][source.value=/^~\\/(?!lib\\/|generated\\/|models\\/)/]',
+      message: 'A value import into `ir/` comes from `~/lib`, `~/generated`, `~/models` or a module `ir/` owns. Move the pure helper beside the type it serves, or make the import type-only.',
+    }, {
+      selector: 'ImportDeclaration[importKind=\'value\'][source.value=/^\\.\\.\\/(?!diff\\/(diffBuilder|diffTypes|unifiedDiffParser)$)/]',
+      message: 'A value import from `ir/` may reach the three pure diff modules and nothing else above the directory.',
+    }],
+  },
+}, {
+  // Layer 1 reads its provider's bytes into the IR and never draws a transcript
+  // row: JSX belongs to the four control surfaces exempted below, which answer a
+  // request rather than render a row. A `.ts` module cannot hold JSX at all,
+  // which is why transcript extractors stay `.ts`. The assertion ban reaches
+  // here too; the provider vocabulary itself does not.
+  files: ['src/components/chat/providers/**/*.ts', 'src/components/chat/providers/**/*.tsx'],
+  ignores: CHAT_IMPLEMENTATION_IGNORES,
+  rules: {
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX],
+  },
+}, {
+  // The JSX half of the same rule, for the `.tsx` modules a plugin may hold.
+  files: ['src/components/chat/providers/**/*.tsx'],
+  ignores: CHAT_IMPLEMENTATION_IGNORES,
+  rules: {
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX, { selector: 'JSXElement', message: 'A plugin reads its provider\'s bytes into the shared row IR; the shared renderers draw it. Move the markup into `components/chat/results/` and state the call through `ToolCallIR`.' }, { selector: 'JSXFragment', message: 'A plugin reads its provider\'s bytes into the shared row IR; the shared renderers draw it. Move the markup into `components/chat/results/` and state the call through `ToolCallIR`.' }],
+  },
+}, {
+  // The four control surfaces a provider may draw itself: a permission prompt,
+  // a question form, a plan approval. They answer a request of that provider;
+  // the row IR does not describe them.
+  files: [
+    'src/components/chat/providers/codex/CodexControlActions.tsx',
+    'src/components/chat/providers/cursor/CursorControlActions.tsx',
+    'src/components/chat/providers/pi/PiControlActions.tsx',
+    'src/components/chat/providers/pi/PiPlanApprovalActions.tsx',
+  ],
+  rules: {
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX],
+  },
+}, {
+  // Layer 1 again, on the import edge: a plugin that imports from `results/`
+  // puts a parser the whole pipeline depends on behind a module that exists to
+  // draw.
+  files: ['src/components/chat/providers/**/*.ts', 'src/components/chat/providers/**/*.tsx'],
+  ignores: CHAT_IMPLEMENTATION_IGNORES,
+  rules: {
+    'ts/no-restricted-imports': ['error', {
+      paths: [...BASE_RESTRICTED_IMPORT_PATHS],
+      patterns: [{
+        group: ['**/results/**', '../results', '../../results', '../../../results'],
+        message: 'A plugin reads its provider\'s bytes into the IR, and the IR is layer 2. Move the pure helper into `components/chat/ir/` beside the type it builds.',
+        allowTypeImports: false,
+      }],
+    }],
+  },
+}, {
+  // Layer 3, the other end of the same rule: a renderer that imports a plugin
+  // reaches for one provider's parser inside the module that exists to draw the
+  // SAME row for every provider.
+  files: ['src/components/chat/results/**/*.ts', 'src/components/chat/results/**/*.tsx'],
+  ignores: [...CHAT_IMPLEMENTATION_IGNORES, '**/*.css.ts'],
+  rules: {
+    'ts/no-restricted-imports': ['error', {
+      paths: [...BASE_RESTRICTED_IMPORT_PATHS],
+      patterns: [{
+        group: ['**/providers/**', '../providers', '../../providers', '../../../providers'],
+        message: 'A renderer draws the row IR, and the IR is layer 2. It never reads a plugin: the shape it needs belongs in `components/chat/ir/`, where both layers read it from.',
+        allowTypeImports: false,
+      }],
     }],
   },
 })

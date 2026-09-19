@@ -111,8 +111,8 @@ export function dispatchParts(call: ToolCallIR): ToolCallDispatch<ToolKind> {
  *
  * Here the pairing is made ONCE: {@link dispatchParts} selects over the total table
  * and builds the parts the hooks declare, so `op` receives a correlated set and no
- * assertion exists outside this table module. `toolCallIrIsUnasserted.test.ts` holds
- * that rule.
+ * assertion exists outside this table module. The assertion ban in `eslint.config.ts`
+ * holds that rule.
  */
 export function dispatchToolCall<R>(call: ToolCallIR, op: <K extends ToolKind>(parts: ToolCallDispatch<K>) => R): R {
   return op(dispatchParts(call))

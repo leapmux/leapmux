@@ -558,7 +558,7 @@ export const CODEX_TOOL_READERS: { [P in ToolKind]: CodexToolReader<P> } = {
  *
  * GENERIC over the kind, so the kind and the payload it answers stay one correlated
  * pair. That is what removes the assertion the old `switch` needed at every branch,
- * and `toolCallIrIsUnasserted.test.ts` refuses exactly that assertion.
+ * and the assertion ban in `eslint.config.ts` refuses exactly that assertion.
  */
 export function codexPayloadFor<K extends ToolKind>(facts: CodexToolFacts, kind: K): ToolCallPayloadOf<K> {
   return CODEX_TOOL_READERS[kind](facts)

@@ -28,8 +28,27 @@ const BASELINE_FILE = 'vitest.config.ts'
 /** One file inside each tree that the scoped blocks match. */
 const SCOPED_FILES = ['src/app.tsx', 'tests/e2e/helpers/mail.ts']
 
+/**
+ * One file inside each chat tree the blocks in `eslint.config.ts` scope, with a
+ * selector that must be present for it. A scoped block that stops matching its
+ * tree -- a path typo, a files pattern the real tree does not spell -- leaves
+ * the architecture rules reading green while guarding nothing.
+ */
+const CHAT_SCOPED_FILES: Array<{ file: string, marker: string }> = [
+  // The provider-neutrality block covers shared modules outside the plugin layer.
+  { file: 'src/stores/chatTypes.ts', marker: 'TSTypeReference[typeName.name=\'Record\'] TSTypeReference[typeName.name=\'AgentProvider\']' },
+  // The chat-wide block adds the tool-call assertion ban.
+  { file: 'src/components/chat/results/ToolMessage.tsx', marker: 'TSAsExpression[typeAnnotation.typeName.name=/^(ToolCallIR' },
+  // The IR blocks add the value-import boundary, one selector per depth.
+  { file: 'src/components/chat/ir/toolCall.ts', marker: 'source.value=/^~\\/(?!lib' },
+  { file: 'src/components/chat/ir/tools/generic.ts', marker: 'source.value=/^\\.\\.\\/(?![^/]+$' },
+  // The provider JSX ban reaches a non-control `.tsx` but not the control surfaces.
+  { file: 'src/components/chat/providers/claude/extractors/toolCall.ts', marker: 'TSAsExpression[typeAnnotation.typeName.name=/^(ToolCallIR' },
+  { file: 'src/components/chat/providers/pi/PiControlActions.tsx', marker: 'TSAsExpression[typeAnnotation.typeName.name=/^(ToolCallIR' },
+]
+
 /** The DOM-`title` ban, which must survive beside the base selectors. */
-const TITLE_SELECTOR = 'JSXAttribute[name.name="title"]'
+const TITLE_SELECTOR = 'JSXOpeningElement[name.type="JSXIdentifier"][name.name=/^[a-z]/] > JSXAttribute[name.name="title"]'
 
 /**
  * Resolve `no-restricted-syntax` for each file, in a SUBPROCESS.
@@ -96,7 +115,8 @@ describe('no-restricted-syntax keeps the base selectors', () => {
   // resolveRestrictedSyntax), and the budget is sized so only a genuine hang
   // trips it.
   beforeAll(() => {
-    resolved = resolveRestrictedSyntax([BASELINE_FILE, ...SCOPED_FILES])
+    const chatFiles = CHAT_SCOPED_FILES.map(entry => entry.file)
+    resolved = resolveRestrictedSyntax([BASELINE_FILE, ...SCOPED_FILES, ...chatFiles])
     baseline = selectorsFor(resolved[BASELINE_FILE])
   }, 60_000)
 
@@ -130,5 +150,30 @@ describe('no-restricted-syntax keeps the base selectors', () => {
       `${file} must keep the DOM-\`title\` ban. Without it a bare \`title\` attribute `
       + 'renders the OS tooltip and becomes the accessible name of the element.',
     ).toBe(true)
+  })
+
+  // A chat-scoped block that stops matching its tree leaves its architecture
+  // selectors silently gone -- the same failure the baseline check above reads,
+  // one tree further in. Each marker below is one selector the block for that
+  // tree must resolve with.
+  it.each(CHAT_SCOPED_FILES)('keeps the chat architecture selectors for %s', ({ file, marker }) => {
+    const scoped = selectorsFor(resolved[file])
+    expect(
+      scoped.some(selector => selector.includes(marker)),
+      `${file} lost the chat pipeline selector that starts \`${marker}\`. The scoped `
+      + 'block in `eslint.config.ts` no longer matches this tree, so the rule guards nothing.',
+    ).toBe(true)
+  })
+
+  // The four control surfaces keep JSX -- and a control file resolving WITHOUT
+  // the JSX ban pins the exemption from the other side: the ban block must not
+  // swallow them, or every permission prompt in the app fails lint.
+  it('keeps the provider JSX ban off the control surfaces', () => {
+    const scoped = selectorsFor(resolved['src/components/chat/providers/pi/PiControlActions.tsx'])
+    expect(
+      scoped.some(selector => /^JSXElement$|^JSXFragment$/.test(selector)),
+      'A control surface must keep its JSX: the ban is for transcript rows, and this file answers a request.',
+    ).toBe(false)
+    expect(scoped.some(selector => selector.includes(TITLE_SELECTOR))).toBe(true)
   })
 })

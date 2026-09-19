@@ -34,7 +34,7 @@ does.
 - **PascalCase**, named for ONE reusable component, exactly as `../widgets/` does:
   `ToolMessage.tsx`, `CollapsibleContent.tsx`, `ToolStatusHeader.tsx`. The file carries
   that component's own name, and
-  `src/test-support/chatLayerModuleNames.test.ts` fails the suite when it does not.
+  `src/test-support/chatLayerStructure.test.ts` fails the suite when it does not.
 
 A body that several kinds share sits here; a body that one kind draws can sit in its
 own `tools/<kind>.tsx`.
@@ -42,7 +42,8 @@ own `tools/<kind>.tsx`.
 ## What layer 3 may know
 
 It reads the IR and the design tokens. It never imports `../providers/`, and
-`providerLayering.test.ts` enforces the other direction — a plugin that imports from
+the scoped `ts/no-restricted-imports` blocks in `eslint.config.ts` enforce both
+directions — a plugin that imports from
 here puts a parser the whole pipeline depends on behind a module that exists to draw.
 Seven providers reached into `readFileResult.tsx` for its content parser before that
 rule existed, so the content parse now lives in `ir/readFileResult.ts` and both layers

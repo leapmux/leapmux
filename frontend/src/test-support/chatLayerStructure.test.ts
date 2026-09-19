@@ -2,42 +2,94 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
+import { TOOL_KINDS } from '~/components/chat/ir/toolKind'
+import { lineNumberAt, stripCommentLines } from '~/test-support/sourceScan'
 import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 import { importedNames } from '~/test-support/typescriptImports'
-// The file-NAMING guard for the three-layer chat pipeline. `providerLayering.test.ts`
-// and `irLayering.test.ts` say what a layer may import and draw; this says what its
-// modules are called.
+
+// The STRUCTURE guard for the three-layer chat pipeline. `eslint.config.ts`
+// states what a layer may import, draw and assert; this file states what its
+// files ARE: which modules exist, what they are called, and that every
+// exception the linter config carves out stays pinned to a path that exists.
 //
-// Two conventions used to run side by side in `results/` with nothing to tell them
-// apart: `ReadResultView.tsx` beside `readFileResult.tsx`, both component-only modules
-// about the same tool kind. A reader could not predict either name, and the answer to
-// "where does my new file go?" was whichever neighbour they happened to open.
-//
-// The classifier rule says where one JOB lives. `providers/README.md` gives
-// `plugin.ts` the `registerProvider` call and nothing else another module can hold,
-// and it gives `classification.ts` the answer to "which shared message category one
-// frame takes".
-// A classifier runs 150 to 330 lines of a provider's own vocabulary, so a plugin that
-// holds one is more classifier than registration. The rule reads the `classify` hook
-// of each provider object and requires that the hook arrive from a module named
-// `classification`.
-//
-// WHAT THE CLASSIFIER RULE DOES NOT CATCH:
-//
-//   - A SUB-HOOK. `classifyToolCallUpdate` answers one frame's category too, and the
-//     ACP family entry takes one as an option. Goose declares its own beside its
-//     registration. This rule reads the `classify` property alone.
-//   - Everything else in `plugin.ts`. The rule states where the classifier lives. It
-//     does not state that the file holds the registration and nothing more.
-//   - A re-export. The rule reads the module specifier of the import, so a
-//     `classification.ts` symbol that reaches the plugin through a third module reports
-//     that third module's name.
-//   - A provider object that no object literal states. A plugin assembled by
-//     `Object.assign` or by a spread at run time carries no `classify` property for
-//     this walk to read.
+// The rules here are the ones no type system and no AST selector can read:
+// a directory's contents, a file's export set, the module an identifier
+// arrives from, and the allowlists that would silently forgive whatever new
+// file took a stale path.
 
 const CHAT_DIR = join(frontendRoot, 'src/components/chat')
 const PROVIDERS_DIR = join(CHAT_DIR, 'providers')
+const IR_DIR = join(CHAT_DIR, 'ir')
+
+/**
+ * The provider `.tsx` modules that MAY draw.
+ *
+ * Each is a control surface: a permission prompt, a question form, a plan
+ * approval. Those read a provider's own request payload and answer it, which is
+ * not a transcript row -- the row IR does not describe them. `eslint.config.ts`
+ * lifts the JSX ban for exactly these four paths.
+ */
+const DRAWING_ALLOWED = [
+  'codex/CodexControlActions.tsx',
+  'cursor/CursorControlActions.tsx',
+  'pi/PiControlActions.tsx',
+  'pi/PiPlanApprovalActions.tsx',
+]
+
+/**
+ * The display surfaces that MAY identify one provider in shared code.
+ *
+ * `AgentProviderIcon` is the whole list: an icon is a per-provider asset, and no
+ * shared shape can supply one. `eslint.config.ts` lifts the decision selectors
+ * for this one file.
+ */
+const PROVIDER_COMPARISON_ALLOWED = [
+  'components/common/AgentProviderIcon.tsx',
+]
+
+/** The IR's own builder: the one module the assertion ban exempts. */
+const IR_BUILDER = 'ir/toolCall.ts'
+
+/**
+ * The provider that registers a classifier, and the module it takes one from.
+ *
+ * Discovery is the walk and not this table, so a provider a later change adds is
+ * covered with no edit here. The table exists for the opposite failure: a matcher that
+ * stops reading a hook reports nothing, which looks exactly like a clean tree. A name
+ * here that the walk no longer finds fails the case below and states which provider
+ * went unread.
+ */
+const PROVIDER_CLASSIFIERS: Readonly<Record<string, string | null>> = {
+  'acp/registerACPProvider.ts': './classification',
+  'claude/plugin.ts': './classification',
+  'codex/plugin.ts': './classification',
+  'copilot/plugin.ts': './classification',
+  'pi/plugin.ts': './classification',
+  'zcode/plugin.ts': './classification',
+}
+
+/**
+ * The assertion types the ESLint selector refuses, by the name the selector reads.
+ *
+ * Each one re-pairs a kind with a payload, a request or a result; the renderers
+ * read those fields with no guard, so the row throws rather than draws. The
+ * builder's exemption is ONE assertion, not a standing permission for the file:
+ * a second one there is a new pairing nobody checked, and it would hide behind
+ * the first.
+ */
+const FORBIDDEN_ASSERTION_TYPES = [
+  'ToolCallIR',
+  'ToolCallPayloadIR',
+  'ToolCallPayloadOf',
+  'ToolCallPayload<',
+  'ToolCallOf<',
+  'ToolCallOfKinds<',
+  'ToolRequests[',
+  'ToolResults[',
+  'ToolResultOf<',
+  'ParsedCall<',
+  'ResolvedCall<',
+]
 
 /**
  * The directories the three-layer pipeline occupies.
@@ -60,11 +112,6 @@ function layerModules(extension: '.ts' | '.tsx'): string[] {
   }))
 }
 
-/** Whether the module exports a `const` or `function` with exactly this name. */
-function exportsSymbol(source: string, name: string): boolean {
-  return new RegExp(`^export (?:const|function) ${name}\\b`, 'm').test(source)
-}
-
 /** Every provider module that ships, in either extension. */
 function providerModules(): string[] {
   return collectFiles(PROVIDERS_DIR, {
@@ -73,6 +120,11 @@ function providerModules(): string[] {
       && !name.endsWith('.test.tsx')
       && !name.endsWith('.fixtures.ts'),
   })
+}
+
+/** Whether the module exports a `const` or `function` with exactly this name. */
+function exportsSymbol(source: string, name: string): boolean {
+  return new RegExp(`^export (?:const|function) ${name}\\b`, 'm').test(source)
 }
 
 /** One `classify` hook of one provider object. */
@@ -161,27 +213,63 @@ function isClassificationModule(specifier: string): boolean {
   return specifier.endsWith('/classification')
 }
 
-/**
- * The provider that registers a classifier, and the module it takes one from.
- *
- * Discovery is the walk and not this table, so a provider a later change adds is
- * covered with no edit here. The table exists for the opposite failure: a matcher that
- * stops reading a hook reports nothing, which looks exactly like a clean tree. A name
- * here that the walk no longer finds fails the case below and states which provider
- * went unread.
- */
-const PROVIDER_CLASSIFIERS: Readonly<Record<string, string | null>> = {
-  'acp/registerACPProvider.ts': './classification',
-  'claude/plugin.ts': './classification',
-  'codex/plugin.ts': './classification',
-  'copilot/plugin.ts': './classification',
-  'pi/plugin.ts': './classification',
-  'zcode/plugin.ts': './classification',
+/** Each `as <Type>` in one file, with the line it sits on. Comments are stripped first. */
+function assertionsTo(source: string, types: string[]): Array<{ type: string, line: number }> {
+  const text = stripCommentLines(source)
+  const found: Array<{ type: string, line: number }> = []
+  for (const type of types) {
+    const needle = `as ${type}`
+    for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + 1))
+      found.push({ type, line: lineNumberAt(text, at) })
+  }
+  return found
 }
 
-describe('the chat render layers name their modules one way', () => {
+describe('the chat render pipeline holds the structure its guards assume', () => {
   it('finds the modules it guards', () => {
     expect(layerModules('.tsx').length).toBeGreaterThan(40)
+    expect(providerModules().length).toBeGreaterThan(30)
+  })
+
+  // One file per kind: the pair a kind declares has exactly one home, and a kind
+  // added to TOOL_KINDS without its file is a compile error the table below turns
+  // into a named failure.
+  it('holds exactly one kind file per tool kind', () => {
+    const SHARED_SHAPE_FILES = new Set(['index.ts', 'generic.ts', 'fileChange.ts'])
+    const kindFiles = collectFiles(join(IR_DIR, 'tools'), { matches: name => name.endsWith('.ts') })
+      .map(file => basename(file))
+      .filter(name => !SHARED_SHAPE_FILES.has(name) && !name.endsWith('.test.ts') && !name.endsWith('.typecheck.ts'))
+    const fileForKind = (kind: string): string => {
+      if (kind === '')
+        return 'none.ts'
+      if (kind === 'switch_mode')
+        return 'switchMode.ts'
+      if (kind === 'web_search')
+        return 'webSearch.ts'
+      return `${kind}.ts`
+    }
+    const expected = TOOL_KINDS.map(fileForKind)
+    expect(kindFiles.sort(), 'Every ir/tools/<file>.ts is one TOOL_KINDS member\'s home.').toEqual([...expected].sort())
+  })
+
+  /**
+   * No provider keeps a `renderers/` directory.
+   *
+   * Layer 1 returns IR and never draws -- the ESLint JSX ban enforces that on
+   * the markup itself. Four providers once carried a `renderers/` directory from
+   * before the pipeline closed, holding modules that answer `DividerIR` and
+   * `NotificationEntryIR`. Those read the provider's own bytes, so they are
+   * extraction, and the name sent every reader to the wrong layer.
+   */
+  it('keeps no renderers directory under a provider', () => {
+    const offences = readdirSync(PROVIDERS_DIR, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && existsSync(join(PROVIDERS_DIR, entry.name, 'renderers')))
+      .map(entry => `providers/${entry.name}/renderers`)
+    expect(
+      offences,
+      'A module that reads the provider\'s bytes into IR belongs in `extractors/`. '
+      + 'Nothing in the provider layer draws.',
+    ).toEqual([])
   })
 
   /**
@@ -211,31 +299,8 @@ describe('the chat render layers name their modules one way', () => {
   })
 
   /**
-   * No provider keeps a `renderers/` directory.
-   *
-   * Layer 1 returns IR and never draws -- `providerLayering.test.ts` enforces that on
-   * the JSX itself. Four providers still carried a `renderers/` directory from before
-   * the pipeline closed, holding modules that answer `DividerIR` and
-   * `NotificationEntryIR`. Those read the provider's own bytes, so they are extraction,
-   * and the name sent every reader to the wrong layer.
-   */
-  it('keeps no renderers directory under a provider', () => {
-    const providers = join(CHAT_DIR, 'providers')
-    const offences = readdirSync(providers, { withFileTypes: true })
-      .filter(entry => entry.isDirectory() && existsSync(join(providers, entry.name, 'renderers')))
-      .map(entry => `providers/${entry.name}/renderers`)
-    expect(
-      offences,
-      'A module that reads the provider\'s bytes into IR belongs in `extractors/`. '
-      + 'Nothing in the provider layer draws.',
-    ).toEqual([])
-  })
-
-  /**
-   * A provider's classifier lives in `classification.ts`.
-   *
-   * The five cases below pin the matcher on sources of their own, because a matcher
-   * that reads no hook reports no offence and passes.
+   * The matcher samples below pin the classify walk on sources of their own, because a
+   * matcher that reads no hook reports no offence and passes.
    */
   it('reads an inline classify method as the file\'s own', () => {
     const source = `const plugin = {\n  classify(input) {\n    return { kind: 'unknown' }\n  },\n}\n`
@@ -298,5 +363,34 @@ describe('the chat render layers name their modules one way', () => {
       + 'gives the answer to "which shared message category one frame takes". Move the '
       + 'classifier there and import it here.',
     ).toStrictEqual([])
+  })
+
+  /**
+   * Every exception the ESLint config carves out stays pinned to a path that exists.
+   *
+   * Left behind after a module moves, an exception would silently forgive whatever
+   * new file takes that path -- the linter rule would read as green while guarding
+   * nothing.
+   */
+  it('keeps every drawing exception pinned to a file that exists', () => {
+    const present = new Set(providerModules().map(file => posixRelative(PROVIDERS_DIR, file)))
+    const stale = DRAWING_ALLOWED.filter(entry => !present.has(entry))
+    expect(stale, 'Delete the entry in `eslint.config.ts`, or repoint it at the module that replaced it.').toEqual([])
+  })
+
+  it('keeps the provider-icon exception pinned to a file that exists', () => {
+    const srcRoot = join(frontendRoot, 'src')
+    const present = new Set(collectFiles(srcRoot, {
+      matches: name => (name.endsWith('.ts') || name.endsWith('.tsx')) && !name.endsWith('.d.ts'),
+    }).map(file => posixRelative(srcRoot, file)))
+    const stale = PROVIDER_COMPARISON_ALLOWED.filter(entry => !present.has(entry))
+    expect(stale, 'Delete the entry in `eslint.config.ts`, or repoint it at the module that replaced it.').toEqual([])
+  })
+
+  it('keeps the IR builder to the single assertion its check earns', () => {
+    const builder = join(CHAT_DIR, IR_BUILDER)
+    expect(existsSync(builder), `\`${IR_BUILDER}\` is the one file the assertion ban exempts; the ESLint config entry is stale without it.`).toBe(true)
+    const found = assertionsTo(readFileSync(builder, 'utf8'), FORBIDDEN_ASSERTION_TYPES)
+    expect(found.map(entry => `${IR_BUILDER}:${entry.line} asserts to ${entry.type}`)).toHaveLength(1)
   })
 })

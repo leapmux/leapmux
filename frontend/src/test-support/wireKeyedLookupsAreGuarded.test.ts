@@ -113,7 +113,7 @@ function chatModules(): string[] {
       && !name.endsWith('.test.ts')
       && !name.endsWith('.test.tsx')
       && !name.endsWith('.css.ts')
-      // Test DATA co-located with the module it describes; see `providerLayering.test.ts`.
+      // Test DATA co-located with the module it describes; see `chatLayerStructure.test.ts`.
       && !name.endsWith('.fixtures.ts')
       && name !== 'testUtils.ts'
       && name !== 'testUtils.tsx'

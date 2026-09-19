@@ -236,7 +236,7 @@ export type ToolRequestOverrides<F> = { [P in ToolKind]?: (args: Record<string, 
  *
  * GENERIC over the kind, so `kind` and the request it answers stay one correlated pair.
  * An assertion back to `ToolRequests[K]` is what a `switch` needed here, and that is the
- * one cast `toolCallIrIsUnasserted.test.ts` refuses.
+ * one cast the assertion ban in `eslint.config.ts` refuses.
  */
 export function toolRequestFor<K extends ToolKind, F>(
   kind: K,

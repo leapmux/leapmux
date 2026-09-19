@@ -112,11 +112,10 @@ function claudeCallKind(toolName: string): ToolKind {
  * the keys of `CLAUDE_TOOL_REQUEST_OVERRIDES`. Each reader below asks for its OWN
  * kind's request, so the kind and the request it answers stay one checked pair.
  *
- * A function DECLARATION rather than a generic arrow. `providerLayering.test.ts` reads
- * ` <K extends ToolKind>` as an opening JSX element, and a `.ts` file that draws a
- * transcript row of its own is what that guard refuses; a declaration puts the `<`
- * against the name, where the rule does not look. {@link claudeReaderFor} takes the
- * same form for the same reason.
+ * A function DECLARATION rather than a generic arrow. The JSX ban in `eslint.config.ts`
+ * reads a `.tsx` module's markup, and a `.ts` file cannot hold JSX at all; the
+ * declaration form predates that and reads just as well. {@link claudeReaderFor} takes
+ * the same form.
  */
 function claudeReaderRequest<K extends ToolKind>(kind: K, facts: ClaudeCallFacts): ToolRequests[K] {
   return claudeRequestFor(kind, facts.args.input, { toolName: facts.args.toolName, result: facts.result, context: facts.context })
@@ -202,7 +201,7 @@ export const CLAUDE_TOOL_READERS: { [K in ToolKind]: (facts: ClaudeCallFacts) =>
  * GENERIC over the kind, which is what keeps `kind` and the payload it answers one
  * correlated pair. The caller's `ToolKind` satisfies the parameter member by member, so
  * no assertion stands between the table and the result --
- * `toolCallIrIsUnasserted.test.ts` refuses exactly that assertion.
+ * the assertion ban in `eslint.config.ts` refuses exactly that assertion.
  */
 function claudeReaderFor<K extends ToolKind>(facts: ClaudeCallFacts, kind: K): ToolCallPayloadOf<K> {
   return CLAUDE_TOOL_READERS[kind](facts)
