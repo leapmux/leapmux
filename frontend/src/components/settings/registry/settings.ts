@@ -584,7 +584,7 @@ export const browserSettings: BrowserSettingDecl[] = [
         const id = typeof v === 'string' ? v.trim() : ''
         if (id === '') {
           prefs.setPreferredExternalAppId(undefined)
-          return
+          return undefined
         }
         if (!KNOWN_EXTERNAL_APP_IDS.has(id)) {
           // A REJECTED promise, never a bare `throw`: `SettingRow.commit`
@@ -596,6 +596,7 @@ export const browserSettings: BrowserSettingDecl[] = [
           ))
         }
         prefs.setPreferredExternalAppId(id)
+        return undefined
       },
     }),
     resetBrowser: prefs => prefs.setPreferredExternalAppId(undefined),
