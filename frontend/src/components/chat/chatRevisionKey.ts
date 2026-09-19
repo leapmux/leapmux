@@ -18,7 +18,7 @@ import type { MessageRevision } from '~/lib/messageSpan'
  * The revisions one row's caches depend on: always its own, plus a sibling's
  * when the row renders from that side.
  *
- * `request` rides only on a RESULT row (the row that draws its opener's input),
+ * `request` rides only on a RESULT row (the row that draws its request's input),
  * and `result` only on a TOOL-USE row (the row that may render from hidden
  * result data). An absent member states "this row does not depend on that side"
  * -- which is itself part of the key, so a member ARRIVING changes it.

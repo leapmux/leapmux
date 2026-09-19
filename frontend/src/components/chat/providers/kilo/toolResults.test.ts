@@ -22,8 +22,8 @@ function callOf(name: string) {
 }
 const failureCallOf = (fixture: ToolFailureFixture) => providerToolCall(AgentProvider.KILO, fixture.payload, fixture.options)
 
-/** The `tool_call` opener each fixture pairs with, read alone as a call still in flight. */
-function openerCallOf(name: string) {
+/** The `tool_call` request that each fixture pairs with, read alone as a call still in flight. */
+function requestCallOf(name: string) {
   const fixture = KILO_TOOL_RESULTS.fixtures[name]
   const frame = fixture === undefined ? null : openingFrameOf(fixture)
   return frame === null ? null : providerToolCall(AgentProvider.KILO, frame)
@@ -42,5 +42,5 @@ describe('kilo tool results', () => {
   })
 
   describeToolResultCorpus(KINDS, KILO_TOOL_RESULTS, callOf)
-  describeToolFailureLadder(KILO_TOOL_RESULTS, { callOf, failureCallOf, openerCallOf })
+  describeToolFailureLadder(KILO_TOOL_RESULTS, { callOf, failureCallOf, requestCallOf })
 })

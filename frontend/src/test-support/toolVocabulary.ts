@@ -275,9 +275,9 @@ export function openingFrameOf(fixture: ToolResultFixture): Record<string, unkno
 }
 
 /** The names whose OPENING frame already carries a result, so the row answers before the call did. */
-export function openersThatAnswerEarly(results: ToolResultCheck, openerCallOf: CallReader): string[] {
+export function requestsThatAnswerEarly(results: ToolResultCheck, requestCallOf: CallReader): string[] {
   return Object.keys(results.fixtures).filter((name) => {
-    const call = openerCallOf(name)
+    const call = requestCallOf(name)
     return call !== null && call.result !== undefined
   })
 }

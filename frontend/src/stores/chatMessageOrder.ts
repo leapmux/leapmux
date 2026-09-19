@@ -41,7 +41,7 @@ export function insertMessageBySeq(list: AgentChatMessage[], message: AgentChatM
 /**
  * Return dropped span IDs that no surviving row uses.
  *
- * An opener and its result can share a span ID. The function keeps that span
+ * A request and its result can share a span ID. The function keeps that span
  * while either row survives.
  */
 export function prunableDroppedSpanIds(

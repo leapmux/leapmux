@@ -140,7 +140,7 @@ export interface ProviderTranscriptCapability {
   classify: (input: ClassificationInput, context?: ClassificationContext) => MessageCategory
 
   /**
-   * Classify a message's role within a tool span (opener / result / other) from this provider's
+   * Classify a message's role within a tool span (request / result / other) from this provider's
    * wire shape, so chatSpanIndex can pair a tool_use with its result regardless of arrival order.
    * Claude reads Anthropic `tool_use`/`tool_result` content blocks; Pi routes by envelope `type`.
    */

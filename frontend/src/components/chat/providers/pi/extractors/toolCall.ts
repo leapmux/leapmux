@@ -81,7 +81,7 @@ export function piToolRow(
 }
 
 /**
- * Which SIDE of its span one row draws: the opener while the call runs, the answer
+ * Which SIDE of its span one row draws: the request while the call runs, the answer
  * once it finished.
  *
  * A retained `tool_execution_start` counts as finished, so the last frame of an
@@ -221,7 +221,7 @@ export function piReclassify(facts: PiToolFacts): ToolKind {
  * un-annotated entry takes a stray key without a word.
  */
 export const PI_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<PiToolFacts> = {
-  // The launch card, which Pi states across the frame, the paired opener and the paired
+  // The launch card, which Pi states across the frame, the paired request and the paired
   // result; the shared entry sees the arguments alone.
   agent: (_args, facts): ToolRequests['agent'] => piRowAgentRequest(facts),
   // The substitutions the opening event asked for, which Pi does not repeat in the
@@ -601,7 +601,7 @@ function piAgentPayload(facts: PiToolFacts): AgentRun {
 /**
  * The changes an edit or write call asked for, read from its opening event.
  *
- * A RESOLVED opener is authoritative even when it states nothing, so the row's own
+ * A RESOLVED request is authoritative even when it states nothing, so the row's own
  * frame serves the call that resolved none rather than standing beside one.
  */
 function piFileChangeRequest(facts: PiToolFacts): FileChangeRequest {

@@ -48,7 +48,7 @@ export function copilotExtractRow(input: RowExtractionInput): ChatRowIR | null {
  * Resolve all three sides of one Copilot tool span into rows.
  *
  * A RESULT event states no tool name and no arguments of its own, so it reads them off
- * the paired start. The OPENER resolves against ITSELF, which is what an opener's own
+ * the paired start. The REQUEST resolves against ITSELF, which is what a request's own
  * row needs -- passing the span's request there would pair a row with a sibling.
  */
 function copilotToolSpanRow(
@@ -83,7 +83,7 @@ function copilotSideIsStart(side: ParsedMessageContent | undefined, toolCallId: 
  *
  * A turn that ended while a call ran stores the start frame AGAIN as the closing
  * row, so the result side can legitimately be a start event. Asking "is it not a
- * start frame" therefore answered no for exactly that case: the opener then read as
+ * start frame" therefore answered no for exactly that case: the request then read as
  * having no result row, `rowDrawsResult` returned true for both halves, and a
  * retained subagent launch drew its prompt card twice.
  */

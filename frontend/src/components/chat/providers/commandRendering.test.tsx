@@ -546,7 +546,7 @@ describe('command summary syntax highlighting selection stability', () => {
       renderMessageContent(request, { sources: testMessageSources({ current: () => request, result: () => result }) }, { kind: 'tool_use' }, AgentProvider.CLAUDE_CODE),
       renderMessageContent(result, { sources: testMessageSources({ current: () => result, request: () => request }) }, { kind: 'tool_result' }, AgentProvider.CLAUDE_CODE),
     ])
-    // The opener states the command; the completing row states what it answered.
+    // The request states the command. The completing row states what it answered.
     expect(container.textContent ?? '').toContain('the output words')
     expect((container.textContent ?? '').match(/pair-only-marker/g)).toHaveLength(1)
   })

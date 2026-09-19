@@ -26,7 +26,7 @@ function callOf(name: string) {
 const failureCallOf = (fixture: ToolFailureFixture) => providerToolCall(AgentProvider.GITHUB_COPILOT, fixture.payload, fixture.options)
 
 /** The `tool.execution_start` each fixture pairs with, read alone as a call still in flight. */
-function openerCallOf(name: string) {
+function requestCallOf(name: string) {
   const fixture = COPILOT_TOOL_RESULTS.fixtures[name]
   if (fixture === undefined)
     throw new Error(`No copilot result fixture for ${name}`)
@@ -46,5 +46,5 @@ describe('copilot tool results', () => {
   })
 
   describeToolResultCorpus(KINDS, COPILOT_TOOL_RESULTS, callOf)
-  describeToolFailureLadder(COPILOT_TOOL_RESULTS, { callOf, failureCallOf, openerCallOf })
+  describeToolFailureLadder(COPILOT_TOOL_RESULTS, { callOf, failureCallOf, requestCallOf })
 })

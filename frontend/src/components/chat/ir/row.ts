@@ -16,7 +16,7 @@ export type ToolRowRole = 'request' | 'update' | 'result'
  * Where one row sits in its span, and which SIBLING rows the transcript draws beside it.
  *
  * A row is never its own sibling, so each role states only the siblings it can have:
- * the opener IS the request row, and the closer IS the result row. Writing the union
+ * the request is its own row, and the result is its own row. Writing the union
  * this way is what makes `{ role: 'request', hasRequestRow: true }` -- a row that
  * claims to sit beside itself -- impossible to spell. A reader still asks for either
  * flag on any row and gets `undefined`, which is falsy, where the role rules it out.
@@ -28,7 +28,7 @@ export type ToolRowPosition
 
 /** What the transcript draws for one tool SPAN, whichever row the extraction builds. */
 export interface ToolSpanRows {
-  /** The span states an opener, and the transcript draws it as its own row. */
+  /** The span states a request, and the transcript draws it as its own row. */
   request: boolean
   /** The span states a result, and the transcript draws it as its own row. */
   result: boolean

@@ -10,9 +10,9 @@ describe('toolCallRow', () => {
   // two flags, and one that restated it wrongly drew a result row with its own header
   // suppressed and no request row beside it to carry one.
   it('never states a row as its own sibling', () => {
-    const opener = toolCallRow(call, 'request', { request: true, result: true })
-    expect(rowHasRequestRow(opener)).toBe(false)
-    expect(rowHasResultRow(opener)).toBe(true)
+    const request = toolCallRow(call, 'request', { request: true, result: true })
+    expect(rowHasRequestRow(request)).toBe(false)
+    expect(rowHasResultRow(request)).toBe(true)
 
     const closer = toolCallRow(call, 'result', { request: true, result: true })
     expect(rowHasRequestRow(closer)).toBe(true)
@@ -35,9 +35,9 @@ describe('toolCallRow', () => {
   // The flag the role rules out is ABSENT rather than false, so every reader must go
   // through the derivations. This pins that an absent flag reads as no.
   it('reads an absent flag as no', () => {
-    const opener = toolCallRow(call, 'request', { request: true, result: false })
-    expect(opener.role === 'request' ? opener.hasRequestRow : true).toBeUndefined()
-    expect(rowHasRequestRow(opener)).toBe(false)
+    const request = toolCallRow(call, 'request', { request: true, result: false })
+    expect(request.role === 'request' ? request.hasRequestRow : true).toBeUndefined()
+    expect(rowHasRequestRow(request)).toBe(false)
   })
 
   describe('toolRowPosition', () => {
@@ -47,9 +47,9 @@ describe('toolCallRow', () => {
     // so a position that carried `hasRequestRow: undefined` on a request row would
     // pass a value comparison while still stating a field the role rules out.
     it('carries only the siblings the role admits', () => {
-      const opener = toolRowPosition(toolCallRow(call, 'request', { request: true, result: true }))
-      expect(Object.keys(opener).sort()).toEqual(['hasResultRow', 'role'])
-      expect(opener).toEqual({ role: 'request', hasResultRow: true })
+      const request = toolRowPosition(toolCallRow(call, 'request', { request: true, result: true }))
+      expect(Object.keys(request).sort()).toEqual(['hasResultRow', 'role'])
+      expect(request).toEqual({ role: 'request', hasResultRow: true })
 
       const closer = toolRowPosition(toolCallRow(call, 'result', { request: true, result: true }))
       expect(Object.keys(closer).sort()).toEqual(['hasRequestRow', 'role'])

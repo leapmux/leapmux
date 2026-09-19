@@ -39,7 +39,7 @@ export const triggerRenderer = proseRenderer<'trigger'>({
   // It draws while the call runs, which is the one state `typedRequestLine` is for and
   // the rule `thinkRenderer` follows for its own line. A row that holds the answer
   // draws that answer instead, so one span draws the line exactly once: a paired
-  // opener carries no result, and the result row beside it carries one.
+  // request carries no result, and the result row beside it carries one.
   request(call) {
     if (call.result !== undefined)
       return null

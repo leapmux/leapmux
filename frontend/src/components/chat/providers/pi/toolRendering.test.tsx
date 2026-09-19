@@ -464,7 +464,7 @@ describe('a pi tool row the turn ended before the call did', () => {
 
   it('reads the retained start frame as the call result', () => {
     expect(plugin().transcript.spanRole!(resolveMessageForRendering(parseMessageContent(message), AgentProvider.PI))).toBe('result')
-    // The same frame with no completion is the call's OPENER, which is the row the
+    // The same frame with no completion is the call's REQUEST, which is the row the
     // agent sent when the call began. A COPY first -- `parseMessageContent` caches by
     // message, and a `delete` on the cached object would reach every later reader of
     // this same message. The key is deleted rather than stated `undefined`, which the

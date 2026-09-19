@@ -28,7 +28,7 @@ function collabFrame(id: string, item: Record<string, unknown>, completion?: Mes
  * stood alone, which the e2e suite saw as a missing "Show prompt" button.
  */
 describe('codex tool span pairing', () => {
-  it('keeps both sides of a paired spawnAgent call the agent kind, whatever the opener frame still says', () => {
+  it('keeps both sides of a paired spawnAgent call at the agent kind, whatever the request frame still says', () => {
     const prompt = '**Instruction marker**\n\nRead the fixture and report the findings.'
     const report = '**Report marker**\n\n- First finding'
     const base = { id: 'shared-agent-call', type: 'collabAgentToolCall', tool: 'spawnAgent', prompt }

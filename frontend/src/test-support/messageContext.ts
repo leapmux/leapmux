@@ -93,10 +93,15 @@ export function createMutableTranscript(archive: readonly AgentChatMessage[], op
   const contentVersions = new Map<string, number>()
   const observers = new Set<(message: AgentChatMessage) => void>()
 
-  const messages = createMemo(() => windowIds()
-    .map(id => archiveById.get(id))
-    .filter((message): message is AgentChatMessage => message !== undefined)
-    .sort((a, b) => (a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0)))
+  const messages = createMemo(() => {
+    // A same-ID replacement changes the archive map, not the window's id list.
+    // Subscribe to the transcript version so this memo reads the new object.
+    version()
+    return windowIds()
+      .map(id => archiveById.get(id))
+      .filter((message): message is AgentChatMessage => message !== undefined)
+      .sort((a, b) => (a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0))
+  })
   const index = createMemo(() => {
     const spans = createSpanIndex()
     spans.reindex('test', messages())
@@ -125,13 +130,10 @@ export function createMutableTranscript(archive: readonly AgentChatMessage[], op
       messages,
       messageVersion: () => version(),
       contentVersion: id => contentVersions.get(id) ?? 0,
-      messageBySeq: (seq) => {
-        for (const message of archiveById.values()) {
-          if (message.seq === seq)
-            return message
-        }
-        return undefined
-      },
+      // A resident lookup reads the LOADED window alone. The archive backs the
+      // asynchronous fetch below, so an out-of-window sequence exercises the
+      // same fetch and cache path as the application.
+      messageBySeq: seq => messages().find(message => message.seq === seq),
       spanMessage: (identity, side) => side === 'request' ? index().getRequestMessage('test', identity) : index().getResultMessage('test', identity),
       // The default span fetch answers from the COMPLETE archive, filtered by the
       // whole span identity: the session AND the span id, which is what keeps one

@@ -16,7 +16,7 @@ function encode(raw: unknown): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(raw))
 }
 
-/** A Claude tool_use opener (an assistant message carrying a tool_use block). */
+/** A Claude tool_use request (an assistant message that carries a tool_use block). */
 function toolUse(id: string, spanId: string) {
   return create(AgentChatMessageSchema, {
     id,
@@ -58,7 +58,7 @@ function plain(id: string, spanId: string, content: string) {
  * A Pi tool span. Pi discriminates by the flat envelope `type`
  * (tool_execution_start / _end), NOT Anthropic content blocks -- the `_end`
  * carries no `message.content[]`, so a content-block-only role check would
- * mis-bucket it as `other` and first-seen-is-opener would misfile it.
+ * mis-bucket it as `other`, and first-message-is-request would misfile it.
  */
 function piStart(id: string, spanId: string) {
   return create(AgentChatMessageSchema, {
@@ -98,11 +98,11 @@ function codexSpan(id: string, spanId: string, seq: bigint, status: string) {
 }
 
 describe('createSpanIndex', () => {
-  it('routes by content-block role, not arrival order (result before opener)', () => {
+  it('routes by content-block role, not arrival order (result before request)', () => {
     const idx = createSpanIndex()
-    // Out-of-order: the result is indexed before its opener.
+    // Out-of-order: the result is indexed before its request.
     idx.index('a1', toolResult('res', 's1'))
-    expect(parsed(idx.getRequestMessage('a1', { spanId: 's1', agentSessionId: '' }))).toBeUndefined() // no opener yet
+    expect(parsed(idx.getRequestMessage('a1', { spanId: 's1', agentSessionId: '' }))).toBeUndefined() // no request yet
     expect(parsed(idx.getResultMessage('a1', { spanId: 's1', agentSessionId: '' }))?.parentObject?.type).toBe('user')
 
     idx.index('a1', toolUse('op', 's1'))
@@ -174,7 +174,7 @@ describe('createSpanIndex', () => {
     expect(idx.getResultMessage('agent', { spanId: 'call', agentSessionId: '' })).toBe(result)
   })
 
-  it('routes by role when the opener arrives first too', () => {
+  it('routes by role when the request arrives first too', () => {
     const idx = createSpanIndex()
     idx.index('a1', toolUse('op', 's1'), toolResult('res', 's1'))
     expect(parsed(idx.getRequestMessage('a1', { spanId: 's1', agentSessionId: '' }))?.parentObject?.type).toBe('assistant')
@@ -191,11 +191,11 @@ describe('createSpanIndex', () => {
   it('files a Pi tool_execution_end that arrives BEFORE its start into the result map', () => {
     const idx = createSpanIndex()
     // The motivating regression: Pi's end carries no Anthropic blocks, so the old
-    // content-block heuristic returned `other` and first-seen-is-opener filed the
-    // end as the opener -- leaving getResultParsed undefined. Provider-aware role
+    // content-block heuristic returned `other` and first-message-is-request filed the
+    // end as the request. This left getResultParsed undefined. Provider-aware role
     // routing fixes it regardless of arrival order.
     idx.index('a1', piEnd('res', 's1'))
-    expect(parsed(idx.getRequestMessage('a1', { spanId: 's1', agentSessionId: '' }))).toBeUndefined() // the end is not an opener
+    expect(parsed(idx.getRequestMessage('a1', { spanId: 's1', agentSessionId: '' }))).toBeUndefined() // the end is not a request
     idx.index('a1', piStart('op', 's1'))
     expect(parsed(idx.getRequestMessage('a1', { spanId: 's1', agentSessionId: '' }))?.parentObject?.type).toBe('tool_execution_start')
     expect(parsed(idx.getResultMessage('a1', { spanId: 's1', agentSessionId: '' }))?.parentObject?.type).toBe('tool_execution_end')
@@ -204,26 +204,26 @@ describe('createSpanIndex', () => {
   it('routes non-tool kinds by first-seen, but flags a conflict on the second member for a safety reindex', () => {
     const idx = createSpanIndex()
     // Two non-tool messages share a span and BOTH classify as 'other'. In order
-    // (opener first) the first-seen fallback routes correctly -- AND the second
+    // (request first) the first-seen fallback routes correctly. The second
     // member flags a conflict, because role can't order two 'other' members, so the
     // caller reindexes from the authoritative window as a backstop.
-    expect(idx.index('a1', plain('first', 's1', 'OPENER'), plain('second', 's1', 'RESULT'))).toBe(true)
-    expect(parsed(idx.getRequestMessage('a1', { spanId: 's1', agentSessionId: '' }))?.parentObject?.content).toBe('OPENER')
+    expect(idx.index('a1', plain('first', 's1', 'REQUEST'), plain('second', 's1', 'RESULT'))).toBe(true)
+    expect(parsed(idx.getRequestMessage('a1', { spanId: 's1', agentSessionId: '' }))?.parentObject?.content).toBe('REQUEST')
     expect(parsed(idx.getResultMessage('a1', { spanId: 's1', agentSessionId: '' }))?.parentObject?.content).toBe('RESULT')
   })
 
   it('flags a conflict when two "other" members arrive OUT of order, so a reindex fixes the routing', () => {
     const idx = createSpanIndex()
-    const opener = plain('op', 's1', 'OPENER')
+    const request = plain('op', 's1', 'REQUEST')
     const result = plain('res', 's1', 'RESULT')
     // Incremental, OUT of order: the result arrives first and the first-seen
-    // fallback misfiles it as the opener; the later opener flags a conflict.
+    // fallback misfiles it as the request. The later request flags a conflict.
     expect(idx.index('a1', result)).toBe(false) // first member, fresh slot
-    expect(idx.index('a1', opener)).toBe(true) // second 'other' member -> conflict
-    // The store rebuilds from its seq-ordered window (opener before result on the
+    expect(idx.index('a1', request)).toBe(true) // second 'other' member -> conflict
+    // The store rebuilds from its seq-ordered window (request before result on the
     // wire), which routes both correctly.
-    idx.reindex('a1', [opener, result])
-    expect(parsed(idx.getRequestMessage('a1', { spanId: 's1', agentSessionId: '' }))?.parentObject?.content).toBe('OPENER')
+    idx.reindex('a1', [request, result])
+    expect(parsed(idx.getRequestMessage('a1', { spanId: 's1', agentSessionId: '' }))?.parentObject?.content).toBe('REQUEST')
     expect(parsed(idx.getResultMessage('a1', { spanId: 's1', agentSessionId: '' }))?.parentObject?.content).toBe('RESULT')
   })
 
@@ -238,10 +238,10 @@ describe('createSpanIndex', () => {
 
   it('keeps repeated messages with an unknown role on their original side', () => {
     const idx = createSpanIndex()
-    const opener = plain('op', 's1', 'OPENER')
+    const request = plain('op', 's1', 'REQUEST')
     const result = plain('res', 's1', 'RESULT')
-    idx.reindex('a1', [opener, result])
-    expect(idx.index('a1', opener)).toBe(false)
+    idx.reindex('a1', [request, result])
+    expect(idx.index('a1', request)).toBe(false)
     expect(idx.getRequestMessage('a1', { spanId: 's1', agentSessionId: '' })?.id).toBe('op')
     expect(idx.getResultMessage('a1', { spanId: 's1', agentSessionId: '' })?.id).toBe('res')
     expect(idx.index('a1', result)).toBe(false)
@@ -318,7 +318,7 @@ describe('createSpanIndex', () => {
 
   it('reports a conflict when an incremental index reassigns a spanId to a new message id', () => {
     const idx = createSpanIndex()
-    // First opener for s1 -> no conflict (fresh slot).
+    // First request for s1 -> no conflict (fresh slot).
     expect(idx.index('a1', toolUse('op', 's1'))).toBe(false)
     // Re-broadcast of the SAME message id -> in-place update, not a conflict.
     expect(idx.index('a1', toolUse('op', 's1'))).toBe(false)
@@ -331,13 +331,13 @@ describe('createSpanIndex', () => {
     expect(idx.index('a1', toolResult('res-rebroadcast', 's2'))).toBe(true)
   })
 
-  it('reports a conflict when a span message flips sides under the SAME id (opener -> result)', () => {
+  it('reports a conflict when a span message flips sides under the SAME id (request -> result)', () => {
     const idx = createSpanIndex()
-    // 'm1' is first an opener for s1.
+    // 'm1' is first a request for s1.
     expect(idx.index('a1', toolUse('m1', 's1'))).toBe(false)
     expect(parsed(idx.getRequestMessage('a1', { spanId: 's1', agentSessionId: '' }))).toBeDefined()
     // The SAME id is re-indexed as a RESULT (its role flipped). It now sits on
-    // BOTH sides, so the opener entry is stale -- a same-side-only check would miss
+    // BOTH sides, so the request entry is stale. A same-side-only check would miss
     // this (the result side is empty), but the cross-side check catches it so the
     // caller reindexes from the authoritative window.
     expect(idx.index('a1', toolResult('m1', 's1'))).toBe(true)

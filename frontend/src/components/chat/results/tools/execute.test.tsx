@@ -22,7 +22,7 @@ describe('execute renderer', () => {
     resultPart: 'a.ts',
   })
 
-  // The command belongs to the row that states the REQUEST. Where the opener is a
+  // The command belongs to the row that states the REQUEST. Where the request is a
   // row of its own, a result row that repeated the command would draw it twice.
   describe('the command line', () => {
     const call = toolCallIr('execute', {
@@ -30,7 +30,7 @@ describe('execute renderer', () => {
       result: { commands: [{ output: 'a.ts' }], unresolvedTerminals: [] },
     })
 
-    it('stays off a result row whose opener is beside it', () => {
+    it('stays off a result row whose request is beside it', () => {
       const { container } = render(() => <ToolMessage row={toolRow(call, 'result', { request: true })} />)
       expect(container.textContent).not.toContain('rg --files')
       expect(container.textContent).toContain('a.ts')

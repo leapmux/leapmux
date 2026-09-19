@@ -23,8 +23,8 @@ function callOf(name: string) {
 }
 const failureCallOf = (fixture: ToolFailureFixture) => providerToolCall(AgentProvider.OPENCODE, fixture.payload, fixture.options)
 
-/** The `tool_call` opener each fixture pairs with, read alone as a call still in flight. */
-function openerCallOf(name: string) {
+/** The `tool_call` request that each fixture pairs with, read alone as a call still in flight. */
+function requestCallOf(name: string) {
   const fixture = OPENCODE_TOOL_RESULTS.fixtures[name]
   const frame = fixture === undefined ? null : openingFrameOf(fixture)
   return frame === null ? null : providerToolCall(AgentProvider.OPENCODE, frame)
@@ -43,5 +43,5 @@ describe('opencode tool results', () => {
   })
 
   describeToolResultCorpus(KINDS, OPENCODE_TOOL_RESULTS, callOf)
-  describeToolFailureLadder(OPENCODE_TOOL_RESULTS, { callOf, failureCallOf, openerCallOf })
+  describeToolFailureLadder(OPENCODE_TOOL_RESULTS, { callOf, failureCallOf, requestCallOf })
 })

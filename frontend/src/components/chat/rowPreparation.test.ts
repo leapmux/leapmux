@@ -151,7 +151,7 @@ describe('extractPreparedRow', () => {
   })
 
   // The role comes from the provider's own reading of the frame, so a call that has
-  // not returned is an opener and its finished row closes the span.
+  // not returned is a request and its finished row closes the span.
   it('derives the span role from the provider', () => {
     const pending = prepareMessage(message({
       provider: AgentProvider.OPENCODE,
@@ -164,18 +164,18 @@ describe('extractPreparedRow', () => {
   })
 
   // An explicit `sides` must reach the provider, or the transcript's resolved
-  // siblings are lost the moment a row goes through the preparation. The opener the
+  // siblings are lost the moment a row goes through the preparation. The request the
   // rail cannot afford to fetch is exactly what the transcript supplies.
   it('takes an explicit sides over the derived one', () => {
-    const opener = prepareMessage(message({
+    const request = prepareMessage(message({
       provider: AgentProvider.OPENCODE,
       content: { sessionUpdate: 'tool_call', toolCallId: 'call-1', status: 'pending', title: 'Run it', kind: 'execute' },
     }))
     const prepared = prepareMessage(message({ provider: AgentProvider.OPENCODE, content: ACP_INNER }))
-    const withOpener = extractedRow(extractPreparedRow(prepared, {
-      sides: { current: prepared.resolved, request: opener.resolved, result: undefined, role: 'result' },
+    const withRequest = extractedRow(extractPreparedRow(prepared, {
+      sides: { current: prepared.resolved, request: request.resolved, result: undefined, role: 'result' },
     }))
-    expect(withOpener?.kind === 'tool' ? withOpener.hasRequestRow : null).toBe(true)
+    expect(withRequest?.kind === 'tool' ? withRequest.hasRequestRow : null).toBe(true)
     // The default states no sibling at all, which is the answer for a reader that
     // resolved none -- so the two cannot be reading the same sides.
     const alone = extractedRow(extractPreparedRow(prepared))

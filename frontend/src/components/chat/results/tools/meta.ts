@@ -126,7 +126,7 @@ export function toolCallMeta(row: ToolCallRow): ToolCallMeta {
   //  2. The row drew a failure or an unparsed payload as plain text, and that text
   //     is long enough to clip. `plainMeta` words nothing, so the button keeps the
   //     toolbar's own last resort.
-  //  3. Anything else clips the REQUEST: a paired opener, a call that has not
+  //  3. Anything else clips the REQUEST: a paired request, a call that has not
   //     returned, or a call whose turn ended before its result arrived. Reading the
   //     words off the result side alone left those rows stating the bare word
   //     "Expand" over a command that is the only thing they can un-clip.

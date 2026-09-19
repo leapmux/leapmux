@@ -37,7 +37,7 @@ function failureCallOf(fixture: ToolFailureFixture) {
 }
 
 /** The `tool_use` block each fixture pairs with, read alone as a call still in flight. */
-function openerCallOf(name: string) {
+function requestCallOf(name: string) {
   const fixture = CLAUDE_TOOL_RESULTS.fixtures[name]
   if (!fixture)
     throw new Error(`No fixture states ${name}`)
@@ -58,5 +58,5 @@ describe('claude tool results', () => {
   })
 
   describeToolResultCorpus(KINDS, CLAUDE_TOOL_RESULTS, callOf)
-  describeToolFailureLadder(CLAUDE_TOOL_RESULTS, { callOf, failureCallOf, openerCallOf })
+  describeToolFailureLadder(CLAUDE_TOOL_RESULTS, { callOf, failureCallOf, requestCallOf })
 })

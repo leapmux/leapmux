@@ -71,7 +71,7 @@ function emptyCodexReasoning(id: string, seq: bigint, spanId: string): AgentChat
   })
 }
 
-/** A Claude tool_result row (classifies tool_result; sizes its diff from its opener). */
+/** A Claude tool_result row (classifies tool_result; sizes its diff from its request). */
 function claudeToolResult(id: string, seq: bigint, spanId: string): AgentChatMessage {
   return create(AgentChatMessageSchema, {
     id,
@@ -106,6 +106,25 @@ function claudeToolUse(id: string, seq: bigint, spanId: string, toolName = 'Task
   })
 }
 
+/** A completed ACP update, whose category is tool_use but whose span role is result. */
+function acpToolResult(id: string, seq: bigint, spanId: string): AgentChatMessage {
+  return create(AgentChatMessageSchema, {
+    id,
+    source: MessageSource.AGENT,
+    content: new TextEncoder().encode(JSON.stringify({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: spanId,
+      status: 'completed',
+      rawOutput: 'No file changes occurred.',
+    })),
+    contentCompression: ContentCompression.NONE,
+    seq,
+    agentProvider: AgentProvider.OPENCODE,
+    spanId,
+    spanType: 'edit',
+  })
+}
+
 /**
  * A Claude user row forwarded from a subagent. It carries `parent_tool_use_id`,
  * so it classifies as the prompt SENT to the subagent in the parent's transcript
@@ -130,8 +149,8 @@ describe('createClassifiedEntryCache', () => {
   it('rebuilds a span row\'s entry when its paired tool_use sibling becomes available', () => {
     createRoot((dispose) => {
       const [hasSibling, setHasSibling] = createSignal(false)
-      // A tool_result reads its paired tool_use opener for its rendered shape.
-      // When the opener arrives LATER (older-page prepend / reseq) the entry must
+      // A tool_result reads its paired tool_use request for its rendered shape.
+      // When the request arrives LATER (older-page prepend / reseq) the entry must
       // rebuild so the row's measured-height key changes instead of staying frozen
       // at its no-sibling shape.
       const messages = [claudeToolResult('r1', 2n, 'span-1')]
@@ -144,7 +163,7 @@ describe('createClassifiedEntryCache', () => {
       const before = cache.getEntry('r1')!
       expect(before.category.kind).toBe('tool_result')
       expect(before.freshness.revisionKey).not.toContain('~request=')
-      // The opener is indexed -> the freshness check rebuilds the entry (a new ref,
+      // The request is indexed -> the freshness check rebuilds the entry (a new ref,
       // which busts the virtualizer's cached DOM height via the changed heightKey).
       setHasSibling(true)
       cache.visibleEntries()
@@ -155,26 +174,49 @@ describe('createClassifiedEntryCache', () => {
     })
   })
 
-  it('rebuilds a tool_result entry when its paired opener\'s content version bumps', () => {
+  it('tracks the request for a result role that uses the tool_use category', () => {
     createRoot((dispose) => {
-      // A tool_result sizes its diff from the OPENER's input, and the opener is a
-      // different message: an in-place same-seq opener edit bumps the OPENER's
+      const [hasRequest, setHasRequest] = createSignal(false)
+      const messages = [acpToolResult('result', 2n, 'span-1')]
+      const cache = createClassifiedEntryCache({
+        messages: () => messages,
+        requestRevision: () => hasRequest() ? { id: 'request', seq: 1n, contentVersion: 0, supplementalRevision: 0n } : undefined,
+        showHiddenMessages: () => false,
+      })
+
+      cache.visibleEntries()
+      const before = cache.getEntry('result')!
+      expect(before.category.kind).toBe('tool_use')
+      expect(before.freshness.revisionKey).not.toContain('~request=')
+      setHasRequest(true)
+      cache.visibleEntries()
+      const after = cache.getEntry('result')!
+      expect(after).not.toBe(before)
+      expect(after.freshness.revisionKey).toContain('~request=')
+      dispose()
+    })
+  })
+
+  it('rebuilds a tool_result entry when its paired request\'s content version bumps', () => {
+    createRoot((dispose) => {
+      // A tool_result sizes its diff from the REQUEST's input, and the request is a
+      // different message: an in-place same-seq request edit bumps the REQUEST's
       // content version while the result's own seq/id/contentVersion stay put, so
-      // the entry (and its heightKey) must rebuild off the opener version.
-      const [openerVersion, setOpenerVersion] = createSignal(0)
+      // the entry (and its heightKey) must rebuild off the request version.
+      const [requestVersion, setRequestVersion] = createSignal(0)
       const messages = [claudeToolResult('tr1', 2n, 'span-1')]
       const cache = createClassifiedEntryCache({
         messages: () => messages,
-        requestRevision: () => ({ id: 'request', seq: 1n, contentVersion: openerVersion(), supplementalRevision: 0n }),
+        requestRevision: () => ({ id: 'request', seq: 1n, contentVersion: requestVersion(), supplementalRevision: 0n }),
         showHiddenMessages: () => true, // keep the result row visible regardless of classification
       })
       cache.visibleEntries()
       const before = cache.getEntry('tr1')!
       expect(before.category.kind).toBe('tool_result')
       expect(before.freshness.revisionKey).toMatch(/~request=\d+:request\|1\|0\|0$/)
-      // The opener's body is replaced in place -> its version bumps -> the result
+      // The request's body is replaced in place -> its version bumps -> the result
       // rebuilds even though nothing on the result's own id/seq moved.
-      setOpenerVersion(1)
+      setRequestVersion(1)
       cache.visibleEntries()
       const after = cache.getEntry('tr1')!
       expect(after.freshness.revisionKey).toMatch(/~request=\d+:request\|1\|1\|0$/)
@@ -183,20 +225,20 @@ describe('createClassifiedEntryCache', () => {
     })
   })
 
-  it('rebuilds a tool_result entry when its paired opener identity changes at the same content version', () => {
+  it('rebuilds a tool_result entry when its paired request identity changes at the same content version', () => {
     createRoot((dispose) => {
-      const [openerRevision, setOpenerRevision] = createSignal({ id: 'opener-a', seq: 1n, contentVersion: 0, supplementalRevision: 0n })
+      const [requestRevision, setRequestRevision] = createSignal({ id: 'request-a', seq: 1n, contentVersion: 0, supplementalRevision: 0n })
       const messages = [claudeToolResult('tr1', 2n, 'span-1')]
       const cache = createClassifiedEntryCache({
         messages: () => messages,
-        requestRevision: () => openerRevision(),
+        requestRevision: () => requestRevision(),
         showHiddenMessages: () => true,
       })
       cache.visibleEntries()
       const before = cache.getEntry('tr1')!
       const beforeHeightKey = heightKeyForEntry(before, 0)
 
-      setOpenerRevision({ id: 'opener-b', seq: 3n, contentVersion: 0, supplementalRevision: 0n })
+      setRequestRevision({ id: 'request-b', seq: 3n, contentVersion: 0, supplementalRevision: 0n })
       cache.visibleEntries()
       const after = cache.getEntry('tr1')!
 
@@ -209,8 +251,8 @@ describe('createClassifiedEntryCache', () => {
   it('rebuilds a tool_use entry when its paired hidden result content version bumps', () => {
     createRoot((dispose) => {
       // Claude Task* tool_use rows render details from their hidden tool_result
-      // sibling. A same-seq result edit bumps the RESULT version while the opener's
-      // seq/id/contentVersion stay put, so the opener entry and height key must
+      // sibling. A same-seq result edit bumps the RESULT version while the request's
+      // seq/id/contentVersion stay put, so the request entry and height key must
       // rebuild off the result version.
       const [resultVersion, setResultVersion] = createSignal(0)
       const messages = [claudeToolUse('tu1', 2n, 'span-1')]
@@ -258,6 +300,49 @@ describe('createClassifiedEntryCache', () => {
     })
   })
 
+  it('does not rebuild a request row when an unrelated request revision changes', () => {
+    createRoot((dispose) => {
+      const [unrelatedVersion, setUnrelatedVersion] = createSignal(0)
+      const messages = [claudeToolUse('current-request', 2n, 'span-1')]
+      const cache = createClassifiedEntryCache({
+        messages: () => messages,
+        requestRevision: () => ({ id: 'selected-request', seq: 1n, contentVersion: unrelatedVersion(), supplementalRevision: 0n }),
+        showHiddenMessages: () => false,
+      })
+
+      cache.visibleEntries()
+      const before = cache.getEntry('current-request')!
+      expect(before.freshness.revisionKey).not.toContain('~request=')
+      setUnrelatedVersion(1)
+      cache.visibleEntries()
+      expect(cache.getEntry('current-request')).toBe(before)
+      dispose()
+    })
+  })
+
+  it('rebuilds a non-selected tool row when its own revision changes', () => {
+    createRoot((dispose) => {
+      const [ownVersion, setOwnVersion] = createSignal(0)
+      const messages = [claudeToolUse('current-request', 2n, 'span-1')]
+      const cache = createClassifiedEntryCache({
+        messages: () => messages,
+        requestRevision: () => ({ id: 'selected-request', seq: 1n, contentVersion: 0, supplementalRevision: 0n }),
+        resultRevision: () => ({ id: 'selected-result', seq: 3n, contentVersion: 0, supplementalRevision: 0n }),
+        contentVersionById: () => ownVersion(),
+        showHiddenMessages: () => false,
+      })
+
+      cache.visibleEntries()
+      const before = cache.getEntry('current-request')!
+      setOwnVersion(1)
+      cache.visibleEntries()
+      const after = cache.getEntry('current-request')!
+      expect(after).not.toBe(before)
+      expect(after.freshness.revisionKey).toContain('own=15:current-request|2|1|0')
+      dispose()
+    })
+  })
+
   // A result-side SUPPLEMENT is the one change that reaches the request row from
   // the other side of the span: the merged result body can change what the
   // request row renders, so the request's own row rebuilds off a revision it
@@ -285,9 +370,9 @@ describe('createClassifiedEntryCache', () => {
 
   it('rebuilds a tool_use entry and height key when its paired hidden result arrives', () => {
     createRoot((dispose) => {
-      // Result arrival is distinct from result content changing: a Task* opener may
+      // Result arrival is distinct from result content changing: a Task* request may
       // first classify with no hidden result and later gain one under the same id/seq.
-      // The sibling-presence bit must invalidate the cached opener entry and height key.
+      // The sibling-presence bit must invalidate the cached request entry and height key.
       const [hasResult, setHasResult] = createSignal(false)
       const messages = [claudeToolUse('tu1', 2n, 'span-1')]
       const cache = createClassifiedEntryCache({
@@ -400,20 +485,20 @@ describe('createClassifiedEntryCache', () => {
     })
   })
 
-  it('does not consult the opener version for a non-tool_result row (no spurious rebuild)', () => {
+  it('does not consult the request version for a non-tool_result row (no spurious rebuild)', () => {
     createRoot((dispose) => {
-      // An assistant_text row never sizes from an opener, so its opener-version
+      // An assistant_text row never sizes from a request, so its request-version
       // probe must be skipped entirely -- a bump there must NOT rebuild it.
-      let openerProbeReads = 0
+      let requestProbeReads = 0
       let resultProbeReads = 0
-      const [openerVersion, setOpenerVersion] = createSignal(0)
+      const [requestVersion, setRequestVersion] = createSignal(0)
       const [resultVersion, setResultVersion] = createSignal(0)
       const messages = [assistantText('a1', 1n, 'hi')]
       const cache = createClassifiedEntryCache({
         messages: () => messages,
         requestRevision: () => {
-          openerProbeReads++
-          return { id: 'request', seq: 1n, contentVersion: openerVersion(), supplementalRevision: 0n }
+          requestProbeReads++
+          return { id: 'request', seq: 1n, contentVersion: requestVersion(), supplementalRevision: 0n }
         },
         resultRevision: () => {
           resultProbeReads++
@@ -424,25 +509,25 @@ describe('createClassifiedEntryCache', () => {
       cache.visibleEntries()
       const before = cache.getEntry('a1')!
       expect(before.freshness.revisionKey).not.toContain('~request=')
-      const readsAfterFirst = openerProbeReads
+      const readsAfterFirst = requestProbeReads
       const resultReadsAfterFirst = resultProbeReads
-      setOpenerVersion(1)
+      setRequestVersion(1)
       setResultVersion(1)
       cache.visibleEntries()
       const after = cache.getEntry('a1')!
-      // Same reference: the assistant row never read the opener version, so the
+      // Same reference: the assistant row never read the request version, so the
       // bump didn't wake/rebuild it. The probe count also never advanced.
       expect(after).toBe(before)
-      expect(openerProbeReads).toBe(readsAfterFirst)
+      expect(requestProbeReads).toBe(readsAfterFirst)
       expect(resultProbeReads).toBe(resultReadsAfterFirst)
       dispose()
     })
   })
 
-  it('records no opener revision on a tool_use row, whose own span resolves to itself', () => {
+  it('records no request revision on a tool_use row, whose own span resolves to itself', () => {
     createRoot((dispose) => {
       // The resolver answers a tool_use row's own span WITH that row. Recording
-      // it as the row's sibling opener tracks the row's own content version a
+      // it as the row's sibling request tracks the row's own content version a
       // second time, in a slot the height key reads as a sibling's.
       const [ownVersion, setOwnVersion] = createSignal(0)
       const messages = [claudeToolUse('tu1', 2n, 'span-1')]
@@ -455,31 +540,29 @@ describe('createClassifiedEntryCache', () => {
       cache.visibleEntries()
       const before = cache.getEntry('tu1')!
       expect(before.category.kind).toBe('tool_use')
-      // A tool_use row's own span resolves to ITSELF, so the request member
-      // mirrors the own member: it is stable, and it carries nothing the own
-      // member does not.
-      expect(before.freshness.revisionKey).toContain('own=3:tu1|2|0|0~request=3:tu1|2|0|0')
+      expect(before.freshness.revisionKey).toContain('own=3:tu1|2|0|0')
+      expect(before.freshness.revisionKey).not.toContain('~request=')
 
       setOwnVersion(1)
       cache.visibleEntries()
       const after = cache.getEntry('tu1')!
-      // The row rebuilds off its OWN content version, and off that alone: the
-      // request member moved with it because it IS the own side.
+      // The row rebuilds off its OWN content version, and off that alone.
       expect(after).not.toBe(before)
-      expect(after.freshness.revisionKey).toContain('own=3:tu1|2|1|0~request=3:tu1|2|1|0')
+      expect(after.freshness.revisionKey).toContain('own=3:tu1|2|1|0')
+      expect(after.freshness.revisionKey).not.toContain('~request=')
       dispose()
     })
   })
 
-  it('records no opener revision on a spanned row that is not a tool_result', () => {
+  it('records no request revision on a spanned row that is not a tool_result', () => {
     createRoot((dispose) => {
       // A Codex reasoning row carries a span but never sizes itself from an
-      // opener, so the opener's version is not one of its freshness dimensions.
-      const [openerVersion, setOpenerVersion] = createSignal(0)
+      // request, so the request's version is not one of its freshness dimensions.
+      const [requestVersion, setRequestVersion] = createSignal(0)
       const messages = [emptyCodexReasoning('r1', 2n, 'span-1')]
       const cache = createClassifiedEntryCache({
         messages: () => messages,
-        requestRevision: () => ({ id: 'request', seq: 1n, contentVersion: openerVersion(), supplementalRevision: 0n }),
+        requestRevision: () => ({ id: 'request', seq: 1n, contentVersion: requestVersion(), supplementalRevision: 0n }),
         showHiddenMessages: () => false,
       })
       cache.visibleEntries()
@@ -487,7 +570,7 @@ describe('createClassifiedEntryCache', () => {
       expect(before.category.kind).not.toBe('tool_result')
       expect(before.freshness.revisionKey).not.toContain('~request=')
 
-      setOpenerVersion(1)
+      setRequestVersion(1)
       cache.visibleEntries()
       expect(cache.getEntry('r1')).toBe(before)
       dispose()

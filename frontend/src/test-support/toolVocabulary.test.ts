@@ -13,8 +13,8 @@ import {
   fixturesOnTheUncategorizedKind,
   invariantViolations,
   kindsWithoutFailureFixture,
-  openersThatAnswerEarly,
   openingFrameOf,
+  requestsThatAnswerEarly,
   staleNoFailureReasons,
 } from './toolVocabulary'
 
@@ -357,15 +357,15 @@ describe('openingFrameOf', () => {
   })
 })
 
-describe('openersThatAnswerEarly', () => {
+describe('requestsThatAnswerEarly', () => {
   it('reports an opening frame that already carries a result', () => {
     const results = check({ fixtures: { todowrite: FIXTURE } })
     const early = smuggle(toolCallIr('todo', { status: 'pending' }), { result: { items: [] } })
-    expect(openersThatAnswerEarly(results, () => early)).toStrictEqual(['todowrite'])
+    expect(requestsThatAnswerEarly(results, () => early)).toStrictEqual(['todowrite'])
   })
 
   it('answers nothing for an opening frame that states no result', () => {
     const results = check({ fixtures: { todowrite: FIXTURE } })
-    expect(openersThatAnswerEarly(results, () => toolCallIr('todo', { status: 'pending' }) as ToolCallIR)).toStrictEqual([])
+    expect(requestsThatAnswerEarly(results, () => toolCallIr('todo', { status: 'pending' }) as ToolCallIR)).toStrictEqual([])
   })
 })

@@ -6,13 +6,13 @@ import { input } from '../testUtils'
 
 const CALL = 'goose-1'
 
-/** A finished Goose update, with its opener and the `_meta` name both carry. */
-function gooseUpdate(frame: Record<string, unknown>, opener: Record<string, unknown>): ToolResultFixture {
+/** A finished Goose update, with its request and the `_meta` name that both sides carry. */
+function gooseUpdate(frame: Record<string, unknown>, request: Record<string, unknown>): ToolResultFixture {
   return {
     payload: { sessionUpdate: 'tool_call_update', toolCallId: CALL, status: 'completed', ...frame },
     options: {
       spanType: 'tool_call_update',
-      request: input({ sessionUpdate: 'tool_call', toolCallId: CALL, status: 'pending', kind: 'other', ...opener }) as ParsedMessageContent,
+      request: input({ sessionUpdate: 'tool_call', toolCallId: CALL, status: 'pending', kind: 'other', ...request }) as ParsedMessageContent,
     },
   }
 }
@@ -85,7 +85,7 @@ const ERROR_TEXT = 'The tool reported an error.'
  * display record.
  *
  * The request half comes from the successful fixture rather than from a second copy of
- * the opener. The two frames then describe ONE call, which is what lets the ladder
+ * the request. The two frames then describe ONE call, which is what lets the ladder
  * assert that a failure keeps the kind, the tool and the request of its success.
  */
 function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status'] = 'failed'): ToolFailureFixture {

@@ -47,7 +47,7 @@ const FILE_TARGET_KINDS = new Set<ToolKind>(['read', 'edit', 'write', 'delete'])
  *
  * `row` states where this row sits in its tool span, which a provider needs to place
  * something exactly once across the two rows of ONE call. The tool's own fields cannot do
- * that job: `resolveACPToolCall` merges the opener into the result, so both rows can
+ * that job: `resolveACPToolCall` merges the request into the result, so both rows can
  * carry the same `sessionUpdate` and `status`, and neither `acpToolFinished` nor the
  * stored `sessionUpdate` separates them by the time an adapter runs.
  */
@@ -669,12 +669,12 @@ function hasScalarToolInput(tool: Record<string, unknown>): boolean {
 }
 
 /** Resolve historical results that omit fields from the matching request. */
-export function resolveACPToolCall(tool: Record<string, unknown>, opener?: Record<string, unknown>): Record<string, unknown> {
-  if (!opener || !tool.toolCallId || opener.toolCallId !== tool.toolCallId)
+export function resolveACPToolCall(tool: Record<string, unknown>, request?: Record<string, unknown>): Record<string, unknown> {
+  if (!request || !tool.toolCallId || request.toolCallId !== tool.toolCallId)
     return tool
   const fields = Object.fromEntries(Object.entries(tool).filter(([, value]) => value !== undefined && value !== null))
-  const resolved = { ...opener, ...fields }
-  const previousInput = pickObject(opener, ACP_SUPPLEMENT_REQUEST.RawInput)
+  const resolved = { ...request, ...fields }
+  const previousInput = pickObject(request, ACP_SUPPLEMENT_REQUEST.RawInput)
   const currentInput = pickObject(tool, ACP_SUPPLEMENT_REQUEST.RawInput)
   if (previousInput && currentInput)
     resolved[ACP_SUPPLEMENT_REQUEST.RawInput] = { ...previousInput, ...currentInput }

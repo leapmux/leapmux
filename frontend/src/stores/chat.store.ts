@@ -171,7 +171,7 @@ export function createChatStore() {
   const markSeeder = createMessageMarkSeeder({ marks: messageMarks })
 
   /**
-   * Non-reactive index linking each tool span's opener (tool_use) and result
+   * Non-reactive index linking each tool span's request (tool_use) and result
    * (tool_result) by spanId, plus the shared per-message parse cache. Owned by a
    * dedicated module (createSpanIndex); the store only keeps it in step with the
    * in-memory window via reindexSpans.
@@ -273,7 +273,7 @@ export function createChatStore() {
    * reorders messages (trim, prepend, window replace) must reindex: otherwise
    * trimmed-away messages leak into the index (growing it unbounded and
    * defeating the windowing's memory goal). createSpanIndex routes by message
-   * classification, so a re-fetched opener can't be misfiled as a result.
+   * classification, so a re-fetched request cannot be misfiled as a result.
    */
   function reindexSpans(agentId: string) {
     spanIdx.reindex(agentId, state.messagesByAgent[agentId] ?? [])
@@ -545,9 +545,9 @@ export function createChatStore() {
       invalidateNewSupplements(prevWindow, next)
       setState('messagesByAgent', agentId, next)
       // Rebuild the span index over the merged, seq-ascending window rather than
-      // incrementally indexing only the fetched page: a prepended opener whose
+      // incrementally indexing only the fetched page: a prepended request whose
       // result is already in the window would otherwise be misfiled, and the
-      // 'older' prepend never re-establishes opener-first ordering on its own.
+      // 'older' prepend never re-establishes request-first ordering on its own.
       reindexSpans(agentId)
       const merged = state.messagesByAgent[agentId] ?? []
       for (const message of fetched)

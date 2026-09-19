@@ -90,7 +90,7 @@ describe('zcode plugin metadata', () => {
 })
 
 describe('zcode spanRole', () => {
-  it('routes a scheduled row to opener and each finishing kind to result', () => {
+  it('routes a scheduled row to request and each finishing kind to result', () => {
     expect(plugin?.transcript.spanRole!(parsedOf(toolEvent(ZCODE_TOOL_KIND.Scheduled)))).toBe('request')
     for (const kind of [ZCODE_TOOL_KIND.Result, ZCODE_TOOL_KIND.Error, ZCODE_TOOL_KIND.Batch]) {
       expect(plugin?.transcript.spanRole!(parsedOf(toolEvent(kind)))).toBe('result')
@@ -386,7 +386,7 @@ describe('zcode isAskUserQuestion', () => {
 })
 
 describe('zcode todo rows', () => {
-  const opener = toolEvent(ZCODE_TOOL_KIND.Scheduled, {
+  const request = toolEvent(ZCODE_TOOL_KIND.Scheduled, {
     toolName: ZCODE_TOOL.TodoWrite,
     input: { todos: [{ content: 'A', status: 'pending', activeForm: 'Doing A' }] },
   })
@@ -396,8 +396,8 @@ describe('zcode todo rows', () => {
     return plugin?.transcript.classify({ ...input(parent, null, AgentProvider.ZCODE), spanType })
   }
 
-  it('classifies the TodoWrite opener as a tool use', () => {
-    expect(classifyWithSpan(opener, ZCODE_TOOL.TodoWrite).kind).toBe('tool_use')
+  it('classifies the TodoWrite request as a tool use', () => {
+    expect(classifyWithSpan(request, ZCODE_TOOL.TodoWrite).kind).toBe('tool_use')
   })
 
   it('keeps the TodoWrite result row for the shared checklist', () => {

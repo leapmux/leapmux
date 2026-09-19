@@ -8,7 +8,7 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { TodoItem } from '~/models/todo'
 import { parseMessageContent } from '~/lib/messageParser'
 import { classifyMessage, toClassificationInput } from './messageClassification'
-import { pluginFor, resolveMessageForRendering } from './providers/registry'
+import { resolvedSpanRole, resolveMessageForRendering } from './providers/registry'
 import { extractChatRow } from './rowExtraction'
 
 // ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ function soleSide(prepared: PreparedMessage): ToolSpanSides {
     current: prepared.resolved,
     request: undefined,
     result: undefined,
-    role: pluginFor(prepared.message.agentProvider)?.transcript.spanRole?.(prepared.resolved) ?? 'other',
+    role: resolvedSpanRole(prepared.resolved, prepared.message.agentProvider),
   }
 }
 

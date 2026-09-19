@@ -40,7 +40,7 @@ interface PairCase {
   status: 'completed' | 'failed' | 'cancelled' | 'declined'
   /**
    * The status the REQUEST row's merged call derives, when the protocol promotes
-   * a landed result onto the opener frame. Absent states the opener keeps its
+   * a landed result onto the request frame. Absent states the request keeps its
    * own unfinished word, which most protocols do.
    */
   requestStatus?: 'completed' | 'failed' | 'cancelled' | 'declined'
@@ -53,7 +53,7 @@ const CASES: PairCase[] = [
     request: { sessionUpdate: 'tool_call', toolCallId: 'acp-call', kind: 'execute', title: 'Run command', status: 'pending', rawInput: { command: 'printf acp' } },
     result: { sessionUpdate: 'tool_call_update', toolCallId: 'acp-call', kind: 'execute', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'acp output' } }] },
     kind: 'execute',
-    // The update frame's own status word completes the call; the opener's
+    // The update frame's own status word completes the call; the request's
     // 'pending' is a fact of the request half alone.
     status: 'completed',
   },
@@ -75,7 +75,7 @@ const CASES: PairCase[] = [
     result: { item: { type: 'commandExecution', id: 'codex-call', command: 'printf codex', status: 'completed', aggregatedOutput: 'codex output' } },
     kind: 'execute',
     // The item's own status word: 'completed' with an aggregated output is a
-    // finished call, and the opener's 'inProgress' frame must not outvote it.
+    // finished call, and the request's 'inProgress' frame must not outvote it.
     status: 'completed',
     // The request row's call reads the landed result side, so the call it draws
     // is finished even while its own frame still says `inProgress`.
@@ -127,7 +127,7 @@ describe('one request/result pair per protocol', () => {
       })
       const requestRow = scenario.toolRow('request')
       const resultRow = scenario.toolRow('result')
-      expect(requestRow.role, 'the opener frame files as the span\'s request side').toBe('request')
+      expect(requestRow.role, 'the request frame files as the span\'s request side').toBe('request')
       expect(resultRow.role, 'the closing frame files as the span\'s result side').toBe('result')
       expect(requestRow.hasResultRow).toBe(true)
       expect(resultRow.hasRequestRow).toBe(true)

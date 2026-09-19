@@ -130,7 +130,7 @@ function codexTurnPlanRow(notification: Record<string, unknown>): ChatRowIR | nu
     },
   )
   // A plan update is ONE row: the frame states the whole list, so the span holds no
-  // opener and no closer beside it.
+  // request and no result beside it.
   return toolCallRow(call, 'result', { request: false, result: false })
 }
 
@@ -710,7 +710,7 @@ function codexItemLabel(facts: CodexToolFacts): string | undefined {
  * An item that states NO status of its own -- `imageView` is the live case -- cannot
  * say where it sits in its span, so the resolver's role answers instead. Both sides
  * of such a span carry the same bytes, and without this they both read as the
- * opener: the result then drew a second header and no picture.
+ * request: the result then drew a second header and no picture.
  */
 function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInput['sides'], completion?: MessageCompletion): ChatRowIR | null {
   const payload = parsed.parentObject

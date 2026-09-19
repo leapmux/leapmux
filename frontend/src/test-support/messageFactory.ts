@@ -58,7 +58,7 @@ export function makeControlResponseMessage(
  * a captured wrapper). `supplemental` and `metadata` share the stored envelope
  * the worker writes, exactly as `makeControlResponseMessage` spells it.
  */
-export interface TranscriptFrame {
+interface TranscriptFrameFields {
   id: string
   provider: AgentProvider
   seq?: bigint
@@ -66,13 +66,17 @@ export interface TranscriptFrame {
   spanId?: string
   spanType?: string
   agentSessionId?: string
-  content?: unknown
-  rawContent?: Uint8Array
   supplemental?: unknown
   metadata?: unknown
   supplementalRevision?: bigint
   completion?: MessageCompletion
 }
+
+/** A transcript frame states one encoded payload source. */
+export type TranscriptFrame = TranscriptFrameFields & (
+  | { content: unknown, rawContent?: never }
+  | { content?: never, rawContent: Uint8Array }
+)
 
 /**
  * One transcript frame as its stored `AgentChatMessage`.
@@ -82,8 +86,10 @@ export interface TranscriptFrame {
  * `makeTranscriptMessage(frame, nextSeq())` walks an archive in order.
  */
 export function makeTranscriptMessage(frame: TranscriptFrame, defaultSeq: bigint): AgentChatMessage {
-  if ('content' in frame && 'rawContent' in frame)
-    throw new Error('A transcript frame states `content` or `rawContent`, never both.')
+  const hasContent = Object.hasOwn(frame, 'content')
+  const hasRawContent = Object.hasOwn(frame, 'rawContent')
+  if (hasContent === hasRawContent)
+    throw new Error('A transcript frame must state exactly one of `content` or `rawContent`.')
   const supplemental = frame.supplemental !== undefined || frame.metadata !== undefined
   return makeMessage({
     id: frame.id,
@@ -93,7 +99,7 @@ export function makeTranscriptMessage(frame: TranscriptFrame, defaultSeq: bigint
     ...(frame.spanId !== undefined ? { spanId: frame.spanId } : {}),
     ...(frame.spanType !== undefined ? { spanType: frame.spanType } : {}),
     ...(frame.agentSessionId !== undefined ? { agentSessionId: frame.agentSessionId } : {}),
-    content: frame.rawContent ?? rawContent(frame.content ?? null),
+    content: frame.rawContent ?? rawContent(frame.content),
     ...(supplemental
       ? {
           supplementalContent: rawContent({ provider: frame.supplemental, metadata: frame.metadata }),

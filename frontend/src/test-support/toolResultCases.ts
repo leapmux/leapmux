@@ -8,7 +8,7 @@ import {
   invariantViolations,
   kindsWithoutFailureFixture,
   namesWithoutResultFixture,
-  openersThatAnswerEarly,
+  requestsThatAnswerEarly,
   staleNoFailureReasons,
   staleResultEntries,
   undocumentedUnparsedResults,
@@ -34,7 +34,7 @@ export interface FailureLadderReaders {
   /** The call a FAILED frame extracts. */
   failureCallOf: FailureReader
   /** The call one fixture's OPENING frame extracts, read alone as a call still in flight. */
-  openerCallOf: CallReader
+  requestCallOf: CallReader
 }
 
 /**
@@ -117,7 +117,7 @@ export function describeToolResultCorpus(kinds: ToolVocabularyCheck, check: Tool
  * column and paired request that protocol needs.
  */
 export function describeToolFailureLadder(check: ToolResultCheck, readers: FailureLadderReaders): void {
-  const { callOf, failureCallOf, openerCallOf } = readers
+  const { callOf, failureCallOf, requestCallOf } = readers
   describe('the failure ladder', () => {
     it('pairs every failed frame with the successful frame of the same tool', () => {
       expect(
@@ -183,7 +183,7 @@ export function describeToolFailureLadder(check: ToolResultCheck, readers: Failu
     // tail with an empty card.
     it('satisfies the call invariants for the opening frame of every fixture', () => {
       for (const name of Object.keys(check.fixtures)) {
-        const call = openerCallOf(name)
+        const call = requestCallOf(name)
         expect(call, name).not.toBeNull()
         expect(invariantViolations(call!), name).toStrictEqual([])
       }
@@ -191,7 +191,7 @@ export function describeToolFailureLadder(check: ToolResultCheck, readers: Failu
 
     it('answers no result on the opening frame of any fixture', () => {
       expect(
-        openersThatAnswerEarly(check, openerCallOf),
+        requestsThatAnswerEarly(check, requestCallOf),
         'The call has not answered yet, so a result on its opening frame is one the tool never sent.',
       ).toStrictEqual([])
     })
@@ -200,7 +200,7 @@ export function describeToolFailureLadder(check: ToolResultCheck, readers: Failu
     // reads by design degrades nowhere.
     it('extracts no degraded call for the opening frame of any fixture', () => {
       for (const name of Object.keys(check.fixtures)) {
-        const call = openerCallOf(name)
+        const call = requestCallOf(name)
         expect(call?.degradation, name).toBeUndefined()
       }
     })

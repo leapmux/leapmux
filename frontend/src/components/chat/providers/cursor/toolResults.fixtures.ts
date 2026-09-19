@@ -7,14 +7,14 @@ import { input } from '../testUtils'
 
 const CALL = 'cursor-1'
 
-/** A finished Cursor update, with its opener and the record the worker stored on it. */
-function cursorUpdate(frame: Record<string, unknown>, opener: Record<string, unknown>, supplemental?: Record<string, unknown>): ToolResultFixture {
+/** A finished Cursor update, with its request and the record that the worker stored on it. */
+function cursorUpdate(frame: Record<string, unknown>, request: Record<string, unknown>, supplemental?: Record<string, unknown>): ToolResultFixture {
   const payload = { sessionUpdate: 'tool_call_update', toolCallId: CALL, status: 'completed', ...frame }
   return {
     payload,
     options: {
       spanType: 'tool_call_update',
-      request: input({ sessionUpdate: 'tool_call', toolCallId: CALL, status: 'pending', ...opener }) as ParsedMessageContent,
+      request: input({ sessionUpdate: 'tool_call', toolCallId: CALL, status: 'pending', ...request }) as ParsedMessageContent,
       ...(supplemental ? { supplementalContent: { sessionUpdate: payload.sessionUpdate, toolCallId: CALL, status: payload.status, ...supplemental } } : {}),
     },
   }

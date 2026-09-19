@@ -70,7 +70,7 @@ export function retainedOutcome(completion: MessageCompletion | undefined): Tool
  * True when this row is the final row of its tool span whatever its provider bytes
  * say.
  *
- * A span role read from the provider status alone calls the closing row an opener, for
+ * A span role read from the provider status alone calls the closing row a request, for
  * the reason {@link retainedOutcome} gives. Every `spanRole` hook reads the rule from
  * here rather than spelling the completion test again.
  */
@@ -97,11 +97,13 @@ export function registerProvider(provider: AgentProvider, plugin: ProviderPlugin
   if (registry.has(provider))
     throw new Error(`registerProvider: ${AgentProvider[provider]} is already registered`)
   registry.set(provider, plugin)
+  resetResolvedMessageMemo()
 }
 
 /** Test-only: drop every registration, so a test can register its own stubs. */
 export function __resetProviderRegistryForTest(): void {
   registry.clear()
+  resetResolvedMessageMemo()
 }
 
 export function providerFor(provider: AgentProvider): ProviderPlugin | undefined {
@@ -132,6 +134,10 @@ export function openAgentRequestOptions(provider: AgentProvider): { options?: Re
  * the no-guessing contract lives in one place instead of a ternary at every
  * call site.
  */
+export function pluginFor(provider: AgentProvider | undefined): ProviderPlugin | undefined {
+  return provider != null ? providerFor(provider) : undefined
+}
+
 /**
  * The span role of one RESOLVED parse, through its provider's hook.
  *
@@ -142,10 +148,6 @@ export function openAgentRequestOptions(provider: AgentProvider): { options?: Re
  */
 export function resolvedSpanRole(parsed: ParsedMessageContent, provider: AgentProvider): ToolSpanRole {
   return pluginFor(provider)?.transcript.spanRole?.(resolveMessageForRendering(parsed, provider)) ?? 'other'
-}
-
-export function pluginFor(provider: AgentProvider | undefined): ProviderPlugin | undefined {
-  return provider != null ? providerFor(provider) : undefined
 }
 
 /**
@@ -164,9 +166,14 @@ export function pluginFor(provider: AgentProvider | undefined): ProviderPlugin |
  */
 let resolvedMemo = new WeakMap<ParsedMessageContent, Map<AgentProvider, ResolvedMessageContent>>()
 
+/** Replace the memo after any registry mutation changes resolution behavior. */
+function resetResolvedMessageMemo(): void {
+  resolvedMemo = new WeakMap()
+}
+
 /** Drop the resolved-parse memo. Test-only: the registry reset must invalidate it. */
 export function __resetResolvedMessageMemoForTest(): void {
-  resolvedMemo = new WeakMap()
+  resetResolvedMessageMemo()
 }
 
 /**

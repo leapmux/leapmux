@@ -36,7 +36,7 @@ const logger = createLogger('chatImageResolve')
 export interface ImageExtractionSources {
   /** The message as the resolver currently holds it, with its supplemental content. */
   resolved?: ResolvedMessage
-  /** The span's opener, which carries the file metadata a result alone does not. */
+  /** The span's request, which carries the file metadata that a result alone does not. */
   request?: ReturnType<MessageContextResolver['request']>
   /**
    * The live to-do store. The transcript row reads it, so a resolver that left it

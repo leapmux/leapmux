@@ -8,7 +8,7 @@ import { clearStaleKeys } from './clearStaleKeys'
 // message's content but leaves the fields the classified-entry cache's memo subscribes
 // to (seq / id / spanId) untouched -- so the memo would NOT wake on its own. Reading
 // the version reactively per row is what makes the bump wake the memo to re-check
-// freshness (a tool_result also folds in its OPENER's version, since an opener body
+// freshness (a tool_result also folds in its REQUEST's version, since a request body
 // replacement must bust the result's stale classification / estimate).
 //
 // Keyed by message id and written ONLY by that rare merge, so it stays tiny; an id-keyed

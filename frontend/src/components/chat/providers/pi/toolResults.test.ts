@@ -23,7 +23,7 @@ function callOf(name: string) {
 const failureCallOf = (fixture: ToolFailureFixture) => providerToolCall(AgentProvider.PI, fixture.payload, fixture.options)
 
 /** The `tool_execution_start` each fixture pairs with, read alone as a call still in flight. */
-function openerCallOf(name: string) {
+function requestCallOf(name: string) {
   const fixture = PI_TOOL_RESULTS.fixtures[name]
   const frame = fixture === undefined ? null : openingFrameOf(fixture)
   return frame === null ? null : providerToolCall(AgentProvider.PI, frame)
@@ -42,5 +42,5 @@ describe('pi tool results', () => {
   })
 
   describeToolResultCorpus(KINDS, PI_TOOL_RESULTS, callOf)
-  describeToolFailureLadder(PI_TOOL_RESULTS, { callOf, failureCallOf, openerCallOf })
+  describeToolFailureLadder(PI_TOOL_RESULTS, { callOf, failureCallOf, requestCallOf })
 })

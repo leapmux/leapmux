@@ -6,7 +6,7 @@ import { input } from '../testUtils'
 
 const CALL = 'oc-1'
 
-/** A finished update whose paired opener identifies the tool and the arguments. */
+/** A finished update whose paired request identifies the tool and the arguments. */
 function update(rawInput: Record<string, unknown>, result: Record<string, unknown> = {}, title = 'bash'): ToolResultFixture {
   return {
     payload: { sessionUpdate: 'tool_call_update', toolCallId: CALL, status: 'completed', ...result },
@@ -53,7 +53,7 @@ const ERROR_TEXT = 'The tool reported an error.'
  * display record.
  *
  * The request half comes from the successful fixture rather than from a second copy of
- * the opener. The two frames then describe ONE call, which is what lets the ladder
+ * the request. The two frames then describe ONE call, which is what lets the ladder
  * assert that a failure keeps the kind, the tool and the request of its success.
  */
 function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status'] = 'failed'): ToolFailureFixture {

@@ -6,13 +6,13 @@ import { input } from '../testUtils'
 
 const CALL = 'rx-1'
 
-/** A finished Reasonix update, with the opener that states the tool. */
-function rxUpdate(frame: Record<string, unknown>, opener: Record<string, unknown>): ToolResultFixture {
+/** A finished Reasonix update, with the request that states the tool. */
+function rxUpdate(frame: Record<string, unknown>, request: Record<string, unknown>): ToolResultFixture {
   return {
     payload: { sessionUpdate: 'tool_call_update', toolCallId: CALL, status: 'completed', ...frame },
     options: {
       spanType: 'tool_call_update',
-      request: input({ sessionUpdate: 'tool_call', toolCallId: CALL, status: 'pending', ...opener }) as ParsedMessageContent,
+      request: input({ sessionUpdate: 'tool_call', toolCallId: CALL, status: 'pending', ...request }) as ParsedMessageContent,
     },
   }
 }
@@ -59,13 +59,13 @@ const ERROR_TEXT = 'The tool reported an error.'
 /**
  * The FAILED frame of the call one successful fixture already states.
  *
- * It keeps the frame's identity -- the call id, and the opener that states the tool, which describe the TOOL and never
+ * It keeps the frame's identity and the request that states the tool. These fields describe the TOOL and never
  * the outcome -- and replaces the answer with the reason. Everything a successful call
  * left behind is gone: a call that failed computed no `rawOutput`, no diff and no
  * display record.
  *
  * The request half comes from the successful fixture rather than from a second copy of
- * the opener. The two frames then describe ONE call, which is what lets the ladder
+ * the request. The two frames then describe ONE call, which is what lets the ladder
  * assert that a failure keeps the kind, the tool and the request of its success.
  */
 function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status'] = 'failed'): ToolFailureFixture {

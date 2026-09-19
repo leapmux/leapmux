@@ -587,14 +587,14 @@ describe('opencode tool_call_update diff selection', () => {
   // Regression: the span merge once told the row's own result side from the
   // current frame by OBJECT IDENTITY, but the resolver hands the result side
   // back as a re-parse -- a distinct object for the same message. A finished
-  // row then folded the result frame in as its own opener, merging no request
+  // row then folded the result frame in as its own request, merging no request
   // at all, and the edit fell to the uncategorized card: its words drew, the
   // requested change beside them did not. The finished flag tells the sides
   // apart, so this pair must draw both halves however many times the message
   // was parsed.
   it('keeps the requested edit beside reported words when the result side is a re-parse of the row', () => {
     const parse = (content: Record<string, unknown>) => resolveMessageForRendering(parseMessageContent(makeFakeMessage(content)), AgentProvider.OPENCODE)
-    const opener = parse({
+    const request = parse({
       sessionUpdate: 'tool_call',
       toolCallId: 'unconfirmed-edit',
       kind: 'edit',
@@ -610,7 +610,7 @@ describe('opencode tool_call_update diff selection', () => {
     }
     const { container } = render(() => renderMessageContent(
       resultContent,
-      { sources: testMessageSources({ current: () => parse(resultContent), request: () => opener, result: () => parse(resultContent), role: () => 'result' }) },
+      { sources: testMessageSources({ current: () => parse(resultContent), request: () => request, result: () => parse(resultContent), role: () => 'result' }) },
       { kind: 'tool_use' } as MessageCategory,
       AgentProvider.OPENCODE,
     ))

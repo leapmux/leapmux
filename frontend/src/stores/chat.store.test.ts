@@ -67,7 +67,7 @@ function makeSpanMessage(id: string, seq: bigint, spanId: string, content: strin
 }
 
 /**
- * A Claude tool_use opener carrying `spanId` (classifies as kind 'tool_use'). Pass
+ * A Claude tool_use request that carries `spanId` (classifies as kind 'tool_use'). Pass
  * `previousSeq` to model a reseq broadcast that MOVED this row from an older seq.
  */
 function makeToolUseSpan(id: string, seq: bigint, spanId: string, previousSeq = 0n, input: Record<string, unknown> = {}) {
@@ -230,12 +230,12 @@ describe('chatstore span content versions', () => {
     const spanId = 'span-1'
 
     store.setMessages(agentId, [
-      claudeToolUse('opener-1', 1n, spanId),
+      claudeToolUse('request-1', 1n, spanId),
       claudeToolResult('result-1', 2n, spanId, 'first result'),
     ])
 
     expect(JSON.stringify(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.resolved?.parentObject)).toContain('first result')
-    expect(storeContext(store, agentId).request({ spanId, agentSessionId: '' })?.revision).toEqual({ id: 'opener-1', seq: 1n, contentVersion: 0, supplementalRevision: 0n })
+    expect(storeContext(store, agentId).request({ spanId, agentSessionId: '' })?.revision).toEqual({ id: 'request-1', seq: 1n, contentVersion: 0, supplementalRevision: 0n })
     expect(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.revision).toEqual({ id: 'result-1', seq: 2n, contentVersion: 0, supplementalRevision: 0n })
     expect((storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(0)
     expect((storeContext(store, agentId).request({ spanId, agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(0)
@@ -254,17 +254,17 @@ describe('chatstore span content versions', () => {
     const spanId = 'span-1'
 
     store.setMessages(agentId, [
-      claudeToolUse('opener-1', 1n, spanId),
+      claudeToolUse('request-1', 1n, spanId),
       claudeToolResult('result-1', 2n, spanId, 'first result'),
     ])
 
     store.setMessages(agentId, [
-      claudeToolUse('opener-2', 3n, spanId),
+      claudeToolUse('request-2', 3n, spanId),
       claudeToolResult('result-1', 2n, spanId, 'first result'),
     ])
 
     expect((storeContext(store, agentId).request({ spanId, agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(0)
-    expect(storeContext(store, agentId).request({ spanId, agentSessionId: '' })?.revision).toEqual({ id: 'opener-2', seq: 3n, contentVersion: 0, supplementalRevision: 0n })
+    expect(storeContext(store, agentId).request({ spanId, agentSessionId: '' })?.revision).toEqual({ id: 'request-2', seq: 3n, contentVersion: 0, supplementalRevision: 0n })
   })
 
   it('returns zero when no result is indexed for a span id', () => {
@@ -272,7 +272,7 @@ describe('chatstore span content versions', () => {
     const agentId = 'agent-1'
     const spanId = 'span-1'
 
-    store.setMessages(agentId, [claudeToolUse('opener-1', 1n, spanId)])
+    store.setMessages(agentId, [claudeToolUse('request-1', 1n, spanId)])
 
     expect(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.resolved).toBeUndefined()
     expect((storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(0)
@@ -1928,16 +1928,16 @@ describe('createChatStore', () => {
         createRoot((dispose) => {
           const store = createChatStore()
           const filler = Array.from({ length: 198 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1)))
-          const opener = makeSpanMessage('op', 199n, 's-new', 'OPENER')
+          const request = makeSpanMessage('op', 199n, 's-new', 'REQUEST')
           const result = makeSpanMessage('res', 200n, 's-new', 'RESULT')
-          store.setMessages('a1', [...filler, opener, result])
+          store.setMessages('a1', [...filler, request, result])
           // Indexed and resolvable while in the window.
-          expect(storeContext(store, 'a1').request({ spanId: 's-new', agentSessionId: '' })?.resolved?.parentObject?.content).toBe('OPENER')
+          expect(storeContext(store, 'a1').request({ spanId: 's-new', agentSessionId: '' })?.resolved?.parentObject?.content).toBe('REQUEST')
           expect(storeContext(store, 'a1').result({ spanId: 's-new', agentSessionId: '' })?.resolved?.parentObject?.content).toBe('RESULT')
           // Trimming the newest end (older history loaded) evicts seq 199/200.
           store.trimNewestEnd('a1', 150)
           expect(store.getMessages('a1').some(m => m.spanId === 's-new')).toBe(false)
-          // The span index must not retain the trimmed opener/result — otherwise
+          // The span index must not retain the trimmed request and result. Otherwise,
           // it grows unbounded across a long scroll-through and leaks the messages.
           expect(storeContext(store, 'a1').request({ spanId: 's-new', agentSessionId: '' })?.resolved).toBeUndefined()
           expect(storeContext(store, 'a1').result({ spanId: 's-new', agentSessionId: '' })?.resolved).toBeUndefined()
@@ -1945,22 +1945,22 @@ describe('createChatStore', () => {
         })
       })
 
-      it('does not swap opener/result when the opener is prepended after its result', async () => {
+      it('does not swap request/result when the request is prepended after its result', async () => {
         await createRoot(async (dispose) => {
           const store = createChatStore()
-          // Window holds only the tool_result (seq 51); its opener (seq 50) is
-          // older. With no opener loaded yet, the insertion-order heuristic
-          // initially files the result as the opener.
+          // Window holds only the tool_result (seq 51); its request (seq 50) is
+          // older. With no request loaded yet, the insertion-order heuristic
+          // initially files the result as the request.
           const result = makeSpanMessage('res', 51n, 's1', 'RESULT')
           const filler = Array.from({ length: 49 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 52)))
           store.setMessages('a1', [result, ...filler], true)
-          // Scroll up: the older page carries the real opener (seq 50).
-          const opener = makeSpanMessage('op', 50n, 's1', 'OPENER')
-          mockListAgentMessages.mockResolvedValueOnce({ messages: [opener], hasMore: false })
+          // Scroll up: the older page carries the real request (seq 50).
+          const request = makeSpanMessage('op', 50n, 's1', 'REQUEST')
+          mockListAgentMessages.mockResolvedValueOnce({ messages: [request], hasMore: false })
           await store.loadOlderMessages('w1', 'a1')
-          // After the prepend + reindex over the seq-ascending window, opener and
+          // After the prepend and reindex over the seq-ascending window, request and
           // result are correctly separated rather than swapped.
-          expect(storeContext(store, 'a1').request({ spanId: 's1', agentSessionId: '' })?.resolved?.parentObject?.content).toBe('OPENER')
+          expect(storeContext(store, 'a1').request({ spanId: 's1', agentSessionId: '' })?.resolved?.parentObject?.content).toBe('REQUEST')
           expect(storeContext(store, 'a1').result({ spanId: 's1', agentSessionId: '' })?.resolved?.parentObject?.content).toBe('RESULT')
           dispose()
         })
@@ -1970,14 +1970,14 @@ describe('createChatStore', () => {
         createRoot((dispose) => {
           const store = createChatStore()
           // Live (incremental addMessage) delivery, OUT OF ORDER: the result is
-          // appended before its opener and nothing triggers a reindex. Routing by
+          // appended before its request and nothing triggers a reindex. Routing by
           // classification keeps the result on the result side rather than
-          // misfiling it as the opener (the old insertion-order heuristic would).
+          // misfiling it as the request (the old insertion-order heuristic would).
           store.addMessage('a1', makeToolResultSpan('res', 51n, 's1'))
-          // With only the result seen, the opener lookup is empty (not the result).
+          // With only the result seen, the request lookup is empty (not the result).
           expect(storeContext(store, 'a1').request({ spanId: 's1', agentSessionId: '' })?.resolved).toBeUndefined()
           expect(storeContext(store, 'a1').result({ spanId: 's1', agentSessionId: '' })?.resolved?.parentObject?.type).toBe('user')
-          // The opener arrives afterward (lower seq); it must land on the opener side.
+          // The request arrives afterward (lower seq); it must land on the request side.
           store.addMessage('a1', makeToolUseSpan('op', 50n, 's1'))
           expect(storeContext(store, 'a1').request({ spanId: 's1', agentSessionId: '' })?.resolved?.parentObject?.type).toBe('assistant')
           expect(storeContext(store, 'a1').result({ spanId: 's1', agentSessionId: '' })?.resolved?.parentObject?.type).toBe('user')
@@ -2336,19 +2336,19 @@ describe('createChatStore', () => {
         })
       })
 
-      it('resolves a tool_result\'s opener content version by spanId', () => {
+      it('resolves a tool_result\'s request content version by spanId', () => {
         createRoot((dispose) => {
           const store = createChatStore()
-          // An opener (tool_use) and its result (tool_result) share one spanId. The
-          // result sizes its diff from the OPENER, so it must be able to observe the
-          // opener's content version (which an in-place opener edit bumps).
+          // A request (tool_use) and its result (tool_result) share one spanId. The
+          // result sizes its diff from the REQUEST, so it must observe the request's
+          // content version (which an in-place request edit increments).
           store.setMessages('a1', [makeToolUseSpan('op', 1n, 'spanX'), makeToolResultSpan('res', 2n, 'spanX')])
           expect((storeContext(store, 'a1').request({ spanId: 'spanX', agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(0)
-          // The opener's body is replaced in place with NEW content (same id+seq, edited
+          // The request's body is replaced in place with NEW content (same id+seq, edited
           // tool input) -> its version bumps, and the result's spanId lookup reflects it.
           store.addMessage('a1', makeToolUseSpan('op', 1n, 'spanX', 0n, { file_path: '/edited' }))
           expect((storeContext(store, 'a1').request({ spanId: 'spanX', agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(1)
-          // An unindexed span has no opener -> 0.
+          // An unindexed span has no request -> 0.
           expect((storeContext(store, 'a1').request({ spanId: 'nope', agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(0)
           dispose()
         })

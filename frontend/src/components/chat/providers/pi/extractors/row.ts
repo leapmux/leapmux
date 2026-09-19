@@ -85,7 +85,7 @@ function piToolSpanRow(
   const own = piExtractTool(payload)
   if (!own)
     return null
-  // ONE call from every side of THIS call the store resolved: the opener names
+  // ONE call from every side of THIS call the store resolved: the request names
   // the arguments, the end event the payload. A sibling from another call is no
   // side of this one at all -- one turn can run several calls at once.
   const mine = (side: ParsedMessageContent | undefined) => !!side && piSideIsMine(own.toolCallId, side)

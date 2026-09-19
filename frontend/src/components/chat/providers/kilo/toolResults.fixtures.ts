@@ -6,7 +6,7 @@ import { input } from '../testUtils'
 
 const CALL = 'kilo-1'
 
-/** A finished Kilo update whose paired opener states the tool and the arguments. */
+/** A finished Kilo update whose paired request states the tool and the arguments. */
 function kiloUpdate(rawInput: Record<string, unknown>, result: Record<string, unknown>, title: string): ToolResultFixture {
   return {
     payload: { sessionUpdate: 'tool_call_update', toolCallId: CALL, status: 'completed', kind: 'other', ...result },
@@ -63,7 +63,7 @@ const ERROR_TEXT = 'The tool reported an error.'
  * display record.
  *
  * The request half comes from the successful fixture rather than from a second copy of
- * the opener. The two frames then describe ONE call, which is what lets the ladder
+ * the request. The two frames then describe ONE call, which is what lets the ladder
  * assert that a failure keeps the kind, the tool and the request of its success.
  */
 function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status'] = 'failed'): ToolFailureFixture {

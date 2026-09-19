@@ -204,7 +204,7 @@ describe('zcode tool rendering', () => {
 
 describe('zcode rows on the shared tool path', () => {
   // A result with no request beside it states WHICH tool it belongs to. The row used
-  // to draw a bare body, so a reader who scrolled past the opener saw output with no
+  // to draw a bare body, so a reader who scrolled past the request saw output with no
   // name on it.
   it('draws its own header when no request row sits beside the result', () => {
     const end = event('result', { result: { success: true, content: 'a.ts' } })

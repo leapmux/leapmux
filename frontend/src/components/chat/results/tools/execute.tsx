@@ -43,7 +43,7 @@ export const executeRenderer: ToolKindRenderer<'execute'> = {
   },
   summary(call, view) {
     // The command belongs to the rows that state the REQUEST. A result row with
-    // its opener beside it draws only what the command answered -- the opener
+    // its request beside it draws only what the command answered -- the request
     // above states the command -- while a lone result row (a single-frame call)
     // is the only place the command is ever stated, so it keeps the summary. An
     // UPDATE row keeps it too: it may be the only row the call has.

@@ -78,6 +78,24 @@ describe('the transcript scenario harness', () => {
     expect(scenario.entry('result').category.kind).toBe('tool_result')
   })
 
+  it('fetches a message by sequence from outside the window', async () => {
+    const request = message(zcodeRequest('request', { command: 'printf fetched' }), 1n)
+    const result = message(zcodeResult('result', 'done'), 2n)
+    let fetches = 0
+    const scenario = createTranscriptScenario({
+      archive: [request, result],
+      windowIds: ['result'],
+      fetchMessage: async (seq) => {
+        fetches++
+        return seq === request.seq ? request : undefined
+      },
+    })
+
+    expect(scenario.resolver.peek(request.seq)).toBeUndefined()
+    expect((await scenario.resolver.message(request.seq))?.message.id).toBe('request')
+    expect(fetches).toBe(1)
+  })
+
   it('rejects another session\'s reused tool ID when a span is fetched', async () => {
     const otherSession = zcodeRequest('other-session-request', { command: 'rm -rf /' })
     const scenario = createTranscriptScenario({

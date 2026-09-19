@@ -204,7 +204,7 @@ describe('claude spanRole', () => {
     return resolveMessageForRendering({ rawText: '', topLevel: null, parentObject: { message: { content: blocks } }, wrapper: null }, AgentProvider.CLAUDE_CODE)
   }
 
-  it('classifies a tool_use block as the opener', () => {
+  it('classifies a tool_use block as the request', () => {
     expect(plugin?.transcript.spanRole!(parsedWithBlocks([{ type: 'tool_use' }]))).toBe('request')
   })
 
@@ -212,7 +212,7 @@ describe('claude spanRole', () => {
     expect(plugin?.transcript.spanRole!(parsedWithBlocks([{ type: 'tool_result' }]))).toBe('result')
   })
 
-  it('lets the tool_use opener win when a message carries BOTH block types, regardless of order', () => {
+  it('lets the tool_use request win when a message carries BOTH block types, regardless of order', () => {
     expect(plugin?.transcript.spanRole!(parsedWithBlocks([{ type: 'tool_result' }, { type: 'tool_use' }]))).toBe('request')
     expect(plugin?.transcript.spanRole!(parsedWithBlocks([{ type: 'tool_use' }, { type: 'tool_result' }]))).toBe('request')
   })

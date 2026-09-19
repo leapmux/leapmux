@@ -23,7 +23,7 @@ import '~/components/chat/providers/testMocks'
 
 const SESSION = 'corpus-session'
 
-function frame(id: string, provider: AgentProvider, spanId: string | undefined, spanType: string | undefined, content: unknown, extra: Partial<TranscriptFrame> = {}): TranscriptFrame {
+function frame(id: string, provider: AgentProvider, spanId: string | undefined, spanType: string | undefined, content: unknown, extra: Partial<Omit<TranscriptFrame, 'content' | 'rawContent'>> = {}): TranscriptFrame {
   return { id, provider, ...(spanId === undefined ? {} : { spanId }), ...(spanType === undefined ? {} : { spanType }), agentSessionId: SESSION, content, ...extra }
 }
 

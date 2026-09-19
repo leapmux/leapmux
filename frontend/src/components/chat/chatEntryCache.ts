@@ -6,10 +6,12 @@ import type { SpanLine } from './widgets/SpanLines'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageRevision, MessageSpanIdentity } from '~/lib/messageSpan'
 import { createMemo } from 'solid-js'
+import { parseMessageContent } from '~/lib/messageParser'
 import { messageSpanIdentity } from '~/lib/messageSpan'
 import { shallowEqual } from '~/lib/shallowEqual'
 import { rowRevisionKey } from './chatRevisionKey'
 import { buildContentKey, buildHeightKey } from './chatRowGeometry'
+import { resolvedSpanRole } from './providers/registry'
 import { prepareMessage } from './rowPreparation'
 import { parseSpanLines } from './spanLinesParse'
 
@@ -157,31 +159,31 @@ export interface ClassifiedEntryCache {
 export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): ClassifiedEntryCache {
   const entryCache = new Map<string, ClassifiedEntry>()
   /**
-   * Build the freshness signature for `message` classified as `kind`. The SINGLE place
-   * the freshness dimensions are enumerated: isEntryFresh compares against this and
-   * buildEntry stores it, so neither can drift from a hand-synced field list. `kind`
-   * is the row's classification (only a tool_result row tracks an opener's
-   * revision); isEntryFresh passes the CACHED entry's kind, so the comparison reads
-   * the same slots the entry was built with.
+   * Build the freshness signature for `message`. This is the SINGLE place that
+   * lists the freshness dimensions. `isEntryFresh` compares this value, and
+   * `buildEntry` stores it, so the two paths cannot drift.
    */
-  const freshnessOf = (message: AgentChatMessage, kind: string): EntryFreshness => {
+  const freshnessOf = (message: AgentChatMessage): EntryFreshness => {
     const own: MessageRevision = {
       id: message.id,
       seq: message.seq,
       contentVersion: deps.contentVersionById?.(message.id) ?? 0,
       supplementalRevision: message.supplementalRevision,
     }
-    // Both sibling members, for a TOOL row alone: a tool_result draws its opener's
-    // input, a tool_use may render from hidden result data, and an UPDATE frame
-    // the wire classified under the tool_use category is the span's closing side
-    // whose request arrives late. A tool row's own span resolves to ITSELF on
-    // its own side, so the self-referential member is stable and carries nothing
-    // the own member does not. Every other row keys on its own revision alone,
-    // so an unrelated sibling's change rebuilds nothing; a member ARRIVING is
-    // itself a change, which the key states.
-    const toolRow = kind.startsWith('tool_') && message.spanId !== ''
-    const request = toolRow ? deps.requestRevision?.(messageSpanIdentity(message)) : undefined
-    const result = toolRow ? deps.resultRevision?.(messageSpanIdentity(message)) : undefined
+    // Select a sibling by the resolved SPAN ROLE, not by the message category.
+    // Some completed ACP updates use the tool_use category but hold the result
+    // role. A result draws its request input. A request can draw hidden result
+    // data. No row records its own selected side a second time.
+    const identity = messageSpanIdentity(message)
+    const role = message.spanId === ''
+      ? 'other'
+      : resolvedSpanRole(deps.resolvedParsed?.(message) ?? parseMessageContent(message), message.agentProvider)
+    const request = role === 'result'
+      ? deps.requestRevision?.(identity)
+      : undefined
+    const result = role === 'request'
+      ? deps.resultRevision?.(identity)
+      : undefined
     return {
       revisionKey: rowRevisionKey({
         own,
@@ -194,15 +196,15 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
   /**
    * A cached entry is reusable only if its freshness signature still matches the
    * message's seq, in-place content version,
-   * the paired tool_use availability, AND (for a tool_result) the opener's content
+   * the paired tool_use availability, AND (for a tool_result) the request's content
    * version are all unchanged. seq alone is not enough -- a same-seq in-place body
    * replacement keeps the seq (and the proxy reference), so the content version is
-   * what reveals it; and an opener edit moves only the OPENER's version, so a result
+   * what reveals it; and a request edit moves only the REQUEST's version, so a result
    * row needs that folded in too. Compared STRUCTURALLY against a freshly-built
    * signature so the dimension list lives only in freshnessOf.
    */
   const isEntryFresh = (cached: ClassifiedEntry | undefined, message: AgentChatMessage): cached is ClassifiedEntry =>
-    !!cached && shallowEqual(cached.freshness, freshnessOf(message, cached.category.kind))
+    !!cached && shallowEqual(cached.freshness, freshnessOf(message))
   const buildEntry = (message: AgentChatMessage, cached?: ClassifiedEntry): ClassifiedEntry => {
     // The shared resolver's own parse when it holds one, so the bubble, the toolbar
     // and the image tab read the row from ONE resolved payload. The resolver is
@@ -224,7 +226,7 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     return {
       ...prepared,
       parsedSpanLines,
-      freshness: freshnessOf(message, prepared.category.kind),
+      freshness: freshnessOf(message),
       spanLinesRef: message.spanLines,
     }
   }

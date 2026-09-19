@@ -14,7 +14,7 @@ import { messageSpanIdentity, messageSpanKey } from '~/lib/messageSpan'
 import { preferNewerSupplement } from '~/stores/chatMessageOrder'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
 import { createFileImageResolver } from './fileImageResolver'
-import { pluginFor, resolveMessageForRendering } from './providers/registry'
+import { pluginFor, resolvedSpanRole, resolveMessageForRendering } from './providers/registry'
 
 /** A message and the revision of the data that its renderer receives. */
 export interface ResolvedMessage {
@@ -102,7 +102,7 @@ export function createMessageRenderSources(resolver: () => MessageContextResolve
         return 'result'
       if (context?.request(messageSpanIdentity(own))?.message.id === own.id)
         return 'request'
-      return pluginFor(own.agentProvider)?.transcript.spanRole?.(current()) ?? 'other'
+      return resolvedSpanRole(current(), own.agentProvider)
     },
     fileImage: (path, options) => resolver()?.fileImage(path, { ...options, reference: message().id }) ?? Promise.reject(new Error('The image source is unavailable')),
     cachedFileImage: path => resolver()?.cachedFileImage(path, message().id),

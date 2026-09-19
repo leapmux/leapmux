@@ -38,9 +38,9 @@ export function toolRowPosition(row: ToolCallRow): ToolRowPosition {
 }
 
 /**
- * Whether the span's OPENER is a row beside this one.
+ * Whether the span's REQUEST is a row beside this one.
  *
- * Always false on the opener itself, which the type states by leaving the flag out of
+ * Always false on the request itself, which the type states by leaving the flag out of
  * that branch. These two read the flag through one place, so no caller has to know
  * that an absent flag means no.
  */

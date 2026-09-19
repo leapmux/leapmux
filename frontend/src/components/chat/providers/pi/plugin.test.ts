@@ -434,7 +434,7 @@ describe('pi spanRole', () => {
     return resolveMessageForRendering({ rawText: '', topLevel: null, parentObject: { type }, wrapper: null }, AgentProvider.PI)
   }
 
-  it('routes tool_execution_start to opener and _end to result by envelope type', () => {
+  it('routes tool_execution_start to request and _end to result by envelope type', () => {
     expect(plugin?.transcript.spanRole!(parsedWithType('tool_execution_start'))).toBe('request')
     expect(plugin?.transcript.spanRole!(parsedWithType('tool_execution_end'))).toBe('result')
   })

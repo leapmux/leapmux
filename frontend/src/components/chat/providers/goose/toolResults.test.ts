@@ -21,8 +21,8 @@ function callOf(name: string) {
 }
 const failureCallOf = (fixture: ToolFailureFixture) => providerToolCall(AgentProvider.GOOSE, fixture.payload, fixture.options)
 
-/** The `tool_call` opener each fixture pairs with, read alone as a call still in flight. */
-function openerCallOf(name: string) {
+/** The `tool_call` request that each fixture pairs with, read alone as a call still in flight. */
+function requestCallOf(name: string) {
   const fixture = GOOSE_TOOL_RESULTS.fixtures[name]
   const frame = fixture === undefined ? null : openingFrameOf(fixture)
   return frame === null ? null : providerToolCall(AgentProvider.GOOSE, frame)
@@ -60,5 +60,5 @@ describe('goose tool results', () => {
   })
 
   describeToolResultCorpus(KINDS, GOOSE_TOOL_RESULTS, callOf)
-  describeToolFailureLadder(GOOSE_TOOL_RESULTS, { callOf, failureCallOf, openerCallOf })
+  describeToolFailureLadder(GOOSE_TOOL_RESULTS, { callOf, failureCallOf, requestCallOf })
 })

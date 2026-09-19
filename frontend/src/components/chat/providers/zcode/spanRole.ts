@@ -7,7 +7,7 @@ import { zcodeControlPlanText } from './extractors/plan'
 import { zcodeEnvelope, zcodeToolSpanRole } from './extractors/toolCommon'
 
 /**
- * ZCode span role. The `tool.updated` KIND discriminates the opener from the result,
+ * ZCode span role. The `tool.updated` KIND discriminates the request from the result,
  * because both halves arrive as the same event type -- a content-block scan would
  * bucket every one of them the same way.
  */

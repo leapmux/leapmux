@@ -6,24 +6,24 @@ import { parseMessageContent } from '~/lib/messageParser'
 import { messageSpanKey } from '~/lib/messageSpan'
 
 /**
- * Window-scoped index linking a tool span's opener (tool_use) and result
+ * Window-scoped index linking a tool span's request (tool_use) and result
  * (tool_result) messages by spanId, so a tool_use bubble can find its result
  * and vice versa. Extracted from the chat store: it owns only the two
  * span-to-message maps. The message parser owns the parse cache.
  *
  * Routing is by message ROLE (the per-provider `spanRole` classifier), not
  * arrival order: a tool_result always files into the result map and a tool_use
- * into the opener map, so a result that arrives before its opener (out-of-order
- * live delivery, or a re-broadcast after the opener was trimmed away) can't be
- * misfiled as the opener. Other kinds that happen to share a spanId fall back to
- * first-seen-is-opener.
+ * into the request map, so a result that arrives before its request cannot be
+ * misfiled as the request. This can occur during out-of-order live delivery or
+ * after the request leaves the window. Other kinds that share a spanId use the
+ * first message as the request.
  */
 export interface ChatSpanIndex {
   /**
    * Index one or more messages incrementally (does NOT clear first). Returns
    * true when a spanId slot was about to be reassigned to a DIFFERENT message id
    * -- the incremental update can no longer be trusted to match the window (a
-   * re-broadcast opener/result under a new id, with the old instance still
+   * re-broadcast request/result under a new id, with the old instance still
    * loaded). A true return is MANDATORY-reindex, not advisory: the conflicting
    * message was ALREADY filed (the maps are left in a partially-updated state),
    * so the caller MUST `reindex` from the authoritative window to discard it.
@@ -32,7 +32,7 @@ export interface ChatSpanIndex {
   index: (agentId: string, ...messages: AgentChatMessage[]) => boolean
   /** Replace an agent's index with exactly `messages` (clear, then index). */
   reindex: (agentId: string, messages: AgentChatMessage[]) => void
-  /** The opener message for a spanId, or undefined. */
+  /** The request message for a spanId, or undefined. */
   getRequestMessage: (agentId: string, identity: MessageSpanIdentity) => AgentChatMessage | undefined
   /** The result message for a spanId, or undefined. */
   getResultMessage: (agentId: string, identity: MessageSpanIdentity) => AgentChatMessage | undefined
@@ -40,8 +40,8 @@ export interface ChatSpanIndex {
 }
 
 export function createSpanIndex(): ChatSpanIndex {
-  // The opener (tool_use) message per spanId, and the result (tool_result).
-  const openers = new Map<string, Map<string, AgentChatMessage>>()
+  // The request (tool_use) message per spanId, and the result (tool_result).
+  const requests = new Map<string, Map<string, AgentChatMessage>>()
   const results = new Map<string, Map<string, AgentChatMessage>>()
 
   function mapFor(store: Map<string, Map<string, AgentChatMessage>>, agentId: string): Map<string, AgentChatMessage> {
@@ -53,11 +53,10 @@ export function createSpanIndex(): ChatSpanIndex {
   //  - the TARGET side already holds a DIFFERENT message id for this span: a
   //    same-span re-broadcast under a new id, with the old instance maybe still
   //    loaded;
-  //  - this message's OWN id currently sits on the OTHER side: the span flipped
-  //    classification side under the same id (e.g. a row first filed as opener via
-  //    the first-seen fallback, then re-classified as a result), leaving a stale
-  //    entry behind that a same-side-only check would miss.
-  // The normal opener+result pairing (two DIFFERENT ids, one per side) is NOT a
+  //  - this message's OWN id currently sits on the OTHER side. The span changed
+  //    classification under the same id. This can occur when the fallback first
+  //    files a request and the provider later classifies it as a result.
+  // The normal request and result pairing (two DIFFERENT ids, one per side) is NOT a
   // conflict -- only a different id on the SAME side, or the SAME id on BOTH.
   function conflictsForSpan(
     targetStore: Map<string, Map<string, AgentChatMessage>>,
@@ -93,34 +92,32 @@ export function createSpanIndex(): ChatSpanIndex {
       const role = resolvedSpanRole(parseMessageContent(msg), msg.agentProvider)
       if (role === 'result') {
         // Always the result side, regardless of arrival order.
-        fileInto(results, openers, msg)
+        fileInto(results, requests, msg)
       }
       else if (role === 'request') {
-        fileInto(openers, results, msg)
+        fileInto(requests, results, msg)
       }
       else {
         // A refreshed message keeps its side when its protocol still omits the role.
-        if (openers.get(agentId)?.get(messageSpanKey(msg))?.id === msg.id) {
-          fileInto(openers, results, msg)
+        if (requests.get(agentId)?.get(messageSpanKey(msg))?.id === msg.id) {
+          fileInto(requests, results, msg)
           continue
         }
         if (results.get(agentId)?.get(messageSpanKey(msg))?.id === msg.id) {
-          fileInto(results, openers, msg)
+          fileInto(results, requests, msg)
           continue
         }
-        // Other kinds sharing a spanId: first-seen is the opener. But a SECOND
-        // 'other' member can't be ordered by role (neither side classifies it), so
-        // filing it opposite the first by arrival order is a guess that's wrong when
-        // it arrived out of seq order (a result-before-opener pair both classified
-        // 'other'). Flag a conflict so the caller reindexes from the authoritative,
-        // seq-ordered window, where the lower-seq member correctly becomes the
-        // opener. Some item shapes omit status, so their protocol cannot identify the role here.
-        if (!openers.get(agentId)?.has(messageSpanKey(msg))) {
-          fileInto(openers, results, msg)
+        // For other kinds, the first message is the request. A second `other`
+        // member has no role that orders it. Arrival order gives a wrong answer
+        // when the result arrives first. Report a conflict so the caller reindexes
+        // the authoritative window in sequence order. Some shapes omit status,
+        // so their protocol cannot identify the role here.
+        if (!requests.get(agentId)?.has(messageSpanKey(msg))) {
+          fileInto(requests, results, msg)
         }
         else {
           conflict = true
-          fileInto(results, openers, msg)
+          fileInto(results, requests, msg)
         }
       }
     }
@@ -128,7 +125,7 @@ export function createSpanIndex(): ChatSpanIndex {
   }
 
   function reindex(agentId: string, messages: AgentChatMessage[]) {
-    openers.delete(agentId)
+    requests.delete(agentId)
     results.delete(agentId)
     // Rebuilding from a cleared slate: any "reassignment" index() reports here is
     // against the authoritative window itself, so the return value is irrelevant.
@@ -139,7 +136,7 @@ export function createSpanIndex(): ChatSpanIndex {
   return {
     index,
     reindex,
-    getRequestMessage: (agentId: string, identity: MessageSpanIdentity) => openers.get(agentId)?.get(messageSpanKey(identity)),
+    getRequestMessage: (agentId: string, identity: MessageSpanIdentity) => requests.get(agentId)?.get(messageSpanKey(identity)),
     getResultMessage: (agentId: string, identity: MessageSpanIdentity) => results.get(agentId)?.get(messageSpanKey(identity)),
   }
 }

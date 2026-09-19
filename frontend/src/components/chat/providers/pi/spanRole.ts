@@ -6,7 +6,7 @@ import { pickString } from '~/lib/jsonPick'
 import { retainedRowIsFinal } from '../registry'
 
 /**
- * Pi span role: the flat envelope `type` discriminates the start (opener) from the end (result).
+ * Pi span role: the flat envelope `type` discriminates the request from the result.
  * Pi's `tool_execution_end` carries no Anthropic content blocks, so the default content-block scan
  * would mis-bucket it as `other` -- routing by `type` files it as a result regardless of arrival
  * order.

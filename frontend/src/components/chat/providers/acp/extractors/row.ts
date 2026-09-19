@@ -62,17 +62,17 @@ function acpSideCallId(side: ParsedMessageContent | undefined): string | null {
 
 /** The span row a provider on the new path emits: ONE call, plus the row facts. */
 function acpToolCallSpanRow(tool: Record<string, unknown>, sides: ToolSpanSides, callAdapter: ACPToolCallAdapter | undefined): ToolCallRow {
-  // Each side is built from its OWN parsed message, with the opener merged in where
+  // Each side is built from its OWN parsed message, with the request merged in where
   // a later frame omitted a field; which frame ARRIVED decides the row's place.
   // A side from ANOTHER call is no side of this one: `resolveACPToolCall` refuses
-  // a mismatched opener, and the row flags must refuse it the same way.
+  // a mismatched request, and the row flags must refuse it the same way.
   const own = sides.current ?? undefined
   const callId = pickString(tool, 'toolCallId') || ''
-  const openerSide = acpSideCallId(sides.request) === callId ? sides.request : undefined
+  const requestSide = acpSideCallId(sides.request) === callId ? sides.request : undefined
   const resultSide = acpSideCallId(sides.result) === callId ? sides.result : undefined
-  // ONE call from every side: the opener identifies the arguments, the result the
+  // ONE call from every side: the request identifies the arguments, the result the
   // payload. Whichever frame this row is, the merged object carries both.
-  const openerFrame = openerSide?.parentObject
+  const requestFrame = requestSide?.parentObject
   const resultFrame = resultSide?.parentObject
   // The role reads the OWN frame, not the merged call: the merge folds the result
   // into a request row, and a request row that then read as a result row would
@@ -84,8 +84,8 @@ function acpToolCallSpanRow(tool: Record<string, unknown>, sides: ToolSpanSides,
   // tell the two apart, and the finished flag must.
   const resolved = !finished && resultFrame
     ? resolveACPToolCall(resultFrame, tool)
-    : resolveACPToolCall(tool, openerFrame)
+    : resolveACPToolCall(tool, requestFrame)
   const call: ToolCallIR = acpToolCallIR(resolved, callAdapter, (resultSide ?? own)?.supplementalContent, own?.completion, { role: sides.role, hasResult: !!resultSide })
   const role: ToolRowRole = finished ? 'result' : pickString(tool, ACP_SUPPLEMENT_IDENTITY.SessionUpdate) === ACP_SESSION_UPDATE.TOOL_CALL ? 'request' : 'update'
-  return toolCallRow(call, role, { request: !!openerSide, result: !!resultSide })
+  return toolCallRow(call, role, { request: !!requestSide, result: !!resultSide })
 }

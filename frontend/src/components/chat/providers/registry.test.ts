@@ -136,6 +136,32 @@ describe('provider registration', () => {
       __resetProviderRegistryForTest()
     }
   })
+
+  it('invalidates resolved content when registration changes or resets', () => {
+    const provider = 999 as AgentProvider
+    const parsed = rawParse({ value: 'stored' })
+    __resetProviderRegistryForTest()
+    try {
+      // No plugin exists yet. This result must not survive the registration.
+      expect(resolveMessageForRendering(parsed, provider)).toBe(parsed)
+      registerProvider(provider, {
+        ...stubPlugin(),
+        transcript: {
+          ...stubPlugin().transcript,
+          resolveMessage: () => ({ value: 'resolved' }),
+        },
+      })
+      const registered = resolveMessageForRendering(parsed, provider)
+      expect(registered).not.toBe(parsed)
+      expect(registered.parentObject).toEqual({ value: 'resolved' })
+
+      __resetProviderRegistryForTest()
+      expect(resolveMessageForRendering(parsed, provider)).toBe(parsed)
+    }
+    finally {
+      __resetProviderRegistryForTest()
+    }
+  })
 })
 
 // A turn that ends while a tool call runs leaves no final frame, so the worker keeps the

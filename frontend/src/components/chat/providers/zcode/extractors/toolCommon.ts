@@ -362,7 +362,7 @@ export function zcodeNativeTool(row: ZCodeRow): {
 /**
  * The tool.updated kinds that OPEN a span rather than close it.
  *
- * `scheduled` is the opener. `result`, `error`, and `batch` are final.
+ * `scheduled` is the request. `result`, `error`, and `batch` are final.
  * The Worker consumes `started` and `progress` for live counters.
  *
  * A RETAINED row is final whatever its kind. A turn that ends while the call runs
