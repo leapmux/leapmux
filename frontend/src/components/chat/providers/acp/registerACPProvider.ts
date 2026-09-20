@@ -1,4 +1,4 @@
-import type { MessageCategory } from '../../messageClassification'
+import type { MessageCategory } from '../../messageClassifier'
 import type { ProviderPermissionPresets } from '../../providerSettings'
 import type { AttachmentCapabilities, ProviderAskUserQuestion, ProviderConfigurationCapability, ProviderControlCapability, ProviderPlugin } from '../capabilities'
 import type { ACPToolCallAdapter } from './extractors/toolCall'
@@ -9,7 +9,7 @@ import { sendSelectedOptionResponse } from '../../controls/types'
 import { buildPlanMode, OPTION_ID_PERMISSION_MODE } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { acpBuildControlResponse, classifyACPMessage } from './classification'
-import { acpControlResponseDisplay } from './controlResponse'
+import { acpControlResponseSummary } from './controlResponse'
 import { acpElicitation } from './elicitation'
 import { acpExtractControl, acpPermissionSpanId } from './extractControl'
 import { acpResultDivider } from './extractors/resultDivider'
@@ -84,7 +84,7 @@ export interface ACPProviderOptions {
   /** Question-handling hooks for providers that override the default ACP path. */
   questionHandling?: ACPQuestionHandling
   /**
-   * Persisted control-response -> display derivation. Defaults to {@link acpControlResponseDisplay}
+   * Persisted control-response -> display derivation. Defaults to {@link acpControlResponseSummary}
    * (the permission-selection path); OpenCode/Kilo and Cursor pass their own, which dispatch on the
    * request shape and delegate back to the ACP default for the permission case.
    */
@@ -141,7 +141,7 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
     sc = { kind: 'permissionMode', defaultMode: opts.defaultPermissionMode }
   }
   const controls: ProviderControlCapability = {
-    controlResponseDisplay: withElicitationResponse(acpElicitation, opts.controlResponseDisplay ?? acpControlResponseDisplay),
+    controlResponseDisplay: withElicitationResponse(acpElicitation, opts.controlResponseDisplay ?? acpControlResponseSummary),
     elicitation: acpElicitation,
     buildControlResponse: acpBuildControlResponse,
     // The shared Agent Client Protocol reader; a provider whose payload is shaped
@@ -150,7 +150,7 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
     controlToolSpanId: acpPermissionSpanId,
 
     // Neither half of the banner needs a component from this family now. The reader
-    // above fills the IR, the shared row draws it, and the decision travels back as
+    // above fills the model, the shared row draws it, and the decision travels back as
     // the protocol's own selected-option outcome.
     sendPermissionOption: opts.sendPermissionOption ?? sendSelectedOptionResponse,
 

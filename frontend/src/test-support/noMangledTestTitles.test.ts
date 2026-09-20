@@ -455,7 +455,7 @@ describe('test-title flattening', () => {
    */
   it('accepts a lowercase word that folds onto an all-caps constant', () => {
     const source = [importLine('PI_EVENT, PI'), callSite('describe', 'pi tool presentation')].join('\n')
-    expect(findFlattenedTitles(source, 'toolCall.test.ts')).toEqual([])
+    expect(findFlattenedTitles(source, 'createToolCall.test.ts')).toEqual([])
   })
 
   it('accepts the identifier written in its own casing', () => {

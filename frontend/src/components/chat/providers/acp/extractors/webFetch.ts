@@ -1,7 +1,7 @@
-import type { FetchResult } from '../../../ir/tools/fetch'
+import type { FetchResult } from '../../../model/tools/fetch'
 import { ACP_SUPPLEMENT } from '~/generated/contracts/acp-protocol'
 import { pickObject } from '~/lib/jsonPick'
-import { webFetchFromObj } from '../../../ir/tools/fetch'
+import { webFetchFromObj } from '../../../model/tools/fetch'
 import { collectAcpToolText } from '../content'
 
 /**

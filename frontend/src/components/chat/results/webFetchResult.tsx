@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
-import type { FetchResult } from '../ir/tools/fetch'
-import type { RenderContext } from '../messageRenderers'
+import type { FetchResult } from '../model/tools/fetch'
+import type { ToolResultRenderContext } from '../renderContext'
 import { Show } from 'solid-js'
 import { formatBytes } from '~/lib/formatBytes'
 import { getToolResultExpanded } from '../messageRenderers'
@@ -14,7 +14,7 @@ import { useCollapsedFlag } from './useCollapsedLines'
 
 export function WebFetchResultBody(props: {
   source: FetchResult
-  context?: RenderContext
+  context?: ToolResultRenderContext
 }): JSX.Element {
   const isCollapsed = useCollapsedFlag({
     text: () => props.source.result,

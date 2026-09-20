@@ -1,6 +1,6 @@
-import type { McpContentItem } from '../../../ir/mcpToolCall'
-import type { ToolCallPayloadIR } from '../../../ir/toolCall'
-import type { FileChangeRequest } from '../../../ir/tools/fileChange'
+import type { McpContentItem } from '../../../model/mcpToolCall'
+import type { ToolCallSpec } from '../../../model/toolCall'
+import type { FileChangeRequest } from '../../../model/tools/fileChange'
 import type { ACPToolFacts } from '../../acp/extractors/toolCall'
 import type { ACPToolSupplement } from '../../acp/toolSupplement'
 import { ACP_SUPPLEMENT } from '~/generated/contracts/acp-protocol'
@@ -9,10 +9,10 @@ import { prettifyJson } from '~/lib/jsonFormat'
 import { isObject, pickBoolean, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { isAbsolute, join } from '~/lib/paths'
 import { parseUnifiedDiffCached } from '../../../diff'
-import { fileEditDiffFromHunks, fileEditHasDiff } from '../../../ir/fileEditDiff'
-import { mcpToolCallRequest, parseMcpContentItem } from '../../../ir/mcpToolCall'
-import { readFileResultFromContent } from '../../../ir/readFileResult'
-import { failedResult } from '../../../ir/toolCall'
+import { fileEditDiffFromHunks, fileEditHasDiff } from '../../../model/fileEditDiff'
+import { mcpToolCallRequest, parseMcpContentItem } from '../../../model/mcpToolCall'
+import { readFileResultFromContent } from '../../../model/readFileResult'
+import { failedResult } from '../../../model/toolCall'
 import { acpSupplementRawOutput } from '../../acp/toolSupplement'
 import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
 import { cursorAgentCall } from './agent'
@@ -30,7 +30,7 @@ export interface CursorStoredRestore {
   /** The saved record's own output, which outranks the frame's collected text. */
   output: string
   /** The whole payload a recognized record built, or null to keep building. */
-  payload: ToolCallPayloadIR | null
+  payload: ToolCallSpec | null
 }
 
 /** Cursor stores both standard content blocks and native protobuf content variants. */
@@ -132,7 +132,7 @@ function failureText(reason: string, output: string): string {
  *
  * The change a removal asks for draws no diff -- there is nothing to diff -- and this
  * reading kept a change only where one drew. The request then stated no file, which
- * `toolCall` refuses (invariant I7): the row composes its header from that list at
+ * `createToolCall` refuses (invariant I7): the row composes its header from that list at
  * every state of the call, so the removal came back as the uncategorized card.
  *
  * `path` is the file the RECORD names, which outranks the arguments for the same

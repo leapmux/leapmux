@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolComplete, copilotToolStart } from '~/test-support/copilotFixtures'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { toolOutcomeLabel } from '../ir/toolOutcomeLabel'
-import { renderMessageContent } from '../rowRenderers'
+import { renderMessageContent } from '../messageContentRenderer'
+import { toolOutcomeLabel } from '../results/toolOutcomeLabel'
 import { toolUseHeader } from '../toolStyles.css'
 import { providerFor } from './registry'
 import { input } from './testUtils'
@@ -78,10 +78,16 @@ describe.each([
   it('renders one header and one argument section for the pair', () => {
     const { request, result, spanType } = mcpMessages(provider)
     const plugin = providerFor(provider)!
-    const sources = (current: Record<string, unknown>) => testMessageSources({ current: () => input(current), request: () => input(request), result: () => input(result) })
+    const sources = (current: Record<string, unknown>, role: 'request' | 'result') => testMessageSources({
+      current: () => input(current),
+      request: () => input(request),
+      result: () => input(result),
+      role: () => role,
+      visibleRows: () => ({ request: true, result: true }),
+    })
     const { container } = render(() => [
-      renderMessageContent(request, { premeasureMode: true, spanType, sources: sources(request) }, plugin?.transcript.classify(input(request)), provider),
-      renderMessageContent(result, { premeasureMode: true, spanType, sources: sources(result) }, plugin?.transcript.classify(input(result)), provider),
+      renderMessageContent(request, { premeasureMode: true, spanType, sources: sources(request, 'request') }, plugin?.transcript.classify(input(request)), provider),
+      renderMessageContent(result, { premeasureMode: true, spanType, sources: sources(result, 'result') }, plugin?.transcript.classify(input(result)), provider),
     ])
     expect(container.querySelectorAll(`.${toolUseHeader}`)).toHaveLength(1)
     expect(container.textContent?.match(/Arguments/g)).toHaveLength(1)

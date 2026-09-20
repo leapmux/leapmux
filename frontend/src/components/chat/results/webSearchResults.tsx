@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
-import type { WebSearchLink, WebSearchRequest, WebSearchResult } from '../ir/tools/webSearch'
-import type { RenderContext } from '../messageRenderers'
+import type { WebSearchLink, WebSearchRequest, WebSearchResult } from '../model/tools/webSearch'
+import type { ToolResultRenderContext } from '../renderContext'
 import { For, Show } from 'solid-js'
 import { Tooltip } from '~/components/common/Tooltip'
 import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
@@ -38,7 +38,7 @@ export function WebSearchResultsBody(props: {
    * reads it for the QUERIES the title has no room for.
    */
   request?: WebSearchRequest
-  context?: RenderContext
+  context?: ToolResultRenderContext
 }): JSX.Element {
   const expanded = () => getToolResultExpanded(props.context)
   const links = () => props.source.links

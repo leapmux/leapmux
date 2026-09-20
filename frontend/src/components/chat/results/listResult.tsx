@@ -1,16 +1,22 @@
 import type { JSX } from 'solid-js'
-import type { ListResult } from '../ir/tools/list'
-import type { RenderContext } from '../messageRenderers'
+import type { ListResult } from '../model/tools/list'
+import type { ToolResultRenderContext } from '../renderContext'
 import { Show } from 'solid-js'
 import { pluralize } from '~/lib/plural'
 import { getToolResultExpanded } from '../messageRenderers'
 import { toolMessage, toolResultCollapsed, toolResultPrompt } from '../toolStyles.css'
 import { TRUNCATION_NOTICE } from '../truncationNotice'
+import { COLLAPSED_RESULT_ROWS } from './collapse'
 import { FileListView } from './searchResult'
 import { useCollapsedItems } from './useCollapsedLines'
 
+/** Whether a listing exceeds the collapsed display. */
+export function listResultCollapsible(result: ListResult): boolean {
+  return result.entries.length > COLLAPSED_RESULT_ROWS
+}
+
 /** The body of one `list` call: the entry count, the page range, and the file list. */
-export function ListResultBody(props: { source: ListResult, context?: RenderContext }): JSX.Element {
+export function ListResultBody(props: { source: ListResult, context?: ToolResultRenderContext }): JSX.Element {
   const entries = useCollapsedItems({ items: () => props.source.entries, expanded: () => getToolResultExpanded(props.context) })
   const summary = () => {
     const count = props.source.entries.length

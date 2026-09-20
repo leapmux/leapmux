@@ -1,9 +1,11 @@
-import type { ProviderRowOptions } from './toolCallIr'
-import type { ToolCallDraft, ToolCallIR } from '~/components/chat/ir/toolCall'
-import type { ToolKind } from '~/components/chat/ir/toolKind'
-import type { ToolRowStatus } from '~/components/chat/ir/toolRowStatus'
+import type { ProviderRowOptions } from './toolCallFixture'
+import type { ToolCallDraft } from '~/components/chat/model/createToolCall'
+import type { ToolCall } from '~/components/chat/model/toolCall'
+import type { ToolCallStatus } from '~/components/chat/model/toolCallStatus'
+import type { ToolKind } from '~/components/chat/model/toolKind'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isUnparsedResult, toolCallFault } from '~/components/chat/ir/toolCall'
+import { toolCallFault } from '~/components/chat/model/createToolCall'
+import { isUnparsedToolResult } from '~/components/chat/model/toolCall'
 
 /**
  * The shared shape of a provider's tool-vocabulary coverage test.
@@ -67,7 +69,7 @@ export interface ToolResultFixture {
 }
 
 /** The three words that end a call without an answer. `completed` is the fourth final word. */
-export type FailedCallStatus = Extract<ToolRowStatus, 'failed' | 'cancelled' | 'declined'>
+export type FailedToolCallStateStatus = Extract<ToolCallStatus, 'failed' | 'cancelled' | 'declined'>
 
 /**
  * A frame that ends one call BELOW a successful completion.
@@ -94,7 +96,7 @@ export interface ToolFailureFixture extends ToolResultFixture {
   /** The tool whose successful fixture this failure pairs with. */
   name: string
   /** The outcome word the extraction must read from this frame. */
-  status: FailedCallStatus
+  status: FailedToolCallStateStatus
 }
 
 export interface ToolResultCheck {
@@ -118,12 +120,12 @@ export interface ToolResultCheck {
   noFailure: Readonly<Partial<Record<ToolKind, string>>>
   /** Names with no fixture ON PURPOSE (a hidden row, a request-only tool), each with the reason. */
   noResult: Readonly<Record<string, string>>
-  /** Names whose SUCCESSFUL result stays UnparsedResult on purpose, each with the reason. */
+  /** Names whose SUCCESSFUL result stays UnparsedToolResult on purpose, each with the reason. */
   unparsed: Readonly<Record<string, string>>
 }
 
 /** One frame read into its call, or null when the frame draws no tool row. */
-export type CallReader = (name: string) => ToolCallIR | null
+export type CallReader = (name: string) => ToolCall | null
 
 /** The names whose kind the table holds but that state no successful result frame. */
 export function namesWithoutResultFixture(kinds: ToolVocabularyCheck, results: ToolResultCheck): string[] {
@@ -153,21 +155,21 @@ export function fixturesThatChangeKind(kinds: ToolVocabularyCheck, results: Tool
  *
  * `mcp` stays OUT, although {@link isGenericKind} holds all three together. The Model
  * Context Protocol card states the server and the tool it called, so a tool that
- * reaches it is identified. The empty kind and `other` are the two that identify
+ * reaches it is identified. `unspecified` and `other` are the two kinds that identify
  * nothing.
  */
 export function fixturesOnTheUncategorizedKind(results: ToolResultCheck, callOf: CallReader): string[] {
   return Object.keys(results.fixtures).filter((name) => {
     const call = callOf(name)
-    return call !== null && (call.kind === '' || call.kind === 'other')
+    return call !== null && (call.kind === 'unspecified' || call.kind === 'other')
   })
 }
 
 /** The names whose successful result stays unparsed although no reason says it must. */
-export function undocumentedUnparsedResults(results: ToolResultCheck, callOf: CallReader): string[] {
+export function undocumentedUnparsedToolResults(results: ToolResultCheck, callOf: CallReader): string[] {
   return Object.keys(results.fixtures).filter((name) => {
     const call = callOf(name)
-    return call !== null && call.result !== undefined && isUnparsedResult(call.result) && !(name in results.unparsed)
+    return call !== null && call.result !== undefined && isUnparsedToolResult(call.result) && !(name in results.unparsed)
   })
 }
 
@@ -175,7 +177,7 @@ export function undocumentedUnparsedResults(results: ToolResultCheck, callOf: Ca
 export function documentedUnparsedThatParse(results: ToolResultCheck, callOf: CallReader): string[] {
   return Object.keys(results.unparsed).filter((name) => {
     const call = callOf(name)
-    return call === null || call.result === undefined || !isUnparsedResult(call.result)
+    return call === null || call.result === undefined || !isUnparsedToolResult(call.result)
   })
 }
 
@@ -187,7 +189,7 @@ export function staleResultEntries(kinds: ToolVocabularyCheck, results: ToolResu
 }
 
 /** One FAILED frame read into its call, through the provider's own extraction. */
-export type FailureReader = (fixture: ToolFailureFixture) => ToolCallIR | null
+export type FailureReader = (fixture: ToolFailureFixture) => ToolCall | null
 
 /** One failed entry, as a reader identifies it in a message. */
 function describeFailure(fixture: ToolFailureFixture): string {
@@ -292,7 +294,7 @@ export function requestsThatAnswerEarly(results: ToolResultCheck, requestCallOf:
  * unreachable code.
  *
  * Read a green suite carefully. The union refuses every pair this reports at COMPILE
- * time, and `toolCall` degrades a draft that breaks one to the uncategorized row
+ * time, and `createToolCall` degrades a draft that breaks one to the uncategorized row
  * rather than returning it -- so a call that reaches here has already passed the same
  * check twice. What this still earns is the third case: a call an `as` assertion
  * built behind the compiler, and the empty file name of I7, which no type states.
@@ -300,7 +302,7 @@ export function requestsThatAnswerEarly(results: ToolResultCheck, requestCallOf:
  * {@link fixturesThatChangeKind} and {@link failuresThatMisreadTheirKind}: a fixture
  * whose kind fell to `other` is a fixture whose draft broke a rule.
  */
-export function invariantViolations(call: ToolCallIR): string[] {
+export function invariantViolations(call: ToolCall): string[] {
   // `ToolCallDraft`'s optional members refuse an explicit undefined, which the
   // no-result half of the lifecycle still states, so the call is restated with
   // those members omitted rather than undefined. The catalogue reads the same

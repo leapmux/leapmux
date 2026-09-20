@@ -1,18 +1,19 @@
-import type { ControlResponseDisplay, PersistedControlResponse } from './persistedControlResponse'
+import type { ControlResponseSummary } from './model/controlResponse'
+import type { PersistedControlResponse } from './persistedControlResponse'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { renderMessageContent } from './messageContentRenderer'
 import { renderControlResponseRow } from './messageRenderers'
-import { resolveControlResponseDisplay } from './persistedControlResponse'
-import { renderMessageContent } from './rowRenderers'
+import { resolveControlResponseSummary } from './persistedControlResponse'
 // Register provider plugins so renderMessageContent can resolve a plugin's controlResponseDisplay.
 import '~/components/chat/providers'
 
 // The renderer takes the DISPLAY: layer 1 runs the provider's derivation and the
 // never-null chokepoint (~/components/chat/rowExtraction.ts), so the markup below is
 // all this function decides. The derivation and its three degradations are asserted
-// against `resolveControlResponseDisplay` itself, in the describe after this one.
-function row(display: ControlResponseDisplay) {
+// against `resolveControlResponseSummary` itself, in the describe after this one.
+function row(display: ControlResponseSummary) {
   return render(() => <>{renderControlResponseRow(display, undefined)}</>)
 }
 
@@ -39,10 +40,10 @@ describe('renderControlResponseRow', () => {
   })
 })
 
-describe('resolveControlResponseDisplay', () => {
+describe('resolveControlResponseSummary', () => {
   it('degrades to the neutral/generic fallback when the deriver returns null', () => {
     // No plugin display + an unrecognized response -> the generic label.
-    expect(resolveControlResponseDisplay(RESPONSE, () => null)).toEqual({ kind: 'label', text: 'Responded' })
+    expect(resolveControlResponseSummary(RESPONSE, () => null)).toEqual({ kind: 'label', text: 'Responded' })
   })
 
   it('degrades to the fallback when the deriver THROWS, never leaking raw JSON', () => {
@@ -52,12 +53,12 @@ describe('resolveControlResponseDisplay', () => {
     const throwing = (): never => {
       throw new Error('bad payload')
     }
-    expect(resolveControlResponseDisplay(RESPONSE, throwing)).toEqual({ kind: 'label', text: 'Responded' })
+    expect(resolveControlResponseSummary(RESPONSE, throwing)).toEqual({ kind: 'label', text: 'Responded' })
   })
 
   it('uses the coarse behavior envelope as the fallback when no deriver is given', () => {
     const parsed = { ...RESPONSE, response: { response: { response: { behavior: 'allow' } } } }
-    expect(resolveControlResponseDisplay(parsed, undefined)).toEqual({ kind: 'label', text: 'Allow' })
+    expect(resolveControlResponseSummary(parsed, undefined)).toEqual({ kind: 'label', text: 'Allow' })
   })
 })
 

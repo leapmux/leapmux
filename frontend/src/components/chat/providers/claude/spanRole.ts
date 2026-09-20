@@ -3,6 +3,17 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ToolSpanRole } from '~/lib/messageSpan'
 import { getMessageContent } from '~/lib/contentBlocks'
 import { isObject } from '~/lib/jsonPick'
+import { extractToolUseInfo } from './extractors/assistantContent'
+import { canonicalClaudeToolName } from './toolKinds'
+import { CLAUDE_TOOL_NAMES } from './toolNames'
+
+const REQUEST_NEEDS_RESULT: ReadonlySet<string> = new Set([
+  CLAUDE_TOOL_NAMES.AGENT,
+  CLAUDE_TOOL_NAMES.TODO_WRITE,
+  CLAUDE_TOOL_NAMES.TASK_CREATE,
+  CLAUDE_TOOL_NAMES.TASK_UPDATE,
+  CLAUDE_TOOL_NAMES.TASK_GET,
+])
 
 /**
  * Claude/Anthropic span role: a `tool_use` content block marks a request, and a `tool_result` block
@@ -25,4 +36,11 @@ export function claudeSpanRole(parsed: ParsedMessageContent): ToolSpanRole {
       hasToolResult = true
   }
   return hasToolUse ? 'request' : hasToolResult ? 'result' : 'other'
+}
+
+export function claudeRelatedMessages(parsed: ParsedMessageContent) {
+  if (claudeSpanRole(parsed) === 'result')
+    return ['request'] as const
+  const tool = canonicalClaudeToolName(extractToolUseInfo(parsed)?.toolName ?? '')
+  return REQUEST_NEEDS_RESULT.has(tool) ? ['result'] as const : []
 }

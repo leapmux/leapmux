@@ -1,5 +1,5 @@
 import type { MessageBandKind } from './chatRowGeometry'
-import type { MessageCategory } from './messageClassification'
+import type { MessageCategory } from './messageClassifier'
 import { describe, expect, it, vi } from 'vitest'
 import { kindScopedLayoutKey, messageBandKind } from './chatRowGeometry'
 

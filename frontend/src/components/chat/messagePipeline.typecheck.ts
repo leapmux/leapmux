@@ -35,9 +35,9 @@ void rawToSpanRole
 
 // A raw parse cannot reach `extractRow` -- not its payload slot, and not a side.
 // @ts-expect-error Extraction reads the merged payload; a raw parse would extract a row its own category never saw.
-const rawParsedSlot: RowExtractionInput['parsed'] = RAW
+const rawParsedSlot: RowExtractionInput['resolved'] = RAW
 // @ts-expect-error A side the caller resolved carries the same brand a payload does.
-const rawSideSlot: RowExtractionInput['sides']['current'] = RAW
+const rawSideSlot: RowExtractionInput['span']['request'] = RAW
 void [rawParsedSlot, rawSideSlot]
 
 // A value the constructor returned reaches all three.
@@ -45,9 +45,9 @@ const RESOLVED: ResolvedMessageContent = resolveMessageForRendering(RAW, AgentPr
 const resolvedToClassify: ClassificationInput = { ...RESOLVED, ...ENVELOPE }
 const resolvedToSpanRole: string = spanRoleHook(RESOLVED)
 const resolvedToExtractRow: RowExtractionInput = {
-  parsed: RESOLVED,
+  resolved: RESOLVED,
   category: { kind: 'unknown' },
-  sides: { current: RESOLVED, request: undefined, result: undefined, role: 'other' },
+  span: { request: undefined, result: undefined, role: 'other', visibleRows: { request: false, result: false } },
 }
 void [resolvedToClassify, resolvedToSpanRole, resolvedToExtractRow]
 

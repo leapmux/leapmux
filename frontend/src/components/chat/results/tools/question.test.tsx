@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { checkKindModule } from '~/test-support/kindTestHarness'
-import { toolCallIr } from '~/test-support/toolCallIr'
+import { toolCallFixture } from '~/test-support/toolCallFixture'
 import { questionRenderer } from './question'
 import { parsedCall } from './renderer'
 
@@ -26,7 +26,7 @@ describe('question renderer', () => {
 
   /** One title, composed from the request the way every other kind composes its own. */
   const titleOf = (questions: Array<{ header?: string, question: string }>, title?: string): string =>
-    questionRenderer.title(parsedCall(toolCallIr('question', {
+    questionRenderer.title(parsedCall(toolCallFixture('question', {
       request: { questions: questions.map(entry => ({ ...entry, options: [] })) },
       ...(title === undefined ? {} : { title }),
     })), undefined) as string

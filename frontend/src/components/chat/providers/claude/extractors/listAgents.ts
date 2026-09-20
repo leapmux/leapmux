@@ -1,10 +1,10 @@
-import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
-import type { AgentsRequest } from '../../../ir/tools/agents'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { AgentsRequest } from '../../../model/tools/agents'
 import type { ClaudeToolRow } from './toolCommon'
 import { pickString } from '~/lib/jsonPick'
-import { proseResult } from '../../../ir/toolCall'
+import { proseResult } from '../../../model/toolCall'
 import { CLAUDE_TOOL_NAMES } from '../toolNames'
-import { claudeFailedResult } from './failure'
+import { claudeToolFailureResult } from './failure'
 
 /**
  * The `ListAgents` listing: the CLI's own `listing` field, falling back to the
@@ -38,7 +38,7 @@ export function claudeListAgentsListing(
  * The failure rung leads, and this kind needs it most: the listing renders as
  * MARKDOWN, so a reason that holds a `#` or a `*` drew as a heading or as emphasis.
  */
-export function claudeAgentsPayload(request: AgentsRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'agents'> {
+export function claudeAgentsSpec(request: AgentsRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'agents'> {
   // The roster question, as the row's own header word. It reads the REQUEST rather than
   // the arguments a second time, so the header and the body cannot state two different
   // filters. `TeamCreate` and `TeamDelete` share this kind and name a TEAM rather than a
@@ -52,7 +52,7 @@ export function claudeAgentsPayload(request: AgentsRequest, args: ClaudeToolRow,
     : filters ? `List agents (${filters})` : 'List agents'
   if (!result)
     return { kind: 'agents', request, title }
-  const failure = claudeFailedResult(result)
+  const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'agents', request, title, result: failure }
   const listing = claudeListAgentsListing(result.toolUseResult, result.resultContent)

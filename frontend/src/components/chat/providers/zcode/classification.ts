@@ -1,4 +1,4 @@
-import type { MessageCategory } from '../../messageClassification'
+import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../registry'
 import { ZCODE_EVENT } from '~/generated/contracts/zcode-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'

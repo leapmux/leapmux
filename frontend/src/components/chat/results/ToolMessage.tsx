@@ -1,27 +1,28 @@
 import type { JSX } from 'solid-js'
-import type { ToolCallRow } from '../ir/row'
-import type { FailedResult, UnparsedResult } from '../ir/toolCall'
-import type { ToolKind } from '../ir/toolKind'
-import type { RenderContext } from '../messageRenderers'
 import type { MessageUiKey } from '../messageUiKeys'
-import type { MessageUiState, ToolProgressSource } from '../renderContext'
+import type { ToolCallRow } from '../model/row'
+import type { ToolFailureResult, UnparsedToolResult } from '../model/toolCall'
+import type { ToolKind } from '../model/toolKind'
+import type { MessageUiState, ToolProgressSource, ToolResultRenderContext } from '../renderContext'
 import type { ToolCallDispatch } from './tools/index'
 import type { ToolRowView } from './tools/renderer'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
+import TriangleAlert from 'lucide-solid/icons/triangle-alert'
 import { createMemo, createSignal, Match, Show, Switch, untrack } from 'solid-js'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { stripLeadingBlankLines } from '~/lib/normalizeProgressOutput'
-import { extraImages, resultImages, rowDrawsResult, rowHasRequestRow, toolRowPosition } from '../ir/derivations'
-import { isFailedResult, isUnparsedResult } from '../ir/toolCall'
-import { toolOutcomeLabel } from '../ir/toolOutcomeLabel'
-import { isFinishedToolStatus, toolRowStatusOutcome } from '../ir/toolRowStatus'
 import { useSharedExpandedState } from '../messageRenderers'
 import { MESSAGE_UI_KEY } from '../messageUiKeys'
+import { rowDrawsRequest, rowDrawsResult, rowHasRequestRow, toolRowPosition } from '../model/derivations'
+import { isToolFailureResult, isUnparsedToolResult } from '../model/toolCall'
+import { isFinishedToolCallStatus, toolCallStatusOutcome } from '../model/toolCallStatus'
+import { toolOutcomeLabel } from '../results/toolOutcomeLabel'
 import { toolInputSummary } from '../toolStyles.css'
 import { TRUNCATION_NOTICE } from '../truncationNotice'
 import { ToolMessageLayout } from '../widgets/ToolMessageLayout'
 import { McpContentList } from './genericToolCall'
 import { ImageResultList } from './imageResult'
+import { extraImages, resultImages } from './rowImages'
 import { toolHintIcon } from './toolIconHints'
 import { ToolMetadata } from './ToolMetadata'
 import { toolCallDisplayName } from './tools/header'
@@ -31,13 +32,14 @@ import { PlainTextResult } from './tools/plainTextResult'
 import { ToolOutcomeHeader } from './ToolStatusHeader'
 
 /** Draw one tool row from its merged call: one kind, one request, one result slot. */
-export function ToolMessage(props: { row: ToolCallRow, context?: RenderContext, progress?: ToolProgressSource }): JSX.Element {
+export function ToolMessage(props: { row: ToolCallRow, context?: ToolResultRenderContext, progress?: ToolProgressSource }): JSX.Element {
   const call = createMemo(() => props.row.call)
+  const drawsRequest = () => rowDrawsRequest(props.row)
   const drawsResult = () => rowDrawsResult(props.row)
   // The renderer, the call and the views of it the hooks read, dispatched as ONE
   // correlated pair. No assertion re-pairs them here; the dispatch owns the pairing.
   const parts = createMemo((): ToolCallDispatch<ToolKind> => dispatchParts(call()))
-  const plain = createMemo(() => (isFailedResult(call().result) || isUnparsedResult(call().result)) ? call().result as FailedResult | UnparsedResult : undefined)
+  const plain = createMemo(() => (isToolFailureResult(call().result) || isUnparsedToolResult(call().result)) ? call().result as ToolFailureResult | UnparsedToolResult : undefined)
   // One key per mounted row, read once: AGENT_PROMPT for an agent request row, TOOL_RESULT_EXPANDED otherwise.
   const expandKey = untrack((): MessageUiKey => (!drawsResult() && parts().renderer.requestExpandUiKey) || MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)
   const [expanded, setExpanded] = useSharedExpandedState(() => props.context, expandKey)
@@ -65,8 +67,8 @@ export function ToolMessage(props: { row: ToolCallRow, context?: RenderContext, 
         props.context?.setMessageUiState?.(key, value)
     },
   }
-  const bodyContext = createMemo<RenderContext>(() => {
-    const context: RenderContext = Object.create(props.context ?? null)
+  const bodyContext = createMemo<ToolResultRenderContext>(() => {
+    const context: ToolResultRenderContext = Object.create(props.context ?? null)
     Object.defineProperties(context, {
       getMessageUiState: { value: rowUiState.get },
       setMessageUiState: { value: rowUiState.set },
@@ -87,7 +89,7 @@ export function ToolMessage(props: { row: ToolCallRow, context?: RenderContext, 
     expanded,
     setExpanded: value => setExpanded(value),
     // The RESULT body draws first, so its pictures are numbered from zero.
-    // `imagesForIR` states the same order, and an image tab addresses a picture by
+    // `imagesForRow` states the same order, and an image tab addresses a picture by
     // its index in that list.
     imageIndexOffset: 0,
     onSummaryOverflow: setSummaryOverflows,
@@ -116,9 +118,9 @@ export function ToolMessage(props: { row: ToolCallRow, context?: RenderContext, 
   // The live output of a call that has NOT returned. The worker broadcasts it on
   // the ephemeral channel and drops it when the result row lands, so the finished
   // row keeps drawing its own persisted text and the row never re-lays out.
-  const liveTail = () => !isFinishedToolStatus(call().status) && call().result === undefined ? props.progress?.liveTail() : undefined
+  const liveTail = () => !isFinishedToolCallStatus(call().status) && call().result === undefined ? props.progress?.liveTail() : undefined
   const truncated = () => call().truncated || liveTail()?.outputTruncated === true
-  const statusOutcome = () => toolRowStatusOutcome(call().status)
+  const statusOutcome = () => toolCallStatusOutcome(call().status)
   // The image tabs' name: the call's own title when it stated one, else the
   // leading-name renderers' display name, else the bubble's span-type fallback.
   const imageTitle = () => call().title ?? (parts().renderer.nameLeads ? toolCallDisplayName(call()) : undefined)
@@ -177,15 +179,15 @@ export function ToolMessage(props: { row: ToolCallRow, context?: RenderContext, 
       showHeaderActions={!props.context?.hasOuterToolbar}
       alwaysVisible
     >
-      <Show when={call().metadata}>{items => <ToolMetadata items={items()} />}</Show>
-      {parts().renderer.request?.(parts().parsed, view())}
+      <Show when={drawsRequest() && call().metadata}>{items => <ToolMetadata items={items()} />}</Show>
+      <Show when={drawsRequest()}>{parts().renderer.request?.(parts().parsed, view())}</Show>
       {/* The RESULT SIDE, gated ONCE.
           A span whose two rows are both drawn puts every one of these on the result
-          row alone -- `rowDrawsResult` is that rule, and `imagesForIR` states the same
+          row alone -- `rowDrawsResult` is that rule, and `imagesForRow` states the same
           order over the same rule. The gate used to be spelled at each piece
           separately, and two of them were missed: a paired REQUEST row drew the
           call's extra content and the truncation notice a second time, and it handed
-          `onOpenImage` an index for a picture `imagesForIR` reports no row as holding
+          `onOpenImage` an index for a picture `imagesForRow` reports no row as holding
           -- so the tab that index opens after a reload shows a different picture. One
           `Show` makes the next piece added here correct by construction. */}
       <Show when={drawsResult()}>
@@ -204,7 +206,7 @@ export function ToolMessage(props: { row: ToolCallRow, context?: RenderContext, 
         <Show when={call().images.length > 0}>
           <ImageResultList sources={call().images} indexOffset={extraImages(call()).length + resultImages(call()).length} {...imageDressings()} holdDisplay={() => props.context?.syntaxHighlightingPaused?.() === true || props.context?.textSelectionActive?.() === true} />
         </Show>
-        <ToolOutcomeHeader when={statusOutcome() !== null && !bodyStatesOutcome()} icon={CircleAlert} title={typedTitle()} {...(props.context !== undefined ? { context: props.context } : {})} />
+        <ToolOutcomeHeader when={statusOutcome() !== null && !bodyStatesOutcome()} icon={call().status === 'incomplete' ? TriangleAlert : CircleAlert} title={typedTitle()} {...(props.context !== undefined ? { context: props.context } : {})} />
       </Show>
     </ToolMessageLayout>
   )

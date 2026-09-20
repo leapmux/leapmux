@@ -1,10 +1,10 @@
-import type { ToolCallIR } from '../../../ir/toolCall'
+import type { ToolCall } from '../../../model/toolCall'
 import { describe, expect, it } from 'vitest'
 import { CURSOR_METHOD, CURSOR_SUPPLEMENT } from '~/generated/contracts/cursor-protocol'
-import { todoTitleOf } from '~/test-support/toolCallIr'
-import { isFailedResult, typedResult } from '../../../ir/toolCall'
+import { todoTitleOf } from '~/test-support/toolCallFixture'
+import { isToolFailureResult, typedResult } from '../../../model/toolCall'
 
-import { acpToolCallIR } from '../../acp/extractors/toolCall'
+import { acpToolCall } from '../../acp/extractors/toolCall'
 import { cursorToolCallAdapter } from './toolCall'
 
 // Cursor's own call id carries an embedded newline. It is kept verbatim here because
@@ -18,7 +18,7 @@ const CALL = 'call-9ff1787e-0\nfc_442cb271_0'
  * needs to accept it -- see `resolveACPMessageContent` on the Go side for the same
  * rule.
  */
-function callWithExtension(tool: Record<string, unknown>, method?: string, params?: Record<string, unknown>): ToolCallIR {
+function callWithExtension(tool: Record<string, unknown>, method?: string, params?: Record<string, unknown>): ToolCall {
   const frame = { sessionUpdate: 'tool_call_update', toolCallId: CALL, status: 'completed', ...tool }
   const supplemental = method
     ? {
@@ -28,7 +28,7 @@ function callWithExtension(tool: Record<string, unknown>, method?: string, param
         [CURSOR_SUPPLEMENT.Extension]: { method, params: { toolCallId: CALL, ...params } },
       }
     : undefined
-  return acpToolCallIR(frame, cursorToolCallAdapter, supplemental)
+  return acpToolCall(frame, cursorToolCallAdapter, supplemental)
 }
 
 describe('cursor updateTodos rows', () => {
@@ -181,7 +181,7 @@ describe('cursor declined rows', () => {
   it('reads a rejected approval as declined and keeps its reason', () => {
     const call = callWithExtension({ kind: 'search', title: 'Web Search: parsers', rawOutput: { rejected: true, reason: 'User Rejected' } })
     expect(call.status).toBe('declined')
-    expect(isFailedResult(call.result) && call.result.text).toBe('User Rejected')
+    expect(isToolFailureResult(call.result) && call.result.text).toBe('User Rejected')
   })
 
   // An MCP call states no reason, so the call keeps whatever text it already had.
@@ -201,7 +201,7 @@ describe('cursor declined rows', () => {
     })
     expect(call.status).toBe('declined')
     expect(call.kind).toBe('mcp')
-    expect(isFailedResult(call.result) && call.result.text).toBe('User Rejected')
+    expect(isToolFailureResult(call.result) && call.result.text).toBe('User Rejected')
   })
 
   it('leaves an ordinary result alone', () => {

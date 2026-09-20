@@ -1,9 +1,9 @@
-import type { CompactionBoundaryMeta, NotificationEntryIR } from '../../../ir/notification'
+import type { CompactionDetails, NotificationEntry } from '../../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { isObject, pickNumber, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
-import { compactionMetaFromBoundary } from '../../../ir/notification'
+import { compactionMetaFromBoundary } from '../../../model/notification'
 import { humanizeWireWord } from '../../../rendererUtils'
 import { claudeRateLimitInfo } from '../rateLimits'
 
@@ -103,11 +103,11 @@ function isMicrocompactBoundary(m: Record<string, unknown>): boolean {
  * The compaction boundary a Claude message states, or null when it states none.
  *
  * `agentEvents` reads this to refresh the context-usage grid the instant a boundary
- * lands -- outside the render tree, before any row IR exists -- and
+ * lands -- outside the render tree, before any row model exists -- and
  * {@link claudeNotificationEntry} reads the same parse. One provider-owned reading, so
  * the grid and the transcript cannot disagree about what a boundary is.
  */
-export function claudeCompactionBoundary(parsed: ParsedMessageContent): CompactionBoundaryMeta | null {
+export function claudeCompactionBoundary(parsed: ParsedMessageContent): CompactionDetails | null {
   const inner = getInnerMessage(parsed)
   if (!isObject(inner))
     return null
@@ -117,13 +117,13 @@ export function claudeCompactionBoundary(parsed: ParsedMessageContent): Compacti
 }
 
 /**
- * Read one Claude notification frame into the shared notification IR.
+ * Read one Claude notification frame into the shared notification model.
  *
  * Every shape here is Claude's own: the rate-limit event, the API-retry status, and
  * the three compaction boundaries. They used to sit in the shared notification switch,
  * where a second provider's frame could reach them by accident.
  */
-export function claudeNotificationEntry(m: Record<string, unknown>): NotificationEntryIR[] {
+export function claudeNotificationEntry(m: Record<string, unknown>): NotificationEntry[] {
   if (m.type === NOTIFICATION_TYPE.RateLimitEvent) {
     const info = m.rate_limit_info
     if (!isObject(info)) {

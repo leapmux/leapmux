@@ -1,4 +1,4 @@
-import type { CompactionBoundaryMeta, NotificationEntryIR, NotificationIconHint, SettingChangeIR } from './ir/notification'
+import type { CompactionDetails, NotificationEntry, NotificationIconHint, SettingChange } from './model/notification'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { GoalStatus } from '~/stores/chatGoal'
@@ -58,7 +58,7 @@ const MICROCOMPACT_LABEL = 'Context microcompacted'
 export function notificationEntriesFor(
   message: Record<string, unknown>,
   agentProvider: AgentProvider | undefined,
-): NotificationEntryIR[] {
+): NotificationEntry[] {
   return leapmuxNotificationEntry(message, agentProvider)
     ?? pluginFor(agentProvider)?.transcript.notificationEntry?.(message)
     ?? []
@@ -74,7 +74,7 @@ export function notificationEntriesFor(
 export function leapmuxNotificationEntry(
   m: Record<string, unknown>,
   agentProvider: AgentProvider | undefined,
-): NotificationEntryIR[] | null {
+): NotificationEntry[] | null {
   switch (m.type) {
     case NOTIFICATION_TYPE.SettingsChanged: {
       const changes = parseSettingsChanges(m[NOTIFICATION_FIELD.Changes], agentProvider)
@@ -155,10 +155,10 @@ function displayValue(provider: AgentProvider | undefined, key: string, value: s
  * overrides win over the cache-derived display, an unchanged entry is dropped, and a
  * non-object entry is skipped so a malformed payload degrades rather than throws.
  */
-export function parseSettingsChanges(changes: unknown, provider: AgentProvider | undefined): SettingChangeIR[] {
+export function parseSettingsChanges(changes: unknown, provider: AgentProvider | undefined): SettingChange[] {
   if (!isObject(changes))
     return []
-  const result: SettingChangeIR[] = []
+  const result: SettingChange[] = []
   for (const [key, val] of Object.entries(changes)) {
     if (!isObject(val))
       continue
@@ -256,7 +256,7 @@ function goalUpdatedLabel(source: Record<string, unknown>): string | null {
  * shared glyph vocabulary to match; the shared reading comes from the label, which
  * lists the same four outcomes.
  */
-function subagentEndedEntry(m: Record<string, unknown>): NotificationEntryIR {
+function subagentEndedEntry(m: Record<string, unknown>): NotificationEntry {
   // Narrowed through the store's wire reader, so the four final statuses are spelled
   // out in one place rather than re-listed here.
   switch (backgroundTaskStatusFromWire(pickString(m, NOTIFICATION_FIELD.Status) ?? '')) {
@@ -299,7 +299,7 @@ function formatTokenTransition(pre: number | undefined, post: number | undefined
  * Every part is optional, so the result can be " (manual)", " (manual, 105.4k)",
  * " (105.4k → 8.5k)", " (→ 8.5k)", or "" when nothing is known.
  */
-function formatCompactionDetail(detail: CompactionBoundaryMeta | undefined): string {
+function formatCompactionDetail(detail: CompactionDetails | undefined): string {
   if (!detail)
     return ''
   const tokens = formatTokenTransition(detail.pre, detail.post)
@@ -308,12 +308,12 @@ function formatCompactionDetail(detail: CompactionBoundaryMeta | undefined): str
 }
 
 /** "Context compacted" plus the formatted token detail. */
-export function compactedLabel(detail: CompactionBoundaryMeta | undefined): string {
+export function compactedLabel(detail: CompactionDetails | undefined): string {
   return `Context compacted${formatCompactionDetail(detail)}`
 }
 
 /** One settings change as `Label (old → new)`, or `Label (new)` when there was none. */
-function formatSettingChange(change: SettingChangeIR): string {
+function formatSettingChange(change: SettingChange): string {
   return change.old === undefined
     ? `${change.label} (${change.new})`
     : `${change.label} (${change.old} → ${change.new})`
@@ -327,7 +327,7 @@ function formatSettingChange(change: SettingChangeIR): string {
  * wrote "Auto-retry 1/3 in 2s…" for the same stall, and a reader who moved between
  * them had to learn both.
  */
-function formatRetry(entry: Extract<NotificationEntryIR, { kind: 'retry' }>): string {
+function formatRetry(entry: Extract<NotificationEntry, { kind: 'retry' }>): string {
   const what = entry.scope === 'summarization' ? 'Summary retry' : 'API retry'
   const count = entry.attempt !== undefined
     ? ` ${entry.attempt}${entry.maxAttempts !== undefined ? `/${entry.maxAttempts}` : ''}`
@@ -348,7 +348,7 @@ function formatRetry(entry: Extract<NotificationEntryIR, { kind: 'retry' }>): st
  * A `group` entry never reaches here: {@link flattenNotificationEntries} coalesces a
  * run of them into one text block first.
  */
-function blocksForEntry(entry: Exclude<NotificationEntryIR, { kind: 'group' }>): NotificationBlock[] {
+function blocksForEntry(entry: Exclude<NotificationEntry, { kind: 'group' }>): NotificationBlock[] {
   switch (entry.kind) {
     case 'text':
       return [{ kind: 'text', text: entry.text }]
@@ -391,7 +391,7 @@ function blocksForEntry(entry: Exclude<NotificationEntryIR, { kind: 'group' }>):
  * `Prefix: a, b, c` block. The run ends at the first entry of any other kind, so the
  * order a provider produced is the order a reader sees.
  */
-export function flattenNotificationEntries(entries: readonly NotificationEntryIR[]): NotificationBlock[] {
+export function flattenNotificationEntries(entries: readonly NotificationEntry[]): NotificationBlock[] {
   const blocks: NotificationBlock[] = []
   const groupOrder: string[] = []
   const groups = new Map<string, { prefix: string, entries: string[] }>()

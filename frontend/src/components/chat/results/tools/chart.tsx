@@ -1,7 +1,6 @@
 import type { ToolKindRenderer } from './renderer'
 import ChartColumn from 'lucide-solid/icons/chart-column'
-import { chartCopyableText } from '../../ir/chartResult'
-import { ChartResultBody } from '../chartResult'
+import { chartCopyableText, ChartResultBody } from '../chartResult'
 
 export const chartRenderer: ToolKindRenderer<'chart'> = {
   icon: ChartColumn,

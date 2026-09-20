@@ -1,16 +1,16 @@
-import type { ChatRowIR, ToolCallRow } from '../../../ir/row'
-import type { ToolKind } from '../../../ir/toolKind'
-import type { ToolSpanSides } from '~/components/chat/rowExtractionTypes'
+import type { ChatRow, ToolCallRow } from '../../../model/row'
+import type { ToolKind } from '../../../model/toolKind'
+import type { ToolSpanContext } from '~/components/chat/rowExtractionTypes'
 import { describe, expect, it } from 'vitest'
 import { CODEX_ITEM } from '~/generated/contracts/codex-protocol'
 import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { fileEditHasDiff } from '../../../ir/fileEditDiff'
-import { TOOL_KINDS } from '../../../ir/toolKind'
+import { fileEditHasDiff } from '../../../model/fileEditDiff'
+import { TOOL_KINDS } from '../../../model/toolKind'
 import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
 import { CODEX_STATUS } from '../itemVocabulary'
-import { CODEX_TOOL_READERS, codexExtractRow, codexItemKind, codexPayloadFor, codexToolFacts } from './row'
+import { CODEX_TOOL_READERS, codexExtractRow, codexItemKind, codexReasoningHasText, codexReasoningText, codexSpecFor, codexToolFacts } from './row'
 
-const NO_SIDES: ToolSpanSides = { current: undefined, request: undefined, result: undefined, role: 'other' }
+const NO_SIDES: ToolSpanContext = { request: undefined, result: undefined, role: 'other', visibleRows: { request: false, result: false } }
 
 // The completion rides BOTH carriers, the way the pipeline delivers it: the parser
 // copies it onto the parsed message, and the row extractor takes it as its own field.
@@ -18,14 +18,41 @@ const NO_SIDES: ToolSpanSides = { current: undefined, request: undefined, result
 // fixture that set one alone exercised half of a retained row.
 function toolRow(item: Record<string, unknown>, completion?: MessageCompletion): ToolCallRow | null {
   const parsed = { wrapper: null, topLevel: { item }, parentObject: { item }, rawText: '', supplementalContent: undefined, messageMetadata: undefined, completion }
-  const row: ChatRowIR | null = codexExtractRow({
-    parsed,
+  const row: ChatRow | null = codexExtractRow({
+    resolved: parsed,
     category: { kind: 'tool_use' },
-    sides: NO_SIDES,
+    span: NO_SIDES,
     completion,
   } as never)
   return row && row.kind === 'tool' ? row : null
 }
+
+describe('atomic Codex result items', () => {
+  it.each([
+    [CODEX_ITEM.Sleep, { durationMs: 1200 }],
+    [CODEX_ITEM.EnteredReviewMode, { review: 'Inspect the change.' }],
+    [CODEX_ITEM.ExitedReviewMode, {}],
+    [CODEX_ITEM.HookPrompt, { fragments: [{ hookRunId: 'hook-1', text: 'Run the check.' }] }],
+    [CODEX_ITEM.FunctionCallOutput, { callId: 'call-1', namespace: 'tools', output: 'done' }],
+  ] as const)('extracts a status-free %s item as one completed result row', (type, fields) => {
+    const row = toolRow({ type, id: `atomic-${type}`, ...fields })
+    expect(row?.role).toBe('result')
+    expect(row?.call.status).toBe('completed')
+    expect(row?.call.result).toBeDefined()
+  })
+})
+
+describe('reasoning text from Codex', () => {
+  it('detects visible reasoning without building its Markdown body', () => {
+    expect(codexReasoningHasText({ summary: [' ', 'visible'] })).toBe(true)
+    expect(codexReasoningHasText({ content: ['', '  '] })).toBe(false)
+    expect(codexReasoningHasText({ text: '\t' })).toBe(false)
+  })
+
+  it('filters blank content entries before it joins them', () => {
+    expect(codexReasoningText({ content: ['first', '  ', '', 'second'] })).toBe('first\nsecond')
+  })
+})
 
 describe('codex file change kinds', () => {
   // A rename states its DESTINATION in `kind.movePath` and its source in `path`.
@@ -46,7 +73,7 @@ describe('codex file change kinds', () => {
 
 describe('codex retained outcome', () => {
   // Codex was the only provider that did not fold LeapMux's own reading of how the
-  // turn ended into the row status, which `ToolCallCommon.status` requires of every
+  // turn ended into the row status, which `ToolCallBase.status` requires of every
   // provider. A turn the reader stopped leaves the last `inProgress` frame stored,
   // so the replayed row spun for the life of the transcript.
   it('words an interrupted command cancelled rather than running', () => {
@@ -155,12 +182,12 @@ describe('codex imageView paths', () => {
   // The role's answer states the outcome the frame's own words cannot.
   it('reads a span final by completedAtMs alone as completed, with its pictures', () => {
     const parsed = { wrapper: null, topLevel: { item: { type: CODEX_ITEM.ImageView, id: 'i1', path: '/repo/shot.png' }, completedAtMs: 2 }, parentObject: { item: { type: CODEX_ITEM.ImageView, id: 'i1', path: '/repo/shot.png' }, completedAtMs: 2 }, rawText: '', supplementalContent: undefined, messageMetadata: undefined }
-    const row: ChatRowIR | null = codexExtractRow({
-      parsed,
+    const row: ChatRow | null = codexExtractRow({
+      resolved: parsed,
       category: { kind: 'tool_use' },
       // The role the span index resolved: final by `completedAtMs`, no completion
       // column and no status word on the item.
-      sides: { current: parsed, request: undefined, result: undefined, role: 'result' },
+      span: { request: undefined, result: parsed, role: 'result', visibleRows: { request: false, result: true } },
     } as never)
     const call = row?.kind === 'tool' ? row.call : undefined
     expect(call?.kind).toBe('read')
@@ -239,7 +266,7 @@ describe('CODEX_TOOL_READERS', () => {
    * notification with no item behind it, and `codexTurnPlanRow` builds that row on
    * its own. The case below pins that row.
    */
-  const SHARED_REQUEST_KINDS = ['', 'agents', 'chart', 'glob', 'grep', 'list', 'memory', 'message', 'question', 'report', 'search', 'task', 'think', 'todo', 'trigger'] as const
+  const SHARED_REQUEST_KINDS = ['unspecified', 'agents', 'chart', 'glob', 'grep', 'list', 'memory', 'message', 'question', 'report', 'search', 'task', 'think', 'todo', 'trigger'] as const
 
   type CodexReadKind = typeof CODEX_READ_KINDS[number]
 
@@ -307,7 +334,7 @@ describe('CODEX_TOOL_READERS', () => {
   }
 
   function payloadOf<K extends ToolKind>(kind: K, item: Record<string, unknown>, finished = true) {
-    return codexPayloadFor(codexToolFacts(item, finished, NO_SIDES), kind)
+    return codexSpecFor(codexToolFacts(item, finished, NO_SIDES), kind)
   }
 
   it('answers for every tool kind', () => {
@@ -351,9 +378,9 @@ describe('CODEX_TOOL_READERS', () => {
 
   it('draws the plan of a turn/plan/updated notification at the todo kind', () => {
     const row = codexExtractRow({
-      parsed: { wrapper: null, topLevel: {}, parentObject: { method: 'turn/plan/updated', params: { plan: [{ step: 'Inspect messages', status: 'inProgress' }] } }, rawText: '', supplementalContent: undefined, messageMetadata: undefined },
+      resolved: { wrapper: null, topLevel: {}, parentObject: { method: 'turn/plan/updated', params: { plan: [{ step: 'Inspect messages', status: 'inProgress' }] } }, rawText: '', supplementalContent: undefined, messageMetadata: undefined },
       category: { kind: 'tool_use' },
-      sides: NO_SIDES,
+      span: NO_SIDES,
     } as never)
     const call = row && row.kind === 'tool' ? row.call : null
     expect(call?.kind).toBe('todo')

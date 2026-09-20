@@ -1,14 +1,14 @@
-import type { FileChangeEntry, FileEditDiff } from '../../../ir/fileEditDiff'
-import type { ChatRowIR, ToolRowRole } from '../../../ir/row'
-import type { FailedResult, ToolCallIR, ToolCallPayloadForKind, ToolLifecycleFacts } from '../../../ir/toolCall'
-import type { ToolKind } from '../../../ir/toolKind'
-import type { ToolRowStatus } from '../../../ir/toolRowStatus'
-import type { ExecuteRequest } from '../../../ir/tools/execute'
-import type { FileChangeRequest, FileChangeResult } from '../../../ir/tools/fileChange'
-import type { ImageRequest } from '../../../ir/tools/image'
-import type { WebSearchResult } from '../../../ir/tools/webSearch'
+import type { FileChangeEntry, FileEditDiff } from '../../../model/fileEditDiff'
+import type { ChatRow, ToolSpanRowRole } from '../../../model/row'
+import type { ToolCall, ToolCallLifecycleFacts, ToolCallSpecReader, ToolCallSpecReaderTable, ToolCallSpecVariant, ToolFailureResult } from '../../../model/toolCall'
+import type { ToolCallStatus } from '../../../model/toolCallStatus'
+import type { ToolKind } from '../../../model/toolKind'
+import type { ExecuteRequest } from '../../../model/tools/execute'
+import type { FileChangeRequest, FileChangeResult } from '../../../model/tools/fileChange'
+import type { ImageRequest } from '../../../model/tools/image'
+import type { WebSearchResult } from '../../../model/tools/webSearch'
 import type { ToolRequestOverrides } from '../../defaultToolRequests'
-import type { RowExtractionInput, ToolSpanSides } from '~/components/chat/rowExtractionTypes'
+import type { RowExtractionInput, ToolSpanContext } from '~/components/chat/rowExtractionTypes'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
@@ -17,12 +17,14 @@ import { prettifyJson } from '~/lib/jsonFormat'
 import { isObject, pickNumber, pickObject, pickString, stringArray } from '~/lib/jsonPick'
 import { markdownBulletList } from '~/lib/markdownList'
 import { pluralize } from '~/lib/plural'
-import { fileEditDiffFromOldNew, fileEditDiffsFromChanges } from '../../../ir/fileEditDiff'
-import { mcpToolCallDisplayName } from '../../../ir/mcpToolCall'
-import { toolCallRow } from '../../../ir/row'
-import { failedResult, proseResult, SYNTHETIC_TOOL_LIFECYCLE, toolCall } from '../../../ir/toolCall'
-import { toolRowStatus } from '../../../ir/toolRowStatus'
 import { leapmuxPlanExecutionRow, leapmuxUserRow } from '../../../leapmuxRows'
+import { createToolCall } from '../../../model/createToolCall'
+import { fileEditDiffFromOldNew, fileEditDiffsFromChanges } from '../../../model/fileEditDiff'
+import { mcpToolCallDisplayName } from '../../../model/mcpToolCall'
+import { toolCallRow } from '../../../model/row'
+import { failedResult, proseResult, readToolCallSpec } from '../../../model/toolCall'
+import { SYNTHETIC_TOOL_LIFECYCLE } from '../../../model/toolCallLifecycle'
+import { toolCallStatus } from '../../../model/toolCallStatus'
 import { formatDuration, humanizeWireWord } from '../../../rendererUtils'
 import { toolRequestFor } from '../../defaultToolRequests'
 import { retainedOutcome } from '../../registry'
@@ -38,14 +40,14 @@ import { codexPlanItemMarkdown, codexTurnPlanParams, codexTurnPlanTodos } from '
 import { codexWebSearchActionFromItem } from './webSearch'
 
 /**
- * Read one Codex row into the shared row IR.
+ * Read one Codex row into the shared row model.
  *
  * Codex sends one ITEM per tool call, and the item's `type` is the whole dispatch --
  * so the table below is the provider's vocabulary in one place, where it used to be a
  * registry of twelve JSX renderers.
  */
-export function codexExtractRow(input: RowExtractionInput): ChatRowIR | null {
-  const { category, parsed, sides } = input
+export function codexExtractRow(input: RowExtractionInput): ChatRow | null {
+  const { category, resolved: parsed, span } = input
   switch (category.kind) {
     case 'assistant_text': {
       // The same reader the classifier used, so the two layers state one answer:
@@ -65,7 +67,7 @@ export function codexExtractRow(input: RowExtractionInput): ChatRowIR | null {
     case 'plan_execution':
       return leapmuxPlanExecutionRow(parsed.parentObject)
     case 'tool_use':
-      return codexToolSpanRow(parsed, sides, input.completion)
+      return codexToolSpanRow(parsed, span, input.completion)
     default:
       return null
   }
@@ -79,7 +81,7 @@ export function codexExtractRow(input: RowExtractionInput): ChatRowIR | null {
  * shared thinking bubble draws it as a list without a second renderer that owns its
  * own `<ul>` -- and so a reader sees the same bubble on Codex and on Claude.
  */
-function codexReasoningRow(item: Record<string, unknown> | undefined): ChatRowIR {
+function codexReasoningRow(item: Record<string, unknown> | undefined): ChatRow {
   const text = codexReasoningText(item)
   return text ? { kind: 'assistant-thinking', text } : { kind: 'hidden' }
 }
@@ -94,8 +96,25 @@ function codexReasoningRow(item: Record<string, unknown> | undefined): ChatRowIR
  */
 export function codexReasoningText(item: Record<string, unknown> | undefined): string {
   const summary = stringArray(item?.summary).filter(entry => entry.trim().length > 0)
-  const content = stringArray(item?.content).join('\n')
-  return summary.length > 0 ? markdownBulletList(summary) : content || pickString(item, 'text')
+  const content = stringArray(item?.content).filter(entry => entry.trim().length > 0).join('\n')
+  const text = pickString(item, 'text')
+  return summary.length > 0 ? markdownBulletList(summary) : content || (text.trim() ? text : '')
+}
+
+/** Whether one reasoning item contains visible text, without building Markdown. */
+export function codexReasoningHasText(item: Record<string, unknown> | undefined): boolean {
+  return stringArray(item?.summary).some(entry => entry.trim().length > 0)
+    || stringArray(item?.content).some(entry => entry.trim().length > 0)
+    || pickString(item, 'text').trim().length > 0
+}
+
+/** Whether an item is a complete one-row result without a status word. */
+function isCodexAtomicResultItem(type: string): boolean {
+  return type === CODEX_ITEM.Sleep
+    || type === CODEX_ITEM.EnteredReviewMode
+    || type === CODEX_ITEM.ExitedReviewMode
+    || type === CODEX_ITEM.HookPrompt
+    || type === CODEX_ITEM.FunctionCallOutput
 }
 
 /**
@@ -109,7 +128,7 @@ export function codexReasoningText(item: Record<string, unknown> | undefined): s
  * no span of its own, so {@link CodexToolFacts} cannot describe it. The table's `todo`
  * entry therefore states the shared declared request, which no Codex row reads.
  */
-function codexTurnPlanRow(notification: Record<string, unknown>): ChatRowIR | null {
+function codexTurnPlanRow(notification: Record<string, unknown>): ChatRow | null {
   const params = codexTurnPlanParams(notification)
   const todos = codexTurnPlanTodos(params)
   if (todos === null)
@@ -119,7 +138,7 @@ function codexTurnPlanRow(notification: Record<string, unknown>): ChatRowIR | nu
   const title = todos.length > 0
     ? (explanation ? `${pluralize(todos.length, 'task')} - ${explanation}` : pluralize(todos.length, 'task'))
     : ''
-  const call = toolCall(
+  const call = createToolCall(
     { id: '', name: CODEX_INTERNAL_TOOL.TURN_PLAN, lifecycle: SYNTHETIC_TOOL_LIFECYCLE },
     {
       kind: 'todo',
@@ -149,10 +168,10 @@ function codexTurnPlanRow(notification: Record<string, unknown>): ChatRowIR | nu
  * {@link CODEX_TOOL_READERS} is read under, and each reader answers at its own kind,
  * so the kind a row draws is always the kind this function gave it.
  */
-export function codexItemKind(item: Record<string, unknown>): ToolKind {
+export function codexItemKind(item: Record<string, unknown>, fileChanges?: FileChangeEntry[]): ToolKind {
   switch (pickString(item, 'type')) {
     case CODEX_ITEM.CommandExecution: return 'execute'
-    case CODEX_ITEM.FileChange: return codexFileChangeKind(item)
+    case CODEX_ITEM.FileChange: return codexFileChangeKind(fileChanges ?? codexChangeEntries(item))
     case CODEX_ITEM.CollabAgentToolCall: return 'agent'
     case CODEX_ITEM.ImageView: return 'read'
     case CODEX_ITEM.ImageGeneration: return 'image'
@@ -177,12 +196,11 @@ export function codexItemKind(item: Record<string, unknown>): ToolKind {
 /**
  * The one-file change kinds: a write adds, a delete removes, the rest edit.
  *
- * It reads {@link codexChangeEntries}, which is the SAME list the payload builds its
+ * It reads {@link codexChangeEntries}, which is the same list the specification builds its
  * request from. A second reading of the raw `changes` array answered for entries the
  * request then dropped, so the row could take the `write` kind and state no file.
  */
-function codexFileChangeKind(item: Record<string, unknown>): ToolKind {
-  const entries = codexChangeEntries(item)
+function codexFileChangeKind(entries: FileChangeEntry[]): ToolKind {
   const [only] = entries
   if (entries.length !== 1 || only === undefined)
     return 'edit'
@@ -293,7 +311,7 @@ function codexItemImages(item: Record<string, unknown>): ImageResultSource[] {
 }
 
 /**
- * Everything one Codex item states, read ONCE before a payload reader runs.
+ * Everything one Codex item states, read once before a specification reader runs.
  *
  * Each entry of {@link CODEX_TOOL_READERS} takes this and nothing else. The
  * membership is what the payload decisions read, and no more: the item itself, its
@@ -332,44 +350,46 @@ export interface CodexToolFacts {
    */
   finished: boolean
   /** The three sides of the row's span. An agent call reads its counterpart from here. */
-  sides: ToolSpanSides
+  sides: ToolSpanContext
   /** The header words a status-shaped item states, or none for a type the table omits. */
   statusTitle: string | undefined
   /** The note a status-shaped item carries under its header. */
   detail: string
   /** The pictures the item carries: the one it generated, the one it viewed, or none. */
   images: ImageResultSource[]
+  /** File changes normalized once for kind, request, and result projections. */
+  fileChanges: FileChangeEntry[]
   /** Everything Codex aggregated from the call's own output stream, untrimmed. */
   aggregatedOutput: string
 }
 
-/** Read one item into the facts every payload reader shares. */
-export function codexToolFacts(item: Record<string, unknown>, finished: boolean, sides: ToolSpanSides): CodexToolFacts {
+/** Read one item into the facts every specification reader shares. */
+export function codexToolFacts(item: Record<string, unknown>, finished: boolean, sides: ToolSpanContext): CodexToolFacts {
   const type = pickString(item, 'type')
+  const fileChanges = type === CODEX_ITEM.FileChange ? codexChangeEntries(item) : []
   return {
     item,
     type,
     status: pickString(item, 'status'),
-    kind: codexItemKind(item),
+    kind: codexItemKind(item, fileChanges),
     finished,
     sides,
     statusTitle: codexStatusItemTitle(type),
     detail: codexStatusDetail(item),
     images: codexItemImages(item),
+    fileChanges,
     aggregatedOutput: pickString(item, CODEX_ITEM_FIELD.AggregatedOutput),
   }
 }
 
-/** One kind's payload, read from the facts alone. */
-type CodexToolReader<P extends ToolKind> = (facts: CodexToolFacts) => ToolCallPayloadForKind<P>
-
+/** One kind's specification, read from the facts alone. */
 /**
  * The kinds Codex reads from its own facts rather than from the shared table.
  *
- * EMPTY, and it stays empty. A kind Codex produces states its WHOLE payload in
+ * Empty, and it stays empty. A kind Codex produces states its whole specification in
  * {@link CODEX_TOOL_READERS} -- the request and the result together -- so an entry
  * here would be a second place one Codex request is built, and the two would drift.
- * An entry belongs here only for a kind whose payload reader Codex does not state.
+ * An entry belongs here only for a kind whose specification reader Codex does not state.
  */
 const CODEX_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<CodexToolFacts> = {}
 
@@ -382,8 +402,8 @@ const CODEX_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<CodexToolFacts> = {}
  * `{ args }` payload -- which the renderers read without a guard, so `request.path`
  * or `request.changes[0]` throws the whole message into the ErrorBoundary.
  */
-function codexDeclaredOnly<P extends ToolKind>(kind: P): CodexToolReader<P> {
-  return (facts): ToolCallPayloadForKind<P> => ({ kind, request: toolRequestFor(kind, facts.item, facts, CODEX_TOOL_REQUEST_OVERRIDES) })
+function codexDeclaredOnly<P extends ToolKind>(kind: P): ToolCallSpecReader<CodexToolFacts, P> {
+  return (facts): ToolCallSpecVariant<P> => ({ kind, request: toolRequestFor(kind, facts.item, facts, CODEX_TOOL_REQUEST_OVERRIDES) })
 }
 
 /**
@@ -413,8 +433,8 @@ function codexDeclaredOnly<P extends ToolKind>(kind: P): CodexToolReader<P> {
  * For the same reason, no entry may return an intermediate `const` that carries no
  * type annotation of its own.
  */
-export const CODEX_TOOL_READERS: { [P in ToolKind]: CodexToolReader<P> } = {
-  'execute': (facts): ToolCallPayloadForKind<'execute'> => {
+export const CODEX_TOOL_READERS: ToolCallSpecReaderTable<CodexToolFacts> = {
+  execute: (facts): ToolCallSpecVariant<'execute'> => {
     const command = codexUnwrapCommand(pickString(facts.item, 'command'))
     const cwd = pickString(facts.item, 'cwd') || undefined
     const request: ExecuteRequest = { command, ...(cwd !== undefined ? { cwd } : {}) }
@@ -428,11 +448,11 @@ export const CODEX_TOOL_READERS: { [P in ToolKind]: CodexToolReader<P> } = {
   // The four file kinds declare the same request and the same result, and one item
   // builds all four the same way -- but each entry states its OWN kind, because a
   // shared generic would put the pair beyond the checker again.
-  'edit': (facts): ToolCallPayloadForKind<'edit'> => ({ kind: 'edit', ...codexFileChangeParts(facts) }),
-  'write': (facts): ToolCallPayloadForKind<'write'> => ({ kind: 'write', ...codexFileChangeParts(facts) }),
-  'delete': (facts): ToolCallPayloadForKind<'delete'> => ({ kind: 'delete', ...codexFileChangeParts(facts) }),
-  'move': (facts): ToolCallPayloadForKind<'move'> => ({ kind: 'move', ...codexFileChangeParts(facts) }),
-  'image': (facts): ToolCallPayloadForKind<'image'> => {
+  edit: (facts): ToolCallSpecVariant<'edit'> => ({ kind: 'edit', ...codexFileChangeParts(facts) }),
+  write: (facts): ToolCallSpecVariant<'write'> => ({ kind: 'write', ...codexFileChangeParts(facts) }),
+  delete: (facts): ToolCallSpecVariant<'delete'> => ({ kind: 'delete', ...codexFileChangeParts(facts) }),
+  move: (facts): ToolCallSpecVariant<'move'> => ({ kind: 'move', ...codexFileChangeParts(facts) }),
+  image: (facts): ToolCallSpecVariant<'image'> => {
     const failure = pickString(pickObject(facts.item, 'failure'), 'type')
     // The prompt the model actually rendered from often differs from the one the
     // reader asked for, so it belongs on the REQUEST: the result lands only when
@@ -445,7 +465,7 @@ export const CODEX_TOOL_READERS: { [P in ToolKind]: CodexToolReader<P> } = {
       return { kind: 'image', request, title: 'Generate image', images: facts.images, result: { ...(prompt !== undefined ? { revisedPrompt: prompt } : {}) } }
     return { kind: 'image', request, title: 'Generate image' }
   },
-  'read': (facts): ToolCallPayloadForKind<'read'> => {
+  read: (facts): ToolCallSpecVariant<'read'> => {
     // An `imageView` sends a `file:` URI where every other item sends a plain path. A
     // URI the parser refuses keeps its raw text, which states more than a blank path.
     const raw = pickString(facts.item, 'path')
@@ -454,7 +474,7 @@ export const CODEX_TOOL_READERS: { [P in ToolKind]: CodexToolReader<P> } = {
       ? { kind: 'read', request: { path }, images: facts.images, result: { lines: null, fallbackContent: '' } }
       : { kind: 'read', request: { path } }
   },
-  'fetch': (facts): ToolCallPayloadForKind<'fetch'> => {
+  fetch: (facts): ToolCallSpecVariant<'fetch'> => {
     // `codexItemKind` answers `fetch` for exactly the `openPage` action, reading the
     // same item through the same function -- so the action below is always that page.
     // Its url is empty only for a frame the classifier already hid, which is why the
@@ -465,7 +485,7 @@ export const CODEX_TOOL_READERS: { [P in ToolKind]: CodexToolReader<P> } = {
       ? { kind: 'fetch', request: { url }, title: url, result: { result: '' } }
       : { kind: 'fetch', request: { url }, title: url }
   },
-  'web_search': (facts): ToolCallPayloadForKind<'web_search'> => {
+  web_search: (facts): ToolCallSpecVariant<'web_search'> => {
     const action = codexWebSearchActionFromItem(facts.item)
     // A finished search states its (empty) result: the item carries no links of its
     // own, and the row keeps the queries an expand control reveals.
@@ -478,7 +498,7 @@ export const CODEX_TOOL_READERS: { [P in ToolKind]: CodexToolReader<P> } = {
     const query = action?.type === 'other' ? action.query : ''
     return { kind: 'web_search', request: { query }, title: query || 'Searching the web', ...(result !== undefined ? { result } : {}) }
   },
-  'agent': (facts): ToolCallPayloadForKind<'agent'> => {
+  agent: (facts): ToolCallSpecVariant<'agent'> => {
     const counterpart = codexAgentCounterpart(facts.item, facts.finished ? facts.sides.request : facts.sides.result, facts.finished ? 'request' : 'result')
     const resolved = resolveCodexAgentItem(facts.item, counterpart)
     const request = codexAgentRequest(resolved)
@@ -492,8 +512,8 @@ export const CODEX_TOOL_READERS: { [P in ToolKind]: CodexToolReader<P> } = {
       ...(facts.status === 'interrupted' ? { statusOverride: 'cancelled' as const } : {}),
     }
   },
-  'mcp': codexMcpPayload,
-  'wait': (facts): ToolCallPayloadForKind<'wait'> => {
+  mcp: codexMcpSpec,
+  wait: (facts): ToolCallSpecVariant<'wait'> => {
     const durationMs = pickNumber(facts.item, 'durationMs', undefined)
     return {
       kind: 'wait',
@@ -502,7 +522,7 @@ export const CODEX_TOOL_READERS: { [P in ToolKind]: CodexToolReader<P> } = {
       result: proseResult(facts.detail),
     }
   },
-  'switch_mode': (facts): ToolCallPayloadForKind<'switch_mode'> => ({
+  switch_mode: (facts): ToolCallSpecVariant<'switch_mode'> => ({
     kind: 'switch_mode',
     // No `mode`: `switchModeRenderer` titles the row from `request.mode` first,
     // so stating one here would draw the bare word "review" for BOTH the entry
@@ -511,7 +531,7 @@ export const CODEX_TOOL_READERS: { [P in ToolKind]: CodexToolReader<P> } = {
     ...(facts.statusTitle !== undefined ? { title: facts.statusTitle } : {}),
     result: proseResult(facts.detail),
   }),
-  'skill': codexHookPromptPayload,
+  skill: codexHookPromptSpec,
   /*
    * Every OTHER item type: a call that states what happened.
    *
@@ -521,7 +541,7 @@ export const CODEX_TOOL_READERS: { [P in ToolKind]: CodexToolReader<P> } = {
    * states its own sentence, and a type from a later release states its own wire word
    * instead of drawing nothing at all.
    */
-  'other': (facts): ToolCallPayloadForKind<'other'> => {
+  other: (facts): ToolCallSpecVariant<'other'> => {
     const title = facts.statusTitle ?? (facts.type ? humanizeWireWord(facts.type) : undefined)
     return {
       kind: 'other',
@@ -536,32 +556,32 @@ export const CODEX_TOOL_READERS: { [P in ToolKind]: CodexToolReader<P> } = {
   // `todo` is here for a different reason than the rest: Codex DOES draw a to-do row,
   // and `codexTurnPlanRow` builds it from a notification that carries no item. See
   // the note there.
-  '': codexDeclaredOnly(''),
-  'agents': codexDeclaredOnly('agents'),
-  'chart': codexDeclaredOnly('chart'),
-  'glob': codexDeclaredOnly('glob'),
-  'grep': codexDeclaredOnly('grep'),
-  'list': codexDeclaredOnly('list'),
-  'memory': codexDeclaredOnly('memory'),
-  'message': codexDeclaredOnly('message'),
-  'question': codexDeclaredOnly('question'),
-  'report': codexDeclaredOnly('report'),
-  'search': codexDeclaredOnly('search'),
-  'task': codexDeclaredOnly('task'),
-  'think': codexDeclaredOnly('think'),
-  'todo': codexDeclaredOnly('todo'),
-  'trigger': codexDeclaredOnly('trigger'),
+  unspecified: codexDeclaredOnly('unspecified'),
+  agents: codexDeclaredOnly('agents'),
+  chart: codexDeclaredOnly('chart'),
+  glob: codexDeclaredOnly('glob'),
+  grep: codexDeclaredOnly('grep'),
+  list: codexDeclaredOnly('list'),
+  memory: codexDeclaredOnly('memory'),
+  message: codexDeclaredOnly('message'),
+  question: codexDeclaredOnly('question'),
+  report: codexDeclaredOnly('report'),
+  search: codexDeclaredOnly('search'),
+  task: codexDeclaredOnly('task'),
+  think: codexDeclaredOnly('think'),
+  todo: codexDeclaredOnly('todo'),
+  trigger: codexDeclaredOnly('trigger'),
 }
 
 /**
- * One item's payload at ONE kind.
+ * One item's specification at one kind.
  *
- * GENERIC over the kind, so the kind and the payload it answers stay one correlated
+ * Generic over the kind, so the kind and its specification stay one correlated
  * pair. That is what removes the assertion the old `switch` needed at every branch,
  * and the assertion ban in `eslint.config.ts` refuses exactly that assertion.
  */
-export function codexPayloadFor<K extends ToolKind>(facts: CodexToolFacts, kind: K): { [P in K]: ToolCallPayloadForKind<P> }[K] {
-  return CODEX_TOOL_READERS[kind](facts)
+export function codexSpecFor<K extends ToolKind>(facts: CodexToolFacts, kind: K): { [P in K]: ToolCallSpecVariant<P> }[K] {
+  return readToolCallSpec(CODEX_TOOL_READERS, kind, facts)
 }
 
 /**
@@ -570,8 +590,8 @@ export function codexPayloadFor<K extends ToolKind>(facts: CodexToolFacts, kind:
  * The four file kinds share this, and it states no `kind` of its own -- each entry of
  * the table spells its own, which is what keeps every pair checked.
  */
-function codexFileChangeParts(facts: CodexToolFacts): { request: FileChangeRequest, title?: string, result?: FileChangeResult | FailedResult } {
-  const entries = codexChangeEntries(facts.item)
+function codexFileChangeParts(facts: CodexToolFacts): { request: FileChangeRequest, title?: string, result?: FileChangeResult | ToolFailureResult } {
+  const entries = facts.fileChanges
   const changes = codexRequestedChanges(entries)
   const request: FileChangeRequest = { changes }
   // One change identifies its file; several state their count. NONE states nothing:
@@ -604,7 +624,7 @@ function codexFileChangeParts(facts: CodexToolFacts): { request: FileChangeReque
 }
 
 /** The Model Context Protocol pair of a server call, a dynamic call, or an output. */
-function codexMcpPayload(facts: CodexToolFacts): ToolCallPayloadForKind<'mcp'> {
+function codexMcpSpec(facts: CodexToolFacts): ToolCallSpecVariant<'mcp'> {
   if (facts.type === CODEX_ITEM.FunctionCallOutput) {
     const namespace = pickString(facts.item, 'namespace')
     const callId = pickString(facts.item, 'callId') || pickString(facts.item, 'id')
@@ -650,7 +670,7 @@ function safeJson(text: string): Record<string, unknown> {
  * own words, so they draw as Markdown -- the row used to show an empty body under an
  * empty header, because nothing here read `fragments` at all.
  */
-function codexHookPromptPayload(facts: CodexToolFacts): ToolCallPayloadForKind<'skill'> {
+function codexHookPromptSpec(facts: CodexToolFacts): ToolCallSpecVariant<'skill'> {
   const raw: unknown[] = Array.isArray(facts.item.fragments) ? facts.item.fragments : []
   const fragments = raw
     .map(fragment => typeof fragment === 'string' ? fragment : pickString(isObject(fragment) ? fragment : undefined, 'text'))
@@ -669,20 +689,20 @@ function codexHookPromptPayload(facts: CodexToolFacts): ToolCallPayloadForKind<'
 /**
  * One Codex item as the kind-discriminated call.
  *
- * The item carries BOTH the arguments and the payload -- the sides differ only in
+ * The item carries both the arguments and result data. The sides differ only in
  * status -- so one set of facts builds the pair, and `finished` decides which half the
  * row states.
  */
-function codexToolCallIR(facts: CodexToolFacts, lifecycle: ToolLifecycleFacts): ToolCallIR {
-  const payload = codexPayloadFor(facts, facts.kind)
+function codexToolCall(facts: CodexToolFacts, lifecycle: ToolCallLifecycleFacts): ToolCall {
+  const spec = codexSpecFor(facts, facts.kind)
   const label = codexItemLabel(facts)
-  return toolCall(
+  return createToolCall(
     {
       id: pickString(facts.item, 'id'),
       name: facts.type,
       lifecycle,
     },
-    { ...payload, ...(label !== undefined ? { label } : {}) },
+    { ...spec, ...(label !== undefined ? { label } : {}) },
   )
 }
 
@@ -712,7 +732,7 @@ function codexItemLabel(facts: CodexToolFacts): string | undefined {
  * of such a span carry the same bytes, and without this they both read as the
  * request: the result then drew a second header and no picture.
  */
-function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInput['sides'], completion?: MessageCompletion): ChatRowIR | null {
+function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInput['span'], completion?: MessageCompletion): ChatRow | null {
   const payload = parsed.parentObject
   // `turnPlan` dispatches off the notification METHOD rather than an item type, so it
   // answers before the item table.
@@ -722,14 +742,15 @@ function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInpu
   if (!item)
     return null
   const statusWord = pickString(item, 'status')
-  const role: ToolRowRole = sides.role === 'result'
+  const atomicResult = isCodexAtomicResultItem(pickString(item, 'type'))
+  const role: ToolSpanRowRole = atomicResult || sides.role === 'result'
     ? 'result'
     : sides.role === 'request'
       ? 'request'
       : (isCodexFinishedStatus(statusWord) || !!parsed.completion ? 'result' : 'request')
-  const finished = role === 'result' || isCodexFinishedStatus(statusWord) || !!parsed.completion
+  const rowFinal = role === 'result' || isCodexFinishedStatus(statusWord) || !!parsed.completion
   // LeapMux's own reading of how the turn ended wins over the item word, as
-  // `ToolCallCommon.status` states for every provider. A turn the reader stopped
+  // `ToolCallBase.status` states for every provider. A turn the reader stopped
   // leaves the last `inProgress` frame stored, so the item still reads as running
   // and the replayed row would spin for the life of the transcript.
   const outcome = retainedOutcome(completion)
@@ -739,25 +760,25 @@ function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInpu
   // pairs that word with a finished span's pictures is a draft the validating
   // builder refuses: the row degraded to the generic card and lost the picture.
   // The role's answer states the outcome the frame's own words cannot.
-  const requestItem = sides.request ? extractItem(sides.request.parentObject) : null
   const resultItem = sides.result ? extractItem(sides.result.parentObject) : null
   // The call reads EVERY side the store resolved: a request row whose result has
   // landed carries it, so its prompt stays compact behind the same expand control.
-  const answered = finished || !!resultItem
+  const answered = atomicResult || sides.role === 'result' || isCodexFinishedStatus(statusWord) || !!resultItem
   // A row that carries the landed result is a row of a FINISHED call, whatever its
   // own frame still says: the validating builder refuses an in-progress envelope
   // over a result, and the degrade it answers would trade the typed card for the
   // generic one. The lifecycle facts below hand that rule to the shared derivation,
   // which owns the precedence between the item's word, the provider's own
   // interruption, the retained outcome, and the landed result.
-  const lifecycle: ToolLifecycleFacts = {
+  const lifecycle: ToolCallLifecycleFacts = {
     frameStatus: codexFrameStatus(statusWord),
     providerOutcome: statusWord === 'interrupted' ? 'interrupted' : null,
     retainedOutcome: outcome,
-    resultLanded: answered,
+    rowFinal,
+    resultFrameLanded: answered,
   }
-  const call = codexToolCallIR(codexToolFacts(item, answered, sides), lifecycle)
-  return toolCallRow(call, role, { request: !!requestItem, result: !!resultItem })
+  const call = codexToolCall(codexToolFacts(item, rowFinal, sides), lifecycle)
+  return toolCallRow(call, role, sides.visibleRows)
 }
 
 /**
@@ -767,8 +788,8 @@ function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInpu
  * `interrupted` is not a status at all -- it is the provider's own conclusion, which
  * the lifecycle carries as its outcome fact while the frame states none.
  */
-function codexFrameStatus(statusWord: string): ToolRowStatus {
+function codexFrameStatus(statusWord: string): ToolCallStatus {
   if (statusWord === CODEX_STATUS.IN_PROGRESS)
     return 'in_progress'
-  return statusWord === 'interrupted' ? '' : toolRowStatus(statusWord)
+  return statusWord === 'interrupted' ? 'unstated' : toolCallStatus(statusWord)
 }

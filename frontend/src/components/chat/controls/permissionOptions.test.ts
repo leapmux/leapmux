@@ -1,4 +1,4 @@
-import type { WirePermissionOption } from './permissionOptionLabels'
+import type { PermissionOption } from '~/components/chat/model/controlPrompt'
 import { describe, expect, it } from 'vitest'
 import {
   allowScopeLabel,
@@ -8,13 +8,13 @@ import {
   resolvePermissionOption,
 } from './permissionOptions'
 
-function option(optionId: string, kind: string, name = optionId): WirePermissionOption {
+function option(optionId: string, kind: string, name = optionId): PermissionOption {
   return { optionId, kind, name }
 }
 
 // Goose's exact wire shape: four options whose ids, kinds and names are all the
 // same snake_case token, emitted allow-first.
-const GOOSE_OPTIONS: WirePermissionOption[] = [
+const GOOSE_OPTIONS: PermissionOption[] = [
   option('allow_always', 'allow_always'),
   option('allow_once', 'allow_once'),
   option('reject_once', 'reject_once'),

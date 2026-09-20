@@ -1,5 +1,5 @@
 import type { ParentComponent } from 'solid-js'
-import type { PermissionRequestIR } from '../ir/controlRequest'
+import type { PermissionPrompt } from '../model/controlPrompt'
 import type { ControlRequest } from '~/stores/control.store'
 import { createMemo, Show } from 'solid-js'
 import { isObject } from '~/lib/jsonPick'
@@ -11,14 +11,14 @@ import { canAnswerControlRequest } from './controlResponseState'
 /**
  * The permission body: what the call is, why it needs approval, and its arguments.
  *
- * It draws every field of the IR's permission EXCEPT the options, which are the
+ * It draws every field of the model's permission EXCEPT the options, which are the
  * answers -- those belong to the actions half, beside the buttons that send one.
  * The elicitation form draws the same body for an input request, which states no
  * options at all.
  */
 export const PermissionRequestContent: ParentComponent<{
   request: ControlRequest
-  source: Omit<PermissionRequestIR, 'options'>
+  source: Omit<PermissionPrompt, 'options'>
 }> = (props) => {
   const details = createMemo(() => {
     const { input, command } = props.source

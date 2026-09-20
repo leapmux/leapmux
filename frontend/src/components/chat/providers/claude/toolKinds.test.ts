@@ -40,7 +40,7 @@ describe('claudeToolIcon', () => {
   // overrides the glyph of a kind that already fits it is a mistake in the
   // table, so the two `Task*` overrides must not have taken a `task` kind.
   it('overrides only where the kind says something else', () => {
-    expect(claudeToolKind(CLAUDE_TOOL_NAMES.TASK_STOP)).not.toBe('')
+    expect(claudeToolKind(CLAUDE_TOOL_NAMES.TASK_STOP)).not.toBe('unspecified')
     expect(claudeToolIcon(CLAUDE_TOOL_NAMES.TASK_STOP)).toBe('stop')
   })
 })

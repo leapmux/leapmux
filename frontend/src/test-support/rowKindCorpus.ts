@@ -1,5 +1,5 @@
-import type { ChatRowIR } from '~/components/chat/ir/row'
-import type { MessageCategory } from '~/components/chat/messageClassification'
+import type { MessageCategory } from '~/components/chat/messageClassifier'
+import type { ChatRow } from '~/components/chat/model/row'
 import type { ChatRowExtraction } from '~/components/chat/rowExtraction'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
@@ -12,7 +12,7 @@ import { copilotToolStart } from '~/test-support/copilotFixtures'
  * Layer 1 classifies a frame (`Provider.classify`) and layer 1 also extracts it
  * (`Provider.extractRow`). Two readers then take different answers from them: the
  * virtual list premeasures a row from the CATEGORY, and the transcript draws it from
- * the row IR. A frame the two disagree about is measured as one kind of row and
+ * the row model. A frame the two disagree about is measured as one kind of row and
  * drawn as another, which is a height the list reserved for the wrong thing.
  *
  * Each entry states the category explicitly rather than only comparing the two
@@ -56,12 +56,14 @@ export interface RowKindCase {
  * cannot read a frame answers the `unsupported` OUTCOME, and `renderExtractedRow`
  * draws the shared unrecognized card for it.
  *
- * Every other category now draws from the row IR. The turn end, the notification
+ * Every other category now draws from the row model. The turn end, the notification
  * thread and the control response each used to take a path around it -- a hook that
- * predated the IR, or a branch in `MessageBubble` -- and each is extracted here now,
+ * predated the model, or a branch in `MessageBubble` -- and each is extracted here now,
  * so one switch draws every row.
  */
-export const ROW_KIND_FOR_CATEGORY: Record<MessageCategory['kind'], ChatRowIR['kind']> = {
+export type DrawnRowKind = ChatRow['kind'] | 'unrecognized'
+
+export const ROW_KIND_FOR_CATEGORY: Record<MessageCategory['kind'], DrawnRowKind> = {
   hidden: 'hidden',
   notification: 'notification',
   tool_use: 'tool',
@@ -81,7 +83,7 @@ export const ROW_KIND_FOR_CATEGORY: Record<MessageCategory['kind'], ChatRowIR['k
 }
 
 /**
- * The one category `MessageBubble` draws ITSELF, outside the row IR.
+ * The one category `MessageBubble` draws ITSELF, outside the row model.
  *
  * An unsupported provider draws the loud misconfiguration notice, because only the
  * transcript knows to blame the tab's own metadata rather than the provider. The
@@ -106,7 +108,7 @@ const DRAWN_OUTSIDE_THE_ROW_IR = new Set<MessageCategory['kind']>(['unsupported_
  * list measured as a tool call and the transcript drew as the fallback card -- which
  * is the exact disagreement this corpus exists to catch.
  */
-export function drawnRowKind(category: MessageCategory['kind'], extraction: ChatRowExtraction): ChatRowIR['kind'] {
+export function drawnRowKind(category: MessageCategory['kind'], extraction: ChatRowExtraction): DrawnRowKind {
   if (extraction.kind === 'row')
     return extraction.row.kind
   return DRAWN_OUTSIDE_THE_ROW_IR.has(category) ? 'hidden' : 'unrecognized'
@@ -354,7 +356,7 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     // UNSPECIFIED reaches the reader while a tab's worker metadata still loads, and
     // an unregistered provider would reach it the same way. Neither has a plugin to
-    // read the frame, so the row IR draws nothing and `MessageBubble` states the
+    // read the frame, so the row model draws nothing and `MessageBubble` states the
     // misconfiguration itself.
     provider: Provider.UNSPECIFIED,
     name: 'frame of an unknown provider',

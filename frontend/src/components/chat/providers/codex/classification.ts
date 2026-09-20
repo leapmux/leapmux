@@ -1,4 +1,4 @@
-import type { MessageCategory } from '../../messageClassification'
+import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../registry'
 import { CODEX_ITEM, CODEX_METHOD } from '~/generated/contracts/codex-protocol'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
@@ -8,7 +8,7 @@ import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../mess
 import { isJsonRpcResponseObject } from '../acp/classification'
 import { extractItem } from './extractors/item'
 import { codexPlanItemMarkdown, codexTurnPlanParams, codexTurnPlanTodos } from './extractors/plan'
-import { codexReasoningText } from './extractors/row'
+import { codexReasoningHasText } from './extractors/row'
 import { CODEX_RATE_LIMITS_METHOD, codexRateLimitReachedType, iterCodexRateLimitTiers } from './rateLimits'
 
 const CODEX_TURN_FAILED_NOTIFICATION = 'Codex turn failed'
@@ -194,7 +194,7 @@ const CODEX_ITEM_CLASSIFIERS: Record<string, CodexItemClassifier> = {
     return { kind: 'tool_use' }
   },
   // The extractor's own read, so a measured row is always a row that draws.
-  [CODEX_ITEM.Reasoning]: item => codexReasoningText(item) ? { kind: 'assistant_thinking' } : { kind: 'hidden' },
+  [CODEX_ITEM.Reasoning]: item => codexReasoningHasText(item) ? { kind: 'assistant_thinking' } : { kind: 'hidden' },
   [CODEX_ITEM.UserMessage]: () => ({ kind: 'hidden' }),
   // The five kinds Codex added after this table was written. The row extractor draws
   // each as a status row, and the classifier covered none of them -- so the list

@@ -93,7 +93,7 @@ export const messageBubble = style({
  *
  * The card carries NO bleed of its own. Running its right side off the panel
  * edge is `bubbleFlushRight` below, which only takes effect inside a widened
- * row. `bubbleRunsToRightEdge` (~/components/chat/messageClassification.ts)
+ * row. `bubbleRunsToRightEdge` (~/components/chat/messageClassifier.ts)
  * decides which rows carry that marker from the ROW's own layout, so a fourth
  * card added here reaches the edge with no list to join.
  */

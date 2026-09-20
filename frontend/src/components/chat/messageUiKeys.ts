@@ -1,4 +1,4 @@
-import type { MessageCategory } from './messageClassification'
+import type { MessageCategory } from './messageClassifier'
 
 /**
  * Per-message UI state keys consumed via `getMessageUiState`/`setMessageUiState`

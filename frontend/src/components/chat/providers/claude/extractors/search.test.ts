@@ -1,6 +1,6 @@
 import type { ClaudeToolRow } from './toolCommon'
 import { describe, expect, it } from 'vitest'
-import { claudeGlobPayload, claudeGrepPayload, claudeSearchFromToolResult, parseRawGrepGlobResult } from './search'
+import { claudeGlobSpec, claudeGrepSpec, claudeSearchFromToolResult, parseRawGrepGlobResult } from './search'
 import { claudeRequestFor } from './toolRequests'
 
 describe('parseRawGrepGlobResult', () => {
@@ -230,31 +230,31 @@ const SEARCH_REQUEST = claudeRequestFor('grep', { pattern: 'needle' }, { toolNam
  * read as content as a FILE NAME. The row then drew "Found 1 file" over a file list
  * holding the sentence, and `relativizePath` shortened the sentence like a path.
  */
-describe('claudeGrepPayload', () => {
+describe('claudeGrepSpec', () => {
   it('states the reason alone for a search the tool failed', () => {
     const result = searchRow({ isError: true, resultContent: 'File does not exist.' })
-    expect(claudeGrepPayload(SEARCH_REQUEST, result).result).toStrictEqual({ failure: true, text: 'File does not exist.' })
+    expect(claudeGrepSpec(SEARCH_REQUEST, result).result).toStrictEqual({ failure: true, text: 'File does not exist.' })
   })
 
   it('reads the search result for a call that did not fail', () => {
     const result = searchRow({ resultContent: 'Found 1 file\n/a.ts' })
-    expect(claudeGrepPayload(SEARCH_REQUEST, result).result).toMatchObject({ numFiles: 1, filenames: ['/a.ts'] })
+    expect(claudeGrepSpec(SEARCH_REQUEST, result).result).toMatchObject({ numFiles: 1, filenames: ['/a.ts'] })
   })
 
   it('states no result for a call that has not answered', () => {
-    expect(claudeGrepPayload(SEARCH_REQUEST, undefined).result).toBeUndefined()
+    expect(claudeGrepSpec(SEARCH_REQUEST, undefined).result).toBeUndefined()
   })
 })
 
-describe('claudeGlobPayload', () => {
+describe('claudeGlobSpec', () => {
   it('states the reason alone for a search the tool failed', () => {
     const result = searchRow({ toolName: 'Glob', isError: true, resultContent: 'EISDIR: illegal operation' })
-    expect(claudeGlobPayload(SEARCH_REQUEST, result).result).toStrictEqual({ failure: true, text: 'EISDIR: illegal operation' })
+    expect(claudeGlobSpec(SEARCH_REQUEST, result).result).toStrictEqual({ failure: true, text: 'EISDIR: illegal operation' })
   })
 
   it('reads the file list for a call that did not fail', () => {
     const result = searchRow({ toolName: 'Glob', resultContent: 'Found 2 files\n/a.ts\n/b.ts' })
-    expect(claudeGlobPayload(SEARCH_REQUEST, result).result).toMatchObject({ numFiles: 2, filenames: ['/a.ts', '/b.ts'] })
+    expect(claudeGlobSpec(SEARCH_REQUEST, result).result).toMatchObject({ numFiles: 2, filenames: ['/a.ts', '/b.ts'] })
   })
 })
 

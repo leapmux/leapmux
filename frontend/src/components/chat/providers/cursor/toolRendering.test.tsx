@@ -6,9 +6,9 @@ import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { pngBase64 } from '~/test-support/pngFixture'
-import { providerRowImages, providerToolMeta } from '~/test-support/toolCallIr'
+import { providerRowImages, providerToolMeta } from '~/test-support/toolCallFixture'
 import { ChatImageViewer } from '../../ChatImageViewer'
-import { renderMessageContent } from '../../rowRenderers'
+import { renderMessageContent } from '../../messageContentRenderer'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import './plugin'
@@ -60,6 +60,7 @@ describe('cursor native tool rendering', () => {
       const sources = testMessageSources({
         current: () => parsed,
         role: () => role,
+        visibleRows: () => ({ request: role === 'request', result: role === 'result' || result !== undefined }),
         ...(result ? { result: () => parse(result) } : {}),
       })
       return render(() => renderMessageContent(tool, { premeasureMode: true, sources }, category, AgentProvider.CURSOR))

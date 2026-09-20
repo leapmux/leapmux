@@ -74,7 +74,8 @@ describe('the transcript scenario harness', () => {
     })
     expect(scenario.toolRow('result').hasRequestRow).toBe(false)
     await scenario.loadSpan('result')
-    expect(scenario.toolRow('result').hasRequestRow).toBe(true)
+    expect(scenario.toolRow('result').hasRequestRow).toBe(false)
+    expect(scenario.resolver.request({ spanId: CALL, agentSessionId: SESSION })?.message.id).toBe('request')
     expect(scenario.entry('result').category.kind).toBe('tool_result')
   })
 
@@ -107,9 +108,9 @@ describe('the transcript scenario harness', () => {
       windowIds: ['result'],
     })
     await scenario.loadSpan('result')
-    // The fetch answered the span under THIS session's identity alone, so the
-    // pairing landed on this session's own request.
-    expect(scenario.toolRow('result').hasRequestRow).toBe(true)
+    // The fetch answered the span under this session's identity alone. It enriches
+    // the result without claiming that the fetched request is a visible sibling.
+    expect(scenario.toolRow('result').hasRequestRow).toBe(false)
     const request = scenario.resolver.request({ spanId: CALL, agentSessionId: SESSION })
     expect(request?.message.id).toBe('request')
     // The other session's row under the same tool ID never entered the resolver:

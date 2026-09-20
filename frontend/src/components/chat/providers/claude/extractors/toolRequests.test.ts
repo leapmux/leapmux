@@ -1,10 +1,10 @@
-import type { ToolKind } from '../../../ir/toolKind'
+import type { ToolKind } from '../../../model/toolKind'
 import type { ClaudeRowContext, ClaudeToolRow } from './toolCommon'
 import { describe, expect, it } from 'vitest'
 import { prettifyArgsJson } from '~/lib/jsonFormat'
 import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
 import { CLAUDE_TOOL_NAMES } from '../toolNames'
-import { claudePayload } from './toolCall'
+import { claudeSpec } from './toolCall'
 import { CLAUDE_TOOL_REQUEST_OVERRIDES, claudeRequestFor } from './toolRequests'
 
 /** One Claude REQUEST row: the tool's name and the arguments it sent, and nothing else. */
@@ -25,12 +25,12 @@ function requestRow(toolName: string, input: Record<string, unknown>): ClaudeToo
 /**
  * The declared request of a call that has not answered, read through the DISPATCHER.
  *
- * `claudePayload` is what a mounted row calls, so this pins that the builder of each
+ * `claudeSpec` is what a mounted row calls, so this pins that the builder of each
  * kind really takes the routed request. A direct `claudeRequestFor` would pass for a
  * builder that still hand-built one of its own.
  */
 function requestOf(toolName: string, input: Record<string, unknown>, context: ClaudeRowContext = {}) {
-  return claudePayload(requestRow(toolName, input), undefined, context).request
+  return claudeSpec(requestRow(toolName, input), undefined, context).request
 }
 
 /**
@@ -198,7 +198,7 @@ describe('CLAUDE_TOOL_REQUEST_OVERRIDES', () => {
   })
 
   it.each(OVERRIDE_CASES)('reads a %s request from the keys Claude spells', (kind, toolName, input, request) => {
-    const payload = claudePayload(requestRow(toolName, input), undefined, {})
+    const payload = claudeSpec(requestRow(toolName, input), undefined, {})
     expect(payload.kind).toBe(kind)
     expect(payload.request).toStrictEqual(request)
   })
@@ -265,7 +265,7 @@ const ROUTED_CASES: ReadonlyArray<readonly [ToolKind, string, Record<string, unk
   ['fetch', CLAUDE_TOOL_NAMES.WEB_FETCH, { url: 'https://example.com', prompt: 'Summarize it' }],
   ['web_search', CLAUDE_TOOL_NAMES.WEB_SEARCH, { query: 'renderer', allowed_domains: ['example.com'] }],
   ['report', CLAUDE_TOOL_NAMES.STRUCTURED_OUTPUT, { summary: 'done', findings: [] }],
-  ['', 'ToolNobodyNames', { anything: 1 }],
+  ['unspecified', 'ToolNobodyNames', { anything: 1 }],
 ]
 
 describe('claudeRequestFor', () => {
@@ -275,7 +275,7 @@ describe('claudeRequestFor', () => {
   })
 
   it.each(ROUTED_CASES)('answers the shared table for a %s request', (kind, toolName, input) => {
-    const payload = claudePayload(requestRow(toolName, input), undefined, {})
+    const payload = claudeSpec(requestRow(toolName, input), undefined, {})
     expect(payload.kind).toBe(kind)
     expect(payload.request).toStrictEqual(DEFAULT_TOOL_REQUESTS[kind](input))
   })

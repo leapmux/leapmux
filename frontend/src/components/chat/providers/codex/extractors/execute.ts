@@ -1,4 +1,4 @@
-import type { CommandResult } from '../../../ir/commandResult'
+import type { CommandResult } from '../../../model/commandResult'
 import { CODEX_ITEM, CODEX_ITEM_FIELD } from '~/generated/contracts/codex-protocol'
 import { pickNumber, pickString } from '~/lib/jsonPick'
 

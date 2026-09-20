@@ -109,7 +109,7 @@ export function acpSupplementRawOutput(supplement: ACPToolSupplement | undefined
  *
  * A MAP rather than a record, because the agent chooses the ids. A plain object
  * answers `terminals['toString']` with a function from `Object.prototype`, and the
- * caller then reads an entry whose `output` is `undefined` through a field the IR
+ * caller then reads an entry whose `output` is `undefined` through a field the model
  * declares as `string` -- which the command body dereferences and crashes on. A Map
  * holds only what was put in it, so no id can reach anything the supplement did not
  * carry.

@@ -1,8 +1,8 @@
-import type { ToolKind } from '../../ir/toolKind'
+import type { ToolKind } from '../../model/toolKind'
 import type { ToolVocabularyCheck } from '~/test-support/toolVocabulary'
 import { describe, expect, it } from 'vitest'
 import { documentedNamesThatReachAKind, staleGenericNames, undocumentedFallbacks } from '~/test-support/toolVocabulary'
-import { acpToolCallIR } from '../acp/extractors/toolCall'
+import { acpToolCall } from '../acp/extractors/toolCall'
 import { gooseToolCallAdapter } from './extractors/toolCall'
 import { GOOSE_DEVELOPER_TOOL, GOOSE_TOOL_KINDS } from './toolKinds'
 
@@ -11,7 +11,7 @@ function kindOf(toolName: string, extensionName?: string, rawInput: Record<strin
   const separator = toolName.indexOf('__')
   const extension = extensionName ?? (separator >= 0 ? toolName.slice(0, separator) : '')
   const name = separator >= 0 ? toolName.slice(separator + 2) : toolName
-  return acpToolCallIR(
+  return acpToolCall(
     {
       sessionUpdate: 'tool_call',
       toolCallId: 'goose-vocab',
@@ -35,7 +35,7 @@ const EXTENSION_OF: Readonly<Record<string, string>> = {
 /**
  * The smallest arguments a tool must state for its own kind to build.
  *
- * The two file changes state the FILE they change. The IR refuses an `edit` or a
+ * The two file changes state the FILE they change. The model refuses an `edit` or a
  * `write` whose request names none -- the row composes its header from that list at
  * every state of the call -- and degrades such a call to the uncategorized row, so a
  * case that states no file tests that row and not the tool. Goose spells the two

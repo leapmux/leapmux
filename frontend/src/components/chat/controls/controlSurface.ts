@@ -1,7 +1,7 @@
 import type { Accessor } from 'solid-js'
-import type { ControlRequestIR } from '../ir/controlRequest'
 import type { MessageContextResolver } from '../messageContextResolver'
-import type { ControlQuestion } from './AskUserQuestionControl'
+import type { ControlPrompt } from '../model/controlPrompt'
+import type { ActiveQuestionControl } from './AskUserQuestionControl'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ControlRequest } from '~/stores/control.store'
@@ -15,14 +15,14 @@ import { controlQuestion } from './AskUserQuestionControl'
 /**
  * Which control surface answers ONE request.
  *
- * It is the shared control IR, with the QUESTION variant carrying its send path
+ * It is the shared control model, with the QUESTION variant carrying its send path
  * beside the questions: a question is answered through the provider's own
  * `askUserQuestion` capability, and the banner and the composer both need it.
- * Every other variant is drawn and answered from the IR alone.
+ * Every other variant is drawn and answered from the model alone.
  */
 export type ControlSurface
-  = | { kind: 'question', question: ControlQuestion }
-    | Exclude<ControlRequestIR, { kind: 'question' }>
+  = | { kind: 'question', question: ActiveQuestionControl }
+    | Exclude<ControlPrompt, { kind: 'question' }>
 
 /**
  * The ONE classifier. The banner and the composer both call it, with the same

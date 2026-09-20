@@ -1,34 +1,37 @@
-import type { ToolCallIR, ToolCallPayloadForKind, ToolCallPayloadIR, ToolLifecycleFacts } from '../../../ir/toolCall'
-import type { ToolKind } from '../../../ir/toolKind'
-import type { ToolRowOutcome } from '../../../ir/toolOutcomeLabel'
-import type { ToolRowStatus } from '../../../ir/toolRowStatus'
-import type { ToolRequests } from '../../../ir/tools'
-import type { FileChangeRequest, FileChangeResult } from '../../../ir/tools/fileChange'
-import type { GenericResult } from '../../../ir/tools/generic'
-import type { McpRequest } from '../../../ir/tools/mcp'
+import type { ToolCall, ToolCallLifecycleFacts, ToolCallSpec, ToolCallSpecVariant } from '../../../model/toolCall'
+import type { ToolCallStatus } from '../../../model/toolCallStatus'
+import type { ToolKind } from '../../../model/toolKind'
+import type { RetainedToolOutcome } from '../../../model/toolOutcome'
+import type { ToolRequestByKind } from '../../../model/tools'
+import type { FileChangeRequest, FileChangeResult } from '../../../model/tools/fileChange'
+import type { GenericToolResult } from '../../../model/tools/generic'
+import type { McpRequest } from '../../../model/tools/mcp'
 import type { ToolRequestOverrides } from '../../defaultToolRequests'
 import type {} from '../../registry'
 import type { ACPToolSupplement } from '../toolSupplement'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { ContentBlock } from '~/lib/contentBlocks'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ToolSpanRole } from '~/lib/messageSpan'
-import { isFinishedToolStatus, toolRowStatus } from '~/components/chat/ir/toolRowStatus'
+import { isFinishedToolCallStatus, toolCallStatus } from '~/components/chat/model/toolCallStatus'
 import { ACP_SUPPLEMENT_REQUEST } from '~/generated/contracts/acp-protocol'
 import { prettifyArgsJson, prettifyJson } from '~/lib/jsonFormat'
 import { isObject, pickFirstString, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { fileEditHasDiff } from '../../../ir/fileEditDiff'
-import { parseMcpContentItem } from '../../../ir/mcpToolCall'
-import { deriveToolCallStatus, failedResult, isGenericKind, proseResult, toolCall, unparsedResult } from '../../../ir/toolCall'
-import { toolKind } from '../../../ir/toolKind'
+import { createToolCall } from '../../../model/createToolCall'
+import { fileEditHasDiff } from '../../../model/fileEditDiff'
+import { parseMcpContentItem } from '../../../model/mcpToolCall'
+import { failedResult, isGenericKind, proseResult, unparsedResult } from '../../../model/toolCall'
+import { deriveToolCallStatus } from '../../../model/toolCallLifecycle'
+import { toolKind } from '../../../model/toolKind'
 import { humanizeWireWord } from '../../../rendererUtils'
 import { toolRequestFor } from '../../defaultToolRequests'
 import { retainedOutcome, retainedRowIsFinal } from '../../registry'
 import { TOOL_FILE_PATH_KEYS, toolInputPaths } from '../../toolInputKeys'
-import { collectAcpToolText, flattenAcpContent } from '../content'
+import { collectAcpToolTextFromContent, flattenAcpContent } from '../content'
 import { acpExecuteFromToolCall } from '../extractors/execute'
 import { acpFileEditFromToolCallContent, acpFileEditsFromToolCallRawInput } from '../extractors/fileEdit'
-import { acpImagesFromToolCall } from '../extractors/image'
+import { acpImagesFromContent } from '../extractors/image'
 import { acpReadFromToolCall } from '../extractors/read'
 import { acpSearchFromToolCall } from '../extractors/search'
 import { acpTerminalResults } from '../extractors/terminal'
@@ -79,18 +82,18 @@ export interface ACPToolFacts {
    * The call states an input, and it is NOT an object.
    *
    * No typed request can be filled from one: every typed reader indexes `args`.
-   * {@link acpBasePayload} therefore builds such a call at the generic kind, where
+   * {@link acpBaseSpec} therefore builds such a call at the generic kind, where
    * `argsText` states the whole argument.
    *
    * An ABSENT input leaves this false, and that is a different case: a file tool
    * often states no arguments of its own and recovers its path from `locations`.
    */
   scalarInput: boolean
-  status: ToolRowStatus
+  status: ToolCallStatus
   /** The outcome LeapMux's completion column retained for the turn, or null. */
-  retained: ToolRowOutcome | null
+  retained: RetainedToolOutcome | null
   /** The call's lifecycle as RAW FACTS; the shared derivation owns the precedence. */
-  lifecycle: ToolLifecycleFacts
+  lifecycle: ToolCallLifecycleFacts
   /**
    * Whether the call ENDED: its own status states it, or the retained outcome does.
    *
@@ -102,6 +105,10 @@ export interface ACPToolFacts {
   finished: boolean
   /** The collected text of the call's content blocks. */
   text: string
+  /** The content blocks, normalized once for text, images, and generic results. */
+  content: ContentBlock[]
+  /** The structured raw output formatted once for a generic result. */
+  structuredJson?: string
   images: ImageResultSource[]
   terminals: ReturnType<typeof acpTerminalResults>
   place: ACPToolRow
@@ -112,56 +119,54 @@ export interface ACPToolFacts {
  * content blocks it answered with.
  *
  * Shared by the three kinds that state no vocabulary. Only the REQUEST differs
- * between them, and it differs by widening -- `McpRequest extends GenericRequest` --
+ * between them, and it differs by widening -- `McpRequest extends GenericToolRequest` --
  * so one shape satisfies all three.
  *
- * The lifecycle is NOT here. {@link acpPayloadFor} owns it for every kind, so this
+ * The lifecycle is NOT here. {@link acpSpecFor} owns it for every kind, so this
  * states the answer of a call that finished and let it stand.
  */
-function acpGenericCard(facts: ACPToolFacts): { request: McpRequest, result: GenericResult } {
+function acpGenericCard(facts: ACPToolFacts): { request: McpRequest, result: GenericToolResult } {
   const args = facts.args
   const title = acpCallTitle(facts)
-  const blocks = flattenAcpContent(facts.tool.content)
   // `facts.argsText` rather than a second format of `args`: a scalar input has no
   // object to format, and this card is the one surface that can still show it.
   const request: McpRequest = { server: '', tool: facts.wireKind === 'other' && pickString(facts.tool, 'kind') !== 'other' ? pickString(facts.tool, 'kind') : title, args, ...(facts.argsText !== undefined ? { argsText: facts.argsText } : {}) }
-  const content = blocks.length > 0 ? blocks.map(parseMcpContentItem) : facts.text ? [{ type: 'text' as const, text: facts.text }] : []
-  const structuredJson = facts.tool.rawOutput !== undefined ? prettifyJson(facts.tool.rawOutput) : undefined
-  return { request, result: { content, ...(structuredJson !== undefined ? { structuredJson } : {}) } }
+  const content = facts.content.length > 0 ? facts.content.map(parseMcpContentItem) : facts.text ? [{ type: 'text' as const, text: facts.text }] : []
+  return { request, result: { content, ...(facts.structuredJson !== undefined ? { structuredJson: facts.structuredJson } : {}) } }
 }
 
 /**
  * The DECLARED request of one kind, filled from the arguments, with no result yet.
  *
- * A provider adapter that reclassifies supplies its own payload. This is what the row
+ * A provider adapter that reclassifies supplies its own specification. This is what the row
  * draws until it does, and it states each kind's declared request rather than the raw
  * arguments: the renderers read those fields with no guard, so a `{ args }` here
  * reaches `call.request.changes[0]` on a running call and throws the whole message
  * into the ErrorBoundary.
  *
- * The RESULT is {@link acpPayloadFor}'s: a finished call with no typed answer takes
+ * The RESULT is {@link acpSpecFor}'s: a finished call with no typed answer takes
  * the words it printed. Before the ladder these twenty kinds answered nothing at all,
  * and twelve of them declare no request body either -- so a finished row of one of
  * them drew its header and an empty card.
  */
-function acpArgumentsOnly<P extends ToolKind>(kind: P): ACPPayloadEntry<P> {
-  // The inner arrow states its OWN return type, although `ACPPayloadEntry<P>` already
+function acpArgumentsOnly<P extends ToolKind>(kind: P): ACPSpecEntry<P> {
+  // The inner arrow states its OWN return type, although `ACPSpecEntry<P>` already
   // declares it. A contextual signature is not an annotated position, so without this
   // the literal escapes the excess-property check -- the same hole every `build` above
   // closes, one level down.
-  return { build: (facts): ToolCallPayloadForKind<P> => ({ kind, request: acpDefaultRequestFor(kind, facts), title: acpCallTitle(facts) }) }
+  return { build: (facts): ToolCallSpecVariant<P> => ({ kind, request: acpDefaultRequestFor(kind, facts), title: acpCallTitle(facts) }) }
 }
 
 /**
- * The table's entry for ONE kind: how to build its payload, and the two questions
+ * The table's entry for one kind: how to build its specification, and the two questions
  * the shared code asks about it.
  *
  * `build` states the kind's own request and, where the kind can answer one, its own
- * result. It does NOT state the lifecycle -- {@link acpPayloadFor} owns that for
+ * result. It does NOT state the lifecycle -- {@link acpSpecFor} owns that for
  * every kind, so a builder cannot forget the retained state or the failed one.
  */
-interface ACPPayloadEntry<P extends ToolKind> {
-  build: (facts: ACPToolFacts) => ToolCallPayloadForKind<P>
+interface ACPSpecEntry<P extends ToolKind> {
+  build: (facts: ACPToolFacts) => ToolCallSpecVariant<P>
   /**
    * The kind draws a FAILED call itself, so the ladder leaves its result alone.
    *
@@ -180,7 +185,7 @@ interface ACPPayloadEntry<P extends ToolKind> {
    * Absent means the shared default: a call whose arguments are empty states
    * nothing, so the result row is the only thing that can.
    */
-  needsResult?: (request: ToolRequests[P], facts: ACPToolFacts) => boolean
+  needsResult?: (request: ToolRequestByKind[P], facts: ACPToolFacts) => boolean
 }
 
 /**
@@ -230,9 +235,9 @@ function fileChangesNeedResult(request: { changes: readonly unknown[] }, facts: 
  * A generic `switch (kind)` cannot do this. TypeScript narrows the VALUE the switch
  * tests and never the type parameter `K`, so every case had to be asserted back to
  * `K`'s payload at the return -- and a case that answered the WRONG kind compiled.
- * `acpPayloadFor(facts, 'mcp')` did exactly that: no case list held `mcp`, so it fell
- * to the generic case and answered `kind: ''` from behind a declared
- * `ToolCallPayload<'mcp'>`. Cursor's MCP branch tested `shared.kind === 'mcp'`,
+ * `acpSpecFor(facts, 'mcp')` did exactly that: no case list held `mcp`, so it fell
+ * to the generic case and answered `kind: 'unspecified'` from behind a declared
+ * `ToolCallSpec<'mcp'>`. Cursor's MCP branch tested `shared.kind === 'mcp'`,
  * never matched, and drew the card with no body at all.
  *
  * A mapped table cannot state that lie: each entry's value type mentions its own `P`,
@@ -253,19 +258,19 @@ function fileChangesNeedResult(request: { changes: readonly unknown[] }, facts: 
  * literal, so each of the four builders that lifts one declares that `const`'s type too.
  * `toolTableEntriesAreAnnotated.test.ts` keeps both forms in place.
  *
- * The table is EXPORTED for its own cases in `toolCall.test.ts`, which pin the three
+ * The table is EXPORTED for its own cases in `createToolCall.test.ts`, which pin the three
  * statements no type makes: the keys are exactly `TOOL_KINDS`, each entry answers at
  * the key that states it, and every kind outside the provider's own readings fills the
  * shared declared request. The last one is the only mechanical check that
  * {@link ACP_TOOL_REQUEST_OVERRIDES} has not grown past its deviations.
  */
-export const ACP_PAYLOAD_BUILDERS: { [P in ToolKind]: ACPPayloadEntry<P> } = {
-  'execute': { ownsFailure: true, needsResult: request => !request.command, build: (facts): ToolCallPayloadForKind<'execute'> => {
+export const ACP_SPEC_READERS: { [P in ToolKind]: ACPSpecEntry<P> } = {
+  execute: { ownsFailure: true, needsResult: request => !request.command, build: (facts): ToolCallSpecVariant<'execute'> => {
     const kind = 'execute' as const
     const args = facts.args
 
     const description = pickString(args, 'description')
-    const request: ToolRequests['execute'] = { command: pickString(args, 'command') || '', ...(description ? { description } : {}) }
+    const request: ToolRequestByKind['execute'] = { command: pickString(args, 'command') || '', ...(description ? { description } : {}) }
     const merged = acpExecuteFromToolCall(facts.tool)
     // The call's own text blocks and its terminals are two different outputs: an
     // agent that wrote a preamble beside a terminal reference meant both to show.
@@ -286,40 +291,40 @@ export const ACP_PAYLOAD_BUILDERS: { [P in ToolKind]: ACPPayloadEntry<P> } = {
     const title = frameTitle && frameTitle !== request.command && frameTitle !== pickString(facts.tool, 'kind') ? frameTitle : undefined
     return { kind, request, ...(title !== undefined ? { title } : {}), result: { commands, unresolvedTerminals: facts.terminals.unresolved } }
   } },
-  'read': { needsResult: (request, facts) => !request.path && !pickFirstString(facts.args, TOOL_FILE_PATH_KEYS), build: (facts): ToolCallPayloadForKind<'read'> => {
+  read: { needsResult: (request, facts) => !request.path && !pickFirstString(facts.args, TOOL_FILE_PATH_KEYS), build: (facts): ToolCallSpecVariant<'read'> => {
     const kind = 'read' as const
     const args = facts.args
     const title = acpCallTitle(facts)
 
     const offset = pickNumber(args, 'offset', undefined)
     const limit = pickNumber(args, 'limit', undefined)
-    const request: ToolRequests['read'] = { path: pickFirstString(args, TOOL_FILE_PATH_KEYS) ?? '', ...(offset !== undefined ? { offset } : {}), ...(limit !== undefined ? { limit } : {}) }
+    const request: ToolRequestByKind['read'] = { path: pickFirstString(args, TOOL_FILE_PATH_KEYS) ?? '', ...(offset !== undefined ? { offset } : {}), ...(limit !== undefined ? { limit } : {}) }
     const source = acpReadFromToolCall(facts.tool)
     if (source?.lines !== null && source)
       return { kind, request, title, result: source }
     return { kind, request, title, images: facts.images }
   } },
-  'edit': { needsResult: fileChangesNeedResult, build: (facts): ToolCallPayloadForKind<'edit'> => ({ kind: 'edit', ...acpFileChangeParts('edit', facts) }) },
-  'write': { needsResult: fileChangesNeedResult, build: (facts): ToolCallPayloadForKind<'write'> => ({ kind: 'write', ...acpFileChangeParts('write', facts) }) },
-  'search': { needsResult: request => !request.pattern, build: (facts): ToolCallPayloadForKind<'search'> => {
+  edit: { needsResult: fileChangesNeedResult, build: (facts): ToolCallSpecVariant<'edit'> => ({ kind: 'edit', ...acpFileChangeParts('edit', facts) }) },
+  write: { needsResult: fileChangesNeedResult, build: (facts): ToolCallSpecVariant<'write'> => ({ kind: 'write', ...acpFileChangeParts('write', facts) }) },
+  search: { needsResult: request => !request.pattern, build: (facts): ToolCallSpecVariant<'search'> => {
     const kind = 'search' as const
     const args = facts.args
     const title = acpCallTitle(facts)
 
-    const request: ToolRequests['search'] = { pattern: pickString(args, 'pattern') || pickString(args, 'query') || '', paths: toolInputPaths(args) }
+    const request: ToolRequestByKind['search'] = { pattern: pickString(args, 'pattern') || pickString(args, 'query') || '', paths: toolInputPaths(args) }
     const source = acpSearchFromToolCall(facts.tool)
     return source ? { kind, request, title, result: source } : { kind, request, title }
   } },
-  'fetch': { needsResult: request => !request.url, build: (facts): ToolCallPayloadForKind<'fetch'> => {
+  fetch: { needsResult: request => !request.url, build: (facts): ToolCallSpecVariant<'fetch'> => {
     const kind = 'fetch' as const
     const args = facts.args
     const title = acpCallTitle(facts)
 
-    const request: ToolRequests['fetch'] = { url: pickString(args, 'url') || '' }
+    const request: ToolRequestByKind['fetch'] = { url: pickString(args, 'url') || '' }
     const source = acpWebFetchFromToolCall(facts.tool)
     return source ? { kind, request, title, result: source } : { kind, request, title }
   } },
-  'switch_mode': { build: (facts): ToolCallPayloadForKind<'switch_mode'> => {
+  switch_mode: { build: (facts): ToolCallSpecVariant<'switch_mode'> => {
     const kind = 'switch_mode' as const
     // The one kind in this list the protocol itself defines. Its answer is the
     // sentence the switch wrote, which is the prose the kind draws.
@@ -333,40 +338,40 @@ export const ACP_PAYLOAD_BUILDERS: { [P in ToolKind]: ACPPayloadEntry<P> } = {
   } },
   // The three kinds that state no vocabulary. Each states its OWN kind, which is what
   // the shared `default` case could not do.
-  '': { build: (facts): ToolCallPayloadForKind<''> => ({ kind: '', ...acpGenericCard(facts) }) },
-  'other': { build: (facts): ToolCallPayloadForKind<'other'> => ({ kind: 'other', ...acpGenericCard(facts) }) },
-  'mcp': { build: (facts): ToolCallPayloadForKind<'mcp'> => ({ kind: 'mcp', ...acpGenericCard(facts) }) },
+  unspecified: { build: (facts): ToolCallSpecVariant<'unspecified'> => ({ kind: 'unspecified', ...acpGenericCard(facts) }) },
+  other: { build: (facts): ToolCallSpecVariant<'other'> => ({ kind: 'other', ...acpGenericCard(facts) }) },
+  mcp: { build: (facts): ToolCallSpecVariant<'mcp'> => ({ kind: 'mcp', ...acpGenericCard(facts) }) },
   // The kinds whose DECLARED result is the words the tool wrote. `unparsedResult`
   // states "this build could not read the payload into the kind's shape", which is
   // never true where the shape IS the words, so each answers prose instead. `think`
   // is the fifth of them and sits with the rest of the table below, because its words
   // reach it through its own request rather than through the content blocks.
-  'agents': { build: (facts): ToolCallPayloadForKind<'agents'> => ({ kind: 'agents', request: acpDefaultRequestFor('agents', facts), title: acpCallTitle(facts), result: proseResult(facts.text, 'markdown') }) },
-  'memory': { build: (facts): ToolCallPayloadForKind<'memory'> => ({ kind: 'memory', request: acpDefaultRequestFor('memory', facts), title: acpCallTitle(facts), result: proseResult(facts.text) }) },
-  'message': { build: (facts): ToolCallPayloadForKind<'message'> => ({ kind: 'message', request: acpDefaultRequestFor('message', facts), title: acpCallTitle(facts), result: proseResult(facts.text) }) },
-  'report': { build: (facts): ToolCallPayloadForKind<'report'> => ({ kind: 'report', request: acpDefaultRequestFor('report', facts), title: acpCallTitle(facts), result: proseResult(facts.text, 'markdown') }) },
+  agents: { build: (facts): ToolCallSpecVariant<'agents'> => ({ kind: 'agents', request: acpDefaultRequestFor('agents', facts), title: acpCallTitle(facts), result: proseResult(facts.text, 'markdown') }) },
+  memory: { build: (facts): ToolCallSpecVariant<'memory'> => ({ kind: 'memory', request: acpDefaultRequestFor('memory', facts), title: acpCallTitle(facts), result: proseResult(facts.text) }) },
+  message: { build: (facts): ToolCallSpecVariant<'message'> => ({ kind: 'message', request: acpDefaultRequestFor('message', facts), title: acpCallTitle(facts), result: proseResult(facts.text) }) },
+  report: { build: (facts): ToolCallSpecVariant<'report'> => ({ kind: 'report', request: acpDefaultRequestFor('report', facts), title: acpCallTitle(facts), result: proseResult(facts.text, 'markdown') }) },
   // An agent launch and a to-do list both answer on the row that COMPLETES them, and
   // neither states its answer in the arguments, so both always need the result side.
-  'agent': { ...acpArgumentsOnly('agent'), needsResult: () => true },
-  'todo': { ...acpArgumentsOnly('todo'), needsResult: () => true },
-  'delete': { ...acpArgumentsOnly('delete'), needsResult: fileChangesNeedResult },
-  'move': { ...acpArgumentsOnly('move'), needsResult: fileChangesNeedResult },
-  'glob': { ...acpArgumentsOnly('glob'), needsResult: request => !request.pattern },
-  'grep': { ...acpArgumentsOnly('grep'), needsResult: request => !request.pattern },
-  'web_search': { ...acpArgumentsOnly('web_search'), needsResult: request => !request.query },
-  'chart': acpArgumentsOnly('chart'),
+  agent: { ...acpArgumentsOnly('agent'), needsResult: () => true },
+  todo: { ...acpArgumentsOnly('todo'), needsResult: () => true },
+  delete: { ...acpArgumentsOnly('delete'), needsResult: fileChangesNeedResult },
+  move: { ...acpArgumentsOnly('move'), needsResult: fileChangesNeedResult },
+  glob: { ...acpArgumentsOnly('glob'), needsResult: request => !request.pattern },
+  grep: { ...acpArgumentsOnly('grep'), needsResult: request => !request.pattern },
+  web_search: { ...acpArgumentsOnly('web_search'), needsResult: request => !request.query },
+  chart: acpArgumentsOnly('chart'),
   // The PICTURES are the answer and they ride `call.images`, so the typed result
   // states only a prompt the generator revised. It is stated all the same: a
   // completed call with no result at all draws its header over an empty card.
   //
-  // An `{}` here states no prompt, so {@link acpPayloadFor} replaces it with the words
+  // An `{}` here states no prompt, so {@link acpSpecFor} replaces it with the words
   // the call printed whenever it printed any. That is what carries the reason a
   // cancelled or failed generation gave beside the picture it never produced.
-  'image': { build: (facts): ToolCallPayloadForKind<'image'> => ({ kind: 'image', request: acpDefaultRequestFor('image', facts), title: acpCallTitle(facts), result: {} }) },
-  'list': acpArgumentsOnly('list'),
-  'question': acpArgumentsOnly('question'),
-  'skill': acpArgumentsOnly('skill'),
-  'task': acpArgumentsOnly('task'),
+  image: { build: (facts): ToolCallSpecVariant<'image'> => ({ kind: 'image', request: acpDefaultRequestFor('image', facts), title: acpCallTitle(facts), result: {} }) },
+  list: acpArgumentsOnly('list'),
+  question: acpArgumentsOnly('question'),
+  skill: acpArgumentsOnly('skill'),
+  task: acpArgumentsOnly('task'),
   // PROSE, like the four kinds above, and built from the request rather than from
   // `facts.text`: {@link ACP_TOOL_REQUEST_OVERRIDES} already folds the thought's two
   // arrival points -- a `thought` argument and the call's own content -- into one
@@ -374,13 +379,13 @@ export const ACP_PAYLOAD_BUILDERS: { [P in ToolKind]: ACPPayloadEntry<P> } = {
   // brand `parsedCall` strips, so `thinkRenderer` read `result` as absent, drew its
   // request line, and the row printed the first line of the thought as a summary above
   // the whole thought again.
-  'think': { build: (facts): ToolCallPayloadForKind<'think'> => {
+  think: { build: (facts): ToolCallSpecVariant<'think'> => {
     const kind = 'think' as const
-    const request: ToolRequests['think'] = acpDefaultRequestFor(kind, facts)
+    const request: ToolRequestByKind['think'] = acpDefaultRequestFor(kind, facts)
     return { kind, request, title: acpCallTitle(facts), result: proseResult(request.text) }
   } },
-  'trigger': acpArgumentsOnly('trigger'),
-  'wait': acpArgumentsOnly('wait'),
+  trigger: acpArgumentsOnly('trigger'),
+  wait: acpArgumentsOnly('wait'),
 }
 
 /**
@@ -391,7 +396,7 @@ export const ACP_PAYLOAD_BUILDERS: { [P in ToolKind]: ACPPayloadEntry<P> } = {
  * answers the reason it stated in words; one that finished and stated no typed answer
  * takes the words it printed.
  *
- * The last step is what twenty kinds were missing. `ToolResultOf<K>` admits the
+ * The last step is what twenty kinds were missing. `ToolResult<K>` admits the
  * unparsed and the failed brand for EVERY kind, and no kind's own result declares
  * either word, so both are unambiguous wherever they land.
  *
@@ -401,7 +406,7 @@ export const ACP_PAYLOAD_BUILDERS: { [P in ToolKind]: ACPPayloadEntry<P> } = {
  * would replace all of it with the same text the row already prints, and the two rows
  * then differ in their bodies while both head `Interrupted`. ZCode, Pi, Claude and
  * Codex each key this branch on the PROVIDER's own error flag, so one lifecycle now
- * holds for every provider. The header is unaffected: `toolRowStatusOutcome` composes
+ * holds for every provider. The header is unaffected: `toolCallStatusOutcome` composes
  * it from the row's own status and never from the result.
  *
  * The last step also replaces a typed result that states NOTHING, which
@@ -418,34 +423,40 @@ export const ACP_PAYLOAD_BUILDERS: { [P in ToolKind]: ACPPayloadEntry<P> } = {
  * Every reader of the slot tests its VALUE (`result !== undefined`), so the stripped
  * payload reads exactly as the old present-but-undefined one did.
  */
-function withoutResult<P extends ToolKind>(payload: ToolCallPayloadForKind<P>): ToolCallPayloadForKind<P> {
-  const { result, ...rest } = payload
-  return result === undefined ? payload : rest
+function withoutResult<P extends ToolKind>(spec: ToolCallSpecVariant<P>): ToolCallSpecVariant<P> {
+  const { result, ...rest } = spec
+  return result === undefined ? spec : rest
 }
 
-export function acpPayloadFor<K extends ToolKind>(facts: ACPToolFacts, kind: K): { [P in K]: ToolCallPayloadForKind<P> }[K] {
-  const entry = ACP_PAYLOAD_BUILDERS[kind]
-  const payload = entry.build(facts)
-  if (!facts.finished)
-    return withoutResult(payload)
+export function acpSpecFor<K extends ToolKind>(facts: ACPToolFacts, kind: K): { [P in K]: ToolCallSpecVariant<P> }[K] {
+  const entry = ACP_SPEC_READERS[kind]
+  const spec = entry.build(facts)
+  if (!acpResultAvailable(facts))
+    return withoutResult(spec)
   if (entry.ownsFailure)
-    return payload
+    return spec
   if (facts.status === 'failed')
-    return { ...payload, result: failedResult(facts.text) }
-  if (payload.result !== undefined && !acpResultStatesNothing(payload.result))
-    return payload
+    return { ...spec, result: failedResult(facts.text) }
+  if (spec.result !== undefined && !acpResultStatesNothing(spec.result))
+    return spec
   if (facts.text)
-    return { ...payload, result: unparsedResult(facts.text) }
+    return { ...spec, result: unparsedResult(facts.text) }
   // A result a builder stated that says nothing (see {@link acpResultStatesNothing})
   // still states "no answer", which absent does not.
-  if (payload.result !== undefined)
-    return payload
-  // A COMPLETED call that printed nothing still carries a result: the unparsed brand
-  // states the empty answer, which is what the validating builder's second rule
-  // (I2) demands -- without it the call degraded to the generic card and lost the
-  // pictures and the request a reader had already seen. Every OTHER finished status
-  // may state none: a cancelled call printed nothing is the row's own answer.
-  return facts.status === 'completed' ? { ...payload, result: unparsedResult('') } : withoutResult(payload)
+  if (spec.result !== undefined)
+    return spec
+  return withoutResult(spec)
+}
+
+/** Whether this frame supplied result data, including a retained one-row body. */
+function acpResultAvailable(facts: ACPToolFacts): boolean {
+  return facts.lifecycle.resultFrameLanded
+    || (facts.finished && (
+      facts.content.length > 0
+      || facts.images.length > 0
+      || facts.tool.rawOutput !== undefined
+      || facts.terminals.entries.length > 0
+    ))
 }
 
 /**
@@ -459,12 +470,12 @@ export function acpPayloadFor<K extends ToolKind>(facts: ACPToolFacts, kind: K):
  * a defined value, so none of them is empty here.
  *
  * Only a result whose fields are ALL optional can reach `true`, and `image` is the one
- * kind in `ToolResults` whose shape is that: `{ revisedPrompt?: string }`. Every other
+ * kind in `ToolResultByKind` whose shape is that: `{ revisedPrompt?: string }`. Every other
  * kind declares at least one required field, so the compiler already refuses the empty
- * object there. `UnparsedResult` and `FailedResult` each carry a brand and a `text`,
+ * object there. `UnparsedToolResult` and `ToolFailureResult` each carry a brand and a `text`,
  * so neither reads as empty either.
  *
- * EXPORTED for its own cases in `toolCall.test.ts`. No ACP builder answers an
+ * EXPORTED for its own cases in `createToolCall.test.ts`. No ACP builder answers an
  * all-empty-but-present result today, so the exclusions this predicate rests on are
  * demonstrable here and nowhere else.
  */
@@ -481,19 +492,19 @@ export function acpResultStatesNothing(result: object): boolean {
  * provider-NEUTRAL way belongs in the shared table where every provider reads it.
  *
  * Both entries declare their own return type, for the reason
- * {@link ACP_PAYLOAD_BUILDERS} gives: a contextual signature is not an annotated
+ * {@link ACP_SPEC_READERS} gives: a contextual signature is not an annotated
  * position, so an un-annotated entry takes a stray key without a word.
  */
 export const ACP_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ACPToolFacts> = {
   // The frame's own TITLE, which an ACP launch states there rather than in its
   // arguments; the shared entry sees the arguments alone.
-  agent: (args, facts): ToolRequests['agent'] => ({ description: acpCallTitle(facts), prompt: pickString(args, 'prompt') || pickString(args, 'instructions') || '' }),
+  agent: (args, facts): ToolRequestByKind['agent'] => ({ description: acpCallTitle(facts), prompt: pickString(args, 'prompt') || pickString(args, 'instructions') || '' }),
   // The call's collected TEXT, which is where an ACP thought arrives when the tool
   // states no `thought` argument; the shared entry sees the arguments alone.
-  think: (args, facts): ToolRequests['think'] => ({ text: pickString(args, 'thought') || pickString(args, 'text') || facts.text }),
+  think: (args, facts): ToolRequestByKind['think'] => ({ text: pickString(args, 'thought') || pickString(args, 'text') || facts.text }),
 }
 
-function acpDefaultRequestFor<K extends ToolKind>(kind: K, facts: ACPToolFacts): ToolRequests[K] {
+function acpDefaultRequestFor<K extends ToolKind>(kind: K, facts: ACPToolFacts): ToolRequestByKind[K] {
   return toolRequestFor(kind, facts.args, facts, ACP_TOOL_REQUEST_OVERRIDES)
 }
 
@@ -511,8 +522,8 @@ function acpCallTitle(facts: ACPToolFacts): string {
  * "Other" do not. An adapter that rebuilt its own facts asks for this rather than
  * repeating the fold, which is one more place for the two to disagree.
  */
-export function acpBasePayload(facts: ACPToolFacts): ToolCallPayloadIR {
-  return acpPayloadFor(facts, acpPayloadKind(facts))
+export function acpBaseSpec(facts: ACPToolFacts): ToolCallSpec {
+  return acpSpecFor(facts, acpSpecKind(facts))
 }
 
 /**
@@ -528,49 +539,49 @@ export function acpBasePayload(facts: ACPToolFacts): ToolCallPayloadIR {
  * An ADAPTER may still override the kind, and that is correct: a provider that knows
  * its own tool's scalar convention is the one layer allowed to read it.
  */
-function acpPayloadKind(facts: ACPToolFacts): ToolKind {
-  if (facts.wireKind === '' || facts.wireKind === 'other' || facts.scalarInput)
+function acpSpecKind(facts: ACPToolFacts): ToolKind {
+  if (facts.wireKind === 'unspecified' || facts.wireKind === 'other' || facts.scalarInput)
     return 'mcp'
   return facts.wireKind
 }
 
-/** The provider's own reading. `base()` = {@link acpBasePayload} over the same facts. */
-export type ACPToolCallAdapter = (facts: ACPToolFacts, base: () => ToolCallPayloadIR) => ToolCallPayloadIR
+/** The provider's own reading. `base()` = {@link acpBaseSpec} over the same facts. */
+export type ACPToolCallAdapter = (facts: ACPToolFacts, base: () => ToolCallSpec) => ToolCallSpec
 
-/** One call joined from the facts, the shared payload, and the provider's adapter. */
-export function acpToolCallIR(rawTool: Record<string, unknown>, adapter: ACPToolCallAdapter | undefined, supplemental: unknown, completion?: MessageCompletion, row?: ACPToolRow): ToolCallIR {
+/** One call joined from the facts, the shared specification, and the provider's adapter. */
+export function acpToolCall(rawTool: Record<string, unknown>, adapter: ACPToolCallAdapter | undefined, supplemental: unknown, completion?: MessageCompletion, row?: ACPToolRow): ToolCall {
   const facts = acpToolFacts(rawTool, supplemental, completion, row)
-  const base = () => acpBasePayload(facts)
-  const payload = adapter ? adapter(facts, base) : base()
+  const base = () => acpBaseSpec(facts)
+  const spec = adapter ? adapter(facts, base) : base()
   const name = pickString(rawTool, 'kind') || 'tool'
   const label = facts.wireKind === 'other' && name !== 'other' ? humanizeWireWord(name) : undefined
   // The generic trio folds to `mcp`: the uncategorized card states the server and
   // the tool, which a wrench and the word "Other" do not.
   // The request is REBUILT, not relabelled. `McpRequest` declares `server` and `tool`
-  // and `GenericRequest` declares neither, so stamping the new kind over the old
-  // request asserted two fields that an adapter answering `{ kind: '', request:
+  // and `GenericToolRequest` declares neither, so stamping the new kind over the old
+  // request asserted two fields that an adapter answering `{ kind: 'unspecified', request:
   // { args } }` never supplied -- and `mcpToolCallDisplayName` then drew the header
   // as the string `undefined`. The shared card states both, so the spread keeps them.
-  const folded = payload.kind === '' || payload.kind === 'other'
-    ? { ...payload, kind: 'mcp' as const, request: { server: '', tool: '', ...payload.request } }
-    : payload
+  const folded = spec.kind === 'unspecified' || spec.kind === 'other'
+    ? { ...spec, kind: 'mcp' as const, request: { server: '', tool: '', ...spec.request } }
+    : spec
   const rest = folded
   // The protocol carries no tool NAME, so an adapter that knows the registry id
   // states it: the shared build had only the wire kind, which identifies nothing.
-  // `toolCall` applies the payload's own name over this one and ignores an
+  // `createToolCall` applies the specification's own name over this one and ignores an
   // undefined, so no strip is needed here.
   // The frame's TITLE is the call's own header word, which an execute row shows
   // when its description states none.
   // Pictures ride the envelope for every kind whose result is TYPED; the generic
   // trio carries them inside `result.content` instead, which is what
-  // `ToolCallCommon.images` states. Attaching them here rather than per case is
+  // `ToolCallBase.images` states. Attaching them here rather than per case is
   // why a `fetch` of an image URL or an `execute` that returned a screenshot
   // still reaches the image tab.
   const images = rest.images ?? (isGenericKind(folded.kind) ? [] : facts.images)
-  // The payload's own label wins; absent on both means no label, which the
+  // The specification's own label wins; absent on both means no label, which the
   // exact-optional rule spells by omitting the key rather than writing `undefined`.
   const callLabel = folded.label ?? label
-  return toolCall(
+  return createToolCall(
     { id: pickString(rawTool, 'toolCallId'), name, lifecycle: facts.lifecycle },
     { title: acpCallTitle(facts), ...rest, images, ...(callLabel !== undefined ? { label: callLabel } : {}) },
   )
@@ -579,26 +590,25 @@ export function acpToolCallIR(rawTool: Record<string, unknown>, adapter: ACPTool
 /** Whether this row needs its result side resolved, read from the TYPED request fields. */
 export function acpToolCallNeedsResult(tool: Record<string, unknown>, adapter: ACPToolCallAdapter | undefined, supplemental?: unknown): boolean {
   const facts = acpToolFacts(tool, supplemental)
-  const base = () => acpBasePayload(facts)
-  return acpPayloadNeedsResult(adapter ? adapter(facts, base) : base(), facts)
+  const base = () => acpBaseSpec(facts)
+  return acpSpecNeedsResult(adapter ? adapter(facts, base) : base(), facts)
 }
 
 /**
  * The kind's own test, over the request the build produced.
  *
- * GENERIC over the kind, and that is the whole point: `payload.kind` and
- * `payload.request` are one correlated pair inside this body, so the table lookup
- * hands back the entry of that kind and its `needsResult` takes that kind's request.
+ * Generic over the kind: `spec.kind` and `spec.request` stay one correlated pair.
+ * The table gives the entry for that kind, and `needsResult` takes its request.
  * The caller's union satisfies the parameter member by member. An `if`-chain over the
  * kind cast the typed request back to `Record<string, unknown>` to ask the same
  * questions -- the one cast that discards exactly what the typed table exists to
  * create -- and it re-listed the kind set a third time.
  */
-function acpPayloadNeedsResult<K extends ToolKind>(payload: ToolCallPayloadForKind<K>, facts: ACPToolFacts): boolean {
-  const needsResult = ACP_PAYLOAD_BUILDERS[payload.kind].needsResult
+function acpSpecNeedsResult<K extends ToolKind>(spec: ToolCallSpecVariant<K>, facts: ACPToolFacts): boolean {
+  const needsResult = ACP_SPEC_READERS[spec.kind].needsResult
   // The ARGUMENTS, not the typed request: every request this build produces
   // carries at least one key, so asking the request answers "no" for every call.
-  return needsResult ? needsResult(payload.request, facts) : Object.keys(facts.args).length === 0
+  return needsResult ? needsResult(spec.request, facts) : Object.keys(facts.args).length === 0
 }
 
 /** Collect everything the shared build and the adapters read, in one pass. */
@@ -615,7 +625,7 @@ export function acpToolFacts(rawTool: Record<string, unknown>, supplemental?: un
   // whose input is a scalar cannot fill its typed request. The test itself needs no
   // kind, so there is no cycle.
   const scalarInput = hasScalarToolInput(tool)
-  const uncategorized = wireKind === 'other' || wireKind === '' || scalarInput
+  const uncategorized = wireKind === 'other' || wireKind === 'unspecified' || scalarInput
   const kind = uncategorized ? 'mcp' as const : wireKind
   const { args, text: argsText } = acpToolInput(tool, kind)
   // Write the RECOVERED arguments back onto the frame, so every later read of the
@@ -625,20 +635,25 @@ export function acpToolFacts(rawTool: Record<string, unknown>, supplemental?: un
   // string case was excluded before, so a number, a boolean and an array were lost.
   if (isObject(tool[ACP_SUPPLEMENT_REQUEST.RawInput]) && tool[ACP_SUPPLEMENT_REQUEST.RawInput] !== args)
     tool = { ...tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: args }
+  const frameStatus = toolCallStatus(pickString(tool, 'status'))
   const finished = acpToolFinished(tool, completion)
-  const lifecycle: ToolLifecycleFacts = {
-    frameStatus: toolRowStatus(pickString(tool, 'status')),
+  const resultFrameLanded = isFinishedToolCallStatus(frameStatus)
+  const lifecycle: ToolCallLifecycleFacts = {
+    frameStatus,
     providerOutcome: null,
     retainedOutcome: outcome,
-    resultLanded: finished,
+    rowFinal: finished,
+    resultFrameLanded,
   }
   // The DERIVED word, for the payload ladder: a retained row whose turn ended
   // shapes its body as a finished call's, which is what the old in-frame override
   // expressed by rewriting the status before any reader saw it.
-  const status = deriveToolCallStatus(lifecycle)
+  const status = deriveToolCallStatus(lifecycle, resultFrameLanded)
 
-  const text = collectAcpToolText(tool, { rawObjects: uncategorized })
-  const images = acpImagesFromToolCall(tool)
+  const content = flattenAcpContent(tool.content)
+  const text = collectAcpToolTextFromContent(content, tool.rawOutput, { rawObjects: uncategorized })
+  const images = acpImagesFromContent(content, pickObject(tool, ACP_SUPPLEMENT_REQUEST.RawInput))
+  const structuredJson = tool.rawOutput !== undefined ? prettifyJson(tool.rawOutput) : undefined
   return {
     tool,
     extra,
@@ -651,6 +666,8 @@ export function acpToolFacts(rawTool: Record<string, unknown>, supplemental?: un
     lifecycle,
     finished,
     text,
+    content,
+    ...(structuredJson !== undefined ? { structuredJson } : {}),
     images,
     terminals: acpTerminalResults(tool, extra),
     place: place ?? {},
@@ -692,7 +709,7 @@ export function resolveACPToolCall(tool: Record<string, unknown>, request?: Reco
  */
 export function acpToolFinished(tool: Record<string, unknown>, completion?: MessageCompletion): boolean {
   return retainedRowIsFinal(completion)
-    || isFinishedToolStatus(toolRowStatus(pickString(tool, 'status')))
+    || isFinishedToolCallStatus(toolCallStatus(pickString(tool, 'status')))
 }
 
 /**
@@ -714,7 +731,7 @@ export function acpToolFinished(tool: Record<string, unknown>, completion?: Mess
  * the request key; `kind` is what the frame now claims to be.
  */
 export function acpRemapFacts(facts: ACPToolFacts, remap: { tool: Record<string, unknown>, kind: ToolKind }): ACPToolFacts {
-  const uncategorized = remap.kind === 'other' || remap.kind === '' || hasScalarToolInput(remap.tool)
+  const uncategorized = remap.kind === 'other' || remap.kind === 'unspecified' || hasScalarToolInput(remap.tool)
   const framed: Record<string, unknown> = { ...remap.tool, kind: remap.kind }
   const { args, text: argsText } = acpToolInput(framed, remap.kind)
   // The same rule the first pass applies: the recovered object goes back on the
@@ -722,14 +739,18 @@ export function acpRemapFacts(facts: ACPToolFacts, remap: { tool: Record<string,
   const tool = isObject(framed[ACP_SUPPLEMENT_REQUEST.RawInput])
     ? { ...framed, [ACP_SUPPLEMENT_REQUEST.RawInput]: args }
     : framed
+  const content = flattenAcpContent(tool.content)
+  const structuredJson = tool.rawOutput !== undefined ? prettifyJson(tool.rawOutput) : undefined
   return {
     ...facts,
     tool,
     args,
     ...(argsText !== undefined ? { argsText } : {}),
     scalarInput: hasScalarToolInput(tool),
-    text: collectAcpToolText(tool, { rawObjects: uncategorized }),
-    images: acpImagesFromToolCall(tool),
+    text: collectAcpToolTextFromContent(content, tool.rawOutput, { rawObjects: uncategorized }),
+    content,
+    ...(structuredJson !== undefined ? { structuredJson } : {}),
+    images: acpImagesFromContent(content, pickObject(tool, ACP_SUPPLEMENT_REQUEST.RawInput)),
   }
 }
 

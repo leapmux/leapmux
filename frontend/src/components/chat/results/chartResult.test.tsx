@@ -1,7 +1,7 @@
-import type { ChartResult } from '../ir/chartResult'
+import type { ChartResult } from '../model/chartResult'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { CHART_MAX_POINTS, CHART_MAX_SERIES, chartResultFromSpec } from '../ir/chartResult'
+import { CHART_MAX_POINTS, CHART_MAX_SERIES, chartResultFromSpec } from '../model/chartResult'
 import { ChartResultBody } from './chartResult'
 
 function draw(spec: Record<string, unknown>, meta?: { title?: string, description?: string }) {
@@ -115,7 +115,7 @@ describe('the chart body (ChartResultBody)', () => {
    * `Math.min(0, ...values)` passed every value as a separate argument, and V8 throws
    * a `RangeError` past roughly 123,000 of them -- so a chart this size threw where
    * it should have drawn. The source is built here rather than parsed, because the
-   * parser caps a series long before this count; a caller that builds the IR itself
+   * parser caps a series long before this count; a caller that builds the model itself
    * has no such cap.
    *
    * A `scatter` whose series carries plain VALUES is the cheap way to reach the range

@@ -1,15 +1,15 @@
 import type { JSX } from 'solid-js'
-import type { ToolCallIR } from '../../ir/toolCall'
+import type { ToolCall } from '../../model/toolCall'
 import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { COPILOT_EVENT, COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { providerRowImages, providerToolCall, providerToolMeta } from '~/test-support/toolCallIr'
+import { providerRowImages, providerToolCall, providerToolMeta } from '~/test-support/toolCallFixture'
+import { renderMessageContent } from '../../messageContentRenderer'
 import { rendererFor } from '../../results/tools'
 import { parsedCall } from '../../results/tools/renderer'
-import { renderMessageContent } from '../../rowRenderers'
 import { toolBodyBorder, toolUseHeader } from '../../toolStyles.css'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
@@ -42,25 +42,28 @@ function complete(data: Record<string, unknown>, toolCallId = CALL) {
 const plugin = () => providerFor(AgentProvider.GITHUB_COPILOT)!
 
 /** The words one call's kind composes for its header, as `ToolMessageLayout` draws them. */
-function titleTextOf(call: ToolCallIR): string {
+function titleTextOf(call: ToolCall): string {
   const { container } = render(() => rendererFor(call).title(parsedCall(call), undefined) as JSX.Element)
   return container.textContent ?? ''
 }
 
 /** Render one row with the sources the store would supply for its pair. */
-function renderRow(row: Record<string, unknown>, request?: Record<string, unknown>, spanType?: string) {
+function renderRow(row: Record<string, unknown>, request?: Record<string, unknown>, spanType?: string, requestVisible = false) {
   const category = plugin().transcript.classify(input(row))
+  const role = request === undefined ? plugin().transcript.spanRole?.(input(row)) ?? 'other' : 'result'
   const sources = testMessageSources({
     current: () => parsed(row),
     ...(request ? { request: () => parsed(request) } : {}),
+    role: () => role,
+    visibleRows: () => ({ request: requestVisible, result: role === 'result' }),
   })
   return render(() => renderMessageContent(row, { premeasureMode: true, ...(spanType !== undefined ? { spanType } : {}), sources }, category, AgentProvider.GITHUB_COPILOT))
 }
 
 /** Render the result half of one tool call, with its start row as the request. */
-function renderResult(args: Record<string, unknown>, toolName: string, result: Record<string, unknown>) {
+function renderResult(args: Record<string, unknown>, toolName: string, result: Record<string, unknown>, requestVisible = false) {
   const request = start(args, toolName)
-  return renderRow(complete(result), request, toolName)
+  return renderRow(complete(result), request, toolName, requestVisible)
 }
 
 describe('copilot native tool rendering', () => {
@@ -71,7 +74,7 @@ describe('copilot native tool rendering', () => {
   it('renders a paired read result without another header or body border', () => {
     const { container } = renderResult({ path: '/project/README.md' }, COPILOT_TOOL.View, {
       result: { content: 'File content' },
-    })
+    }, true)
     expect(container.textContent).toContain('File content')
     expect(container.querySelector(`.${toolUseHeader}`)).toBeNull()
     expect(container.querySelector(`.${toolBodyBorder}`)).toBeNull()
@@ -493,7 +496,7 @@ describe('a copilot tool row the turn interrupted', () => {
     // The row's OWN parsed content carries the completion, which is what marks this
     // copy of the start frame as the call's end.
     const retained = { ...parsed(request), completion: MessageCompletion.INTERRUPTED }
-    const sources = testMessageSources({ current: () => retained, request: () => parsed(request) })
+    const sources = testMessageSources({ current: () => retained, request: () => parsed(request), role: () => 'result', visibleRows: () => ({ request: true, result: true }) })
     return render(() => renderMessageContent(
       request,
       { premeasureMode: true, spanType: COPILOT_TOOL.Bash, sources },

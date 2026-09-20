@@ -1,4 +1,4 @@
-import type { ElicitationRequest } from '../../controls/elicitationForm'
+import type { ElicitationRequest } from '~/components/chat/model/controlPrompt'
 import { COPILOT_EVENT } from '~/generated/contracts/copilot-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { copilotEvent } from './protocol'

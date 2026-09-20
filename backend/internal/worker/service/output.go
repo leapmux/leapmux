@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"google.golang.org/protobuf/encoding/protojson"
+
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -1779,8 +1781,6 @@ func createMessageRow(ctx context.Context, q *db.Queries, params db.CreateMessag
 type messageWrite struct {
 	params  db.CreateMessageParams
 	message *leapmuxv1.AgentChatMessage
-	content agent.MessageContent
-	span    agent.SpanInfo
 }
 
 // prepareMessage keeps one field mapping for ordinary writes and transactional writes.
@@ -1866,12 +1866,18 @@ func (h *OutputHandler) prepareMessage(agentID string, agentProvider leapmuxv1.A
 		AssembledKind:                  assembledKind,
 		Completion:                     completion,
 	}
-	return messageWrite{params: params, message: message, content: content, span: span}
+	return messageWrite{params: params, message: message}
 }
 
 // persistAndBroadcast stores the message before it broadcasts the event.
 // A nil tracker uses the agent's current span snapshot.
 func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo, tracker *SpanTracker) error {
+	provider := agent.ProviderFor(agentProvider)
+	resolved := agent.ResolveMessageContent(provider, content)
+	event, hasTodoEvent := provider.ExtractTodoEvent(span.SpanType, resolved, h.pairedToolUseLookup(agentID, span))
+	if hasTodoEvent {
+		return h.persistMessageWithTodoEvent(agentID, agentProvider, source, content, span, tracker, event)
+	}
 	write := h.prepareMessage(agentID, agentProvider, source, content, span, tracker)
 	seq, err := createMessageRow(bgCtx(), h.queries, write.params)
 	if err != nil {
@@ -1883,35 +1889,95 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 
 // publishMessageWrite runs only after the database commits the message.
 func (h *OutputHandler) publishMessageWrite(write messageWrite, seq int64) {
-	agentID, provider := write.params.AgentID, write.params.AgentProvider
+	agentID := write.params.AgentID
 	h.clearNotifThread(agentID)
 	write.message.Seq = seq
 	h.broadcastMessage(agentID, write.message)
-	// The committed transcript permits later reconciliation if the to-do update fails.
-	if err := h.applyTodoEventForMessage(agentID, provider, write.span, agent.ResolveMessageContent(agent.ProviderFor(provider), write.content)); err != nil {
-		slog.Warn("apply todo event", "agent_id", agentID, "span_type", write.span.SpanType, "error", err)
-	}
 }
 
-// applyTodoEventForMessage extracts a to-do event from the just-persisted
-// message, applies it to agent_todos, and broadcasts AgentTodosChanged
-// on mutation. No-ops (unknown-id update, unknown-id delete, empty
-// snapshot replay) skip the broadcast.
-func (h *OutputHandler) applyTodoEventForMessage(agentID string, provider leapmuxv1.AgentProvider, span agent.SpanInfo, contentJSON []byte) error {
-	if len(contentJSON) == 0 {
+// persistMessageWithTodoEvent stores one provider message and applies its extracted
+// to-do mutation while the canonical list stays locked. A TaskUpdate snapshot enters
+// the message's initial supplement before the transcript row commits.
+func (h *OutputHandler) persistMessageWithTodoEvent(
+	agentID string,
+	agentProvider leapmuxv1.AgentProvider,
+	source leapmuxv1.MessageSource,
+	content agent.MessageContent,
+	span agent.SpanInfo,
+	tracker *SpanTracker,
+	event todoevents.Event,
+) error {
+	ctx := bgCtx()
+	cache := h.todoCache(agentID)
+	cache.Mu.Lock()
+	reg := cache.on(h.queries, agentID)
+	if err := reg.ensureSeededLocked(ctx); err != nil {
+		cache.Mu.Unlock()
+		return err
+	}
+	if event.Kind == todoevents.KindUpdate {
+		snapshot, ok := todoUpdateSnapshot(cache.Rows, event)
+		if !ok {
+			cache.Mu.Unlock()
+			return fmt.Errorf("cannot persist TaskUpdate snapshot for unknown task %q", event.ID)
+		}
+		var err error
+		content, err = withTodoSnapshot(content, snapshot)
+		if err != nil {
+			cache.Mu.Unlock()
+			return err
+		}
+	}
+
+	write := h.prepareMessage(agentID, agentProvider, source, content, span, tracker)
+	seq, err := createMessageRow(ctx, h.queries, write.params)
+	if err != nil {
+		cache.Mu.Unlock()
+		return err
+	}
+	items, mutated, todoErr := h.applyTodoEventLocked(ctx, reg, event)
+	cache.Mu.Unlock()
+
+	h.publishMessageWrite(write, seq)
+	if todoErr != nil {
+		slog.Warn("apply todo event", "agent_id", agentID, "span_type", span.SpanType, "error", todoErr)
 		return nil
 	}
-	// The to-do list is carried in each provider's own message shape, so the
-	// provider plugin reads it -- and states its own cheap discriminator, which is
-	// why no gate runs here. Shared code decides only what to do with the result.
-	// The paired tool_use is a DATABASE read, so it is handed over as a function:
-	// only the parsers that need the input pay for one.
-	ev, ok := agent.ProviderFor(provider).ExtractTodoEvent(
-		span.SpanType, contentJSON, h.pairedToolUseLookup(agentID, span))
-	if !ok {
-		return nil
+	if mutated {
+		h.broadcastTodoChange(agentID, items)
 	}
-	return h.applyExtractedTodoEvent(agentID, ev)
+	return nil
+}
+
+func todoUpdateSnapshot(rows []cachedTodo, event todoevents.Event) (todoevents.Item, bool) {
+	if event.ID == "" {
+		return todoevents.Item{}, false
+	}
+	idx := todoIndexByID(rows, event.ID)
+	if idx < 0 {
+		return todoevents.Item{}, false
+	}
+	return todoevents.ApplyPatch(rows[idx].item, event.Patch), true
+}
+
+func withTodoSnapshot(content agent.MessageContent, item todoevents.Item) (agent.MessageContent, error) {
+	snapshot, err := protojson.Marshal(item.ToProto())
+	if err != nil {
+		return content, fmt.Errorf("encode todo snapshot: %w", err)
+	}
+	fields := make(map[string]json.RawMessage)
+	if len(content.Metadata) > 0 {
+		if err := json.Unmarshal(content.Metadata, &fields); err != nil {
+			return content, fmt.Errorf("decode message metadata for todo snapshot: %w", err)
+		}
+	}
+	fields[contracts.MessageMetadataFieldTodoSnapshot] = snapshot
+	metadata, err := json.Marshal(fields)
+	if err != nil {
+		return content, fmt.Errorf("encode message metadata for todo snapshot: %w", err)
+	}
+	content.Metadata = metadata
+	return content, nil
 }
 
 // applyExtractedTodoEvent applies one to-do event the CALLER already extracted, and
@@ -1930,6 +1996,11 @@ func (h *OutputHandler) applyExtractedTodoEvent(agentID string, ev todoevents.Ev
 	if !mutated {
 		return nil
 	}
+	h.broadcastTodoChange(agentID, items)
+	return nil
+}
+
+func (h *OutputHandler) broadcastTodoChange(agentID string, items []todoevents.Item) {
 	h.watcher.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_TodosChanged{
@@ -1939,7 +2010,6 @@ func (h *OutputHandler) applyExtractedTodoEvent(agentID string, ev todoevents.Ev
 			},
 		},
 	})
-	return nil
 }
 
 // pairedToolUseLookup returns the reader a provider's to-do extractor calls to get
@@ -1986,7 +2056,11 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 	if err := reg.ensureSeededLocked(ctx); err != nil {
 		return nil, false, err
 	}
+	return h.applyTodoEventLocked(ctx, reg, ev)
+}
 
+func (h *OutputHandler) applyTodoEventLocked(ctx context.Context, reg agentTodoView, ev todoevents.Event) ([]todoevents.Item, bool, error) {
+	cache := reg.cache
 	switch ev.Kind {
 	case todoevents.KindSnapshot:
 		return h.applySnapshotLocked(ctx, reg, ev.Snapshot)

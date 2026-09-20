@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeStructuredPatchHunks } from '../ir/fileEditDiff'
+import { normalizeStructuredPatchHunks } from '../model/fileEditDiff'
 import { parseUnifiedDiff } from './unifiedDiffParser'
 
 describe('parseUnifiedDiff', () => {

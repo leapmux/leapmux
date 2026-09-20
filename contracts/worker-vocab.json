@@ -81,7 +81,8 @@
     "ControlRequestID": "control_request_id",
     "ControlRequestClaimToken": "control_request_claim_token",
     "PlanApprovalSettings": "plan_approval_settings",
-    "ToolOutcome": "tool_outcome"
+    "ToolOutcome": "tool_outcome",
+    "TodoSnapshot": "todo_snapshot"
   },
   "notificationFields": {
     "Type": "type",

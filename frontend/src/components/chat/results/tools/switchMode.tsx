@@ -1,6 +1,6 @@
 import Replace from 'lucide-solid/icons/replace'
-import { toolOutcomeLabel } from '../../ir/toolOutcomeLabel'
-import { toolRowStatusOutcome } from '../../ir/toolRowStatus'
+import { toolCallStatusOutcome } from '../../model/toolCallStatus'
+import { toolOutcomeLabel } from '../../results/toolOutcomeLabel'
 import { proseRenderer } from './proseResult'
 
 export const switchModeRenderer = proseRenderer<'switch_mode'>({
@@ -20,7 +20,7 @@ export const switchModeRenderer = proseRenderer<'switch_mode'>({
   // cannot decide which tool that is; a request that words nothing takes the shared
   // outcome word, which reads "Declined".
   outcomeTitle(call) {
-    const outcome = toolRowStatusOutcome(call.status)
+    const outcome = toolCallStatusOutcome(call.status)
     if (outcome === 'declined' && call.request.declinedTitle)
       return call.request.declinedTitle
     return toolOutcomeLabel(outcome ?? 'failed')

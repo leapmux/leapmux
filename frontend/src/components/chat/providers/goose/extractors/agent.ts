@@ -1,4 +1,4 @@
-import type { AgentRequest, AgentRun } from '../../../ir/tools/agent'
+import type { AgentRequest, AgentRun } from '../../../model/tools/agent'
 import { clipFirstLine } from '~/lib/clipFirstLine'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { pickNumber, pickObject, pickString, stringArray } from '~/lib/jsonPick'

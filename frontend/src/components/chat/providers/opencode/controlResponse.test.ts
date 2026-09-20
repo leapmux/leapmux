@@ -1,6 +1,6 @@
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { describe, expect, it } from 'vitest'
-import { openCodeControlResponseDisplay, openCodeQuestionAnswersText } from './controlResponse'
+import { openCodeControlResponseSummary, openCodeQuestionAnswersText } from './controlResponse'
 
 const QUESTION_REQUEST = {
   type: 'question.asked',
@@ -33,10 +33,10 @@ describe('openCodeQuestionAnswersText', () => {
   })
 })
 
-describe('openCodeControlResponseDisplay', () => {
+describe('openCodeControlResponseSummary', () => {
   it('renders question answers for a question.asked request', () => {
     const cr: PersistedControlResponse = { claimToken: 'claim-1', requestId: 'q1', request: QUESTION_REQUEST, response: { result: { answers: [['Build']] } } }
-    expect(openCodeControlResponseDisplay(cr)).toEqual({ kind: 'label', text: 'Task: Build' })
+    expect(openCodeControlResponseSummary(cr)).toEqual({ kind: 'label', text: 'Task: Build' })
   })
 
   it('delegates to the ACP permission path for a non-question request', () => {
@@ -46,7 +46,7 @@ describe('openCodeControlResponseDisplay', () => {
       request: { method: 'session/request_permission', params: { options: [{ optionId: 'proceed_once', name: 'Allow once' }] } },
       response: { result: { outcome: { optionId: 'proceed_once' } } },
     }
-    expect(openCodeControlResponseDisplay(cr)).toEqual({ kind: 'label', text: 'Allow once' })
+    expect(openCodeControlResponseSummary(cr)).toEqual({ kind: 'label', text: 'Allow once' })
   })
 
   describe('request-gone (pruned request absent)', () => {
@@ -55,17 +55,17 @@ describe('openCodeControlResponseDisplay', () => {
     // question headers -- instead of degrading to the generic label.
     it('recovers question answers from the response, labeled by position', () => {
       const cr: PersistedControlResponse = { claimToken: 'claim-1', requestId: 'q1', request: undefined, response: { result: { answers: [['Build'], ['Dev']] } } }
-      expect(openCodeControlResponseDisplay(cr)).toEqual({ kind: 'label', text: 'Question 1: Build\nQuestion 2: Dev' })
+      expect(openCodeControlResponseSummary(cr)).toEqual({ kind: 'label', text: 'Question 1: Build\nQuestion 2: Dev' })
     })
 
     it('recovers a rejected question from the response', () => {
       const cr: PersistedControlResponse = { claimToken: 'claim-1', requestId: 'q1', request: undefined, response: { result: { rejected: true } } }
-      expect(openCodeControlResponseDisplay(cr)).toEqual({ kind: 'label', text: 'Reject' })
+      expect(openCodeControlResponseSummary(cr)).toEqual({ kind: 'label', text: 'Reject' })
     })
 
     it('still resolves a request-gone permission via the response-based ACP path', () => {
       const cr: PersistedControlResponse = { claimToken: 'claim-1', requestId: '7', request: undefined, response: { result: { outcome: { optionId: 'proceed_once' } } } }
-      expect(openCodeControlResponseDisplay(cr)).toEqual({ kind: 'label', text: 'Allow once' })
+      expect(openCodeControlResponseSummary(cr)).toEqual({ kind: 'label', text: 'Allow once' })
     })
   })
 })

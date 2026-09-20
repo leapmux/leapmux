@@ -1,4 +1,4 @@
-import type { Question } from '../../controls/types'
+import type { ControlQuestion } from '../../model/question'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
 import { COPILOT_EVENT } from '~/generated/contracts/copilot-protocol'
 import { pickString } from '~/lib/jsonPick'
@@ -13,7 +13,7 @@ export function copilotPermissionSource(payload: Record<string, unknown>) {
     || pickString(request, 'toolTitle')
     || pickString(request, 'toolName')
     || kind
-  // The command is optional on the IR, so it stays ABSENT for every other kind.
+  // The command is optional on the model, so it stays ABSENT for every other kind.
   const command = kind === 'shell' ? pickString(request, 'fullCommandText', undefined) : undefined
   return {
     title,
@@ -35,7 +35,7 @@ export function copilotIsQuestion(payload: Record<string, unknown>): boolean {
  * answer, so the control offers it exactly where the runtime takes one. A request that
  * states no flag wants one of its choices, and the submit then waits for one.
  */
-export function copilotQuestions(payload: Record<string, unknown>): Question[] {
+export function copilotQuestions(payload: Record<string, unknown>): ControlQuestion[] {
   const data = copilotEvent(payload)?.data
   if (!data)
     return []

@@ -1,4 +1,5 @@
-import type { ControlAnswerState, ControlResponseSender, Question } from '../../controls/types'
+import type { ControlAnswerState, ControlResponseSender } from '../../controls/types'
+import type { ControlQuestion } from '../../model/question'
 import { CURSOR_METHOD } from '~/generated/contracts/cursor-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { sendResponse } from '../../controls/types'
@@ -15,7 +16,7 @@ export function isCursorCreatePlanPayload(payload: Record<string, unknown>): boo
   return payload.method === CURSOR_METHOD.CreatePlan
 }
 
-export function getCursorQuestions(payload: Record<string, unknown>): Question[] {
+export function getCursorQuestions(payload: Record<string, unknown>): ControlQuestion[] {
   const params = getCursorParams(payload)
   if (!Array.isArray(params?.questions))
     return []
@@ -40,7 +41,7 @@ export function getCursorQuestions(payload: Record<string, unknown>): Question[]
 export function sendCursorQuestionResponse(
   onRespond: ControlResponseSender,
   requestId: string,
-  questions: Question[],
+  questions: ControlQuestion[],
   answerState: ControlAnswerState,
 ): Promise<void> {
   // Cursor's own answer carries `freeformText` beside `selectedOptionIds`, and its own

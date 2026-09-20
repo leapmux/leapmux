@@ -1,8 +1,8 @@
-import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
-import type { SwitchModeRequest } from '../../../ir/tools/switchMode'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { SwitchModeRequest } from '../../../model/tools/switchMode'
 import type { ClaudeToolRow } from './toolCommon'
 import { pickString } from '~/lib/jsonPick'
-import { proseResult, unparsedResult } from '../../../ir/toolCall'
+import { proseResult, unparsedResult } from '../../../model/toolCall'
 import { CLAUDE_TOOL_NAMES } from '../toolNames'
 
 /**
@@ -15,7 +15,7 @@ import { CLAUDE_TOOL_NAMES } from '../toolNames'
  * provider, so it cannot tell this tool from one whose refusal really is a failure --
  * Pi's, which answers `failed`.
  */
-export function claudeSwitchModePayload(request: SwitchModeRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'switch_mode'> {
+export function claudeSwitchModeSpec(request: SwitchModeRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'switch_mode'> {
   const toolName = args.toolName
   const exitPlan = toolName === CLAUDE_TOOL_NAMES.EXIT_PLAN_MODE
   // The header word rides only when the tool states one; absent lets `request.mode`

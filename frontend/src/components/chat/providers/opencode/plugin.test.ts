@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { assembledMessageRow } from '~/test-support/assembledMessages'
-import { providerQuotableText } from '~/test-support/toolCallIr'
+import { providerQuotableText } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
 import { acpResultDivider } from '../acp/extractors/resultDivider'
 import { describeACPProviderBasics, renderACPRow } from '../acp/testUtils'
@@ -45,7 +45,7 @@ describe('opencode classify', () => {
   describeACPProviderBasics(AgentProvider.OPENCODE, { text: true, image: true, pdf: true, binary: true })
 
   // The neutral {isSynthetic, controlResponse} row -> control_response classification is provider-
-  // agnostic and lives in classifyMessage (see messageClassification.test.ts); this plugin test
+  // agnostic and lives in classifyMessage (see messageClassifier.test.ts); this plugin test
   // covers only OpenCode's own controlResponseDisplay derivation.
   it('wires controlResponseDisplay: question answers, else the ACP permission path', () => {
     expect(plugin?.controls?.controlResponseDisplay!({

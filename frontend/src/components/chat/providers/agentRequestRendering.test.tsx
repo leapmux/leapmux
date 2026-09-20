@@ -2,7 +2,7 @@ import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { renderMessageContent } from '../rowRenderers'
+import { renderMessageContent } from '../messageContentRenderer'
 import { providerFor } from './registry'
 import { input } from './testUtils'
 import './index'
@@ -25,7 +25,12 @@ describe.each([AgentProvider.CLAUDE_CODE, AgentProvider.ZCODE, AgentProvider.OPE
       : provider === AgentProvider.ZCODE
         ? { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', result: { success: true, content: 'Done' } } }
         : { sessionUpdate: 'tool_call_update', toolCallId: 'call', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'Done' } }] }
-    const sources = testMessageSources({ current: () => input(request), result: () => completed ? input(result) : undefined })
+    const sources = testMessageSources({
+      current: () => input(request),
+      result: () => completed ? input(result) : undefined,
+      role: () => 'request',
+      visibleRows: () => ({ request: true, result: completed }),
+    })
     return { ...render(() => renderMessageContent(request, { premeasureMode: true, sources }, providerFor(provider)!.transcript.classify(input(request)), provider)), request }
   }
 

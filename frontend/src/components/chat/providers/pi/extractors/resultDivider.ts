@@ -1,4 +1,4 @@
-import type { DividerIR } from '../../../ir/divider'
+import type { TurnEnd } from '../../../model/divider'
 import { PI_EVENT } from '~/generated/contracts/pi-protocol'
 import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickBool, pickNumber, pickString } from '~/lib/jsonPick'
@@ -42,7 +42,7 @@ function lastAssistantMessage(messages: unknown): Record<string, unknown> | null
  * reader asked for. LeapMux knows which it is, because it sent the abort, and
  * `completion` is where it records that.
  */
-export function piResultDivider(parsed: unknown, completion?: MessageCompletion): DividerIR | null {
+export function piResultDivider(parsed: unknown, completion?: MessageCompletion): TurnEnd | null {
   if (!isObject(parsed) || pickString(parsed, 'type') !== PI_EVENT.AgentEnd)
     return null
 

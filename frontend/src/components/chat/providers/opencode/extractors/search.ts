@@ -1,7 +1,7 @@
-import type { SearchResultLine } from '../../../ir/searchResult'
+import type { SearchMatch } from '../../../model/searchResult'
 
 /** Read OpenCode's grouped grep output only when every row matches its native format. */
-export function openCodeSearchLines(text: string, count: number, truncated = false): SearchResultLine[] | null {
+export function openCodeSearchLines(text: string, count: number, truncated = false): SearchMatch[] | null {
   if (!Number.isSafeInteger(count) || count < 0)
     return null
   if (count === 0 && text.trim() === 'No files found')
@@ -12,7 +12,7 @@ export function openCodeSearchLines(text: string, count: number, truncated = fal
     return null
   if (heading[0].includes('(more matches available)') && !truncated)
     return null
-  const matches: SearchResultLine[] = []
+  const matches: SearchMatch[] = []
   let path = ''
   let pathHasMatch = false
   let ended = false

@@ -1,4 +1,4 @@
-import type { ElicitationRequest } from '../../controls/elicitationForm'
+import type { ElicitationRequest } from '~/components/chat/model/controlPrompt'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { MCP_ELICITATION_APPROVAL_SCOPE } from '~/generated/contracts/mcp-elicitation'
 import { PI_DIALOG_METHOD, PI_EVENT, PI_MCP_APPROVAL_CHOICE, PI_MCP_APPROVAL_TEXT } from '~/generated/contracts/pi-protocol'

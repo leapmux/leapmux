@@ -1,8 +1,9 @@
-import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
+import type { ControlResponseSummary } from '../../model/controlResponse'
+import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { CURSOR_METHOD } from '~/generated/contracts/cursor-protocol'
 import { isObject, pickObject, pickString, stringArray } from '~/lib/jsonPick'
 import { feedbackOrLabel, firstNonEmpty, joinAnswerLines, label, labeledAnswerLine, labelOrNull } from '../../persistedControlResponse'
-import { acpControlResponseDisplay } from '../acp/controlResponse'
+import { acpControlResponseSummary } from '../acp/controlResponse'
 
 /** The transformed/native outcome object at `result.outcome`, or undefined when absent. */
 function cursorOutcome(response: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
@@ -87,7 +88,7 @@ function cursorAnswerLines(
 function cursorQuestionDisplay(
   request: Record<string, unknown> | undefined,
   response: Record<string, unknown> | undefined,
-): ControlResponseDisplay | null {
+): ControlResponseSummary | null {
   const outcome = cursorOutcome(response)
   if (!outcome)
     return null
@@ -107,7 +108,7 @@ function cursorQuestionDisplay(
  * (`result.outcome.{outcome, reason}`): accepted -> "Accept"; rejected/cancelled -> the reason as
  * feedback, or "Reject"/"Cancel" when bare.
  */
-function cursorCreatePlanDisplay(response: Record<string, unknown> | undefined): ControlResponseDisplay | null {
+function cursorCreatePlanDisplay(response: Record<string, unknown> | undefined): ControlResponseSummary | null {
   const outcome = cursorOutcome(response)
   if (!outcome)
     return null
@@ -135,7 +136,7 @@ function cursorCreatePlanDisplay(response: Record<string, unknown> | undefined):
  * nothing and the row degrades to the neutral "Responded" -- an accepted limitation (the raw option
  * ids would be opaque tokens), not a recovery we can complete here.
  */
-export function cursorControlResponseDisplay(cr: PersistedControlResponse): ControlResponseDisplay | null {
+export function cursorControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
   switch (pickString(cr.request, 'method', '')) {
     case CURSOR_METHOD.AskQuestion:
       return cursorQuestionDisplay(cr.request, cr.response)
@@ -144,8 +145,8 @@ export function cursorControlResponseDisplay(cr: PersistedControlResponse): Cont
     case '':
       return cursorCreatePlanDisplay(cr.response)
         ?? cursorQuestionDisplay(cr.request, cr.response)
-        ?? acpControlResponseDisplay(cr)
+        ?? acpControlResponseSummary(cr)
     default:
-      return acpControlResponseDisplay(cr)
+      return acpControlResponseSummary(cr)
   }
 }

@@ -1,6 +1,6 @@
 import type { ToolKindRenderer } from './renderer'
 import Globe from 'lucide-solid/icons/globe'
-import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../../ir/collapse'
+import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../collapse'
 import { WebFetchResultBody } from '../webFetchResult'
 import { renderUrlTitle } from './titleParts'
 

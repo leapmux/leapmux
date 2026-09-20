@@ -1,9 +1,9 @@
-import type { McpCallFacts, McpContentItem } from '../../../ir/mcpToolCall'
+import type { McpCallFacts, McpContentItem } from '../../../model/mcpToolCall'
 import { CODEX_ITEM } from '~/generated/contracts/codex-protocol'
 import { parseImageBlock } from '~/lib/imageBlocks'
 import { prettifyArgsJson, prettifyStructuredJson } from '~/lib/jsonFormat'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { parseMcpContentItem } from '../../../ir/mcpToolCall'
+import { parseMcpContentItem } from '../../../model/mcpToolCall'
 
 /**
  * Read the wire facts of a Codex MCP item. Handles both `mcpToolCall`

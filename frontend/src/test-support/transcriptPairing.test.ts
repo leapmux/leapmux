@@ -43,7 +43,7 @@ interface PairCase {
    * a landed result onto the request frame. Absent states the request keeps its
    * own unfinished word, which most protocols do.
    */
-  requestStatus?: 'completed' | 'failed' | 'cancelled' | 'declined'
+  requestStatus?: 'completed' | 'failed' | 'cancelled' | 'declined' | 'incomplete'
 }
 
 const CASES: PairCase[] = [
@@ -77,9 +77,9 @@ const CASES: PairCase[] = [
     // The item's own status word: 'completed' with an aggregated output is a
     // finished call, and the request's 'inProgress' frame must not outvote it.
     status: 'completed',
-    // The request row's call reads the landed result side, so the call it draws
-    // is finished even while its own frame still says `inProgress`.
-    requestStatus: 'completed',
+    // The request frame carries no output of its own. The landed sibling makes the
+    // row final, but it does not let this frame invent the sibling's result body.
+    requestStatus: 'incomplete',
   },
   {
     label: 'Copilot',

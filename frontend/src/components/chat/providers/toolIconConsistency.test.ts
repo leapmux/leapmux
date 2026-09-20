@@ -4,7 +4,7 @@ import { ACP_TOOL_KIND } from '~/generated/contracts/acp-protocol'
 import { rendererFor } from '../results/tools'
 import { claudeToolIcon, claudeToolKind } from './claude/toolKinds'
 import { CLAUDE_TOOL_NAMES } from './claude/toolNames'
-import { piToolCallIR, piToolRow } from './pi/extractors/toolCall'
+import { piToolCall, piToolRow } from './pi/extractors/toolCall'
 
 describe('read tool icons', () => {
   // Pi states no icon of its own, so the row takes the KIND's icon -- which is the
@@ -16,7 +16,7 @@ describe('read tool icons', () => {
       toolName: 'read',
       args: { path: '/tmp/a.ts' },
     }, undefined, undefined)!
-    const call = piToolCallIR(row)
+    const call = piToolCall(row)
     expect(call.icon).toBeUndefined()
     expect(rendererFor(call).icon).toBe(Eye)
   })

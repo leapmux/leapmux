@@ -1,8 +1,8 @@
 import type { ToolKindRenderer } from './renderer'
 import Eye from 'lucide-solid/icons/eye'
 import { relativizePath } from '~/lib/paths'
-import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../../ir/collapse'
-import { readFileBodyText } from '../../ir/readFileResult'
+import { readFileBodyText } from '../../model/readFileResult'
+import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../collapse'
 import { ReadFileResultBody } from '../readFileResult'
 import { renderReadTitle } from './titleParts'
 

@@ -1,8 +1,8 @@
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { TodoItem } from '~/models/todo'
+import { rawTodosToItems } from '~/components/chat/normalizers/todo'
 import { CURSOR_EXTENSION_FRAME, CURSOR_METHOD, CURSOR_SUPPLEMENT } from '~/generated/contracts/cursor-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { rawTodosToItems } from '~/models/todo'
 
 /**
  * One `cursor/*` extension frame, as the worker stored it on a tool row.

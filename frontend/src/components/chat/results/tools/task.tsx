@@ -1,7 +1,6 @@
 import type { ToolKindRenderer } from './renderer'
 import ClockFading from 'lucide-solid/icons/clock-fading'
-import { taskResultCollapsible } from '../../ir/tools/task'
-import { StatusResultBody } from '../statusResult'
+import { StatusResultBody, taskResultCollapsible } from '../statusResult'
 
 export const taskRenderer: ToolKindRenderer<'task'> = {
   icon: ClockFading,

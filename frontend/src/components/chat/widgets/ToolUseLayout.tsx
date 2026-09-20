@@ -1,7 +1,7 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
 import type { ToolHeaderActionsCallerProps } from '../messageActions'
-import type { RenderContext } from '../messageRenderers'
+import type { ToolLayoutContext } from '../renderContext'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import { children, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
@@ -30,7 +30,7 @@ export function ToolUseLayout(props: {
   hasDiff?: boolean
   diffView?: DiffViewPreference
   onDiffViewChange?: (view: DiffViewPreference) => void
-  context?: RenderContext
+  context?: ToolLayoutContext
   expanded?: boolean
   onToggleExpand?: () => void
   expandLabel?: string

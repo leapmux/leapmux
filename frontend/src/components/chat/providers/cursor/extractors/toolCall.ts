@@ -1,15 +1,15 @@
-import type { QuestionIR } from '../../../ir/questionBody'
-import type { SearchBodyKind } from '../../../ir/searchResult'
-import type { ToolCallPayloadIR } from '../../../ir/toolCall'
-import type { ToolKind } from '../../../ir/toolKind'
+import type { QuestionPrompt } from '../../../model/question'
+import type { SearchToolKind } from '../../../model/searchResult'
+import type { ToolCallSpec } from '../../../model/toolCall'
+import type { ToolKind } from '../../../model/toolKind'
 import type { ACPToolCallAdapter, ACPToolFacts } from '../../acp/extractors/toolCall'
 import { ACP_SUPPLEMENT, ACP_SUPPLEMENT_REQUEST } from '~/generated/contracts/acp-protocol'
 import { CURSOR_TOOL } from '~/generated/contracts/cursor-protocol'
 import { isObject, pickBoolean, pickFirstString, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { mcpToolCallRequest } from '../../../ir/mcpToolCall'
-import { readFileResultFromContent } from '../../../ir/readFileResult'
-import { failedResult, proseResult, unparsedResult } from '../../../ir/toolCall'
-import { acpBasePayload, acpPayloadFor, acpRemapFacts } from '../../acp/extractors/toolCall'
+import { mcpToolCallRequest } from '../../../model/mcpToolCall'
+import { readFileResultFromContent } from '../../../model/readFileResult'
+import { failedResult, proseResult, unparsedResult } from '../../../model/toolCall'
+import { acpBaseSpec, acpRemapFacts, acpSpecFor } from '../../acp/extractors/toolCall'
 import { questionsFromRecords } from '../../questionRecords'
 import { TOOL_FILE_PATH_KEYS } from '../../toolInputKeys'
 import { cursorAgentCall } from '../extractors/agent'
@@ -43,7 +43,7 @@ const CURSOR_TOOL_GENERATE_IMAGE = 'generateImage'
  * narrows nothing, so the payload built under it was checked against every kind at
  * once and a result field that belonged to none still compiled.
  */
-function isSearchKind(kind: ToolKind): kind is SearchBodyKind {
+function isSearchKind(kind: ToolKind): kind is SearchToolKind {
   return kind === 'search' || kind === 'glob' || kind === 'grep'
 }
 
@@ -54,7 +54,7 @@ function isSearchKind(kind: ToolKind): kind is SearchBodyKind {
  * row is the transcript record of an interaction the reader answered in the control
  * banner, so it states the question and the choices that were offered.
  */
-function cursorQuestions(input: Record<string, unknown>): QuestionIR[] {
+function cursorQuestions(input: Record<string, unknown>): QuestionPrompt[] {
   return questionsFromRecords(
     input.questions,
     (question) => {
@@ -91,7 +91,7 @@ function cursorQuestions(input: Record<string, unknown>): QuestionIR[] {
  * is the one part that stays constant. The file-name search writes `Find`, then an
  * optional path and an optional pattern, each one inside backticks.
  */
-export function cursorSearchKind(tool: Record<string, unknown>, raw: Record<string, unknown> | null): SearchBodyKind {
+export function cursorSearchKind(tool: Record<string, unknown>, raw: Record<string, unknown> | null): SearchToolKind {
   const title = pickString(tool, 'title')
   if (title === 'Find' || title.startsWith('Find `'))
     return 'glob'
@@ -113,7 +113,7 @@ export function cursorSearchKind(tool: Record<string, unknown>, raw: Record<stri
  * five tools that state their own name in `rawInput` follow; everything else reads
  * the protocol frame through the shared build, with the search shape repaired first.
  */
-function cursorToolCall(source: ACPToolFacts): ToolCallPayloadIR {
+function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
   const stored = cursorStoredRestore(source)
   // The saved record's own output OUTRANKS the frame's collected text, which is what
   // `CursorStoredRestore.output` declares. Cursor answers in `rawOutput` and sends no
@@ -121,7 +121,7 @@ function cursorToolCall(source: ACPToolFacts): ToolCallPayloadIR {
   // and a record this build does not recognize, or a call that failed, then had
   // nothing at all to state.
   const facts = stored?.output && stored.output !== source.text ? { ...source, text: stored.output } : source
-  const base = () => acpBasePayload(facts)
+  const base = () => acpBaseSpec(facts)
   const tool = facts.tool
   const raw = pickObject(tool, ACP_SUPPLEMENT.RawOutput)
   const input = stored?.args ?? facts.args
@@ -130,7 +130,7 @@ function cursorToolCall(source: ACPToolFacts): ToolCallPayloadIR {
   // name is what the coverage table and the MCP card key on.
   const named = pickString(input, '_toolName')
   const name = named || stored?.name
-  // `toolCall` folds an absent name onto the envelope's own, so the key rides only
+  // `createToolCall` folds an absent name onto the envelope's own, so the key rides only
   // when one was read.
   const nameSlot = name !== undefined ? { name } : {}
   const extension = cursorExtension(facts.extra)
@@ -200,7 +200,7 @@ function cursorToolCall(source: ACPToolFacts): ToolCallPayloadIR {
       // while the approval is open, and the completing row's result draws it after.
       // A dump of the JSON that carried it is what a reader saw instead, never here.
       // `proposal` is the TYPED field for it, so the shared renderer reads a name
-      // the IR declares rather than a key Cursor happens to spell.
+      // the model declares rather than a key Cursor happens to spell.
       request: { ...(plan ? { proposal: plan } : {}) },
       ...(facts.finished ? { result: proseResult(plan || facts.text, 'markdown') } : {}),
     }
@@ -216,7 +216,7 @@ function cursorToolCall(source: ACPToolFacts): ToolCallPayloadIR {
   // sits above the execute, read and search branches, so testing the arguments by
   // themselves rebuilt any call that happened to carry both keys as an MCP card and
   // dropped its command, file or search body.
-  if ((facts.wireKind === '' || facts.wireKind === 'other') && pickString(input, 'toolName') && pickString(input, 'providerIdentifier')) {
+  if ((facts.wireKind === 'unspecified' || facts.wireKind === 'other') && pickString(input, 'toolName') && pickString(input, 'providerIdentifier')) {
     const server = pickString(input, 'providerIdentifier')
     const toolName = pickString(input, 'toolName')
     const args = pickObject(input, 'args') ?? {}
@@ -330,7 +330,7 @@ function cursorToolCall(source: ACPToolFacts): ToolCallPayloadIR {
   // arguments over the frame's, and the shared request reads `facts.args`, so a
   // pattern that only the record carried was lost on this path.
   if (kind !== facts.wireKind)
-    return acpPayloadFor(acpRemapFacts(facts, { tool: { ...tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: input }, kind }), kind)
+    return acpSpecFor(acpRemapFacts(facts, { tool: { ...tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: input }, kind }), kind)
   return base()
 }
 

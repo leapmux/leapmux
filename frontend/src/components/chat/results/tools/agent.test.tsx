@@ -2,7 +2,7 @@ import type { RenderContext } from '~/components/chat/messageRenderers'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { checkKindModule } from '~/test-support/kindTestHarness'
 import { elementText } from '~/test-support/messageRenderProbes'
-import { toolCallIr } from '~/test-support/toolCallIr'
+import { toolCallFixture } from '~/test-support/toolCallFixture'
 import { subagentsFrom } from '../../renderContext'
 import { agentRenderer } from './agent'
 import { parsedCall } from './renderer'
@@ -21,7 +21,7 @@ describe('agent renderer', () => {
   // label alone (Codex's `spawnAgent` calls itself "Subagent"). The row then reads the
   // same as the Background tasks entry it points at.
   it('prefers the background-task title over the launch description', () => {
-    const call = toolCallIr('agent', {
+    const call = toolCallFixture('agent', {
       request: { description: 'Subagent', prompt: 'Go.', registryKey: 'child-1' },
     })
     const context = { subagents: subagentsFrom({ backgroundTask: () => ({ title: 'Fix the failing build' }) as never }) } as unknown as RenderContext

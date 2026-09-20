@@ -1,26 +1,27 @@
-import type { ChatRowIR, ToolRowRole } from '../../../ir/row'
-import type { ToolCallIR } from '../../../ir/toolCall'
+import type { ChatRow, ToolSpanRowRole } from '../../../model/row'
+import type { ToolCall } from '../../../model/toolCall'
 import type { RowExtractionInput } from '~/components/chat/rowExtractionTypes'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject } from '~/lib/jsonPick'
-import { toolCallRow } from '../../../ir/row'
-import { SYNTHETIC_TOOL_LIFECYCLE, toolCall } from '../../../ir/toolCall'
 import { leapmuxPlanExecutionRow, leapmuxUserRow } from '../../../leapmuxRows'
+import { createToolCall } from '../../../model/createToolCall'
+import { toolCallRow } from '../../../model/row'
+import { SYNTHETIC_TOOL_LIFECYCLE } from '../../../model/toolCallLifecycle'
 import { piContentText } from '../messageContent'
 import { piSubagentNotifications } from './customMessage'
 import { piPlanStatement } from './plan'
-import { piToolCallIR, piToolRow, piToolRowRole } from './toolCall'
+import { piToolCall, piToolRow, piToolSpanRowRole } from './toolCall'
 import { piExtractTool } from './toolCommon'
 
 /**
- * Read one Pi row into the shared row IR.
+ * Read one Pi row into the shared row model.
  *
  * Pi's stream is flat JSONL, so the row's own `type` and the classification already
  * agree on what this is; the work here is turning the frame into the neutral shape.
  */
-export function piExtractRow(input: RowExtractionInput): ChatRowIR | null {
-  const { category, parsed, sides } = input
+export function piExtractRow(input: RowExtractionInput): ChatRow | null {
+  const { category, resolved: parsed, span } = input
   const payload = parsed.parentObject
   switch (category.kind) {
     case 'assistant_text': {
@@ -44,9 +45,9 @@ export function piExtractRow(input: RowExtractionInput): ChatRowIR | null {
       return plan?.kind === 'plan' ? { kind: 'assistant-plan', text: plan.text } : null
     }
     case 'tool_use':
-      return piToolSpanRow(payload, parsed, sides)
+      return piToolSpanRow(payload, parsed, span)
     case 'tool_result':
-      return isObject(payload) ? piResultRow(payload, parsed, sides) : null
+      return isObject(payload) ? piResultRow(payload, parsed, span) : null
     case 'user_content':
       return leapmuxUserRow(payload)
     case 'plan_execution':
@@ -78,8 +79,8 @@ function piSideIsMine(callId: string, side: ParsedMessageContent | undefined): b
 function piToolSpanRow(
   payload: unknown,
   parsed: ParsedMessageContent,
-  sides: RowExtractionInput['sides'],
-): ChatRowIR | null {
+  span: RowExtractionInput['span'],
+): ChatRow | null {
   if (!isObject(payload))
     return null
   const own = piExtractTool(payload)
@@ -89,14 +90,14 @@ function piToolSpanRow(
   // the arguments, the end event the payload. A sibling from another call is no
   // side of this one at all -- one turn can run several calls at once.
   const mine = (side: ParsedMessageContent | undefined) => !!side && piSideIsMine(own.toolCallId, side)
-  const request = mine(sides.request) ? sides.request : undefined
-  const result = mine(sides.result) ? sides.result : undefined
+  const request = mine(span.request) ? span.request : undefined
+  const result = mine(span.result) ? span.result : undefined
   const row = piToolRow(payload, request, result, parsed.completion)
   if (!row)
     return null
-  const call: ToolCallIR = piToolCallIR(row, parsed.completion)
-  const role: ToolRowRole = piToolRowRole(row)
-  return toolCallRow(call, role, { request: !!request, result: !!result })
+  const call: ToolCall = piToolCall(row, parsed.completion)
+  const role: ToolSpanRowRole = piToolSpanRowRole(row)
+  return toolCallRow(call, role, span.visibleRows)
 }
 
 /**
@@ -108,8 +109,8 @@ function piToolSpanRow(
 function piResultRow(
   payload: Record<string, unknown>,
   parsed: ParsedMessageContent,
-  sides: RowExtractionInput['sides'],
-): ChatRowIR | null {
+  span: RowExtractionInput['span'],
+): ChatRow | null {
   const notifications = piSubagentNotifications(payload)
   if (notifications) {
     // Each notification is one finished subagent. They share a row, so the first one
@@ -118,11 +119,11 @@ function piResultRow(
     const [first, ...rest] = notifications
     if (!first)
       return null
-    const call = toolCall(
+    const call = createToolCall(
       { id: '', name: PI_TOOL.Agent, lifecycle: SYNTHETIC_TOOL_LIFECYCLE },
       { kind: 'agent', title: first.description || 'Subagent', request: { description: first.description || 'Subagent', prompt: '' }, result: { agents: [first, ...rest] } },
     )
     return toolCallRow(call, 'result', { request: false, result: false })
   }
-  return piToolSpanRow(payload, parsed, sides)
+  return piToolSpanRow(payload, parsed, span)
 }

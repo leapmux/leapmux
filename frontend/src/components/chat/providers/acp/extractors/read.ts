@@ -1,7 +1,7 @@
-import type { ReadFileResult } from '../../../ir/readFileResult'
+import type { ReadFileResult } from '../../../model/readFileResult'
 import { ACP_SUPPLEMENT_REQUEST } from '~/generated/contracts/acp-protocol'
 import { pickFirstString, pickObject } from '~/lib/jsonPick'
-import { parseReadContent } from '../../../ir/readFileResult'
+import { parseReadContent } from '../../../model/readFileResult'
 import { TOOL_FILE_PATH_KEYS } from '../../toolInputKeys'
 import { collectAcpToolText } from '../content'
 

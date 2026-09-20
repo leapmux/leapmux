@@ -1,7 +1,7 @@
 import type { ToolFailureFixture, ToolVocabularyCheck } from '~/test-support/toolVocabulary'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { providerToolCall } from '~/test-support/toolCallIr'
+import { providerToolCall } from '~/test-support/toolCallFixture'
 import { describeToolFailureLadder, describeToolResultCorpus } from '~/test-support/toolResultCases'
 import { fixturesOnTheUncategorizedKind, openingFrameOf } from '~/test-support/toolVocabulary'
 import { KILO_TOOL_KINDS } from './toolKinds'

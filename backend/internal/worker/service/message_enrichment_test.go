@@ -354,6 +354,12 @@ func TestReadToolResultAnswersNothingForASpanWithNoRow(t *testing.T) {
 func TestEnrichmentReadsThePairedToolUseOnce(t *testing.T) {
 	t.Parallel()
 	sink, _ := newGitStatusFixture(t)
+	createUse := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskCreate","input":{"subject":"Original"}}]}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: createUse}, agent.SpanInfo{SpanID: "create-1", SpanType: "TaskCreate"}))
+	createResult := []byte(`{"type":"user","message":{"content":[]},"tool_use_result":{"task":{"id":"1","subject":"Original"}}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		agent.MessageContent{Original: createResult}, agent.SpanInfo{SpanID: "create-1", SpanType: "TaskCreate"}))
 	counter := &countingDBTX{DBTX: sink.h.db}
 	sink.h.queries = db.New(counter)
 

@@ -77,7 +77,7 @@ export function rowBodyActivators(activators: DragActivatorProps): DragActivator
 
 /** `onPointerdown` → `pointerdown`, the DOM event name a handler key specifies. */
 function eventNameOf(handlerKey: string): string {
-  return handlerKey.replace(/^on/, '').replace(/^([A-Z])/, lead => lead.toLowerCase())
+  return handlerKey.replace(/^on/, '').replace(/^[A-Z]/, lead => lead.toLowerCase())
 }
 
 /**

@@ -1,4 +1,4 @@
-import type { DividerIR } from '../../../ir/divider'
+import type { TurnEnd } from '../../../model/divider'
 import { ZCODE_EVENT, ZCODE_RESULT } from '~/generated/contracts/zcode-protocol'
 import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { turnEndLabel } from '../../../turnEndLabel'
@@ -24,7 +24,7 @@ const ZCODE_FAILED_RESULTS: ReadonlyMap<string, string> = new Map([
  * millisecond `duration`, while `turn.failed` states an `error` object. Returns null
  * for any other row so the caller falls back to the raw-JSON renderer.
  */
-export function zcodeResultDivider(parsed: unknown): DividerIR | null {
+export function zcodeResultDivider(parsed: unknown): TurnEnd | null {
   const envelope = zcodeEnvelope(parsed)
   if (!envelope)
     return null
@@ -50,7 +50,7 @@ export function zcodeResultDivider(parsed: unknown): DividerIR | null {
     const message = pickString(error, 'message')
     const code = pickString(error, 'code') || pickString(error, 'type')
     const detail = pickString(error, 'detail')
-    const model: DividerIR = {
+    const model: TurnEnd = {
       label: turnEndLabel('failed', { qualifiers: [code], reason: message }),
       isError: true,
     }

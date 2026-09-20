@@ -1,24 +1,24 @@
-import type { CommandExit } from '../../../ir/commandResult'
-import type { ToolCallPayload, ToolCallPayloadIR } from '../../../ir/toolCall'
-import type { ToolKind } from '../../../ir/toolKind'
+import type { CommandExit } from '../../../model/commandResult'
+import type { ToolCallSpec } from '../../../model/toolCall'
+import type { ToolKind } from '../../../model/toolKind'
 import type { ACPToolCallAdapter, ACPToolFacts } from '../../acp/extractors/toolCall'
+import { rawTodosToItems } from '~/components/chat/normalizers/todo'
 import { ACP_SUPPLEMENT, ACP_SUPPLEMENT_REQUEST } from '~/generated/contracts/acp-protocol'
 import { GOOSE_SUBAGENT } from '~/generated/contracts/goose-protocol'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { rawTodosToItems } from '~/models/todo'
-import { splitExitCodeMarker } from '../../../ir/exitCodeMarker'
-import { mcpToolCallRequest, parseMcpContentItem } from '../../../ir/mcpToolCall'
-import { readFileResultFromContent } from '../../../ir/readFileResult'
-import { failedResult, isFailedResult, isUnparsedResult } from '../../../ir/toolCall'
+import { splitExitCodeMarker } from '../../../model/exitCodeMarker'
+import { mcpToolCallRequest, parseMcpContentItem } from '../../../model/mcpToolCall'
+import { readFileResultFromContent } from '../../../model/readFileResult'
+import { failedResult, isToolFailureResult, isUnparsedToolResult } from '../../../model/toolCall'
 import { flattenAcpContent } from '../../acp/content'
-import { acpPayloadFor, acpRemapFacts, acpToolFacts } from '../../acp/extractors/toolCall'
+import { acpRemapFacts, acpSpecFor, acpToolFacts } from '../../acp/extractors/toolCall'
 import { gooseAgentRequest, gooseAgentResult } from '../extractors/agent'
 import { gooseSubagentToolCall, isGooseSubagentToolRequest } from '../extractors/subagentToolRequest'
 import { GOOSE_DEVELOPER_EXTENSION, GOOSE_DEVELOPER_TOOL, GOOSE_TODO_EXTENSION, GOOSE_TODO_TOOL, GOOSE_TOOL_KINDS, isGooseDeveloperTool } from '../toolKinds'
 
 /**
- * One `read_image` payload, with the file and the size the result states.
+ * One `read_image` specification, with the file and the size the result states.
  *
  * The image itself already reaches the call: Goose sends it as an ACP image content
  * block beside the text summary, and the shared collector reads it. What that
@@ -34,21 +34,21 @@ import { GOOSE_DEVELOPER_EXTENSION, GOOSE_DEVELOPER_TOOL, GOOSE_TODO_EXTENSION, 
  * `originalWidth` / `originalHeight` are deliberately unread: they describe the file
  * before Goose scaled it down, and the row draws the bytes it received.
  */
-function gooseImagePayload<K extends ToolKind>(payload: ToolCallPayload<K>, tool: Record<string, unknown>, input: Record<string, unknown>): ToolCallPayload<K> {
+function gooseImageSpec<K extends ToolKind>(spec: ToolCallSpec<K>, tool: Record<string, unknown>, input: Record<string, unknown>): ToolCallSpec<K> {
   const raw = pickObject(tool, ACP_SUPPLEMENT.RawOutput)
   const filePath = pickString(raw, 'source') || pickString(input, 'source')
   const width = pickNumber(raw, 'width', undefined)
   const height = pickNumber(raw, 'height', undefined)
   const dimensions = width !== undefined && height !== undefined && width > 0 && height > 0 ? { width, height } : undefined
-  // `images` is declared on every payload, so it is read straight off. The old
+  // `images` is declared on every specification, so it is read straight off. The old
   // hand-written `{ images?: Array<{ filePath?, dimensions? }> }` intersection was a
   // second, weaker copy of `ImageResultSource` that would keep compiling after the
   // real one gained a field.
-  const images = payload.images ?? []
+  const images = spec.images ?? []
   if (!filePath && !dimensions)
-    return payload
+    return spec
   return {
-    ...payload,
+    ...spec,
     label: 'Read Image',
     images: images.map(image => ({
       ...image,
@@ -61,7 +61,7 @@ function gooseImagePayload<K extends ToolKind>(payload: ToolCallPayload<K>, tool
 /** Goose puts stable tool identity in metadata. Its generated title can change. */
 export const gooseToolCallAdapter: ACPToolCallAdapter = (facts, base) => gooseCall(facts, base)
 
-function gooseCall(facts: ACPToolFacts, base: () => ToolCallPayloadIR): ToolCallPayloadIR {
+function gooseCall(facts: ACPToolFacts, base: () => ToolCallSpec): ToolCallSpec {
   const tool = facts.tool
   if (isGooseSubagentToolRequest(tool)) {
     // A subagent ASKING to run a tool is a request about a call, not a call of its
@@ -83,7 +83,7 @@ function gooseCall(facts: ACPToolFacts, base: () => ToolCallPayloadIR): ToolCall
       _meta: { goose: { toolCall: { toolName: name } } },
     }
     const synthetic = acpToolFacts(frame, undefined)
-    const built = gooseCall(synthetic, () => acpPayloadFor(synthetic, 'mcp'))
+    const built = gooseCall(synthetic, () => acpSpecFor(synthetic, 'mcp'))
     return { ...built, label: 'Tool request' }
   }
   const metadata = pickObject(pickObject(pickObject(tool, '_meta'), 'goose'), 'toolCall')
@@ -165,7 +165,7 @@ function gooseCall(facts: ACPToolFacts, base: () => ToolCallPayloadIR): ToolCall
       input.offset = input.line
     // The shared build of the remapped frame: the developer tools speak Goose's own
     // argument names, so the frame is rebuilt with the words the shared extractors
-    // read before the per-kind payload is derived from it.
+    // read before the per-kind specification is derived from it.
     const remapFacts = acpRemapFacts(facts, { tool: { ...tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: input }, kind })
     if (name === GOOSE_DEVELOPER_TOOL.Tree) {
       // The LABEL alone. The table already states this tool's kind, so the shared
@@ -173,16 +173,16 @@ function gooseCall(facts: ACPToolFacts, base: () => ToolCallPayloadIR): ToolCall
       // the words the tool wrote -- which is what this row must draw, because the
       // branch art and the line counts are the point and a flat entry list would
       // redraw them into something the tool did not print.
-      return { ...acpPayloadFor(remapFacts, GOOSE_TOOL_KINDS[name]), ...named, label: 'List Files' }
+      return { ...acpSpecFor(remapFacts, GOOSE_TOOL_KINDS[name]), ...named, label: 'List Files' }
     }
     if (name === GOOSE_DEVELOPER_TOOL.Shell) {
       // Built at `execute`, so `result.commands` is a typed `CommandResult[]` rather
       // than the `Record<string, unknown>` the old intersection widened it to -- which
       // is what let this branch spread a terminal's `signal` and write an `exitCode`
       // beside it, the one pair `CommandExit` exists to forbid.
-      const shell = acpPayloadFor(remapFacts, GOOSE_TOOL_KINDS[name])
+      const shell = acpSpecFor(remapFacts, GOOSE_TOOL_KINDS[name])
       const title = pickString(input, 'description') || shell.title
-      const prior = shell.result !== undefined && !isFailedResult(shell.result) && !isUnparsedResult(shell.result) ? shell.result : undefined
+      const prior = shell.result !== undefined && !isToolFailureResult(shell.result) && !isUnparsedToolResult(shell.result) ? shell.result : undefined
       if (facts.finished) {
         // A failed shell call carries no `rawOutput` at all. Goose states the code in
         // a content block of its own, ahead of the output: `exit code: 1`. That block
@@ -224,11 +224,11 @@ function gooseCall(facts: ACPToolFacts, base: () => ToolCallPayloadIR): ToolCall
     }
     if (name === GOOSE_DEVELOPER_TOOL.Read && tool.status === 'completed') {
       const startLine = pickNumber(input, 'line', undefined)
-      return { ...acpPayloadFor(remapFacts, GOOSE_TOOL_KINDS[name]), ...named, result: readFileResultFromContent({ content: facts.text, ...(startLine !== undefined ? { startLine } : {}) }) }
+      return { ...acpSpecFor(remapFacts, GOOSE_TOOL_KINDS[name]), ...named, result: readFileResultFromContent({ content: facts.text, ...(startLine !== undefined ? { startLine } : {}) }) }
     }
     if (name === GOOSE_DEVELOPER_TOOL.ReadImage)
-      return { ...gooseImagePayload(acpPayloadFor(remapFacts, GOOSE_TOOL_KINDS[name]), tool, input), ...named }
-    return { ...acpPayloadFor(remapFacts, kind), ...named }
+      return { ...gooseImageSpec(acpSpecFor(remapFacts, GOOSE_TOOL_KINDS[name]), tool, input), ...named }
+    return { ...acpSpecFor(remapFacts, kind), ...named }
   }
   if (!extension || !name || extension === GOOSE_TODO_EXTENSION)
     return { ...base(), ...named }
@@ -240,7 +240,7 @@ function gooseCall(facts: ACPToolFacts, base: () => ToolCallPayloadIR): ToolCall
   //
   // A call the reader STOPPED is not a failure, and it keeps the blocks that did
   // arrive: they are the part of the answer the reader asked to see. The header still
-  // states `Interrupted`, which `toolRowStatusOutcome` composes from the row's own
+  // states `Interrupted`, which `toolCallStatusOutcome` composes from the row's own
   // status.
   const unanswered = facts.status === 'failed'
   return {

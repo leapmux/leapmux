@@ -1,5 +1,5 @@
 import type { MessageBubbleHost } from '../MessageBubble'
-import type { MessageCategory } from '../messageClassification'
+import type { MessageCategory } from '../messageClassifier'
 import type { RenderContext } from '../messageRenderers'
 import type { PreparedMessage } from '../rowPreparation'
 import type { ParsedMessageContent } from '~/lib/messageParser'
@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, AgentProvider, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolComplete } from '~/test-support/copilotFixtures'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { providerToolMeta } from '~/test-support/toolCallIr'
+import { providerToolMeta } from '~/test-support/toolCallFixture'
 import { MessageBubble } from '../MessageBubble'
 import { commandInputCollapsed, toolInputSummary } from '../toolStyles.css'
 import { providerFor, resolveMessageForRendering } from './registry'
@@ -71,7 +71,7 @@ vi.mock('~/context/PreferencesContext', () => ({
   }),
 }))
 
-const { renderMessageContent } = await import('../rowRenderers')
+const { renderMessageContent } = await import('../messageContentRenderer')
 const { createMessageRenderCacheStore } = await import('../messageRenderCache')
 const { CommandHighlightHtml } = await import('../syntaxHighlight')
 const { COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT } = await import('../chatHeightShared')
@@ -543,8 +543,8 @@ describe('command summary syntax highlighting selection stability', () => {
     })
     const result = input(makeBashResult({ tool_name: 'Bash', stdout: 'the output words' }, 'the output words'))
     const { container } = render(() => [
-      renderMessageContent(request, { sources: testMessageSources({ current: () => request, result: () => result }) }, { kind: 'tool_use' }, AgentProvider.CLAUDE_CODE),
-      renderMessageContent(result, { sources: testMessageSources({ current: () => result, request: () => request }) }, { kind: 'tool_result' }, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(request, { sources: testMessageSources({ current: () => request, result: () => result, role: () => 'request', visibleRows: () => ({ request: true, result: true }) }) }, { kind: 'tool_use' }, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(result, { sources: testMessageSources({ current: () => result, request: () => request, role: () => 'result', visibleRows: () => ({ request: true, result: true }) }) }, { kind: 'tool_result' }, AgentProvider.CLAUDE_CODE),
     ])
     // The request states the command. The completing row states what it answered.
     expect(container.textContent ?? '').toContain('the output words')

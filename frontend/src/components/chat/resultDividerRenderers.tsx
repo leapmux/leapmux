@@ -1,5 +1,5 @@
 import type { JSXElement } from 'solid-js'
-import type { DividerIR } from './ir/divider'
+import type { TurnEnd } from './model/divider'
 import { Show } from 'solid-js'
 import { pluralize } from '~/lib/plural'
 import { resultDivider, resultErrorDetail } from './messageStyles.css'
@@ -15,7 +15,7 @@ import { resultDivider, resultErrorDetail } from './messageStyles.css'
  * The DURATION is deliberately absent. Every provider already writes it into its own
  * label -- "Turn ended (12s)" -- so a second copy here would say it twice.
  */
-function dividerTotals(meta: DividerIR['meta']): string {
+function dividerTotals(meta: TurnEnd['meta']): string {
   if (!meta)
     return ''
   const parts: string[] = []
@@ -29,12 +29,12 @@ function dividerTotals(meta: DividerIR['meta']): string {
 
 /**
  * The single renderer for a `result_divider` (turn-end) message across providers.
- * Draws a {@link DividerIR}: the label in danger color when `isError`, the turn totals
+ * Draws a {@link TurnEnd}: the label in danger color when `isError`, the turn totals
  * beside it, and optionally a `<pre>` detail block. The danger color is an inline
  * style (not a class) on purpose -- it preserves the exact markup the four
  * per-provider divider renderers emitted before they were unified onto this model.
  */
-export function ResultDivider(props: { model: DividerIR }): JSXElement {
+export function ResultDivider(props: { model: TurnEnd }): JSXElement {
   return (
     <>
       {/*

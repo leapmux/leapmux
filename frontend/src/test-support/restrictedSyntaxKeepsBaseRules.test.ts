@@ -34,19 +34,6 @@ const SCOPED_FILES = ['src/app.tsx', 'tests/e2e/helpers/mail.ts']
  * tree -- a path typo, a files pattern the real tree does not spell -- leaves
  * the architecture rules reading green while guarding nothing.
  */
-const CHAT_SCOPED_FILES: Array<{ file: string, marker: string }> = [
-  // The provider-neutrality block covers shared modules outside the plugin layer.
-  { file: 'src/stores/chatTypes.ts', marker: 'TSTypeReference[typeName.name=\'Record\'] TSTypeReference[typeName.name=\'AgentProvider\']' },
-  // The chat-wide block adds the tool-call assertion ban.
-  { file: 'src/components/chat/results/ToolMessage.tsx', marker: 'TSAsExpression TSTypeReference[typeName.name=/^(ToolCallIR' },
-  // The IR blocks add the value-import boundary, one selector per depth.
-  { file: 'src/components/chat/ir/toolCall.ts', marker: 'source.value=/^~\\/(?!lib' },
-  { file: 'src/components/chat/ir/tools/generic.ts', marker: 'source.value=/^\\.\\.\\/(?![^/]+$' },
-  // The provider JSX ban reaches a non-control `.tsx` but not the control surfaces.
-  { file: 'src/components/chat/providers/claude/extractors/toolCall.ts', marker: 'TSAsExpression TSTypeReference[typeName.name=/^(ToolCallIR' },
-  { file: 'src/components/chat/providers/pi/PiControlActions.tsx', marker: 'TSAsExpression TSTypeReference[typeName.name=/^(ToolCallIR' },
-]
-
 interface LintSample {
   file: string
   label: string
@@ -54,14 +41,14 @@ interface LintSample {
 }
 
 const RESTRICTED_IMPORT_SAMPLES: LintSample[] = [
-  { label: 'IR static type import', file: 'src/components/chat/ir/auditProbe.ts', source: 'import type { Provider } from \'../providers/registry\'' },
-  { label: 'IR re-export', file: 'src/components/chat/ir/auditProbe.ts', source: 'export * from \'../providers/registry\'' },
-  { label: 'IR side-effect import', file: 'src/components/chat/ir/auditProbe.ts', source: 'import \'../providers/registry\'' },
-  { label: 'IR dynamic import', file: 'src/components/chat/ir/auditProbe.ts', source: 'void import(\'../providers/registry\')' },
-  { label: 'IR computed dynamic import', file: 'src/components/chat/ir/auditProbe.ts', source: 'void import(modulePath)' },
-  { label: 'IR require call', file: 'src/components/chat/ir/auditProbe.ts', source: 'require(\'../results/tools\')' },
-  { label: 'IR import-equals declaration', file: 'src/components/chat/ir/auditProbe.ts', source: 'import tools = require(\'../results/tools\')' },
-  { label: 'IR import type', file: 'src/components/chat/ir/auditProbe.ts', source: 'type ProviderModule = typeof import(\'../providers/registry\')' },
+  { label: 'model static type import', file: 'src/components/chat/model/auditProbe.ts', source: 'import type { Provider } from \'../providers/registry\'' },
+  { label: 'model re-export', file: 'src/components/chat/model/auditProbe.ts', source: 'export * from \'../providers/registry\'' },
+  { label: 'model side-effect import', file: 'src/components/chat/model/auditProbe.ts', source: 'import \'../providers/registry\'' },
+  { label: 'model dynamic import', file: 'src/components/chat/model/auditProbe.ts', source: 'void import(\'../providers/registry\')' },
+  { label: 'model computed dynamic import', file: 'src/components/chat/model/auditProbe.ts', source: 'void import(modulePath)' },
+  { label: 'model require call', file: 'src/components/chat/model/auditProbe.ts', source: 'require(\'../results/tools\')' },
+  { label: 'model import-equals declaration', file: 'src/components/chat/model/auditProbe.ts', source: 'import tools = require(\'../results/tools\')' },
+  { label: 'model import type', file: 'src/components/chat/model/auditProbe.ts', source: 'type ProviderModule = typeof import(\'../providers/registry\')' },
   { label: 'provider side-effect import', file: 'src/components/chat/providers/auditProbe.ts', source: 'import \'../results/tools\'' },
   { label: 'provider dynamic import', file: 'src/components/chat/providers/auditProbe.ts', source: 'void import(\'../results/tools\')' },
   { label: 'provider require call', file: 'src/components/chat/providers/auditProbe.ts', source: 'require(\'../results/tools\')' },
@@ -76,16 +63,16 @@ const RESTRICTED_IMPORT_SAMPLES: LintSample[] = [
 ]
 
 const RESTRICTED_ASSERTION_SAMPLES: LintSample[] = [
-  { label: 'tool call as assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ToolCallIR' },
-  { label: 'tool call angle-bracket assertion', file: 'src/components/chat/results/auditProbe.ts', source: '<ToolCallIR>value' },
-  { label: 'tool call helper assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ToolCallForKind<\'read\'>' },
-  { label: 'qualified tool call assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ChatIR.ToolCallIR' },
-  { label: 'wrapped tool call assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as Readonly<ToolCallIR>' },
-  { label: 'imported tool call assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as import(\'../ir/toolCall\').ToolCallIR' },
-  { label: 'tool payload helper assertion', file: 'src/components/chat/providers/auditProbe.ts', source: 'value as ToolCallPayloadForKind<\'read\'>' },
-  { label: 'tool request indexed assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ToolRequests[\'read\']' },
-  { label: 'qualified tool request indexed assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ChatIR.ToolRequests[\'read\']' },
-  { label: 'tool result indexed angle-bracket assertion', file: 'src/components/chat/providers/auditProbe.ts', source: '<ToolResults[\'read\']>value' },
+  { label: 'tool call as assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ToolCall' },
+  { label: 'tool call angle-bracket assertion', file: 'src/components/chat/results/auditProbe.ts', source: '<ToolCall>value' },
+  { label: 'tool call helper assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ToolCallVariant<\'read\'>' },
+  { label: 'qualified tool call assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ChatIR.ToolCall' },
+  { label: 'wrapped tool call assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as Readonly<ToolCall>' },
+  { label: 'imported tool call assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as import(\'../model/toolCall\').ToolCall' },
+  { label: 'tool payload helper assertion', file: 'src/components/chat/providers/auditProbe.ts', source: 'value as ToolCallSpecVariant<\'read\'>' },
+  { label: 'tool request indexed assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ToolRequestByKind[\'read\']' },
+  { label: 'qualified tool request indexed assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ChatIR.ToolRequestByKind[\'read\']' },
+  { label: 'tool result indexed angle-bracket assertion', file: 'src/components/chat/providers/auditProbe.ts', source: '<ToolResultByKind[\'read\']>value' },
   { label: 'resolved content as assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ResolvedMessageContent' },
   { label: 'resolved content angle-bracket assertion', file: 'src/components/chat/providers/auditProbe.ts', source: '<ResolvedMessageContent>value' },
   { label: 'qualified resolved content assertion', file: 'src/components/chat/providers/auditProbe.ts', source: 'value as Pipeline.ResolvedMessageContent' },
@@ -94,13 +81,35 @@ const RESTRICTED_ASSERTION_SAMPLES: LintSample[] = [
 ]
 
 const ALLOWED_ARCHITECTURE_SAMPLES: LintSample[] = [
-  { label: 'IR allowed dynamic diff import', file: 'src/components/chat/ir/auditProbe.ts', source: 'void import(\'../diff/diffTypes\')' },
-  { label: 'IR allowed sibling import type', file: 'src/components/chat/ir/auditProbe.ts', source: 'type ControlModule = typeof import(\'../controls/types\')' },
+  { label: 'model allowed dynamic diff import', file: 'src/components/chat/model/auditProbe.ts', source: 'void import(\'../diff/diffTypes\')' },
+  { label: 'model allowed sibling import type', file: 'src/components/chat/model/auditProbe.ts', source: 'type ToolModule = typeof import(\'./toolCall\')' },
   { label: 'registry resolved content assertion', file: 'src/components/chat/providers/registry.ts', source: 'value as ResolvedMessageContent' },
-  { label: 'checked builder tool call assertion', file: 'src/components/chat/ir/toolCall.ts', source: 'value as ToolCallIR' },
+  { label: 'checked builder tool call assertion', file: 'src/components/chat/model/createToolCall.ts', source: 'value as ToolCall' },
+  { label: 'plugin imported related hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'import { related } from \'./spanRole\'\nconst plugin = { transcript: { relatedMessages: related } }' },
 ]
 
-const ARCHITECTURE_RULE_IDS = new Set(['no-restricted-syntax', 'ts/no-restricted-imports'])
+const PROVIDER_DECISION_SAMPLES: LintSample[] = [
+  { label: 'provider alias comparison', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nconst selected: AgentProvider = AgentProvider.CODEX\nvoid (selected === AgentProvider.CLAUDE_CODE)' },
+  { label: 'provider array includes', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nconst providers: AgentProvider[] = [AgentProvider.CODEX]\nvoid providers.includes(AgentProvider.CLAUDE_CODE)' },
+  { label: 'provider set has', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nconst providers = new Set<AgentProvider>()\nvoid providers.has(AgentProvider.CODEX)' },
+  { label: 'provider switch alias', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nconst selected: AgentProvider = AgentProvider.CODEX\nswitch (selected) { case AgentProvider.CODEX: break }' },
+  { label: 'destructured provider comparison', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nconst { CODEX: codex, CLAUDE_CODE: claude } = AgentProvider\nvoid (codex === claude)' },
+]
+
+const REGISTRATION_SAMPLES: LintSample[] = [
+  { label: 'plugin inline related hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const plugin = { transcript: { relatedMessages: () => [] } }' },
+  { label: 'plugin inline role hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const plugin = { transcript: { spanRole() { return \'other\' } } }' },
+  { label: 'plugin local named hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const spanRole = () => \'other\'\nconst plugin = { transcript: { spanRole } }' },
+]
+
+const ARCHITECTURE_RULE_IDS = new Set([
+  'no-restricted-syntax',
+  'ts/no-restricted-imports',
+  'chat-pipeline/layer-imports',
+  'chat-pipeline/no-provider-decision',
+  'chat-pipeline/no-forbidden-assertion',
+  'chat-pipeline/plugin-registration-only',
+])
 
 /** The DOM-`title` ban, which must survive beside the base selectors. */
 const TITLE_SELECTOR = 'JSXOpeningElement[name.type="JSXIdentifier"][name.name=/^[a-z]/] > JSXAttribute[name.name="title"]'
@@ -189,9 +198,8 @@ describe('no-restricted-syntax keeps the base selectors', () => {
   // resolveRestrictedSyntax), and the budget is sized so only a genuine hang
   // trips it.
   beforeAll(() => {
-    const chatFiles = CHAT_SCOPED_FILES.map(entry => entry.file)
-    const samples = [...RESTRICTED_IMPORT_SAMPLES, ...RESTRICTED_ASSERTION_SAMPLES, ...ALLOWED_ARCHITECTURE_SAMPLES]
-    const inspection = inspectEslint([BASELINE_FILE, ...SCOPED_FILES, ...chatFiles], samples)
+    const samples = [...RESTRICTED_IMPORT_SAMPLES, ...RESTRICTED_ASSERTION_SAMPLES, ...PROVIDER_DECISION_SAMPLES, ...REGISTRATION_SAMPLES, ...ALLOWED_ARCHITECTURE_SAMPLES]
+    const inspection = inspectEslint([BASELINE_FILE, ...SCOPED_FILES], samples)
     resolved = inspection.restrictedSyntax
     ruleIds = inspection.ruleIds
     baseline = selectorsFor(resolved[BASELINE_FILE])
@@ -229,37 +237,20 @@ describe('no-restricted-syntax keeps the base selectors', () => {
     ).toBe(true)
   })
 
-  // A chat-scoped block that stops matching its tree leaves its architecture
-  // selectors silently gone -- the same failure the baseline check above reads,
-  // one tree further in. Each marker below is one selector the block for that
-  // tree must resolve with.
-  it.each(CHAT_SCOPED_FILES)('keeps the chat architecture selectors for %s', ({ file, marker }) => {
-    const scoped = selectorsFor(resolved[file])
-    expect(
-      scoped.some(selector => selector.includes(marker)),
-      `${file} lost the chat pipeline selector that starts \`${marker}\`. The scoped `
-      + 'block in `eslint.config.ts` no longer matches this tree, so the rule guards nothing.',
-    ).toBe(true)
-  })
-
-  // The four control surfaces keep JSX -- and a control file resolving WITHOUT
-  // the JSX ban pins the exemption from the other side: the ban block must not
-  // swallow them, or every permission prompt in the app fails lint.
-  it('keeps the provider JSX ban off the control surfaces', () => {
-    const scoped = selectorsFor(resolved['src/components/chat/providers/pi/PiControlActions.tsx'])
-    expect(
-      scoped.some(selector => /^JSXElement$|^JSXFragment$/.test(selector)),
-      'A control surface must keep its JSX: the ban is for transcript rows, and this file answers a request.',
-    ).toBe(false)
-    expect(scoped.some(selector => selector.includes(TITLE_SELECTOR))).toBe(true)
-  })
-
   it.each(RESTRICTED_IMPORT_SAMPLES)('rejects every layer import form: $label', ({ label }) => {
-    expect(ruleIds[label] ?? []).toContainEqual(expect.stringMatching(/^(?:no-restricted-syntax|ts\/no-restricted-imports)$/))
+    expect(ruleIds[label] ?? []).toContainEqual(expect.stringMatching(/^(?:chat-pipeline\/layer-imports|no-restricted-syntax|ts\/no-restricted-imports)$/))
   })
 
   it.each(RESTRICTED_ASSERTION_SAMPLES)('rejects an unsafe assertion: $label', ({ label }) => {
-    expect(ruleIds[label] ?? []).toContain('no-restricted-syntax')
+    expect(ruleIds[label] ?? []).toContainEqual(expect.stringMatching(/^(?:chat-pipeline\/no-forbidden-assertion|no-restricted-syntax)$/))
+  })
+
+  it.each(PROVIDER_DECISION_SAMPLES)('rejects a provider decision: $label', ({ label }) => {
+    expect(ruleIds[label] ?? []).toContain('chat-pipeline/no-provider-decision')
+  })
+
+  it.each(REGISTRATION_SAMPLES)('rejects an inline plugin hook: $label', ({ label }) => {
+    expect(ruleIds[label] ?? []).toContain('chat-pipeline/plugin-registration-only')
   })
 
   it.each(ALLOWED_ARCHITECTURE_SAMPLES)('keeps the intentional exception: $label', ({ label }) => {

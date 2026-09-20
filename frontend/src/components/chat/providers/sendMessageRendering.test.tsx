@@ -1,4 +1,4 @@
-import type { MessageCategory } from '../messageClassification'
+import type { MessageCategory } from '../messageClassifier'
 import type { RenderContext } from '../messageRenderers'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { render } from '@solidjs/testing-library'
@@ -7,7 +7,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { subagentsFrom } from '../renderContext'
 import './testMocks'
 
-const { renderMessageContent } = await import('../rowRenderers')
+const { renderMessageContent } = await import('../messageContentRenderer')
 
 /** Half of an astral character, left behind by a cut between the pair. */
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/

@@ -17,9 +17,9 @@ const CHECK: ToolVocabularyCheck = {
   names: Object.values(PI_TOOL),
   kindOf: piToolKind,
   generic: GENERIC,
-  // Pi's table answers the EMPTY kind for a name it does not hold, which is the state
+  // Pi's table answers `unspecified` for a name it does not hold, which is the state
   // "the provider states no kind" rather than "uncategorized".
-  fallback: '',
+  fallback: 'unspecified',
 }
 
 describe('pi tool vocabulary', () => {

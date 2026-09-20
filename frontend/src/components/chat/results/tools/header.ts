@@ -1,5 +1,5 @@
-import type { ToolCallIR } from '../../ir/toolCall'
-import { mcpToolCallDisplayName } from '../../ir/mcpToolCall'
+import type { ToolCall } from '../../model/toolCall'
+import { mcpToolCallDisplayName } from '../../model/mcpToolCall'
 import { humanizeWireWord } from '../../rendererUtils'
 import { rendererFor } from './index'
 
@@ -7,7 +7,7 @@ import { rendererFor } from './index'
  * The name one row shows beside its icon: the provider's own label, then the
  * humanized tool NAME when the kind's word says less, then the kind's label.
  */
-export function toolCallDisplayName(call: ToolCallIR): string {
+export function toolCallDisplayName(call: ToolCall): string {
   if (call.label)
     return call.label
   // An MCP call states its server and its tool, which the wire name buries.

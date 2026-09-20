@@ -1,7 +1,7 @@
 import { render } from '@solidjs/testing-library'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { checkKindModule } from '~/test-support/kindTestHarness'
-import { toolCallIr, toolRow } from '~/test-support/toolCallIr'
+import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { ToolMessage } from '../ToolMessage'
 
 // jsdom does not provide ResizeObserver, which the shared layouts observe with.
@@ -25,7 +25,7 @@ describe('execute renderer', () => {
   // The command belongs to the row that states the REQUEST. Where the request is a
   // row of its own, a result row that repeated the command would draw it twice.
   describe('the command line', () => {
-    const call = toolCallIr('execute', {
+    const call = toolCallFixture('execute', {
       request: { command: 'rg --files' },
       result: { commands: [{ output: 'a.ts' }], unresolvedTerminals: [] },
     })
@@ -59,7 +59,7 @@ describe('execute renderer', () => {
  */
 describe('the execute row header (executeRenderer)', () => {
   const headerOf = (request: { command: string, description?: string }, title?: string) =>
-    render(() => <ToolMessage row={toolRow(toolCallIr('execute', { request, title }))} />).container.textContent ?? ''
+    render(() => <ToolMessage row={toolRow(toolCallFixture('execute', { request, title }))} />).container.textContent ?? ''
 
   it('states the description the agent sent', () => {
     expect(headerOf({ command: 'ls -la', description: 'List files in current directory' }))

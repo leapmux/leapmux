@@ -1,7 +1,7 @@
 # `providers/` — the provider plugins
 
 Layer 1 of the chat render pipeline. A plugin reads ONE agent's own wire format and
-returns the provider-neutral IR (`../ir/`, layer 2); the shared renderers
+returns the provider-neutral model (`../model/`, layer 2); the shared renderers
 (`../results/`, layer 3) draw it. A plugin never draws a transcript row, and shared
 code never parses a provider's bytes.
 
@@ -11,10 +11,10 @@ backend's `agent.Provider`, and each side carries the hooks its own layer needs.
 ## Where a module goes
 
 Two locations, and one question decides between them: **does this module turn the
-provider's bytes into IR?**
+provider's bytes into model?**
 
-- **`extractors/`** — yes. Every reader that answers a `ToolCallIR`, a `ChatRowIR`, a
-  `DividerIR` or a `NotificationEntryIR`.
+- **`extractors/`** — yes. Every reader that answers a `ToolCall`, a `ChatRow`, a
+  `TurnEnd` or a `NotificationEntry`.
 - **the provider's root** — no. Plugin registration, the control path (a permission
   prompt, a question form, an elicitation), the wire vocabulary, and the settings.
 
@@ -30,20 +30,20 @@ when it has no such job; it never renames it.
 | `toolKinds.ts` | The wire name to `ToolKind` table (`<PROVIDER>_TOOL_KINDS`) and the lookup over it. |
 | `toolNames.ts` | The tool NAME vocabulary (`<PROVIDER>_TOOL_NAMES`) and its aliases. |
 | `classification.ts` | Which shared message category one frame takes. |
-| `extractControl.ts` | One control request read into `ControlRequestIR`. |
+| `extractControl.ts` | One control request read into `ControlPrompt`. |
 | `controlResponse.ts` | How an answered control request reads back. |
 | `elicitation.ts` | One elicitation form read into `ElicitationRequest`. |
 | `askUserQuestion.ts` | The question-request half of the control path: recognize, read, answer. |
 | `resolveMessage.ts` | The `Provider.resolveMessage` hook: supplemental content merged into the payload for DISPLAY. |
-| `toolSupplement.ts` | The stored supplement read into a typed struct. Input to extraction, not IR. |
+| `toolSupplement.ts` | The stored supplement read into a typed struct. Input to extraction, not model. |
 | `resumeHandle.ts` | The `Provider.validateResumeHandle` hook: which resume handles this provider accepts. |
 | `<Provider><Component>.tsx` | A control surface this provider answers itself. The file carries its component's name. |
 | `toolResults.fixtures.ts` | Test DATA for the sibling `toolResults.test.ts`. Nothing that ships imports it. |
-| `extractors/row.ts` | The `extractRow` entry: one transcript row into `ChatRowIR`. |
-| `extractors/toolCall.ts` | The tool-call entry: one call into `ToolCallIR`, as `<provider>ToolCallIR`. |
+| `extractors/row.ts` | The `extractRow` entry: one transcript row into `ChatRow`. |
+| `extractors/toolCall.ts` | The tool-call entry: one call into `ToolCall`, as `<provider>ToolCall`. |
 | `extractors/<kind>.ts` | One `ToolKind`'s reader, named for the kind it answers — `agent.ts`, `read.ts`, `todo.ts`. |
-| `extractors/notification.ts` | One notification frame into `NotificationEntryIR[]`. |
-| `extractors/resultDivider.ts` | One turn-end frame into `DividerIR`. |
+| `extractors/notification.ts` | One notification frame into `NotificationEntry[]`. |
+| `extractors/resultDivider.ts` | One turn-end frame into `TurnEnd`. |
 | `extractors/toolCommon.ts` | The row shape the kind readers beside it share. |
 | `testUtils.tsx` | The shared test helpers a provider FAMILY reuses. `acp/` and `zcode/` hold one each. |
 
@@ -55,11 +55,11 @@ would give the reader three files for one format, and a different three in each
 provider. No other kind shares a reader this way.
 
 **There is no `renderers/` directory, and a guard refuses one.** Four providers carried
-one until the pipeline closed. Every module in them answered IR rather than markup, so
+one until the pipeline closed. Every module in them answered model rather than markup, so
 the name sent each reader to the wrong layer. They are `extractors/` now.
 
 **Codex has no `extractors/toolCall.ts`, and that is the shape of its protocol.** One
-Codex item carries the arguments AND the payload -- the request frame and the result
+Codex item carries the arguments and result data. The request frame and the result
 frame differ only in status -- so reading the row and reading the call are one read, and
 `extractors/row.ts` does both. A second module there would be a boundary the data does
 not have. Kilo has none either, and for a different reason: it holds no `extractors/`
@@ -111,7 +111,7 @@ carry it.
 
 ### The adapter contract
 
-`ACPToolCallAdapter` is `(facts, base) => ToolCallPayloadIR`. The five members follow
+`ACPToolCallAdapter` is `(facts, base) => ToolCallSpec`. The five members follow
 rules that the signature does not state, and these are those rules.
 
 **`base()` is OPTIONAL, and so is the parameter.** `base()` answers the shared build at
@@ -162,14 +162,12 @@ around each member.
 
 ## The guards
 
-- The scoped blocks in `eslint.config.ts` — no plugin draws (JSX outside the four
-  control components), no plugin imports `results/`, no shared module identifies
-  one provider or its wire words, and no producer pairs a `ToolKind` with another
-  kind's request or result by assertion.
+- The `chat-pipeline` ESLint plugin checks layer imports, shared provider decisions,
+  forbidden correlated assertions, and plugin hook registration.
 - `src/test-support/chatLayerStructure.test.ts` — the structure those lint rules
   assume: the module-name rules above (a PascalCase `.tsx` carries its
   component's name, and no `renderers/` directory comes back), every `classify`
-  hook arriving from a `classification.ts` module, one `ir/tools/<kind>.ts` file
+  hook arriving from a `classification.ts` module, one `model/tools/<kind>.ts` file
   per `ToolKind`, and every exception path the lint config carves out pinned to
   a file that exists. It resolves each `classify` hook to the module it arrives
   from, and that module must be a `classification.ts`. It reads that one

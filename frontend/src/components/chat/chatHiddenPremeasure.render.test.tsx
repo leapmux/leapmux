@@ -1,5 +1,5 @@
 import type { ClassifiedEntry } from './chatEntryCache'
-import type { MessageCategory } from './messageClassification'
+import type { MessageCategory } from './messageClassifier'
 import type { VirtualItem } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { render, screen } from '@solidjs/testing-library'

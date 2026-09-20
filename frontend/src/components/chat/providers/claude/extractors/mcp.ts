@@ -1,10 +1,10 @@
-import type { McpCallFacts, McpContentItem } from '../../../ir/mcpToolCall'
-import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
-import type { McpRequest } from '../../../ir/tools/mcp'
+import type { McpCallFacts, McpContentItem } from '../../../model/mcpToolCall'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { McpRequest } from '../../../model/tools/mcp'
 import type { ClaudeToolRow } from './toolCommon'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { prettifyStructuredJson } from '~/lib/jsonFormat'
-import { parseMcpContentItem, parseMcpToolName } from '../../../ir/mcpToolCall'
+import { parseMcpContentItem, parseMcpToolName } from '../../../model/mcpToolCall'
 
 /** Tool name matches the shared `mcp__server__tool` convention. */
 export function isClaudeMcpTool(name: string): boolean {
@@ -55,7 +55,7 @@ export function claudeMcpFromToolResult(args: ClaudeMcpFromToolResultArgs): McpC
     // it twice -- the `error` string above is the joined text of these same
     // blocks. The images stay: nothing else carries them, so dropping them hid
     // the screenshot a failed MCP tool returned (Playwright returns one), and
-    // it left the row with fewer images than `imagesForIR`
+    // it left the row with fewer images than `imagesForRow`
     // numbers for the message -- which is the index an already-open image tab
     // addresses by, permanently.
     content: args.isError ? content.filter(item => item.type !== 'text') : content,
@@ -78,7 +78,7 @@ function parseClaudeResultContent(raw: unknown): McpContentItem[] {
 }
 
 /** The MCP pair: the server and tool the name spells, with the blocks it answered. */
-export function claudeMcpPayload(request: McpRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'mcp'> {
+export function claudeMcpSpec(request: McpRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'mcp'> {
   if (!result)
     return { kind: 'mcp', request }
   const source = claudeMcpFromToolResult({

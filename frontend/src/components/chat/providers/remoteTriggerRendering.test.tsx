@@ -1,12 +1,12 @@
-import type { MessageCategory } from '../messageClassification'
+import type { MessageCategory } from '../messageClassifier'
 import type { RenderContext } from '../messageRenderers'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { providerToolMeta } from '~/test-support/toolCallIr'
+import { providerToolMeta } from '~/test-support/toolCallFixture'
 import './testMocks'
 
-const { renderMessageContent } = await import('../rowRenderers')
+const { renderMessageContent } = await import('../messageContentRenderer')
 
 /** Build a Claude `RemoteTrigger` tool_use assistant message. */
 function makeRemoteTriggerToolUse(input: Record<string, unknown>) {
@@ -167,7 +167,7 @@ describe('claude RemoteTrigger tool_result rendering', () => {
 // A RemoteTrigger result draws a STATUS body: the HTTP status and the trigger it
 // names become the header, and the response body becomes the note below it. Both
 // answers below follow from that, and both changed when the row moved onto the
-// shared IR:
+// shared model:
 //
 //   - Collapsibility counts the NOTE's lines, like every other body. The rule it
 //     replaced answered true for any structured payload, so a one-line `{}` drew an

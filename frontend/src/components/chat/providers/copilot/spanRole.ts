@@ -1,6 +1,7 @@
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { COPILOT_EVENT } from '~/generated/contracts/copilot-protocol'
 import { retainedRowIsFinal } from '../registry'
+import { copilotToolRow } from './extractors/toolCall'
 import { copilotEvent } from './protocol'
 
 /**
@@ -19,4 +20,14 @@ export function copilotSpanRole(parsed: ParsedMessageContent) {
     default:
       return 'other' as const
   }
+}
+
+export function copilotRelatedMessages(parsed: ParsedMessageContent) {
+  const role = copilotSpanRole(parsed)
+  if (role === 'result')
+    return ['request'] as const
+  if (role !== 'request')
+    return []
+  const row = copilotToolRow(parsed.parentObject)
+  return row && (row.kind === 'agent' || Object.keys(row.input).length === 0) ? ['result'] as const : []
 }

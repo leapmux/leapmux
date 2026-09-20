@@ -1,4 +1,4 @@
-import type { ElicitationRequest } from '../../controls/elicitationForm'
+import type { ElicitationRequest } from '~/components/chat/model/controlPrompt'
 import { MCP_ELICITATION_APPROVAL_KIND, MCP_ELICITATION_APPROVAL_SCOPE, MCP_ELICITATION_METHOD } from '~/generated/contracts/mcp-elicitation'
 import { pickObject, pickString } from '~/lib/jsonPick'
 

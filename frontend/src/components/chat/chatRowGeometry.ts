@@ -31,9 +31,9 @@ export type MessageBandKind = 'text' | 'thought'
  *
  * This is the ONE place that decides which kinds render as a band. The
  * virtualizer reads it to close the gap between two adjacent bands, and
- * messageClassification reads it to pick the row and bubble classes -- both
+ * messageClassifier reads it to pick the row and bubble classes -- both
  * from here, so the offset map and the borders can never disagree. It lives in
- * this leaf module (no imports) rather than in messageClassification, whose own
+ * this leaf module (no imports) rather than in messageClassifier, whose own
  * imports pull in every provider plugin: the virtualizer must stay clear of that
  * graph.
  *

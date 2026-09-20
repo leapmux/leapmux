@@ -1,6 +1,6 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { JSXElement } from 'solid-js'
-import type { NotificationIconHint } from './ir/notification'
+import type { NotificationIconHint } from './model/notification'
 import type { NotificationBlock } from './notificationEntries'
 import ArrowDownToLine from 'lucide-solid/icons/arrow-down-to-line'
 import Check from 'lucide-solid/icons/check'
@@ -16,7 +16,7 @@ import { controlResponseMessage, resultDivider } from './messageStyles.css'
 // lives in `notificationEntries.ts`; this file decides only how the blocks look.
 
 /**
- * The glyph for each divider outcome the IR states.
+ * The glyph for each divider outcome the model states.
  *
  * Exhaustive over {@link NotificationIconHint}, so a new outcome fails to
  * compile until this file gives it a glyph. A `stopped` subagent and one that

@@ -1,12 +1,12 @@
-import type { MessageCategory } from '../messageClassification'
+import type { MessageCategory } from '../messageClassifier'
 import type { RenderContext } from '../messageRenderers'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { providerToolMeta } from '~/test-support/toolCallIr'
+import { providerToolMeta } from '~/test-support/toolCallFixture'
 import './testMocks'
 
-const { renderMessageContent } = await import('../rowRenderers')
+const { renderMessageContent } = await import('../messageContentRenderer')
 
 const LISTING = [
   '| Name | Kind | Status |',

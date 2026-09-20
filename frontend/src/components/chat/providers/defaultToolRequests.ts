@@ -1,6 +1,6 @@
-import type { FileChangeOperation, FileEditDiff } from '../ir/fileEditDiff'
-import type { ToolKind } from '../ir/toolKind'
-import type { ToolRequests } from '../ir/tools'
+import type { FileChangeOperation, FileEditDiff } from '../model/fileEditDiff'
+import type { ToolKind } from '../model/toolKind'
+import type { ToolRequestByKind } from '../model/tools'
 import { prettifyArgsJson } from '~/lib/jsonFormat'
 import { pickFirstString, pickNumber, pickString } from '~/lib/jsonPick'
 import { TOOL_DESTINATION_PATH_KEYS, TOOL_FILE_PATH_KEYS, TOOL_NEW_TEXT_KEYS, TOOL_OLD_TEXT_KEYS, TOOL_SOURCE_PATH_KEYS, toolInputPaths } from './toolInputKeys'
@@ -17,7 +17,7 @@ import { TOOL_DESTINATION_PATH_KEYS, TOOL_FILE_PATH_KEYS, TOOL_NEW_TEXT_KEYS, TO
 // then read it without a reader seeing which provider it now serves.
 
 /** One kind's declared request, filled from the arguments. */
-export type DefaultToolRequest<P extends ToolKind> = (args: Record<string, unknown>) => ToolRequests[P]
+export type DefaultToolRequest<P extends ToolKind> = (args: Record<string, unknown>) => ToolRequestByKind[P]
 
 /**
  * The change a removal ASKED for, from the file its arguments state.
@@ -100,54 +100,54 @@ function moveChange(args: Record<string, unknown>): FileEditDiff[] {
  * annotated position: TypeScript infers an un-annotated arrow's return type from the
  * literals it returns, so the object loses its freshness before any property is checked
  * and the excess-property check never runs. `'fetch': args => ({ url, patchText })`
- * compiles with the undeclared key, and the IR then carries a field no renderer reads.
- * `'fetch': (args): ToolRequests['fetch'] =>` rejects it.
+ * compiles with the undeclared key, and the model then carries a field no renderer reads.
+ * `'fetch': (args): ToolRequestByKind['fetch'] =>` rejects it.
  * `toolTableEntriesAreAnnotated.test.ts` keeps every entry in that form.
  */
 export const DEFAULT_TOOL_REQUESTS: { [P in ToolKind]: DefaultToolRequest<P> } = {
   // A launch states its own description when the arguments carry one. A provider whose
   // frame states the description somewhere else overrides this entry.
-  'agent': (args): ToolRequests['agent'] => ({ description: pickString(args, 'description') || '', prompt: pickString(args, 'prompt') || pickString(args, 'instructions') || '' }),
-  'agents': (args): ToolRequests['agents'] => {
+  agent: (args): ToolRequestByKind['agent'] => ({ description: pickString(args, 'description') || '', prompt: pickString(args, 'prompt') || pickString(args, 'instructions') || '' }),
+  agents: (args): ToolRequestByKind['agents'] => {
     const channel = pickString(args, 'channel')
     const query = pickString(args, 'q') || pickString(args, 'query')
     return { ...(channel ? { channel } : {}), ...(query ? { query } : {}) }
   },
-  'chart': (args): ToolRequests['chart'] => ({ spec: pickString(args, 'spec') || '' }),
-  'delete': (args): ToolRequests['delete'] => ({ changes: removalChange(pickFirstString(args, TOOL_FILE_PATH_KEYS)) }),
-  'move': (args): ToolRequests['move'] => ({ changes: moveChange(args) }),
-  'glob': (args): ToolRequests['glob'] => ({ pattern: pickString(args, 'pattern') || pickString(args, 'query') || '', paths: toolInputPaths(args) }),
-  'grep': (args): ToolRequests['grep'] => ({ pattern: pickString(args, 'pattern') || pickString(args, 'query') || '', paths: toolInputPaths(args) }),
-  'image': (args): ToolRequests['image'] => {
+  chart: (args): ToolRequestByKind['chart'] => ({ spec: pickString(args, 'spec') || '' }),
+  delete: (args): ToolRequestByKind['delete'] => ({ changes: removalChange(pickFirstString(args, TOOL_FILE_PATH_KEYS)) }),
+  move: (args): ToolRequestByKind['move'] => ({ changes: moveChange(args) }),
+  glob: (args): ToolRequestByKind['glob'] => ({ pattern: pickString(args, 'pattern') || pickString(args, 'query') || '', paths: toolInputPaths(args) }),
+  grep: (args): ToolRequestByKind['grep'] => ({ pattern: pickString(args, 'pattern') || pickString(args, 'query') || '', paths: toolInputPaths(args) }),
+  image: (args): ToolRequestByKind['image'] => {
     const prompt = pickString(args, 'prompt')
     return prompt ? { prompt } : {}
   },
-  'list': (args): ToolRequests['list'] => ({ path: pickFirstString(args, TOOL_FILE_PATH_KEYS) || '.' }),
-  'memory': (args): ToolRequests['memory'] => (Object.keys(args).length > 0 ? { payload: args } : {}),
-  'report': (args): ToolRequests['report'] => (Object.keys(args).length > 0 ? { payload: args } : {}),
-  'message': (args): ToolRequests['message'] => {
+  list: (args): ToolRequestByKind['list'] => ({ path: pickFirstString(args, TOOL_FILE_PATH_KEYS) || '.' }),
+  memory: (args): ToolRequestByKind['memory'] => (Object.keys(args).length > 0 ? { payload: args } : {}),
+  report: (args): ToolRequestByKind['report'] => (Object.keys(args).length > 0 ? { payload: args } : {}),
+  message: (args): ToolRequestByKind['message'] => {
     const to = pickString(args, 'to')
     const summary = pickString(args, 'summary')
     return { ...(to ? { to } : {}), text: pickString(args, 'text') || pickString(args, 'message') || '', ...(summary ? { summary } : {}) }
   },
-  'question': (): ToolRequests['question'] => ({ questions: [] }),
-  'skill': (args): ToolRequests['skill'] => {
+  question: (): ToolRequestByKind['question'] => ({ questions: [] }),
+  skill: (args): ToolRequestByKind['skill'] => {
     const name = pickString(args, 'name') || pickString(args, 'skill')
     return { ...(name ? { name } : {}), ...(Object.keys(args).length > 0 ? { args: prettifyArgsJson(args) } : {}) }
   },
-  'task': (args): ToolRequests['task'] => {
+  task: (args): ToolRequestByKind['task'] => {
     const taskId = pickString(args, 'task_id') || pickString(args, 'taskId')
     return { action: 'other', ...(taskId ? { taskId } : {}) }
   },
   // The thought the arguments carry. A provider whose thought arrives as the call's
   // own content, and not as an argument, overrides this entry.
-  'think': (args): ToolRequests['think'] => ({ text: pickString(args, 'thought') || pickString(args, 'text') || '' }),
-  'todo': (): ToolRequests['todo'] => ({ items: [] }),
+  think: (args): ToolRequestByKind['think'] => ({ text: pickString(args, 'thought') || pickString(args, 'text') || '' }),
+  todo: (): ToolRequestByKind['todo'] => ({ items: [] }),
   // Four facts and five keys, because a scheduled job states its id, its label and its
   // schedule the same way whichever provider sends it. `action` is the exception and
   // stays `other` here: the providers that state one state it in the TOOL NAME, which
   // this table never sees, so each of those overrides this entry for that field alone.
-  'trigger': (args): ToolRequests['trigger'] => {
+  trigger: (args): ToolRequestByKind['trigger'] => {
     const triggerId = pickString(args, 'trigger_id') || pickString(args, 'triggerId') || pickString(args, 'id')
     const name = pickString(args, 'name')
     const schedule = pickString(args, 'schedule') || pickString(args, 'cron')
@@ -158,17 +158,17 @@ export const DEFAULT_TOOL_REQUESTS: { [P in ToolKind]: DefaultToolRequest<P> } =
       ...(schedule ? { schedule } : {}),
     }
   },
-  'wait': (): ToolRequests['wait'] => ({}),
-  'web_search': (args): ToolRequests['web_search'] => ({ query: pickString(args, 'query') || pickString(args, 'q') || '' }),
-  'edit': (args): ToolRequests['edit'] => ({ changes: replacementChange(args, 'edit') }),
-  'write': (args): ToolRequests['write'] => ({ changes: replacementChange(args, 'add') }),
-  'execute': (args): ToolRequests['execute'] => {
+  wait: (): ToolRequestByKind['wait'] => ({}),
+  web_search: (args): ToolRequestByKind['web_search'] => ({ query: pickString(args, 'query') || pickString(args, 'q') || '' }),
+  edit: (args): ToolRequestByKind['edit'] => ({ changes: replacementChange(args, 'edit') }),
+  write: (args): ToolRequestByKind['write'] => ({ changes: replacementChange(args, 'add') }),
+  execute: (args): ToolRequestByKind['execute'] => {
     const description = pickString(args, 'description')
     return { command: pickString(args, 'command') || pickString(args, 'cmd') || '', ...(description ? { description } : {}) }
   },
-  'fetch': (args): ToolRequests['fetch'] => ({ url: pickString(args, 'url') || pickString(args, 'uri') || '' }),
-  'mcp': (args): ToolRequests['mcp'] => ({ args, server: pickString(args, 'server'), tool: pickString(args, 'tool') }),
-  'read': (args): ToolRequests['read'] => {
+  fetch: (args): ToolRequestByKind['fetch'] => ({ url: pickString(args, 'url') || pickString(args, 'uri') || '' }),
+  mcp: (args): ToolRequestByKind['mcp'] => ({ args, server: pickString(args, 'server'), tool: pickString(args, 'tool') }),
+  read: (args): ToolRequestByKind['read'] => {
     const offset = pickNumber(args, 'offset', undefined)
     const limit = pickNumber(args, 'limit', undefined)
     return {
@@ -177,18 +177,18 @@ export const DEFAULT_TOOL_REQUESTS: { [P in ToolKind]: DefaultToolRequest<P> } =
       ...(limit !== undefined ? { limit } : {}),
     }
   },
-  'search': (args): ToolRequests['search'] => ({ pattern: pickString(args, 'pattern') || pickString(args, 'query') || '', paths: toolInputPaths(args) }),
+  search: (args): ToolRequestByKind['search'] => ({ pattern: pickString(args, 'pattern') || pickString(args, 'query') || '', paths: toolInputPaths(args) }),
   // Two fields, and three keys, because the kind carries two separate facts. `mode`
   // is where the session lands, and the Agent Client Protocol spells it `targetModeId`
   // as well. `target` is what the switch acts on -- the worktree name that
   // `switchModeRenderer` draws after the mode -- so it never folds into `mode`.
-  'switch_mode': (args): ToolRequests['switch_mode'] => {
+  switch_mode: (args): ToolRequestByKind['switch_mode'] => {
     const mode = pickString(args, 'mode') || pickString(args, 'targetModeId')
     const target = pickString(args, 'target')
     return { ...(mode ? { mode } : {}), ...(target ? { target } : {}) }
   },
-  '': (args): ToolRequests[''] => ({ args }),
-  'other': (args): ToolRequests['other'] => ({ args }),
+  unspecified: (args): ToolRequestByKind['unspecified'] => ({ args }),
+  other: (args): ToolRequestByKind['other'] => ({ args }),
 }
 
 /**
@@ -228,14 +228,14 @@ export const DEFAULT_TOOL_REQUESTS: { [P in ToolKind]: DefaultToolRequest<P> } =
  * gives: a contextual signature is not an annotated position, so an un-annotated entry
  * takes a stray key without a word.
  */
-export type ToolRequestOverrides<F> = { [P in ToolKind]?: (args: Record<string, unknown>, facts: F) => ToolRequests[P] }
+export type ToolRequestOverrides<F> = { [P in ToolKind]?: (args: Record<string, unknown>, facts: F) => ToolRequestByKind[P] }
 
 /**
  * One kind's declared request: the provider's own reading where it states one, and the
  * shared table's everywhere else.
  *
  * GENERIC over the kind, so `kind` and the request it answers stay one correlated pair.
- * An assertion back to `ToolRequests[K]` is what a `switch` needed here, and that is the
+ * An assertion back to `ToolRequestByKind[K]` is what a `switch` needed here, and that is the
  * one cast the assertion ban in `eslint.config.ts` refuses.
  */
 export function toolRequestFor<K extends ToolKind, F>(
@@ -243,7 +243,7 @@ export function toolRequestFor<K extends ToolKind, F>(
   args: Record<string, unknown>,
   facts: F,
   overrides: ToolRequestOverrides<F>,
-): ToolRequests[K] {
+): ToolRequestByKind[K] {
   const override = overrides[kind]
   return override ? override(args, facts) : DEFAULT_TOOL_REQUESTS[kind](args)
 }

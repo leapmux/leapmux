@@ -1,4 +1,4 @@
-import type { ToolKind } from '../../ir/toolKind'
+import type { ToolKind } from '../../model/toolKind'
 
 /**
  * The tool names Reasonix states in a call's title, as the words a branch compares

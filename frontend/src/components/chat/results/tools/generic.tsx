@@ -1,19 +1,18 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
-import type { GenericToolKind } from '../../ir/toolCall'
+import type { GenericToolKind } from '../../model/toolCall'
 import type { ParsedCall, ResolvedCall, ToolKindMeta, ToolKindRenderer, ToolRowView } from './renderer'
 import { Show } from 'solid-js'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { isObject } from '~/lib/jsonPick'
-import { genericResultCollapsible, genericResultCopyable } from '../../ir/tools/generic'
 import { humanizeWireWord } from '../../rendererUtils'
 import { toolInputCode, toolInputSummary, toolInputText } from '../../toolStyles.css'
 import { CollapsibleContent } from '../CollapsibleContent'
-import { GenericToolBody } from '../genericToolCall'
+import { genericResultCollapsible, genericResultCopyable, GenericToolBody } from '../genericToolCall'
 import { useCollapsedLines } from '../useCollapsedLines'
 
 /** The two kinds one renderer serves: a tool no vocabulary lists, with no protocol shape of its own. */
-export type PlainGenericKind = '' | 'other'
+export type PlainGenericKind = 'unspecified' | 'other'
 
 const INPUT_HINT_KEYS = ['query', 'input', 'prompt', 'text', 'command', 'description', 'url']
 

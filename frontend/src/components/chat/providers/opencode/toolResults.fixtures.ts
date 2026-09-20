@@ -1,4 +1,4 @@
-import type { ToolKind } from '~/components/chat/ir/toolKind'
+import type { ToolKind } from '~/components/chat/model/toolKind'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ToolFailureFixture, ToolResultCheck, ToolResultFixture } from '~/test-support/toolVocabulary'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'

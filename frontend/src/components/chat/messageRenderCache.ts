@@ -44,7 +44,7 @@ export interface StringTupleRenderCacheEntry<T> {
 }
 
 /**
- * The key for one value under a FIXED name -- the row IR, per row-revision cache.
+ * The key for one value under a FIXED name -- the row model, per row-revision cache.
  *
  * The row cache is per-revision by construction (`forRow` hands each revision its
  * own map), so its key needs no input folded in.

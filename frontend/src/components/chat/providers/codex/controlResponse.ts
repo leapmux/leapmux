@@ -1,5 +1,7 @@
-import type { ControlAnswerState, ControlResponseSender, Question } from '../../controls/types'
-import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
+import type { ControlAnswerState, ControlResponseSender } from '../../controls/types'
+import type { ControlResponseSummary } from '../../model/controlResponse'
+import type { ControlQuestion } from '../../model/question'
+import type { PersistedControlResponse } from '../../persistedControlResponse'
 import type { PillOptions } from '~/components/common/PillGroup'
 import { disambiguateLabels, isPillOptions, PILL_OPTION_LIMIT } from '~/components/common/PillGroup'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
@@ -89,12 +91,12 @@ export function sendCodexDecision(
 
 const CODEX_OTHER_OPTION_LABEL = 'None of the above'
 
-function hasCodexOtherOption(question: Question): boolean {
+function hasCodexOtherOption(question: ControlQuestion): boolean {
   const raw = question as unknown as Record<string, unknown>
   return raw.isOther === true && Array.isArray(question.options) && question.options.length > 0
 }
 
-function codexAnswerValues(question: Question, index: number, answerState: ControlAnswerState): string[] {
+function codexAnswerValues(question: ControlQuestion, index: number, answerState: ControlAnswerState): string[] {
   const selected = answerState.selections()[index] ?? []
   const customText = answerState.customTexts()[index]?.trim()
   const values = [...selected]
@@ -118,7 +120,7 @@ function codexAnswerValues(question: Question, index: number, answerState: Contr
 export function sendCodexUserInputResponse(
   onRespond: ControlResponseSender,
   requestId: string,
-  questions: Question[],
+  questions: ControlQuestion[],
   answerState: ControlAnswerState,
 ): Promise<void> {
   const answers: Record<string, { answers: string[] }> = {}
@@ -411,7 +413,7 @@ function codexDecisionText(request: Record<string, unknown> | undefined, respons
  * ({result:{decision:'decline'}}) -- so it falls through to the deny-with-feedback / decision-label
  * derivation. Null when none applies (the caller falls back to the neutral behavior/generic label).
  */
-export function codexControlResponseDisplay(cr: PersistedControlResponse): ControlResponseDisplay | null {
+export function codexControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
   const answers = codexUserInputAnswers(cr.request, cr.response)
   if (answers !== null)
     return label(answers)

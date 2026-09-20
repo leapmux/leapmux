@@ -7,37 +7,26 @@ import { sendResponse } from '../../controls/types'
 import { buildPlanMode } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { classifyCopilotMessage, copilotResultDivider } from './classification'
-import { copilotControlResponseDisplay } from './controlResponse'
+import { copilotControlResponseSummary } from './controlResponse'
 import { copilotElicitation } from './elicitation'
 import { copilotExtractControl, copilotIsQuestion, copilotQuestions } from './extractControl'
 import { copilotCompactionBoundary, copilotNotificationEntry } from './extractors/notification'
 import { copilotExtractRow } from './extractors/row'
-import { copilotToolRow } from './extractors/toolCall'
 import { sendCopilotPermissionResponse } from './permissionOptions'
 import { copilotContextUsage } from './sessionMetadata'
-import { copilotSpanRole } from './spanRole'
+import { copilotRelatedMessages, copilotSpanRole } from './spanRole'
 
 const copilotPlugin: ProviderPlugin = {
   transcript: {
     classify: classifyCopilotMessage,
     extractRow: copilotExtractRow,
     spanRole: copilotSpanRole,
-    relatedMessages: (parsed) => {
-      const role = copilotSpanRole(parsed)
-      // A result states no tool name and no arguments of its own, so it always wants
-      // its request. A request wants its result only when the body comes from there.
-      if (role === 'result')
-        return ['request']
-      if (role !== 'request')
-        return []
-      const row = copilotToolRow(parsed.parentObject)
-      return row && (row.kind === 'agent' || Object.keys(row.input).length === 0) ? ['result'] : []
-    },
+    relatedMessages: copilotRelatedMessages,
     extractDivider: copilotResultDivider,
     notificationEntry: copilotNotificationEntry,
   },
   controls: {
-    controlResponseDisplay: withElicitationResponse(copilotElicitation, copilotControlResponseDisplay),
+    controlResponseDisplay: withElicitationResponse(copilotElicitation, copilotControlResponseSummary),
     elicitation: copilotElicitation,
     // The composer's own send is a rejection: Allow lives on its own button, and an
     // empty send is a refusal with no reason.

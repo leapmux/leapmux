@@ -1,17 +1,17 @@
-import type { ToolCallRow } from '../../../ir/row'
-import type { ToolCallIR } from '../../../ir/toolCall'
+import type { ToolCallRow } from '../../../model/row'
+import type { ToolCall } from '../../../model/toolCall'
 import type { PiToolRow } from './toolCall'
 import { describe, expect, it } from 'vitest'
 import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { toolCallRow } from '../../../ir/row'
-import { isFailedResult } from '../../../ir/toolCall'
-import { TOOL_KINDS } from '../../../ir/toolKind'
+import { toolCallRow } from '../../../model/row'
+import { isToolFailureResult } from '../../../model/toolCall'
+import { TOOL_KINDS } from '../../../model/toolKind'
 import { toolCallMeta } from '../../../results/tools/meta'
 import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
 import { input } from '../../testUtils'
 import { PI_POWERSHELL_TOOL, PI_SEARCH_TOOL } from '../protocol'
-import { PI_TOOL_READERS, PI_TOOL_REQUEST_OVERRIDES, piReclassify, piToolCallIR, piToolFacts, piToolRow, piToolRowRole } from './toolCall'
+import { PI_TOOL_READERS, PI_TOOL_REQUEST_OVERRIDES, piReclassify, piToolCall, piToolFacts, piToolRow, piToolSpanRowRole } from './toolCall'
 
 const text = (value: string) => [{ type: 'text', text: value }]
 
@@ -34,7 +34,7 @@ function requestRow(toolName: string, args: Record<string, unknown> = {}): PiToo
 /**
  * The smallest arguments a tool must state for its own kind to build.
  *
- * A file change states the FILE it changes. The IR refuses an `edit` or a `write`
+ * A file change states the FILE it changes. The model refuses an `edit` or a `write`
  * whose request names none -- the row composes its header from that list at every
  * state of the call -- and degrades such a call to the uncategorized row, so a case
  * that states no file tests the uncategorized card rather than the tool.
@@ -50,7 +50,7 @@ function minimalRequestRow(toolName: string): PiToolRow {
 }
 
 /** The mounted row one call sits in, so its toolbar derivation can be read. */
-function rowOf(call: ToolCallIR): ToolCallRow {
+function rowOf(call: ToolCall): ToolCallRow {
   return toolCallRow(call, 'result', { request: false, result: false })
 }
 
@@ -93,13 +93,13 @@ describe('piToolCall kinds and labels', () => {
     [PI_SEARCH_TOOL.Find, 'glob', PI_SEARCH_TOOL.Find],
     [PI_SEARCH_TOOL.List, 'list', PI_SEARCH_TOOL.List],
   ] as const)('maps %s to the %s kind', (toolName, kind, label) => {
-    const call = piToolCallIR(minimalRequestRow(toolName))
+    const call = piToolCall(minimalRequestRow(toolName))
     expect(call.kind).toBe(kind)
     expect(call.label).toBe(label)
   })
 
   it('maps a to-do operation to the todo kind', () => {
-    const call = piToolCallIR(requestRow(PI_TOOL.Todo, { action: 'list' }))
+    const call = piToolCall(requestRow(PI_TOOL.Todo, { action: 'list' }))
     expect(call.kind).toBe('todo')
     expect(call.label).toBe(PI_TOOL.Todo)
   })
@@ -109,8 +109,8 @@ describe('piToolCall kinds and labels', () => {
   // Context Protocol card the instant it ended -- one call, two cards.
   it('states one kind on both frames of a to-do call it cannot read', () => {
     const args = { action: 'teleport' }
-    const running = piToolCallIR(requestRow(PI_TOOL.Todo, args))
-    const ended = piToolCallIR(resultRow(PI_TOOL.Todo, args, { content: text('done') }))
+    const running = piToolCall(requestRow(PI_TOOL.Todo, args))
+    const ended = piToolCall(resultRow(PI_TOOL.Todo, args, { content: text('done') }))
     expect(running.kind).toBe('mcp')
     expect(ended.kind).toBe('mcp')
   })
@@ -118,17 +118,17 @@ describe('piToolCall kinds and labels', () => {
   // A plain object answers `toString` from its prototype, which would give the row a
   // function where a label belongs.
   it.each(['constructor', 'toString', '__proto__'])('states the name of an extension called %s', (toolName) => {
-    const call = piToolCallIR(requestRow(toolName, { query: 'marker' }))
+    const call = piToolCall(requestRow(toolName, { query: 'marker' }))
     // An extension is a Model Context Protocol bridge as far as the row is
-    // concerned: it draws the shared card, and the kind says so. The empty kind
+    // concerned: it draws the shared card, and the kind says so. The unspecified kind
     // drew a wrench and the word "Tool" above that very card.
     expect(call.kind).toBe('mcp')
     expect(call.label).toBe(toolName)
   })
 
   it('states the PowerShell language so the row highlights the command', () => {
-    const shell = piToolCallIR(requestRow(PI_POWERSHELL_TOOL, { command: 'Get-ChildItem' }))
-    const bash = piToolCallIR(requestRow(PI_TOOL.Bash, { command: 'ls' }))
+    const shell = piToolCall(requestRow(PI_POWERSHELL_TOOL, { command: 'Get-ChildItem' }))
+    const bash = piToolCall(requestRow(PI_TOOL.Bash, { command: 'ls' }))
     expect(shell.kind).toBe('execute')
     expect(shell.kind === 'execute' && shell.request.language).toBe('powershell')
     expect(bash.kind === 'execute' && bash.request.language).toBeUndefined()
@@ -137,13 +137,13 @@ describe('piToolCall kinds and labels', () => {
   // The shared header draws the command itself, so a title here would put the tool's
   // own name above the very command it ran.
   it('leaves a command row without a title of its own', () => {
-    expect(piToolCallIR(requestRow(PI_TOOL.Bash, { command: 'ls' })).title).toBeUndefined()
+    expect(piToolCall(requestRow(PI_TOOL.Bash, { command: 'ls' })).title).toBeUndefined()
   })
 })
 
-describe('piToolCallIR edit arguments', () => {
+describe('piToolCall edit arguments', () => {
   it('states a single substitution as the one change the title reads', () => {
-    const call = piToolCallIR(requestRow(PI_TOOL.Edit, { path: '/project/a.ts', edits: [{ oldText: 'before', newText: 'after' }] }))
+    const call = piToolCall(requestRow(PI_TOOL.Edit, { path: '/project/a.ts', edits: [{ oldText: 'before', newText: 'after' }] }))
     expect(call.kind).toBe('edit')
     const changes = call.kind === 'edit' ? call.request.changes : []
     expect(changes).toHaveLength(1)
@@ -151,7 +151,7 @@ describe('piToolCallIR edit arguments', () => {
   })
 
   it('states the size of a multi-substitution edit', () => {
-    const call = piToolCallIR(requestRow(PI_TOOL.Edit, {
+    const call = piToolCall(requestRow(PI_TOOL.Edit, {
       path: '/project/a.ts',
       edits: [{ oldText: 'a', newText: 'b' }, { oldText: 'c', newText: 'd' }],
     }))
@@ -159,7 +159,7 @@ describe('piToolCallIR edit arguments', () => {
   })
 })
 
-describe('piToolCallIR question arguments', () => {
+describe('piToolCall question arguments', () => {
   const question = {
     question: 'Choose a layout',
     header: 'Layout',
@@ -173,7 +173,7 @@ describe('piToolCallIR question arguments', () => {
   // empty request drew the bare wire name over an empty body, and the reader lost both
   // the question and every option it offered.
   it.each([PI_TOOL.AskUserQuestion, PI_TOOL.PlanQuestion, PI_TOOL.GoalQuestion, PI_TOOL.GoalQuestionnaire])('reads the question a %s call asked', (toolName) => {
-    const call = piToolCallIR(requestRow(toolName, { questions: [question] }))
+    const call = piToolCall(requestRow(toolName, { questions: [question] }))
     expect(call.kind).toBe('question')
     expect(call.kind === 'question' && call.request.questions).toEqual([{
       header: 'Layout',
@@ -186,13 +186,13 @@ describe('piToolCallIR question arguments', () => {
   })
 
   it('heads a single-question row with the question rather than the wire name', () => {
-    expect(piToolCallIR(requestRow(PI_TOOL.GoalQuestion, { questions: [question] })).title).toBe('Choose a layout')
+    expect(piToolCall(requestRow(PI_TOOL.GoalQuestion, { questions: [question] })).title).toBe('Choose a layout')
   })
 
   // Several questions cannot share one line, so the shared renderer states their
   // count -- and a title here would override it with the first question alone.
   it('states no title of its own for several questions', () => {
-    const call = piToolCallIR(requestRow(PI_TOOL.AskUserQuestion, {
+    const call = piToolCall(requestRow(PI_TOOL.AskUserQuestion, {
       questions: [question, { question: 'Pick a colour', options: [{ label: 'Red' }] }],
     }))
     expect(call.kind === 'question' && call.request.questions).toHaveLength(2)
@@ -200,7 +200,7 @@ describe('piToolCallIR question arguments', () => {
   })
 
   it('reads a question record the call states at the root', () => {
-    const call = piToolCallIR(requestRow(PI_TOOL.GoalQuestion, question))
+    const call = piToolCall(requestRow(PI_TOOL.GoalQuestion, question))
     expect(call.kind === 'question' && call.request.questions.map(q => q.question)).toEqual(['Choose a layout'])
   })
 
@@ -209,41 +209,41 @@ describe('piToolCallIR question arguments', () => {
     ['an options list that is not an array', { question: 'Pick', options: 'Red' }],
     ['an option with no label', { question: 'Pick', options: [{ description: 'Small' }] }],
   ])('drops %s', (_name, args) => {
-    const call = piToolCallIR(requestRow(PI_TOOL.AskUserQuestion, args))
+    const call = piToolCall(requestRow(PI_TOOL.AskUserQuestion, args))
     const questions = call.kind === 'question' ? call.request.questions : []
     expect(questions.flatMap(q => q.options)).toEqual([])
   })
 
   it('states the answer the reader chose under the question header', () => {
-    const call = piToolCallIR(resultRow(PI_TOOL.AskUserQuestion, { questions: [question] }, { content: text('Compact') }))
+    const call = piToolCall(resultRow(PI_TOOL.AskUserQuestion, { questions: [question] }, { content: text('Compact') }))
     expect(call.result).toEqual({ answers: [{ header: 'Layout', answer: 'Compact' }] })
   })
 })
 
-describe('piToolCallIR result slots', () => {
+describe('piToolCall result slots', () => {
   it('draws a command result through the shared command body', () => {
-    const call = piToolCallIR(resultRow(PI_TOOL.Bash, { command: 'ls' }, { content: text('a.ts') }))
+    const call = piToolCall(resultRow(PI_TOOL.Bash, { command: 'ls' }, { content: text('a.ts') }))
     expect(call.result).toMatchObject({ commands: [{ output: 'a.ts' }] })
   })
 
   it('draws a directory listing through the shared directory body', () => {
-    const call = piToolCallIR(resultRow(PI_SEARCH_TOOL.List, { path: '/project' }, { content: text('a.ts\nsrc/') }))
+    const call = piToolCall(resultRow(PI_SEARCH_TOOL.List, { path: '/project' }, { content: text('a.ts\nsrc/') }))
     expect(call.result).toMatchObject({ entries: [{ path: 'a.ts' }, { path: 'src/' }] })
   })
 
   it('draws a grep result through the shared search body', () => {
-    const call = piToolCallIR(resultRow(PI_SEARCH_TOOL.Grep, { pattern: 'answer' }, { content: text('a.ts:3: answer') }))
+    const call = piToolCall(resultRow(PI_SEARCH_TOOL.Grep, { pattern: 'answer' }, { content: text('a.ts:3: answer') }))
     expect(call.result).toMatchObject({ content: 'a.ts:3: answer', numLines: 1 })
   })
 
   it('draws an unrecognized extension through the shared rich-content body', () => {
-    const call = piToolCallIR(resultRow('extension_lookup', { query: 'marker' }, { content: text('Extension report'), details: { count: 0 } }))
+    const call = piToolCall(resultRow('extension_lookup', { query: 'marker' }, { content: text('Extension report'), details: { count: 0 } }))
     expect(call.kind).toBe('mcp')
     expect(call.request).toMatchObject({ tool: 'extension_lookup' })
   })
 
   it('draws the checklist, its empty state and the note about the named task', () => {
-    const call = piToolCallIR(resultRow(PI_TOOL.Todo, { action: 'get', id: 1 }, {
+    const call = piToolCall(resultRow(PI_TOOL.Todo, { action: 'get', id: 1 }, {
       content: text('#1 Inspect sample'),
       details: { action: 'get', params: { action: 'get', id: 1 }, tasks: [{ id: 1, subject: 'Inspect sample', status: 'pending', description: 'Read the entry points.' }] },
     }))
@@ -252,7 +252,7 @@ describe('piToolCallIR result slots', () => {
   })
 
   it('draws a cleared to-do list with its own empty state', () => {
-    const call = piToolCallIR(resultRow(PI_TOOL.Todo, { action: 'clear' }, {
+    const call = piToolCall(resultRow(PI_TOOL.Todo, { action: 'clear' }, {
       content: text('Cleared'),
       details: { action: 'clear', params: { action: 'clear' }, tasks: [] },
     }))
@@ -262,7 +262,7 @@ describe('piToolCallIR result slots', () => {
   // These tools draw DATA, so a failed call has no body of its own and the row states
   // the error text under the shared header instead.
   it.each([PI_TOOL.Read, PI_TOOL.Edit, PI_TOOL.Write, PI_SEARCH_TOOL.Grep, PI_SEARCH_TOOL.Find, PI_SEARCH_TOOL.List])('states the error text of a failed %s', (toolName) => {
-    const call = piToolCallIR(resultRow(toolName, {}, { content: text('The call refused.') }, true))
+    const call = piToolCall(resultRow(toolName, {}, { content: text('The call refused.') }, true))
     expect(call.result).toEqual({ failure: true, text: 'The call refused.' })
   })
 })
@@ -272,27 +272,27 @@ describe('piToolCall copy text', () => {
   // to copy `{"plan":"# ..."}` with every line break escaped.
   it('copies the plan of a completed plan row', () => {
     const plan = '# Welcome plan\n\nRead the sample.'
-    const presentation = piToolCallIR(resultRow(PI_TOOL.PlanComplete, { plan }, { content: text('Plan ready for review.'), details: { plan } }))
+    const presentation = piToolCall(resultRow(PI_TOOL.PlanComplete, { plan }, { content: text('Plan ready for review.'), details: { plan } }))
     const meta = toolCallMeta(rowOf(presentation))
     expect(meta.copyableContent()).toBe(plan)
     expect(meta.collapsible).toBe(false)
   })
 
   it('copies the result text of a failed plan row, which is what that row draws', () => {
-    const presentation = piToolCallIR(resultRow(PI_TOOL.PlanComplete, {}, { content: text('The plan tool refused.'), details: { plan: '# Ignored' } }, true))
+    const presentation = piToolCall(resultRow(PI_TOOL.PlanComplete, {}, { content: text('The plan tool refused.'), details: { plan: '# Ignored' } }, true))
     expect(toolCallMeta(rowOf(presentation)).copyableContent()).toBe('The plan tool refused.')
   })
 
   it('copies the raw diff an edit row draws when the diff cannot be parsed', () => {
     const diff = 'A provider diff in an unknown format'
-    const presentation = piToolCallIR(resultRow(PI_TOOL.Edit, { path: '/project/a.ts' }, { content: text('Edit completed'), details: { diff } }))
+    const presentation = piToolCall(resultRow(PI_TOOL.Edit, { path: '/project/a.ts' }, { content: text('Edit completed'), details: { diff } }))
     const meta = toolCallMeta(rowOf(presentation))
     expect(meta.hasDiff).toBe(false)
     expect(meta.copyableContent()).toBe(diff)
   })
 
   it('copies the error of a refused to-do operation', () => {
-    const presentation = piToolCallIR(resultRow(PI_TOOL.Todo, { action: 'update', id: 99 }, {
+    const presentation = piToolCall(resultRow(PI_TOOL.Todo, { action: 'update', id: 99 }, {
       content: text('Error: #99 not found'),
       details: { action: 'update', params: { action: 'update', id: 99 }, error: '#99 not found', tasks: [] },
     }))
@@ -302,24 +302,24 @@ describe('piToolCall copy text', () => {
 
 describe('piToolCall', () => {
   it('reads a start event as the request of its span', () => {
-    const requestCall = piToolCallIR(requestRow(PI_TOOL.Bash, { command: 'ls' }))
+    const requestCall = piToolCall(requestRow(PI_TOOL.Bash, { command: 'ls' }))
     // A start event states no status word; the unfinished frame keeps it.
-    expect(requestCall).toMatchObject({ id: 'call', status: '' })
-    expect(piToolRowRole(requestRow(PI_TOOL.Bash, { command: 'ls' }))).toBe('request')
+    expect(requestCall).toMatchObject({ id: 'call', status: 'unstated' })
+    expect(piToolSpanRowRole(requestRow(PI_TOOL.Bash, { command: 'ls' }))).toBe('request')
   })
 
   it('reads a completion event as the end of its span', () => {
-    expect(piToolCallIR(resultRow(PI_TOOL.Bash, { command: 'ls' }, { content: text('a.ts') }))).toMatchObject({ status: 'completed' })
-    expect(piToolRowRole(resultRow(PI_TOOL.Bash, { command: 'ls' }, { content: text('a.ts') }))).toBe('result')
+    expect(piToolCall(resultRow(PI_TOOL.Bash, { command: 'ls' }, { content: text('a.ts') }))).toMatchObject({ status: 'completed' })
+    expect(piToolSpanRowRole(resultRow(PI_TOOL.Bash, { command: 'ls' }, { content: text('a.ts') }))).toBe('result')
   })
 
   it('reports a failed call', () => {
-    expect(piToolCallIR(resultRow(PI_TOOL.Read, {}, { content: text('gone') }, true)).status).toBe('failed')
+    expect(piToolCall(resultRow(PI_TOOL.Read, {}, { content: text('gone') }, true)).status).toBe('failed')
   })
 
   it('reports an interrupted call from the completion LeapMux recorded', () => {
     const row = piToolRow(start(PI_TOOL.Bash, { command: 'ls' }), undefined, undefined, MessageCompletion.INTERRUPTED)!
-    expect(piToolCallIR(row, MessageCompletion.INTERRUPTED).status).toBe('cancelled')
+    expect(piToolCall(row, MessageCompletion.INTERRUPTED).status).toBe('cancelled')
   })
 })
 
@@ -329,18 +329,18 @@ describe('piToolCall', () => {
  * dropped it, so every Pi command row headed itself with the generic `Run command` --
  * the words the renderer falls back to when the call states nothing of its own.
  */
-describe('piToolCallIR execute description', () => {
+describe('piToolCall execute description', () => {
   it('carries the description the agent sent, on the request row and the result row', () => {
     const args = { command: 'ls -la', description: 'List files in current directory' }
     for (const row of [requestRow(PI_TOOL.Bash, args), resultRow(PI_TOOL.Bash, args, { content: text('ok') })]) {
-      const call = piToolCallIR(row)
+      const call = piToolCall(row)
       expect(call.kind).toBe('execute')
       expect(call.kind === 'execute' && call.request.description).toBe('List files in current directory')
     }
   })
 
   it('states no description for a command that carries none', () => {
-    const call = piToolCallIR(requestRow(PI_TOOL.Bash, { command: 'ls -la' }))
+    const call = piToolCall(requestRow(PI_TOOL.Bash, { command: 'ls -la' }))
     expect(call.kind === 'execute' && call.request.description).toBeUndefined()
   })
 
@@ -348,14 +348,14 @@ describe('piToolCallIR execute description', () => {
   // treats an EMPTY description as one the agent never sent. Carrying `''` through
   // would head the row with a blank line where the command's purpose belongs.
   it('reads an empty description as no description at all', () => {
-    const call = piToolCallIR(requestRow(PI_TOOL.Bash, { command: 'ls -la', description: '' }))
+    const call = piToolCall(requestRow(PI_TOOL.Bash, { command: 'ls -la', description: '' }))
     expect(call.kind === 'execute' && call.request.description).toBeUndefined()
   })
 
   // The language and the description sit in one object literal, and PowerShell is the
   // one tool that sets both. A careless edit to either drops the other.
   it('keeps the description beside the language on a PowerShell call', () => {
-    const call = piToolCallIR(requestRow(PI_POWERSHELL_TOOL, { command: 'Get-ChildItem', description: 'List the files' }))
+    const call = piToolCall(requestRow(PI_POWERSHELL_TOOL, { command: 'Get-ChildItem', description: 'List the files' }))
     expect(call.kind === 'execute' && call.request).toMatchObject({ language: 'powershell', description: 'List the files' })
   })
 })
@@ -365,12 +365,12 @@ describe('piToolCallIR execute description', () => {
  * for both. The row then headed a command the reader stopped "Error", with no exit code
  * and with the marker that explained it stripped from the body.
  */
-describe('piToolCallIR execute outcome', () => {
+describe('piToolCall execute outcome', () => {
   it.each([
     ['a stop the reader sent', 'partial output\n\nCommand aborted'],
     ['a timeout Pi reported', 'partial output\n\nCommand timed out after 30 seconds'],
   ])('words %s as cancelled rather than failed', (_name, output) => {
-    const call = piToolCallIR(resultRow(PI_TOOL.Bash, { command: 'sleep 99' }, { content: text(output) }, true))
+    const call = piToolCall(resultRow(PI_TOOL.Bash, { command: 'sleep 99' }, { content: text(output) }, true))
     expect(call.status).toBe('cancelled')
     // The process the reader stopped reported no code: `null` states "code: none",
     // which is not the same key being absent.
@@ -378,20 +378,20 @@ describe('piToolCallIR execute outcome', () => {
   })
 
   it('leaves a non-zero exit as a failure, with its exit code', () => {
-    const call = piToolCallIR(resultRow(PI_TOOL.Bash, { command: 'false' }, { content: text('boom\n\nCommand exited with code 3') }, true))
+    const call = piToolCall(resultRow(PI_TOOL.Bash, { command: 'false' }, { content: text('boom\n\nCommand exited with code 3') }, true))
     expect(call.status).toBe('failed')
     expect(call.result).toMatchObject({ commands: [{ output: 'boom', exitCode: 3 }] })
   })
 
   it('leaves a command that succeeded completed', () => {
-    const call = piToolCallIR(resultRow(PI_TOOL.Bash, { command: 'ls' }, { content: text('a.ts') }))
+    const call = piToolCall(resultRow(PI_TOOL.Bash, { command: 'ls' }, { content: text('a.ts') }))
     expect(call.status).toBe('completed')
   })
 
   // The marker parser fires on the error path alone, so a process that PRINTS the
   // marker text on a successful run must not word the row as a stop.
   it('ignores marker-shaped output from a command that succeeded', () => {
-    const call = piToolCallIR(resultRow(PI_TOOL.Bash, { command: 'echo' }, { content: text('Command aborted') }))
+    const call = piToolCall(resultRow(PI_TOOL.Bash, { command: 'echo' }, { content: text('Command aborted') }))
     expect(call.status).toBe('completed')
     expect(call.result).toMatchObject({ commands: [{ output: 'Command aborted' }] })
   })
@@ -414,9 +414,9 @@ describe('PI_TOOL_REQUEST_OVERRIDES', () => {
   // `command` alone, because that is the one key Pi sends. The shared entry accepts
   // `cmd` as well, and states no language at all.
   it('reads the execute command from `command`, and the shell from the tool name', () => {
-    const call = piToolCallIR(requestRow(PI_POWERSHELL_TOOL, { command: 'Get-ChildItem', cmd: 'ignored', description: 'List the files' }))
+    const call = piToolCall(requestRow(PI_POWERSHELL_TOOL, { command: 'Get-ChildItem', cmd: 'ignored', description: 'List the files' }))
     expect(call.kind === 'execute' && call.request).toEqual({ command: 'Get-ChildItem', language: 'powershell', description: 'List the files' })
-    expect(piToolCallIR(requestRow(PI_TOOL.Bash, { cmd: 'ignored' })).request).toEqual({ command: '' })
+    expect(piToolCall(requestRow(PI_TOOL.Bash, { cmd: 'ignored' })).request).toEqual({ command: '' })
     expect(DEFAULT_TOOL_REQUESTS.execute({ cmd: 'ignored' })).toEqual({ command: 'ignored' })
   })
 
@@ -424,7 +424,7 @@ describe('PI_TOOL_REQUEST_OVERRIDES', () => {
   // carries no arguments at all. The shared entry reads a ROOT pair and not the list
   // Pi sends, so it states the file and neither side of the change.
   it('reads the edit substitutions from the paired opening event', () => {
-    const call = piToolCallIR(resultRow(PI_TOOL.Edit, { path: '/project/a.ts', edits: [{ oldText: 'before', newText: 'after' }] }, { content: text('Edit completed') }))
+    const call = piToolCall(resultRow(PI_TOOL.Edit, { path: '/project/a.ts', edits: [{ oldText: 'before', newText: 'after' }] }, { content: text('Edit completed') }))
     expect(call.kind === 'edit' && call.request.changes).toMatchObject([{ filePath: '/project/a.ts', oldStr: 'before', newStr: 'after' }])
     expect(DEFAULT_TOOL_REQUESTS.edit({ path: '/project/a.ts', edits: [{ oldText: 'before', newText: 'after' }] }))
       .toMatchObject({ changes: [{ filePath: '/project/a.ts', oldStr: '', newStr: '' }] })
@@ -433,7 +433,7 @@ describe('PI_TOOL_REQUEST_OVERRIDES', () => {
   // Pi normalizes both spellings and states the LIST first, so a call that sends
   // `edits` and a root pair draws them in that order.
   it('reads the `edits` list ahead of the `oldText` and `newText` pair', () => {
-    const call = piToolCallIR(requestRow(PI_TOOL.Edit, {
+    const call = piToolCall(requestRow(PI_TOOL.Edit, {
       path: '/project/a.ts',
       edits: [{ oldText: 'in the list', newText: 'first' }],
       oldText: 'at the root',
@@ -446,7 +446,7 @@ describe('PI_TOOL_REQUEST_OVERRIDES', () => {
   // shared entry states the addition and no body: `content` is a best-effort reading
   // that every provider spells for itself, so only Pi's own entry takes it.
   it('reads the write body from `path` and `content`', () => {
-    const call = piToolCallIR(requestRow(PI_TOOL.Write, { path: '/project/new.ts', content: 'export const a = 1\n' }))
+    const call = piToolCall(requestRow(PI_TOOL.Write, { path: '/project/new.ts', content: 'export const a = 1\n' }))
     expect(call.kind === 'write' && call.request.changes).toMatchObject([{ filePath: '/project/new.ts', operation: 'add', newStr: 'export const a = 1\n' }])
     expect(DEFAULT_TOOL_REQUESTS.write({ path: '/project/new.ts', content: 'export const a = 1\n' }))
       .toMatchObject({ changes: [{ filePath: '/project/new.ts', operation: 'add', newStr: '' }] })
@@ -455,9 +455,9 @@ describe('PI_TOOL_REQUEST_OVERRIDES', () => {
   // The arguments answer first, and the result's own `details` answer after them.
   it('reads the launch description from the arguments ahead of the result details', () => {
     const detailed = { content: text('done'), details: { description: 'From the result', displayName: 'Explorer' } }
-    const stated = piToolCallIR(resultRow(PI_TOOL.Agent, { description: 'From the arguments', prompt: 'Do it', subagent_type: 'explorer' }, detailed))
+    const stated = piToolCall(resultRow(PI_TOOL.Agent, { description: 'From the arguments', prompt: 'Do it', subagent_type: 'explorer' }, detailed))
     expect(stated.kind === 'agent' && stated.request).toMatchObject({ description: 'From the arguments', agentType: 'explorer', prompt: 'Do it' })
-    const recovered = piToolCallIR(resultRow(PI_TOOL.Agent, { prompt: 'Do it' }, detailed))
+    const recovered = piToolCall(resultRow(PI_TOOL.Agent, { prompt: 'Do it' }, detailed))
     expect(recovered.kind === 'agent' && recovered.request).toMatchObject({ description: 'From the result', agentType: 'Explorer' })
     // The shared entry sees the arguments alone, so the recovered launch has no words.
     expect(DEFAULT_TOOL_REQUESTS.agent({ prompt: 'Do it' })).toEqual({ description: '', prompt: 'Do it' })
@@ -467,27 +467,27 @@ describe('PI_TOOL_REQUEST_OVERRIDES', () => {
   // arguments. The shared entry reads a `server` argument Pi never sends.
   it('reads the MCP server from the `mcp__` name and the tool from the `tool` argument', () => {
     const args = { tool: 'create_issue', title: 'A defect' }
-    const call = piToolCallIR(requestRow('mcp__github', args))
+    const call = piToolCall(requestRow('mcp__github', args))
     expect(call.kind === 'mcp' && call.request).toEqual({ server: 'github', tool: 'create_issue', args })
     expect(DEFAULT_TOOL_REQUESTS.mcp(args)).toEqual({ server: '', tool: 'create_issue', args })
   })
 
   // pi-mcp-adapter states the pair in the RESULT, which no argument carries.
   it('reads the MCP server and tool from the result details', () => {
-    const call = piToolCallIR(resultRow('sample_lookup', { query: 'marker' }, { content: text('Found it'), details: { server: 'sample', tool: 'lookup' } }))
+    const call = piToolCall(resultRow('sample_lookup', { query: 'marker' }, { content: text('Found it'), details: { server: 'sample', tool: 'lookup' } }))
     expect(call.kind === 'mcp' && call.request).toEqual({ server: 'sample', tool: 'lookup', args: { query: 'marker' } })
   })
 
   // An extension that identifies no server states its own wire name as the tool.
   it('states the wire name as the tool of an extension with no MCP identity', () => {
-    const call = piToolCallIR(requestRow('extension_lookup', { query: 'marker' }))
+    const call = piToolCall(requestRow('extension_lookup', { query: 'marker' }))
     expect(call.kind === 'mcp' && call.request).toEqual({ server: '', tool: 'extension_lookup', args: { query: 'marker' } })
   })
 
   // A tool that asks ONE question states the record at the root, and one that asks
   // several states a `questions` list. The list answers first.
   it('reads the `questions` list ahead of the question record at the root', () => {
-    const call = piToolCallIR(requestRow(PI_TOOL.AskUserQuestion, {
+    const call = piToolCall(requestRow(PI_TOOL.AskUserQuestion, {
       question: 'At the root',
       questions: [{ question: 'In the list', header: 'Layout', options: [{ label: 'Compact', description: 'Small', preview: 'a worked example' }] }],
     }))
@@ -502,7 +502,7 @@ describe('PI_TOOL_REQUEST_OVERRIDES', () => {
   // The checklist rides in the RESULT's `details.tasks`. An `items` argument is not
   // a key this entry reads, and the shared entry states an empty list.
   it('reads the checklist from the result details rather than from an `items` argument', () => {
-    const call = piToolCallIR(resultRow(PI_TOOL.Todo, { action: 'list', items: [{ id: 9, subject: 'From the arguments' }] }, {
+    const call = piToolCall(resultRow(PI_TOOL.Todo, { action: 'list', items: [{ id: 9, subject: 'From the arguments' }] }, {
       content: text('1 task'),
       details: { action: 'list', params: { action: 'list' }, tasks: [{ id: 1, subject: 'From the result', status: 'pending' }] },
     }))
@@ -513,12 +513,12 @@ describe('PI_TOOL_REQUEST_OVERRIDES', () => {
   // The note is the task's own description where the call identifies one, and the
   // `description` argument otherwise.
   it('reads the to-do note from the named task ahead of the `description` argument', () => {
-    const named = piToolCallIR(resultRow(PI_TOOL.Todo, { action: 'get', id: 1, description: 'From the arguments' }, {
+    const named = piToolCall(resultRow(PI_TOOL.Todo, { action: 'get', id: 1, description: 'From the arguments' }, {
       content: text('#1 Inspect sample'),
       details: { action: 'get', params: { action: 'get', id: 1 }, tasks: [{ id: 1, subject: 'Inspect sample', status: 'pending', description: 'From the task' }] },
     }))
     expect(named.kind === 'todo' && named.request.note).toBe('From the task')
-    const listed = piToolCallIR(resultRow(PI_TOOL.Todo, { action: 'list', description: 'From the arguments' }, {
+    const listed = piToolCall(resultRow(PI_TOOL.Todo, { action: 'list', description: 'From the arguments' }, {
       content: text('1 task'),
       details: { action: 'list', params: { action: 'list' }, tasks: [{ id: 1, subject: 'Inspect sample', status: 'pending' }] },
     }))
@@ -535,7 +535,7 @@ describe('PI_TOOL_REQUEST_OVERRIDES', () => {
  * `switch_mode` once spelled its own empty request, so the shared entry for the kind was
  * unreachable and nothing could see the two disagree.
  */
-describe('piToolCallIR shared requests', () => {
+describe('piToolCall shared requests', () => {
   it.each([
     ['read', PI_TOOL.Read, { path: '/project/a.ts', offset: 5, limit: 20 }],
     ['grep', PI_SEARCH_TOOL.Grep, { pattern: 'answer', path: '/project' }],
@@ -543,7 +543,7 @@ describe('piToolCallIR shared requests', () => {
     ['list', PI_SEARCH_TOOL.List, { path: '/project' }],
     ['switch_mode', PI_TOOL.PlanComplete, { plan: '# Welcome plan' }],
   ] as const)('fills the %s request from the shared table', (kind, toolName, args) => {
-    const call = piToolCallIR(requestRow(toolName, args))
+    const call = piToolCall(requestRow(toolName, args))
     expect(call.kind).toBe(kind)
     // STRICT: a request spelled here rather than read from the table answers the same
     // fields with the absent ones simply MISSING, and `toEqual` calls that equal.
@@ -621,7 +621,7 @@ const PI_OWN_REQUEST_KINDS = ['agent', 'edit', 'execute', 'mcp', 'question', 'to
  * states is that the kind delegates at all.
  */
 const PI_SHARED_REQUEST_KINDS = [
-  '',
+  'unspecified',
   'agents',
   'chart',
   'delete',
@@ -671,7 +671,7 @@ describe('PI_TOOL_READERS', () => {
   // the transcript, where the error boundary replaces the whole message.
   it('answers each kind at the key that states it', () => {
     for (const kind of TOOL_KINDS)
-      expect(PI_TOOL_READERS[kind](probeFacts).kind, kind || 'the empty kind').toBe(kind)
+      expect(PI_TOOL_READERS[kind](probeFacts).kind, kind).toBe(kind)
   })
 
   it('splits every tool kind between the two lists above', () => {
@@ -748,28 +748,44 @@ describe('piReclassify', () => {
  * text -- and a retained START frame has no result text, so the row loses its
  * substitutions AND states an empty reason.
  */
-describe('piToolCallIR on a retained row the turn failed', () => {
+describe('piToolCall on a retained row the turn failed', () => {
   const retained = (toolName: string, args: Record<string, unknown>) =>
-    piToolCallIR(piToolRow(start(toolName, args), undefined, undefined, MessageCompletion.ERROR)!, MessageCompletion.ERROR)
+    piToolCall(piToolRow(start(toolName, args), undefined, undefined, MessageCompletion.ERROR)!, MessageCompletion.ERROR)
 
   it('words the row as failed while Pi flagged nothing', () => {
-    const row = piToolRow(start(PI_TOOL.Edit, { path: '/project/a.ts' }), undefined, undefined, MessageCompletion.ERROR)!
+    const row = piToolRow(start(PI_TOOL.Read, { path: '/project/a.ts' }), undefined, undefined, MessageCompletion.ERROR)!
     expect(row.tool.isError).toBe(false)
     expect(row.isError).toBe(false)
     expect(row.finished).toBe(true)
-    expect(piToolCallIR(row, MessageCompletion.ERROR).status).toBe('failed')
+    expect(piToolCall(row, MessageCompletion.ERROR).status).toBe('failed')
+    expect(piToolCall(row, MessageCompletion.ERROR).result).toBeUndefined()
+  })
+
+  it('marks a retained start row incomplete after a successful turn', () => {
+    const row = piToolRow(start(PI_TOOL.Read, { path: '/project/a.ts' }), undefined, undefined, MessageCompletion.COMPLETE)!
+    const call = piToolCall(row, MessageCompletion.COMPLETE)
+    expect(call.status).toBe('incomplete')
+    expect(call.result).toBeUndefined()
+  })
+
+  it('marks an end frame incomplete when Pi supplied no result body', () => {
+    const row = piToolRow({ type: 'tool_execution_end', toolCallId: 'call', toolName: PI_TOOL.Read, isError: false }, undefined, undefined)!
+    const call = piToolCall(row)
+    expect(call.status).toBe('incomplete')
+    expect(call.result).toBeUndefined()
+    expect(call.images).toEqual([])
   })
 
   it('keeps the substitutions an edit asked for, and takes no error branch', () => {
     const call = retained(PI_TOOL.Edit, { path: '/project/a.ts', edits: [{ oldText: 'before', newText: 'after' }] })
     expect(call.kind === 'edit' && call.request.changes).toMatchObject([{ filePath: '/project/a.ts', oldStr: 'before', newStr: 'after' }])
-    expect(isFailedResult(call.result)).toBe(false)
+    expect(isToolFailureResult(call.result)).toBe(false)
   })
 
   it('keeps the file a write asked for, and takes no error branch', () => {
     const call = retained(PI_TOOL.Write, { path: '/project/new.ts', content: 'export const a = 1\n' })
     expect(call.kind === 'write' && call.request.changes).toMatchObject([{ filePath: '/project/new.ts', operation: 'add' }])
-    expect(isFailedResult(call.result)).toBe(false)
+    expect(isToolFailureResult(call.result)).toBe(false)
   })
 
   // The other half of the pair: Pi's OWN flag does take the error branch, and states
@@ -777,13 +793,13 @@ describe('piToolCallIR on a retained row the turn failed', () => {
   // `RequestedChangesBody` refuses a failed call's diff for every provider, so the
   // list draws nothing extra and only the row's title reads it.
   it('states the reason and keeps the substitutions when Pi itself flags the call', () => {
-    const call = piToolCallIR(resultRow(PI_TOOL.Edit, { path: '/project/a.ts', edits: [{ oldText: 'before', newText: 'after' }] }, { content: text('No match for the old text.') }, true))
+    const call = piToolCall(resultRow(PI_TOOL.Edit, { path: '/project/a.ts', edits: [{ oldText: 'before', newText: 'after' }] }, { content: text('No match for the old text.') }, true))
     expect(call.kind === 'edit' && call.request.changes).toMatchObject([{ filePath: '/project/a.ts', oldStr: 'before', newStr: 'after' }])
     expect(call.result).toStrictEqual({ failure: true, text: 'No match for the old text.' })
   })
 
   it('keeps the file a failed write asked for', () => {
-    const call = piToolCallIR(resultRow(PI_TOOL.Write, { path: '/project/new.ts', content: 'export const a = 1\n' }, { content: text('The directory is read-only.') }, true))
+    const call = piToolCall(resultRow(PI_TOOL.Write, { path: '/project/new.ts', content: 'export const a = 1\n' }, { content: text('The directory is read-only.') }, true))
     expect(call.kind === 'write' && call.request.changes).toMatchObject([{ filePath: '/project/new.ts', operation: 'add' }])
     expect(call.result).toStrictEqual({ failure: true, text: 'The directory is read-only.' })
   })
@@ -798,11 +814,11 @@ describe('piToolCallIR on a retained row the turn failed', () => {
  * `piReclassify` routes every tool `PI_TOOL_KINDS` does not hold to that kind, so the
  * rule covers each Pi extension and each Model Context Protocol bridge.
  */
-describe('piToolCallIR on a call that has not returned', () => {
+describe('piToolCall on a call that has not returned', () => {
   it('states no result for an unrecognized extension that is still running', () => {
-    const call = piToolCallIR(requestRow('extension_lookup', { query: 'marker' }))
+    const call = piToolCall(requestRow('extension_lookup', { query: 'marker' }))
     expect(call.kind).toBe('mcp')
-    expect(call.status).toBe('')
+    expect(call.status).toBe('unstated')
     expect(call.result).toBeUndefined()
     expect(call.request).toMatchObject({ tool: 'extension_lookup' })
   })
@@ -810,7 +826,7 @@ describe('piToolCallIR on a call that has not returned', () => {
   // The second route to the same entry: a to-do operation whose checklist this build
   // cannot read draws the shared card, and it must wait for its answer just the same.
   it('states no result for a running to-do call whose checklist it cannot read', () => {
-    const call = piToolCallIR(requestRow(PI_TOOL.Todo, { action: 'teleport' }))
+    const call = piToolCall(requestRow(PI_TOOL.Todo, { action: 'teleport' }))
     expect(call.kind).toBe('mcp')
     expect(call.result).toBeUndefined()
   })
@@ -819,6 +835,6 @@ describe('piToolCallIR on a call that has not returned', () => {
   // here rather than on the row a reader watches.
   it('states no result on the opening frame of any kind', () => {
     for (const toolName of [PI_TOOL.Bash, PI_TOOL.Read, PI_TOOL.Write, PI_TOOL.Edit, PI_TOOL.Agent, PI_SEARCH_TOOL.Grep, PI_SEARCH_TOOL.Find, PI_SEARCH_TOOL.List, 'an_extension_no_table_holds'])
-      expect(piToolCallIR(minimalRequestRow(toolName)).result, toolName).toBeUndefined()
+      expect(piToolCall(minimalRequestRow(toolName)).result, toolName).toBeUndefined()
   })
 })

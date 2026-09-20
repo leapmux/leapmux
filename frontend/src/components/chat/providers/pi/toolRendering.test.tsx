@@ -8,10 +8,10 @@ import { parseMessageContent } from '~/lib/messageParser'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { pngBase64 } from '~/test-support/pngFixture'
-import { providerRowImages, providerToolMeta } from '~/test-support/toolCallIr'
-import { imageFromMessage } from '../../chatImageResolve'
+import { providerRowImages, providerToolMeta } from '~/test-support/toolCallFixture'
+import { messageToolResultImages } from '../../chatImageResolve'
 import { MessageBubble } from '../../MessageBubble'
-import { renderMessageContent } from '../../rowRenderers'
+import { renderMessageContent } from '../../messageContentRenderer'
 import { toolUseHeader } from '../../toolStyles.css'
 import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
@@ -63,7 +63,7 @@ describe('pi tool rendering', () => {
     const { container } = render(() => <PreferencesProvider><MessageBubble message={message} /></PreferencesProvider>)
     expect(container.querySelectorAll('img')).toHaveLength(1)
     expect(container.textContent).not.toContain('Short preview')
-    expect(imageFromMessage(message, 0)?.data).toBe(data)
+    expect(messageToolResultImages(message)[0]?.data).toBe(data)
     expect(message.content).toEqual(original)
   })
 

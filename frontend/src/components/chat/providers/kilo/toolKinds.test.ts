@@ -1,7 +1,7 @@
-import type { ToolCallIR } from '../../ir/toolCall'
+import type { ToolCall } from '../../model/toolCall'
 import { describe, expect, it } from 'vitest'
-import { isFailedResult, typedResult } from '../../ir/toolCall'
-import { acpToolCallIR } from '../acp/extractors/toolCall'
+import { isToolFailureResult, typedResult } from '../../model/toolCall'
+import { acpToolCall } from '../acp/extractors/toolCall'
 import { openCodeToolCallAdapterFor } from '../opencode/extractors/toolCall'
 import { kiloToolKind } from './toolKinds'
 
@@ -9,7 +9,7 @@ import { kiloToolKind } from './toolKinds'
  * The smallest arguments a tool must state for its own kind to build.
  *
  * `notebook_edit` is the one file change Kilo adds, and a file change states the FILE
- * it changes: the IR refuses an `edit` whose request names none -- the row composes
+ * it changes: the model refuses an `edit` whose request names none -- the row composes
  * its header from that list at every state of the call -- and degrades the call to
  * the uncategorized row. Kilo spells the three keys `path`, `old_string` and
  * `new_string`, which is why `openCodeToolCall` reads every alias of them.
@@ -19,8 +19,8 @@ const MINIMAL_INPUT: Readonly<Record<string, Record<string, unknown>>> = {
 }
 
 /** One Kilo tool call, with the kind Kilo's own protocol layer answers for it. */
-function kiloCall(title: string, kind = 'other', tool: Record<string, unknown> = {}): ToolCallIR {
-  return acpToolCallIR(
+function kiloCall(title: string, kind = 'other', tool: Record<string, unknown> = {}): ToolCall {
+  return acpToolCall(
     { sessionUpdate: 'tool_call', toolCallId: 'kilo-tool', status: 'pending', kind, title, rawInput: MINIMAL_INPUT[title], ...tool },
     openCodeToolCallAdapterFor(kiloToolKind),
     undefined,
@@ -79,7 +79,7 @@ describe('kiloToolKind', () => {
   // OpenCode runs a different tool set behind the same wire format, so its rows must
   // not take Kilo's names.
   it('leaves an OpenCode row alone', () => {
-    const call = acpToolCallIR(
+    const call = acpToolCall(
       { sessionUpdate: 'tool_call', toolCallId: 'oc-tool', status: 'pending', kind: 'other', title: 'semantic_search' },
       openCodeToolCallAdapterFor(),
       undefined,
@@ -97,7 +97,7 @@ describe('the kilo chart tool', () => {
   const CONFIG = { type: 'bar', data: { labels: ['A', 'B'], datasets: [{ label: 'Hits', data: [3, 5] }] } }
 
   function chartRow(output: string, metadata?: Record<string, unknown>) {
-    return acpToolCallIR({
+    return acpToolCall({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'kilo-chart',
       status: 'completed',
@@ -125,7 +125,7 @@ describe('the kilo chart tool', () => {
   // attached its result unconditionally, so a FAILED chart drew the red "not readable
   // JSON" notice where the daemon's own reason belongs.
   it('answers the daemon reason when the call failed', () => {
-    const call = acpToolCallIR({
+    const call = acpToolCall({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'kilo-chart',
       status: 'failed',
@@ -135,7 +135,7 @@ describe('the kilo chart tool', () => {
       content: [{ type: 'content', content: { type: 'text', text: 'The chart tool is not installed' } }],
     }, openCodeToolCallAdapterFor(kiloToolKind), undefined)
     expect(call.kind).toBe('chart')
-    expect(isFailedResult(call.result) && call.result.text).toBe('The chart tool is not installed')
+    expect(isToolFailureResult(call.result) && call.result.text).toBe('The chart tool is not installed')
   })
 
   it('states no arguments, so the configuration is not printed beside its own picture', () => {
@@ -157,7 +157,7 @@ describe('the kilo chart tool', () => {
   // drew the red "not readable JSON" notice for the whole run, while the result it
   // attached suppressed the live output tail the row would otherwise show.
   it('carries the spec it was called with and answers nothing yet', () => {
-    const call = acpToolCallIR({
+    const call = acpToolCall({
       sessionUpdate: 'tool_call',
       toolCallId: 'kilo-chart',
       status: 'pending',

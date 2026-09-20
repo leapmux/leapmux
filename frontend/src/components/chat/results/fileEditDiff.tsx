@@ -1,14 +1,13 @@
 import type { JSX } from 'solid-js'
 import type { StructuredPatchHunk } from '../diff/diffTypes'
-import type { FileEditDiff } from '../ir/fileEditDiff'
-import type { RenderContext } from '../messageRenderers'
-import type { DiffRenderActions } from '../renderContext'
+import type { FileEditDiff } from '../model/fileEditDiff'
+import type { DiffRenderActions, ToolResultRenderContext } from '../renderContext'
 import { createMemo, Show } from 'solid-js'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { relativizePath } from '~/lib/paths'
 import { diffStatsFromHunks, DiffView, rawDiffToHunks } from '../diff'
-import { fileEditNewStr, fileEditOldStr, nonEmptyStructuredPatch } from '../ir/fileEditDiff'
 import { cachedRenderValueForStrings } from '../messageRenderCache'
+import { fileEditNewStr, fileEditOldStr, nonEmptyStructuredPatch } from '../model/fileEditDiff'
 import { toolInputPath, toolInputText, toolResultPrompt } from '../toolStyles.css'
 
 /**
@@ -21,8 +20,8 @@ import { toolInputPath, toolInputText, toolResultPrompt } from '../toolStyles.cs
  * streamed frame. Keying the shared render cache on the three STRINGS they derive
  * from holds the diff to once per content change, for both.
  */
-function fileEditDiffHunksCached(source: FileEditDiff, context: RenderContext | undefined): StructuredPatchHunk[] {
-  // The IR's own predicate, NOT a second copy of it. This inlined
+function fileEditDiffHunksCached(source: FileEditDiff, context: ToolResultRenderContext | undefined): StructuredPatchHunk[] {
+  // The model's own predicate, NOT a second copy of it. This inlined
   // `normalizeStructuredPatchHunks` and re-decided "does the patch win", which is the
   // rule `fileEditDiffHunks` states for the Copy action -- so a change to it landed in
   // one of the two and the drawn diff and the copied diff disagreed. It also memoizes
@@ -42,7 +41,7 @@ function fileEditDiffHunksCached(source: FileEditDiff, context: RenderContext | 
 }
 
 /** Show the paths and statistics of the actual file change. */
-export function FileEditDiffTitle(props: { source: FileEditDiff, context?: RenderContext }): JSX.Element {
+export function FileEditDiffTitle(props: { source: FileEditDiff, context?: ToolResultRenderContext }): JSX.Element {
   const path = (value: string) => relativizePath(value, props.context?.workingDir, props.context?.homeDir)
   const stats = createMemo(() => diffStatsFromHunks(fileEditDiffHunksCached(props.source, props.context)))
   return (
@@ -67,7 +66,7 @@ export function FileEditDiffBody(props: {
   /** The diff preference as a getter: the toolbar may flip it mid-row. */
   diff: DiffRenderActions
   showLineNumbers?: boolean
-  context?: RenderContext
+  context?: ToolResultRenderContext
 }): JSX.Element {
   // Memo: DiffView reads `hunks` from several effects/memos during a single
   // render pass; without this, `rawDiffToHunks` (and the underlying

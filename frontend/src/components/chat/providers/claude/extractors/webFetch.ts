@@ -1,8 +1,8 @@
-import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
-import type { FetchRequest, FetchResult } from '../../../ir/tools/fetch'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { FetchRequest, FetchResult } from '../../../model/tools/fetch'
 import type { ClaudeToolRow } from './toolCommon'
-import { webFetchFromObj } from '../../../ir/tools/fetch'
-import { claudeFailedResult } from './failure'
+import { webFetchFromObj } from '../../../model/tools/fetch'
+import { claudeToolFailureResult } from './failure'
 
 /**
  * Build a FetchResult from a Claude `WebFetch` tool_result. Returns
@@ -23,10 +23,10 @@ export function claudeWebFetchFromToolResult(
  * fetched-page slot draws its body as MARKDOWN -- so the reason drew as the page,
  * with any `#` or `*` in it as a heading or as emphasis.
  */
-export function claudeFetchPayload(request: FetchRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'fetch'> {
+export function claudeFetchSpec(request: FetchRequest, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'fetch'> {
   if (!result)
     return { kind: 'fetch', request }
-  const failure = claudeFailedResult(result)
+  const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'fetch', request, result: failure }
   const source = claudeWebFetchFromToolResult(result.toolUseResult, result.resultContent)

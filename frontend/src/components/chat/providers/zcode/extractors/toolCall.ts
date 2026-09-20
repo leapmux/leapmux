@@ -1,12 +1,12 @@
-import type { FileEditDiff } from '../../../ir/fileEditDiff'
-import type { FailedResult, ProseResult, ToolCallEnvelope, ToolCallIR, ToolCallPayloadForKind, UnparsedResult } from '../../../ir/toolCall'
-import type { ToolKind } from '../../../ir/toolKind'
-import type { ToolRequests } from '../../../ir/tools'
-import type { FileChangeResult } from '../../../ir/tools/fileChange'
-import type { GenericResult } from '../../../ir/tools/generic'
-import type { SearchResult } from '../../../ir/tools/search'
-import type { TaskOutcome } from '../../../ir/tools/task'
-import type { TriggerRequest } from '../../../ir/tools/trigger'
+import type { FileEditDiff } from '../../../model/fileEditDiff'
+import type { ProseResult, ToolCall, ToolCallEnvelope, ToolCallSpecReaderTable, ToolCallSpecVariant, ToolFailureResult, UnparsedToolResult } from '../../../model/toolCall'
+import type { ToolKind } from '../../../model/toolKind'
+import type { ToolRequestByKind } from '../../../model/tools'
+import type { FileChangeResult } from '../../../model/tools/fileChange'
+import type { GenericToolResult } from '../../../model/tools/generic'
+import type { SearchResult } from '../../../model/tools/search'
+import type { TaskStatus } from '../../../model/tools/task'
+import type { TriggerRequest } from '../../../model/tools/trigger'
 import type { ToolRequestOverrides } from '../../defaultToolRequests'
 import type { ZCodeResultDisplay } from '../extractors/display'
 import type { ZCodeRow, ZCodeToolUpdate } from '../extractors/toolCommon'
@@ -15,9 +15,10 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import { ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
 import { prettifyArgsJson } from '~/lib/jsonFormat'
 import { isObject, pickFirstString, pickObject, pickString } from '~/lib/jsonPick'
-import { applyPatchFileChanges } from '../../../ir/applyPatch'
-import { parseMcpToolName } from '../../../ir/mcpToolCall'
-import { failedResult, proseResult, toolCall, unparsedResult } from '../../../ir/toolCall'
+import { applyPatchFileChanges } from '../../../model/applyPatch'
+import { createToolCall } from '../../../model/createToolCall'
+import { parseMcpToolName } from '../../../model/mcpToolCall'
+import { failedResult, proseResult, readToolCallSpec, unparsedResult } from '../../../model/toolCall'
 import { DEFAULT_TOOL_REQUESTS, toolRequestFor } from '../../defaultToolRequests'
 import { retainedOutcome } from '../../registry'
 import { TOOL_FILE_PATH_KEYS } from '../../toolInputKeys'
@@ -60,12 +61,12 @@ const ZCODE_TRIGGER_ACTIONS: ReadonlyMap<string, TriggerRequest['action']> = new
  * replaces the whole row and draws no part of the presentation around it, so a flag
  * there reaches nothing at all.
  */
-const ZCODE_ROW_STATES_NO_TRUNCATION: ReadonlySet<ToolKind> = new Set<ToolKind>(['execute', 'glob', 'grep', 'mcp'])
+const ZCODE_ROW_STATES_NO_TRUNCATION: ReadonlySet<ToolKind> = new Set<ToolKind>(['execute', 'glob', 'grep'])
 
 /**
- * Everything one ZCode row states, collected ONCE before any payload decision runs.
+ * Everything one ZCode row states, collected once before any specification decision runs.
  *
- * The payload build used to take seven positional parameters and re-enter the row
+ * The specification build used to take seven positional parameters and re-enter the row
  * readers from inside its branches: `zcodeDisplayHint` ran four times, the result
  * display twice, the tool input three times, and `update.isError` was unpacked again
  * under a second name. Each of those is one fact, so each is one field here.
@@ -108,6 +109,10 @@ export interface ZCodeToolFacts {
   text: string
   /** True when this row is the last one of its tool call. */
   finished: boolean
+  /** True when this event supplies a result or an error. */
+  resultFrameLanded: boolean
+  /** Whether this row can build a result, including a retained progress body. */
+  resultAvailable: boolean
   /** True when the call reported an error. */
   failed: boolean
   /** The provider kept only part of what the call produced. */
@@ -127,32 +132,40 @@ export interface ZCodeToolFacts {
 /**
  * One ZCode tool call, as the kind-discriminated pair. Null for a row that is not one.
  */
-export function zcodeToolCallIR(row: ZCodeRow, parsed?: ParsedMessageContent): ToolCallIR | null {
+export function zcodeToolCall(row: ZCodeRow, parsed?: ParsedMessageContent): ToolCall | null {
   const update = zcodeExtractTool(row.parsed)
   if (!update)
     return null
   const facts = zcodeToolFacts(row, update, parsed)
+  const pairedResult = zcodeExtractTool(row.result?.parentObject)
+  const resultFrameLanded = update.kind === ZCODE_TOOL_KIND.Result
+    || update.kind === ZCODE_TOOL_KIND.Error
+    || update.kind === ZCODE_TOOL_KIND.Batch
+    || pairedResult?.kind === ZCODE_TOOL_KIND.Result
+    || pairedResult?.kind === ZCODE_TOOL_KIND.Error
+    || pairedResult?.kind === ZCODE_TOOL_KIND.Batch
   const envelope: ToolCallEnvelope = {
     id: update.toolCallId,
     name: row.toolName,
     lifecycle: {
-      frameStatus: '',
+      frameStatus: 'unstated',
       providerOutcome: update.isError ? 'failed' : null,
       retainedOutcome: retainedOutcome(parsed?.completion),
-      resultLanded: facts.finished,
+      rowFinal: facts.finished,
+      resultFrameLanded,
     },
   }
-  const payload = zcodePayloadFor(facts, facts.kind)
+  const spec = zcodeSpecFor(facts, facts.kind)
   // The provider CUT the content. Every body outside the set below states nothing
   // about that, so the row's own flag is the only notice a truncated read, fetch,
   // agent, to-do, task or message row can get -- each of them used to end mid-content
   // with no word for why.
-  const marked = facts.truncated && !ZCODE_ROW_STATES_NO_TRUNCATION.has(payload.kind) ? { ...payload, truncated: true } : payload
+  const marked = facts.truncated && !ZCODE_ROW_STATES_NO_TRUNCATION.has(spec.kind) ? { ...spec, truncated: true } : spec
   // The tool's OWN name, which the icon tooltip states. A row that states none
   // falls back to the kind's word, because a name invented here is not one the
   // agent reported.
   const label = marked.label ?? (row.toolName || undefined)
-  return toolCall(envelope, { ...marked, ...(label !== undefined ? { label } : {}) })
+  return createToolCall(envelope, { ...marked, ...(label !== undefined ? { label } : {}) })
 }
 
 /**
@@ -175,6 +188,14 @@ export function zcodeToolFacts(row: ZCodeRow, update: ZCodeToolUpdate, parsed: P
     : ''
   const images = zcodeToolResultImages(row)
   const input = zcodeToolInput(row)
+  const finished = zcodeToolSpanRole(update.kind, parsed) === 'result'
+  const resultFrameLanded = update.kind === ZCODE_TOOL_KIND.Result
+    || update.kind === ZCODE_TOOL_KIND.Error
+    || update.kind === ZCODE_TOOL_KIND.Batch
+  const pairedResult = zcodeExtractTool(row.result?.parentObject)
+  const pairedResultFrameLanded = pairedResult?.kind === ZCODE_TOOL_KIND.Result
+    || pairedResult?.kind === ZCODE_TOOL_KIND.Error
+    || pairedResult?.kind === ZCODE_TOOL_KIND.Batch
   const classified: ZCodeToolFacts = {
     row,
     update,
@@ -191,7 +212,9 @@ export function zcodeToolFacts(row: ZCodeRow, update: ZCodeToolUpdate, parsed: P
     // takes nothing away, so the `patch` it would hand over is this same text.
     patchChanges: row.toolName === ZCODE_TOOL.ApplyPatch ? applyPatchFileChanges(pickString(input, 'patch')) : null,
     text: update.isError ? zcodeErrorText(update) || 'Tool call failed' : (update.result?.content ?? progressText),
-    finished: zcodeToolSpanRole(update.kind, parsed) === 'result',
+    finished,
+    resultFrameLanded,
+    resultAvailable: resultFrameLanded || pairedResultFrameLanded || (finished && update.result !== null),
     failed: update.isError,
     truncated: rawDisplay?.truncated === true || update.result?.truncated === true,
     images,
@@ -235,11 +258,11 @@ function zcodeClassifyTool(row: ZCodeRow, displayHint: string | undefined): Tool
  * The kind a row takes AFTER its first classification, as one named step.
  *
  * Three swaps, and each one states the input that causes it. They live here rather than
- * inside the payload build for the reason the comment above gives: a build that names
+ * inside the specification build for the reason the comment above gives: a build that names
  * one kind and rewrites it two lines later hides the real answer from every reader of
  * the table, and it is what let a kind be named while its request went unfilled.
  *
- * No swap is dead. `toolCall.test.ts` reaches all three: a `TodoWrite` whose input
+ * No swap is dead. `createToolCall.test.ts` reaches all three: a `TodoWrite` whose input
  * carries no list, a result row that states no tool name at all, and an `ApplyPatch`
  * whose envelope the shared reader refuses.
  */
@@ -251,9 +274,9 @@ export function zcodeReclassify(facts: ZCodeToolFacts): ToolKind {
   // A row whose tool NAME is empty takes the same generic card. The two kinds draw the
   // same body, and the label the envelope states is the only thing that separates
   // them -- which an empty name cannot supply either.
-  if (facts.kind === '')
+  if (facts.kind === 'unspecified')
     return 'other'
-  // A file change that names NO file is not a file change. The IR refuses the pair --
+  // A file change that names NO file is not a file change. The model refuses the pair --
   // the row composes its header from that list at every state of the call -- and
   // degrades such a call itself, to a row whose arguments are the empty change list.
   // Degrading here instead keeps the arguments the tool sent, which for an
@@ -288,7 +311,7 @@ function zcodeResolvedInput(kind: ToolKind, row: ZCodeRow, input: Record<string,
  *
  * PARTIAL by its type, and the key set IS the deviation list. No type can refuse a
  * spread of the shared table here, because an entry that takes `args` alone satisfies a
- * slot that supplies `args` and the facts -- so `toolCall.test.ts` pins these keys and
+ * slot that supplies `args` and the facts -- so `createToolCall.test.ts` pins these keys and
  * the argument keys each one reads.
  *
  * EVERY entry declares its own return type, and the annotation is load-bearing rather
@@ -296,20 +319,20 @@ function zcodeResolvedInput(kind: ToolKind, row: ZCodeRow, input: Record<string,
  * annotated position: TypeScript infers an un-annotated arrow's return type from the
  * literals it returns, so the object loses its freshness before any property is checked
  * and the excess-property check never runs. `todo: args => ({ items, patchText })`
- * compiles with the undeclared key. `todo: (args): ToolRequests['todo'] =>` rejects it.
+ * compiles with the undeclared key. `todo: (args): ToolRequestByKind['todo'] =>` rejects it.
  */
 export const ZCODE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ZCodeToolFacts> = {
   // The subagent TYPE, which ZCode spells `subagent_type`. The shared entry declares no
   // such field, and it reads `instructions` beside `prompt`, which ZCode never sends.
-  agent: (args): ToolRequests['agent'] => ({ description: pickString(args, 'description'), agentType: pickString(args, 'subagent_type'), prompt: pickString(args, 'prompt') }),
+  agent: (args): ToolRequestByKind['agent'] => ({ description: pickString(args, 'description'), agentType: pickString(args, 'subagent_type'), prompt: pickString(args, 'prompt') }),
   // The change that LANDED, which the result display carries as a structured patch.
   // The shared entry states an empty list, because no other provider's arguments
   // describe a diff.
-  edit: (args, facts): ToolRequests['edit'] => ({ changes: zcodeFileChanges('edit', args, facts), ...(args.replace_all === true ? { replaceAll: true } : {}) }),
-  write: (args, facts): ToolRequests['write'] => ({ changes: zcodeFileChanges('write', args, facts), ...(args.replace_all === true ? { replaceAll: true } : {}) }),
+  edit: (args, facts): ToolRequestByKind['edit'] => ({ changes: zcodeFileChanges('edit', args, facts), ...(args.replace_all === true ? { replaceAll: true } : {}) }),
+  write: (args, facts): ToolRequestByKind['write'] => ({ changes: zcodeFileChanges('write', args, facts), ...(args.replace_all === true ? { replaceAll: true } : {}) }),
   // The LANGUAGE, which the tool name states: the three JavaScript tools run code in
   // ZCode's own sandbox. The shared entry sees the arguments alone.
-  execute: (args, facts): ToolRequests['execute'] => {
+  execute: (args, facts): ToolRequestByKind['execute'] => {
     const description = pickString(args, 'description')
     return {
       command: pickString(args, 'command'),
@@ -319,7 +342,7 @@ export const ZCODE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ZCodeToolFacts> 
   },
   // The SERVER and the TOOL, which the result display's own source states and the wire
   // name states after it. The shared entry reads two arguments no ZCode call carries.
-  mcp: (args, facts): ToolRequests['mcp'] => {
+  mcp: (args, facts): ToolRequestByKind['mcp'] => {
     const identity = facts.display?.kind === 'mcp'
       ? { server: facts.display.source.server, tool: facts.display.source.tool }
       : parseMcpToolName(facts.toolName)
@@ -335,7 +358,7 @@ export const ZCODE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ZCodeToolFacts> 
   },
   // The words the RESULT carries, which a message states when its arguments do not,
   // and ZCode's own `recipient` spelling. The shared entry reads neither.
-  message: (args, facts): ToolRequests['message'] => {
+  message: (args, facts): ToolRequestByKind['message'] => {
     const to = pickString(args, 'to') || pickString(args, 'recipient')
     return {
       ...(to ? { to } : {}),
@@ -344,10 +367,10 @@ export const ZCODE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ZCodeToolFacts> 
   },
   // The parsed QUESTIONS. The shared entry states an empty list, because the shape of
   // a question is each provider's own.
-  question: (args): ToolRequests['question'] => ({ questions: zcodeQuestionsFromToolInput(args) }),
+  question: (args): ToolRequestByKind['question'] => ({ questions: zcodeQuestionsFromToolInput(args) }),
   // The ACTION, which the display hint states: one hint reads a task's output and the
   // other stops it. The shared entry answers `other` for every call.
-  task: (args, facts): ToolRequests['task'] => {
+  task: (args, facts): ToolRequestByKind['task'] => {
     const taskId = pickString(args, 'task_id') || pickString(args, 'taskId')
     return {
       action: facts.displayHint === ZCODE_DISPLAY.TaskStop ? 'stop' : facts.displayHint === ZCODE_DISPLAY.TaskOutput ? 'output' : 'other',
@@ -356,7 +379,7 @@ export const ZCODE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ZCodeToolFacts> 
   },
   // The parsed ITEMS. The shared entry states an empty list for the same reason the
   // question entry does.
-  todo: (args): ToolRequests['todo'] => ({ items: zcodeTodoItemsFromInput(args) ?? [] }),
+  todo: (args): ToolRequestByKind['todo'] => ({ items: zcodeTodoItemsFromInput(args) ?? [] }),
   // The ACTION alone, which the TOOL NAME states: one cron tool for each half of the
   // lifecycle, and no `action` argument beside it. The shared entry answers `other` for
   // every call, because no other provider's name reaches it.
@@ -364,14 +387,14 @@ export const ZCODE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ZCodeToolFacts> 
   // The id, the label and the schedule come from that shared entry and are read here no
   // longer. ZCode spells all three the way every provider does, so a reading of its own
   // was a second copy of a neutral one -- the rule that `ToolRequestOverrides` states.
-  trigger: (args, facts): ToolRequests['trigger'] => ({
+  trigger: (args, facts): ToolRequestByKind['trigger'] => ({
     ...DEFAULT_TOOL_REQUESTS.trigger(args),
     action: zcodeTriggerAction(args, facts.toolName),
   }),
 }
 
 /** One kind's declared request: ZCode's own reading, or the shared table's. */
-function zcodeRequestFor<K extends ToolKind>(kind: K, facts: ZCodeToolFacts): ToolRequests[K] {
+function zcodeRequestFor<K extends ToolKind>(kind: K, facts: ZCodeToolFacts): ToolRequestByKind[K] {
   return toolRequestFor(kind, facts.input, facts, ZCODE_TOOL_REQUEST_OVERRIDES)
 }
 
@@ -380,7 +403,7 @@ function zcodeRequestFor<K extends ToolKind>(kind: K, facts: ZCodeToolFacts): To
  *
  * A `switch` over the kind cannot do this. TypeScript narrows the VALUE the switch
  * tests and never the type parameter, so a branch that filled another kind's shape --
- * or filled none at all -- compiled behind a declared payload type. That is the defect
+ * or filled none at all -- compiled behind a declared specification type. That is the defect
  * class this table removes: a kind cannot be named here without its declared request
  * beside it, because the entry's own value type states the pair.
  *
@@ -393,15 +416,15 @@ function zcodeRequestFor<K extends ToolKind>(kind: K, facts: ZCodeToolFacts): To
  * the check. The mapped type states which kind each entry answers for; it does not put
  * the entry's literal under the excess-property check. TypeScript infers an un-annotated
  * arrow's return type from the literals it returns, so the object loses its freshness
- * before any property is checked -- and a payload then carries a key no renderer reads.
+ * before any property is checked, and a specification can then carry an unread key.
  * For the same reason, no entry may return an intermediate `const` that declares no type
  * of its own: a variable reference is not a fresh literal either.
  * `toolTableEntriesAreAnnotated.test.ts` keeps both halves in place.
  */
-export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => ToolCallPayloadForKind<K> } = {
-  'mcp': (facts): ToolCallPayloadForKind<'mcp'> => {
+export const ZCODE_TOOL_READERS: ToolCallSpecReaderTable<ZCodeToolFacts> = {
+  mcp: (facts): ToolCallSpecVariant<'mcp'> => {
     const request = zcodeRequestFor('mcp', facts)
-    if (!facts.finished)
+    if (!facts.resultAvailable)
       return { kind: 'mcp', request }
     const source = facts.display?.kind === 'mcp' ? facts.display.source : null
     if (source) {
@@ -421,10 +444,10 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
       return { kind: 'mcp', request, result: failedResult(facts.text) }
     return { kind: 'mcp', request, result: unparsedResult(facts.text) }
   },
-  'task': (facts): ToolCallPayloadForKind<'task'> => {
+  task: (facts): ToolCallSpecVariant<'task'> => {
     const request = zcodeRequestFor('task', facts)
     const title = zcodeCallTitle(facts)
-    if (!facts.finished)
+    if (!facts.resultAvailable)
       return { kind: 'task', request, title }
     const display = facts.display?.kind === 'status' ? facts.display : null
     if (display) {
@@ -432,14 +455,14 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
         kind: 'task',
         request,
         title,
-        result: { title: display.title, outcome: zcodeTaskOutcome(display.status), ...(display.command !== undefined ? { command: display.command } : {}), output: display.output },
+        result: { title: display.title, outcome: zcodeTaskStatus(display.status), ...(display.command !== undefined ? { command: display.command } : {}), output: display.output },
       }
     }
     if (facts.failed)
       return { kind: 'task', request, title, result: failedResult(facts.text) }
     return { kind: 'task', request, title, result: { outcome: 'completed', output: facts.text } }
   },
-  'message': (facts): ToolCallPayloadForKind<'message'> => {
+  message: (facts): ToolCallSpecVariant<'message'> => {
     const request = zcodeRequestFor('message', facts)
     const title = zcodeCallTitle(facts)
     const display = facts.display?.kind === 'status' ? facts.display : null
@@ -447,38 +470,38 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
     // the row keeps as its answer, and its failure folds into the outcome word.
     const statesMessage = facts.displayHint === ZCODE_DISPLAY.LocalAgentMessage || facts.displayHint === ZCODE_DISPLAY.RespondToCoordinator
     const words = display && statesMessage ? [display.title, display.output].filter(Boolean).join('\n') : ''
-    if (!facts.finished)
+    if (!facts.resultAvailable)
       return { kind: 'message', request, title }
     if (facts.failed || display?.status === 'failed')
       return { kind: 'message', request, title, statusOverride: 'failed', result: failedResult(words || facts.text) }
     return { kind: 'message', request, title, result: proseResult(words || facts.text) }
   },
-  'agent': (facts): ToolCallPayloadForKind<'agent'> => {
+  agent: (facts): ToolCallSpecVariant<'agent'> => {
     const request = zcodeRequestFor('agent', facts)
     const title = zcodeCallTitle(facts)
-    if (!facts.finished)
+    if (!facts.resultAvailable)
       return { kind: 'agent', request, title }
     const source = zcodeAgentResult(facts.row)
     if (source)
       return { kind: 'agent', request, title, result: { agents: [source] } }
     return { kind: 'agent', request, title, ...(facts.text ? { result: unparsedResult(facts.text) } : {}) }
   },
-  'todo': (facts): ToolCallPayloadForKind<'todo'> => {
+  todo: (facts): ToolCallSpecVariant<'todo'> => {
     // NEVER empty by accident here: `zcodeReclassify` answers `other` for an input
     // that carries no todos array, so a row that reaches this reader states a list.
     const request = zcodeRequestFor('todo', facts)
     // No title: `todoRenderer` composes the same words from the request this payload
     // carries, and a copy here is a second place for the wording to drift.
-    if (!facts.finished)
+    if (!facts.resultAvailable)
       return { kind: 'todo', request }
     if (facts.failed)
       return { kind: 'todo', request, result: failedResult(facts.text) }
     return { kind: 'todo', request, result: { items: request.items } }
   },
-  'question': (facts): ToolCallPayloadForKind<'question'> => {
+  question: (facts): ToolCallSpecVariant<'question'> => {
     const request = zcodeRequestFor('question', facts)
     const title = zcodeCallTitle(facts)
-    if (!facts.finished)
+    if (!facts.resultAvailable)
       return { kind: 'question', request, title }
     if (facts.failed)
       return { kind: 'question', request, title, result: failedResult(facts.text) }
@@ -488,17 +511,17 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
     const header = request.questions[0]?.header || request.questions[0]?.question || 'Question'
     return { kind: 'question', request, title, ...(facts.text ? { result: { answers: [{ header, answer: facts.text }] } } : {}) }
   },
-  'execute': (facts): ToolCallPayloadForKind<'execute'> => {
+  execute: (facts): ToolCallSpecVariant<'execute'> => {
     // NO title. The command states itself in the shared header, and every other kind's
     // title falls back to the tool name -- which would sit above the command it ran.
     const request = zcodeRequestFor('execute', facts)
     // A call that has not ended carries NO result, whatever a PROGRESS frame's output
     // tails hold. `ToolMessage` draws the live output the worker broadcasts only while
     // the row states no result, so the tails here replaced a stream that is ahead of
-    // them with a card that never grows -- and the IR refuses the pair outright, which
+    // them with a card that never grows -- and the model refuses the pair outright, which
     // sent the whole row to the uncategorized card. A RETAINED progress frame is
     // finished, and its tails reach the row below as the words the call printed.
-    if (!facts.finished)
+    if (!facts.resultAvailable)
       return { kind: 'execute', request }
     const command = extractZCodeBash(facts.row)
     if (command) {
@@ -521,9 +544,9 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
       return { kind: 'execute', request, result: failedResult(facts.text), images: facts.nodeImages }
     return { kind: 'execute', request, result: unparsedResult(facts.text), images: facts.nodeImages }
   },
-  'read': (facts): ToolCallPayloadForKind<'read'> => {
+  read: (facts): ToolCallSpecVariant<'read'> => {
     const request = zcodeRequestFor('read', facts)
-    if (!facts.finished)
+    if (!facts.resultAvailable)
       return { kind: 'read', request }
     if (facts.failed)
       return { kind: 'read', request, result: failedResult(facts.text) }
@@ -535,21 +558,21 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
   // Two entries for one reading, because each states its OWN kind. A shared generic
   // entry would put the kind and the request beyond the checker again, which is the
   // defect this table exists to remove.
-  'glob': (facts): ToolCallPayloadForKind<'glob'> => ({ kind: 'glob', request: zcodeRequestFor('glob', facts), ...zcodeSearchResult(facts) }),
-  'grep': (facts): ToolCallPayloadForKind<'grep'> => ({ kind: 'grep', request: zcodeRequestFor('grep', facts), ...zcodeSearchResult(facts) }),
-  'edit': (facts): ToolCallPayloadForKind<'edit'> => ({ kind: 'edit', request: zcodeRequestFor('edit', facts), ...zcodeFileChangeResult(facts) }),
-  'write': (facts): ToolCallPayloadForKind<'write'> => ({ kind: 'write', request: zcodeRequestFor('write', facts), ...zcodeFileChangeResult(facts) }),
-  'fetch': (facts): ToolCallPayloadForKind<'fetch'> => {
+  glob: (facts): ToolCallSpecVariant<'glob'> => ({ kind: 'glob', request: zcodeRequestFor('glob', facts), ...zcodeSearchResult(facts) }),
+  grep: (facts): ToolCallSpecVariant<'grep'> => ({ kind: 'grep', request: zcodeRequestFor('grep', facts), ...zcodeSearchResult(facts) }),
+  edit: (facts): ToolCallSpecVariant<'edit'> => ({ kind: 'edit', request: zcodeRequestFor('edit', facts), ...zcodeFileChangeResult(facts) }),
+  write: (facts): ToolCallSpecVariant<'write'> => ({ kind: 'write', request: zcodeRequestFor('write', facts), ...zcodeFileChangeResult(facts) }),
+  fetch: (facts): ToolCallSpecVariant<'fetch'> => {
     const request = zcodeRequestFor('fetch', facts)
-    if (!facts.finished)
+    if (!facts.resultAvailable)
       return { kind: 'fetch', request }
     if (facts.failed)
       return { kind: 'fetch', request, result: failedResult(facts.text) }
     return { kind: 'fetch', request, result: { result: facts.text, ...(facts.update.durationMs != null ? { durationMs: facts.update.durationMs } : {}) } }
   },
-  'web_search': (facts): ToolCallPayloadForKind<'web_search'> => {
+  web_search: (facts): ToolCallSpecVariant<'web_search'> => {
     const request = zcodeRequestFor('web_search', facts)
-    if (!facts.finished)
+    if (!facts.resultAvailable)
       return { kind: 'web_search', request }
     if (facts.failed)
       return { kind: 'web_search', request, result: failedResult(facts.text) }
@@ -557,36 +580,36 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
   },
   // The three kinds whose declared result IS prose. Each states its own kind for the
   // reason the search pair states theirs.
-  'switch_mode': (facts): ToolCallPayloadForKind<'switch_mode'> => ({ kind: 'switch_mode', request: zcodeRequestFor('switch_mode', facts), title: zcodeCallTitle(facts), ...zcodeProseResult(facts) }),
-  'skill': (facts): ToolCallPayloadForKind<'skill'> => ({ kind: 'skill', request: zcodeRequestFor('skill', facts), title: zcodeCallTitle(facts), ...zcodeProseResult(facts) }),
-  'trigger': (facts): ToolCallPayloadForKind<'trigger'> => ({ kind: 'trigger', request: zcodeRequestFor('trigger', facts), title: zcodeCallTitle(facts), ...zcodeProseResult(facts) }),
+  switch_mode: (facts): ToolCallSpecVariant<'switch_mode'> => ({ kind: 'switch_mode', request: zcodeRequestFor('switch_mode', facts), title: zcodeCallTitle(facts), ...zcodeProseResult(facts) }),
+  skill: (facts): ToolCallSpecVariant<'skill'> => ({ kind: 'skill', request: zcodeRequestFor('skill', facts), title: zcodeCallTitle(facts), ...zcodeProseResult(facts) }),
+  trigger: (facts): ToolCallSpecVariant<'trigger'> => ({ kind: 'trigger', request: zcodeRequestFor('trigger', facts), title: zcodeCallTitle(facts), ...zcodeProseResult(facts) }),
   // The generic card, for a tool no vocabulary lists.
-  'other': (facts): ToolCallPayloadForKind<'other'> => ({ kind: 'other', request: zcodeRequestFor('other', facts), ...zcodeGenericResult(facts) }),
+  other: (facts): ToolCallSpecVariant<'other'> => ({ kind: 'other', request: zcodeRequestFor('other', facts), ...zcodeGenericToolResult(facts) }),
   // UNREACHABLE, and the one entry here that a ZCode row could otherwise reach:
   // `zcodeReclassify` folds `''` to `other`, because a row with no tool name has no
   // label to separate it from an uncategorized one. The entry exists because the table
   // is total, and it states the same card at its OWN kind -- so a build that stops
   // folding draws the card rather than an empty row.
-  '': (facts): ToolCallPayloadForKind<''> => ({ kind: '', request: zcodeRequestFor('', facts), ...zcodeGenericResult(facts) }),
+  unspecified: (facts): ToolCallSpecVariant<'unspecified'> => ({ kind: 'unspecified', request: zcodeRequestFor('unspecified', facts), ...zcodeGenericToolResult(facts) }),
   // The eleven kinds no ZCode tool takes: `ZCODE_TOOL_KINDS` maps no name to any of
   // them, and no display hint reaches one. With `''` above, twelve of the thirty kinds
   // are unreachable and the other eighteen are what ZCode produces.
-  'agents': zcodeArgumentsOnly('agents'),
-  'chart': zcodeArgumentsOnly('chart'),
-  'delete': zcodeArgumentsOnly('delete'),
-  'image': zcodeArgumentsOnly('image'),
-  'list': zcodeArgumentsOnly('list'),
-  'memory': zcodeArgumentsOnly('memory'),
-  'move': zcodeArgumentsOnly('move'),
-  'report': zcodeArgumentsOnly('report'),
-  'search': zcodeArgumentsOnly('search'),
-  'think': zcodeArgumentsOnly('think'),
-  'wait': zcodeArgumentsOnly('wait'),
+  agents: zcodeArgumentsOnly('agents'),
+  chart: zcodeArgumentsOnly('chart'),
+  delete: zcodeArgumentsOnly('delete'),
+  image: zcodeArgumentsOnly('image'),
+  list: zcodeArgumentsOnly('list'),
+  memory: zcodeArgumentsOnly('memory'),
+  move: zcodeArgumentsOnly('move'),
+  report: zcodeArgumentsOnly('report'),
+  search: zcodeArgumentsOnly('search'),
+  think: zcodeArgumentsOnly('think'),
+  wait: zcodeArgumentsOnly('wait'),
 }
 
-/** The payload of ONE kind, read from the facts. Total over `ToolKind` by the table. */
-function zcodePayloadFor<K extends ToolKind>(facts: ZCodeToolFacts, kind: K): { [P in K]: ToolCallPayloadForKind<P> }[K] {
-  return ZCODE_TOOL_READERS[kind](facts)
+/** The specification of one kind, read from the facts. The table covers `ToolKind`. */
+function zcodeSpecFor<K extends ToolKind>(facts: ZCodeToolFacts, kind: K): { [P in K]: ToolCallSpecVariant<P> }[K] {
+  return readToolCallSpec(ZCODE_TOOL_READERS, kind, facts)
 }
 
 /**
@@ -594,15 +617,15 @@ function zcodePayloadFor<K extends ToolKind>(facts: ZCodeToolFacts, kind: K): { 
  * call printed.
  *
  * A finished call with no typed answer takes `unparsedResult`, which states "this
- * build could not read the payload into the kind's shape" -- true for a kind no ZCode
+ * build could not read the result into the kind's shape" -- true for a kind no ZCode
  * tool reaches.
  */
-function zcodeArgumentsOnly<P extends ToolKind>(kind: P): (facts: ZCodeToolFacts) => ToolCallPayloadForKind<P> {
+function zcodeArgumentsOnly<P extends ToolKind>(kind: P): (facts: ZCodeToolFacts) => ToolCallSpecVariant<P> {
   // The inner arrow states its OWN return type, although the signature above already
   // declares it. A contextual signature is not an annotated position, so without this
   // the literal escapes the excess-property check -- the same hole every table entry
   // closes, one level down.
-  return (facts): ToolCallPayloadForKind<P> => ({ kind, request: zcodeRequestFor(kind, facts), title: zcodeCallTitle(facts), ...zcodeUnreadResult(facts) })
+  return (facts): ToolCallSpecVariant<P> => ({ kind, request: zcodeRequestFor(kind, facts), title: zcodeCallTitle(facts), ...zcodeUnreadResult(facts) })
 }
 
 /** The row's own header words: the description the arguments state, then the tool's name. */
@@ -611,8 +634,8 @@ function zcodeCallTitle(facts: ZCodeToolFacts): string {
 }
 
 /** The lifecycle of a kind whose answer this build cannot read into a shape. */
-function zcodeUnreadResult(facts: ZCodeToolFacts): { result?: FailedResult | UnparsedResult } {
-  if (!facts.finished)
+function zcodeUnreadResult(facts: ZCodeToolFacts): { result?: ToolFailureResult | UnparsedToolResult } {
+  if (!facts.resultAvailable)
     return {}
   if (facts.failed)
     return { result: failedResult(facts.text) }
@@ -620,15 +643,15 @@ function zcodeUnreadResult(facts: ZCodeToolFacts): { result?: FailedResult | Unp
 }
 
 /** The result side every prose kind shares: none, the failure, or the words. */
-function zcodeProseResult(facts: ZCodeToolFacts): { result?: ProseResult | FailedResult } {
-  if (!facts.finished)
+function zcodeProseResult(facts: ZCodeToolFacts): { result?: ProseResult | ToolFailureResult } {
+  if (!facts.resultAvailable)
     return {}
   return facts.failed ? { result: failedResult(facts.text) } : { result: proseResult(facts.text) }
 }
 
 /** The result side `glob` and `grep` share. */
-function zcodeSearchResult(facts: ZCodeToolFacts): { result?: SearchResult | FailedResult | UnparsedResult } {
-  if (!facts.finished)
+function zcodeSearchResult(facts: ZCodeToolFacts): { result?: SearchResult | ToolFailureResult | UnparsedToolResult } {
+  if (!facts.resultAvailable)
     return {}
   if (facts.failed)
     return { result: failedResult(facts.text) }
@@ -656,8 +679,8 @@ function zcodeSearchResult(facts: ZCodeToolFacts): { result?: SearchResult | Fai
  * no patch. A row on that branch states the file name and the word "Applied" over no
  * diff at all.
  */
-function zcodeFileChangeResult(facts: ZCodeToolFacts): { result?: FileChangeResult | FailedResult | UnparsedResult } {
-  if (!facts.finished)
+function zcodeFileChangeResult(facts: ZCodeToolFacts): { result?: FileChangeResult | ToolFailureResult | UnparsedToolResult } {
+  if (!facts.resultAvailable)
     return {}
   if (facts.failed)
     return { result: failedResult(facts.text) }
@@ -669,12 +692,12 @@ function zcodeFileChangeResult(facts: ZCodeToolFacts): { result?: FileChangeResu
 }
 
 /** The result side the generic card states: the words and the sandbox pictures together. */
-function zcodeGenericResult(facts: ZCodeToolFacts): { result?: GenericResult | FailedResult } {
-  if (!facts.finished)
+function zcodeGenericToolResult(facts: ZCodeToolFacts): { result?: GenericToolResult | ToolFailureResult } {
+  if (!facts.resultAvailable)
     return {}
   if (facts.failed)
     return { result: failedResult(facts.text) }
-  // The pictures ride INSIDE the content, which is what `ToolCallCommon.images` states
+  // The pictures ride INSIDE the content, which is what `ToolCallBase.images` states
   // for the generic trio: `GenericToolBody` never reads the call's own image list, so a
   // node-image row attached its pictures where nothing draws them.
   return {
@@ -695,7 +718,7 @@ function zcodeGenericResult(facts: ZCodeToolFacts): { result?: GenericResult | F
  * of the three tools whose whole change rides in one text argument. Several files can
  * travel in that one patch, and the result display carries at most one of them, so the
  * patch states more than either source below it. The envelope is the shared apply-patch
- * dialect, which `ir/applyPatch.ts` reads for every runtime that sends it.
+ * dialect, which `model/applyPatch.ts` reads for every runtime that sends it.
  *
  * KEPT for a failed call. `RequestedChangesBody` is the one place that decides whether
  * a failed row draws its diff, and it refuses -- so emptying the request here removed
@@ -709,7 +732,7 @@ function zcodeFileChanges(kind: 'edit' | 'write', args: Record<string, unknown>,
 }
 
 /** ZCode's own status words, in the shared outcome vocabulary. */
-function zcodeTaskOutcome(status: 'success' | 'failed' | 'waiting' | 'stopped'): TaskOutcome {
+function zcodeTaskStatus(status: 'success' | 'failed' | 'waiting' | 'stopped'): TaskStatus {
   // `waiting` is ZCode's word for a task that has not answered; the shared vocabulary
   // spells that `running`, which is what the subagent card already called it.
   return status === 'success' ? 'completed' : status === 'waiting' ? 'running' : status

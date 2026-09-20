@@ -1,4 +1,4 @@
-import type { McpContentItem } from '../../../ir/mcpToolCall'
+import type { McpContentItem } from '../../../model/mcpToolCall'
 import type { ZCodeRow } from './toolCommon'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import { ZCODE_STORED_ATTACHMENT, ZCODE_STORED_ATTACHMENT_TYPE } from '~/generated/contracts/zcode-protocol'

@@ -1,8 +1,8 @@
 import { render } from '@solidjs/testing-library'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { failedResult } from '~/components/chat/ir/toolCall'
+import { failedResult } from '~/components/chat/model/toolCall'
 import { checkKindModule } from '~/test-support/kindTestHarness'
-import { toolCallIr, toolRow } from '~/test-support/toolCallIr'
+import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { ToolMessage } from '../ToolMessage'
 import { parsedCall } from './renderer'
 import { TODO_PARTIAL_LIST_NOTICE, todoRenderer } from './todo'
@@ -34,17 +34,17 @@ describe('todo renderer', () => {
   // The BODY states that a cleared list is empty, in `emptyText` one line below the
   // header. A header that said it too printed the same sentence twice on one row.
   it('heads a cleared list without repeating what the body says', () => {
-    const call = toolCallIr('todo', { request: { items: [] } })
+    const call = toolCallFixture('todo', { request: { items: [] } })
     expect(todoRenderer.title(parsedCall(call), undefined)).toBe('To-do list')
   })
 
   // The header counts the list the row HOLDS: the carried one while the answer is
   // absent, the saved one once it lands.
   it('heads a list that carries tasks with their count', () => {
-    const carried = toolCallIr('todo', { status: 'in_progress', request: { items: ONE_TASK } })
+    const carried = toolCallFixture('todo', { status: 'in_progress', request: { items: ONE_TASK } })
     expect(todoRenderer.title(parsedCall(carried), undefined)).toBe('1 task')
 
-    const saved = toolCallIr('todo', { request: { items: [] }, result: { items: ONE_TASK } })
+    const saved = toolCallFixture('todo', { request: { items: [] }, result: { items: ONE_TASK } })
     expect(todoRenderer.title(parsedCall(saved), undefined)).toBe('1 task')
   })
 
@@ -56,7 +56,7 @@ describe('todo renderer', () => {
    * guard passed as well, so the checklist and its note appeared twice on that row.
    */
   it('draws the checklist once on a row that carries both halves', () => {
-    const call = toolCallIr('todo', {
+    const call = toolCallFixture('todo', {
       request: { items: [{ ...ONE_TASK_ITEM, content: 'MARKER-ONE' }], note: 'MARKER-NOTE' },
       result: { items: [{ ...ONE_TASK_ITEM, content: 'MARKER-ONE' }], note: 'MARKER-NOTE' },
     })
@@ -69,7 +69,7 @@ describe('todo renderer', () => {
   // A row whose answer has NOT landed still states the list the call carried, which is
   // the newest fact the reader has.
   it('draws the carried checklist while the answer is absent', () => {
-    const call = toolCallIr('todo', { status: 'in_progress', request: { items: [{ ...ONE_TASK_ITEM, content: 'MARKER-ONE' }] } })
+    const call = toolCallFixture('todo', { status: 'in_progress', request: { items: [{ ...ONE_TASK_ITEM, content: 'MARKER-ONE' }] } })
     const { container } = render(() => <ToolMessage row={toolRow(call, 'update')} />)
     expect(container.textContent).toContain('MARKER-ONE')
   })
@@ -83,7 +83,7 @@ describe('todo renderer', () => {
    * of a fact every provider already folds into that one word.
    */
   it('marks a checklist the turn stopped as partial', () => {
-    const call = toolCallIr('todo', { status: 'cancelled', result: { items: [{ ...ONE_TASK_ITEM, content: 'MARKER-ONE' }] } })
+    const call = toolCallFixture('todo', { status: 'cancelled', result: { items: [{ ...ONE_TASK_ITEM, content: 'MARKER-ONE' }] } })
     const { container } = render(() => <ToolMessage row={toolRow(call)} />)
     expect(container.textContent).toContain('MARKER-ONE')
     expect(container.textContent).toContain(TODO_PARTIAL_LIST_NOTICE)
@@ -92,7 +92,7 @@ describe('todo renderer', () => {
   // The EMPTY case is the one the marker matters most for: the body states
   // `To-do list cleared`, which is a claim the stopped call never made.
   it('marks an empty checklist the turn stopped, which the body calls cleared', () => {
-    const call = toolCallIr('todo', { status: 'cancelled', result: { items: [] } })
+    const call = toolCallFixture('todo', { status: 'cancelled', result: { items: [] } })
     const { container } = render(() => <ToolMessage row={toolRow(call)} />)
     expect(container.textContent).toContain('To-do list cleared')
     expect(container.textContent).toContain(TODO_PARTIAL_LIST_NOTICE)
@@ -105,7 +105,7 @@ describe('todo renderer', () => {
   // declined half of invariant I4 refuses a typed list under that word.
   it.each(['completed', 'failed', 'declined'] as const)('states nothing about a partial list on a %s row', (status) => {
     const result = status === 'declined' ? failedResult('The reader refused the list.') : { items: ONE_TASK }
-    const call = toolCallIr('todo', { status, result })
+    const call = toolCallFixture('todo', { status, result })
     const { container } = render(() => <ToolMessage row={toolRow(call)} />)
     expect(container.textContent).not.toContain(TODO_PARTIAL_LIST_NOTICE)
   })

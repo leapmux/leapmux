@@ -1,4 +1,5 @@
-import type { ControlRequestIR } from './ir/controlRequest'
+import type { ControlPrompt } from './model/controlPrompt'
+import type { ControlResponseSummary } from './model/controlResponse'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { isObject, pickString, stringArray } from '~/lib/jsonPick'
@@ -37,12 +38,12 @@ export type ControlDecisionWords = typeof CONTROL_DECISION_WORDS[keyof typeof CO
  *
  * Which pair is a property of the REQUEST, and the answer cannot state it: a plan
  * approval and a bare permission share the neutral envelope, and their buttons carry
- * different words. The control IR already answers which control arrived -- it is what
+ * different words. The control model already answers which control arrived -- it is what
  * the banner drew -- so a provider reads its own `extractControl` here rather than a
  * second field of the same request. Claude and ZCode each read one, and the two
  * discriminators disagreed for a request that carried only one of them.
  */
-export function controlDecisionWords(control: ControlRequestIR | null | undefined): ControlDecisionWords {
+export function controlDecisionWords(control: ControlPrompt | null | undefined): ControlDecisionWords {
   return control?.kind === 'plan' ? CONTROL_DECISION_WORDS.plan : CONTROL_DECISION_WORDS.permission
 }
 /** Lead-in shown above the user's typed rejection reason (their feedback follows as markdown). */
@@ -70,38 +71,34 @@ export interface PersistedControlResponse {
  * - `feedback`: the user's typed deny reason. The row renders it as markdown under
  *   {@link CONTROL_RESPONSE_FEEDBACK_LEAD}; the rail shows the lead + reason.
  */
-export type ControlResponseDisplay
-  = | { kind: 'label', text: string }
-    | { kind: 'feedback', message: string }
-
 /**
  * A provider's persisted-control-response derivation: native payload -> display, or null when the
- * payload isn't recognizable (the caller then degrades via {@link fallbackControlResponseDisplay}).
+ * payload isn't recognizable (the caller then degrades via {@link fallbackControlResponseSummary}).
  * Named once in this leaf so the registry interface, the transcript renderer, and the
- * {@link resolveControlResponseDisplay} chokepoint reference ONE spelling instead of re-typing the
+ * {@link resolveControlResponseSummary} chokepoint reference ONE spelling instead of re-typing the
  * signature -- a change to the contract lands in one place. (registerACPProvider reaches for
  * `Provider['controlResponseDisplay']` instead, since it can import the plugin type without a cycle.)
  */
-export type ControlResponseDeriver = (cr: PersistedControlResponse) => ControlResponseDisplay | null
+export type ControlResponseDeriver = (cr: PersistedControlResponse) => ControlResponseSummary | null
 
 /**
  * Build a `label` display from plain text -- the factory for the tagged union's `{ kind: 'label' }`
  * variant, so that shape is spelled once here instead of inline at every derivation's return
  * (Codex answer lines, Cursor "Accept", Pi confirm/value, the neutral Approved/Rejected/Responded).
  */
-export function label(text: string): ControlResponseDisplay {
+export function label(text: string): ControlResponseSummary {
   return { kind: 'label', text }
 }
 
 /**
- * Lift a plain-text label into a `ControlResponseDisplay`, or null when there is no meaningful
+ * Lift a plain-text label into a `ControlResponseSummary`, or null when there is no meaningful
  * label. The provider derivations each produce a `string | null` answer and share this one wrap: a
  * null answer maps to null, and so does an EMPTY string -- an empty label would render a blank row
  * (and a blank rail-dot preview), so it degrades to null and the caller falls back to the neutral
  * behavior/generic label instead. No current derivation returns '' (they return null or a non-empty
  * line via joinAnswerLines / a guarded optionId), so this only guards a future one.
  */
-export function labelOrNull(text: string | null): ControlResponseDisplay | null {
+export function labelOrNull(text: string | null): ControlResponseSummary | null {
   return text ? label(text) : null
 }
 
@@ -111,7 +108,7 @@ export function labelOrNull(text: string | null): ControlResponseDisplay | null 
  * shape is spelled once instead of inline at every deny-with-reason site (Claude/Codex behavior
  * envelope, Cursor question/plan rejections).
  */
-export function feedback(message: string): ControlResponseDisplay {
+export function feedback(message: string): ControlResponseSummary {
   return { kind: 'feedback', message }
 }
 
@@ -121,7 +118,7 @@ export function feedback(message: string): ControlResponseDisplay {
  * behavior envelope (bare deny -> "Rejected") and the Cursor question-cancel / plan reject-cancel
  * outcomes all share, so the deny-with-feedback wording can't drift between them.
  */
-export function feedbackOrLabel(reason: string, fallbackLabel: string): ControlResponseDisplay {
+export function feedbackOrLabel(reason: string, fallbackLabel: string): ControlResponseSummary {
   return reason ? feedback(reason) : label(fallbackLabel)
 }
 
@@ -155,7 +152,7 @@ export function parsePersistedControlResponse(
 export function controlBehaviorDisplay(
   response: unknown,
   words: ControlDecisionWords = CONTROL_DECISION_WORDS.permission,
-): ControlResponseDisplay | null {
+): ControlResponseSummary | null {
   const env = decodeControlBehaviorEnvelope(response)
   if (!env)
     return null
@@ -169,7 +166,7 @@ export function controlBehaviorDisplay(
  * coarse behavior envelope, else the generic {@link CONTROL_RESPONSE_GENERIC_LABEL}. Never null, so
  * a control-response row always renders SOMETHING.
  */
-export function fallbackControlResponseDisplay(cr: PersistedControlResponse): ControlResponseDisplay {
+export function fallbackControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary {
   return controlBehaviorDisplay(cr.response) ?? label(CONTROL_RESPONSE_GENERIC_LABEL)
 }
 
@@ -177,13 +174,13 @@ export function fallbackControlResponseDisplay(cr: PersistedControlResponse): Co
  * Resolve a persisted control response to its never-null display -- the SINGLE chokepoint both
  * surfaces that render the row go through (the transcript renderer and the scroll-rail dot preview),
  * so they can't drift or forget the fallback. Runs the provider's derivation, degrades to
- * {@link fallbackControlResponseDisplay} when it returns null, AND catches a derivation that THROWS
+ * {@link fallbackControlResponseSummary} when it returns null, AND catches a derivation that THROWS
  * on a malformed payload -- so neither surface can leak raw wire bytes or render nothing.
  */
-export function resolveControlResponseDisplay(
+export function resolveControlResponseSummary(
   cr: PersistedControlResponse,
   display: ControlResponseDeriver | undefined,
-): ControlResponseDisplay {
+): ControlResponseSummary {
   // ONLY the provider derivation is untrusted, so it is the only thing inside the try. The
   // fallback runs OUTSIDE it -- once, on both the returned-null and the threw paths -- so a
   // future non-total fallback can never double-throw and escape this never-null chokepoint.
@@ -199,14 +196,14 @@ export function resolveControlResponseDisplay(
     // fall through to the same degrade below so neither surface leaks raw wire bytes.
     console.warn('Failed to derive the control response display.', { requestId: cr.requestId, err })
   }
-  return fallbackControlResponseDisplay(cr)
+  return fallbackControlResponseSummary(cr)
 }
 
 /**
  * Plaintext projection shared by the rail preview: a label renders verbatim; feedback renders the
  * lead + the reason on the next line (the rail then truncates the whole thing).
  */
-export function controlResponsePreviewText(display: ControlResponseDisplay): string {
+export function controlResponsePreviewText(display: ControlResponseSummary): string {
   return display.kind === 'feedback'
     ? `${CONTROL_RESPONSE_FEEDBACK_LEAD}\n${display.message}`
     : display.text

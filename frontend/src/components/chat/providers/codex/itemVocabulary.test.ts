@@ -1,10 +1,10 @@
-import type { ToolKind } from '../../ir/toolKind'
+import type { ToolKind } from '../../model/toolKind'
 import { describe, expect, it } from 'vitest'
 import { CODEX_ITEM, CODEX_METHOD } from '~/generated/contracts/codex-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { providerToolCall } from '~/test-support/toolCallIr'
+import { providerToolCall } from '~/test-support/toolCallFixture'
 import { invariantViolations } from '~/test-support/toolVocabulary'
-import { isUnparsedResult } from '../../ir/toolCall'
+import { isUnparsedToolResult } from '../../model/toolCall'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import { codexItemKind } from './extractors/row'
@@ -130,11 +130,11 @@ describe('codex item vocabulary', () => {
    *
    * This is the sibling of the eight `toolVocabulary` tests, which walk a table of
    * tool NAMES. Codex states no tools: its item TYPE is the whole identity, so this
-   * walks that instead. `other` and the empty kind are reserved for an item type no
+   * walks that instead. `other` and the unspecified kind are reserved for an item type no
    * release declared -- a row that carries one draws a wrench, the word "Other" and
    * a dump of the item, and identifies nothing Codex did.
    */
-  const UNCATEGORIZED = new Set<ToolKind>(['', 'other'])
+  const UNCATEGORIZED = new Set<ToolKind>(['unspecified', 'other'])
 
   it.each(Object.values(CODEX_ITEM).filter(type => !(type in STRUCTURAL_ITEM) && type !== CODEX_ITEM.ContextCompaction))(
     'gives the %s item a kind of its own',
@@ -175,7 +175,7 @@ describe('codex item vocabulary', () => {
       expect(call, type).not.toBeNull()
       expect(call!.kind, type).toBe(codexItemKind({ type, ...ITEM_PAYLOAD[type] }))
       expect(invariantViolations(call!), type).toEqual([])
-      if (isUnparsedResult(call!.result))
+      if (isUnparsedToolResult(call!.result))
         expect(UNPARSED_WITH_REASON[type], `the ${type} result stays unparsed without a reason`).toBeTruthy()
     },
   )
@@ -183,7 +183,7 @@ describe('codex item vocabulary', () => {
   it('documents every result that stays unparsed', () => {
     for (const type of Object.keys(UNPARSED_WITH_REASON)) {
       const call = callOf(type)
-      expect(call !== null && call.result !== undefined && isUnparsedResult(call.result), type).toBe(true)
+      expect(call !== null && call.result !== undefined && isUnparsedToolResult(call.result), type).toBe(true)
     }
   })
 })

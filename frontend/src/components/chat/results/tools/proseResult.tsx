@@ -1,10 +1,10 @@
 import type { JSX } from 'solid-js'
-import type { ProseResult } from '../../ir/toolCall'
-import type { ToolKind } from '../../ir/toolKind'
-import type { ToolResults } from '../../ir/tools'
+import type { ProseResult } from '../../model/toolCall'
+import type { ToolKind } from '../../model/toolKind'
+import type { ToolResultByKind } from '../../model/tools'
 import type { ToolKindMeta, ToolKindRenderer, ToolRowView } from './renderer'
-import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../../ir/collapse'
 import { toolInputSummary } from '../../toolStyles.css'
+import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../collapse'
 import { CollapsibleContent } from '../CollapsibleContent'
 import { useCollapsedLines } from '../useCollapsedLines'
 
@@ -34,11 +34,11 @@ export function proseMeta(result: ProseResult): ToolKindMeta {
 /**
  * Every kind whose result IS prose.
  *
- * Derived from `ToolResults` rather than listed, so a kind that stops answering
+ * Derived from `ToolResultByKind` rather than listed, so a kind that stops answering
  * with words -- or a new one that starts -- moves in and out of the factory below
  * by the declaration alone.
  */
-export type ProseKind = { [K in ToolKind]: ToolResults[K] extends ProseResult ? K : never }[ToolKind]
+export type ProseKind = { [K in ToolKind]: ToolResultByKind[K] extends ProseResult ? K : never }[ToolKind]
 
 /**
  * The renderer a prose kind gets for stating its icon, its label and its title.

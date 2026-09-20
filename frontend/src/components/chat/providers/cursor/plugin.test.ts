@@ -65,7 +65,7 @@ describe('cursor provider', () => {
   })
 
   // The neutral {isSynthetic, controlResponse} row -> control_response classification is provider-
-  // agnostic and lives in classifyMessage (see messageClassification.test.ts); this covers only
+  // agnostic and lives in classifyMessage (see messageClassifier.test.ts); this covers only
   // Cursor's own controlResponseDisplay derivation.
   it('derives Cursor-specific control-response labels', () => {
     expect(plugin?.controls?.controlResponseDisplay!({

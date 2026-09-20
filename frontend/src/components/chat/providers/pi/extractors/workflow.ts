@@ -1,4 +1,4 @@
-import type { AgentRequest, AgentRun } from '../../../ir/tools/agent'
+import type { AgentRequest, AgentRun } from '../../../model/tools/agent'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { prettifyArgsJson } from '~/lib/jsonFormat'
 import { pickString } from '~/lib/jsonPick'

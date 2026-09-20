@@ -1,4 +1,4 @@
-import type { MessageCategory } from '../messageClassification'
+import type { MessageCategory } from '../messageClassifier'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { claudeExtractRow } from './claude/extractors/row'
@@ -9,7 +9,7 @@ import './claude/plugin'
 import './testMocks'
 
 /** The three span sides an isolated extraction resolves to nothing. */
-const NO_SIDES = { current: undefined, request: undefined, result: undefined, role: 'other' as const }
+const NO_SIDES = { request: undefined, result: undefined, role: 'other' as const, visibleRows: { request: false, result: false } }
 
 /** Construct a ToolSearch tool_use assistant message. */
 function toolSearchRequest(args: Record<string, unknown> = {}) {
@@ -52,12 +52,12 @@ describe('toolSearch rows', () => {
   it('hides the request row', () => {
     const payload = toolSearchRequest()
     const category: MessageCategory = { kind: 'tool_use' }
-    expect(claudeExtractRow({ parsed: input(payload), category, sides: NO_SIDES })).toEqual({ kind: 'hidden' })
+    expect(claudeExtractRow({ resolved: input(payload), category, span: NO_SIDES })).toEqual({ kind: 'hidden' })
   })
 
   it('hides the result row', () => {
     const payload = toolSearchResult(['Read', 'Glob', 'Grep'])
-    expect(claudeExtractRow({ parsed: input(payload), category: { kind: 'tool_result' }, sides: NO_SIDES })).toEqual({ kind: 'hidden' })
+    expect(claudeExtractRow({ resolved: input(payload), category: { kind: 'tool_result' }, span: NO_SIDES })).toEqual({ kind: 'hidden' })
   })
 
   it('classifies both sides as hidden once the span column names the tool', () => {

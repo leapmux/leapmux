@@ -1,5 +1,6 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
+import { createComputed, createRoot, createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MESSAGE_SUPPLEMENT_FIELD } from '~/generated/contracts/worker-vocab'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -91,7 +92,7 @@ describe('message mark preview text', () => {
 
   // The rail used to show a mark-type LABEL here: the neutral extractor read a
   // top-level `content` string, and an assistant row states its words in blocks.
-  // The row IR reads the blocks, so the dot now previews what the row says.
+  // The row model reads the blocks, so the dot now previews what the row says.
   it('previews an assistant content-block array', () => {
     expect(messageMarkPreviewText(messageOf({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }))).toBe('hi')
   })
@@ -185,10 +186,9 @@ describe('message mark preview text over a resolved payload', () => {
     expect(messageMarkPreviewText(message)).toContain('Running 240 tests')
   })
 
-  it('includes the partial result a retained Pi call recovered', () => {
-    // Pi sends a call's result on its end frame alone, so the worker stores the START
-    // frame and the partial result beside it. The turn was interrupted, which is the
-    // only state in which such a row exists.
+  it('includes partial Pi output that the retained supplement supplied', () => {
+    // Pi sends the finished result on its end frame. The worker stores a partial body
+    // beside the retained start frame when the turn ends first.
     const message = resolvedMessage(
       AgentProvider.PI,
       { type: 'tool_execution_start', toolCallId: 'call', toolName: 'bash', args: { command: 'ls' } },
@@ -209,6 +209,38 @@ describe('message mark preview text over a resolved payload', () => {
 })
 
 describe('warmMarkPreview', () => {
+  it('updates a reactive reader that first saw a cold cache', () => {
+    createRoot((dispose) => {
+      let preview: string | undefined
+      createComputed(() => {
+        preview = getCachedMarkPreview('cold-agent', 5n)
+      })
+      expect(preview).toBeUndefined()
+      void warmMarkPreview('cold-agent', 5n, testMessageContext({
+        messageBySeq: () => userMessage(5n, 'warmed preview'),
+        fetchMessage: vi.fn(),
+      }))
+      expect(preview).toBe('warmed preview')
+      dispose()
+    })
+  })
+
+  it('replaces a cached preview when the current message revision changes', async () => {
+    const [message, setMessage] = createSignal(userMessage(5n, 'before supplement'))
+    const [contentVersion, setContentVersion] = createSignal(0)
+    const context = testMessageContext({
+      messages: () => [message()],
+      contentVersion: () => contentVersion(),
+    })
+    await warmMarkPreview('a1', 5n, context)
+    expect(getCachedMarkPreview('a1', 5n, context.peek(5n)?.revision)).toBe('before supplement')
+
+    setMessage(userMessage(5n, 'after supplement'))
+    setContentVersion(1)
+    await warmMarkPreview('a1', 5n, context)
+    expect(getCachedMarkPreview('a1', 5n, context.peek(5n)?.revision)).toBe('after supplement')
+  })
+
   it('resolves from the loaded window without fetching', () => {
     const fetchMessage = vi.fn()
     warmMarkPreview('a1', 5n, testMessageContext({

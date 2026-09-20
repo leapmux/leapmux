@@ -1,13 +1,12 @@
-import type { MessageCategory } from './messageClassification'
+import type { MessageCategory } from './messageClassifier'
 import type { ClassificationContext } from './providers/registry'
 import type { ChatRowExtraction } from './rowExtraction'
 import type { ResolvedMessageContent } from './rowExtractionTypes'
-import type { ToolSpanSides } from '~/components/chat/rowExtractionTypes'
+import type { ToolSpanContext } from '~/components/chat/rowExtractionTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { TodoItem } from '~/models/todo'
 import { parseMessageContent } from '~/lib/messageParser'
-import { classifyMessage, toClassificationInput } from './messageClassification'
+import { classifyMessage, toClassificationInput } from './messageClassifier'
 import { resolvedSpanRole, resolveMessageForRendering } from './providers/registry'
 import { extractChatRow } from './rowExtraction'
 
@@ -78,9 +77,7 @@ export interface PreparedRowOptions {
    * every image tab to nothing otherwise. The `role` reaches the provider, which
    * decides what to do with it; it does not overwrite the drawn row's own role.
    */
-  sides?: ToolSpanSides
-  /** The live to-do store, which a provider that sends a task PATCH reads. */
-  todoById?: (taskId: string) => TodoItem | undefined
+  span?: ToolSpanContext
 }
 
 /**
@@ -93,12 +90,13 @@ export interface PreparedRowOptions {
  * body into supplemental content previewed its frame without it, and a Codex row
  * previewed under the wrong role.
  */
-function soleSide(prepared: PreparedMessage): ToolSpanSides {
+function soleSpan(prepared: PreparedMessage): ToolSpanContext {
+  const role = resolvedSpanRole(prepared.resolved, prepared.message.agentProvider)
   return {
-    current: prepared.resolved,
     request: undefined,
     result: undefined,
-    role: resolvedSpanRole(prepared.resolved, prepared.message.agentProvider),
+    role,
+    visibleRows: { request: role === 'request', result: role === 'result' },
   }
 }
 
@@ -121,7 +119,7 @@ export function prepareMessage(message: AgentChatMessage, options: PrepareMessag
 }
 
 /**
- * Read a prepared message into the row IR.
+ * Read a prepared message into the row model.
  *
  * The span type and the completion come from the PREPARED MESSAGE and cannot be
  * overridden. They are columns of the row the caller asked about, so a caller that
@@ -129,10 +127,9 @@ export function prepareMessage(message: AgentChatMessage, options: PrepareMessag
  */
 export function extractPreparedRow(prepared: PreparedMessage, options: PreparedRowOptions = {}): ChatRowExtraction {
   return extractChatRow(prepared.message.agentProvider, prepared.resolved, prepared.category, {
-    sides: options.sides ?? soleSide(prepared),
+    span: options.span ?? soleSpan(prepared),
     spanType: prepared.message.spanType,
     completion: prepared.message.completion,
-    ...(options.todoById === undefined ? {} : { todoById: options.todoById }),
   })
 }
 

@@ -1,5 +1,5 @@
 import type { ProviderPlugin } from '../capabilities'
-import { ZCODE_DEFAULT_MODE, ZCODE_MODE, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
+import { ZCODE_DEFAULT_MODE, ZCODE_MODE } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { buildDenyResponse, getToolInput } from '~/utils/controlResponse'
 import { buildAskAnswers } from '../../controls/AskUserQuestionControl'
@@ -7,49 +7,27 @@ import { sendResponse } from '../../controls/types'
 import { registerProvider } from '../registry'
 import { zcodeIsAskUserQuestion, zcodeQuestionsFromPayload } from './askUserQuestion'
 import { classifyZCodeMessage } from './classification'
-import { zcodeControlResponseDisplay } from './controlResponse'
+import { zcodeControlResponseSummary } from './controlResponse'
 import { zcodeExtractControl } from './extractControl'
 import { zcodeNotificationEntry } from './extractors/notification'
-import { zcodeControlPlanText } from './extractors/plan'
 import { zcodeResultDivider } from './extractors/resultDivider'
 import { zcodeExtractRow } from './extractors/row'
-import { zcodeExtractTool } from './extractors/toolCommon'
 import { resolveZCodeMessage } from './resolveMessage'
 import { zcodeContextUsageFromMessage } from './sessionMetadata'
-import { zcodeSpanRole } from './spanRole'
-
-const ZCODE_REQUESTS_WITH_TITLES = new Set<string>([
-  ZCODE_TOOL.Bash,
-  ZCODE_TOOL.Read,
-  ZCODE_TOOL.Write,
-  ZCODE_TOOL.Edit,
-  ZCODE_TOOL.Glob,
-  ZCODE_TOOL.Grep,
-  ZCODE_TOOL.TodoWrite,
-  ZCODE_TOOL.Agent,
-  ZCODE_TOOL.WebFetch,
-])
+import { zcodeRelatedMessages, zcodeSpanRole } from './spanRole'
 
 const zcodePlugin: ProviderPlugin = {
   transcript: {
     resolveMessage: resolveZCodeMessage,
     spanRole: zcodeSpanRole,
-    relatedMessages: (parsed) => {
-      if (zcodeControlPlanText(parsed.parentObject) !== null)
-        return []
-      const role = zcodeSpanRole(parsed)
-      if (role === 'result')
-        return ['request']
-      const tool = zcodeExtractTool(parsed.parentObject)
-      return role === 'request' && (tool?.toolName === ZCODE_TOOL.Agent || tool?.toolName === ZCODE_TOOL.TodoWrite || Object.keys(tool?.input ?? {}).length === 0 || !ZCODE_REQUESTS_WITH_TITLES.has(tool?.toolName ?? '')) ? ['result'] : []
-    },
+    relatedMessages: zcodeRelatedMessages,
     classify: classifyZCodeMessage,
     extractRow: zcodeExtractRow,
     notificationEntry: zcodeNotificationEntry,
     extractDivider: zcodeResultDivider,
   },
   controls: {
-    controlResponseDisplay: zcodeControlResponseDisplay,
+    controlResponseDisplay: zcodeControlResponseSummary,
     askUserQuestion: {
       isRequest: zcodeIsAskUserQuestion,
       extractQuestions: zcodeQuestionsFromPayload,

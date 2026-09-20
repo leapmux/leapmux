@@ -1,14 +1,14 @@
-import type { ToolCallIR } from '~/components/chat/ir/toolCall'
+import type { ToolCall } from '~/components/chat/model/toolCall'
 import { render } from '@solidjs/testing-library'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { failedResult, unparsedResult } from '~/components/chat/ir/toolCall'
-import { TOOL_KINDS } from '~/components/chat/ir/toolKind'
+import { failedResult, unparsedResult } from '~/components/chat/model/toolCall'
+import { TOOL_KINDS } from '~/components/chat/model/toolKind'
 import { ToolMessage } from '~/components/chat/results/ToolMessage'
 import { toolCallDisplayName } from '~/components/chat/results/tools/header'
 import { rendererFor, TOOL_KIND_RENDERERS } from '~/components/chat/results/tools/index'
 import { toolCallMeta } from '~/components/chat/results/tools/meta'
 import { parsedCall } from '~/components/chat/results/tools/renderer'
-import { MINIMAL_REQUEST, MINIMAL_RESULT, toolCallIr, toolRow } from '~/test-support/toolCallIr'
+import { MINIMAL_REQUEST, MINIMAL_RESULT, toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 
 // jsdom does not provide ResizeObserver, which the shared layouts observe with.
 beforeAll(() => {
@@ -28,24 +28,24 @@ describe('the tool kind renderer table', () => {
 
   it.each(TOOL_KINDS)('renders %j as a request row, a result row, and both fallbacks, without throwing', (kind) => {
     for (const call of [
-      toolCallIr(kind, { status: 'in_progress' }),
-      toolCallIr(kind, { result: MINIMAL_RESULT[kind] }),
-      toolCallIr(kind, { result: unparsedResult('raw'), title: 'RAW TITLE' }),
-      toolCallIr(kind, { result: failedResult('boom'), status: 'failed', title: 'RAW TITLE' }),
-    ] as ToolCallIR[]) {
+      toolCallFixture(kind, { status: 'in_progress' }),
+      toolCallFixture(kind, { result: MINIMAL_RESULT[kind] }),
+      toolCallFixture(kind, { result: unparsedResult('raw'), title: 'RAW TITLE' }),
+      toolCallFixture(kind, { result: failedResult('boom'), status: 'failed', title: 'RAW TITLE' }),
+    ] as ToolCall[]) {
       const { container } = render(() => <ToolMessage row={toolRow(call)} />)
       expect(container.querySelector('[data-tool-message]')).not.toBeNull()
     }
   })
 
   it.each(TOOL_KINDS)('states the unparsed payload for %j', (kind) => {
-    const call = toolCallIr(kind, { result: unparsedResult('raw'), title: 'RAW TITLE' }) as ToolCallIR
+    const call = toolCallFixture(kind, { result: unparsedResult('raw'), title: 'RAW TITLE' }) as ToolCall
     const { container } = render(() => <ToolMessage row={toolRow(call)} />)
     expect(container.textContent).toContain('raw')
   })
 
   it.each(TOOL_KINDS)('answers hasCopyable truthfully and titles the row for %j', (kind) => {
-    const call = toolCallIr(kind, { result: unparsedResult('raw'), title: 'RAW TITLE' }) as ToolCallIR
+    const call = toolCallFixture(kind, { result: unparsedResult('raw'), title: 'RAW TITLE' }) as ToolCall
     const meta = toolCallMeta(toolRow(call))
     expect(meta.hasCopyable).toBe(meta.copyableContent() !== null)
     const renderer = rendererFor(call)
@@ -58,8 +58,8 @@ describe('the tool kind renderer table', () => {
     // the nameless trio draws the humanized tool NAME, which identifies the tool.
     for (const kind of TOOL_KINDS) {
       const renderer = TOOL_KIND_RENDERERS[kind]
-      const name = toolCallDisplayName(toolCallIr(kind, { name: 'semantic_search', title: 'RAW TITLE' }) as ToolCallIR)
-      if (kind === '' || kind === 'other')
+      const name = toolCallDisplayName(toolCallFixture(kind, { name: 'semantic_search', title: 'RAW TITLE' }) as ToolCall)
+      if (kind === 'unspecified' || kind === 'other')
         expect(name).toBe('Semantic search')
       else if (kind === 'mcp')
         expect(name).toBe('s / t')

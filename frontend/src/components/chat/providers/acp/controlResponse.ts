@@ -1,12 +1,13 @@
-import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
+import type { ControlResponseSummary } from '../../model/controlResponse'
+import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { permissionOptionLabel } from '../../controls/permissionOptionLabels'
 import {
   CANONICAL_KINDS,
   KIND_ALLOW_ALWAYS,
   KIND_ALLOW_ONCE,
   KIND_REJECT_ONCE,
-  permissionOptionLabel,
-} from '../../controls/permissionOptionLabels'
+} from '../../model/controlPrompt'
 import { labelOrNull } from '../../persistedControlResponse'
 
 /**
@@ -95,6 +96,6 @@ export function acpPermissionResponseText(
  * speak a question protocol (OpenCode/Kilo) or a bespoke flow (Cursor) wrap this with their own
  * dispatch and delegate here for the permission case.
  */
-export function acpControlResponseDisplay(cr: PersistedControlResponse): ControlResponseDisplay | null {
+export function acpControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
   return labelOrNull(acpPermissionResponseText(cr.request, cr.response))
 }

@@ -1,11 +1,11 @@
-import type { QuestionIR } from '../../../ir/questionBody'
-import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
-import type { QuestionRequest } from '../../../ir/tools/question'
+import type { QuestionPrompt } from '../../../model/question'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { QuestionRequest } from '../../../model/tools/question'
 import type { ClaudeToolRow } from './toolCommon'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { pluralize } from '~/lib/plural'
-import { unparsedResult } from '../../../ir/toolCall'
-import { claudeFailedResult } from './failure'
+import { unparsedResult } from '../../../model/toolCall'
+import { claudeToolFailureResult } from './failure'
 
 /** The questions of an `AskUserQuestion` call, as the tool spells them. */
 function questionList(source: Record<string, unknown> | null | undefined): Record<string, unknown>[] {
@@ -42,7 +42,7 @@ export function claudeAskUserQuestionTitle(input: Record<string, unknown>): stri
  * draws BOTH -- the control banner above it does, so a reader who comes back to the
  * row has to be able to tell what the alternatives actually were.
  */
-export function claudeQuestions(input: Record<string, unknown>): QuestionIR[] {
+export function claudeQuestions(input: Record<string, unknown>): QuestionPrompt[] {
   return questionList(input).flatMap((question) => {
     const text = pickString(question, 'question') || questionHeader(question)
     if (!text)
@@ -76,12 +76,12 @@ export function claudeQuestions(input: Record<string, unknown>): QuestionIR[] {
  * Claude keys its answers by the full question text; an older LeapMux build
  * keyed them by the header. Both are read, so a saved row keeps its answer.
  */
-export function claudeQuestionPayload(request: QuestionRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'question'> {
+export function claudeQuestionSpec(request: QuestionRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'question'> {
   // The row's header word: one question states itself, several state their count.
   const title = claudeAskUserQuestionTitle(args.input)
   if (!result || result.role !== 'result')
     return { kind: 'question', request, title }
-  const failure = claudeFailedResult(result)
+  const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'question', request, title, result: failure }
   const questions = questionList(result.toolUseResult)

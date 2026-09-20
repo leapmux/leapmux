@@ -1,10 +1,9 @@
 import type { JSX } from 'solid-js'
-import type { FileListEntry, SearchBodyKind, SearchResult } from '../ir/searchResult'
-import type { RenderContext } from '../messageRenderers'
+import type { FileListEntry, SearchResult, SearchToolKind } from '../model/searchResult'
+import type { ToolResultRenderContext } from '../renderContext'
 import { createMemo, For, Show } from 'solid-js'
 import { relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
-import { searchResultText } from '../ir/searchResult'
 import { getToolResultExpanded } from '../messageRenderers'
 import {
   toolMessage,
@@ -13,12 +12,37 @@ import {
   toolResultPrompt,
 } from '../toolStyles.css'
 import { TRUNCATION_NOTICE } from '../truncationNotice'
+import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 import { useCollapsedItems, useCollapsedLines } from './useCollapsedLines'
+
+function structuredLines(source: SearchResult) {
+  return source.lines?.length ? source.lines : null
+}
+
+export function searchResultText(source: SearchResult, context?: { workingDir?: string | undefined, homeDir?: string | undefined }): string {
+  const lines = structuredLines(source)
+  if (lines)
+    return lines.map(line => `${relativizePath(line.filePath, context?.workingDir, context?.homeDir)}${line.lineNumber !== undefined ? `:${line.lineNumber}` : ''}:${line.text}`).join('\n')
+  return source.content || (source.filenames.length === 0 ? source.fallbackContent : '')
+}
+
+export function searchResultCopyable(source: SearchResult, context?: { workingDir?: string | undefined, homeDir?: string | undefined }): string {
+  return searchResultText(source, context) || source.filenames.join('\n')
+}
+
+export function searchResultCollapsible(source: SearchResult): boolean {
+  if (source.filenames.length > COLLAPSED_RESULT_ROWS)
+    return true
+  const lines = structuredLines(source)
+  if (lines)
+    return lines.length > COLLAPSED_RESULT_ROWS
+  return hasMoreLinesThan(searchResultText(source), COLLAPSED_RESULT_ROWS)
+}
 
 /** Reusable file paths with optional provider-supplied details. */
 export function FileListView(props: {
   entries: FileListEntry[]
-  context?: RenderContext
+  context?: ToolResultRenderContext
 }): JSX.Element {
   return (
     <div class={toolResultContentPre}>
@@ -79,7 +103,7 @@ function emptySummaryFor(source: SearchResult, marker: string): string {
   return source.empty ? marker : ''
 }
 
-function summaryFor(source: SearchResult, kind: SearchBodyKind): string {
+function summaryFor(source: SearchResult, kind: SearchToolKind): string {
   if (kind === 'grep') {
     // Count mode: total occurrences across N files, even when zero.
     if (source.mode === 'count' && typeof source.matchCount === 'number')
@@ -111,9 +135,9 @@ function summaryFor(source: SearchResult, kind: SearchBodyKind): string {
 
 export function SearchResultBody(props: {
   source: SearchResult
-  kind: SearchBodyKind
+  kind: SearchToolKind
   /** The pattern the search ran, when the caller holds it apart from the source. */
-  context?: RenderContext
+  context?: ToolResultRenderContext
 }): JSX.Element {
   const expanded = () => getToolResultExpanded(props.context)
   const filenames = () => props.source.filenames

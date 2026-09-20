@@ -11,7 +11,7 @@ import {
   requestsThatAnswerEarly,
   staleNoFailureReasons,
   staleResultEntries,
-  undocumentedUnparsedResults,
+  undocumentedUnparsedToolResults,
 } from './toolVocabulary'
 
 // The cases every provider's `toolResults.test.ts` runs, emitted from ONE place.
@@ -67,7 +67,7 @@ export function describeToolResultCorpus(kinds: ToolVocabularyCheck, check: Tool
 
     it('documents every result that stays unparsed', () => {
       expect(
-        undocumentedUnparsedResults(check, callOf),
+        undocumentedUnparsedToolResults(check, callOf),
         'A successful result nobody can read is a body the row pretends to understand.',
       ).toStrictEqual([])
     })

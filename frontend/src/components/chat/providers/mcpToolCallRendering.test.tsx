@@ -1,12 +1,12 @@
-import type { MessageCategory } from '../messageClassification'
+import type { MessageCategory } from '../messageClassifier'
 import type { RenderContext } from '../messageRenderers'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal, untrack } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pngBase64 } from '~/test-support/pngFixture'
-import { toolOutcomeLabel } from '../ir/toolOutcomeLabel'
 import { imageActionsFrom } from '../renderContext'
+import { toolOutcomeLabel } from '../results/toolOutcomeLabel'
 import { toolResultCollapsed } from '../toolStyles.css'
 import './claude/plugin'
 import './codex/plugin'
@@ -20,7 +20,7 @@ vi.mock('~/lib/tokenCache', () => ({
   getCachedTokens: () => null,
 }))
 
-const { renderMessageContent } = await import('../rowRenderers')
+const { renderMessageContent } = await import('../messageContentRenderer')
 
 function renderClaudeToolResult(parsed: Record<string, unknown>, context?: RenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }

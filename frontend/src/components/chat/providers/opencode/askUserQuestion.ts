@@ -1,4 +1,5 @@
-import type { ControlAnswerState, ControlResponseSender, Question } from '../../controls/types'
+import type { ControlAnswerState, ControlResponseSender } from '../../controls/types'
+import type { ControlQuestion } from '../../model/question'
 
 import { OPENCODE_ANSWER_FIELD } from '~/generated/contracts/opencode-protocol'
 import { isObject, pickObject } from '~/lib/jsonPick'
@@ -7,7 +8,7 @@ import { questionsFromWire, sendResponse } from '../../controls/types'
 /**
  * Fold the legacy `multiple` field onto `multiSelect`, on the RAW element.
  *
- * Before the shared reader types the element, not after: `Question` declares
+ * Before the shared reader types the element, not after: `ControlQuestion` declares
  * `multiSelect` and carries no `multiple`, so a fold afterwards has to assert its way
  * back into the untyped record it just left. An element that states `multiSelect`
  * already keeps it, and a `multiple` that is not a boolean states nothing.
@@ -33,7 +34,7 @@ function foldMultiple(raw: unknown): unknown {
  * character per key, and `AskUserQuestionControl` then dereferenced a `question` field
  * that no such element has and handed `options` to a `<For>`.
  */
-export function extractOpenCodeQuestions(payload: Record<string, unknown>): Question[] {
+export function extractOpenCodeQuestions(payload: Record<string, unknown>): ControlQuestion[] {
   const properties = pickObject(payload, 'properties', undefined)
   return questionsFromWire(foldMultiple(properties?.questions))
 }
@@ -41,7 +42,7 @@ export function extractOpenCodeQuestions(payload: Record<string, unknown>): Ques
 export function sendOpenCodeQuestionResponse(
   onRespond: ControlResponseSender,
   requestId: string,
-  questions: Question[],
+  questions: ControlQuestion[],
   answerState: ControlAnswerState,
 ): Promise<void> {
   const answers: string[][] = questions.map((_, index) => {

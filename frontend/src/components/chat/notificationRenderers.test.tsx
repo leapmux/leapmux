@@ -747,7 +747,7 @@ describe('the notification thread: subagent_ended', () => {
     expect(renderHasIcon([{ type: 'subagent_ended', status: 'completed' }])).toBe(true)
   })
 
-  // The IR states the OUTCOME and `notificationRenderers` picks the glyph, so a
+  // The model states the OUTCOME and `notificationRenderers` picks the glyph, so a
   // map that answered two outcomes with one glyph would still pass every test
   // above. Four outcomes a reader must tell apart draw four distinct glyphs.
   it('draws a distinct glyph for each outcome it can name', () => {

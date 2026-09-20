@@ -901,6 +901,7 @@ describe('createChatStore', () => {
       const cache = createClassifiedEntryCache({
         messages: () => store.getMessages('agent-1'),
         contentVersionById: id => store.getMessageContentVersion(id),
+        role: () => 'other',
         showHiddenMessages: () => false,
       })
       expect(cache.visibleEntries()[0]?.original.supplementalContent).toBeUndefined()
@@ -2419,6 +2420,7 @@ describe('createChatStore', () => {
           const cache = createClassifiedEntryCache({
             messages: () => store.getMessages('a1'),
             contentVersionById: id => store.getMessageContentVersion(id),
+            role: () => 'other',
             showHiddenMessages: () => false,
           })
           const before = cache.visibleEntries()[0]

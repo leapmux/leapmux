@@ -1,17 +1,17 @@
-import type { QuestionIR, QuestionOptionIR } from '../ir/questionBody'
+import type { QuestionOption, QuestionPrompt } from '../model/question'
 import { describe, expect, it } from 'vitest'
 import { pickString } from '~/lib/jsonPick'
 import { questionsFromRecords } from './questionRecords'
 
 /** A text reader in the shape a provider passes: the two text fields of one record. */
-function readText(record: Record<string, unknown>): Omit<QuestionIR, 'options'> {
+function readText(record: Record<string, unknown>): Omit<QuestionPrompt, 'options'> {
   const header = pickString(record, 'header')
   const question = pickString(record, 'question')
   return { ...(header ? { header } : {}), question }
 }
 
 /** An option reader in the shape a provider passes: a label, and the sentence beside it. */
-function readOption(record: Record<string, unknown>): QuestionOptionIR | null {
+function readOption(record: Record<string, unknown>): QuestionOption | null {
   const label = pickString(record, 'label')
   const description = pickString(record, 'description')
   return label ? { label, ...(description ? { description } : {}) } : null

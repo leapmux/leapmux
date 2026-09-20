@@ -1,8 +1,9 @@
-import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
+import type { ControlResponseSummary } from '../../model/controlResponse'
+import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { firstNonEmpty, joinAnswerLines, labeledAnswerLine, labelOrNull } from '../../persistedControlResponse'
-import { acpControlResponseDisplay } from '../acp/controlResponse'
+import { acpControlResponseSummary } from '../acp/controlResponse'
 
 /**
  * Render an OpenCode/Kilo `question.asked` answer. A rejected answer is "Reject"; otherwise each
@@ -53,8 +54,8 @@ function isOpencodeQuestionResponse(response: Record<string, unknown> | undefine
  * type is gone, the response shape still identifies a question answer, so it is recovered there --
  * labeled by position rather than the missing question headers.
  */
-export function openCodeControlResponseDisplay(cr: PersistedControlResponse): ControlResponseDisplay | null {
+export function openCodeControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
   if (pickString(cr.request, 'type', '') === OPENCODE_EVENT.QuestionAsked || isOpencodeQuestionResponse(cr.response))
     return labelOrNull(openCodeQuestionAnswersText(cr.request, cr.response))
-  return acpControlResponseDisplay(cr)
+  return acpControlResponseSummary(cr)
 }

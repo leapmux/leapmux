@@ -1,10 +1,10 @@
-import type { ReadFileResult } from '../../../ir/readFileResult'
-import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
-import type { ReadRequest } from '../../../ir/tools/read'
+import type { ReadFileResult } from '../../../model/readFileResult'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { ReadRequest } from '../../../model/tools/read'
 import type { ClaudeToolRow } from './toolCommon'
 import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { parseReadContent, readFileResultFromContent } from '../../../ir/readFileResult'
-import { claudeFailedResult } from './failure'
+import { parseReadContent, readFileResultFromContent } from '../../../model/readFileResult'
+import { claudeToolFailureResult } from './failure'
 
 /** Non-text Read variants that the catch-all renderer continues to handle. */
 const NON_TEXT_READ_TYPES = new Set(['image', 'notebook', 'pdf', 'parts', 'file_unchanged'])
@@ -67,10 +67,10 @@ export function claudeReadFromToolResult(args: ClaudeReadInputArg): ReadFileResu
  * A read that FAILED states its reason alone. The file viewer took it as the file's
  * own body otherwise, which reads as a one-line file rather than as an error.
  */
-export function claudeReadPayload(request: ReadRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'read'> {
+export function claudeReadSpec(request: ReadRequest, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'read'> {
   if (!result)
     return { kind: 'read', request }
-  const failure = claudeFailedResult(result)
+  const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'read', request, result: failure, images: result.images }
   // A non-text read -- an image, a notebook, a PDF -- states no lines, and the

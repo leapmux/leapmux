@@ -1,6 +1,6 @@
 import type { Accessor } from 'solid-js'
 import { createMemo } from 'solid-js'
-import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../ir/collapse'
+import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 
 /**
  * Per-line character cap applied to the collapsed slice. The visual fade mask

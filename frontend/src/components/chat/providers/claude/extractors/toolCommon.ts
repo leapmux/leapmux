@@ -1,4 +1,4 @@
-import type { ToolSpanSides } from '~/components/chat/rowExtractionTypes'
+import type { ToolSpanContext } from '~/components/chat/rowExtractionTypes'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ContentBlock } from '~/lib/contentBlocks'
 import type { ImageResultSource } from '~/lib/imageBlocks'
@@ -14,8 +14,10 @@ import { claudeImagesFromToolResult } from './image'
 export interface ClaudeRowContext {
   /** The paired result's `tool_use_result`, which the three `Task*` rows read. */
   pairedResult?: Record<string, unknown>
-  /** The live to-do store, which a status-only `TaskUpdate` patch reads. */
-  todoById?: (taskId: string) => TodoItem | undefined
+  /** The immutable post-update task stored on a TaskUpdate message. */
+  todoSnapshot?: TodoItem
+  /** Why a required TaskUpdate snapshot could not be read. */
+  todoSnapshotDiagnostic?: string
   /** LeapMux's own reading of how the row ended, which a provider frame can contradict. */
   completion?: MessageCompletion
 }
@@ -90,7 +92,7 @@ function toolResultBlock(content: ContentBlock[] | null): Record<string, unknown
 export function claudeToolRow(
   parsed: ParsedMessageContent | undefined,
   spanType: string | undefined,
-  sides: ToolSpanSides,
+  sides: ToolSpanContext,
 ): ClaudeToolRow | null {
   const payload = parsed?.parentObject
   if (!payload)

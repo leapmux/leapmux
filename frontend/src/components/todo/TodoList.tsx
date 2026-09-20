@@ -2,9 +2,10 @@ import type { Component } from 'solid-js'
 import type { TodoItem } from '~/models/todo'
 import { createMemo, For } from 'solid-js'
 import { ClippedText } from '~/components/common/ClippedText'
-import { isFinishedTodoStatus, sortTodos, todoDisplayLabel } from '~/models/todo'
+import { isFinishedTodoStatus } from '~/models/todo'
 import { TaskCheckbox } from './TaskCheckbox'
 import * as styles from './TodoList.css'
+import { sortTodos, todoDisplayLabel } from './todoPresentation'
 
 interface TodoListProps {
   todos: TodoItem[]

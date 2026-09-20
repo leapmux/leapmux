@@ -1,9 +1,9 @@
-import type { ToolCallRow } from '../../ir/row'
+import type { ToolCallRow } from '../../model/row'
 import type { ToolKindMeta } from './renderer'
-import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../../ir/collapse'
-import { rowDrawsResult, rowHasResultRow } from '../../ir/derivations'
-import { isFailedResult, isUnparsedResult } from '../../ir/toolCall'
-import { contentBlocksCopyable } from '../../ir/tools/generic'
+import { rowDrawsRequest, rowDrawsResult, rowHasResultRow } from '../../model/derivations'
+import { isToolFailureResult, isUnparsedToolResult } from '../../model/toolCall'
+import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../collapse'
+import { contentBlocksCopyable } from '../genericToolCall'
 import { dispatchToolCall } from './index'
 
 /**
@@ -39,7 +39,7 @@ export interface ToolCallMeta extends ToolResultMeta {
   previewText: () => string | null
 }
 
-/** The meta a FailedResult or an UnparsedResult offers: one plain text block. */
+/** The meta a ToolFailureResult or an UnparsedToolResult offers: one plain text block. */
 export function plainMeta(text: string): ToolKindMeta {
   return { collapsible: hasMoreLinesThan(text, COLLAPSED_RESULT_ROWS), hasDiff: false, copyableContent: () => text || null }
 }
@@ -81,11 +81,14 @@ const copyableByRow = new WeakMap<ToolCallRow, RowCopyable>()
  */
 export function toolCallMeta(row: ToolCallRow): ToolCallMeta {
   const call = row.call
+  const drawsRequest = rowDrawsRequest(row)
   const drawsResult = rowDrawsResult(row)
-  const plain = isFailedResult(call.result) || isUnparsedResult(call.result) ? call.result : undefined
+  const plain = isToolFailureResult(call.result) || isUnparsedToolResult(call.result) ? call.result : undefined
   // The renderer and the call reach the hooks as ONE correlated pair, over the same
   // total table every reader dispatches through.
-  const request = dispatchToolCall(call, ({ renderer, parsed }) => renderer.requestMeta?.(parsed, call.result !== undefined || rowHasResultRow(row)) ?? {})
+  const request = drawsRequest
+    ? dispatchToolCall(call, ({ renderer, parsed }) => renderer.requestMeta?.(parsed, call.result !== undefined || rowHasResultRow(row)) ?? {})
+    : {}
   const result = drawsResult ? dispatchToolCall(call, ({ renderer, resolved }) => resolved !== undefined ? renderer.resultMeta(resolved) : undefined) : undefined
   const fallback = drawsResult && plain ? plainMeta(plain.text) : undefined
   const primary = result ?? fallback
@@ -98,10 +101,10 @@ export function toolCallMeta(row: ToolCallRow): ToolCallMeta {
     if (cached)
       return cached
     const primaryText = primary?.copyableContent() ?? null
-    const requestText = primaryText === null ? request.copyableContent?.() ?? null : null
+    const requestText = primaryText === null && drawsRequest ? request.copyableContent?.() ?? null : null
     const text = [
       primaryText ?? requestText,
-      contentBlocksCopyable(call.extraContent ?? []),
+      drawsResult ? contentBlocksCopyable(call.extraContent ?? []) : null,
     ].filter(Boolean).join('\n\n') || null
     // Neither side answered, so the text is the call's EXTRA content and neither
     // side's words describe it.
@@ -134,8 +137,8 @@ export function toolCallMeta(row: ToolCallRow): ToolCallMeta {
     ? result.expandLabel
     : fallback?.collapsible ? fallback.expandLabel : request.expandLabel
   return {
-    collapsible: (primary?.collapsible ?? false) || (request.collapsible ?? false),
-    hasDiff: (primary?.hasDiff ?? false) || (request.hasDiff ?? false),
+    collapsible: (primary?.collapsible ?? false) || (drawsRequest && (request.collapsible ?? false)),
+    hasDiff: (primary?.hasDiff ?? false) || (drawsRequest && (request.hasDiff ?? false)),
     copyableContent,
     hasCopyable: copyableContent() !== null,
     ...(copyLabel !== undefined ? { copyLabel } : {}),

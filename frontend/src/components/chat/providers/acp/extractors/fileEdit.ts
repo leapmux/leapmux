@@ -1,4 +1,4 @@
-import type { FileEditDiff } from '../../../ir/fileEditDiff'
+import type { FileEditDiff } from '../../../model/fileEditDiff'
 import { ACP_TOOL_KIND } from '~/generated/contracts/acp-protocol'
 import { isObject, pickFirstString, pickString } from '~/lib/jsonPick'
 import { TOOL_FILE_PATH_KEYS, TOOL_NEW_TEXT_KEYS, TOOL_OLD_TEXT_KEYS } from '../../toolInputKeys'

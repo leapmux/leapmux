@@ -1,8 +1,9 @@
-import type { WirePermissionOption } from './permissionOptionLabels'
+import type { PermissionOption } from '~/components/chat/model/controlPrompt'
 import { describe, expect, it } from 'vitest'
-import { isAllowPermissionKind, isRejectPermissionKind, permissionOptionLabel } from './permissionOptionLabels'
+import { isAllowPermissionKind, isRejectPermissionKind } from '~/components/chat/model/controlPrompt'
+import { permissionOptionLabel } from './permissionOptionLabels'
 
-function option(optionId: string, kind: string, name = optionId): WirePermissionOption {
+function option(optionId: string, kind: string, name = optionId): PermissionOption {
   return { optionId, kind, name }
 }
 

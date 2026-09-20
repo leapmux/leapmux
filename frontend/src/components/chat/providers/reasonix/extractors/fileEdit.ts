@@ -1,4 +1,4 @@
-import type { FileEditDiff } from '../../../ir/fileEditDiff'
+import type { FileEditDiff } from '../../../model/fileEditDiff'
 import { isObject } from '~/lib/jsonPick'
 
 const RECEIPT_HEADER = '\nActual replacement receipt after write:\n'

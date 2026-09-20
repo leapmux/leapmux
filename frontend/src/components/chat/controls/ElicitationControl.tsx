@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
-import type { ElicitationRequest } from './elicitationForm'
 import type { ActionsProps, ContentProps } from './types'
+import type { ElicitationRequest } from '~/components/chat/model/controlPrompt'
 import type { McpElicitationAction } from '~/generated/contracts/mcp-elicitation'
 import { createMemo, createSignal, createUniqueId, For, Match, Show, Switch } from 'solid-js'
 import { LoadingMenu } from '~/components/common/LoadingMenu'

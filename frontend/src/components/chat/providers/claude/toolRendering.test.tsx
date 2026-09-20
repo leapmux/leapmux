@@ -2,8 +2,8 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { providerRowIr } from '~/test-support/toolCallIr'
-import { renderMessageContent } from '../../rowRenderers'
+import { providerRow } from '~/test-support/toolCallFixture'
+import { renderMessageContent } from '../../messageContentRenderer'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import { CLAUDE_TOOL_NAMES } from './toolNames'
@@ -48,21 +48,21 @@ describe('claude Task rows before their result lands', () => {
   })
 
   it('draws no row for an unresolved TaskGet', () => {
-    const row = providerRowIr(AgentProvider.CLAUDE_CODE, useRow(CLAUDE_TOOL_NAMES.TASK_GET, { task_id: 7 }), { role: 'request' })
+    const row = providerRow(AgentProvider.CLAUDE_CODE, useRow(CLAUDE_TOOL_NAMES.TASK_GET, { task_id: 7 }), { role: 'request' })
     expect(row).toEqual({ kind: 'hidden' })
   })
 
   it('draws the task once the result lands beside it', () => {
     const payload = useRow(CLAUDE_TOOL_NAMES.TASK_GET, { task_id: 7 })
     const result = resultRow({ task: { id: 7, subject: 'Inspect sample', status: 'pending' } })
-    const row = providerRowIr(AgentProvider.CLAUDE_CODE, payload, { role: 'request', result: input(result) })
+    const row = providerRow(AgentProvider.CLAUDE_CODE, payload, { role: 'request', result: input(result) })
     expect(row?.kind).toBe('tool')
     expect(row?.kind === 'tool' && row.call.kind).toBe('todo')
   })
 
   // Both of these DO carry input, so each draws while it runs.
   it.each([CLAUDE_TOOL_NAMES.TASK_CREATE, CLAUDE_TOOL_NAMES.TASK_UPDATE])('still draws an unresolved %s', (name) => {
-    const row = providerRowIr(AgentProvider.CLAUDE_CODE, useRow(name, { subject: 'Inspect sample' }), { role: 'request' })
+    const row = providerRow(AgentProvider.CLAUDE_CODE, useRow(name, { subject: 'Inspect sample' }), { role: 'request' })
     expect(row?.kind).toBe('tool')
   })
 })
@@ -83,7 +83,7 @@ describe('claude Task rows and a sibling from another call', () => {
       message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_other', content: 'ok' }] },
       tool_use_result: { task: { id: 99, subject: 'Another call', status: 'pending' } },
     }
-    const row = providerRowIr(AgentProvider.CLAUDE_CODE, payload, { role: 'request', result: input(stranger) })
+    const row = providerRow(AgentProvider.CLAUDE_CODE, payload, { role: 'request', result: input(stranger) })
     expect(row).toEqual({ kind: 'hidden' })
   })
 })
@@ -108,7 +108,7 @@ describe('claude ExitPlanMode rows', () => {
   })
 
   function approvedCall(payload: Record<string, unknown>) {
-    const row = providerRowIr(AgentProvider.CLAUDE_CODE, useRow(CLAUDE_TOOL_NAMES.EXIT_PLAN_MODE), {
+    const row = providerRow(AgentProvider.CLAUDE_CODE, useRow(CLAUDE_TOOL_NAMES.EXIT_PLAN_MODE), {
       role: 'request',
       result: input(resultRow(payload)),
     })
@@ -133,7 +133,7 @@ describe('claude ExitPlanMode rows', () => {
   // The refusal is an ANSWER the agent asked for, and the kind words that outcome
   // "Sent feedback" from the status rather than from a title.
   it('words a refused plan as declined and keeps the feedback', () => {
-    const row = providerRowIr(AgentProvider.CLAUDE_CODE, useRow(CLAUDE_TOOL_NAMES.EXIT_PLAN_MODE), {
+    const row = providerRow(AgentProvider.CLAUDE_CODE, useRow(CLAUDE_TOOL_NAMES.EXIT_PLAN_MODE), {
       role: 'request',
       result: input(resultRow({}, true)),
     })
@@ -149,7 +149,7 @@ describe('claude ExitPlanMode rows', () => {
     [CLAUDE_TOOL_NAMES.ENTER_WORKTREE, 'worktree'],
     [CLAUDE_TOOL_NAMES.EXIT_WORKTREE, 'default'],
   ])('keeps the mode and the target of a %s call', (name, mode) => {
-    const row = providerRowIr(AgentProvider.CLAUDE_CODE, useRow(name, { name: 'feature-a' }), { role: 'request' })
+    const row = providerRow(AgentProvider.CLAUDE_CODE, useRow(name, { name: 'feature-a' }), { role: 'request' })
     const call = row?.kind === 'tool' ? row.call : null
     expect(call?.kind === 'switch_mode' && call.request).toEqual({ mode, target: 'feature-a' })
   })

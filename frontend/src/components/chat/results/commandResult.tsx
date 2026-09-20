@@ -1,26 +1,64 @@
 import type { JSX } from 'solid-js'
-import type { CommandResult } from '../ir/commandResult'
-import type { ToolRowStatus } from '../ir/toolRowStatus'
-import type { RenderContext } from '../messageRenderers'
+import type { CommandExit, CommandResult } from '../model/commandResult'
+import type { ToolCallStatus } from '../model/toolCallStatus'
+import type { ToolResultRenderContext } from '../renderContext'
 import Ban from 'lucide-solid/icons/ban'
 import Check from 'lucide-solid/icons/check'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
 import Terminal from 'lucide-solid/icons/terminal'
 import { createMemo, For, Show } from 'solid-js'
-import { commandCollapseThreshold, commandExit, commandIsError, commandStatusLabel, normalizedCommandOutput } from '../ir/commandResult'
-import { toolOutcomeLabel } from '../ir/toolOutcomeLabel'
-import { isFinishedToolStatus } from '../ir/toolRowStatus'
+import { normalizedCommandBody, PROGRESS_MAX_ROWS } from '~/lib/normalizeProgressOutput'
 import { getToolResultExpanded } from '../messageRenderers'
+import { commandExit, commandIsError } from '../model/commandResult'
+import { isFinishedToolCallStatus } from '../model/toolCallStatus'
 import { formatDuration, joinMetaParts } from '../rendererUtils'
 import { toolInputSummary, toolMessage } from '../toolStyles.css'
 import { TRUNCATION_NOTICE } from '../truncationNotice'
+import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 import { CollapsibleContent } from './CollapsibleContent'
 import { EMPTY_RESULT_NOTICE } from './emptyResultNotice'
+import { toolOutcomeLabel } from './toolOutcomeLabel'
 import { drawsOwnOutcome, ToolHeaderRow, ToolStatusHeader } from './ToolStatusHeader'
 import { useCollapsedLines } from './useCollapsedLines'
 
+const normalizedByCommand = new WeakMap<CommandResult, ReturnType<typeof normalizedCommandBody>>()
+const MAX_CACHED_NORMALIZED_CHARS = 4 * 1024 * 1024
+
+export function commandCollapseThreshold(hadCarriageReturns: boolean): number {
+  return hadCarriageReturns ? PROGRESS_MAX_ROWS : COLLAPSED_RESULT_ROWS
+}
+
+export function normalizedCommandOutput(command: CommandResult): ReturnType<typeof normalizedCommandBody> {
+  const cached = normalizedByCommand.get(command)
+  if (cached !== undefined)
+    return cached
+  const normalized = normalizedCommandBody(command.output)
+  if (normalized.text.length <= MAX_CACHED_NORMALIZED_CHARS)
+    normalizedByCommand.set(command, normalized)
+  return normalized
+}
+
+export function commandOutputIsCollapsible(command: CommandResult): boolean {
+  const { text, hadCarriageReturns } = normalizedCommandOutput(command)
+  return hasMoreLinesThan(text, commandCollapseThreshold(hadCarriageReturns))
+}
+
+export function commandStatusLabel(status: ToolCallStatus, exit: CommandExit): string {
+  if (status === 'declined')
+    return toolOutcomeLabel('declined')
+  if (status === 'cancelled')
+    return toolOutcomeLabel('interrupted')
+  if (typeof exit.exitCode === 'number' && exit.exitCode !== 0)
+    return toolOutcomeLabel('failed', `exit ${exit.exitCode}`)
+  if (exit.signal)
+    return toolOutcomeLabel('failed', exit.signal)
+  if (status === 'failed')
+    return toolOutcomeLabel('failed')
+  return toolOutcomeLabel('succeeded')
+}
+
 /** Keep separate process output and status when one tool call owns several commands. */
-export function CommandResultList(props: { entries: CommandResult[], status: ToolRowStatus, context?: RenderContext }): JSX.Element {
+export function CommandResultList(props: { entries: CommandResult[], status: ToolCallStatus, context?: ToolResultRenderContext }): JSX.Element {
   return (
     <For each={props.entries}>
       {entry => (
@@ -35,8 +73,8 @@ export function CommandResultList(props: { entries: CommandResult[], status: Too
 
 export function CommandResultBody(props: {
   source: CommandResult
-  status: ToolRowStatus
-  context?: RenderContext
+  status: ToolCallStatus
+  context?: ToolResultRenderContext
 }): JSX.Element {
   // The shared normalize-then-strip transform (order matters: normalize CR
   // overwrites first so a leading bare `\r` becomes a `\n` that strip can then
@@ -75,7 +113,7 @@ export function CommandResultBody(props: {
       return null
     // A call that has not returned yet has no empty output to state: the tail
     // may still arrive.
-    if (!isFinishedToolStatus(props.status))
+    if (!isFinishedToolCallStatus(props.status))
       return null
     const dur = props.source.durationMs
     const code = props.source.exitCode

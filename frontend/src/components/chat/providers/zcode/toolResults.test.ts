@@ -2,7 +2,7 @@ import type { ToolFailureFixture, ToolVocabularyCheck } from '~/test-support/too
 import { describe, expect, it } from 'vitest'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { providerToolCall } from '~/test-support/toolCallIr'
+import { providerToolCall } from '~/test-support/toolCallFixture'
 import { describeToolFailureLadder, describeToolResultCorpus } from '~/test-support/toolResultCases'
 import { fixturesOnTheUncategorizedKind, openingFrameOf } from '~/test-support/toolVocabulary'
 import { zcodeToolKind } from './toolKinds'

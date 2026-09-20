@@ -1,12 +1,12 @@
 import type { StructuredPatchHunk } from '../../../diff'
-import type { FileEditDiff } from '../../../ir/fileEditDiff'
-import type { ReadFileResult } from '../../../ir/readFileResult'
+import type { FileEditDiff } from '../../../model/fileEditDiff'
+import type { ReadFileResult } from '../../../model/readFileResult'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { parseUnifiedDiffCached } from '../../../diff'
-import { fileEditDiffFromHunks, fileEditDiffFromWholeFile, fileEditHasDiff } from '../../../ir/fileEditDiff'
-import { readFileResultFromContent } from '../../../ir/readFileResult'
+import { fileEditDiffFromHunks, fileEditDiffFromWholeFile, fileEditHasDiff } from '../../../model/fileEditDiff'
+import { readFileResultFromContent } from '../../../model/readFileResult'
 import { parsePiNumberedDiff } from './piDiffParser'
 import { piExtractTool, piPairedRequest } from './toolCommon'
 
@@ -112,6 +112,8 @@ export function extractPiRead(
 ): ReadFileResult | null {
   const tool = piExtractTool(payload ?? undefined)
   if (!tool || tool.toolName !== PI_TOOL.Read)
+    return null
+  if (tool.result === undefined && tool.partialResult === undefined)
     return null
 
   // `tool_execution_end` carries the result but not the original args; callers

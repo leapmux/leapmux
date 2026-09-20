@@ -32,7 +32,6 @@ export function testMessageContext(overrides: Partial<MessageContextSources> = {
       fetchSpan: async () => [],
       fetchFileImage: async () => { throw new Error('The image source is unavailable') },
       subscribe: () => () => undefined,
-      todo: () => undefined,
       backgroundTask: () => undefined,
       progress: () => undefined,
       ...overrides,
@@ -51,7 +50,6 @@ export interface MutableTranscriptOptions {
   /** Replaces the default archive-backed sequence fetch. */
   fetchMessage?: MessageContextSources['fetchMessage']
   fetchFileImage?: MessageContextSources['fetchFileImage']
-  todo?: MessageContextSources['todo']
   backgroundTask?: MessageContextSources['backgroundTask']
   progress?: MessageContextSources['progress']
 }
@@ -147,7 +145,6 @@ export function createMutableTranscript(archive: readonly AgentChatMessage[], op
         observers.add(observer)
         return () => observers.delete(observer)
       },
-      todo: options.todo ?? (() => undefined),
       backgroundTask: options.backgroundTask ?? (() => undefined),
       progress: options.progress ?? (() => undefined),
     },

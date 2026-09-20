@@ -1,9 +1,9 @@
-import type { CompactionBoundaryMeta, NotificationEntryIR } from '../../../ir/notification'
+import type { CompactionDetails, NotificationEntry } from '../../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { PI_EVENT, PI_EXTENSION_METHOD } from '~/generated/contracts/pi-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
-import { toTokenCount } from '../../../ir/notification'
+import { toTokenCount } from '../../../model/notification'
 
 /**
  * A readable line for one Pi notification event that states plain TEXT.
@@ -46,7 +46,7 @@ export function describePiNotification(parsed: unknown): string | null {
  * the transition degrades to pre-only -- exactly as the shared formatter renders an
  * unknown post. The `reason` (manual, threshold, overflow) is the trigger.
  */
-function piCompactionDetail(m: Record<string, unknown>): CompactionBoundaryMeta {
+function piCompactionDetail(m: Record<string, unknown>): CompactionDetails {
   // Each fact rides only when the frame stated it, never as an explicitly undefined key.
   const trigger = pickString(m, 'reason') || undefined
   const pre = toTokenCount(pickNumber(pickObject(m, 'result'), 'tokensBefore') ?? undefined)
@@ -62,7 +62,7 @@ function piCompactionDetail(m: Record<string, unknown>): CompactionBoundaryMeta 
  * An ABORTED `compaction_end` produced no boundary at all, so the context size did
  * not move and the grid must not refresh from it.
  */
-export function piCompactionBoundary(parsed: ParsedMessageContent): CompactionBoundaryMeta | null {
+export function piCompactionBoundary(parsed: ParsedMessageContent): CompactionDetails | null {
   const inner = getInnerMessage(parsed)
   if (!isObject(inner) || pickString(inner, 'type') !== PI_EVENT.CompactionEnd || inner.aborted === true)
     return null
@@ -70,13 +70,13 @@ export function piCompactionBoundary(parsed: ParsedMessageContent): CompactionBo
 }
 
 /**
- * Read one Pi notification frame into the shared notification IR.
+ * Read one Pi notification frame into the shared notification model.
  *
  * Pi's compaction pair becomes a `compaction` entry, so it draws the same rule every
  * other provider's boundary draws. Its two retry families become `retry` entries, so
  * a reader who meets a stall on Pi and one on Claude reads the same sentence.
  */
-export function piNotificationEntry(msg: Record<string, unknown>): NotificationEntryIR[] {
+export function piNotificationEntry(msg: Record<string, unknown>): NotificationEntry[] {
   const type = pickString(msg, 'type')
 
   if (type === PI_EVENT.CompactionStart)

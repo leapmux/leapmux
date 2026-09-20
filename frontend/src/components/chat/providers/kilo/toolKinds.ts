@@ -1,4 +1,4 @@
-import type { ToolKind } from '../../ir/toolKind'
+import type { ToolKind } from '../../model/toolKind'
 
 /**
  * The kind of each tool Kilo adds on top of the OpenCode tool set.

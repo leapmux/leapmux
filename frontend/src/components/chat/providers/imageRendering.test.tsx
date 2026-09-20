@@ -1,11 +1,11 @@
-import type { MessageCategory } from '../messageClassification'
+import type { MessageCategory } from '../messageClassifier'
 import type { RenderContext } from '../messageRenderers'
 import { render, waitFor } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { pngBase64 } from '~/test-support/pngFixture'
-import { providerRowImages, providerToolMeta } from '~/test-support/toolCallIr'
+import { providerRowImages, providerToolMeta } from '~/test-support/toolCallFixture'
 import { imageActionsFrom } from '../renderContext'
 import { toolUseHeader } from '../toolStyles.css'
 import { resolveMessageForRendering } from './registry'
@@ -24,7 +24,7 @@ vi.mock('~/lib/tokenCache', () => ({
   makeKey: (lang: string, code: string) => `${lang}\0${code}`,
 }))
 
-const { renderMessageContent } = await import('../rowRenderers')
+const { renderMessageContent } = await import('../messageContentRenderer')
 
 const PNG = 'iVBORw0KGgo='
 const PNG_DATA_URL = `data:image/png;base64,${PNG}`
@@ -173,6 +173,7 @@ describe('codex image items', () => {
       request: () => request,
       result: () => result,
       role: () => role,
+      visibleRows: () => ({ request: true, result: true }),
       fileImage,
     })
     const category: MessageCategory = { kind: 'tool_use' }

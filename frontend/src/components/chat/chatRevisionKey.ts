@@ -3,7 +3,7 @@ import type { MessageRevision } from '~/lib/messageSpan'
 // ---------------------------------------------------------------------------
 // The ONE row revision key.
 //
-// A row's caches -- the classified entry, the extracted IR, the normalized
+// A row's caches -- the classified entry, the extracted model, the normalized
 // command body, the measured height -- used to re-key on ten separate freshness
 // fields hand-copied between the entry cache and the geometry key, and the two
 // lists drifted. Here the freshness IS one string, built from exactly the

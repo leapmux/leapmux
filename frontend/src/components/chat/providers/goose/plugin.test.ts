@@ -32,7 +32,7 @@ describe('goose provider', () => {
   })
 
   it('derives a control-response label via the default ACP permission path (no question hook)', () => {
-    // Goose has no question protocol, so it gets the shared acpControlResponseDisplay default.
+    // Goose has no question protocol, so it gets the shared acpControlResponseSummary default.
     expect(plugin?.controls?.controlResponseDisplay!({
       claimToken: 'claim-1',
       requestId: '7',

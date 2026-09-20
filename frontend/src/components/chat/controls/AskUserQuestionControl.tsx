@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
+import type { ControlQuestion } from '../model/question'
 import type { ProviderAskUserQuestion } from '../providers/registry'
-import type { ActionsProps, ControlAnswerState, EditorContentRef, Question } from './types'
+import type { ActionsProps, ControlAnswerState, EditorContentRef } from './types'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ControlRequest } from '~/stores/control.store'
@@ -59,7 +60,7 @@ function isSelected(state: ControlAnswerState, qIdx: number, value: string) {
 }
 
 /** An answer needs content unless the provider accepts an explicit empty answer. */
-function isPageAnsweredWithOption(state: ControlAnswerState, qIdx: number, question?: Question): boolean {
+function isPageAnsweredWithOption(state: ControlAnswerState, qIdx: number, question?: ControlQuestion): boolean {
   if (question?.allowEmpty)
     return true
   const sel = state.selections()[qIdx] ?? []
@@ -83,7 +84,7 @@ function isPageAnsweredWithOption(state: ControlAnswerState, qIdx: number, quest
  * unsaved composer text as an answer and this reason must agree with the `disabled`
  * it explains. A reason that disagrees with the button is worse than no reason.
  */
-export function submitBlockedReason(questions: Question[], isAnswered: (index: number) => boolean): string {
+export function submitBlockedReason(questions: ControlQuestion[], isAnswered: (index: number) => boolean): string {
   // `allAnswered` refuses an empty list, so the submit is disabled with no question
   // on screen to explain it. A payload that parsed to nothing reaches this, and the
   // reader otherwise sees a dead button beside a bare title.
@@ -102,7 +103,7 @@ export function submitBlockedReason(questions: Question[], isAnswered: (index: n
 
 export function buildAskAnswers(
   state: ControlAnswerState,
-  questions: Question[],
+  questions: ControlQuestion[],
   input: Record<string, unknown>,
   requestId: string,
 ): Record<string, unknown> {
@@ -134,9 +135,9 @@ export function buildAskAnswers(
 // ---------------------------------------------------------------------------
 
 /** The provider capability that owns a request, with the questions it carries. */
-export interface ControlQuestion {
+export interface ActiveQuestionControl {
   capability: ProviderAskUserQuestion
-  questions: Question[]
+  questions: ControlQuestion[]
 }
 
 /**
@@ -154,7 +155,7 @@ export function controlQuestion(
   request: ControlRequest | null | undefined,
   agentProvider?: AgentProvider,
   source?: ParsedMessageContent,
-): ControlQuestion | undefined {
+): ActiveQuestionControl | undefined {
   if (!request)
     return undefined
   const capability = pluginFor(controlRequestProvider(request, agentProvider))?.controls?.askUserQuestion
@@ -177,7 +178,7 @@ export function controlQuestion(
  */
 export function trySubmitAskUserQuestion(
   state: ControlAnswerState,
-  questions: Question[],
+  questions: ControlQuestion[],
   currentContent: string,
   onSubmit: () => void,
   editorContentRef?: EditorContentRef,
@@ -231,9 +232,9 @@ export function trySubmitAskUserQuestion(
  * falls back to extracting `questions` from the wrapped tool input,
  * preserving the original Claude/Codex/OpenCode/Cursor flow.
  */
-export const AskUserQuestionContent: Component<{ request: ControlRequest, answerState: ControlAnswerState, optionsDisabled?: boolean, agentProvider?: AgentProvider, questions?: Question[] }> = (props) => {
+export const AskUserQuestionContent: Component<{ request: ControlRequest, answerState: ControlAnswerState, optionsDisabled?: boolean, agentProvider?: AgentProvider, questions?: ControlQuestion[] }> = (props) => {
   const input = () => getToolInput(props.request.payload)
-  const questions = () => props.questions ?? (input().questions as Question[] | undefined) ?? []
+  const questions = () => props.questions ?? (input().questions as ControlQuestion[] | undefined) ?? []
   const currentPage = () => props.answerState.currentPage()
   const currentQuestion = () => questions()[currentPage()]
 
@@ -312,7 +313,7 @@ export const AskUserQuestionActions: Component<ActionsProps & {
   onReject: (message: string) => Promise<void>
 }> = (props) => {
   const input = () => getToolInput(props.request.payload)
-  const questions = () => props.questions ?? (input().questions as Question[] | undefined) ?? []
+  const questions = () => props.questions ?? (input().questions as ControlQuestion[] | undefined) ?? []
 
   /** Check if question at index is answered, accounting for unsaved editor content on the current page. */
   const isPageAnswered = (qIdx: number) => {

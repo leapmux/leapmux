@@ -1,7 +1,8 @@
-import type { MessageCategory } from '../messageClassification'
+import type { MessageCategory } from '../messageClassifier'
 import type { RenderContext } from '../messageRenderers'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { resolveMessageForRendering } from './registry'
@@ -18,10 +19,10 @@ vi.mock('~/lib/tokenCache', () => ({
   getCachedTokens: () => null,
 }))
 
-const { renderMessageContent } = await import('../rowRenderers')
-const { classifyMessage } = await import('../messageClassification')
+const { renderMessageContent } = await import('../messageContentRenderer')
+const { classifyMessage } = await import('../messageClassifier')
 
-interface ToolUsePayload {
+interface ToolUsePayload extends Record<string, unknown> {
   type: string
   message: { role: string, content: Array<Record<string, unknown>> }
 }
@@ -41,6 +42,21 @@ function renderClaudeToolUse(name: string, input: Record<string, unknown>, conte
   const category = { kind: 'tool_use' } as MessageCategory
   const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
   return render(() => result)
+}
+
+function taskUpdateContext(
+  input: Record<string, unknown>,
+  snapshot: Record<string, unknown> | undefined,
+): RenderContext {
+  const parentObject = makeClaudeToolUseMessage('TaskUpdate', input)
+  const resolved = resolveMessageForRendering({
+    rawText: '',
+    topLevel: parentObject,
+    parentObject,
+    wrapper: null,
+    messageMetadata: snapshot === undefined ? {} : { [MESSAGE_METADATA_FIELD.TodoSnapshot]: snapshot },
+  }, AgentProvider.CLAUDE_CODE)
+  return { sources: testMessageSources({ current: () => resolved }) }
 }
 
 /**
@@ -129,57 +145,51 @@ describe('claude TaskCreate renders a single-row card', () => {
 })
 
 describe('claude TaskUpdate renders a single-row card', () => {
-  it('falls back to "Task #ID" when the patch has no subject and the store is empty', () => {
+  it('renders a diagnostic and warns once when the required snapshot is absent', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const { container } = renderClaudeToolUse('TaskUpdate', {
       taskId: '1',
       status: 'in_progress',
     })
     const text = container.textContent ?? ''
-    expect(text).toContain('Task #1')
-    expect(container.querySelector('[data-task-checkbox="in_progress"]')).toBeTruthy()
+    expect(text).toContain('TaskUpdate metadata is missing todo_snapshot')
+    renderClaudeToolUse('TaskUpdate', { taskId: '1', status: 'in_progress' })
+    expect(warn.mock.calls.filter(call => call[0] === '[claudeTaskUpdate]')).toHaveLength(1)
+    warn.mockRestore()
   })
 
-  it('resolves the subject from the live todos store on a status-only patch', () => {
-    const { container } = renderClaudeToolUse('TaskUpdate', {
+  it('renders the persisted snapshot on a status-only patch', () => {
+    const input = {
       taskId: '42',
       status: 'completed',
-    }, { sources: testMessageSources({ todo: id => id === '42' ? { id: '42', rowKey: '42', content: 'Stored subject', status: 'pending', activeForm: '' } : undefined }) })
+    }
+    const { container } = renderClaudeToolUse('TaskUpdate', input, taskUpdateContext(input, {
+      id: '42',
+      content: 'Persisted subject',
+      status: 'TODO_STATUS_COMPLETED',
+      activeForm: '',
+      description: 'Persisted description',
+    }))
     const text = container.textContent ?? ''
-    expect(text).toContain('Stored subject')
-    expect(text).not.toContain('Task #42')
+    expect(text).toContain('Persisted subject')
+    expect(text).toContain('Persisted description')
     expect(container.querySelector('[data-task-checkbox="completed"]')).toBeTruthy()
   })
 
-  it('prefers the input subject over a (stale) store entry', () => {
-    const { container } = renderClaudeToolUse('TaskUpdate', {
+  it('does not read the live store after the snapshot is persisted', () => {
+    const input = {
       taskId: '7',
-      subject: 'Fresh subject from this patch',
       status: 'in_progress',
-    }, { sources: testMessageSources({ todo: id => id === '7' ? { id: '7', rowKey: '7', content: 'Stale stored subject', status: 'pending', activeForm: '' } : undefined }) })
+    }
+    const { container } = renderClaudeToolUse('TaskUpdate', input, taskUpdateContext(input, {
+      id: '7',
+      content: 'Persisted subject',
+      status: 'TODO_STATUS_IN_PROGRESS',
+      activeForm: 'Persisted active form',
+    }))
     const text = container.textContent ?? ''
-    expect(text).toContain('Fresh subject from this patch')
-    expect(text).not.toContain('Stale stored subject')
-  })
-
-  it('also resolves the subject from the store for the deleted card', () => {
-    const { container } = renderClaudeToolUse('TaskUpdate', {
-      taskId: '8',
-      status: 'deleted',
-    }, { sources: testMessageSources({ todo: id => id === '8' ? { id: '8', rowKey: '8', content: 'Will be removed', status: 'completed', activeForm: '' } : undefined }) })
-    const text = container.textContent ?? ''
-    expect(text).toContain('Will be removed')
-    expect(container.querySelector('[data-task-checkbox="deleted"]')).toBeTruthy()
-  })
-
-  it('renders the deleted checkbox when status=deleted', () => {
-    const { container } = renderClaudeToolUse('TaskUpdate', {
-      taskId: '5',
-      subject: 'tmp task',
-      status: 'deleted',
-    })
-    const text = container.textContent ?? ''
-    expect(text).toContain('tmp task')
-    expect(container.querySelector('[data-task-checkbox="deleted"]')).toBeTruthy()
+    expect(text).toContain('Persisted active form')
+    expect('todo' in (taskUpdateContext(input, undefined).sources ?? {})).toBe(false)
   })
 })
 

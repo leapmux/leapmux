@@ -1,4 +1,4 @@
-import type { SearchResult } from '../ir/searchResult'
+import type { SearchResult } from '../model/searchResult'
 import { render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'

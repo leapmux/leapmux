@@ -1,16 +1,16 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
-import type { FileEditDiff } from '../../ir/fileEditDiff'
-import type { ToolKind } from '../../ir/toolKind'
-import type { ToolRowStatus } from '../../ir/toolRowStatus'
-import type { ToolRequests, ToolResults } from '../../ir/tools'
-import type { FileChangeRequest, FileChangeResult } from '../../ir/tools/fileChange'
-import type { RenderContext } from '../../messageRenderers'
+import type { FileEditDiff } from '../../model/fileEditDiff'
+import type { ToolCallStatus } from '../../model/toolCallStatus'
+import type { ToolKind } from '../../model/toolKind'
+import type { ToolRequestByKind, ToolResultByKind } from '../../model/tools'
+import type { FileChangeRequest, FileChangeResult } from '../../model/tools/fileChange'
+import type { ToolResultRenderContext } from '../../renderContext'
 import type { ParsedCall, ToolKindMeta, ToolKindRenderer, ToolRowView } from './renderer'
 import { For, Show } from 'solid-js'
 import { relativizePath } from '~/lib/paths'
-import { fileEditCopyableText, fileEditHasDiff, requestedFileChangesCopyable } from '../../ir/fileEditDiff'
-import { toolRowStatusOutcome } from '../../ir/toolRowStatus'
+import { fileEditCopyableText, fileEditHasDiff, requestedFileChangesCopyable } from '../../model/fileEditDiff'
+import { toolCallStatusOutcome } from '../../model/toolCallStatus'
 import { toolInputSummary, toolInputText } from '../../toolStyles.css'
 import { FileEditDiffBody, FileEditDiffTitle } from '../fileEditDiff'
 import { RequestedFileChanges } from '../requestedFileChanges'
@@ -30,9 +30,9 @@ import { RequestedFileChanges } from '../requestedFileChanges'
  * same failed row drew differently depending on which agent ran it. Keeping the
  * request lets the row's title still name the file the call was about.
  */
-export function RequestedChangesBody(props: { request: FileChangeRequest, view: ToolRowView, hasResult: boolean, status: ToolRowStatus }): JSX.Element {
+export function RequestedChangesBody(props: { request: FileChangeRequest, view: ToolRowView, hasResult: boolean, status: ToolCallStatus }): JSX.Element {
   return (
-    <Show when={props.view.drawsResult && !props.hasResult && !fileChangeFailed(props.status) && props.request.changes.length > 0}>
+    <Show when={!props.hasResult && !fileChangeFailed(props.status) && props.request.changes.length > 0}>
       <RequestedFileChanges sources={props.request.changes} {...(props.view.context !== undefined ? { context: props.view.context } : {})} />
     </Show>
   )
@@ -58,7 +58,7 @@ export function FileChangesBody(props: { changes: FileEditDiff[], view: ToolRowV
  * The title a set of file changes states: the one change's own title, a count
  * in one file, or a count of files.
  */
-export function fileChangesTitle(changes: FileEditDiff[], replaceAll: boolean | undefined, context: RenderContext | undefined): JSX.Element | string | null {
+export function fileChangesTitle(changes: FileEditDiff[], replaceAll: boolean | undefined, context: ToolResultRenderContext | undefined): JSX.Element | string | null {
   if (changes.length === 0)
     return null
   if (changes.length === 1) {
@@ -112,8 +112,8 @@ export function requestedFileChangesMeta(changes: FileEditDiff[]): ToolKindMeta 
  * declined row that drew its changes drew the identical body a PENDING row draws,
  * which states a diff the file never took.
  */
-export function fileChangeFailed(status: ToolRowStatus): boolean {
-  const outcome = toolRowStatusOutcome(status)
+export function fileChangeFailed(status: ToolCallStatus): boolean {
+  const outcome = toolCallStatusOutcome(status)
   return outcome === 'failed' || outcome === 'interrupted' || outcome === 'declined'
 }
 
@@ -138,8 +138,8 @@ export function failedFileChangesMeta(changes: FileEditDiff[]): ToolKindMeta {
  * alone. `ProseKind` reads its own table the same way.
  */
 export type FileChangeKind = {
-  [K in ToolKind]: ToolRequests[K] extends FileChangeRequest
-    ? ToolResults[K] extends FileChangeResult ? K : never
+  [K in ToolKind]: ToolRequestByKind[K] extends FileChangeRequest
+    ? ToolResultByKind[K] extends FileChangeResult ? K : never
     : never
 }[ToolKind]
 
@@ -166,7 +166,7 @@ export function fileChangeRenderer<K extends FileChangeKind>(options: {
    * Null falls through, as `fileChangesTitle` does, so a kind states the one case it
    * words differently and nothing else.
    */
-  title?: (call: ParsedCall<K>, context: RenderContext | undefined) => JSX.Element | string | null
+  title?: (call: ParsedCall<K>, context: ToolResultRenderContext | undefined) => JSX.Element | string | null
 }): ToolKindRenderer<K> {
   return {
     icon: options.icon,

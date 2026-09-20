@@ -1,17 +1,15 @@
 import type { Accessor } from 'solid-js'
 import type { ContentKeyInputs } from './chatRowGeometry'
-import type { ResolvedMessageContent } from './rowExtractionTypes'
+import type { ResolvedMessage } from './messageContextResolver'
 import type { PreparedMessage } from './rowPreparation'
 import type { SpanLine } from './widgets/SpanLines'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageRevision, MessageSpanIdentity } from '~/lib/messageSpan'
 import { createMemo } from 'solid-js'
-import { parseMessageContent } from '~/lib/messageParser'
 import { messageSpanIdentity } from '~/lib/messageSpan'
 import { shallowEqual } from '~/lib/shallowEqual'
 import { rowRevisionKey } from './chatRevisionKey'
 import { buildContentKey, buildHeightKey } from './chatRowGeometry'
-import { resolvedSpanRole } from './providers/registry'
 import { prepareMessage } from './rowPreparation'
 import { parseSpanLines } from './spanLinesParse'
 
@@ -103,7 +101,7 @@ export function heightKeyForEntry(entry: ClassifiedEntry, uiVersion: number): st
  * The row CACHE's key, and it is deliberately a different key from the height one.
  * The two answer different questions: an expand or a diff-view toggle changes what
  * the row MEASURES and changes nothing that the cache holds. Deriving one key from
- * the other threw away the row's extracted IR, its normalized command body, its
+ * the other threw away the row's extracted model, its normalized command body, its
  * Myers diff and its rendered markdown on every click of the expand control, and the
  * row rebuilt all four to draw the same content at a new height.
  */
@@ -134,7 +132,9 @@ export interface ClassifiedEntryCacheDeps {
    * the image tab would then each read the row from a different one. Reading the
    * resolver's copy here is what keeps them on one.
    */
-  resolvedParsed?: (message: AgentChatMessage) => ResolvedMessageContent | undefined
+  resolvedMessage?: (message: AgentChatMessage) => ResolvedMessage | undefined
+  /** The shared resolver's one role decision for this message. */
+  role: (message: AgentChatMessage) => 'request' | 'result' | 'other'
   /** Show otherwise-hidden messages (the debug preference). */
   showHiddenMessages: () => boolean
   /**
@@ -163,8 +163,8 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
    * lists the freshness dimensions. `isEntryFresh` compares this value, and
    * `buildEntry` stores it, so the two paths cannot drift.
    */
-  const freshnessOf = (message: AgentChatMessage): EntryFreshness => {
-    const own: MessageRevision = {
+  const freshnessOf = (message: AgentChatMessage, selected: ResolvedMessage | undefined): EntryFreshness => {
+    const own: MessageRevision = selected?.revision ?? {
       id: message.id,
       seq: message.seq,
       contentVersion: deps.contentVersionById?.(message.id) ?? 0,
@@ -174,15 +174,16 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     // Some completed ACP updates use the tool_use category but hold the result
     // role. A result draws its request input. A request can draw hidden result
     // data. No row records its own selected side a second time.
-    const identity = messageSpanIdentity(message)
-    const role = message.spanId === ''
+    const selectedMessage = selected?.message ?? message
+    const role = selectedMessage.spanId === ''
       ? 'other'
-      : resolvedSpanRole(deps.resolvedParsed?.(message) ?? parseMessageContent(message), message.agentProvider)
+      : deps.role(selectedMessage)
+    const selectedIdentity = messageSpanIdentity(selectedMessage)
     const request = role === 'result'
-      ? deps.requestRevision?.(identity)
+      ? deps.requestRevision?.(selectedIdentity)
       : undefined
     const result = role === 'request'
-      ? deps.resultRevision?.(identity)
+      ? deps.resultRevision?.(selectedIdentity)
       : undefined
     return {
       revisionKey: rowRevisionKey({
@@ -197,16 +198,15 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
    * Reuse a cached entry only when its revision key and child-transcript flag
    * match the current source. `freshnessOf` owns both values.
    */
-  const isEntryFresh = (cached: ClassifiedEntry | undefined, message: AgentChatMessage): cached is ClassifiedEntry =>
-    !!cached && shallowEqual(cached.freshness, freshnessOf(message))
-  const buildEntry = (message: AgentChatMessage, cached?: ClassifiedEntry): ClassifiedEntry => {
+  const isEntryFresh = (cached: ClassifiedEntry | undefined, freshness: EntryFreshness): cached is ClassifiedEntry =>
+    !!cached && shallowEqual(cached.freshness, freshness)
+  const buildEntry = (message: AgentChatMessage, selected: ResolvedMessage | undefined, freshness: EntryFreshness, cached?: ClassifiedEntry): ClassifiedEntry => {
     // The shared resolver's own parse when it holds one, so the bubble, the toolbar
     // and the image tab read the row from ONE resolved payload. The resolver is
     // absent outside ChatView (a test, an isolated preview), and preparation then
     // resolves the payload itself.
-    const resolved = deps.resolvedParsed?.(message)
-    const prepared = prepareMessage(message, {
-      ...(resolved === undefined ? {} : { resolved }),
+    const prepared = prepareMessage(selected?.message ?? message, {
+      ...(selected === undefined ? {} : { original: selected.original, resolved: selected.resolved }),
       isChildTranscript: deps.isChildTranscript?.() ?? false,
     })
     // Reuse the cached parse when the `spanLines` payload is byte-identical to the
@@ -220,8 +220,8 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     return {
       ...prepared,
       parsedSpanLines,
-      freshness: freshnessOf(message),
-      spanLinesRef: message.spanLines,
+      freshness,
+      spanLinesRef: (selected?.message ?? message).spanLines,
     }
   }
   /**
@@ -230,14 +230,14 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
    */
   const resolveEntry = (message: AgentChatMessage): ClassifiedEntry => {
     const cached = entryCache.get(message.id)
-    if (isEntryFresh(cached, message))
+    const selected = deps.resolvedMessage?.(message)
+    const freshness = freshnessOf(message, selected)
+    if (isEntryFresh(cached, freshness))
       return cached
-    const entry = buildEntry(message, cached)
+    const entry = buildEntry(message, selected, freshness, cached)
     entryCache.set(message.id, entry)
     return entry
   }
-  const hasVisibleMessage = (message: AgentChatMessage): boolean =>
-    resolveEntry(message).category.kind !== 'hidden'
   /**
    * Drop cached entries for ids no longer in the window, EVERY run (no size
    * guard): a window that swaps out and in the SAME number of ids leaves size
@@ -271,26 +271,7 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     })
     return result
   })
-  // Cheaper than materializing visibleEntries(): it skips building the result
-  // array and short-circuits the EXPENSIVE classification at the first visible
-  // row (`!visible &&`). It still walks the full window via walkWindow (which
-  // collects the present-id set and prunes), so reading ONLY this accessor keeps
-  // the cache bounded instead of leaking departed-id entries. Note this bounds the
-  // cache but does NOT refresh it: rows past the first visible one skip resolveEntry,
-  // so their cached entries are not rebuilt on a hasVisibleEntries-only read -- a
-  // consumer that needs fresh entries must also read visibleEntries() (ChatView
-  // always does).
-  const hasVisibleEntries = createMemo(() => {
-    const showHidden = deps.showHiddenMessages()
-    let visible = false
-    walkWindow((message) => {
-      // `showHidden ||` short-circuits hasVisibleMessage (no classify/cache-fill);
-      // `!visible &&` stops classifying once any visible row is found.
-      if (!visible && (showHidden || hasVisibleMessage(message)))
-        visible = true
-    })
-    return visible
-  })
+  const hasVisibleEntries = createMemo(() => visibleEntries().length > 0)
 
   return { visibleEntries, hasVisibleEntries, getEntry: id => entryCache.get(id) }
 }

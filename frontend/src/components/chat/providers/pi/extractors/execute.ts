@@ -1,4 +1,4 @@
-import type { CommandResult } from '../../../ir/commandResult'
+import type { CommandResult } from '../../../model/commandResult'
 import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { PI_POWERSHELL_TOOL } from '../protocol'

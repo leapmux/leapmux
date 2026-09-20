@@ -1,9 +1,8 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageSpanIdentity } from '~/lib/messageSpan'
-import type { TodoItem } from '~/models/todo'
 import { create } from '@bufbuild/protobuf'
-import { createEffect, createMemo, createRoot, createSignal, untrack } from 'solid-js'
+import { createEffect, createRoot, createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createChatStore } from '~/stores/chat.store'
@@ -41,7 +40,6 @@ function fixture(initial: AgentChatMessage[] = []) {
     cleanups.push(dispose)
     const [messages, setMessages] = createSignal(initial)
     const [version, setVersion] = createSignal(0)
-    const [todo, setTodo] = createSignal<TodoItem>()
     const index = createSpanIndex()
     index.reindex('agent', initial)
     const observers = new Set<(message: AgentChatMessage) => void>()
@@ -61,7 +59,6 @@ function fixture(initial: AgentChatMessage[] = []) {
         observers.add(observer)
         return () => observers.delete(observer)
       },
-      todo: () => todo(),
       backgroundTask: () => undefined,
       progress: () => undefined,
     })
@@ -69,7 +66,6 @@ function fixture(initial: AgentChatMessage[] = []) {
       resolver,
       fetchSpan,
       fetchMessage,
-      setTodo,
       dispose,
       emit: (message: AgentChatMessage) => observers.forEach(observer => observer(message)),
       replaceMessages: (next: AgentChatMessage[]) => {
@@ -219,6 +215,17 @@ describe('message context resolver', () => {
     expect(resolver.result({ spanId: 'span', agentSessionId: '' })?.message.id).toBe('result')
   })
 
+  it('keeps fetched sibling data separate from visible sibling rows', async () => {
+    const request = toolMessage('request', 1n, 'request')
+    const result = toolMessage('result', 2n, 'result')
+    const { resolver, fetchSpan } = fixture([result])
+    fetchSpan.mockResolvedValue([request, result])
+    await resolver.loadSpan({ spanId: 'span', agentSessionId: '' })
+    expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.message.id).toBe('request')
+    expect(resolver.visibleRows({ spanId: 'span', agentSessionId: '' })).toEqual({ request: false, result: true })
+    expect(resolver.role(result)).toBe('result')
+  })
+
   it('keeps a live supplement when an older lookup response arrives later', async () => {
     const result = toolMessage('result', 2n, 'result')
     const request = toolMessage('request', 1n, 'request')
@@ -242,18 +249,6 @@ describe('message context resolver', () => {
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.message.supplementalRevision).toBe(2n)
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.resolved.parentObject?.rawInput).toEqual({ filePath: '/project/recovered.ts' })
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.original.parentObject?.rawInput).toEqual({ filePath: '/project/file.ts' })
-  })
-
-  it('keeps live task labels reactive', () => {
-    const { resolver, setTodo } = fixture()
-    createRoot((dispose) => {
-      cleanups.push(dispose)
-      const label = createMemo(() => resolver.todo('1')?.content)
-      setTodo({ rowKey: '1', id: '1', content: 'First title', status: 'pending', activeForm: '' })
-      expect(untrack(label)).toBe('First title')
-      setTodo({ rowKey: '1', id: '1', content: 'Renamed title', status: 'pending', activeForm: '' })
-      expect(untrack(label)).toBe('Renamed title')
-    })
   })
 
   it('does not cache a transient lookup failure as a missing request', async () => {
@@ -400,7 +395,6 @@ describe('message context resolver', () => {
         fetchMessage: async () => undefined,
         fetchFileImage: async () => { throw new Error('The image source is unavailable') },
         subscribe: observer => store.subscribeMessages(agentId, observer),
-        todo: () => undefined,
         backgroundTask: () => undefined,
         progress: () => undefined,
       })

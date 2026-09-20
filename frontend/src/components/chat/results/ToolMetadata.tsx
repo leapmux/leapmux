@@ -1,9 +1,9 @@
 import type { JSX } from 'solid-js'
-import type { ToolMetadataItem } from '../ir/toolMetadata'
+import type { ToolMetadataEntry } from '../model/toolMetadata'
 import { For, Show } from 'solid-js'
 import { toolMetaLabel, toolMetaList, toolMetaRow, toolMetaValue } from '../toolStyles.css'
 
-export function ToolMetadata(props: { items: ToolMetadataItem[] | undefined }): JSX.Element {
+export function ToolMetadata(props: { items: ToolMetadataEntry[] | undefined }): JSX.Element {
   return (
     <Show when={props.items?.length}>
       <div class={toolMetaList}>

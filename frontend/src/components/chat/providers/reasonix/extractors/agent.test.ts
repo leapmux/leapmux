@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { agentRunStatusLabel } from '../../../ir/tools/agent'
+import { agentRunStatusLabel } from '../../../model/tools/agent'
 import { reasonixAgentResult } from './agent'
 
 function taskResult(input: Record<string, unknown>, output: string, status: unknown) {

@@ -1,7 +1,7 @@
 import { render } from '@solidjs/testing-library'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { checkKindModule } from '~/test-support/kindTestHarness'
-import { toolCallIr, toolRow } from '~/test-support/toolCallIr'
+import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { ToolMessage } from '../ToolMessage'
 
 // jsdom does not provide ResizeObserver, which the shared layouts observe with.
@@ -32,7 +32,7 @@ describe('report renderer', () => {
     // An OPEN approval is a call that has not answered, and such a call carries no
     // result: the status moves with the body the case states.
     const planCall = (result?: { text: string, format: 'markdown' }, hasResultRow = false) => toolRow(
-      toolCallIr('report', {
+      toolCallFixture('report', {
         title: 'Add CHANGELOG.md',
         request: { proposal: '# Add CHANGELOG.md\n\nPLANMARKER-7\n' },
         status: result ? 'completed' : 'in_progress',

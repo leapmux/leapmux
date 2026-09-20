@@ -1,10 +1,10 @@
-import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
-import type { ReportRequest } from '../../../ir/tools/report'
-import type { SkillRequest } from '../../../ir/tools/skill'
-import type { WaitRequest } from '../../../ir/tools/wait'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { ReportRequest } from '../../../model/tools/report'
+import type { SkillRequest } from '../../../model/tools/skill'
+import type { WaitRequest } from '../../../model/tools/wait'
 import type { ClaudeToolRow } from './toolCommon'
-import { proseResult, unparsedResult } from '../../../ir/toolCall'
-import { claudeFailedResult } from './failure'
+import { proseResult, unparsedResult } from '../../../model/toolCall'
+import { claudeToolFailureResult } from './failure'
 
 /**
  * The skill pair: which skill ran, and the words it answered with.
@@ -14,10 +14,10 @@ import { claudeFailedResult } from './failure'
  * prose: without it the error text drew as the skill's own answer, and an EMPTY error
  * fell to `unparsedResult`, which claims the call completed.
  */
-export function claudeSkillPayload(request: SkillRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'skill'> {
+export function claudeSkillSpec(request: SkillRequest, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'skill'> {
   if (!result)
     return { kind: 'skill', request }
-  const failure = claudeFailedResult(result)
+  const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'skill', request, result: failure }
   if (!result.resultContent)
@@ -26,10 +26,10 @@ export function claudeSkillPayload(request: SkillRequest, result: ClaudeToolRow 
 }
 
 /** The wait pair: how long the call waited, and the words it answered with. */
-export function claudeWaitPayload(request: WaitRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'wait'> {
+export function claudeWaitSpec(request: WaitRequest, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'wait'> {
   if (!result)
     return { kind: 'wait', request }
-  const failure = claudeFailedResult(result)
+  const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'wait', request, result: failure }
   if (!result.resultContent)
@@ -41,10 +41,10 @@ export function claudeWaitPayload(request: WaitRequest, result: ClaudeToolRow | 
  * The report pair: the turn's own structured answer. The payload is free-form
  * by design -- the schema is the model's to state -- so it rides raw.
  */
-export function claudeReportPayload(request: ReportRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'report'> {
+export function claudeReportSpec(request: ReportRequest, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'report'> {
   if (!result)
     return { kind: 'report', request }
-  const failure = claudeFailedResult(result)
+  const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'report', request, result: failure }
   if (!result.resultContent)

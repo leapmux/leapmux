@@ -1,23 +1,18 @@
 /**
  * The kinds Claude reads differently from the shared table, in one place.
  *
- * A LEAF module, for the reason `failure.ts` gives: it imports the row TYPE alone, so
- * nothing here reaches `toolKinds.ts` and its icons. `lucide-solid` refuses to load
- * outside a browser, and several extractor suites run in the `node` environment. The
- * table cannot live in `toolCall.ts` for that reason -- that module draws the icons, so
- * a node-environment test that asked it for one request would fail with
- * "Client-only API called on the server side" and no mention of the module that reached
- * the icons.
+ * This leaf module imports the row type alone. It keeps Claude-specific request
+ * extraction in the provider layer and keeps the model validator provider-neutral.
  */
 
-import type { ToolKind } from '../../../ir/toolKind'
-import type { ToolRequests } from '../../../ir/tools'
+import type { ToolKind } from '../../../model/toolKind'
+import type { ToolRequestByKind } from '../../../model/tools'
 import type { ToolRequestOverrides } from '../../defaultToolRequests'
 import type { ClaudeRowContext, ClaudeToolRow } from './toolCommon'
 import { clipFirstLine } from '~/lib/clipFirstLine'
 import { pickBoolean, pickNumber, pickString } from '~/lib/jsonPick'
-import { parseMcpToolName } from '../../../ir/mcpToolCall'
-import { MESSAGE_PREVIEW_LIMIT } from '../../../ir/tools/message'
+import { parseMcpToolName } from '../../../model/mcpToolCall'
+import { MESSAGE_PREVIEW_LIMIT } from '../../../model/tools/message'
 import { DEFAULT_TOOL_REQUESTS, toolRequestFor } from '../../defaultToolRequests'
 import { CLAUDE_TOOL_NAMES } from '../toolNames'
 import { claudeFileEditChanges } from './fileEdit'
@@ -63,13 +58,13 @@ export interface ClaudeToolFacts {
  * `ToolRequestOverrides` supplies a contextual signature, which is not an annotated
  * position: TypeScript infers the arrow's return type from the literal it returns, so
  * the object loses its freshness before any property is checked and a key no renderer
- * reads rides into the IR. `toolTableEntriesAreAnnotated.test.ts` keeps every entry in
+ * reads rides into the model. `toolTableEntriesAreAnnotated.test.ts` keeps every entry in
  * this form.
  */
 export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts> = {
   // The subagent TYPE, which Claude spells `subagent_type`. The shared entry declares no
   // such field, and it supplies the description and the prompt that ride beside it.
-  agent: (input): ToolRequests['agent'] => {
+  agent: (input): ToolRequestByKind['agent'] => {
     const agentType = pickString(input, 'subagent_type')
     return {
       ...DEFAULT_TOOL_REQUESTS.agent(input),
@@ -81,7 +76,7 @@ export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts
   // all: the shared entry declares no team, so both calls drew the header "List agents"
   // and the team's own name appeared nowhere on the row. The two filters are TRIMMED
   // here, which the shared entry does not do, because a filter of spaces is no filter.
-  agents: (input): ToolRequests['agents'] => {
+  agents: (input): ToolRequestByKind['agents'] => {
     const team = pickString(input, 'team_name').trim()
     if (team)
       return { team: { name: team } }
@@ -96,11 +91,11 @@ export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts
   // The change the ARGUMENTS ask for: one entry per substitution, one for a write. The
   // shared entry states an empty list, because no other provider's arguments describe a
   // diff.
-  edit: (input, facts): ToolRequests['edit'] => ({
+  edit: (input, facts): ToolRequestByKind['edit'] => ({
     changes: claudeFileEditChanges(input, facts.toolName, facts.result),
     ...(input.replace_all === true ? { replaceAll: true } : {}),
   }),
-  write: (input, facts): ToolRequests['write'] => ({
+  write: (input, facts): ToolRequestByKind['write'] => ({
     changes: claudeFileEditChanges(input, facts.toolName, facts.result),
     ...(input.replace_all === true ? { replaceAll: true } : {}),
   }),
@@ -108,7 +103,7 @@ export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts
   // The LANGUAGE, which the tool NAME states: `PowerShell` runs its command through a
   // different shell, and the row draws that word. The shared entry sees the arguments
   // alone, and it supplies the command and the description but states no language.
-  execute: (input, facts): ToolRequests['execute'] => {
+  execute: (input, facts): ToolRequestByKind['execute'] => {
     const shared = DEFAULT_TOOL_REQUESTS.execute(input)
     return facts.toolName === CLAUDE_TOOL_NAMES.POWERSHELL
       ? { ...shared, language: 'powershell' }
@@ -118,11 +113,11 @@ export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts
   // The SERVER whose resources a listing asks for, which is not a file path. The shared
   // entry reads a path and answers `.` for a call that carries none, which states a
   // directory nobody listed.
-  list: (input): ToolRequests['list'] => ({ path: pickString(input, 'server') || 'resources' }),
+  list: (input): ToolRequestByKind['list'] => ({ path: pickString(input, 'server') || 'resources' }),
 
   // The SERVER and the TOOL, which Claude spells inside the tool NAME. The shared entry
   // reads two arguments no Claude call carries, so both fields were empty.
-  mcp: (input, facts): ToolRequests['mcp'] => {
+  mcp: (input, facts): ToolRequestByKind['mcp'] => {
     const identity = parseMcpToolName(facts.toolName)
     return { server: identity?.server ?? '', tool: identity?.tool ?? facts.toolName, args: input }
   },
@@ -131,7 +126,7 @@ export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts
   // one-line form such a message has. The shared entry reads `text` and then `message`,
   // and neither answers a record, so a structured message left the row with no words at
   // all. The addressee is TRIMMED here for the reason the agents entry gives.
-  message: (input): ToolRequests['message'] => {
+  message: (input): ToolRequestByKind['message'] => {
     const message = input.message
     const to = pickString(input, 'to').trim()
     const summary = pickString(input, 'summary')
@@ -144,12 +139,12 @@ export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts
 
   // The parsed QUESTIONS. The shared entry states an empty list, because the shape of a
   // question is each provider's own.
-  question: (input): ToolRequests['question'] => ({ questions: claudeQuestions(input) }),
+  question: (input): ToolRequestByKind['question'] => ({ questions: claudeQuestions(input) }),
 
   // The free-text ARGUMENT STRING a `Skill` call takes beside the name. The shared entry
   // prettifies the whole arguments record as JSON, which draws the skill's own name back
   // to the reader as one of its arguments.
-  skill: (input): ToolRequests['skill'] => {
+  skill: (input): ToolRequestByKind['skill'] => {
     const name = pickString(input, 'skill')
     const args = pickString(input, 'args')
     return {
@@ -160,7 +155,7 @@ export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts
 
   // The mode the TOOL NAME states. The shared entry reads a `mode` argument that no
   // Claude call carries, so every switch stated no mode at all.
-  switch_mode: (input, facts): ToolRequests['switch_mode'] => {
+  switch_mode: (input, facts): ToolRequestByKind['switch_mode'] => {
     // `mode` is where the session IS after the switch, which is what separates entering
     // a worktree from leaving one: both used to state `worktree`, so the two rows drew
     // the identical title.
@@ -179,7 +174,7 @@ export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts
   // Claude task call sends beside the id. The shared entry answers `other` for every
   // call and declares neither of those two. `shell_id` is Claude's second spelling of
   // the id, from the tools that answer to a `Bash`-era alias.
-  task: (input, facts): ToolRequests['task'] => {
+  task: (input, facts): ToolRequestByKind['task'] => {
     const taskId = pickString(input, 'task_id') || pickString(input, 'shell_id')
     const timeoutMs = pickNumber(input, 'timeout', undefined)
     const block = pickBoolean(input, 'block', undefined)
@@ -194,17 +189,17 @@ export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts
 
   // The list `TodoWrite` asks to save, or the SINGLE task a `Task*` call acts on. The
   // shared entry states an empty list for the reason the question entry gives.
-  todo: (input, facts): ToolRequests['todo'] => claudeTodoRequest(facts.toolName, input, facts.result, facts.context),
+  todo: (input, facts): ToolRequestByKind['todo'] => claudeTodoRequest(facts.toolName, input, facts.result, facts.context),
 
   // The ACTION, which Claude states in an `action` ARGUMENT, and the label one level down
   // under `body`. The shared entry supplies the id and the schedule.
-  trigger: (input): ToolRequests['trigger'] => claudeTriggerRequest(input),
+  trigger: (input): ToolRequestByKind['trigger'] => claudeTriggerRequest(input),
 
   // How long the call waited, which `Sleep` spells `durationMs` -- the one camelCase
   // argument in a vocabulary that is snake_case everywhere else. The shared entry answers
   // undefined for every call, because no other provider states a duration in its
   // arguments.
-  wait: (input): ToolRequests['wait'] => {
+  wait: (input): ToolRequestByKind['wait'] => {
     const durationMs = pickNumber(input, 'durationMs', undefined)
     return { ...(durationMs !== undefined ? { durationMs } : {}) }
   },
@@ -215,6 +210,6 @@ export function claudeRequestFor<K extends ToolKind>(
   kind: K,
   input: Record<string, unknown>,
   facts: ClaudeToolFacts,
-): ToolRequests[K] {
+): ToolRequestByKind[K] {
   return toolRequestFor(kind, input, facts, CLAUDE_TOOL_REQUEST_OVERRIDES)
 }

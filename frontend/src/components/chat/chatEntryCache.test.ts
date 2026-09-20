@@ -1,3 +1,4 @@
+import type { ClassifiedEntryCacheDeps } from './chatEntryCache'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
@@ -6,6 +7,8 @@ import { ZCODE_EVENT, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { invalidateMessageParseCache } from '~/lib/messageParser'
 import { createClassifiedEntryCache, heightKeyForEntry, renderKeyForEntry } from './chatEntryCache'
+import { resolvedSpanRole } from './providers/registry'
+import { prepareMessage } from './rowPreparation'
 
 /**
  * A ZCode `scheduled` ExitPlanMode call whose own frame carries no arguments: the
@@ -145,7 +148,39 @@ function forwardedUserText(id: string, seq: bigint, parentToolUseId: string): Ag
   })
 }
 
+function createTestClassifiedEntryCache(
+  deps: Omit<ClassifiedEntryCacheDeps, 'role'> & Partial<Pick<ClassifiedEntryCacheDeps, 'role'>>,
+) {
+  return createClassifiedEntryCache({
+    ...deps,
+    role: deps.role ?? (message => resolvedSpanRole(prepareMessage(message).resolved, message.agentProvider)),
+  })
+}
+
 describe('createClassifiedEntryCache', () => {
+  it('uses the resolver-selected message and revision as the row authority', () => {
+    createRoot((dispose) => {
+      const stale = zcodeScheduledExitPlanMode()
+      const selected = zcodeScheduledExitPlanMode('Use the selected supplement')
+      const selectedPrepared = prepareMessage(selected)
+      const cache = createTestClassifiedEntryCache({
+        messages: () => [stale],
+        resolvedMessage: () => ({
+          message: selected,
+          original: selectedPrepared.original,
+          resolved: selectedPrepared.resolved,
+          revision: { id: selected.id, seq: selected.seq, contentVersion: 7, supplementalRevision: selected.supplementalRevision },
+        }),
+        role: () => 'request',
+        showHiddenMessages: () => false,
+      })
+      const entry = cache.visibleEntries()[0]!
+      expect(entry.message).toBe(selected)
+      expect(entry.category.kind).toBe('assistant_plan')
+      expect(entry.freshness.revisionKey).toContain('|7|1')
+      dispose()
+    })
+  })
   it('rebuilds a span row\'s entry when its paired tool_use sibling becomes available', () => {
     createRoot((dispose) => {
       const [hasSibling, setHasSibling] = createSignal(false)
@@ -154,7 +189,7 @@ describe('createClassifiedEntryCache', () => {
       // rebuild so the row's measured-height key changes instead of staying frozen
       // at its no-sibling shape.
       const messages = [claudeToolResult('r1', 2n, 'span-1')]
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages,
         requestRevision: () => hasSibling() ? { id: 'request', seq: 1n, contentVersion: 0, supplementalRevision: 0n } : undefined,
         showHiddenMessages: () => true,
@@ -178,7 +213,7 @@ describe('createClassifiedEntryCache', () => {
     createRoot((dispose) => {
       const [hasRequest, setHasRequest] = createSignal(false)
       const messages = [acpToolResult('result', 2n, 'span-1')]
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages,
         requestRevision: () => hasRequest() ? { id: 'request', seq: 1n, contentVersion: 0, supplementalRevision: 0n } : undefined,
         showHiddenMessages: () => false,
@@ -205,7 +240,7 @@ describe('createClassifiedEntryCache', () => {
       // the entry (and its heightKey) must rebuild off the request version.
       const [requestVersion, setRequestVersion] = createSignal(0)
       const messages = [claudeToolResult('tr1', 2n, 'span-1')]
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages,
         requestRevision: () => ({ id: 'request', seq: 1n, contentVersion: requestVersion(), supplementalRevision: 0n }),
         showHiddenMessages: () => true, // keep the result row visible regardless of classification
@@ -229,7 +264,7 @@ describe('createClassifiedEntryCache', () => {
     createRoot((dispose) => {
       const [requestRevision, setRequestRevision] = createSignal({ id: 'request-a', seq: 1n, contentVersion: 0, supplementalRevision: 0n })
       const messages = [claudeToolResult('tr1', 2n, 'span-1')]
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages,
         requestRevision: () => requestRevision(),
         showHiddenMessages: () => true,
@@ -256,7 +291,7 @@ describe('createClassifiedEntryCache', () => {
       // rebuild off the result version.
       const [resultVersion, setResultVersion] = createSignal(0)
       const messages = [claudeToolUse('tu1', 2n, 'span-1')]
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages,
         resultRevision: () => ({ id: 'result', seq: 2n, contentVersion: resultVersion(), supplementalRevision: 0n }),
         showHiddenMessages: () => false,
@@ -281,7 +316,7 @@ describe('createClassifiedEntryCache', () => {
     createRoot((dispose) => {
       const [resultRevision, setResultRevision] = createSignal({ id: 'result-a', seq: 5n, contentVersion: 0, supplementalRevision: 0n })
       const messages = [claudeToolUse('tu1', 2n, 'span-1')]
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages,
         resultRevision: () => resultRevision(),
         showHiddenMessages: () => false,
@@ -304,7 +339,7 @@ describe('createClassifiedEntryCache', () => {
     createRoot((dispose) => {
       const [unrelatedVersion, setUnrelatedVersion] = createSignal(0)
       const messages = [claudeToolUse('current-request', 2n, 'span-1')]
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages,
         requestRevision: () => ({ id: 'selected-request', seq: 1n, contentVersion: unrelatedVersion(), supplementalRevision: 0n }),
         showHiddenMessages: () => false,
@@ -324,7 +359,7 @@ describe('createClassifiedEntryCache', () => {
     createRoot((dispose) => {
       const [ownVersion, setOwnVersion] = createSignal(0)
       const messages = [claudeToolUse('current-request', 2n, 'span-1')]
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages,
         requestRevision: () => ({ id: 'selected-request', seq: 1n, contentVersion: 0, supplementalRevision: 0n }),
         resultRevision: () => ({ id: 'selected-result', seq: 3n, contentVersion: 0, supplementalRevision: 0n }),
@@ -351,7 +386,7 @@ describe('createClassifiedEntryCache', () => {
     createRoot((dispose) => {
       const [resultSupplement, setResultSupplement] = createSignal(0n)
       const messages = [claudeToolUse('tu1', 1n, 'span-1')]
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages,
         resultRevision: () => ({ id: 'result', seq: 2n, contentVersion: 0, supplementalRevision: resultSupplement() }),
         showHiddenMessages: () => false,
@@ -375,7 +410,7 @@ describe('createClassifiedEntryCache', () => {
       // The result member's arrival must invalidate the cached request entry and height key.
       const [hasResult, setHasResult] = createSignal(false)
       const messages = [claudeToolUse('tu1', 2n, 'span-1')]
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages,
         resultRevision: () => hasResult() ? { id: 'result', seq: 2n, contentVersion: 0, supplementalRevision: 0n } : undefined,
         showHiddenMessages: () => false,
@@ -406,7 +441,7 @@ describe('createClassifiedEntryCache', () => {
       // A signal, because the swap must WAKE the memo: the supplement arrives as a
       // store write, and a plain array mutation is invisible to a tracked read.
       const [messages, setMessages] = createSignal([zcodeScheduledExitPlanMode()])
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages(),
         showHiddenMessages: () => false,
       })
@@ -435,7 +470,7 @@ describe('createClassifiedEntryCache', () => {
   it('keeps the raw JSON parse on the original message beside the resolved one', () => {
     createRoot((dispose) => {
       const messages = [zcodeScheduledExitPlanMode('Ship it')]
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages,
         showHiddenMessages: () => false,
       })
@@ -463,7 +498,7 @@ describe('createClassifiedEntryCache', () => {
     // the pre-hydration answer and rendered as a collapsed "Prompt" card forever.
       const [isChild, setIsChild] = createSignal(false)
       const messages = [forwardedUserText('fu1', 3n, 'toolu_spawn')]
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages,
         showHiddenMessages: () => false,
         isChildTranscript: () => isChild(),
@@ -494,7 +529,7 @@ describe('createClassifiedEntryCache', () => {
       const [requestVersion, setRequestVersion] = createSignal(0)
       const [resultVersion, setResultVersion] = createSignal(0)
       const messages = [assistantText('a1', 1n, 'hi')]
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages,
         requestRevision: () => {
           requestProbeReads++
@@ -531,7 +566,7 @@ describe('createClassifiedEntryCache', () => {
       // second time, in a slot the height key reads as a sibling's.
       const [ownVersion, setOwnVersion] = createSignal(0)
       const messages = [claudeToolUse('tu1', 2n, 'span-1')]
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages,
         requestRevision: () => ({ id: 'tu1', seq: 2n, contentVersion: ownVersion(), supplementalRevision: 0n }),
         contentVersionById: () => ownVersion(),
@@ -560,7 +595,7 @@ describe('createClassifiedEntryCache', () => {
       // request, so the request's version is not one of its freshness dimensions.
       const [requestVersion, setRequestVersion] = createSignal(0)
       const messages = [emptyCodexReasoning('r1', 2n, 'span-1')]
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages,
         requestRevision: () => ({ id: 'request', seq: 1n, contentVersion: requestVersion(), supplementalRevision: 0n }),
         showHiddenMessages: () => false,
@@ -585,7 +620,7 @@ describe('createClassifiedEntryCache', () => {
         emptyCodexReasoning('r1', 1n, 'span-1'),
         assistantText('a1', 2n, 'hi'),
       ])
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages,
         showHiddenMessages: () => false,
       })
@@ -612,7 +647,7 @@ describe('createClassifiedEntryCache', () => {
         emptyCodexReasoning('r1', 1n, 'span-1'),
         assistantText('a1', 2n, 'hi'),
       ])
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages,
         showHiddenMessages: () => false,
       })
@@ -634,7 +669,7 @@ describe('createClassifiedEntryCache', () => {
   it('prunes entries no longer in the window and reuses the cached ref for an unchanged row', () => {
     createRoot((dispose) => {
       const [messages, setMessages] = createSignal([assistantText('a1', 1n, 'hi'), assistantText('a2', 2n, 'yo')])
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages,
         showHiddenMessages: () => false,
       })
@@ -659,7 +694,7 @@ describe('createClassifiedEntryCache', () => {
       // the seq -- the freshness signature's seq dimension must catch it and rebuild,
       // not hand back the pre-reseq classification.
       const [messages, setMessages] = createSignal<AgentChatMessage[]>([assistantText('a1', 1n, 'hi')])
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages,
         showHiddenMessages: () => false,
       })
@@ -682,7 +717,7 @@ describe('createClassifiedEntryCache', () => {
       const versions = new Map<string, number>()
       const msg = assistantText('a1', 1n, 'hi')
       const [messages, setMessages] = createSignal<AgentChatMessage[]>([msg])
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages,
         contentVersionById: id => versions.get(id) ?? 0,
         showHiddenMessages: () => false,
@@ -719,7 +754,7 @@ describe('createClassifiedEntryCache', () => {
     createRoot((dispose) => {
       const [showHidden, setShowHidden] = createSignal(false)
       const messages = [assistantText('a1', 1n, 'hi'), emptyCodexReasoning('r1', 2n, 'span-1')]
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages,
         showHiddenMessages: showHidden,
       })
@@ -732,13 +767,13 @@ describe('createClassifiedEntryCache', () => {
 
   it('hasVisibleEntries reports presence without depending on visibleEntries()', () => {
     createRoot((dispose) => {
-      const visible = createClassifiedEntryCache({
+      const visible = createTestClassifiedEntryCache({
         messages: () => [assistantText('a1', 1n, 'hi')],
         showHiddenMessages: () => false,
       })
       expect(visible.hasVisibleEntries()).toBe(true)
 
-      const allHidden = createClassifiedEntryCache({
+      const allHidden = createTestClassifiedEntryCache({
         messages: () => [emptyCodexReasoning('r1', 1n, 'span-1')],
         showHiddenMessages: () => false,
       })
@@ -779,7 +814,7 @@ describe('createClassifiedEntryCache', () => {
         // `typeof type === 'string'` gate from a looser `'type' in el` / truthy check.
         withSpanLines('badtype', 7n, '[{"type":5}, {"type":null}, {"type":true}, {"type":"add"}]'),
       ]
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => messages,
         showHiddenMessages: () => false,
       })
@@ -803,13 +838,13 @@ describe('createClassifiedEntryCache', () => {
  * The virtualizer asks "must this row be re-measured", which a per-row expand or
  * diff-view toggle answers yes to. The render cache asks "must this row be read
  * again", which the same toggle answers no to. Deriving the second key from the
- * first threw away the row's extracted IR, its normalized command body, its Myers
+ * first threw away the row's extracted model, its normalized command body, its Myers
  * diff and its rendered markdown on every click of the expand control.
  */
 describe('renderKeyForEntry', () => {
   function entryOf(id: string, seq: bigint, text: string) {
     return createRoot((dispose) => {
-      const cache = createClassifiedEntryCache({
+      const cache = createTestClassifiedEntryCache({
         messages: () => [assistantText(id, seq, text)],
         showHiddenMessages: () => false,
       })

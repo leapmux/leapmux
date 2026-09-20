@@ -10,9 +10,9 @@
  * reached the icons.
  */
 
-import type { FailedResult } from '../../../ir/toolCall'
+import type { ToolFailureResult } from '../../../model/toolCall'
 import type { ClaudeToolRow } from './toolCommon'
-import { failedResult } from '../../../ir/toolCall'
+import { failedResult } from '../../../model/toolCall'
 
 /**
  * The result a FAILED Claude call states: its error text alone, and no payload.
@@ -27,7 +27,7 @@ import { failedResult } from '../../../ir/toolCall'
  * Undefined for a row that did not fail and for one that has not answered, so one
  * guard covers a whole builder:
  *
- *     const failure = claudeFailedResult(result)
+ *     const failure = claudeToolFailureResult(result)
  *     if (failure)
  *       return { kind: 'grep', request, result: failure }
  *
@@ -36,12 +36,12 @@ import { failedResult } from '../../../ir/toolCall'
  * ended, and `switch_mode` reads a plan the reader sent back as `declined`. `trigger`
  * asks one rung LOWER, because an endpoint that answered outside 2xx still answered.
  *
- * The BRAND is load-bearing although `FailedResult` and `UnparsedResult` draw the same
+ * The BRAND is load-bearing although `ToolFailureResult` and `UnparsedToolResult` draw the same
  * pixels. `invariantViolations` reads it: I3 requires a failed, cancelled or declined
- * status under a `FailedResult`, and I4 requires a completed one under an
- * `UnparsedResult`. So a failed call that answered `unparsedResult` claimed that it
+ * status under a `ToolFailureResult`, and I4 requires a completed one under an
+ * `UnparsedToolResult`. So a failed call that answered `unparsedResult` claimed that it
  * completed.
  */
-export function claudeFailedResult(result: ClaudeToolRow | undefined): FailedResult | undefined {
+export function claudeToolFailureResult(result: ClaudeToolRow | undefined): ToolFailureResult | undefined {
   return result?.isError === true ? failedResult(result.resultContent) : undefined
 }

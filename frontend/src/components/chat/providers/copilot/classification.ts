@@ -1,4 +1,4 @@
-import type { MessageCategory } from '../../messageClassification'
+import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../registry'
 import { COPILOT_EVENT, COPILOT_EVENT_PREFIX } from '~/generated/contracts/copilot-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
@@ -179,7 +179,7 @@ const COPILOT_HIDDEN_TYPES = new Set<string>([
  * the PREFIX rather than one constant per member.
  *
  * Two of them are the runtime's own trace. The other four are the experiments the
- * IR plan holds out of scope -- a canvas, a Fusion route, a factory run. LeapMux
+ * model plan holds out of scope -- a canvas, a Fusion route, a factory run. LeapMux
  * renders none of them, and each drew a raw-JSON bubble until this rule identified it.
  *
  * The WHOLE contract table, not a list of its members: `COPILOT_EVENT_PREFIX` exists

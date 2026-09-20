@@ -3,8 +3,9 @@ import type { JSX } from 'solid-js'
 import type { MessageRenderSources } from './messageContextResolver'
 import type { MessageRenderCache } from './messageRenderCache'
 import type { MessageUiKey } from './messageUiKeys'
-import type { ControlResponseDisplay } from './persistedControlResponse'
-import type { ImageRenderActions, MarkdownRenderContext, SubagentNavigation, ToolProgressSource } from './renderContext'
+import type { ControlResponseSummary } from './model/controlResponse'
+import type { UserMessageAttachment } from './model/row'
+import type { ImageRenderActions, MarkdownRenderContext, MessageUiRenderContext, SubagentNavigation, ToolProgressSource, ToolResultRenderContext } from './renderContext'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import Braces from 'lucide-solid/icons/braces'
@@ -18,7 +19,6 @@ import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { prettifyJson } from '~/lib/jsonFormat'
-import { isObject } from '~/lib/jsonPick'
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownEditor/markdownContent.css'
 import { renderMarkdownForContext } from './markdownRendering'
@@ -48,7 +48,7 @@ export { markdownCacheNamespace, renderMarkdownForContext, shouldPauseSyntaxHigh
  * cannot omit a key, so `undefined` is the live "absent for now" state rather
  * than an invalid construction.
  */
-export interface RenderContext {
+export interface RenderContext extends ToolResultRenderContext {
   /** ISO timestamp of the message (for relative time in toolbar). */
   createdAt?: string
   /** Original, supplemental, linked, and live data resolved for this row. */
@@ -139,7 +139,7 @@ export interface RenderContext {
    * Open an image this row rendered in its own tab.
    *
    * `index` addresses the image within its message -- the position
-   * `imagesForIR` gives it over the row's one call. The handler is assembled where the
+   * `imagesForRow` gives it over the row's one call. The handler is assembled where the
    * message and the agent are both in scope (MessageBubble over ChatView), so
    * this context carries neither; a renderer only says WHICH image.
    *
@@ -165,18 +165,18 @@ export interface MessageContentRenderer {
  * Read the parent-driven tool-result-expanded flag from a render context.
  * Centralizes the `?.() ?? false` boilerplate every shared result body needs.
  */
-export function getExpandedForKey(context: RenderContext | undefined, key: MessageUiKey): boolean {
+export function getExpandedForKey(context: MessageUiRenderContext | undefined, key: MessageUiKey): boolean {
   const expandAgentThoughts = context?.expandAgentThoughts
   return context?.getMessageUiState?.(key)
     ?? messageUiDefault(key, expandAgentThoughts !== undefined ? { expandAgentThoughts } : {})
 }
 
-export function getToolResultExpanded(context: RenderContext | undefined): boolean {
+export function getToolResultExpanded(context: MessageUiRenderContext | undefined): boolean {
   return getExpandedForKey(context, MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)
 }
 
 export function useSharedExpandedState(
-  getContext: () => RenderContext | undefined,
+  getContext: () => MessageUiRenderContext | undefined,
   key: MessageUiKey,
   // Defaults to the key's shared MESSAGE_UI_DEFAULTS entry (resolved against the
   // context's expandAgentThoughts pref); a renderer with a per-row default passes
@@ -281,33 +281,20 @@ export function PlanExecutionMessage(props: { text: string, context?: RenderCont
  * attachment + markdown rendering. Renders nothing when the parsed body has
  * no usable text or attachments.
  */
-export function UserContentMessage(props: { parsed: unknown, context?: RenderContext }): JSX.Element {
-  const parsed = (): Record<string, unknown> | null => {
-    return isObject(props.parsed) ? props.parsed as Record<string, unknown> : null
-  }
-  const content = (): string => {
-    const obj = parsed()
-    return obj && typeof obj.content === 'string' ? obj.content as string : ''
-  }
-  const attachments = (): Array<{ filename?: string, mime_type?: string }> => {
-    const obj = parsed()
-    if (!obj || !Array.isArray(obj.attachments))
-      return []
-    return obj.attachments as Array<{ filename?: string, mime_type?: string }>
-  }
-  const hasText = (): boolean => content().trim().length > 0
-  const hasAttachments = (): boolean => attachments().length > 0
+export function UserContentMessage(props: { text: string, attachments: UserMessageAttachment[], context?: RenderContext }): JSX.Element {
+  const hasText = (): boolean => props.text.trim().length > 0
+  const hasAttachments = (): boolean => props.attachments.length > 0
   const hasAny = (): boolean => hasText() || hasAttachments()
 
   return (
     <Show when={hasAny()}>
       <Show when={hasAttachments()}>
         <div class={attachmentList}>
-          <For each={attachments()}>
+          <For each={props.attachments}>
             {att => (
               <span class={attachmentItem}>
                 <Icon
-                  icon={att.mime_type?.startsWith('image/') ? FileImageIcon : FileIcon}
+                  icon={att.mimeType?.startsWith('image/') ? FileImageIcon : FileIcon}
                   size="xs"
                 />
                 {att.filename ?? 'Unnamed file'}
@@ -317,7 +304,7 @@ export function UserContentMessage(props: { parsed: unknown, context?: RenderCon
         </div>
       </Show>
       <Show when={hasText()}>
-        <MarkdownText text={content()} {...(props.context !== undefined ? { context: props.context } : {})} />
+        <MarkdownText text={props.text} {...(props.context !== undefined ? { context: props.context } : {})} />
       </Show>
     </Show>
   )
@@ -339,7 +326,7 @@ export function UserContentMessage(props: { parsed: unknown, context?: RenderCon
  * one answer, and each carried its own copy of the fallback.
  */
 export function renderControlResponseRow(
-  display: ControlResponseDisplay,
+  display: ControlResponseSummary,
   context: RenderContext | undefined,
 ): JSX.Element {
   if (display.kind === 'feedback') {

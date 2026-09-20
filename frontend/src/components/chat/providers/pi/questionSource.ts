@@ -1,4 +1,4 @@
-import type { QuestionIR } from '../../ir/questionBody'
+import type { QuestionPrompt } from '../../model/question'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { PI_DIALOG_METHOD, PI_EVENT, PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
@@ -47,7 +47,7 @@ function piQuestionRecords(args: Record<string, unknown>): Record<string, unknow
  * row draws BOTH: the control surface above it does, so a reader who comes back to
  * the row has to be able to tell what the alternatives actually were.
  */
-export function piQuestionsFromArgs(args: Record<string, unknown>): QuestionIR[] {
+export function piQuestionsFromArgs(args: Record<string, unknown>): QuestionPrompt[] {
   return questionsFromRecords(
     piQuestionRecords(args),
     (record) => {
@@ -76,7 +76,7 @@ export function piQuestionsFromArgs(args: Record<string, unknown>): QuestionIR[]
  * it. Several cannot share one line, so the shared renderer states their count, and
  * this gives it nothing to override.
  */
-export function piQuestionTitle(questions: QuestionIR[]): string | undefined {
+export function piQuestionTitle(questions: QuestionPrompt[]): string | undefined {
   // One question is the list; the `length === 1` test pins the indexed read.
   return questions.length === 1 ? questions[0]?.question : undefined
 }

@@ -2,8 +2,8 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { todoList } from '~/components/todo/TodoList.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { providerToolMeta } from '~/test-support/toolCallIr'
-import { renderMessageContent } from '../../rowRenderers'
+import { providerToolMeta } from '~/test-support/toolCallFixture'
+import { renderMessageContent } from '../../messageContentRenderer'
 import { renderACPToolPair } from '../acp/testUtils'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
@@ -104,7 +104,7 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
       kind: 'edit',
       title: 'apply_patch',
       // The patch the call ASKED for. A file change whose request names no file is
-      // refused by the IR and degrades to the uncategorized row, so a frame with no
+      // refused by the model and degrades to the uncategorized row, so a frame with no
       // arguments at all would test that row rather than the metadata below.
       rawInput: { filePath: '/project/old.ts', patch: first + second },
       rawOutput: { metadata: { diff: first + second, files: [

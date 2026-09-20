@@ -2,9 +2,8 @@ import type { JSX } from 'solid-js'
 import type { ToolKindRenderer } from './renderer'
 import FolderSearch from 'lucide-solid/icons/folder-search'
 import { relativizePath } from '~/lib/paths'
-import { searchResultCollapsible, searchResultCopyable } from '../../ir/searchResult'
 import { toolInputCode } from '../../toolStyles.css'
-import { SearchResultBody } from '../searchResult'
+import { SearchResultBody, searchResultCollapsible, searchResultCopyable } from '../searchResult'
 import { pathLines } from './titleParts'
 
 /** A glob's title: the pattern, and the one path it ran in when it states any. */

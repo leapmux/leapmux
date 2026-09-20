@@ -1,5 +1,6 @@
 import type { Accessor, Setter } from 'solid-js'
 import type { MessageContextResolver } from '../messageContextResolver'
+import type { ControlQuestion, QuestionOption } from '../model/question'
 import type { PermissionPresetController } from '../providerSettings'
 import type { ControlSurface } from './controlSurface'
 import type { AgentProvider, PlanApprovalSettings } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -16,26 +17,8 @@ export type ControlResponseHandler = (request: ControlRequest, content: Uint8Arr
 
 export type ControlResponseSender = (content: Uint8Array, options?: ControlResponseOptions) => Promise<void>
 
-export interface QuestionOption {
-  /** The response value stays stable when supplemental data changes the label. */
-  value?: string
-  label: string
-  description?: string
-  preview?: string
-}
-
 export function questionOptionValue(option: QuestionOption): string {
   return option.value ?? option.label
-}
-
-export interface Question {
-  id?: string
-  question: string
-  header?: string
-  options: QuestionOption[]
-  multiSelect?: boolean
-  /** The provider accepts an explicit empty answer. */
-  allowEmpty?: boolean
 }
 
 /**
@@ -51,13 +34,13 @@ export interface Question {
  * that is not an array. It does NOT drop a question that states no option: a
  * free-text question is a real one, and `allowEmpty` is what says so.
  */
-export function questionsFromWire(raw: unknown): Question[] {
+export function questionsFromWire(raw: unknown): ControlQuestion[] {
   if (!Array.isArray(raw))
     return []
   return raw.flatMap((item) => {
     if (typeof item !== 'object' || item === null)
       return []
-    const source = item as Partial<Question>
+    const source = item as Partial<ControlQuestion>
     return [{ ...source, question: source.question ?? '', options: Array.isArray(source.options) ? source.options : [] }]
   })
 }
@@ -242,7 +225,7 @@ export interface ActionsProps {
    * can drive the same selection / multi-page flow without a wrapper
    * adapter.
    */
-  questions?: Question[]
+  questions?: ControlQuestion[]
 }
 
 /**

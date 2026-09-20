@@ -4,7 +4,7 @@ import ListTodo from 'lucide-solid/icons/list-todo'
 import { Show } from 'solid-js'
 import { todosToMarkdown } from '~/lib/messageParser'
 import { pluralize } from '~/lib/plural'
-import { toolRowStatusOutcome } from '../../ir/toolRowStatus'
+import { toolCallStatusOutcome } from '../../model/toolCallStatus'
 import { toolInputSummary } from '../../toolStyles.css'
 import { CollapsibleContent } from '../CollapsibleContent'
 import { TodoListBody } from '../todoListBody'
@@ -64,7 +64,7 @@ export const todoRenderer: ToolKindRenderer<'todo'> = {
     return (
       <>
         <TodoListBody todos={call.result.items} {...(call.result.emptyText !== undefined ? { emptyText: call.result.emptyText } : {})} />
-        <Show when={toolRowStatusOutcome(call.status) === 'interrupted'}>
+        <Show when={toolCallStatusOutcome(call.status) === 'interrupted'}>
           <div class={toolInputSummary}>{TODO_PARTIAL_LIST_NOTICE}</div>
         </Show>
         {call.result.note ? <CollapsibleContent kind="markdown-tool-result" text={call.result.note} isCollapsed={false} {...(view.context !== undefined ? { context: view.context } : {})} /> : null}

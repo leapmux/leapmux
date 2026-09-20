@@ -1,13 +1,13 @@
-import type { ToolKind } from '../../../ir/toolKind'
+import type { ToolKind } from '../../../model/toolKind'
 import type { ClaudeToolRow } from './toolCommon'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { providerToolCall } from '~/test-support/toolCallIr'
+import { providerToolCall } from '~/test-support/toolCallFixture'
 import { invariantViolations } from '~/test-support/toolVocabulary'
-import { typedResult } from '../../../ir/toolCall'
+import { typedResult } from '../../../model/toolCall'
 import { CLAUDE_TOOL_NAMES } from '../toolNames'
-import { claudeFailedResult } from './failure'
+import { claudeToolFailureResult } from './failure'
 import '~/components/chat/providers'
 
 /** The reason the command line interface sends for a path that is not there. */
@@ -71,7 +71,7 @@ function failedCall(name: string, args: Record<string, unknown>, content = REASO
 /**
  * One case per kind whose answer a failed call used to be read as.
  *
- * The list is the ladder's coverage, so a kind added to `claudePayload` without a
+ * The list is the ladder's coverage, so a kind added to `claudeSpec` without a
  * failure rung leaves a hole here that a reader can see.
  */
 const CASES: { name: string, kind: ToolKind, args: Record<string, unknown> }[] = [
@@ -91,22 +91,22 @@ const CASES: { name: string, kind: ToolKind, args: Record<string, unknown> }[] =
   { name: CLAUDE_TOOL_NAMES.TASK_STOP, kind: 'task', args: { task_id: 't-1' } },
 ]
 
-describe('claudeFailedResult', () => {
+describe('claudeToolFailureResult', () => {
   it('states the reason alone for a row the tool marked failed', () => {
-    expect(claudeFailedResult(row({ isError: true }))).toStrictEqual({ failure: true, text: REASON })
+    expect(claudeToolFailureResult(row({ isError: true }))).toStrictEqual({ failure: true, text: REASON })
   })
 
   // An empty reason still takes the failed brand. `unparsedResult` is the other
   // spelling, and it claims the call COMPLETED -- which invariant I4 rejects under the
   // failed status such a row carries.
   it('keeps the failed brand for a reason with no words in it', () => {
-    expect(claudeFailedResult(row({ isError: true, resultContent: '' }))).toStrictEqual({ failure: true, text: '' })
+    expect(claudeToolFailureResult(row({ isError: true, resultContent: '' }))).toStrictEqual({ failure: true, text: '' })
   })
 
   it('answers undefined for a row that did not fail and for one that has not answered', () => {
-    expect(claudeFailedResult(undefined)).toBeUndefined()
-    expect(claudeFailedResult(row({ isError: false }))).toBeUndefined()
-    expect(claudeFailedResult(row({ isError: undefined }))).toBeUndefined()
+    expect(claudeToolFailureResult(undefined)).toBeUndefined()
+    expect(claudeToolFailureResult(row({ isError: false }))).toBeUndefined()
+    expect(claudeToolFailureResult(row({ isError: undefined }))).toBeUndefined()
   })
 })
 
@@ -118,7 +118,7 @@ describe('claudeFailedResult', () => {
  * classifies a line it cannot read as content as a FILE NAME, so the row drew the
  * summary "Found 1 file" over a file list holding "File does not exist.".
  */
-describe('claudePayload failure rung', () => {
+describe('claudeSpec failure rung', () => {
   it.each(CASES)('states the reason alone for a failed $name', ({ name, kind, args }) => {
     const call = failedCall(name, args)
     expect(call.kind).toBe(kind)

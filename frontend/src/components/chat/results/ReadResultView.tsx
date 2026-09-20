@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import type { ParsedCatLine } from '../ir/readFileResult'
+import type { NumberedFileLine } from '../model/readFileResult'
 import { createMemo, For, Show } from 'solid-js'
 import { ansiSyncTokenize } from '~/lib/ansiTokenize'
 import { guessLanguage } from '~/lib/languageMap'
@@ -18,7 +18,7 @@ import { HIGHLIGHT_LINE_LIMIT } from './collapse'
  * Tokenization runs in a Web Worker to avoid blocking the main thread.
  */
 export function ReadResultView(props: {
-  lines: ParsedCatLine[]
+  lines: NumberedFileLine[]
   filePath?: string
   /** Hidden DOM premeasurement keeps line geometry but skips Shiki/token workers. */
   premeasureMode?: boolean

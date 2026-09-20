@@ -1,4 +1,4 @@
-import type { DialogRequestIR } from '../../ir/controlRequest'
+import type { DialogPrompt } from '../../model/controlPrompt'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
 import { PI_DIALOG_METHOD } from '~/generated/contracts/pi-protocol'
 import { pickNumber, pickString } from '~/lib/jsonPick'
@@ -12,7 +12,7 @@ import { isPiPlanApproval, piPlanApprovalDetails } from './planRequest'
  * `select` reaches here only for a shape `isPiPlanApproval` refused, and it has no
  * control of its own -- the reader acknowledges it, which is what a bare confirm is.
  */
-function piDialogVariant(method: string): DialogRequestIR['variant'] {
+function piDialogVariant(method: string): DialogPrompt['variant'] {
   switch (method) {
     case PI_DIALOG_METHOD.Input:
       return 'input'

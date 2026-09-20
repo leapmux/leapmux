@@ -1,18 +1,18 @@
-import type { QuestionIR } from '../../../ir/questionBody'
-import type { ToolCallPayload, ToolCallPayloadIR } from '../../../ir/toolCall'
-import type { ToolKind } from '../../../ir/toolKind'
-import type { FileChangeRequest } from '../../../ir/tools/fileChange'
+import type { QuestionPrompt } from '../../../model/question'
+import type { ToolCallSpec } from '../../../model/toolCall'
+import type { ToolKind } from '../../../model/toolKind'
+import type { FileChangeRequest } from '../../../model/tools/fileChange'
 import type { ACPToolCallAdapter, ACPToolFacts } from '../../acp/extractors/toolCall'
+import { rawTodosToItems } from '~/components/chat/normalizers/todo'
 import { ACP_SUPPLEMENT } from '~/generated/contracts/acp-protocol'
 import { isObject, pickBoolean, pickFirstString, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { rawTodosToItems } from '~/models/todo'
-import { chartResultFromSpec } from '../../../ir/chartResult'
-import { fileEditDiffFromUnifiedPatch, fileEditDiffsFromChanges, fileEditHasDiff } from '../../../ir/fileEditDiff'
-import { readFileResultFromContent } from '../../../ir/readFileResult'
-import { failedResult, unparsedResult } from '../../../ir/toolCall'
+import { chartResultFromSpec } from '../../../model/chartResult'
+import { fileEditDiffFromUnifiedPatch, fileEditDiffsFromChanges, fileEditHasDiff } from '../../../model/fileEditDiff'
+import { readFileResultFromContent } from '../../../model/readFileResult'
+import { failedResult, unparsedResult } from '../../../model/toolCall'
 import { acpFileEditFromToolCallContent } from '../../acp/extractors/fileEdit'
 import { acpReadFromToolCall } from '../../acp/extractors/read'
-import { acpPayloadFor } from '../../acp/extractors/toolCall'
+import { acpSpecFor } from '../../acp/extractors/toolCall'
 import { questionsFromRecords } from '../../questionRecords'
 import { TOOL_FILE_PATH_KEYS, TOOL_NEW_TEXT_KEYS, TOOL_OLD_TEXT_KEYS, toolInputPaths } from '../../toolInputKeys'
 import { openCodeTaskResult } from '../extractors/agent'
@@ -43,7 +43,7 @@ export function openCodeToolCallAdapterFor(extraKinds?: OpenCodeFamilyToolKinds)
 const REGISTRY_ID = /^[a-z0-9_-]+$/
 
 /** Each question the call asked, or an empty list for a call that asked none. */
-function openCodeQuestions(args: Record<string, unknown>): QuestionIR[] {
+function openCodeQuestions(args: Record<string, unknown>): QuestionPrompt[] {
   return questionsFromRecords(
     args.questions,
     (question) => {
@@ -64,7 +64,7 @@ function openCodeQuestions(args: Record<string, unknown>): QuestionIR[] {
 }
 
 /** The provider's own reading of one call, beside the shared build. */
-function openCodeToolCall(facts: ACPToolFacts, extraKinds: OpenCodeFamilyToolKinds | undefined): ToolCallPayloadIR {
+function openCodeToolCall(facts: ACPToolFacts, extraKinds: OpenCodeFamilyToolKinds | undefined): ToolCallSpec {
   const tool = facts.tool
   const args = facts.args
   // The tool's REGISTRY ID, which OpenCode and Kilo send as the call title. The
@@ -88,7 +88,7 @@ function openCodeToolCall(facts: ACPToolFacts, extraKinds: OpenCodeFamilyToolKin
     // and answers null for everything else. Without it the row drew its title and the
     // Error header with nothing at all between them, where every sibling states a
     // reason.
-    const result = facts.finished && task ? { agents: [task] } : acpPayloadFor(facts, 'agent').result
+    const result = facts.finished && task ? { agents: [task] } : acpSpecFor(facts, 'agent').result
     return {
       ...named,
       kind: 'agent',
@@ -155,7 +155,7 @@ function openCodeToolCall(facts: ACPToolFacts, extraKinds: OpenCodeFamilyToolKin
     const items = rawTodosToItems(rawTodos)
     // No title: `todoRenderer` composes the same words from the request this payload
     // carries, and a copy here is a second place for the wording to drift. Stated as
-    // an EXPLICIT undefined, because `acpToolCallIR` spreads the adapter's payload
+    // an EXPLICIT undefined, because `acpToolCall` spreads the adapter's payload
     // over its own frame-title default -- a payload that merely OMITTED the key let
     // that default ('todowrite') stand where every sibling provider composes '1 task'.
     const todo = { ...named, kind: 'todo' as const, title: undefined, request: { items } }
@@ -181,15 +181,15 @@ function openCodeToolCall(facts: ACPToolFacts, extraKinds: OpenCodeFamilyToolKin
 
   // The protocol's own kinds, reading the display metadata the daemons keep
   // beside the output.
-  const decorated = basePayload(facts, callKind, metadata)
+  const decorated = baseSpec(facts, callKind, metadata)
   if (decorated)
     return { ...named, ...decorated }
-  if (kind === '' || kind === 'other')
-    return { ...named, ...genericPayload(facts, toolName) }
+  if (kind === 'unspecified' || kind === 'other')
+    return { ...named, ...genericSpec(facts, toolName) }
   // A kind the protocol states and this family decorates none of: the shared
   // build answers it. A command row whose title repeats the registry id states
   // nothing the command below it does not already say.
-  const shared = acpPayloadFor(facts, kind)
+  const shared = acpSpecFor(facts, kind)
   // A command row whose title repeats the registry id, the wire kind or the command
   // itself states nothing the command below it does not already say. A title with
   // spaces is a sentence the daemon wrote, and it stays.
@@ -231,7 +231,7 @@ function openCodeCallKind(facts: ACPToolFacts, toolName: string, extraKinds: Ope
   // ONLY where the frame said nothing useful. A provider table that overrode a real
   // kind would undo the repairs above, and would overwrite the kinds Kilo's own
   // protocol layer does state.
-  if (facts.wireKind === 'other' || facts.wireKind === 'mcp' || facts.wireKind === '') {
+  if (facts.wireKind === 'other' || facts.wireKind === 'mcp' || facts.wireKind === 'unspecified') {
     const extra = extraKinds?.(toolName)
     if (extra)
       return { kind: extra, open: false }
@@ -239,7 +239,7 @@ function openCodeCallKind(facts: ACPToolFacts, toolName: string, extraKinds: Ope
   // The protocol's `search` is the one kind that leaves the question open: it says a
   // search ran, and the daemon spells a glob, a grep and a documentation lookup with
   // it. The counters the answer carries are the only evidence of which one, so
-  // {@link basePayload} may narrow THIS kind and no other.
+  // {@link baseSpec} may narrow THIS kind and no other.
   return { kind: facts.wireKind, open: facts.wireKind === 'search' }
 }
 
@@ -250,14 +250,14 @@ function openCodeCallKind(facts: ACPToolFacts, toolName: string, extraKinds: Ope
  * call still runs, the reason it stated when it FAILED, and the body this builder read
  * in every other case. A call the reader STOPPED takes that last path, because the
  * lines, the hits and the diff that did arrive are what they asked to see. The header
- * is unaffected: `toolRowStatusOutcome` composes it from the row's own status.
+ * is unaffected: `toolCallStatusOutcome` composes it from the row's own status.
  *
  * The kind the call arrived with is the kind it keeps. Two branches below answer a
  * different one, and each states at the site why the answer carries a fact the call
  * itself could not: the directory listing a `read` turns out to be, and the narrowing of
  * the wide `search` that {@link OpenCodeCallKind.open} admits.
  */
-function basePayload(facts: ACPToolFacts, callKind: OpenCodeCallKind, metadata: Record<string, unknown> | null): ToolCallPayloadIR | null {
+function baseSpec(facts: ACPToolFacts, callKind: OpenCodeCallKind, metadata: Record<string, unknown> | null): ToolCallSpec | null {
   const { kind, open } = callKind
   const args = facts.args
   const display = pickObject(metadata, 'display')
@@ -480,7 +480,7 @@ function basePayload(facts: ACPToolFacts, callKind: OpenCodeCallKind, metadata: 
  * The shared build owns the card's content blocks, so its payload stands except
  * for the tool name: the registry id identifies the call, which the wire kind cannot.
  */
-function genericPayload(facts: ACPToolFacts, toolName: string): ToolCallPayload<'mcp'> {
+function genericSpec(facts: ACPToolFacts, toolName: string): ToolCallSpec<'mcp'> {
   const request = { server: '', tool: toolName || 'tool', args: facts.args }
   if (!facts.finished)
     return { kind: 'mcp', request }
@@ -489,5 +489,5 @@ function genericPayload(facts: ACPToolFacts, toolName: string): ToolCallPayload<
   // generic trio -- so for a frame whose wire kind was `read`, spreading `base()` put
   // a file body behind an MCP card's type. Asking for the card directly states what
   // the row draws.
-  return { ...acpPayloadFor(facts, 'mcp'), kind: 'mcp', request }
+  return { ...acpSpecFor(facts, 'mcp'), kind: 'mcp', request }
 }

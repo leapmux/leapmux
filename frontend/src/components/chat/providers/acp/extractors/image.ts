@@ -1,3 +1,4 @@
+import type { ContentBlock } from '~/lib/contentBlocks'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import { ACP_SUPPLEMENT_REQUEST } from '~/generated/contracts/acp-protocol'
 import { parseImageBlock, withFallbackFilePath } from '~/lib/imageBlocks'
@@ -13,9 +14,14 @@ import { flattenAcpContent } from '../content'
 export function acpImagesFromToolCall(toolUse: Record<string, unknown> | null | undefined): ImageResultSource[] {
   if (!toolUse)
     return []
-  const fallbackPath = pickFirstString(pickObject(toolUse, ACP_SUPPLEMENT_REQUEST.RawInput), TOOL_FILE_PATH_KEYS)
+  return acpImagesFromContent(flattenAcpContent(toolUse.content), pickObject(toolUse, ACP_SUPPLEMENT_REQUEST.RawInput))
+}
+
+/** Extract images from content that the caller normalized once. */
+export function acpImagesFromContent(content: ContentBlock[], rawInput: Record<string, unknown> | null | undefined): ImageResultSource[] {
+  const fallbackPath = pickFirstString(rawInput, TOOL_FILE_PATH_KEYS)
   const images: ImageResultSource[] = []
-  for (const block of flattenAcpContent(toolUse.content)) {
+  for (const block of content) {
     const source = parseImageBlock(block)
     if (!source)
       continue

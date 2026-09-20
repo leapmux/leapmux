@@ -1,4 +1,4 @@
-import type { SearchResult } from '../../../ir/searchResult'
+import type { SearchResult } from '../../../model/searchResult'
 import { pickNumber } from '~/lib/jsonPick'
 import { collectAcpToolText, pickAcpRawOutputMetadata } from '../content'
 

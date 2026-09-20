@@ -1,11 +1,12 @@
 import type { ToolFailureFixture, ToolResultCheck, ToolResultFixture } from './toolVocabulary'
-import type { ToolCallFault, ToolCallIR, ToolCallPayloadForKind } from '~/components/chat/ir/toolCall'
-import type { ToolKind } from '~/components/chat/ir/toolKind'
-import type { ToolRowStatus } from '~/components/chat/ir/toolRowStatus'
+import type { ToolCall, ToolCallFault, ToolCallSpecVariant } from '~/components/chat/model/toolCall'
+import type { ToolCallStatus } from '~/components/chat/model/toolCallStatus'
+import type { ToolKind } from '~/components/chat/model/toolKind'
 import { describe, expect, it } from 'vitest'
-import { buildToolCall, failedResult, FILE_CHANGE_KINDS, proseResult, toolCall, unparsedResult } from '~/components/chat/ir/toolCall'
+import { buildToolCall, createToolCall } from '~/components/chat/model/createToolCall'
+import { failedResult, FILE_CHANGE_KINDS, proseResult, unparsedResult } from '~/components/chat/model/toolCall'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { toolCallIr } from './toolCallIr'
+import { toolCallFixture } from './toolCallFixture'
 import {
   failuresThatMisreadTheirKind,
   failuresThatMisreadTheirStatus,
@@ -52,13 +53,13 @@ function failure(overrides: Partial<ToolFailureFixture> = {}): ToolFailureFixtur
  * reports a call some later assertion smuggles past the pair -- and it cannot be
  * tested without one.
  */
-function smuggle(call: ToolCallIR, broken: Record<string, unknown>): ToolCallIR {
-  return { ...call, ...broken } as unknown as ToolCallIR
+function smuggle(call: ToolCall, broken: Record<string, unknown>): ToolCall {
+  return { ...call, ...broken } as unknown as ToolCall
 }
 
 describe('invariantViolations', () => {
   it('answers nothing for a call the builder produced', () => {
-    expect(invariantViolations(toolCallIr('read', { result: { lines: null, fallbackContent: '' } }))).toStrictEqual([])
+    expect(invariantViolations(toolCallFixture('read', { result: { lines: null, fallbackContent: '' } }))).toStrictEqual([])
   })
 
   // The tool call succeeded and the command it ran failed, which are two facts. ZCode's
@@ -66,21 +67,21 @@ describe('invariantViolations', () => {
   // the exit code. This case pins the pair as LEGAL, so a rule that refuses it cannot
   // come back without turning the suite red.
   it('answers nothing for a completed command that reported a non-zero exit code', () => {
-    const call = toolCallIr('execute', { result: { commands: [{ output: '', exitCode: 1 }], unresolvedTerminals: [] } })
+    const call = toolCallFixture('execute', { result: { commands: [{ output: '', exitCode: 1 }], unresolvedTerminals: [] } })
     expect(invariantViolations(call)).toStrictEqual([])
   })
 
   // I4 admits `cancelled` beside `completed`. A call the reader interrupted keeps the
-  // partial body it printed, and that body is an UnparsedResult wherever no kind's
+  // partial body it printed, and that body is an UnparsedToolResult wherever no kind's
   // shape reads it -- which is what the lifecycle ladder answers for every kind.
   it('answers nothing for an unparsed result on a call the reader stopped', () => {
-    const call = toolCallIr('read', { status: 'cancelled', result: unparsedResult('the lines that arrived') })
+    const call = toolCallFixture('read', { status: 'cancelled', result: unparsedResult('the lines that arrived') })
     expect(invariantViolations(call)).toStrictEqual([])
   })
 
   it('answers nothing for a file change whose request names its file', () => {
     const change = { filePath: '/p/a.ts', structuredPatch: null, oldStr: 'a', newStr: 'b' }
-    const call = toolCallIr('edit', { request: { changes: [change] }, status: 'failed', result: failedResult('nope') })
+    const call = toolCallFixture('edit', { request: { changes: [change] }, status: 'failed', result: failedResult('nope') })
     expect(invariantViolations(call)).toStrictEqual([])
   })
 
@@ -88,7 +89,7 @@ describe('invariantViolations', () => {
   // vocabularies. It reaches a call only through an assertion, which is what the case
   // below states -- production has no route to one.
   it('reports the builder\'s own fault for a call that reached it invalid', () => {
-    const smuggled = smuggle(toolCallIr('mcp', { result: { content: [] } }), { images: [{ data: 'aGk=', mimeType: 'image/png' }] })
+    const smuggled = smuggle(toolCallFixture('mcp', { result: { content: [] } }), { images: [{ data: 'aGk=', mimeType: 'image/png' }] })
     expect(invariantViolations(smuggled)).toStrictEqual(['a-generic-kind-carries-its-own-images'])
   })
 })
@@ -104,8 +105,8 @@ describe('invariantViolations', () => {
  * because the status it will meet lives on the envelope.
  */
 describe('buildToolCall', () => {
-  function faultOf<K extends ToolKind>(kind: K, status: ToolRowStatus, payload: Omit<ToolCallPayloadForKind<K>, 'kind'>): ToolCallFault | 'built' {
-    const built = buildToolCall<K>({ id: 'c1', name: 'tool', lifecycle: { frameStatus: status, providerOutcome: null, retainedOutcome: null, resultLanded: false } }, { kind, ...payload } as ToolCallPayloadForKind<K>)
+  function faultOf<K extends ToolKind>(kind: K, status: ToolCallStatus, payload: Omit<ToolCallSpecVariant<K>, 'kind'>): ToolCallFault | 'built' {
+    const built = buildToolCall<K>({ id: 'c1', name: 'tool', lifecycle: { frameStatus: status, providerOutcome: null, retainedOutcome: null, rowFinal: false, resultFrameLanded: false } }, { kind, ...payload } as ToolCallSpecVariant<K>)
     return built.ok ? 'built' : built.fault
   }
 
@@ -113,7 +114,7 @@ describe('buildToolCall', () => {
   const NAMED_CHANGE = { filePath: '/p/a.ts', structuredPatch: null, oldStr: 'a', newStr: 'b' }
 
   it('refuses a result on a call that has not ended', () => {
-    for (const status of ['', 'pending', 'in_progress'] as const)
+    for (const status of ['unstated', 'pending', 'in_progress'] as const)
       expect(faultOf('read', status, { request: { path: '/p/a.ts' }, result: READ_RESULT })).toBe('result-before-the-call-finished')
   })
 
@@ -127,8 +128,9 @@ describe('buildToolCall', () => {
     expect(faultOf('read', 'pending', { request, truncated: true })).toBe('pictures-before-the-call-finished')
   })
 
-  it('refuses a completed call with no result', () => {
-    expect(faultOf('read', 'completed', { request: { path: '/p/a.ts' } })).toBe('completed-with-no-result')
+  it('derives incomplete for a completed frame with no result', () => {
+    const built = buildToolCall({ id: 'c1', name: 'Read', lifecycle: { frameStatus: 'completed', providerOutcome: null, retainedOutcome: null, rowFinal: true, resultFrameLanded: true } }, { kind: 'read', request: { path: '/p/a.ts' } })
+    expect(built.ok && built.call.status).toBe('incomplete')
   })
 
   // The two brands draw the same pixels, so a completed call that answers the failure
@@ -186,15 +188,15 @@ describe('buildToolCall', () => {
 /**
  * The row a refused draft becomes.
  *
- * `toolCall` never hands back an invalid call, and it never throws either: a frame
+ * `createToolCall` never hands back an invalid call, and it never throws either: a frame
  * this build read wrongly still has to draw something, and the uncategorized row is
  * the codebase's own word for that. It keeps what the reader can still trust -- the
  * tool name, the arguments, the status -- and drops what the fault says cannot be
  * true.
  */
-describe('toolCall', () => {
+describe('createToolCall', () => {
   it('degrades a refused draft to the uncategorized row', () => {
-    const call = toolCall({ id: 'c1', name: 'Edit', lifecycle: { frameStatus: 'failed', providerOutcome: null, retainedOutcome: null, resultLanded: false } }, { kind: 'edit', request: { changes: [] }, result: failedResult('no such file') })
+    const call = createToolCall({ id: 'c1', name: 'Edit', lifecycle: { frameStatus: 'failed', providerOutcome: null, retainedOutcome: null, rowFinal: false, resultFrameLanded: false } }, { kind: 'edit', request: { changes: [] }, result: failedResult('no such file') })
     expect(call.kind).toBe('other')
     expect(call.name).toBe('Edit')
     expect(call.status).toBe('failed')
@@ -204,20 +206,20 @@ describe('toolCall', () => {
   // The degrade must not restate the very rule it exists to enforce, so an unfinished
   // status keeps no result at all.
   it('drops the result of a refused draft that had not finished', () => {
-    const call = toolCall({ id: 'c1', name: 'Read', lifecycle: { frameStatus: 'in_progress', providerOutcome: null, retainedOutcome: null, resultLanded: false } }, { kind: 'read', request: { path: '/p/a.ts' }, result: { lines: null, fallbackContent: '' } })
+    const call = createToolCall({ id: 'c1', name: 'Read', lifecycle: { frameStatus: 'in_progress', providerOutcome: null, retainedOutcome: null, rowFinal: false, resultFrameLanded: false } }, { kind: 'read', request: { path: '/p/a.ts' }, result: { lines: null, fallbackContent: '' } })
     expect(call.kind).toBe('other')
     expect(call.result).toBeUndefined()
     expect(invariantViolations(call)).toStrictEqual([])
   })
 
   it('states the fault when the refused draft carried no words of its own', () => {
-    const call = toolCall({ id: 'c1', name: 'Write', lifecycle: { frameStatus: 'completed', providerOutcome: null, retainedOutcome: null, resultLanded: false } }, { kind: 'write', request: { changes: [] }, result: { changes: [] } })
+    const call = createToolCall({ id: 'c1', name: 'Write', lifecycle: { frameStatus: 'completed', providerOutcome: null, retainedOutcome: null, rowFinal: false, resultFrameLanded: false } }, { kind: 'write', request: { changes: [] }, result: { changes: [] } })
     expect(call.kind).toBe('other')
     expect(call.result).toStrictEqual(unparsedResult('This build could not read the call: a file change states no file.'))
   })
 
   it('keeps the arguments of a refused draft that carried them', () => {
-    const call = toolCall({ id: 'c1', name: 'weird', lifecycle: { frameStatus: 'completed', providerOutcome: null, retainedOutcome: null, resultLanded: false } }, { kind: 'mcp', request: { args: { q: 1 }, server: 's', tool: 't' }, result: { content: [] }, images: [{ data: 'aGk=', mimeType: 'image/png' }] })
+    const call = createToolCall({ id: 'c1', name: 'weird', lifecycle: { frameStatus: 'completed', providerOutcome: null, retainedOutcome: null, rowFinal: false, resultFrameLanded: false } }, { kind: 'mcp', request: { args: { q: 1 }, server: 's', tool: 't' }, result: { content: [] }, images: [{ data: 'aGk=', mimeType: 'image/png' }] })
     expect(call.kind === 'other' && call.request.args).toStrictEqual({ q: 1 })
   })
 
@@ -226,20 +228,20 @@ describe('toolCall', () => {
   // away the whole of what the tool answered.
   it('keeps the body of a refused draft the uncategorized kind can hold', () => {
     const content = [{ type: 'text' as const, text: 'the tool answered this' }]
-    const call = toolCall({ id: 'c1', name: 'weird', lifecycle: { frameStatus: 'completed', providerOutcome: null, retainedOutcome: null, resultLanded: false } }, { kind: 'mcp', request: { args: {}, server: 's', tool: 't' }, result: { content }, images: [{ data: 'aGk=', mimeType: 'image/png' }] })
+    const call = createToolCall({ id: 'c1', name: 'weird', lifecycle: { frameStatus: 'completed', providerOutcome: null, retainedOutcome: null, rowFinal: false, resultFrameLanded: false } }, { kind: 'mcp', request: { args: {}, server: 's', tool: 't' }, result: { content }, images: [{ data: 'aGk=', mimeType: 'image/png' }] })
     expect(call.kind === 'other' && call.result).toStrictEqual({ content })
     expect(call.images).toStrictEqual([])
   })
 
   it('builds every valid draft unchanged', () => {
-    const call = toolCall({ id: 'c1', name: 'Read', lifecycle: { frameStatus: 'completed', providerOutcome: null, retainedOutcome: null, resultLanded: false } }, { kind: 'read', request: { path: '/p/a.ts' }, result: { lines: null, fallbackContent: '' } })
+    const call = createToolCall({ id: 'c1', name: 'Read', lifecycle: { frameStatus: 'completed', providerOutcome: null, retainedOutcome: null, rowFinal: false, resultFrameLanded: false } }, { kind: 'read', request: { path: '/p/a.ts' }, result: { lines: null, fallbackContent: '' } })
     expect(call.kind).toBe('read')
   })
 })
 
 describe('fixturesOnTheUncategorizedKind', () => {
   const results = check({ fixtures: { bash: FIXTURE, wrench: FIXTURE, unstated: FIXTURE, recall: FIXTURE } })
-  const KIND_OF: Record<string, ToolKind> = { bash: 'execute', wrench: 'other', unstated: '', recall: 'mcp' }
+  const KIND_OF: Record<string, ToolKind> = { bash: 'execute', wrench: 'other', unstated: 'unspecified', recall: 'mcp' }
 
   // `recall` draws the Model Context Protocol card, which `isGenericKind` holds beside
   // the other two. It stays OUT of the answer: that card states the server and the tool
@@ -249,7 +251,7 @@ describe('fixturesOnTheUncategorizedKind', () => {
       const kind = KIND_OF[name]
       if (kind === undefined)
         throw new Error(`no kind stated for "${name}"`)
-      return toolCallIr(kind) as ToolCallIR
+      return toolCallFixture(kind) as ToolCall
     }))
       .toStrictEqual(['wrench', 'unstated'])
   })
@@ -273,7 +275,7 @@ describe('failuresWithoutASuccessFixture', () => {
 
 describe('kindsWithoutFailureFixture', () => {
   const results = check({ fixtures: { bash: FIXTURE, read: FIXTURE } })
-  const callOf = (name: string) => toolCallIr(name === 'bash' ? 'execute' : 'read') as ToolCallIR
+  const callOf = (name: string) => toolCallFixture(name === 'bash' ? 'execute' : 'read') as ToolCall
 
   it('reports a kind a fixture draws that no failed frame pins', () => {
     expect(kindsWithoutFailureFixture({ ...results, failures: [failure()] }, callOf)).toStrictEqual(['read'])
@@ -293,7 +295,7 @@ describe('kindsWithoutFailureFixture', () => {
 })
 
 describe('staleNoFailureReasons', () => {
-  const callOf = () => toolCallIr('execute') as ToolCallIR
+  const callOf = () => toolCallFixture('execute') as ToolCall
 
   it('reports a reason for a kind a failed frame pins', () => {
     const results = check({ fixtures: { bash: FIXTURE }, failures: [failure()], noFailure: { execute: 'stale' } })
@@ -309,26 +311,26 @@ describe('staleNoFailureReasons', () => {
 describe('failuresThatMisreadTheirKind', () => {
   it('reports a failed frame that lands on another kind', () => {
     const results = check({ failures: [failure({ kind: 'todo', name: 'todo_write' })] })
-    expect(failuresThatMisreadTheirKind(results, () => toolCallIr('edit') as ToolCallIR))
+    expect(failuresThatMisreadTheirKind(results, () => toolCallFixture('edit') as ToolCall))
       .toStrictEqual(['todo_write: states "todo" and draws "edit"'])
   })
 
   it('answers nothing when the frame draws the kind it states', () => {
     const results = check({ failures: [failure()] })
-    expect(failuresThatMisreadTheirKind(results, () => toolCallIr('execute') as ToolCallIR)).toStrictEqual([])
+    expect(failuresThatMisreadTheirKind(results, () => toolCallFixture('execute') as ToolCall)).toStrictEqual([])
   })
 })
 
 describe('failuresThatMisreadTheirStatus', () => {
   it('reports a failed frame that reads as another outcome word', () => {
     const results = check({ failures: [failure()] })
-    expect(failuresThatMisreadTheirStatus(results, () => toolCallIr('execute', { status: 'declined' }) as ToolCallIR))
+    expect(failuresThatMisreadTheirStatus(results, () => toolCallFixture('execute', { status: 'declined' }) as ToolCall))
       .toStrictEqual(['bash: states "failed" and reads "declined"'])
   })
 
   it('answers nothing when the frame reads the word it states', () => {
     const results = check({ failures: [failure()] })
-    expect(failuresThatMisreadTheirStatus(results, () => toolCallIr('execute', { status: 'failed' }) as ToolCallIR)).toStrictEqual([])
+    expect(failuresThatMisreadTheirStatus(results, () => toolCallFixture('execute', { status: 'failed' }) as ToolCall)).toStrictEqual([])
   })
 })
 
@@ -360,12 +362,12 @@ describe('openingFrameOf', () => {
 describe('requestsThatAnswerEarly', () => {
   it('reports an opening frame that already carries a result', () => {
     const results = check({ fixtures: { todowrite: FIXTURE } })
-    const early = smuggle(toolCallIr('todo', { status: 'pending' }), { result: { items: [] } })
+    const early = smuggle(toolCallFixture('todo', { status: 'pending' }), { result: { items: [] } })
     expect(requestsThatAnswerEarly(results, () => early)).toStrictEqual(['todowrite'])
   })
 
   it('answers nothing for an opening frame that states no result', () => {
     const results = check({ fixtures: { todowrite: FIXTURE } })
-    expect(requestsThatAnswerEarly(results, () => toolCallIr('todo', { status: 'pending' }) as ToolCallIR)).toStrictEqual([])
+    expect(requestsThatAnswerEarly(results, () => toolCallFixture('todo', { status: 'pending' }) as ToolCall)).toStrictEqual([])
   })
 })

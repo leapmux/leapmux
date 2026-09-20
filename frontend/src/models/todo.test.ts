@@ -1,8 +1,11 @@
 import type { TodoItem } from '~/models/todo'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
+import { normalizeTodoStatus, rawTodosToItems } from '~/components/chat/normalizers/todo'
+import { sortTodos, todoDisplayLabel } from '~/components/todo/todoPresentation'
 import { TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isFinishedTodoStatus, normalizeTodoStatus, protoTodoToItem, rawTodosToItems, sortTodos, todoDisplayLabel, todoProgress, todoRowKey } from '~/models/todo'
+import { isFinishedTodoStatus, todoProgress, todoRowKey } from '~/models/todo'
+import { protoTodoToItem } from '~/stores/chatTodoStore'
 
 describe('TodoItem', () => {
   describe('normalizeTodoStatus', () => {

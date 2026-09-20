@@ -1,20 +1,20 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { Accessor, JSX } from 'solid-js'
-import type { ToolRowPosition } from '../../ir/row'
-import type { ToolCallForKind } from '../../ir/toolCall'
-import type { ToolKind } from '../../ir/toolKind'
-import type { ToolResults } from '../../ir/tools'
-import type { RenderContext } from '../../messageRenderers'
 import type { MessageUiKey } from '../../messageUiKeys'
-import { typedResult } from '../../ir/toolCall'
+import type { ToolSpanRowPosition } from '../../model/row'
+import type { ToolCallVariant } from '../../model/toolCall'
+import type { ToolKind } from '../../model/toolKind'
+import type { ToolResultByKind } from '../../model/tools'
+import type { ToolResultRenderContext } from '../../renderContext'
+import { typedResult } from '../../model/toolCall'
 
 /** A call whose result, when present, is the kind's own payload. Failed and unparsed results are stripped BEFORE any hook runs. */
-export type ParsedCall<K extends ToolKind> = Omit<ToolCallForKind<K>, 'result'> & { result?: ToolResults[K] }
+export type ParsedCall<K extends ToolKind> = Omit<ToolCallVariant<K>, 'result'> & { result?: ToolResultByKind[K] }
 /** A call that carries the kind's own result. `result()` and `resultMeta()` take this alone. */
-export type ResolvedCall<K extends ToolKind> = Omit<ToolCallForKind<K>, 'result'> & { result: ToolResults[K] }
+export type ResolvedCall<K extends ToolKind> = Omit<ToolCallVariant<K>, 'result'> & { result: ToolResultByKind[K] }
 
 /** The call with its failed and unparsed results stripped, so a kind hook reads its own payload alone. */
-export function parsedCall<K extends ToolKind>(call: ToolCallForKind<K>): ParsedCall<K> {
+export function parsedCall<K extends ToolKind>(call: ToolCallVariant<K>): ParsedCall<K> {
   const { result, ...rest } = call
   const parsed = typedResult({ kind: call.kind, result })
   // A stripped or empty slot re-applies as ABSENT rather than an explicitly
@@ -31,7 +31,7 @@ export function parsedCall<K extends ToolKind>(call: ToolCallForKind<K>): Parsed
  * spread states the pair -- every field but `result` from the call, `result` from the
  * stripped slot -- the way {@link parsedCall} does.
  */
-export function resolvedCall<K extends ToolKind>(call: ToolCallForKind<K>): ResolvedCall<K> | undefined {
+export function resolvedCall<K extends ToolKind>(call: ToolCallVariant<K>): ResolvedCall<K> | undefined {
   const result = typedResult(call)
   return result === undefined ? undefined : { ...call, result }
 }
@@ -39,13 +39,13 @@ export function resolvedCall<K extends ToolKind>(call: ToolCallForKind<K>): Reso
 /**
  * What one mounted row hands each drawing hook.
  *
- * It carries {@link ToolRowPosition} rather than a flat `role` plus two booleans, so
- * the rule the row IR states -- a row is never its own sibling -- reaches the shared
+ * It carries {@link ToolSpanRowPosition} rather than a flat `role` plus two booleans, so
+ * the rule the row model states -- a row is never its own sibling -- reaches the shared
  * renderers that actually branch on it. Restating the three fields here let
  * `{role: 'request', hasRequestRow: true}` back in one hop above every reader.
  */
-export type ToolRowView = ToolRowPosition & {
-  context: RenderContext | undefined
+export type ToolRowView = ToolSpanRowPosition & {
+  context: ToolResultRenderContext | undefined
   drawsResult: boolean
   expanded: Accessor<boolean>
   setExpanded: (value: boolean) => void
@@ -111,7 +111,7 @@ export interface ToolKindRenderer<K extends ToolKind> {
    * The generic trio exchanges the first two steps, because {@link nameLeads} makes
    * the tool's own name the heading. It is the one exception.
    */
-  title: (call: ParsedCall<K>, context: RenderContext | undefined) => JSX.Element | string
+  title: (call: ParsedCall<K>, context: ToolResultRenderContext | undefined) => JSX.Element | string
   /** One-liners above the body border: the command line, extra search paths. */
   summary?: (call: ParsedCall<K>, view: ToolRowView) => JSX.Element | null
   /** Request-side body: the expanded command, the requested diff, the question options, the agent prompt. */

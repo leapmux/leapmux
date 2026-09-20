@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { providerRowIr } from '~/test-support/toolCallIr'
+import { providerRow } from '~/test-support/toolCallFixture'
 import { zcodeControlPlanText, zcodePlanText } from './plan'
 import '../plugin'
 import '../../testMocks'
@@ -43,7 +43,7 @@ describe('zcodePlanText', () => {
   })
 
   it('classifies the streamed-plan row as the plan the transcript draws', () => {
-    const row = providerRowIr(AgentProvider.ZCODE, scheduled({ input: { allowedPrompts: [] } }), {
+    const row = providerRow(AgentProvider.ZCODE, scheduled({ input: { allowedPrompts: [] } }), {
       spanType: 'ExitPlanMode',
       supplementalContent: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'plan', input: { plan: '# Streamed plan' } } },
     })

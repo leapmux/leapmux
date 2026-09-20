@@ -1,7 +1,7 @@
 import type { ToolFailureFixture, ToolResultFixture, ToolVocabularyCheck } from '~/test-support/toolVocabulary'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { providerToolCall } from '~/test-support/toolCallIr'
+import { providerToolCall } from '~/test-support/toolCallFixture'
 import { describeToolFailureLadder, describeToolResultCorpus } from '~/test-support/toolResultCases'
 import { fixturesThatChangeKind, openingFrameOf } from '~/test-support/toolVocabulary'
 import { claudeToolKind } from './toolKinds'
@@ -13,7 +13,7 @@ const KINDS: ToolVocabularyCheck = {
   names: Object.values(CLAUDE_TOOL_NAMES),
   kindOf: claudeToolKind,
   generic: {},
-  fallback: '',
+  fallback: 'unspecified',
 }
 
 /** One fixture's own frame, read through the span column a result row sits in. */

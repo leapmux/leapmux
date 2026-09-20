@@ -1,5 +1,5 @@
-import type { ToolCallIR, ToolCallOf } from '../../ir/toolCall'
-import type { ToolKind } from '../../ir/toolKind'
+import type { ToolCall } from '../../model/toolCall'
+import type { ToolKind } from '../../model/toolKind'
 import type { ParsedCall, ResolvedCall, ToolKindRenderer } from './renderer'
 import { agentRenderer } from './agent'
 import { agentsRenderer } from './agents'
@@ -16,7 +16,6 @@ import { mcpRenderer } from './mcp'
 import { memoryRenderer } from './memory'
 import { messageRenderer } from './message'
 import { moveRenderer } from './move'
-import { noneRenderer } from './none'
 import { otherRenderer } from './other'
 import { questionRenderer } from './question'
 import { readRenderer } from './read'
@@ -29,42 +28,43 @@ import { taskRenderer } from './task'
 import { thinkRenderer } from './think'
 import { todoRenderer } from './todo'
 import { triggerRenderer } from './trigger'
+import { unspecifiedRenderer } from './unspecified'
 import { waitRenderer } from './wait'
 import { webSearchRenderer } from './webSearch'
 import { writeRenderer } from './write'
 
 /** The one renderer per kind. Total by mapped type: a missing kind is a compile error. */
 export const TOOL_KIND_RENDERERS: { readonly [K in ToolKind]: ToolKindRenderer<K> } = {
-  '': noneRenderer,
-  'agent': agentRenderer,
-  'agents': agentsRenderer,
-  'chart': chartRenderer,
-  'delete': deleteRenderer,
-  'edit': editRenderer,
-  'execute': executeRenderer,
-  'fetch': fetchRenderer,
-  'glob': globRenderer,
-  'grep': grepRenderer,
-  'image': imageRenderer,
-  'list': listRenderer,
-  'mcp': mcpRenderer,
-  'memory': memoryRenderer,
-  'message': messageRenderer,
-  'move': moveRenderer,
-  'other': otherRenderer,
-  'question': questionRenderer,
-  'read': readRenderer,
-  'report': reportRenderer,
-  'search': searchRenderer,
-  'skill': skillRenderer,
-  'switch_mode': switchModeRenderer,
-  'task': taskRenderer,
-  'think': thinkRenderer,
-  'todo': todoRenderer,
-  'trigger': triggerRenderer,
-  'wait': waitRenderer,
-  'web_search': webSearchRenderer,
-  'write': writeRenderer,
+  unspecified: unspecifiedRenderer,
+  agent: agentRenderer,
+  agents: agentsRenderer,
+  chart: chartRenderer,
+  delete: deleteRenderer,
+  edit: editRenderer,
+  execute: executeRenderer,
+  fetch: fetchRenderer,
+  glob: globRenderer,
+  grep: grepRenderer,
+  image: imageRenderer,
+  list: listRenderer,
+  mcp: mcpRenderer,
+  memory: memoryRenderer,
+  message: messageRenderer,
+  move: moveRenderer,
+  other: otherRenderer,
+  question: questionRenderer,
+  read: readRenderer,
+  report: reportRenderer,
+  search: searchRenderer,
+  skill: skillRenderer,
+  switch_mode: switchModeRenderer,
+  task: taskRenderer,
+  think: thinkRenderer,
+  todo: todoRenderer,
+  trigger: triggerRenderer,
+  wait: waitRenderer,
+  web_search: webSearchRenderer,
+  write: writeRenderer,
 }
 
 /** The one cast in the layer: the table is total and keyed by the same `kind` the call carries. */
@@ -75,7 +75,7 @@ export function rendererFor<K extends ToolKind>(call: { kind: K }): ToolKindRend
 /** One renderer beside the views of the call its hooks read, all of ONE kind. */
 export interface ToolCallDispatch<K extends ToolKind> {
   renderer: ToolKindRenderer<K>
-  call: ToolCallOf<K>
+  call: ToolCall<K>
   /** The call with the failed and unparsed brands stripped from its result slot. */
   parsed: ParsedCall<K>
   /** The parsed call when its result slot holds the kind's own payload; undefined when the slot is empty. */
@@ -90,7 +90,7 @@ export interface ToolCallDispatch<K extends ToolKind> {
  * table's mapped type keys each renderer by the same literal the call holds, and the
  * union a real call arrives as satisfies every member at its own kind.
  */
-export function dispatchParts(call: ToolCallIR): ToolCallDispatch<ToolKind> {
+export function dispatchParts(call: ToolCall): ToolCallDispatch<ToolKind> {
   return {
     renderer: rendererFor(call),
     call,
@@ -114,6 +114,6 @@ export function dispatchParts(call: ToolCallIR): ToolCallDispatch<ToolKind> {
  * assertion exists outside this table module. The assertion ban in `eslint.config.ts`
  * holds that rule.
  */
-export function dispatchToolCall<R>(call: ToolCallIR, op: <K extends ToolKind>(parts: ToolCallDispatch<K>) => R): R {
+export function dispatchToolCall<R>(call: ToolCall, op: <K extends ToolKind>(parts: ToolCallDispatch<K>) => R): R {
   return op(dispatchParts(call))
 }

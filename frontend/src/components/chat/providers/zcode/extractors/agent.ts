@@ -1,4 +1,4 @@
-import type { AgentRun } from '../../../ir/tools/agent'
+import type { AgentRun } from '../../../model/tools/agent'
 import type { ZCodeRow } from './toolCommon'
 import { pickString } from '~/lib/jsonPick'
 import { formatDuration, formatNumber } from '../../../rendererUtils'

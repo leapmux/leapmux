@@ -1,4 +1,4 @@
-import type { NotificationEntryIR } from '../../../ir/notification'
+import type { NotificationEntry } from '../../../model/notification'
 import { ZCODE_DECISION, ZCODE_EVENT } from '~/generated/contracts/zcode-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { zcodeEnvelope } from './toolCommon'
@@ -71,13 +71,13 @@ export function describeZCodeNotification(parsed: unknown): string | null {
 }
 
 /**
- * Read one ZCode notification row into the shared notification IR.
+ * Read one ZCode notification row into the shared notification model.
  *
  * ZCode's SOLE notification seam, for a standalone row and for one entry of a
  * consolidated wrapper alike -- without it a multi-event thread would render only its
  * first message.
  */
-export function zcodeNotificationEntry(msg: Record<string, unknown>): NotificationEntryIR[] {
+export function zcodeNotificationEntry(msg: Record<string, unknown>): NotificationEntry[] {
   const text = describeZCodeNotification(msg)
   return text === null ? [] : [{ kind: 'text', text }]
 }

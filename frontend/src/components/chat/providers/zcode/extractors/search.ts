@@ -1,8 +1,8 @@
-import type { SearchResult } from '../../../ir/searchResult'
+import type { SearchResult } from '../../../model/searchResult'
 import type { ZCodeRow } from './toolCommon'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { pickString } from '~/lib/jsonPick'
-import { searchMode } from '../../../ir/searchMode'
+import { searchOutputMode } from '../../../model/searchOutputMode'
 import { zcodeExtractTool, zcodeToolInput } from './toolCommon'
 
 const GLOB_TRUNCATION = '(Results are truncated. Consider using a more specific path or pattern.)'
@@ -51,7 +51,7 @@ export function extractZCodeSearch(row: ZCodeRow): SearchResult | null {
   // raw word; both still fall through to the content branch below, exactly as an
   // absent mode always did.
   const declared = pickString(input, 'output_mode')
-  const mode = declared ? searchMode(declared) : 'files_with_matches'
+  const mode = declared ? searchOutputMode(declared) : 'files_with_matches'
   // An unrecognized word leaves the mode unstated rather than explicitly undefined.
   if (mode !== undefined)
     source.mode = mode

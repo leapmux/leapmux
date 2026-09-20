@@ -9,12 +9,11 @@
  *     value, so an option always has something to click.
  *   - Give the plugin ONE reader that both its registry hook and its control
  *     components call, so the two surfaces cannot disagree about what is on screen.
- *   - Give the saved-answer display (`zcodeControlResponseDisplay`) the SAME question
+ *   - Give the saved-answer display (`zcodeControlResponseSummary`) the SAME question
  *     list, in the same order, that the reader answered.
  */
 
-import type { Question } from '../../controls/types'
-import type { QuestionIR } from '../../ir/questionBody'
+import type { ControlQuestion, QuestionPrompt } from '../../model/question'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { getToolInput, getToolName } from '~/utils/controlResponse'
@@ -29,7 +28,7 @@ import { questionsFromRecords } from '../questionRecords'
  * other keeps the option answerable; an option with neither is dropped, because it
  * has nothing to send.
  */
-function zcodeOptions(question: Record<string, unknown>): Question['options'] {
+function zcodeOptions(question: Record<string, unknown>): ControlQuestion['options'] {
   const options = question.options
   if (!Array.isArray(options))
     return []
@@ -50,7 +49,7 @@ function zcodeOptions(question: Record<string, unknown>): Question['options'] {
  * that the request declares.
  *
  * This is the ONE question list of the provider. The control surface answers this list,
- * and `zcodeControlResponseDisplay` reads the saved answer back through it. A second
+ * and `zcodeControlResponseSummary` reads the saved answer back through it. A second
  * list lets the two surfaces disagree about which question one answer belongs to, and
  * the positional `answer_<index>` fallback then shows an answer under the wrong
  * question.
@@ -97,7 +96,7 @@ export function zcodeQuestionText(question: Record<string, unknown>): string {
  * other keeps the option readable -- the same repair `zcodeOptions` makes for the
  * answerable list.
  */
-export function zcodeQuestionsFromToolInput(input: Record<string, unknown>): QuestionIR[] {
+export function zcodeQuestionsFromToolInput(input: Record<string, unknown>): QuestionPrompt[] {
   return questionsFromRecords(
     input.questions,
     (question) => {
@@ -120,12 +119,12 @@ export function zcodeQuestionsFromToolInput(input: Record<string, unknown>): Que
 }
 
 /**
- * Build the `Question[]` for a stored ZCode user-input control request.
+ * Build the `ControlQuestion[]` for a stored ZCode user-input control request.
  *
  * Returns an empty array for a request that declares no question -- a plan approval
  * reaches the plan surface instead, which needs none.
  */
-export function zcodeQuestionsFromPayload(payload: Record<string, unknown>): Question[] {
+export function zcodeQuestionsFromPayload(payload: Record<string, unknown>): ControlQuestion[] {
   return zcodeQuestionRecords(payload).flatMap((raw) => {
     const text = zcodeQuestionText(raw)
     // The answer is keyed by the question TEXT, so a question with neither text nor
@@ -133,7 +132,7 @@ export function zcodeQuestionsFromPayload(payload: Record<string, unknown>): Que
     if (!text)
       return []
     const header = pickString(raw, 'header')
-    const built: Question = {
+    const built: ControlQuestion = {
       question: text,
       options: zcodeOptions(raw),
     }

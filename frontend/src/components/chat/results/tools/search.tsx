@@ -1,7 +1,6 @@
 import type { ToolKindRenderer } from './renderer'
 import Search from 'lucide-solid/icons/search'
-import { searchResultCollapsible, searchResultCopyable } from '../../ir/searchResult'
-import { SearchResultBody } from '../searchResult'
+import { SearchResultBody, searchResultCollapsible, searchResultCopyable } from '../searchResult'
 import { renderSearchTitle } from './titleParts'
 
 export const searchRenderer: ToolKindRenderer<'search'> = {

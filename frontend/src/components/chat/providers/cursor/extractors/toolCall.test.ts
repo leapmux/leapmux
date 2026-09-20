@@ -1,18 +1,18 @@
-import type { ToolCallIR } from '../../../ir/toolCall'
+import type { ToolCall } from '../../../model/toolCall'
 import { describe, expect, it } from 'vitest'
 import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isFailedResult, isUnparsedResult, typedResult } from '../../../ir/toolCall'
-import { acpToolCallIR } from '../../acp/extractors/toolCall'
+import { isToolFailureResult, isUnparsedToolResult, typedResult } from '../../../model/toolCall'
+import { acpToolCall } from '../../acp/extractors/toolCall'
 import { cursorSearchKind, cursorToolCallAdapter } from './toolCall'
 
 const CALL = 'cursor-tool'
 
-function call(tool: Record<string, unknown>, supplemental?: Record<string, unknown>): ToolCallIR {
+function call(tool: Record<string, unknown>, supplemental?: Record<string, unknown>): ToolCall {
   const frame = { sessionUpdate: 'tool_call_update', toolCallId: CALL, status: 'completed', ...tool }
   const extra = supplemental
     ? { sessionUpdate: frame.sessionUpdate, toolCallId: frame.toolCallId, status: frame.status, ...supplemental }
     : undefined
-  return acpToolCallIR(frame, cursorToolCallAdapter, extra)
+  return acpToolCall(frame, cursorToolCallAdapter, extra)
 }
 
 describe('cursor search kind', () => {
@@ -56,13 +56,13 @@ describe('cursor search kind', () => {
     expect(call({ sessionUpdate: 'tool_call', status: 'pending', kind: 'search', title: 'grep -l "needle"', rawInput: { pattern: 'needle' } }).kind).toBe('grep')
   })
 
-  // The reason is the RESULT of a call that failed, which is what a `FailedResult`
+  // The reason is the RESULT of a call that failed, which is what a `ToolFailureResult`
   // states: the call ended without its payload and said only these words. The shared
   // ladder answers it for every kind, so the repaired kind answers it too.
   it('reads a content search from a flagged grep title when the call failed', () => {
     const failed = call({ kind: 'search', status: 'failed', title: 'grep -i "needle"', rawInput: { pattern: 'needle' }, rawOutput: { error: 'no such path' } })
     expect(failed.kind).toBe('grep')
-    expect(isFailedResult(failed.result) && failed.result.text).toBe('no such path')
+    expect(isToolFailureResult(failed.result) && failed.result.text).toBe('no such path')
   })
 
   // A file-name search states its path, its pattern, both, or neither.
@@ -114,13 +114,13 @@ describe('cursor protocol errors', () => {
   }
 
   // A call that FAILED states a failure, not an unparsed payload: the two draw the
-  // same, and the words mean different things. `UnparsedResult` says this build could
+  // same, and the words mean different things. `UnparsedToolResult` says this build could
   // not read the answer into the kind's shape, which is not what happened.
   it('states the protocol error when a saved result restores no output', () => {
     const errored = failedServerCall('')
     expect(errored.kind).toBe('mcp')
-    expect(isUnparsedResult(errored.result)).toBe(false)
-    expect(isFailedResult(errored.result) && errored.result.text).toBe('server unavailable')
+    expect(isUnparsedToolResult(errored.result)).toBe(false)
+    expect(isToolFailureResult(errored.result) && errored.result.text).toBe('server unavailable')
   })
 
   // The saved content of a failed call is not the card's body. Restoring it as one
@@ -129,7 +129,7 @@ describe('cursor protocol errors', () => {
   it('states the protocol error above the partial output the record still holds', () => {
     const restored = failedServerCall('partial answer')
     expect(restored.kind).toBe('mcp')
-    expect(isFailedResult(restored.result) && restored.result.text).toBe('server unavailable\n\npartial answer')
+    expect(isToolFailureResult(restored.result) && restored.result.text).toBe('server unavailable\n\npartial answer')
   })
 
   // A call the reader STOPPED is not a failure. It saved the part of the answer that
@@ -145,7 +145,7 @@ describe('cursor protocol errors', () => {
       rawOutput: { content: [{ type: 'tool-result', toolCallId: CALL, toolName: 'mcp_server_lookup', result: 'one hit so far' }] },
     })
     expect(stopped.kind).toBe('mcp')
-    expect(isFailedResult(stopped.result)).toBe(false)
+    expect(isToolFailureResult(stopped.result)).toBe(false)
     expect(stopped.result).toMatchObject({ content: [{ type: 'text', text: 'one hit so far' }] })
   })
 
@@ -172,7 +172,7 @@ describe('cursor protocol errors', () => {
    * away the answer it did produce.
    */
   it('keeps the saved content of a retained server call the frame never completed', () => {
-    const retained = acpToolCallIR({
+    const retained = acpToolCall({
       sessionUpdate: 'tool_call_update',
       toolCallId: CALL,
       status: 'in_progress',
@@ -214,8 +214,8 @@ describe('cursor protocol errors', () => {
    *
    * The shared build answers this row, and Cursor's branch keeps its result only when
    * that answer states `kind: 'mcp'`. It did not: no case list of the old
-   * `acpPayloadFor` switch held `mcp`, so the frame fell to the generic case and came back
-   * as `kind: ''` from behind a declared `ToolCallPayload<'mcp'>`. The test below
+   * `acpSpecFor` switch held `mcp`, so the frame fell to the generic case and came back
+   * as `kind: 'unspecified'` from behind a declared `ToolCallSpec<'mcp'>`. The test below
    * therefore matched nothing, `result` was always undefined, and the card drew empty.
    */
   it('draws the content blocks of an MCP call that saved no tool result', () => {

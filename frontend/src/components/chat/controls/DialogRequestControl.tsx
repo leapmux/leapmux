@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { DialogRequestIR } from '../ir/controlRequest'
+import type { DialogPrompt } from '../model/controlPrompt'
 import type { ContentProps } from './types'
 import { Show, untrack } from 'solid-js'
 import * as styles from '../ControlRequestBanner.css'
@@ -31,7 +31,7 @@ export function createDialogText(props: Pick<ContentProps, 'answerState'>, prefi
  * whole seconds read "Auto-resolves in 0s if no response." for every deadline under
  * 500 ms, which tells the reader the dialog already expired.
  */
-export function dialogTimeoutHint(dialog: DialogRequestIR): string | null {
+export function dialogTimeoutHint(dialog: DialogPrompt): string | null {
   return dialog.timeoutMs === undefined ? null : `Auto-resolves in ${formatShortWait(dialog.timeoutMs)} if no response.`
 }
 
@@ -43,7 +43,7 @@ export function dialogTimeoutHint(dialog: DialogRequestIR): string | null {
  * buttons -- a one-line answer reads as part of the decision row, and putting it
  * here would separate the field from the button that sends it.
  */
-export const DialogRequestContent: Component<ContentProps & { dialog: DialogRequestIR }> = (props) => {
+export const DialogRequestContent: Component<ContentProps & { dialog: DialogPrompt }> = (props) => {
   const text = createDialogText(props, () => props.dialog.prefill)
   return (
     <>

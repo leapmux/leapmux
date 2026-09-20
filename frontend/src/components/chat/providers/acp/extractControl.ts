@@ -1,6 +1,6 @@
-import type { WirePermissionOption } from '../../controls/permissionOptionLabels'
-import type { PermissionRequestIR } from '../../ir/controlRequest'
+import type { PermissionPrompt } from '../../model/controlPrompt'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
+import type { PermissionOption } from '~/components/chat/model/controlPrompt'
 import { ACP_SUPPLEMENT_REQUEST } from '~/generated/contracts/acp-protocol'
 import { assignDefined, isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { resolveACPToolCall } from './extractors/toolCall'
@@ -30,7 +30,7 @@ export function acpPermissionToolCall(payload: Record<string, unknown>): Record<
  * the layout iterated the CHARACTERS, and the decision row drew one empty button for
  * each of them. An element that is no object cannot state a kind, so it is dropped.
  */
-export function acpPermissionOptions(payload: Record<string, unknown>): WirePermissionOption[] {
+export function acpPermissionOptions(payload: Record<string, unknown>): PermissionOption[] {
   const options = acpParams(payload)?.options
   if (!Array.isArray(options))
     return []
@@ -47,7 +47,7 @@ export function acpPermissionOptions(payload: Record<string, unknown>): WirePerm
 }
 
 /**
- * One Agent Client Protocol permission request, read into the shared IR.
+ * One Agent Client Protocol permission request, read into the shared model.
  *
  * The request states its tool call in a COMPACT form -- an id, a title and a kind --
  * and the arguments live on the tool-request row of the same call. `resolveACPToolCall`
@@ -56,7 +56,7 @@ export function acpPermissionOptions(payload: Record<string, unknown>): WirePerm
  *
  * Returns null for a payload that is no permission request at all.
  */
-export function acpPermissionIR(input: ControlExtractionInput): PermissionRequestIR | null {
+export function acpPermissionIR(input: ControlExtractionInput): PermissionPrompt | null {
   const original = acpPermissionToolCall(input.payload)
   const options = acpPermissionOptions(input.payload)
   // A permission request states a tool call, an option list, or both. A payload with
@@ -67,7 +67,7 @@ export function acpPermissionIR(input: ControlExtractionInput): PermissionReques
     return null
   const toolCall: Record<string, unknown> = original ? resolveACPToolCall(original, input.request?.parentObject) : {}
   const kind = pickString(toolCall, 'kind')
-  const permission: PermissionRequestIR = {
+  const permission: PermissionPrompt = {
     title: pickString(toolCall, 'title') || kind,
     input: toolCall[ACP_SUPPLEMENT_REQUEST.RawInput],
     options,

@@ -2,14 +2,14 @@ import type { ToolVocabularyCheck } from '~/test-support/toolVocabulary'
 import { describe, expect, it } from 'vitest'
 import { REASONIX_TOOL } from '~/generated/contracts/reasonix-protocol'
 import { documentedNamesThatReachAKind, staleGenericNames, undocumentedFallbacks } from '~/test-support/toolVocabulary'
-import { acpToolCallIR } from '../acp/extractors/toolCall'
+import { acpToolCall } from '../acp/extractors/toolCall'
 import { reasonixToolCallAdapter } from './extractors/toolCall'
 import { REASONIX_TOOL_KINDS, REASONIX_TOOL_NAME } from './toolKinds'
 
 /**
  * The smallest arguments a tool must state for its own kind to build.
  *
- * The four file changes state the FILE they change. The IR refuses a `delete`, an
+ * The four file changes state the FILE they change. The model refuses a `delete`, an
  * `edit`, a `move` or a `write` whose request names none -- the row composes its
  * header from that list at every state of the call -- and degrades such a call to the
  * uncategorized row, so a case that states no file tests that row and not the tool.
@@ -26,7 +26,7 @@ const MINIMAL_INPUT: Readonly<Record<string, Record<string, unknown>>> = {
 
 /** One pending call titled with the name, the way every Reasonix call states its own. */
 function kindOf(name: string) {
-  return acpToolCallIR(
+  return acpToolCall(
     { sessionUpdate: 'tool_call', toolCallId: 'rx-vocab', status: 'pending', kind: 'other', title: name, rawInput: MINIMAL_INPUT[name] ?? {} },
     reasonixToolCallAdapter,
     undefined,

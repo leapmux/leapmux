@@ -4,7 +4,7 @@ import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 
-// Every provider fills the tool-call IR from a TABLE keyed by `ToolKind`: one entry for
+// Every provider fills the tool-call model from a TABLE keyed by `ToolKind`: one entry for
 // each kind, holding that kind's request or that kind's whole payload. The table's own
 // type states which kind each entry answers for, so an entry cannot fill another kind's
 // shape and cannot leave a declared field out.
@@ -17,14 +17,14 @@ import { collectFiles, frontendRoot, posixRelative } from '~/test-support/source
 // these compile, and they are the two forms this guard refuses:
 //
 //   'fetch': args => ({ url: read(args), patchText: '...' })          // no annotation
-//   'fetch': (args): ToolRequests['fetch'] => {
+//   'fetch': (args): ToolRequestByKind['fetch'] => {
 //     const request = { url: read(args), patchText: '...' }           // not a literal
 //     return request
 //   }
 //
 // An explicit return type, or a declared type on the intermediate `const`, puts the
 // literal back under the check. A `patchText` key once rode `FileChangeRequest` into the
-// IR through exactly this hole: no renderer could read it, and nothing could report it.
+// model through exactly this hole: no renderer could read it, and nothing could report it.
 //
 // A PARSE rather than a text scan. The tables hold arrow entries, named-function
 // entries, factory calls and entry objects with a `build` member, and a regular
@@ -57,7 +57,7 @@ const PROVIDERS_DIR = join(frontendRoot, 'src/components/chat/providers')
  * below and states which table went unread.
  */
 const KNOWN_TABLES = [
-  'ACP_PAYLOAD_BUILDERS',
+  'ACP_SPEC_READERS',
   'ACP_TOOL_REQUEST_OVERRIDES',
   'CLAUDE_TOOL_READERS',
   'CLAUDE_TOOL_REQUEST_OVERRIDES',
@@ -203,7 +203,7 @@ function escapingNames(expr: ts.Expression, into: Set<string>): void {
  * A variable is not a fresh literal, so lifting a request out of the `return` switches
  * the excess-property check off exactly as a missing return type does. Only a `const`
  * that ESCAPES counts, in the sense {@link escapingNames} gives: a local the function
- * merely reads carries nothing into the IR.
+ * merely reads carries nothing into the model.
  */
 function unannotatedReturnedConsts(fn: FunctionNode): string[] {
   const body = fn.body
@@ -229,16 +229,15 @@ function unannotatedReturnedConsts(fn: FunctionNode): string[] {
 /**
  * Whether a declaration's type is a table over `ToolKind`.
  *
- * Two forms, and both state the key set in the declaration itself: the mapped type that
- * every reader table writes out, and the `ToolRequestOverrides<F>` alias that every
- * partial table takes. A provider that adds a table takes one of the two, because those
+ * Three forms state the key set: an inline mapped type, the shared reader-table alias,
+ * and the request-override alias. A provider that adds a table takes one of these, because they
  * are what `toolRequestFor` and the payload lookups accept.
  */
 function isToolKindTable(node: ts.TypeNode | undefined): boolean {
   if (!node)
     return false
   if (ts.isTypeReferenceNode(node))
-    return ts.isIdentifier(node.typeName) && node.typeName.text === 'ToolRequestOverrides'
+    return ts.isIdentifier(node.typeName) && (node.typeName.text === 'ToolRequestOverrides' || node.typeName.text === 'ToolCallSpecReaderTable')
   if (!ts.isMappedTypeNode(node))
     return false
   const constraint = node.typeParameter.constraint
@@ -456,7 +455,7 @@ describe('a tool-call table entry declares its return type', () => {
       'A mapped table states which kind an entry answers for. It does NOT put the entry\'s '
       + 'literal under the excess-property check, because a contextual signature is not an '
       + 'annotated position -- so an entry with no return type accepts a key the kind never '
-      + 'declared, and no renderer can read it. Write `(args): ToolRequests[\'fetch\'] => ...` '
+      + 'declared, and no renderer can read it. Write `(args): ToolRequestByKind[\'fetch\'] => ...` '
       + 'at the entry, and declare the type of any `const` the body hands back.',
     ).toEqual([])
   })
@@ -528,7 +527,7 @@ describe('a tool-call table entry declares its return type', () => {
     // `needsResult` answers a boolean: no property of its answer can be excess.
     expect(offencesOf('  \'edit\': { needsResult: r => !r.path, build: (f): P => ({ kind: \'edit\' }) },\n')).toEqual([])
     // A local the function READS rather than hands back. `String(seen)` answers a
-    // string, so no key the literal holds reaches the IR through it.
+    // string, so no key the literal holds reaches the model through it.
     expect(offencesOf(
       '  \'fetch\': (args): Req => {\n'
       + '    const seen = { url: args.url }\n'

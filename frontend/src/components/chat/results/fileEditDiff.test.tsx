@@ -1,8 +1,8 @@
 import type { StructuredPatchHunk } from '../diff'
-import type { FileEditContent, FileEditDiff, FileEditFacts } from '../ir/fileEditDiff'
+import type { FileEditBase, FileEditContent, FileEditDiff } from '../model/fileEditDiff'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { fileEditContent, fileEditDiffFromHunks, fileEditDiffFromWholeFile, fileEditDiffHunks, fileEditHasDiff, normalizeStructuredPatchHunks, pickFileEditDiff } from '../ir/fileEditDiff'
+import { fileEditContent, fileEditDiffFromHunks, fileEditDiffFromWholeFile, fileEditDiffHunks, fileEditHasDiff, normalizeStructuredPatchHunks, pickFileEditDiff } from '../model/fileEditDiff'
 import { FileEditDiffBody } from './fileEditDiff'
 
 const tokenizeAsyncMock = vi.hoisted(() => vi.fn(async (_lang: string, code: string) =>
@@ -23,7 +23,7 @@ const PATCH: StructuredPatchHunk[] = [
  * A `structuredPatch` override REPLACES the two sides, because `FileEditContent` is a
  * union: a source carries the patch or the sides, never both.
  */
-function source(over: Partial<FileEditFacts> & Partial<FileEditContent> = {}): FileEditDiff {
+function source(over: Partial<FileEditBase> & Partial<FileEditContent> = {}): FileEditDiff {
   const { structuredPatch, oldStr, newStr, ...facts } = over
   if (structuredPatch !== undefined && structuredPatch !== null)
     return { filePath: 'a.ts', ...facts, structuredPatch }

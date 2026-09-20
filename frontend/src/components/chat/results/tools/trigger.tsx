@@ -1,4 +1,4 @@
-import type { TriggerRequest } from '../../ir/tools/trigger'
+import type { TriggerRequest } from '../../model/tools/trigger'
 import CalendarClock from 'lucide-solid/icons/calendar-clock'
 import { proseRenderer, typedRequestLine } from './proseResult'
 

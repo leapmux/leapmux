@@ -1,7 +1,7 @@
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from '../acp/registerACPProvider'
 import { getCursorQuestions, isCursorAskQuestionPayload, isCursorCreatePlanPayload, sendCursorQuestionRejectResponse, sendCursorQuestionResponse } from './askUserQuestion'
-import { cursorControlResponseDisplay } from './controlResponse'
+import { cursorControlResponseSummary } from './controlResponse'
 import { CursorControlActions } from './CursorControlActions'
 import { cursorExtractControl } from './extractControl'
 import { cursorToolCallAdapter } from './extractors/toolCall'
@@ -10,7 +10,7 @@ registerACPProvider({
   provider: AgentProvider.CURSOR,
   toolCallAdapter: cursorToolCallAdapter,
   defaultPermissionMode: 'agent',
-  controlResponseDisplay: cursorControlResponseDisplay,
+  controlResponseDisplay: cursorControlResponseSummary,
   extractControl: cursorExtractControl,
   // Cursor answers its create-plan itself: the verdict its worker transforms is
   // neither a permission decision nor the shared plan approval's. Every Agent

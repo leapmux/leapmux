@@ -1,11 +1,11 @@
-import type { ToolCallIR } from '../../../ir/toolCall'
+import type { ToolCall } from '../../../model/toolCall'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { toolRow } from '~/test-support/toolCallIr'
+import { toolRow } from '~/test-support/toolCallFixture'
 import { ToolMessage } from '../../../results/ToolMessage'
 import { cursorToolCallAdapter } from '../../cursor/extractors/toolCall'
 import { reasonixToolCallAdapter } from '../../reasonix/extractors/toolCall'
-import { acpToolCallIR } from './toolCall'
+import { acpToolCall } from './toolCall'
 
 /**
  * The shared ACP build answers every kind with the request shape that kind DECLARES.
@@ -17,13 +17,13 @@ import { acpToolCallIR } from './toolCall'
  * rows a reader sees for the WHOLE time the call runs, which is why neither was
  * caught by a test that only built a completed call.
  */
-function renderCall(call: ToolCallIR) {
+function renderCall(call: ToolCall) {
   return render(() => <ToolMessage row={toolRow(call, 'request', { result: false })} />)
 }
 
 describe('acp shared default request', () => {
   it('names both files of a running reasonix move_file', () => {
-    const call = acpToolCallIR({
+    const call = acpToolCall({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'move-1',
       // Still RUNNING, which is the state the row spends its whole life in: the
@@ -45,7 +45,7 @@ describe('acp shared default request', () => {
   })
 
   it('draws a pending cursor search instead of throwing', () => {
-    const call = acpToolCallIR({
+    const call = acpToolCall({
       sessionUpdate: 'tool_call',
       toolCallId: 'find-1',
       // `cursorSearchKind` reads the TITLE, which states the shape before the call
@@ -83,7 +83,7 @@ describe('acp shared default request', () => {
       ['trigger', {}, request => typeof request.action === 'string'],
     ]
     for (const [kind, rawInput, holds] of shapes) {
-      const call = acpToolCallIR({
+      const call = acpToolCall({
         sessionUpdate: 'tool_call',
         toolCallId: `bare-${kind}`,
         status: 'pending',

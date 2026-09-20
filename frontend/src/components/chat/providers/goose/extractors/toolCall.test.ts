@@ -1,12 +1,12 @@
-import type { ToolCallIR } from '../../../ir/toolCall'
+import type { ToolCall } from '../../../model/toolCall'
 import { describe, expect, it } from 'vitest'
 import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isFailedResult, isUnparsedResult, typedResult } from '../../../ir/toolCall'
-import { acpToolCallIR } from '../../acp/extractors/toolCall'
+import { isToolFailureResult, isUnparsedToolResult, typedResult } from '../../../model/toolCall'
+import { acpToolCall } from '../../acp/extractors/toolCall'
 import { gooseToolCallAdapter } from './toolCall'
 
-function delegate(rawInput: Record<string, unknown>, tool: Record<string, unknown> = {}): ToolCallIR {
-  return acpToolCallIR({
+function delegate(rawInput: Record<string, unknown>, tool: Record<string, unknown> = {}): ToolCall {
+  return acpToolCall({
     sessionUpdate: 'tool_call',
     toolCallId: 'goose-tool',
     status: 'pending',
@@ -49,8 +49,8 @@ describe('goose delegate launches', () => {
 // summary, the path is in `rawInput.source`, and the size is in `rawOutput`.
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 
-function readImage(tool: Record<string, unknown> = {}): ToolCallIR {
-  return acpToolCallIR({
+function readImage(tool: Record<string, unknown> = {}): ToolCall {
+  return acpToolCall({
     sessionUpdate: 'tool_call_update',
     toolCallId: 'goose-image',
     status: 'completed',
@@ -111,8 +111,8 @@ describe('goose read_image calls', () => {
  * now replaced rather than merged.
  */
 describe('goose shell exit', () => {
-  function shell(tool: Record<string, unknown>): ToolCallIR {
-    return acpToolCallIR({
+  function shell(tool: Record<string, unknown>): ToolCall {
+    return acpToolCall({
       sessionUpdate: 'tool_call',
       toolCallId: 'goose-shell',
       status: 'completed',
@@ -146,8 +146,8 @@ describe('goose shell exit', () => {
  * `locations` recovery: a file tool that states its file only there drew with no path.
  */
 describe('goose developer tool facts', () => {
-  function developer(name: string, rawInput: Record<string, unknown>, tool: Record<string, unknown> = {}): ToolCallIR {
-    return acpToolCallIR({
+  function developer(name: string, rawInput: Record<string, unknown>, tool: Record<string, unknown> = {}): ToolCall {
+    return acpToolCall({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'goose-tool',
       status: 'completed',
@@ -169,7 +169,7 @@ describe('goose developer tool facts', () => {
   })
 
   it('reports the subagent run of a retained row the frame never completed', () => {
-    const call = acpToolCallIR({
+    const call = acpToolCall({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'goose-tool',
       status: 'in_progress',
@@ -203,8 +203,8 @@ describe('goose developer tool facts', () => {
   it.each([['completed', false], ['failed', true], ['cancelled', false]])('answers a %s tree with the words it printed', (status, failed) => {
     const call = developer('tree', { path: '/p/src' }, { status, content: [{ type: 'content', content: { text: 'src\n|-- a.ts' } }] })
     expect(call.kind).toBe('list')
-    expect(isFailedResult(call.result)).toBe(failed)
-    expect(isFailedResult(call.result) || isUnparsedResult(call.result) ? call.result.text : undefined).toBe('src\n|-- a.ts')
+    expect(isToolFailureResult(call.result)).toBe(failed)
+    expect(isToolFailureResult(call.result) || isUnparsedToolResult(call.result) ? call.result.text : undefined).toBe('src\n|-- a.ts')
   })
 })
 
@@ -214,8 +214,8 @@ describe('goose developer tool facts', () => {
  * drew its (usually empty) card and `[no output]` where the reason belongs.
  */
 describe('goose extension tool calls', () => {
-  function extensionCall(status: string, tool: Record<string, unknown> = {}): ToolCallIR {
-    return acpToolCallIR({
+  function extensionCall(status: string, tool: Record<string, unknown> = {}): ToolCall {
+    return acpToolCall({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'goose-tool',
       status,
@@ -230,7 +230,7 @@ describe('goose extension tool calls', () => {
   it('states the reason a failed server call gave', () => {
     const call = extensionCall('failed', { content: [{ type: 'content', content: { text: 'the memory server is not running' } }] })
     expect(call.kind).toBe('mcp')
-    expect(isFailedResult(call.result) && call.result.text).toBe('the memory server is not running')
+    expect(isToolFailureResult(call.result) && call.result.text).toBe('the memory server is not running')
   })
 
   // A call the reader STOPPED is not a failure. The blocks that arrived are the part
@@ -239,7 +239,7 @@ describe('goose extension tool calls', () => {
   it('keeps the card a cancelled server call had built', () => {
     const call = extensionCall('cancelled', { content: [{ type: 'content', content: { type: 'text', text: 'one memory so far' } }] })
     expect(call.kind).toBe('mcp')
-    expect(isFailedResult(call.result)).toBe(false)
+    expect(isToolFailureResult(call.result)).toBe(false)
     expect(call.result).toStrictEqual({ content: [{ type: 'text', text: 'one memory so far' }] })
   })
 
@@ -263,8 +263,8 @@ describe('goose extension tool calls', () => {
 describe('goose to-do lists', () => {
   const MARKDOWN = '- [x] Completed task\n- [ ] Pending task'
 
-  function todoCall(status: string, tool: Record<string, unknown> = {}): ToolCallIR {
-    return acpToolCallIR({
+  function todoCall(status: string, tool: Record<string, unknown> = {}): ToolCall {
+    return acpToolCall({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'goose-todo',
       status,
@@ -294,7 +294,7 @@ describe('goose to-do lists', () => {
     const call = todoCall('failed', { content: [{ type: 'content', content: { text: 'the todo file is read only' } }] })
     expect(call.kind).toBe('todo')
     expect(call.kind === 'todo' ? call.request.items : undefined).toStrictEqual(requested)
-    expect(isFailedResult(call.result) && call.result.text).toBe('the todo file is read only')
+    expect(isToolFailureResult(call.result) && call.result.text).toBe('the todo file is read only')
   })
 
   // A call the reader STOPPED keeps the list it collected. The row marks it partial
@@ -302,7 +302,7 @@ describe('goose to-do lists', () => {
   it('keeps the list a cancelled call collected', () => {
     const call = todoCall('cancelled', { content: [{ type: 'content', content: { text: 'stopped' } }] })
     expect(call.kind).toBe('todo')
-    expect(isFailedResult(call.result)).toBe(false)
+    expect(isToolFailureResult(call.result)).toBe(false)
     expect(call.kind === 'todo' ? typedResult(call)?.items : undefined).toStrictEqual(requested)
   })
 
@@ -323,7 +323,7 @@ describe('goose to-do lists', () => {
       content: [{ type: 'content', content: { text: 'the todo file is read only' } }],
     })
     expect(call.kind).toBe('todo')
-    expect(isFailedResult(call.result)).toBe(failed)
+    expect(isToolFailureResult(call.result)).toBe(failed)
     expect(call.kind === 'todo' ? typedResult(call)?.note : undefined).toBe(failed ? undefined : '## Tasks\n\n- [ ] **Inspect** files')
   })
 })

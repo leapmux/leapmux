@@ -6,7 +6,7 @@ import { useCollapsedLines } from '../useCollapsedLines'
 /**
  * The one fallback body: a plain, collapsible text block.
  *
- * It draws a `FailedResult` and an `UnparsedResult`, so it is owned by the row
+ * It draws a `ToolFailureResult` and an `UnparsedToolResult`, so it is owned by the row
  * component and never by a kind -- a kind whose result arrived unreadable says
  * so in words the row spells, not in a body the kind pretends to understand.
  */

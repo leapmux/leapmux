@@ -1,4 +1,4 @@
-import type { AttachmentIR, ChatRowIR } from './ir/row'
+import type { ChatRow, UserMessageAttachment } from './model/row'
 import { isObject, pickString } from '~/lib/jsonPick'
 
 // The rows LeapMux writes ITSELF, read once for every provider.
@@ -15,11 +15,11 @@ import { isObject, pickString } from '~/lib/jsonPick'
  * attachment is HIDDEN instead: it is a row LeapMux wrote and there is nothing in it
  * to show, which is a different statement from one nobody could read.
  */
-export function leapmuxUserRow(payload: unknown): ChatRowIR | null {
+export function leapmuxUserRow(payload: unknown): ChatRow | null {
   if (!isObject(payload))
     return null
   const text = pickString(payload, 'content')
-  const attachments: AttachmentIR[] = Array.isArray(payload.attachments)
+  const attachments: UserMessageAttachment[] = Array.isArray(payload.attachments)
     ? payload.attachments.filter(isObject).map((item) => {
         const filename = pickString(item, 'filename') || undefined
         const mimeType = pickString(item, 'mime_type') || undefined
@@ -30,7 +30,7 @@ export function leapmuxUserRow(payload: unknown): ChatRowIR | null {
 }
 
 /** The notice LeapMux writes when the reader sends a plan into execution. */
-export function leapmuxPlanExecutionRow(payload: unknown): ChatRowIR | null {
+export function leapmuxPlanExecutionRow(payload: unknown): ChatRow | null {
   if (!isObject(payload))
     return null
   const text = pickString(payload, 'content')

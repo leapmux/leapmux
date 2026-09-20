@@ -27,3 +27,12 @@ export function codexSpanRole(parsed: ParsedMessageContent): ToolSpanRole {
     return 'result'
   return Number.isFinite(parent?.startedAtMs) || item.status === CODEX_STATUS.IN_PROGRESS ? 'request' : 'other'
 }
+
+export function codexRelatedMessages(parsed: ParsedMessageContent) {
+  const item = extractItem(parsed.parentObject)
+  if (item?.type === CODEX_ITEM.ImageView || item?.type === CODEX_ITEM.CollabAgentToolCall)
+    return ['request', 'result'] as const
+  return (item?.type === CODEX_ITEM.McpToolCall || item?.type === CODEX_ITEM.DynamicToolCall) && codexSpanRole(parsed) === 'result'
+    ? ['request'] as const
+    : []
+}

@@ -2,8 +2,8 @@ import type { JSX } from 'solid-js'
 import FilePlus from 'lucide-solid/icons/file-plus'
 import { relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
-import { countLines } from '../../ir/collapse'
 import { toolInputPath, toolInputText } from '../../toolStyles.css'
+import { countLines } from '../collapse'
 import { fileChangeRenderer } from './fileChanges'
 
 /** The "(N lines)" form a one-file write keeps: the file, and how much of it the call states. */

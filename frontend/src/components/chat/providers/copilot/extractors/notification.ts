@@ -1,9 +1,9 @@
-import type { CompactionBoundaryMeta, NotificationEntryIR } from '../../../ir/notification'
+import type { CompactionDetails, NotificationEntry } from '../../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { COPILOT_EVENT, COPILOT_PERMISSION_DECISION_SOURCE, COPILOT_PERMISSION_OUTCOME } from '~/generated/contracts/copilot-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
-import { toTokenCount } from '../../../ir/notification'
+import { toTokenCount } from '../../../model/notification'
 import { formatDuration, formatNumber } from '../../../rendererUtils'
 import { copilotEvent, copilotEventData } from '../protocol'
 
@@ -347,7 +347,7 @@ function copilotPostCompactionTokens(data: Record<string, unknown>): number | un
  * `manual`, `context_limit_retry`, `memory_pressure` or `model_switch` -- and the row
  * states it beside the transition.
  */
-function copilotCompactionDetail(data: Record<string, unknown>): CompactionBoundaryMeta {
+function copilotCompactionDetail(data: Record<string, unknown>): CompactionDetails {
   // Each field is optional on the meta, so a count the frame stated as absent or
   // unreadable stays ABSENT rather than present with `undefined`.
   const trigger = pickString(data, 'trigger') || undefined
@@ -386,7 +386,7 @@ function copilotCompactionError(data: Record<string, unknown>): string {
  * that did not succeed rewrote nothing -- so its numbers describe a context that still
  * holds what it held before, and the grid must not refresh from them.
  */
-export function copilotCompactionBoundary(parsed: ParsedMessageContent): CompactionBoundaryMeta | null {
+export function copilotCompactionBoundary(parsed: ParsedMessageContent): CompactionDetails | null {
   const data = copilotEventData(getInnerMessage(parsed), COPILOT_EVENT.SessionCompactionComplete)
   return data && data.success === true ? copilotCompactionDetail(data) : null
 }
@@ -400,7 +400,7 @@ export function copilotCompactionBoundary(parsed: ParsedMessageContent): Compact
  * other provider's boundary draws, and the cleared-context event becomes the neutral
  * entry rather than a sentence of Copilot's own.
  */
-export function copilotNotificationEntry(msg: Record<string, unknown>): NotificationEntryIR[] {
+export function copilotNotificationEntry(msg: Record<string, unknown>): NotificationEntry[] {
   const event = copilotEvent(msg)
   if (event?.type === COPILOT_EVENT.SessionCompactionStart)
     return [{ kind: 'compaction', phase: 'start' }]

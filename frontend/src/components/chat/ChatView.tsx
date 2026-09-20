@@ -37,9 +37,9 @@ import { createDelayedSet, createFlingSkeletonRegistry, createLingerSet } from '
 import * as styles from './ChatView.css'
 import { computeOverscanPx, createViewportSizeObserver, measureSpaceToken, PRE_MEASURE_WIDTH_PX } from './chatViewportGeometry'
 import { MessageBubble } from './MessageBubble'
-import { messageRowChrome } from './messageClassification'
 import { MessageContextMenuHostProvider } from './MessageContextMenuHost'
 import { createMessageRenderCacheStore } from './messageRenderCache'
+import { messageRowChrome } from './messageRowLayout'
 import { expandedUiKeyFor, messageUiDefault } from './messageUiKeys'
 import { useChatScroll } from './useChatScroll'
 import { sameVirtualItems, useChatVirtualizer } from './useChatVirtualizer'
@@ -271,10 +271,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // A syntax theme change invalidates every cached body at once: they all carry
   // Shiki's baked token colours. The two module-level caches already register
   // here; this one held its entries per ROW, and the rows stay live, so nothing
-  // dropped the previous generation's copies. `onSyntaxThemeChange` keeps no
-  // unsubscribe, but this store is created once per mounted ChatView and the
-  // clear is idempotent on a store nothing reads any more.
-  onSyntaxThemeChange(() => renderCacheStore.clear())
+  // dropped the previous generation's copies.
+  onCleanup(onSyntaxThemeChange(() => renderCacheStore.clear()))
   const [textSelectionActive, setTextSelectionActive] = createSignal(false)
 
   // Each member is omitted (not undefined) when the agent scope holds none, so the
@@ -302,7 +300,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     contentVersionById: id => props.messageContext?.contentVersion(id) ?? 0,
     // The shared resolver's merged payload, so the entry the list MEASURES, the bubble
     // that draws it and the toolbar beside it all read one object for one row.
-    resolvedParsed: message => props.messageContext?.current(message).resolved,
+    resolvedMessage: message => props.messageContext?.resolvedMessage(message),
+    role: message => props.messageContext?.role(message) ?? 'other',
     isChildTranscript: () => !!props.isChildTranscript,
     showHiddenMessages: () => prefs.showHiddenMessages(),
   })
@@ -496,7 +495,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     // `renderKeyForEntry`, which is the CONTENT key rather than the measurement one
     // `heightKeyForEntry` builds. It folds no `uiVersion`, so an expand or a
     // diff-view toggle re-measures the row and KEEPS everything the cache holds for
-    // it -- its extracted IR, its normalized command body, its Myers diff and its
+    // it -- its extracted model, its normalized command body, its Myers diff and its
     // rendered markdown, none of which the click changed.
     renderCacheStore.prune(visibleEntries().map(renderKeyForEntry))
   })

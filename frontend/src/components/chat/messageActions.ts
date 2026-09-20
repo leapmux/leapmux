@@ -93,7 +93,7 @@ export interface MessageAction {
  * Provider-specific extraction stays where it belongs, and `MessageBubble` resolves
  * all three texts before they reach this function:
  *
- * - `onCopyMarkdown` comes from `quotableTextForIR(row)` (`ir/derivations.ts`), which
+ * - `onCopyMarkdown` comes from `quotableTextForRow(row)` (`model/derivations.ts`), which
  *   answers for the PROSE rows alone.
  * - `onCopyContent` comes from the tool call's `toolCallMeta().copyableContent`, and
  *   `copyContentLabel` from the `copyLabel` of that same derivation.

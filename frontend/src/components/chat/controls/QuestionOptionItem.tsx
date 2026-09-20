@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { QuestionOption } from './types'
+import type { QuestionOption } from '../model/question'
 import { Show } from 'solid-js'
 import * as styles from '../ControlRequestBanner.css'
 import { MarkdownText } from '../messageRenderers'

@@ -1,12 +1,13 @@
 import type { MessageContextResolver } from './messageContextResolver'
 import type { ChatRowExtraction } from './rowExtraction'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { TodoItem } from '~/models/todo'
+import type { MessageRevision } from '~/lib/messageSpan'
 import { createSignal } from 'solid-js'
 import { truncatePreview } from '~/lib/textTruncate'
 import { appendCompletionMarker } from './assembledMessage'
-import { quotableTextForIR } from './ir/derivations'
+import { rowRevisionKey } from './chatRevisionKey'
 import { controlResponsePreviewText } from './persistedControlResponse'
+import { quotableTextForRow } from './results/rowText'
 import { toolCallMeta } from './results/tools/meta'
 import { extractedRow } from './rowExtraction'
 import { prepareChatRow } from './rowPreparation'
@@ -16,9 +17,9 @@ import { prepareChatRow } from './rowPreparation'
 //
 // Resolves the short plaintext snippet the rail shows when the user hovers a jump dot, and
 // caches it. Two concerns, one job ("give me the preview for this mark"):
-//   1. messageMarkPreviewText -- pure extraction, routed through the row IR: a tool row
+//   1. messageMarkPreviewText -- pure extraction, routed through the row model: a tool row
 //      answers from `toolCallMeta(row).previewText()` and the prose rows from
-//      `quotableTextForIR`, so the provider that owns the raw shape reads it once and the
+//      `quotableTextForRow`, so the provider that owns the raw shape reads it once and the
 //      rail and the Copy button cannot state two different texts for one row.
 //   2. the reactive `seq -> preview text` cache + fetch-through below.
 //
@@ -32,8 +33,8 @@ import { prepareChatRow } from './rowPreparation'
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the hover-preview text for a marked message, read from the row IR its own
- * provider produced -- `toolCallMeta(row).previewText()` for a tool row, `quotableTextForIR`
+ * Resolve the hover-preview text for a marked message, read from the row model its own
+ * provider produced -- `toolCallMeta(row).previewText()` for a tool row, `quotableTextForRow`
  * for the prose rows -- so a provider-specific shape is read by the provider that owns it.
  * Returns null when the content carries no previewable text (the rail then shows a
  * mark-type label instead).
@@ -45,12 +46,9 @@ import { prepareChatRow } from './rowPreparation'
  * all previewed as nothing before. `parseMessageContent` is WeakMap-cached on the
  * message reference, so this stays cheap to call repeatedly on hover.
  *
- * `todoById` is the live to-do store, and the rail passes it for the same reason the
- * transcript does: Claude's `TaskUpdate` states a task id and a status, and the
- * subject comes from the store. A reader that left it out previewed `Task #4` under
- * a dot whose row read the real subject.
+ * TaskUpdate rows read their immutable persisted snapshots through the message.
  */
-export function messageMarkPreviewText(message: AgentChatMessage, todoById?: (taskId: string) => TodoItem | undefined): string | null {
+export function messageMarkPreviewText(message: AgentChatMessage): string | null {
   // Defensive: the parse, the supplemental merge and the classification all run outside
   // the extraction's own guard, and a malformed message that makes any of them throw
   // must degrade to "no preview" (null) rather than propagate. On the synchronous
@@ -63,7 +61,7 @@ export function messageMarkPreviewText(message: AgentChatMessage, todoById?: (ta
     // `soleSide`). That is not an omission: a marked message is usually outside the
     // loaded window, so its sibling is not loaded, and resolving one would put a span
     // fetch behind every hover.
-    const { extraction } = prepareChatRow(message, ...(todoById === undefined ? [{}] : [{ todoById }]))
+    const { extraction } = prepareChatRow(message)
     const preview = rowPreviewText(extraction)
     if (preview === null)
       return null
@@ -95,7 +93,7 @@ function rowPreviewText(extraction: ChatRowExtraction): string | null {
   // module used to run that derivation a second time.
   if (row?.kind === 'control-response')
     return controlResponsePreviewText(row.display)
-  const quotable = quotableTextForIR(row)
+  const quotable = quotableTextForRow(row)
   if (quotable !== null)
     return quotable
   if (row?.kind === 'divider')
@@ -124,7 +122,7 @@ const MAX_PREVIEW_CACHE_ENTRIES_PER_AGENT = 500
  * land, and no other agent's rail re-renders.
  */
 interface MarkPreviewBucket {
-  entries: Map<string, string>
+  entries: Map<string, { revisionKey: string, text: string }>
   readVersion: () => number
   bump: (value?: number) => number
 }
@@ -142,11 +140,15 @@ function bucketFor(agentId: string): MarkPreviewBucket {
 }
 
 /** The bucket's entry for one seq, without tracking the version signal. */
-function peekBucketEntry(agentId: string, seq: bigint): string | undefined {
+function peekBucketEntry(agentId: string, seq: bigint): { revisionKey: string, text: string } | undefined {
   return buckets.get(agentId)?.entries.get(seq.toString())
 }
 
-function setCachedMarkPreview(agentId: string, seq: bigint, preview: string): void {
+function previewRevisionKey(revision: MessageRevision | undefined): string {
+  return revision === undefined ? `missing:${String(revision)}` : rowRevisionKey({ own: revision })
+}
+
+function setCachedMarkPreview(agentId: string, seq: bigint, revision: MessageRevision | undefined, preview: string): void {
   const key = seq.toString()
   const bucket = bucketFor(agentId)
   if (!bucket.entries.has(key)) {
@@ -161,7 +163,7 @@ function setCachedMarkPreview(agentId: string, seq: bigint, preview: string): vo
       excess--
     }
   }
-  bucket.entries.set(key, preview)
+  bucket.entries.set(key, { revisionKey: previewRevisionKey(revision), text: preview })
   bucket.bump()
 }
 
@@ -170,12 +172,15 @@ function setCachedMarkPreview(agentId: string, seq: bigint, preview: string): vo
  * with no previewable text, otherwise the snippet. Tracks the agent's bucket, so the
  * tooltip re-renders when a pending fetch lands.
  */
-export function getCachedMarkPreview(agentId: string, seq: bigint): string | undefined {
-  const bucket = buckets.get(agentId)
-  if (!bucket)
-    return undefined
+export function getCachedMarkPreview(agentId: string, seq: bigint, revision?: MessageRevision): string | undefined {
+  // Allocate the bucket before the first read. The open preview must subscribe to
+  // its signal while the cache is cold, or the first warm cannot update the card.
+  const bucket = bucketFor(agentId)
   bucket.readVersion()
-  return bucket.entries.get(seq.toString())
+  const entry = bucket.entries.get(seq.toString())
+  if (entry === undefined)
+    return undefined
+  return revision === undefined || entry.revisionKey === previewRevisionKey(revision) ? entry.text : undefined
 }
 
 // Key -> a token identifying the CURRENT in-flight fetch, both to dedupe concurrent hovers
@@ -203,18 +208,21 @@ function cachePrefix(agentId: string): string {
  * rejects) is deliberately left UNRESOLVED (no cache entry) so a later hover retries,
  * rather than poisoning the dot with a permanent empty preview for the rest of the session.
  */
-export async function warmMarkPreview(agentId: string, seq: bigint, messages: Pick<MessageContextResolver, 'peek' | 'message' | 'todo'>): Promise<void> {
+export async function warmMarkPreview(agentId: string, seq: bigint, messages: Pick<MessageContextResolver, 'peek' | 'message'>): Promise<void> {
   if (seq <= 0n)
     return
   const k = cacheKey(agentId, seq)
-  if (peekBucketEntry(agentId, seq) !== undefined || inflight.has(k))
-    return
-
   const local = messages.peek(seq)
+  const cached = peekBucketEntry(agentId, seq)
+  if (cached !== undefined && (local === undefined || cached.revisionKey === previewRevisionKey(local.revision)))
+    return
   if (local) {
-    setCachedMarkPreview(agentId, seq, messageMarkPreviewText(local.message, messages.todo) ?? '')
+    inflight.delete(k)
+    setCachedMarkPreview(agentId, seq, local.revision, messageMarkPreviewText(local.message) ?? '')
     return
   }
+  if (inflight.has(k))
+    return
 
   const token = ++nextFetchToken
   inflight.set(k, token)
@@ -228,7 +236,7 @@ export async function warmMarkPreview(agentId: string, seq: bigint, messages: Pi
       // cache '' so the rail shows a label without re-fetching. A REJECTION lands in
       // .catch below and is NOT cached, so a transient failure can be retried.
       if (isCurrent())
-        setCachedMarkPreview(agentId, seq, msg ? (messageMarkPreviewText(msg.message, messages.todo) ?? '') : '')
+        setCachedMarkPreview(agentId, seq, msg?.revision, msg ? (messageMarkPreviewText(msg.message) ?? '') : '')
     })
     .catch(() => {
       // Transient fetch failure: leave the key UNRESOLVED (the finally drops the

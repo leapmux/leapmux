@@ -1,5 +1,5 @@
-import type { ToolCallForKind, ToolResultOf } from '../../../ir/toolCall'
-import type { ToolKind } from '../../../ir/toolKind'
+import type { ToolCallVariant, ToolResult } from '../../../model/toolCall'
+import type { ToolKind } from '../../../model/toolKind'
 import type { ACPToolCallAdapter } from './toolCall'
 import { describe, expect, it } from 'vitest'
 import { MESSAGE_SUPPLEMENT_FIELD } from '~/generated/contracts/worker-vocab'
@@ -7,16 +7,16 @@ import { AgentProvider, ContentCompression, MessageCompletion } from '~/generate
 import { prettifyArgsJson } from '~/lib/jsonFormat'
 import { parseMessageContent } from '~/lib/messageParser'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
-import { toolRow } from '~/test-support/toolCallIr'
+import { toolRow } from '~/test-support/toolCallFixture'
 import { buildRawJsonEnvelope } from '../../../chatRawJson'
-import { imagesForIR } from '../../../ir/derivations'
-import { failedResult, isFailedResult, isUnparsedResult, typedResult, unparsedResult } from '../../../ir/toolCall'
-import { TOOL_KINDS } from '../../../ir/toolKind'
+import { failedResult, isToolFailureResult, isUnparsedToolResult, typedResult, unparsedResult } from '../../../model/toolCall'
+import { TOOL_KINDS } from '../../../model/toolKind'
+import { imagesForRow } from '../../../results/rowImages'
 import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
 import { resolveMessageForRendering } from '../../registry'
 import { input } from '../../testUtils'
 import { classifyACPMessage } from '../classification'
-import { ACP_PAYLOAD_BUILDERS, ACP_TOOL_REQUEST_OVERRIDES, acpPayloadFor, acpResultStatesNothing, acpToolCallIR, acpToolCallNeedsResult, acpToolFacts, resolveACPMessage } from './toolCall'
+import { ACP_SPEC_READERS, ACP_TOOL_REQUEST_OVERRIDES, acpResultStatesNothing, acpSpecFor, acpToolCall, acpToolCallNeedsResult, acpToolFacts, resolveACPMessage } from './toolCall'
 
 /**
  * `typedResult` takes `{ kind, result }` with the result key omitted when the call
@@ -24,7 +24,7 @@ import { ACP_PAYLOAD_BUILDERS, ACP_TOOL_REQUEST_OVERRIDES, acpPayloadFor, acpRes
  * present `undefined` the exact-optional rule refuses. Each test hands the call's
  * own two fields over, so the question it asks stays the one it asked.
  */
-function resultArgs<K extends ToolKind>(call: ToolCallForKind<K>): { kind: K, result?: ToolResultOf<K> } {
+function resultArgs<K extends ToolKind>(call: ToolCallVariant<K>): { kind: K, result?: ToolResult<K> } {
   return call.result === undefined ? { kind: call.kind } : { kind: call.kind, result: call.result }
 }
 
@@ -104,7 +104,7 @@ describe('an interrupted tool call (ACP)', () => {
 
   it('presents the recovered command and the partial output', () => {
     const parsed = parseMessageContent(message)
-    const call = acpToolCallIR(
+    const call = acpToolCall(
       resolveACPMessage(parsed)!,
       undefined,
       parsed.supplementalContent,
@@ -112,7 +112,8 @@ describe('an interrupted tool call (ACP)', () => {
     )
     expect(call.kind).toBe('execute')
     expect(call.title).toBe('printf partial')
-    expect(call.kind === 'execute' ? typedResult(resultArgs(call))?.commands[0]?.output : undefined).toBe('partial output')
+    expect(call.status).toBe('cancelled')
+    expect(call.result).toMatchObject({ commands: [{ output: 'partial output' }] })
   })
 
   it('classifies the row as a tool use although its status is not final', () => {
@@ -151,7 +152,7 @@ describe('acpToolCallNeedsResult', () => {
 // treatment a literal `other` gets: the shared Model Context Protocol card, whose
 // wrench identifies nothing the agent ran. The provider's own word survives as the label.
 describe('a wire kind the shared tables do not know', () => {
-  const call = (extra: Record<string, unknown> = {}) => acpToolCallIR({
+  const call = (extra: Record<string, unknown> = {}) => acpToolCall({
     sessionUpdate: 'tool_call_update',
     toolCallId: 'frob',
     kind: 'frobnicate',
@@ -170,7 +171,7 @@ describe('a wire kind the shared tables do not know', () => {
   // than one headed "Tool", and the wire word reached the header while nothing
   // caught it.
   it('never titles a call with the bare wire word', () => {
-    const untitled = acpToolCallIR({ sessionUpdate: 'tool_call', toolCallId: 'bare', kind: 'other', status: 'pending' }, undefined, undefined)
+    const untitled = acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'bare', kind: 'other', status: 'pending' }, undefined, undefined)
     expect(untitled.title).toBe('Tool')
     expect(untitled.kind).toBe('mcp')
   })
@@ -191,7 +192,7 @@ describe('a wire kind the shared tables do not know', () => {
 // name no tool for. Its answer is the sentence the switch wrote, drawn as the prose
 // the kind reads.
 describe('the protocol mode switch', () => {
-  const call = (status = 'completed') => acpToolCallIR({
+  const call = (status = 'completed') => acpToolCall({
     sessionUpdate: 'tool_call_update',
     toolCallId: 'switch',
     kind: 'switch_mode',
@@ -231,29 +232,29 @@ describe('the images one tool call carries', () => {
   const generated: ACPToolCallAdapter = () => ({ kind: 'image', request: { prompt: 'a red square' }, result: {}, images: [{ filePath: '/repo/made.png' }] })
 
   it('keeps what the adapter supplied', () => {
-    const row = acpToolCallIR(call, generated, undefined)
+    const row = acpToolCall(call, generated, undefined)
     expect(row.images).toEqual([{ filePath: '/repo/made.png' }])
   })
 
   // The card's own blocks ride its RESULT, and the shared image derivation reads
   // them there: an image tab addresses the picture without the call listing it.
   it('collects the protocol blocks into the card the shared build draws', () => {
-    const row = acpToolCallIR(withBlock, undefined, undefined)
-    expect(imagesForIR(toolRow(row)).map(image => image.data)).toEqual([PNG])
+    const row = acpToolCall(withBlock, undefined, undefined)
+    expect(imagesForRow(toolRow(row)).map(image => image.data)).toEqual([PNG])
   })
 
   // An adapter that read a provider record replaces the whole payload, so the
   // bytes the same frame happens to carry never reach the card beside it.
   it('prefers the adapter over the protocol blocks', () => {
-    const row = acpToolCallIR(withBlock, generated, undefined)
-    expect(imagesForIR(toolRow(row))).toEqual([{ filePath: '/repo/made.png' }])
+    const row = acpToolCall(withBlock, generated, undefined)
+    expect(imagesForRow(toolRow(row))).toEqual([{ filePath: '/repo/made.png' }])
   })
 })
 
 describe('the facts-and-builder adapter (ACP)', () => {
   it.each(['pending', 'completed', 'failed', 'cancelled'])('keeps the requested change and the %s outcome apart', (status) => {
-    const call = acpToolCallIR({
-      sessionUpdate: 'tool_call_update',
+    const call = acpToolCall({
+      sessionUpdate: 'tool_call',
       toolCallId: 'edit',
       kind: 'edit',
       status,
@@ -267,7 +268,7 @@ describe('the facts-and-builder adapter (ACP)', () => {
   })
 
   it('uses the confirmed diff a completed call carries, not the requested one', () => {
-    const call = acpToolCallIR({
+    const call = acpToolCall({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'edit',
       kind: 'edit',
@@ -279,7 +280,7 @@ describe('the facts-and-builder adapter (ACP)', () => {
   })
 
   it('folds the generic trio to the mcp kind and its card', () => {
-    const call = acpToolCallIR({
+    const call = acpToolCall({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'probe',
       kind: 'semantic_search',
@@ -295,7 +296,7 @@ describe('the facts-and-builder adapter (ACP)', () => {
 })
 
 /**
- * The lifecycle every kind takes, stated once in `acpPayloadFor`.
+ * The lifecycle every kind takes, stated once in `acpSpecFor`.
  *
  * Twenty kinds answered NOTHING at all before it: the shared build filled their
  * declared request and left the result slot empty, and twelve of those kinds draw no
@@ -308,13 +309,13 @@ describe('the shared ACP lifecycle', () => {
   // A `task` row reaches a reader only through a provider's own kind table, so the
   // adapter asks the shared build for it -- which is where the ladder lives.
   function row(tool: Record<string, unknown>) {
-    return acpToolCallIR({ ...frame, ...tool }, facts => acpPayloadFor(facts, 'task'), undefined)
+    return acpToolCall({ ...frame, ...tool }, facts => acpSpecFor(facts, 'task'), undefined)
   }
 
   it('answers a finished arguments-only kind with the words it printed', () => {
     const call = row({ status: 'completed', ...answered })
     expect(call.kind).toBe('task')
-    expect(isUnparsedResult(call.result) && call.result.text).toBe('The words it printed')
+    expect(isUnparsedToolResult(call.result) && call.result.text).toBe('The words it printed')
   })
 
   it('answers nothing while the call still runs', () => {
@@ -323,7 +324,7 @@ describe('the shared ACP lifecycle', () => {
 
   it('answers the reason a failed call stated', () => {
     const call = row({ status: 'failed', ...answered })
-    expect(isFailedResult(call.result) && call.result.text).toBe('The words it printed')
+    expect(isToolFailureResult(call.result) && call.result.text).toBe('The words it printed')
   })
 
   // A call the reader STOPPED is not a fault, so the ladder leaves its body where it
@@ -333,14 +334,14 @@ describe('the shared ACP lifecycle', () => {
   it('keeps the words a cancelled call printed rather than restating them as a reason', () => {
     const call = row({ status: 'cancelled', ...answered })
     expect(call.status).toBe('cancelled')
-    expect(isFailedResult(call.result)).toBe(false)
-    expect(isUnparsedResult(call.result) && call.result.text).toBe('The words it printed')
+    expect(isToolFailureResult(call.result)).toBe(false)
+    expect(isUnparsedToolResult(call.result) && call.result.text).toBe('The words it printed')
   })
 
   // The TYPED half of the same rule, and the one a reader sees: the lines that did
   // arrive stay on the row, under the kind's own body.
   it('keeps the typed body a cancelled read already collected', () => {
-    const call = acpToolCallIR({
+    const call = acpToolCall({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'tc-read',
       kind: 'read',
@@ -357,17 +358,18 @@ describe('the shared ACP lifecycle', () => {
   // where the call printed no words. The empty unparsed brand is that statement, and
   // it costs the reader nothing: `parsedCall` strips the brand, so the card draws
   // exactly as it does for the empty result slot this case used to pin. Without it
-  // the draft breaks I2 and `toolCall` degrades the whole row to the uncategorized
+  // the draft breaks I2 and `createToolCall` degrades the whole row to the uncategorized
   // card, which drops the kind, the header and the request body the build did read.
-  it('states an empty answer for a finished call that printed nothing', () => {
+  it('marks a finished call incomplete when it supplied no answer', () => {
     const call = row({ status: 'completed' })
     expect(call.kind).toBe('task')
-    expect(isUnparsedResult(call.result) && call.result.text).toBe('')
+    expect(call.status).toBe('incomplete')
+    expect(call.result).toBeUndefined()
   })
 
   // A cancelled call that collected NOTHING states nothing under its header, exactly
   // as a completed one that printed nothing does. The `Interrupted` word still reaches
-  // the reader: `toolRowStatusOutcome` composes the header from the row's own status,
+  // the reader: `toolCallStatusOutcome` composes the header from the row's own status,
   // so the empty result slot never takes it away.
   it('answers nothing for a cancelled call that printed nothing', () => {
     const call = row({ status: 'cancelled' })
@@ -379,7 +381,7 @@ describe('the shared ACP lifecycle', () => {
   // states the exit code beside the output. Replacing that with the reason in words is
   // what makes a row read "Error" where every other provider reads "Error (exit 1)".
   it('leaves a failed execute call its own command output', () => {
-    const call = acpToolCallIR({
+    const call = acpToolCall({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'tc-10',
       kind: 'execute',
@@ -397,18 +399,18 @@ describe('the shared ACP lifecycle', () => {
   // finished, failed or was stopped. The rule lives in the ladder rather than in the
   // builder, which is what keeps the lifecycle out of all thirty builders.
   function imageRow(tool: Record<string, unknown>) {
-    return acpToolCallIR({ ...frame, ...tool }, facts => acpPayloadFor(facts, 'image'), undefined)
+    return acpToolCall({ ...frame, ...tool }, facts => acpSpecFor(facts, 'image'), undefined)
   }
 
   it('answers the words a cancelled image call printed in place of its empty result', () => {
     const call = imageRow({ status: 'cancelled', ...answered })
     expect(call.status).toBe('cancelled')
-    expect(isUnparsedResult(call.result) && call.result.text).toBe('The words it printed')
+    expect(isUnparsedToolResult(call.result) && call.result.text).toBe('The words it printed')
   })
 
   it('answers the words a completed image call printed in place of its empty result', () => {
     const call = imageRow({ status: 'completed', ...answered })
-    expect(isUnparsedResult(call.result) && call.result.text).toBe('The words it printed')
+    expect(isUnparsedToolResult(call.result) && call.result.text).toBe('The words it printed')
   })
 
   // NOTHING replaces an empty result when the call printed nothing, because a
@@ -420,17 +422,17 @@ describe('the shared ACP lifecycle', () => {
   // A row the turn RETAINED reads as still running in its own status, and the
   // completion is the only place that says otherwise. Every reader that asked the
   // status alone dropped the file content, the hits, the page and the diff.
-  it('reads the content of a retained call that never reported completion', () => {
-    const call = acpToolCallIR({
+  it('does not invent a result for a retained call that never sent a result update', () => {
+    const call = acpToolCall({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'tc-11',
       kind: 'read',
       status: 'in_progress',
       rawInput: { path: '/p/a.ts' },
-      content: [{ type: 'content', content: { text: '1\tconst a = 1\n2\tconst b = 2\n' } }],
     }, undefined, undefined, MessageCompletion.COMPLETE)
     expect(call.kind).toBe('read')
-    expect(call.kind === 'read' ? typedResult(resultArgs(call))?.lines?.[0]?.text : undefined).toBe('const a = 1')
+    expect(call.status).toBe('incomplete')
+    expect(call.result).toBeUndefined()
   })
 
   // The outcome mapping runs ONE way: it completes a frame that never reported an
@@ -442,7 +444,7 @@ describe('the shared ACP lifecycle', () => {
     ['cancelled', 'cancelled'],
     ['completed', 'completed'],
   ] as const)('keeps the frame own terminal status %s over the outcome mapping', (stated, expected) => {
-    const call = acpToolCallIR({
+    const call = acpToolCall({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'tc-terminal',
       kind: 'read',
@@ -499,7 +501,7 @@ describe('acpResultStatesNothing', () => {
 // for the whole time the call runs, not once it finishes.
 describe('the file-change requests the arguments state', () => {
   function request(kind: string, rawInput: Record<string, unknown>) {
-    const call = acpToolCallIR({ sessionUpdate: 'tool_call', toolCallId: 'tc-12', kind, status: 'pending', rawInput }, undefined, undefined)
+    const call = acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'tc-12', kind, status: 'pending', rawInput }, undefined, undefined)
     return call.kind === 'delete' || call.kind === 'move' ? call.request.changes : []
   }
 
@@ -541,7 +543,7 @@ describe('the file-change requests the arguments state', () => {
   // builder read one root pair alone, so a `multi_edit` opened with an empty list and
   // a header that could name no file at all.
   it('states every substitution a multi-edit asks for', () => {
-    const changes = acpToolCallIR({
+    const changes = acpToolCall({
       sessionUpdate: 'tool_call',
       toolCallId: 'tc-14',
       kind: 'edit',
@@ -558,7 +560,7 @@ describe('the file-change requests the arguments state', () => {
   // A change that draws NO diff still states the file, which is the only thing the
   // header needs. Dropping it headed a failed edit with the word "Edit" and nothing.
   it('keeps the file of an edit whose arguments state no replacement text', () => {
-    const call = acpToolCallIR({
+    const call = acpToolCall({
       sessionUpdate: 'tool_call',
       toolCallId: 'tc-15',
       kind: 'edit',
@@ -583,7 +585,7 @@ describe('the file-change requests the arguments state', () => {
  * into `mode` would lose it.
  */
 describe('the mode switch request', () => {
-  const switchCall = (rawInput: Record<string, unknown>) => acpToolCallIR({
+  const switchCall = (rawInput: Record<string, unknown>) => acpToolCall({
     sessionUpdate: 'tool_call_update',
     toolCallId: 'switch',
     kind: 'switch_mode',
@@ -630,7 +632,7 @@ describe('ACP_TOOL_REQUEST_OVERRIDES', () => {
   // The rows are LIVE, because the request is what these cases ask about and it is the
   // same at every state of the call. A running row is also the state that admits no
   // result, so no case has to state an answer beside the question it asks.
-  const overrideCall = (frame: Record<string, unknown>) => acpToolCallIR({
+  const overrideCall = (frame: Record<string, unknown>) => acpToolCall({
     sessionUpdate: 'tool_call_update',
     toolCallId: 'override',
     status: 'in_progress',
@@ -732,7 +734,7 @@ const SHARED_ARGUMENT_PROBE: Record<string, unknown> = {
  * two file-change kinds that read the diff out of `rawInput`, and the generic trio,
  * whose card states a server and a tool that no argument carries.
  */
-const ACP_OWN_REQUEST_KINDS = ['', 'agent', 'edit', 'execute', 'fetch', 'mcp', 'other', 'read', 'search', 'think', 'write'] as const
+const ACP_OWN_REQUEST_KINDS = ['unspecified', 'agent', 'edit', 'execute', 'fetch', 'mcp', 'other', 'read', 'search', 'think', 'write'] as const
 
 /**
  * Every other kind, which takes the shared declared request.
@@ -778,11 +780,11 @@ const ACP_SHARED_REQUEST_KINDS = [
  * satisfies a slot supplying `args` and the facts, so a spread of the shared table --
  * or one stray key that shadows a kind -- compiles and simply draws a different card.
  *
- * The builders are read DIRECTLY rather than through `acpPayloadFor`, because the
+ * The builders are read DIRECTLY rather than through `acpSpecFor`, because the
  * lifecycle ladder sits above them and states the result. The request is what these
  * cases ask about, and it is the same at every state of the call.
  */
-describe('ACP_PAYLOAD_BUILDERS', () => {
+describe('ACP_SPEC_READERS', () => {
   const probeFacts = acpToolFacts({
     sessionUpdate: 'tool_call_update',
     toolCallId: 'tc-probe',
@@ -793,7 +795,7 @@ describe('ACP_PAYLOAD_BUILDERS', () => {
   })
 
   it('states one builder for every tool kind', () => {
-    expect(Object.keys(ACP_PAYLOAD_BUILDERS).sort()).toStrictEqual([...TOOL_KINDS].sort())
+    expect(Object.keys(ACP_SPEC_READERS).sort()).toStrictEqual([...TOOL_KINDS].sort())
   })
 
   // Every builder runs against a frame of a DIFFERENT kind and answers its own kind. A
@@ -801,7 +803,7 @@ describe('ACP_PAYLOAD_BUILDERS', () => {
   // in the transcript, where the error boundary replaces the whole message.
   it('answers each kind at the key that states it', () => {
     for (const kind of TOOL_KINDS)
-      expect(ACP_PAYLOAD_BUILDERS[kind].build(probeFacts).kind, kind || 'the empty kind').toBe(kind)
+      expect(ACP_SPEC_READERS[kind].build(probeFacts).kind, kind).toBe(kind)
   })
 
   it('splits every tool kind between the two lists above', () => {
@@ -815,7 +817,7 @@ describe('ACP_PAYLOAD_BUILDERS', () => {
   })
 
   it.each(ACP_SHARED_REQUEST_KINDS)('fills the declared request of %s from the shared table', (kind) => {
-    expect(ACP_PAYLOAD_BUILDERS[kind].build(probeFacts).request).toStrictEqual(DEFAULT_TOOL_REQUESTS[kind](probeFacts.args))
+    expect(ACP_SPEC_READERS[kind].build(probeFacts).request).toStrictEqual(DEFAULT_TOOL_REQUESTS[kind](probeFacts.args))
   })
 })
 
@@ -836,7 +838,7 @@ describe('a scalar ACP tool input', () => {
   const scalar = 'a bare string argument'
 
   function generic(rawInput: unknown, supplemental?: unknown) {
-    const call = acpToolCallIR(
+    const call = acpToolCall(
       { sessionUpdate: 'tool_call_update', toolCallId: 'tc-scalar', kind: 'other', title: 'Probe', status: 'completed', rawInput },
       undefined,
       supplemental,
@@ -864,7 +866,7 @@ describe('a scalar ACP tool input', () => {
   // and a row that has not answered is the state that admits no result -- so the case
   // states the input it is about and nothing else.
   it('still fills a typed field from an object input', () => {
-    const call = acpToolCallIR(
+    const call = acpToolCall(
       { sessionUpdate: 'tool_call_update', toolCallId: 'tc-read', kind: 'read', status: 'in_progress', rawInput: { filePath: '/p/a.ts' } },
       undefined,
       undefined,
@@ -876,7 +878,7 @@ describe('a scalar ACP tool input', () => {
   // request has no field the scalar can fill, so the row used to draw `read` with an
   // empty path and the argument the tool sent reached nobody at all.
   it('degrades a known kind with a scalar input to the generic card', () => {
-    const call = acpToolCallIR(
+    const call = acpToolCall(
       { sessionUpdate: 'tool_call_update', toolCallId: 'tc-read', kind: 'read', title: 'Read', status: 'completed', rawInput: '/p/a.ts' },
       undefined,
       undefined,
@@ -891,7 +893,7 @@ describe('a scalar ACP tool input', () => {
   // and a degrade here would throw that recovery away.
   it('keeps a known kind whose input is absent or null', () => {
     for (const rawInput of [undefined, null]) {
-      const call = acpToolCallIR(
+      const call = acpToolCall(
         { sessionUpdate: 'tool_call_update', toolCallId: 'tc-read', kind: 'read', status: 'in_progress', rawInput, locations: [{ path: '/p/a.ts' }] },
         undefined,
         undefined,
@@ -904,7 +906,7 @@ describe('a scalar ACP tool input', () => {
   // The adapter is the one layer above this that may read a provider's own scalar
   // convention, so its kind must survive the degrade.
   it('lets a provider adapter state its own kind for a scalar input', () => {
-    const call = acpToolCallIR(
+    const call = acpToolCall(
       { sessionUpdate: 'tool_call_update', toolCallId: 'tc-exec', kind: 'execute', status: 'in_progress', rawInput: 'ls -1' },
       facts => ({ kind: 'execute', request: { command: facts.argsText ?? '' } }),
       undefined,
@@ -940,13 +942,13 @@ describe('the ACP think result', () => {
   const content = [{ type: 'content', content: { type: 'text', text: thought } }]
 
   function think(frame: Record<string, unknown>) {
-    return acpToolCallIR({ sessionUpdate: 'tool_call_update', toolCallId: 'tc-think', kind: 'think', ...frame }, undefined, undefined)
+    return acpToolCall({ sessionUpdate: 'tool_call_update', toolCallId: 'tc-think', kind: 'think', ...frame }, undefined, undefined)
   }
 
   it('answers a finished thought as prose rather than as an unparsed payload', () => {
     const call = think({ status: 'completed', rawInput: {}, content })
     expect(call.kind).toBe('think')
-    expect(isUnparsedResult(call.result)).toBe(false)
+    expect(isUnparsedToolResult(call.result)).toBe(false)
     expect(call.kind === 'think' ? typedResult(resultArgs(call)) : undefined).toEqual({ text: thought, format: 'plain' })
   })
 
@@ -964,7 +966,7 @@ describe('the ACP think result', () => {
 
   it('answers the reason a failed thought stated', () => {
     const call = think({ status: 'failed', rawInput: {}, content })
-    expect(isFailedResult(call.result) && call.result.text).toBe(thought)
+    expect(isToolFailureResult(call.result) && call.result.text).toBe(thought)
   })
 
   // A thought the reader STOPPED keeps the words it wrote, under the prose body
@@ -974,7 +976,7 @@ describe('the ACP think result', () => {
   it('keeps the prose a cancelled thought wrote', () => {
     const call = think({ status: 'cancelled', rawInput: {}, content })
     expect(call.status).toBe('cancelled')
-    expect(isFailedResult(call.result)).toBe(false)
+    expect(isToolFailureResult(call.result)).toBe(false)
     expect(call.kind === 'think' ? typedResult(resultArgs(call)) : undefined).toStrictEqual({ text: thought, format: 'plain' })
   })
 })

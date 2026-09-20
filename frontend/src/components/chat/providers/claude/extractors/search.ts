@@ -1,12 +1,12 @@
-import type { SearchBodyKind, SearchResult } from '../../../ir/searchResult'
-import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
-import type { GlobRequest } from '../../../ir/tools/glob'
-import type { GrepRequest } from '../../../ir/tools/grep'
+import type { SearchResult, SearchToolKind } from '../../../model/searchResult'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { GlobRequest } from '../../../model/tools/glob'
+import type { GrepRequest } from '../../../model/tools/grep'
 import type { ClaudeToolRow } from './toolCommon'
 import { pickBool, pickNumber, pickString, stringArray } from '~/lib/jsonPick'
-import { searchMode } from '../../../ir/searchMode'
+import { searchOutputMode } from '../../../model/searchOutputMode'
 import { CLAUDE_TOOL_NAMES } from '../toolNames'
-import { claudeFailedResult } from './failure'
+import { claudeToolFailureResult } from './failure'
 
 /** Grep content-mode line pattern: "line_num:text" or "file:line_num:text". */
 const GREP_CONTENT_LINE_RE = /^\d+[:-]|^[^:]+:\d+[:-]/
@@ -134,7 +134,7 @@ export function parseRawGrepGlobResult(raw: string, toolName: string): {
  * (no `tool_use_result`, parse the raw text) is shared.
  */
 export function claudeSearchFromToolResult(
-  variant: Extract<SearchBodyKind, 'grep' | 'glob'>,
+  variant: Extract<SearchToolKind, 'grep' | 'glob'>,
   toolUseResult: Record<string, unknown> | null | undefined,
   resultContent: string,
 ): SearchResult {
@@ -150,7 +150,7 @@ export function claudeSearchFromToolResult(
       const numFiles = pickNumber(toolUseResult, 'numFiles', 0)
       const numLines = pickNumber(toolUseResult, 'numLines', 0)
       const numMatches = pickNumber(toolUseResult, 'numMatches', undefined)
-      const mode = searchMode(toolUseResult.mode)
+      const mode = searchOutputMode(toolUseResult.mode)
       // The tool's OWN counters, which is what makes this a RECOGNIZED empty rather
       // than a guess: zero on each one it stated, with no match text and no file, is
       // the tool reporting that it found nothing. A structured object that stated no
@@ -223,20 +223,20 @@ export function claudeSearchFromToolResult(
  * name -- which drew "File does not exist." as a file hit under the summary
  * "Found 1 file".
  */
-export function claudeGrepPayload(request: GrepRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'grep'> {
+export function claudeGrepSpec(request: GrepRequest, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'grep'> {
   if (!result)
     return { kind: 'grep', request }
-  const failure = claudeFailedResult(result)
+  const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'grep', request, result: failure }
   return { kind: 'grep', request, result: claudeSearchFromToolResult('grep', result.toolUseResult, result.resultContent) }
 }
 
 /** The glob pair: the pattern and the paths it ran in. The failure rung leads, as above. */
-export function claudeGlobPayload(request: GlobRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'glob'> {
+export function claudeGlobSpec(request: GlobRequest, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'glob'> {
   if (!result)
     return { kind: 'glob', request }
-  const failure = claudeFailedResult(result)
+  const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'glob', request, result: failure }
   return { kind: 'glob', request, result: claudeSearchFromToolResult('glob', result.toolUseResult, result.resultContent) }

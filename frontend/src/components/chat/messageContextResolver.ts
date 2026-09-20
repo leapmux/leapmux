@@ -1,11 +1,11 @@
 import type { FileImageLoadOptions, FileImageReader } from './fileImageResolver'
+import type { ToolSpanRowPresence } from './model/row'
 import type {} from './providers/registry'
 import type { ResolvedMessageContent } from './rowExtractionTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { MessageRevision, MessageSpanIdentity, ToolSpanRole, ToolSpanSide } from '~/lib/messageSpan'
-import type { TodoItem } from '~/models/todo'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 import { batch, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
@@ -50,14 +50,15 @@ export interface MessageContextSources {
   fetchMessage: (seq: bigint, signal: AbortSignal) => Promise<AgentChatMessage | undefined>
   fetchFileImage: FileImageReader
   subscribe: (observer: (message: AgentChatMessage) => void) => () => void
-  todo: (taskId: string) => TodoItem | undefined
   backgroundTask: (rowKey: string) => BackgroundTaskItem | undefined
   progress: (identity: MessageSpanIdentity) => ToolProgressEntry | undefined
 }
 
 /** One resolution path for tool renderers, image tabs, and message previews. */
 export interface MessageContextResolver {
-  current: (message: AgentChatMessage, parsed?: ParsedMessageContent) => ResolvedMessage
+  resolvedMessage: (message: AgentChatMessage, parsed?: ParsedMessageContent) => ResolvedMessage
+  role: (message: AgentChatMessage, parsed?: ParsedMessageContent) => ToolSpanRole
+  visibleRows: (identity: MessageSpanIdentity) => ToolSpanRowPresence
   request: (identity: MessageSpanIdentity) => ResolvedMessage | undefined
   result: (identity: MessageSpanIdentity) => ResolvedMessage | undefined
   loadSpan: (identity: MessageSpanIdentity) => Promise<void>
@@ -68,7 +69,6 @@ export interface MessageContextResolver {
   retainMessage: (seq: bigint) => () => void
   peek: (seq: bigint) => ResolvedMessage | undefined
   message: (seq: bigint) => Promise<ResolvedMessage | undefined>
-  todo: (taskId: string) => TodoItem | undefined
   backgroundTask: (rowKey: string) => BackgroundTaskItem | undefined
   progress: (identity: MessageSpanIdentity) => ToolProgressEntry | undefined
   contentVersion: (messageId: string) => number
@@ -82,9 +82,9 @@ export interface MessageRenderSources {
   request: () => ResolvedMessageContent | undefined
   result: () => ResolvedMessageContent | undefined
   role: () => ToolSpanRole
+  visibleRows: () => ToolSpanRowPresence
   fileImage: MessageContextResolver['fileImage']
   cachedFileImage: MessageContextResolver['cachedFileImage']
-  todo: MessageContextResolver['todo']
   backgroundTask: MessageContextResolver['backgroundTask']
   progress: () => ToolProgressEntry | undefined
 }
@@ -96,17 +96,12 @@ export function createMessageRenderSources(resolver: () => MessageContextResolve
     request: () => resolver()?.request(span())?.resolved,
     result: () => resolver()?.result(span())?.resolved,
     role: () => {
-      const context = resolver()
       const own = message()
-      if (context?.result(messageSpanIdentity(own))?.message.id === own.id)
-        return 'result'
-      if (context?.request(messageSpanIdentity(own))?.message.id === own.id)
-        return 'request'
-      return resolvedSpanRole(current(), own.agentProvider)
+      return resolver()?.role(own) ?? resolvedSpanRole(current(), own.agentProvider)
     },
+    visibleRows: () => resolver()?.visibleRows(span()) ?? { request: false, result: false },
     fileImage: (path, options) => resolver()?.fileImage(path, { ...options, reference: message().id }) ?? Promise.reject(new Error('The image source is unavailable')),
     cachedFileImage: path => resolver()?.cachedFileImage(path, message().id),
-    todo: taskId => resolver()?.todo(taskId),
     backgroundTask: rowKey => resolver()?.backgroundTask(rowKey),
     progress: () => resolver()?.progress(messageSpanIdentity(message())),
   }
@@ -190,6 +185,30 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
         latest = cached
     }
     return reference(latest, latest === message ? parsed : undefined)
+  }
+
+  function role(message: AgentChatMessage, parsed?: ParsedMessageContent): ToolSpanRole {
+    const selected = current(message, parsed)
+    const identity = messageSpanIdentity(selected.message)
+    if (related(identity, 'result')?.message.id === selected.message.id)
+      return 'result'
+    if (related(identity, 'request')?.message.id === selected.message.id)
+      return 'request'
+    return resolvedSpanRole(selected.resolved, selected.message.agentProvider)
+  }
+
+  function visibleRows(identity: MessageSpanIdentity): ToolSpanRowPresence {
+    const key = messageSpanKey(identity)
+    let request = false
+    let result = false
+    for (const message of source.messages()) {
+      if (messageSpanKey(message) !== key)
+        continue
+      const rowRole = role(message)
+      request ||= rowRole === 'request'
+      result ||= rowRole === 'result'
+    }
+    return { request, result }
   }
 
   function remember(messages: AgentChatMessage[]): void {
@@ -422,7 +441,9 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
   }
 
   return {
-    current,
+    resolvedMessage: current,
+    role,
+    visibleRows,
     fileImage: (path, options) => disposed ? Promise.reject(new DOMException('The image resolver is no longer active', 'AbortError')) : fileImages.load(path, options),
     cachedFileImage: fileImages.peek,
     request: identity => related(identity, 'request'),
@@ -473,7 +494,6 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       return message ? reference(message, undefined, false) : undefined
     },
     message,
-    todo: taskId => disposed ? undefined : source.todo(taskId),
     backgroundTask: rowKey => disposed ? undefined : source.backgroundTask(rowKey),
     // The lookup takes the WHOLE span identity, because the store keys an entry
     // by the provider session and the span together. The producer states the

@@ -1,6 +1,6 @@
 import type { ACPToolFacts } from '../../acp/extractors/toolCall'
 import { describe, expect, it } from 'vitest'
-import { typedResult } from '../../../ir/toolCall'
+import { typedResult } from '../../../model/toolCall'
 import { acpToolFinished } from '../../acp/extractors/toolCall'
 import { cursorAgentCall } from './agent'
 

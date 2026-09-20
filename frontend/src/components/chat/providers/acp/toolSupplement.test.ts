@@ -67,7 +67,7 @@ describe('acpSupplementTerminals', () => {
 
   // The AGENT chooses the terminal ids. A plain object answers `terminals.toString`
   // with a function off `Object.prototype`, and the caller then reads an entry whose
-  // `output` is undefined through a field the IR declares as `string` -- which the
+  // `output` is undefined through a field the model declares as `string` -- which the
   // command body dereferences and crashes on.
   it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty', '__proto__'])('holds no entry for the inherited id %s', (id) => {
     expect(acpSupplementTerminals(undefined).get(id)).toBeUndefined()

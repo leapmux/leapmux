@@ -7,31 +7,11 @@
  * it directly, so one answer reads the same before and after the user gives it.
  */
 
-export interface WirePermissionOption {
-  optionId: string
-  kind: string
-  /** Absent on wire payloads that omit it; every reader must tolerate `undefined`. */
-  name?: string
-}
+import type { PermissionOption } from '../model/controlPrompt'
+import { KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ALWAYS, KIND_REJECT_ONCE } from '../model/controlPrompt'
 
 // The four option kinds the Agent Client Protocol defines. They are the only stable
 // discriminator across agents, because each agent spells its own optionId vocabulary.
-export const KIND_ALLOW_ONCE = 'allow_once'
-export const KIND_ALLOW_ALWAYS = 'allow_always'
-export const KIND_REJECT_ONCE = 'reject_once'
-export const KIND_REJECT_ALWAYS = 'reject_always'
-
-export const CANONICAL_KINDS = [KIND_ALLOW_ONCE, KIND_ALLOW_ALWAYS, KIND_REJECT_ONCE, KIND_REJECT_ALWAYS]
-
-export function isRejectPermissionKind(kind: string): boolean {
-  return kind === KIND_REJECT_ONCE || kind === KIND_REJECT_ALWAYS
-}
-
-/** The option family the request's positive action sends: only these apply a permission preset. */
-export function isAllowPermissionKind(kind: string): boolean {
-  return kind === KIND_ALLOW_ONCE || kind === KIND_ALLOW_ALWAYS
-}
-
 /** Goose sets every option's name to its kind (`name === optionId === kind`), which is no label at all. */
 const KIND_FALLBACK_LABELS: Record<string, string> = {
   [KIND_ALLOW_ONCE]: 'Allow once',
@@ -41,7 +21,7 @@ const KIND_FALLBACK_LABELS: Record<string, string> = {
 }
 
 /** The label an extra option's button shows: the agent's own name, unless the name is just the id. */
-export function permissionOptionLabel(option: WirePermissionOption): string {
+export function permissionOptionLabel(option: PermissionOption): string {
   if (option.name !== undefined && option.name !== option.optionId)
     return option.name
   // `Object.hasOwn`, not `??`: `kind` comes straight off the wire, and a value

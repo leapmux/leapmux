@@ -1,11 +1,11 @@
-import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
-import type { ToolRequests } from '../../../ir/tools'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { ToolRequestByKind } from '../../../model/tools'
 import type { ClaudeToolRow } from './toolCommon'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { proseResult, unparsedResult } from '../../../ir/toolCall'
+import { proseResult, unparsedResult } from '../../../model/toolCall'
 import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
-import { claudeFailedResult } from './failure'
+import { claudeToolFailureResult } from './failure'
 
 /** What one Claude `RemoteTrigger` call answered, read out of the endpoint's JSON. */
 export interface RemoteTriggerResult {
@@ -90,7 +90,7 @@ function buildSource(status: number, json: string): RemoteTriggerResult {
  * it. `toolTableEntriesAreAnnotated.test.ts` keeps every TABLE entry in that form, and
  * it reaches no helper a table entry calls -- so only a reader keeps this one annotated.
  */
-export function claudeTriggerRequest(input: Record<string, unknown>): ToolRequests['trigger'] {
+export function claudeTriggerRequest(input: Record<string, unknown>): ToolRequestByKind['trigger'] {
   const shared = DEFAULT_TOOL_REQUESTS.trigger(input)
   const name = pickString(pickObject(input, 'body'), 'name') || shared.name
   return {
@@ -108,7 +108,7 @@ export function claudeTriggerRequest(input: Record<string, unknown>): ToolReques
  * that answered outside 2xx failed the call although it answered, so the payload
  * overrides the status with `failed`.
  */
-export function claudeTriggerPayload(request: ToolRequests['trigger'], args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'trigger'> {
+export function claudeTriggerSpec(request: ToolRequestByKind['trigger'], args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'trigger'> {
   if (!result) {
     // An action the tool does not spell falls back to the tool's own name.
     return {
@@ -120,13 +120,13 @@ export function claudeTriggerPayload(request: ToolRequests['trigger'], args: Cla
   const source = claudeRemoteTriggerFromToolResult(result.toolUseResult, result.resultContent)
   if (!source) {
     // The failure rung sits HERE rather than ahead of the parse, which is this kind's
-    // one deviation from the ladder {@link claudeFailedResult} states. An endpoint that
+    // one deviation from the ladder {@link claudeToolFailureResult} states. An endpoint that
     // answered outside 2xx still answered: the branch below titles the row with that
     // status and draws the response body, which says more than the raw text does. A
     // call the tool itself failed carries no `HTTP <status>` line for the parse to
     // read, so it lands here -- and it states its reason under the row's failed status
     // rather than claiming, as `unparsedResult` does, that the call completed.
-    const failure = claudeFailedResult(result)
+    const failure = claudeToolFailureResult(result)
     return { kind: 'trigger', request, result: failure ?? unparsedResult(result.resultContent) }
   }
   const ok = source.status >= 200 && source.status < 300
@@ -144,7 +144,7 @@ export function claudeTriggerPayload(request: ToolRequests['trigger'], args: Cla
 }
 
 /** The action word the `action` argument states, or `other` for one it does not spell. */
-function claudeTriggerAction(action: string): ToolRequests['trigger']['action'] {
+function claudeTriggerAction(action: string): ToolRequestByKind['trigger']['action'] {
   if (action === 'list' || action === 'get' || action === 'create' || action === 'update' || action === 'run' || action === 'delete')
     return action
   return 'other'

@@ -1,7 +1,8 @@
 import type { TodoItem } from '~/models/todo'
+import { normalizeTodoStatus } from '~/components/chat/normalizers/todo'
 import { CODEX_ITEM } from '~/generated/contracts/codex-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { normalizeTodoStatus, todoRowKey } from '~/models/todo'
+import { todoRowKey } from '~/models/todo'
 
 /** Convert a Codex plan array (from turn/plan/updated) to TodoItem[]. */
 function codexPlanToTodos(plan: unknown[]): TodoItem[] {

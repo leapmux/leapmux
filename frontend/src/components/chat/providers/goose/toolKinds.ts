@@ -1,4 +1,4 @@
-import type { ToolKind } from '../../ir/toolKind'
+import type { ToolKind } from '../../model/toolKind'
 
 /**
  * The two built-in extensions whose tools this plugin reads by name.

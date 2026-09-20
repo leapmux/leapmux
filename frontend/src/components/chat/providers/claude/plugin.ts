@@ -12,31 +12,12 @@ import { claudeAskUserQuestions, claudeIsAskUserQuestion } from './askUserQuesti
 import { classifyClaudeCodeMessage } from './classification'
 import { claudeElicitation } from './elicitation'
 import { claudeExtractControl } from './extractControl'
-import { extractToolUseInfo } from './extractors/assistantContent'
 import { claudeCompactionBoundary, claudeNotificationEntry } from './extractors/notification'
 import { claudeResultDivider } from './extractors/resultDivider'
 import { claudeExtractRow } from './extractors/row'
 import { claudeRateLimitsFromMessage } from './rateLimits'
 import { claudeContextUsageFromMessage } from './sessionMetadata'
-import { claudeSpanRole } from './spanRole'
-import { canonicalClaudeToolName } from './toolKinds'
-import { CLAUDE_TOOL_NAMES } from './toolNames'
-
-/**
- * The tools whose REQUEST row reads its own result.
- *
- * Each of these draws one row for the whole call: a checklist shows the saved
- * list, a `Task*` card shows the state the patch produced, and a subagent card
- * says whether the child has reported. Canonical names only -- the aliases fold
- * before the lookup.
- */
-const REQUEST_NEEDS_RESULT: ReadonlySet<string> = new Set<string>([
-  CLAUDE_TOOL_NAMES.AGENT,
-  CLAUDE_TOOL_NAMES.TODO_WRITE,
-  CLAUDE_TOOL_NAMES.TASK_CREATE,
-  CLAUDE_TOOL_NAMES.TASK_UPDATE,
-  CLAUDE_TOOL_NAMES.TASK_GET,
-])
+import { claudeRelatedMessages, claudeSpanRole } from './spanRole'
 
 // Claude reserves ~16.5% of the context window as an autocompact buffer, so the
 // context-usage percentage is measured against the remaining usable capacity.
@@ -46,12 +27,7 @@ const claudeCodePlugin: ProviderPlugin = {
   transcript: {
     classify: classifyClaudeCodeMessage,
     spanRole: claudeSpanRole,
-    relatedMessages: (parsed) => {
-      if (claudeSpanRole(parsed) === 'result')
-        return ['request']
-      const tool = canonicalClaudeToolName(extractToolUseInfo(parsed)?.toolName ?? '')
-      return REQUEST_NEEDS_RESULT.has(tool) ? ['result'] : []
-    },
+    relatedMessages: claudeRelatedMessages,
     extractRow: claudeExtractRow,
     notificationEntry: claudeNotificationEntry,
     extractDivider: claudeResultDivider,

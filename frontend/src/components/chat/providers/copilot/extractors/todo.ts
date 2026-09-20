@@ -1,5 +1,5 @@
 import type { TodoItem } from '~/models/todo'
-import { rawTodosToItems } from '~/models/todo'
+import { rawTodosToItems } from '~/components/chat/normalizers/todo'
 
 /**
  * The to-do rows a Copilot `update_todo` argument carries.

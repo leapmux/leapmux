@@ -1,13 +1,13 @@
-import type { ChatRowIR, ToolRowRole } from '../../../ir/row'
-import type { ToolCallIR } from '../../../ir/toolCall'
+import type { ChatRow, ToolSpanRowRole } from '../../../model/row'
+import type { ToolCall } from '../../../model/toolCall'
 import type { RowExtractionInput } from '~/components/chat/rowExtractionTypes'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { COPILOT_EVENT } from '~/generated/contracts/copilot-protocol'
 import { pickString } from '~/lib/jsonPick'
-import { toolCallRow } from '../../../ir/row'
 import { leapmuxPlanExecutionRow, leapmuxUserRow } from '../../../leapmuxRows'
+import { toolCallRow } from '../../../model/row'
 import { copilotEvent, copilotEventData } from '../protocol'
-import { copilotToolCallIR, copilotToolRow } from './toolCall'
+import { copilotToolCall, copilotToolRow } from './toolCall'
 
 /** The text of one assistant or reasoning event. */
 export function copilotEventText(parsed: unknown): string {
@@ -15,14 +15,14 @@ export function copilotEventText(parsed: unknown): string {
 }
 
 /**
- * Read one Copilot row into the shared row IR.
+ * Read one Copilot row into the shared row model.
  *
  * Copilot's stream is a single `session.event` envelope whose `type` carries the
  * whole vocabulary, so the classification already answered what this row is; the work
  * here is turning the frame into the neutral shape.
  */
-export function copilotExtractRow(input: RowExtractionInput): ChatRowIR | null {
-  const { category, parsed, sides, spanType } = input
+export function copilotExtractRow(input: RowExtractionInput): ChatRow | null {
+  const { category, resolved: parsed, span, spanType } = input
   switch (category.kind) {
     case 'assistant_text': {
       const text = copilotEventText(parsed.parentObject)
@@ -34,7 +34,7 @@ export function copilotExtractRow(input: RowExtractionInput): ChatRowIR | null {
     }
     case 'tool_use':
     case 'tool_result':
-      return copilotToolSpanRow(input.parsed, sides, spanType)
+      return copilotToolSpanRow(parsed, span, spanType)
     case 'user_content':
       return leapmuxUserRow(parsed.parentObject)
     case 'plan_execution':
@@ -53,22 +53,22 @@ export function copilotExtractRow(input: RowExtractionInput): ChatRowIR | null {
  */
 function copilotToolSpanRow(
   parsed: ParsedMessageContent,
-  sides: RowExtractionInput['sides'],
+  span: RowExtractionInput['span'],
   spanType: string | undefined,
-): ChatRowIR | null {
+): ChatRow | null {
   // ONE call from every side of THIS call the store resolved: the start event
   // identifies the tool and the arguments, the completion the outcome. A start for
   // another call would supply the wrong name and the wrong arguments.
-  const row = copilotToolRow(parsed.parentObject, spanType, sides.request, parsed.completion)
+  const row = copilotToolRow(parsed.parentObject, spanType, span.request, parsed.completion)
   if (!row)
     return null
-  const call: ToolCallIR = copilotToolCallIR(row)
-  const role: ToolRowRole = row.finished ? 'result' : 'request'
+  const call: ToolCall = copilotToolCall(row)
+  const role: ToolSpanRowRole = row.finished ? 'result' : 'request'
   // Copilot's span sides are events of every kind, so each one must NAME this call
   // before it counts as the row beside it.
   return toolCallRow(call, role, {
-    request: copilotSideIsStart(sides.request, row.toolCallId),
-    result: copilotSideNames(sides.result, row.toolCallId),
+    request: span.visibleRows.request && copilotSideIsStart(span.request, row.toolCallId),
+    result: span.visibleRows.result && copilotSideNames(span.result, row.toolCallId),
   })
 }
 

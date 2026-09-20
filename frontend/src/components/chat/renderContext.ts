@@ -52,6 +52,19 @@ export interface MessageUiState {
   set: (key: MessageUiKey, value: boolean) => void
 }
 
+/** The stored expansion state that a mounted row can read and change. */
+export interface MessageUiRenderContext {
+  expandAgentThoughts?: boolean
+  getMessageUiState?: ((key: MessageUiKey) => boolean | undefined) | undefined
+  setMessageUiState?: ((key: MessageUiKey, value: boolean) => void) | undefined
+}
+
+/** The directories that a result uses to shorten a displayed path. */
+export interface PathRenderContext {
+  workingDir?: string | undefined
+  homeDir?: string | undefined
+}
+
 /**
  * Loading and opening the images one row drew.
  *
@@ -102,6 +115,25 @@ export interface SubagentNavigation {
 /** The live output of a call that has not returned, read by the row drawing its tail. */
 export interface ToolProgressSource {
   liveTail: () => ToolProgressEntry | undefined
+}
+
+/** The capabilities that the common tool-row layout uses. */
+export interface ToolLayoutContext extends MarkdownRenderContext {
+  createdAt?: string
+  onCopyJson?: () => void
+  jsonCopied?: () => boolean
+  spanColor?: number
+  toolProgress?: ToolProgressSource
+}
+
+/** The complete, focused capability set that result components can receive. */
+export interface ToolResultRenderContext extends ToolLayoutContext, MessageUiRenderContext, PathRenderContext {
+  completionHeader?: boolean
+  diffView?: () => DiffViewPreference
+  onReply?: ((quotedText: string) => void) | undefined
+  hasOuterToolbar?: boolean
+  subagents?: SubagentNavigation
+  images?: ImageRenderActions
 }
 
 /**

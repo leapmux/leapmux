@@ -2,8 +2,8 @@ import type { ToolKindRenderer } from './renderer'
 import Vote from 'lucide-solid/icons/vote'
 import { Show } from 'solid-js'
 import { pluralize } from '~/lib/plural'
-import { questionBodyMarkdown } from '../../ir/questionBody'
 import { CollapsibleContent } from '../CollapsibleContent'
+import { questionBodyMarkdown } from '../questionBody'
 import { proseMeta } from './proseResult'
 
 /** The answers a question drew, as the markdown list the row states them in. */
@@ -24,7 +24,7 @@ export const questionRenderer: ToolKindRenderer<'question'> = {
     //
     // The sentence, never the header: `header` is a short tab caption that tells
     // several questions apart, and preferring it threw away the title the extractor
-    // computed for every question that carries one. `QuestionIR.question` is required,
+    // computed for every question that carries one. `QuestionPrompt.question` is required,
     // so this reads the same on every provider.
     const questions = call.request.questions
     if (questions.length > 1)

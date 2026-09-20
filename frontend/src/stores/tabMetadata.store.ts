@@ -212,7 +212,7 @@ export interface ImageMeta {
   imageAgentId?: string | undefined
   /** Per-agent message seq. */
   imageSeq?: bigint | undefined
-  /** Which image of that message, in `imagesForIR` order. */
+  /** Which image of that message, in `imagesForRow` order. */
   imageIndex?: number | undefined
 }
 

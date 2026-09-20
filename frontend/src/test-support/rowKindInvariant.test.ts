@@ -1,6 +1,6 @@
-import type { MessageCategory } from '~/components/chat/messageClassification'
+import type { MessageCategory } from '~/components/chat/messageClassifier'
 import { describe, expect, it } from 'vitest'
-import { classifyMessage } from '~/components/chat/messageClassification'
+import { classifyMessage } from '~/components/chat/messageClassifier'
 import { providerFor } from '~/components/chat/providers/registry'
 import { input } from '~/components/chat/providers/testUtils'
 import { extractChatRow } from '~/components/chat/rowExtraction'
@@ -12,7 +12,7 @@ import '~/components/chat/providers'
 //
 // Two readers take two different answers from layer 1. The virtual list premeasures
 // a row's height from the CATEGORY that `classify` answers, before anything draws;
-// the transcript then draws it from the row IR that `extractRow` answers. A frame
+// the transcript then draws it from the row model that `extractRow` answers. A frame
 // the two disagree about reserves the height of one kind of row and paints another
 // one into it, which reads as a scroll jump on a row nobody touched.
 //

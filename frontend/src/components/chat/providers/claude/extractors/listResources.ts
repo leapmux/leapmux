@@ -1,9 +1,9 @@
-import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
-import type { ListRequest } from '../../../ir/tools/list'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { ListRequest } from '../../../model/tools/list'
 import type { ClaudeToolRow } from './toolCommon'
 import { isObject, pickString } from '~/lib/jsonPick'
-import { unparsedResult } from '../../../ir/toolCall'
-import { claudeFailedResult } from './failure'
+import { unparsedResult } from '../../../model/toolCall'
+import { claudeToolFailureResult } from './failure'
 
 /**
  * The list pair of an MCP resource listing: the server's resources, one entry
@@ -13,10 +13,10 @@ import { claudeFailedResult } from './failure'
  * reason. It carries no resource array either, so it fell to the unparsed rung, which
  * states that the call completed and contradicts the row's own failed status.
  */
-export function claudeListResourcesPayload(request: ListRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'list'> {
+export function claudeListResourcesSpec(request: ListRequest, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'list'> {
   if (!result)
     return { kind: 'list', request }
-  const failure = claudeFailedResult(result)
+  const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'list', request, result: failure }
   const resources = Array.isArray(result.toolUseResult?.resources) ? result.toolUseResult.resources : []

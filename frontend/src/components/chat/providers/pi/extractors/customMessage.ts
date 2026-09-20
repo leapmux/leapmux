@@ -1,4 +1,4 @@
-import type { AgentRun } from '../../../ir/tools/agent'
+import type { AgentRun } from '../../../model/tools/agent'
 import { PI_CUSTOM_TYPE, PI_EVENT } from '~/generated/contracts/pi-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { formatDuration, formatNumber } from '../../../rendererUtils'

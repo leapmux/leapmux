@@ -1,6 +1,7 @@
 import type { TodoItem } from '~/models/todo'
+import { normalizeTodoStatus } from '~/components/chat/normalizers/todo'
 import { isObject, pickString } from '~/lib/jsonPick'
-import { normalizeTodoStatus, todoRowKey } from '~/models/todo'
+import { todoRowKey } from '~/models/todo'
 
 /**
  * The checklist items an ACP `plan` update carries, or null when it carries none.

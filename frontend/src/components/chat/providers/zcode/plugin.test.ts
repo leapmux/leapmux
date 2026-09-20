@@ -1,10 +1,10 @@
-import type { MessageCategory } from '../../messageClassification'
+import type { MessageCategory } from '../../messageClassifier'
 import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import { describe, expect, it } from 'vitest'
 import { ZCODE_EVENT, ZCODE_MODE, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { renderDivider } from '~/test-support/messageRenderProbes'
-import { providerQuotableText, providerToolMeta } from '~/test-support/toolCallIr'
+import { providerQuotableText, providerToolMeta } from '~/test-support/toolCallFixture'
 import { buildDenyResponse } from '~/utils/controlResponse'
 import { toolCallMeta } from '../../results/tools/meta'
 import { extractChatRow, extractedRow } from '../../rowExtraction'
@@ -136,7 +136,7 @@ describe('zcode retained tool row', () => {
     }, AgentProvider.ZCODE)
     const row = extractedRow(extractChatRow(AgentProvider.ZCODE, parsed, { kind: 'tool_result' }, {
       spanType: ZCODE_TOOL.Bash,
-      sides: { current: parsed, request: undefined, result: undefined, role: 'result' },
+      span: { request: undefined, result: parsed, role: 'result', visibleRows: { request: false, result: true } },
     }))
     expect(row?.kind === 'tool' ? toolCallMeta(row).copyableContent() : null).toBe('partial \noutput')
   })

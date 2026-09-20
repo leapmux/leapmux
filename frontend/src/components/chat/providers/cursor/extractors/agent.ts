@@ -1,5 +1,5 @@
-import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
-import type { AgentRequest, AgentRun } from '../../../ir/tools/agent'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { AgentRequest, AgentRun } from '../../../model/tools/agent'
 import type { ACPToolFacts } from '../../acp/extractors/toolCall'
 import { ACP_SUPPLEMENT } from '~/generated/contracts/acp-protocol'
 import { isObject, pickBoolean, pickObject, pickString } from '~/lib/jsonPick'
@@ -74,7 +74,7 @@ export function cursorAgentCall(
   input: Record<string, unknown>,
   native: Record<string, unknown> | null | undefined,
   savedOutput?: string,
-): ToolCallPayloadForKind<'agent'> {
+): ToolCallSpecVariant<'agent'> {
   const tool = facts.tool
   const raw = pickObject(tool, ACP_SUPPLEMENT.RawOutput)
   const success = pickObject(pickObject(native, 'output'), 'success')

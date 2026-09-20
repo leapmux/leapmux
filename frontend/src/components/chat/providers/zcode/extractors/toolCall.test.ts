@@ -1,22 +1,22 @@
-import type { FileEditDiff } from '../../../ir/fileEditDiff'
-import type { ToolCallIR } from '../../../ir/toolCall'
-import type { ToolKind } from '../../../ir/toolKind'
+import type { FileEditDiff } from '../../../model/fileEditDiff'
+import type { ToolCall } from '../../../model/toolCall'
+import type { ToolKind } from '../../../model/toolKind'
 import type { ZCodeRow } from '../extractors/toolCommon'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it } from 'vitest'
 import { ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
 import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { todoTitleOf } from '~/test-support/toolCallIr'
-import { toolCallRow } from '../../../ir/row'
-import { isUnparsedResult, typedResult } from '../../../ir/toolCall'
-import { TOOL_KINDS } from '../../../ir/toolKind'
+import { todoTitleOf } from '~/test-support/toolCallFixture'
+import { toolCallRow } from '../../../model/row'
+import { isUnparsedToolResult, typedResult } from '../../../model/toolCall'
+import { TOOL_KINDS } from '../../../model/toolKind'
 import { toolCallMeta } from '../../../results/tools/meta'
 import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
 import { input } from '../../testUtils'
 import { zcodeExtractTool, zcodeRow } from '../extractors/toolCommon'
 import { ZCODE_DISPLAY } from '../protocol'
 import { zcodeToolKind } from '../toolKinds'
-import { ZCODE_TOOL_READERS, ZCODE_TOOL_REQUEST_OVERRIDES, zcodeReclassify, zcodeToolCallIR, zcodeToolFacts } from './toolCall'
+import { ZCODE_TOOL_READERS, ZCODE_TOOL_REQUEST_OVERRIDES, zcodeReclassify, zcodeToolCall, zcodeToolFacts } from './toolCall'
 
 function event(kind: string, fields: Record<string, unknown>): Record<string, unknown> {
   return { type: 'tool.updated', payload: { kind, toolCallId: 'call', ...fields } }
@@ -31,7 +31,7 @@ function resultRow(toolName: string, args: Record<string, unknown>, result: Reco
 }
 
 function presentationOf(toolName: string, args: Record<string, unknown>, result: Record<string, unknown>) {
-  return zcodeToolCallIR(resultRow(toolName, args, result))!
+  return zcodeToolCall(resultRow(toolName, args, result))!
 }
 
 describe('zcodeToolKind', () => {
@@ -60,11 +60,11 @@ describe('zcodeToolKind', () => {
   })
 
   it('states no kind for a row that carries no tool name', () => {
-    expect(zcodeToolKind('')).toBe('')
+    expect(zcodeToolKind('')).toBe('unspecified')
   })
 })
 
-describe('zcodeToolCallIR bodies', () => {
+describe('zcodeToolCall bodies', () => {
   it('maps an MCP display to the shared rich-content pair and recovers its arguments', () => {
     const call = presentationOf('mcp__docs__lookup', { query: 'renderer' }, {
       success: true,
@@ -107,9 +107,9 @@ describe('zcodeToolCallIR bodies', () => {
     const parsed = event(ZCODE_TOOL_KIND.Result, {
       result: { success: true, content: 'Rendered the chart', display: { kind: 'node_repl_images', images: [{ base64: 'AAAA', mimeType: 'image/png' }] } },
     })
-    const call = zcodeToolCallIR(row(parsed, 'js'))!
+    const call = zcodeToolCall(row(parsed, 'js'))!
     expect(call.images).toHaveLength(1)
-    expect(call.kind === 'execute' && call.result && isUnparsedResult(call.result) ? call.result.text : undefined).toBe('Rendered the chart')
+    expect(call.kind === 'execute' && call.result && isUnparsedToolResult(call.result) ? call.result.text : undefined).toBe('Rendered the chart')
   })
 
   it('copies a numbered read without the native line-number prefixes', () => {
@@ -125,7 +125,7 @@ describe('zcodeToolCallIR bodies', () => {
 
   it('draws the checklist of an open TodoWrite request', () => {
     const parsed = event(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.TodoWrite, input: { todos: [{ content: 'Write the parser', status: 'pending' }] } })
-    const call = zcodeToolCallIR(row(parsed))!
+    const call = zcodeToolCall(row(parsed))!
     expect(call.kind).toBe('todo')
     // `todoRenderer` composes the count from the request; the payload states none.
     expect(call.title).toBeUndefined()
@@ -134,7 +134,7 @@ describe('zcodeToolCallIR bodies', () => {
   })
 })
 
-describe('zcodeToolCallIR truncation', () => {
+describe('zcodeToolCall truncation', () => {
   it('leaves the notice to the row for a body that cannot state it', () => {
     const call = presentationOf(ZCODE_TOOL.Edit, {}, {
       success: true,
@@ -153,16 +153,14 @@ describe('zcodeToolCallIR truncation', () => {
     expect(source?.truncated).toBe(true)
   })
 
-  // The rich-content body replaces the whole row with the shared card, which draws no
-  // part of the presentation around it.
-  it('keeps no flag for a rich-content body, which no notice can reach', () => {
+  it('preserves the row truncation flag for a Model Context Protocol result', () => {
     const call = presentationOf('mcp__docs__lookup', {}, {
       success: true,
       truncated: true,
       content: 'The tool response',
       display: { kind: 'mcp_tool', serverName: 'docs', toolName: 'lookup' },
     })
-    expect(call.truncated).toBeUndefined()
+    expect(call.truncated).toBe(true)
   })
 
   it('gives the flag to the search body, not to the row', () => {
@@ -172,20 +170,20 @@ describe('zcodeToolCallIR truncation', () => {
   })
 })
 
-describe('zcodeToolCallIR', () => {
+describe('zcodeToolCall', () => {
   it('reads a scheduled row as the request of its span', () => {
-    const call = zcodeToolCallIR(row(event(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.Bash, input: { command: 'ls' } })))!
-    expect(call).toMatchObject({ id: 'call', status: '' })
+    const call = zcodeToolCall(row(event(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.Bash, input: { command: 'ls' } })))!
+    expect(call).toMatchObject({ id: 'call', status: 'unstated' })
     expect(call.label).toBe(ZCODE_TOOL.Bash)
   })
 
   it('reads a result row as the end of its span', () => {
-    const call = zcodeToolCallIR(resultRow(ZCODE_TOOL.Bash, { command: 'ls' }, { success: true, content: 'a.ts' }))!
+    const call = zcodeToolCall(resultRow(ZCODE_TOOL.Bash, { command: 'ls' }, { success: true, content: 'a.ts' }))!
     expect(call).toMatchObject({ status: 'completed' })
   })
 
   it('reports a failed call', () => {
-    const call = zcodeToolCallIR(resultRow(ZCODE_TOOL.Read, {}, { success: false, content: 'gone' }))!
+    const call = zcodeToolCall(resultRow(ZCODE_TOOL.Read, {}, { success: false, content: 'gone' }))!
     expect(call.status).toBe('failed')
   })
 
@@ -193,13 +191,14 @@ describe('zcodeToolCallIR', () => {
   // still reads as a call in progress.
   it('reads a retained frame as a cancelled result', () => {
     const parsed: ParsedMessageContent = { ...input(event(ZCODE_TOOL_KIND.Progress, { stdoutTail: 'partial output' })), completion: MessageCompletion.INTERRUPTED }
-    const call = zcodeToolCallIR(row(parsed.parentObject!, ZCODE_TOOL.Bash), parsed)!
+    const call = zcodeToolCall(row(parsed.parentObject!, ZCODE_TOOL.Bash), parsed)!
     expect(call).toMatchObject({ status: 'cancelled' })
     expect(call.kind).toBe('execute')
+    expect(call.result).toMatchObject({ commands: [{ output: 'partial output' }] })
   })
 
   it('invents no tool name for a row that states none', () => {
-    const call = zcodeToolCallIR(row(event(ZCODE_TOOL_KIND.Result, { result: { success: true, content: 'recovered output' } })))!
+    const call = zcodeToolCall(row(event(ZCODE_TOOL_KIND.Result, { result: { success: true, content: 'recovered output' } })))!
     expect(call.kind).toBe('other')
     expect(call.label).toBeUndefined()
   })
@@ -242,7 +241,7 @@ describe('zcode AskUserQuestion rows', () => {
 
   it('draws the question the scheduled row asked', () => {
     const scheduled = row(event(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.AskUserQuestion, input: QUESTION }), ZCODE_TOOL.AskUserQuestion)
-    const call = zcodeToolCallIR(scheduled)!
+    const call = zcodeToolCall(scheduled)!
     expect(call.kind).toBe('question')
     expect(call.kind === 'question' && call.request.questions[0]?.question).toBe('Which parser should I write?')
     expect(call.kind === 'question' && call.request.questions[0]?.options).toHaveLength(2)
@@ -255,7 +254,7 @@ describe('zcode AskUserQuestion rows', () => {
       event(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.AskUserQuestion, input: { questions: [{ question: 'What next?' }] } }),
       ZCODE_TOOL.AskUserQuestion,
     )
-    const call = zcodeToolCallIR(scheduled)!
+    const call = zcodeToolCall(scheduled)!
     expect(call.kind === 'question' && call.request.questions[0]?.question).toBe('What next?')
   })
 
@@ -263,7 +262,7 @@ describe('zcode AskUserQuestion rows', () => {
   // must not claim one.
   it('draws plain text before the question arrives', () => {
     const scheduled = row(event(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.AskUserQuestion, input: {} }), ZCODE_TOOL.AskUserQuestion)
-    const call = zcodeToolCallIR(scheduled)!
+    const call = zcodeToolCall(scheduled)!
     expect(call.kind === 'question' && call.request.questions).toEqual([])
   })
 
@@ -277,7 +276,7 @@ describe('zcode AskUserQuestion rows', () => {
   })
 })
 
-describe('zcodeToolCallIR generic rows', () => {
+describe('zcodeToolCall generic rows', () => {
   // The pictures ride INSIDE the content: `GenericToolBody` never reads the call's
   // own image list, so a node-image row attached them where nothing draws them.
   it('carries a node-image row pictures inside its content', () => {
@@ -303,7 +302,7 @@ describe('zcodeToolCallIR generic rows', () => {
   })
 })
 
-describe('zcodeToolCallIR to-do rows', () => {
+describe('zcodeToolCall to-do rows', () => {
   // The demotion belongs to the kind, which is what stops the payload build from
   // answering one kind and rewriting it two lines later.
   it('reads a TodoWrite whose input carries no list as the generic row', () => {
@@ -317,7 +316,7 @@ describe('zcodeToolCallIR to-do rows', () => {
   })
 })
 
-describe('zcodeToolCallIR truncated bodies', () => {
+describe('zcodeToolCall truncated bodies', () => {
   // A read, a fetch, an agent, a to-do and a task body all state nothing about a cut,
   // so the row's own flag is the only notice the reader gets.
   it.each([
@@ -328,7 +327,7 @@ describe('zcodeToolCallIR truncated bodies', () => {
   })
 })
 
-describe('zcodeToolCallIR bash timeouts', () => {
+describe('zcodeToolCall bash timeouts', () => {
   // A timed-out Bash says the call was STOPPED, not failed. The payload states it
   // through `statusOverride`, which is the declared route for an outcome the
   // envelope cannot see.
@@ -596,7 +595,7 @@ describe('zcodeReclassify', () => {
   // A row with no tool name has no label to tell it apart from an uncategorized one.
   it('folds a row that states no tool name onto the generic card', () => {
     const noName = row(event(ZCODE_TOOL_KIND.Result, { result: { success: true, content: 'recovered output' } }))
-    expect(zcodeToolKind(noName.toolName)).toBe('')
+    expect(zcodeToolKind(noName.toolName)).toBe('unspecified')
     expect(zcodeReclassify(factsOf(noName))).toBe('other')
   })
 
@@ -646,7 +645,7 @@ describe('a ZCode ApplyPatch call', () => {
   const MULTI_FILE_PATCH = '*** Begin Patch\n*** Update File: /project/a.ts\n@@\n-before\n+after\n*** Delete File: /project/b.ts\n*** End Patch'
 
   /** The changes the call reports as LANDED, or null for a result that states none. */
-  function landedChanges(call: ToolCallIR): FileEditDiff[] | null {
+  function landedChanges(call: ToolCall): FileEditDiff[] | null {
     return call.kind === 'edit' && call.result && 'changes' in call.result ? call.result.changes : null
   }
 
@@ -663,7 +662,7 @@ describe('a ZCode ApplyPatch call', () => {
   // The opening frame carries the same arguments and no result at all, which is the
   // state the reader watches for longest.
   it('names the file before any result lands', () => {
-    const call = zcodeToolCallIR(row(event(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.ApplyPatch, input: { patch: PATCH } }), ZCODE_TOOL.ApplyPatch))!
+    const call = zcodeToolCall(row(event(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.ApplyPatch, input: { patch: PATCH } }), ZCODE_TOOL.ApplyPatch))!
     expect(call.result).toBeUndefined()
     const changes = call.kind === 'edit' ? call.request.changes : []
     expect(changes.map(change => change.filePath)).toEqual(['/project/a.ts'])
@@ -709,7 +708,7 @@ describe('a ZCode ApplyPatch call', () => {
   })
 
   // A patch this build cannot read names no file, and a file change that names none
-  // is not one: the IR refuses the pair rather than heading a row with the word
+  // is not one: the model refuses the pair rather than heading a row with the word
   // "Edit" and nothing else. The uncategorized card takes it, where the PATCH stays
   // visible as the argument the call was made with.
   it('takes the uncategorized card for a patch the shared reader refuses', () => {
@@ -789,7 +788,7 @@ describe('a ZCode skill call', () => {
 // kind `ZCODE_TOOL_READERS` fills with the shared request alone lands here first.
 describe('the tool kinds ZCode produces', () => {
   // One argument record for every tool, so each name reaches its own kind. The FILE
-  // is stated for the same reason the checklist and the question are: the IR refuses
+  // is stated for the same reason the checklist and the question are: the model refuses
   // an `edit` or a `write` whose request names no file and degrades it to the
   // uncategorized row, which would drop both kinds out of the set this walk measures.
   const ARGS = {
@@ -828,7 +827,7 @@ describe('the tool kinds ZCode produces', () => {
     for (const hint of Object.values(ZCODE_DISPLAY))
       kinds.add(presentationOf('SomeToolAddedLater', ARGS, { success: true, content: 'done', display: { kind: hint } }).kind)
     // A row that states no tool name at all.
-    kinds.add(zcodeToolCallIR(row(event(ZCODE_TOOL_KIND.Result, { result: { success: true, content: 'done' } })))!.kind)
+    kinds.add(zcodeToolCall(row(event(ZCODE_TOOL_KIND.Result, { result: { success: true, content: 'done' } })))!.kind)
     return kinds
   }
 
@@ -837,11 +836,11 @@ describe('the tool kinds ZCode produces', () => {
   })
 
   // The complement, spelled out: these are the twelve `zcodeArgumentsOnly` and the
-  // folded empty kind answer for. `''` is here because `zcodeReclassify` folds it.
+  // folded unspecified answer for. The explicit member keeps that route in the table.
   it('reaches none of the twelve kinds no ZCode tool takes', () => {
     const produced = producedKinds()
     expect(TOOL_KINDS.filter(kind => !produced.has(kind))).toEqual([
-      '',
+      'unspecified',
       'agents',
       'chart',
       'delete',

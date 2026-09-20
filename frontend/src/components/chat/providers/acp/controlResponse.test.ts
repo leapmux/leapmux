@@ -1,6 +1,6 @@
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { describe, expect, it } from 'vitest'
-import { acpControlResponseDisplay, acpOptionIdKind, acpPermissionResponseText } from './controlResponse'
+import { acpControlResponseSummary, acpOptionIdKind, acpPermissionResponseText } from './controlResponse'
 
 // Mirrors what the backend persists as the request context. The worker stores the
 // request whole, so an option keeps whatever fields its agent sent. This agent sends
@@ -99,14 +99,14 @@ describe('acpOptionIdKind', () => {
   })
 })
 
-describe('acpControlResponseDisplay', () => {
+describe('acpControlResponseSummary', () => {
   it('wraps the permission text as a label', () => {
     const cr: PersistedControlResponse = { claimToken: 'claim-1', requestId: '7', request: REQUEST, response: selected('proceed_once') }
-    expect(acpControlResponseDisplay(cr)).toEqual({ kind: 'label', text: 'Allow once' })
+    expect(acpControlResponseSummary(cr)).toEqual({ kind: 'label', text: 'Allow once' })
   })
 
   it('returns null when no optionId was selected (caller degrades)', () => {
     const cr: PersistedControlResponse = { claimToken: 'claim-1', requestId: '7', request: REQUEST, response: {} }
-    expect(acpControlResponseDisplay(cr)).toBeNull()
+    expect(acpControlResponseSummary(cr)).toBeNull()
   })
 })

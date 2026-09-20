@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import type { ParsedCatLine } from '../chat/ir/readFileResult'
+import type { NumberedFileLine } from '../chat/model/readFileResult'
 import type { ViewMode } from './ViewToggle'
 import { createMemo, Show } from 'solid-js'
 import { markdownContent } from '~/components/chat/markdownEditor/markdownContent.css'
@@ -20,7 +20,7 @@ export function MarkdownFileView(props: {
   const text = createMemo(() => new TextDecoder().decode(props.content))
   const html = createMemo(() => renderMarkdown(text()))
 
-  const lines = createMemo((): ParsedCatLine[] => {
+  const lines = createMemo((): NumberedFileLine[] => {
     const raw = text()
     if (!raw)
       return []

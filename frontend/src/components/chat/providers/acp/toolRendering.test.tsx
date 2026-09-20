@@ -6,9 +6,9 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { providerToolMeta } from '~/test-support/toolCallIr'
+import { providerToolMeta } from '~/test-support/toolCallFixture'
 import { MessageBubble } from '../../MessageBubble'
-import { renderMessageContent } from '../../rowRenderers'
+import { renderMessageContent } from '../../messageContentRenderer'
 import { toolBodyBorder, toolUseHeader } from '../../toolStyles.css'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
@@ -137,7 +137,11 @@ describe('acp tool rendering', () => {
     const plugin = providerFor(provider)!
     const { container } = render(() => renderMessageContent(result, {
       premeasureMode: true,
-      sources: testMessageSources({ request: () => input(request) }),
+      sources: testMessageSources({
+        request: () => input(request),
+        role: () => 'result',
+        visibleRows: () => ({ request: true, result: true }),
+      }),
     }, plugin?.transcript.classify(input(result)), provider))
     expect(container.textContent).toContain('File content')
     expect(container.querySelector(`.${toolUseHeader}`)).toBeNull()
@@ -192,7 +196,15 @@ describe('acp tool rendering', () => {
   it('recovers a read header from matching result metadata without inventing a requested range', () => {
     const request = { sessionUpdate: 'tool_call', toolCallId: 'read', kind: 'read', title: 'read', status: 'pending', rawInput: {} }
     const result = { sessionUpdate: 'tool_call_update', toolCallId: 'read', status: 'completed', rawOutput: { metadata: { display: { type: 'file', path: '/project/README.md', text: 'File content', lineStart: 1, lineEnd: 1 } } } }
-    const { container } = renderTool(request, { premeasureMode: true, workingDir: '/project', sources: testMessageSources({ result: () => input(result) }) })
+    const { container } = renderTool(request, {
+      premeasureMode: true,
+      workingDir: '/project',
+      sources: testMessageSources({
+        result: () => input(result),
+        role: () => 'request',
+        visibleRows: () => ({ request: true, result: true }),
+      }),
+    })
     expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toBe('README.md')
     expect(container.textContent).not.toContain('File content')
     expect(providerFor(AgentProvider.OPENCODE)!.transcript.relatedMessages?.(input(request))).toEqual(['result'])

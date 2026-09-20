@@ -1,4 +1,5 @@
-import type { MessageCategory } from './messageClassification'
+import type { MessageCategory } from './messageClassifier'
+import type { ToolSpanRowPresence } from './model/row'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ToolSpanRole } from '~/lib/messageSpan'
@@ -10,11 +11,11 @@ import type { TodoItem } from '~/models/todo'
 // These types describe what an extractor READS: a parsed provider payload, the
 // classification the shared classifier reached, the sides of a tool span, the
 // live to-do list. None of them is part of what extraction PRODUCES, and
-// `ir/row.ts` holds only the latter -- so a provider-neutral output model no
+// `model/row.ts` holds only the latter -- so a provider-neutral output model no
 // longer has to import `ParsedMessageContent` for a field the renderer never
 // sees.
 //
-// They sit above `ir/` rather than inside it for the same reason: the IR is the
+// They sit above `model/` rather than inside it for the same reason: the model is the
 // boundary the renderers read, and a renderer that can reach a raw parsed
 // payload through it has a second route to the provider's wire format.
 // ---------------------------------------------------------------------------
@@ -38,15 +39,15 @@ export type ResolvedMessageContent
   }
 
 /** Every side of one tool span the row's extractor reads, resolved once by the caller. */
-export interface ToolSpanSides {
-  /** The message the extractor was called for. */
-  current: ResolvedMessageContent | undefined
+export interface ToolSpanContext {
   /** The span's request, or undefined when the span states none. */
   request: ResolvedMessageContent | undefined
   /** The span's result, or undefined while the call still runs. */
   result: ResolvedMessageContent | undefined
   /** Where the CURRENT message sits in the span, decided by message id. */
   role: ToolSpanRole
+  /** The span rows that exist in the loaded transcript window. */
+  visibleRows: ToolSpanRowPresence
 }
 
 /**
@@ -58,15 +59,19 @@ export interface ToolSpanSides {
  */
 export interface RowExtractionInput {
   /** The row's own content with its supplemental data merged: the resolved brand, by construction. */
-  parsed: ResolvedMessageContent
+  resolved: ResolvedMessageContent
   /** The classification the shared classifier already reached for this row. */
   category: MessageCategory
   /** The three sides of this row's tool span, plus this row's place among them. */
-  sides: ToolSpanSides
+  span: ToolSpanContext
   /** The worker's `span_type` column, which identifies the tool on every span row. */
   spanType?: string
   /** LeapMux's own reading of how the row ended, which a provider frame can contradict. */
   completion?: MessageCompletion
+  /** The immutable post-update task stored on this message. */
+  todoSnapshot?: TodoItem
+  /** Why a required task snapshot could not be read. */
+  todoSnapshotDiagnostic?: string
   /**
    * The live to-do store, by task id.
    *
@@ -76,5 +81,4 @@ export interface RowExtractionInput {
    * already holds. Without it a patch that moved a task to `completed` drew
    * `Task #<id>` where the subject belongs.
    */
-  todoById?: (taskId: string) => TodoItem | undefined
 }

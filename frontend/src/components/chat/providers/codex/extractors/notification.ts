@@ -1,9 +1,9 @@
-import type { CompactionBoundaryMeta, CompactionPhase, NotificationEntryIR } from '../../../ir/notification'
+import type { CompactionDetails, CompactionPhase, NotificationEntry } from '../../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { CODEX_ITEM, CODEX_METHOD } from '~/generated/contracts/codex-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
-import { compactionMetaFromBoundary } from '../../../ir/notification'
+import { compactionMetaFromBoundary } from '../../../model/notification'
 import { CODEX_RATE_LIMITS_METHOD, codexRateLimitEntries } from '../rateLimits'
 
 const STARTUP_METHOD = CODEX_METHOD.McpServerStartupStatusUpdated
@@ -60,7 +60,7 @@ function appendsSuffix(kind: StartupKind): boolean {
   return kind !== 'starting' && kind !== 'ready'
 }
 
-function startupGroupEntry(parsed: Record<string, unknown>): NotificationEntryIR | null {
+function startupGroupEntry(parsed: Record<string, unknown>): NotificationEntry | null {
   const p = parseMcpStartup(parsed)
   if (!p)
     return null
@@ -105,7 +105,7 @@ function codexCompactionPhase(m: Record<string, unknown>): CompactionPhase | nul
  * A sibling of Claude's, and it serves the same two readers: the context-usage grid
  * outside the render tree, and the notification extractor below.
  */
-export function codexCompactionBoundary(parsed: ParsedMessageContent): CompactionBoundaryMeta | null {
+export function codexCompactionBoundary(parsed: ParsedMessageContent): CompactionDetails | null {
   const inner = getInnerMessage(parsed)
   if (!isObject(inner) || codexCompactionPhase(inner) !== 'end')
     return null
@@ -113,13 +113,13 @@ export function codexCompactionBoundary(parsed: ParsedMessageContent): Compactio
 }
 
 /**
- * Read one Codex notification frame into the shared notification IR.
+ * Read one Codex notification frame into the shared notification model.
  *
  * Returns an empty array for a frame Codex recognizes and suppresses, and for one it
  * does not recognize at all -- a notification that produced no entry draws nothing,
  * which is the safe answer either way.
  */
-export function codexNotificationEntry(msg: Record<string, unknown>): NotificationEntryIR[] {
+export function codexNotificationEntry(msg: Record<string, unknown>): NotificationEntry[] {
   if (msg.method === CODEX_METHOD.SkillsChanged || msg.method === CODEX_METHOD.RemoteControlStatusChanged)
     return []
 

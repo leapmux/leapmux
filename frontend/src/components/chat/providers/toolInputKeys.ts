@@ -1,8 +1,8 @@
 /**
  * The argument keys each file-path-like input answers to, across providers.
  *
- * This module is the one shared place allowed to hold WIRE tokens: `ir/` cannot
- * (its layering guard forbids a provider vocabulary inside the IR), and every
+ * This module is the one shared place allowed to hold WIRE tokens: `model/` cannot
+ * (its layering guard forbids a provider vocabulary inside the model), and every
  * extractor that lifts a path out of raw arguments needs the same alias list.
  */
 export const TOOL_FILE_PATH_KEYS = ['filePath', 'path', 'file_path'] as const

@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
-import { TOOL_KINDS } from '~/components/chat/ir/toolKind'
+import { TOOL_KINDS } from '~/components/chat/model/toolKind'
 import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 import { importedNames } from '~/test-support/typescriptImports'
 
@@ -18,14 +18,14 @@ import { importedNames } from '~/test-support/typescriptImports'
 
 const CHAT_DIR = join(frontendRoot, 'src/components/chat')
 const PROVIDERS_DIR = join(CHAT_DIR, 'providers')
-const IR_DIR = join(CHAT_DIR, 'ir')
+const MODEL_DIR = join(CHAT_DIR, 'model')
 
 /**
  * The provider `.tsx` modules that MAY draw.
  *
  * Each is a control surface: a permission prompt, a question form, a plan
  * approval. Those read a provider's own request payload and answer it, which is
- * not a transcript row -- the row IR does not describe them. `eslint.config.ts`
+ * not a transcript row -- the row model does not describe them. `eslint.config.ts`
  * lifts the JSX ban for exactly these four paths.
  */
 const DRAWING_ALLOWED = [
@@ -46,8 +46,8 @@ const PROVIDER_COMPARISON_ALLOWED = [
   'components/common/AgentProviderIcon.tsx',
 ]
 
-/** The IR's own builder: the one module the assertion ban exempts. */
-const IR_BUILDER = 'ir/toolCall.ts'
+/** The model's own builder: the one module the assertion ban exempts. */
+const MODEL_BUILDER = 'model/createToolCall.ts'
 
 /** The resolved-content constructor: the one module the brand ban exempts. */
 const RESOLVED_CONTENT_BUILDER = 'providers/registry.ts'
@@ -80,17 +80,13 @@ const PROVIDER_CLASSIFIERS: Readonly<Record<string, string | null>> = {
  * the first.
  */
 const FORBIDDEN_ASSERTION_TYPES = [
-  'ToolCallIR',
-  'ToolCallPayloadIR',
-  'ToolCallPayloadOf',
-  'ToolCallPayloadForKind',
-  'ToolCallPayload',
-  'ToolCallForKind',
-  'ToolCallOf',
-  'ToolCallOfKinds',
-  'ToolRequests',
-  'ToolResults',
-  'ToolResultOf',
+  'ToolCall',
+  'ToolCallSpec',
+  'ToolCallSpecVariant',
+  'ToolCallVariant',
+  'ToolRequestByKind',
+  'ToolResultByKind',
+  'ToolResult',
   'ParsedCall',
   'ResolvedCall',
 ]
@@ -104,7 +100,7 @@ const FORBIDDEN_ASSERTION_TYPES = [
  * own. Widening this guard would either fail on eleven files or need an allow-list
  * long enough to stop meaning anything.
  */
-const LAYER_DIRS = ['providers', 'ir', 'results', 'widgets']
+const LAYER_DIRS = ['providers', 'model', 'results', 'widgets']
 
 function layerModules(extension: '.ts' | '.tsx'): string[] {
   return LAYER_DIRS.flatMap(dir => collectFiles(join(CHAT_DIR, dir), {
@@ -264,17 +260,21 @@ describe('the chat render pipeline holds the structure its guards assume', () =>
     expect(providerModules().length).toBeGreaterThan(30)
   })
 
+  it('keeps JSX out of the local chat model', () => {
+    expect(collectFiles(MODEL_DIR, { matches: name => name.endsWith('.tsx') })).toEqual([])
+  })
+
   // One file per kind: the pair a kind declares has exactly one home, and a kind
   // added to TOOL_KINDS without its file is a compile error the table below turns
   // into a named failure.
   it('holds exactly one kind file per tool kind', () => {
     const SHARED_SHAPE_FILES = new Set(['index.ts', 'generic.ts', 'fileChange.ts'])
-    const kindFiles = collectFiles(join(IR_DIR, 'tools'), { matches: name => name.endsWith('.ts') })
+    const kindFiles = collectFiles(join(MODEL_DIR, 'tools'), { matches: name => name.endsWith('.ts') })
       .map(file => basename(file))
       .filter(name => !SHARED_SHAPE_FILES.has(name) && !name.endsWith('.test.ts') && !name.endsWith('.typecheck.ts'))
     const fileForKind = (kind: string): string => {
-      if (kind === '')
-        return 'none.ts'
+      if (kind === 'unspecified')
+        return 'unspecified.ts'
       if (kind === 'switch_mode')
         return 'switchMode.ts'
       if (kind === 'web_search')
@@ -282,16 +282,16 @@ describe('the chat render pipeline holds the structure its guards assume', () =>
       return `${kind}.ts`
     }
     const expected = TOOL_KINDS.map(fileForKind)
-    expect(kindFiles.sort(), 'Every ir/tools/<file>.ts is one TOOL_KINDS member\'s home.').toEqual([...expected].sort())
+    expect(kindFiles.sort(), 'Every model/tools/<file>.ts is one TOOL_KINDS member\'s home.').toEqual([...expected].sort())
   })
 
   /**
    * No provider keeps a `renderers/` directory.
    *
-   * Layer 1 returns IR and never draws -- the ESLint JSX ban enforces that on
+   * Layer 1 returns model and never draws -- the ESLint JSX ban enforces that on
    * the markup itself. Four providers once carried a `renderers/` directory from
-   * before the pipeline closed, holding modules that answer `DividerIR` and
-   * `NotificationEntryIR`. Those read the provider's own bytes, so they are
+   * before the pipeline closed, holding modules that answer `TurnEnd` and
+   * `NotificationEntry`. Those read the provider's own bytes, so they are
    * extraction, and the name sent every reader to the wrong layer.
    */
   it('keeps no renderers directory under a provider', () => {
@@ -300,7 +300,7 @@ describe('the chat render pipeline holds the structure its guards assume', () =>
       .map(entry => `providers/${entry.name}/renderers`)
     expect(
       offences,
-      'A module that reads the provider\'s bytes into IR belongs in `extractors/`. '
+      'A module that reads the provider\'s bytes into model belongs in `extractors/`. '
       + 'Nothing in the provider layer draws.',
     ).toEqual([])
   })
@@ -309,7 +309,7 @@ describe('the chat render pipeline holds the structure its guards assume', () =>
    * A PascalCase `.tsx` module is ONE component, and carries that component's name.
    *
    * The inverse is what the layers use for everything else: a camelCase module is named
-   * after the IR shape it reads or draws, so `ir/searchResult.ts` and
+   * after the model shape it reads or draws, so `model/searchResult.ts` and
    * `results/searchResult.tsx` pair by sight. Mixing the two hid that pairing -- and a
    * PascalCase name that did NOT match its export would hide it twice, because the file
    * then claims to be a component nobody can import under that name.
@@ -327,7 +327,7 @@ describe('the chat render pipeline holds the structure its guards assume', () =>
       offences,
       'A PascalCase module in these directories is one component and carries its name. '
       + 'Rename the file to the component it exports, or give the module a camelCase name '
-      + 'matching the IR shape it draws.',
+      + 'matching the model shape it draws.',
     ).toEqual([])
   })
 
@@ -420,11 +420,11 @@ describe('the chat render pipeline holds the structure its guards assume', () =>
     expect(stale, 'Delete the entry in `eslint.config.ts`, or repoint it at the module that replaced it.').toEqual([])
   })
 
-  it('keeps the IR builder to the single assertion its check earns', () => {
-    const builder = join(CHAT_DIR, IR_BUILDER)
-    expect(existsSync(builder), `\`${IR_BUILDER}\` is the one file the assertion ban exempts; the ESLint config entry is stale without it.`).toBe(true)
+  it('keeps the model builder to the single assertion its check earns', () => {
+    const builder = join(CHAT_DIR, MODEL_BUILDER)
+    expect(existsSync(builder), `\`${MODEL_BUILDER}\` is the one file the assertion ban exempts; the ESLint config entry is stale without it.`).toBe(true)
     const found = assertionsTo(readFileSync(builder, 'utf8'), FORBIDDEN_ASSERTION_TYPES)
-    expect(found.map(entry => `${IR_BUILDER}:${entry.line} asserts to ${entry.type}`)).toHaveLength(1)
+    expect(found.map(entry => `${MODEL_BUILDER}:${entry.line} asserts to ${entry.type}`)).toHaveLength(1)
   })
 
   it('keeps the provider registry to one resolved-content assertion', () => {
@@ -436,11 +436,11 @@ describe('the chat render pipeline holds the structure its guards assume', () =>
 
   it('finds direct and nested TypeScript assertions in a builder exception', () => {
     const found = assertionsTo([
-      'const byAs = value as ToolCallIR',
-      'const byAngle = <ToolCallOf<\'read\'>>value',
-      'const qualified = value as ChatIR.ToolCallIR',
-      'const wrapped = value as Readonly<ToolCallIR>',
-      'const imported = value as import(\'./toolCall\').ToolCallIR',
+      'const byAs = value as ToolCall',
+      'const byAngle = <ToolCall<\'read\'>>value',
+      'const qualified = value as ChatIR.ToolCall',
+      'const wrapped = value as Readonly<ToolCall>',
+      'const imported = value as import(\'./createToolCall\').ToolCall',
     ].join('\n'), FORBIDDEN_ASSERTION_TYPES)
     expect(found.map(entry => entry.line)).toEqual([1, 2, 3, 4, 5])
   })

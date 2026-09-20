@@ -4,7 +4,7 @@ import type { VirtualItem } from './useChatVirtualizer'
 import { batch, createEffect, createMemo, createSignal, For, on, onCleanup } from 'solid-js'
 import { monotonicNow } from '~/lib/monotonicNow'
 import * as styles from './ChatView.css'
-import { messageRowChrome } from './messageClassification'
+import { messageRowChrome } from './messageRowLayout'
 import { reservedRowContentColumnStyle } from './widgets/SpanLines.geometry'
 
 export interface ChatDomPremeasureCandidate {

@@ -1,4 +1,4 @@
-import type { QuestionIR, QuestionOptionIR } from '../ir/questionBody'
+import type { QuestionOption, QuestionPrompt } from '../model/question'
 import { isObject } from '~/lib/jsonPick'
 
 // The shared builder for the question list a tool call asked.
@@ -24,7 +24,7 @@ import { isObject } from '~/lib/jsonPick'
  * An empty `question` marks a record that asks nothing, and
  * {@link questionsFromRecords} drops it.
  */
-export type QuestionTextReader = (record: Record<string, unknown>) => Omit<QuestionIR, 'options'>
+export type QuestionTextReader = (record: Record<string, unknown>) => Omit<QuestionPrompt, 'options'>
 
 /**
  * One option in the shared shape, or null for a record that offers nothing to click.
@@ -32,7 +32,7 @@ export type QuestionTextReader = (record: Record<string, unknown>) => Omit<Quest
  * The reader answers null rather than an empty label, so the drop decision stays with
  * the provider that knows which of its fields can stand in for a missing one.
  */
-export type QuestionOptionReader = (record: Record<string, unknown>) => QuestionOptionIR | null
+export type QuestionOptionReader = (record: Record<string, unknown>) => QuestionOption | null
 
 /**
  * The questions a call asked, from the raw records it carries.
@@ -45,7 +45,7 @@ export function questionsFromRecords(
   source: unknown,
   readText: QuestionTextReader,
   readOption: QuestionOptionReader,
-): QuestionIR[] {
+): QuestionPrompt[] {
   const records = Array.isArray(source) ? source.filter(isObject) : []
   return records.flatMap((record) => {
     const text = readText(record)

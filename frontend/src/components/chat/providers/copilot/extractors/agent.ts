@@ -1,4 +1,4 @@
-import type { AgentRun } from '../../../ir/tools/agent'
+import type { AgentRun } from '../../../model/tools/agent'
 import type { CopilotToolFacts } from './toolCall'
 import { pickString } from '~/lib/jsonPick'
 

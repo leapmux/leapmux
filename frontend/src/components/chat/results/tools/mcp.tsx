@@ -1,7 +1,7 @@
 import type { JSX } from 'solid-js'
 import type { ParsedCall, ResolvedCall, ToolKindRenderer, ToolRowView } from './renderer'
 import Blocks from 'lucide-solid/icons/blocks'
-import { mcpToolCallDisplayName } from '../../ir/mcpToolCall'
+import { mcpToolCallDisplayName } from '../../model/mcpToolCall'
 import { genericRequestBody, genericResultBody, genericResultMeta, genericTitle } from './generic'
 
 /**

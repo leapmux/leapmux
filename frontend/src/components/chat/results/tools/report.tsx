@@ -1,6 +1,6 @@
 import ClipboardList from 'lucide-solid/icons/clipboard-list'
 import { Show } from 'solid-js'
-import { proseResult } from '../../ir/toolCall'
+import { proseResult } from '../../model/toolCall'
 import { proseRenderer, ProseResultBody } from './proseResult'
 
 export const reportRenderer = proseRenderer<'report'>({

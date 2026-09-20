@@ -1,4 +1,4 @@
-import type { ToolKind } from '../../ir/toolKind'
+import type { ToolKind } from '../../model/toolKind'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 
 /**
@@ -61,5 +61,5 @@ const ZCODE_TOOL_KINDS: ReadonlyMap<string, ToolKind> = new Map<string, ToolKind
 
 /** The kind of one ZCode tool. An empty name states no kind; an unknown one is uncategorized. */
 export function zcodeToolKind(toolName: string): ToolKind {
-  return ZCODE_TOOL_KINDS.get(toolName) ?? (toolName ? 'other' : '')
+  return ZCODE_TOOL_KINDS.get(toolName) ?? (toolName ? 'other' : 'unspecified')
 }

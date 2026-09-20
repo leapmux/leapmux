@@ -1,10 +1,9 @@
-import type { TaskResult } from '../ir/tools/task'
+import type { TaskResult } from '../model/tools/task'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { COLLAPSED_RESULT_ROWS } from '../ir/collapse'
-import { taskResultCollapsible } from '../ir/tools/task'
 import { toolUseHeader } from '../toolStyles.css'
-import { StatusResultBody } from './statusResult'
+import { COLLAPSED_RESULT_ROWS } from './collapse'
+import { StatusResultBody, taskResultCollapsible } from './statusResult'
 import '../providers/testMocks'
 
 function source(overrides: Partial<TaskResult> = {}): TaskResult {

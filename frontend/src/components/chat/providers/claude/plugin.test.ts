@@ -1,9 +1,9 @@
-import type { MessageCategory } from '../../messageClassification'
+import type { MessageCategory } from '../../messageClassifier'
 import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { providerQuotableText, providerRowPreviewText } from '~/test-support/toolCallIr'
+import { providerQuotableText, providerRowPreviewText } from '~/test-support/toolCallFixture'
 import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
 

@@ -628,7 +628,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
       },
       fetchFileImage: (path, signal) => readWorkerImage(workerId, path, view.getAgentTab(agentId)?.workingDir, signal),
       subscribe: observer => chatStore.subscribeMessages(agentId, observer),
-      todo: taskId => chatStore.todos.getById(bgRootFor(agentId), taskId),
       backgroundTask: rowKey => backgroundRows().get(rowKey),
       progress: identity => chatStore.getToolProgress(agentId, identity),
     })
@@ -861,15 +860,26 @@ export function createTileRenderer(opts: TileRendererOpts) {
             const messages = () => messageContext(agent()?.workerId ?? '', agentId)
             // The rail reads this object several times per frame. Compute its sequence range once per change.
             // Stable preview handlers avoid new closures on each read.
-            const railPreviewFor = (seq: bigint) => getCachedMarkPreview(agentId, seq)
-            const railWarmPreview = (seq: bigint) => {
-              const workerId = agent()?.workerId
-              if (!workerId)
-                return
+            const railPreviewFor = (seq: bigint) => {
               const resolver = messages()
-              if (resolver)
-                warmMarkPreview(agentId, seq, resolver)
+              return getCachedMarkPreview(agentId, seq, resolver?.peek(seq)?.revision)
             }
+            let pendingPreviewSeq: bigint | undefined
+            const warmPendingPreview = () => {
+              const resolver = messages()
+              const seq = pendingPreviewSeq
+              if (resolver === undefined || seq === undefined)
+                return
+              pendingPreviewSeq = undefined
+              void warmMarkPreview(agentId, seq, resolver)
+            }
+            const railWarmPreview = (seq: bigint) => {
+              pendingPreviewSeq = seq
+              warmPendingPreview()
+            }
+            // A dot can open before the agent tab receives its worker id. Keep that
+            // warm request and retry it when the message resolver becomes available.
+            createEffect(warmPendingPreview)
             // One evaluation per change, and one stable array identity.
             //
             // `agentLifecycle` below is a plain object literal, so Solid treats

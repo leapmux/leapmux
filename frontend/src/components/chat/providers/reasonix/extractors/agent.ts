@@ -1,4 +1,4 @@
-import type { AgentRun } from '../../../ir/tools/agent'
+import type { AgentRun } from '../../../model/tools/agent'
 import { REASONIX_TOOL } from '~/generated/contracts/reasonix-protocol'
 import { pickString } from '~/lib/jsonPick'
 

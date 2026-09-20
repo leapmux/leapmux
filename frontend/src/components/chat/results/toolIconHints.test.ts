@@ -1,8 +1,8 @@
-import type { ToolIconHint } from '../ir/toolCall'
+import type { ToolIconHint } from '../model/toolCall'
 import { describe, expect, it } from 'vitest'
 import { toolHintIcon } from './toolIconHints'
 
-// Every hint the IR can state. Listed here rather than derived, because the
+// Every hint the model can state. Listed here rather than derived, because the
 // union is a type and leaves nothing to read at run time: a hint added to it
 // and forgotten here is what the count assertion below catches.
 const EVERY_HINT: readonly ToolIconHint[] = [

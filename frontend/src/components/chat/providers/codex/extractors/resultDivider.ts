@@ -1,4 +1,4 @@
-import type { DividerIR } from '../../../ir/divider'
+import type { TurnEnd } from '../../../model/divider'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { turnEndLabel } from '../../../turnEndLabel'
 import { CODEX_STATUS } from '../itemVocabulary'
@@ -19,7 +19,7 @@ const CODEX_TURN_INTERRUPTED = new Set<string>(['interrupted', 'cancelled', 'abo
  * A status this build does not recognize qualifies the shared "Turn ended" rather
  * than becoming the label, so a word the runtime adds later still reads as a turn end.
  */
-export function codexResultDivider(parsed: unknown): DividerIR | null {
+export function codexResultDivider(parsed: unknown): TurnEnd | null {
   if (!isObject(parsed))
     return null
   const turn = pickObject(parsed, 'turn')
@@ -36,7 +36,7 @@ export function codexResultDivider(parsed: unknown): DividerIR | null {
     const details = pickString(error, 'additionalDetails')
     // `additionalDetails` goes in the detail block rather than the label: the label
     // already carries one em dash, and a second one reads as a list of two reasons.
-    const model: DividerIR = { label: turnEndLabel('failed', { reason: message }), isError: true }
+    const model: TurnEnd = { label: turnEndLabel('failed', { reason: message }), isError: true }
     if (details)
       model.detail = details
     return model

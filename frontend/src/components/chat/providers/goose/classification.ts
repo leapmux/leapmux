@@ -1,4 +1,4 @@
-import type { MessageCategory } from '../../messageClassification'
+import type { MessageCategory } from '../../messageClassifier'
 import { isGooseSubagentToolRequest } from './extractors/subagentToolRequest'
 
 /**

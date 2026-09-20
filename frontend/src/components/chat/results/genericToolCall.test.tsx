@@ -1,6 +1,6 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { mcpToolCallDisplayName, parseMcpContentItem, parseMcpToolName } from '../ir/mcpToolCall'
+import { mcpToolCallDisplayName, parseMcpContentItem, parseMcpToolName } from '../model/mcpToolCall'
 import { GenericToolBody } from './genericToolCall'
 
 it('gives an empty completed result visible content without inventing copyable output', () => {

@@ -1,4 +1,4 @@
-import type { ChatRowIR } from './ir/row'
+import type { ChatRow } from './model/row'
 import type { ChatRowExtraction } from './rowExtraction'
 import type { ResolvedMessageContent } from './rowExtractionTypes'
 import { describe, expect, it } from 'vitest'
@@ -15,8 +15,8 @@ import './providers'
  * A turn end, a notification thread and a control response are not any one
  * provider's shape: every provider ends a turn, the worker threads notifications
  * from all of them, and LeapMux writes the control response itself. Each used to take
- * a path AROUND the row IR -- a hook that predated it, or a branch in MessageBubble --
- * which left the matching `ChatRowIR` variant declared and never produced, and the
+ * a path AROUND the row model -- a hook that predated it, or a branch in MessageBubble --
+ * which left the matching `ChatRow` variant declared and never produced, and the
  * render case behind it unreachable.
  */
 function parsed(parent: Record<string, unknown>, provider: AgentProvider = AgentProvider.CLAUDE_CODE): ResolvedMessageContent {
@@ -24,7 +24,7 @@ function parsed(parent: Record<string, unknown>, provider: AgentProvider = Agent
 }
 
 /** The row an extraction produced, or null for either rowless outcome. */
-function rowOf(extraction: ChatRowExtraction): ChatRowIR | null {
+function rowOf(extraction: ChatRowExtraction): ChatRow | null {
   return extractedRow(extraction)
 }
 
@@ -97,7 +97,7 @@ describe('extractChatRow notification thread', () => {
 describe('extractChatRow control response', () => {
   const response = { requestId: 'r1', claimToken: 'c1', request: undefined, response: { response: { response: { behavior: 'allow' } } } }
 
-  // LeapMux writes this row itself, so it needs no plugin -- and it must reach the IR
+  // LeapMux writes this row itself, so it needs no plugin -- and it must reach the model
   // rather than skipping it, or the transcript needs a second render path for it.
   //
   // The row carries the DISPLAY, not the native payloads: layer 1 runs the provider's

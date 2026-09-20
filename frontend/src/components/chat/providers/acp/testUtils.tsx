@@ -4,8 +4,8 @@ import { render } from '@solidjs/testing-library'
 import { expect, it } from 'vitest'
 import { assembledMessageRow } from '~/test-support/assembledMessages'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { classifyMessage } from '../../messageClassification'
-import { renderMessageContent } from '../../rowRenderers'
+import { classifyMessage } from '../../messageClassifier'
+import { renderMessageContent } from '../../messageContentRenderer'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 
@@ -28,9 +28,9 @@ export function describeACPProviderBasics(provider: AgentProvider, attachments: 
     const parent = assembledMessageRow(kind, 'Hello')
     expect(classifyMessage(input(parent, null, provider))).toEqual({ kind: expected })
     expect(plugin?.transcript.extractRow!({
-      parsed: input(parent, null, provider),
+      resolved: input(parent, null, provider),
       category: { kind: expected },
-      sides: { current: undefined, request: undefined, result: undefined, role: 'other' },
+      span: { request: undefined, result: undefined, role: 'other', visibleRows: { request: false, result: false } },
     })).toBeNull()
   })
 
@@ -48,6 +48,7 @@ export function renderACPToolPair(provider: AgentProvider, request: Record<strin
   const end = { sessionUpdate: 'tool_call_update', toolCallId: 'call', status: 'completed', ...result }
   const parsed = { ...input(end), supplementalContent: supplemental ? { sessionUpdate: end.sessionUpdate, status: end.status, toolCallId: end.toolCallId, ...supplemental } : undefined }
   const plugin = providerFor(provider)!
+  const hasRequestRow = Object.keys(request).length > 0
   // Each row sits inside a FRAGMENT rather than being called bare: `render(fn)` calls
   // `fn` once and inserts the result, so a bare call freezes the row at its first
   // payload. The JSX compiler wraps an expression inside a fragment in a memo, which is
@@ -57,14 +58,24 @@ export function renderACPToolPair(provider: AgentProvider, request: Record<strin
       <>
         {renderMessageContent(start, {
           premeasureMode: true,
-          sources: testMessageSources({ current: () => input(start), result: () => parsed }),
+          sources: testMessageSources({
+            current: () => input(start),
+            result: () => parsed,
+            role: () => 'request',
+            visibleRows: () => ({ request: hasRequestRow, result: true }),
+          }),
         }, plugin?.transcript.classify(input(start)), provider)}
       </>
     ),
     <>
       {renderMessageContent(end, {
         premeasureMode: true,
-        sources: testMessageSources({ current: () => parsed, request: () => input(start) }),
+        sources: testMessageSources({
+          current: () => parsed,
+          request: () => input(start),
+          role: () => 'result',
+          visibleRows: () => ({ request: hasRequestRow, result: true }),
+        }),
       }, plugin?.transcript.classify(parsed), provider)}
     </>,
   ])

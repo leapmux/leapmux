@@ -1,15 +1,15 @@
-import type { SearchBodyKind } from '../../../ir/searchResult'
+import type { SearchToolKind } from '../../../model/searchResult'
 import type { ACPToolCallAdapter } from '../../acp/extractors/toolCall'
+import { rawTodosToItems } from '~/components/chat/normalizers/todo'
 import { ACP_SUPPLEMENT_REQUEST } from '~/generated/contracts/acp-protocol'
 import { REASONIX_CAPABILITY_ACTION, REASONIX_CAPABILITY_PREFIX, REASONIX_TOOL, REASONIX_TOOL_RECORD } from '~/generated/contracts/reasonix-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { rawTodosToItems } from '~/models/todo'
 import { parseUnifiedDiffCached } from '../../../diff'
-import { fileEditDiffFromHunks, fileEditHasDiff } from '../../../ir/fileEditDiff'
-import { mcpToolCallRequest, parseMcpContentItem, parseMcpToolName, splitPrefixedPair } from '../../../ir/mcpToolCall'
-import { failedResult, unparsedResult } from '../../../ir/toolCall'
+import { fileEditDiffFromHunks, fileEditHasDiff } from '../../../model/fileEditDiff'
+import { mcpToolCallRequest, parseMcpContentItem, parseMcpToolName, splitPrefixedPair } from '../../../model/mcpToolCall'
+import { failedResult, unparsedResult } from '../../../model/toolCall'
 import { flattenAcpContent } from '../../acp/content'
-import { acpPayloadFor, acpRemapFacts } from '../../acp/extractors/toolCall'
+import { acpRemapFacts, acpSpecFor } from '../../acp/extractors/toolCall'
 import { acpSupplementRawOutput } from '../../acp/toolSupplement'
 import { grepMatches } from '../../grepOutput'
 import { reasonixAgentResult } from '../extractors/agent'
@@ -27,7 +27,7 @@ import { isReasonixTool, REASONIX_TOOL_KINDS, REASONIX_TOOL_NAME } from '../tool
 const REASONIX_MCP_CAPABILITY_PREFIX = 'mcp-tool:'
 
 /** The search result one completed glob or grep states, from the words it printed. */
-function reasonixSearchResult(name: Extract<SearchBodyKind, 'glob' | 'grep'>, output: string) {
+function reasonixSearchResult(name: Extract<SearchToolKind, 'glob' | 'grep'>, output: string) {
   const trimmed = output.trim()
   const empty = trimmed === '(no matches)' || trimmed === ''
   const lines = empty ? [] : trimmed.split('\n')
@@ -104,7 +104,7 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
     //
     // A call the reader STOPPED is not a failure, and it keeps the blocks that did
     // arrive: they are the part of the answer the reader asked to see. The header
-    // still states `Interrupted`, which `toolRowStatusOutcome` composes from the
+    // still states `Interrupted`, which `toolCallStatusOutcome` composes from the
     // row's own status.
     const unanswered = facts.status === 'failed'
     return {
@@ -156,7 +156,7 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
   // because that is what a glob declares. The single `kind` variable is the whole union
   // at the type level, so every override through it had to be cast -- and a table entry
   // changed under a branch still compiled.
-  const remapped = acpPayloadFor(remapFacts, kind)
+  const remapped = acpSpecFor(remapFacts, kind)
   if (name === REASONIX_TOOL.Task || name === REASONIX_TOOL.ReadOnlyTask) {
     return {
       kind: 'agent',
@@ -170,7 +170,7 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
     }
   }
   if (name === REASONIX_TOOL_NAME.Bash) {
-    const base = acpPayloadFor(remapFacts, REASONIX_TOOL_KINDS[name])
+    const base = acpSpecFor(remapFacts, REASONIX_TOOL_KINDS[name])
     return { ...base, name, title: pickString(input, 'description') || base.title }
   }
   if (name === REASONIX_TOOL_NAME.Ls) {
@@ -178,7 +178,7 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
     // states this tool's kind, so the shared build reads the path out of the same
     // arguments -- under `filePath` and `file_path` as well, which a hand-written
     // `input.path` missed. A second branch spelled the label a second time.
-    const list = { ...acpPayloadFor(remapFacts, REASONIX_TOOL_KINDS[name]), name, label: 'List Files' }
+    const list = { ...acpSpecFor(remapFacts, REASONIX_TOOL_KINDS[name]), name, label: 'List Files' }
     return tool.status === 'completed' ? { ...list, result: reasonixDirectoryOutput(output) } : list
   }
   if (tool.status === 'completed' && (name === REASONIX_TOOL_NAME.DeleteRange || name === REASONIX_TOOL_NAME.DeleteSymbol)) {
@@ -189,12 +189,12 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
     // `RequestedChangesBody` already keeps the two bodies apart, because it draws
     // nothing once a result exists.
     if (patch)
-      return { ...acpPayloadFor(remapFacts, REASONIX_TOOL_KINDS[name]), name, result: { changes: [fileEditDiffFromHunks(pickString(input, 'path'), patch.hunks)] } }
+      return { ...acpSpecFor(remapFacts, REASONIX_TOOL_KINDS[name]), name, result: { changes: [fileEditDiffFromHunks(pickString(input, 'path'), patch.hunks)] } }
   }
   if (tool.status === 'completed' && (name === REASONIX_TOOL_NAME.EditFile || name === REASONIX_TOOL_NAME.MultiEdit)) {
     const path = pickString(input, 'path')
     const receipt = reasonixEditReceipt(output, path, input)
-    const edit = acpPayloadFor(remapFacts, REASONIX_TOOL_KINDS[name])
+    const edit = acpSpecFor(remapFacts, REASONIX_TOOL_KINDS[name])
     if (receipt !== null) {
       // An empty receipt says the daemon reported what it DID without a diff: the
       // words stay, drawn as the answer rather than a change.
@@ -214,7 +214,7 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
     // The shared build's request stands: it reads the same `pattern` and, for the
     // paths, the whole alias list plus a native `paths` array. The narrower copy that
     // replaced it dropped every one of those.
-    const search = { ...acpPayloadFor(remapFacts, REASONIX_TOOL_KINDS[name]), name }
+    const search = { ...acpSpecFor(remapFacts, REASONIX_TOOL_KINDS[name]), name }
     return tool.status === 'completed' ? { ...search, result: reasonixSearchResult(name, output) } : search
   }
   return { ...remapped, ...(name ? { name } : {}) }

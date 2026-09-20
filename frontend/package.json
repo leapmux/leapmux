@@ -79,6 +79,7 @@
     "@solidjs/testing-library": "^0.8.10",
     "@tauri-apps/cli": "^2.11.4",
     "@testing-library/jest-dom": "^7.0.1",
+    "@typescript-eslint/utils": "8.68.0",
     "@vanilla-extract/vite-plugin": "^5.2.6",
     "ajv": "^8.20.0",
     "ds-store": "^0.1.6",

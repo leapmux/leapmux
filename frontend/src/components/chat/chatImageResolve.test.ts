@@ -4,14 +4,14 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
-import { classifyMessage, toClassificationInput } from './messageClassification'
+import { classifyMessage, toClassificationInput } from './messageClassifier'
 import { resolveMessageForRendering } from './providers/registry'
 import './providers/claude/plugin'
 import './providers/opencode/plugin'
 import './providers/cursor/plugin'
 import './providers/testMocks'
 
-const { imageFromMessage, messageToolResultImages, resolveChatImage } = await import('./chatImageResolve')
+const { messageToolResultImages, resolveChatImage } = await import('./chatImageResolve')
 
 const PNG = 'iVBORw0KGgo='
 
@@ -36,7 +36,7 @@ function claudeImageMessage(datas: string[], seq = 7n): AgentChatMessage {
 
 const ref = { workerId: 'w1', agentId: 'a1', seq: 7n, imageIndex: 0 }
 
-describe('messageToolResultImages', () => {
+describe('messageToolResultImages indexing', () => {
   it('routes through the message provider plugin, keeping wire order', () => {
     expect(messageToolResultImages(claudeImageMessage(['first', 'second'])).map(i => i.data))
       .toEqual(['first', 'second'])
@@ -98,13 +98,13 @@ describe('messageToolResultImages over a resolved payload', () => {
   })
 })
 
-describe('imageFromMessage', () => {
+describe('messageToolResultImages', () => {
   it('picks the image at the index', () => {
-    expect(imageFromMessage(claudeImageMessage(['first', 'second']), 1)?.data).toBe('second')
+    expect(messageToolResultImages(claudeImageMessage(['first', 'second']))[1]?.data).toBe('second')
   })
 
   it('is null when the index is past the end', () => {
-    expect(imageFromMessage(claudeImageMessage(['only']), 3)).toBeNull()
+    expect(messageToolResultImages(claudeImageMessage(['only']))[3]).toBeUndefined()
   })
 })
 

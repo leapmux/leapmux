@@ -21,3 +21,8 @@ export function piSpanRole(parsed: ParsedMessageContent): ToolSpanRole {
   // row, so the completion is what separates the two copies.
   return retainedRowIsFinal(parsed.completion) ? 'result' : 'request'
 }
+
+export function piRelatedMessages(parsed: ParsedMessageContent) {
+  const role = piSpanRole(parsed)
+  return role === 'result' ? ['request'] as const : role === 'request' ? ['result'] as const : []
+}

@@ -1,6 +1,6 @@
-import type { MessageCategory } from '../../messageClassification'
+import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationContext, ClassificationInput } from '../registry'
-import { isFinishedToolStatus, toolRowStatus } from '~/components/chat/ir/toolRowStatus'
+import { isFinishedToolCallStatus, toolCallStatus } from '~/components/chat/model/toolCallStatus'
 import { ACP_UPDATE } from '~/generated/contracts/acp-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
@@ -172,7 +172,7 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
         if (providerCategory)
           return providerCategory
       }
-      if (isFinishedToolStatus(toolRowStatus(pickString(parent, 'status'))) || messageCompletionFromProto(input.completion))
+      if (isFinishedToolCallStatus(toolCallStatus(pickString(parent, 'status'))) || messageCompletionFromProto(input.completion))
         return { kind: 'tool_use' }
       return { kind: 'hidden' }
     }

@@ -1,4 +1,4 @@
-import type { AgentOutcome, AgentRequest, AgentRun } from '../../../ir/tools/agent'
+import type { AgentRequest, AgentRun, AgentRunStatus } from '../../../model/tools/agent'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { CODEX_COLLAB_ITEM, CODEX_ITEM } from '~/generated/contracts/codex-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -79,7 +79,7 @@ export function codexAgentRequest(item: Record<string, unknown>): AgentRequest {
 }
 
 /** Each native child state as the two words a run's card states: its label and its outcome. */
-const AGENT_STATES: Record<string, { statusLabel: string, outcome: AgentOutcome }> = {
+const AGENT_STATES: Record<string, { statusLabel: string, outcome: AgentRunStatus }> = {
   pendingInit: { statusLabel: 'starting', outcome: 'running' },
   running: { statusLabel: 'running', outcome: 'running' },
   completed: { statusLabel: 'completed', outcome: 'completed' },

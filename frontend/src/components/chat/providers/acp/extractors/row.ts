@@ -1,34 +1,35 @@
-import type { ChatRowIR, ToolCallRow, ToolRowRole } from '../../../ir/row'
-import type { ToolCallIR } from '../../../ir/toolCall'
+import type { ChatRow, ToolCallRow, ToolSpanRowRole } from '../../../model/row'
+import type { ToolCall } from '../../../model/toolCall'
 import type { ACPToolCallAdapter } from './toolCall'
-import type { RowExtractionInput, ToolSpanSides } from '~/components/chat/rowExtractionTypes'
+import type { RowExtractionInput, ToolSpanContext } from '~/components/chat/rowExtractionTypes'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { ACP_SUPPLEMENT_IDENTITY } from '~/generated/contracts/acp-protocol'
 import { pickString } from '~/lib/jsonPick'
-import { toolCallRow } from '../../../ir/row'
-import { SYNTHETIC_TOOL_LIFECYCLE, toolCall } from '../../../ir/toolCall'
 import { leapmuxPlanExecutionRow, leapmuxUserRow } from '../../../leapmuxRows'
+import { createToolCall } from '../../../model/createToolCall'
+import { toolCallRow } from '../../../model/row'
+import { SYNTHETIC_TOOL_LIFECYCLE } from '../../../model/toolCallLifecycle'
 import { ACP_SESSION_UPDATE } from '../updateVocabulary'
 import { acpPlanTodos } from './plan'
-import { acpToolCallIR, acpToolFinished, parsedACPToolCall, resolveACPToolCall } from './toolCall'
+import { acpToolCall, acpToolFinished, parsedACPToolCall, resolveACPToolCall } from './toolCall'
 
 /**
- * Read one Agent Client Protocol row into the shared row IR.
+ * Read one Agent Client Protocol row into the shared row model.
  *
  * Every provider of this family shares it and supplies only its own tool adapter.
  * Assistant text and reasoning are absent on purpose: LeapMux assembles a run of text
  * chunks into ONE row carrying the shared assembled-message envelope, and the
  * dispatcher draws that envelope before it reaches any plugin.
  */
-export function acpExtractRow(input: RowExtractionInput, callAdapter?: ACPToolCallAdapter): ChatRowIR | null {
-  const { category, parsed, sides } = input
+export function acpExtractRow(input: RowExtractionInput, callAdapter?: ACPToolCallAdapter): ChatRow | null {
+  const { category, resolved: parsed, span } = input
   const payload = parsed.parentObject
   if (category.kind === 'tool_use') {
     if (!payload)
       return null
     if (payload.sessionUpdate === ACP_SESSION_UPDATE.PLAN)
       return acpPlanRow(payload)
-    return acpToolCallSpanRow(parsedACPToolCall(payload) ?? payload, sides, callAdapter)
+    return acpToolCallSpanRow(parsedACPToolCall(payload) ?? payload, parsed, span, callAdapter)
   }
   if (category.kind === 'user_content')
     return leapmuxUserRow(payload)
@@ -44,11 +45,11 @@ export function acpExtractRow(input: RowExtractionInput, callAdapter?: ACPToolCa
  * and no span. It still draws through the shared tool row, because the checklist body
  * and its header are the same ones every provider's to-do tool draws.
  */
-function acpPlanRow(update: Record<string, unknown>): ChatRowIR | null {
+function acpPlanRow(update: Record<string, unknown>): ChatRow | null {
   const todos = acpPlanTodos(update.entries)
   if (todos === null)
     return null
-  const call = toolCall(
+  const call = createToolCall(
     { id: '', name: ACP_SESSION_UPDATE.PLAN, lifecycle: SYNTHETIC_TOOL_LIFECYCLE },
     { kind: 'todo', label: 'Plan', title: 'Plan', request: { items: todos }, result: { items: todos } },
   )
@@ -61,15 +62,15 @@ function acpSideCallId(side: ParsedMessageContent | undefined): string | null {
 }
 
 /** The span row a provider on the new path emits: ONE call, plus the row facts. */
-function acpToolCallSpanRow(tool: Record<string, unknown>, sides: ToolSpanSides, callAdapter: ACPToolCallAdapter | undefined): ToolCallRow {
+function acpToolCallSpanRow(tool: Record<string, unknown>, current: ParsedMessageContent, span: ToolSpanContext, callAdapter: ACPToolCallAdapter | undefined): ToolCallRow {
   // Each side is built from its OWN parsed message, with the request merged in where
   // a later frame omitted a field; which frame ARRIVED decides the row's place.
   // A side from ANOTHER call is no side of this one: `resolveACPToolCall` refuses
   // a mismatched request, and the row flags must refuse it the same way.
-  const own = sides.current ?? undefined
+  const own = current
   const callId = pickString(tool, 'toolCallId') || ''
-  const requestSide = acpSideCallId(sides.request) === callId ? sides.request : undefined
-  const resultSide = acpSideCallId(sides.result) === callId ? sides.result : undefined
+  const requestSide = acpSideCallId(span.request) === callId ? span.request : undefined
+  const resultSide = acpSideCallId(span.result) === callId ? span.result : undefined
   // ONE call from every side: the request identifies the arguments, the result the
   // payload. Whichever frame this row is, the merged object carries both.
   const requestFrame = requestSide?.parentObject
@@ -85,7 +86,7 @@ function acpToolCallSpanRow(tool: Record<string, unknown>, sides: ToolSpanSides,
   const resolved = !finished && resultFrame
     ? resolveACPToolCall(resultFrame, tool)
     : resolveACPToolCall(tool, requestFrame)
-  const call: ToolCallIR = acpToolCallIR(resolved, callAdapter, (resultSide ?? own)?.supplementalContent, own?.completion, { role: sides.role, hasResult: !!resultSide })
-  const role: ToolRowRole = finished ? 'result' : pickString(tool, ACP_SUPPLEMENT_IDENTITY.SessionUpdate) === ACP_SESSION_UPDATE.TOOL_CALL ? 'request' : 'update'
-  return toolCallRow(call, role, { request: !!requestSide, result: !!resultSide })
+  const call: ToolCall = acpToolCall(resolved, callAdapter, (resultSide ?? own).supplementalContent, own.completion, { role: span.role, hasResult: !!resultSide })
+  const role: ToolSpanRowRole = finished ? 'result' : pickString(tool, ACP_SUPPLEMENT_IDENTITY.SessionUpdate) === ACP_SESSION_UPDATE.TOOL_CALL ? 'request' : 'update'
+  return toolCallRow(call, role, span.visibleRows)
 }

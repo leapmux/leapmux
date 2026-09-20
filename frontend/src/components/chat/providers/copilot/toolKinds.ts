@@ -1,4 +1,4 @@
-import type { ToolKind } from '../../ir/toolKind'
+import type { ToolKind } from '../../model/toolKind'
 import { COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
 
 /**

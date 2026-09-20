@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { commandStatusLabel } from '../../../ir/commandResult'
+import { commandStatusLabel } from '../../../results/commandResult'
 import { acpExecuteFromToolCall } from './execute'
 
 describe('acpExecuteFromToolCall', () => {

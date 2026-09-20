@@ -1,4 +1,4 @@
-import type { ControlRequestIR } from '../ir/controlRequest'
+import type { ControlPrompt } from '../model/controlPrompt'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotPermissionRequest } from '~/test-support/copilotFixtures'
@@ -15,8 +15,8 @@ import '../providers'
  * next drew none, because nobody could see the two side by side. This reads them
  * side by side.
  */
-function surfaceOf(provider: AgentProvider, payload: Record<string, unknown>): ControlRequestIR | undefined {
-  return controlSurface({ requestId: 'r', agentId: 'a', payload }, provider, undefined) as ControlRequestIR | undefined
+function surfaceOf(provider: AgentProvider, payload: Record<string, unknown>): ControlPrompt | undefined {
+  return controlSurface({ requestId: 'r', agentId: 'a', payload }, provider, undefined) as ControlPrompt | undefined
 }
 
 const COMMAND = 'npm test -- --runInBand'
@@ -110,7 +110,7 @@ describe('pi extension dialogs', () => {
 
   // Pi's own question predicate claims `input` and `select` first -- both offer the
   // reader a CHOICE, which is what the shared question form answers. The dialog
-  // control therefore sees `confirm` and `editor` alone, and the IR keeps its
+  // control therefore sees `confirm` and `editor` alone, and the model keeps its
   // `input` variant because Pi's four methods are what it models.
   it.each(['input', 'select'])('routes a %s dialog to the question form', (method) => {
     const surface = surfaceOf(AgentProvider.PI, { type: 'extension_ui_request', method, title: 'Approve?' })

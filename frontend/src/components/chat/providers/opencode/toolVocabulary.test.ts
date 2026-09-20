@@ -1,8 +1,8 @@
-import type { ToolKind } from '../../ir/toolKind'
+import type { ToolKind } from '../../model/toolKind'
 import type { ToolVocabularyCheck } from '~/test-support/toolVocabulary'
 import { describe, expect, it } from 'vitest'
 import { documentedNamesThatReachAKind, staleGenericNames, undocumentedFallbacks } from '~/test-support/toolVocabulary'
-import { acpToolCallIR } from '../acp/extractors/toolCall'
+import { acpToolCall } from '../acp/extractors/toolCall'
 import { openCodeToolCallAdapterFor } from './extractors/toolCall'
 import { OPENCODE_TOOL_NAMES } from './toolNames'
 
@@ -19,7 +19,7 @@ const WIRE_KIND: Readonly<Record<string, string>> = {
 
 /** The kind the family answers for one call titled with the registry id. */
 function kindOf(name: string): ToolKind {
-  return acpToolCallIR(
+  return acpToolCall(
     { sessionUpdate: 'tool_call', toolCallId: 'vocab-1', status: 'pending', kind: WIRE_KIND[name] ?? 'other', title: name, rawInput: {} },
     openCodeToolCallAdapterFor(),
     undefined,

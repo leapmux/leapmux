@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import type { CommandLanguage } from './ir/tools/execute'
+import type { CommandLanguage } from './model/tools/execute'
 import type { MarkdownRenderContext } from './renderContext'
 import type { TokenGate } from './useAsyncCodeTokens'
 import type { CachedToken } from '~/lib/tokenCache'

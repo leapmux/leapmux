@@ -1,5 +1,5 @@
 import type { ControlResponseDeriver } from '../persistedControlResponse'
-import type { ElicitationRequest } from './elicitationForm'
+import type { ElicitationRequest } from '~/components/chat/model/controlPrompt'
 import { MCP_ELICITATION_ACTION } from '~/generated/contracts/mcp-elicitation'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { isObject, pickObject } from '~/lib/jsonPick'

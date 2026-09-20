@@ -1,4 +1,4 @@
-import type { CommandResult } from '../../../ir/commandResult'
+import type { CommandResult } from '../../../model/commandResult'
 import { ACP_SUPPLEMENT } from '~/generated/contracts/acp-protocol'
 import { pickBoolean, pickNumber, pickObject } from '~/lib/jsonPick'
 import { collectAcpToolText, pickAcpRawOutputMetadata } from '../content'

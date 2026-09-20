@@ -1,10 +1,10 @@
-import type { ToolCallIR } from '../../ir/toolCall'
+import type { ToolCall } from '../../model/toolCall'
 import type { ToolRowView } from './renderer'
 import { render } from '@solidjs/testing-library'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { ToolMessage } from '~/components/chat/results/ToolMessage'
 import { checkKindModule } from '~/test-support/kindTestHarness'
-import { toolCallIr, toolRow } from '~/test-support/toolCallIr'
+import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { parsedCall } from './renderer'
 import { triggerRenderer } from './trigger'
 
@@ -30,29 +30,29 @@ describe('trigger renderer', () => {
   // that also carried no title of its own then reached the header with no words at
   // all, and the row drew a bare icon. Every other kind ends in its own label.
   it.each([[undefined], [{ text: '', format: 'plain' as const }]])('falls back to the label for an unworded action (result: %s)', (result) => {
-    const call = toolCallIr('trigger', { request: { action: 'other' }, ...(result ? { result } : {}) })
+    const call = toolCallFixture('trigger', { request: { action: 'other' }, ...(result ? { result } : {}) })
     expect(triggerRenderer.title(parsedCall(call), undefined)).toBe('Trigger')
   })
 
   it('keeps the call\'s own title ahead of the label', () => {
-    const call = toolCallIr('trigger', { request: { action: 'other' }, title: 'Nightly build' })
+    const call = toolCallFixture('trigger', { request: { action: 'other' }, title: 'Nightly build' })
     expect(triggerRenderer.title(parsedCall(call), undefined)).toBe('Nightly build')
   })
 
   // The SCHEDULE is the one fact a cron entry exists for, and no title states it.
   // Every provider filled it and no row drew it.
   describe('the schedule line', () => {
-    const rowText = (call: ToolCallIR) => render(() => <ToolMessage row={toolRow(call)} />).container.textContent ?? ''
+    const rowText = (call: ToolCall) => render(() => <ToolMessage row={toolRow(call)} />).container.textContent ?? ''
 
     it('draws the schedule while the call runs', () => {
-      const call = toolCallIr('trigger', { status: 'in_progress', request: { action: 'create', name: 'nightly', schedule: '0 3 * * *' } })
+      const call = toolCallFixture('trigger', { status: 'in_progress', request: { action: 'create', name: 'nightly', schedule: '0 3 * * *' } })
       expect(rowText(call)).toContain('0 3 * * *')
     })
 
     // Once the answer lands the endpoint restates the schedule in its own words, so a
     // second copy above it would draw the same fact twice.
     it('draws no schedule once the answer lands', () => {
-      const call = toolCallIr('trigger', {
+      const call = toolCallFixture('trigger', {
         request: { action: 'create', name: 'nightly', schedule: '0 3 * * *' },
         result: { text: 'created', format: 'plain' },
       })
@@ -62,7 +62,7 @@ describe('trigger renderer', () => {
 
     // A call that states no schedule draws no line at all, rather than an empty one.
     it('draws no line for a call that states no schedule', () => {
-      const call = toolCallIr('trigger', { status: 'in_progress', request: { action: 'list' } })
+      const call = toolCallFixture('trigger', { status: 'in_progress', request: { action: 'list' } })
       expect(triggerRenderer.request?.(parsedCall(call), rowView())).toBeNull()
     })
   })

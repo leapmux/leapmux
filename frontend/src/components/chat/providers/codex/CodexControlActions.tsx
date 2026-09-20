@@ -147,8 +147,16 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
   // The footer omits a button when the request offered no decision for it, which
   // the exact-optional rule spells by leaving the prop out rather than passing
   // `undefined` down.
-  const negativeAction = codexAction(decisions().negative, 'control-deny-btn', decision => handleDecision(decision))
-  const positiveAction = codexAction(decisions().positive, 'control-allow-btn', handleAllow)
+  const negativeAction = createMemo(() => codexAction(decisions().negative, 'control-deny-btn', decision => handleDecision(decision)))
+  const positiveAction = createMemo(() => codexAction(decisions().positive, 'control-allow-btn', handleAllow))
+  const decisionActionProps = () => {
+    const negative = negativeAction()
+    const positive = positiveAction()
+    return {
+      ...(negative !== undefined ? { negativeAction: negative } : {}),
+      ...(positive !== undefined ? { positiveAction: positive } : {}),
+    }
+  }
 
   return (
     <Switch
@@ -156,8 +164,7 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
         <ControlDecisionFooter
           hasEditorContent={props.hasEditorContent}
           onSendFeedback={props.onTriggerSend}
-          {...(negativeAction !== undefined ? { negativeAction } : {})}
-          {...(positiveAction !== undefined ? { positiveAction } : {})}
+          {...decisionActionProps()}
           allowChoicePill={allowChoicePill}
           permissionPill={() => buildSessionPermissionPill(props.presets, permissionChoice)}
           additionalActions={() => decisions().additional.map(decision => ({

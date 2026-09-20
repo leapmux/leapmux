@@ -1,21 +1,46 @@
 import type { JSX } from 'solid-js'
-import type { McpContentItem } from '../ir/mcpToolCall'
-import type { ToolRowStatus } from '../ir/toolRowStatus'
-import type { GenericRequest, GenericResult } from '../ir/tools/generic'
-import type { RenderContext } from '../messageRenderers'
-import type { ImageRenderActions } from '../renderContext'
+import type { McpContentItem } from '../model/mcpToolCall'
+import type { ToolCallStatus } from '../model/toolCallStatus'
+import type { GenericToolRequest, GenericToolResult } from '../model/tools/generic'
+import type { ImageRenderActions, ToolResultRenderContext } from '../renderContext'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import { createMemo, For, Match, Show, Switch } from 'solid-js'
 import { prettifyJson } from '~/lib/jsonFormat'
-import { isFinishedToolStatus } from '../ir/toolRowStatus'
 import { getToolResultExpanded } from '../messageRenderers'
+import { isFinishedToolCallStatus } from '../model/toolCallStatus'
 import { toolInputSummary, toolMessage, toolResultError, toolResultPrompt } from '../toolStyles.css'
+import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 import { CollapsibleContent } from './CollapsibleContent'
 import { EMPTY_RESULT_NOTICE } from './emptyResultNotice'
 import { ImageResultView } from './imageResult'
 import { useCollapsedLines } from './useCollapsedLines'
 
-function McpTextView(props: { text: string, markdown?: boolean, expanded: () => boolean, context?: RenderContext }): JSX.Element {
+function contentText(item: McpContentItem): string {
+  switch (item.type) {
+    case 'text': return item.text
+    case 'resource': return [item.uri, item.text].filter(value => value !== undefined).join('\n')
+    case 'unknown': return prettifyJson(item.raw)
+    case 'image': return item.source.description ?? ''
+  }
+}
+
+/** The text that Copy writes for a list of generic content blocks. */
+export function contentBlocksCopyable(content: readonly McpContentItem[]): string {
+  return content.map(contentText).filter(Boolean).join('\n\n')
+}
+
+/** The text that Copy writes for a generic result. */
+export function genericResultCopyable(result: GenericToolResult): string {
+  return [contentBlocksCopyable(result.content), result.structuredJson, result.error].filter(Boolean).join('\n\n')
+}
+
+/** Whether a generic request or result exceeds the collapsed display. */
+export function genericResultCollapsible(result: GenericToolResult, argsJson: string): boolean {
+  return [argsJson, result.structuredJson, result.error, ...result.content.map(item => item.type === 'image' ? undefined : item.type === 'resource' ? item.text : contentText(item))]
+    .some(text => text !== undefined && hasMoreLinesThan(text, COLLAPSED_RESULT_ROWS))
+}
+
+function McpTextView(props: { text: string, markdown?: boolean, expanded: () => boolean, context?: ToolResultRenderContext }): JSX.Element {
   const collapsed = useCollapsedLines({ text: () => props.text, expanded: () => props.expanded() })
   return <CollapsibleContent kind={props.markdown ? 'markdown-tool-result' : 'pre'} text={props.text} display={collapsed.display()} isCollapsed={collapsed.isCollapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />
 }
@@ -28,13 +53,13 @@ export function McpContentList(props: {
   failed?: boolean
   actions?: ImageRenderActions
   holdDisplay?: () => boolean
-  context?: RenderContext
+  context?: ToolResultRenderContext
   expanded?: () => boolean
 }): JSX.Element {
   const expanded = () => props.expanded?.() ?? getToolResultExpanded(props.context)
   // Each image's position among the IMAGES of this message, which is what an
   // image tab addresses -- not its position among the content items, which
-  // counts the text blocks between them. `imagesForIR` produces the same
+  // counts the text blocks between them. `imagesForRow` produces the same
   // ordering from the same blocks, so index N here and index N there are the
   // same picture.
   const imageOrdinals = createMemo(() => {
@@ -67,12 +92,12 @@ export function McpContentList(props: {
  * `mcpToolCallDisplayName` as the title).
  */
 export function GenericToolBody(props: {
-  request: GenericRequest
-  result: GenericResult
-  status: ToolRowStatus
+  request: GenericToolRequest
+  result: GenericToolResult
+  status: ToolCallStatus
   actions?: ImageRenderActions
   holdDisplay?: () => boolean
-  context?: RenderContext
+  context?: ToolResultRenderContext
   expanded?: () => boolean
   /**
    * How many images of this MESSAGE precede the ones this body draws. A row that
@@ -102,14 +127,14 @@ export function GenericToolBody(props: {
       <Show when={props.result.error}>
         <div class={toolResultError}><McpTextView text={props.result.error!} expanded={expanded} {...(props.context !== undefined ? { context: props.context } : {})} /></div>
       </Show>
-      <Show when={isFinishedToolStatus(props.status) && props.result.content.length === 0 && !props.result.structuredJson && !props.result.error}>
+      <Show when={isFinishedToolCallStatus(props.status) && props.result.content.length === 0 && !props.result.structuredJson && !props.result.error}>
         <div class={toolResultPrompt}>{EMPTY_RESULT_NOTICE}</div>
       </Show>
     </div>
   )
 }
 
-function McpContentItemView(props: { item: McpContentItem, imageIndex?: number, title?: string, failed?: boolean, actions?: ImageRenderActions, holdDisplay?: () => boolean, context?: RenderContext, expanded: () => boolean }): JSX.Element {
+function McpContentItemView(props: { item: McpContentItem, imageIndex?: number, title?: string, failed?: boolean, actions?: ImageRenderActions, holdDisplay?: () => boolean, context?: ToolResultRenderContext, expanded: () => boolean }): JSX.Element {
   return (
     <Switch>
       <Match when={props.item.type === 'text'}>
@@ -137,7 +162,7 @@ function McpContentItemView(props: { item: McpContentItem, imageIndex?: number, 
 function McpResourceView(props: {
   item: Extract<McpContentItem, { type: 'resource' }>
   expanded: () => boolean
-  context?: RenderContext
+  context?: ToolResultRenderContext
 }): JSX.Element {
   return (
     <>

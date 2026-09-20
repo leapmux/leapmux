@@ -1,10 +1,36 @@
-import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
-import type { WebSearchRequest, WebSearchResult } from '../../../ir/tools/webSearch'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { WebSearchLink, WebSearchRequest, WebSearchResult } from '../../../model/tools/webSearch'
 import type { ClaudeToolRow } from './toolCommon'
-import { pickNumber } from '~/lib/jsonPick'
-import { unparsedResult } from '../../../ir/toolCall'
-import { extractWebSearchLinks, extractWebSearchSummary } from '../../../ir/tools/webSearch'
-import { claudeFailedResult } from './failure'
+import { isObject, pickNumber } from '~/lib/jsonPick'
+import { unparsedResult } from '../../../model/toolCall'
+import { claudeToolFailureResult } from './failure'
+
+/** Extract deduplicated links from Claude's WebSearch result entries. */
+function extractWebSearchLinks(results: unknown[]): WebSearchLink[] {
+  const seen = new Set<string>()
+  const links: WebSearchLink[] = []
+  for (const item of results) {
+    if (!isObject(item) || !Array.isArray(item.content))
+      continue
+    for (const link of item.content) {
+      if (isObject(link) && typeof link.url === 'string' && typeof link.title === 'string' && !seen.has(link.url)) {
+        seen.add(link.url)
+        links.push({ title: link.title, url: link.url })
+      }
+    }
+  }
+  return links
+}
+
+/** Extract the final non-blank summary from Claude's WebSearch entries. */
+function extractWebSearchSummary(results: unknown[]): string {
+  for (let index = results.length - 1; index >= 0; index--) {
+    const result = results[index]
+    if (typeof result === 'string' && result.trim().length > 0)
+      return result.trim()
+  }
+  return ''
+}
 
 /**
  * Build a WebSearchResult from a Claude `WebSearch` tool_result. Returns
@@ -37,10 +63,10 @@ export function claudeWebSearchFromToolResult(
  * no `results` array either, so it fell to the unparsed rung, which states that the
  * call completed and contradicts the row's own failed status.
  */
-export function claudeWebSearchPayload(request: WebSearchRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'web_search'> {
+export function claudeWebSearchSpec(request: WebSearchRequest, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'web_search'> {
   if (!result)
     return { kind: 'web_search', request }
-  const failure = claudeFailedResult(result)
+  const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'web_search', request, result: failure }
   const source = claudeWebSearchFromToolResult(result.toolUseResult)

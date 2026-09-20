@@ -1,31 +1,31 @@
-import type { ChatRowIR } from '../../../ir/row'
+import type { ChatRow } from '../../../model/row'
 import type { ClaudeRowContext, ClaudeToolRow } from './toolCommon'
 import type { RowExtractionInput } from '~/components/chat/rowExtractionTypes'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { pickObject, pickString } from '~/lib/jsonPick'
-import { toolCallRow } from '../../../ir/row'
 import { leapmuxPlanExecutionRow, leapmuxUserRow } from '../../../leapmuxRows'
+import { toolCallRow } from '../../../model/row'
 import { canonicalClaudeToolName, claudeToolRowHidden } from '../toolKinds'
 import { getMessageContentArray } from './assistantContent'
 import { claudePlanFromEnvelope } from './plan'
 import { claudeTaskGetUnresolved } from './todo'
-import { claudeToolCallIR } from './toolCall'
+import { claudeToolCall } from './toolCall'
 import { claudeToolRow } from './toolCommon'
 
 const LOCAL_COMMAND_OPEN = '<local-command-stdout>'
 const LOCAL_COMMAND_CLOSE = '</local-command-stdout>'
 
 /**
- * Read one Claude row into the shared row IR.
+ * Read one Claude row into the shared row model.
  *
  * Claude states every row inside an Anthropic envelope, so the work here is two
  * steps: find which of the envelope's content blocks carries the row, and turn
  * it into the neutral shape. The tool table itself lives in
  * `../toolPresentation.ts`, beside the identity tables it reads.
  */
-export function claudeExtractRow(input: RowExtractionInput): ChatRowIR | null {
-  const { category, parsed } = input
+export function claudeExtractRow(input: RowExtractionInput): ChatRow | null {
+  const { category, resolved: parsed } = input
   const payload = parsed.parentObject
   switch (category.kind) {
     case 'tool_use':
@@ -64,7 +64,7 @@ export function claudeExtractRow(input: RowExtractionInput): ChatRowIR | null {
  * not one this provider failed to read. A signature-only thinking block reaches
  * that state, and the classifier already hides it.
  */
-function claudeAssistantRow(payload: Record<string, unknown> | undefined, block: 'text' | 'thinking'): ChatRowIR {
+function claudeAssistantRow(payload: Record<string, unknown> | undefined, block: 'text' | 'thinking'): ChatRow {
   const content = getMessageContentArray(payload)
   const text = content ? joinContentParagraphs(content, { [block]: block }) : ''
   if (!text)
@@ -80,7 +80,7 @@ function claudeAssistantRow(payload: Record<string, unknown> | undefined, block:
  * for the model rather than for a reader. A message forwarded into a SUBAGENT's
  * transcript answers with a block array instead.
  */
-function claudeUserTextRow(payload: Record<string, unknown> | undefined): ChatRowIR | null {
+function claudeUserTextRow(payload: Record<string, unknown> | undefined): ChatRow | null {
   const message = pickObject(payload, 'message')
   if (!message)
     return null
@@ -100,7 +100,7 @@ function claudeUserTextRow(payload: Record<string, unknown> | undefined): ChatRo
 }
 
 /** The instruction a parent sent to one of its subagents. */
-function claudeAgentPromptRow(payload: Record<string, unknown> | undefined): ChatRowIR | null {
+function claudeAgentPromptRow(payload: Record<string, unknown> | undefined): ChatRow | null {
   if (!payload || payload.type !== 'user' || typeof payload.parent_tool_use_id !== 'string')
     return null
   const content = pickObject(payload, 'message')?.content
@@ -117,7 +117,7 @@ function claudeAgentPromptRow(payload: Record<string, unknown> | undefined): Cha
  * survived, which nothing else in the transcript does. It used to draw an empty
  * bubble.
  */
-function claudeCompactSummaryRow(payload: Record<string, unknown> | undefined): ChatRowIR {
+function claudeCompactSummaryRow(payload: Record<string, unknown> | undefined): ChatRow {
   const content = getMessageContentArray(payload)
   const summary = content ? joinContentParagraphs(content, { text: 'text' }) : pickString(payload, 'content')
   if (!summary)
@@ -132,7 +132,7 @@ function claudeCompactSummaryRow(payload: Record<string, unknown> | undefined): 
  * before the assistant ones, because a `{type:'user'}` envelope carries a
  * `message.content` array that reads as an assistant block list.
  */
-function claudeUnknownRow(payload: Record<string, unknown> | undefined): ChatRowIR | null {
+function claudeUnknownRow(payload: Record<string, unknown> | undefined): ChatRow | null {
   if (!payload)
     return null
   // Each step falls through on `hidden` as well as on null: the shape matched but
@@ -165,9 +165,9 @@ function claudeUnknownRow(payload: Record<string, unknown> | undefined): ChatRow
  * `assistant_plan` -- see {@link claudePlanFromEnvelope}. An `ExitPlanMode` call
  * that carried NO plan does reach here, and draws the ordinary tool row.
  */
-function claudeToolSpanRow(input: RowExtractionInput): ChatRowIR | null {
-  const { parsed, sides, spanType, completion } = input
-  const own = claudeToolRow(parsed, spanType, sides)
+function claudeToolSpanRow(input: RowExtractionInput): ChatRow | null {
+  const { resolved: parsed, span, spanType, completion } = input
+  const own = claudeToolRow(parsed, spanType, span)
   if (!own)
     return null
   if (claudeToolRowHidden(own.toolName, own.role))
@@ -177,7 +177,7 @@ function claudeToolSpanRow(input: RowExtractionInput): ChatRowIR | null {
   // beside it. When this row IS that request, it stands in for itself: without
   // that, a result rendered before the store resolved the pair lost its subagent
   // card, its diff and its file path all at once.
-  const spanSides = sides.request ? sides : { ...sides, request: own.role === 'request' ? parsed : undefined }
+  const spanSides = span.request ? span : { ...span, request: own.role === 'request' ? parsed : undefined }
   // The span's tool name is ONE fact, and either side may be the one that knows
   // it: a result row takes its tool name from the span column, and a row rendered
   // without one would otherwise report no tool at all.
@@ -196,7 +196,7 @@ function claudeToolSpanRow(input: RowExtractionInput): ChatRowIR | null {
   // suppress this row's own header or request body -- and a side from ANOTHER
   // call is no side of this one at all.
   const requestSide = sideRow(spanSides.request)
-  const resultSide = sideRow(sides.result)
+  const resultSide = sideRow(span.result)
   const argsRow = requestSide ?? own
   const resultRow = resultSide ?? (own.role === 'result' ? own : undefined)
   const context: ClaudeRowContext = {
@@ -205,16 +205,17 @@ function claudeToolSpanRow(input: RowExtractionInput): ChatRowIR | null {
     // also declines a block whose id is empty, which the raw read admitted. Each
     // optional half rides only when this row carries it.
     ...(resultSide?.toolUseResult !== undefined ? { pairedResult: resultSide.toolUseResult } : {}),
-    ...(input.todoById !== undefined ? { todoById: input.todoById } : {}),
+    ...(input.todoSnapshot !== undefined ? { todoSnapshot: input.todoSnapshot } : {}),
+    ...(input.todoSnapshotDiagnostic !== undefined ? { todoSnapshotDiagnostic: input.todoSnapshotDiagnostic } : {}),
     ...(completion !== undefined ? { completion } : {}),
   }
   if (claudeTaskGetUnresolved(argsRow, resultRow, context))
     return { kind: 'hidden' }
-  const call = claudeToolCallIR(argsRow, resultRow, context)
+  const call = claudeToolCall(argsRow, resultRow, context)
   // A Claude tool whose own row the transcript HIDES states no sibling for that side,
   // because the sibling the flag promises is never drawn.
   return toolCallRow(call, own.role, {
-    request: !!requestSide && !claudeToolRowHidden(spanTool, 'request'),
-    result: !!resultSide && !claudeToolRowHidden(spanTool, 'result'),
+    request: span.visibleRows.request && !!requestSide && !claudeToolRowHidden(spanTool, 'request'),
+    result: span.visibleRows.result && !!resultSide && !claudeToolRowHidden(spanTool, 'result'),
   })
 }

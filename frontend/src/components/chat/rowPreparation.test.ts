@@ -173,13 +173,31 @@ describe('extractPreparedRow', () => {
     }))
     const prepared = prepareMessage(message({ provider: AgentProvider.OPENCODE, content: ACP_INNER }))
     const withRequest = extractedRow(extractPreparedRow(prepared, {
-      sides: { current: prepared.resolved, request: request.resolved, result: undefined, role: 'result' },
+      span: { request: request.resolved, result: prepared.resolved, role: 'result', visibleRows: { request: true, result: true } },
     }))
     expect(withRequest?.kind === 'tool' ? withRequest.hasRequestRow : null).toBe(true)
     // The default states no sibling at all, which is the answer for a reader that
     // resolved none -- so the two cannot be reading the same sides.
     const alone = extractedRow(extractPreparedRow(prepared))
     expect(alone?.kind === 'tool' ? alone.hasRequestRow : null).toBe(false)
+  })
+
+  it('does not treat fetched sibling data as a visible sibling row', () => {
+    const request = prepareMessage(message({
+      provider: AgentProvider.OPENCODE,
+      content: { sessionUpdate: 'tool_call', toolCallId: 'call-1', status: 'pending', title: 'Run it', kind: 'execute' },
+    }))
+    const prepared = prepareMessage(message({ provider: AgentProvider.OPENCODE, content: ACP_INNER }))
+    const row = extractedRow(extractPreparedRow(prepared, {
+      span: {
+        request: request.resolved,
+        result: prepared.resolved,
+        role: 'result',
+        visibleRows: { request: false, result: true },
+      },
+    }))
+    expect(row?.kind === 'tool' ? row.hasRequestRow : null).toBe(false)
+    expect(row?.kind === 'tool' ? row.call.request : null).toBeDefined()
   })
 
   // LeapMux's own completion column reaches the extraction through the message, so

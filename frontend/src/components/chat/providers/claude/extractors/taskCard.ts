@@ -1,6 +1,7 @@
 import type { TodoItem } from '~/models/todo'
+import { normalizeTodoStatus } from '~/components/chat/normalizers/todo'
 import { pickObject, pickString } from '~/lib/jsonPick'
-import { normalizeTodoStatus, todoRowKey } from '~/models/todo'
+import { todoRowKey } from '~/models/todo'
 
 /**
  * One Claude `Task*` call as a single-item checklist.
@@ -13,8 +14,8 @@ import { normalizeTodoStatus, todoRowKey } from '~/models/todo'
  * is why they stay three builders:
  *
  *   - `TaskCreate` states the whole task in its INPUT, before an id exists.
- *   - `TaskUpdate` sends a PATCH, so the unchanged fields come from the live
- *     to-do store and the authoritative status from the paired result.
+ *   - `TaskUpdate` sends a patch, so the persisted post-update snapshot supplies
+ *     the complete task.
  *   - `TaskGet` sends an id alone, so the task comes from the paired result.
  */
 export function buildTaskCreateItem(
@@ -40,35 +41,14 @@ export function buildTaskCreateItem(
 /**
  * The to-do a `TaskUpdate` leaves behind, or null when the patch identifies no task.
  *
- * `getTodoById` reads the live store, which holds the fields a status-only patch
- * omits. Without it a card that moved a task to `completed` showed `Task #<id>`
- * where the subject belongs. An update that carries no status at all keeps the
- * stored one, so a metadata-only patch does not flip a finished row back to
- * pending.
+ * The worker stores the complete post-update snapshot on the message. A status-only
+ * patch therefore keeps the subject, active form, and description that existed at
+ * that revision. Rendering never reads the current to-do store.
  */
 export function buildTaskUpdateItem(
-  toolUseInput: Record<string, unknown> | null | undefined,
-  toolUseResult: Record<string, unknown> | null | undefined,
-  getTodoById?: (taskId: string) => TodoItem | undefined,
+  snapshot: TodoItem | undefined,
 ): TodoItem | null {
-  const taskId = pickString(toolUseInput, 'taskId') || pickString(toolUseResult, 'taskId')
-  if (!taskId)
-    return null
-
-  const stored = getTodoById?.(taskId)
-  const content = pickString(toolUseInput, 'subject') || stored?.content || `Task #${taskId}`
-  const statusChange = pickObject(toolUseResult, 'statusChange')
-  const rawStatus = pickString(statusChange, 'to') || pickString(toolUseInput, 'status')
-  const description = pickString(toolUseInput, 'description') || stored?.description
-  return {
-    id: taskId,
-    rowKey: todoRowKey(taskId, 0, content),
-    content,
-    status: rawStatus ? normalizeTodoStatus(rawStatus) : (stored?.status ?? 'pending'),
-    activeForm: pickString(toolUseInput, 'activeForm') || stored?.activeForm || '',
-    // The description rides only when the patch or the store stated one.
-    ...(description !== undefined ? { description } : {}),
-  }
+  return snapshot ?? null
 }
 
 /**

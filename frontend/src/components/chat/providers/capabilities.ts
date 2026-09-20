@@ -13,17 +13,18 @@
 // control channel supplies no `controls` at all rather than an empty one.
 
 import type { Component } from 'solid-js'
-import type { ElicitationRequest } from '../controls/elicitationForm'
 import type { SendPermissionOption } from '../controls/PermissionDecisionActions'
-import type { ActionsProps, ControlAnswerState, ControlResponseSender, Question } from '../controls/types'
-import type { ControlRequestIR } from '../ir/controlRequest'
-import type { DividerIR } from '../ir/divider'
-import type { CompactionBoundaryMeta, NotificationEntryIR } from '../ir/notification'
-import type { ChatRowIR } from '../ir/row'
-import type { MessageCategory } from '../messageClassification'
+import type { ActionsProps, ControlAnswerState, ControlResponseSender } from '../controls/types'
+import type { MessageCategory } from '../messageClassifier'
+import type { ControlPrompt } from '../model/controlPrompt'
+import type { TurnEnd } from '../model/divider'
+import type { CompactionDetails, NotificationEntry } from '../model/notification'
+import type { ControlQuestion } from '../model/question'
+import type { ChatRow } from '../model/row'
 import type { ControlResponseDeriver } from '../persistedControlResponse'
 import type { ProviderPermissionPresets } from '../providerSettings'
 import type { ResolvedMessageContent, RowExtractionInput } from '../rowExtractionTypes'
+import type { ElicitationRequest } from '~/components/chat/model/controlPrompt'
 import type { ToolSpanRole } from '~/components/chat/rowExtractionTypes'
 import type { AgentProvider, AssembledMessageKind, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
@@ -40,7 +41,7 @@ export interface AttachmentCapabilities {
 
 export interface ProviderAskUserQuestion {
   isRequest: (payload: Record<string, unknown>) => boolean
-  extractQuestions: (payload: Record<string, unknown>, source?: ParsedMessageContent) => Question[]
+  extractQuestions: (payload: Record<string, unknown>, source?: ParsedMessageContent) => ControlQuestion[]
   /**
    * Answers ONE request instance.
    *
@@ -52,7 +53,7 @@ export interface ProviderAskUserQuestion {
   sendAnswer: (
     request: ControlRequest,
     sendControlResponse: ControlResponseSender,
-    questions: Question[],
+    questions: ControlQuestion[],
     answerState: ControlAnswerState,
   ) => Promise<void>
   sendReject: (
@@ -109,7 +110,7 @@ export interface ClassificationContext {
  * control surface asks that first -- so a reader that answered one here handed back a
  * value the caller dropped. Naming the type is what keeps that copy from returning.
  */
-export type ExtractedControlRequest = Exclude<ControlRequestIR, { kind: 'question' }>
+export type ExtractedControlRequest = Exclude<ControlPrompt, { kind: 'question' }>
 
 export interface ControlExtractionInput {
   payload: Record<string, unknown>
@@ -150,7 +151,7 @@ export interface ProviderTranscriptCapability {
   relatedMessages?: (parsed: ParsedMessageContent) => readonly ToolSpanSide[]
 
   /**
-   * Read one message of this provider's wire format into the shared row IR.
+   * Read one message of this provider's wire format into the shared row model.
    *
    * Layer 1 of the render pipeline: the plugin is the only place that knows the
    * provider's format, and what it returns is provider-NEUTRAL, so the renderer below
@@ -160,11 +161,11 @@ export interface ProviderTranscriptCapability {
    * the shared unrecognized card. A row the provider recognizes and deliberately
    * suppresses returns `{ kind: 'hidden' }`, which is a different statement.
    */
-  extractRow: (input: RowExtractionInput) => ChatRowIR | null
+  extractRow: (input: RowExtractionInput) => ChatRow | null
 
   /**
    * Read one notification message of this provider's wire format into the shared
-   * notification IR.
+   * notification model.
    *
    * There is no shared switch below this. `notificationEntriesFor` asks ONE neutral
    * extractor first, so a plugin cannot claim a row LeapMux wrote.
@@ -183,10 +184,10 @@ export interface ProviderTranscriptCapability {
    * first, so this hook would never run. `classifyACPMessage` accepts a `system` frame,
    * and no daemon of this family sends one.
    */
-  notificationEntry?: (msg: Record<string, unknown>) => NotificationEntryIR[]
+  notificationEntry?: (msg: Record<string, unknown>) => NotificationEntry[]
 
   /**
-   * Read a turn-end frame into the shared {@link DividerIR}.
+   * Read a turn-end frame into the shared {@link TurnEnd}.
    *
    * A turn end is a cross-provider surface: every provider ends a turn and each states
    * it in its own frame -- a Claude `result` subtype, a Codex `turn.status`, a ZCode
@@ -200,7 +201,7 @@ export interface ProviderTranscriptCapability {
    * subtype it uses for a genuine failure, and only LeapMux knows it asked for the
    * stop. A plugin that needs no such correction ignores the parameter.
    */
-  extractDivider: (parsed: unknown, completion?: MessageCompletion) => DividerIR | null
+  extractDivider: (parsed: unknown, completion?: MessageCompletion) => TurnEnd | null
 }
 
 /**
@@ -209,9 +210,9 @@ export interface ProviderTranscriptCapability {
  */
 export interface ProviderControlCapability {
   /**
-   * Read one control request into the shared control IR.
+   * Read one control request into the shared control model.
    *
-   * The ONE reader of a provider's control payload. The banner switches over the IR
+   * The ONE reader of a provider's control payload. The banner switches over the model
    * and draws it; `buildControlResponse` and `askUserQuestion` answer it. Before this
    * hook every provider shipped its own `ControlContent` and `ControlActions`
    * components, and the five shared bodies they all dispatched to drifted apart in
@@ -265,7 +266,7 @@ export interface ProviderControlCapability {
    * (renderControlResponseRow, dispatched from renderMessageContent's shared `control_response`
    * branch) and the scroll rail's dot preview (messageMarkPreviewText), so the two cannot drift.
    * Return null when the payload isn't recognizable -- the caller then degrades via
-   * `fallbackControlResponseDisplay` (coarse Approved/Rejected from the neutral behavior
+   * `fallbackControlResponseSummary` (coarse Approved/Rejected from the neutral behavior
    * envelope, else the generic "Responded" label).
    */
   controlResponseDisplay?: ControlResponseDeriver
@@ -296,7 +297,7 @@ export interface ProviderControlCapability {
 
   /**
    * The actions for a request this provider answers ITSELF, or undefined to let
-   * the shared switch answer it from {@link extractControl}'s IR.
+   * the shared switch answer it from {@link extractControl}'s model.
    *
    * Three providers answer some request of their own. Codex states its decisions
    * as WORDS that vary per request, and one of them carries a policy amendment as
@@ -359,7 +360,7 @@ export interface ProviderSessionCapability {
    *
    * A sibling of {@link contextUsageFromMessage}, and it runs on the same path: the
    * context-usage grid refreshes the instant a boundary lands, OUTSIDE the render tree
-   * and before any row IR exists. One provider-owned parse serves that reader and the
+   * and before any row model exists. One provider-owned parse serves that reader and the
    * notification extractor, so `messageParser` holds no provider shape and the two
    * readers cannot disagree about what a boundary is.
    *
@@ -371,7 +372,7 @@ export interface ProviderSessionCapability {
    * message that carries usage replaces it, which is a limit of the protocol rather
    * than a hook anybody forgot.
    */
-  compactionBoundaryFromMessage?: (parsed: ParsedMessageContent) => CompactionBoundaryMeta | null
+  compactionBoundaryFromMessage?: (parsed: ParsedMessageContent) => CompactionDetails | null
 
   /**
    * Fraction of the context window (as a percentage, e.g. 16.5) this provider

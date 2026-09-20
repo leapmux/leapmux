@@ -10,7 +10,7 @@ import { CLAUDE_TOOL_NAMES } from './toolNames'
  * EMPTY, and it must stay that way. Claude has no wire contract of its own -- it
  * reports a tool by NAME and nothing else -- so `CLAUDE_TOOL_NAMES` in
  * `toolNames.ts` is the table this walks, and every name in it reaches a kind. A
- * tool that takes the empty kind draws a wrench above a dump of its arguments and
+ * tool that takes the unspecified kind draws a wrench above a dump of its arguments and
  * identifies nothing the agent ran.
  */
 const GENERIC: Record<string, string> = {}
@@ -19,9 +19,9 @@ const CHECK: ToolVocabularyCheck = {
   names: Object.values(CLAUDE_TOOL_NAMES),
   kindOf: claudeToolKind,
   generic: GENERIC,
-  // Claude's table answers the EMPTY kind for a name it does not hold, which is the
+  // Claude's table answers `unspecified` for a name it does not hold, which is the
   // state "the provider states no kind" -- not the state "uncategorized".
-  fallback: '',
+  fallback: 'unspecified',
 }
 
 describe('claude tool vocabulary', () => {
@@ -59,7 +59,7 @@ describe('claude tool vocabulary', () => {
    * `search` states a query against a corpus the session holds, and the file tree is
    * one corpus of several -- Copilot maps its own two tool-registry probes onto the
    * same kind, and it DRAWS them. The fallback would state that Claude's table holds
-   * no kind for this tool, which is false, and `ir/toolKind.ts` reserves the fallback
+   * no kind for this tool, which is false, and `model/toolKind.ts` reserves the fallback
    * for a tool that no table lists at all.
    *
    * The rows of this tool are hidden on both sides, so the kind picks no icon, no
@@ -85,8 +85,8 @@ describe('claude tool tables over an Object.prototype name', () => {
     expect(canonicalClaudeToolName(name)).toBe(name)
   })
 
-  it.each(inherited)('gives a tool called %s the empty kind', (name) => {
-    expect(claudeToolKind(name)).toBe('')
+  it.each(inherited)('gives a tool called %s the unspecified kind', (name) => {
+    expect(claudeToolKind(name)).toBe('unspecified')
   })
 
   it.each(inherited)('hides neither side of a tool called %s', (name) => {

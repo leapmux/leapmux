@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-solid'
-import type { ToolIconHint } from '../ir/toolCall'
+import type { ToolIconHint } from '../model/toolCall'
 import Braces from 'lucide-solid/icons/braces'
 import GitBranch from 'lucide-solid/icons/git-branch'
 import ListChecks from 'lucide-solid/icons/list-checks'
@@ -13,7 +13,7 @@ import Webhook from 'lucide-solid/icons/webhook'
  *
  * Exhaustive over {@link ToolIconHint}, so a new hint fails to compile until
  * this file gives it a glyph. This is the ONE place a tool-call hint becomes an
- * icon component: the IR states what the tool does, and the choice of glyph is
+ * icon component: the model states what the tool does, and the choice of glyph is
  * this layer's.
  */
 const TOOL_HINT_ICON: Record<ToolIconHint, LucideIcon> = {

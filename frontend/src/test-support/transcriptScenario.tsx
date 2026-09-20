@@ -1,9 +1,8 @@
 import type { ClassifiedEntry } from '~/components/chat/chatEntryCache'
-import type { ToolCallRow } from '~/components/chat/ir/row'
 import type { MessageContextResolver, MessageContextSources } from '~/components/chat/messageContextResolver'
+import type { ToolCallRow } from '~/components/chat/model/row'
 import type { ChatRowExtraction } from '~/components/chat/rowExtraction'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { TodoItem } from '~/models/todo'
 import type { TranscriptFrame } from '~/test-support/messageFactory'
 import { render } from '@solidjs/testing-library'
 import { createRoot } from 'solid-js'
@@ -11,7 +10,7 @@ import { createClassifiedEntryCache, renderKeyForEntry } from '~/components/chat
 import { MessageBubble } from '~/components/chat/MessageBubble'
 import { createMessageRenderSources } from '~/components/chat/messageContextResolver'
 import { createMessageRenderCacheStore } from '~/components/chat/messageRenderCache'
-import { cachedChatRow } from '~/components/chat/rowRenderers'
+import { cachedChatRow } from '~/components/chat/rowModelCache'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { messageSpanIdentity } from '~/lib/messageSpan'
 import { cleanups, testTranscriptContext } from '~/test-support/messageContext'
@@ -30,7 +29,7 @@ import '../components/chat/providers/registry'
 // it does NOT model stays in the E2E suite: the store's SQL window, the worker's
 // transport, and the browser's own clipboard and image codecs.
 
-/** What a scenario overrides on the transport sources or the to-do store. */
+/** What a scenario overrides on the transport sources. */
 export interface TranscriptScenarioOptions {
   /** The complete transcript: the loaded window and every fetch read from it. */
   archive: readonly AgentChatMessage[]
@@ -38,7 +37,6 @@ export interface TranscriptScenarioOptions {
   windowIds?: readonly string[]
   fetchSpan?: MessageContextSources['fetchSpan']
   fetchMessage?: MessageContextSources['fetchMessage']
-  todo?: (taskId: string) => TodoItem | undefined
 }
 
 export interface TranscriptScenario {
@@ -48,7 +46,7 @@ export interface TranscriptScenario {
   messages: () => AgentChatMessage[]
   /** The classified entry for one message id, from the entry cache the transcript uses. */
   entry: (id: string) => ClassifiedEntry
-  /** The row IR for one message id, through the render sources and the row cache. */
+  /** The row model for one message id, through the render sources and the row cache. */
   extract: (id: string) => ChatRowExtraction
   /** The tool row for one message id: `extract`, narrowed and checked. */
   toolRow: (id: string) => ToolCallRow
@@ -82,7 +80,6 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
     {
       ...(options.fetchSpan !== undefined ? { fetchSpan: options.fetchSpan } : {}),
       ...(options.fetchMessage !== undefined ? { fetchMessage: options.fetchMessage } : {}),
-      ...(options.todo !== undefined ? { todo: options.todo } : {}),
     },
   )
   if (options.windowIds !== undefined)
@@ -94,7 +91,8 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
     requestRevision: identity => resolver.request(identity)?.revision,
     resultRevision: identity => resolver.result(identity)?.revision,
     contentVersionById: id => resolver.contentVersion(id),
-    resolvedParsed: message => resolver.current(message).resolved,
+    resolvedMessage: message => resolver.resolvedMessage(message),
+    role: message => resolver.role(message),
     showHiddenMessages: () => false,
   })
 

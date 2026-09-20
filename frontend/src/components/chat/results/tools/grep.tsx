@@ -1,7 +1,6 @@
 import type { ToolKindRenderer } from './renderer'
 import TextSearch from 'lucide-solid/icons/text-search'
-import { searchResultCollapsible, searchResultCopyable } from '../../ir/searchResult'
-import { SearchResultBody } from '../searchResult'
+import { SearchResultBody, searchResultCollapsible, searchResultCopyable } from '../searchResult'
 import { pathLines, renderSearchTitle } from './titleParts'
 
 export const grepRenderer: ToolKindRenderer<'grep'> = {

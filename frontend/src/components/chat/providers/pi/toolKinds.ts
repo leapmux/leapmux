@@ -1,4 +1,4 @@
-import type { ToolKind } from '../../ir/toolKind'
+import type { ToolKind } from '../../model/toolKind'
 import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { PI_AGENT_TOOL, PI_POWERSHELL_TOOL, PI_SEARCH_TOOL } from './protocol'
 
@@ -49,7 +49,7 @@ const PI_TOOL_KINDS: ReadonlyMap<string, ToolKind> = new Map<string, ToolKind>([
 ])
 
 /**
- * The tool kind one Pi tool declares, or the empty kind for a name it does not know.
+ * The tool kind one Pi tool declares, or the unspecified kind for a name it does not know.
  *
  * The empty answer is what `toolVocabulary.test.ts` reads to find a tool the table
  * forgot, so it stays the literal table lookup. No ROW carries it: an unnamed tool
@@ -57,5 +57,5 @@ const PI_TOOL_KINDS: ReadonlyMap<string, ToolKind> = new Map<string, ToolKind>([
  * gives it the `mcp` kind that matches the card it draws.
  */
 export function piToolKind(toolName: string): ToolKind {
-  return PI_TOOL_KINDS.get(toolName) ?? ''
+  return PI_TOOL_KINDS.get(toolName) ?? 'unspecified'
 }

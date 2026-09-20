@@ -37,8 +37,9 @@ const invalidators = new Set<Invalidator>()
  * markdown renderer and the token cache, and both already import the theme
  * state -- a cycle. The owners opt in instead.
  */
-export function onSyntaxThemeChange(invalidate: Invalidator): void {
+export function onSyntaxThemeChange(invalidate: Invalidator): () => void {
   invalidators.add(invalidate)
+  return () => invalidators.delete(invalidate)
 }
 
 function createSyntaxThemeStore() {

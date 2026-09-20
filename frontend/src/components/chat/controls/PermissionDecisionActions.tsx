@@ -1,10 +1,11 @@
 import type { Accessor, Component } from 'solid-js'
-import type { WirePermissionOption } from './permissionOptionLabels'
 import type { ActionsProps, ControlResponseSender } from './types'
+import type { PermissionOption } from '~/components/chat/model/controlPrompt'
 
 import { createMemo } from 'solid-js'
+import { isAllowPermissionKind, isRejectPermissionKind } from '~/components/chat/model/controlPrompt'
 import { ControlDecisionFooter } from './ControlDecisionFooter'
-import { isAllowPermissionKind, isRejectPermissionKind, permissionOptionLabel } from './permissionOptionLabels'
+import { permissionOptionLabel } from './permissionOptionLabels'
 import {
   allowScopePillOptions,
   decisionLabel,
@@ -27,12 +28,12 @@ export type SendPermissionOption = (
  * group (Unchanged / Smart / Bypass), Deny / Allow, and one extra button per option
  * no slot or group consumed.
  *
- * The options arrive from the control IR, which each provider's `extractControl`
+ * The options arrive from the control model, which each provider's `extractControl`
  * filled -- so no wire shape is read here. The provider states `send` beside them,
  * because the envelope that carries one id back is its own.
  */
 export const PermissionDecisionActions: Component<ActionsProps & {
-  options: Accessor<WirePermissionOption[]>
+  options: Accessor<PermissionOption[]>
   send: SendPermissionOption
 }> = (props) => {
   const layout = createMemo(() => layoutPermissionOptions(props.options()))
@@ -65,7 +66,7 @@ export const PermissionDecisionActions: Component<ActionsProps & {
   // answer reaches it. Only an ALLOW-kind option — the request's positive action
   // family — applies a preset: an extra answer option decides nothing about
   // future permissions.
-  const handleOption = async (option: WirePermissionOption | undefined) => {
+  const handleOption = async (option: PermissionOption | undefined) => {
     if (!option)
       return
     if (isAllowPermissionKind(option.kind)) {

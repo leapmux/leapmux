@@ -15,7 +15,7 @@ import '../providers'
  * Every agent that states its own answers sends a different vocabulary of option
  * IDS, and this row lays them out by their KINDS instead. The cases below are the
  * four shapes those agents send, each rendered through the real banner: the
- * provider's `extractControl` fills the IR and the banner picks this row, so a
+ * provider's `extractControl` fills the model and the banner picks this row, so a
  * plugin that stopped filling the options would fail here rather than draw an
  * Allow that answers nothing.
  */

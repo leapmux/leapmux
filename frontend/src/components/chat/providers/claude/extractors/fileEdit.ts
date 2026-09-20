@@ -1,12 +1,12 @@
-import type { FileEditDiff } from '../../../ir/fileEditDiff'
-import type { FailedResult, UnparsedResult } from '../../../ir/toolCall'
-import type { FileChangeResult } from '../../../ir/tools/fileChange'
+import type { FileEditDiff } from '../../../model/fileEditDiff'
+import type { ToolFailureResult, UnparsedToolResult } from '../../../model/toolCall'
+import type { FileChangeResult } from '../../../model/tools/fileChange'
 import type { ClaudeToolRow } from './toolCommon'
 import { isObject, pickString } from '~/lib/jsonPick'
-import { fileEditContent, fileEditDiffFromWholeFile, normalizeStructuredPatchHunks, pickFileEditDiff } from '../../../ir/fileEditDiff'
-import { unparsedResult } from '../../../ir/toolCall'
+import { fileEditContent, fileEditDiffFromWholeFile, normalizeStructuredPatchHunks, pickFileEditDiff } from '../../../model/fileEditDiff'
+import { unparsedResult } from '../../../model/toolCall'
 import { CLAUDE_TOOL_NAMES } from '../toolNames'
-import { claudeFailedResult } from './failure'
+import { claudeToolFailureResult } from './failure'
 
 /**
  * Build a FileEditDiff from the input of a Claude `Write` or `Edit`
@@ -98,10 +98,10 @@ export function claudeCreateResultDiff(
  * that kind's request. A builder that answered both kinds read the tool name a second
  * time to choose between them, which put the same mapping in two places.
  */
-export function claudeFileChangeResult(args: ClaudeToolRow, result: ClaudeToolRow | undefined): { result?: FileChangeResult | FailedResult | UnparsedResult } {
+export function claudeFileChangeResult(args: ClaudeToolRow, result: ClaudeToolRow | undefined): { result?: FileChangeResult | ToolFailureResult | UnparsedToolResult } {
   if (!result)
     return {}
-  const failure = claudeFailedResult(result)
+  const failure = claudeToolFailureResult(result)
   if (failure) {
     // The REQUEST stays, and the caller keeps it. A failed call draws no diff --
     // `RequestedChangesBody` owns that rule for every provider now -- but the row's

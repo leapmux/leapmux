@@ -1,12 +1,12 @@
-import type { ToolCallIR } from '../../../ir/toolCall'
-import type { ToolKind } from '../../../ir/toolKind'
+import type { ToolCall } from '../../../model/toolCall'
+import type { ToolKind } from '../../../model/toolKind'
 import { describe, expect, it } from 'vitest'
-import { isFailedResult, isUnparsedResult, typedResult } from '../../../ir/toolCall'
-import { acpToolCallIR } from '../../acp/extractors/toolCall'
+import { isToolFailureResult, isUnparsedToolResult, typedResult } from '../../../model/toolCall'
+import { acpToolCall } from '../../acp/extractors/toolCall'
 import { openCodeToolCallAdapterFor } from './toolCall'
 
-function model(tool: Record<string, unknown>): ToolCallIR {
-  return acpToolCallIR({ sessionUpdate: 'tool_call', toolCallId: 'open-code-tool', status: 'pending', kind: 'think', title: 'task', ...tool }, openCodeToolCallAdapterFor(), undefined)
+function model(tool: Record<string, unknown>): ToolCall {
+  return acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'open-code-tool', status: 'pending', kind: 'think', title: 'task', ...tool }, openCodeToolCallAdapterFor(), undefined)
 }
 
 describe('openCodeToolCallAdapterFor subagent launches', () => {
@@ -42,7 +42,7 @@ describe('openCodeToolCallAdapterFor subagent launches', () => {
       content: [{ type: 'content', content: { type: 'text', text: 'no such agent: explore' } }],
     })
     expect(call.kind).toBe('agent')
-    expect(isFailedResult(call.result) && call.result.text).toBe('no such agent: explore')
+    expect(isToolFailureResult(call.result) && call.result.text).toBe('no such agent: explore')
   })
 
   /*
@@ -58,8 +58,8 @@ describe('openCodeToolCallAdapterFor subagent launches', () => {
       content: [{ type: 'content', content: { type: 'text', text: 'Read two entry points so far.' } }],
     })
     expect(call.kind).toBe('agent')
-    expect(isFailedResult(call.result)).toBe(false)
-    expect(isUnparsedResult(call.result) && call.result.text).toBe('Read two entry points so far.')
+    expect(isToolFailureResult(call.result)).toBe(false)
+    expect(isUnparsedToolResult(call.result) && call.result.text).toBe('Read two entry points so far.')
   })
 
   // A launch that finished and wrote words no wrapper encloses still states them.
@@ -71,7 +71,7 @@ describe('openCodeToolCallAdapterFor subagent launches', () => {
       content: [{ type: 'content', content: { type: 'text', text: 'The agent reported nothing.' } }],
     })
     expect(call.kind).toBe('agent')
-    expect(isUnparsedResult(call.result) && call.result.text).toBe('The agent reported nothing.')
+    expect(isUnparsedToolResult(call.result) && call.result.text).toBe('The agent reported nothing.')
   })
 
   // The wrapper still wins where it is present: the run's own report is a typed
@@ -175,7 +175,7 @@ describe('openCodeToolCallAdapterFor question rows', () => {
       content: [{ type: 'content', content: { text: 'the question could not be shown' } }],
     })
     expect(call.kind).toBe('question')
-    expect(isFailedResult(call.result) && call.result.text).toBe('the question could not be shown')
+    expect(isToolFailureResult(call.result) && call.result.text).toBe('the question could not be shown')
   })
 
   it('reads the choice a completed question carried', () => {
@@ -242,7 +242,7 @@ describe('openCodeToolCallAdapterFor search counts', () => {
 describe('openCodeToolCallAdapterFor kind stability', () => {
   /** The kind one call draws while it runs, once it answers, and once it fails. */
   function lifecycle(frame: Record<string, unknown>, answer: Record<string, unknown>, kinds?: (toolName: string) => ToolKind | undefined): ToolKind[] {
-    const build = (tool: Record<string, unknown>) => acpToolCallIR(
+    const build = (tool: Record<string, unknown>) => acpToolCall(
       { sessionUpdate: 'tool_call', toolCallId: 'open-code-tool', ...tool },
       openCodeToolCallAdapterFor(kinds),
       undefined,
@@ -360,12 +360,12 @@ describe('openCodeToolCallAdapterFor file bodies', () => {
       rawInput: { filePath: '/p/a.ts' },
       content: [{ type: 'content', content: { text: 'no such file' } }],
     })
-    expect(isFailedResult(call.result) && call.result.text).toBe('no such file')
+    expect(isToolFailureResult(call.result) && call.result.text).toBe('no such file')
   })
 })
 
 /**
- * The edit-family request carries the keys the IR DECLARES, and no other one.
+ * The edit-family request carries the keys the model DECLARES, and no other one.
  *
  * `FileChangeRequest` states `changes` and an optional `replaceAll`. This branch also
  * put `replaceAll: undefined` and `patchText: undefined` on the object, and nothing
@@ -490,7 +490,7 @@ describe('openCodeToolCallAdapterFor to-do lists', () => {
   it('states the reason a failed list gave', () => {
     const call = todoCall({ status: 'failed', content: [{ type: 'content', content: { text: 'the todo store is not writable' } }] })
     expect(call.kind).toBe('todo')
-    expect(isFailedResult(call.result) && call.result.text).toBe('the todo store is not writable')
+    expect(isToolFailureResult(call.result) && call.result.text).toBe('the todo store is not writable')
   })
 
   // A call the reader STOPPED keeps the list it collected. The row marks it partial
@@ -498,18 +498,18 @@ describe('openCodeToolCallAdapterFor to-do lists', () => {
   it('keeps the list a cancelled call collected', () => {
     const call = todoCall({ status: 'cancelled', content: [{ type: 'content', content: { text: 'stopped' } }] })
     expect(call.kind).toBe('todo')
-    expect(isFailedResult(call.result)).toBe(false)
+    expect(isToolFailureResult(call.result)).toBe(false)
     expect(call.kind === 'todo' ? typedResult(call)?.items : undefined).toStrictEqual(saved)
   })
 
-  // A finished call that carried no list states the words it printed. `UnparsedResult`
+  // A finished call that carried no list states the words it printed. `UnparsedToolResult`
   // is the brand for that -- this build could not read an answer into the kind's shape
-  // -- and a `FailedResult` would claim the call failed under a `completed` header.
+  // -- and a `ToolFailureResult` would claim the call failed under a `completed` header.
   it('states the words a finished list printed when it carried no list', () => {
     const call = todoCall({ rawInput: {}, content: [{ type: 'content', content: { text: 'nothing to save' } }] })
     expect(call.kind).toBe('todo')
-    expect(isFailedResult(call.result)).toBe(false)
-    expect(isUnparsedResult(call.result) && call.result.text).toBe('nothing to save')
+    expect(isToolFailureResult(call.result)).toBe(false)
+    expect(isUnparsedToolResult(call.result) && call.result.text).toBe('nothing to save')
   })
 })
 
@@ -531,7 +531,7 @@ describe('openCodeToolCallAdapterFor stopped calls', () => {
       content: [{ type: 'content', content: { text: '1\tconst a = 1\n' } }],
     })
     expect(call.kind).toBe('read')
-    expect(isFailedResult(call.result)).toBe(false)
+    expect(isToolFailureResult(call.result)).toBe(false)
     expect(call.kind === 'read' ? typedResult(call)?.lines?.map(line => line.text) : undefined).toStrictEqual(['const a = 1'])
   })
 
@@ -544,7 +544,7 @@ describe('openCodeToolCallAdapterFor stopped calls', () => {
       rawInput: { filePath: '/p/a.ts' },
       content: [{ type: 'content', content: { text: 'no such file' } }],
     })
-    expect(isFailedResult(call.result) && call.result.text).toBe('no such file')
+    expect(isToolFailureResult(call.result) && call.result.text).toBe('no such file')
   })
 
   it.each([
@@ -562,7 +562,7 @@ describe('openCodeToolCallAdapterFor stopped calls', () => {
     expect(call.kind).toBe('edit')
     // The file stays in the REQUEST at every state, so the row heads itself with it.
     expect(call.kind === 'edit' ? call.request.changes.map(change => change.filePath) : []).toStrictEqual(['/p/a.ts'])
-    expect(isFailedResult(call.result)).toBe(failed)
+    expect(isToolFailureResult(call.result)).toBe(failed)
     expect(call.kind === 'edit' ? typedResult(call)?.changes.map(change => change.filePath) : undefined)
       .toStrictEqual(failed ? undefined : ['/p/a.ts'])
   })
@@ -598,7 +598,7 @@ describe('openCodeToolCallAdapterFor stopped calls', () => {
       rawOutput: { metadata: { matches: 1 } },
       content: [{ type: 'content', content: { text: 'Found 1 matches\n/p/a.ts:\n  Line 3: needle' } }],
     })
-    expect(isFailedResult(call.result)).toBe(failed)
+    expect(isToolFailureResult(call.result)).toBe(failed)
     expect(call.kind === 'grep' ? typedResult(call)?.numLines : undefined).toBe(failed ? undefined : 1)
   })
 
@@ -609,7 +609,7 @@ describe('openCodeToolCallAdapterFor stopped calls', () => {
     ['failed', true],
   ])('answers a %s chart through the same ladder', (status, failed) => {
     const spec = JSON.stringify({ type: 'bar', data: { labels: ['A'], datasets: [{ label: 'Hits', data: [3] }] } })
-    const call = acpToolCallIR({
+    const call = acpToolCall({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'open-code-tool',
       status,
@@ -619,7 +619,7 @@ describe('openCodeToolCallAdapterFor stopped calls', () => {
       content: [{ type: 'content', content: { type: 'text', text: spec } }],
     }, openCodeToolCallAdapterFor(name => (name === 'chart' ? 'chart' : undefined)), undefined)
     expect(call.kind).toBe('chart')
-    expect(isFailedResult(call.result)).toBe(failed)
+    expect(isToolFailureResult(call.result)).toBe(failed)
     expect(call.kind === 'chart' ? typedResult(call)?.series.map(series => series.label) : undefined)
       .toStrictEqual(failed ? undefined : ['Hits'])
   })

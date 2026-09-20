@@ -1,9 +1,9 @@
-import type { ChatRowIR, ToolCallRow } from '../../../ir/row'
+import type { ChatRow, ToolCallRow } from '../../../model/row'
 import { describe, expect, it } from 'vitest'
 import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { piExtractRow } from './row'
 
-const NO_SIDES = { own: undefined, current: undefined, request: undefined, result: undefined, role: 'other' as const }
+const NO_SIDES = { request: undefined, result: undefined, role: 'other' as const, visibleRows: { request: false, result: false } }
 
 function toolRow(payload: Record<string, unknown>, completion?: MessageCompletion): ToolCallRow | null {
   const parsed = {
@@ -15,17 +15,17 @@ function toolRow(payload: Record<string, unknown>, completion?: MessageCompletio
     messageMetadata: undefined,
     completion,
   }
-  const row: ChatRowIR | null = piExtractRow({
-    parsed,
+  const row: ChatRow | null = piExtractRow({
+    resolved: parsed,
     category: { kind: 'tool_use' },
-    sides: NO_SIDES,
+    span: NO_SIDES,
     completion,
   } as never)
   return row && row.kind === 'tool' ? row : null
 }
 
 describe('pi retained outcome', () => {
-  // `piToolCallIR` takes the completion for exactly this: a turn the reader stopped
+  // `piToolCall` takes the completion for exactly this: a turn the reader stopped
   // leaves the `tool_execution_start` frame stored, `retainedRowIsFinal` marks the
   // row finished, and without the completion the status resolved to `completed`.
   // The row then drew a green finished command for one the reader cancelled, and

@@ -1,5 +1,5 @@
-import type { ToolKind } from '~/components/chat/ir/toolKind'
-import type { ProviderRowOptions } from '~/test-support/toolCallIr'
+import type { ToolKind } from '~/components/chat/model/toolKind'
+import type { ProviderRowOptions } from '~/test-support/toolCallFixture'
 import type { ToolFailureFixture, ToolResultCheck, ToolResultFixture } from '~/test-support/toolVocabulary'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { CLAUDE_TOOL_NAMES } from './toolNames'
@@ -101,7 +101,7 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
  *
  * `is_error` on the result block, and no `tool_use_result` beside it: that pair is
  * what the CLI sends, and a failed call produces no payload, so the reason is the
- * whole answer. Every per-kind builder asks `claudeFailedResult` before it reads a
+ * whole answer. Every per-kind builder asks `claudeToolFailureResult` before it reads a
  * payload for exactly that reason.
  *
  * The request half comes from the successful fixture rather than from a second copy

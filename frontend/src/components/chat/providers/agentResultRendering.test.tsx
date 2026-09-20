@@ -1,13 +1,13 @@
-import type { MessageCategory } from '../messageClassification'
+import type { MessageCategory } from '../messageClassifier'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { providerToolMeta } from '~/test-support/toolCallIr'
+import { providerToolMeta } from '~/test-support/toolCallFixture'
 import { resolveMessageForRendering } from './registry'
 import './testMocks'
 
-const { renderMessageContent } = await import('../rowRenderers')
+const { renderMessageContent } = await import('../messageContentRenderer')
 
 const PROMPT = 'You are the lead reviewer subagent. Read the code that it names.'
 const OUTPUT_FILE = '/private/tmp/claude-501/-Users-trustin/tasks/a7bcba10b2b861663.output'

@@ -1,4 +1,4 @@
-import type { NotificationEntryIR } from './ir/notification'
+import type { NotificationEntry } from './model/notification'
 import { describe, expect, it } from 'vitest'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -13,7 +13,7 @@ import { providerFor } from './providers/registry'
 await import('./providers/opencode/plugin')
 
 /** The one text block a single retry entry flattens into. */
-function retryText(entry: Omit<Extract<NotificationEntryIR, { kind: 'retry' }>, 'kind'>): string {
+function retryText(entry: Omit<Extract<NotificationEntry, { kind: 'retry' }>, 'kind'>): string {
   const blocks = flattenNotificationEntries([{ kind: 'retry', ...entry }])
   expect(blocks).toHaveLength(1)
   // The length is asserted above; `?.` is the type-level guard alone.

@@ -1,4 +1,4 @@
-import type { ToolKind } from '~/components/chat/ir/toolKind'
+import type { ToolKind } from '~/components/chat/model/toolKind'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ToolFailureFixture, ToolResultCheck, ToolResultFixture } from '~/test-support/toolVocabulary'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
@@ -31,7 +31,7 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   // this call read it, so the word "Applied" never reaches the row: the request states
   // the change the patch asks for, and the result states the one it applied. This name
   // is therefore absent from `unparsed` below, and an envelope edited into a shape the
-  // reader refuses puts it back there -- `undocumentedUnparsedResults` says so.
+  // reader refuses puts it back there -- `undocumentedUnparsedToolResults` says so.
   [ZCODE_TOOL.ApplyPatch]: done(ZCODE_TOOL.ApplyPatch, { patch: '*** Begin Patch\n*** Update File: a.ts\n@@\n-before\n+after\n*** End Patch' }, { success: true, content: 'Applied' }),
   [ZCODE_TOOL.Glob]: done(ZCODE_TOOL.Glob, { pattern: '*.ts' }, { success: true, content: 'a.ts' }),
   [ZCODE_TOOL.Grep]: done(ZCODE_TOOL.Grep, { pattern: 'x' }, { success: true, content: 'a.ts:1:x' }),

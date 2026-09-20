@@ -1,4 +1,4 @@
-import type { DividerIR } from '../../../ir/divider'
+import type { TurnEnd } from '../../../model/divider'
 import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickNumber, pickString, stringArray } from '~/lib/jsonPick'
 import { humanizeWireWord } from '../../../rendererUtils'
@@ -48,7 +48,7 @@ function buildErrorResult(
   resultText: string,
   durationMs: number | null,
   subtype: string,
-): DividerIR {
+): TurnEnd {
   // `stringArray`, never a cast: `errors` arrives off the wire, and both branches below
   // JOIN the list into the divider's own words. A cast let an object through, and the
   // join wrote "[object Object]" where the reason belongs.
@@ -87,7 +87,7 @@ function buildPlainResult(
   resultText: string,
   durationMs: number | null,
   subtype: string,
-): DividerIR {
+): TurnEnd {
   const displayText = subtype && subtype !== 'success' ? resultText : ''
   // Any other non-success subtype's own text qualifies the turn end rather than
   // replacing it, so the row still opens with the words every other provider uses.
@@ -109,7 +109,7 @@ function buildPlainResult(
  *     [ede_diagnostic] result_type=user ...".
  *   - The `cancelled` subtype, for a stop the interface reports itself.
  */
-export function claudeResultDivider(parsed: unknown, completion?: MessageCompletion): DividerIR | null {
+export function claudeResultDivider(parsed: unknown, completion?: MessageCompletion): TurnEnd | null {
   if (!isObject(parsed) || parsed.type !== 'result')
     return null
 

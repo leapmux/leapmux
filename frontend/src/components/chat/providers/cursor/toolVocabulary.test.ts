@@ -1,9 +1,9 @@
-import type { ToolKind } from '../../ir/toolKind'
+import type { ToolKind } from '../../model/toolKind'
 import type { ToolVocabularyCheck } from '~/test-support/toolVocabulary'
 import { describe, expect, it } from 'vitest'
 import { CURSOR_TOOL } from '~/generated/contracts/cursor-protocol'
 import { documentedNamesThatReachAKind, staleGenericNames, undocumentedFallbacks } from '~/test-support/toolVocabulary'
-import { acpToolCallIR } from '../acp/extractors/toolCall'
+import { acpToolCall } from '../acp/extractors/toolCall'
 import { cursorToolCallAdapter } from './extractors/toolCall'
 
 /**
@@ -15,7 +15,7 @@ const FRONTEND_TOOL_NAMES = ['createPlan', 'askQuestion', 'updateTodos', 'genera
 
 /** The kind the adapter answers for one call that states its own name. */
 function kindOf(name: string): ToolKind {
-  return acpToolCallIR(
+  return acpToolCall(
     { sessionUpdate: 'tool_call', toolCallId: 'vocab-1', status: 'pending', kind: 'other', rawInput: { _toolName: name } },
     cursorToolCallAdapter,
     undefined,

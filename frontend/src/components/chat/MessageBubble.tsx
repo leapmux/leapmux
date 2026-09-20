@@ -1,14 +1,14 @@
 import type { Component } from 'solid-js'
-import type { ChatRowIR } from './ir/row'
 import type { ToolHeaderActionsCallerProps, ToolHeaderActionsLayoutProps } from './messageActions'
 import type { MessageContextResolver } from './messageContextResolver'
 import type { MessageRenderCache } from './messageRenderCache'
 import type { RenderContext } from './messageRenderers'
 import type { MessageUiKey } from './messageUiKeys'
+import type { ChatRow } from './model/row'
 import type { ToolProgressSource } from './renderContext'
 import type { ToolCallMeta } from './results/tools/meta'
+import type { RowExtractionContext } from './rowModelCache'
 import type { PreparedMessage } from './rowPreparation'
-import type { RowExtractionContext } from './rowRenderers'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import Check from 'lucide-solid/icons/check'
@@ -30,19 +30,20 @@ import { formatChatQuote } from '~/lib/quoteUtils'
 import { resolveStack } from '~/lib/resolveStack'
 import { appendCompletionMarker } from './assembledMessage'
 import { buildRawJsonEnvelope } from './chatRawJson'
-import { quotableTextForIR } from './ir/derivations'
 import { codeCopyHostClass } from './markdownEditor/markdownContent.css'
 import { buildMessageActions } from './messageActions'
-import { bubbleRunsToRightEdge, isMirroredMessageRow, messageBubbleClass, messageRowClass } from './messageClassification'
+import { renderMessageContent } from './messageContentRenderer'
 import { useMessageContextMenu } from './MessageContextMenuHost'
 import { createMessageRenderSources } from './messageContextResolver'
+import { bubbleRunsToRightEdge, isMirroredMessageRow, messageBubbleClass, messageRowClass } from './messageRowLayout'
 import * as chatStyles from './messageStyles.css'
 import { expandedUiKeyFor, MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 import { imageActionsFrom, subagentsFrom } from './renderContext'
+import { quotableTextForRow } from './results/rowText'
 import { toolCallMeta } from './results/tools/meta'
 import { extractedRow } from './rowExtraction'
+import { cachedChatRow } from './rowModelCache'
 import { prepareMessage } from './rowPreparation'
-import { cachedChatRow, renderMessageContent } from './rowRenderers'
 import { JsonHighlightHtml } from './syntaxHighlight'
 import { ToolHeaderActions } from './ToolHeaderActions'
 
@@ -201,7 +202,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // MEASURED and the row this bubble DRAWS are read from one payload and one
   // category. A bubble mounted outside ChatView (a test, an isolated preview)
   // prepares the message itself.
-  const resolved = createMemo(() => props.host?.messages?.current(props.message, props.prepared?.original))
+  const resolved = createMemo(() => props.host?.messages?.resolvedMessage(props.message, props.prepared?.original))
   const prepared = createMemo<PreparedMessage>(() => {
     const resolvedParsed = resolved()?.resolved
     return props.prepared ?? prepareMessage(props.message, resolvedParsed !== undefined ? { resolved: resolvedParsed } : {})
@@ -209,7 +210,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const parsed = () => prepared().original
   const category = () => prepared().category
   const displayParsed = () => prepared().resolved
-  const sources = createMessageRenderSources(() => props.host?.messages, () => props.message, displayParsed)
+  const sources = createMessageRenderSources(() => props.host?.messages, () => prepared().message, displayParsed)
 
   // Full raw JSON for the Raw JSON display. Plain function (not createMemo)
   // so the JSON.parse + JSON.stringify only run when a consumer actually
@@ -270,7 +271,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     props.message.completion,
   ))
   /** The drawn row, or null for a frame nobody could read (which draws the shared card). */
-  const row = (): ChatRowIR | null => extractedRow(extraction())
+  const row = (): ChatRow | null => extractedRow(extraction())
 
   // Toolbar metadata for the current message — collapsibility, diff presence, the
   // two button labels, and a lazy copyable-content getter. Every tool row answers,
@@ -331,8 +332,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // Safe to take from the render pass because the title is STORED in the tab
   // payload at open time and read back from it -- unlike `index`, nothing ever
   // re-derives it, so there is no second side for it to disagree with.
+  const openImageHost = createMemo(() => props.host?.onOpenImage)
   const openImage = (image: { index: number, filePath?: string, title?: string }) => {
-    props.host?.onOpenImage?.({
+    openImageHost()?.({
       seq: props.message.seq,
       index: image.index,
       ...(image.filePath !== undefined ? { filePath: image.filePath } : {}),
@@ -354,7 +356,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     cachedFileImage: filePath => sources.cachedFileImage(filePath),
     deferLoad: () => props.premeasureMode === true || props.host?.rowOffscreen?.() === true,
     premeasurePass: () => props.premeasureMode === true,
-    ...(props.host?.onOpenImage !== undefined ? { openImage } : {}),
+    ...(untrack(openImageHost) !== undefined ? { openImage } : {}),
   })
   const toolProgress: ToolProgressSource = { liveTail: () => sources.progress() }
 
@@ -400,7 +402,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // assembled envelope reaches the same three prose rows through layer 1, so this no
   // longer parses that envelope a second time. This is what Copy-Markdown writes.
   const proseText = createMemo(() => {
-    const text = quotableTextForIR(row())
+    const text = quotableTextForRow(row())
     if (text === null)
       return null
     return appendCompletionMarker(text, extraction().completion)
@@ -450,7 +452,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // the envelope did not parse to an object.
   const renderPayload = () => displayParsed().parentObject ?? parsed().rawText
 
-  // Render the message body through the row IR, ending in the raw-JSON last-resort
+  // Render the message body through the row model, ending in the raw-JSON last-resort
   // span when nothing claims it. It draws EVERY category now: a notification thread
   // and a turn end each used to take a branch of their own here, and a thread that
   // states nothing still reaches the same last resort, because the extractor answers

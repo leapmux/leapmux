@@ -1,8 +1,52 @@
+import type { JsonValue } from '@bufbuild/protobuf'
 import type { TodoItem as ProtoTodoItem } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TodoItem } from '~/models/todo'
+import { fromJson } from '@bufbuild/protobuf'
+import { TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { shallowEqualArraysDeep } from '~/lib/shallowEqual'
-import { protoTodoToItem } from '~/models/todo'
+import { todoRowKey } from '~/models/todo'
 import { createPerAgentListStore } from './chatPerAgentStore'
+
+export function protoTodoToItem(t: ProtoTodoItem, index: number): TodoItem {
+  let status: TodoItem['status'] = 'pending'
+  if (t.status === TodoStatus.IN_PROGRESS)
+    status = 'in_progress'
+  else if (t.status === TodoStatus.COMPLETED)
+    status = 'completed'
+  else if (t.status === TodoStatus.DELETED)
+    status = 'deleted'
+  const id = t.id || undefined
+  const description = t.description || undefined
+  return {
+    ...(id !== undefined ? { id } : {}),
+    rowKey: todoRowKey(id, index, t.content),
+    content: t.content,
+    status,
+    activeForm: t.activeForm,
+    ...(description !== undefined ? { description } : {}),
+  }
+}
+
+export function protoJsonTodoToItem(value: unknown): TodoItem | null {
+  if (!isJsonValue(value))
+    return null
+  try {
+    return protoTodoToItem(fromJson(TodoItemSchema, value), 0)
+  }
+  catch {
+    return null
+  }
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number')
+    return true
+  if (Array.isArray(value))
+    return value.every(isJsonValue)
+  if (typeof value !== 'object')
+    return false
+  return Object.values(value).every(isJsonValue)
+}
 
 // ---------------------------------------------------------------------------
 // To-do list slice

@@ -1,20 +1,21 @@
-import type { SearchResult } from '../../../ir/searchResult'
-import type { ToolKind } from '../../../ir/toolKind'
+import type { SearchResult } from '../../../model/searchResult'
+import type { ToolKind } from '../../../model/toolKind'
 import type { CopilotToolFacts, CopilotToolRow } from './toolCall'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it } from 'vitest'
 import { COPILOT_EVENT, COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
 import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotFrame, copilotToolComplete, copilotToolStart } from '~/test-support/copilotFixtures'
-import { todoTitleOf } from '~/test-support/toolCallIr'
-import { imagesForIR } from '../../../ir/derivations'
-import { toolCallRow } from '../../../ir/row'
-import { deriveToolCallStatus, isFailedResult, typedResult } from '../../../ir/toolCall'
-import { TOOL_KINDS } from '../../../ir/toolKind'
+import { todoTitleOf } from '~/test-support/toolCallFixture'
+import { toolCallRow } from '../../../model/row'
+import { isToolFailureResult, typedResult } from '../../../model/toolCall'
+import { deriveToolCallStatus } from '../../../model/toolCallLifecycle'
+import { TOOL_KINDS } from '../../../model/toolKind'
+import { imagesForRow } from '../../../results/rowImages'
 import { DEFAULT_TOOL_REQUESTS, toolRequestFor } from '../../defaultToolRequests'
 import { input } from '../../testUtils'
 import { copilotToolKind } from '../toolKinds'
-import { COPILOT_TOOL_READERS, COPILOT_TOOL_REQUEST_OVERRIDES, copilotReclassify, copilotToolCallIR, copilotToolFacts, copilotToolRow } from './toolCall'
+import { COPILOT_TOOL_READERS, COPILOT_TOOL_REQUEST_OVERRIDES, copilotReclassify, copilotToolCall, copilotToolFacts, copilotToolRow } from './toolCall'
 
 const CALL = 'copilot-call'
 
@@ -54,7 +55,7 @@ describe('copilotToolRow', () => {
       result: { content: 'partial output' },
       error: { code: 'ENOENT', message: 'no such file' },
     })
-    expect(row && deriveToolCallStatus(row.lifecycle)).toBe('failed')
+    expect(row && deriveToolCallStatus(row.lifecycle, row.lifecycle.resultFrameLanded)).toBe('failed')
     expect(row.raw).toEqual({ code: 'ENOENT', message: 'no such file' })
   })
 
@@ -64,7 +65,7 @@ describe('copilotToolRow', () => {
       result: { content: 'partial output' },
       error: { code: 'interrupted', message: 'aborted' },
     })
-    expect(row && deriveToolCallStatus(row.lifecycle)).toBe('cancelled')
+    expect(row && deriveToolCallStatus(row.lifecycle, row.lifecycle.resultFrameLanded)).toBe('cancelled')
     expect(row.raw).toEqual({ content: 'partial output' })
   })
 
@@ -73,12 +74,12 @@ describe('copilotToolRow', () => {
       success: false,
       error: { code: 'interrupted', message: 'aborted' },
     })
-    expect(row && deriveToolCallStatus(row.lifecycle)).toBe('cancelled')
+    expect(row && deriveToolCallStatus(row.lifecycle, row.lifecycle.resultFrameLanded)).toBe('cancelled')
     expect(row.raw).toEqual({ code: 'interrupted', message: 'aborted' })
   })
 })
 
-describe('copilotToolCallIR background shells', () => {
+describe('copilotToolCall background shells', () => {
   // The four calls act on a shell the session already started: each one identifies it by
   // id and carries no command, which is a task rather than an execution.
   it.each([
@@ -87,7 +88,7 @@ describe('copilotToolCallIR background shells', () => {
     [COPILOT_TOOL.ListBash, 'list'],
     [COPILOT_TOOL.WriteBash, 'input'],
   ])('reads %s as a task on the shell it names', (toolName, action) => {
-    const call = copilotToolCallIR(resultRow(toolName, { shellId: '7' }, { result: { content: 'shell output' } }))
+    const call = copilotToolCall(resultRow(toolName, { shellId: '7' }, { result: { content: 'shell output' } }))
     expect(call.kind).toBe('task')
     expect(call.kind === 'task' ? call.request : null).toEqual({ action, taskId: '7' })
     expect(call.kind === 'task' && call.result && 'output' in call.result ? call.result.output : undefined).toBe('shell output')
@@ -95,12 +96,12 @@ describe('copilotToolCallIR background shells', () => {
 
   // `ListBash` identifies no shell, because it asks about every one of them.
   it('states no shell id for the call that lists them all', () => {
-    const call = copilotToolCallIR(resultRow(COPILOT_TOOL.ListBash, {}, { result: { content: 'one shell' } }))
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.ListBash, {}, { result: { content: 'one shell' } }))
     expect(call.kind === 'task' ? call.request : null).toEqual({ action: 'list', taskId: undefined })
   })
 
   it('states the failed outcome of a shell call that stopped', () => {
-    const call = copilotToolCallIR(resultRow(COPILOT_TOOL.ReadBash, { shellId: '7' }, {
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.ReadBash, { shellId: '7' }, {
       success: false,
       error: { code: 'ENOENT', message: 'no such shell' },
     }))
@@ -109,7 +110,7 @@ describe('copilotToolCallIR background shells', () => {
   })
 })
 
-describe('copilotToolCallIR shell results', () => {
+describe('copilotToolCall shell results', () => {
   it('states the shell metadata when the exit block reports no numeric code', () => {
     const row = resultRow(COPILOT_TOOL.Bash, { command: 'run' }, {
       result: {
@@ -117,7 +118,7 @@ describe('copilotToolCallIR shell results', () => {
         contents: [{ type: 'shell_exit', shellId: '7', cwd: '/project', outputFilePath: '/project/.tmp/out.log' }],
       },
     })
-    const call = copilotToolCallIR(row)
+    const call = copilotToolCall(row)
     expect(call.metadata).toEqual([
       { label: 'Shell ID', value: '7' },
       { label: 'Directory', value: '/project' },
@@ -133,7 +134,7 @@ describe('copilotToolCallIR shell results', () => {
     const row = resultRow(COPILOT_TOOL.Bash, { command: 'run' }, {
       result: { content: 'command output', contents: [{ type: 'shell_exit', shellId: '0', exitCode: 3 }] },
     })
-    const call = copilotToolCallIR(row)
+    const call = copilotToolCall(row)
     expect(call.kind === 'execute' && call.result && 'commands' in call.result ? call.result.commands[0]?.exitCode : undefined).toBe(3)
     expect(call.metadata).toEqual([{ label: 'Shell ID', value: '0' }])
   })
@@ -150,7 +151,7 @@ describe('copilotToolCallIR shell results', () => {
         ],
       },
     })
-    const call = copilotToolCallIR(row)
+    const call = copilotToolCall(row)
     expect(call.extraContent).toEqual([{ type: 'text', text: 'a note neither field carries' }])
   })
 
@@ -163,7 +164,7 @@ describe('copilotToolCallIR shell results', () => {
         contents: [{ type: 'text', text: 'model summary' }],
       },
     })
-    expect(copilotToolCallIR(row).extraContent).toBeUndefined()
+    expect(copilotToolCall(row).extraContent).toBeUndefined()
   })
 
   // The trailer states the code in decimal text of unbounded length, so it takes the
@@ -173,7 +174,7 @@ describe('copilotToolCallIR shell results', () => {
     const row = resultRow(COPILOT_TOOL.Bash, { command: 'run' }, {
       result: { content: 'output\n<shellId: 0 completed with exit code 99999999999999999999>' },
     })
-    const call = copilotToolCallIR(row)
+    const call = copilotToolCall(row)
     expect(call.kind === 'execute' && call.result && 'commands' in call.result ? call.result.commands[0]?.exitCode : undefined).toBeUndefined()
   })
 
@@ -181,17 +182,17 @@ describe('copilotToolCallIR shell results', () => {
     const row = resultRow(COPILOT_TOOL.Bash, { command: 'run' }, {
       result: { content: 'output\n<shellId: 0 completed with exit code 7>' },
     })
-    const call = copilotToolCallIR(row)
+    const call = copilotToolCall(row)
     expect(call.kind === 'execute' && call.result && 'commands' in call.result ? call.result.commands[0]?.exitCode : undefined).toBe(7)
   })
 })
 
-describe('copilotToolCallIR search results', () => {
+describe('copilotToolCall search results', () => {
   function grepModel(context: Record<string, unknown>): SearchResult {
     const row = resultRow(COPILOT_TOOL.Grep, { pattern: 'hit', ...context }, {
       result: { content: 'a.ts:1:hit\nb.ts:2:hit' },
     })
-    const call = copilotToolCallIR(row)
+    const call = copilotToolCall(row)
     // The grep kind stays; the match count states the total.
     expect(call.kind).toBe('grep')
     return (call.kind === 'grep' && call.result ? call.result : null) as SearchResult
@@ -215,14 +216,22 @@ describe('copilotToolCallIR search results', () => {
   ])('drops the match count when the context argument states one as %s', (_label, context) => {
     expect(grepModel(context)?.matchCount).toBeUndefined()
   })
+
+  it('keeps the drive prefix while it counts unnumbered Windows paths', () => {
+    const row = resultRow(COPILOT_TOOL.Grep, { pattern: 'hit' }, {
+      result: { content: 'C:\\repo\\a.ts:hit one\nC:\\repo\\b.ts:hit two' },
+    })
+    const call = copilotToolCall(row)
+    expect(call.kind === 'grep' ? typedResult(call)?.numFiles : undefined).toBe(2)
+  })
 })
 
-describe('copilotToolCallIR to-do lists', () => {
+describe('copilotToolCall to-do lists', () => {
   // No `title` of its own: `todoRenderer` composes the same words from the request,
   // and a copy here was a second place for the wording to drift.
   it('states a cleared list rather than a count of zero', () => {
     const row = copilotToolRow(copilotToolStart(CALL, COPILOT_TOOL.UpdateTodo, { todos: '' }))!
-    const call = copilotToolCallIR(row)
+    const call = copilotToolCall(row)
     expect(call.title).toBeUndefined()
     expect(call.kind === 'todo' && call.request.items).toEqual([])
     expect(todoTitleOf(call)).toBe('To-do list')
@@ -230,18 +239,18 @@ describe('copilotToolCallIR to-do lists', () => {
 
   it('states the count for a list that holds items', () => {
     const row = copilotToolRow(copilotToolStart(CALL, COPILOT_TOOL.UpdateTodo, { todos: '- [ ] first\n- [x] second' }))!
-    const call = copilotToolCallIR(row)
+    const call = copilotToolCall(row)
     expect(call.title).toBeUndefined()
     expect(todoTitleOf(call)).toBe('2 tasks')
   })
 })
 
-describe('copilotToolCallIR rich content', () => {
+describe('copilotToolCall rich content', () => {
   it('states the arguments in an unrecognized tool\'s own body', () => {
     const row = resultRow('custom_tool', { query: 'needle' }, {
       result: { contents: [{ type: 'text', text: 'a block' }] },
     })
-    const call = copilotToolCallIR(row)
+    const call = copilotToolCall(row)
     expect(call.kind).toBe('mcp')
     expect(JSON.stringify(call.request)).toContain('needle')
   })
@@ -250,13 +259,13 @@ describe('copilotToolCallIR rich content', () => {
     const row = resultRow(COPILOT_TOOL.View, { path: '/project/a.txt' }, {
       result: { content: 'file text', contents: [{ type: 'text', text: 'a block' }] },
     })
-    expect(copilotToolCallIR(row).extraContent).toEqual([{ type: 'text', text: 'a block' }])
+    expect(copilotToolCall(row).extraContent).toEqual([{ type: 'text', text: 'a block' }])
   })
 })
 
-describe('copilotToolCallIR subagent launches', () => {
+describe('copilotToolCall subagent launches', () => {
   function launch(args: Record<string, unknown>) {
-    return copilotToolCallIR(copilotToolRow(copilotToolStart(CALL, COPILOT_TOOL.Task, args))!)
+    return copilotToolCall(copilotToolRow(copilotToolStart(CALL, COPILOT_TOOL.Task, args))!)
   }
 
   it('titles the row from the description', () => {
@@ -280,7 +289,7 @@ describe('copilotToolCallIR subagent launches', () => {
 
   it('states one description on the request card and on the report', () => {
     const row = resultRow(COPILOT_TOOL.Task, { name: 'Reviewer' }, { success: true, result: { content: 'Found two' } })
-    const call = copilotToolCallIR(row)
+    const call = copilotToolCall(row)
     expect(call.kind === 'agent' && call.request.description).toBe('Reviewer')
     expect(call.kind === 'agent' && call.result && 'agents' in call.result ? call.result.agents[0] : null).toEqual(expect.objectContaining({ description: 'Reviewer', body: 'Found two' }))
   })
@@ -295,7 +304,7 @@ describe('copilotToolCallIR subagent launches', () => {
  */
 describe('copilot typed requests', () => {
   function callOf(toolName: string, args: Record<string, unknown>, outcome: { success?: boolean, result?: Record<string, unknown>, error?: Record<string, unknown> } = { success: true, result: { content: 'ok' } }) {
-    return copilotToolCallIR(resultRow(toolName, args, outcome))
+    return copilotToolCall(resultRow(toolName, args, outcome))
   }
 
   it('names the file a delete removed', () => {
@@ -353,7 +362,7 @@ describe('copilot background shells', () => {
   const contents = [{ type: 'shell_exit', exitCode: 1, shellId: '7', cwd: '/p', outputFilePath: '/p/out.log' }]
 
   it('states the exit code, the trailer-free output and the shell rows', () => {
-    const call = copilotToolCallIR(resultRow(COPILOT_TOOL.ReadBash, { shellId: '7' }, {
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.ReadBash, { shellId: '7' }, {
       success: true,
       result: { content: 'partial output\n<shellId: 7 completed with exit code 1>', contents },
     }))
@@ -369,7 +378,7 @@ describe('copilot background shells', () => {
   })
 
   it('reports a shell that exited cleanly as completed', () => {
-    const call = copilotToolCallIR(resultRow(COPILOT_TOOL.ReadBash, { shellId: '7' }, {
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.ReadBash, { shellId: '7' }, {
       success: true,
       result: { content: 'done', contents: [{ type: 'shell_exit', exitCode: 0, shellId: '7' }] },
     }))
@@ -389,19 +398,19 @@ describe('copilot rich content', () => {
     [COPILOT_TOOL.AskUser, { question: 'Which?' }],
     [COPILOT_TOOL.Move, { path: '/p/b.ts', source: '/p/a.ts' }],
   ])('carries the blocks %s attached', (toolName, args) => {
-    const call = copilotToolCallIR(resultRow(toolName, args, { success: true, result: { content: 'ok', contents } }))
+    const call = copilotToolCall(resultRow(toolName, args, { success: true, result: { content: 'ok', contents } }))
     expect(call.extraContent?.some(item => item.type === 'image')).toBe(true)
   })
 
   // The blocks ride every state of the call, not the success one alone.
   it('carries the blocks a failed skill attached', () => {
-    const call = copilotToolCallIR(resultRow(COPILOT_TOOL.Skill, { skill: 'deploy' }, { success: false, error: { message: 'no such skill', contents } }))
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.Skill, { skill: 'deploy' }, { success: false, error: { message: 'no such skill', contents } }))
     expect(call.extraContent?.some(item => item.type === 'image')).toBe(true)
   })
 
   // Copilot carries EVERY picture in `extraContent` rather than in the call's own image
   // list, so a failure path that drops the blocks drops each image with them -- and the
-  // image tab, which addresses a picture by its index in `imagesForIR`, loses it too.
+  // image tab, which addresses a picture by its index in `imagesForRow`, loses it too.
   it.each([
     [COPILOT_TOOL.Grep, { pattern: 'needle' }],
     [COPILOT_TOOL.Glob, { pattern: '*.ts' }],
@@ -409,7 +418,7 @@ describe('copilot rich content', () => {
     [COPILOT_TOOL.View, { path: '/p/a.ts' }],
     [COPILOT_TOOL.WebFetch, { url: 'https://example.com' }],
   ])('carries the blocks a failed %s attached', (toolName, args) => {
-    const call = copilotToolCallIR(resultRow(toolName, args, { success: false, error: { message: 'it broke', contents } }))
+    const call = copilotToolCall(resultRow(toolName, args, { success: false, error: { message: 'it broke', contents } }))
     expect(call.extraContent?.some(item => item.type === 'image')).toBe(true)
   })
 
@@ -420,14 +429,14 @@ describe('copilot rich content', () => {
     [COPILOT_TOOL.View, { path: '/p/a.ts' }],
     [COPILOT_TOOL.WebFetch, { url: 'https://example.com' }],
   ])('lists the picture a failed %s attached in the row it draws', (toolName, args) => {
-    const row = toolCallRow(copilotToolCallIR(resultRow(toolName, args, { success: false, error: { message: 'it broke', contents } })), 'result', { request: false, result: false })
-    expect(imagesForIR(row)).toHaveLength(1)
+    const row = toolCallRow(copilotToolCall(resultRow(toolName, args, { success: false, error: { message: 'it broke', contents } })), 'result', { request: false, result: false })
+    expect(imagesForRow(row)).toHaveLength(1)
   })
 
   // `JSON.parse` re-reads every number as a double, so a round trip through it drew a
   // different id than the runtime sent.
   it('keeps a structured id past the double range exactly', () => {
-    const call = copilotToolCallIR(resultRow(COPILOT_TOOL.Task, { description: 'Probe' }, {
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.Task, { description: 'Probe' }, {
       success: true,
       result: { content: 'ok', structuredContent: '{"id":9007199254740993}' },
     }))
@@ -438,7 +447,7 @@ describe('copilot rich content', () => {
   // `GenericToolBody` draws both fields with no guard, so the same words in each drew
   // the failure twice under one card.
   it('states a failed generic call once', () => {
-    const call = copilotToolCallIR(resultRow('some_unknown_tool', {}, { success: false, error: { message: 'it broke' } }))
+    const call = copilotToolCall(resultRow('some_unknown_tool', {}, { success: false, error: { message: 'it broke' } }))
     expect(call.kind).toBe('mcp')
     const source = call.kind === 'mcp' && call.result && 'content' in call.result ? call.result : undefined
     expect(source?.content).toEqual([])
@@ -460,13 +469,13 @@ describe('copilot retained rows', () => {
       parsed(copilotToolStart(CALL, COPILOT_TOOL.Bash, { command: 'ls' })),
       MessageCompletion.ERROR,
     )
-    expect(row && deriveToolCallStatus(row.lifecycle)).toBe('failed')
+    expect(row && deriveToolCallStatus(row.lifecycle, row.lifecycle.resultFrameLanded)).toBe('failed')
   })
 
   it('reports a failed turn on a retained start row', () => {
     const row = copilotToolRow(copilotToolStart(CALL, COPILOT_TOOL.Bash, { command: 'ls' }), COPILOT_TOOL.Bash, undefined, MessageCompletion.ERROR)
     expect(row?.finished).toBe(true)
-    expect(row && deriveToolCallStatus(row.lifecycle)).toBe('failed')
+    expect(row && deriveToolCallStatus(row.lifecycle, row.lifecycle.resultFrameLanded)).toBe('failed')
   })
 
   // A start row carries NO result, so `completed` over it claims an answer that never
@@ -477,29 +486,29 @@ describe('copilot retained rows', () => {
     expect(row?.finished).toBe(true)
     // A succeeded outcome completes nothing and a start lands no result, so the
     // row states no status word at all -- never a completed one.
-    expect(row && deriveToolCallStatus(row.lifecycle)).toBe('')
+    expect(row && deriveToolCallStatus(row.lifecycle, row.lifecycle.resultFrameLanded)).toBe('incomplete')
   })
 })
 
 /**
- * The edit-family request carries the keys the IR DECLARES, and no other one.
+ * The edit-family request carries the keys the model DECLARES, and no other one.
  *
  * `FileChangeRequest` states `changes` and an optional `replaceAll`. This branch put
  * an extra `patchText` on the object, and nothing caught it: TypeScript checks a fresh
  * object literal for excess properties only in a contextually typed position, and the
  * request was a `const` that the returned literal then referenced as a VARIABLE. The
- * IR carried a key no renderer reads.
+ * model carried a key no renderer reads.
  *
  * The assertion reads the KEYS rather than comparing objects. `toEqual` ignores a
  * property whose value is `undefined`, so it passes straight over an undeclared key
  * that holds one and proves nothing.
  */
-describe('copilotToolCallIR edit-family requests', () => {
+describe('copilotToolCall edit-family requests', () => {
   const UNREADABLE_PATCH = 'this text is not a patch envelope'
   const PATCH = '*** Begin Patch\n*** Update File: /project/a.ts\n@@\n-before\n+after\n*** End Patch'
 
   it('states only the declared keys for the patch it read', () => {
-    const call = copilotToolCallIR(resultRow(COPILOT_TOOL.ApplyPatch, { input: PATCH }, {
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.ApplyPatch, { input: PATCH }, {
       success: true,
       result: { content: 'applied' },
     }))
@@ -512,7 +521,7 @@ describe('copilotToolCallIR edit-family requests', () => {
   // the arguments the tool was called with are still in hand: the shared degrade states
   // the empty change list in their place, and the card then reads as a call nobody made.
   it('draws a patch it could not read as an uncategorized call', () => {
-    const call = copilotToolCallIR(resultRow(COPILOT_TOOL.ApplyPatch, { input: UNREADABLE_PATCH }, {
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.ApplyPatch, { input: UNREADABLE_PATCH }, {
       success: true,
       result: { content: 'applied' },
     }))
@@ -523,7 +532,7 @@ describe('copilotToolCallIR edit-family requests', () => {
   // The row still identifies the tool that ran. The uncategorized card heads itself
   // with the tool its request names, which is where the name goes once the kind is gone.
   it('names the tool of a patch it could not read', () => {
-    const call = copilotToolCallIR(resultRow(COPILOT_TOOL.ApplyPatch, { input: UNREADABLE_PATCH }, { success: true, result: { content: '' } }))
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.ApplyPatch, { input: UNREADABLE_PATCH }, { success: true, result: { content: '' } }))
     expect(call.kind === 'mcp' && call.request.tool).toBe(COPILOT_TOOL.ApplyPatch)
   })
 
@@ -531,7 +540,7 @@ describe('copilotToolCallIR edit-family requests', () => {
   // for every provider, so the list draws nothing extra -- but the row's TITLE is
   // composed from it, and an empty one heads the row with the bare kind word.
   it('keeps the file a failed edit asked to change', () => {
-    const call = copilotToolCallIR(resultRow(COPILOT_TOOL.Edit, { path: '/project/a.ts', old_str: 'before', new_str: 'after' }, {
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.Edit, { path: '/project/a.ts', old_str: 'before', new_str: 'after' }, {
       success: false,
       error: { message: 'no match for the old text' },
     }))
@@ -541,7 +550,7 @@ describe('copilotToolCallIR edit-family requests', () => {
   })
 
   it('keeps the file a failed create asked to write', () => {
-    const call = copilotToolCallIR(resultRow(COPILOT_TOOL.Create, { path: '/project/new.ts', file_text: 'export const a = 1\n' }, {
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.Create, { path: '/project/new.ts', file_text: 'export const a = 1\n' }, {
       success: false,
       error: { message: 'the directory is read-only' },
     }))
@@ -550,7 +559,7 @@ describe('copilotToolCallIR edit-family requests', () => {
   })
 
   it('keeps both paths a failed move asked for', () => {
-    const call = copilotToolCallIR(resultRow(COPILOT_TOOL.Move, { source: '/project/old.ts', path: '/project/new.ts' }, {
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.Move, { source: '/project/old.ts', path: '/project/new.ts' }, {
       success: false,
       error: { message: 'the destination exists' },
     }))
@@ -567,9 +576,9 @@ describe('copilotToolCallIR edit-family requests', () => {
  * renderer no longer measures a provider's bytes against LeapMux's own summary prose
  * to guess it.
  */
-describe('copilotToolCallIR empty search results', () => {
+describe('copilotToolCall empty search results', () => {
   const searchCall = (toolName: string, output: string, args: Record<string, unknown> = {}) =>
-    copilotToolCallIR(resultRow(toolName, args, { success: true, result: { content: output } }))
+    copilotToolCall(resultRow(toolName, args, { success: true, result: { content: output } }))
 
   const emptyOf = (call: ReturnType<typeof searchCall>) =>
     (call.result as SearchResult | undefined)?.empty
@@ -906,7 +915,7 @@ describe('COPILOT_TOOL_READERS', () => {
   it('answers its own kind at every key', () => {
     const facts = resultFacts(COPILOT_TOOL.Bash, { command: 'ls' })
     for (const kind of TOOL_KINDS)
-      expect(payloadOf(kind, facts).kind, kind || 'the empty kind').toBe(kind)
+      expect(payloadOf(kind, facts).kind, kind).toBe(kind)
   })
 
   // The tool table plus the Model Context Protocol fallback IS the inventory: every
@@ -914,7 +923,7 @@ describe('COPILOT_TOOL_READERS', () => {
   it('leaves eight kinds that no Copilot tool takes', () => {
     const named = new Set<ToolKind>([...Object.values(COPILOT_TOOL).map(copilotToolKind), 'mcp'])
     expect(TOOL_KINDS.filter(kind => !named.has(kind)))
-      .toEqual(['', 'chart', 'image', 'list', 'other', 'think', 'trigger', 'wait'])
+      .toEqual(['unspecified', 'chart', 'image', 'list', 'other', 'think', 'trigger', 'wait'])
     expect((['write', 'delete', 'report', 'glob'] as const).filter(kind => !named.has(kind))).toEqual([])
   })
 
@@ -936,12 +945,12 @@ describe('COPILOT_TOOL_READERS', () => {
  * `task_complete` states its own tool word. A `view` that `copilotReclassify` moved
  * here states none: the word `view` over a page of prose says nothing its body does not.
  */
-describe('copilotToolCallIR reports', () => {
+describe('copilotToolCall reports', () => {
   it('heads a native report with its tool name and a reclassified view with nothing', () => {
-    const native = copilotToolCallIR(resultRow(COPILOT_TOOL.TaskComplete, {}, { success: true, result: { content: 'all done' } }))
+    const native = copilotToolCall(resultRow(COPILOT_TOOL.TaskComplete, {}, { success: true, result: { content: 'all done' } }))
     expect(native.kind).toBe('report')
     expect(native.title).toBe(COPILOT_TOOL.TaskComplete)
-    const viewed = copilotToolCallIR(resultRow(COPILOT_TOOL.View, { query: 'needle' }, { success: true, result: { message: 'a note' } }))
+    const viewed = copilotToolCall(resultRow(COPILOT_TOOL.View, { query: 'needle' }, { success: true, result: { message: 'a note' } }))
     expect(viewed.kind).toBe('report')
     expect(viewed.title).toBeUndefined()
     expect(viewed.kind === 'report' ? viewed.request.payload : undefined).toEqual({ query: 'needle' })
@@ -959,7 +968,7 @@ describe('copilotToolCallIR reports', () => {
  */
 describe('copilotProseAnswer formats', () => {
   const proseOf = (toolName: string, args: Record<string, unknown>, output: string) =>
-    copilotToolCallIR(resultRow(toolName, args, { success: true, result: { content: output } })).result
+    copilotToolCall(resultRow(toolName, args, { success: true, result: { content: output } })).result
 
   it.each([
     [COPILOT_TOOL.ListAgents, {}, '| Agent | Model |\n| --- | --- |\n| **explore** | fast |'],
@@ -979,7 +988,7 @@ describe('copilotProseAnswer formats', () => {
 
   // A failed prose call states its reason instead, in every one of the five kinds.
   it('states the reason rather than a prose body for a failed roster', () => {
-    const call = copilotToolCallIR(resultRow(COPILOT_TOOL.ListAgents, {}, { success: false, error: { message: 'no agents configured' } }))
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.ListAgents, {}, { success: false, error: { message: 'no agents configured' } }))
     expect(call.result).toStrictEqual({ failure: true, text: 'no agents configured' })
   })
 })
@@ -993,32 +1002,32 @@ describe('copilotProseAnswer formats', () => {
  * there, and every reader below then draws them. Testing the row STATUS instead threw
  * that away and restated the same words as the reason the call gave.
  *
- * The outcome word is unaffected in each case. `toolRowStatusOutcome` composes the
+ * The outcome word is unaffected in each case. `toolCallStatusOutcome` composes the
  * `Interrupted` header from the row's own status, never from the result.
  */
 describe('a cancelled Copilot call', () => {
   /** One finished call that the turn stopped: Copilot reports it with this error code. */
   const cancelledCall = (toolName: string, args: Record<string, unknown>, result: Record<string, unknown>) =>
-    copilotToolCallIR(resultRow(toolName, args, { success: false, result, error: { code: 'interrupted', message: 'aborted' } }))
+    copilotToolCall(resultRow(toolName, args, { success: false, result, error: { code: 'interrupted', message: 'aborted' } }))
 
   it('keeps the lines a stopped read already returned', () => {
     const call = cancelledCall(COPILOT_TOOL.View, { path: '/p/a.ts' }, { content: 'const a = 1\nconst b = 2' })
     expect(call.status).toBe('cancelled')
-    expect(isFailedResult(call.result)).toBe(false)
+    expect(isToolFailureResult(call.result)).toBe(false)
     expect(call.kind === 'read' ? typedResult(call)?.fallbackContent : undefined).toBe('const a = 1\nconst b = 2')
   })
 
   it('keeps the matches a stopped search already listed', () => {
     const call = cancelledCall(COPILOT_TOOL.Grep, { pattern: 'needle', output_mode: 'files_with_matches' }, { content: 'a.ts\nb.ts' })
     expect(call.status).toBe('cancelled')
-    expect(isFailedResult(call.result)).toBe(false)
+    expect(isToolFailureResult(call.result)).toBe(false)
     expect(call.kind === 'glob' ? typedResult(call)?.filenames : undefined).toStrictEqual(['a.ts', 'b.ts'])
   })
 
   it('keeps the substitution a stopped edit asked for', () => {
     const call = cancelledCall(COPILOT_TOOL.Edit, { path: '/p/a.ts', old_str: 'before', new_str: 'after' }, { content: 'partial' })
     expect(call.status).toBe('cancelled')
-    expect(isFailedResult(call.result)).toBe(false)
+    expect(isToolFailureResult(call.result)).toBe(false)
     expect(call.kind === 'edit' ? typedResult(call)?.changes.map(change => change.newStr) : undefined).toStrictEqual(['after'])
   })
 
@@ -1063,7 +1072,7 @@ describe('a cancelled Copilot call', () => {
     [COPILOT_TOOL.Edit, { path: '/p/a.ts', old_str: 'before', new_str: 'after' }],
     [COPILOT_TOOL.Skill, { skill: 'deploy' }],
   ])('still states the reason a failed %s gave', (toolName, args) => {
-    const call = copilotToolCallIR(resultRow(toolName, args, { success: false, error: { message: 'permission denied' } }))
+    const call = copilotToolCall(resultRow(toolName, args, { success: false, error: { message: 'permission denied' } }))
     expect(call.status).toBe('failed')
     expect(call.result).toStrictEqual({ failure: true, text: 'permission denied' })
   })

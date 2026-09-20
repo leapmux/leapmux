@@ -1,11 +1,15 @@
-import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
-import type { ToolRequests } from '../../../ir/tools'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { ToolRequestByKind } from '../../../model/tools'
 import type { ClaudeRowContext, ClaudeToolRow } from './toolCommon'
 import type { TodoItem } from '~/models/todo'
-import { rawTodosToItems } from '~/models/todo'
+import { rawTodosToItems } from '~/components/chat/normalizers/todo'
+import { createLogger } from '~/lib/logger'
 import { CLAUDE_TOOL_NAMES } from '../toolNames'
-import { claudeFailedResult } from './failure'
+import { claudeToolFailureResult } from './failure'
 import { buildTaskCreateItem, buildTaskGetItem, buildTaskUpdateItem } from './taskCard'
+
+const logger = createLogger('claudeTaskUpdate')
+const reportedSnapshotDiagnostics = new Set<string>()
 
 /**
  * The checklist a Claude `TodoWrite` tool_use input carries. Null when the input
@@ -50,8 +54,16 @@ export function claudeTodoRequest(
   input: Record<string, unknown>,
   result: ClaudeToolRow | undefined,
   context: ClaudeRowContext,
-): ToolRequests['todo'] {
-  const item = claudeTaskItem(toolName, input, result?.toolUseResult ?? context.pairedResult, context.todoById)
+): ToolRequestByKind['todo'] {
+  const item = claudeTaskItem(toolName, input, result?.toolUseResult ?? context.pairedResult, context.todoSnapshot)
+  if (toolName === CLAUDE_TOOL_NAMES.TASK_UPDATE && !item && context.todoSnapshotDiagnostic) {
+    const taskId = typeof input.taskId === 'string' ? input.taskId : ''
+    const warningKey = `${taskId}:${context.todoSnapshotDiagnostic}`
+    if (!reportedSnapshotDiagnostics.has(warningKey)) {
+      reportedSnapshotDiagnostics.add(warningKey)
+      logger.warn('Cannot render TaskUpdate snapshot', { taskId, diagnostic: context.todoSnapshotDiagnostic })
+    }
+  }
   if (!item)
     return { items: claudeTodoItems(input) ?? [] }
   // The description goes beside the checklist rather than on the item, so the row
@@ -68,10 +80,10 @@ export function claudeTodoRequest(
  * the result reports. A failed call keeps the list it carried and states its
  * error text alone.
  */
-export function claudeTodoPayload(request: ToolRequests['todo'], args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'todo'> {
+export function claudeTodoSpec(request: ToolRequestByKind['todo'], args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'todo'> {
   if (!result)
     return { kind: 'todo', request }
-  const failure = claudeFailedResult(result)
+  const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'todo', request, result: failure }
   const saved = claudeTodoItemsFromResult(result.toolUseResult, args.input) ?? []
@@ -98,12 +110,21 @@ export function claudeTaskGetUnresolved(args: ClaudeToolRow, result: ClaudeToolR
  * A `Task*` result row is HIDDEN, so the request row draws the item: when the
  * paired result has landed, its task rides the result slot of this one row.
  */
-export function claudeTaskTodoPayload(request: ToolRequests['todo'], result: ClaudeToolRow | undefined, context: ClaudeRowContext, title: string): ToolCallPayloadForKind<'todo'> {
+export function claudeTaskTodoSpec(request: ToolRequestByKind['todo'], result: ClaudeToolRow | undefined, context: ClaudeRowContext, title: string, toolName: string): ToolCallSpecVariant<'todo'> {
+  if (toolName === CLAUDE_TOOL_NAMES.TASK_UPDATE && context.todoSnapshotDiagnostic) {
+    return {
+      kind: 'todo',
+      request,
+      title,
+      statusOverride: 'completed',
+      result: { unparsed: true, text: context.todoSnapshotDiagnostic },
+    }
+  }
   // Nothing to draw: the call states no task yet, or no answer has landed beside it.
   // An empty list is what {@link claudeTodoRequest} answers for the first of those.
   if (request.items.length === 0 || (!result && !context.pairedResult))
     return { kind: 'todo', request, title }
-  const failure = claudeFailedResult(result)
+  const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'todo', request, title, result: failure }
   // The paired result may draw no row of its own, so THIS row carries its item.
@@ -126,13 +147,13 @@ function claudeTaskItem(
   toolName: string,
   input: Record<string, unknown>,
   payload: Record<string, unknown> | undefined,
-  todoById: ClaudeRowContext['todoById'],
+  todoSnapshot: ClaudeRowContext['todoSnapshot'],
 ): TodoItem | null {
   switch (toolName) {
     case CLAUDE_TOOL_NAMES.TASK_CREATE:
       return buildTaskCreateItem(input, payload)
     case CLAUDE_TOOL_NAMES.TASK_UPDATE:
-      return buildTaskUpdateItem(input, payload, todoById)
+      return buildTaskUpdateItem(todoSnapshot)
     case CLAUDE_TOOL_NAMES.TASK_GET:
       return buildTaskGetItem(payload)
     default:

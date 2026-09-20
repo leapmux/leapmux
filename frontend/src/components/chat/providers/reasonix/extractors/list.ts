@@ -1,4 +1,4 @@
-import type { ListResult } from '../../../ir/tools/list'
+import type { ListResult } from '../../../model/tools/list'
 import { formatBytes } from '~/lib/formatBytes'
 
 /** Separate the ACP clip notice from native directory entries and byte sizes. */

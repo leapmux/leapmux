@@ -87,7 +87,7 @@ describe('classifyPiMessage', () => {
   })
 
   // The neutral {isSynthetic, controlResponse} row -> control_response classification is provider-
-  // agnostic and lives in classifyMessage (see messageClassification.test.ts), not this plugin.
+  // agnostic and lives in classifyMessage (see messageClassifier.test.ts), not this plugin.
 
   it('hides signature-only thinking blocks so tool-call message_end rows do not render empty thinking bubbles', () => {
     const parent = {

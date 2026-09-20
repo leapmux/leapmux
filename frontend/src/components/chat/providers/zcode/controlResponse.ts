@@ -1,4 +1,5 @@
-import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
+import type { ControlResponseSummary } from '../../model/controlResponse'
+import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { ZCODE_ACTION, ZCODE_ANSWER_FIELD, ZCODE_DECISION, ZCODE_METHOD, ZCODE_PLAN_CONTROL, ZCODE_REPLY_FIELD } from '~/generated/contracts/zcode-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { CONTROL_DECISION_WORDS, feedback, label } from '../../persistedControlResponse'
@@ -30,7 +31,7 @@ function requestQuestions(payload: Record<string, unknown> | null | undefined): 
   return zcodeQuestionRecords(payload).map(zcodeQuestionText)
 }
 
-function questionAnswerDisplay(payload: Record<string, unknown> | null | undefined, content: Record<string, unknown> | null | undefined): ControlResponseDisplay | null {
+function questionAnswerDisplay(payload: Record<string, unknown> | null | undefined, content: Record<string, unknown> | null | undefined): ControlResponseSummary | null {
   if (!content)
     return null
   const answers = pickObject(content, ZCODE_ANSWER_FIELD.Map)
@@ -59,7 +60,7 @@ function questionAnswerDisplay(payload: Record<string, unknown> | null | undefin
 }
 
 /** Read the actual native reply. LeapMux stores the complete matching request separately. */
-export function zcodeControlResponseDisplay(cr: PersistedControlResponse): ControlResponseDisplay | null {
+export function zcodeControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
   const result = pickObject(cr.response, 'result')
   if (!result)
     return null

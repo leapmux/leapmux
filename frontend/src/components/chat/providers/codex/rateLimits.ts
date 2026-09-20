@@ -1,4 +1,4 @@
-import type { NotificationEntryIR } from '../../ir/notification'
+import type { NotificationEntry } from '../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { RateLimitInfo } from '~/models/agentSession'
 import { CODEX_RATE_LIMIT_REACHED_TIME_WINDOW } from '~/generated/contracts/worker-vocab'
@@ -110,7 +110,7 @@ export function codexTierToRateLimitInfo(tier: Record<string, unknown>): RateLim
  * window is over its own threshold, so it surfaces when no tier line already conveys
  * the throttle.
  */
-export function codexRateLimitEntries(msg: Record<string, unknown>): NotificationEntryIR[] {
+export function codexRateLimitEntries(msg: Record<string, unknown>): NotificationEntry[] {
   const tiers: RateLimitInfo[] = []
   for (const { info } of iterCodexRateLimitTiers(msg)) {
     if (info.rateLimitType && info.status !== 'allowed')

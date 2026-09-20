@@ -1,8 +1,8 @@
-import type { CommandResult } from '../../../ir/commandResult'
+import type { CommandResult } from '../../../model/commandResult'
 import type { ZCodeRow } from './toolCommon'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { splitExitCodeMarker } from '../../../ir/exitCodeMarker'
+import { splitExitCodeMarker } from '../../../model/exitCodeMarker'
 import { zcodeErrorText, zcodeExtractTool, zcodeToolInput } from './toolCommon'
 
 /** The `perf.detail.kind` that marks a command's telemetry block. */

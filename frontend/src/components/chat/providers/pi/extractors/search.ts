@@ -1,4 +1,4 @@
-import type { SearchResult } from '../../../ir/searchResult'
+import type { SearchResult } from '../../../model/searchResult'
 import { pickCounter, pickObject } from '~/lib/jsonPick'
 import { grepMatches } from '../../grepOutput'
 import { PI_SEARCH_TOOL } from '../protocol'

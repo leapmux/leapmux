@@ -1,4 +1,4 @@
-import type { AgentRun } from '../../../ir/tools/agent'
+import type { AgentRun } from '../../../model/tools/agent'
 import { pickObject, pickString } from '~/lib/jsonPick'
 
 /** Read only the complete wrapper that the native task tool writes. Keep the report's text intact. */

@@ -1,7 +1,8 @@
-import type { WirePermissionOption } from './permissionOptionLabels'
+import type { PermissionOption } from '~/components/chat/model/controlPrompt'
 import type { PillOptions } from '~/components/common/PillGroup'
+import { CANONICAL_KINDS, KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ALWAYS, KIND_REJECT_ONCE } from '~/components/chat/model/controlPrompt'
 import { disambiguateLabels, isPillOptions, PILL_OPTION_LIMIT } from '~/components/common/PillGroup'
-import { CANONICAL_KINDS, KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ALWAYS, KIND_REJECT_ONCE, permissionOptionLabel } from './permissionOptionLabels'
+import { permissionOptionLabel } from './permissionOptionLabels'
 
 /**
  * How a permission request's options lay out as one decision row.
@@ -37,23 +38,23 @@ import { CANONICAL_KINDS, KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ALWAYS
  * kind, and goose's server parses the returned id string.
  */
 export interface PermissionOptionLayout {
-  negative?: WirePermissionOption
+  negative?: PermissionOption
   /** The option Allow sends while no scope control overrides it (the once slot, or the only allow). */
-  positive?: WirePermissionOption
+  positive?: PermissionOption
   /** The reject_always slot, when the agent offers one beside a reject_once AND a scope group is drawn. */
-  rememberReject?: WirePermissionOption
+  rememberReject?: PermissionOption
   /**
    * The allow options a scope pill group offers — one allow-once plus every
    * allow-always, once first then payload order. Undefined when the agent
    * offers no always scope at all, no single once slot to anchor the group, or
    * a vocabulary too wide for the pill limit.
    */
-  allowScope?: WirePermissionOption[]
-  additional: WirePermissionOption[]
+  allowScope?: PermissionOption[]
+  additional: PermissionOption[]
 }
 
-export function layoutPermissionOptions(options: WirePermissionOption[]): PermissionOptionLayout {
-  const byKind = new Map<string, WirePermissionOption>()
+export function layoutPermissionOptions(options: PermissionOption[]): PermissionOptionLayout {
+  const byKind = new Map<string, PermissionOption>()
   for (const option of options) {
     if (CANONICAL_KINDS.includes(option.kind) && !byKind.has(option.kind))
       byKind.set(option.kind, option)
@@ -73,7 +74,7 @@ export function layoutPermissionOptions(options: WirePermissionOption[]): Permis
   const allOnces = options.filter(option => option.kind === KIND_ALLOW_ONCE)
   const allAlways = options.filter(option => option.kind === KIND_ALLOW_ALWAYS)
   const once = allOnces.length === 1 ? allOnces[0] : undefined
-  const scopeAlways: WirePermissionOption[] = []
+  const scopeAlways: PermissionOption[] = []
   if (once) {
     for (const option of allAlways) {
       if (option.optionId !== once.optionId && !scopeAlways.some(seen => seen.optionId === option.optionId))
@@ -91,7 +92,7 @@ export function layoutPermissionOptions(options: WirePermissionOption[]): Permis
   // as its own extra button.
   const positive = allowOnce ?? allowAlways
   const negative = rejectOnce ?? rejectAlways
-  const consumed = new Set<WirePermissionOption | undefined>(allowScope ?? [positive, negative])
+  const consumed = new Set<PermissionOption | undefined>(allowScope ?? [positive, negative])
   if (allowScope) {
     consumed.add(rejectOnce)
     consumed.add(rejectAlways)
@@ -146,7 +147,7 @@ export function resolvePermissionOption(
   layout: PermissionOptionLayout,
   polarity: 'allow' | 'reject',
   selectedAllowScopeId?: string,
-): WirePermissionOption | undefined {
+): PermissionOption | undefined {
   if (polarity === 'allow') {
     if (layout.allowScope) {
       const selected = layout.allowScope.find(option => option.optionId === selectedAllowScopeId)
@@ -178,7 +179,7 @@ export function decisionLabel(layout: PermissionOptionLayout, polarity: 'allow' 
  * Always. Names are prose, so this is a keyword read, not a parse — a name with
  * neither keyword still gets a truthful label, just a generic one.
  */
-export function allowScopeLabel(option: WirePermissionOption): string {
+export function allowScopeLabel(option: PermissionOption): string {
   if (option.kind === KIND_ALLOW_ONCE)
     return 'Once'
   const name = (option.name ?? '').toLowerCase()
@@ -197,7 +198,7 @@ export function allowScopeLabel(option: WirePermissionOption): string {
  * apart (both read "Always") show their own names instead, so no two pills of
  * one group share a label the user cannot distinguish.
  */
-export function allowScopePillOptions(scope: readonly WirePermissionOption[]): PillOptions<string> | undefined {
+export function allowScopePillOptions(scope: readonly PermissionOption[]): PillOptions<string> | undefined {
   const labels = disambiguateLabels(scope, allowScopeLabel, permissionOptionLabel)
   const pills = scope.map((option, index) => ({ key: option.optionId, label: labels[index]! }))
   return isPillOptions(pills) ? pills : undefined

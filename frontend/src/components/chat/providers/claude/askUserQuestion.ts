@@ -1,4 +1,4 @@
-import type { Question } from '../../controls/types'
+import type { ControlQuestion } from '../../model/question'
 import { getToolInput, getToolName } from '~/utils/controlResponse'
 import { questionsFromWire } from '../../controls/types'
 import { CLAUDE_TOOL_NAMES } from './toolNames'
@@ -32,6 +32,6 @@ export function claudeIsAskUserQuestion(payload: Record<string, unknown>): boole
  * `AskUserQuestionControl`, which dereferences `question` and hands `options` to a
  * `<For>`.
  */
-export function claudeAskUserQuestions(payload: Record<string, unknown>): Question[] {
+export function claudeAskUserQuestions(payload: Record<string, unknown>): ControlQuestion[] {
   return questionsFromWire(getToolInput(payload).questions)
 }

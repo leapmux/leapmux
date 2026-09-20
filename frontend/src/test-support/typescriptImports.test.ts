@@ -7,33 +7,33 @@ import { importEdgesIntoLayer, importedNames, moduleImportEdges } from './typesc
 
 describe('moduleImportEdges', () => {
   it('reads a static import, in either quote style', () => {
-    const single = moduleImportEdges(`import { toolCall } from './ir/toolCall'`)
-    expect(single).toEqual([expect.objectContaining({ specifier: './ir/toolCall', kind: 'static', typeOnly: false, doubleQuoted: false })])
+    const single = moduleImportEdges(`import { createToolCall } from './model/createToolCall'`)
+    expect(single).toEqual([expect.objectContaining({ specifier: './model/createToolCall', kind: 'static', typeOnly: false, doubleQuoted: false })])
 
-    const double = moduleImportEdges(`import { toolCall } from "./ir/toolCall"`)
-    expect(double).toEqual([expect.objectContaining({ specifier: './ir/toolCall', kind: 'static', doubleQuoted: true })])
+    const double = moduleImportEdges(`import { createToolCall } from "./model/createToolCall"`)
+    expect(double).toEqual([expect.objectContaining({ specifier: './model/createToolCall', kind: 'static', doubleQuoted: true })])
   })
 
   it('reads a type-only import as an erased edge', () => {
     const edges = moduleImportEdges(`
-import type { ChatRowIR } from './ir/row'
-import { type ToolKind } from './ir/toolKind'
+import type { ChatRow } from './model/row'
+import { type ToolKind } from './model/toolKind'
 `)
     expect(edges).toEqual([
-      expect.objectContaining({ specifier: './ir/row', typeOnly: true }),
+      expect.objectContaining({ specifier: './model/row', typeOnly: true }),
       // One TYPE binding inside a VALUE statement: the statement still runs.
-      expect.objectContaining({ specifier: './ir/toolKind', typeOnly: false }),
+      expect.objectContaining({ specifier: './model/toolKind', typeOnly: false }),
     ])
   })
 
   it('reads a re-export, including the type-only form', () => {
     const edges = moduleImportEdges(`
-export { toolCall } from './ir/toolCall'
-export type { ChatRowIR } from './ir/row'
+export { createToolCall } from './model/createToolCall'
+export type { ChatRow } from './model/row'
 `)
     expect(edges).toEqual([
-      expect.objectContaining({ specifier: './ir/toolCall', kind: 're-export', typeOnly: false }),
-      expect.objectContaining({ specifier: './ir/row', kind: 're-export', typeOnly: true }),
+      expect.objectContaining({ specifier: './model/createToolCall', kind: 're-export', typeOnly: false }),
+      expect.objectContaining({ specifier: './model/row', kind: 're-export', typeOnly: true }),
     ])
   })
 
@@ -55,9 +55,9 @@ export type { ChatRowIR } from './ir/row'
   it('reports the line the STATEMENT begins on, not the line the specifier sits on', () => {
     const edges = moduleImportEdges([
       'import {',
-      '  toolCall,',
+      '  createToolCall,',
       '  buildToolCall,',
-      '} from \'./ir/toolCall\'',
+      '} from \'./model/createToolCall\'',
     ].join('\n'))
     expect(edges).toEqual([expect.objectContaining({ line: 1 })])
   })
@@ -80,13 +80,13 @@ export type { ChatRowIR } from './ir/row'
 
 describe('importEdgesIntoLayer', () => {
   const edges = moduleImportEdges([
-    `import type { ChatRowIR } from '~/components/chat/ir/row'`,
-    `import { toolCall } from '../ir/toolCall'`,
+    `import type { ChatRow } from '~/components/chat/model/row'`,
+    `import { createToolCall } from '../model/createToolCall'`,
     `import { render } from './renderers'`,
   ].join('\n'))
 
   it('finds the edges whose specifier crosses into the layer', () => {
-    expect(importEdgesIntoLayer(edges, 'ir').map(edge => edge.specifier)).toEqual(['~/components/chat/ir/row', '../ir/toolCall'])
+    expect(importEdgesIntoLayer(edges, 'model').map(edge => edge.specifier)).toEqual(['~/components/chat/model/row', '../model/createToolCall'])
   })
 
   it('finds an edge that names the layer directory itself', () => {
@@ -111,13 +111,13 @@ describe('importedNames', () => {
   })
 
   it('reads a type-only named binding, which still names a local', () => {
-    const names = importedNames(`import { type ChatRowIR } from './ir/row'`)
-    expect(names).toEqual([{ name: 'ChatRowIR', specifier: './ir/row' }])
+    const names = importedNames(`import { type ChatRow } from './model/row'`)
+    expect(names).toEqual([{ name: 'ChatRow', specifier: './model/row' }])
   })
 
   it('names nothing for the re-export, side-effect, dynamic and require forms', () => {
     const names = importedNames([
-      `export { toolCall } from './ir/toolCall'`,
+      `export { createToolCall } from './model/createToolCall'`,
       `import './providers/claude/plugin'`,
       `const plugin = import('./providers/claude/plugin')`,
       `const ts = require('typescript')`,

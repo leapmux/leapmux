@@ -1,7 +1,7 @@
 import type { ClaudeToolRow } from './toolCommon'
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
-import { claudeRemoteTriggerFromToolResult, claudeTriggerPayload } from './remoteTrigger'
+import { claudeRemoteTriggerFromToolResult, claudeTriggerSpec } from './remoteTrigger'
 import { claudeRequestFor } from './toolRequests'
 
 describe('claudeRemoteTriggerFromToolResult', () => {
@@ -82,7 +82,7 @@ function requestOf(input: Record<string, unknown>, toolName = 'RemoteTrigger') {
 
 /** The payload of a call, with its request read the way a mounted row reads it. */
 function payloadOf(input: Record<string, unknown>, result: ClaudeToolRow | undefined, toolName = 'RemoteTrigger') {
-  return claudeTriggerPayload(requestOf(input, toolName), triggerRow(input, toolName), result)
+  return claudeTriggerSpec(requestOf(input, toolName), triggerRow(input, toolName), result)
 }
 
 // Claude reads its trigger request through the SHARED entry, and deviates on two
@@ -92,7 +92,7 @@ function payloadOf(input: Record<string, unknown>, result: ClaudeToolRow | undef
 // Every key assertion uses `toStrictEqual` or a sorted key list. `toEqual` ignores a
 // property whose value is `undefined`, so it passes straight over a stray
 // `key: undefined` -- which is exactly what an un-annotated request literal admits.
-describe('claudeTriggerPayload', () => {
+describe('claudeTriggerSpec', () => {
   it('answers the shared entry on every field when no body and no action argument arrive', () => {
     const input = { trigger_id: 't-1', name: 'Nightly', schedule: '0 0 * * *' }
     expect(requestOf(input)).toStrictEqual(DEFAULT_TOOL_REQUESTS.trigger(input))
@@ -181,7 +181,7 @@ function triggerResult(resultContent: string, isError?: boolean): ClaudeToolRow 
  * itself failed carries no `HTTP <status>` line, so it lands on the rung below, where
  * the reason is all the row has.
  */
-describe('claudeTriggerPayload outcome', () => {
+describe('claudeTriggerSpec outcome', () => {
   it('draws the response body of an endpoint that answered outside 2xx', () => {
     const payload = payloadOf({ action: 'run' }, triggerResult('HTTP 500\n{"error":"boom"}'))
     expect(payload.statusOverride).toBe('failed')

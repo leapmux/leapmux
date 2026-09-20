@@ -1,7 +1,7 @@
-import type { ReadFileResult } from '../../../ir/readFileResult'
+import type { ReadFileResult } from '../../../model/readFileResult'
 import { pickString } from '~/lib/jsonPick'
 import { parseUnifiedDiff } from '../../../diff'
-import { readFileResultFromContent } from '../../../ir/readFileResult'
+import { readFileResultFromContent } from '../../../model/readFileResult'
 /** Native view details use context-only diff hunks to preserve file positions. */
 export function copilotReadResult(raw: Record<string, unknown>, input: Record<string, unknown>): ReadFileResult {
   const filePath = pickString(input, 'path')

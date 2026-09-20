@@ -30,7 +30,7 @@ describe('acpTerminalResults', () => {
 
   // The AGENT chooses the ids. Looking one up in a plain object answers `toString`
   // with a function off `Object.prototype`, and the row then carried `output:
-  // undefined` through a field the IR declares as `string` -- which the command body
+  // undefined` through a field the model declares as `string` -- which the command body
   // dereferences and crashes on. Every entry this answers must carry real text.
   it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty', '__proto__'])('resolves nothing for the inherited id %s', (terminalId) => {
     const call = { content: [{ type: 'terminal', terminalId }] }

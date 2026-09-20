@@ -1,20 +1,20 @@
-import type { ToolCallIR } from '../../../ir/toolCall'
+import type { ToolCall } from '../../../model/toolCall'
 import { describe, expect, it } from 'vitest'
 import { REASONIX_CAPABILITY_ACTION, REASONIX_TOOL } from '~/generated/contracts/reasonix-protocol'
 import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isFailedResult, isUnparsedResult, typedResult } from '../../../ir/toolCall'
-import { acpToolCallIR } from '../../acp/extractors/toolCall'
+import { isToolFailureResult, isUnparsedToolResult, typedResult } from '../../../model/toolCall'
+import { acpToolCall } from '../../acp/extractors/toolCall'
 import { reasonixToolCallAdapter } from './toolCall'
 
-function call(tool: Record<string, unknown>, supplemental?: Record<string, unknown>): ToolCallIR {
+function call(tool: Record<string, unknown>, supplemental?: Record<string, unknown>): ToolCall {
   const frame = { sessionUpdate: 'tool_call_update', toolCallId: 'reasonix-tool', status: 'completed', kind: 'other', ...tool }
   const extra = supplemental
     ? { sessionUpdate: frame.sessionUpdate, toolCallId: frame.toolCallId, status: frame.status, ...supplemental }
     : undefined
-  return acpToolCallIR(frame, reasonixToolCallAdapter, extra)
+  return acpToolCall(frame, reasonixToolCallAdapter, extra)
 }
 
-function capability(capabilityId: string): ToolCallIR {
+function capability(capabilityId: string): ToolCall {
   return call({
     title: REASONIX_TOOL.UseCapability,
     rawInput: { action: REASONIX_CAPABILITY_ACTION.Call, capability_id: capabilityId, arguments: { query: 'needle' } },
@@ -72,7 +72,7 @@ describe('reasonix subagent launches', () => {
 
 // The supplement echoes the call it answers, which is what the shared ACP resolver
 // matches it on before the plugin sees it.
-function withStoredBody(fields: Record<string, unknown>, record: Record<string, unknown>): ToolCallIR {
+function withStoredBody(fields: Record<string, unknown>, record: Record<string, unknown>): ToolCall {
   return call({ content: [{ type: 'content', content: { type: 'text', text: 'clipped…(4 more chars truncated)' } }], ...fields }, {
     rawOutput: { reasonix: { role: 'tool', tool_call_id: 'reasonix-tool', ...record } },
   })
@@ -126,7 +126,7 @@ describe('reasonix remapped facts', () => {
     })
     expect(read.kind).toBe('read')
     expect(read.kind === 'read' && read.request.path).toBe('/p/a.ts')
-    expect(isUnparsedResult(read.result) && read.result.text).toBe('plain body, no line numbers')
+    expect(isUnparsedToolResult(read.result) && read.result.text).toBe('plain body, no line numbers')
   })
 
   it('recovers the file path the record states when the arguments carry none', () => {
@@ -159,7 +159,7 @@ describe('reasonix move_file', () => {
   // The turn RETAINED the row: the frame still says `in_progress`, and the completion
   // is the only thing that says the call ended.
   it('identifies both files on a retained row the frame never completed', () => {
-    const move = acpToolCallIR(
+    const move = acpToolCall(
       { sessionUpdate: 'tool_call_update', toolCallId: 'reasonix-tool', status: 'in_progress', kind: 'other', title: 'move_file', rawInput },
       reasonixToolCallAdapter,
       undefined,
@@ -170,7 +170,7 @@ describe('reasonix move_file', () => {
 
   it('states the daemon words beside the two files', () => {
     const move = call({ title: 'move_file', rawInput, content: [{ type: 'content', content: { text: 'Moved a.ts to b.ts' } }] })
-    expect(isUnparsedResult(move.result) && move.result.text).toBe('Moved a.ts to b.ts')
+    expect(isUnparsedToolResult(move.result) && move.result.text).toBe('Moved a.ts to b.ts')
   })
 })
 
@@ -309,7 +309,7 @@ describe('reasonixToolCallAdapter server calls', () => {
       content: [{ type: 'content', content: { text: 'the server is not reachable' } }],
     })
     expect(errored.kind).toBe('mcp')
-    expect(isFailedResult(errored.result) && errored.result.text).toBe('the server is not reachable')
+    expect(isToolFailureResult(errored.result) && errored.result.text).toBe('the server is not reachable')
   })
 
   // A call the reader STOPPED is not a failure. The blocks that arrived are the part
@@ -323,7 +323,7 @@ describe('reasonixToolCallAdapter server calls', () => {
       content: [{ type: 'content', content: { type: 'text', text: 'one hit so far' } }],
     })
     expect(stopped.kind).toBe('mcp')
-    expect(isFailedResult(stopped.result)).toBe(false)
+    expect(isToolFailureResult(stopped.result)).toBe(false)
     expect(stopped.result).toStrictEqual({ content: [{ type: 'text', text: 'one hit so far' }] })
   })
 
@@ -376,7 +376,7 @@ describe('reasonix todo_write', () => {
     const errored = todoCall('failed', { content: [{ type: 'content', content: { text: 'the todo file is read only' } }] })
     expect(errored.kind).toBe('todo')
     expect(errored.kind === 'todo' ? errored.request.items : undefined).toStrictEqual(saved)
-    expect(isFailedResult(errored.result) && errored.result.text).toBe('the todo file is read only')
+    expect(isToolFailureResult(errored.result) && errored.result.text).toBe('the todo file is read only')
   })
 
   // A call the reader STOPPED keeps the list it collected. The row marks it partial
@@ -384,7 +384,7 @@ describe('reasonix todo_write', () => {
   it('keeps the list a cancelled call collected', () => {
     const stopped = todoCall('cancelled', { content: [{ type: 'content', content: { text: 'stopped' } }] })
     expect(stopped.kind).toBe('todo')
-    expect(isFailedResult(stopped.result)).toBe(false)
+    expect(isToolFailureResult(stopped.result)).toBe(false)
     expect(stopped.kind === 'todo' ? typedResult(stopped)?.items : undefined).toStrictEqual(saved)
   })
 

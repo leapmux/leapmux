@@ -1,5 +1,5 @@
-import type { WirePermissionOption } from '../../controls/permissionOptionLabels'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
+import type { PermissionOption } from '~/components/chat/model/controlPrompt'
 import { acpPermissionIR } from '../acp/extractControl'
 
 /**
@@ -8,7 +8,7 @@ import { acpPermissionIR } from '../acp/extractControl'
  * These are the daemon's real option ids -- it maps an unknown id to reject, so a
  * synthesized pair with invented ids would turn every Allow into a reject.
  */
-const DEFAULT_OPTIONS: readonly WirePermissionOption[] = [
+const DEFAULT_OPTIONS: readonly PermissionOption[] = [
   { optionId: 'once', kind: 'allow_once', name: 'Allow' },
   { optionId: 'reject', kind: 'reject_once', name: 'Deny' },
 ]

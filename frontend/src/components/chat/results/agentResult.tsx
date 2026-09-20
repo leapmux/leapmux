@@ -1,12 +1,12 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
-import type { AgentOutcome, AgentRun } from '../ir/tools/agent'
-import type { RenderContext } from '../messageRenderers'
+import type { AgentRun, AgentRunStatus } from '../model/tools/agent'
+import type { ToolResultRenderContext } from '../renderContext'
 import Bot from 'lucide-solid/icons/bot'
 import { Show } from 'solid-js'
 import { clipFirstLine } from '~/lib/clipFirstLine'
-import { agentRunStatusLabel } from '../ir/tools/agent'
 import { getToolResultExpanded } from '../messageRenderers'
+import { agentRunStatusLabel } from '../model/tools/agent'
 import { toolResultPrompt } from '../toolStyles.css'
 import { CollapsibleContent } from './CollapsibleContent'
 import { ENDED_OUTCOME_ICON } from './endedOutcomeIcon'
@@ -15,7 +15,7 @@ import { ToolStatusHeader } from './ToolStatusHeader'
 import { useCollapsedFlag } from './useCollapsedLines'
 
 /** Limit the description so the outcome remains visible in the status header. */
-function agentResultTitle(source: AgentRun, context?: RenderContext): string {
+function agentResultTitle(source: AgentRun, context?: ToolResultRenderContext): string {
   const description = clipFirstLine(source.description || (source.registryKey ? context?.subagents?.row(source.registryKey)?.title ?? '' : ''), 80)
   const identity = description ? `"${description}"` : source.agentId
   return ['Agent', identity, agentRunStatusLabel(source)].filter(Boolean).join(' ')
@@ -29,7 +29,7 @@ function agentResultTitle(source: AgentRun, context?: RenderContext): string {
  * {@link agentRunStatesOutcome} reads the same table, so the glyph and the answer the
  * row's header depends on cannot drift.
  */
-const AGENT_OUTCOME_ICON: Partial<Record<AgentOutcome, LucideIcon>> = ENDED_OUTCOME_ICON
+const AGENT_OUTCOME_ICON: Partial<Record<AgentRunStatus, LucideIcon>> = ENDED_OUTCOME_ICON
 
 /**
  * Whether ONE run's card states how that run ended.
@@ -45,7 +45,7 @@ export function agentRunStatesOutcome(run: AgentRun): boolean {
 }
 
 /** Render an agent's status, identifying fields, and formatted report or launch prompt. */
-export function AgentResultBody(props: { source: AgentRun, context?: RenderContext }): JSX.Element {
+export function AgentResultBody(props: { source: AgentRun, context?: ToolResultRenderContext }): JSX.Element {
   const collapsed = useCollapsedFlag({ text: () => props.source.body, expanded: () => getToolResultExpanded(props.context) })
   const icon = () => AGENT_OUTCOME_ICON[props.source.outcome] ?? Bot
   return (

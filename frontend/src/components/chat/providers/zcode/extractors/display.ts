@@ -1,4 +1,4 @@
-import type { McpCallFacts } from '../../../ir/mcpToolCall'
+import type { McpCallFacts } from '../../../model/mcpToolCall'
 import type { ZCodeRow } from './toolCommon'
 import { prettifyArgsJson, prettifyStructuredJson } from '~/lib/jsonFormat'
 import { pickObject, pickString } from '~/lib/jsonPick'

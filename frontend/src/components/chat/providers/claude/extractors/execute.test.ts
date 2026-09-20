@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { commandExit, commandStatusLabel } from '../../../ir/commandResult'
-import { claudeBashFromToolResult, claudeExecutePayload } from './execute'
+import { commandExit } from '../../../model/commandResult'
+import { commandStatusLabel } from '../../../results/commandResult'
+import { claudeBashFromToolResult, claudeExecuteSpec } from './execute'
 import { claudeRequestFor } from './toolRequests'
 
 // The outcome words live on the row's status, not on the source: `interrupted`
@@ -148,16 +149,16 @@ describe('claudeBashFromToolResult exit-code marker', () => {
  * header is the only place a reader sees it. Without it the header states the generic
  * `Run command`, which says nothing the terminal icon does not.
  */
-describe('claudeExecutePayload description', () => {
+describe('claudeExecuteSpec description', () => {
   const request = (input: Record<string, unknown>) =>
     claudeRequestFor('execute', input, { toolName: 'Bash', result: undefined, context: {} })
 
   it('carries the description the agent sent', () => {
-    const payload = claudeExecutePayload(request({ command: 'ls -la', description: 'List files in current directory' }), undefined)
+    const payload = claudeExecuteSpec(request({ command: 'ls -la', description: 'List files in current directory' }), undefined)
     expect(payload.request.description).toBe('List files in current directory')
   })
 
   it('states no description for a command that carries none', () => {
-    expect(claudeExecutePayload(request({ command: 'ls -la' }), undefined).request.description).toBeUndefined()
+    expect(claudeExecuteSpec(request({ command: 'ls -la' }), undefined).request.description).toBeUndefined()
   })
 })

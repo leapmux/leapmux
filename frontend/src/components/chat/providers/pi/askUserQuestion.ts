@@ -4,12 +4,12 @@
  * Pi surfaces multiple-choice prompts via `extension_ui_request` with
  * `method: "select"` and a flat `options: string[]`. The shared
  * AskUserQuestion components (used by Claude / Codex / OpenCode) expect
- * a richer `Question[]` shape with per-option `{label, description?}`
+ * a richer `ControlQuestion[]` shape with per-option `{label, description?}`
  * objects. The conversion lives here so the plugin (registry-side) and
  * the controls-bubble UI never drift on the option-shape mapping.
  */
 
-import type { Question } from '../../controls/types'
+import type { ControlQuestion } from '../../model/question'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { PI_DIALOG_METHOD } from '~/generated/contracts/pi-protocol'
 import { pickString } from '~/lib/jsonPick'
@@ -29,13 +29,13 @@ export function piSelectOptions(payload: Record<string, unknown>): Array<{ label
 }
 
 /**
- * Build the canonical Question[] for a Pi `extension_ui_request`. Used
+ * Build the canonical ControlQuestion[] for a Pi `extension_ui_request`. Used
  * by both `piPlugin?.controls?.askUserQuestion.extractQuestions` (registry surface) and
  * `PiControlContent` / `PiControlActions` (controls bubble), so a single
  * source of truth defines the question id, prompt, and options for any
  * given Pi payload.
  */
-export function piQuestionsFromPayload(payload: Record<string, unknown>, source?: ParsedMessageContent): Question[] {
+export function piQuestionsFromPayload(payload: Record<string, unknown>, source?: ParsedMessageContent): ControlQuestion[] {
   const method = pickString(payload, 'method')
   const question = piQuestionFromSource(payload, source)
   if (question && method === PI_DIALOG_METHOD.Input && question.multiSelect) {

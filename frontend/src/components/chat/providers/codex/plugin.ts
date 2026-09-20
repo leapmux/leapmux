@@ -2,7 +2,7 @@ import type { ProviderPlugin } from '../capabilities'
 import { buildJsonRpcResult, questionsFromWire } from '~/components/chat/controls/types'
 import { buildPlanMode } from '~/components/chat/settingsGroups'
 import { CODEX_BYPASS_SETTINGS } from '~/generated/contracts/codex-bypass'
-import { CODEX_ITEM, CODEX_OPTION, CODEX_OPTION_DEFAULT } from '~/generated/contracts/codex-protocol'
+import { CODEX_OPTION, CODEX_OPTION_DEFAULT } from '~/generated/contracts/codex-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
@@ -11,7 +11,7 @@ import { registerProvider } from '../registry'
 import { classifyCodexMessage } from './classification'
 import { CodexControlActions } from './CodexControlActions'
 import {
-  codexControlResponseDisplay,
+  codexControlResponseSummary,
   codexRequestedPermissions,
   resolveCodexDecisions,
   sendCodexUserInputRejectResponse,
@@ -19,25 +19,19 @@ import {
 } from './controlResponse'
 import { codexElicitation } from './elicitation'
 import { codexExtractControl } from './extractControl'
-import { extractItem } from './extractors/item'
 import { codexCompactionBoundary, codexNotificationEntry } from './extractors/notification'
 import { codexResultDivider } from './extractors/resultDivider'
 import { codexExtractRow } from './extractors/row'
 import { codexRateLimitsFromMessage } from './rateLimits'
 import { resolveCodexMessage } from './resolveMessage'
 import { codexContextUsageFromNotification } from './sessionMetadata'
-import { codexSpanRole } from './spanRole'
+import { codexRelatedMessages, codexSpanRole } from './spanRole'
 
 const codexPlugin: ProviderPlugin = {
   transcript: {
     resolveMessage: resolveCodexMessage,
     spanRole: codexSpanRole,
-    relatedMessages: (parsed) => {
-      const item = extractItem(parsed.parentObject)
-      if (item?.type === CODEX_ITEM.ImageView || item?.type === CODEX_ITEM.CollabAgentToolCall)
-        return ['request', 'result']
-      return (item?.type === CODEX_ITEM.McpToolCall || item?.type === CODEX_ITEM.DynamicToolCall) && codexSpanRole(parsed) === 'result' ? ['request'] : []
-    },
+    relatedMessages: codexRelatedMessages,
     classify: classifyCodexMessage,
     extractRow: codexExtractRow,
     extractDivider: codexResultDivider,
@@ -48,7 +42,7 @@ const codexPlugin: ProviderPlugin = {
     // Codex accepts an option selection AND a free-text note together, so the
     // AskUserQuestion UI keeps both instead of treating them as mutually exclusive.
     preservesSelectionNotes: true,
-    controlResponseDisplay: withElicitationResponse(codexElicitation, codexControlResponseDisplay),
+    controlResponseDisplay: withElicitationResponse(codexElicitation, codexControlResponseSummary),
     askUserQuestion: {
       isRequest: payload => payload.method === 'item/tool/requestUserInput',
       // The shared reader, not a cast: an `Array.isArray` on the OUTER array says

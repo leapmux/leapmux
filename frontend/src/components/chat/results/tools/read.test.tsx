@@ -1,7 +1,7 @@
-import type { ToolResults } from '~/components/chat/ir/tools'
+import type { ToolResultByKind } from '~/components/chat/model/tools'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { checkKindModule } from '~/test-support/kindTestHarness'
-import { toolCallIr, toolRow } from '~/test-support/toolCallIr'
+import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { toolCallMeta } from './meta'
 
 // jsdom does not provide ResizeObserver, which the shared layouts observe with.
@@ -26,8 +26,8 @@ describe('read renderer', () => {
   })
 
   /** Whether the toolbar offers Expand over one read result. */
-  const collapsibleOf = (result: ToolResults['read']): boolean =>
-    toolCallMeta(toolRow(toolCallIr('read', { result }))).collapsible
+  const collapsibleOf = (result: ToolResultByKind['read']): boolean =>
+    toolCallMeta(toolRow(toolCallFixture('read', { result }))).collapsible
 
   // `[]` is TRUTHY, so the old test measured a list of zero lines and never reached
   // the fallback -- where a refused read states the reason that is the whole answer.

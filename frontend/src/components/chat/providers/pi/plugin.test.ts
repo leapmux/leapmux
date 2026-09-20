@@ -3,7 +3,7 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { renderDivider } from '~/test-support/messageRenderProbes'
-import { providerQuotableText, providerRowIr, providerToolMeta } from '~/test-support/toolCallIr'
+import { providerQuotableText, providerRow, providerToolMeta } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
 import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
@@ -252,7 +252,7 @@ describe('pi tool row toolbar metadata', () => {
       toolName: 'plan_mode_complete',
       args: { plan: planText },
     }
-    expect(providerRowIr(AgentProvider.PI, start, { spanType: 'plan_mode_complete' }))
+    expect(providerRow(AgentProvider.PI, start, { spanType: 'plan_mode_complete' }))
       .toEqual({ kind: 'assistant-plan', text: planText })
   })
 
@@ -267,7 +267,7 @@ describe('pi tool row toolbar metadata', () => {
       toolName: 'plan_mode_complete',
       result: { content: [{ type: 'text', text: `**Proposed Plan**\n\n${planText}` }], details: { plan: planText } },
     }
-    expect(providerRowIr(AgentProvider.PI, end, { spanType: 'plan_mode_complete' }))
+    expect(providerRow(AgentProvider.PI, end, { spanType: 'plan_mode_complete' }))
       .toEqual({ kind: 'assistant-text', text: 'Plan ready for review.' })
   })
 
@@ -281,11 +281,11 @@ describe('pi tool row toolbar metadata', () => {
       toolName: 'plan_mode_complete',
       result: { content: [{ type: 'text', text: 'Plan ready.' }], details: { plan: '# Plan' } },
     }
-    const withRequest = providerRowIr(AgentProvider.PI, end, {
+    const withRequest = providerRow(AgentProvider.PI, end, {
       spanType: 'plan_mode_complete',
       request: input({ type: 'tool_execution_start', toolCallId: 'call-1', toolName: 'plan_mode_complete', args: { plan: '# Plan' } }, undefined, AgentProvider.PI),
     })
-    const alone = providerRowIr(AgentProvider.PI, end, { spanType: 'plan_mode_complete' })
+    const alone = providerRow(AgentProvider.PI, end, { spanType: 'plan_mode_complete' })
     expect(withRequest).toEqual(alone)
     expect(alone).toEqual({ kind: 'assistant-text', text: 'Plan ready for review.' })
   })
@@ -297,7 +297,7 @@ describe('pi tool row toolbar metadata', () => {
       toolName: 'plan_mode_complete',
       result: { content: [{ type: 'text', text: 'Plan ready for review.' }] },
     }
-    expect(providerRowIr(AgentProvider.PI, end, { spanType: 'plan_mode_complete' }))
+    expect(providerRow(AgentProvider.PI, end, { spanType: 'plan_mode_complete' }))
       .toEqual({ kind: 'assistant-text', text: 'Plan ready for review.' })
   })
 
@@ -309,7 +309,7 @@ describe('pi tool row toolbar metadata', () => {
       isError: true,
       result: { content: [{ type: 'text', text: 'The plan tool refused.' }], details: { plan: '# Ignored' } },
     }
-    expect(providerRowIr(AgentProvider.PI, end, { spanType: 'plan_mode_complete' }))
+    expect(providerRow(AgentProvider.PI, end, { spanType: 'plan_mode_complete' }))
       .toEqual({ kind: 'assistant-text', text: 'The plan tool refused.' })
   })
 })

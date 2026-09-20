@@ -1,11 +1,12 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
-import type { TaskOutcome, TaskResult } from '../ir/tools/task'
-import type { RenderContext } from '../messageRenderers'
+import type { TaskResult, TaskStatus } from '../model/tools/task'
+import type { ToolResultRenderContext } from '../renderContext'
 import ClockFading from 'lucide-solid/icons/clock-fading'
 import { Show } from 'solid-js'
 import { getToolResultExpanded } from '../messageRenderers'
 import { toolMessage } from '../toolStyles.css'
+import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 import { CollapsibleContent } from './CollapsibleContent'
 import { ENDED_OUTCOME_ICON } from './endedOutcomeIcon'
 import { CommandInputBody } from './multiLineCommandBody'
@@ -19,14 +20,19 @@ import { useCollapsedLines } from './useCollapsedLines'
  * too: the two used to spell the same three mappings under different words, so a
  * change to the "it stopped" glyph reached one card and not the other.
  */
-const OUTCOME_ICON: Record<TaskOutcome, LucideIcon> = {
+const OUTCOME_ICON: Record<TaskStatus, LucideIcon> = {
   ...ENDED_OUTCOME_ICON,
   // A task surface that has not answered yet. The subagent card has no glyph for its
   // own `running`, because absence is what tells it the run has not ended.
   running: ClockFading,
 }
 
-export function StatusResultBody(props: { source: TaskResult, context?: RenderContext }): JSX.Element {
+/** Whether a task note exceeds the collapsed display. */
+export function taskResultCollapsible(result: TaskResult): boolean {
+  return hasMoreLinesThan(result.output, COLLAPSED_RESULT_ROWS)
+}
+
+export function StatusResultBody(props: { source: TaskResult, context?: ToolResultRenderContext }): JSX.Element {
   const output = () => props.source.output
   const collapsed = useCollapsedLines({ text: output, expanded: () => getToolResultExpanded(props.context) })
   const body = () => (

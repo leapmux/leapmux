@@ -10,7 +10,7 @@ import {
   piAskAnswerValue,
   piCancelResponse,
   piConfirmResponse,
-  piControlResponseDisplay,
+  piControlResponseSummary,
   piValueResponse,
   sendPiExtensionResponse,
 } from './controlResponse'
@@ -24,13 +24,13 @@ import { isPiPlanApproval } from './planRequest'
 import { resolvePiMessage } from './resolveMessage'
 import { piValidateResumeHandle } from './resumeHandle'
 import { piContextUsageFromMessage } from './sessionMetadata'
-import { piSpanRole } from './spanRole'
+import { piRelatedMessages, piSpanRole } from './spanRole'
 
 const piPlugin: ProviderPlugin = {
   transcript: {
     resolveMessage: resolvePiMessage,
     spanRole: piSpanRole,
-    relatedMessages: parsed => piSpanRole(parsed) === 'result' ? ['request'] : piSpanRole(parsed) === 'request' ? ['result'] : [],
+    relatedMessages: piRelatedMessages,
     classify: classifyPiMessage,
     extractRow: piExtractRow,
     // The sole Pi notification seam: consulted by the shared thread reader for each
@@ -40,7 +40,7 @@ const piPlugin: ProviderPlugin = {
     extractDivider: piResultDivider,
   },
   controls: {
-    controlResponseDisplay: piControlResponseDisplay,
+    controlResponseDisplay: piControlResponseSummary,
     elicitation: piMcpApproval,
     askUserQuestion: {
       isRequest: payload => payload.type === PI_EVENT.ExtensionUIRequest

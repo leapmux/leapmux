@@ -6,7 +6,7 @@ import { makeControlResponseMessage } from '~/test-support/messageFactory'
 import {
   controlBehaviorDisplay,
   controlResponsePreviewText,
-  fallbackControlResponseDisplay,
+  fallbackControlResponseSummary,
   feedback,
   feedbackOrLabel,
   firstNonEmpty,
@@ -15,7 +15,7 @@ import {
   labeledAnswerLine,
   labelOrNull,
   parsePersistedControlResponse,
-  resolveControlResponseDisplay,
+  resolveControlResponseSummary,
 } from './persistedControlResponse'
 
 function crWith(response: Record<string, unknown> | undefined): PersistedControlResponse {
@@ -70,16 +70,16 @@ describe('controlBehaviorDisplay', () => {
   })
 })
 
-describe('fallbackControlResponseDisplay', () => {
+describe('fallbackControlResponseSummary', () => {
   it('uses the behavior envelope when present', () => {
-    expect(fallbackControlResponseDisplay({ claimToken: 'claim-1', requestId: '', request: undefined, response: { response: { response: { behavior: 'allow' } } } }))
+    expect(fallbackControlResponseSummary({ claimToken: 'claim-1', requestId: '', request: undefined, response: { response: { response: { behavior: 'allow' } } } }))
       .toEqual({ kind: 'label', text: 'Allow' })
   })
 
   it('falls back to the generic label as the terminal', () => {
-    expect(fallbackControlResponseDisplay({ claimToken: 'claim-1', requestId: '', request: undefined, response: { anything: 1 } }))
+    expect(fallbackControlResponseSummary({ claimToken: 'claim-1', requestId: '', request: undefined, response: { anything: 1 } }))
       .toEqual({ kind: 'label', text: 'Responded' })
-    expect(fallbackControlResponseDisplay({ requestId: '', claimToken: '', request: undefined, response: undefined }))
+    expect(fallbackControlResponseSummary({ requestId: '', claimToken: '', request: undefined, response: undefined }))
       .toEqual({ kind: 'label', text: 'Responded' })
   })
 })
@@ -115,21 +115,21 @@ describe('feedbackOrLabel', () => {
   })
 })
 
-describe('resolveControlResponseDisplay', () => {
+describe('resolveControlResponseSummary', () => {
   it('returns the plugin derivation when it yields one', () => {
-    expect(resolveControlResponseDisplay(crWith({ anything: 1 }), () => ({ kind: 'label', text: 'X' })))
+    expect(resolveControlResponseSummary(crWith({ anything: 1 }), () => ({ kind: 'label', text: 'X' })))
       .toEqual({ kind: 'label', text: 'X' })
   })
 
   it('degrades to the neutral fallback when the derivation returns null', () => {
-    expect(resolveControlResponseDisplay(crWith({ response: { response: { behavior: 'allow' } } }), () => null))
+    expect(resolveControlResponseSummary(crWith({ response: { response: { behavior: 'allow' } } }), () => null))
       .toEqual({ kind: 'label', text: 'Allow' })
-    expect(resolveControlResponseDisplay(crWith({ anything: 1 }), () => null))
+    expect(resolveControlResponseSummary(crWith({ anything: 1 }), () => null))
       .toEqual({ kind: 'label', text: 'Responded' })
   })
 
   it('degrades when no derivation is provided', () => {
-    expect(resolveControlResponseDisplay(crWith({ anything: 1 }), undefined))
+    expect(resolveControlResponseSummary(crWith({ anything: 1 }), undefined))
       .toEqual({ kind: 'label', text: 'Responded' })
   })
 
@@ -139,9 +139,9 @@ describe('resolveControlResponseDisplay', () => {
     const boom = (): never => {
       throw new Error('bad payload')
     }
-    expect(resolveControlResponseDisplay(crWith({ anything: 1 }), boom))
+    expect(resolveControlResponseSummary(crWith({ anything: 1 }), boom))
       .toEqual({ kind: 'label', text: 'Responded' })
-    expect(resolveControlResponseDisplay(crWith({ response: { response: { behavior: 'allow' } } }), boom))
+    expect(resolveControlResponseSummary(crWith({ response: { response: { behavior: 'allow' } } }), boom))
       .toEqual({ kind: 'label', text: 'Allow' })
   })
 
@@ -154,7 +154,7 @@ describe('resolveControlResponseDisplay', () => {
       const boom = (): never => {
         throw new Error('bad payload')
       }
-      resolveControlResponseDisplay(crWith({ anything: 1 }), boom)
+      resolveControlResponseSummary(crWith({ anything: 1 }), boom)
       expect(warn).toHaveBeenCalledTimes(1)
     }
     finally {

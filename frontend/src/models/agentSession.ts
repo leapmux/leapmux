@@ -2,11 +2,11 @@
 // The two readings a session reports about itself: how much of the context
 // window it holds, and where it stands against the provider's rate limits.
 //
-// MODELS, not store state. Ten provider extractors produce them, the IR carries
+// Domain models, not store state. Ten provider extractors produce them. The chat model carries
 // them inside a notification, `lib/rateLimitUtils` derives words from them, and
 // `ContextUsageGrid` draws them -- so the store is one consumer among many. They
 // lived in `stores/agentSession.store.ts`, which made a provider extractor and
-// an IR module import from the store layer for a type neither layer owns.
+// a chat-model module import from the store layer for a type neither layer owns.
 // ---------------------------------------------------------------------------
 
 export interface ContextUsageInfo {

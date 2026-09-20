@@ -1,5 +1,5 @@
-import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
-import type { AgentRequest, AgentRun } from '../../../ir/tools/agent'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { AgentRequest, AgentRun } from '../../../model/tools/agent'
 import type { ClaudeToolRow } from './toolCommon'
 import { asContentArray, joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject, pickString, stringArray } from '~/lib/jsonPick'
@@ -163,7 +163,7 @@ export function claudeAgentRun(source: ClaudeAgentResult): AgentRun {
 }
 
 /** The agent pair: the launch, and the report the subagent wrote. */
-export function claudeAgentPayload(request: AgentRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'agent'> {
+export function claudeAgentSpec(request: AgentRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'agent'> {
   if (!result)
     return { kind: 'agent', request }
   const source = claudeAgentFromToolResult(result.toolUseResult, result.resultContent, args.input)

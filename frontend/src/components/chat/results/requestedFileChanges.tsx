@@ -1,13 +1,13 @@
 import type { JSX } from 'solid-js'
-import type { FileEditDiff } from '../ir/fileEditDiff'
-import type { RenderContext } from '../messageRenderers'
+import type { FileEditDiff } from '../model/fileEditDiff'
+import type { ToolResultRenderContext } from '../renderContext'
 import { For, Show } from 'solid-js'
-import { fileEditDrawsDiff, fileEditHasDiff } from '../ir/fileEditDiff'
+import { fileEditDrawsDiff, fileEditHasDiff } from '../model/fileEditDiff'
 import { toolInputSummary, toolResultPrompt } from '../toolStyles.css'
 import { FileEditDiffBody, FileEditDiffTitle } from './fileEditDiff'
 
 /** Display proposed differences without claiming that the provider applied them. */
-export function RequestedFileChanges(props: { sources: FileEditDiff[], context?: RenderContext }): JSX.Element {
+export function RequestedFileChanges(props: { sources: FileEditDiff[], context?: ToolResultRenderContext }): JSX.Element {
   return (
     <Show when={props.sources.length > 0}>
       <div class={toolResultPrompt}>Requested changes</div>

@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
-import type { CommandLanguage } from '../ir/tools/execute'
-import type { RenderContext } from '../messageRenderers'
+import type { CommandLanguage } from '../model/tools/execute'
+import type { ToolResultRenderContext } from '../renderContext'
 import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT } from '../chatHeightShared'
@@ -32,7 +32,7 @@ function scheduleOverflowMeasure(measure: () => void): () => void {
 export function CommandInputSummary(props: {
   command: string
   language?: CommandLanguage
-  context?: RenderContext
+  context?: ToolResultRenderContext
   collapsed?: boolean
   onOverflowChange?: (overflowing: boolean) => void
 }): JSX.Element {
@@ -106,7 +106,7 @@ export function CommandInputSummary(props: {
 }
 
 /** Full command body shown after expanding a command input summary. */
-export function CommandInputBody(props: { command: string, language?: CommandLanguage, context?: RenderContext }): JSX.Element {
+export function CommandInputBody(props: { command: string, language?: CommandLanguage, context?: ToolResultRenderContext }): JSX.Element {
   return (
     <CommandHighlightHtml
       {...(props.language !== undefined ? { language: props.language } : {})}

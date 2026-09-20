@@ -1,4 +1,4 @@
-import type { MessageCategory } from './messageClassification'
+import type { MessageCategory } from './messageClassifier'
 import type { RenderContext } from './messageRenderers'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { render } from '@solidjs/testing-library'
@@ -7,9 +7,9 @@ import { AgentProvider, ContentCompression, MessageCompletion } from '~/generate
 import { parseMessageContent } from '~/lib/messageParser'
 import { assembledMessageRow } from '~/test-support/assembledMessages'
 import { testMessageSources } from '~/test-support/messageRenderSources'
+import { renderMessageContent } from './messageContentRenderer'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
 import { resolveMessageForRendering } from './providers/registry'
-import { renderMessageContent } from './rowRenderers'
 import './providers'
 
 // Mock shiki worker to avoid Web Worker unavailability in test environment.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
@@ -412,6 +413,120 @@ func TestOutputTodos_TaskUpdateStatusOnlyPreservesActiveForm(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusInProgress), rows[0].Status)
 	assert.Equal(t, "Running tests", rows[0].ActiveForm, "activeForm must survive a status-only patch")
+}
+
+func TestOutputTodos_TaskUpdatePersistsItsPostUpdateSnapshotAtomically(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-snapshot", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	sink := svc.Output.NewSink("agent-snapshot", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+
+	createUse := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskCreate","input":{"subject":"Run tests","activeForm":"Running tests","description":"Full suite"}}]}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: createUse}, agent.SpanInfo{SpanID: "create", SpanType: "TaskCreate"}))
+	createResult := []byte(`{"type":"user","message":{"content":[]},"tool_use_result":{"task":{"id":"1","subject":"Run tests"}}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: createResult}, agent.SpanInfo{SpanID: "create", SpanType: "TaskCreate"}))
+
+	updateUse := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskUpdate","input":{"taskId":"1","status":"in_progress"}}]}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: updateUse}, agent.SpanInfo{SpanID: "update", SpanType: "TaskUpdate"}))
+	updateResult := []byte(`{"type":"user","message":{"content":[]},"tool_use_result":{"success":true,"taskId":"1","updatedFields":["status"],"statusChange":{"from":"pending","to":"in_progress"}}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: updateResult}, agent.SpanInfo{SpanID: "update", SpanType: "TaskUpdate"}))
+
+	messages, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-snapshot", Seq: 0, Limit: 100})
+	require.NoError(t, err)
+	var update db.Message
+	for _, message := range messages {
+		if message.SpanID == "update" && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_USER {
+			update = message
+			break
+		}
+	}
+	require.NotEmpty(t, update.ID)
+	supplement, err := msgcodec.Decompress(update.SupplementalContent, update.SupplementalContentCompression)
+	require.NoError(t, err)
+	decoded, err := agent.DecodeMessageSupplement(updateResult, supplement)
+	require.NoError(t, err)
+	var metadata map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(decoded.Metadata, &metadata))
+	require.Contains(t, metadata, "todo_snapshot")
+	assert.JSONEq(t, `{"id":"1","content":"Run tests","status":"TODO_STATUS_IN_PROGRESS","activeForm":"Running tests","description":"Full suite"}`, string(metadata["todo_snapshot"]))
+}
+
+func TestOutputTodos_TaskUpdateMessageFailureDoesNotMutateTodo(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-message-failure", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	sink := svc.Output.NewSink("agent-message-failure", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	createUse := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskCreate","input":{"subject":"Keep pending"}}]}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: createUse}, agent.SpanInfo{SpanID: "create", SpanType: "TaskCreate"}))
+	createResult := []byte(`{"type":"user","message":{"content":[]},"tool_use_result":{"task":{"id":"1","subject":"Keep pending"}}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: createResult}, agent.SpanInfo{SpanID: "create", SpanType: "TaskCreate"}))
+	updateUse := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskUpdate","input":{"taskId":"1","status":"in_progress"}}]}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: updateUse}, agent.SpanInfo{SpanID: "update", SpanType: "TaskUpdate"}))
+	_, err := svc.DB.ExecContext(ctx, `CREATE TRIGGER fail_task_update_message BEFORE INSERT ON messages WHEN NEW.span_id = 'update' BEGIN SELECT RAISE(ABORT, 'message unavailable'); END`)
+	require.NoError(t, err)
+
+	updateResult := []byte(`{"type":"user","message":{"content":[]},"tool_use_result":{"success":true,"taskId":"1","statusChange":{"from":"pending","to":"in_progress"}}}`)
+	err = sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: updateResult}, agent.SpanInfo{SpanID: "update", SpanType: "TaskUpdate"})
+	require.ErrorContains(t, err, "message unavailable")
+	rows, err := svc.Queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{AgentID: "agent-message-failure", Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusPending), rows[0].Status)
+}
+
+func TestOutputTodos_TaskUpdateRegistryFailureKeepsSnapshottedMessage(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-registry-failure", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	sink := svc.Output.NewSink("agent-registry-failure", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	createUse := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskCreate","input":{"subject":"Saved transcript"}}]}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: createUse}, agent.SpanInfo{SpanID: "create", SpanType: "TaskCreate"}))
+	createResult := []byte(`{"type":"user","message":{"content":[]},"tool_use_result":{"task":{"id":"1","subject":"Saved transcript"}}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: createResult}, agent.SpanInfo{SpanID: "create", SpanType: "TaskCreate"}))
+	updateUse := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskUpdate","input":{"taskId":"1","status":"in_progress"}}]}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: updateUse}, agent.SpanInfo{SpanID: "update", SpanType: "TaskUpdate"}))
+	_, err := svc.DB.ExecContext(ctx, `CREATE TRIGGER fail_task_update_registry BEFORE UPDATE ON agent_todos BEGIN SELECT RAISE(ABORT, 'registry unavailable'); END`)
+	require.NoError(t, err)
+
+	updateResult := []byte(`{"type":"user","message":{"content":[]},"tool_use_result":{"success":true,"taskId":"1","statusChange":{"from":"pending","to":"in_progress"}}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: updateResult}, agent.SpanInfo{SpanID: "update", SpanType: "TaskUpdate"}))
+
+	todos, err := svc.Queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{AgentID: "agent-registry-failure", Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, todos, 1)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusPending), todos[0].Status)
+	messages, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-registry-failure", Seq: 0, Limit: 100})
+	require.NoError(t, err)
+	var persisted db.Message
+	for _, message := range messages {
+		if message.SpanID == "update" && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_USER {
+			persisted = message
+			break
+		}
+	}
+	require.NotEmpty(t, persisted.ID)
+	supplement, err := msgcodec.Decompress(persisted.SupplementalContent, persisted.SupplementalContentCompression)
+	require.NoError(t, err)
+	decoded, err := agent.DecodeMessageSupplement(updateResult, supplement)
+	require.NoError(t, err)
+	var metadata map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(decoded.Metadata, &metadata))
+	assert.JSONEq(t, `{"id":"1","content":"Saved transcript","status":"TODO_STATUS_IN_PROGRESS"}`, string(metadata["todo_snapshot"]))
 }
 
 func TestOutputTodos_TaskUpdateDeletedSoftDeletesRow(t *testing.T) {

@@ -1,16 +1,16 @@
-import type { FileEditDiff } from '../../../ir/fileEditDiff'
-import type { McpContentItem } from '../../../ir/mcpToolCall'
-import type { QuestionIR } from '../../../ir/questionBody'
-import type { SearchResult } from '../../../ir/searchResult'
-import type { FailedResult, FileChangeKind, ProseResult, ToolCallIR, ToolCallPayloadForKind, ToolLifecycleFacts } from '../../../ir/toolCall'
-import type { ToolKind } from '../../../ir/toolKind'
-import type { ToolMetadataItem } from '../../../ir/toolMetadata'
-import type { ToolRowStatus } from '../../../ir/toolRowStatus'
-import type { ToolRequests } from '../../../ir/tools'
-import type { CommandLanguage } from '../../../ir/tools/execute'
-import type { FileChangeRequest } from '../../../ir/tools/fileChange'
-import type { GenericResult } from '../../../ir/tools/generic'
-import type { SearchRequest } from '../../../ir/tools/search'
+import type { FileEditDiff } from '../../../model/fileEditDiff'
+import type { McpContentItem } from '../../../model/mcpToolCall'
+import type { QuestionPrompt } from '../../../model/question'
+import type { SearchResult } from '../../../model/searchResult'
+import type { FileChangeKind, ProseResult, ToolCall, ToolCallLifecycleFacts, ToolCallSpecReaderTable, ToolCallSpecVariant, ToolFailureResult } from '../../../model/toolCall'
+import type { ToolCallStatus } from '../../../model/toolCallStatus'
+import type { ToolKind } from '../../../model/toolKind'
+import type { ToolMetadataEntry } from '../../../model/toolMetadata'
+import type { ToolRequestByKind } from '../../../model/tools'
+import type { CommandLanguage } from '../../../model/tools/execute'
+import type { FileChangeRequest } from '../../../model/tools/fileChange'
+import type { GenericToolResult } from '../../../model/tools/generic'
+import type { SearchRequest } from '../../../model/tools/search'
 import type { ToolRequestOverrides } from '../../defaultToolRequests'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
@@ -18,10 +18,12 @@ import { COPILOT_EVENT, COPILOT_TOOL } from '~/generated/contracts/copilot-proto
 import { withFallbackFilePath } from '~/lib/imageBlocks'
 import { prettifyStructuredJson } from '~/lib/jsonFormat'
 import { isObject, pickFirstString, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { applyPatchFileChanges } from '../../../ir/applyPatch'
-import { parseMcpContentItem } from '../../../ir/mcpToolCall'
-import { searchMode } from '../../../ir/searchMode'
-import { deriveToolCallStatus, failedResult, isFileChangeKind, proseResult, toolCall, unparsedResult } from '../../../ir/toolCall'
+import { applyPatchFileChanges } from '../../../model/applyPatch'
+import { createToolCall } from '../../../model/createToolCall'
+import { parseMcpContentItem } from '../../../model/mcpToolCall'
+import { searchOutputMode } from '../../../model/searchOutputMode'
+import { failedResult, isFileChangeKind, proseResult, readToolCallSpec, unparsedResult } from '../../../model/toolCall'
+import { deriveToolCallStatus } from '../../../model/toolCallLifecycle'
 import { toolRequestFor } from '../../defaultToolRequests'
 import { retainedOutcome } from '../../registry'
 import { TOOL_FILE_PATH_KEYS, toolInputPaths } from '../../toolInputKeys'
@@ -83,7 +85,7 @@ function copilotCommandLanguage(toolName: string): CommandLanguage | undefined {
  * this build can read answers an empty list, which the renderer draws as no request
  * body rather than an empty one.
  */
-function copilotToolQuestions(input: Record<string, unknown>): QuestionIR[] {
+function copilotToolQuestions(input: Record<string, unknown>): QuestionPrompt[] {
   const question = pickString(input, 'question')
   if (!question)
     return []
@@ -117,7 +119,7 @@ export interface CopilotToolRow {
   input: Record<string, unknown>
   /** True once the completion event arrived. */
   finished: boolean
-  lifecycle: ToolLifecycleFacts
+  lifecycle: ToolCallLifecycleFacts
   /** The completion's `result` object, or its `error` object when the call failed. */
   raw: Record<string, unknown> | null
 }
@@ -134,7 +136,10 @@ export interface CopilotToolRow {
  */
 function grepMatchFile(line: string): string {
   const numbered = line.replace(/:\d+:.*/s, '')
-  return numbered === line ? line.replace(/:.*/s, '') : numbered
+  if (numbered !== line)
+    return numbered
+  const separator = /^[a-z]:[\\/]/i.test(line) ? line.indexOf(':', 2) : line.indexOf(':')
+  return separator < 0 ? line : line.slice(0, separator)
 }
 
 /**
@@ -143,15 +148,16 @@ function grepMatchFile(line: string): string {
  * what LeapMux retained, and the completion event itself is the one thing that
  * lands a result.
  */
-function copilotCompletionLifecycle(data: Record<string, unknown>, completion?: MessageCompletion): ToolLifecycleFacts {
+function copilotCompletionLifecycle(data: Record<string, unknown>, completion?: MessageCompletion): ToolCallLifecycleFacts {
   // The runtime reports an aborted turn's tool as a failure with this code, which is
   // an interruption rather than a fault the user should read as an error.
   const interrupted = pickString(pickObject(data, 'error'), 'code') === 'interrupted'
   return {
-    frameStatus: '',
+    frameStatus: 'unstated',
     providerOutcome: interrupted ? 'interrupted' : data.success !== true ? 'failed' : null,
     retainedOutcome: retainedOutcome(completion),
-    resultLanded: true,
+    rowFinal: true,
+    resultFrameLanded: true,
   }
 }
 
@@ -206,7 +212,7 @@ export function copilotToolRow(
       finished: outcome !== null,
       // A retained start frame lands NO result: the turn ending says nothing about
       // a call whose completion event the runtime never sent.
-      lifecycle: { frameStatus: '', providerOutcome: null, retainedOutcome: outcome, resultLanded: false },
+      lifecycle: { frameStatus: 'unstated', providerOutcome: null, retainedOutcome: outcome, rowFinal: outcome !== null, resultFrameLanded: false },
       raw: null,
     }
   }
@@ -219,7 +225,7 @@ export function copilotToolRow(
   const paired = pairedStart && pickString(pairedStart, 'toolCallId') === toolCallId ? pairedStart : null
   const toolName = pickString(paired, 'toolName') || spanType || ''
   const lifecycle = copilotCompletionLifecycle(completed, completion)
-  const status = deriveToolCallStatus(lifecycle)
+  const status = deriveToolCallStatus(lifecycle, true)
   const identity = copilotMcpIdentity(paired)
   return {
     toolCallId,
@@ -248,7 +254,7 @@ function copilotOutput(row: CopilotToolRow): string {
 }
 
 /**
- * Everything one row's payload reads, collected ONCE.
+ * Everything one row's specification reads, collected once.
  *
  * The readers below take this and nothing else. Before it, each kind re-entered the
  * same helpers with seven and eight positional parameters, and three of the
@@ -258,7 +264,7 @@ function copilotOutput(row: CopilotToolRow): string {
  * other reader with it.
  *
  * Two argument records, and the difference is load-bearing. {@link rawArgs} is what
- * the start event sent. {@link args} adds three derivations that the payload reads and
+ * the start event sent. {@link args} adds three derivations that the specification reads and
  * the picture blocks must NOT: a `path` folded onto a patch row would make a screenshot
  * claim the file the patch touched.
  */
@@ -266,7 +272,7 @@ export interface CopilotToolFacts {
   /** The arguments the start event stated, untouched. */
   rawArgs: Record<string, unknown>
   /**
-   * Those arguments, with the three derivations the payload reads folded in: the read
+   * Those arguments, with the three derivations the specification reads folded in: the read
    * window from `view_range`, the single search target, and the file one patch
    * operation identifies.
    */
@@ -278,7 +284,7 @@ export interface CopilotToolFacts {
   raw: Record<string, unknown> | null
   /** The text the result carries. */
   output: string
-  status: ToolRowStatus
+  status: ToolCallStatus
   /**
    * True once the call ENDED, whether the runtime completed it or the turn retained it.
    *
@@ -297,7 +303,7 @@ export interface CopilotToolFacts {
    * the `result` object the runtime attached -- and every branch below then keeps
    * the typed body it builds out of that object. Reading the row STATUS here instead
    * replaced the lines, the hits and the diff with the same text the row already
-   * prints. The `Interrupted` header is unaffected: `toolRowStatusOutcome` composes it
+   * prints. The `Interrupted` header is unaffected: `toolCallStatusOutcome` composes it
    * from {@link status} and never from the result.
    */
   failed: boolean
@@ -382,7 +388,7 @@ export function copilotToolFacts(row: CopilotToolRow): CopilotToolFacts {
   const requestedChanges = patchText ? applyPatchFileChanges(patchText) : null
   const args = copilotToolArgs(row, requestedChanges)
   const output = copilotOutput(row)
-  const status = deriveToolCallStatus(row.lifecycle)
+  const status = deriveToolCallStatus(row.lifecycle, row.lifecycle.resultFrameLanded)
   const failed = status === 'failed'
   const contents = Array.isArray(row.raw?.contents) ? row.raw.contents : null
   const structuredJson = prettifyStructuredJson(row.raw?.structuredContent)
@@ -417,7 +423,7 @@ export function copilotToolFacts(row: CopilotToolRow): CopilotToolFacts {
  * cannot carry change the answer. Each swap states the input that causes it.
  *
  * ONE named step, ahead of the readers. The three swaps used to sit inside the branch
- * that filled the payload, so a kind could be chosen in one place and its request
+ * that filled the specification, so a kind could be chosen in one place and its request
  * filled in another -- and a reader who wanted the list of kinds a Copilot row can
  * reach had to find all three by hand.
  */
@@ -443,7 +449,7 @@ export function copilotReclassify(facts: CopilotToolFacts): ToolKind {
   if (facts.search && facts.search.filenames.length > 0)
     return 'glob'
   // A file operation that identifies NO file is not a file operation this build can
-  // draw: `toolCall` refuses it (invariant I7) and answers the uncategorized row, whose
+  // draw: `createToolCall` refuses it (invariant I7) and answers the uncategorized row, whose
   // words are the fault. The provider knows more here -- the tool name, the arguments
   // and whatever the call printed -- so the degrade happens at the frame, where the
   // generic card states all three. An `apply_patch` whose one text blob this build
@@ -457,7 +463,7 @@ export function copilotReclassify(facts: CopilotToolFacts): ToolKind {
 /**
  * Whether a file operation states the file it acts on. Invariant I7.
  *
- * The REQUEST is asked, and it is the one the payload will carry, so the two can never
+ * The request is asked, and it is the one the specification will carry.
  * answer differently. An empty file name counts as no file: the row's header is
  * composed from this list, and an entry with no name heads the row with the operation
  * word alone.
@@ -483,7 +489,7 @@ function copilotFileChangeStatesAFile(facts: CopilotToolFacts, kind: FileChangeK
  * shared table does, so both take the shared entry and each has one reading.
  *
  * The whole deviation list is this object's own keys, and `COPILOT_TOOL_REQUEST_OVERRIDES`
- * in `toolCall.test.ts` pins them. No type can do that job: an entry that reads `args`
+ * in `createToolCall.test.ts` pins them. No type can do that job: an entry that reads `args`
  * alone satisfies a slot that supplies `args` and the facts, so a spread of the shared
  * table -- or one stray key that shadows a kind -- still compiles.
  *
@@ -491,13 +497,13 @@ function copilotFileChangeStatesAFile(facts: CopilotToolFacts, kind: FileChangeK
  * decorative. TypeScript runs its excess-property check on a fresh object literal in
  * an ANNOTATED position only. The contextual signature this mapped type supplies is not
  * one: `fetch: args => ({ url, patchText })` compiles with the undeclared key, and the
- * IR then carries a field no renderer reads. `fetch: (args): ToolRequests['fetch'] =>`
+ * model then carries a field no renderer reads. `fetch: (args): ToolRequestByKind['fetch'] =>`
  * rejects it.
  */
 export const COPILOT_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<CopilotToolFacts> = {
   // The four shell tools and `read_agent` share this kind, and the TOOL NAME is what
   // says which of them ran. `shellId` is Copilot's own spelling of the target.
-  task: (args, facts): ToolRequests['task'] => {
+  task: (args, facts): ToolRequestByKind['task'] => {
     const taskId = pickString(args, 'shellId') || pickString(args, 'shell_id')
     return {
       action: facts.toolName === COPILOT_TOOL.StopBash
@@ -508,7 +514,7 @@ export const COPILOT_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<CopilotToolFac
   },
   // The TOOL NAME states the language for the highlighter, and four tools spell the
   // command four ways: only `bash` and `local_shell` send a `command`.
-  execute: (args, facts): ToolRequests['execute'] => {
+  execute: (args, facts): ToolRequestByKind['execute'] => {
     const language = copilotCommandLanguage(facts.toolName)
     const description = pickString(args, 'description') || undefined
     return {
@@ -519,20 +525,20 @@ export const COPILOT_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<CopilotToolFac
   },
   // The PATCH this build parsed, which no argument states: `apply_patch` sends one
   // text blob, and the three edit-family kinds read the operations out of it.
-  edit: (args, facts): ToolRequests['edit'] => copilotFileChangeRequest(args, facts),
-  write: (args, facts): ToolRequests['write'] => copilotFileChangeRequest(args, facts),
-  delete: (args, facts): ToolRequests['delete'] => copilotFileChangeRequest(args, facts),
+  edit: (args, facts): ToolRequestByKind['edit'] => copilotFileChangeRequest(args, facts),
+  write: (args, facts): ToolRequestByKind['write'] => copilotFileChangeRequest(args, facts),
+  delete: (args, facts): ToolRequestByKind['delete'] => copilotFileChangeRequest(args, facts),
   // The MCP identity the START event stated. Copilot namespaces an MCP tool with a
   // dash, so the pair exists nowhere else; a call that is not one keeps its tool name.
-  mcp: (args, facts): ToolRequests['mcp'] => facts.mcp
+  mcp: (args, facts): ToolRequestByKind['mcp'] => facts.mcp
     ? { server: facts.mcp.server, tool: facts.mcp.tool, args }
     : { server: '', tool: facts.toolName, args },
   // The SKILL the call ran, not the tool that ran it. The tool name is the fallback,
   // and `skill` is Copilot's own spelling, ahead of the neutral `name`.
-  skill: (args, facts): ToolRequests['skill'] => ({ name: pickString(args, 'skill') || pickString(args, 'name') || facts.toolName }),
+  skill: (args, facts): ToolRequestByKind['skill'] => ({ name: pickString(args, 'skill') || pickString(args, 'name') || facts.toolName }),
   // The RESULT text, for a message the call stated in neither `message` nor `content`:
   // `write_agent` answers with the text it sent. `agent` is its word for the recipient.
-  message: (args, facts): ToolRequests['message'] => {
+  message: (args, facts): ToolRequestByKind['message'] => {
     const to = pickString(args, 'agent') || undefined
     return {
       ...(to !== undefined ? { to } : {}),
@@ -541,20 +547,20 @@ export const COPILOT_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<CopilotToolFac
   },
   // The subagent's own LABEL beside the instruction: a launch states one or the other.
   // `agent_type` is Copilot's word for which subagent ran.
-  agent: (args): ToolRequests['agent'] => ({
+  agent: (args): ToolRequestByKind['agent'] => ({
     description: pickString(args, 'description') || pickString(args, 'name'),
     agentType: pickString(args, 'agent_type'),
     prompt: pickString(args, 'prompt'),
   }),
   // The checklist `update_todo` carries as ONE markdown string. No other provider
   // states its list that way, so the shared entry answers an empty list.
-  todo: (args): ToolRequests['todo'] => ({ items: copilotChecklistItems(pickString(args, 'todos')) }),
+  todo: (args): ToolRequestByKind['todo'] => ({ items: copilotChecklistItems(pickString(args, 'todos')) }),
   // The question and the CHOICES `ask_user` offered. The shared entry answers an empty
   // list, so the row stated nothing it had asked.
-  question: (args): ToolRequests['question'] => ({ questions: copilotToolQuestions(args) }),
+  question: (args): ToolRequestByKind['question'] => ({ questions: copilotToolQuestions(args) }),
   // `source` is Copilot's word for where the file came from, and the shared move list
   // holds neither that spelling nor `path` for the destination.
-  move: (args): ToolRequests['move'] => {
+  move: (args): ToolRequestByKind['move'] => {
     const previousPath = pickString(args, 'source') || undefined
     return {
       changes: [{
@@ -570,29 +576,29 @@ export const COPILOT_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<CopilotToolFac
   // `path` FIRST, which is where `copilotToolArgs` puts the single target it recovered.
   // The shared entry reads the neutral key order instead, so the two answers differ for
   // a call that states `filePath` and `path` at once -- which no Copilot search tool does.
-  glob: (args): ToolRequests['glob'] => copilotSearchRequest(args),
-  grep: (args): ToolRequests['grep'] => copilotSearchRequest(args),
-  search: (args): ToolRequests['search'] => copilotSearchRequest(args),
+  glob: (args): ToolRequestByKind['glob'] => copilotSearchRequest(args),
+  grep: (args): ToolRequestByKind['grep'] => copilotSearchRequest(args),
+  search: (args): ToolRequestByKind['search'] => copilotSearchRequest(args),
   // Copilot's `web_fetch` sends `url` and never the `uri` the shared entry also reads.
-  fetch: (args): ToolRequests['fetch'] => ({ url: pickString(args, 'url') || '' }),
+  fetch: (args): ToolRequestByKind['fetch'] => ({ url: pickString(args, 'url') || '' }),
   // `exit_plan_mode` states the mode it leaves for, and no worktree target.
-  switch_mode: (args): ToolRequests['switch_mode'] => {
+  switch_mode: (args): ToolRequestByKind['switch_mode'] => {
     const mode = pickString(args, 'mode') || undefined
     return { ...(mode !== undefined ? { mode } : {}) }
   },
   // The WHOLE argument record is the note, including an empty one: `context_board`
   // reads and writes the board with the same tool, and a read states no fields.
-  memory: (args): ToolRequests['memory'] => ({ payload: args }),
-  report: (args): ToolRequests['report'] => ({ payload: args }),
+  memory: (args): ToolRequestByKind['memory'] => ({ payload: args }),
+  report: (args): ToolRequestByKind['report'] => ({ payload: args }),
   // `list_agents` filters with `query` alone, and states no channel.
-  agents: (args): ToolRequests['agents'] => {
+  agents: (args): ToolRequestByKind['agents'] => {
     const query = pickString(args, 'query') || undefined
     return { ...(query !== undefined ? { query } : {}) }
   },
 }
 
 /** One kind's declared request: Copilot's own reading where it states one, the shared one elsewhere. */
-function copilotRequestFor<K extends ToolKind>(kind: K, facts: CopilotToolFacts): ToolRequests[K] {
+function copilotRequestFor<K extends ToolKind>(kind: K, facts: CopilotToolFacts): ToolRequestByKind[K] {
   return toolRequestFor(kind, facts.args, facts, COPILOT_TOOL_REQUEST_OVERRIDES)
 }
 
@@ -675,16 +681,16 @@ function copilotFileEdit(facts: CopilotToolFacts): FileEditDiff | null {
  * listing from Claude and from the Agent Client Protocol family draws formatted, so a
  * default here would put one provider's card out of step with every other one.
  */
-function copilotProseAnswer(facts: CopilotToolFacts, format: ProseResult['format']): { result?: ProseResult | FailedResult } {
+function copilotProseAnswer(facts: CopilotToolFacts, format: ProseResult['format']): { result?: ProseResult | ToolFailureResult } {
   if (!facts.finished)
     return {}
   return { result: facts.failed ? failedResult(facts.output) : proseResult(facts.output, format) }
 }
 
 /**
- * The rich content blocks a payload carries, as a spread-in half.
+ * The rich content blocks a specification carries, as a spread-in half.
  *
- * `extraContent` is optional on every payload shape, so the key stays ABSENT for a call
+ * `extraContent` is optional on every specification, so the key stays absent for a call
  * that stated no blocks rather than present with `undefined` -- which every reader of
  * the field treats as none.
  */
@@ -700,10 +706,10 @@ function copilotExtraContent(extraContent: McpContentItem[] | undefined): { extr
  * A removal states the same change on both sides and needs no title, because the card
  * already identifies the file.
  */
-function copilotFileChangeParts(facts: CopilotToolFacts, kind: 'edit' | 'write' | 'delete'): Omit<ToolCallPayloadForKind<'edit'>, 'kind'> {
+function copilotFileChangeParts(facts: CopilotToolFacts, kind: 'edit' | 'write' | 'delete'): Omit<ToolCallSpecVariant<'edit'>, 'kind'> {
   const request = copilotRequestFor(kind, facts)
   const extraContent = facts.extraContent
-  // Both halves are optional on the payload, so each stays ABSENT when the facts state
+  // Both halves are optional on the specification, so each stays absent when the facts state
   // none rather than present with `undefined`.
   const sides = {
     ...(extraContent !== undefined ? { extraContent } : {}),
@@ -741,14 +747,14 @@ function copilotFileChangeParts(facts: CopilotToolFacts, kind: 'edit' | 'write' 
  * the two states above that one: a running call states its pattern alone, and a failed
  * one states the reason it printed.
  */
-function copilotSearchParts(facts: CopilotToolFacts): Omit<ToolCallPayloadForKind<'search'>, 'kind'> {
+function copilotSearchParts(facts: CopilotToolFacts): Omit<ToolCallSpecVariant<'search'>, 'kind'> {
   const request = copilotSearchRequest(facts.args)
   const source = facts.search
   // The blocks ride EVERY state of the call, exactly as the prose family states below.
   // Copilot carries each PICTURE in `extraContent` rather than in the call's own image
   // list, so a state that drops it loses the rich blocks and every image with them --
   // and the image tab, which addresses a picture by its index, loses the same ones.
-  // The field is optional on the payload, so it stays ABSENT when the call stated none.
+  // The field is optional on the specification, so it stays absent when the call stated none.
   const extraContent = facts.extraContent
   const sides = extraContent !== undefined ? { extraContent } : {}
   if (!source)
@@ -780,14 +786,14 @@ function copilotSearchParts(facts: CopilotToolFacts): Omit<ToolCallPayloadForKin
  * the raw arguments. The request comes from `DEFAULT_TOOL_REQUESTS`, so the row states
  * the kind's declared fields the moment a later release does map a tool onto it.
  */
-function copilotUnreachedKind<P extends ToolKind>(kind: P): (facts: CopilotToolFacts) => ToolCallPayloadForKind<P> {
-  return (facts): ToolCallPayloadForKind<P> => ({ kind, request: copilotRequestFor(kind, facts) })
+function copilotUnreachedKind<P extends ToolKind>(kind: P): (facts: CopilotToolFacts) => ToolCallSpecVariant<P> {
+  return (facts): ToolCallSpecVariant<P> => ({ kind, request: copilotRequestFor(kind, facts) })
 }
 
 /**
  * One reader for each kind, each checked against its OWN kind's request and result.
  *
- * A chain of `if (kind === ...)` cannot do this. It tests a VALUE, so the payload it
+ * A chain of `if (kind === ...)` cannot do this. It tests a value, so the specification it
  * returns is checked against the union of every kind's shape, and a branch that states
  * one kind while it fills another kind's request compiles. That is the exact defect
  * class this table removes: a kind cannot be stated here without its own declared
@@ -800,15 +806,15 @@ function copilotUnreachedKind<P extends ToolKind>(kind: P): (facts: CopilotToolF
  * Each entry DECLARES its return type as well, for the reason
  * {@link COPILOT_TOOL_REQUEST_OVERRIDES} states: the excess-property check runs on an
  * ANNOTATED position and not on a contextual signature, so the annotation is what keeps
- * an undeclared key off the payload.
+ * an undeclared key off the specification.
  *
  * The lifecycle stays INSIDE each reader rather than in a shared ladder above them,
  * because Copilot's kinds genuinely disagree about it: `execute` and `task` draw a
  * failed call themselves from its exit code, the prose family answers the same words in
  * two states, and the search family drops its label on a failure.
  */
-export const COPILOT_TOOL_READERS: { [P in ToolKind]: (facts: CopilotToolFacts) => ToolCallPayloadForKind<P> } = {
-  'agent': (facts): ToolCallPayloadForKind<'agent'> => {
+export const COPILOT_TOOL_READERS: ToolCallSpecReaderTable<CopilotToolFacts> = {
+  agent: (facts): ToolCallSpecVariant<'agent'> => {
     const request = copilotRequestFor('agent', facts)
     return {
       kind: 'agent',
@@ -820,15 +826,15 @@ export const COPILOT_TOOL_READERS: { [P in ToolKind]: (facts: CopilotToolFacts) 
       ...(facts.finished ? { result: { agents: [copilotAgentResult(facts)] } } : {}),
     }
   },
-  'todo': (facts): ToolCallPayloadForKind<'todo'> => {
+  todo: (facts): ToolCallSpecVariant<'todo'> => {
     const request = copilotRequestFor('todo', facts)
-    // No title: `todoRenderer` composes the same words from the request this payload
+    // No title: `todoRenderer` composes the same words from the request this specification
     // carries, and a copy here is a second place for the wording to drift.
     if (facts.failed)
       return { kind: 'todo', request, ...copilotExtraContent(facts.extraContent), result: failedResult(facts.output) }
     return { kind: 'todo', request, ...copilotExtraContent(facts.extraContent), ...(facts.finished ? { result: { items: request.items } } : {}) }
   },
-  'task': (facts): ToolCallPayloadForKind<'task'> => {
+  task: (facts): ToolCallSpecVariant<'task'> => {
     const request = copilotRequestFor('task', facts)
     if (!facts.finished)
       return { kind: 'task', request, title: facts.title }
@@ -861,7 +867,7 @@ export const COPILOT_TOOL_READERS: { [P in ToolKind]: (facts: CopilotToolFacts) 
       result: { title: facts.title, outcome, output: shell.text },
     }
   },
-  'execute': (facts): ToolCallPayloadForKind<'execute'> => {
+  execute: (facts): ToolCallSpecVariant<'execute'> => {
     const request = copilotRequestFor('execute', facts)
     // No title: a command states itself in the shared header, and the tool word
     // `bash` above the very command it ran states nothing more.
@@ -878,10 +884,10 @@ export const COPILOT_TOOL_READERS: { [P in ToolKind]: (facts: CopilotToolFacts) 
       result: { commands: [{ output: text, ...(exitCode !== undefined ? { exitCode } : {}) }], unresolvedTerminals: [] },
     }
   },
-  'edit': (facts): ToolCallPayloadForKind<'edit'> => ({ kind: 'edit', ...copilotFileChangeParts(facts, 'edit') }),
-  'write': (facts): ToolCallPayloadForKind<'write'> => ({ kind: 'write', ...copilotFileChangeParts(facts, 'write') }),
-  'delete': (facts): ToolCallPayloadForKind<'delete'> => ({ kind: 'delete', ...copilotFileChangeParts(facts, 'delete') }),
-  'read': (facts): ToolCallPayloadForKind<'read'> => {
+  edit: (facts): ToolCallSpecVariant<'edit'> => ({ kind: 'edit', ...copilotFileChangeParts(facts, 'edit') }),
+  write: (facts): ToolCallSpecVariant<'write'> => ({ kind: 'write', ...copilotFileChangeParts(facts, 'write') }),
+  delete: (facts): ToolCallSpecVariant<'delete'> => ({ kind: 'delete', ...copilotFileChangeParts(facts, 'delete') }),
+  read: (facts): ToolCallSpecVariant<'read'> => {
     const request = copilotRequestFor('read', facts)
     if (!facts.finished)
       return { kind: 'read', request }
@@ -894,16 +900,16 @@ export const COPILOT_TOOL_READERS: { [P in ToolKind]: (facts: CopilotToolFacts) 
     // and identified no file is a `report`, which {@link copilotReclassify} states.
     return { kind: 'read', request, ...copilotExtraContent(facts.extraContent), result: unparsedResult(facts.output) }
   },
-  'glob': (facts): ToolCallPayloadForKind<'glob'> => ({ kind: 'glob', ...copilotSearchParts(facts) }),
-  'grep': (facts): ToolCallPayloadForKind<'grep'> => ({ kind: 'grep', ...copilotSearchParts(facts) }),
-  'search': (facts): ToolCallPayloadForKind<'search'> => ({ kind: 'search', ...copilotSearchParts(facts) }),
-  'web_search': (facts): ToolCallPayloadForKind<'web_search'> => {
+  glob: (facts): ToolCallSpecVariant<'glob'> => ({ kind: 'glob', ...copilotSearchParts(facts) }),
+  grep: (facts): ToolCallSpecVariant<'grep'> => ({ kind: 'grep', ...copilotSearchParts(facts) }),
+  search: (facts): ToolCallSpecVariant<'search'> => ({ kind: 'search', ...copilotSearchParts(facts) }),
+  web_search: (facts): ToolCallSpecVariant<'web_search'> => {
     const request = copilotRequestFor('web_search', facts)
     if (!facts.finished)
       return { kind: 'web_search', request }
     return { kind: 'web_search', request, ...copilotExtraContent(facts.extraContent), result: { links: [], summary: facts.output } }
   },
-  'question': (facts): ToolCallPayloadForKind<'question'> => {
+  question: (facts): ToolCallSpecVariant<'question'> => {
     const request = copilotRequestFor('question', facts)
     // No title: `questionRenderer` composes the same sentence from the request this
     // payload carries, and a copy here is a second place for the wording to drift.
@@ -917,15 +923,15 @@ export const COPILOT_TOOL_READERS: { [P in ToolKind]: (facts: CopilotToolFacts) 
       ...(facts.finished ? { result: { answers: facts.output ? [{ header, answer: facts.output }] : [] } } : {}),
     }
   },
-  'mcp': (facts): ToolCallPayloadForKind<'mcp'> => {
+  mcp: (facts): ToolCallSpecVariant<'mcp'> => {
     const request = copilotRequestFor('mcp', facts)
     // No extra content: an uncategorized card draws its blocks inside the result, so
     // stating them here too would draw each one twice.
     if (!facts.finished)
       return { kind: 'mcp', request }
-    return { kind: 'mcp', request, result: copilotGenericResult(facts) }
+    return { kind: 'mcp', request, result: copilotGenericToolResult(facts) }
   },
-  'move': (facts): ToolCallPayloadForKind<'move'> => {
+  move: (facts): ToolCallSpecVariant<'move'> => {
     const request = copilotRequestFor('move', facts)
     if (!facts.finished)
       return { kind: 'move', request, ...copilotExtraContent(facts.extraContent) }
@@ -935,7 +941,7 @@ export const COPILOT_TOOL_READERS: { [P in ToolKind]: (facts: CopilotToolFacts) 
       return { kind: 'move', request, ...copilotExtraContent(facts.extraContent), result: failedResult(facts.output) }
     return { kind: 'move', request, ...copilotExtraContent(facts.extraContent), result: { changes: request.changes } }
   },
-  'fetch': (facts): ToolCallPayloadForKind<'fetch'> => {
+  fetch: (facts): ToolCallSpecVariant<'fetch'> => {
     const request = copilotRequestFor('fetch', facts)
     if (!facts.finished)
       return { kind: 'fetch', request }
@@ -944,7 +950,7 @@ export const COPILOT_TOOL_READERS: { [P in ToolKind]: (facts: CopilotToolFacts) 
       return { kind: 'fetch', request, ...copilotExtraContent(facts.extraContent), result: failedResult(facts.output) }
     return { kind: 'fetch', request, result: { result: facts.output }, ...copilotExtraContent(facts.extraContent) }
   },
-  'message': (facts): ToolCallPayloadForKind<'message'> => {
+  message: (facts): ToolCallSpecVariant<'message'> => {
     const request = copilotRequestFor('message', facts)
     if (!facts.finished)
       return { kind: 'message', request }
@@ -958,12 +964,12 @@ export const COPILOT_TOOL_READERS: { [P in ToolKind]: (facts: CopilotToolFacts) 
   // to, and `memory` states what the scratch board holds. Claude and the Agent Client
   // Protocol family draw all three plain, and a `<pre>` block keeps the runtime's own
   // line breaks and indentation exactly as it sent them.
-  'skill': (facts): ToolCallPayloadForKind<'skill'> => ({ kind: 'skill', request: copilotRequestFor('skill', facts), title: facts.title, ...copilotExtraContent(facts.extraContent), ...copilotProseAnswer(facts, 'plain') }),
-  'switch_mode': (facts): ToolCallPayloadForKind<'switch_mode'> => ({ kind: 'switch_mode', request: copilotRequestFor('switch_mode', facts), title: facts.title, ...copilotExtraContent(facts.extraContent), ...copilotProseAnswer(facts, 'plain') }),
-  'memory': (facts): ToolCallPayloadForKind<'memory'> => ({ kind: 'memory', request: copilotRequestFor('memory', facts), title: facts.title, ...copilotExtraContent(facts.extraContent), ...copilotProseAnswer(facts, 'plain') }),
+  skill: (facts): ToolCallSpecVariant<'skill'> => ({ kind: 'skill', request: copilotRequestFor('skill', facts), title: facts.title, ...copilotExtraContent(facts.extraContent), ...copilotProseAnswer(facts, 'plain') }),
+  switch_mode: (facts): ToolCallSpecVariant<'switch_mode'> => ({ kind: 'switch_mode', request: copilotRequestFor('switch_mode', facts), title: facts.title, ...copilotExtraContent(facts.extraContent), ...copilotProseAnswer(facts, 'plain') }),
+  memory: (facts): ToolCallSpecVariant<'memory'> => ({ kind: 'memory', request: copilotRequestFor('memory', facts), title: facts.title, ...copilotExtraContent(facts.extraContent), ...copilotProseAnswer(facts, 'plain') }),
   // A roster of subagents, which `list_agents` writes as a markdown table or list.
-  'agents': (facts): ToolCallPayloadForKind<'agents'> => ({ kind: 'agents', request: copilotRequestFor('agents', facts), title: facts.title, ...copilotExtraContent(facts.extraContent), ...copilotProseAnswer(facts, 'markdown') }),
-  'report': (facts): ToolCallPayloadForKind<'report'> => ({
+  agents: (facts): ToolCallSpecVariant<'agents'> => ({ kind: 'agents', request: copilotRequestFor('agents', facts), title: facts.title, ...copilotExtraContent(facts.extraContent), ...copilotProseAnswer(facts, 'markdown') }),
+  report: (facts): ToolCallSpecVariant<'report'> => ({
     kind: 'report',
     request: copilotRequestFor('report', facts),
     // A `view` that {@link copilotReclassify} moved here states NO title: the tool word
@@ -977,41 +983,41 @@ export const COPILOT_TOOL_READERS: { [P in ToolKind]: (facts: CopilotToolFacts) 
     ...copilotProseAnswer(facts, 'markdown'),
   }),
   // The eight kinds no Copilot tool takes, and that no swap reaches either. The
-  // `COPILOT_TOOL_READERS` cases in `toolCall.test.ts` pin that list against the
+  // `COPILOT_TOOL_READERS` cases in `createToolCall.test.ts` pin that list against the
   // contract, so a release that maps a tool onto one of them fails the suite here.
-  '': copilotUnreachedKind(''),
-  'other': copilotUnreachedKind('other'),
-  'chart': copilotUnreachedKind('chart'),
-  'image': copilotUnreachedKind('image'),
-  'list': copilotUnreachedKind('list'),
-  'think': copilotUnreachedKind('think'),
-  'trigger': copilotUnreachedKind('trigger'),
-  'wait': copilotUnreachedKind('wait'),
+  unspecified: copilotUnreachedKind('unspecified'),
+  other: copilotUnreachedKind('other'),
+  chart: copilotUnreachedKind('chart'),
+  image: copilotUnreachedKind('image'),
+  list: copilotUnreachedKind('list'),
+  think: copilotUnreachedKind('think'),
+  trigger: copilotUnreachedKind('trigger'),
+  wait: copilotUnreachedKind('wait'),
 }
 
 /**
- * One kind's payload from the facts.
+ * One kind's specification from the facts.
  *
- * GENERIC over the kind, which is what keeps `kind` and the payload it answers one
+ * Generic over the kind, which keeps `kind` and the specification one
  * correlated pair. The caller's `ToolKind` satisfies the parameter member by member,
  * so no assertion stands between the table and the result --
  * the assertion ban in `eslint.config.ts` refuses exactly that assertion.
  */
-function copilotPayloadFor<K extends ToolKind>(facts: CopilotToolFacts, kind: K): { [P in K]: ToolCallPayloadForKind<P> }[K] {
-  return COPILOT_TOOL_READERS[kind](facts)
+function copilotSpecFor<K extends ToolKind>(facts: CopilotToolFacts, kind: K): { [P in K]: ToolCallSpecVariant<P> }[K] {
+  return readToolCallSpec(COPILOT_TOOL_READERS, kind, facts)
 }
 
 /**
  * One Copilot tool call, as the kind-discriminated pair.
  *
  * Three steps, each with a name of its own: collect the facts, decide the kind, fill
- * that kind's declared payload.
+ * that kind's declared specification.
  */
-export function copilotToolCallIR(row: CopilotToolRow): ToolCallIR {
+export function copilotToolCall(row: CopilotToolRow): ToolCall {
   const facts = copilotToolFacts(row)
-  return toolCall(
+  return createToolCall(
     { id: row.toolCallId, name: row.toolName, lifecycle: row.lifecycle },
-    copilotPayloadFor(facts, copilotReclassify(facts)),
+    copilotSpecFor(facts, copilotReclassify(facts)),
   )
 }
 
@@ -1020,7 +1026,7 @@ function copilotCommandParts(facts: CopilotToolFacts): {
   exitCode: number | undefined
   text: string
   extraContent: McpContentItem[] | undefined
-  metadata: ToolMetadataItem[] | undefined
+  metadata: ToolMetadataEntry[] | undefined
 } {
   const contents = facts.contents ?? []
   const exits = contents.filter(isObject).filter(item => item.type === 'shell_exit')
@@ -1072,7 +1078,7 @@ function copilotCommandParts(facts: CopilotToolFacts): {
  *
  * Copilot's rich content always rides a rendered body rather than the call's own
  * image list: a generic body when the result is content blocks, and the command
- * body's own extra content when it is a shell result. `imagesForIR` reads it from
+ * body's own extra content when it is a shell result. `imagesForRow` reads it from
  * `extraContent`, which is why every reader that can carry one states it.
  *
  * An image block that carries no `uri` of its own takes the call's own file path, so a
@@ -1094,7 +1100,7 @@ function copilotRichContent(rawArgs: Record<string, unknown>, contents: unknown[
 }
 
 /** The generic result an unrecognized or MCP-shaped call answers with. */
-function copilotGenericResult(facts: CopilotToolFacts): GenericResult {
+function copilotGenericToolResult(facts: CopilotToolFacts): GenericToolResult {
   const parsed = (facts.contents ?? []).map(parseMcpContentItem)
   return {
     // An unmatched completion identifies no tool: its content text IS the result. A
@@ -1111,7 +1117,7 @@ function copilotSearchSource(wireKind: ToolKind, args: Record<string, unknown>, 
   const glob = wireKind === 'glob'
   const empty = output.trim() === '' || /^No (?:files|matches) (?:found|matched)[.!]?$/i.test(output.trim())
   const lines = empty ? [] : output.trim().split('\n').filter(Boolean)
-  const mode = searchMode(args.output_mode)
+  const mode = searchOutputMode(args.output_mode)
   const fileList = glob || mode === 'files_with_matches'
   const countMode = mode === 'count'
   const counts = countMode ? lines.map(line => line.match(/:(\d+)\s*$/)).filter(match => match !== null) : []

@@ -9,7 +9,7 @@ function totalsOf(meta: Parameters<typeof ResultDivider>[0]['model']['meta']): s
 
 /*
  * The turn totals the worker measured. They reached no reader before the divider row
- * moved onto the shared IR: the tool count was parsed and thrown away, and the cost
+ * moved onto the shared model: the tool count was parsed and thrown away, and the cost
  * went to the session panel alone.
  */
 describe('result divider totals', () => {

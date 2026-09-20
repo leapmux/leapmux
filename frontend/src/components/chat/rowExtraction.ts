@@ -1,33 +1,32 @@
 import type { MessageCompletion } from './assembledMessage'
-import type { ChatRowIR } from './ir/row'
-import type { MessageCategory } from './messageClassification'
+import type { MessageCategory } from './messageClassifier'
+import type { ChatRow } from './model/row'
 import type { ResolvedMessageContent } from './rowExtractionTypes'
-import type { ToolSpanSides } from '~/components/chat/rowExtractionTypes'
+import type { ToolSpanContext } from '~/components/chat/rowExtractionTypes'
 import type { AgentProvider, MessageCompletion as ProtoMessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { TodoItem } from '~/models/todo'
+import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { isObject } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
+import { protoJsonTodoToItem } from '~/stores/chatTodoStore'
 import { messageCompletionFromProto, parseAssembledMessage } from './assembledMessage'
-import { dividerMetaFromMessage } from './ir/divider'
 import { leapmuxUserRow } from './leapmuxRows'
+import { dividerMetaFromMessage } from './model/divider'
 import { notificationEntriesFor } from './notificationEntries'
-import { resolveControlResponseDisplay } from './persistedControlResponse'
+import { resolveControlResponseSummary } from './persistedControlResponse'
 import { pluginFor } from './providers/registry'
 
 const logger = createLogger('rowExtraction')
 
 /** The three sides a caller resolved no span for. */
-const NO_SIDES: ToolSpanSides = { current: undefined, request: undefined, result: undefined, role: 'other' }
+const NO_SPAN: ToolSpanContext = { request: undefined, result: undefined, role: 'other', visibleRows: { request: false, result: false } }
 
 export interface RowExtractionOptions {
   /** The three sides of this row's tool span, already resolved. */
-  sides?: ToolSpanSides
+  span?: ToolSpanContext
   /** The worker's `span_type` column, which identifies the tool on every span row. */
   spanType?: string
   /** LeapMux's own reading of how the row ended, which a provider frame can contradict. */
   completion?: ProtoMessageCompletion
-  /** The live to-do store, which a provider that sends a task PATCH reads. */
-  todoById?: (taskId: string) => TodoItem | undefined
 }
 
 /**
@@ -52,7 +51,7 @@ export type ChatRowExtraction = {
    */
   completion: MessageCompletion | null
 } & (
-  | { kind: 'row', row: ChatRowIR }
+  | { kind: 'row', row: ChatRow }
   /**
    * No reader could produce a row: the provider has no plugin, the plugin has no
    * extractor, or the extractor read the frame and found nothing it knows. The frame
@@ -70,12 +69,12 @@ export type ChatRowExtraction = {
  * preview and the image tab's index lookup -- rather than for the transcript, which
  * draws the frame itself through {@link ChatRowExtraction}'s other two outcomes.
  */
-export function extractedRow(extraction: ChatRowExtraction): ChatRowIR | null {
+export function extractedRow(extraction: ChatRowExtraction): ChatRow | null {
   return extraction.kind === 'row' ? extraction.row : null
 }
 
 /**
- * Read one message into the shared row IR, through its own provider's plugin.
+ * Read one message into the shared row model, through its own provider's plugin.
  *
  * The ONE entry into layer 1, for every reader of a row: the transcript renderer
  * draws from it, the bubble's toolbar derives its actions from it, the scroll
@@ -105,13 +104,13 @@ export function extractChatRow(
   // proves it is a saved control answer whose ORIGINAL frame never parsed, which must
   // still state its answer.
   let completion = recorded
-  const row = (value: ChatRowIR): ChatRowExtraction => ({ kind: 'row', row: value, completion })
+  const row = (value: ChatRow): ChatRowExtraction => ({ kind: 'row', row: value, completion })
   const unsupported = (): ChatRowExtraction => ({ kind: 'unsupported', payload, completion })
 
   try {
     // A control response is LeapMux's OWN row: the worker writes it, and the
     // classifier reads it out of the worker's metadata before any plugin is asked. It
-    // reaches the IR here rather than skipping it, so the transcript draws every row
+    // reaches the model here rather than skipping it, so the transcript draws every row
     // through one switch and no reader has to know which categories take a path of
     // their own.
     //
@@ -124,7 +123,7 @@ export function extractChatRow(
     // Both surfaces that draw the answer ran the hook themselves, which is two
     // dispatches for one row and two places for the fallback to be forgotten.
     if (category.kind === 'control_response')
-      return row({ kind: 'control-response', display: resolveControlResponseDisplay(category.response, plugin?.controls?.controlResponseDisplay) })
+      return row({ kind: 'control-response', display: resolveControlResponseSummary(category.response, plugin?.controls?.controlResponseDisplay) })
 
     // The worker joins a run of streamed chunks into ONE assembled message and states
     // how that run ended inside the envelope. LeapMux's own column wins where it is
@@ -202,7 +201,7 @@ export function extractChatRow(
     // plugin answered it with this same helper. Answering it HERE is what keeps the
     // row readable for a provider that has no plugin at all -- a tab can lack worker
     // metadata while hydration runs, so its provider can be UNSPECIFIED, and
-    // `classifyMessage` still gives such a message `user_content`. `rowRenderers`
+    // `classifyMessage` still gives such a message `user_content`. `messageContentRenderer`
     // draws that row outside the `extractRow` branch, so the transcript showed the
     // text while the scroll rail's dot lost its preview.
     if (category.kind === 'user_content') {
@@ -212,13 +211,21 @@ export function extractChatRow(
     const extract = plugin?.transcript.extractRow
     if (!extract)
       return unsupported()
+    const metadata = isObject(parsed.messageMetadata) ? parsed.messageMetadata : undefined
+    const snapshotValue = metadata?.[MESSAGE_METADATA_FIELD.TodoSnapshot]
+    const todoSnapshot = snapshotValue === undefined ? null : protoJsonTodoToItem(snapshotValue)
     const extracted = extract({
-      parsed,
+      resolved: parsed,
       category,
-      sides: options.sides ?? NO_SIDES,
+      span: options.span ?? NO_SPAN,
       ...(options.spanType === undefined ? {} : { spanType: options.spanType }),
       ...(options.completion === undefined ? {} : { completion: options.completion }),
-      ...(options.todoById === undefined ? {} : { todoById: options.todoById }),
+      ...(todoSnapshot !== null ? { todoSnapshot } : {}),
+      ...(snapshotValue === undefined
+        ? { todoSnapshotDiagnostic: 'TaskUpdate metadata is missing todo_snapshot; the persisted row is corrupted.' }
+        : todoSnapshot === null
+          ? { todoSnapshotDiagnostic: 'TaskUpdate metadata contains an invalid todo_snapshot; the persisted row is corrupted.' }
+          : {}),
     })
     return extracted ? row(extracted) : unsupported()
   }

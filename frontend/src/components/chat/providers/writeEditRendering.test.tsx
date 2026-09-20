@@ -1,4 +1,4 @@
-import type { MessageCategory } from '../messageClassification'
+import type { MessageCategory } from '../messageClassifier'
 import type { RenderContext } from '../messageRenderers'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { render } from '@solidjs/testing-library'
@@ -22,7 +22,7 @@ vi.mock('~/lib/tokenCache', () => ({
   makeKey: (lang: string, code: string) => `${lang}\0${code}`,
 }))
 
-const { renderMessageContent } = await import('../rowRenderers')
+const { renderMessageContent } = await import('../messageContentRenderer')
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -309,7 +309,7 @@ describe('pi Edit/Write tool_use states its requested change', () => {
     expect(text).toContain('example.ts')
     expect(text).toContain('+1')
     expect(text).toContain('-1')
-    // The requested diff IS what a pending edit row states under the pair IR.
+    // The requested diff IS what a pending edit row states under the pair model.
     expect(text).toContain('piOldToolUseMarker')
     expect(text).toContain('piNewToolUseMarker')
   })

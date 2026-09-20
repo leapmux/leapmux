@@ -1,6 +1,6 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { readFileResultFromContent } from '../ir/readFileResult'
+import { readFileResultFromContent } from '../model/readFileResult'
 import { EMPTY_RESULT_NOTICE } from './emptyResultNotice'
 import { ReadFileResultBody } from './readFileResult'
 

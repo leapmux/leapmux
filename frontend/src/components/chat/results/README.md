@@ -1,8 +1,8 @@
 # `results/` — the shared renderers
 
 Layer 3 of the chat render pipeline. A provider plugin (`../providers/`, layer 1) reads
-its own wire format into the provider-neutral IR (`../ir/`, layer 2); everything here
-draws that IR. Nothing here knows a provider, and nothing here parses a provider's
+its own wire format into the provider-neutral model (`../model/`, layer 2); everything here
+draws that model. Nothing here knows a provider, and nothing here parses a provider's
 bytes.
 
 **The kind table.** `tools/index.ts` holds `TOOL_KIND_RENDERERS`, total over `ToolKind`,
@@ -26,8 +26,8 @@ Each one is called at the top of the kind module that uses it, so the export in 
 Two conventions, and the file extension does not pick between them — the module's job
 does.
 
-- **camelCase**, named after the IR shape it draws, so the pair reads by sight:
-  `ir/searchResult.ts` and `results/searchResult.tsx`, `ir/commandResult.ts` and
+- **camelCase**, named after the model shape it draws, so the pair reads by sight:
+  `model/searchResult.ts` and `results/searchResult.tsx`, `model/commandResult.ts` and
   `results/commandResult.tsx`. The body it exports takes a `*Body` suffix
   (`SearchResultBody`), because the kind renderer above it supplies the title and the
   chrome.
@@ -41,10 +41,9 @@ own `tools/<kind>.tsx`.
 
 ## What layer 3 may know
 
-It reads the IR and the design tokens. It never imports `../providers/`, and
-the scoped `ts/no-restricted-imports` blocks in `eslint.config.ts` enforce both
-directions — a plugin that imports from
-here puts a parser the whole pipeline depends on behind a module that exists to draw.
+It reads the model and the design tokens. It never imports `../providers/`, and
+the `chat-pipeline/layer-imports` ESLint rule enforces both directions. A plugin
+that imports this layer puts a parser behind a module that exists to draw.
 Seven providers reached into `readFileResult.tsx` for its content parser before that
-rule existed, so the content parse now lives in `ir/readFileResult.ts` and both layers
+rule existed, so the content parse now lives in `model/readFileResult.ts` and both layers
 read it from there.

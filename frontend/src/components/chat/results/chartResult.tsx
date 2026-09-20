@@ -1,7 +1,7 @@
 import type { JSX } from 'solid-js'
-import type { ChartResult, ChartSeries, ChartShape } from '../ir/chartResult'
+import type { ChartResult, ChartSeries, ChartShape } from '../model/chartResult'
 import { createMemo, For, Show } from 'solid-js'
-import { CHART_MAX_POINTS, CHART_MAX_SERIES, chartHasData, chartSeriesName, seriesPoints, seriesValues } from '../ir/chartResult'
+import { CHART_MAX_POINTS, CHART_MAX_SERIES, chartHasData, chartSeriesName, seriesPoints, seriesValues } from '../model/chartResult'
 import {
   chartAxisLabel,
   chartAxisLine,
@@ -24,6 +24,50 @@ const WIDTH = 320
 const HEIGHT = 180
 const PAD = { top: 8, right: 8, bottom: 18, left: 34 }
 const PLOT = { w: WIDTH - PAD.left - PAD.right, h: HEIGHT - PAD.top - PAD.bottom }
+
+function valueBlock(source: ChartResult): string[][] {
+  const columns = source.series
+    .map((series, index) => ({ series, index }))
+    .filter(column => column.series.values !== undefined)
+  if (columns.length === 0)
+    return []
+  const rows = Math.max(source.labels.length, ...columns.map(column => seriesValues(column.series).length), 0)
+  return [
+    ['', ...columns.map(column => chartSeriesName(column.series, column.index))],
+    ...Array.from({ length: rows }, (_, row) => [
+      source.labels[row] ?? `#${row + 1}`,
+      ...columns.map((column) => {
+        const value = seriesValues(column.series)[row]
+        return value === undefined ? '' : String(value)
+      }),
+    ]),
+  ]
+}
+
+function pointBlock(source: ChartResult): string[][] {
+  const plotted = source.series.filter(series => seriesPoints(series).length > 0)
+  if (plotted.length === 0)
+    return []
+  const hasRadius = plotted.some(series => seriesPoints(series).some(point => point.r !== undefined))
+  return [
+    ['', 'x', 'y', ...(hasRadius ? ['r'] : [])],
+    ...source.series.flatMap((series, index) => seriesPoints(series).map(point => [
+      chartSeriesName(series, index),
+      String(point.x),
+      String(point.y),
+      ...(hasRadius ? [point.r === undefined ? '' : String(point.r)] : []),
+    ])),
+  ]
+}
+
+export function chartCopyableText(source: ChartResult): string {
+  if (source.error)
+    return source.error
+  return [valueBlock(source), pointBlock(source)]
+    .filter(block => block.length > 0)
+    .map(block => block.map(line => line.join('\t')).join('\n'))
+    .join('\n\n')
+}
 
 /** The shapes drawn on an x/y plane. Everything else is a circle or a table. */
 const CARTESIAN: ReadonlySet<ChartShape> = new Set(['bar', 'line', 'area', 'scatter', 'bubble'])

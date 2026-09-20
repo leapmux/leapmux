@@ -1,5 +1,5 @@
-import type { AgentRun } from '../ir/tools/agent'
-import type { TaskResult } from '../ir/tools/task'
+import type { AgentRun } from '../model/tools/agent'
+import type { TaskResult } from '../model/tools/task'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentResultBody } from './agentResult'

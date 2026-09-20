@@ -1,8 +1,7 @@
-import type { ListResult } from '../ir/tools/list'
+import type { ListResult } from '../model/tools/list'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { listResultCollapsible } from '../ir/tools/list'
-import { ListResultBody } from './listResult'
+import { ListResultBody, listResultCollapsible } from './listResult'
 
 describe('the list result body (ListResultBody)', () => {
   it.each([

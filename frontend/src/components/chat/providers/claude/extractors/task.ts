@@ -1,15 +1,15 @@
-import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
-import type { ToolMetadataItem } from '../../../ir/toolMetadata'
-import type { TaskOutcome, TaskRequest } from '../../../ir/tools/task'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { ToolMetadataEntry } from '../../../model/toolMetadata'
+import type { TaskRequest, TaskStatus } from '../../../model/tools/task'
 import type { ClaudeToolRow } from './toolCommon'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { unparsedResult } from '../../../ir/toolCall'
+import { unparsedResult } from '../../../model/toolCall'
 import { formatTaskStatus, joinMetaParts } from '../../../rendererUtils'
 import { CLAUDE_TOOL_NAMES } from '../toolNames'
-import { claudeFailedResult } from './failure'
+import { claudeToolFailureResult } from './failure'
 
 /** The state a background task reports, in the four words the status body draws. */
-function claudeTaskOutcome(status: string): TaskOutcome {
+function claudeTaskStatus(status: string): TaskStatus {
   if (status === 'completed')
     return 'completed'
   if (status === 'failed' || status === 'error')
@@ -29,7 +29,7 @@ function claudeTaskOutcome(status: string): TaskOutcome {
  * completed and contradicts the row's own failed status, and `TaskStop` drew the error
  * SENTENCE as the title of the task it stopped.
  */
-export function claudeTaskPayload(request: TaskRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'task'> {
+export function claudeTaskSpec(request: TaskRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'task'> {
   const toolName = args.toolName
   // Both rows of the span share one call, so a title set only on the no-result
   // branch disappears from BOTH headers the moment the result lands -- and a
@@ -38,7 +38,7 @@ export function claudeTaskPayload(request: TaskRequest, args: ClaudeToolRow, res
   const title = claudeTaskTitle(args, request)
   if (!result)
     return { kind: 'task', request, title }
-  const failure = claudeFailedResult(result)
+  const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'task', request, title, result: failure }
   if (toolName === CLAUDE_TOOL_NAMES.TASK_OUTPUT) {
@@ -60,7 +60,7 @@ export function claudeTaskPayload(request: TaskRequest, args: ClaudeToolRow, res
       title,
       result: {
         title: meta ? `${head} (${meta})` : head,
-        outcome: claudeTaskOutcome(status),
+        outcome: claudeTaskStatus(status),
         output: pickString(task, 'output', result.resultContent),
       },
     }
@@ -69,7 +69,7 @@ export function claudeTaskPayload(request: TaskRequest, args: ClaudeToolRow, res
   if (!message)
     return { kind: 'task', request, title, result: unparsedResult(result.resultContent) }
   const taskType = pickString(result.toolUseResult, 'task_type')
-  const metadata: ToolMetadataItem[] = taskType ? [{ label: 'Task type', value: taskType }] : []
+  const metadata: ToolMetadataEntry[] = taskType ? [{ label: 'Task type', value: taskType }] : []
   const command = pickString(result.toolUseResult, 'command')
   return {
     kind: 'task',

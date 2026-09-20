@@ -2,7 +2,7 @@ import type { MessageContextResolver, ResolvedMessage } from './messageContextRe
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import { createLogger } from '~/lib/logger'
-import { imagesForIR } from './ir/derivations'
+import { imagesForRow } from './results/rowImages'
 import { extractedRow } from './rowExtraction'
 import { extractPreparedRow, prepareMessage } from './rowPreparation'
 
@@ -25,7 +25,7 @@ export type ChatImageResolution
 /**
  * The images one message carries, in the order its provider read them.
  *
- * Read from the SAME row IR the chat row drew. That is the whole reason
+ * Read from the SAME row model the chat row drew. That is the whole reason
  * `imageIndex` means anything: two walks of the same JSON would agree until one
  * of them learned a new block kind, and by then the tab would show a
  * different picture than the row the reader clicked.
@@ -38,12 +38,6 @@ export interface ImageExtractionSources {
   resolved?: ResolvedMessage
   /** The span's request, which carries the file metadata that a result alone does not. */
   request?: ReturnType<MessageContextResolver['request']>
-  /**
-   * The live to-do store. The transcript row reads it, so a resolver that left it
-   * out read a DIFFERENT row than the one the reader clicked -- and the index of a
-   * picture only means anything while the two rows agree.
-   */
-  todoById?: MessageContextResolver['todo']
 }
 
 export function messageToolResultImages(message: AgentChatMessage, sources: ImageExtractionSources = {}): ImageResultSource[] {
@@ -65,20 +59,14 @@ export function messageToolResultImages(message: AgentChatMessage, sources: Imag
     // provider that requires a completed call before it states its picture (Codex
     // states no status on an `imageView` item) resolves every image tab to nothing.
     const extraction = extractPreparedRow(prepared, {
-      sides: { current: prepared.resolved, request: sources.request?.resolved, result: undefined, role: 'result' },
-      ...(sources.todoById === undefined ? {} : { todoById: sources.todoById }),
+      span: { request: sources.request?.resolved, result: prepared.resolved, role: 'result', visibleRows: { request: false, result: true } },
     })
-    return imagesForIR(extractedRow(extraction))
+    return imagesForRow(extractedRow(extraction))
   }
   catch (err) {
     logger.warn('image extraction failed', { id: message.id, err })
     return []
   }
-}
-
-/** Pick image N out of a message, or null when it has no such image. */
-export function imageFromMessage(message: AgentChatMessage, imageIndex: number): ImageResultSource | null {
-  return messageToolResultImages(message)[imageIndex] ?? null
 }
 
 /**
@@ -112,11 +100,10 @@ export async function resolveChatImage(
           console.warn('Cannot load image request metadata', { spanId, error })
         }
       }
-      const current = messages.current(resolved.message, resolved.original)
+      const current = messages.resolvedMessage(resolved.message, resolved.original)
       const source = messageToolResultImages(current.message, {
         resolved: current,
         request: messages.request(identity),
-        todoById: messages.todo,
       })[ref.imageIndex]
       if (!source)
         return { status: 'gone' }

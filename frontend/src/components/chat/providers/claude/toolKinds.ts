@@ -1,5 +1,5 @@
-import type { ToolIconHint } from '../../ir/toolCall'
-import type { ToolKind } from '../../ir/toolKind'
+import type { ToolIconHint } from '../../model/toolCall'
+import type { ToolKind } from '../../model/toolKind'
 import { CLAUDE_TOOL_ALIAS, CLAUDE_TOOL_NAMES } from './toolNames'
 
 /**
@@ -25,7 +25,7 @@ export function canonicalClaudeToolName(name: string): string {
  *
  * Claude reports a tool by NAME alone, so this table is where the name becomes
  * the closed kind that drives the icon, the label, the title and the input
- * summary. A name absent from the table takes the empty kind, which draws the
+ * summary. A name absent from the table takes the unspecified kind, which draws the
  * uncategorized row every provider gives an unknown tool.
  *
  * A Map rather than an object, for the reason Pi's table gives: a tool may be
@@ -53,7 +53,7 @@ const CLAUDE_TOOL_KINDS: ReadonlyMap<string, ToolKind> = new Map<string, ToolKin
   [CLAUDE_TOOL_NAMES.ASK_USER_QUESTION, 'question'],
   // The deferred-tool probe searches the tool REGISTRY. `search` is a query against a
   // corpus the session holds, and the file tree is one corpus of several, so the kind
-  // fits (`ir/toolKind.ts`). The matches are TOOL NAMES, so the reader leaves the two
+  // fits (`model/toolKind.ts`). The matches are TOOL NAMES, so the reader leaves the two
   // file fields of `SearchResult` empty -- see `extractors/toolCall.ts`.
   [CLAUDE_TOOL_NAMES.TOOL_SEARCH, 'search'],
   // A Model Context Protocol RESOURCE, which is a document the server holds rather
@@ -95,7 +95,7 @@ const CLAUDE_TOOL_KINDS: ReadonlyMap<string, ToolKind> = new Map<string, ToolKin
 
 /** The tool kind a canonical Claude tool name declares. */
 export function claudeToolKind(toolName: string): ToolKind {
-  return CLAUDE_TOOL_KINDS.get(toolName) ?? ''
+  return CLAUDE_TOOL_KINDS.get(toolName) ?? 'unspecified'
 }
 
 /**

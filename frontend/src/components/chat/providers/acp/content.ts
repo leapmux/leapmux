@@ -38,16 +38,20 @@ export function flattenAcpContent(content: unknown): ContentBlock[] {
 export function collectAcpToolText(toolUse: Record<string, unknown> | null | undefined, options: { rawObjects?: boolean } = {}): string {
   if (!toolUse)
     return ''
-  const text = joinContentParagraphs(flattenAcpContent(toolUse.content), { text: 'text' }, () => null)
+  return collectAcpToolTextFromContent(flattenAcpContent(toolUse.content), toolUse.rawOutput, options)
+}
+
+/** Join text from content that the caller normalized once, then use raw output. */
+export function collectAcpToolTextFromContent(content: ContentBlock[], rawOutput: unknown, options: { rawObjects?: boolean } = {}): string {
+  const text = joinContentParagraphs(content, { text: 'text' }, () => null)
   if (text)
     return text
-  const raw = toolUse.rawOutput
   const format = (value: unknown) => value === undefined || value === null
     ? ''
     : typeof value === 'object' ? prettifyJson(value) : String(value)
-  if (!isObject(raw))
-    return format(raw)
-  if ('output' in raw || 'error' in raw)
-    return [format(raw.output), format(raw.error)].filter(value => value !== '').join('\n')
-  return options.rawObjects === false ? '' : format(raw)
+  if (!isObject(rawOutput))
+    return format(rawOutput)
+  if ('output' in rawOutput || 'error' in rawOutput)
+    return [format(rawOutput.output), format(rawOutput.error)].filter(value => value !== '').join('\n')
+  return options.rawObjects === false ? '' : format(rawOutput)
 }

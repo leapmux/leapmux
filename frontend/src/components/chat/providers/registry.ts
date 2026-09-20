@@ -9,7 +9,7 @@
 // SHAPE is the four capabilities of `capabilities.ts`; this module owns registration
 // and lookup alone.
 
-import type { ToolRowOutcome } from '../ir/toolOutcomeLabel'
+import type { RetainedToolOutcome } from '../model/toolOutcome'
 import type { ResolvedMessageContent } from '../rowExtractionTypes'
 import type { ProviderPlugin } from './capabilities'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -53,7 +53,7 @@ export type {
  * Null means that the worker recorded no completion. The provider's own bytes then
  * state the outcome, and a caller keeps whatever they say.
  */
-export function retainedOutcome(completion: MessageCompletion | undefined): ToolRowOutcome | null {
+export function retainedOutcome(completion: MessageCompletion | undefined): RetainedToolOutcome | null {
   switch (messageCompletionFromProto(completion)) {
     case 'complete':
       return 'succeeded'

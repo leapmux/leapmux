@@ -1,7 +1,6 @@
 import type { ToolKindRenderer } from './renderer'
 import Folder from 'lucide-solid/icons/folder'
-import { listResultCollapsible } from '../../ir/tools/list'
-import { ListResultBody } from '../listResult'
+import { ListResultBody, listResultCollapsible } from '../listResult'
 import { renderReadTitle } from './titleParts'
 
 export const listRenderer: ToolKindRenderer<'list'> = {

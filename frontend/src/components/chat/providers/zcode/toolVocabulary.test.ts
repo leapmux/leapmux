@@ -55,7 +55,7 @@ describe('zcode tool vocabulary', () => {
   // An EMPTY name states no kind at all, which is a different answer from a name the
   // table does not hold: the first row says nothing, the second says "uncategorized".
   it('tells an absent name from an unknown one', () => {
-    expect(zcodeToolKind('')).toBe('')
+    expect(zcodeToolKind('')).toBe('unspecified')
     expect(zcodeToolKind('a_tool_from_a_later_release')).toBe('other')
   })
 })

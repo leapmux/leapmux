@@ -1,10 +1,10 @@
-import type { Question } from '../../controls/types'
+import type { ControlQuestion } from '../../model/question'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it, vi } from 'vitest'
 import { CODEX_OPTION, CODEX_OPTION_DEFAULT } from '~/generated/contracts/codex-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { renderDivider } from '~/test-support/messageRenderProbes'
-import { providerQuotableText } from '~/test-support/toolCallIr'
+import { providerQuotableText } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
@@ -253,7 +253,7 @@ describe('sendCodexUserInputResponse', () => {
       captured = content
     })
 
-    const questions: Question[] = [
+    const questions: ControlQuestion[] = [
       { id: 'q1', question: 'Pick one', header: 'Header1', options: [{ label: 'A' }, { label: 'B' }] },
     ]
     const state = createControlAnswerState({ selections: { 0: ['A'] } })
@@ -278,7 +278,7 @@ describe('sendCodexUserInputResponse', () => {
       captured = content
     })
 
-    const questions: Question[] = [
+    const questions: ControlQuestion[] = [
       { question: 'Pick one', header: 'MyHeader', options: [{ label: 'X' }] },
     ]
     const state = createControlAnswerState({ selections: { 0: ['X'] } })
@@ -303,7 +303,7 @@ describe('sendCodexUserInputResponse', () => {
       captured = content
     })
 
-    const questions: Question[] = [
+    const questions: ControlQuestion[] = [
       { id: 'q1', question: 'Custom input', options: [] },
     ]
     const state = createControlAnswerState({ customTexts: { 0: 'my custom answer' } })
@@ -328,7 +328,7 @@ describe('sendCodexUserInputResponse', () => {
       captured = content
     })
 
-    const questions: Question[] = [
+    const questions: ControlQuestion[] = [
       { id: 'q1', question: 'Pick multiple', options: [{ label: 'A' }, { label: 'B' }, { label: 'C' }], multiSelect: true },
     ]
     const state = createControlAnswerState({ selections: { 0: ['A', 'C'] } })
@@ -353,7 +353,7 @@ describe('sendCodexUserInputResponse', () => {
       captured = content
     })
 
-    const questions: Question[] = [
+    const questions: ControlQuestion[] = [
       { id: 'q1', question: 'Pick one', options: [{ label: 'A' }, { label: 'B' }] },
     ]
     const state = createControlAnswerState({ selections: { 0: ['B'] }, customTexts: { 0: 'note for B' } })
@@ -378,13 +378,13 @@ describe('sendCodexUserInputResponse', () => {
       captured = content
     })
 
-    const questions: Question[] = [
+    const questions: ControlQuestion[] = [
       {
         id: 'q1',
         question: 'Pick one',
         options: [{ label: 'A' }, { label: 'B' }],
         isOther: true,
-      } as unknown as Question,
+      } as unknown as ControlQuestion,
     ]
     const state = createControlAnswerState({ customTexts: { 0: 'my custom answer' } })
 
@@ -408,7 +408,7 @@ describe('sendCodexUserInputResponse', () => {
       captured = content
     })
 
-    const questions: Question[] = [
+    const questions: ControlQuestion[] = [
       { id: 'q1', question: 'First', options: [{ label: 'A' }] },
       { id: 'q2', question: 'Second', options: [{ label: 'B' }] },
     ]

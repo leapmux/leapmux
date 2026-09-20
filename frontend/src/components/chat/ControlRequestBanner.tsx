@@ -116,7 +116,7 @@ export const ControlRequestContent: Component<BannerContentProps> = (props) => {
             fallback={<p role="alert">{controlPayloadFaultNotice(request().payloadFault)}</p>}
           >
             {/*
-              ONE switch over the shared control IR. Every provider used to ship a
+              ONE switch over the shared control model. Every provider used to ship a
               `ControlContent` component that dispatched to the same five bodies,
               and the five drifted apart in which fields each provider bothered to
               pass -- so a permission on one agent showed its reason and the same
@@ -197,7 +197,7 @@ export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
   const question = () => questionOf(props.controlSurface)
   const elicitation = () => surfaceOf(props.controlSurface, 'elicitation')?.elicitation
   // The actions a provider answers THIS request with, or undefined when the shared
-  // switch below answers it from the IR.
+  // switch below answers it from the model.
   const pluginActions = () => props.request
     ? pluginFor(props.agentProvider)?.controls?.controlActionsFor?.(props.request.payload)
     : undefined
@@ -255,18 +255,18 @@ export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
               )}
             >
               {/*
-                ONE switch over the shared control IR, beside the content half's,
+                ONE switch over the shared control model, beside the content half's,
                 and the order is what decides who answers. The question and the
                 elicitation are cross-provider surfaces and come first. Then a
                 provider answers its OWN request wherever `controlActionsFor`
                 claims it -- Codex's decision words, Pi's dialog envelopes,
                 Cursor's create-plan verdict. Everything left is answered from
-                the IR.
+                the model.
 
                 The FALLBACK is the shared Allow/Deny pair, and it is what keeps the
                 invariant this banner exists for: the agent's turn blocks until an
                 answer reaches it, so a surface with no buttons blocks it forever. The
-                content half switches over all five kinds of the closed IR and this
+                content half switches over all five kinds of the closed model and this
                 one answers four -- `dialog` reaches the fallback, because the one
                 provider that sends a dialog claims it above with its own envelopes,
                 and a second one would otherwise draw a dialog nobody could dismiss.

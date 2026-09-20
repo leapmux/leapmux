@@ -1,4 +1,4 @@
-import type { DividerIR } from '../../../ir/divider'
+import type { TurnEnd } from '../../../model/divider'
 import { pickString } from '~/lib/jsonPick'
 import { turnEndLabel } from '../../../turnEndLabel'
 import { unwrapACPResult } from '../resultWrapper'
@@ -19,7 +19,7 @@ const ACP_STOP_END_TURN = 'end_turn'
  * through that same unwrap, which keeps the two from disagreeing about which
  * object holds it.
  */
-export function acpResultDivider(parsed: unknown): DividerIR | null {
+export function acpResultDivider(parsed: unknown): TurnEnd | null {
   const result = unwrapACPResult(parsed)
   if (!result)
     return null
