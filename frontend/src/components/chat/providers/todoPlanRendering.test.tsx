@@ -1,5 +1,5 @@
 import type { MessageCategory } from '../messageClassifier'
-import type { RenderContext } from '../messageRenderers'
+import type { MessageContentRenderContext } from '../messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
@@ -37,7 +37,7 @@ function makeClaudeToolUseMessage(name: string, input: Record<string, unknown>):
   }
 }
 
-function renderClaudeToolUse(name: string, input: Record<string, unknown>, context?: RenderContext) {
+function renderClaudeToolUse(name: string, input: Record<string, unknown>, context?: MessageContentRenderContext) {
   const parsed = makeClaudeToolUseMessage(name, input)
   const category = { kind: 'tool_use' } as MessageCategory
   const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
@@ -47,7 +47,7 @@ function renderClaudeToolUse(name: string, input: Record<string, unknown>, conte
 function taskUpdateContext(
   input: Record<string, unknown>,
   snapshot: Record<string, unknown> | undefined,
-): RenderContext {
+): MessageContentRenderContext {
   const parentObject = makeClaudeToolUseMessage('TaskUpdate', input)
   const resolved = resolveMessageForRendering({
     rawText: '',
@@ -67,7 +67,7 @@ function taskUpdateContext(
  * pass while the two layers disagreed -- which is exactly the defect this file now
  * covers end to end.
  */
-function renderCodexItem(item: Record<string, unknown>, context?: RenderContext) {
+function renderCodexItem(item: Record<string, unknown>, context?: MessageContentRenderContext) {
   const parsed = { item, threadId: 't1', turnId: 'r1' }
   const category = classifyMessage({
     ...resolveMessageForRendering({ rawText: '', topLevel: parsed, parentObject: parsed, wrapper: null }, AgentProvider.CODEX),
@@ -77,13 +77,13 @@ function renderCodexItem(item: Record<string, unknown>, context?: RenderContext)
   return render(() => result)
 }
 
-function renderCodexTurnPlan(parsed: Record<string, unknown>, context?: RenderContext) {
+function renderCodexTurnPlan(parsed: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(parsed, context, category, AgentProvider.CODEX)
   return render(() => result)
 }
 
-function renderOpenCodePlan(toolUse: Record<string, unknown>, context?: RenderContext) {
+function renderOpenCodePlan(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(toolUse, context, category, AgentProvider.OPENCODE)
   return render(() => result)

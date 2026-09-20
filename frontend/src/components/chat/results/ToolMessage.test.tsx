@@ -1,5 +1,5 @@
-import type { RenderContext } from '~/components/chat/messageRenderers'
 import type { ToolCall } from '~/components/chat/model/toolCall'
+import type { ToolResultRenderContext } from '~/components/chat/renderContext'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 import { render } from '@solidjs/testing-library'
@@ -146,7 +146,7 @@ describe('the result side of a paired tool span (ToolMessage)', () => {
   // renders with one: the index each picture reports is the whole point.
   function drawRow(row: typeof requestRow): { container: HTMLElement, opened: number[], drawn: string[] } {
     const opened: number[] = []
-    const context = { images: { loadFileImage: () => Promise.resolve(undefined), cachedFileImage: () => undefined, openImage: (request: { index: number }) => opened.push(request.index), deferLoad: () => false, premeasurePass: () => false } } as unknown as RenderContext
+    const context: ToolResultRenderContext = { images: { loadFileImage: () => Promise.resolve(undefined), cachedFileImage: () => undefined, openImage: request => opened.push(request.index), deferLoad: () => false, premeasurePass: () => false } }
     const { container } = render(() => <ToolMessage row={row} context={context} />)
     const buttons = [...container.querySelectorAll('button[aria-label="Open image"]')]
     const drawn = buttons.map(button => button.querySelector('img')?.getAttribute('src') ?? '')
@@ -229,7 +229,7 @@ describe('the picture a tool row opens (ToolMessage)', () => {
       expect(listed.map(source => source.data)).toEqual(expected)
 
       const opened: number[] = []
-      const context = { images: { loadFileImage: () => Promise.resolve(undefined), cachedFileImage: () => undefined, openImage: (request: { index: number }) => opened.push(request.index), deferLoad: () => false, premeasurePass: () => false } } as unknown as RenderContext
+      const context: ToolResultRenderContext = { images: { loadFileImage: () => Promise.resolve(undefined), cachedFileImage: () => undefined, openImage: request => opened.push(request.index), deferLoad: () => false, premeasurePass: () => false } }
       const { container } = render(() => <ToolMessage row={row} context={context} />)
 
       const buttons = [...container.querySelectorAll('button[aria-label="Open image"]')]

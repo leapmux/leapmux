@@ -22,7 +22,7 @@ import { zcodeToolSupplement } from '../toolSupplement'
  *   batch     → {toolCallIds, successCount, errorCount}
  *
  * A `result` carries no tool name, so the result renderers resolve the name from the span
- * (`RenderContext.spanType`, which the worker sets from the tool name) or from the
+ * (`RowExtractionContext.spanType`, which the worker sets from the tool name) or from the
  * paired `scheduled` row -- never from the result payload itself.
  */
 export interface ZCodeToolUpdate {

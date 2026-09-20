@@ -1,5 +1,5 @@
 import type { MessageCategory } from '../messageClassifier'
-import type { RenderContext } from '../messageRenderers'
+import type { MessageContentRenderContext } from '../messageContentRenderer'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
@@ -24,7 +24,7 @@ function subagentRow(over: Partial<BackgroundTaskItem> = {}): BackgroundTaskItem
   }
 }
 
-function renderToolUse(input: Record<string, unknown>, context?: RenderContext): HTMLElement {
+function renderToolUse(input: Record<string, unknown>, context?: MessageContentRenderContext): HTMLElement {
   const msg = {
     type: 'assistant',
     message: {
@@ -37,7 +37,7 @@ function renderToolUse(input: Record<string, unknown>, context?: RenderContext):
 }
 
 /** The context of one case, from the subagent host it states. Every host here names a handler, so the navigation is never undefined at runtime. */
-function withSubagents(host: Parameters<typeof subagentsFrom>[0]): RenderContext {
+function withSubagents(host: Parameters<typeof subagentsFrom>[0]): MessageContentRenderContext {
   const subagents = subagentsFrom(host)
   return subagents === undefined ? {} : { subagents }
 }

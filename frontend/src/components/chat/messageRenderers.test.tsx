@@ -1,5 +1,5 @@
 import type { MessageCategory } from './messageClassifier'
-import type { RenderContext } from './messageRenderers'
+import type { MessageContentRenderContext } from './messageContentRenderer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
@@ -29,7 +29,7 @@ function makeToolUseMessage(name: string, input: Record<string, unknown>) {
 }
 
 /** Render a tool_use message and return the trimmed text content. */
-function renderToolUseText(name: string, input: Record<string, unknown>, context?: RenderContext): string {
+function renderToolUseText(name: string, input: Record<string, unknown>, context?: MessageContentRenderContext): string {
   const parsed = makeToolUseMessage(name, input)
   const category = { kind: 'tool_use' } as MessageCategory
   const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
@@ -146,7 +146,7 @@ describe('write/edit tool_use messages state the change they request', () => {
         structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] }],
       },
     })), AgentProvider.CLAUDE_CODE)
-    const context: RenderContext = { sources: testMessageSources({ result: () => (toolResultParsed) }) }
+    const context: MessageContentRenderContext = { sources: testMessageSources({ result: () => (toolResultParsed) }) }
     const category = { kind: 'tool_use' } as MessageCategory
     const { container } = render(() =>
       renderMessageContent(makeToolUseMessage('Write', writeInput), context, category, AgentProvider.CLAUDE_CODE),
@@ -176,7 +176,7 @@ describe('write/edit tool_use messages state the change they request', () => {
 })
 
 /** Build a Read tool_result message without structured tool_use_result. */
-function makeReadToolResult(resultContent: string, context?: Partial<RenderContext>) {
+function makeReadToolResult(resultContent: string, context?: Partial<MessageContentRenderContext>) {
   const parsed = {
     type: 'user',
     message: {
@@ -278,7 +278,7 @@ describe('the row no renderer claimed', () => {
 
   // The frame is the only content the row has, so it is one click away rather than gone.
   it('keeps the frame in the body the expand control opens', () => {
-    const context: RenderContext = { getMessageUiState: () => true, setMessageUiState: () => {} }
+    const context: MessageContentRenderContext = { getMessageUiState: () => true, setMessageUiState: () => {} }
     const { container } = render(() => renderMessageContent(frame, context, { kind: 'unknown' } as MessageCategory, AgentProvider.GITHUB_COPILOT))
     expect(container.textContent).toContain('not.a.known.event')
   })
@@ -303,7 +303,7 @@ describe('thinking renderer honors context.expandUiKey', () => {
     // look its shared UI-state up under THAT key, not the hand-typed THINKING literal
     // it falls back to only without a context. PLAN_EXECUTION stands in for "a key
     // that is not the fallback" -- what the case proves is the lookup, not the key.
-    const context: RenderContext = {
+    const context: MessageContentRenderContext = {
       expandUiKey: MESSAGE_UI_KEY.PLAN_EXECUTION,
       getMessageUiState,
       setMessageUiState,
@@ -322,7 +322,7 @@ describe('thinking renderer honors context.expandUiKey', () => {
     const parsed = assembledMessageRow('reasoning', 'a long private thought')
     const getMessageUiState = vi.fn().mockReturnValue(false)
     const setMessageUiState = vi.fn()
-    const context: RenderContext = {
+    const context: MessageContentRenderContext = {
       expandUiKey: MESSAGE_UI_KEY.PLAN_EXECUTION,
       getMessageUiState,
       setMessageUiState,

@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import type { RenderContext } from '../messageRenderers'
+import type { PlanRenderContext } from '../renderContext'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { createMemo, Show } from 'solid-js'
 import { useCopyButton } from '~/hooks/useCopyButton'
@@ -15,7 +15,7 @@ export interface MarkdownPlanLayoutProps {
   title: string
   /** Markdown body of the plan. Empty string suppresses the body and copy/reply actions. */
   planText: string
-  context?: RenderContext
+  context?: PlanRenderContext
 }
 
 /**

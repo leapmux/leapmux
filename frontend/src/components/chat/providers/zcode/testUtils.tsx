@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import type { RenderContext } from '../../messageRenderers'
+import type { MessageContentRenderContext } from '../../messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '~/lib/jsonPick'
@@ -20,7 +20,7 @@ import './plugin'
  * the row at its first payload: Solid calls `fn` once and inserts the result, while a
  * component re-reads its props.
  */
-export function ZCodeRowView(props: { parsed: unknown, context?: RenderContext }): JSX.Element {
+export function ZCodeRowView(props: { parsed: unknown, context?: MessageContentRenderContext }): JSX.Element {
   const category = () => {
     const parsed = isObject(props.parsed) ? props.parsed : undefined
     return providerFor(AgentProvider.ZCODE)!.transcript.classify({
@@ -33,6 +33,6 @@ export function ZCodeRowView(props: { parsed: unknown, context?: RenderContext }
 }
 
 /** Render one ZCode row and return the testing-library handle. */
-export function renderZCodeRow(parsed: unknown, context?: RenderContext): ReturnType<typeof render> {
+export function renderZCodeRow(parsed: unknown, context?: MessageContentRenderContext): ReturnType<typeof render> {
   return render(() => <ZCodeRowView parsed={parsed} {...(context !== undefined ? { context } : {})} />)
 }

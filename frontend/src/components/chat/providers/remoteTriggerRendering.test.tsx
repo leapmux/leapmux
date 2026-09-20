@@ -1,5 +1,5 @@
 import type { MessageCategory } from '../messageClassifier'
-import type { RenderContext } from '../messageRenderers'
+import type { MessageContentRenderContext } from '../messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -53,7 +53,7 @@ function renderToolUseText(input: Record<string, unknown>): string {
 function renderToolResultContainer(
   resultContent: string,
   toolUseResult?: Record<string, unknown>,
-  context?: RenderContext,
+  context?: MessageContentRenderContext,
 ): HTMLElement {
   const msg = makeRemoteTriggerToolResult(resultContent, toolUseResult)
   const category: MessageCategory = { kind: 'tool_result' }

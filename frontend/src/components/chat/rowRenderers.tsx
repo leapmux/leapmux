@@ -1,7 +1,7 @@
 import type { JSX } from 'solid-js'
-import type { RenderContext } from './messageRenderers'
 import type { AgentPrompt } from './model/divider'
 import type { ChatRow } from './model/row'
+import type { ExpandableToolLayoutContext, RowRenderContext } from './renderContext'
 import type { ChatRowExtraction } from './rowExtraction'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
 import MessageSquare from 'lucide-solid/icons/message-square'
@@ -44,7 +44,7 @@ import { ToolUseLayout } from './widgets/ToolUseLayout'
  */
 export function renderRowContent(
   row: ChatRow,
-  context: RenderContext | undefined,
+  context: RowRenderContext | undefined,
 ): JSX.Element {
   switch (row.kind) {
     case 'tool':
@@ -89,7 +89,7 @@ export function renderRowContent(
  * prompt row, Claude's `agent_prompt`, and a prompt delivered into a child transcript
  * -- and the card must read the same for all three.
  */
-export function AgentPromptView(props: { prompt: AgentPrompt, context?: RenderContext }): JSX.Element {
+export function AgentPromptView(props: { prompt: AgentPrompt, context?: ExpandableToolLayoutContext }): JSX.Element {
   // Key from the shared classification mapper (context.expandUiKey) so it matches
   // the estimator's pre-mount assumption; the literal is the context-less fallback.
   // untrack: the key is stable for a row (kind+provider don't change), so read it
@@ -133,8 +133,8 @@ export function AgentPromptView(props: { prompt: AgentPrompt, context?: RenderCo
  * output it held when the interrupted header was built; a prototype overlay keeps
  * the getters live but leaves them off any later spread. This does both.
  */
-function withCompletionHeader(context: RenderContext | undefined): RenderContext {
-  const overlay = { completionHeader: true } as RenderContext
+function withCompletionHeader(context: RowRenderContext | undefined): RowRenderContext {
+  const overlay: RowRenderContext = { completionHeader: true }
   if (context === undefined)
     return overlay
   for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(context))) {
@@ -171,7 +171,8 @@ function withCompletionHeader(context: RenderContext | undefined): RenderContext
  */
 export function renderExtractedRow(
   extraction: ChatRowExtraction,
-  context: RenderContext | undefined,
+  context: RowRenderContext | undefined,
+  messageMetadata?: unknown,
 ): JSX.Element {
   const row = extraction.kind === 'row' ? extraction.row : null
   // The one row kind the chrome below asks about. Held as its own narrowed binding so
@@ -182,7 +183,7 @@ export function renderExtractedRow(
   const toolCompletion = toolRow !== null && (completion === 'interrupted' || completion === 'error')
   // The outcome note is LeapMux's own statement about a tool row, so it is drawn here
   // rather than by any provider.
-  const note = toolOutcomeNote(context?.sources?.current()?.messageMetadata)
+  const note = toolOutcomeNote(messageMetadata)
   // The note says the agent sent NO result for this call, and LeapMux concluded the
   // outcome itself. The RESULT row then draws no body at all: an empty body reads as
   // "the tool returned nothing", which asserts something the agent never reported.

@@ -1,5 +1,5 @@
 import type { MessageCategory } from '../messageClassifier'
-import type { RenderContext } from '../messageRenderers'
+import type { MessageContentRenderContext } from '../messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -41,7 +41,7 @@ function listAgentsToolResult(resultContent: string, toolUseResult?: Record<stri
 function renderToolResult(
   resultContent: string,
   toolUseResult?: Record<string, unknown>,
-  context?: RenderContext,
+  context?: MessageContentRenderContext,
 ): HTMLElement {
   const msg = listAgentsToolResult(resultContent, toolUseResult)
   const category: MessageCategory = { kind: 'tool_result' }

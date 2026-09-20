@@ -5,7 +5,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import './testMocks'
 
 const { renderMessageContent } = await import('../messageContentRenderer')
-type RenderContext = import('../messageRenderers').RenderContext
+type MessageContentRenderContext = import('../messageContentRenderer').MessageContentRenderContext
 
 /** Construct a Glob tool_use assistant message. */
 function makeGlobToolUse(input: Record<string, unknown> = {}) {
@@ -42,7 +42,7 @@ function makeGlobToolResult(
 }
 
 /** Render a Glob tool_use message and return its text content. */
-function renderToolUseText(context?: RenderContext): string {
+function renderToolUseText(context?: MessageContentRenderContext): string {
   const msg = makeGlobToolUse()
   const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(msg, context, category, AgentProvider.CLAUDE_CODE)
@@ -54,7 +54,7 @@ function renderToolUseText(context?: RenderContext): string {
 function renderToolResultContainer(
   resultContent: string,
   toolUseResult?: Record<string, unknown>,
-  context?: RenderContext,
+  context?: MessageContentRenderContext,
 ): HTMLElement {
   const msg = makeGlobToolResult(resultContent, toolUseResult)
   const category: MessageCategory = { kind: 'tool_result' }
@@ -67,7 +67,7 @@ function renderToolResultContainer(
 function renderToolResultText(
   resultContent: string,
   toolUseResult?: Record<string, unknown>,
-  context?: RenderContext,
+  context?: MessageContentRenderContext,
 ): string {
   return renderToolResultContainer(resultContent, toolUseResult, context).textContent?.trim() ?? ''
 }

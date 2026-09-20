@@ -108,7 +108,7 @@ vi.mock('./MessageBubble', async () => {
               data-message-id={props.message.id}
               data-premeasure={props.premeasureMode ? 'true' : 'false'}
               // The scroll-idle highlight pause is only observable through the host
-              // binding MessageBubble forwards into its RenderContext, so surface it
+              // binding MessageBubble forwards into its focused context, so surface it
               // here for the tests that pin ChatView's highlightActivity window.
               data-syntax-paused={props.host?.syntaxHighlightingPaused?.() ? 'true' : 'false'}
             />

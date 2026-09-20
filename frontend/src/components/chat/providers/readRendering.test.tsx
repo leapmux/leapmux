@@ -1,5 +1,5 @@
 import type { MessageCategory } from '../messageClassifier'
-import type { RenderContext } from '../messageRenderers'
+import type { MessageContentRenderContext } from '../messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -21,7 +21,7 @@ vi.mock('~/lib/tokenCache', () => ({
 
 const { renderMessageContent } = await import('../messageContentRenderer')
 
-function renderClaudeToolResult(parsed: Record<string, unknown>, context?: RenderContext) {
+function renderClaudeToolResult(parsed: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }
   const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
   return render(() => result)
@@ -38,7 +38,7 @@ function makeReadResult(toolUseResult: Record<string, unknown> | undefined, cont
   }
 }
 
-function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: RenderContext) {
+function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(toolUse, context, category, AgentProvider.OPENCODE)
   return render(() => result)

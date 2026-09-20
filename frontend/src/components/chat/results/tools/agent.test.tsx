@@ -1,4 +1,4 @@
-import type { RenderContext } from '~/components/chat/messageRenderers'
+import type { ToolResultRenderContext } from '~/components/chat/renderContext'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { checkKindModule } from '~/test-support/kindTestHarness'
 import { elementText } from '~/test-support/messageRenderProbes'
@@ -24,10 +24,16 @@ describe('agent renderer', () => {
     const call = toolCallFixture('agent', {
       request: { description: 'Subagent', prompt: 'Go.', registryKey: 'child-1' },
     })
-    const context = { subagents: subagentsFrom({ backgroundTask: () => ({ title: 'Fix the failing build' }) as never }) } as unknown as RenderContext
+    const navigation = subagentsFrom({ backgroundTask: () => ({ title: 'Fix the failing build' }) as never })
+    if (navigation === undefined)
+      throw new Error('The subagent test needs navigation capabilities')
+    const context: ToolResultRenderContext = { subagents: navigation }
     expect(elementText(agentRenderer.title(parsedCall(call), context))).toContain('Fix the failing build')
     // A key the registry does not answer for leaves the launch's own words.
-    const empty = { subagents: subagentsFrom({ backgroundTask: () => undefined }) } as unknown as RenderContext
+    const emptyNavigation = subagentsFrom({ backgroundTask: () => undefined })
+    if (emptyNavigation === undefined)
+      throw new Error('The subagent test needs empty navigation capabilities')
+    const empty: ToolResultRenderContext = { subagents: emptyNavigation }
     expect(elementText(agentRenderer.title(parsedCall(call), empty))).toContain('Subagent')
   })
 

@@ -1,4 +1,4 @@
-import type { RenderContext } from '../../messageRenderers'
+import type { MessageContentRenderContext } from '../../messageContentRenderer'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -20,7 +20,7 @@ function result(display: Record<string, unknown>, content = '') {
   return { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'tool', result: { success: true, content, display } } }
 }
 
-function renderDisplay(display: Record<string, unknown>, context?: RenderContext, content = '') {
+function renderDisplay(display: Record<string, unknown>, context?: MessageContentRenderContext, content = '') {
   const parsed = result(display, content)
   return { ...renderZCodeRow(parsed, context), parsed }
 }

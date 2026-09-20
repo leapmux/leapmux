@@ -1,6 +1,6 @@
 import type { MessageBubbleHost } from '../MessageBubble'
 import type { MessageCategory } from '../messageClassifier'
-import type { RenderContext } from '../messageRenderers'
+import type { MessageContentRenderContext } from '../messageContentRenderer'
 import type { PreparedMessage } from '../rowPreparation'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { create } from '@bufbuild/protobuf'
@@ -106,7 +106,7 @@ describe('pi command syntax', () => {
   })
 })
 
-function renderClaudeToolResult(parsed: Record<string, unknown>, context?: RenderContext) {
+function renderClaudeToolResult(parsed: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }
   const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
   return render(() => result)
@@ -121,7 +121,7 @@ function renderClaudeToolResult(parsed: Record<string, unknown>, context?: Rende
 function renderClaudeToolUse(
   toolName: string,
   props: { input: Record<string, unknown> },
-  context?: RenderContext,
+  context?: MessageContentRenderContext,
 ) {
   const args = () => props.input
   const toolUse = () => ({ type: 'tool_use', id: 'toolu_1', name: toolName, input: args() })
@@ -141,7 +141,7 @@ function makeBashResult(toolUseResult: Record<string, unknown> | undefined, cont
   }
 }
 
-function renderCodexItem(item: Record<string, unknown>, context?: RenderContext) {
+function renderCodexItem(item: Record<string, unknown>, context?: MessageContentRenderContext) {
   const parsed = { item, threadId: 't1', turnId: 'r1' }
   const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(parsed, context, category, AgentProvider.CODEX)
@@ -175,7 +175,7 @@ function renderCodexMessageBubble(item: Record<string, unknown>, host?: MessageB
   ))
 }
 
-function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: RenderContext) {
+function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(toolUse, context, category, AgentProvider.OPENCODE)
   return render(() => result)

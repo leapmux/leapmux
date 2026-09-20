@@ -1,13 +1,9 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
-import type { MessageRenderSources } from './messageContextResolver'
-import type { MessageRenderCache } from './messageRenderCache'
 import type { MessageUiKey } from './messageUiKeys'
 import type { ControlResponseSummary } from './model/controlResponse'
 import type { UserMessageAttachment } from './model/row'
-import type { ImageRenderActions, MarkdownRenderContext, MessageUiRenderContext, SubagentNavigation, ToolProgressSource, ToolResultRenderContext } from './renderContext'
-import type { DiffViewPreference } from '~/context/PreferencesContext'
-import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
+import type { ExpandableMarkdownRenderContext, MarkdownRenderContext, MessageUiRenderContext } from './renderContext'
 import Braces from 'lucide-solid/icons/braces'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -33,133 +29,6 @@ import {
 import { ToolUseLayout } from './widgets/ToolUseLayout'
 
 export { markdownCacheNamespace, renderMarkdownForContext, shouldPauseSyntaxHighlighting } from './markdownRendering'
-
-/**
- * Context passed to renderers from MessageBubble.
- *
- * Reactive UI state (`jsonCopied`, `diffView`) is exposed as getter functions
- * so the context object itself stays referentially stable across re-renders.
- * That lets the renderer functions called from MessageBubble skip re-running
- * on UI toggles — only the body components that actually read the getters
- * re-evaluate.
- *
- * Members marked `| undefined` below are assigned by reactive getters that
- * resolve through to undefined while the host is absent/loading; a getter
- * cannot omit a key, so `undefined` is the live "absent for now" state rather
- * than an invalid construction.
- */
-export interface RenderContext extends ToolResultRenderContext {
-  /** ISO timestamp of the message (for relative time in toolbar). */
-  createdAt?: string
-  /** Original, supplemental, linked, and live data resolved for this row. */
-  sources?: MessageRenderSources
-  /** The enclosing renderer displays the retained tool completion. */
-  completionHeader?: boolean
-  workingDir?: string | undefined
-  /** Worker's home directory for tilde (~) path simplification. */
-  homeDir?: string | undefined
-  /** User's preferred diff view. */
-  diffView?: () => DiffViewPreference
-  /** Reply/quote callback — inserts quoted text into the editor. */
-  onReply?: ((quotedText: string) => void) | undefined
-  /** Copy raw JSON to clipboard. */
-  onCopyJson?: () => void
-  /** Whether JSON was just copied (for feedback). */
-  jsonCopied?: () => boolean
-  /** Whether thinking/reasoning bubbles should start expanded by default. */
-  expandAgentThoughts?: boolean
-  /**
-   * The per-message UI key for this row's EXPAND toggle (thinking/reasoning/plan/
-   * agent-prompt bubble), resolved ONCE from the row's kind+provider via
-   * `expandedUiKeyFor`. The thinking-style renderers read it instead of a hand-typed
-   * literal, so they read the SAME key ChatView used for row state. Absent only
-   * when a row is rendered without a MessageBubble context
-   * (isolated tests/previews), where each renderer falls back to its own literal.
-   */
-  expandUiKey?: MessageUiKey
-  /** Per-row/content-version pure render-derivation cache shared by visible + premeasure mounts. */
-  renderCache?: MessageRenderCache | undefined
-  /** Color index assigned to this message's span (−1 = no color). */
-  spanColor?: number
-  /** Tool name or item type from span_type column (reliable, always set for span messages). */
-  spanType?: string | undefined
-  /** Current message span id. */
-  spanId?: string | undefined
-  /** Stable per-message UI state getter for remount-sensitive renderers. */
-  getMessageUiState?: ((key: MessageUiKey) => boolean | undefined) | undefined
-  /** The message host supplies an outer toolbar with shared result actions. */
-  hasOuterToolbar?: boolean
-  /** Stable per-message UI state setter for remount-sensitive renderers. */
-  setMessageUiState?: ((key: MessageUiKey, value: boolean) => void) | undefined
-  /**
-   * Hidden premeasurement render pass. Renderers should keep layout-relevant
-   * structure but skip non-geometry work such as timers, copy chrome, worker
-   * dispatch, span-line drawing, and syntax highlighting.
-   */
-  premeasureMode?: boolean
-  /**
-   * Visible render pass is currently scroll-critical. Renderers should preserve
-   * layout but skip Shiki/worker syntax jobs until this flips back to false.
-   */
-  syntaxHighlightingPaused?: () => boolean
-  /**
-   * A browser text selection is active inside this chat tree. Renderers must not
-   * replace selected text nodes while this is true; doing so clears selection.
-   */
-  textSelectionActive?: () => boolean
-  /**
-   * Whether this row currently sits OUTSIDE the near-viewport band (overscan-
-   * only). Re-read at worker-dispatch time: renderers pass it as the
-   * low-priority thunk for markdown/highlight jobs, so viewport rows' upgrades
-   * preempt offscreen ones and an offscreen row upgrades automatically once
-   * scrolled in (see createWorkerPriorityGate).
-   */
-  rowOffscreen?: (() => boolean) | undefined
-  /** Open (or activate, or revive) a subagent's tab from its registry row. */
-  onOpenSubagent?: ((item: BackgroundTaskItem) => void) | undefined
-  /**
-   * Resolving a subagent row and opening its transcript, without the registry
-   * store. Assembled where the row's own navigation is in scope; the shared
-   * result components read THIS rather than `sources.backgroundTask`.
-   */
-  subagents?: SubagentNavigation
-  /**
-   * Loading and opening the images this row drew, assembled once where the
-   * message and the agent are both in scope. The image bodies read this rather
-   * than the resolver's file-image channel.
-   */
-  images?: ImageRenderActions
-  /**
-   * The live output of a call that has not returned, for the row drawing its
-   * tail. `ToolMessage` takes this as an explicit prop; the context member is
-   * the assembly point its mount reads.
-   */
-  toolProgress?: ToolProgressSource
-  /**
-   * Open an image this row rendered in its own tab.
-   *
-   * `index` addresses the image within its message -- the position
-   * `imagesForRow` gives it over the row's one call. The handler is assembled where the
-   * message and the agent are both in scope (MessageBubble over ChatView), so
-   * this context carries neither; a renderer only says WHICH image.
-   *
-   * `filePath` is present when the provider stated where the image came from.
-   * The handler opens that file instead, which is the same picture at full
-   * resolution and costs no new tab machinery.
-   *
-   * `title` is the row's own display name, supplied by whichever renderer
-   * mounted the image -- it is the one layer that already computed a human
-   * name for this row, so the tab reads the same as the row it came from
-   * instead of restating the raw tool name. Omit it and the bubble falls back
-   * to the span type.
-   */
-  onOpenImage?: ((image: { index: number, filePath?: string, title?: string }) => void) | undefined
-}
-
-export interface MessageContentRenderer {
-  /** Try to render the parsed JSON content. Return null if this renderer doesn't handle it. */
-  render: (parsed: unknown, context?: RenderContext) => JSX.Element | null
-}
 
 /**
  * Read the parent-driven tool-result-expanded flag from a render context.
@@ -217,7 +86,7 @@ type ThinkingBubbleProps = {
   icon: LucideIcon
   label: string
   stateKey: MessageUiKey
-  context?: RenderContext
+  context?: ExpandableMarkdownRenderContext
 } & (
   | { text: string, renderBody?: never }
   | { text?: never, renderBody: () => JSX.Element }
@@ -263,13 +132,13 @@ export function ThinkingBubble(props: ThinkingBubbleProps): JSX.Element {
   )
 }
 
-export function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.Element {
+export function ThinkingMessage(props: { text: string, context?: ExpandableMarkdownRenderContext }): JSX.Element {
   // Key from the shared classification mapper (context.expandUiKey) so it matches
   // the estimator's pre-mount assumption; the literal is the context-less fallback.
   return <ThinkingBubble text={props.text} icon={Brain} label="Thinking" stateKey={props.context?.expandUiKey ?? MESSAGE_UI_KEY.THINKING} {...(props.context !== undefined ? { context: props.context } : {})} />
 }
 
-export function PlanExecutionMessage(props: { text: string, context?: RenderContext }): JSX.Element {
+export function PlanExecutionMessage(props: { text: string, context?: ExpandableMarkdownRenderContext }): JSX.Element {
   return <ThinkingBubble text={props.text} icon={PlaneTakeoff} label="Execute plan" stateKey={props.context?.expandUiKey ?? MESSAGE_UI_KEY.PLAN_EXECUTION} {...(props.context !== undefined ? { context: props.context } : {})} />
 }
 
@@ -281,7 +150,7 @@ export function PlanExecutionMessage(props: { text: string, context?: RenderCont
  * attachment + markdown rendering. Renders nothing when the parsed body has
  * no usable text or attachments.
  */
-export function UserContentMessage(props: { text: string, attachments: UserMessageAttachment[], context?: RenderContext }): JSX.Element {
+export function UserContentMessage(props: { text: string, attachments: UserMessageAttachment[], context?: MarkdownRenderContext }): JSX.Element {
   const hasText = (): boolean => props.text.trim().length > 0
   const hasAttachments = (): boolean => props.attachments.length > 0
   const hasAny = (): boolean => hasText() || hasAttachments()
@@ -327,7 +196,7 @@ export function UserContentMessage(props: { text: string, attachments: UserMessa
  */
 export function renderControlResponseRow(
   display: ControlResponseSummary,
-  context: RenderContext | undefined,
+  context: MarkdownRenderContext | undefined,
 ): JSX.Element {
   if (display.kind === 'feedback') {
     return (
@@ -364,17 +233,14 @@ export function renderControlResponseRow(
  * never reaches this one. This card therefore reads NOTHING out of the payload, which
  * keeps every provider's wire shape inside that provider's plugin.
  *
- * It lives HERE rather than in `results/`, where the other row bodies live, because
- * `renderMessageContent` below must import it: every module under `results/` reaches
- * this one again through `toolRenderers`, and `src/test-support/noImportCycles.test.ts`
- * fails the suite for that cycle. `ToolUseLayout` comes from its own widget module for
- * the same reason -- the `toolRenderers` re-export would close the cycle.
+ * It lives here rather than in `results/` because it is not a tool result. It is the
+ * fallback for any row that the extraction layer cannot turn into the local model.
  */
 export function UnrecognizedMessage(props: {
   payload: unknown
   /** True when a renderer threw for this row, rather than no renderer claiming it. */
   renderFailed?: boolean
-  context?: RenderContext
+  context?: MessageUiRenderContext
 }): JSX.Element {
   const text = (): string => typeof props.payload === 'string' ? props.payload : prettifyJson(props.payload)
   const title = (): string => props.renderFailed

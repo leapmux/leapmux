@@ -5,7 +5,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import './testMocks'
 
 const { renderMessageContent } = await import('../messageContentRenderer')
-type RenderContext = import('../messageRenderers').RenderContext
+type MessageContentRenderContext = import('../messageContentRenderer').MessageContentRenderContext
 
 /** Construct a TaskStop tool_use assistant message. */
 function makeTaskStopMessage(input: Record<string, unknown> = {}) {
@@ -39,7 +39,7 @@ function makeTaskStopResult(resultContent: string) {
 }
 
 /** Render a TaskStop tool_use message and return its text content. */
-function renderToolUseText(input?: Record<string, unknown>, context?: RenderContext): string {
+function renderToolUseText(input?: Record<string, unknown>, context?: MessageContentRenderContext): string {
   const msg = makeTaskStopMessage(input)
   const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(msg, context, category, AgentProvider.CLAUDE_CODE)
@@ -48,7 +48,7 @@ function renderToolUseText(input?: Record<string, unknown>, context?: RenderCont
 }
 
 /** Render a TaskStop tool_result message and return its text content. */
-function renderToolResultText(resultContent: string, context?: RenderContext): string {
+function renderToolResultText(resultContent: string, context?: MessageContentRenderContext): string {
   const msg = makeTaskStopResult(resultContent)
   const category: MessageCategory = { kind: 'tool_result' }
   const result = renderMessageContent(msg, context, category, AgentProvider.CLAUDE_CODE)

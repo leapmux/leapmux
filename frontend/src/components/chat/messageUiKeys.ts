@@ -61,7 +61,7 @@ export function messageUiDefault(key: MessageUiKey, ctx: MessageUiDefaultContext
  * bubble), resolved from the row's classification kind.
  *
  * The SINGLE source of this mapping: ChatView and the renderers (ThinkingBubble /
- * AgentPromptView, via `RenderContext.expandUiKey`) both read it, so hidden premeasure
+ * AgentPromptView, via the `expandUiKey` context capability) both read it, so hidden premeasure
  * and visible render cannot assume different keys.
  *
  * It takes NO provider. Each kind draws through one shared component now, so the key a

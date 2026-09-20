@@ -6,7 +6,7 @@ import './testMocks'
 
 const { renderMessageContent } = await import('../messageContentRenderer')
 const { formatTaskStatus, firstNonEmptyLine } = await import('../rendererUtils')
-type RenderContext = import('../messageRenderers').RenderContext
+type MessageContentRenderContext = import('../messageContentRenderer').MessageContentRenderContext
 
 /** Construct a TaskOutput tool_use assistant message object. */
 function makeTaskOutputMessage() {
@@ -24,7 +24,7 @@ function makeTaskOutputMessage() {
 }
 
 /** Render a TaskOutput message with the given context and return the text content. */
-function renderText(context?: RenderContext): string {
+function renderText(context?: MessageContentRenderContext): string {
   const msg = makeTaskOutputMessage()
   const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(msg, context, category, AgentProvider.CLAUDE_CODE)

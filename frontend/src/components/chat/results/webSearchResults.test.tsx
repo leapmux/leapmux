@@ -1,4 +1,4 @@
-import type { RenderContext } from '../messageRenderers'
+import type { ToolResultRenderContext } from '../renderContext'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
@@ -43,9 +43,9 @@ describe('WebSearchResultsBody', () => {
   // body lists the rest. It reads them from the REQUEST, which is the one place a
   // query lives now that the result carries none.
   describe('further queries', () => {
-    const EXPANDED = { getMessageUiState: () => true } as unknown as RenderContext
+    const EXPANDED: ToolResultRenderContext = { getMessageUiState: () => true }
 
-    function renderQueries(request: { query: string, queries?: string[] } | undefined, context?: RenderContext) {
+    function renderQueries(request: { query: string, queries?: string[] } | undefined, context?: ToolResultRenderContext) {
       return render(() => (
         <WebSearchResultsBody source={{ links: [], summary: '' }} {...(request !== undefined ? { request } : {})} {...(context !== undefined ? { context } : {})} />
       ))

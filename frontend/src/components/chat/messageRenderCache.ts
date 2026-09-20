@@ -153,7 +153,7 @@ export function createMessageRenderCacheStore(maxRows = DEFAULT_MAX_RENDER_CACHE
 }
 
 // The context params below allow an explicit `undefined` renderCache: a full
-// MarkdownRenderContext/RenderContext flows in here, and its reactive getter
+// A MarkdownRenderContext flows in here, and its reactive getter
 // answers undefined while the owning row is absent for now. Every reader
 // optional-chains, so undefined stays the live "no cache yet" state.
 export function cachedRenderValueForString<T>(

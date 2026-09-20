@@ -1,5 +1,5 @@
 import type { MessageCategory } from '../messageClassifier'
-import type { RenderContext } from '../messageRenderers'
+import type { MessageContentRenderContext } from '../messageContentRenderer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
@@ -69,13 +69,13 @@ function makeClaudeToolResultMessage(
   return envelope
 }
 
-function renderClaudeToolUse(name: string, input: Record<string, unknown>, context?: RenderContext) {
+function renderClaudeToolUse(name: string, input: Record<string, unknown>, context?: MessageContentRenderContext) {
   const parsed = makeClaudeToolUseMessage(name, input)
   const category = { kind: 'tool_use' } as MessageCategory
   return render(() => renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE))
 }
 
-function renderClaudeToolResult(parsed: Record<string, unknown>, context?: RenderContext) {
+function renderClaudeToolResult(parsed: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }
   return render(() => renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE))
 }
@@ -99,7 +99,7 @@ function makePiToolEnd(toolName: string, result: Record<string, unknown>, isErro
   }
 }
 
-function renderPiToolUse(toolName: string, args: Record<string, unknown>, context?: RenderContext) {
+function renderPiToolUse(toolName: string, args: Record<string, unknown>, context?: MessageContentRenderContext) {
   const toolUse = makePiToolStart(toolName, args)
   const category: MessageCategory = { kind: 'tool_use' }
   return render(() => renderMessageContent(toolUse, context, category, AgentProvider.PI))
@@ -408,7 +408,7 @@ describe('pi Write tool_result diff selection', () => {
 // Codex fileChange
 // ---------------------------------------------------------------------------
 
-function renderCodexFileChange(item: Record<string, unknown>, context?: RenderContext) {
+function renderCodexFileChange(item: Record<string, unknown>, context?: MessageContentRenderContext) {
   const parsed = { item, threadId: 't1', turnId: 'r1' }
   const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(parsed, context, category, AgentProvider.CODEX)
@@ -479,7 +479,7 @@ describe('codex fileChange routes through the shared diff component', () => {
 // OpenCode tool_call_update
 // ---------------------------------------------------------------------------
 
-function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: RenderContext) {
+function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(toolUse, context, category, AgentProvider.OPENCODE)
   return render(() => result)

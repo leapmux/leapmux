@@ -1,4 +1,4 @@
-import type { RenderContext } from '~/components/chat/messageRenderers'
+import type { ToolLayoutContext } from '~/components/chat/renderContext'
 import { render, screen } from '@solidjs/testing-library'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import { createSignal, Show } from 'solid-js'
@@ -17,7 +17,7 @@ beforeAll(() => {
   } as unknown as typeof ResizeObserver
 })
 
-function makeContext(overrides: Partial<RenderContext> = {}): RenderContext {
+function makeContext(overrides: Partial<ToolLayoutContext> = {}): ToolLayoutContext {
   return {
     onCopyJson: vi.fn(),
     jsonCopied: () => false,

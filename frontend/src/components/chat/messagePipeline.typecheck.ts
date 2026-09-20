@@ -1,3 +1,5 @@
+// @ts-expect-error The orchestration context is private to MessageBubble.
+import type { RenderContext } from './messageRenderers'
 import type { ClassificationInput } from './providers/registry'
 import type { ResolvedMessageContent, RowExtractionInput } from './rowExtractionTypes'
 import type { ParsedMessageContent } from '~/lib/messageParser'
@@ -20,6 +22,8 @@ import { zcodeRelatedMessages, zcodeSpanRole } from './providers/zcode/spanRole'
 // renderer. This module exports nothing and no runner executes it.
 
 declare const brandProbe: unique symbol
+declare const privateRenderContext: RenderContext
+void privateRenderContext
 
 /** A raw parse, as the parser hands it to the resolver. */
 const RAW: ParsedMessageContent = { wrapper: null, topLevel: null, parentObject: undefined, rawText: '', supplementalContent: undefined, messageMetadata: undefined }

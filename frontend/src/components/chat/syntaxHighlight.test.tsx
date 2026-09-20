@@ -1,4 +1,4 @@
-import type { RenderContext } from './messageRenderers'
+import type { MarkdownRenderContext } from './renderContext'
 import { render, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { _resetTokenCache, setCachedTokens, toCachedTokens } from '~/lib/tokenCache'
@@ -10,7 +10,7 @@ vi.mock('~/lib/shikiWorkerClient', () => ({
   tokenizeAsync: vi.fn(),
 }))
 
-const pausedContext = { syntaxHighlightingPaused: () => true } as unknown as RenderContext
+const pausedContext: MarkdownRenderContext = { syntaxHighlightingPaused: () => true }
 
 describe('json/bash async token highlighting', () => {
   beforeEach(async () => {

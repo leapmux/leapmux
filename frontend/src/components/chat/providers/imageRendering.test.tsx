@@ -1,5 +1,6 @@
 import type { MessageCategory } from '../messageClassifier'
-import type { RenderContext } from '../messageRenderers'
+import type { MessageContentRenderContext } from '../messageContentRenderer'
+import type { ImageRenderActions } from '../renderContext'
 import { render, waitFor } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -33,14 +34,21 @@ function parsed(parentObject: Record<string, unknown>, provider: AgentProvider =
   return resolveMessageForRendering({ rawText: JSON.stringify(parentObject), topLevel: parentObject, parentObject, wrapper: null }, provider)
 }
 
-function renderToolResult(provider: AgentProvider, payload: unknown, context?: RenderContext) {
+function renderToolResult(provider: AgentProvider, payload: unknown, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }
   return render(() => renderMessageContent(payload, context, category, provider))
 }
 
-function renderToolUse(provider: AgentProvider, toolUse: Record<string, unknown>, toolName: string, context?: RenderContext) {
+function renderToolUse(provider: AgentProvider, toolUse: Record<string, unknown>, toolName: string, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_use' }
   return render(() => renderMessageContent(toolUse, context, category, provider))
+}
+
+function imageActions(openImage: ImageRenderActions['openImage']): ImageRenderActions {
+  const actions = imageActionsFrom({ openImage })
+  if (actions === undefined)
+    throw new Error('The image test needs image actions')
+  return actions
 }
 
 // ---------------------------------------------------------------------------
@@ -65,7 +73,7 @@ describe('claude Read on an image', () => {
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult(
       [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }],
       { type: 'image', file: { base64: PNG, type: 'image/png', originalSize: 136311 } },
-    ), { spanType: 'Read' } as RenderContext)
+    ), { spanType: 'Read' })
     expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL)
     expect(container.textContent ?? '').not.toContain('base64,')
   })
@@ -84,14 +92,14 @@ describe('claude Read on an image', () => {
           dimensions: { originalWidth: 2480, originalHeight: 2400, displayWidth: 620, displayHeight: 600 },
         },
       },
-    ), { spanType: 'Read' } as RenderContext)
+    ), { spanType: 'Read' })
     expect(container.querySelector('img')?.getAttribute('style') ?? '').toContain('620 / 600')
   })
 
   it('renders a Bash result whose stdout was a data URI as an image', () => {
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult(
       [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }],
-    ), { spanType: 'Bash' } as RenderContext)
+    ), { spanType: 'Bash' })
     expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL)
   })
 
@@ -108,7 +116,7 @@ describe('claude Read on an image', () => {
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult(
       [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }],
       { status: 'completed', description: 'screenshot the page', content: 'done' },
-    ), { spanType: 'Agent' } as RenderContext)
+    ), { spanType: 'Agent' })
     expect(container.textContent ?? '').toContain('screenshot the page')
     expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL)
   })
@@ -117,7 +125,7 @@ describe('claude Read on an image', () => {
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult([
       { type: 'text', text: 'captured the page' },
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } },
-    ]), { spanType: 'mcp__playwright__screenshot' } as RenderContext)
+    ]), { spanType: 'mcp__playwright__screenshot' })
     expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL)
     expect(container.textContent ?? '').toContain('captured the page')
   })
@@ -241,7 +249,7 @@ describe('pi read on an image', () => {
       result: { content: [{ type: 'image', data: PNG, mimeType: 'image/png' }] },
     }
     const start = { type: 'tool_execution_start', toolCallId: 'call-1', toolName: 'read', args: { filePath: '/repo/shot.png' } }
-    const { container } = renderToolResult(AgentProvider.PI, payload, { spanType: 'read', sources: testMessageSources({ request: () => (parsed(start, AgentProvider.PI)) }) } as RenderContext)
+    const { container } = renderToolResult(AgentProvider.PI, payload, { spanType: 'read', sources: testMessageSources({ request: () => (parsed(start, AgentProvider.PI)) }) })
     expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL)
     expect(container.textContent ?? '').not.toContain('base64,')
   })
@@ -259,14 +267,14 @@ describe('shared image guardrails', () => {
   it('draws an SVG, the same way the file viewer renders one off disk', () => {
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult(
       [{ type: 'image', source: { type: 'base64', media_type: 'image/svg+xml', data: 'PHN2Zy8+' } }],
-    ), { spanType: 'Read' } as RenderContext)
+    ), { spanType: 'Read' })
     expect(container.querySelector('img')).not.toBeNull()
   })
 
   it('refuses a type no `<img>` can draw', () => {
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult(
       [{ type: 'image', source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' } }],
-    ), { spanType: 'Read' } as RenderContext)
+    ), { spanType: 'Read' })
     expect(container.querySelector('img')).toBeNull()
     expect(container.textContent ?? '').toContain('unsupported format')
   })
@@ -274,7 +282,7 @@ describe('shared image guardrails', () => {
   it('reserves the intrinsic box by sniffing when the provider states no dimensions', () => {
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult(
       [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: pngBase64(640, 480) } }],
-    ), { spanType: 'Bash' } as RenderContext)
+    ), { spanType: 'Bash' })
     expect(container.querySelector('img')?.getAttribute('data-size-reserved')).toBe('1')
   })
 })
@@ -305,7 +313,7 @@ describe('provider toolResultImages', () => {
     const { container } = renderToolResult(
       AgentProvider.CLAUDE_CODE,
       payload,
-      { spanType: 'mcp__x__y' } as RenderContext,
+      { spanType: 'mcp__x__y' },
     )
     expect(container.querySelectorAll('img')).toHaveLength(1)
     expect(imagesOf(AgentProvider.CLAUDE_CODE, payload, 'mcp__x__y')).toHaveLength(1)
@@ -459,7 +467,7 @@ describe('opening a tool-result image', () => {
       { type: 'image', data: PNG, mimeType: 'image/png' },
       { type: 'text', text: 'second' },
       { type: 'image', data: PNG, mimeType: 'image/png' },
-    ]), { spanType: 'mcp__playwright__screenshot', images: imageActionsFrom({ openImage: onOpenImage }) } as unknown as RenderContext)
+    ]), { spanType: 'mcp__playwright__screenshot', images: imageActions(onOpenImage) })
 
     const buttons = [...container.querySelectorAll('button')].filter(b => b.querySelector('img'))
     expect(buttons).toHaveLength(2)
@@ -472,7 +480,7 @@ describe('opening a tool-result image', () => {
     const { container } = renderToolResult(
       AgentProvider.CLAUDE_CODE,
       claudeToolResult([{ type: 'image', data: PNG, mimeType: 'image/png' }]),
-      { spanType: 'Read', images: imageActionsFrom({ openImage: onOpenImage }), sources: testMessageSources({ request: () => (parsed({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'r1', name: 'Read', input: { file_path: '/repo/shot.png' } }] } })) }) } as unknown as RenderContext,
+      { spanType: 'Read', images: imageActions(onOpenImage), sources: testMessageSources({ request: () => (parsed({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'r1', name: 'Read', input: { file_path: '/repo/shot.png' } }] } })) }) },
     )
     container.querySelector('button')?.click()
     expect(onOpenImage).toHaveBeenCalledWith(expect.objectContaining({ index: 0, filePath: '/repo/shot.png' }))
@@ -486,7 +494,7 @@ describe('opening a tool-result image', () => {
     const { container } = renderToolResult(
       AgentProvider.CLAUDE_CODE,
       claudeToolResult([{ type: 'image', data: PNG, mimeType: 'image/png' }]),
-      { spanType: 'mcp__playwright__screenshot', images: imageActionsFrom({ openImage: onOpenImage }) } as unknown as RenderContext,
+      { spanType: 'mcp__playwright__screenshot', images: imageActions(onOpenImage) },
     )
     container.querySelector('button')?.click()
     expect(onOpenImage).toHaveBeenCalledWith(
@@ -504,7 +512,7 @@ describe('opening a tool-result image', () => {
       rawInput: { description: 'Screenshot the login page' },
       content: [{ type: 'content', content: { type: 'image', mimeType: 'image/png', data: PNG } }],
     }
-    const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read', { images: imageActionsFrom({ openImage: onOpenImage }) } as unknown as RenderContext)
+    const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read', { images: imageActions(onOpenImage) })
     const imageButton = [...container.querySelectorAll('button')].find(b => b.querySelector('img'))
     imageButton?.click()
     expect(onOpenImage).toHaveBeenCalledWith(
@@ -519,7 +527,7 @@ describe('opening a tool-result image', () => {
     const { container } = renderToolResult(
       AgentProvider.CLAUDE_CODE,
       claudeToolResult([{ type: 'image', data: PNG, mimeType: 'image/png' }]),
-      { spanType: 'Bash', images: imageActionsFrom({ openImage: onOpenImage }) } as unknown as RenderContext,
+      { spanType: 'Bash', images: imageActions(onOpenImage) },
     )
     container.querySelector('button')?.click()
     expect(onOpenImage).toHaveBeenCalledOnce()
@@ -536,7 +544,7 @@ describe('opening a tool-result image', () => {
     const { container } = renderToolResult(
       AgentProvider.CLAUDE_CODE,
       claudeToolResult([{ type: 'image', data: PNG, mimeType: 'image/png' }]),
-      { spanType: 'Read' } as RenderContext,
+      { spanType: 'Read' },
     )
     expect(container.querySelector('img')).not.toBeNull()
     expect(container.querySelector('button')).toBeNull()
@@ -555,7 +563,7 @@ describe('opening a tool-result image', () => {
         { type: 'content', content: { type: 'image', mimeType: 'image/png', data: PNG } },
       ],
     }
-    const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read', { images: imageActionsFrom({ openImage: onOpenImage }) } as unknown as RenderContext)
+    const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read', { images: imageActions(onOpenImage) })
     // Scoped to the buttons that WRAP an image: the row also carries an
     // expand toggle, and picking by position would silently start asserting
     // about that one the day the header grows another control.

@@ -2,10 +2,9 @@ import type { Component } from 'solid-js'
 import type { ToolHeaderActionsCallerProps, ToolHeaderActionsLayoutProps } from './messageActions'
 import type { MessageContextResolver } from './messageContextResolver'
 import type { MessageRenderCache } from './messageRenderCache'
-import type { RenderContext } from './messageRenderers'
 import type { MessageUiKey } from './messageUiKeys'
 import type { ChatRow } from './model/row'
-import type { ToolProgressSource } from './renderContext'
+import type { RowRenderContext, ToolProgressSource } from './renderContext'
 import type { ToolCallMeta } from './results/tools/meta'
 import type { RowExtractionContext } from './rowModelCache'
 import type { PreparedMessage } from './rowPreparation'
@@ -32,7 +31,6 @@ import { appendCompletionMarker } from './assembledMessage'
 import { buildRawJsonEnvelope } from './chatRawJson'
 import { codeCopyHostClass } from './markdownEditor/markdownContent.css'
 import { buildMessageActions } from './messageActions'
-import { renderMessageContent } from './messageContentRenderer'
 import { useMessageContextMenu } from './MessageContextMenuHost'
 import { createMessageRenderSources } from './messageContextResolver'
 import { bubbleRunsToRightEdge, isMirroredMessageRow, messageBubbleClass, messageRowClass } from './messageRowLayout'
@@ -44,6 +42,7 @@ import { toolCallMeta } from './results/tools/meta'
 import { extractedRow } from './rowExtraction'
 import { cachedChatRow } from './rowModelCache'
 import { prepareMessage } from './rowPreparation'
+import { renderExtractedRow } from './rowRenderers'
 import { JsonHighlightHtml } from './syntaxHighlight'
 import { ToolHeaderActions } from './ToolHeaderActions'
 
@@ -164,7 +163,7 @@ export interface MessageBubbleHost {
   syntaxHighlightingPaused?: (() => boolean) | undefined
   /** True while the user has a live document selection inside the chat content. */
   textSelectionActive?: (() => boolean) | undefined
-  /** True while this row sits outside the near-viewport band (see RenderContext.rowOffscreen). */
+  /** True while this row sits outside the near-viewport band. */
   rowOffscreen?: (() => boolean) | undefined
 }
 
@@ -364,15 +363,12 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // getter accessors for reactive fields gives stable identity (allocated once
   // per component setup) AND per-field reactivity — body components track only
   // the getters they read, so changes to one field don't cascade to siblings.
-  const renderContext: RenderContext = {
-    sources,
+  const renderContext: RowRenderContext = {
     get hasOuterToolbar() { return !hasInternalActions() },
     get workingDir() { return props.workingDir },
     get homeDir() { return props.homeDir },
     diffView,
     get onReply() { return wrappedOnReply() },
-    get onOpenSubagent() { return props.host?.onOpenSubagent },
-    get onOpenImage() { return props.host?.onOpenImage ? openImage : undefined },
     ...(subagents !== undefined ? { subagents } : {}),
     ...(images !== undefined ? { images } : {}),
     toolProgress,
@@ -390,7 +386,6 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     textSelectionActive: () => props.host?.textSelectionActive?.() ?? false,
     get spanColor() { return props.message.spanColor },
     get spanType() { return props.message.spanType },
-    get spanId() { return props.message.spanId },
     get getMessageUiState() { return props.host?.getMessageUiState },
     get setMessageUiState() { return props.premeasureMode ? undefined : props.host?.setMessageUiState },
     get premeasureMode() { return props.premeasureMode === true },
@@ -448,17 +443,11 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       : base
   }
 
-  // The payload to hand the renderer: the parsed parent object, or the raw text when
-  // the envelope did not parse to an object.
-  const renderPayload = () => displayParsed().parentObject ?? parsed().rawText
-
-  // Render the message body through the row model, ending in the raw-JSON last-resort
-  // span when nothing claims it. It draws EVERY category now: a notification thread
-  // and a turn end each used to take a branch of their own here, and a thread that
-  // states nothing still reaches the same last resort, because the extractor answers
-  // no row for it rather than an empty one.
+  // Render the message body from the row that this bubble already extracted. The
+  // renderer receives row capabilities and message metadata, not resolver sources.
+  // A frame that no extractor claims still reaches the shared raw-payload card.
   const renderContent = () =>
-    renderMessageContent(renderPayload(), renderContext, category(), props.message.agentProvider, props.message.completion, extraction())
+    renderExtractedRow(extraction(), renderContext, displayParsed().messageMetadata)
 
   // The raw-JSON last-resort block (highlighted as token spans via the async
   // token worker), shared by the `hidden` category and the unsupported-provider

@@ -1,5 +1,5 @@
 import type { MessageCategory } from '../messageClassifier'
-import type { RenderContext } from '../messageRenderers'
+import type { MessageContentRenderContext } from '../messageContentRenderer'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal, untrack } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
@@ -22,7 +22,7 @@ vi.mock('~/lib/tokenCache', () => ({
 
 const { renderMessageContent } = await import('../messageContentRenderer')
 
-function renderClaudeToolResult(parsed: Record<string, unknown>, context?: RenderContext) {
+function renderClaudeToolResult(parsed: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }
   return render(() => renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE))
 }
@@ -37,7 +37,7 @@ function makeMcpToolResult(content: unknown, isError = false) {
   }
 }
 
-function renderCodexItem(item: Record<string, unknown>, context?: RenderContext) {
+function renderCodexItem(item: Record<string, unknown>, context?: MessageContentRenderContext) {
   const parsed = { item, threadId: 't1', turnId: 'r1' }
   const category: MessageCategory = { kind: 'tool_use' }
   return render(() => renderMessageContent(parsed, context, category, AgentProvider.CODEX))

@@ -473,7 +473,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
 
   /**
    * Whether a row currently intersects the viewport plus half a screen of
-   * slack — the priority band for worker dispatch (RenderContext.rowOffscreen):
+   * slack — the priority band for worker dispatch (`rowOffscreen` capability):
    * rows outside it dispatch their markdown/highlight jobs at low priority.
    * Deliberately non-reactive: the worker gate re-reads it at each dispatch
    * opportunity, so it needs the CURRENT scroll position, not a subscription.

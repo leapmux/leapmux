@@ -5,7 +5,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import './testMocks'
 
 const { renderMessageContent } = await import('../messageContentRenderer')
-type RenderContext = import('../messageRenderers').RenderContext
+type MessageContentRenderContext = import('../messageContentRenderer').MessageContentRenderContext
 
 /** Construct a Grep tool_use assistant message. */
 function makeGrepToolUse(input: Record<string, unknown> = {}) {
@@ -42,7 +42,7 @@ function makeGrepToolResult(
 }
 
 /** Render a Grep tool_use message and return its text content. */
-function renderToolUseText(context?: RenderContext): string {
+function renderToolUseText(context?: MessageContentRenderContext): string {
   const msg = makeGrepToolUse({ path: '/home/user/project/src' })
   const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(msg, context, category, AgentProvider.CLAUDE_CODE)
@@ -54,7 +54,7 @@ function renderToolUseText(context?: RenderContext): string {
 function renderToolResultText(
   resultContent: string,
   toolUseResult?: Record<string, unknown>,
-  context?: RenderContext,
+  context?: MessageContentRenderContext,
 ): string {
   const msg = makeGrepToolResult(resultContent, toolUseResult)
   const category: MessageCategory = { kind: 'tool_result' }

@@ -1,4 +1,4 @@
-import type { RenderContext } from '../messageRenderers'
+import type { ToolLayoutContext } from '../renderContext'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 import { render } from '@solidjs/testing-library'
 import SquareTerminal from 'lucide-solid/icons/square-terminal'
@@ -17,7 +17,7 @@ const SPAN = { spanId: 'toolu_A', agentSessionId: 'sess-1' }
 function renderCard(initial?: ToolProgressEntry) {
   const [progress, setProgress] = createSignal<ToolProgressEntry | undefined>(initial)
   const [selecting, setSelecting] = createSignal(false)
-  const context = { textSelectionActive: selecting, toolProgress: { liveTail: progress } } as unknown as RenderContext
+  const context: ToolLayoutContext = { textSelectionActive: selecting, toolProgress: { liveTail: progress } }
   const result = render(() => (
     <ToolUseLayout
       icon={SquareTerminal}
@@ -97,7 +97,7 @@ describe('ToolUseLayout running-tool badge', () => {
     const store = createToolProgressStore()
     store.apply('a1', { ...SPAN, elapsedSeconds: 30 })
     const [selecting, setSelecting] = createSignal(false)
-    const context = { textSelectionActive: selecting, toolProgress: { liveTail: () => store.get('a1', SPAN) } } as unknown as RenderContext
+    const context: ToolLayoutContext = { textSelectionActive: selecting, toolProgress: { liveTail: () => store.get('a1', SPAN) } }
     const { getByText, getByTestId } = render(() => (
       <ToolUseLayout
         icon={SquareTerminal}

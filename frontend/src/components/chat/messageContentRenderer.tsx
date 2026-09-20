@@ -1,7 +1,9 @@
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from './messageClassifier'
-import type { RenderContext } from './messageRenderers'
+import type { MessageRenderSources } from './messageContextResolver'
+import type { RowRenderContext } from './renderContext'
 import type { ChatRowExtraction } from './rowExtraction'
+import type { RowExtractionContext, RowExtractionSources } from './rowModelCache'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -15,6 +17,11 @@ import { renderExtractedRow } from './rowRenderers'
 
 const logger = createLogger('messageContentRenderer')
 
+/** Focused capabilities for isolated extraction-and-render callers such as tests. */
+export interface MessageContentRenderContext extends RowRenderContext, Omit<RowExtractionContext, 'sources'> {
+  sources?: RowExtractionSources & Pick<MessageRenderSources, 'current'>
+}
+
 /** A minimal parsed message for an isolated caller that supplies no resolved source. */
 function parsedMessageOf(parsed: unknown): ParsedMessageContent {
   const parentObject = isObject(parsed) ? parsed : undefined
@@ -24,17 +31,18 @@ function parsedMessageOf(parsed: unknown): ParsedMessageContent {
 /** Extract and render an isolated payload, or render the caller's prepared extraction. */
 export function renderMessageContent(
   parsedOrRawJson: unknown,
-  context?: RenderContext,
+  context?: MessageContentRenderContext,
   category?: MessageCategory,
   agentProvider?: AgentProvider,
   messageCompletion?: MessageCompletion,
   extracted?: ChatRowExtraction,
 ): JSX.Element {
   try {
+    const current = context?.sources?.current()
     if (extracted)
-      return renderExtractedRow(extracted, context)
+      return renderExtractedRow(extracted, context, current?.messageMetadata)
 
-    const resolved = context?.sources?.current()
+    const resolved = current
       ?? resolveMessageForRendering(
         category?.kind === 'control_response'
           ? parsedMessageOf(undefined)
@@ -45,6 +53,7 @@ export function renderMessageContent(
     return renderExtractedRow(
       cachedChatRow(context, agentProvider, resolved, category ?? { kind: 'unknown' }, messageCompletion),
       context,
+      resolved.messageMetadata,
     )
   }
   catch (error) {

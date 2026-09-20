@@ -1,4 +1,4 @@
-import type { RenderContext } from '../../messageRenderers'
+import type { MessageContentRenderContext } from '../../messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
@@ -21,7 +21,7 @@ import '../cursor/plugin'
 import '../copilot/plugin'
 import '../testMocks'
 
-function renderTool(tool: Record<string, unknown>, context?: RenderContext) {
+function renderTool(tool: Record<string, unknown>, context?: MessageContentRenderContext) {
   const plugin = providerFor(AgentProvider.OPENCODE)!
   const category = plugin?.transcript.classify(input(tool))
   return render(() => renderMessageContent(tool, context, category, AgentProvider.OPENCODE))

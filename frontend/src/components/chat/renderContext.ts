@@ -1,15 +1,9 @@
 // Focused render capabilities, named for the component that reads them.
+// MessageBubble assembles these capabilities. Each child receives only the
+// intersection that it uses. A result body cannot reach the resolver or a store.
 //
-// `RenderContext` (messageRenderers.tsx) is the ORCHESTRATION bag: MessageBubble
-// builds one per row and every layer below may hand it down. These interfaces are
-// what the shared RESULT components accept instead -- each states the capabilities
-// its component actually uses, so a result body cannot reach the whole service bag
-// (the background-task store, the message resolver, the live progress channel) and
-// a component's real dependencies read from its props.
-//
-// Reactive members are GETTERS or functions, never plain fields: an assembly that
-// spreads a context freezes the values of one pass, and a row that streams would
-// draw the output it held when the button was built.
+// MessageBubble supplies reactive members as getters or functions. Spreading that
+// assembly would freeze one pass, so a streaming row would draw stale output.
 
 import type { MessageRenderCache } from './messageRenderCache'
 import type { MessageUiKey } from './messageUiKeys'
@@ -26,8 +20,8 @@ import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 export interface MarkdownRenderContext {
   /**
    * Per-row/content-version render-derivation cache shared by visible + premeasure
-   * mounts. Carries `| undefined` because a full RenderContext -- whose `renderCache`
-   * getter resolves through to undefined while the host is absent -- is a valid
+   * mounts. Carries `| undefined` because a mounted row context can resolve its
+   * `renderCache` getter to undefined while the host is absent. That row is a valid
    * markdown context, and undefined is the live "absent for now" state.
    */
   renderCache?: MessageRenderCache | undefined
@@ -39,8 +33,8 @@ export interface MarkdownRenderContext {
   textSelectionActive?: () => boolean
   /**
    * The row sits outside the near-viewport band: its upgrades are low-priority.
-   * Carries `| undefined` because a full RenderContext -- whose `rowOffscreen`
-   * getter resolves through to undefined while the host is absent -- is a valid
+   * Carries `| undefined` because a mounted row context can resolve its
+   * `rowOffscreen` getter to undefined while the host is absent. That row is a valid
    * markdown context, and undefined is the live "absent for now" state.
    */
   rowOffscreen?: (() => boolean) | undefined
@@ -134,6 +128,26 @@ export interface ToolResultRenderContext extends ToolLayoutContext, MessageUiRen
   hasOuterToolbar?: boolean
   subagents?: SubagentNavigation
   images?: ImageRenderActions
+}
+
+/** Markdown and stored expansion state for a prose row with one expand control. */
+export interface ExpandableMarkdownRenderContext extends MarkdownRenderContext, MessageUiRenderContext {
+  expandUiKey?: MessageUiKey
+}
+
+/** Tool-layout and stored expansion capabilities for an agent prompt. */
+export interface ExpandableToolLayoutContext extends ToolLayoutContext, MessageUiRenderContext {
+  expandUiKey?: MessageUiKey
+}
+
+/** The plan body, its common tool layout, and its reply action. */
+export interface PlanRenderContext extends ToolLayoutContext {
+  onReply?: ((quotedText: string) => void) | undefined
+}
+
+/** The capability union that the exhaustive row renderer dispatches. */
+export interface RowRenderContext extends ToolResultRenderContext {
+  expandUiKey?: MessageUiKey
 }
 
 /**

@@ -1,12 +1,18 @@
 import type { MessageCategory } from './messageClassifier'
-import type { RenderContext } from './messageRenderers'
+import type { MessageRenderSources } from './messageContextResolver'
+import type { MarkdownRenderContext } from './renderContext'
 import type { ChatRowExtraction } from './rowExtraction'
 import type { ResolvedMessageContent, ToolSpanContext } from './rowExtractionTypes'
 import type { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { fixedCacheKey } from './messageRenderCache'
 import { extractChatRow } from './rowExtraction'
 
-export type RowExtractionContext = Pick<RenderContext, 'renderCache' | 'sources' | 'spanType'>
+export type RowExtractionSources = Pick<MessageRenderSources, 'request' | 'result' | 'role' | 'visibleRows'>
+
+export interface RowExtractionContext extends Pick<MarkdownRenderContext, 'renderCache'> {
+  sources?: RowExtractionSources
+  spanType?: string | undefined
+}
 
 function rowSpanContext(context: RowExtractionContext | undefined): ToolSpanContext {
   return {
