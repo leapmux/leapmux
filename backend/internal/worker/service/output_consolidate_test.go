@@ -470,26 +470,17 @@ func TestConsolidateNotificationThread_CodexMcpStartupStatus(t *testing.T) {
 	})
 }
 
-func TestConsolidateNotificationThread_CodexMetadataNotificationsCollapse(t *testing.T) {
+func TestConsolidateNotificationThread_CodexSkillsChangedCollapses(t *testing.T) {
 	t.Parallel()
 
 	msgs := []json.RawMessage{
 		raw(t, codexMethod("skills/changed", map[string]interface{}{})),
-		raw(t, codexMethod("remoteControl/status/changed", map[string]interface{}{
-			"status":        "connecting",
-			"environmentId": nil,
-		})),
-		raw(t, codexMethod("remoteControl/status/changed", map[string]interface{}{
-			"status":        "disabled",
-			"environmentId": nil,
-		})),
+		raw(t, codexMethod("skills/changed", map[string]interface{}{})),
 	}
 
 	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, msgs)
-	require.Len(t, result, 2)
-	assert.Equal(t, []string{"skills/changed", "remoteControl/status/changed"}, types(t, result))
-	params := parseRaw(t, result[1])["params"].(map[string]interface{})
-	assert.Equal(t, "disabled", params["status"])
+	require.Len(t, result, 1)
+	assert.Equal(t, []string{"skills/changed"}, types(t, result))
 }
 
 func TestConsolidateNotificationThread_DefaultProviderKeepsUnknownProviderNotifications(t *testing.T) {

@@ -51,6 +51,7 @@
     "RemoteControlStatusChanged": "remoteControl/status/changed",
     "HookStarted": "hook/started",
     "HookCompleted": "hook/completed",
+    "RawResponseItemCompleted": "rawResponseItem/completed",
     "ItemStarted": "item/started",
     "ItemCompleted": "item/completed",
     "ThreadCompacted": "thread/compacted",

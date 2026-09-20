@@ -139,6 +139,23 @@ describe('codex MCP OAuth notifications', () => {
   })
 })
 
+describe('codex hook notifications', () => {
+  it('renders the failure status and diagnostic text', () => {
+    expect(renderText([{
+      method: 'hook/completed',
+      params: {
+        run: {
+          status: 'failed',
+          eventName: 'preToolUse',
+          sourcePath: '/hooks/check.sh',
+          statusMessage: 'hook failed',
+          entries: [{ kind: 'error', text: 'permission denied' }],
+        },
+      },
+    }])).toContain('Hook failed: permission denied')
+  })
+})
+
 describe('renderNotificationThread (Codex provider): MCP startup grouping', () => {
   it('does not render skills or remote-control metadata entries', () => {
     const text = renderText([

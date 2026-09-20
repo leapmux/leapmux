@@ -244,6 +244,7 @@ type contentBlock struct {
 	Type      string          `json:"type"`
 	ID        string          `json:"id"`
 	Name      string          `json:"name"`
+	Text      string          `json:"text"`
 	ToolUseID string          `json:"tool_use_id"`
 	Input     json.RawMessage `json:"input"`
 }
@@ -253,7 +254,16 @@ type contentBlock struct {
 type messageEnvelope struct {
 	ParentToolUseID string `json:"parent_tool_use_id"`
 	ToolUseID       string `json:"tool_use_id"`
-	Message         struct {
+	TaskDescription string `json:"task_description"`
+	Origin          struct {
+		Kind         string `json:"kind"`
+		From         string `json:"from"`
+		SenderTaskID string `json:"senderTaskId"`
+		Body         string `json:"body"`
+		Handback     bool   `json:"handback"`
+		Flagged      bool   `json:"flagged"`
+	} `json:"origin"`
+	Message struct {
 		RawContent json.RawMessage `json:"content"`
 		Usage      *struct {
 			InputTokens              int64 `json:"input_tokens"`
@@ -556,6 +566,12 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		msgType == claudeMsgTypeUser || msgType == claudeMsgTypeResult) {
 		a.routeSubagentMessage(content, msgType, &env)
 		return
+	}
+	if msgType == claudeMsgTypeResult && a.persistClaudePeerHandbackResult(&env) {
+		return
+	}
+	if msgType == claudeMsgTypeUser {
+		a.persistClaudeHandbackResult(&env)
 	}
 
 	// Extract agent context metadata from top-level assistant and result

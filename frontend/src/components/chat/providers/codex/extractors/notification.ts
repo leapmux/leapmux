@@ -4,6 +4,7 @@ import { CODEX_ITEM, CODEX_METHOD } from '~/generated/contracts/codex-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
 import { compactionMetaFromBoundary } from '../../../model/notification'
+import { codexHookIsFailureOrUnknown } from '../hookNotifications'
 import { codexMcpOauthIsFailureOrUnknown, codexMcpStartupIsFailureOrUnknown } from '../mcpNotifications'
 import { CODEX_RATE_LIMITS_METHOD, codexRateLimitEntries } from '../rateLimits'
 
@@ -73,6 +74,20 @@ function mcpOauthFailureEntry(parsed: Record<string, unknown>): NotificationEntr
   return { kind: 'status', text: `MCP OAuth login ${outcome}${subject}${detail}` }
 }
 
+function hookFailureEntry(parsed: Record<string, unknown>): NotificationEntry | null {
+  if (!codexHookIsFailureOrUnknown(parsed))
+    return null
+  const run = pickObject(pickObject(parsed, 'params'), 'run')
+  const status = pickString(run, 'status') || 'status unknown'
+  const entries = Array.isArray(run?.entries) ? run.entries : []
+  const entryText = entries
+    .map(entry => pickString(isObject(entry) ? entry : undefined, 'text').trim())
+    .filter(Boolean)
+    .join('; ')
+  const detail = entryText || pickString(run, 'statusMessage').trim()
+  return { kind: 'status', text: `Hook ${status}${detail ? `: ${detail}` : ''}` }
+}
+
 /**
  * The context-compaction item Codex reports, in either of its two envelopes.
  *
@@ -125,6 +140,10 @@ export function codexNotificationEntry(msg: Record<string, unknown>): Notificati
   const startup = startupGroupEntry(msg)
   if (startup)
     return [startup]
+
+  const hookFailure = hookFailureEntry(msg)
+  if (hookFailure)
+    return [hookFailure]
 
   if (msg.method === CODEX_RATE_LIMITS_METHOD)
     return codexRateLimitEntries(msg)

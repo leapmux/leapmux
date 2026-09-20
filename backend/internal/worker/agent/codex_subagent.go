@@ -42,6 +42,9 @@ const (
 	codexPendingItemCompleted
 	codexPendingTurnStarted
 	codexPendingTurnCompleted
+	codexPendingHookCompleted
+	codexPendingMcpOauthCompleted
+	codexPendingMcpStartupUpdated
 )
 
 type codexPendingChildEvent struct {
@@ -70,6 +73,9 @@ type codexChildState struct {
 	pendingEventBytes      int
 	pendingOutputDropped   bool
 	turnID                 string
+	lastReportItemID       string
+	reportCandidateItemID  string
+	reportCandidateText    string
 }
 
 func (s *codexChildState) displayTitle() string {
@@ -274,6 +280,9 @@ func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage, parentThr
 	transition := codexChildTransition{status: bgtask.StatusRunning}
 	switch act.Kind {
 	case "started":
+		if prompt := a.takeCodexSpawnPrompt(act.ID); prompt != "" {
+			a.rememberCollabChildPrompt(act.AgentThreadID, prompt)
+		}
 		if !a.registerCodexV2ChildStart(act.AgentThreadID, act.ID, parentThreadID) {
 			return true
 		}
@@ -310,6 +319,71 @@ func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage, parentThr
 		}
 	}
 	return true
+}
+
+func (a *CodexAgent) rememberCodexSpawnPrompt(callID, prompt string) {
+	if callID == "" || strings.TrimSpace(prompt) == "" {
+		return
+	}
+	a.mu.Lock()
+	if a.codexSpawnPrompts == nil {
+		a.codexSpawnPrompts = make(map[string]string)
+	}
+	a.codexSpawnPrompts[callID] = prompt
+	var threadID string
+	for id, state := range a.collabChildren {
+		if state != nil && state.spawnCorrelationID == callID {
+			state.prompt = prompt
+			threadID = id
+			break
+		}
+	}
+	a.mu.Unlock()
+
+	if threadID == "" {
+		return
+	}
+	if route, ok := a.lookupCodexChildRoute(threadID); ok {
+		if err := route.parentSink.PersistChildPrompt(route.agentID, prompt); err != nil {
+			slog.Warn("codex persist late V2 prompt failed", "thread", threadID, "error", err)
+		}
+	}
+}
+
+func (a *CodexAgent) takeCodexSpawnPrompt(callID string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	prompt := a.codexSpawnPrompts[callID]
+	delete(a.codexSpawnPrompts, callID)
+	return prompt
+}
+
+func (a *CodexAgent) recordCodexChildReportCandidate(threadID, itemID, text string, publishNow bool) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	state := a.collabChildren[threadID]
+	if state == nil || state.agentPath == "" {
+		return "", false
+	}
+	state.reportCandidateItemID = itemID
+	state.reportCandidateText = text
+	if !publishNow || state.lastReportItemID == itemID {
+		return "", false
+	}
+	state.lastReportItemID = itemID
+	return state.displayTitle(), true
+}
+
+func (a *CodexAgent) takeCodexChildReportCandidate(threadID string) (label, text string, ok bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	state := a.collabChildren[threadID]
+	if state == nil || state.agentPath == "" || state.reportCandidateItemID == "" ||
+		state.reportCandidateItemID == state.lastReportItemID || strings.TrimSpace(state.reportCandidateText) == "" {
+		return "", "", false
+	}
+	state.lastReportItemID = state.reportCandidateItemID
+	return state.displayTitle(), state.reportCandidateText, true
 }
 
 func codexAgentPathTitle(agentPath string) string {

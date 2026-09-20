@@ -156,9 +156,15 @@ func TestNativeCopilotSubagentOpensItsOwnTranscript(t *testing.T) {
 	require.Len(t, child.Messages(), 2)
 	assert.Contains(t, string(child.Messages()[1].Content), "The diff looks correct.")
 
+	parentBeforeCompletion := len(sink.Messages())
+	childBeforeCompletion := len(child.Messages())
 	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentCompleted, map[string]any{
 		"toolCallId": "task-1", "agentName": "reviewer", "agentDisplayName": "Reviewer",
 	}))
+	assert.Len(t, sink.Messages(), parentBeforeCompletion,
+		"a child completion notification must not leak into the parent transcript")
+	require.Len(t, child.Messages(), childBeforeCompletion+1)
+	assert.Contains(t, string(child.Messages()[childBeforeCompletion].Content), contracts.CopilotEventSubagentCompleted)
 	row, ok = copilotBackgroundRow(t, sink, "agent-1")
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusCompleted, row.Status)
@@ -210,10 +216,18 @@ func TestNativeCopilotSubagentOutcomes(t *testing.T) {
 			a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentStarted, map[string]any{
 				"toolCallId": "task-1", "agentName": "checker",
 			}))
-			a.HandleOutput(nativeCopilotEvent(t, "agent-1", test.event, test.data))
 			row, ok := copilotBackgroundRow(t, sink, "agent-1")
 			require.True(t, ok)
+			child, ok := sink.ChildSink(row.ChildAgentID).(*testSink)
+			require.True(t, ok)
+			parentBefore := len(sink.Messages())
+			a.HandleOutput(nativeCopilotEvent(t, "agent-1", test.event, test.data))
+			row, ok = copilotBackgroundRow(t, sink, "agent-1")
+			require.True(t, ok)
 			assert.Equal(t, test.want, row.Status)
+			assert.Len(t, sink.Messages(), parentBefore)
+			require.Len(t, child.Messages(), 1, "the final lifecycle notification stays in the child")
+			assert.Contains(t, string(child.Messages()[0].Content), test.event)
 		})
 	}
 }

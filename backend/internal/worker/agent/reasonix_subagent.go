@@ -17,6 +17,7 @@ func reasonixSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservatio
 	}
 	var input struct {
 		Description string `json:"description"`
+		Prompt      string `json:"prompt"`
 	}
 	// Invalid or incomplete arguments keep the same launch layout.
 	title := ""
@@ -26,12 +27,13 @@ func reasonixSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservatio
 	if title == "" {
 		title = "Reasonix subagent"
 	}
-	// This registry path does not create a child transcript, so it retains no prompt copy.
 	return &acpSubagentObservation{
-		RowKey: tc.ToolCallID,
-		Title:  title,
-		Status: bgtask.StatusRunning,
-		Spawns: true,
+		RowKey:        tc.ToolCallID,
+		Title:         title,
+		Status:        bgtask.StatusRunning,
+		ChildAgentKey: tc.ToolCallID,
+		Prompt:        input.Prompt,
+		Spawns:        true,
 	}
 }
 
@@ -85,5 +87,22 @@ func reasonixSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubag
 			}
 		}
 	}
-	return &acpSubagentObservation{RowKey: tcu.ToolCallID, Status: status, CloseRow: true, Mode: acpModeCloseOnly}
+	hasOutcomeEnvelope := toolName != contracts.ReasonixToolReadOnlyTask
+	return &acpSubagentObservation{
+		RowKey: tcu.ToolCallID, Status: status, CloseRow: true, Mode: acpModeCloseOnly,
+		Report: subagentReport{Text: reasonixSubagentReport(acpToolCallText(tcu.Content), hasOutcomeEnvelope)},
+	}
+}
+
+func reasonixSubagentReport(text string, hasOutcomeEnvelope bool) string {
+	text = strings.TrimSpace(text)
+	if !hasOutcomeEnvelope {
+		return text
+	}
+	text = reasonixOutcomeHeader.ReplaceAllString(text, "")
+	text = strings.TrimSpace(text)
+	if report, ok := strings.CutPrefix(text, "Final answer:"); ok {
+		return strings.TrimSpace(report)
+	}
+	return text
 }

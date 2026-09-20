@@ -71,7 +71,6 @@ describe('classifyCodexMessage', () => {
 
   it.each([
     'hook/started',
-    'hook/completed',
   ])('hides %s notifications', (method) => {
     const parent = {
       method,
@@ -83,6 +82,22 @@ describe('classifyCodexMessage', () => {
     }
     const result = classifyCodexMessage(input(parent))
     expect(result).toEqual({ kind: 'hidden' })
+  })
+
+  it('renders a failed hook completion as a notification', () => {
+    const parent = {
+      method: 'hook/completed',
+      params: { run: { status: 'failed', statusMessage: 'permission denied' } },
+    }
+    expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+  })
+
+  it('hides a successful hook completion', () => {
+    const parent = {
+      method: 'hook/completed',
+      params: { run: { status: 'completed' } },
+    }
+    expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('classifies mixed wrappers when context_cleared follows a hidden Codex lifecycle event', () => {

@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 )
@@ -17,10 +19,23 @@ type cursorToolSource struct {
 	// resolveStorePath reports the store file of the session that runs now. The
 	// transcript calls it for every agent message.
 	resolveStorePath func() string
+	// observeRecord copies provider data that belongs in another transcript.
+	// Cursor's ACP stream omits the subagent report, but its store keeps it in
+	// the completed Task record.
+	observeRecord func(toolCallID string, record cursorToolRecord)
 }
 
 func newCursorToolTranscript(ctx context.Context, services ProviderServices, storePath func() string) *toolTranscript {
-	source := &cursorToolSource{store: &cursorToolStore{}, resolveStorePath: storePath}
+	return newCursorToolTranscriptWithObserver(ctx, services, storePath, nil)
+}
+
+func newCursorToolTranscriptWithObserver(
+	ctx context.Context,
+	services ProviderServices,
+	storePath func() string,
+	observe func(toolCallID string, record cursorToolRecord),
+) *toolTranscript {
+	source := &cursorToolSource{store: &cursorToolStore{}, resolveStorePath: storePath, observeRecord: observe}
 	// The store holds one database handle for the session's store file. The agent's
 	// context ending is what releases it, because the transcript has no teardown call.
 	context.AfterFunc(ctx, source.store.reset)
@@ -49,6 +64,9 @@ func (c *cursorToolSource) readSupplements(ctx context.Context, path string, pen
 	}
 	out := make(map[string][]byte, len(records))
 	for id, record := range records {
+		if c.observeRecord != nil {
+			c.observeRecord(id, record)
+		}
 		supplement, err := cursorToolSupplement(pending[id].Original, record)
 		if err != nil {
 			return out, err
@@ -76,4 +94,84 @@ func cursorToolSupplement(original []byte, record cursorToolRecord) ([]byte, err
 		return nil, err
 	}
 	return json.Marshal(supplement)
+}
+
+func (a *CursorCLIAgent) observeCursorTaskRecord(toolCallID string, record cursorToolRecord) {
+	report := cursorTaskReport(record.content)
+	if toolCallID == "" || report == "" {
+		return
+	}
+	a.mu.Lock()
+	if a.reportedTaskCalls[toolCallID] {
+		a.mu.Unlock()
+		return
+	}
+	if a.taskStoreReports == nil {
+		a.taskStoreReports = make(map[string]string)
+	}
+	a.taskStoreReports[toolCallID] = report
+	allowed := a.taskReportExtensions[toolCallID]
+	a.mu.Unlock()
+	if allowed {
+		a.persistReadyCursorTaskReport(toolCallID, report)
+	}
+}
+
+func (a *CursorCLIAgent) noteCursorTaskExtension(toolCallID string) {
+	a.mu.Lock()
+	if a.taskReportExtensions == nil {
+		a.taskReportExtensions = make(map[string]bool)
+	}
+	a.taskReportExtensions[toolCallID] = true
+	report := a.taskStoreReports[toolCallID]
+	a.mu.Unlock()
+	if report != "" {
+		a.persistReadyCursorTaskReport(toolCallID, report)
+	}
+}
+
+func (a *CursorCLIAgent) persistReadyCursorTaskReport(toolCallID, report string) {
+	a.mu.Lock()
+	if a.reportedTaskCalls[toolCallID] {
+		a.mu.Unlock()
+		return
+	}
+	a.mu.Unlock()
+	childID, _, found, err := a.sink.LookupBackgroundTask(toolCallID)
+	if err != nil {
+		slog.Warn("cursor task report child lookup failed", "agent_id", a.agentID, "tool_call_id", toolCallID, "error", err)
+		return
+	}
+	if !found || childID == "" {
+		return
+	}
+	if !persistSubagentReport(a.sink.ChildSink(childID), subagentReport{Label: "Cursor subagent", Text: report}) {
+		return
+	}
+	a.mu.Lock()
+	if a.reportedTaskCalls == nil {
+		a.reportedTaskCalls = make(map[string]bool)
+	}
+	a.reportedTaskCalls[toolCallID] = true
+	delete(a.taskStoreReports, toolCallID)
+	a.mu.Unlock()
+}
+
+func cursorTaskReport(content json.RawMessage) string {
+	var block struct {
+		ToolName string `json:"toolName"`
+		Result   string `json:"result"`
+	}
+	if json.Unmarshal(content, &block) != nil || !strings.EqualFold(block.ToolName, contracts.CursorToolTask) {
+		return ""
+	}
+	text := strings.TrimSpace(block.Result)
+	const responseStart = "<response>"
+	const responseEnd = "</response>"
+	if _, after, ok := strings.Cut(text, responseStart); ok {
+		if report, _, found := strings.Cut(after, responseEnd); found {
+			return strings.TrimSpace(report)
+		}
+	}
+	return text
 }

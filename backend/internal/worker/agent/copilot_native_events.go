@@ -477,7 +477,7 @@ func (a *copilotAgent) finishNativeSubagent(raw []byte, event copilotEvent) {
 		return
 	}
 	delete(a.children, child.nativeAgentID)
-	a.persistNativeFrameTo(child.owner, raw, SpanInfo{})
+	a.persistNativeFrameTo(child.sink, raw, SpanInfo{})
 	logRegistryRefusal("copilot", "close subagent", child.owner.CloseBackgroundTask(child.nativeAgentID, status))
 	child.sink.ReportProgress(ResetProgress())
 	child.sink.ResetSpans()

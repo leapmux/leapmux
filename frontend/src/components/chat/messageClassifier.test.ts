@@ -534,11 +534,18 @@ describe('classifyMessage', () => {
   // divider as raw JSON in the subagent's own transcript.
   describe('worker-written notification', () => {
     const divider = { type: 'subagent_ended', status: 'completed' }
+    const report = { type: 'subagent_report', label: 'Reviewer', text: 'Report' }
 
     it.each(ALL_PROVIDERS)('classifies subagent_ended as a notification for provider %s', (provider) => {
       const result = classifyMessage(input(divider, null, provider))
       expect(result.kind).toBe('notification')
       expect(result.kind === 'notification' && result.messages).toEqual([divider])
+    })
+
+    it.each(ALL_PROVIDERS)('classifies subagent_report as a notification for provider %s', (provider) => {
+      const result = classifyMessage(input(report, null, provider))
+      expect(result.kind).toBe('notification')
+      expect(result.kind === 'notification' && result.messages).toEqual([report])
     })
 
     it('carries every final status through unchanged', () => {

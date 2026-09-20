@@ -676,7 +676,12 @@ func TestHandleZCodeOutput_SubagentSpawnOpensNoSpanAndRemembersThePrompt(t *test
 	require.Equal(t, 1, sink.MessageCount())
 	assert.Equal(t, 0, len(sink.OpenSpans()),
 		"a subagent spawn holds no rail: its output lands in a child transcript")
-	assert.Equal(t, "investigate the flake", a.toolCallPrompts.take("spawn-1"))
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	require.Len(t, child.Messages(), 1)
+	assert.JSONEq(t, `{"content":"investigate the flake"}`, string(child.Messages()[0].Content))
 }
 
 // The background-task path creates the row (and the child transcript). The tool

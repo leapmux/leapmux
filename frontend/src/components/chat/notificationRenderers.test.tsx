@@ -1,4 +1,6 @@
+import { render } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it } from 'vitest'
+import { ALL_PROVIDERS } from '~/generated/contracts/providers'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { elementText, renderThreadElement, renderThreadGlyph, renderThreadHasIcon, renderThreadText } from '~/test-support/messageRenderProbes'
@@ -772,5 +774,27 @@ describe('the notification thread: subagent_ended', () => {
     const compaction = renderThreadGlyph([boundary], AgentProvider.CLAUDE_CODE)
     expect(compaction).not.toBeNull()
     expect(renderThreadGlyph([{ type: 'subagent_ended', status: 'completed' }])).not.toBe(compaction)
+  })
+})
+
+describe('the notification thread: subagent_report', () => {
+  it.each(ALL_PROVIDERS)('renders the agent label and Markdown report for provider %s', (provider) => {
+    const { container } = render(() => renderThreadElement([
+      { type: 'subagent_report', label: 'Parser reviewer', text: '**Finding**\n\n- Fixed' },
+    ], provider))
+
+    expect(container.textContent).toContain('Parser reviewer reported')
+    expect(container.querySelector('strong')?.textContent).toBe('Finding')
+    expect(container.querySelector('li')?.textContent).toBe('Fixed')
+  })
+
+  it('shows Claude Code\'s flagged delivery status', () => {
+    expect(renderText([{ type: 'subagent_report', label: 'Reviewer', text: 'Check this', status: 'flagged' }]))
+      .toContain('Reviewer reported — security warning')
+  })
+
+  it('states that Claude Code withheld a report from the parent', () => {
+    expect(renderText([{ type: 'subagent_report', label: 'Reviewer', text: 'Child-only report', status: 'withheld' }]))
+      .toContain('Reviewer report withheld')
   })
 })

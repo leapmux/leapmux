@@ -151,6 +151,9 @@ type CodexAgent struct {
 	// deltas carry only an item ID, so this index restores the transcript route.
 	// Guarded by mu.
 	collabChildItems map[string]string
+	// codexSpawnPrompts holds Multi-Agent V2 spawn arguments until the matching
+	// subAgentActivity supplies the child thread ID.
+	codexSpawnPrompts map[string]string
 	// interruptCalls coalesces concurrent interrupts for one Codex turn. A
 	// successful call stays cached until the turn ends, so a late retry cannot
 	// send another request for an already interrupted turn. Guarded by mu.
@@ -702,6 +705,7 @@ func (a *CodexAgent) ClearContext() (string, error) {
 	// completed run keeps its route only while its root thread lives.
 	clear(a.collabChildren)
 	clear(a.collabChildItems)
+	clear(a.codexSpawnPrompts)
 	clear(a.incompleteTools)
 	a.incompleteToolOrder = 0
 	a.mu.Unlock()

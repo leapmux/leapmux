@@ -129,6 +129,46 @@ func piFinalStatus(s string) (bgtask.Status, bool) {
 	}
 }
 
+func piEnsureSubagentChild(sink subagentServices, toolCallID, title, prompt string) string {
+	if sink == nil || toolCallID == "" {
+		return ""
+	}
+	childID, _, found, err := sink.LookupBackgroundTask(toolCallID)
+	if err != nil {
+		slog.Warn("pi subagent child lookup failed", "tool_call_id", toolCallID, "error", err)
+		return ""
+	}
+	if !found || childID == "" {
+		childID, err = sink.EnsureChildAgent(toolCallID, toolCallID, title)
+		if err != nil {
+			slog.Warn("pi ensure subagent child failed", "tool_call_id", toolCallID, "error", err)
+			return ""
+		}
+	}
+	if err := sink.PersistChildPrompt(childID, prompt); err != nil {
+		slog.Warn("pi persist subagent prompt failed", "tool_call_id", toolCallID, "error", err)
+	}
+	logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: toolCallID, Kind: bgtask.KindSubagent, ChildAgentID: childID,
+		Title: title, Status: bgtask.StatusRunning,
+	}))
+	return childID
+}
+
+func piSubagentReportText(result json.RawMessage) string {
+	var envelope piPartialResult
+	if json.Unmarshal(result, &envelope) != nil {
+		return ""
+	}
+	var report strings.Builder
+	for _, block := range envelope.Content {
+		if block.Type == PiContentBlockText {
+			report.WriteString(block.Text)
+		}
+	}
+	return strings.TrimSpace(report.String())
+}
+
 // piAgentIDRe matches a standalone "Agent ID: <id>" line in a Pi tool result.
 // Anchored to a line start so free-form model prose that merely mentions
 // "Agent ID:" mid-sentence does not produce a phantom registry row.
@@ -144,6 +184,20 @@ func piApplySubagentEnd(sink subagentServices, result json.RawMessage, toolCallI
 	var envelope piPartialResult
 	var d piSubagentDetails
 	if json.Unmarshal(result, &envelope) == nil && json.Unmarshal(envelope.Details, &d) == nil && d.Status != "" {
+		childID := ""
+		childStatus := bgtask.StatusUnspecified
+		childFound := false
+		if d.AgentID != "" {
+			var err error
+			childID, childStatus, childFound, err = sink.LookupBackgroundTask(d.AgentID)
+			if err != nil {
+				slog.Warn("pi subagent stable child lookup failed", "agent_id", d.AgentID, "error", err)
+			}
+		}
+		if childID == "" {
+			childID = piEnsureSubagentChild(sink, toolCallID, title, prompt)
+			_, childStatus, childFound, _ = sink.LookupBackgroundTask(toolCallID)
+		}
 		// A rename that failed leaves the row under its original key. The final status
 		// must still reach that key, or the registry keeps a Running row for a call
 		// that ended: piApplySubagentNotification cannot repair it, because it writes
@@ -158,18 +212,18 @@ func piApplySubagentEnd(sink subagentServices, result json.RawMessage, toolCallI
 		if d.Status == "background" {
 			if agentID := d.AgentID; renamed && agentID != "" && agentID != toolCallID {
 				// Link the background run to its child transcript after the registry rename.
-				if childID, err := sink.EnsureChildAgent(toolCallID, agentID, title); err != nil {
+				if linkedChildID, err := sink.EnsureChildAgent(toolCallID, agentID, title); err != nil {
 					slog.Warn("pi background re-key ensure child failed", "tool_call_id", toolCallID, "agent_id", agentID, "error", err)
 				} else {
 					// The child transcript exists only from here, so this is where
 					// the spawn prompt becomes its first message.
-					if err := sink.PersistChildPrompt(childID, prompt); err != nil {
+					if err := sink.PersistChildPrompt(linkedChildID, prompt); err != nil {
 						slog.Warn("pi background re-key persist prompt failed", "tool_call_id", toolCallID, "error", err)
 					}
 					logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{
 						RowKey:       agentID,
 						Kind:         bgtask.KindSubagent,
-						ChildAgentID: childID,
+						ChildAgentID: linkedChildID,
 						Title:        title,
 						Status:       bgtask.StatusRunning,
 					}))
@@ -178,6 +232,9 @@ func piApplySubagentEnd(sink subagentServices, result json.RawMessage, toolCallI
 			// No agent id, or a rename that failed: the row stays keyed by toolCallID
 			// as-is (still running).
 			return
+		}
+		if report := piSubagentReportText(result); report != "" && childID != "" && (!childFound || !childStatus.IsFinished()) {
+			persistSubagentReport(sink.ChildSink(childID), subagentReport{Text: report})
 		}
 		// An unrecognized status must NOT give a final status to the row (piFinalStatus
 		// returns ok=false for it). Upsert as Running so a future final event
@@ -216,6 +273,7 @@ func piApplySubagentEnd(sink subagentServices, result json.RawMessage, toolCallI
 	}
 	if strings.Contains(s, "Agent ID:") {
 		if m := piAgentIDRe.FindStringSubmatch(s); len(m) > 1 {
+			piEnsureSubagentChild(sink, toolCallID, title, prompt)
 			rowTitle := title
 			if rowTitle == "" {
 				rowTitle = "background agent " + m[1]
@@ -230,11 +288,12 @@ func piApplySubagentEnd(sink subagentServices, result json.RawMessage, toolCallI
 // piApplySubagentNotification sniffs a customType:"subagent-notification"
 // message and updates/closes the registry from its details (including
 // details.others[] for group nudges). The message itself still persists.
-func piApplySubagentNotification(sink BackgroundTaskServices, raw []byte) {
+func piApplySubagentNotification(sink subagentServices, raw []byte) {
 	type details struct {
 		ID          string `json:"id"`
 		Status      string `json:"status"`
 		Description string `json:"description"`
+		Result      string `json:"resultPreview"`
 	}
 	var envelope struct {
 		Message struct {
@@ -254,6 +313,12 @@ func piApplySubagentNotification(sink BackgroundTaskServices, raw []byte) {
 			return
 		}
 		if status, ok := piFinalStatus(d.Status); ok {
+			childID, current, found, err := sink.LookupBackgroundTask(d.ID)
+			if err != nil {
+				slog.Warn("pi subagent notification child lookup failed", "agent_id", d.ID, "error", err)
+			} else if found && childID != "" && !current.IsFinished() {
+				persistSubagentReport(sink.ChildSink(childID), subagentReport{Text: d.Result})
+			}
 			logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: d.ID, Kind: bgtask.KindSubagent, Title: d.Description, Status: status}))
 		} else {
 			logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: d.ID, Kind: bgtask.KindSubagent, Title: d.Description, Status: bgtask.StatusRunning}))

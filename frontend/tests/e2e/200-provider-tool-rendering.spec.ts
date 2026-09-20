@@ -970,6 +970,29 @@ test.describe('provider tool rendering', () => {
     await expect(row.getByRole('button', { name: 'Copy', exact: true })).toHaveCount(0)
   })
 
+  test('renders a mirrored subagent report as Markdown in the parent transcript', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
+    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-subagent-report-'), {
+      agentProvider: AgentProvider.CODEX,
+      ...realAgentOpenOptions(realAgentSettings(AgentProvider.CODEX)),
+    })
+    const [seq] = await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [{
+      id: 'subagent-report',
+      provider: AgentProvider.CODEX,
+      content: {
+        type: 'notification_thread',
+        messages: [{ type: 'subagent_report', label: 'Parser reviewer', text: '**Report heading**\n\n- Finding one' }],
+        old_seqs: [],
+      },
+    }])
+
+    await page.reload()
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const row = page.locator(`[data-seq="${seq}"]`).filter({ visible: true })
+    await expect(row).toContainText('Parser reviewer reported')
+    await expect(row.locator('strong')).toHaveText('Report heading')
+    await expect(row.locator('li')).toHaveText('Finding one')
+  })
+
   test('uses a late supplement for the scroll-rail preview', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
     await page.setViewportSize({ width: 720, height: 380 })
     const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-late-preview-'), {

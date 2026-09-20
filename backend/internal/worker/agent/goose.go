@@ -455,9 +455,8 @@ func fallbackGooseCLIModes() []*leapmuxv1.AvailableOption {
 
 // gooseSubagentFromToolCall detects Goose's spawn tool_call by the structured
 // _meta.goose.toolCall marker {toolName:"delegate", extensionName:"summon"}.
-// This is the spawn detector (NOT title guessing). Registry-only here -- the
-// child transcript is fed by the tool-request updates; the spawn tool_call
-// itself just registers a running row with the spawn title.
+// This is the spawn detector, not title guessing. The spawn creates the child
+// transcript, and later tool-request updates add its live activity.
 func gooseSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservation {
 	if len(tc.Meta) == 0 {
 		return nil
@@ -482,14 +481,13 @@ func gooseSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservation {
 		title = "Goose subagent"
 	}
 	return &acpSubagentObservation{
-		RowKey: tc.ToolCallID,
-		Title:  title,
-		Status: bgtask.StatusRunning,
-		Spawns: true,
+		RowKey:        tc.ToolCallID,
+		Title:         title,
+		Status:        bgtask.StatusRunning,
+		ChildAgentKey: tc.ToolCallID,
+		Spawns:        true,
 		// Goose's delegate tool puts its task text in `instructions`, not `prompt`
-		// (crates/goose/src/agents/platform_extensions/summon.rs). The child
-		// transcript is created later, on the first forwarded tool request, so
-		// applySubagentObservation holds this until then.
+		// (crates/goose/src/agents/platform_extensions/summon.rs).
 		Prompt: gooseDelegateInstructions(tc.RawInput),
 	}
 }
@@ -558,11 +556,19 @@ func gooseSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagent
 	// the final update is correct. CloseRow is idempotent: a plain tool with
 	// no registry row is a no-op (the upsert path finds no row to close).
 	if acpStatusIsFinal(tcu.Status) {
+		report := ""
+		var input struct {
+			Async bool `json:"async"`
+		}
+		if json.Unmarshal(tcu.RawInput, &input) == nil && !input.Async {
+			report = acpToolCallText(tcu.Content)
+		}
 		return &acpSubagentObservation{
 			RowKey:   tcu.ToolCallID,
 			Status:   acpFinalStatus(tcu.Status),
 			CloseRow: true,
 			Mode:     acpModeCloseOnly,
+			Report:   subagentReport{Text: report},
 		}
 	}
 	if len(tcu.Meta) == 0 {

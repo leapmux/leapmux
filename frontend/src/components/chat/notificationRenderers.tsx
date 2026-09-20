@@ -3,14 +3,17 @@ import type { JSXElement } from 'solid-js'
 import type { NotificationIconHint } from './model/notification'
 import type { NotificationBlock } from './notificationEntries'
 import ArrowDownToLine from 'lucide-solid/icons/arrow-down-to-line'
+import Bot from 'lucide-solid/icons/bot'
 import Check from 'lucide-solid/icons/check'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import OctagonMinus from 'lucide-solid/icons/octagon-minus'
 import RotateCcw from 'lucide-solid/icons/rotate-ccw'
+import TriangleAlert from 'lucide-solid/icons/triangle-alert'
 import X from 'lucide-solid/icons/x'
 import { Icon } from '~/components/common/Icon'
 import { spinner } from '~/styles/animations.css'
-import { controlResponseMessage, resultDivider } from './messageStyles.css'
+import { MarkdownText } from './messageRenderers'
+import { controlResponseMessage, resultDivider, subagentReport, subagentReportHeader } from './messageStyles.css'
 
 // The markup half of the notification pipeline. Every decision about WHAT a row says
 // lives in `notificationEntries.ts`; this file decides only how the blocks look.
@@ -75,6 +78,21 @@ export function renderNotificationBlocks(blocks: readonly NotificationBlock[]): 
       continue
     }
     flushPendingText()
+    if (block.kind === 'subagent-report') {
+      const warning = block.status === 'flagged'
+      const withheld = block.status === 'withheld'
+      const verb = warning ? 'reported — security warning' : withheld ? 'report withheld' : 'reported'
+      elements.push(
+        <div class={subagentReport}>
+          <div class={subagentReportHeader}>
+            <Icon icon={warning || withheld ? TriangleAlert : Bot} size="sm" />
+            {`${block.label || 'Subagent'} ${verb}`}
+          </div>
+          <MarkdownText text={block.text} />
+        </div>,
+      )
+      continue
+    }
     elements.push(
       <NotificationDivider
         text={block.text}

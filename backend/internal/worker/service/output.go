@@ -2517,9 +2517,8 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		return false, err
 	}
 
-	// If a flapping ProviderScoped notification (e.g.
-	// remoteControl/status/changed) collapses into the existing tail and
-	// produces a byte-identical slice, skip the DB write + broadcast. The
+	// If a repeated ProviderScoped notification collapses into the existing
+	// tail and produces a byte-identical slice, skip the DB write and broadcast.
 	// The false return tells the reset decorator that no visible row arrived.
 	// It must not reset the live progress counters in that case.
 	oldMessages := wrapper.Messages

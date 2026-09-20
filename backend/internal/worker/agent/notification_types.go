@@ -53,6 +53,10 @@ package agent
 //     way, so a transcript holds as many of these as the subagent had runs, each
 //     with more messages below it.
 //
+//   - SubagentReport: a provider-neutral copy of a child's final report for the
+//     parent transcript. Carries `text` and an optional `label`. Providers emit
+//     it only when their native parent result omits the report.
+//
 //   - GoalUpdated and GoalCleared: a session goal TRANSITION -- the objective
 //     changed, the status changed, or the goal went away. Carries `objective`,
 //     and for an update the neutral `goal_status` plus the provider's own

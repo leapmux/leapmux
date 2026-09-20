@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -110,9 +111,8 @@ func StartOpenCode(ctx context.Context, opts Options, sink ProviderServices) (Ag
 			a.modeChannel = modeChannelPrimaryAgent
 			a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
 			a.questions.configure(sink)
-			// Subagent spawn detection (registry-only; OpenCode drops child
-			// sessions over ACP so there is no transcript). Detect by input
-			// shape, not tool-name guessing.
+			// OpenCode omits child-session events from the root ACP stream. The
+			// prompt and final task result still form an inspectable transcript.
 			a.subagentFromToolCall = openCodeSubagentFromToolCall
 			a.subagentFromToolCallUpdate = openCodeSubagentFromToolCallUpdate
 		},
@@ -182,13 +182,15 @@ func openCodeSpawnObservation(toolCallID, callTitle string, rawInput json.RawMes
 	if title == "" {
 		title = "Subagent"
 	}
-	// ACP omits child-session messages. This registry path has no child transcript
-	// to consume a saved prompt, so it does not retain a separate copy.
+	prompt := ""
+	_ = json.Unmarshal(input.Prompt, &prompt)
 	return &acpSubagentObservation{
-		RowKey: toolCallID,
-		Title:  title,
-		Status: bgtask.StatusRunning,
-		Spawns: true,
+		RowKey:        toolCallID,
+		Title:         title,
+		Status:        bgtask.StatusRunning,
+		ChildAgentKey: toolCallID,
+		Prompt:        prompt,
+		Spawns:        true,
 	}
 }
 
@@ -216,13 +218,18 @@ func openCodeSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubag
 	// The final rawOutput may carry the child session id under metadata.
 	rowKey := tcu.ToolCallID
 	renameFrom := ""
+	background := false
 	if len(tcu.RawOutput) > 0 {
 		var out struct {
 			Metadata struct {
-				SessionID string `json:"sessionId"`
+				SessionID  string `json:"sessionId"`
+				Background bool   `json:"background"`
 			} `json:"metadata"`
 		}
-		if json.Unmarshal(tcu.RawOutput, &out) == nil && out.Metadata.SessionID != "" {
+		if json.Unmarshal(tcu.RawOutput, &out) == nil {
+			background = out.Metadata.Background
+		}
+		if out.Metadata.SessionID != "" {
 			// Rename the spawn row (toolCallId) to the child session id so one
 			// row tracks the lifecycle, then give a final status to it.
 			rowKey = out.Metadata.SessionID
@@ -230,12 +237,31 @@ func openCodeSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubag
 		}
 	}
 	return &acpSubagentObservation{
-		RowKey:     rowKey,
-		RenameFrom: renameFrom,
-		Status:     acpFinalStatus(tcu.Status),
-		CloseRow:   true,
-		Mode:       acpModeCloseOnly,
+		RowKey:        rowKey,
+		RenameFrom:    renameFrom,
+		ChildAgentKey: rowKey,
+		Status:        acpFinalStatus(tcu.Status),
+		CloseRow:      true,
+		Mode:          acpModeCloseOnly,
+		Report: subagentReport{
+			Text: openCodeSubagentReport(acpToolCallText(tcu.Content), background),
+		},
 	}
+}
+
+func openCodeSubagentReport(text string, background bool) string {
+	if background {
+		return ""
+	}
+	text = strings.TrimSpace(text)
+	const start = "<task_result>"
+	const end = "</task_result>"
+	if _, after, ok := strings.Cut(text, start); ok {
+		if report, _, found := strings.Cut(after, end); found {
+			return strings.TrimSpace(report)
+		}
+	}
+	return text
 }
 
 // buildACPPromptBlocks converts text + classified attachments into ACP prompt

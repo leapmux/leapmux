@@ -217,26 +217,21 @@ func TestNotificationThreading_CodexStartupStatusConsolidatesInWrapper(t *testin
 	assert.Equal(t, "ready", params["status"])
 }
 
-func TestNotificationThreading_CodexMetadataNotificationsPersistAsAgentWrapper(t *testing.T) {
+func TestNotificationThreading_CodexSkillsChangedPersistsAsAgentWrapper(t *testing.T) {
 	t.Parallel()
 
 	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	skillsChanged := raw(t, codexMethod("skills/changed", map[string]interface{}{}))
-	remoteControlChanged := raw(t, codexMethod("remoteControl/status/changed", map[string]interface{}{
-		"status":        "disabled",
-		"environmentId": nil,
-	}))
 
 	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, skillsChanged)
-	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, remoteControlChanged)
 
 	rows := listRows()
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, rows[0].Source)
 
 	wrapper := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
-	require.Len(t, wrapper.Messages, 2)
-	assert.Equal(t, []string{"skills/changed", "remoteControl/status/changed"}, types(t, wrapper.Messages))
+	require.Len(t, wrapper.Messages, 1)
+	assert.Equal(t, []string{"skills/changed"}, types(t, wrapper.Messages))
 }
 
 func TestNotificationThreading_CodexMetadataNotificationsSurviveMixedThread(t *testing.T) {
@@ -245,15 +240,10 @@ func TestNotificationThreading_CodexMetadataNotificationsSurviveMixedThread(t *t
 	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	starting := raw(t, codexStartupStatus("codex_apps", "starting", nil))
 	skillsChanged := raw(t, codexMethod("skills/changed", map[string]interface{}{}))
-	remoteControlChanged := raw(t, codexMethod("remoteControl/status/changed", map[string]interface{}{
-		"status":        "disabled",
-		"environmentId": nil,
-	}))
 	ready := raw(t, codexStartupStatus("codex_apps", "ready", nil))
 
 	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, starting)
 	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, skillsChanged)
-	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, remoteControlChanged)
 	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, ready)
 
 	rows := listRows()
@@ -261,30 +251,25 @@ func TestNotificationThreading_CodexMetadataNotificationsSurviveMixedThread(t *t
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, rows[0].Source)
 
 	wrapper := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
-	require.Len(t, wrapper.Messages, 3)
+	require.Len(t, wrapper.Messages, 2)
 	assert.Equal(t, []string{
 		"skills/changed",
-		"remoteControl/status/changed",
 		"mcpServer/startupStatus/updated",
 	}, types(t, wrapper.Messages))
 
-	startup := parseRaw(t, wrapper.Messages[2])
+	startup := parseRaw(t, wrapper.Messages[1])
 	params := startup["params"].(map[string]interface{})
 	assert.Equal(t, "ready", params["status"])
 }
 
 // TestNotificationThreading_RepeatedIdenticalProviderScopedSkipsWrite verifies
-// that appending a ProviderScoped notification whose consolidation collapses
-// to byte-identical wrapper.Messages does not bump the row's seq. A flapping
-// remoteControl/status/changed should not produce a DB write per arrival.
+// that a repeated ProviderScoped notification does not bump the row sequence
+// when consolidation leaves the message list unchanged.
 func TestNotificationThreading_RepeatedIdenticalProviderScopedSkipsWrite(t *testing.T) {
 	t.Parallel()
 
 	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
-	payload := raw(t, codexMethod("remoteControl/status/changed", map[string]interface{}{
-		"status":        "disabled",
-		"environmentId": nil,
-	}))
+	payload := raw(t, codexMethod("skills/changed", map[string]interface{}{}))
 
 	// The first notification opens a standalone thread and is broadcast.
 	broadcast, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, payload)

@@ -328,6 +328,86 @@ func TestHandleCodexOutput_McpOauthFailurePersistsAsAgent(t *testing.T) {
 	assert.JSONEq(t, input, string(sink.LastNotification().Content))
 }
 
+func TestHandleCodexOutput_SubagentFailuresRouteToTheChildTranscript(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "MCP OAuth",
+			input: `{"method":"mcpServer/oauthLogin/completed","params":{"name":"docs","threadId":"child-1","success":false,"error":"authorization failed"}}`,
+		},
+		{
+			name:  "MCP startup",
+			input: `{"method":"mcpServer/startupStatus/updated","params":{"threadId":"child-1","name":"docs","status":"failed","error":"startup failed"}}`,
+		},
+		{
+			name:  "hook",
+			input: `{"method":"hook/completed","params":{"threadId":"child-1","turnId":"child-turn","run":{"id":"hook-1","eventName":"preToolUse","handlerType":"command","sourcePath":"/hooks/check.sh","status":"failed","statusMessage":"hook failed","entries":[{"kind":"error","text":"permission denied"}]}}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &testSink{}
+			agent := newCodexAgentWithSink(sink)
+			handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"collabAgentToolCall","id":"spawn-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"inspect","agentsStates":{}}}}`)))
+			parentCount := sink.MessageCount()
+
+			handleCodexOutput(agent, parseLine([]byte(tc.input)))
+
+			assert.Equal(t, parentCount, sink.MessageCount(), "the parent transcript must not receive the child failure")
+			assert.Zero(t, sink.NotificationCount(), "the parent notification thread must stay unchanged")
+			child := sink.ChildSink("child-of-spawn-1").(*testSink)
+			require.Equal(t, 1, child.NotificationCount())
+			assert.JSONEq(t, tc.input, string(child.LastNotification().Content))
+		})
+	}
+}
+
+func TestHandleCodexOutput_SubagentFailureWaitsForItsRoute(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	failure := `{"method":"hook/completed","params":{"threadId":"child-1","turnId":"child-turn","run":{"id":"hook-1","status":"blocked","statusMessage":"policy blocked the hook"}}}`
+
+	handleCodexOutput(agent, parseLine([]byte(failure)))
+	assert.Zero(t, sink.MessageCount())
+	assert.Zero(t, sink.NotificationCount())
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/reviewer"}}}`)))
+
+	child := sink.ChildSink("child-of-spawn-1").(*testSink)
+	require.Equal(t, 1, child.NotificationCount())
+	assert.JSONEq(t, failure, string(child.LastNotification().Content))
+}
+
+func TestHandleCodexOutput_MultiAgentV2PersistsPromptAndMirrorsFinalReport(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","arguments":"{\"message\":\"Inspect the parser.\",\"task_name\":\"parser-review\"}","call_id":"spawn-1"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/parser-review"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"child-1","turnId":"child-turn","item":{"type":"agentMessage","id":"report-1","text":"**Parser report**\n\n- Finding","phase":null}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"child-turn","status":"completed","items":[],"error":null}}}`)))
+
+	child := sink.ChildSink("child-of-spawn-1").(*testSink)
+	childMessages := child.Messages()
+	require.Len(t, childMessages, 3, "the prompt must precede the native final report and turn end")
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, childMessages[0].Source)
+	assert.JSONEq(t, `{"content":"Inspect the parser."}`, string(childMessages[0].Content))
+	assert.Contains(t, string(childMessages[1].Content), "Parser report")
+
+	reports := sink.LeapMuxNotifications()
+	require.Len(t, reports, 1, "the direct parent receives one report copy")
+	assert.Equal(t, "subagent_report", reports[0]["type"])
+	assert.Equal(t, "**Parser report**\n\n- Finding", reports[0]["text"])
+	assert.Equal(t, "parser-review", reports[0]["label"])
+}
+
 func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsAgent(t *testing.T) {
 	t.Parallel()
 
@@ -348,38 +428,37 @@ func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsAgent(t *testing.T) {
 		"raw envelope must be preserved so future renderers can read every field")
 }
 
-func TestHandleCodexOutput_MetadataNotificationsPersistRawAsAgent(t *testing.T) {
+func TestHandleCodexOutput_SkillsChangedPersistsRawAsAgent(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range []struct {
-		name  string
-		input string
-	}{
-		{
-			name:  "skills changed",
-			input: `{"method":"skills/changed","params":{}}`,
-		},
-		{
-			name:  "remote control status changed",
-			input: `{"method":"remoteControl/status/changed","params":{"status":"disabled","environmentId":null}}`,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			sink := &recordingControlSink{}
-			agent := newCodexAgentWithSink(sink)
+	sink := &recordingControlSink{}
+	agent := newCodexAgentWithSink(sink)
+	input := `{"method":"skills/changed","params":{}}`
 
-			handleCodexOutput(agent, parseLine([]byte(tc.input)))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
-			require.Equal(t, 1, sink.NotificationCount())
-			require.Equal(t, 0, sink.MessageCount(),
-				"Codex metadata notifications must not fall through to the default AGENT branch")
-			last := sink.LastNotification()
-			assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
-				"Codex-emitted metadata must persist as AGENT")
-			assert.JSONEq(t, tc.input, string(last.Content),
-				"raw JSON-RPC envelope must be preserved verbatim")
-		})
-	}
+	require.Equal(t, 1, sink.NotificationCount())
+	require.Equal(t, 0, sink.MessageCount(),
+		"Codex metadata notifications must not fall through to the default AGENT branch")
+	last := sink.LastNotification()
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
+		"Codex-emitted metadata must persist as AGENT")
+	assert.JSONEq(t, input, string(last.Content),
+		"raw JSON-RPC envelope must be preserved verbatim")
+}
+
+func TestHandleCodexOutput_RemoteControlStatusChangedDoesNotReachTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"remoteControl/status/changed","params":{"status":"disabled","serverName":"OpenAI","installationId":"install-1","environmentId":null}}`)))
+
+	assert.Zero(t, sink.MessageCount())
+	assert.Zero(t, sink.NotificationCount())
+	assert.Zero(t, sink.SessionInfoCount())
+	assert.Empty(t, sink.TurnActives())
 }
 
 func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
@@ -1640,8 +1719,9 @@ func TestHandleCodexOutput_UnsuccessfulHookCompletionPersists(t *testing.T) {
 
 		handleCodexOutput(agent, parseLine([]byte(input)))
 
-		require.Equal(t, 1, sink.MessageCount(), status)
-		assert.JSONEq(t, input, string(sink.Messages()[0].Content))
+		require.Equal(t, 1, sink.NotificationCount(), status)
+		assert.Zero(t, sink.MessageCount(), status)
+		assert.JSONEq(t, input, string(sink.LastNotification().Content))
 	}
 }
 

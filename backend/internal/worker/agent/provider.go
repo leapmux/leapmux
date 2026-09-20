@@ -455,11 +455,6 @@ func (codexProvider) Classify(raw json.RawMessage) NotificationClassification {
 			Kind: NotificationKindProviderScoped,
 			Key:  "codex:skills/changed",
 		}
-	case contracts.CodexMethodRemoteControlStatusChanged:
-		return NotificationClassification{
-			Kind: NotificationKindProviderScoped,
-			Key:  "codex:remoteControl/status/changed",
-		}
 	case contracts.CodexMethodMcpServerStartupStatusUpdated:
 		name := "unknown"
 		if env.Params != nil && env.Params.Name != "" {

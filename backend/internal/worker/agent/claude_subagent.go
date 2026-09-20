@@ -31,6 +31,13 @@ const (
 // new transcript, so it owns an ordinary span that its own tool_result closes.
 const ToolNameClaudeSendMessage = "SendMessage"
 
+// ToolNameClaudeSubagentHandback is the one-shot report delivery tool that
+// Claude Code 2.1.277 gives an auto-mode subagent. The child stream carries the
+// call and its acknowledgement. A foreground parent states the outcome in
+// tool_use_result.handback. A background parent sends a result with a peer
+// origin and handback=true.
+const ToolNameClaudeSubagentHandback = "SubagentHandback"
+
 // claudeToolSpawnsSubagent reports whether a Claude tool_use block starts a
 // subagent. A spawn owns no span: the subagent's own output lands in its child
 // transcript, so a rail held open for the whole run only pushes every
@@ -793,6 +800,20 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 	// and under the spawn span as the parent. The span itself opens only AFTER
 	// the persist below -- see the ordering note there.
 	childSink := a.sink.ChildSink(childID)
+	if msgType == claudeMsgTypeAssistant {
+		if toolUseID, report, ok := claudeSubagentHandback(env); ok {
+			if a.tasks.rememberHandbackToolUse(spawnSpanID, taskID, toolUseID, env.TaskDescription, report) {
+				persistSubagentReport(childSink, subagentReport{Label: env.TaskDescription, Text: report})
+			}
+			return
+		}
+		if a.tasks.isHandbackEcho(spawnSpanID, env) {
+			return
+		}
+	}
+	if msgType == claudeMsgTypeUser && a.tasks.consumeHandbackToolResult(env) {
+		return
+	}
 	spanInfo := claudeSpanInfoFor(childSink, msgType, env, spawnSpanID)
 	spanID, spanType := spanInfo.SpanID, spanInfo.SpanType
 
@@ -881,12 +902,76 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 	}
 }
 
+func claudeSubagentHandback(env *messageEnvelope) (toolUseID, report string, ok bool) {
+	blocks := env.ContentBlocks()
+	if len(blocks) != 1 || blocks[0].Type != "tool_use" || blocks[0].Name != ToolNameClaudeSubagentHandback || blocks[0].ID == "" {
+		return "", "", false
+	}
+	var input struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(blocks[0].Input, &input) != nil || strings.TrimSpace(input.Message) == "" {
+		return "", "", false
+	}
+	return blocks[0].ID, input.Message, true
+}
+
+type claudePendingHandback struct {
+	taskID string
+	label  string
+	report string
+}
+
+func (a *ClaudeCodeAgent) persistClaudeHandbackResult(env *messageEnvelope) {
+	pending, outcome, ok := a.tasks.takeHandbackForAgentResult(env)
+	if !ok {
+		return
+	}
+	report := subagentReport{Label: pending.label, Text: pending.report, Status: outcome}
+	if outcome == "send" || outcome == "flagged" {
+		persistSubagentReport(a.sink, report)
+	}
+}
+
+func (a *ClaudeCodeAgent) persistClaudePeerHandbackResult(env *messageEnvelope) bool {
+	if env.Origin.Kind != "peer" || !env.Origin.Handback {
+		return false
+	}
+	pending, found := a.tasks.takeHandbackForPeerResult(env.Origin.SenderTaskID)
+	text := claudePeerHandbackText(env.Origin.Body)
+	label := env.Origin.From
+	if found {
+		label = pending.label
+		if text == "" {
+			text = pending.report
+		}
+	}
+	status := "send"
+	if env.Origin.Flagged {
+		status = "flagged"
+	}
+	persistSubagentReport(a.sink, subagentReport{Label: label, Text: text, Status: status})
+	return true
+}
+
+func claudePeerHandbackText(body string) string {
+	const reportMarker = "The report follows:\n"
+	if index := strings.Index(body, reportMarker); index >= 0 {
+		body = body[index+len(reportMarker):]
+	}
+	lines := strings.Split(body, "\n")
+	for index, line := range lines {
+		lines[index] = strings.TrimPrefix(line, "  ")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
 // claudeTaskIndex is everything this agent knows about a Claude task, in one
 // value with one mutex.
 //
-// Eight maps index the same concept, and they were eight fields on the agent
-// under processBase.mu -- the process-lifecycle lock, shared with `stopped`, the
-// model, and the effort. Grouping them states the shared lifetime rule in one
+// These maps index one concept. They were fields on the agent under
+// processBase.mu, which also guards process lifecycle, model, and effort.
+// Grouping them states the shared lifetime rule in one
 // place (forgetTaskIndex drops the run-scoped entries; childTask and
 // finishedTasks describe things that outlive a run) rather than in five field
 // comments that a reader has to collect.
@@ -987,6 +1072,111 @@ type claudeTaskIndex struct {
 	// call still holds. Limited to the SendMessage calls of one session, the same
 	// limit finishedTasks accepts. Guarded by i.mu.
 	sendMessageCalls map[string]struct{} // tool_use ids of SendMessage calls
+	// handbackToolUses identifies acknowledgements for reports that await the
+	// parent Agent result's delivery outcome.
+	handbackToolUses map[string]struct{}
+	// pendingHandbacks enforces Claude's one-report contract until the parent
+	// Agent result states how Claude delivered the report.
+	pendingHandbacks map[string]claudePendingHandback
+	// handbackTasks resolves a background peer-result sender to its spawn span.
+	handbackTasks map[string]string
+}
+
+func (i *claudeTaskIndex) rememberHandbackToolUse(spawnSpanID, taskID, toolUseID, label, report string) bool {
+	if spawnSpanID == "" || toolUseID == "" || strings.TrimSpace(report) == "" {
+		return false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.handbackToolUses == nil {
+		i.handbackToolUses = make(map[string]struct{})
+	}
+	i.handbackToolUses[toolUseID] = struct{}{}
+	if i.pendingHandbacks == nil {
+		i.pendingHandbacks = make(map[string]claudePendingHandback)
+	}
+	if _, duplicate := i.pendingHandbacks[spawnSpanID]; !duplicate {
+		i.pendingHandbacks[spawnSpanID] = claudePendingHandback{taskID: taskID, label: label, report: report}
+		if taskID != "" {
+			if i.handbackTasks == nil {
+				i.handbackTasks = make(map[string]string)
+			}
+			i.handbackTasks[taskID] = spawnSpanID
+		}
+		return true
+	}
+	return false
+}
+
+func (i *claudeTaskIndex) isHandbackEcho(spawnSpanID string, env *messageEnvelope) bool {
+	blocks := env.ContentBlocks()
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		return false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	pending, ok := i.pendingHandbacks[spawnSpanID]
+	return ok && strings.TrimSpace(blocks[0].Text) == strings.TrimSpace(pending.report)
+}
+
+func (i *claudeTaskIndex) consumeHandbackToolResult(env *messageEnvelope) bool {
+	blocks := env.ContentBlocks()
+	if len(blocks) != 1 || blocks[0].Type != "tool_result" || blocks[0].ToolUseID == "" {
+		return false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if _, ok := i.handbackToolUses[blocks[0].ToolUseID]; !ok {
+		return false
+	}
+	delete(i.handbackToolUses, blocks[0].ToolUseID)
+	return true
+}
+
+func (i *claudeTaskIndex) takeHandbackForAgentResult(env *messageEnvelope) (claudePendingHandback, string, bool) {
+	var result struct {
+		Handback string `json:"handback"`
+	}
+	if json.Unmarshal(env.ToolUseResult, &result) != nil || result.Handback == "" {
+		return claudePendingHandback{}, "", false
+	}
+	blocks := env.ContentBlocks()
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	for _, block := range blocks {
+		if block.Type != "tool_result" || block.ToolUseID == "" {
+			continue
+		}
+		pending, ok := i.pendingHandbacks[block.ToolUseID]
+		if !ok {
+			continue
+		}
+		i.deletePendingHandbackLocked(block.ToolUseID, pending)
+		return pending, result.Handback, true
+	}
+	return claudePendingHandback{}, "", false
+}
+
+func (i *claudeTaskIndex) takeHandbackForPeerResult(taskID string) (claudePendingHandback, bool) {
+	if taskID == "" {
+		return claudePendingHandback{}, false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	spawnSpanID := i.handbackTasks[taskID]
+	pending, ok := i.pendingHandbacks[spawnSpanID]
+	if !ok {
+		return claudePendingHandback{}, false
+	}
+	i.deletePendingHandbackLocked(spawnSpanID, pending)
+	return pending, true
+}
+
+func (i *claudeTaskIndex) deletePendingHandbackLocked(spawnSpanID string, pending claudePendingHandback) {
+	delete(i.pendingHandbacks, spawnSpanID)
+	if pending.taskID != "" && i.handbackTasks[pending.taskID] == spawnSpanID {
+		delete(i.handbackTasks, pending.taskID)
+	}
 }
 
 // startTask records what a task_started says a task IS, indexes every tool_use

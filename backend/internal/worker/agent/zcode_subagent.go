@@ -47,11 +47,9 @@ type zcodeChildIndex struct {
 	// tools maps ONE of the subagent's tool calls to the same transcript, so a
 	// closing row lands where its opening row went.
 	tools map[string]string
-	// titles holds the label the SPAWN stated, until the subagent's first tool call
-	// creates the transcript that carries it. The spawn is where the task gets its title
-	// ("file census"); the subagent's own updates describe each COMMAND it runs, so
-	// taking the title from one of those would label the row after whatever the
-	// subagent happened to do first.
+	// titles holds the label the SPAWN stated until the spawn ends. The spawn
+	// supplies the task title ("file census"). The subagent updates describe
+	// commands. They must not replace the task title.
 	titles map[string]string
 }
 
@@ -113,11 +111,12 @@ func (i *zcodeChildIndex) rememberTitle(spawnToolCallID, title string) {
 	if i.titles == nil {
 		i.titles = map[string]string{}
 	}
-	i.titles[spawnToolCallID] = title
+	if i.titles[spawnToolCallID] == "" {
+		i.titles[spawnToolCallID] = title
+	}
 }
 
-// takeTitle returns the label the spawn stated, and drops it. It is consumed once,
-// when the child transcript is created.
+// takeTitle returns the label the spawn stated, and drops it.
 func (i *zcodeChildIndex) takeTitle(spawnToolCallID string) string {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -126,10 +125,13 @@ func (i *zcodeChildIndex) takeTitle(spawnToolCallID string) string {
 	return title
 }
 
-// forgetTitle drops a spawn's label when the spawn ENDS. A subagent that answers with
-// text alone makes no tool call of its own, so no child transcript is ever created and
-// takeTitle never runs -- and the entry would then be held for the process's life. This
-// is the same rule pendingPrompts states: forget on close, clear on session replace.
+func (i *zcodeChildIndex) title(spawnToolCallID string) string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.titles[spawnToolCallID]
+}
+
+// forgetTitle drops a spawn's label when the spawn ends.
 func (i *zcodeChildIndex) forgetTitle(spawnToolCallID string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -162,6 +164,96 @@ func zcodeToolSpawnsSubagent(payload zcodeToolUpdated) bool {
 // rather than into the parent's.
 func zcodeToolFromSubagent(payload zcodeToolUpdated) bool {
 	return payload.Source == ZCodeToolSourceSubagent || payload.ParentToolCallID != ""
+}
+
+type zcodeSubagentLifecycle struct {
+	AgentID          string `json:"agentId"`
+	AgentType        string `json:"agentType"`
+	ChildSessionID   string `json:"childSessionId"`
+	ParentToolCallID string `json:"parentToolCallId"`
+	Description      string `json:"description"`
+	Prompt           string `json:"prompt"`
+	Status           string `json:"status"`
+	SummaryText      string `json:"summaryText"`
+	Text             string `json:"text"`
+	Message          string `json:"message"`
+	Error            string `json:"error"`
+}
+
+func (a *zcodeAgent) handleZCodeSubagentLifecycle(event zcodeEventEnvelope) {
+	var payload zcodeSubagentLifecycle
+	if json.Unmarshal(event.Payload, &payload) != nil || payload.ParentToolCallID == "" {
+		return
+	}
+	if payload.Description == "" && payload.Prompt == "" && payload.Status == "" &&
+		payload.SummaryText == "" && payload.Text == "" && payload.Message == "" && payload.Error == "" {
+		return
+	}
+	title := strings.TrimSpace(payload.Description)
+	if title == "" {
+		title = strings.TrimSpace(payload.AgentType)
+	}
+	if title == "" {
+		title = "ZCode subagent"
+	}
+	if payload.Prompt != "" {
+		a.toolCallPrompts.remember(payload.ParentToolCallID, payload.Prompt)
+	}
+	a.children.rememberTitle(payload.ParentToolCallID, title)
+	childID, childTitle, ok := a.ensureZCodeSubagentTranscript(
+		payload.ParentToolCallID,
+		payload.ParentToolCallID,
+		title,
+	)
+	if !ok {
+		return
+	}
+
+	report := strings.TrimSpace(payload.Message)
+	if report == "" {
+		report = strings.TrimSpace(payload.Text)
+	}
+	if report == "" && payload.Status == "" {
+		report = strings.TrimSpace(payload.SummaryText)
+	}
+	if report != "" {
+		raw, err := MarshalAssembledMessage(AssembledMessageKindText, report, MessageCompletionComplete)
+		if err != nil {
+			slog.Warn("zcode subagent message marshal failed", "agent_id", a.agentID, "child_agent_id", childID, "error", err)
+		} else if err := a.sink.PersistChildMessage(childID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{}); err != nil {
+			slog.Warn("zcode subagent message persist failed", "agent_id", a.agentID, "child_agent_id", childID, "error", err)
+		}
+		persistSubagentReport(a.sink, subagentReport{Label: childTitle, Text: report})
+	}
+
+	status := bgtask.StatusRunning
+	final := false
+	switch payload.Status {
+	case "completed", "success":
+		status, final = bgtask.StatusCompleted, true
+	case "failed":
+		status, final = bgtask.StatusFailed, true
+	case "cancelled", "stopped":
+		status, final = bgtask.StatusStopped, true
+	}
+	// The Agent tool result owns the durable final status and report. A stopped
+	// lifecycle event can arrive first. Finalizing here would make that later
+	// result look like a replay and suppress the child report.
+	if final {
+		if failure := strings.TrimSpace(payload.Error); failure != "" {
+			raw, err := MarshalAssembledMessage(AssembledMessageKindText, failure, MessageCompletionError)
+			if err != nil {
+				slog.Warn("zcode subagent failure marshal failed", "agent_id", a.agentID, "child_agent_id", childID, "error", err)
+			} else if err := a.sink.PersistChildMessage(childID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{}); err != nil {
+				slog.Warn("zcode subagent failure persist failed", "agent_id", a.agentID, "child_agent_id", childID, "error", err)
+			}
+		}
+		return
+	}
+	logRegistryRefusal("zcode", "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: payload.ParentToolCallID, Kind: bgtask.KindSubagent, Title: childTitle,
+		Status: status, ChildAgentID: childID,
+	}))
 }
 
 // zcodeSinkForToolCall returns the transcript a tool call's rows belong to: the
@@ -228,7 +320,7 @@ func (a *zcodeAgent) zcodeSubagentChild(payload zcodeToolUpdated) (string, bool)
 // spawn gave the task its title ("file census"), while the subagent's own updates each
 // describe a COMMAND it runs and the background-task event says only "Agent".
 func (a *zcodeAgent) ensureZCodeSubagentTranscript(rowKey, spawnSpanID, fallbackTitle string) (childAgentID, title string, ok bool) {
-	title = a.children.takeTitle(rowKey)
+	title = a.children.title(rowKey)
 	if title == "" {
 		title = fallbackTitle
 	}
@@ -269,10 +361,6 @@ func (a *zcodeAgent) openZCodeSubagentToolCall(event zcodeEventEnvelope, payload
 
 // closeZCodeSubagentChild ends the child transcript a spawn opened, when its own
 // `Agent` call finishes.
-//
-// A spawn whose subagent never emitted a tool call has no child transcript, and
-// nothing here creates one: its result is already in the parent transcript, and an
-// empty child tab would be a tab with nothing in it.
 //
 // The child index is the discriminator, not the tool NAME. Only a spawn's id is ever
 // written to `children`, so a hit is proof that this call owns a subagent -- and a name
@@ -327,7 +415,16 @@ func (a *zcodeAgent) openZCodeToolCallInto(sink ToolSpanServices, event zcodeEve
 		if prompt := zcodeSpawnPrompt(input); prompt != "" {
 			a.toolCallPrompts.remember(payload.ToolCallID, prompt)
 		}
-		a.children.rememberTitle(payload.ToolCallID, zcodeSpawnTitle(input, payload))
+		title := zcodeSpawnTitle(input, payload)
+		a.children.rememberTitle(payload.ToolCallID, title)
+		// The spawn already identifies one conversation. Create its transcript now,
+		// so a child that answers without any tool call still has a prompt and report.
+		if childID, childTitle, ok := a.ensureZCodeSubagentTranscript(payload.ToolCallID, payload.ToolCallID, title); ok {
+			logRegistryRefusal("zcode", "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
+				RowKey: payload.ToolCallID, Kind: bgtask.KindSubagent, Title: childTitle,
+				Status: bgtask.StatusRunning, ChildAgentID: childID,
+			}))
+		}
 	}
 	supplemental, err := zcodeToolInputSupplement(payload, input)
 	if err != nil {
@@ -392,18 +489,56 @@ func (a *zcodeAgent) closeZCodeToolCallInto(sink toolLifecycleServices, event zc
 	}
 	sink.CloseSpan(payload.ToolCallID)
 
-	a.applyZCodeSubagentEnd(payload, recovered)
-	a.closeZCodeSubagentChild(payload)
+	backgroundLaunch := zcodeAgentLaunchedInBackground(payload)
+	if !backgroundLaunch {
+		a.persistZCodeSubagentReport(payload)
+		a.applyZCodeSubagentEnd(payload, recovered)
+		a.closeZCodeSubagentChild(payload)
+	}
 	a.children.forgetTool(payload.ToolCallID)
-	// Unconditionally, and here rather than inside closeZCodeSubagentChild: a spawn whose
-	// subagent made no tool call of its own returns before that function's own lookup.
-	a.children.forgetTitle(payload.ToolCallID)
+	if !backgroundLaunch {
+		a.children.forgetTitle(payload.ToolCallID)
+	}
 	a.toolCallPrompts.take(payload.ToolCallID)
 	// No running-tool clear is broadcast here. The `zcode_running_tool` key this
 	// site used to clear had no reader; its replacement,
 	// contracts.SessionInfoKeyRunningTool, is cleared by the frontend when the
 	// result row above lands, so a provider never sends an end message. See
 	// recordZCodeToolStarted for what ZCode must report before it broadcasts one.
+}
+
+func zcodeAgentLaunchedInBackground(payload zcodeToolUpdated) bool {
+	if !zcodeToolSpawnsSubagent(payload) || len(payload.Result) == 0 {
+		return false
+	}
+	var result struct {
+		Content string `json:"content"`
+	}
+	return json.Unmarshal(payload.Result, &result) == nil &&
+		strings.HasPrefix(result.Content, "Async agent launched successfully.\n")
+}
+
+func (a *zcodeAgent) persistZCodeSubagentReport(payload zcodeToolUpdated) {
+	if !zcodeToolSpawnsSubagent(payload) || len(payload.Result) == 0 {
+		return
+	}
+	var result struct {
+		Content string `json:"content"`
+	}
+	if json.Unmarshal(payload.Result, &result) != nil || strings.TrimSpace(result.Content) == "" {
+		return
+	}
+	if zcodeAgentLaunchedInBackground(payload) {
+		return
+	}
+	childID, status, found, err := a.sink.LookupBackgroundTask(payload.ToolCallID)
+	if err != nil {
+		slog.Warn("zcode subagent report lookup failed", "agent_id", a.agentID, "row_key", payload.ToolCallID, "error", err)
+		return
+	}
+	if found && childID != "" && !status.IsFinished() {
+		persistSubagentReport(a.sink.ChildSink(childID), subagentReport{Text: result.Content})
+	}
 }
 
 // zcodeSpawnTitle labels the subagent an `Agent` call starts: the description the

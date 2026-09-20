@@ -19,18 +19,19 @@ import (
 
 var codexRetryableDisconnectPattern = regexp.MustCompile(`^stream disconnected before completion(?:$|[^[:alnum:]].*)`)
 
+const codexMultiAgentV2Namespace = "collaboration"
+
 // codexSystemMetadataMethods are Codex-emitted JSON-RPC notifications that
-// carry agent/system metadata (auto-compaction, lifecycle, skills invalidation,
-// remote-control status). They share one handler — persist
-// verbatim as agent-emitted notifications. Methods with extra side effects
+// carry agent/system metadata (auto-compaction, lifecycle, and skills
+// invalidation). They share one handler, which persists each notification
+// verbatim as agent-emitted data. Methods with extra side effects
 // (rate-limit, token-usage broadcasts) keep dedicated cases below. A method
 // that this table omits falls to the default branch and lands in the transcript
 // as a raw JSON-RPC bubble.
 var codexSystemMetadataMethods = map[string]struct{}{
-	contracts.CodexMethodThreadCompacted:            {},
-	contracts.CodexMethodThreadNameUpdated:          {},
-	contracts.CodexMethodSkillsChanged:              {},
-	contracts.CodexMethodRemoteControlStatusChanged: {},
+	contracts.CodexMethodThreadCompacted:   {},
+	contracts.CodexMethodThreadNameUpdated: {},
+	contracts.CodexMethodSkillsChanged:     {},
 }
 
 // handleCodexOutput processes a single parsed JSONL notification from the Codex app-server.
@@ -100,10 +101,19 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 	case contracts.CodexMethodMcpServerStartupStatusUpdated:
 		a.handleMcpStartupStatusUpdated(line.Raw, line.Params)
 
+	case contracts.CodexMethodRawResponseItemCompleted:
+		if !a.handleRawResponseItemCompleted(line.Params) {
+			a.persistUnknownCodexNotification(line)
+		}
+
 	case contracts.CodexMethodThreadStatusChanged:
 		// turn/started and turn/completed own the Worker's turn state. Codex sends
 		// this second lifecycle view around the same turn, so it adds no state for
 		// the transcript, the thinking indicator, or turn-end detection.
+
+	case contracts.CodexMethodRemoteControlStatusChanged:
+		// Codex remote control reports app-server transport state. It does not
+		// describe the LeapMux session, turn, or control channel.
 
 	case contracts.CodexMethodHookStarted:
 		// A hook start has no outcome and no transcript content. Keep the matching
@@ -155,10 +165,13 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 		// dispatcher does not recognize reaches here carrying a runtime that waits.
 		// A transcript row alone leaves it waiting for its own timeout.
 		a.refuseUnsupportedRequest(line)
-		// Persist unknown notifications so the frontend can decide how to render them.
-		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: line.Raw}, SpanInfo{}); err != nil {
-			slog.Error("codex persist notification", "agent_id", a.agentID, "method", line.Method, "error", err)
-		}
+		a.persistUnknownCodexNotification(line)
+	}
+}
+
+func (a *CodexAgent) persistUnknownCodexNotification(line *parsedLine) {
+	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: line.Raw}, SpanInfo{}); err != nil {
+		slog.Error("codex persist notification", "agent_id", a.agentID, "method", line.Method, "error", err)
 	}
 }
 
@@ -742,9 +755,27 @@ func (a *CodexAgent) handleItemCompleted(raw []byte, params json.RawMessage) {
 		}
 		a.replayPendingCodexChildEvents(event.threadID, route)
 		a.handleCodexItemCompletedForSink(route.childSink, route.agentID, false, event)
+		a.persistCodexChildReport(route, event)
 		return
 	}
 	a.handleCodexItemCompletedForSink(a.sink, a.agentID, true, event)
+}
+
+func (a *CodexAgent) persistCodexChildReport(route codexChildRoute, event codexItemEvent) {
+	if event.itemType != contracts.CodexItemTypeAgentMessage {
+		return
+	}
+	var message struct {
+		Text  string `json:"text"`
+		Phase string `json:"phase"`
+	}
+	if json.Unmarshal(event.item, &message) != nil || strings.TrimSpace(message.Text) == "" {
+		return
+	}
+	label, fresh := a.recordCodexChildReportCandidate(event.threadID, event.itemID, message.Text, message.Phase == "final_answer")
+	if fresh {
+		persistSubagentReport(route.parentSink, subagentReport{Label: label, Text: message.Text})
+	}
 }
 
 func (a *CodexAgent) handleCodexItemCompletedForSink(
@@ -882,6 +913,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	a.turnID = ""
 	a.turnSawPlan = false
 	a.turnPlanText = ""
+	clear(a.codexSpawnPrompts)
 	a.mu.Unlock()
 	// Deferred, so it lands AFTER the PersistTurnEnd below. That call hands the
 	// finished turn's tool-call count to the Worker's activity latch, and the
@@ -959,6 +991,9 @@ func (a *CodexAgent) handleChildTurnCompleted(threadID string, params json.RawMe
 	completion := codexTurnCompletion(params)
 	a.flushCodexChildGeneration(threadID, completion)
 	a.persistIncompleteCodexTools(threadID, false, completion)
+	if label, report, ok := a.takeCodexChildReportCandidate(threadID); ok {
+		persistSubagentReport(route.parentSink, subagentReport{Label: label, Text: report})
+	}
 	if err := route.childSink.PersistTurnEnd(MessageContent{Original: params}, SpanInfo{}); err != nil {
 		slog.Warn("codex persist child turn/completed", "agent_id", a.agentID, "thread", threadID, "error", err)
 	}
@@ -1347,32 +1382,30 @@ func (a *CodexAgent) handleTokenUsageUpdated(params json.RawMessage) {
 	})
 }
 
-// handleHookCompleted drops successful outcomes and preserves every other state.
+// handleHookCompleted drops successful outcomes and routes every other state.
 func (a *CodexAgent) handleHookCompleted(content []byte, params json.RawMessage) {
 	var notification struct {
-		Run struct {
+		ThreadID string `json:"threadId"`
+		Run      struct {
 			Status string `json:"status"`
 		} `json:"run"`
 	}
 	if json.Unmarshal(params, &notification) == nil && notification.Run.Status == "completed" {
 		return
 	}
-	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: content}, SpanInfo{}); err != nil {
-		slog.Error("codex persist non-completed hook", "agent_id", a.agentID, "error", err)
-	}
+	a.persistCodexThreadFailure(notification.ThreadID, codexPendingHookCompleted, content, params)
 }
 
 // handleMcpOauthLoginCompleted keeps only failures and unknown future outcomes.
 func (a *CodexAgent) handleMcpOauthLoginCompleted(content []byte, params json.RawMessage) {
 	var notification struct {
-		Success *bool `json:"success"`
+		ThreadID string `json:"threadId"`
+		Success  *bool  `json:"success"`
 	}
 	if json.Unmarshal(params, &notification) == nil && notification.Success != nil && *notification.Success {
 		return
 	}
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
-		slog.Error("codex persist MCP OAuth failure", "agent_id", a.agentID, "error", err)
-	}
+	a.persistCodexThreadFailure(notification.ThreadID, codexPendingMcpOauthCompleted, content, params)
 }
 
 // handleMcpStartupStatusUpdated keeps only failures and unknown future states.
@@ -1381,9 +1414,59 @@ func (a *CodexAgent) handleMcpStartupStatusUpdated(content []byte, params json.R
 	case "starting", "ready", "cancelled":
 		return
 	}
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
-		slog.Error("codex persist MCP startup failure", "agent_id", a.agentID, "error", err)
+	var notification struct {
+		ThreadID string `json:"threadId"`
 	}
+	_ = json.Unmarshal(params, &notification)
+	a.persistCodexThreadFailure(notification.ThreadID, codexPendingMcpStartupUpdated, content, params)
+}
+
+func (a *CodexAgent) persistCodexThreadFailure(threadID string, kind codexPendingChildEventKind, content, params json.RawMessage) {
+	if a.isMainThreadID(threadID) {
+		a.persistCodexFailureForSink(a.sink, a.agentID, kind, content)
+		return
+	}
+	route, routed := a.ensureCodexChildRoute(threadID)
+	if !routed {
+		a.enqueuePendingCodexChildEvent(threadID, codexPendingChildEvent{
+			kind: kind, raw: append(json.RawMessage(nil), content...), params: append(json.RawMessage(nil), params...),
+		})
+		return
+	}
+	a.replayPendingCodexChildEvents(threadID, route)
+	a.persistCodexFailureForSink(route.childSink, route.agentID, kind, content)
+}
+
+func (a *CodexAgent) persistCodexFailureForSink(sink ProviderServices, agentID string, kind codexPendingChildEventKind, content json.RawMessage) {
+	if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
+		slog.Error("codex persist failure notification", "agent_id", agentID, "kind", kind, "error", err)
+	}
+}
+
+func (a *CodexAgent) handleRawResponseItemCompleted(params json.RawMessage) bool {
+	var notification struct {
+		ThreadID string `json:"threadId"`
+		Item     struct {
+			Type      string `json:"type"`
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+			Arguments string `json:"arguments"`
+			CallID    string `json:"call_id"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(params, &notification) != nil || !a.isMainThreadID(notification.ThreadID) ||
+		notification.Item.Type != "function_call" || notification.Item.Name != "spawn_agent" ||
+		notification.Item.Namespace != codexMultiAgentV2Namespace || notification.Item.CallID == "" {
+		return false
+	}
+	var arguments struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal([]byte(notification.Item.Arguments), &arguments) != nil {
+		return false
+	}
+	a.rememberCodexSpawnPrompt(notification.Item.CallID, arguments.Message)
+	return true
 }
 
 func codexMcpStartupState(params json.RawMessage) string {
@@ -1979,6 +2062,7 @@ func (a *CodexAgent) replayPendingCodexChildEvents(threadID string, route codexC
 				a.handleCodexItemStartedForSink(route.childSink, route.agentID, false, itemEvent)
 			} else {
 				a.handleCodexItemCompletedForSink(route.childSink, route.agentID, false, itemEvent)
+				a.persistCodexChildReport(route, itemEvent)
 			}
 		case codexPendingTurnStarted:
 			var value struct {
@@ -1991,6 +2075,8 @@ func (a *CodexAgent) replayPendingCodexChildEvents(threadID string, route codexC
 			}
 		case codexPendingTurnCompleted:
 			a.handleChildTurnCompleted(threadID, event.params, route)
+		case codexPendingHookCompleted, codexPendingMcpOauthCompleted, codexPendingMcpStartupUpdated:
+			a.persistCodexFailureForSink(route.childSink, route.agentID, event.kind, event.raw)
 		}
 	}
 }

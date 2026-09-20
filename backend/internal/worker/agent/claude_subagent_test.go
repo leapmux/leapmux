@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"testing"
@@ -12,6 +13,108 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
+
+func TestClaudeSubagentHandbackPersistsOneSharedReportInBothTranscripts(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newTestAgent(sink)
+	agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Parser reviewer","prompt":"Inspect the parser."}`))
+	agent.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"handback-1","name":"SubagentHandback","input":{"message":"**Parser report**\n\n- Finding"}}]},"parent_tool_use_id":"spawn-1","task_description":"Parser reviewer"}`))
+	agent.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"handback-1","type":"tool_result","content":[{"type":"text","text":"{\"success\":true,\"message\":\"Report delivered to your caller.\"}"}]}]},"parent_tool_use_id":"spawn-1"}`))
+	agent.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"handback-2","name":"SubagentHandback","input":{"message":"duplicate report"}}]},"parent_tool_use_id":"spawn-1","task_description":"Parser reviewer"}`))
+	agent.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"handback-2","type":"tool_result","content":[{"type":"text","text":"{\"success\":false,\"message\":\"already delivered\"}"}]}]},"parent_tool_use_id":"spawn-1"}`))
+	assert.Empty(t, sink.LeapMuxNotifications(), "the child call alone does not prove that Claude delivered the report to the parent")
+	child := sink.ChildSink("child-of-spawn-1").(*testSink)
+	require.Len(t, child.LeapMuxNotifications(), 1, "the child transcript records the report where the child made it")
+	agent.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"spawn-1","type":"tool_result","content":[{"type":"text","text":"report delivered separately"}]}]},"tool_use_result":{"status":"completed","agentId":"task-1","handback":"send","content":[{"type":"text","text":"report delivered separately"}]}}`))
+
+	parentReports := sink.LeapMuxNotifications()
+	require.Len(t, parentReports, 1)
+	assert.Equal(t, "subagent_report", parentReports[0]["type"])
+	assert.Equal(t, "**Parser report**\n\n- Finding", parentReports[0]["text"])
+	assert.Equal(t, "Parser reviewer", parentReports[0]["label"])
+
+	childReports := child.LeapMuxNotifications()
+	require.Len(t, childReports, 1)
+	assert.Equal(t, "subagent_report", childReports[0]["type"])
+	assert.Equal(t, "**Parser report**\n\n- Finding", childReports[0]["text"])
+	assert.Equal(t, "Parser reviewer", childReports[0]["label"])
+	assert.NotContains(t, childReports[0], "status")
+	assert.Equal(t, "send", parentReports[0]["status"])
+	require.Len(t, child.Messages(), 1, "hand-back calls and acknowledgements must not render as tool rows")
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, child.Messages()[0].Source)
+}
+
+func TestClaudeSubagentHandbackRespectsTheDeliveryOutcome(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		outcome      string
+		wantInParent bool
+	}{
+		{outcome: "flagged", wantInParent: true},
+		{outcome: "withheld", wantInParent: false},
+	} {
+		t.Run(tc.outcome, func(t *testing.T) {
+			sink := &testSink{}
+			agent := newTestAgent(sink)
+			agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
+			agent.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"handback-1","name":"SubagentHandback","input":{"message":"Report"}}]},"parent_tool_use_id":"spawn-1","task_description":"Reviewer"}`))
+			agent.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"handback-1","type":"tool_result","content":"done"}]},"parent_tool_use_id":"spawn-1"}`))
+			agent.HandleOutput([]byte(fmt.Sprintf(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"spawn-1","type":"tool_result","content":"done"}]},"tool_use_result":{"handback":%q}}`, tc.outcome)))
+
+			child := sink.ChildSink("child-of-spawn-1").(*testSink)
+			require.Len(t, child.LeapMuxNotifications(), 1)
+			assert.NotContains(t, child.LeapMuxNotifications()[0], "status")
+			if tc.wantInParent {
+				require.Len(t, sink.LeapMuxNotifications(), 1)
+				assert.Equal(t, tc.outcome, sink.LeapMuxNotifications()[0]["status"])
+			} else {
+				assert.Empty(t, sink.LeapMuxNotifications())
+			}
+		})
+	}
+}
+
+func TestClaudeBackgroundSubagentHandbackUsesThePeerResultAndDropsTheChildEcho(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newTestAgent(sink)
+	agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
+	agent.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"handback-1","name":"SubagentHandback","input":{"message":"**Background report**\n\n- Finding"}}]},"parent_tool_use_id":"spawn-1","task_description":"Reviewer"}`))
+	agent.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"handback-1","type":"tool_result","content":"done"}]},"parent_tool_use_id":"spawn-1"}`))
+	agent.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"**Background report**\n\n- Finding"}]},"parent_tool_use_id":"spawn-1","task_description":"Reviewer"}`))
+	peerResult := `{"type":"result","subtype":"success","result":"done","origin":{"kind":"peer","from":"task-1","senderTaskId":"task-1","body":"[Subagent hand-back] The report follows:\n  **Background report**\n  \n  - Finding","handback":true}}`
+	agent.HandleOutput([]byte(peerResult))
+
+	child := sink.ChildSink("child-of-spawn-1").(*testSink)
+	require.Len(t, child.Messages(), 1, "the child echo must not duplicate the shared report")
+	require.Len(t, child.LeapMuxNotifications(), 1)
+
+	reports := sink.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "Reviewer", reports[0]["label"])
+	assert.Equal(t, "**Background report**\n\n- Finding", reports[0]["text"])
+	assert.Equal(t, "send", reports[0]["status"])
+	assert.Zero(t, sink.MessageCount(), "the peer result is a report carrier, not a turn-end divider")
+}
+
+func TestClaudePeerHandbackSurvivesMissingChildState(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newTestAgent(sink)
+	agent.HandleOutput([]byte(`{"type":"result","subtype":"success","result":"done","origin":{"kind":"peer","from":"orphan-reviewer","senderTaskId":"unknown-task","body":"SECURITY WARNING: review carefully\n[Subagent hand-back] The report follows:\n  **Recovered report**\n  \n  - Finding","handback":true,"flagged":true}}`))
+
+	reports := sink.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "orphan-reviewer", reports[0]["label"])
+	assert.Equal(t, "**Recovered report**\n\n- Finding", reports[0]["text"])
+	assert.Equal(t, "flagged", reports[0]["status"])
+	assert.Zero(t, sink.MessageCount())
+}
 
 // TestClaude_PendingTaskEndRecordsAndConsumes verifies the pending-end map
 // that closes a Task subagent row whose FINAL result arrived before its

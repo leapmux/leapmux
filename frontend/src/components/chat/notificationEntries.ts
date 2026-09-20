@@ -24,6 +24,7 @@ import { OPTION_ID_PERMISSION_MODE } from './settingsGroups'
 /** What survives flattening: the two things a notification row lays out. */
 export type NotificationBlock
   = | { kind: 'text', text: string }
+    | { kind: 'subagent-report', label?: string, text: string, status?: string }
     | { kind: 'divider', text: string, loading?: boolean, icon?: NotificationIconHint }
 
 // Provider-neutral notification labels. Named constants so the wording lives in one
@@ -105,6 +106,14 @@ export function leapmuxNotificationEntry(
     }
     case NOTIFICATION_TYPE.SubagentEnded:
       return [subagentEndedEntry(m)]
+    case NOTIFICATION_TYPE.SubagentReport: {
+      const text = pickString(m, NOTIFICATION_FIELD.Text).trim()
+      if (!text)
+        return []
+      const label = pickString(m, NOTIFICATION_FIELD.Label).trim()
+      const status = pickString(m, NOTIFICATION_FIELD.Status).trim()
+      return [{ kind: 'subagent-report', text, ...(label ? { label } : {}), ...(status ? { status } : {}) }]
+    }
     case NOTIFICATION_TYPE.PlanUpdated: {
       const label = planUpdatedLabel(m)
       return label !== null ? [{ kind: 'text', text: label }] : []
@@ -352,6 +361,13 @@ function blocksForEntry(entry: Exclude<NotificationEntry, { kind: 'group' }>): N
   switch (entry.kind) {
     case 'text':
       return [{ kind: 'text', text: entry.text }]
+    case 'subagent-report':
+      return [{
+        kind: 'subagent-report',
+        text: entry.text,
+        ...(entry.label ? { label: entry.label } : {}),
+        ...(entry.status ? { status: entry.status } : {}),
+      }]
     case 'divider':
       return [{
         kind: 'divider',

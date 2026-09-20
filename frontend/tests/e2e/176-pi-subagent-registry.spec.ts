@@ -1,9 +1,11 @@
 import {
   expectNoRegistryRows,
-  expectRegistryOnlySubagentEnds,
+  expectRowBecomesFinal,
+  expectSectionPersists,
+  openChildTabFromRow,
   requireRegistryRow,
 } from './helpers/subagentRegistry'
-import { sendMessage } from './helpers/ui'
+import { sendMessage, userBubbles } from './helpers/ui'
 /**
  * 176 — Pi subagent registry (pi-subagents extension).
  *
@@ -11,9 +13,9 @@ import { sendMessage } from './helpers/ui'
  * running row whose activity text changes over time. Background: after the
  * Agent tool's own result renders in the parent transcript, the row stays
  * running (background re-key by agent id) until a subagent-notification
- * message closes it. Registry-only: not clickable, no child agents.
+ * message closes it. The child tab keeps the spawn prompt and final report.
  */
-import { PI_E2E_SKIP_REASON, piTest } from './pi-fixtures'
+import { expect, PI_E2E_SKIP_REASON, piTest } from './pi-fixtures'
 
 piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
 
@@ -35,6 +37,12 @@ piTest.describe('Pi subagent registry', () => {
     // rather than fail on a real LLM's discretion.
     const row = await requireRegistryRow(piTest, page)
 
-    await expectRegistryOnlySubagentEnds(page, row)
+    await expectRowBecomesFinal(page, row)
+    await expectSectionPersists(page)
+    await expect.poll(async () => await row.getAttribute('data-child-agent-id')).not.toBe('')
+    await openChildTabFromRow(page, row)
+    await expect(userBubbles(page).filter({ hasText: /list three fruits/i })).toBeVisible()
+    if (await row.getAttribute('data-status') === 'completed')
+      await expect(page.getByText('Subagent reported', { exact: true })).toBeVisible()
   })
 })

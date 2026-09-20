@@ -101,6 +101,74 @@ func TestCursorExtensionFramesLandOnTheirToolRow(t *testing.T) {
 	}
 }
 
+func TestCursorTaskStoreResultPersistsTheReportInTheChildTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newCursorTestAgent(sink)
+	a.handleToolCall(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"task-call","title":"Task: Inspect the parser","status":"pending","rawInput":{"_toolName":"task","prompt":"Find the parser.","description":"Inspect the parser"}}`))
+	require.True(t, a.handleCursorExtension(contracts.CursorMethodTask,
+		json.RawMessage(`{"toolCallId":"task-call","description":"Inspect the parser","prompt":"Find the parser.","agentId":"child"}`)))
+	record := cursorToolRecord{content: json.RawMessage(`{
+		"type":"tool-result",
+		"toolCallId":"task-call",
+		"toolName":"Task",
+		"result":"This is the output of the subagent:\n\nresponse:\n<response>\nThe parser is in parser.go.\n</response>\n\nAgent ID: child"
+	}`)}
+	a.observeCursorTaskRecord("task-call", record)
+	a.observeCursorTaskRecord("task-call", record)
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	require.NotEmpty(t, rows[0].ChildAgentID)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	require.Len(t, child.Messages(), 1)
+	assert.JSONEq(t, `{"content":"Find the parser."}`, string(child.Messages()[0].Content))
+	reports := child.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "The parser is in parser.go.", reports[0]["text"])
+}
+
+func TestCursorTaskStoreReplayDoesNotDuplicateAChildReport(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newCursorTestAgent(sink)
+	a.handleToolCall(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"task-call","title":"Task: Inspect","status":"pending","rawInput":{"_toolName":"task","prompt":"Inspect."}}`))
+	a.observeCursorTaskRecord("task-call", cursorToolRecord{content: json.RawMessage(
+		`{"type":"tool-result","toolCallId":"task-call","toolName":"Task","result":"<response>Report</response>"}`,
+	)})
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	assert.Empty(t, child.LeapMuxNotifications(),
+		"session/load replays the stored Task result but not cursor/task, so it must not copy the report again")
+}
+
+func TestCursorTaskExtensionConsumesAReportThatTheStoreFoundFirst(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newCursorTestAgent(sink)
+	a.handleToolCall(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"task-call","title":"Task: Inspect","status":"pending","rawInput":{"_toolName":"task","prompt":"Inspect."}}`))
+	a.observeCursorTaskRecord("task-call", cursorToolRecord{content: json.RawMessage(
+		`{"type":"tool-result","toolCallId":"task-call","toolName":"Task","result":"<response>Report</response>"}`,
+	)})
+	require.True(t, a.handleCursorExtension(contracts.CursorMethodTask,
+		json.RawMessage(`{"toolCallId":"task-call","description":"Inspect","prompt":"Inspect.","agentId":"child"}`)))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	reports := child.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "Report", reports[0]["text"])
+}
+
 // The transcript's own store pass enriches the SAME row. It passes the revision this
 // write left, so both supplements survive. A direct EnrichMessage would raise the
 // revision under that pass, the pass would be refused for good, and the store output

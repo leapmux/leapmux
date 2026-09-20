@@ -862,6 +862,12 @@ func (a *zcodeAgent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 		Usage      *zcodeUsage `json:"usage"`
 
 		ContextWindow int64 `json:"contextWindow"`
+
+		// A subagent lifecycle or message event. The public protocol maps all
+		// three internal event types to session.updated, so their payload fields
+		// are the discriminator.
+		AgentID          string `json:"agentId"`
+		ParentToolCallID string `json:"parentToolCallId"`
 	}
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		slog.Warn("zcode session.updated unmarshal failed", "agent_id", a.agentID, "error", err)
@@ -871,6 +877,8 @@ func (a *zcodeAgent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 	switch {
 	case payload.TaskID != "":
 		a.handleZCodeBackgroundTask(event)
+	case payload.AgentID != "" && payload.ParentToolCallID != "":
+		a.handleZCodeSubagentLifecycle(event)
 	case payload.Content != nil && payload.StopReason != "":
 		a.flushZCodeGenerationKind(AssembledMessageKindReasoning, MessageCompletionComplete)
 		a.generationBuffer.DiscardKind(AssembledMessageKindText)
@@ -1071,6 +1079,7 @@ func (a *zcodeAgent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 				// Drop the index entry too, or the spawn's own result would clean up a
 				// transcript this path already tore down.
 				a.children.takeChild(rowKey)
+				a.children.forgetTitle(rowKey)
 			}
 		}
 	}

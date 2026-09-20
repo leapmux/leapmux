@@ -53,12 +53,22 @@ func TestPi_FinalStatus(t *testing.T) {
 
 func TestPi_ApplySubagentEnd_FinalStatus(t *testing.T) {
 	sink := &testSink{}
-	result := json.RawMessage(`{"content":[],"details":{"status":"completed","agentId":"a-1"}}`)
-	piApplySubagentEnd(sink, result, "tc-1", "title", "")
+	result := json.RawMessage(`{"content":[{"type":"text","text":"The review passed."}],"details":{"status":"completed","agentId":"a-1"}}`)
+	piApplySubagentEnd(sink, result, "tc-1", "title", "Review it.")
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
 	assert.Equal(t, "a-1", tasks[0].RowKey)
 	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+	require.NotEmpty(t, tasks[0].ChildAgentID)
+	child, ok := sink.ChildSink(tasks[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	require.Len(t, child.Messages(), 1)
+	assert.JSONEq(t, `{"content":"Review it."}`, string(child.Messages()[0].Content))
+	reports := child.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "The review passed.", reports[0]["text"])
+	piApplySubagentEnd(sink, result, "tc-1", "title", "Review it.")
+	assert.Len(t, child.LeapMuxNotifications(), 1, "a replayed final result must not duplicate the child report")
 }
 
 func TestPi_ApplySubagentEnd_BackgroundRekey(t *testing.T) {
@@ -69,9 +79,7 @@ func TestPi_ApplySubagentEnd_BackgroundRekey(t *testing.T) {
 	require.Len(t, tasks, 1)
 	assert.Equal(t, "bg-1", tasks[0].RowKey)
 	assert.Equal(t, bgtask.StatusRunning, tasks[0].Status)
-	// The re-keyed row links to a child transcript (EnsureChildAgent on the
-	// spawn span tc-1) so the task is openable as a child tab, not just a
-	// registry-only row the user cannot inspect.
+	// The re-keyed row links to a child transcript through the spawn span.
 	assert.Equal(t, "child-of-tc-1", tasks[0].ChildAgentID, "re-keyed row carries child linkage")
 }
 
@@ -208,8 +216,8 @@ func TestPi_ExtractPrompt(t *testing.T) {
 	assert.Empty(t, piExtractPrompt(json.RawMessage(`not json`)))
 }
 
-// A Pi subagent's child transcript is created only on the background re-key, so
-// that is where the spawn prompt becomes its first message.
+// The end helper also creates the child when startup state is absent. This
+// covers a resumed stream whose tool_execution_start did not replay.
 func TestPi_ApplySubagentEnd_BackgroundRekeyPersistsThePrompt(t *testing.T) {
 	sink := &testSink{}
 	result := json.RawMessage(`{"content":[],"details":{"status":"background","agentId":"bg-1"}}`)
@@ -223,21 +231,16 @@ func TestPi_ApplySubagentEnd_BackgroundRekeyPersistsThePrompt(t *testing.T) {
 	assert.JSONEq(t, `{"content":"Write the essay."}`, string(msgs[0].Content))
 }
 
-// A foreground subagent never re-keys, so no child transcript is created and
-// nothing is written.
-//
-// Asserted on the REGISTRY ROW rather than on ChildSink's messages: ChildSink
-// creates its recording sink on demand, so the empty-message assertion alone
-// would still pass if the code wrongly created a child agent here.
-func TestPi_ApplySubagentEnd_FinalStatusWritesNoPrompt(t *testing.T) {
+func TestPi_ApplySubagentEnd_FinalStatusCreatesAChildTranscript(t *testing.T) {
 	sink := &testSink{}
 	piApplySubagentEnd(sink, json.RawMessage(`{"content":[],"details":{"status":"completed","agentId":"a-1"}}`), "tc-1", "title", "Write the essay.")
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
-	assert.Empty(t, tasks[0].ChildAgentID, "a foreground subagent gets no child transcript")
-	child, ok := sink.ChildSink("child-of-tc-1").(*testSink)
+	assert.Equal(t, "child-of-tc-1", tasks[0].ChildAgentID)
+	child, ok := sink.ChildSink(tasks[0].ChildAgentID).(*testSink)
 	require.True(t, ok)
-	assert.Empty(t, child.Messages())
+	require.Len(t, child.Messages(), 1)
+	assert.JSONEq(t, `{"content":"Write the essay."}`, string(child.Messages()[0].Content))
 }
 
 // --- A subagent launch opens no span ---
@@ -263,6 +266,13 @@ func TestPi_AgentToolStartOpensNoSpan(t *testing.T) {
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "tc-spawn", msgs[0].SpanID, "the row still carries the span id")
 	assert.Empty(t, msgs[0].SpansOpenAtPersist, "nothing else was open, so no rail")
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	require.NotEmpty(t, rows[0].ChildAgentID, "the prompt is inspectable before the child finishes")
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	require.Len(t, child.Messages(), 1)
+	assert.JSONEq(t, `{"content":"look around"}`, string(child.Messages()[0].Content))
 }
 
 // Only the spawn loses its span. Every other Pi tool -- including the two
@@ -335,6 +345,11 @@ func TestPi_NativeSubagentResultAndNotification(t *testing.T) {
 	require.Len(t, tasks, 1)
 	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
 	assert.Equal(t, notification, sink.Messages()[2].Content)
+	child, ok := sink.ChildSink(tasks[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	reports := child.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "Read the sample.", reports[0]["text"])
 }
 
 func TestPi_OrdinaryToolStatusCreatesNoSubagent(t *testing.T) {
@@ -416,5 +431,6 @@ func TestPiApplySubagentEndKeepsTheToolCallRowWhenTheBackgroundRenameFails(t *te
 	result := json.RawMessage(`{"content":[],"details":{"status":"background","agentId":"a-1"}}`)
 	piApplySubagentEnd(piRenameFailureSink{sink}, result, "tc-1", "title", "spawn prompt")
 	assert.Equal(t, []string{"tc-1"}, bgTaskRowKeys(sink), "a row that kept its key must not gain a second row")
-	assert.Empty(t, sink.ChildAgentIDs(), "no child links to a key the registry does not hold")
+	assert.Equal(t, []string{"child-of-tc-1"}, sink.ChildAgentIDs(),
+		"the child remains linked to the original row when the rename fails")
 }
