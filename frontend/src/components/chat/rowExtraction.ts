@@ -7,7 +7,7 @@ import type { AgentProvider, MessageCompletion as ProtoMessageCompletion } from 
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { isObject } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
-import { protoJsonTodoToItem } from '~/models/todo'
+import { protoJsonTodoToItem } from '~/stores/chatTodoStore'
 import { messageCompletionFromProto, parseAssembledMessage } from './assembledMessage'
 import { leapmuxUserRow } from './leapmuxRows'
 import { dividerMetaFromMessage } from './model/divider'
