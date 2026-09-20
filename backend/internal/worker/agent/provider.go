@@ -450,17 +450,17 @@ func (codexProvider) Classify(raw json.RawMessage) NotificationClassification {
 			Kind: NotificationKindProviderScoped,
 			Key:  "codex:account/rateLimits/updated",
 		}
-	case "skills/changed":
+	case contracts.CodexMethodSkillsChanged:
 		return NotificationClassification{
 			Kind: NotificationKindProviderScoped,
 			Key:  "codex:skills/changed",
 		}
-	case "remoteControl/status/changed":
+	case contracts.CodexMethodRemoteControlStatusChanged:
 		return NotificationClassification{
 			Kind: NotificationKindProviderScoped,
 			Key:  "codex:remoteControl/status/changed",
 		}
-	case "mcpServer/startupStatus/updated":
+	case contracts.CodexMethodMcpServerStartupStatusUpdated:
 		name := "unknown"
 		if env.Params != nil && env.Params.Name != "" {
 			name = env.Params.Name
@@ -469,24 +469,24 @@ func (codexProvider) Classify(raw json.RawMessage) NotificationClassification {
 			Kind: NotificationKindProviderScoped,
 			Key:  "codex:mcpServer/startupStatus/updated:" + name,
 		}
-	case "item/started":
+	case contracts.CodexMethodItemStarted:
 		// Codex emits item/started for many item kinds; only the
 		// contextCompaction subtype is consolidatable as a compacting
 		// indicator. All other item types route through the per-item
 		// handler and never hit PersistNotification.
-		if env.Params != nil && env.Params.Item != nil && env.Params.Item.Type == "contextCompaction" {
+		if env.Params != nil && env.Params.Item != nil && env.Params.Item.Type == contracts.CodexItemTypeContextCompaction {
 			return NotificationClassification{
 				Kind: NotificationKindStatus,
 				Key:  "codex:item/started:contextCompaction",
 			}
 		}
 		return NotificationClassification{}
-	case "item/completed":
+	case contracts.CodexMethodItemCompleted:
 		// The contextCompaction completion is the Codex compaction boundary:
 		// it ends the "Compacting context..." status that the matching
 		// item/started opened. Every other item type routes through the
 		// per-item handler and never hits PersistNotification.
-		if env.Params != nil && env.Params.Item != nil && env.Params.Item.Type == "contextCompaction" {
+		if env.Params != nil && env.Params.Item != nil && env.Params.Item.Type == contracts.CodexItemTypeContextCompaction {
 			return NotificationClassification{
 				Kind: NotificationKindCompactionBoundary,
 				Key:  "codex:item/completed:contextCompaction",
@@ -536,7 +536,7 @@ func (codexProvider) PlanModePermissionMode(kind PlanModeControlKind) string {
 // PlanApprovalOptions exits plan mode and applies the requested permission choice.
 // Only the bypass preset's permission mode enables its network and sandbox settings.
 func (codexProvider) PlanApprovalOptions(permissionMode string) map[string]string {
-	options := map[string]string{CodexOptionCollaborationMode: CodexCollaborationDefault}
+	options := map[string]string{contracts.CodexOptionCollaborationMode: CodexCollaborationDefault}
 	if permissionMode == "" {
 		return options
 	}

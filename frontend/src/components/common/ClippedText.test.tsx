@@ -160,10 +160,12 @@ describe('clippedText', () => {
   })
 
   // A detail that arrives after the first render must start to show the
-  // tooltip, so the prop has to stay inside a tracked scope.
+  // tooltip, so the prop has to stay inside a tracked scope. `''` is
+  // ClippedText's own documented spelling of "no detail", so the reactive
+  // read keeps working without passing an explicit `undefined`.
   it('tracks a detail that appears later', () => {
     const [detail, setDetail] = createSignal<string | undefined>()
-    const { container } = render(() => <ClippedText text="Run tests" detail={detail()} />)
+    const { container } = render(() => <ClippedText text="Run tests" detail={detail() ?? ''} />)
 
     const el = label(container)
     stubFitting(el)

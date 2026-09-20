@@ -15,7 +15,7 @@ function withStore(body: (s: ReturnType<typeof createMessageMarksStore>) => void
 const U = MarkType.USER_MESSAGE
 const C = MarkType.CONTROL_RESPONSE
 
-describe('chatmessagemarks', () => {
+describe('chatMessageMarks', () => {
   describe('pure helpers', () => {
     it('insertMarkSorted keeps ascending order and is idempotent on a duplicate seq', () => {
       let marks = insertMarkSorted([], 5n, U)

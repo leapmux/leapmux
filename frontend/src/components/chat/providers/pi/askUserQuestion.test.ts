@@ -27,7 +27,7 @@ describe('piQuestionsFromPayload', () => {
     const questions = [{ question: 'Choose', options: [{ label: 'A', description: 'First', preview: 'A preview' }, { label: 'B', description: 'Second' }] }]
     const source = input({ type: 'tool_execution_start', toolName: 'ask_user_question', args: { questions } })
     const result = piQuestionsFromPayload({ method: 'select', id: 'dialog', title: 'Choose', options: ['1. A — First', '2. B — Second', '3. Other'] }, source)
-    expect(result[0].options).toEqual([
+    expect(result[0]?.options).toEqual([
       { label: 'A', description: 'First', preview: 'A preview', value: '1. A — First' },
       { label: 'B', description: 'Second', preview: undefined, value: '2. B — Second' },
     ])

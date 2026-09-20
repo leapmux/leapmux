@@ -42,7 +42,7 @@ function group(id: string): NavGroup {
   return found
 }
 
-describe('preferencesNav desktop', () => {
+describe('PreferencesNav desktop', () => {
   it('renders a tab per group and selects on click', () => {
     const onSelect = vi.fn()
     render(() => (
@@ -156,7 +156,7 @@ describe('preferencesNav desktop', () => {
   })
 })
 
-describe('preferencesNav compact', () => {
+describe('PreferencesNav compact', () => {
   it('renders an oat-styled dropdown instead of a native select or tab list', () => {
     const onSelect = vi.fn()
     render(() => (

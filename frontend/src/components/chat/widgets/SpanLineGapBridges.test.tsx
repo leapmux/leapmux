@@ -6,12 +6,12 @@ import { BAND_BORDER_PX } from '../chatRowGeometry'
 import { SpanLineGapBridges } from './SpanLineGapBridges'
 import { SPAN_BRIDGE_GAP_VAR } from './SpanLines.geometry'
 
-describe('spanlinegapbridges', () => {
+describe('SpanLineGapBridges', () => {
   // Two rows sharing one active span column: the SECOND row's column continues from the
   // first (an 'active' line has both a vertical top and bottom with the same key), so its
   // gap bridge connects. The first row has nothing above it, so it never draws a bridge.
   const entry = (id: string): SpanBridgeEntry => ({
-    msg: { id, spanId: 's1' },
+    message: { id, spanId: 's1' },
     parsedSpanLines: [{ type: 'active', span_id: 's1' }],
     category: { kind: 'assistant_text' },
   })

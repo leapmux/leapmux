@@ -199,7 +199,7 @@ describe('useTabOperations', () => {
           // Allow the fire-and-forget E2EE call to dispatch.
           await Promise.resolve()
           expect(mockRegisterTabPayload).toHaveBeenCalledTimes(1)
-          const [workerId, req] = mockRegisterTabPayload.mock.calls[0]
+          const [workerId, req] = mockRegisterTabPayload.mock.calls[0] ?? []
           expect(workerId).toBe('w-1')
           // The working dir is the CONTEXT's, not the file's own directory:
           // it is what the worker answers this tab's branch-context questions
@@ -225,7 +225,7 @@ describe('useTabOperations', () => {
           ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 1, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
           await Promise.resolve()
           expect(mockRegisterTabPayload).toHaveBeenCalledTimes(1)
-          const [workerId, req] = mockRegisterTabPayload.mock.calls[0] as [string, Record<string, unknown>]
+          const [workerId, req] = mockRegisterTabPayload.mock.calls[0] ?? []
           expect(workerId).toBe('w-1')
           expect(req).toMatchObject({
             payload: {
@@ -526,7 +526,7 @@ describe('useTabOperations', () => {
           await Promise.resolve()
           expect(mockInspectLastTabClose).toHaveBeenCalledTimes(1)
           expect(mockRevokeTabPayload).toHaveBeenCalledTimes(1)
-          const [workerId, req] = mockRevokeTabPayload.mock.calls[0]
+          const [workerId, req] = mockRevokeTabPayload.mock.calls[0] ?? []
           expect(workerId).toBe('w-1')
           expect((req as { tabId: string }).tabId).toBe('file-1')
           expect((req as { worktreeAction: WorktreeAction }).worktreeAction).toBe(WorktreeAction.KEEP)
@@ -710,7 +710,7 @@ describe('useTabOperations', () => {
           expect(ok).toBe(true)
           await Promise.resolve()
           expect(mockRevokeTabPayload).toHaveBeenCalledTimes(1)
-          const [, req] = mockRevokeTabPayload.mock.calls[0]
+          const [, req] = mockRevokeTabPayload.mock.calls[0] ?? []
           expect((req as { worktreeAction: WorktreeAction }).worktreeAction).toBe(WorktreeAction.KEEP)
           expect(mockShowInfoToast).not.toHaveBeenCalledWith('Worktree will be removed')
         }
@@ -735,7 +735,7 @@ describe('useTabOperations', () => {
           expect(ok).toBe(true)
           await Promise.resolve()
           expect(mockRevokeTabPayload).toHaveBeenCalledTimes(1)
-          const [, req] = mockRevokeTabPayload.mock.calls[0]
+          const [, req] = mockRevokeTabPayload.mock.calls[0] ?? []
           expect((req as { worktreeAction: WorktreeAction }).worktreeAction).toBe(WorktreeAction.REMOVE)
           // The report is the worker's verdict, not an optimistic promise at
           // click time. This mock resolves no result, so the honest answer is
@@ -1062,7 +1062,7 @@ describe('useTabOperations', () => {
 
       const trimmed = chatStore.getMessages('agent-a')
       expect(trimmed).toHaveLength(MAX_BACKGROUND_CHAT_MESSAGES)
-      expect(trimmed[0].seq).toBe(11n)
+      expect(trimmed[0]?.seq).toBe(11n)
       expect(trimmed.at(-1)?.seq).toBe(60n)
       expect(chatStore.hasOlderMessages('agent-a')).toBe(true)
       dispose()
@@ -1119,7 +1119,7 @@ describe('useTabOperations', () => {
 
       const messages = chatStore.getMessages('agent-a')
       expect(messages).toHaveLength(MAX_BACKGROUND_CHAT_MESSAGES + 10)
-      expect(messages[0].seq).toBe(1n)
+      expect(messages[0]?.seq).toBe(1n)
       expect(messages.at(-1)?.seq).toBe(60n)
       dispose()
     })
@@ -1414,8 +1414,8 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
       expect(handleAgentClose).not.toHaveBeenCalled()
       expect(handleTerminalClose).not.toHaveBeenCalled()
       expect(mockRevokeTabPayload).toHaveBeenCalledTimes(1)
-      expect(mockRevokeTabPayload.mock.calls[0][0]).toBe('w-other')
-      expect(mockRevokeTabPayload.mock.calls[0][1]).toMatchObject({
+      expect(mockRevokeTabPayload.mock.calls[0]?.[0]).toBe('w-other')
+      expect(mockRevokeTabPayload.mock.calls[0]?.[1]).toMatchObject({
         tabId: 'file-cross',
         worktreeAction: WorktreeAction.KEEP,
       })
@@ -1452,6 +1452,9 @@ describe('useTabOperations.handleTabClose focus migration', () => {
       // pre-split root id.
       const otherTileId = layoutStore.splitTile('root-leaf', 'horizontal')!
       const [tileA, tileB] = layoutStore.getAllTileIds()
+      // The split produced exactly two leaves; the throw is the type-level guard alone.
+      if (tileA === undefined || tileB === undefined)
+        throw new Error('expected two tiles after split')
       // The split keeps both children as leaves; we just need to know
       // which one is the new childB so we can target the other.
       const focusTile = tileB === otherTileId ? tileA : tileB
@@ -1502,6 +1505,9 @@ describe('useTabOperations.handleTabClose focus migration', () => {
 
       const otherTileId = layoutStore.splitTile('root-leaf', 'horizontal')!
       const [tileA, tileB] = layoutStore.getAllTileIds()
+      // The split produced exactly two leaves; the throw is the type-level guard alone.
+      if (tileA === undefined || tileB === undefined)
+        throw new Error('expected two tiles after split')
       const focusTile = tileB === otherTileId ? tileA : tileB
       const otherLeafTile = otherTileId
 
@@ -1958,8 +1964,8 @@ describe('useTabOperations.closeTabWithAction', () => {
       expect(handleAgentClose).not.toHaveBeenCalled()
       expect(handleTerminalClose).not.toHaveBeenCalled()
       expect(mockRevokeTabPayload).toHaveBeenCalledTimes(1)
-      expect(mockRevokeTabPayload.mock.calls[0][0]).toBe('w-cross')
-      expect(mockRevokeTabPayload.mock.calls[0][1]).toMatchObject({
+      expect(mockRevokeTabPayload.mock.calls[0]?.[0]).toBe('w-cross')
+      expect(mockRevokeTabPayload.mock.calls[0]?.[1]).toMatchObject({
         tabId: 'file-cross',
         worktreeAction: WorktreeAction.KEEP,
       })
@@ -1983,6 +1989,9 @@ function setupForFocusMigration() {
   // never resolves into the view, so the focus target has to actually exist.
   const otherTileId = layoutStore.splitTile('root-leaf', 'horizontal')!
   const [tileA, tileB] = layoutStore.getAllTileIds()
+  // The split produced exactly two leaves; the throw is the type-level guard alone.
+  if (tileA === undefined || tileB === undefined)
+    throw new Error('expected two tiles after split')
   const homeTileId = tileB === otherTileId ? tileA : tileB
   layoutStore.setFocusedTile(homeTileId)
 

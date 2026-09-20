@@ -81,6 +81,15 @@ func mergeMessageMetadata(content MessageContent) []byte {
 }
 
 // EncodeMessageSupplement keeps native provider fields outside the worker metadata schema.
+//
+// The provider half keeps the agent's own KEY ORDER and its own number spelling, which
+// is what the Raw JSON view shows and what
+// `TestControlResponseStoragePreservesOriginalBytes` pins. It is not byte for byte:
+// `encoding/json` compacts every `json.RawMessage` it copies and escapes `<`, `>`, `&`
+// and U+2028/U+2029 inside it. That is the encoder's own behaviour and predates this
+// envelope; nothing HERE may re-encode beyond it. A caller that must decide whether
+// two supplements say the same thing uses JSONCanonicalEqual rather than a byte
+// compare.
 func EncodeMessageSupplement(content MessageContent) ([]byte, error) {
 	fields := make(map[string]json.RawMessage, 2)
 	if len(content.Supplemental) > 0 {

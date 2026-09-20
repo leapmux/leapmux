@@ -1,30 +1,34 @@
-import { render } from '@solidjs/testing-library'
 import Eye from 'lucide-solid/icons/eye'
 import { describe, expect, it } from 'vitest'
-import { ACP_TOOL_KIND, CLAUDE_TOOL } from '~/types/toolMessages'
-import { toolKindIcon } from '../results/toolKind'
-import { toolIconFor } from './claude/toolUse/icons'
-import { PiToolExecutionRenderer } from './pi/renderers/toolMessage'
+import { ACP_TOOL_KIND } from '~/generated/contracts/acp-protocol'
+import { rendererFor } from '../results/tools'
+import { claudeToolIcon, claudeToolKind } from './claude/toolKinds'
+import { CLAUDE_TOOL_NAMES } from './claude/toolNames'
+import { piToolCall, piToolRow } from './pi/extractors/toolCall'
 
 describe('read tool icons', () => {
+  // Pi states no icon of its own, so the row takes the KIND's icon -- which is the
+  // point: a read on Pi and a read on Claude must not draw two different glyphs.
   it('uses the Eye icon for Pi read tool uses', () => {
-    const { container } = render(() => PiToolExecutionRenderer({
-      parsed: {
-        type: 'tool_execution_start',
-        toolCallId: 'call-read',
-        toolName: 'read',
-        args: { path: '/tmp/a.ts' },
-      },
-    }))
-
-    expect(container.querySelector('svg.lucide-eye')).not.toBeNull()
+    const row = piToolRow({
+      type: 'tool_execution_start',
+      toolCallId: 'call-read',
+      toolName: 'read',
+      args: { path: '/tmp/a.ts' },
+    }, undefined, undefined)!
+    const call = piToolCall(row)
+    expect(call.icon).toBeUndefined()
+    expect(rendererFor(call).icon).toBe(Eye)
   })
 
+  // Claude states no icon of its own for a read either: the tool maps to the
+  // shared `read` kind, and the kind owns the glyph.
   it('uses the Eye icon for Claude Code Read tool uses', () => {
-    expect(toolIconFor(CLAUDE_TOOL.READ)).toBe(Eye)
+    expect(claudeToolIcon(CLAUDE_TOOL_NAMES.READ)).toBeUndefined()
+    expect(rendererFor({ kind: claudeToolKind(CLAUDE_TOOL_NAMES.READ) }).icon).toBe(Eye)
   })
 
   it('uses the Eye icon for ACP read tool uses', () => {
-    expect(toolKindIcon(ACP_TOOL_KIND.READ)).toBe(Eye)
+    expect(rendererFor({ kind: ACP_TOOL_KIND.Read }).icon).toBe(Eye)
   })
 })

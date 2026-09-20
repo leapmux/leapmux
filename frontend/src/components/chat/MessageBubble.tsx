@@ -1,17 +1,18 @@
 import type { Component } from 'solid-js'
 import type { ToolHeaderActionsCallerProps, ToolHeaderActionsLayoutProps } from './messageActions'
-import type { MessageCategory } from './messageClassification'
 import type { MessageContextResolver } from './messageContextResolver'
 import type { MessageRenderCache } from './messageRenderCache'
-import type { RenderContext } from './messageRenderers'
 import type { MessageUiKey } from './messageUiKeys'
-import type { ToolResultMeta } from './providers/registry'
+import type { ChatRow } from './model/row'
+import type { RowRenderContext, ToolProgressSource } from './renderContext'
+import type { ToolCallMeta } from './results/tools/meta'
+import type { RowExtractionContext } from './rowModelCache'
+import type { PreparedMessage } from './rowPreparation'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import Check from 'lucide-solid/icons/check'
-
 import Copy from 'lucide-solid/icons/copy'
+
 import { createEffect, createMemo, createResource, ErrorBoundary, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { render } from 'solid-js/web'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
@@ -26,21 +27,24 @@ import { prettifyJson } from '~/lib/jsonFormat'
 import { createLogger } from '~/lib/logger'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { resolveStack } from '~/lib/resolveStack'
-import { appendCompletionMarker, assembledMessageDisplayText, messageCompletionFromProto, parseAssembledMessage } from './assembledMessage'
+import { appendCompletionMarker } from './assembledMessage'
 import { buildRawJsonEnvelope } from './chatRawJson'
 import { codeCopyHostClass } from './markdownEditor/markdownContent.css'
 import { buildMessageActions } from './messageActions'
-import { bubbleRunsToRightEdge, classifyParsedMessage, isMirroredMessageRow, messageBubbleClass, messageRowClass } from './messageClassification'
 import { useMessageContextMenu } from './MessageContextMenuHost'
 import { createMessageRenderSources } from './messageContextResolver'
-import { renderMessageContent } from './messageRenderers'
+import { bubbleRunsToRightEdge, isMirroredMessageRow, messageBubbleClass, messageRowClass } from './messageRowLayout'
 import * as chatStyles from './messageStyles.css'
 import { expandedUiKeyFor, MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
-import { renderNotificationThread } from './notificationRenderers'
-import { parsedMessageForRendering, providerFor } from './providers/registry'
-import { renderResultDivider } from './resultDividerRenderers'
+import { imageActionsFrom, subagentsFrom } from './renderContext'
+import { quotableTextForRow } from './results/rowText'
+import { toolCallMeta } from './results/tools/meta'
+import { extractedRow } from './rowExtraction'
+import { cachedChatRow } from './rowModelCache'
+import { prepareMessage } from './rowPreparation'
+import { renderExtractedRow } from './rowRenderers'
+import { JsonHighlightHtml } from './syntaxHighlight'
 import { ToolHeaderActions } from './ToolHeaderActions'
-import { JsonHighlightHtml } from './toolRenderers'
 
 const logger = createLogger('MessageBubble')
 
@@ -125,44 +129,56 @@ function injectCopyButtons(container: HTMLElement): Array<() => void> {
  * ChatView-owned bindings exposed to a MessageBubble. Grouped here so the
  * bubble has a single host-side prop instead of a sprawling list of lifted
  * callbacks. Every field is optional — a bubble rendered outside ChatView
- * (tests, isolated previews) can pass `host={undefined}`.
+ * (tests, isolated previews) can pass `host={undefined}`. The members marked
+ * `| undefined` are assigned by reactive getters that resolve through to
+ * undefined while the host is absent/loading; a getter cannot omit a key, so
+ * `undefined` is the live "absent for now" state rather than an invalid
+ * construction.
  */
 export interface MessageBubbleHost {
   /** Shared resolver for this agent's messages and live entities. */
   messages?: MessageContextResolver
   /** Open (or activate, or revive) a subagent's tab from its registry row. */
-  onOpenSubagent?: (item: BackgroundTaskItem) => void
+  onOpenSubagent?: ((item: BackgroundTaskItem) => void) | undefined
   /**
    * Open an image a row rendered in its own tab.
    *
    * `seq` is stamped by the bubble, which is the only layer that holds the
    * message; a renderer says only which image of its own row it means.
    */
-  onOpenImage?: (image: { seq: bigint, index: number, filePath?: string, title: string }) => void
+  onOpenImage?: ((image: { seq: bigint, index: number, filePath?: string, title: string }) => void) | undefined
   /** Lifted per-message diff view override, managed by ChatView. */
-  localDiffView?: 'unified' | 'split'
+  localDiffView?: ('unified' | 'split') | undefined
   /** Set the per-message diff view override. */
-  onSetLocalDiffView?: (view: 'unified' | 'split') => void
+  onSetLocalDiffView?: ((view: 'unified' | 'split') => void) | undefined
   /** Stable per-message UI state getter for remount-sensitive renderers. */
-  getMessageUiState?: (key: MessageUiKey) => boolean | undefined
+  getMessageUiState?: ((key: MessageUiKey) => boolean | undefined) | undefined
   /** Stable per-message UI state setter for remount-sensitive renderers. */
-  setMessageUiState?: (key: MessageUiKey, value: boolean) => void
+  setMessageUiState?: ((key: MessageUiKey, value: boolean) => void) | undefined
   /** Debug: this row's measured DOM height, for the raw-JSON surface. */
-  getHeightDebug?: () => { measured?: number }
+  getHeightDebug?: (() => { measured?: number }) | undefined
   /** Per-row/content-version cache for pure renderer derivations shared across hidden + visible mounts. */
-  renderCache?: MessageRenderCache
+  renderCache?: MessageRenderCache | undefined
   /** True while visible row rendering should avoid starting syntax-highlight jobs. */
-  syntaxHighlightingPaused?: () => boolean
+  syntaxHighlightingPaused?: (() => boolean) | undefined
   /** True while the user has a live document selection inside the chat content. */
-  textSelectionActive?: () => boolean
-  /** True while this row sits outside the near-viewport band (see RenderContext.rowOffscreen). */
-  rowOffscreen?: () => boolean
+  textSelectionActive?: (() => boolean) | undefined
+  /** True while this row sits outside the near-viewport band. */
+  rowOffscreen?: (() => boolean) | undefined
 }
 
 interface MessageBubbleProps {
   message: AgentChatMessage
-  parsed?: ParsedMessageContent
-  category?: MessageCategory
+  /**
+   * The row as ChatView already prepared it -- the parse, the resolved payload and
+   * the category, from the entry cache the virtual list measured the row from.
+   *
+   * Absent only outside ChatView, where the bubble prepares the message itself. It
+   * used to arrive as the parse and the category SEPARATELY, and the bubble resolved
+   * the payload after them -- so the row it drew was extracted from a payload its own
+   * category had never seen.
+   */
+  prepared?: PreparedMessage
   workingDir?: string
   homeDir?: string
   onReply?: (quotedText: string) => void
@@ -181,16 +197,19 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     props.host?.setMessageUiState?.(MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED, !toolResultExpanded())
   let contentRef: HTMLDivElement | undefined
 
-  // Use pre-computed values from ChatView when available, otherwise compute on demand.
-  const classified = createMemo(() => props.parsed && props.category
-    ? { parsed: props.parsed, category: props.category }
-    : classifyParsedMessage(props.message))
-  const parsed = () => classified().parsed
-  const category = () => classified().category
-  const resolved = createMemo(() => props.host?.messages?.current(props.message, parsed()))
-  const displayParsed = createMemo(() => resolved()?.parsed
-    ?? parsedMessageForRendering(parsed(), props.message.agentProvider))
-  const sources = createMessageRenderSources(() => props.host?.messages, () => props.message, displayParsed)
+  // ChatView's own preparation when it supplied one, so the row the virtual list
+  // MEASURED and the row this bubble DRAWS are read from one payload and one
+  // category. A bubble mounted outside ChatView (a test, an isolated preview)
+  // prepares the message itself.
+  const resolved = createMemo(() => props.host?.messages?.resolvedMessage(props.message, props.prepared?.original))
+  const prepared = createMemo<PreparedMessage>(() => {
+    const resolvedParsed = resolved()?.resolved
+    return props.prepared ?? prepareMessage(props.message, resolvedParsed !== undefined ? { resolved: resolvedParsed } : {})
+  })
+  const parsed = () => prepared().original
+  const category = () => prepared().category
+  const displayParsed = () => prepared().resolved
+  const sources = createMessageRenderSources(() => props.host?.messages, () => prepared().message, displayParsed)
 
   // Full raw JSON for the Raw JSON display. Plain function (not createMemo)
   // so the JSON.parse + JSON.stringify only run when a consumer actually
@@ -221,7 +240,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     const kind = category().kind
     if (!resolver || !spanId || props.premeasureMode || (kind !== 'tool_use' && kind !== 'tool_result'))
       return
-    const release = resolver.retainSpan({ spanId, agentSessionId: props.message.agentSessionId })
+    const release = resolver.retainRenderSpan({ spanId, agentSessionId: props.message.agentSessionId })
     onCleanup(release)
     void resolver.loadRelated(props.message, parsed()).catch((error: unknown) => {
       if (!(error instanceof DOMException && error.name === 'AbortError'))
@@ -229,26 +248,54 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     })
   })
 
-  // Toolbar metadata for the current message — collapsibility, diff presence,
-  // and a lazy copyable-content getter. Each provider's plugin decides which
-  // messages produce metadata (Claude returns it for tool_result; Codex for
-  // final-state tool_use spans).
-  const toolMeta = createMemo<ToolResultMeta | null>(() => {
-    const plugin = providerFor(props.message.agentProvider)
-    if (!plugin?.toolResultMeta)
-      return null
-    return plugin.toolResultMeta(category(), { parsed: displayParsed(), spanType: props.message.spanType, request: sources.request(), role: sources.role() })
+  // The three fields reading a row needs, built before the render context that
+  // carries them: that context's `hasOuterToolbar` getter reads the toolbar, the
+  // toolbar reads the row, and the row would otherwise read a context that does
+  // not exist yet.
+  const rowContext: RowExtractionContext = {
+    sources,
+    get renderCache() { return props.host?.renderCache },
+    get spanType() { return props.message.spanType },
+  }
+
+  // The row this bubble draws, read ONCE through the shared extraction and
+  // cached under the row's own revision key. The toolbar below, the Quote and
+  // Copy-Markdown actions, and the transcript row itself all read this one row,
+  // so the toolbar can never describe a body the reader is not looking at.
+  const extraction = createMemo(() => cachedChatRow(
+    rowContext,
+    props.message.agentProvider,
+    displayParsed(),
+    category(),
+    props.message.completion,
+  ))
+  /** The drawn row, or null for a frame nobody could read (which draws the shared card). */
+  const row = (): ChatRow | null => extractedRow(extraction())
+
+  // Toolbar metadata for the current message — collapsibility, diff presence, the
+  // two button labels, and a lazy copyable-content getter. Every tool row answers,
+  // including a row that is still running: a long partial output is exactly what a
+  // reader wants to expand and copy.
+  //
+  // The WHOLE `ToolCallMeta`, not the narrower `ToolResultMeta` it extends: the two
+  // labels live on the wider type, and reading the memo through the narrow one made
+  // them invisible here, so the outer toolbar dropped every word a kind states about
+  // its own buttons. `previewText` rides along and belongs to the scroll rail
+  // (~/components/chat/chatMarkPreview.ts); nothing in this file reads it.
+  const toolMeta = createMemo<ToolCallMeta | null>(() => {
+    const current = row()
+    return current?.kind === 'tool' ? toolCallMeta(current) : null
   })
 
   // The renderer renders its own ToolHeaderActions (inside ToolUseLayout) for
-  // tool_use / agent_prompt — except when the provider produces toolResultMeta
-  // for a tool_use, which means the message is acting as a result and uses the
-  // bubble's outer toolbar instead.
+  // tool_use / agent_prompt — except when the row carries the RESULT of its
+  // span, which puts its actions in the bubble's outer toolbar instead.
   const hasInternalActions = () => {
     const kind = category().kind
     if (kind !== 'tool_use' && kind !== 'agent_prompt')
       return false
-    return toolMeta() === null
+    const current = row()
+    return current?.kind !== 'tool' || current.role !== 'result'
   }
 
   const isCollapsibleToolResult = () => toolMeta()?.collapsible ?? false
@@ -284,28 +331,47 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // Safe to take from the render pass because the title is STORED in the tab
   // payload at open time and read back from it -- unlike `index`, nothing ever
   // re-derives it, so there is no second side for it to disagree with.
+  const openImageHost = createMemo(() => props.host?.onOpenImage)
   const openImage = (image: { index: number, filePath?: string, title?: string }) => {
-    props.host?.onOpenImage?.({
+    openImageHost()?.({
       seq: props.message.seq,
       index: image.index,
-      filePath: image.filePath,
+      ...(image.filePath !== undefined ? { filePath: image.filePath } : {}),
       title: image.title || props.message.spanType || 'Image',
     })
   }
+
+  // The narrow capabilities the shared result components accept. Built ONCE
+  // beside the context that carries them, for the same identity reason as
+  // `openImage` above: a getter that re-assembled per read would hand every
+  // reader a different object and defeat the memos that capture it. The members
+  // stay lazy, so each read tracks only what it asks for.
+  const subagents = subagentsFrom({
+    backgroundTask: key => sources.backgroundTask(key),
+    openSubagent: item => props.host?.onOpenSubagent?.(item),
+  })
+  const images = imageActionsFrom({
+    fileImage: (filePath, options) => sources.fileImage(filePath, options),
+    cachedFileImage: filePath => sources.cachedFileImage(filePath),
+    deferLoad: () => props.premeasureMode === true || props.host?.rowOffscreen?.() === true,
+    premeasurePass: () => props.premeasureMode === true,
+    ...(untrack(openImageHost) !== undefined ? { openImage } : {}),
+  })
+  const toolProgress: ToolProgressSource = { liveTail: () => sources.progress() }
 
   // Build render context for message renderers. A plain object literal with
   // getter accessors for reactive fields gives stable identity (allocated once
   // per component setup) AND per-field reactivity — body components track only
   // the getters they read, so changes to one field don't cascade to siblings.
-  const renderContext: RenderContext = {
-    sources,
+  const renderContext: RowRenderContext = {
     get hasOuterToolbar() { return !hasInternalActions() },
     get workingDir() { return props.workingDir },
     get homeDir() { return props.homeDir },
     diffView,
     get onReply() { return wrappedOnReply() },
-    get onOpenSubagent() { return props.host?.onOpenSubagent },
-    get onOpenImage() { return props.host?.onOpenImage ? openImage : undefined },
+    ...(subagents !== undefined ? { subagents } : {}),
+    ...(images !== undefined ? { images } : {}),
+    toolProgress,
     get onCopyJson() { return copyJson },
     get jsonCopied() { return props.premeasureMode ? () => false : jsonCopied },
     get createdAt() { return props.message.createdAt },
@@ -314,40 +380,59 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     // thinking-style renderers read the same key ChatView resolved -- see
     // expandedUiKeyFor. Getter so the literal stays referentially stable while
     // tracking a category/provider change.
-    get expandUiKey() { return expandedUiKeyFor(category().kind, props.message.agentProvider) },
+    get expandUiKey() { return expandedUiKeyFor(category().kind) },
     get renderCache() { return props.host?.renderCache },
     syntaxHighlightingPaused: () => props.host?.syntaxHighlightingPaused?.() ?? false,
     textSelectionActive: () => props.host?.textSelectionActive?.() ?? false,
     get spanColor() { return props.message.spanColor },
-    get spanType() { return props.message.spanType },
-    get spanId() { return props.message.spanId },
     get getMessageUiState() { return props.host?.getMessageUiState },
     get setMessageUiState() { return props.premeasureMode ? undefined : props.host?.setMessageUiState },
     get premeasureMode() { return props.premeasureMode === true },
     get rowOffscreen() { return props.host?.rowOffscreen },
   }
 
-  // Quotable text dispatch: each provider plugin reads its own wire format
-  // (Codex: parent.item.text, ACP: parent.content.text, Claude: message.content[]).
-  const extractQuotableText = createMemo(() => {
-    const assembled = parseAssembledMessage(parsed().parentObject)
-    if (assembled)
-      return assembledMessageDisplayText(assembled)
-    const plugin = providerFor(props.message.agentProvider)
-    const text = plugin?.extractQuotableText?.(category(), parsed()) ?? null
+  // The row's own PROSE: what the agent said, what it thought, the plan it proposed,
+  // what the reader typed. Read from the ROW, whatever produced it -- the worker's
+  // assembled envelope reaches the same three prose rows through layer 1, so this no
+  // longer parses that envelope a second time. This is what Copy-Markdown writes.
+  const proseText = createMemo(() => {
+    const text = quotableTextForRow(row())
     if (text === null)
       return null
-    return appendCompletionMarker(text, messageCompletionFromProto(props.message.completion))
+    return appendCompletionMarker(text, extraction().completion)
   })
 
+  /**
+   * The text Quote writes, for EVERY row that carries one.
+   *
+   * A prose row answers from the row itself. A tool row answers from its kind's
+   * meta -- the same getter its Copy button writes -- so Copy and Quote can never
+   * state two different texts for one row, whatever the kind. This is the one place
+   * the rule lives, and both the hover toolbar and the row's context menu read it.
+   *
+   * Not `previewText()`, which is the scroll rail's snippet and is deliberately
+   * unlike a quote: a file-change row answers it with the file PATHS, and a task row
+   * with `title - output`. Quoting a list of paths into the composer is a bug.
+   *
+   * No completion marker on the tool branch, because Copy states none either.
+   *
+   * No CAP on the length either, and that is deliberate. A whole unified diff or a
+   * long grep result reaches the composer in one click. Copy already writes that same
+   * text with no cap, so a cap here alone would break the one property this rule
+   * exists to hold -- and the quote lands in a draft the reader edits or deletes, well
+   * under the message ceiling the channel negotiates. A cap must also TELL the reader
+   * where it cut, which puts a marker in their draft for them to remove.
+   */
+  const quotableText = createMemo(() => proseText() ?? toolMeta()?.copyableContent() ?? null)
+
   const handleReply = () => {
-    const text = extractQuotableText()
+    const text = quotableText()
     if (text && props.onReply) {
       props.onReply(formatChatQuote(text))
     }
   }
 
-  const { copied: markdownCopied, copy: copyMarkdown } = useCopyButton(() => props.premeasureMode ? undefined : extractQuotableText() ?? undefined)
+  const { copied: markdownCopied, copy: copyMarkdown } = useCopyButton(() => props.premeasureMode ? undefined : proseText() ?? undefined)
 
   const rowClass = () => messageRowClass(category().kind, props.message.source)
   const bubbleClass = () => {
@@ -357,27 +442,11 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       : base
   }
 
-  // A notification category carries the messages to render -- a consolidated
-  // thread holds the wrapper's messages; a standalone notification is a
-  // one-element thread (classify supplies `[parentObject]`). The narrowing here
-  // is just for the type; a non-notification category never reaches this.
-  const notificationMessages = (): unknown[] => {
-    const cat = category()
-    return cat.kind === 'notification' ? cat.messages : []
-  }
-
-  // The payload to hand a renderer: the parsed parent object, or the raw text
-  // when the envelope didn't parse to an object. Defined once so renderContent and
-  // the result_divider arm pass the renderers the same shape.
-  const renderPayload = () => displayParsed().parentObject ?? parsed().rawText
-
-  // Render the message body through the provider plugin, ending in the raw-JSON
-  // last-resort span when no renderer claims it. Used for every non-notification
-  // category, and as the fallback when a notification produces no entries (an
-  // unrecognized or legacy shape) -- so the message surfaces as raw JSON rather
-  // than an empty bubble.
+  // Render the message body from the row that this bubble already extracted. The
+  // renderer receives row capabilities and message metadata, not resolver sources.
+  // A frame that no extractor claims still reaches the shared raw-payload card.
   const renderContent = () =>
-    renderMessageContent(renderPayload(), renderContext, category(), props.message.agentProvider, props.message.completion)
+    renderExtractedRow(extraction(), renderContext, displayParsed().messageMetadata)
 
   // The raw-JSON last-resort block (highlighted as token spans via the async
   // token worker), shared by the `hidden` category and the unsupported-provider
@@ -494,29 +563,41 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // The two action bags, read by the hover toolbar AND by the row's context menu
   // (below). One definition, so the menu can never offer a different set from the
   // toolbar -- see `buildMessageActions` in ~/components/chat/messageActions.ts.
-  const actionsCaller = createMemo((): ToolHeaderActionsCallerProps => ({
-    onCopyContent: hasCopyableResult() ? copyResultContent : undefined,
-    contentCopied: resultCopied(),
-    onReply: extractQuotableText() ? (props.premeasureMode ? () => {} : handleReply) : undefined,
-    onCopyMarkdown: extractQuotableText() ? copyMarkdown : undefined,
-    markdownCopied: markdownCopied(),
-  }))
+  //
+  // Copy-Markdown stays on the PROSE text alone. A tool row already carries Copy,
+  // worded by its own kind, over exactly the text Quote would write -- so keying
+  // Copy-Markdown to `quotableText` would put two buttons on that row that copy the
+  // same string under two names.
+  const actionsCaller = createMemo((): ToolHeaderActionsCallerProps => {
+    const copyContentLabel = toolMeta()?.copyLabel
+    return {
+      contentCopied: resultCopied(),
+      markdownCopied: markdownCopied(),
+      ...(hasCopyableResult() ? { onCopyContent: copyResultContent } : {}),
+      ...(copyContentLabel !== undefined ? { copyContentLabel } : {}),
+      ...(quotableText() ? { onReply: props.premeasureMode ? () => {} : handleReply } : {}),
+      ...(proseText() ? { onCopyMarkdown: copyMarkdown } : {}),
+    }
+  })
 
-  const actionsLayout = createMemo((): ToolHeaderActionsLayoutProps => ({
-    // A right-aligned user row mirrors its toolbar beside the bubble, so it
-    // reverses the button order -- read from the same predicate that picks the row
-    // class, never re-derived here.
-    mirrored: isMirroredMessageRow(category().kind, props.message.source),
-    createdAt: props.message.createdAt,
-    expanded: toolResultExpanded(),
-    onToggleExpand: isCollapsibleToolResult() ? toggleToolResultExpanded : undefined,
-    onCopyJson: copyJson,
-    jsonCopied: jsonCopied(),
-    hasDiff: hasToolResultDiff(),
-    diffView: diffView(),
-    onToggleDiffView: hasToolResultDiff() ? toggleDiffView : undefined,
-  }))
-
+  const actionsLayout = createMemo((): ToolHeaderActionsLayoutProps => {
+    const expandLabel = toolMeta()?.expandLabel
+    return {
+      // A right-aligned user row mirrors its toolbar beside the bubble, so it
+      // reverses the button order -- read from the same predicate that picks the row
+      // class, never re-derived here.
+      mirrored: isMirroredMessageRow(category().kind, props.message.source),
+      createdAt: props.message.createdAt,
+      expanded: toolResultExpanded(),
+      onCopyJson: copyJson,
+      jsonCopied: jsonCopied(),
+      hasDiff: hasToolResultDiff(),
+      diffView: diffView(),
+      ...(isCollapsibleToolResult() ? { onToggleExpand: toggleToolResultExpanded } : {}),
+      ...(expandLabel !== undefined ? { expandLabel } : {}),
+      ...(hasToolResultDiff() ? { onToggleDiffView: toggleDiffView } : {}),
+    }
+  })
   // Right-click / long-press anywhere on the row opens the same actions the hover
   // toolbar carries. Attached here rather than through `DropdownMenu`'s
   // `contextMenuFor`, because the menu itself is a singleton for the whole list --
@@ -561,13 +642,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
             <ErrorBoundary fallback={messageErrorFallback('Failed to render message:')}>
               {category().kind === 'hidden'
                 ? rawJsonBlock()
-                : category().kind === 'notification'
-                  ? (renderNotificationThread(notificationMessages(), props.message.agentProvider) ?? renderContent())
-                  : category().kind === 'result_divider'
-                    ? (renderResultDivider(renderPayload(), props.message.agentProvider, props.message.completion) ?? renderContent())
-                    : category().kind === 'unsupported_provider'
-                      ? renderUnsupportedProvider()
-                      : renderContent()}
+                : category().kind === 'unsupported_provider'
+                  ? renderUnsupportedProvider()
+                  : renderContent()}
             </ErrorBoundary>
           </div>
         </div>

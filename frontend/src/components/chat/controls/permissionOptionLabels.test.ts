@@ -1,8 +1,9 @@
-import type { WirePermissionOption } from './permissionOptionLabels'
+import type { PermissionOption } from '~/components/chat/model/controlPrompt'
 import { describe, expect, it } from 'vitest'
-import { isAllowPermissionKind, isRejectPermissionKind, permissionOptionLabel } from './permissionOptionLabels'
+import { isAllowPermissionKind, isRejectPermissionKind } from '~/components/chat/model/controlPrompt'
+import { permissionOptionLabel } from './permissionOptionLabels'
 
-function option(optionId: string, kind: string, name = optionId): WirePermissionOption {
+function option(optionId: string, kind: string, name = optionId): PermissionOption {
   return { optionId, kind, name }
 }
 
@@ -21,6 +22,17 @@ describe('permissionOptionLabel', () => {
   it('falls back to the id when an option has neither name nor known kind', () => {
     expect(permissionOptionLabel({ optionId: 'opt1', kind: 'answer' })).toBe('opt1')
   })
+
+  // `kind` comes straight off the wire. A bare index answered `Object.prototype`
+  // here -- a truthy value, so the two fallbacks below it never ran and the
+  // function's SOURCE TEXT became the decision button's label.
+  it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty', '__proto__'])(
+    'falls back for a kind spelled %s, which names an Object.prototype member',
+    (kind) => {
+      expect(permissionOptionLabel({ optionId: 'opt1', kind })).toBe('opt1')
+      expect(permissionOptionLabel({ optionId: 'opt1', kind, name: 'Run it' })).toBe('Run it')
+    },
+  )
 })
 
 describe('isRejectPermissionKind', () => {

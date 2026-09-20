@@ -95,32 +95,40 @@ export const TileActionsMenu: Component<TileActionsMenuProps> = (props) => {
   return (
     <>
       <Show when={props.pop}>
-        {pop => (
-          <button
-            role="menuitem"
-            onClick={() => pop().onClick()}
-          >
-            <DropdownMenuItemContent
-              label={pop().label}
-              detail={getShortcutHintsText('app.toggleFloatingTab')}
-            />
-          </button>
-        )}
+        {(pop) => {
+          // Hoisted so the spread narrows; `detail?: string` takes no undefined.
+          const hint = getShortcutHintsText('app.toggleFloatingTab')
+          return (
+            <button
+              role="menuitem"
+              onClick={() => pop().onClick()}
+            >
+              <DropdownMenuItemContent
+                label={pop().label}
+                {...(hint !== undefined ? { detail: hint } : {})}
+              />
+            </button>
+          )
+        }}
       </Show>
       <Show when={props.actions.canSplit}>
         <For each={SPLIT_ACTIONS}>
-          {action => (
-            <button
-              role="menuitem"
-              onClick={() => props.actions.onSplit(action.direction)}
-            >
-              <Show when={props.withIcons}><Icon icon={action.icon} size="sm" /></Show>
-              <DropdownMenuItemContent
-                label={action.label}
-                detail={getShortcutHintsText(action.shortcutId)}
-              />
-            </button>
-          )}
+          {(action) => {
+            // Hoisted so the spread narrows; `detail?: string` takes no undefined.
+            const hint = getShortcutHintsText(action.shortcutId)
+            return (
+              <button
+                role="menuitem"
+                onClick={() => props.actions.onSplit(action.direction)}
+              >
+                <Show when={props.withIcons}><Icon icon={action.icon} size="sm" /></Show>
+                <DropdownMenuItemContent
+                  label={action.label}
+                  {...(hint !== undefined ? { detail: hint } : {})}
+                />
+              </button>
+            )
+          }}
         </For>
       </Show>
       <Show when={props.actions.canMakeGrid}>

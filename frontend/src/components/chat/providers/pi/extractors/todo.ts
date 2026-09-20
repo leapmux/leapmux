@@ -1,18 +1,18 @@
-import type { ToolMetadataItem } from '../../../results/ToolMetadata'
-import type { TodoListSource } from '../../../todoListMessage'
+import type { ToolMetadataEntry } from '../../../model/toolMetadata'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { TodoItem } from '~/stores/chatTodos'
+import type { TodoItem } from '~/models/todo'
 import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { prettifyStructuredJson } from '~/lib/jsonFormat'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { pluralize } from '~/lib/plural'
-import { todoRowKey } from '~/stores/chatTodos'
+import { todoRowKey } from '~/models/todo'
 import { piExtractTool, piPairedRequest, piPairedResult } from './toolCommon'
 
 export interface PiTodoSource {
-  list: TodoListSource
+  /** The checklist one Todo call states: its header words, its tasks, and what an empty one says. */
+  list: { title: string, todos: TodoItem[], emptyText: string }
   description: string
-  metadata: ToolMetadataItem[]
+  metadata: ToolMetadataEntry[]
   error?: string
 }
 
@@ -87,7 +87,7 @@ export function piTodoSource(payload: Record<string, unknown>, request?: ParsedM
     : action === 'clear' ? [] : task ? [task] : tasks ?? []
   if (action === 'list' && tasks)
     title = pluralize(visible.length, 'task')
-  const metadata: ToolMetadataItem[] = []
+  const metadata: ToolMetadataEntry[] = []
   if (task) {
     const raw = Array.isArray(details?.tasks) ? details.tasks.find(value => isObject(value) && String(value.id) === task.id) : undefined
     if (isObject(raw)) {
@@ -102,9 +102,9 @@ export function piTodoSource(payload: Record<string, unknown>, request?: ParsedM
     }
   }
   return {
-    list: { toolName: PI_TOOL.Todo, title, todos: visible, emptyText: action === 'clear' ? 'To-do list cleared' : action === 'list' ? 'No matching tasks' : 'The provider did not supply the task.' },
+    list: { title, todos: visible, emptyText: action === 'clear' ? 'To-do list cleared' : action === 'list' ? 'No matching tasks' : 'The provider did not supply the task.' },
     description: task?.description || pickString(args, 'description'),
     metadata,
-    error: error || undefined,
+    ...(error ? { error } : {}),
   }
 }

@@ -1,9 +1,126 @@
 {
-  "_readme": "The Agent Client Protocol defines these session updates and message roles. The worker and frontend share their identifiers.",
+  "_readme": "The Agent Client Protocol defines these session updates, message roles, tool-call content blocks and terminal-result fields. LeapMux owns the SET of keys in the supplement tables, not their spellings: a tool row keeps the fields the protocol delivered LATE, or that no protocol frame carries at all, in its own supplemental content beside the agent's original bytes, and seven of the ten keys are the protocol's own field names carried across unchanged. Only `protocol` and `terminals` are names LeapMux chose; `rawOutput` is the protocol's own tool-call field, which the worker reuses as the key it stores a native record under. The worker writes that envelope and the browser plugin reads it back, so every key in it is a cross-language dispatch key. `terminalResult` holds the nested field names of the `terminals` payload, because those cross the boundary exactly as the top-level keys do. Six providers share these tables, because all six speak this protocol.",
+  "_unread": {
+    "toolKinds": {
+      "Edit": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the browser narrows the wire word into `ToolKind` through `toolKind()` in `ir/`, which owns these same seven words, and picks the renderer from the NARROWED kind -- so no call site compares against this table. Only `acpFileEditFromToolCallRawInput` compares by name, and it asks one question this table cannot answer for these four: which kinds READ a file. `Read`, `Search` and `Execute` answer yes, and these four answer no by being absent from that test"
+      },
+      "Write": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the browser narrows the wire word into `ToolKind` through `toolKind()` in `ir/`, which owns these same seven words, and picks the renderer from the NARROWED kind -- so no call site compares against this table. Only `acpFileEditFromToolCallRawInput` compares by name, and it asks one question this table cannot answer for these four: which kinds READ a file. `Read`, `Search` and `Execute` answer yes, and these four answer no by being absent from that test"
+      },
+      "Fetch": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the browser narrows the wire word into `ToolKind` through `toolKind()` in `ir/`, which owns these same seven words, and picks the renderer from the NARROWED kind -- so no call site compares against this table. Only `acpFileEditFromToolCallRawInput` compares by name, and it asks one question this table cannot answer for these four: which kinds READ a file. `Read`, `Search` and `Execute` answer yes, and these four answer no by being absent from that test"
+      },
+      "Think": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the browser narrows the wire word into `ToolKind` through `toolKind()` in `ir/`, which owns these same seven words, and picks the renderer from the NARROWED kind -- so no call site compares against this table. Only `acpFileEditFromToolCallRawInput` compares by name, and it asks one question this table cannot answer for these four: which kinds READ a file. `Read`, `Search` and `Execute` answer yes, and these four answer no by being absent from that test"
+      }
+    }
+  },
   "updates": {
-    "CurrentMode": "current_mode_update"
+    "CurrentMode": "current_mode_update",
+    "ToolCall": "tool_call",
+    "ToolCallUpdate": "tool_call_update",
+    "Plan": "plan",
+    "UsageUpdate": "usage_update",
+    "AvailableCommandsUpdate": "available_commands_update",
+    "UserMessageChunk": "user_message_chunk",
+    "ConfigOptionUpdate": "config_option_update",
+    "SessionInfoUpdate": "session_info_update",
+    "AgentMessageChunk": "agent_message_chunk",
+    "AgentThoughtChunk": "agent_thought_chunk"
   },
   "roles": {
     "Result": "result"
+  },
+  "supplementIdentity": {
+    "SessionUpdate": "sessionUpdate",
+    "ToolCallID": "toolCallId",
+    "Status": "status"
+  },
+  "supplementRequest": {
+    "Title": "title",
+    "Kind": "kind",
+    "RawInput": "rawInput",
+    "Locations": "locations"
+  },
+  "supplement": {
+    "Protocol": "protocol",
+    "Terminals": "terminals",
+    "RawOutput": "rawOutput"
+  },
+  "terminalResult": {
+    "Output": "output",
+    "Truncated": "truncated",
+    "ExitCode": "exitCode",
+    "Signal": "signal"
+  },
+  "contentBlock": {
+    "Content": "content",
+    "Type": "type",
+    "TerminalID": "terminalId"
+  },
+  "blockTypes": {
+    "Terminal": "terminal"
+  },
+  "structs": {
+    "ACPTerminalResult": {
+      "doc": "ACPTerminalResult is the output of ONE terminal, as a tool row stores it.\n\nExitCode and Signal are EXCLUSIVE, because `exitStatusFromProcessState` answers\nwith a code or with a signal and never both. A process the OS ended reports no\ncode of its own, and the signal is then the only thing that explains the row.",
+      "table": "terminalResult",
+      "fields": [
+        {
+          "key": "Output",
+          "type": "string"
+        },
+        {
+          "key": "Truncated",
+          "type": "bool"
+        },
+        {
+          "key": "ExitCode",
+          "type": "*int",
+          "omitempty": true
+        },
+        {
+          "key": "Signal",
+          "type": "*string",
+          "omitempty": true
+        }
+      ]
+    },
+    "ACPToolContentBlock": {
+      "doc": "ACPToolContentBlock is one entry of a tool call's content array.\n\nOnly the terminal blocks matter to the supplement, so this reads the two fields\nthat identify one. The browser reads the same two off the same array.",
+      "table": "contentBlock",
+      "fields": [
+        {
+          "key": "Type",
+          "type": "string"
+        },
+        {
+          "key": "TerminalID",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "toolKinds": {
+    "Execute": "execute",
+    "Edit": "edit",
+    "Write": "write",
+    "Read": "read",
+    "Search": "search",
+    "Fetch": "fetch",
+    "Think": "think"
   }
 }

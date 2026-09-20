@@ -98,7 +98,7 @@ function renderContainer(opts: ContainerOpts = {}) {
         title={opts.title ?? 'Test Window'}
         floatingWindowStore={store}
         onClose={opts.onClose ?? (() => {})}
-        onActivate={opts.onActivate}
+        {...(opts.onActivate !== undefined ? { onActivate: opts.onActivate } : {})}
       >
         <div data-testid="window-content">child</div>
       </FloatingWindowContainer>
@@ -171,7 +171,7 @@ describe('resolveParentSize', () => {
   })
 })
 
-describe('floatingWindowContainer', () => {
+describe('FloatingWindowContainer', () => {
   it('renders the window with title, content and close button', () => {
     renderContainer({ title: 'My Window' })
     expect(screen.getByTestId('floating-window')).toBeInTheDocument()

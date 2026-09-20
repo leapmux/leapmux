@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,10 +40,10 @@ func newCodexAgentForRPC(t *testing.T, respond func(method string) jsonrpcRespon
 		model:             "gpt-5.4",
 		effort:            "high",
 		approvalPolicy:    CodexDefaultApprovalPolicy,
-		sandboxPolicy:     CodexDefaultSandboxPolicy,
-		networkAccess:     CodexDefaultNetworkAccess,
-		collaborationMode: CodexDefaultCollaborationMode,
-		serviceTier:       CodexDefaultServiceTier,
+		sandboxPolicy:     contracts.CodexOptionDefaultSandboxPolicy,
+		networkAccess:     contracts.CodexOptionDefaultNetworkAccess,
+		collaborationMode: contracts.CodexOptionDefaultCollaborationMode,
+		serviceTier:       contracts.CodexOptionDefaultServiceTier,
 		sink:              sink,
 	}
 	close(agent.stderrDone)
@@ -93,11 +94,11 @@ func TestCodexUpdateSettingsPublishesRequestedValues(t *testing.T) {
 	})
 
 	updated := agent.UpdateSettings(map[string]string{
-		OptionIDModel:            "gpt-5.2",
-		OptionIDEffort:           "low",
-		OptionIDPermissionMode:   "never",
-		CodexOptionSandboxPolicy: "read-only",
-		CodexOptionServiceTier:   "fast",
+		OptionIDModel:                      "gpt-5.2",
+		OptionIDEffort:                     "low",
+		OptionIDPermissionMode:             "never",
+		contracts.CodexOptionSandboxPolicy: "read-only",
+		contracts.CodexOptionServiceTier:   "fast",
 	})
 	require.True(t, updated.AppliedLive)
 
@@ -123,11 +124,11 @@ func TestCodexUpdateSettingsPreservesRequestedThreadSettings(t *testing.T) {
 	})
 
 	updated := agent.UpdateSettings(map[string]string{
-		OptionIDEffort:           "low",
-		OptionIDPermissionMode:   "never",
-		CodexOptionSandboxPolicy: CodexSandboxDangerFullAccess,
-		CodexOptionNetworkAccess: CodexNetworkEnabled,
-		CodexOptionServiceTier:   CodexServiceTierFast,
+		OptionIDEffort:                     "low",
+		OptionIDPermissionMode:             "never",
+		contracts.CodexOptionSandboxPolicy: CodexSandboxDangerFullAccess,
+		contracts.CodexOptionNetworkAccess: CodexNetworkEnabled,
+		contracts.CodexOptionServiceTier:   CodexServiceTierFast,
 	})
 
 	require.True(t, updated.AppliedLive)
@@ -200,16 +201,16 @@ func TestCodexOptionGroups_OrderAndCurrentsFromTemplates(t *testing.T) {
 
 	assert.Equal(t, OptionOrderModel, orderByID[OptionIDModel])
 	assert.Equal(t, OptionOrderEffort, orderByID[OptionIDEffort])
-	assert.Equal(t, OptionOrderProviderFirst, orderByID[CodexOptionServiceTier])
-	assert.Equal(t, OptionOrderProviderSecond, orderByID[CodexOptionCollaborationMode])
-	assert.Equal(t, OptionOrderProviderThird, orderByID[CodexOptionNetworkAccess])
-	assert.Equal(t, OptionOrderProviderFourth, orderByID[CodexOptionSandboxPolicy])
+	assert.Equal(t, OptionOrderProviderFirst, orderByID[contracts.CodexOptionServiceTier])
+	assert.Equal(t, OptionOrderProviderSecond, orderByID[contracts.CodexOptionCollaborationMode])
+	assert.Equal(t, OptionOrderProviderThird, orderByID[contracts.CodexOptionNetworkAccess])
+	assert.Equal(t, OptionOrderProviderFourth, orderByID[contracts.CodexOptionSandboxPolicy])
 	assert.Equal(t, OptionOrderPermissionMode, orderByID[OptionIDPermissionMode])
 
 	// The agent's per-axis current values flow through.
 	assert.Equal(t, "gpt-5.4", currentByID[OptionIDModel])
 	assert.Equal(t, "high", currentByID[OptionIDEffort])
-	assert.Equal(t, CodexServiceTierFast, currentByID[CodexOptionServiceTier])
+	assert.Equal(t, CodexServiceTierFast, currentByID[contracts.CodexOptionServiceTier])
 
 	for id, ord := range orderByID {
 		if id != OptionIDModel {
@@ -360,28 +361,28 @@ func TestCodexThreadParams(t *testing.T) {
 	t.Parallel()
 
 	// A non-default service tier is included.
-	fast := codexThreadParams("gpt-5.4", "/work", CodexDefaultApprovalPolicy, CodexDefaultSandboxPolicy, CodexServiceTierFast)
+	fast := codexThreadParams("gpt-5.4", "/work", CodexDefaultApprovalPolicy, contracts.CodexOptionDefaultSandboxPolicy, CodexServiceTierFast)
 	assert.Equal(t, map[string]interface{}{"model_reasoning_summary": "detailed"}, fast["config"])
 	assert.Equal(t, "gpt-5.4", fast["model"])
 	assert.Equal(t, "/work", fast["cwd"])
 	assert.Equal(t, CodexDefaultApprovalPolicy, fast["approvalPolicy"])
-	assert.Equal(t, CodexDefaultSandboxPolicy, fast["sandbox"])
+	assert.Equal(t, contracts.CodexOptionDefaultSandboxPolicy, fast["sandbox"])
 	assert.Equal(t, CodexServiceTierFast, fast["serviceTier"], "a non-default tier is sent")
 
 	// The default tier omits serviceTier so Codex keeps its normal tier.
-	def := codexThreadParams("gpt-5.4", "/work", CodexDefaultApprovalPolicy, CodexDefaultSandboxPolicy, CodexDefaultServiceTier)
+	def := codexThreadParams("gpt-5.4", "/work", CodexDefaultApprovalPolicy, contracts.CodexOptionDefaultSandboxPolicy, contracts.CodexOptionDefaultServiceTier)
 	_, hasDefaultTier := def["serviceTier"]
 	assert.False(t, hasDefaultTier, "the default tier omits serviceTier")
 
 	// An empty (unset) tier likewise omits it.
-	empty := codexThreadParams("gpt-5.4", "/work", CodexDefaultApprovalPolicy, CodexDefaultSandboxPolicy, "")
+	empty := codexThreadParams("gpt-5.4", "/work", CodexDefaultApprovalPolicy, contracts.CodexOptionDefaultSandboxPolicy, "")
 	_, hasEmptyTier := empty["serviceTier"]
 	assert.False(t, hasEmptyTier, "an empty tier omits serviceTier")
 
-	accountDefault := codexThreadParams(DefaultModelSentinel, "/work", CodexDefaultApprovalPolicy, CodexDefaultSandboxPolicy, CodexDefaultServiceTier)
+	accountDefault := codexThreadParams(DefaultModelSentinel, "/work", CodexDefaultApprovalPolicy, contracts.CodexOptionDefaultSandboxPolicy, contracts.CodexOptionDefaultServiceTier)
 	assert.NotContains(t, accountDefault, "model", "the account default lets Codex resolve the model")
 
-	unsetModel := codexThreadParams("", "/work", CodexDefaultApprovalPolicy, CodexDefaultSandboxPolicy, CodexDefaultServiceTier)
+	unsetModel := codexThreadParams("", "/work", CodexDefaultApprovalPolicy, contracts.CodexOptionDefaultSandboxPolicy, contracts.CodexOptionDefaultServiceTier)
 	assert.NotContains(t, unsetModel, "model", "an unset model lets Codex resolve the model")
 }
 

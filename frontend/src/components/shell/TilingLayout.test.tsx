@@ -16,7 +16,7 @@ afterEach(() => {
 
 const renderTile = (id: string) => (<div data-testid={`tile-${id}`}>{id}</div>)
 
-describe('tilingLayout', () => {
+describe('TilingLayout', () => {
   describe('split renderer', () => {
     it('emits live-preview ratios via inline grid-template-columns and commits once on pointerup', () => {
       const root: LayoutNodeLocal = {

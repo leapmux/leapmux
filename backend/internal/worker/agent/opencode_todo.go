@@ -39,11 +39,7 @@ func (p openCodeFamilyProvider) ExtractTodoEvent(spanType string, content []byte
 		if json.Unmarshal(raw, &entry) != nil || strings.TrimSpace(entry.Content) == "" {
 			continue
 		}
-		status := todoevents.StatusFromProviderWord(entry.Status)
-		if entry.Status == "cancelled" {
-			status = todoevents.StatusDeleted
-		}
-		items = append(items, todoevents.Item{Content: entry.Content, Status: status})
+		items = append(items, todoevents.Item{Content: entry.Content, Status: todoevents.StatusFromProviderWord(entry.Status)})
 	}
 	if len(entries) > 0 && len(items) == 0 {
 		return todoevents.Event{}, false

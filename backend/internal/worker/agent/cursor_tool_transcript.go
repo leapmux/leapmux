@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 // cursorToolSource reads Cursor's tool records out of one session's own store.
@@ -61,22 +63,16 @@ func cursorToolSupplement(original []byte, record cursorToolRecord) ([]byte, err
 	if err := json.Unmarshal(original, &tool); err != nil {
 		return nil, err
 	}
-	supplement := acpToolSupplement(tool)
-	output := make(map[string]json.RawMessage)
+	supplement := newACPToolSupplement(tool)
+	output := contracts.CursorStoredToolOutput{Content: []json.RawMessage{record.content}}
 	// Keep the native record shape so the frontend owns tool-specific extraction.
-	if providerOptions := record.result["providerOptions"]; len(providerOptions) > 0 {
-		output["providerOptions"] = providerOptions
+	if providerOptions := record.result[contracts.CursorStoredToolProviderOptions]; len(providerOptions) > 0 {
+		output.ProviderOptions = providerOptions
 	}
-	content, err := json.Marshal([]json.RawMessage{record.content})
-	if err != nil {
-		return nil, err
-	}
-	output["content"] = content
 	if len(record.arguments) > 0 {
-		output["toolArguments"] = record.arguments
+		output.ToolArguments = record.arguments
 	}
-	supplement["rawOutput"], err = json.Marshal(output)
-	if err != nil {
+	if err := supplement.setRawOutput(output); err != nil {
 		return nil, err
 	}
 	return json.Marshal(supplement)

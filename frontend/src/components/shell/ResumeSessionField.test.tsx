@@ -33,7 +33,10 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 0))
 interface FieldOverrides {
   workerId?: string
   workingDir?: string
-  agentProvider?: AgentProvider
+  // Explicit undefined ("no provider chosen yet") is distinct from an absent
+  // override (fall back to CLAUDE_CODE); the `in` check in renderField below
+  // tells the two apart.
+  agentProvider?: AgentProvider | undefined
 }
 
 // Each prop is passed explicitly rather than spread. Solid's `mergeProps`
@@ -88,7 +91,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('resumeSessionField', () => {
+describe('ResumeSessionField', () => {
   it('shows the menu once the worker offers sessions', async () => {
     listAgentSessions.mockResolvedValue(response('ses_a', 'ses_b'))
     renderField()

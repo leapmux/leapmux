@@ -1,4 +1,5 @@
 import antfu from '@antfu/eslint-config'
+import chatPipelinePlugin from './eslint/chatPipelinePlugin'
 
 /**
  * The selectors that antfu's TypeScript config puts in `no-restricted-syntax`.
@@ -17,6 +18,36 @@ import antfu from '@antfu/eslint-config'
  *   cannot import.
  */
 const ANTFU_RESTRICTED_SYNTAX = ['TSEnumDeclaration[const=true]', 'TSExportAssignment'] as const
+
+/**
+ * The DOM-`title` ban, factored so every scoped block that sets
+ * `no-restricted-syntax` can spread it beside the antfu selectors above.
+ *
+ * A bare `title` on a DOM element renders the unthemed OS tooltip and silently
+ * becomes the element's accessible name when no `aria-label` sits beside it.
+ */
+const DOM_TITLE_RESTRICTED_SYNTAX = {
+  selector: 'JSXOpeningElement[name.type="JSXIdentifier"][name.name=/^[a-z]/] > JSXAttribute[name.name="title"]',
+  message: 'Do not put `title` on a DOM element: it renders the unthemed OS tooltip, and it silently becomes the element\'s accessible name. Wrap the element in <Tooltip text={...}> instead -- it works on a disabled control too.',
+} as const
+
+/**
+ * Every `no-restricted-syntax` option list in this file starts from these.
+ * ESLint replaces rule options rather than merging them, so a scoped block
+ * that omits one of these deletes it for exactly the tree it matches.
+ */
+const BASE_RESTRICTED_SYNTAX = [...ANTFU_RESTRICTED_SYNTAX, DOM_TITLE_RESTRICTED_SYNTAX]
+
+/**
+ * The Dexie import ban the storage block puts on all of `src/`, factored for
+ * the same reason: the chat layer blocks below restate `ts/no-restricted-imports`
+ * for their trees and must keep it.
+ */
+const BASE_RESTRICTED_IMPORT_PATHS = [{
+  name: 'dexie',
+  message: 'Open IndexedDB through ~/lib/idb (createIdbConnection).',
+  allowTypeImports: true,
+}] as const
 
 export default antfu({
   stylistic: {
@@ -41,6 +72,33 @@ export default antfu({
     'solid/reactivity': ['warn', {
       customReactiveFunctions: ['run', 'formHandler'],
     }],
+  },
+}, {
+  files: ['src/**/*.ts', 'src/**/*.tsx'],
+  ignores: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'src/test-support/**', 'src/generated/**'],
+  plugins: {
+    'chat-pipeline': chatPipelinePlugin,
+  },
+  languageOptions: {
+    parserOptions: {
+      projectService: {
+        allowDefaultProject: [
+          'src/components/chat/auditProbe.ts',
+          'src/components/chat/model/auditProbe.ts',
+          'src/components/chat/providers/auditProbe.ts',
+          'src/components/chat/providers/probe/plugin.ts',
+          'src/components/chat/providers/probe/registerProbeProvider.ts',
+          'src/components/chat/results/auditProbe.ts',
+        ],
+      },
+      tsconfigRootDir: import.meta.dirname,
+    },
+  },
+  rules: {
+    'chat-pipeline/layer-imports': 'error',
+    'chat-pipeline/no-provider-decision': 'error',
+    'chat-pipeline/no-forbidden-assertion': 'error',
+    'chat-pipeline/plugin-registration-only': 'error',
   },
 }, {
   // Every browser-storage access goes through `~/lib/browserStorage`, which
@@ -83,15 +141,11 @@ export default antfu({
     // TypeScript-aware rule: a store still has to name `Table<Row>` to type the
     // tables its connection hands back, and a type cannot open a database.
     'ts/no-restricted-imports': ['error', {
-      paths: [{
-        name: 'dexie',
-        message: 'Open IndexedDB through ~/lib/idb (createIdbConnection).',
-        allowTypeImports: true,
-      }],
+      paths: [...BASE_RESTRICTED_IMPORT_PATHS],
     }],
   },
 }, {
-  // The gateway pair IS the browser-storage layer, so it names the raw globals
+  // The gateway pair IS the browser-storage layer, so it spells the raw globals
   // the rule above confines. It still may not construct a Dexie: that is
   // `~/lib/idb`'s job, and only there is an open paired with the shape check.
   files: ['src/lib/browserStorage.ts', 'src/lib/browserStorageDb.ts'],
@@ -101,7 +155,7 @@ export default antfu({
   },
 }, {
   // `~/lib/idb` is where Dexie is constructed, so it is the one module that may
-  // import it -- and it wraps the raw `indexedDB` global, so it names that too.
+  // import it -- and it wraps the raw `indexedDB` global, so it spells that too.
   files: ['src/lib/idb.ts'],
   rules: {
     'no-restricted-globals': 'off',
@@ -135,10 +189,27 @@ export default antfu({
   // do.
   files: ['src/**/*.ts', 'src/**/*.tsx', 'tests/**/*.ts', 'tests/**/*.tsx'],
   rules: {
-    'no-restricted-syntax': ['error', ...ANTFU_RESTRICTED_SYNTAX, {
-      selector: 'JSXOpeningElement[name.type="JSXIdentifier"][name.name=/^[a-z]/] > JSXAttribute[name.name="title"]',
-      message: 'Do not put `title` on a DOM element: it renders the unthemed OS tooltip, and it silently becomes the element\'s accessible name. Wrap the element in <Tooltip text={...}> instead -- it works on a disabled control too.',
-    }],
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX],
+  },
+}, {
+  // A `describe` identifies the SYMBOL under test, so it must be free to spell that
+  // symbol: `describe('DirectoryTree')`, `describe('MESSAGE_UI_DEFAULTS')`. The
+  // rule rejects any title opening with a capital, and its `--fix` lowercases
+  // character 0 alone -- so a name that keeps its capital came back misspelled
+  // (`DEFAULT_MONO_FONT_FAMILY` -> `dEFAULT_MONO_FONT_FAMILY`). Three hundred
+  // titles worked around it instead, either by flattening the name to
+  // `directorytree` or by dropping its leading capital to `directoryTree`, and
+  // both spell an identifier that does not exist.
+  //
+  // `it` and `test` keep the rule, because those titles are SENTENCES that
+  // continue the word `it`: `it('returns null for an empty payload')`. A capital
+  // there is Title Case prose, which is what this rule is for.
+  //
+  // `src/test-support/noMangledTestTitles.test.ts` carries the other half: a
+  // title may not spell a name the file knows with its capitals removed.
+  files: ['**/*.test.ts', '**/*.test.tsx', '**/*.spec.ts', '**/*.spec.tsx'],
+  rules: {
+    'test/prefer-lowercase-title': ['error', { ignore: ['describe'] }],
   },
 }, {
   // Playwright fixture parameters (e.g. `authenticatedWorkspace`) must be destructured

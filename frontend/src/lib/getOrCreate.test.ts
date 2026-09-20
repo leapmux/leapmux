@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { getOrCreate } from './getOrCreate'
 
-describe('getorcreate', () => {
+describe('getOrCreate', () => {
   it('creates, inserts, and returns a value for an absent key', () => {
     const map = new Map<string, number[]>()
     const factory = vi.fn(() => [] as number[])

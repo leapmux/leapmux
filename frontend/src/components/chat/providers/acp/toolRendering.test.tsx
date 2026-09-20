@@ -1,34 +1,55 @@
-import type { RenderContext } from '../../messageRenderers'
+import type { MessageContentRenderContext } from '../../messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { toolMessageInput } from '~/components/chat/providers/testUtils'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { testMessageSources } from '~/test-support/messageRenderSources'
+import { providerToolMeta } from '~/test-support/toolCallFixture'
 import { MessageBubble } from '../../MessageBubble'
-import { renderMessageContent } from '../../messageRenderers'
+import { renderMessageContent } from '../../messageContentRenderer'
 import { toolBodyBorder, toolUseHeader } from '../../toolStyles.css'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import { renderACPToolPair } from './testUtils'
-import '../opencode'
-import '../kilo'
-import '../goose'
-import '../reasonix'
-import '../cursor'
-import '../copilot'
+import '../opencode/plugin'
+import '../kilo/plugin'
+import '../goose/plugin'
+import '../reasonix/plugin'
+import '../cursor/plugin'
+import '../copilot/plugin'
 import '../testMocks'
 
-function renderTool(tool: Record<string, unknown>, context?: RenderContext) {
+function renderTool(tool: Record<string, unknown>, context?: MessageContentRenderContext) {
   const plugin = providerFor(AgentProvider.OPENCODE)!
-  const category = plugin.classify(input(tool))
+  const category = plugin?.transcript.classify(input(tool))
   return render(() => renderMessageContent(tool, context, category, AgentProvider.OPENCODE))
 }
 
 describe('acp tool rendering', () => {
-  it.each(['completed', 'failed', 'cancelled'])('shows one requested diff and retains a %s edit result', (status) => {
+  it.each([
+    [AgentProvider.OPENCODE, 'todowrite'],
+    [AgentProvider.KILO, 'todowrite'],
+    [AgentProvider.REASONIX, 'todo_write'],
+  ])('composes the task-count header for a %s to-do pair', (provider, title) => {
+    const todos = [{ content: 'Inspect sample', status: 'pending' }]
+    const { container } = renderACPToolPair(provider, {
+      title,
+      kind: 'other',
+      rawInput: { todos },
+    }, {
+      rawOutput: { metadata: { todos } },
+      content: [{ type: 'content', content: { type: 'text', text: JSON.stringify(todos) } }],
+    })
+    // The REQUEST row's header: the renderer composes it from the list, and the
+    // frame's own tool word ('todowrite') must not stand in for that count.
+    expect(container.textContent).toContain('1 task')
+    expect(container.textContent).not.toContain(title)
+    expect(container.querySelector('[data-task-checkbox="pending"]')).not.toBeNull()
+  })
+
+  it.each(['completed'])('shows one requested diff and retains a %s edit result', (status) => {
     const { container } = renderACPToolPair(AgentProvider.OPENCODE, {
       title: 'edit',
       kind: 'edit',
@@ -116,8 +137,12 @@ describe('acp tool rendering', () => {
     const plugin = providerFor(provider)!
     const { container } = render(() => renderMessageContent(result, {
       premeasureMode: true,
-      sources: testMessageSources({ request: () => input(request) }),
-    }, plugin.classify(input(result)), provider))
+      sources: testMessageSources({
+        request: () => input(request),
+        role: () => 'result',
+        visibleRows: () => ({ request: true, result: true }),
+      }),
+    }, plugin?.transcript.classify(input(result)), provider))
     expect(container.textContent).toContain('File content')
     expect(container.querySelector(`.${toolUseHeader}`)).toBeNull()
     expect(container.querySelector(`.${toolBodyBorder}`)).toBeNull()
@@ -139,7 +164,7 @@ describe('acp tool rendering', () => {
     const { container } = render(() => renderMessageContent(result, {
       premeasureMode: true,
       sources: testMessageSources({ request: () => requestId ? input({ sessionUpdate: 'tool_call', toolCallId: requestId, status: 'pending' }) : undefined }),
-    }, plugin.classify(input(result)), provider))
+    }, plugin?.transcript.classify(input(result)), provider))
     expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toContain('README.md')
     expect(container.textContent).toContain('File content')
   })
@@ -149,8 +174,8 @@ describe('acp tool rendering', () => {
   // result, and a result draws its name from the request.
   it.each([AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.GOOSE, AgentProvider.REASONIX, AgentProvider.CURSOR])('declares the related half per provider (%s)', (provider) => {
     const plugin = providerFor(provider)!
-    expect(plugin.relatedMessages?.(input({ sessionUpdate: 'tool_call', toolCallId: 'read', kind: 'read', title: 'read', status: 'pending', rawInput: {} }))).toEqual(['result'])
-    expect(plugin.relatedMessages?.(input({ sessionUpdate: 'tool_call_update', toolCallId: 'read', status: 'completed', content: [] }))).toEqual(['request'])
+    expect(plugin?.transcript.relatedMessages?.(input({ sessionUpdate: 'tool_call', toolCallId: 'read', kind: 'read', title: 'read', status: 'pending', rawInput: {} }))).toEqual(['result'])
+    expect(plugin?.transcript.relatedMessages?.(input({ sessionUpdate: 'tool_call_update', toolCallId: 'read', status: 'completed', content: [] }))).toEqual(['request'])
   })
 
   // The completion that names NO tool of its own. With no request beside it and no
@@ -162,7 +187,7 @@ describe('acp tool rendering', () => {
     const { container } = render(() => renderMessageContent(result, {
       premeasureMode: true,
       sources: testMessageSources({ request: () => undefined }),
-    }, plugin.classify(input(result)), provider))
+    }, plugin?.transcript.classify(input(result)), provider))
     expect(container.textContent).toContain('recovered output')
     for (const invented of ['Run command', 'README', 'Read file', 'Search'])
       expect(container.textContent).not.toContain(invented)
@@ -171,22 +196,30 @@ describe('acp tool rendering', () => {
   it('recovers a read header from matching result metadata without inventing a requested range', () => {
     const request = { sessionUpdate: 'tool_call', toolCallId: 'read', kind: 'read', title: 'read', status: 'pending', rawInput: {} }
     const result = { sessionUpdate: 'tool_call_update', toolCallId: 'read', status: 'completed', rawOutput: { metadata: { display: { type: 'file', path: '/project/README.md', text: 'File content', lineStart: 1, lineEnd: 1 } } } }
-    const { container } = renderTool(request, { premeasureMode: true, workingDir: '/project', sources: testMessageSources({ result: () => input(result) }) })
+    const { container } = renderTool(request, {
+      premeasureMode: true,
+      workingDir: '/project',
+      sources: testMessageSources({
+        result: () => input(result),
+        role: () => 'request',
+        visibleRows: () => ({ request: true, result: true }),
+      }),
+    })
     expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toBe('README.md')
     expect(container.textContent).not.toContain('File content')
-    expect(providerFor(AgentProvider.OPENCODE)!.relatedMessages?.(input(request))).toEqual(['result'])
+    expect(providerFor(AgentProvider.OPENCODE)!.transcript.relatedMessages?.(input(request))).toEqual(['result'])
   })
 
   it('loads result metadata when partial read input has no file path', () => {
     const request = { sessionUpdate: 'tool_call', toolCallId: 'read', kind: 'read', title: 'read', status: 'pending', rawInput: { offset: 7, limit: 2 } }
-    expect(providerFor(AgentProvider.OPENCODE)!.relatedMessages?.(input(request))).toEqual(['result'])
+    expect(providerFor(AgentProvider.OPENCODE)!.transcript.relatedMessages?.(input(request))).toEqual(['result'])
   })
 
   it('uses a protocol file location without a related-message request', () => {
     const request = { sessionUpdate: 'tool_call', toolCallId: 'read', kind: 'read', title: 'read', status: 'pending', rawInput: { offset: 7 }, locations: [{ path: '/project/sample.ts', line: 7 }] }
     const { container } = renderTool(request, { premeasureMode: true, workingDir: '/project' })
     expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toBe('sample.ts (Line 7–)')
-    expect(providerFor(AgentProvider.OPENCODE)!.relatedMessages?.(input(request))).toEqual([])
+    expect(providerFor(AgentProvider.OPENCODE)!.transcript.relatedMessages?.(input(request))).toEqual([])
   })
 
   it('does not use another call to supply a request header', () => {
@@ -248,8 +281,8 @@ describe('acp tool rendering', () => {
 
   it('identifies request and result roles without arrival-order assumptions', () => {
     const plugin = providerFor(AgentProvider.OPENCODE)!
-    expect(plugin.spanRole?.(input({ sessionUpdate: 'tool_call', toolCallId: 'edit', status: 'pending' }))).toBe('opener')
-    expect(plugin.spanRole?.(input({ sessionUpdate: 'tool_call_update', toolCallId: 'edit', status: 'completed' }))).toBe('result')
+    expect(plugin?.transcript.spanRole?.(input({ sessionUpdate: 'tool_call', toolCallId: 'edit', status: 'pending' }))).toBe('request')
+    expect(plugin?.transcript.spanRole?.(input({ sessionUpdate: 'tool_call_update', toolCallId: 'edit', status: 'completed' }))).toBe('result')
   })
   it('renders every changed file in a completed call', () => {
     const tool = {
@@ -257,6 +290,9 @@ describe('acp tool rendering', () => {
       toolCallId: 'edit',
       kind: 'edit',
       status: 'completed',
+      // The call states the file it asked to change. An edit that names none is not a
+      // call this build draws (invariant I7); the RESULT is what states the second file.
+      rawInput: { filePath: '/project/first.ts', oldString: 'firstBefore', newString: 'firstAfter' },
       content: [
         { type: 'diff', path: '/project/first.ts', oldText: 'firstBefore', newText: 'firstAfter' },
         { type: 'diff', path: '/project/second.ts', oldText: 'secondBefore', newText: 'secondAfter' },
@@ -265,8 +301,7 @@ describe('acp tool rendering', () => {
     const { container } = renderTool(tool, { premeasureMode: true })
     expect(container.textContent).toContain('firstAfter')
     expect(container.textContent).toContain('secondAfter')
-    const plugin = providerFor(AgentProvider.OPENCODE)!
-    const meta = plugin.toolResultMeta?.(plugin.classify(input(tool)), toolMessageInput(tool, 'edit', undefined))
+    const meta = providerToolMeta(AgentProvider.OPENCODE, tool, { spanType: 'edit' })
     expect(meta?.hasDiff).toBe(true)
     expect(meta?.copyableContent()).toContain('secondAfter')
   })
@@ -288,7 +323,10 @@ describe('acp tool rendering', () => {
     expect(container.textContent).toContain('afterRequest')
   })
 
-  it.each(['failed', 'cancelled'])('labels the attempted edit as requested after %s', (status) => {
+  // A call that ended without applying anything draws NO diff. Nothing it asked for
+  // reached the file, so the reason it gives is the whole answer -- the same rule
+  // every provider now takes from `RequestedChangesBody`.
+  it.each(['failed', 'cancelled'])('draws no requested diff after %s', (status) => {
     const { container } = renderTool({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'edit',
@@ -296,8 +334,8 @@ describe('acp tool rendering', () => {
       status,
       rawInput: { filePath: '/project/file.ts', oldString: 'attemptBefore', newString: 'attemptAfter' },
     })
-    expect(container.textContent).toContain('Requested changes')
-    expect(container.textContent).toContain('attemptAfter')
+    expect(container.textContent).not.toContain('Requested changes')
+    expect(container.textContent).not.toContain('attemptAfter')
     expect(container.textContent).toContain(status === 'failed' ? 'Error' : 'Interrupted')
   })
 
@@ -312,5 +350,34 @@ describe('acp tool rendering', () => {
     }, { premeasureMode: true })
     expect(container.textContent).toContain('npm test -- --runInBand')
     expect(container.textContent).not.toContain('[no output]')
+  })
+
+  // A finished thought draws ONCE. With no result the renderer's request hook fires
+  // and states the first line as a summary, and the row then drew that line again at
+  // the head of the whole thought below it.
+  it('draws the first line of a finished thought exactly once', () => {
+    const { container } = renderTool({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'thought',
+      kind: 'think',
+      status: 'completed',
+      rawInput: {},
+      content: [{ type: 'content', content: { type: 'text', text: 'Weighing two options.\nThe first one costs less.' } }],
+    }, { premeasureMode: true })
+    expect(container.textContent?.match(/Weighing two options\./g)).toHaveLength(1)
+    expect(container.textContent).toContain('The first one costs less.')
+  })
+
+  // A thought still arriving has no answer yet, so the summary line IS the row.
+  it('draws the first line of a running thought as its summary', () => {
+    const { container } = renderTool({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'thought',
+      kind: 'think',
+      status: 'in_progress',
+      rawInput: { thought: 'Weighing two options.\nThe first one costs less.' },
+    }, { premeasureMode: true })
+    expect(container.textContent?.match(/Weighing two options\./g)).toHaveLength(1)
+    expect(container.textContent).not.toContain('The first one costs less.')
   })
 })

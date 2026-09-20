@@ -26,8 +26,8 @@ describe('createBackgroundTaskStore', () => {
     const store = createBackgroundTaskStore()
     store.replace('a1', [proto('t1', BackgroundTaskStatus.RUNNING, 'working')])
     expect(store.get('a1')).toHaveLength(1)
-    expect(store.get('a1')[0].status).toBe('running')
-    expect(store.get('a1')[0].activity).toBe('working')
+    expect(store.get('a1')[0]?.status).toBe('running')
+    expect(store.get('a1')[0]?.activity).toBe('working')
   })
 
   // The registry arrives WHOLE on every broadcast, so one subagent's new
@@ -88,7 +88,7 @@ describe('createBackgroundTaskStore', () => {
     const store = createBackgroundTaskStore()
     store.replace('a1', [proto('t1', BackgroundTaskStatus.RUNNING, 'a')])
     store.replace('a1', [proto('t1', BackgroundTaskStatus.RUNNING, 'b')])
-    expect(store.get('a1')[0].activity).toBe('b')
+    expect(store.get('a1')[0]?.activity).toBe('b')
   })
 
   it('remove drops only the targeted agent', () => {

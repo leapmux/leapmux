@@ -204,6 +204,19 @@ const (
 	// differs from the session's. Its `data.actualRevision` carries the
 	// revision the app-server holds -- see zcodeActualRevision.
 	ZCodeErrRevisionMismatch = -32009
+	// ZCodeErrRuntimeUnavailable says the session runtime cannot do what the
+	// request asked. The app-server raises it at four sites, read from the
+	// installed bundle: a model request whose provider runtime headers were not
+	// applied, a session/send or a compact against a session that carries a
+	// restoreWarning, and a cancelBackgroundTask the runtime does not implement.
+	//
+	// LeapMux needs no branch for it, and that is deliberate. It is PERMANENT --
+	// a restoreWarning stays set on the session, so every later prompt raises the
+	// same code and a retry can never clear it -- and the app-server always states
+	// a human-readable `message`, which classifyZCodeInputDeliveryError already
+	// returns unchanged. It is named here because the table documents the codes
+	// observed on the wire, so the next reader does not investigate it again.
+	ZCodeErrRuntimeUnavailable = -32031
 )
 
 // ZCodeOfficialAuthUnavailable is the status LeapMux reports for ZCode's hosted MCP

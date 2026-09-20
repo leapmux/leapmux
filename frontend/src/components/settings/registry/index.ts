@@ -29,9 +29,10 @@ function browserOnlyDescriptor(decl: BrowserOnlySettingDecl, prefs: PreferencesS
     hiddenWhen,
     ...descriptor
   } = decl
+  const hidden = hideWhenAny(descriptor.hidden, preferenceRule(hiddenWhen, prefs))
   return {
     ...descriptor,
-    hidden: hideWhenAny(descriptor.hidden, preferenceRule(hiddenWhen, prefs)),
+    ...(hidden === undefined ? {} : { hidden }),
   }
 }
 
@@ -72,15 +73,21 @@ function accountDescriptor(
   const control = controlForField(found.field)
   if (control === undefined)
     return undefined
+  const hidden = hideWhenAny(
+    decl.hidden,
+    found.hiddenInSolo ? () => isSoloMode() : undefined,
+    found.hiddenInHub ? () => !isSoloMode() : undefined,
+    preferenceRule(decl.hiddenWhen, prefs),
+  )
   return {
     id: decl.id,
     category: found.category as CategoryId,
     label: decl.label,
-    help: decl.help,
-    keywords: decl.keywords,
+    ...(decl.help === undefined ? {} : { help: decl.help }),
+    ...(decl.keywords === undefined ? {} : { keywords: decl.keywords }),
     scope: decl.scope,
     control: withDeclaredNames(control, decl),
-    restart: found.restart || undefined,
+    ...(found.restart ? { restart: true } : {}),
     // The wire's own `dependsOn` is NOT consulted, and it is the one hide
     // rule this path drops: it reads a live value out of a
     // `Map<string, SettingValue>`, which the typed account tier does not
@@ -91,12 +98,7 @@ function accountDescriptor(
     // descriptor unfiltered, unlike ListSettings, which drops a hub-scope
     // descriptor its own deployment hides. So this join is the account scope's
     // one enforcement point, and half of it would hide half the rows.
-    hidden: hideWhenAny(
-      decl.hidden,
-      found.hiddenInSolo ? () => isSoloMode() : undefined,
-      found.hiddenInHub ? () => !isSoloMode() : undefined,
-      preferenceRule(decl.hiddenWhen, prefs),
-    ),
+    ...(hidden === undefined ? {} : { hidden }),
   }
 }
 

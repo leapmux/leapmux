@@ -7,6 +7,7 @@ import { createEffect, createMemo } from 'solid-js'
 import { createStore, produce, unwrap } from 'solid-js/store'
 import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { hlcIsZero } from '~/lib/crdt/hlc'
+import { assignDefined } from '~/lib/jsonPick'
 import { sameKeys } from '~/lib/sameKeys'
 import { shallowEqual, shallowEqualArrays } from '~/lib/shallowEqual'
 
@@ -48,8 +49,12 @@ import { shallowEqual, shallowEqualArrays } from '~/lib/shallowEqual'
 
 /** Fields every tab kind carries. */
 export interface SharedMeta {
-  title?: string
-  hasNotification?: boolean
+  // Optional metadata fields are `T | undefined`: producers routinely build a
+  // patch whose absent proto fields arrive as explicit undefined, and
+  // `mergeDefined` SKIPS those by design (see its doc). Only a real value
+  // ('', false) clears a stored field.
+  title?: string | undefined
+  hasNotification?: boolean | undefined
   /**
    * Set once the worker has actually answered for this tab.
    *
@@ -70,7 +75,7 @@ export interface SharedMeta {
    * terminal back to STARTING, rewinds `lastOffset` (replaying bytes xterm has
    * already drawn) and overwrites an in-flight optimistic agent-settings edit.
    */
-  hydrated?: boolean
+  hydrated?: boolean | undefined
   /**
    * Monotonic activation counter. Higher = more recently activated. Never enters
    * the CRDT (two devices should not fight over which tab was touched last) and
@@ -85,19 +90,19 @@ export interface SharedMeta {
    * Seeded eagerly in `createTabMetadataStore` (see `loadMru`) because `mruHead`
    * is read during render before any CRDT-gated hook could rehydrate it.
    */
-  mru?: number
-  workingDir?: string
-  createdAt?: string
+  mru?: number | undefined
+  workingDir?: string | undefined
+  createdAt?: string | undefined
   /** Repo toplevel linking this tab to the repo-keyed git store entry. */
-  gitToplevel?: string
+  gitToplevel?: string | undefined
 }
 
 export interface AgentMeta {
-  agentProvider?: AgentProvider
-  agentStatus?: AgentStatus
-  agentSessionId?: string
-  optionValues?: Record<string, string>
-  optionGroups?: AvailableOptionGroup[]
+  agentProvider?: AgentProvider | undefined
+  agentStatus?: AgentStatus | undefined
+  agentSessionId?: string | undefined
+  optionValues?: Record<string, string> | undefined
+  optionGroups?: AvailableOptionGroup[] | undefined
   /**
    * Subagent linkage. parentAgentId is set only for virtual child agents
    * (protoToAgentTabFields hydrates it from AgentInfo). Without it in AgentMeta
@@ -106,20 +111,20 @@ export interface AgentMeta {
    * undefined -- composer gating, the corner icon, MRU exclusion and
    * rootAgentIdFor all silently break.
    */
-  parentAgentId?: string
+  parentAgentId?: string | undefined
   /** Backend-authoritative: a child that accepts user messages is steerable. */
-  acceptsMessages?: boolean
+  acceptsMessages?: boolean | undefined
   /** Whether the live provider accepts an explicit queue-head steer. */
-  supportsSteering?: boolean
-  supportsPreemption?: boolean
+  supportsSteering?: boolean | undefined
+  supportsPreemption?: boolean | undefined
   /** The root agent that owns this agent's process and notification streams. */
-  rootAgentId?: string
+  rootAgentId?: string | undefined
 }
 
 export interface TerminalMeta {
-  terminalStatus?: TerminalStatus
-  shellStartDir?: string
-  screen?: Uint8Array
+  terminalStatus?: TerminalStatus | undefined
+  shellStartDir?: string | undefined
+  screen?: Uint8Array | undefined
   /**
    * Cumulative PTY byte offset this tab has already applied to its xterm.
    * Seeded at hydration from the backend's `screen_end_offset` (the offset at
@@ -137,7 +142,7 @@ export interface TerminalMeta {
    * 300). Reading it straight off the store is also strictly more correct for
    * the resubscribe cursor: it cannot lag behind a join that has not recomputed.
    */
-  lastOffset?: number
+  lastOffset?: number | undefined
   /**
    * Set when this client knows it lost terminal bytes (the pending-frame
    * queue evicted oldest frames for a terminal that never mounted). The next
@@ -145,15 +150,15 @@ export interface TerminalMeta {
    * full snapshot; the flag clears when that snapshot applies. Local
    * recovery state, like lastOffset — never synced.
    */
-  needsResync?: boolean
+  needsResync?: boolean | undefined
   /** PTY-driven title from OSC 0/2; does not replace a user rename (`title`). */
-  ptyTitle?: string
+  ptyTitle?: string | undefined
   /** Task progress from OSC 9;4 (ConEmu / Windows Terminal protocol). */
-  progressState?: import('~/generated/proto/leapmux/v1/terminal_pb').TerminalProgress_State
-  progressPercent?: number
-  cols?: number
-  rows?: number
-  contentReady?: boolean
+  progressState?: import('~/generated/proto/leapmux/v1/terminal_pb').TerminalProgress_State | undefined
+  progressPercent?: number | undefined
+  cols?: number | undefined
+  rows?: number | undefined
+  contentReady?: boolean | undefined
 }
 
 /**
@@ -162,8 +167,8 @@ export interface TerminalMeta {
  * because `assemble` copies them into both shapes.
  */
 export interface StartupMeta {
-  startupError?: string
-  startupMessage?: string
+  startupError?: string | undefined
+  startupMessage?: string | undefined
 }
 
 export interface FileMeta {
@@ -172,8 +177,8 @@ export interface FileMeta {
    * resolve it; the hub never sees a file path, which is why it cannot live in
    * the CRDT.
    */
-  filePath?: string
-  fileOpenSource?: FileOpenSource
+  filePath?: string | undefined
+  fileOpenSource?: FileOpenSource | undefined
   /**
    * `TabRecord` HAS registers for these three (`display_mode`,
    * `file_view_mode`, `file_diff_base`) and `apply.ts` merges them INBOUND, but
@@ -187,9 +192,9 @@ export interface FileMeta {
    * write path. That may well be desirable, but it is a behaviour change nobody
    * asked for and belongs in its own change, not smuggled in by a refactor.
    */
-  displayMode?: string
-  fileViewMode?: FileViewMode
-  fileDiffBase?: FileDiffBase
+  displayMode?: string | undefined
+  fileViewMode?: FileViewMode | undefined
+  fileDiffBase?: FileDiffBase | undefined
 }
 
 /**
@@ -204,11 +209,11 @@ export interface FileMeta {
  */
 export interface ImageMeta {
   /** The agent whose transcript holds the message. */
-  imageAgentId?: string
+  imageAgentId?: string | undefined
   /** Per-agent message seq. */
-  imageSeq?: bigint
-  /** Which image of that message, in `Provider.toolResultImages` order. */
-  imageIndex?: number
+  imageSeq?: bigint | undefined
+  /** Which image of that message, in `imagesForRow` order. */
+  imageIndex?: number | undefined
 }
 
 /**
@@ -229,21 +234,23 @@ export type { FileDiffBase, FileViewMode }
  * field for field, because both mark the tab `hydrated` and whichever runs
  * second is what the tab keeps.
  *
- * `|| undefined` on the strings because they arrive as proto3 fields: an absent
- * one is `''`, and `mergeDefined` treats a real `''` as a CLEARING write rather
- * than as "no opinion".
+ * Empty proto strings map to ABSENCE (via assignDefined) rather than `''`
+ * because they arrive as proto3 fields: an absent one is `''`, and
+ * `mergeDefined` treats a real `''` as a CLEARING write rather than as "no
+ * opinion".
  */
 export function tabPayloadMetadata(payload: TabPayloadView): TabMetadata {
-  const shared: TabMetadata = { workingDir: payload.workingDir || undefined, hydrated: true }
-  if (payload.kind === 'file')
-    return { ...shared, filePath: payload.filePath || undefined }
-  return {
-    ...shared,
-    title: payload.title || undefined,
-    imageAgentId: payload.agentId || undefined,
-    imageSeq: payload.seq,
-    imageIndex: payload.imageIndex,
+  const shared: TabMetadata = { hydrated: true }
+  assignDefined(shared, 'workingDir', payload.workingDir || undefined)
+  if (payload.kind === 'file') {
+    assignDefined(shared, 'filePath', payload.filePath || undefined)
+    return shared
   }
+  assignDefined(shared, 'title', payload.title || undefined)
+  assignDefined(shared, 'imageAgentId', payload.agentId || undefined)
+  shared.imageSeq = payload.seq
+  shared.imageIndex = payload.imageIndex
+  return shared
 }
 
 /**
@@ -272,7 +279,9 @@ export function tabPayloadMetadata(payload: TabPayloadView): TabMetadata {
  * caller -- see {@link useMetadataSweep}. An id this set omits may be a tab the
  * CRDT has not heard of YET rather than one that went away.
  */
-export function liveTabIds(state: { tabs: Record<string, { tombstoneAt?: HLC } | undefined> }): Set<string> {
+// `tombstoneAt?: HLC | undefined` to match the generated TabRecord shape the
+// CRDT state hands over (proto3 optional fields carry explicit undefined).
+export function liveTabIds(state: { tabs: Record<string, { tombstoneAt?: HLC | undefined } | undefined> }): Set<string> {
   const live = new Set<string>()
   for (const [tabId, rec] of Object.entries(state.tabs)) {
     if (rec && hlcIsZero(rec.tombstoneAt))

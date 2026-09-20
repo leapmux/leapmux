@@ -60,7 +60,7 @@ export function useChatAttachments(opts: UseChatAttachmentsOptions): UseChatAtta
     setActiveDraftKey(agentId)
   }))
 
-  const capabilities = createMemo(() => providerFor(opts.agentProvider())?.attachments)
+  const capabilities = createMemo(() => providerFor(opts.agentProvider())?.configuration?.attachments)
   const acceptAttribute = createMemo(() => buildAcceptAttribute(capabilities()))
 
   const addFiles = async (files: FileList | File[] | PendingAttachmentFile[], isPastedImage?: boolean): Promise<number> => {

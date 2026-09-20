@@ -1,11 +1,14 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
+import { createComputed, createRoot, createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { MESSAGE_SUPPLEMENT_FIELD } from '~/generated/contracts/worker-vocab'
+import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeControlResponseMessage } from '~/test-support/messageFactory'
 import { __resetMarkPreviewCacheForTest, forgetMarkPreview, getCachedMarkPreview, messageMarkPreviewText, warmMarkPreview } from './chatMarkPreview'
 import * as registry from './providers/registry'
+import { prepareChatRow } from './rowPreparation'
 // Register provider plugins so messageMarkPreviewText (called inside warm) can resolve one.
 import '~/components/chat/providers'
 
@@ -52,6 +55,27 @@ describe('message mark preview text', () => {
     expect(messageMarkPreviewText(messageOf({ content: 'jump here' }))).toBe('jump here')
   })
 
+  // The rail reads the SAME row the transcript draws, and half of what an ACP row
+  // says lives in the supplemental half LeapMux wrote beside the provider's frame --
+  // here the terminal output, which the provider's own frame states as an id alone.
+  // Extracting with no sides read the raw frame and lost it.
+  it('reads the supplemental half of an ACP tool row', () => {
+    const frame = { sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed', kind: 'execute', title: 'Run', rawInput: { command: 'bun test' }, content: [{ type: 'terminal', terminalId: 't-1' }] }
+    const message = create(AgentChatMessageSchema, {
+      id: 'm1',
+      source: MessageSource.AGENT,
+      seq: 5n,
+      agentProvider: AgentProvider.OPENCODE,
+      contentCompression: ContentCompression.NONE,
+      supplementalContentCompression: ContentCompression.NONE,
+      content: new TextEncoder().encode(JSON.stringify(frame)),
+      supplementalContent: new TextEncoder().encode(JSON.stringify({
+        provider: { sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed', terminals: { 't-1': { output: 'build ok', exitCode: 0 } } },
+      })),
+    })
+    expect(messageMarkPreviewText(message)).toContain('build ok')
+  })
+
   it('resolves a persisted Codex control response to its decision label', () => {
     const row = makeControlResponseMessage(AgentProvider.CODEX, { jsonrpc: '2.0', id: 7, result: { decision: 'accept' } }, { method: 'item/commandExecution/requestApproval' })
     expect(messageMarkPreviewText(row)).toBe('Allow')
@@ -66,8 +90,15 @@ describe('message mark preview text', () => {
     expect(messageMarkPreviewText(makeControlResponseMessage(AgentProvider.CODEX, {}))).toBe('Responded')
   })
 
+  // The rail used to show a mark-type LABEL here: the neutral extractor read a
+  // top-level `content` string, and an assistant row states its words in blocks.
+  // The row model reads the blocks, so the dot now previews what the row says.
+  it('previews an assistant content-block array', () => {
+    expect(messageMarkPreviewText(messageOf({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }))).toBe('hi')
+  })
+
   it('returns null for a message with no previewable text', () => {
-    expect(messageMarkPreviewText(messageOf({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }))).toBeNull()
+    expect(messageMarkPreviewText(messageOf({ type: 'assistant', message: { content: [] } }))).toBeNull()
   })
 
   it('degrades to null instead of propagating when a provider plugin previewText throws', () => {
@@ -77,9 +108,139 @@ describe('message mark preview text', () => {
       expect(messageMarkPreviewText(messageOf({ content: 'x' }))).toBeNull()
     })
   })
+
+  // The shared preparation is what the hover runs, so its degradation is the one the
+  // rail reads: an extractor that throws answers an EXPLICIT failed extraction -- not
+  // `unsupported`, whose card blames the provider for a defect that is LeapMux's --
+  // and the preview takes that row as no text, so the dot falls to its mark-type label.
+  it('answers an explicit failed extraction when the provider extractor throws', () => {
+    const spy = vi.spyOn(registry, 'pluginFor').mockReturnValue({
+      transcript: {
+        classify: () => ({ kind: 'tool_result' }),
+        spanRole: () => 'result',
+        extractRow: () => {
+          throw new Error('boom')
+        },
+      },
+    } as unknown as ReturnType<typeof registry.pluginFor>)
+    try {
+      const message = messageOf({ type: 'tool_result' })
+      const { extraction } = prepareChatRow(message)
+      expect(extraction.kind).toBe('failed')
+      if (extraction.kind === 'failed') {
+        expect(extraction.payload).toEqual({ type: 'tool_result' })
+        expect(extraction.error).toBeInstanceOf(Error)
+      }
+      expect(messageMarkPreviewText(message)).toBeNull()
+    }
+    finally {
+      spy.mockRestore()
+    }
+  })
 })
 
-describe('warmmarkpreview', () => {
+/**
+ * The rail previews the SAME row the transcript draws, so it must read the payload a
+ * provider's own `resolveMessage` resolved -- not the raw frame.
+ *
+ * Three providers recover half of a retained row there: Codex joins a command's output
+ * deltas, Pi keeps a call's partial result, and ZCode keeps the arguments a scheduled
+ * call omitted. The preview parsed the message and classified it directly, so none of
+ * the three ran, and a dot previewed a command with no output beside a row that drew
+ * one.
+ */
+describe('message mark preview text over a resolved payload', () => {
+  /** One marked message with a provider frame and the LeapMux half beside it. */
+  function resolvedMessage(
+    agentProvider: AgentProvider,
+    frame: unknown,
+    provider: unknown,
+    completion?: MessageCompletion,
+  ): AgentChatMessage {
+    return create(AgentChatMessageSchema, {
+      id: 'm1',
+      source: MessageSource.AGENT,
+      seq: 5n,
+      agentProvider,
+      // Omitted (not undefined) when the fixture states no completion; `create` rejects an explicit undefined.
+      ...(completion !== undefined ? { completion } : {}),
+      contentCompression: ContentCompression.NONE,
+      supplementalContentCompression: ContentCompression.NONE,
+      content: new TextEncoder().encode(JSON.stringify(frame)),
+      supplementalContent: new TextEncoder().encode(JSON.stringify({ [MESSAGE_SUPPLEMENT_FIELD.Provider]: provider })),
+    })
+  }
+
+  // A retained command still reports `inProgress`, because Codex fills the output on
+  // the COMPLETED item and a turn that ended first never sent one. The interruption
+  // LeapMux recorded is what makes the row final, so the completion is part of the
+  // fixture rather than decoration: without it the row has no result side and there is
+  // no output to preview.
+  it('includes the output a retained Codex command recovered', () => {
+    const message = resolvedMessage(
+      AgentProvider.CODEX,
+      { threadId: 'main-thread', turnId: 'turn-1', item: { type: 'commandExecution', id: 'command-1', status: 'inProgress', command: 'printf partial' } },
+      { itemId: 'command-1', itemType: 'commandExecution', aggregatedOutput: 'Running 240 tests' },
+      MessageCompletion.INTERRUPTED,
+    )
+    expect(messageMarkPreviewText(message)).toContain('Running 240 tests')
+  })
+
+  it('includes partial Pi output that the retained supplement supplied', () => {
+    // Pi sends the finished result on its end frame. The worker stores a partial body
+    // beside the retained start frame when the turn ends first.
+    const message = resolvedMessage(
+      AgentProvider.PI,
+      { type: 'tool_execution_start', toolCallId: 'call', toolName: 'bash', args: { command: 'ls' } },
+      { toolCallId: 'call', toolName: 'bash', partialResult: { content: [{ type: 'text', text: 'partial stdout' }] } },
+      MessageCompletion.INTERRUPTED,
+    )
+    expect(messageMarkPreviewText(message)).toContain('partial stdout')
+  })
+
+  it('includes the arguments a scheduled ZCode call omitted', () => {
+    const message = resolvedMessage(
+      AgentProvider.ZCODE,
+      { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'call', toolName: 'Bash', inputOmitted: true, inputRef: 'model_stream' } },
+      { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'call', input: { command: 'printf recovered' } } },
+    )
+    expect(messageMarkPreviewText(message)).toContain('printf recovered')
+  })
+})
+
+describe('warmMarkPreview', () => {
+  it('updates a reactive reader that first saw a cold cache', () => {
+    createRoot((dispose) => {
+      let preview: string | undefined
+      createComputed(() => {
+        preview = getCachedMarkPreview('cold-agent', 5n)
+      })
+      expect(preview).toBeUndefined()
+      void warmMarkPreview('cold-agent', 5n, testMessageContext({
+        messageBySeq: () => userMessage(5n, 'warmed preview'),
+        fetchMessage: vi.fn(),
+      }))
+      expect(preview).toBe('warmed preview')
+      dispose()
+    })
+  })
+
+  it('replaces a cached preview when the current message revision changes', async () => {
+    const [message, setMessage] = createSignal(userMessage(5n, 'before supplement'))
+    const [contentVersion, setContentVersion] = createSignal(0)
+    const context = testMessageContext({
+      messages: () => [message()],
+      contentVersion: () => contentVersion(),
+    })
+    await warmMarkPreview('a1', 5n, context)
+    expect(getCachedMarkPreview('a1', 5n, context.peek(5n)?.revision)).toBe('before supplement')
+
+    setMessage(userMessage(5n, 'after supplement'))
+    setContentVersion(1)
+    await warmMarkPreview('a1', 5n, context)
+    expect(getCachedMarkPreview('a1', 5n, context.peek(5n)?.revision)).toBe('after supplement')
+  })
+
   it('resolves from the loaded window without fetching', () => {
     const fetchMessage = vi.fn()
     warmMarkPreview('a1', 5n, testMessageContext({
@@ -123,6 +284,10 @@ describe('warmmarkpreview', () => {
   })
 
   it('bounds the per-agent preview cache across long hover sessions', () => {
+    // A second agent's entry, held from before the flood: this agent's eviction
+    // walks its own bucket alone, so the flood cannot age another agent's preview
+    // out of its cap.
+    warmMarkPreview('a2', 1n, testMessageContext({ messageBySeq: () => userMessage(1n, 'other agent'), fetchMessage: vi.fn() }))
     for (let seq = 1n; seq <= 505n; seq++) {
       warmMarkPreview('a1', seq, testMessageContext({
         messageBySeq: () => userMessage(seq, `message ${seq}`),
@@ -131,6 +296,7 @@ describe('warmmarkpreview', () => {
     }
     expect(getCachedMarkPreview('a1', 1n)).toBeUndefined()
     expect(getCachedMarkPreview('a1', 505n)).toBe('message 505')
+    expect(getCachedMarkPreview('a2', 1n)).toBe('other agent')
   })
 
   it('caches "" when the message is gone, so the rail shows a label without re-fetching', async () => {

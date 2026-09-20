@@ -40,7 +40,7 @@ function terminalReason(processes: Array<{ pid: number, name: string }>, totalCo
   }
 }
 
-describe('busyTabCloseDialog', () => {
+describe('BusyTabCloseDialog', () => {
   it('names the tab it is about to interrupt', () => {
     renderDialog(terminalReason([{ pid: 1, name: 'node' }]), 'dev server')
 

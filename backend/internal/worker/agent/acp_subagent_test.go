@@ -152,6 +152,33 @@ func TestACP_GooseSubagentFromToolCallUpdate_ToolRequest(t *testing.T) {
 	}
 }
 
+// A request that states no tool call is still a request, so the row opens with the
+// neutral activity line rather than with "tool: ".
+//
+// The worker indexes the `tool_call` key with contracts.GooseSubagentRequestToolCall,
+// because a Go struct tag cannot hold a constant. The last case below is what a stale
+// hand-written tag would produce after Goose renamed the key.
+func TestACP_GooseSubagentFromToolCallUpdate_RequestWithNoToolCall(t *testing.T) {
+	for name, data := range map[string]string{
+		"no tool_call at all":        `{"type":"subagent_tool_request","subagent_id":"g-sub-1"}`,
+		"a tool_call with no name":   `{"type":"subagent_tool_request","tool_call":{}}`,
+		"the name under another key": `{"type":"subagent_tool_request","toolCall":{"name":"Read"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			obs := gooseSubagentFromToolCallUpdate(acpToolCallUpdateEnvelope{
+				ToolCallID: "tc-goose",
+				Status:     "in_progress",
+				Meta:       json.RawMessage(`{"toolNotification":{"type":"message","params":{"data":` + data + `}}}`),
+			})
+			if assert.NotNil(t, obs) {
+				assert.Equal(t, "tool request", obs.Activity)
+				assert.Equal(t, "tc-goose", obs.RowKey)
+				assert.Equal(t, bgtask.StatusRunning, obs.Status)
+			}
+		})
+	}
+}
+
 func TestACP_GooseSubagentFromToolCallUpdate_NonSubagentReturnsNil(t *testing.T) {
 	meta := json.RawMessage(`{"toolNotification":{"type":"message","params":{"data":{"type":"other"}}}}`)
 	tcu := acpToolCallUpdateEnvelope{ToolCallID: "tc-x", Meta: meta}
@@ -742,7 +769,7 @@ func TestACPSubagentPrompt_FirstWriteWins(t *testing.T) {
 }
 
 // Goose is the only ACP provider that opens a child transcript, so it is the
-// only one whose detector reads the spawn's task text. It names that field
+// only one whose detector reads the spawn's task text. It spells that field
 // `instructions` on the delegate tool (summon.rs).
 func TestACPSubagentDetectors_CarryTheSpawnPrompt(t *testing.T) {
 	t.Parallel()
@@ -863,13 +890,13 @@ func TestACP_ObservationIsSpawn(t *testing.T) {
 	t.Parallel()
 
 	assert.False(t, acpObservationIsSpawn(nil), "no observation, no spawn")
-	assert.False(t, acpObservationIsSpawn(&acpSubagentObservation{}), "an empty row key names nothing")
+	assert.False(t, acpObservationIsSpawn(&acpSubagentObservation{}), "an empty row key identifies nothing")
 	assert.False(t, acpObservationIsSpawn(&acpSubagentObservation{
 		RowKey: "call-1", Spawns: false, Status: bgtask.StatusRunning,
 	}), "a running row is not a spawn unless the provider says so")
 	assert.False(t, acpObservationIsSpawn(&acpSubagentObservation{
 		Spawns: true,
-	}), "an observation that names no row must not take a span either")
+	}), "an observation that identifies no row must not take a span either")
 	assert.True(t, acpObservationIsSpawn(&acpSubagentObservation{
 		RowKey: "call-1", Spawns: true,
 	}))
@@ -1185,7 +1212,7 @@ func TestACP_CursorClosingUpdateDoesNotDiscardAPlainToolSpan(t *testing.T) {
 
 	b.handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-read","status":"completed"}`))
 
-	// Closed exactly ONCE, by the closing arm. A close-only observation read as
+	// Closed exactly ONCE, by the closing branch. A close-only observation read as
 	// a spawn would take the span EARLY, before that arm persists the row, and
 	// the result row would lose its connector_end.
 	assert.Equal(t, []string{"call-read"}, sink.ClosedSpans(), "the span closes once, normally")

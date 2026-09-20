@@ -8,19 +8,20 @@ import { parseMessageContent } from '~/lib/messageParser'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { pngBase64 } from '~/test-support/pngFixture'
-import { imageFromMessage } from '../../chatImageResolve'
+import { providerRowImages, providerToolMeta } from '~/test-support/toolCallFixture'
+import { messageToolResultImages } from '../../chatImageResolve'
 import { MessageBubble } from '../../MessageBubble'
-import { renderMessageContent } from '../../messageRenderers'
+import { renderMessageContent } from '../../messageContentRenderer'
 import { toolUseHeader } from '../../toolStyles.css'
-import { parsedMessageForRendering, providerFor } from '../registry'
-import { input, toolMessageInput } from '../testUtils'
-import './index'
+import { providerFor, resolveMessageForRendering } from '../registry'
+import { input } from '../testUtils'
+import './plugin'
 import '../testMocks'
 
 function renderTool(toolName: string, args: Record<string, unknown>, result?: Record<string, unknown>, isError = false) {
   const start = { type: 'tool_execution_start', toolCallId: 'call', toolName, args }
   const payload = result ? { type: 'tool_execution_end', toolCallId: 'call', toolName, result, isError } : start
-  const category = providerFor(AgentProvider.PI)!.classify(input(payload))
+  const category = providerFor(AgentProvider.PI)!.transcript.classify(input(payload))
   return render(() => renderMessageContent(payload, {
     workingDir: '/project',
     premeasureMode: true,
@@ -36,7 +37,7 @@ describe('pi tool rendering', () => {
   // table would have supplied.
   it('shows an unmatched completion by its content alone', () => {
     const payload = { type: 'tool_execution_end', toolCallId: 'orphan', toolName: 'mystery_tool', result: { content: content('recovered output') }, isError: false }
-    const category = providerFor(AgentProvider.PI)!.classify(input(payload))
+    const category = providerFor(AgentProvider.PI)!.transcript.classify(input(payload))
     const { container } = render(() => renderMessageContent(payload, {
       premeasureMode: true,
       sources: testMessageSources({ current: () => input(payload), request: () => undefined }),
@@ -62,7 +63,7 @@ describe('pi tool rendering', () => {
     const { container } = render(() => <PreferencesProvider><MessageBubble message={message} /></PreferencesProvider>)
     expect(container.querySelectorAll('img')).toHaveLength(1)
     expect(container.textContent).not.toContain('Short preview')
-    expect(imageFromMessage(message, 0)?.data).toBe(data)
+    expect(messageToolResultImages(message)[0]?.data).toBe(data)
     expect(message.content).toEqual(original)
   })
 
@@ -85,9 +86,9 @@ describe('pi tool rendering', () => {
     expect(container.querySelectorAll('img')).toHaveLength(1)
     expect(container.textContent).not.toContain(data)
     const payload = { type: 'tool_execution_end', toolCallId: 'image', toolName: 'sample_read_resource', result: { ...result, content: [] } }
-    const images = providerFor(AgentProvider.PI)!.toolResultImages?.(toolMessageInput(payload, 'sample_read_resource'))
+    const images = providerRowImages(AgentProvider.PI, payload, { spanType: 'sample_read_resource' })
     expect(images).toHaveLength(1)
-    expect(images?.[0].data).toBe(data)
+    expect(images?.[0]?.data).toBe(data)
   })
 
   it('keeps the plan result concise when the request already contains the plan', () => {
@@ -97,15 +98,20 @@ describe('pi tool rendering', () => {
     expect(container.textContent).not.toContain('Welcome plan')
   })
 
-  it('renders the result plan when its request is unavailable', () => {
+  // The closing row states the notice whether or not the paired request resolved.
+  // The plan itself is on the REQUEST row, which carries it from the moment the call
+  // opens -- see the case below. The reader this replaced consulted that pair, so the
+  // same row drew a plan card before the pair landed and the notice afterwards.
+  it('states the notice on the result row rather than the plan again', () => {
     const payload = { type: 'tool_execution_end', toolCallId: 'plan', toolName: 'plan_mode_complete', result: { content: content('Plan ready'), details: { plan: '# Recovered plan\n\nRead the sample.' } }, isError: false }
-    const { getByRole } = render(() => renderMessageContent(payload, { premeasureMode: true }, providerFor(AgentProvider.PI)!.classify(input(payload)), AgentProvider.PI))
-    expect(getByRole('heading', { name: 'Recovered plan' })).toBeInTheDocument()
+    const { container } = render(() => renderMessageContent(payload, { premeasureMode: true }, providerFor(AgentProvider.PI)!.transcript.classify(input(payload)), AgentProvider.PI))
+    expect(container.textContent).toContain('Plan ready for review')
+    expect(container.textContent).not.toContain('Recovered plan')
   })
 
   it('renders a completed plan request as Markdown in the transcript', () => {
     const payload = { type: 'tool_execution_start', toolCallId: 'plan', toolName: 'plan_mode_complete', args: { plan: '# Welcome plan\n\n- Keep **original bytes**.' } }
-    const { container, getByRole } = render(() => renderMessageContent(payload, { premeasureMode: true }, providerFor(AgentProvider.PI)!.classify(input(payload)), AgentProvider.PI))
+    const { container, getByRole } = render(() => renderMessageContent(payload, { premeasureMode: true }, providerFor(AgentProvider.PI)!.transcript.classify(input(payload)), AgentProvider.PI))
     expect(getByRole('heading', { name: 'Welcome plan' })).toBeInTheDocument()
     expect(container.querySelector('li strong')?.textContent).toBe('original bytes')
     expect(container.querySelector('.lucide-plane-takeoff')).not.toBeNull()
@@ -123,9 +129,9 @@ describe('pi tool rendering', () => {
       content: [],
       details: { mode: 'call', server: 'sample', tool: 'image', mcpResult: { content: [{ type: 'image', mimeType: 'image/png', data: 'image-bytes' }] } },
     } }
-    const images = providerFor(AgentProvider.PI)!.toolResultImages?.(toolMessageInput(payload, 'mcp'))
+    const images = providerRowImages(AgentProvider.PI, payload, { spanType: 'mcp' })
     expect(images).toHaveLength(1)
-    expect(images?.[0].data).toBe('image-bytes')
+    expect(images?.[0]?.data).toBe('image-bytes')
   })
 
   it('renders the rpiv todo list through the shared checklist', () => {
@@ -156,18 +162,18 @@ describe('pi tool rendering', () => {
       details: { id: 'wf_probe', description: 'Workflow probe', status: 'completed', resultPreview: '- Full…', toolUses: 0, durationMs: 1200 },
     } }
     const plugin = providerFor(AgentProvider.PI)!
-    const category = plugin.classify(input(payload))
+    const category = plugin?.transcript.classify(input(payload))
     const { container } = render(() => renderMessageContent(payload, { premeasureMode: true }, category, AgentProvider.PI))
     expect(container.textContent).toContain('Agent "Workflow probe" completed')
     expect(container.querySelector('li strong')?.textContent).toBe('report')
     expect(container.textContent).toContain('& details')
     expect(container.textContent).not.toContain('Full…')
-    expect(plugin.toolResultMeta?.(category, toolMessageInput(payload))?.copyableContent?.()).toBe('- Full **report** & details')
+    expect(providerToolMeta(AgentProvider.PI, payload, { category })?.copyableContent()).toBe('- Full **report** & details')
   })
 
   it('renders a visible custom plan as Markdown', () => {
     const payload = { type: 'message_end', message: { role: 'custom', customType: 'proposed-plan', display: true, content: '## Proposed plan\n\n- Read **sample.ts**' } }
-    const category = providerFor(AgentProvider.PI)!.classify(input(payload))
+    const category = providerFor(AgentProvider.PI)!.transcript.classify(input(payload))
     const { container } = render(() => renderMessageContent(payload, { premeasureMode: true }, category, AgentProvider.PI))
     expect(container.querySelector('h2')?.textContent).toBe('Proposed plan')
     expect(container.querySelector('li strong')?.textContent).toBe('sample.ts')
@@ -251,7 +257,7 @@ describe('pi tool rendering', () => {
       content: content('Agent completed in 1.2s (1 tool uses).\n\n- **Report**'),
       details: { status: 'completed', toolUses: 1, durationMs: 1200 },
     } }
-    const meta = providerFor(AgentProvider.PI)!.toolResultMeta?.({ kind: 'tool_result' }, toolMessageInput(payload, 'Agent'))
+    const meta = providerToolMeta(AgentProvider.PI, payload, { category: { kind: 'tool_result' }, spanType: 'Agent' })
     expect(meta?.copyableContent?.()).toBe('- **Report**')
   })
 
@@ -270,7 +276,7 @@ describe('pi tool rendering', () => {
   it('resolves an image file path from the native read request', () => {
     const request = input({ type: 'tool_execution_start', toolCallId: 'call', toolName: 'read', args: { path: '/project/image.png' } })
     const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'read', result: { content: [{ type: 'image', mimeType: 'image/png', data: 'image-bytes' }] } }
-    const images = providerFor(AgentProvider.PI)!.toolResultImages?.(toolMessageInput(payload, 'read', request))
+    const images = providerRowImages(AgentProvider.PI, payload, { spanType: 'read', request })
     expect(images?.[0]?.filePath).toBe('/project/image.png')
   })
 
@@ -296,7 +302,7 @@ describe('pi tool rendering', () => {
   it('offers expansion for a long extension result', () => {
     const text = 'first\nsecond\nthird\nfourth'
     const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'extension_lookup', result: { content: content(text) } }
-    const meta = providerFor(AgentProvider.PI)!.toolResultMeta?.({ kind: 'tool_result' }, toolMessageInput(payload, 'extension_lookup'))
+    const meta = providerToolMeta(AgentProvider.PI, payload, { category: { kind: 'tool_result' }, spanType: 'extension_lookup' })
     expect(meta).toMatchObject({ collapsible: true, hasCopyable: true })
     expect(meta?.copyableContent()).toBe(text)
   })
@@ -304,7 +310,7 @@ describe('pi tool rendering', () => {
   it('copies the displayed raw diff when a diff cannot be parsed', () => {
     const diff = 'A provider diff in an unknown format'
     const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'edit', result: { content: content('Edit completed'), details: { diff } } }
-    const meta = providerFor(AgentProvider.PI)!.toolResultMeta?.({ kind: 'tool_result' }, toolMessageInput(payload, 'edit'))
+    const meta = providerToolMeta(AgentProvider.PI, payload, { category: { kind: 'tool_result' }, spanType: 'edit' })
     expect(meta?.hasDiff).toBe(false)
     expect(meta?.copyableContent()).toBe(diff)
   })
@@ -312,7 +318,7 @@ describe('pi tool rendering', () => {
   it('offers expansion and copying for a long search result', () => {
     const text = 'a.ts\nb.ts\nc.ts\nd.ts'
     const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'find', result: { content: content(text) }, isError: false }
-    const meta = providerFor(AgentProvider.PI)!.toolResultMeta?.({ kind: 'tool_result' }, toolMessageInput(payload, 'find'))
+    const meta = providerToolMeta(AgentProvider.PI, payload, { category: { kind: 'tool_result' }, spanType: 'find' })
     expect(meta).toMatchObject({ collapsible: true, hasCopyable: true })
     expect(meta?.copyableContent()).toBe(text)
   })
@@ -320,7 +326,7 @@ describe('pi tool rendering', () => {
   it('offers expansion for a long failed edit report', () => {
     const text = 'failure\nfirst detail\nsecond detail\nthird detail'
     const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'edit', result: { content: content(text) }, isError: true }
-    const meta = providerFor(AgentProvider.PI)!.toolResultMeta?.({ kind: 'tool_result' }, toolMessageInput(payload, 'edit'))
+    const meta = providerToolMeta(AgentProvider.PI, payload, { category: { kind: 'tool_result' }, spanType: 'edit' })
     expect(meta?.collapsible).toBe(true)
     expect(meta?.hasDiff).toBe(false)
   })
@@ -375,6 +381,36 @@ describe('pi tool rendering', () => {
   })
 })
 
+/**
+ * The output the worker broadcasts while a call runs.
+ *
+ * `ToolMessage` draws it only while the row is `in_progress` AND its result is absent,
+ * so a result attached to a running row hides it. Every tool `PI_TOOL_KINDS` does not
+ * hold reaches the `mcp` entry, so that entry decides this for each Pi extension and
+ * each Model Context Protocol bridge.
+ */
+describe('a pi tool row that has not returned', () => {
+  function renderRunning(toolName: string, args: Record<string, unknown>, outputTail: string) {
+    const payload = { type: 'tool_execution_start', toolCallId: 'call', toolName, args }
+    const category = providerFor(AgentProvider.PI)!.transcript.classify(input(payload))
+    return render(() => renderMessageContent(payload, {
+      premeasureMode: true,
+      sources: testMessageSources({ current: () => input(payload) }),
+      toolProgress: { liveTail: () => ({ outputTail }) },
+    }, category, AgentProvider.PI))
+  }
+
+  it('draws the streaming output of an unrecognized extension', () => {
+    const { container } = renderRunning('extension_lookup', { query: 'marker' }, 'reading the index')
+    expect(container.textContent).toContain('reading the index')
+  })
+
+  it('draws the streaming output of a to-do call whose checklist it cannot read', () => {
+    const { container } = renderRunning('todo', { action: 'teleport' }, 'resolving the action')
+    expect(container.textContent).toContain('resolving the action')
+  })
+})
+
 describe('pi rows on the shared tool path', () => {
   // The open request draws the list the call is about to save. The row used to draw
   // its header alone, so the reader waited for the result to see what changed.
@@ -393,7 +429,7 @@ describe('pi rows on the shared tool path', () => {
   // A result with no request beside it states WHICH tool it belongs to.
   it('draws its own header when no request row sits beside the result', () => {
     const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'read', result: { content: content('first line') } }
-    const category = providerFor(AgentProvider.PI)!.classify(input(payload))
+    const category = providerFor(AgentProvider.PI)!.transcript.classify(input(payload))
     const { container } = render(() => renderMessageContent(payload, {
       premeasureMode: true,
       sources: testMessageSources({ current: () => input(payload) }),
@@ -427,15 +463,20 @@ describe('a pi tool row the turn ended before the call did', () => {
   const plugin = () => providerFor(AgentProvider.PI)!
 
   it('reads the retained start frame as the call result', () => {
-    expect(plugin().spanRole!(parseMessageContent(message))).toBe('result')
-    // The same frame with no completion is the call's OPENER, which is the row the
-    // agent sent when the call began.
-    expect(plugin().spanRole!({ ...parseMessageContent(message), completion: undefined })).toBe('opener')
+    expect(plugin().transcript.spanRole!(resolveMessageForRendering(parseMessageContent(message), AgentProvider.PI))).toBe('result')
+    // The same frame with no completion is the call's REQUEST, which is the row the
+    // agent sent when the call began. A COPY first -- `parseMessageContent` caches by
+    // message, and a `delete` on the cached object would reach every later reader of
+    // this same message. The key is deleted rather than stated `undefined`, which the
+    // exact-optional rule reads as a different object.
+    const uncompleted = { ...parseMessageContent(message) }
+    delete uncompleted.completion
+    expect(plugin().transcript.spanRole!(resolveMessageForRendering(uncompleted, AgentProvider.PI))).toBe('request')
   })
 
   it('shows the partial output under one Interrupted header', () => {
-    const parsed = parsedMessageForRendering(parseMessageContent(message), AgentProvider.PI)
-    const category = plugin().classify({ ...parseMessageContent(message), agentProvider: AgentProvider.PI })
+    const parsed = resolveMessageForRendering(parseMessageContent(message), AgentProvider.PI)
+    const category = plugin().transcript.classify({ ...parsed, agentProvider: AgentProvider.PI })
     const { container } = render(() => renderMessageContent(
       parsed.parentObject,
       { premeasureMode: true, sources: testMessageSources({ current: () => parsed }) },

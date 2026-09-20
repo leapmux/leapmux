@@ -57,9 +57,12 @@ export const FloatingWindowLayer: Component<FloatingWindowLayerProps> = (props) 
             floatingWindowStore={props.floatingWindowStore}
             onClose={() => props.onCloseWindow(win.id)}
             onActivate={() => props.onActivateWindow?.(win.id)}
-            onGeometryChange={props.onGeometryChange}
+            {...(props.onGeometryChange !== undefined ? { onGeometryChange: props.onGeometryChange } : {})}
           >
-            <ChatDropZone onDrop={props.onFileDrop} disabled={props.fileDropDisabled}>
+            <ChatDropZone
+              {...(props.onFileDrop !== undefined ? { onDrop: props.onFileDrop } : {})}
+              {...(props.fileDropDisabled !== undefined ? { disabled: props.fileDropDisabled } : {})}
+            >
               <TilingLayout
                 root={win.layoutRoot}
                 renderTile={props.renderTile}

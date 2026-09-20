@@ -99,7 +99,7 @@ function renderDialog(
     <LastTabCloseDialog
       state={state}
       onDismiss={onDismiss}
-      onStatusRefreshed={onStatusRefreshed}
+      {...(onStatusRefreshed !== undefined ? { onStatusRefreshed } : {})}
     />
   ))
   return { onDismiss, onStatusRefreshed }
@@ -119,7 +119,7 @@ function reasonOf(el: Element): string {
   return document.getElementById(describedBy!)?.textContent ?? ''
 }
 
-describe('lastTabCloseDialog', () => {
+describe('LastTabCloseDialog', () => {
   it('renders the worktree variant with its directory and a Delete worktree button', () => {
     renderDialog(makeState({
       target: LastTabCloseTarget.WORKTREE,

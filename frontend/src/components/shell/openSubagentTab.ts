@@ -202,13 +202,13 @@ function buildMetadata(
   // entry -- the tab would then sit under a repo with no branch name.
   const sameWorker = parent?.workerId === workerId
   const git = parent && sameWorker
-    ? resolveOptimisticGitInfo(parent, { workingDir: parent.workingDir })
+    ? resolveOptimisticGitInfo(parent, parent.workingDir !== undefined ? { workingDir: parent.workingDir } : {})
     : undefined
   return {
-    title: item.title || undefined,
-    parentAgentId: item.parentAgentId || undefined,
-    workingDir: parent?.workingDir,
-    agentProvider: parent?.agentProvider,
+    ...(item.title ? { title: item.title } : {}),
+    ...(item.parentAgentId ? { parentAgentId: item.parentAgentId } : {}),
+    ...(parent?.workingDir !== undefined ? { workingDir: parent.workingDir } : {}),
+    ...(parent?.agentProvider !== undefined ? { agentProvider: parent.agentProvider } : {}),
     ...git,
   }
 }

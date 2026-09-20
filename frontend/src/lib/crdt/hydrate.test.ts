@@ -169,9 +169,9 @@ describe('loadHydrationState', () => {
     expect(payload!.watermark).toEqual(WM)
     expect(payload!.currentEpoch).toBe(1n)
     expect(payload!.frames).toHaveLength(2)
-    expect(payload!.frames[0].event.case).toBe('batch')
-    expect(payload!.frames[0].event.case === 'batch' && payload!.frames[0].event.value.batchId).toBe('b1')
-    expect(payload!.frames[1].event.case === 'batch' && payload!.frames[1].event.value.batchId).toBe('b2')
+    expect(payload!.frames[0]?.event.case).toBe('batch')
+    expect(payload!.frames[0]?.event.case === 'batch' && payload!.frames[0]?.event.value.batchId).toBe('b1')
+    expect(payload!.frames[1]?.event.case === 'batch' && payload!.frames[1]?.event.value.batchId).toBe('b2')
   })
 
   // The checkpoint is sharded across a header row plus one chunk per entity, so
@@ -282,7 +282,7 @@ describe('loadHydrationState', () => {
     expect(payload).not.toBeNull()
     expect(payload!.truncated).toBe(true)
     expect(payload!.frames).toHaveLength(1)
-    expect(payload!.frames[0].event.case).toBe('batch')
+    expect(payload!.frames[0]?.event.case).toBe('batch')
     // The checkpoint itself is untouched, so a second load still finds it.
     expect(await loadHydrationState('u', CLIENT)).not.toBeNull()
   })

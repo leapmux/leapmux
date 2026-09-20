@@ -54,7 +54,10 @@ function sameCandidateIds(a: readonly ChatDomPremeasureCandidate[], b: readonly 
   if (a.length !== b.length)
     return false
   for (let i = 0; i < a.length; i++) {
-    if (a[i].item.id !== b[i].item.id || a[i].item.heightKey !== b[i].item.heightKey)
+    // The length check above keeps `i` in range on both; the undefined checks are the type-level guard alone.
+    const x = a[i]
+    const y = b[i]
+    if (x === undefined || y === undefined || x.item.id !== y.item.id || x.item.heightKey !== y.item.heightKey)
       return false
   }
   return true

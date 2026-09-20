@@ -45,7 +45,7 @@ function renderWithProvider(): Harness {
   return { host, anchor: anchor! }
 }
 
-describe('gridPopoverHost', () => {
+describe('GridPopoverHost', () => {
   it('renders the singleton popover only once regardless of consumer count', () => {
     render(() => (
       <GridPopoverHostProvider>

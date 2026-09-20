@@ -163,11 +163,11 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
         groupTitle: group.title,
         navId: group.id,
         label: descriptor.label,
-        help: descriptor.help,
-        keywords: descriptor.keywords,
-        optionLabels: descriptor.control.kind === 'enum'
-          ? descriptor.control.options.map(o => o.label)
-          : undefined,
+        ...(descriptor.help === undefined ? {} : { help: descriptor.help }),
+        ...(descriptor.keywords === undefined ? {} : { keywords: descriptor.keywords }),
+        ...(descriptor.control.kind === 'enum'
+          ? { optionLabels: descriptor.control.options.map(o => o.label) }
+          : {}),
       })),
     )
   })

@@ -1,6 +1,8 @@
 import type { AgentGoal as ProtoAgentGoal } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { TodoItem } from '~/models/todo'
 import { GOAL_STATUS_TOKEN } from '~/generated/contracts/worker-vocab'
 import { AgentGoalAction, AgentGoalStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { assignDefined } from '~/lib/jsonPick'
 
 // ---------------------------------------------------------------------------
 // Provider-neutral session-goal model + conversions
@@ -120,13 +122,14 @@ export function hasGoalSurface(surface: GoalSurface): boolean {
 
 /** Converts the wire goal to the store shape. */
 export function protoGoalToStore(g: ProtoAgentGoal): SessionGoal {
-  return {
-    nativeId: g.nativeId || undefined,
+  const goal: SessionGoal = {
     objective: g.objective,
     status: goalStatusFromProto(g.status),
-    statusDetail: g.statusDetail || undefined,
-    createdAt: g.createdAt || undefined,
   }
+  assignDefined(goal, 'nativeId', g.nativeId || undefined)
+  assignDefined(goal, 'statusDetail', g.statusDetail || undefined)
+  assignDefined(goal, 'createdAt', g.createdAt || undefined)
+  return goal
 }
 
 /**
@@ -289,4 +292,29 @@ export function goalActionState(
   if (action === 'resume' && goal.status !== 'paused')
     return { kind: 'disabled', reason: 'Only a paused goal can be resumed' }
   return { kind: 'enabled' }
+}
+
+/**
+ * Whether the Goals & To-dos section belongs on screen.
+ *
+ * A to-do keeps the section visible. This is the complete rule for a provider
+ * without a session goal. A goal surface keeps the section visible even when
+ * the list and the current goal are empty. The empty card is the route to a
+ * first goal.
+ *
+ * It takes the SURFACE the section will render, never a boolean about the
+ * provider. A visible section can then never hold nothing: the surface is
+ * absent exactly when the card could show no goal and offer no way to set one
+ * (see {@link hasGoalSurface}).
+ *
+ * It lives beside the surface it reads rather than with the to-do model. The
+ * model is provider-neutral and knows nothing about a goal; this rule is the
+ * one place the two vocabularies meet, and it belongs on the goal side because
+ * the goal is what makes an empty list worth drawing.
+ */
+export function shouldShowGoalsAndTodosSection(
+  todos: TodoItem[],
+  goal: GoalSurface | undefined,
+): boolean {
+  return todos.length > 0 || goal !== undefined
 }

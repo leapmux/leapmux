@@ -1,7 +1,7 @@
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import type { CodexDecision } from './controlResponse'
 import { describe, expect, it } from 'vitest'
-import { codexControlResponseDisplay, codexDecisionKey, codexDecisionLabel } from './controlResponse'
+import { codexControlResponseSummary, codexDecisionKey, codexDecisionLabel } from './controlResponse'
 
 function cr(request: Record<string, unknown> | undefined, response: Record<string, unknown> | undefined): PersistedControlResponse {
   return { claimToken: 'claim-1', requestId: '7', request, response }
@@ -13,7 +13,7 @@ function decision(d: unknown): Record<string, unknown> {
   return { jsonrpc: '2.0', id: 7, result: { decision: d } }
 }
 
-describe('codexdecisionlabel', () => {
+describe('codexDecisionLabel', () => {
   it('maps the known string decisions', () => {
     expect(codexDecisionLabel('accept')).toBe('Allow')
     expect(codexDecisionLabel('acceptForSession')).toBe('Allow for Session')
@@ -36,7 +36,7 @@ describe('codexdecisionlabel', () => {
   })
 })
 
-describe('codexdecisionkey', () => {
+describe('codexDecisionKey', () => {
   it('returns the string decision or the first key of an amendment object', () => {
     expect(codexDecisionKey('accept')).toBe('accept')
     expect(codexDecisionKey('decline')).toBe('decline')
@@ -52,31 +52,31 @@ describe('codexdecisionkey', () => {
   })
 })
 
-describe('codexcontrolresponsedisplay', () => {
+describe('codexControlResponseSummary', () => {
   it('labels string decisions', () => {
-    expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, decision('accept')))).toEqual({ kind: 'label', text: 'Allow' })
-    expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, decision('decline')))).toEqual({ kind: 'label', text: 'Deny' })
+    expect(codexControlResponseSummary(cr(APPROVAL_REQUEST, decision('accept')))).toEqual({ kind: 'label', text: 'Allow' })
+    expect(codexControlResponseSummary(cr(APPROVAL_REQUEST, decision('decline')))).toEqual({ kind: 'label', text: 'Deny' })
   })
 
   it('labels amendment-object decisions', () => {
-    expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, decision({ acceptWithExecpolicyAmendment: { execpolicy_amendment: ['touch'] } }))))
+    expect(codexControlResponseSummary(cr(APPROVAL_REQUEST, decision({ acceptWithExecpolicyAmendment: { execpolicy_amendment: ['touch'] } }))))
       .toEqual({ kind: 'label', text: 'Allow & Remember' })
-    expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, decision({ applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'example.com', action: 'allow' } } }))))
+    expect(codexControlResponseSummary(cr(APPROVAL_REQUEST, decision({ applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'example.com', action: 'allow' } } }))))
       .toEqual({ kind: 'label', text: 'Allow Host & Remember' })
   })
 
   it('returns null for a missing/empty decision (caller degrades)', () => {
-    expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, decision(null)))).toBeNull()
-    expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, decision({})))).toBeNull()
-    expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, { result: {} }))).toBeNull()
+    expect(codexControlResponseSummary(cr(APPROVAL_REQUEST, decision(null)))).toBeNull()
+    expect(codexControlResponseSummary(cr(APPROVAL_REQUEST, decision({})))).toBeNull()
+    expect(codexControlResponseSummary(cr(APPROVAL_REQUEST, { result: {} }))).toBeNull()
   })
 
   it('renders a deny-with-feedback as a feedback block, collapsing the sentinel', () => {
     const deny = { type: 'control_response', response: { request_id: '7', response: { behavior: 'deny', message: 'Add tests first.' } } }
-    expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, deny))).toEqual({ kind: 'feedback', message: 'Add tests first.' })
+    expect(codexControlResponseSummary(cr(APPROVAL_REQUEST, deny))).toEqual({ kind: 'feedback', message: 'Add tests first.' })
     const bare = { response: { response: { behavior: 'deny', message: 'Rejected by user.' } } }
     // Sentinel collapses to no feedback -> the decision path yields nothing -> null (fallback -> Rejected).
-    expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, bare))).toBeNull()
+    expect(codexControlResponseSummary(cr(APPROVAL_REQUEST, bare))).toBeNull()
   })
 
   describe('requestuserinput answers', () => {
@@ -87,34 +87,34 @@ describe('codexcontrolresponsedisplay', () => {
 
     it('renders request-ordered header-labeled answer lines', () => {
       const response = { result: { answers: { task: { answers: ['Inspect'] }, reason: { answers: ['Parity'] } } } }
-      expect(codexControlResponseDisplay(cr(request, response))).toEqual({ kind: 'label', text: 'Task: Inspect\nReason: Parity' })
+      expect(codexControlResponseSummary(cr(request, response))).toEqual({ kind: 'label', text: 'Task: Inspect\nReason: Parity' })
     })
 
     it('drops all-empty answers and joins multiple values', () => {
       const response = { result: { answers: { task: { answers: ['A', ' ', 'B'] }, reason: { answers: ['', '  '] } } } }
-      expect(codexControlResponseDisplay(cr(request, response))).toEqual({ kind: 'label', text: 'Task: A, B' })
+      expect(codexControlResponseSummary(cr(request, response))).toEqual({ kind: 'label', text: 'Task: A, B' })
     })
 
     it('appends answer keys not in the request in sorted order', () => {
       const req = { method: 'item/tool/requestUserInput', params: { questions: [{ id: 'task', header: 'Task' }] } }
       const response = { result: { answers: { task: { answers: ['T'] }, zebra: { answers: ['Z'] }, alpha: { answers: ['A'] } } } }
-      expect(codexControlResponseDisplay(cr(req, response))).toEqual({ kind: 'label', text: 'Task: T\nalpha: A\nzebra: Z' })
+      expect(codexControlResponseSummary(cr(req, response))).toEqual({ kind: 'label', text: 'Task: T\nalpha: A\nzebra: Z' })
     })
 
     it('returns null when there are no answers', () => {
-      expect(codexControlResponseDisplay(cr(request, { result: { answers: {} } }))).toBeNull()
+      expect(codexControlResponseSummary(cr(request, { result: { answers: {} } }))).toBeNull()
     })
 
     it('falls through to the decision label when a requestUserInput is declined', () => {
       // A retained decline decision uses the shared denial label.
       // The answer parser falls through when the response has no answers.
-      expect(codexControlResponseDisplay(cr(request, decision('decline')))).toEqual({ kind: 'label', text: 'Deny' })
-      expect(codexControlResponseDisplay(cr(request, decision('cancel')))).toEqual({ kind: 'label', text: 'Cancel' })
+      expect(codexControlResponseSummary(cr(request, decision('decline')))).toEqual({ kind: 'label', text: 'Deny' })
+      expect(codexControlResponseSummary(cr(request, decision('cancel')))).toEqual({ kind: 'label', text: 'Cancel' })
     })
 
     it('renders a requestUserInput deny-with-feedback as a feedback block on fall-through', () => {
       const deny = { type: 'control_response', response: { request_id: '7', response: { behavior: 'deny', message: 'Need more detail.' } } }
-      expect(codexControlResponseDisplay(cr(request, deny))).toEqual({ kind: 'feedback', message: 'Need more detail.' })
+      expect(codexControlResponseSummary(cr(request, deny))).toEqual({ kind: 'feedback', message: 'Need more detail.' })
     })
 
     it('renders request-gone answers from the response alone, labeled by key', () => {
@@ -122,7 +122,7 @@ describe('codexcontrolresponsedisplay', () => {
       // response, so they still render -- labeled by the answer key (sorted, no request order) rather
       // than the missing question header, instead of degrading to the generic "Responded" label.
       const response = { result: { answers: { task: { answers: ['Inspect'] }, reason: { answers: ['Parity'] } } } }
-      expect(codexControlResponseDisplay(cr(undefined, response))).toEqual({ kind: 'label', text: 'reason: Parity\ntask: Inspect' })
+      expect(codexControlResponseSummary(cr(undefined, response))).toEqual({ kind: 'label', text: 'reason: Parity\ntask: Inspect' })
     })
   })
 })

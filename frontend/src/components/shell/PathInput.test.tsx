@@ -16,7 +16,7 @@ function renderInput(props: {
     <PathInput
       selectedPath={props.selectedPath}
       homeDir={props.homeDir}
-      flavor={props.flavor}
+      {...(props.flavor !== undefined ? { flavor: props.flavor } : {})}
       onSubmit={props.onSubmit}
     />
   ))
@@ -102,7 +102,7 @@ describe('pathInput before the worker reports its os', () => {
    * `C:\` path would be flagged as a mistake.
    */
   it('shows no flavor hint while the flavor is unknown', () => {
-    renderInput({ selectedPath: '', homeDir: '', flavor: undefined, onSubmit: vi.fn() })
+    renderInput({ selectedPath: '', homeDir: '', onSubmit: vi.fn() })
 
     fireEvent.input(pathInput(), { target: { value: 'C:\\Users\\alice' } })
     expect(screen.queryByTestId('path-flavor-hint')).toBeNull()
@@ -114,7 +114,7 @@ describe('pathInput before the worker reports its os', () => {
   // The input still works: only the hint waits.
   it('still submits a typed path while the flavor is unknown', () => {
     const onSubmit = vi.fn()
-    renderInput({ selectedPath: '', homeDir: '', flavor: undefined, onSubmit })
+    renderInput({ selectedPath: '', homeDir: '', onSubmit })
 
     fireEvent.input(pathInput(), { target: { value: '/opt/data' } })
     fireEvent.keyDown(pathInput(), { key: 'Enter' })

@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import type { RenderContext } from '../messageRenderers'
+import type { MarkdownRenderContext } from '../renderContext'
 import { createMemo, Match, Switch } from 'solid-js'
 import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { containsAnsi, renderAnsi, stripAnsi } from '~/lib/renderAnsi'
@@ -7,7 +7,7 @@ import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { markdownContent } from '../markdownEditor/markdownContent.css'
 import { getCachedRenderValueForString, setCachedRenderValueForString } from '../messageRenderCache'
 import { renderMarkdownForContext, shouldPauseSyntaxHighlighting } from '../messageRenderers'
-import { JsonHighlightHtml } from '../toolRenderers'
+import { JsonHighlightHtml } from '../syntaxHighlight'
 import { toolResultCollapsed, toolResultContent, toolResultContentAnsi, toolResultContentPre } from '../toolStyles.css'
 import { canHighlightBySize } from './collapse'
 
@@ -47,8 +47,8 @@ export interface CollapsibleContentProps {
   isCollapsed: boolean
   /** Body kind. See {@link CollapsibleContentKind}. */
   kind: CollapsibleContentKind
-  /** Renderer context; premeasure mode skips worker/Shiki work while preserving block layout. */
-  context?: RenderContext
+  /** Markdown/ANSI render capability; premeasure mode skips worker/Shiki work while preserving block layout. */
+  context?: MarkdownRenderContext
 }
 
 /**
@@ -100,7 +100,7 @@ export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element 
     <JsonHighlightHtml
       class={`${toolResultContentAnsi}${collapsedClass()}`}
       code={props.text}
-      context={props.context}
+      {...(props.context !== undefined ? { context: props.context } : {})}
     />
   )
 

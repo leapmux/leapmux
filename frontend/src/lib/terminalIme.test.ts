@@ -101,8 +101,9 @@ function dispatchInputEvent(
   init: { data?: string | null, inputType?: string, isComposing?: boolean },
 ): void {
   target.dispatchEvent(new InputEvent(type, {
-    data: init.data,
-    inputType: init.inputType,
+    // InputEventInit optionals reject an explicit undefined; omit when absent.
+    ...(init.data === undefined ? {} : { data: init.data }),
+    ...(init.inputType === undefined ? {} : { inputType: init.inputType }),
     isComposing: init.isComposing ?? false,
     bubbles: true,
     cancelable: true,

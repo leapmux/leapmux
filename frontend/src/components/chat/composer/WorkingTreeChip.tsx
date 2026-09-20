@@ -57,7 +57,7 @@ export function WorkingTreeChip(props: WorkingTreeChipProps): JSX.Element {
           isWorktree={props.workingTree.isWorktree}
           workerId={props.workerId}
           actions={chip().actions}
-          disabledReason={props.disabledReason}
+          {...(props.disabledReason === undefined ? {} : { disabledReason: props.disabledReason })}
           data-testid="composer-branch-popover"
           trigger={triggerProps => (
             // The branch name, not an action: the menu holds every action, and
@@ -66,7 +66,7 @@ export function WorkingTreeChip(props: WorkingTreeChipProps): JSX.Element {
             // has no room for. When the actions are unusable it carries the
             // reason instead, which otherwise only reaches a user who opens the
             // menu.
-            <WorkingTreeTooltip info={props.workingTree} disabledReason={props.disabledReason}>
+            <WorkingTreeTooltip info={props.workingTree} {...(props.disabledReason === undefined ? {} : { disabledReason: props.disabledReason })}>
               <button
                 class={styles.axisChip}
                 data-testid="composer-branch-trigger"

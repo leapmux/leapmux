@@ -93,6 +93,14 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
   const { providers } = useAvailableProviders(listWorkerId, menuOpen)
   const { shells, defaultShell } = useAvailableShells(listWorkerId, menuOpen)
 
+  // Spread-ready provider list, read ONCE: the accessor answers undefined
+  // until the worker's list lands, and the spread keeps the prop absent then
+  // -- a second `providers()` call beside the first could not be narrowed.
+  const providerProps = () => {
+    const list = providers()
+    return list !== undefined ? { availableProviders: list } : {}
+  }
+
   /** One change item. The three differ only in their mode. */
   const changeItem = (mode: ChangeBranchMode) => (
     <DisabledReasonMenuItem
@@ -106,9 +114,9 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
   return (
     <DropdownMenu
       trigger={props.trigger ?? rowContextMenuTrigger()}
-      contextMenuFor={props.contextMenuFor}
+      {...(props.contextMenuFor !== undefined ? { contextMenuFor: props.contextMenuFor } : {})}
       onToggle={setMenuOpen}
-      data-testid={props['data-testid']}
+      {...(props['data-testid'] !== undefined ? { 'data-testid': props['data-testid'] } : {})}
     >
       {/* These children mount eagerly, which is safe even while this menu
           serves as a SUBMENU (the composer's `[+]` branch item):
@@ -141,10 +149,10 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
           hints: those keys open a tab at the current tab's working directory,
           and these items open one at this branch's checkout. */}
       <NewTabMenuItems
-        availableProviders={providers()}
+        {...providerProps()}
         availableShells={shells()}
         defaultShell={defaultShell()}
-        disabledReason={props.disabledReason}
+        {...(props.disabledReason !== undefined ? { disabledReason: props.disabledReason } : {})}
         onNewAgent={provider => props.actions.onNewAgent(provider)}
         onNewAgentAdvanced={() => props.actions.onNewAgentAdvanced()}
         onNewTerminalWithShell={shell => props.actions.onNewTerminalWithShell(shell)}

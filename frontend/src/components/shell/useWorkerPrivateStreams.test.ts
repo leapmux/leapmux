@@ -19,6 +19,19 @@ interface OpenedStream {
 }
 
 const opened: OpenedStream[] = []
+
+/**
+ * The stream a test drives. The mock push happens during `run()`, and a run
+ * that opened nothing must fail loudly here rather than pass silently, so
+ * the throw doubles as the type-level guard.
+ */
+function firstOpened(): OpenedStream {
+  const stream = opened[0]
+  if (stream === undefined)
+    throw new Error('expected a worker private stream to be opened')
+  return stream
+}
+
 const mockOpen = vi.fn((o: Record<string, unknown>) => {
   const rec: OpenedStream = {
     workerId: o.workerId as string,
@@ -119,7 +132,7 @@ describe('useWorkerPrivateStreams', () => {
       await flush()
 
       expect(opened).toHaveLength(1)
-      expect(opened[0].workerId).toBe('w1')
+      expect(firstOpened().workerId).toBe('w1')
       dispose()
     })
   })
@@ -149,7 +162,7 @@ describe('useWorkerPrivateStreams', () => {
       await flush()
 
       expect(opened).toHaveLength(before)
-      opened[0].onTabPayloadRegistered({ tabId: 'f1', payload: { kind: 'file', filePath: '/repo/nested/new.ts', workingDir: '/repo' } })
+      firstOpened().onTabPayloadRegistered({ tabId: 'f1', payload: { kind: 'file', filePath: '/repo/nested/new.ts', workingDir: '/repo' } })
       expect(s.metadata.get('f1')?.hydrated, 'the event is a worker answer, so the hydrator has nothing left to ask').toBe(true)
       dispose()
     })
@@ -170,7 +183,7 @@ describe('useWorkerPrivateStreams', () => {
       s.run()
       await flush()
 
-      opened[0].onTabPayloadRegistered({ tabId: 'f1', payload: { kind: 'file', filePath: '/repo/nested/new.ts', workingDir: '/repo' } })
+      firstOpened().onTabPayloadRegistered({ tabId: 'f1', payload: { kind: 'file', filePath: '/repo/nested/new.ts', workingDir: '/repo' } })
 
       expect(s.metadata.get('f1')).toMatchObject({
         filePath: '/repo/nested/new.ts',
@@ -196,7 +209,7 @@ describe('useWorkerPrivateStreams', () => {
       s.run()
       await flush()
 
-      opened[0].onTabPayloadRegistered({ tabId: 'f-early', payload: { kind: 'file', filePath: '/repo/early.ts', workingDir: '/repo' } })
+      firstOpened().onTabPayloadRegistered({ tabId: 'f-early', payload: { kind: 'file', filePath: '/repo/early.ts', workingDir: '/repo' } })
 
       emitAddTab({ type: TabType.FILE, id: 'f-early', tileId: s.harness.rootTileId, position: 'b', workerId: 'w1' })
       s.run()
@@ -227,7 +240,7 @@ describe('useWorkerPrivateStreams', () => {
       // What `handleFileOpen` writes when the context has not hydrated yet.
       s.metadata.patch('f2', { filePath: '/repo/nested/new.ts', workingDir: '' })
 
-      opened[0].onTabPayloadRegistered({ tabId: 'f2', payload: { kind: 'file', filePath: '/repo/nested/new.ts', workingDir: '/repo' } })
+      firstOpened().onTabPayloadRegistered({ tabId: 'f2', payload: { kind: 'file', filePath: '/repo/nested/new.ts', workingDir: '/repo' } })
 
       expect(s.metadata.get('f2')).toMatchObject({
         filePath: '/repo/nested/new.ts',
@@ -253,7 +266,7 @@ describe('useWorkerPrivateStreams', () => {
       await flush()
       s.metadata.patch('f3', { filePath: '/guess/a.ts', workingDir: '/guess' })
 
-      opened[0].onTabPayloadRegistered({ tabId: 'f3', payload: { kind: 'file', filePath: '/repo/a.ts', workingDir: '/repo/wt' } })
+      firstOpened().onTabPayloadRegistered({ tabId: 'f3', payload: { kind: 'file', filePath: '/repo/a.ts', workingDir: '/repo/wt' } })
 
       expect(s.metadata.get('f3')).toMatchObject({
         filePath: '/repo/a.ts',
@@ -277,7 +290,7 @@ describe('useWorkerPrivateStreams', () => {
       await flush()
       s.metadata.patch('f4', { filePath: '/repo/a.ts', workingDir: '/repo' })
 
-      opened[0].onTabPayloadRegistered({ tabId: 'f4', payload: { kind: 'file', filePath: '', workingDir: '' } })
+      firstOpened().onTabPayloadRegistered({ tabId: 'f4', payload: { kind: 'file', filePath: '', workingDir: '' } })
 
       expect(s.metadata.get('f4')).toMatchObject({
         filePath: '/repo/a.ts',
@@ -321,7 +334,7 @@ describe('useWorkerPrivateStreams', () => {
     it('opens the panel of the directory it gives', async () => {
       await withCommand((s) => {
         const open = vi.spyOn(s.quakeStore, 'open')
-        opened[0].onQuakePanelCommand({ workingDir: QUAKE_DIR, action: QuakePanelAction.OPEN })
+        firstOpened().onQuakePanelCommand({ workingDir: QUAKE_DIR, action: QuakePanelAction.OPEN })
         expect(open).toHaveBeenCalledWith(expect.objectContaining({ id: 'a1' }))
       })
     })
@@ -329,7 +342,7 @@ describe('useWorkerPrivateStreams', () => {
     it('closes the panel of the directory it gives', async () => {
       await withCommand((s) => {
         const close = vi.spyOn(s.quakeStore, 'close')
-        opened[0].onQuakePanelCommand({ workingDir: QUAKE_DIR, action: QuakePanelAction.CLOSE })
+        firstOpened().onQuakePanelCommand({ workingDir: QUAKE_DIR, action: QuakePanelAction.CLOSE })
         expect(close).toHaveBeenCalledWith({ workerId: 'w1', workingDir: QUAKE_DIR })
       })
     })
@@ -337,7 +350,7 @@ describe('useWorkerPrivateStreams', () => {
     it('toggles the panel of the directory it gives', async () => {
       await withCommand((s) => {
         const toggle = vi.spyOn(s.quakeStore, 'toggle')
-        opened[0].onQuakePanelCommand({ workingDir: QUAKE_DIR, action: QuakePanelAction.TOGGLE })
+        firstOpened().onQuakePanelCommand({ workingDir: QUAKE_DIR, action: QuakePanelAction.TOGGLE })
         expect(toggle).toHaveBeenCalledWith(expect.objectContaining({ id: 'a1' }))
       })
     })
@@ -347,7 +360,7 @@ describe('useWorkerPrivateStreams', () => {
     it('ignores a directory this client has no tab in', async () => {
       await withCommand((s) => {
         const toggle = vi.spyOn(s.quakeStore, 'toggle')
-        opened[0].onQuakePanelCommand({ workingDir: '/somewhere-else', action: QuakePanelAction.TOGGLE })
+        firstOpened().onQuakePanelCommand({ workingDir: '/somewhere-else', action: QuakePanelAction.TOGGLE })
         expect(toggle).not.toHaveBeenCalled()
       })
     })
@@ -359,7 +372,7 @@ describe('useWorkerPrivateStreams', () => {
     it('closes the panel of a directory this client has no tab in', async () => {
       await withCommand((s) => {
         const close = vi.spyOn(s.quakeStore, 'close')
-        opened[0].onQuakePanelCommand({ workingDir: '/somewhere-else', action: QuakePanelAction.CLOSE })
+        firstOpened().onQuakePanelCommand({ workingDir: '/somewhere-else', action: QuakePanelAction.CLOSE })
         expect(close).toHaveBeenCalledWith({ workerId: 'w1', workingDir: '/somewhere-else' })
       })
     })
@@ -371,7 +384,7 @@ describe('useWorkerPrivateStreams', () => {
         const toggle = vi.spyOn(s.quakeStore, 'toggle')
         const open = vi.spyOn(s.quakeStore, 'open')
         const close = vi.spyOn(s.quakeStore, 'close')
-        opened[0].onQuakePanelCommand({ workingDir: QUAKE_DIR, action: QuakePanelAction.UNSPECIFIED })
+        firstOpened().onQuakePanelCommand({ workingDir: QUAKE_DIR, action: QuakePanelAction.UNSPECIFIED })
         expect(toggle).not.toHaveBeenCalled()
         expect(open).not.toHaveBeenCalled()
         expect(close).not.toHaveBeenCalled()
@@ -387,7 +400,7 @@ describe('useWorkerPrivateStreams', () => {
       await flush()
       expect(opened).toHaveLength(1)
       dispose()
-      expect(opened[0].closed, 'streams must not outlive the AppShell that opened them').toBe(true)
+      expect(firstOpened().closed, 'streams must not outlive the AppShell that opened them').toBe(true)
     })
   })
 })

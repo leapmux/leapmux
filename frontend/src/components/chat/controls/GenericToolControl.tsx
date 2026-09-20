@@ -1,29 +1,10 @@
 import type { Component } from 'solid-js'
 import type { ActionsProps } from './types'
-import type { ControlRequest } from '~/stores/control.store'
 
-import { pickString } from '~/lib/jsonPick'
-import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
+import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
 import { ControlDecisionFooter } from './ControlDecisionFooter'
 import { buildSessionPermissionPill, createSessionPermissionPresetChoice, respondThenApplyPermissionPreset } from './permissionPresets'
-import { PermissionRequestContent } from './PermissionRequestContent'
 import { sendResponse } from './types'
-
-export const GenericToolContent: Component<{ request: ControlRequest }> = (props) => {
-  const toolName = () => getToolName(props.request.payload)
-  const input = () => getToolInput(props.request.payload)
-
-  return (
-    <PermissionRequestContent
-      request={props.request}
-      source={{
-        title: toolName(),
-        input: input(),
-        command: toolName() === 'Bash' ? pickString(input(), 'command', undefined) : undefined,
-      }}
-    />
-  )
-}
 
 export const GenericToolActions: Component<ActionsProps> = (props) => {
   const permissionChoice = createSessionPermissionPresetChoice(props)

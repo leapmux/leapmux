@@ -80,7 +80,8 @@ export function matchSettings(
   for (const navId of navOrder) {
     const hits = byNav.get(navId)
     if (hits && hits.length > 0)
-      groups.push({ navId, groupTitle: hits[0].groupTitle, entries: hits })
+      // The length bound above keeps the read in range; `?? ''` is the type-level guard alone.
+      groups.push({ navId, groupTitle: hits[0]?.groupTitle ?? '', entries: hits })
   }
   return groups
 }

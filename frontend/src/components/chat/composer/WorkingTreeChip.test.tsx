@@ -23,20 +23,30 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-/** The flat option shape the cases read better in, assembled into the prop. */
-function renderChip(overrides: Partial<WorkingTreeInfo> & { disabledReason?: string } = {}) {
+/**
+ * The flat option shape the cases read better in, assembled into the prop.
+ *
+ * `homeDir` keeps an explicit `| undefined`: the unknown-home case must stay
+ * expressible, and `Partial` no longer admits an explicit undefined under
+ * exactOptionalPropertyTypes.
+ */
+function renderChip(overrides: Omit<Partial<WorkingTreeInfo>, 'homeDir'> & {
+  homeDir?: string | undefined
+  disabledReason?: string
+} = {}) {
+  const homeDir = 'homeDir' in overrides ? overrides.homeDir : '/home/dev'
   const workingTree: WorkingTreeInfo = {
     isWorktree: overrides.isWorktree ?? true,
     name: 'name' in overrides ? overrides.name! : 'feature',
     directory: overrides.directory ?? WORKTREE_DIR,
-    homeDir: 'homeDir' in overrides ? overrides.homeDir : '/home/dev',
-    flavor: overrides.flavor,
-    stats: overrides.stats,
+    ...(homeDir === undefined ? {} : { homeDir }),
+    ...(overrides.flavor === undefined ? {} : { flavor: overrides.flavor }),
+    ...(overrides.stats === undefined ? {} : { stats: overrides.stats }),
   }
   render(() => (
     <WorkingTreeChip
       workingTree={workingTree}
-      disabledReason={overrides.disabledReason}
+      {...(overrides.disabledReason === undefined ? {} : { disabledReason: overrides.disabledReason })}
       workerId="w-1"
       actions={stubBranchMenuActions()}
     />
@@ -44,7 +54,7 @@ function renderChip(overrides: Partial<WorkingTreeInfo> & { disabledReason?: str
   return screen.queryByTestId('composer-branch-trigger')
 }
 
-describe('workingTreeChip', () => {
+describe('WorkingTreeChip', () => {
   it('marks a worktree with the worktree glyph', () => {
     const chip = renderChip({ isWorktree: true })
 

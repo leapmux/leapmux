@@ -1,13 +1,12 @@
-import type { MessageCategory } from '../messageClassification'
-import type { RenderContext } from '../messageRenderers'
+import type { MessageCategory } from '../messageClassifier'
+import type { MessageContentRenderContext } from '../messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { toolMessageInput } from '~/components/chat/providers/testUtils'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { claudeToolResultMeta } from './claude/toolResult'
+import { providerToolMeta } from '~/test-support/toolCallFixture'
 import './testMocks'
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../messageContentRenderer')
 
 /** Build a Claude `RemoteTrigger` tool_use assistant message. */
 function makeRemoteTriggerToolUse(input: Record<string, unknown>) {
@@ -45,13 +44,7 @@ function makeRemoteTriggerToolResult(
 
 function renderToolUseText(input: Record<string, unknown>): string {
   const msg = makeRemoteTriggerToolUse(input)
-  const toolUse = (msg.message.content as Array<Record<string, unknown>>)[0]
-  const category: MessageCategory = {
-    kind: 'tool_use',
-    toolName: 'RemoteTrigger',
-    toolUse,
-    content: msg.message.content as Array<Record<string, unknown>>,
-  }
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(msg, undefined, category, AgentProvider.CLAUDE_CODE)
   const { container } = render(() => result)
   return container.textContent?.trim() ?? ''
@@ -60,7 +53,7 @@ function renderToolUseText(input: Record<string, unknown>): string {
 function renderToolResultContainer(
   resultContent: string,
   toolUseResult?: Record<string, unknown>,
-  context?: RenderContext,
+  context?: MessageContentRenderContext,
 ): HTMLElement {
   const msg = makeRemoteTriggerToolResult(resultContent, toolUseResult)
   const category: MessageCategory = { kind: 'tool_result' }
@@ -106,6 +99,23 @@ describe('claude RemoteTrigger tool_use rendering', () => {
 
   it('falls back to plain "RemoteTrigger" when action is missing', () => {
     expect(renderToolUseText({})).toContain('RemoteTrigger')
+  })
+
+  // Claude reads its trigger request through the shared entry, which accepts two more
+  // spellings of the id (`triggerId` and `id`) and a ROOT-level `name`. `RemoteTrigger`
+  // sends `trigger_id` and `body.name` instead, so no transcript changes today. The two
+  // cases below pin what the row draws if one of the wider spellings does arrive.
+  it('renders the id a call spells `id`, which the shared reading also accepts', () => {
+    expect(renderToolUseText({ action: 'get', id: 'trig_shared' }))
+      .toContain('Get trigger trig_shared')
+  })
+
+  it('draws the body name ahead of a root name when a call carries both', () => {
+    expect(renderToolUseText({
+      action: 'create',
+      name: 'From the root',
+      body: { name: 'From the body' },
+    })).toContain('Create trigger: From the body')
   })
 })
 
@@ -154,42 +164,62 @@ describe('claude RemoteTrigger tool_result rendering', () => {
   })
 })
 
-describe('claudeToolResultMeta for RemoteTrigger', () => {
-  it('marks structured tool_use_result as collapsible so the toolbar renders an expand button', () => {
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput({
+// A RemoteTrigger result draws a STATUS body: the HTTP status and the trigger it
+// names become the header, and the response body becomes the note below it. Both
+// answers below follow from that, and both changed when the row moved onto the
+// shared model:
+//
+//   - Collapsibility counts the NOTE's lines, like every other body. The rule it
+//     replaced answered true for any structured payload, so a one-line `{}` drew an
+//     Expand button that revealed nothing.
+//   - The copy text is the note. The `HTTP 200` line it used to start with is the
+//     header the row already draws, and no status row copies its own header.
+describe('claude toolbar actions for RemoteTrigger', () => {
+  it('offers no expand for a response the collapsed row already shows whole', () => {
+    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, {
       type: 'user',
       message: { role: 'user', content: [{ type: 'tool_result', content: 'HTTP 200\n{}' }] },
       tool_use_result: { status: 200, json: '{}' },
-    }, 'RemoteTrigger', undefined))
+    }, { spanType: 'RemoteTrigger' })
+    expect(meta?.collapsible).toBe(false)
+  })
+
+  it('marks a response longer than the collapsed row as collapsible', () => {
+    const compact = '{"trigger":{"id":"trig_1","name":"hello","enabled":true}}'
+    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, {
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', content: `HTTP 200\n${compact}` }] },
+      tool_use_result: { status: 200, json: compact },
+    }, { spanType: 'RemoteTrigger' })
     expect(meta?.collapsible).toBe(true)
   })
 
-  it('marks fallback HTTP {n}\\n... text as collapsible', () => {
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput({
+  it('marks a long fallback HTTP {n}\\n... response as collapsible', () => {
+    const compact = '{"trigger":{"id":"trig_2","name":"hello","enabled":true}}'
+    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, {
       type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', content: 'HTTP 200\n{"trigger":{}}' }] },
-    }, 'RemoteTrigger', undefined))
+      message: { role: 'user', content: [{ type: 'tool_result', content: `HTTP 200\n${compact}` }] },
+    }, { spanType: 'RemoteTrigger' })
     expect(meta?.collapsible).toBe(true)
   })
 
   it('does not mark non-HTTP plain text as collapsible', () => {
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput({
+    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, {
       type: 'user',
       message: { role: 'user', content: [{ type: 'tool_result', content: 'opaque' }] },
-    }, 'RemoteTrigger', undefined))
+    }, { spanType: 'RemoteTrigger' })
     expect(meta?.collapsible).toBe(false)
   })
 
   it('returns prettified JSON for the copy button', () => {
     const compact = '{"trigger":{"id":"trig_1","name":"hello","enabled":true}}'
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput({
+    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, {
       type: 'user',
       message: { role: 'user', content: [{ type: 'tool_result', content: `HTTP 200\n${compact}` }] },
       tool_use_result: { status: 200, json: compact },
-    }, 'RemoteTrigger', undefined))
+    }, { spanType: 'RemoteTrigger' })
     const copied = meta?.copyableContent()
     expect(copied).not.toBeNull()
-    expect(copied!.startsWith('HTTP 200\n')).toBe(true)
     // Pretty-printed JSON spans multiple lines, unlike the compact source.
     expect(copied!.split('\n').length).toBeGreaterThan(2)
     expect(copied).toContain('"trigger"')
@@ -198,13 +228,13 @@ describe('claudeToolResultMeta for RemoteTrigger', () => {
 
   it('prettifies copy text from fallback HTTP {n}\\n... content when tool_use_result is absent', () => {
     const compact = '{"trigger":{"id":"trig_2"}}'
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput({
+    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, {
       type: 'user',
       message: { role: 'user', content: [{ type: 'tool_result', content: `HTTP 201\n${compact}` }] },
-    }, 'RemoteTrigger', undefined))
+    }, { spanType: 'RemoteTrigger' })
     const copied = meta?.copyableContent()
     expect(copied).not.toBeNull()
-    expect(copied!.startsWith('HTTP 201\n')).toBe(true)
     expect(copied!.split('\n').length).toBeGreaterThan(2)
+    expect(copied).toContain('"trig_2"')
   })
 })

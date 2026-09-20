@@ -202,7 +202,7 @@ export function createWebglTerminalPool(deps: WebglTerminalPoolDeps): WebglTermi
       target.add(focusedId)
     for (let i = order.length - 1; i >= 0 && target.size < capacity; i--) {
       const id = order[i]
-      if (isEligible(id))
+      if (id !== undefined && isEligible(id))
         target.add(id)
     }
     return target
@@ -247,7 +247,7 @@ export function createWebglTerminalPool(deps: WebglTerminalPoolDeps): WebglTermi
     slot.epoch++ // invalidate any in-flight attach for this id
     safeDetach(id)
     slot.state = 'dom'
-    slot.attachedAt = undefined
+    delete slot.attachedAt
   }
 
   function doAttach(id: string) {

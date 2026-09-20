@@ -227,7 +227,7 @@ export function ImageFileView(props: {
                     content={props.content}
                     filePath={props.filePath}
                     totalSize={props.totalSize ?? props.content.length}
-                    onQuote={props.onQuote}
+                    {...(props.onQuote !== undefined ? { onQuote: props.onQuote } : {})}
                   />
                 </div>
               </div>
@@ -237,7 +237,7 @@ export function ImageFileView(props: {
                 content={props.content}
                 filePath={props.filePath}
                 totalSize={props.totalSize ?? props.content.length}
-                onQuote={props.onQuote}
+                {...(props.onQuote !== undefined ? { onQuote: props.onQuote } : {})}
               />
             </Match>
           </Switch>

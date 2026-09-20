@@ -1,5 +1,5 @@
 import type { PillOptions } from '~/components/common/PillGroup'
-import type { ResolvedThemeMode, TerminalThemeValue, ThemeMode, ThemeSurface, ThemeValue, ThemeVariant } from '~/styles/themes'
+import type { ResolvedThemeMode, TerminalThemeValue, ThemeMode, ThemeSurface, ThemeValue, ThemeVariant, ThemeVariantChoice } from '~/styles/themes'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import { createMemo, createSignal, For, on, Show } from 'solid-js'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
@@ -187,7 +187,12 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
    * `custom` editors, which `SettingRow` renders bare with no binding wrapper,
    * so they do their own -- as `KeybindingsControl` already does.
    */
-  const commit = (patch: Partial<ThemeValue>) => {
+  // `variant: undefined` in a patch is a distinct instruction, not a skipped
+  // one: the merge below lets it CLEAR the variant, while an absent key keeps
+  // the stored choice. `selectName` relies on exactly that when the palette
+  // changes, so the parameter spells the difference out rather than leaving
+  // `Partial<ThemeValue>` to forbid the explicit clear.
+  const commit = (patch: Omit<Partial<ThemeValue>, 'variant'> & { variant?: ThemeVariantChoice | undefined }) => {
     setWriteError(null)
     void Promise.resolve(props.onChange({ ...props.value, ...patch } as T))
       .catch((err: unknown) => {

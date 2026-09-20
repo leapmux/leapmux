@@ -1,16 +1,16 @@
 import type { Accessor, Component, JSX } from 'solid-js'
 import type { ThinkingStatusCounter } from './ThinkingStatusRow'
+import type { TodoItem } from '~/models/todo'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
-import type { TodoItem } from '~/stores/chatTodos'
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, untrack } from 'solid-js'
 import { BackgroundTaskPanel } from '~/components/backgroundtasks/BackgroundTaskPanel'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { GoalsAndTodos } from '~/components/todo/GoalsAndTodos'
 import { pluralize } from '~/lib/plural'
+import { todoProgress } from '~/models/todo'
 import { countActiveBackgroundTasks } from '~/stores/chatBackgroundTasks'
 import { goalStatusLabel } from '~/stores/chatGoal'
-import { todoProgress } from '~/stores/chatTodos'
 import { motion } from '~/styles/tokens'
 import { createCompassSimulation } from '../compassPhysics'
 import { getRandomVerb } from '../spinnerVerbs'
@@ -543,12 +543,14 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
             tasks={props.backgroundTasks ?? []}
             // The wrapper exists only when the host supplies a handler. The
             // list uses its presence to decide whether a row is a button.
-            onOpenSubagent={props.onOpenSubagent
-              ? (item) => {
-                  bgTasksPopoverEl?.hidePopover()
-                  props.onOpenSubagent?.(item)
+            {...(props.onOpenSubagent
+              ? {
+                  onOpenSubagent: (item) => {
+                    bgTasksPopoverEl?.hidePopover()
+                    props.onOpenSubagent?.(item)
+                  },
                 }
-              : undefined}
+              : {})}
           />
         </DropdownMenu>
       ),
@@ -584,18 +586,22 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
             // This component wraps the handler only when the host supplies one.
             // The card renders its buttons because the handler is present. The
             // rest of the surface passes through unchanged.
-            goal={props.goal
+            {...(props.goal
               ? {
-                  ...props.goal,
-                  onAction: props.goal.onAction
-                    ? (action: GoalAction) => {
-                        if (action === 'set')
-                          todosPopoverEl?.hidePopover()
-                        props.goal?.onAction?.(action)
-                      }
-                    : undefined,
+                  goal: {
+                    ...props.goal,
+                    ...(props.goal.onAction
+                      ? {
+                          onAction: (action: GoalAction) => {
+                            if (action === 'set')
+                              todosPopoverEl?.hidePopover()
+                            props.goal?.onAction?.(action)
+                          },
+                        }
+                      : {}),
+                  },
                 }
-              : undefined}
+              : {})}
           />
         </DropdownMenu>
       ),
@@ -607,13 +613,13 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
       // popping -- and unmounts after, so a stale estimate can't keep it (or
       // its roll effects) alive in a collapsed row.
       show: showTokens,
-      render: () => <ThinkingTokenCount tokens={countTokens()!} paused={props.paused} />,
+      render: () => <ThinkingTokenCount tokens={countTokens()!} {...(props.paused === undefined ? {} : { paused: props.paused })} />,
     },
     {
       show: showOutput,
       render: () => {
         const output = countOutput()!
-        return <ThinkingOutputCount bytes={output.bytes} minimum={output.minimum} paused={props.paused} />
+        return <ThinkingOutputCount bytes={output.bytes} minimum={output.minimum} {...(props.paused === undefined ? {} : { paused: props.paused })} />
       },
     },
   ]

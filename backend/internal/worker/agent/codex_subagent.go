@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -249,7 +250,7 @@ func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage, parentThr
 		AgentPath     string `json:"agentPath"`
 		Kind          string `json:"kind"`
 	}
-	if json.Unmarshal(item, &act) != nil || act.Type != "subAgentActivity" {
+	if json.Unmarshal(item, &act) != nil || act.Type != contracts.CodexItemTypeSubAgentActivity {
 		return false
 	}
 	if act.AgentThreadID == "" {

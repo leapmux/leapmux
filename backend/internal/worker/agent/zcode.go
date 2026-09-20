@@ -1009,7 +1009,7 @@ func (a *zcodeAgent) endStoppedZCodeTurn(generation uint64) {
 // that is still running needs its span for the update it still sends -- the same
 // reason endStoppedZCodeTurn closes no tool call.
 func (a *zcodeAgent) persistZCodeStopRow() {
-	content, err := json.Marshal(map[string]string{"type": contracts.NotificationTypeInterrupted})
+	content, err := json.Marshal(map[string]string{contracts.NotificationFieldType: contracts.NotificationTypeInterrupted})
 	if err != nil {
 		slog.Error("zcode marshal stop row", "agent_id", a.agentID, "error", err)
 		return
@@ -1026,7 +1026,7 @@ func (a *zcodeAgent) persistZCodeStopRow() {
 // press Stop again, and the worker escalates that press into a forced stop. One
 // row per accepted stop, from refreshStoppedZCodeTurn's once-flag.
 func (a *zcodeAgent) persistZCodeStopIgnoredRow() {
-	content, err := json.Marshal(map[string]string{"type": contracts.NotificationTypeStopIgnored})
+	content, err := json.Marshal(map[string]string{contracts.NotificationFieldType: contracts.NotificationTypeStopIgnored})
 	if err != nil {
 		slog.Error("zcode marshal stop-ignored row", "agent_id", a.agentID, "error", err)
 		return

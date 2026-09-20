@@ -47,7 +47,7 @@ export function formatCompactAge(ts: Date, now: Date = new Date()): string {
   // still prints seconds — including `0s`.
   for (let i = AGE_UNITS.length - 1; i > 0; i--) {
     const unit = AGE_UNITS[i]
-    if (diffSec >= unit.seconds)
+    if (unit !== undefined && diffSec >= unit.seconds)
       return `${Math.floor(diffSec / unit.seconds)}${unit.suffix}`
   }
   return `${diffSec}s`

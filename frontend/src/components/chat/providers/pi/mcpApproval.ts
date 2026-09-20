@@ -1,4 +1,4 @@
-import type { ElicitationRequest } from '../../controls/elicitationForm'
+import type { ElicitationRequest } from '~/components/chat/model/controlPrompt'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { MCP_ELICITATION_APPROVAL_SCOPE } from '~/generated/contracts/mcp-elicitation'
 import { PI_DIALOG_METHOD, PI_EVENT, PI_MCP_APPROVAL_CHOICE, PI_MCP_APPROVAL_TEXT } from '~/generated/contracts/pi-protocol'
@@ -53,7 +53,7 @@ export function piMcpApproval(payload: Record<string, unknown>, source?: ParsedM
     message: title.slice(0, marker),
     schema: { type: 'object', properties: {} },
     arguments: recovered ?? preview,
-    argumentNotice: !recovered && preview.endsWith('...') ? 'Pi truncated the argument preview.' : undefined,
+    ...(!recovered && preview.endsWith('...') ? { argumentNotice: 'Pi truncated the argument preview.' } : {}),
     acceptChoices: [
       { key: 'once', label: 'Once' },
       { key: MCP_ELICITATION_APPROVAL_SCOPE.Session, label: 'Session', metadata: { persist: MCP_ELICITATION_APPROVAL_SCOPE.Session } },

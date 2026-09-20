@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 
@@ -30,12 +31,11 @@ type piMessageUpdateEnvelope struct {
 // the start payload (carrying the prompt/description used as the registry
 // title); Result is the end payload.
 type piToolExecutionEnvelope struct {
-	ToolCallID string          `json:"toolCallId"`
-	ToolName   string          `json:"toolName"`
-	Args       json.RawMessage `json:"args"`
-	Input      json.RawMessage `json:"input"`
-	Result     json.RawMessage `json:"result"`
-	IsError    bool            `json:"isError"`
+	contracts.PiToolCallIdentity
+	Args    json.RawMessage `json:"args"`
+	Input   json.RawMessage `json:"input"`
+	Result  json.RawMessage `json:"result"`
+	IsError bool            `json:"isError"`
 }
 
 // piToolUpdateEnvelope adds the cumulative output and the structured details
@@ -47,13 +47,21 @@ type piToolUpdateEnvelope struct {
 }
 
 type piPartialResult struct {
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
+	Content []piContentBlock `json:"content"`
 	// Details carries provider-specific structured data. For the
 	// pi-subagents extension it holds {status, activity, agentId}.
 	Details json.RawMessage `json:"details"`
+}
+
+// piContentBlock is one block of a partial result. Only a block whose Type is
+// PiContentBlockText carries output text; the others carry no text at all.
+//
+// It is a NAMED type so piJoinOutputTail can take the slice. The anonymous struct
+// it replaced could not cross a function boundary without a second spelling of the
+// same two fields.
+type piContentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 type piToolState struct {
@@ -152,26 +160,45 @@ func handlePiOutput(a *PiAgent, line *parsedLine) {
 		a.handlePiQueueUpdate(line.Raw)
 	case contracts.PiEventCompactionStart, contracts.PiEventCompactionEnd,
 		contracts.PiEventAutoRetryStart, contracts.PiEventAutoRetryEnd,
-		contracts.PiEventExtensionError:
+		contracts.PiEventExtensionError,
+		contracts.PiEventSummarizationRetryScheduled,
+		contracts.PiEventSummarizationRetryAttemptStart,
+		contracts.PiEventSummarizationRetryFinished:
 		// Pi-emitted lifecycle / extension events — AGENT source per the
 		// proto rule (LEAPMUX is reserved for worker-synthesized envelopes).
+		//
+		// The three summarization-retry events belong here for the same reason the
+		// auto-retry pair does: each states that a summary failed and that Pi waits
+		// before it tries again, which is a stall the reader must be able to explain.
+		// They reached the `default` branch before, so each one drew a raw JSON row.
 		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw); err != nil {
 			slog.Error("pi persist notification", "agent_id", a.agentID, "type", line.Type, "error", err)
 		}
+	case contracts.PiEventThinkingLevelChanged:
+		a.handlePiThinkingLevelChanged(line.Raw)
+	case contracts.PiEventSessionInfoChanged:
+		// Pi's own session NAME. LeapMux gives its tabs their own names and never
+		// shows this one, so the row would say nothing a reader can act on.
+	case contracts.PiEventBashExecutionUpdate:
+		// One delta of a `bash` command an RPC client issued, and Pi emits one event
+		// per CHUNK. The `default` branch persisted each of them as its own message,
+		// so a single command wrote a row for every chunk of its output.
+		//
+		// Two facts make the drop right, and each one is enough by itself.
+		//
+		// LeapMux starts no shell of its own. Every command it builds reaches Pi
+		// through beginPiCommand, whose method is one of the ten PiCommand* constants
+		// in pi_protocol.go, and none of them is `bash`. The other stdin path,
+		// SendRawInput, carries an ANSWER to a request Pi published.
+		//
+		// Nothing could attribute the text either. A Pi tool span is keyed by the
+		// `toolCallId` that tool_execution_start supplies, and contracts/pi-protocol.json
+		// holds bash_execution_update as the ONLY bash_execution_* event -- there is no
+		// start or end frame that pairs a shell with a tool call.
 	case contracts.PiEventExtensionUIRequest:
 		a.handlePiExtensionUIRequest(line.Raw)
 	case contracts.PiEventEntryAppended:
-		var event struct {
-			Entry struct {
-				CustomType string `json:"customType"`
-			} `json:"entry"`
-		}
-		if json.Unmarshal(line.Raw, &event) == nil && event.Entry.CustomType == "pi-goal-focus" {
-			a.schedulePiGoalRefresh(false)
-		}
-		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: line.Raw}, SpanInfo{}); err != nil {
-			slog.Error("persist Pi session entry", "agent_id", a.agentID, "error", err)
-		}
+		a.handlePiEntryAppended(line.Raw)
 	case contracts.PiEventResponse:
 		// Should have been intercepted by handlePiResponse; reaching here means
 		// no caller was waiting on this id. Log and drop.
@@ -446,6 +473,64 @@ func (a *PiAgent) handlePiToolExecutionStart(raw []byte) {
 	}
 }
 
+// The longest live output tail Pi broadcasts, in bytes.
+//
+// Only the last bytes of a running tool reach a reader, and the service caps the
+// broadcast again at a lower figure. This cap is what keeps the JOIN off the
+// accumulated output, which Pi re-sends whole on every update. Goose caps its own
+// live tail the same way.
+const piLiveOutputLimit = 8192
+
+// The longest TRUNCATED snapshot Pi's byte counter compares, in bytes.
+//
+// A truncated snapshot lost its head, so it is not append-only and the counter
+// measures growth by the overlap of two snapshots. That scan allocates eight bytes
+// for each byte of the newer snapshot, and without a cap the allocation grows with
+// the output, on every update. The delta stays exact while one update adds less than
+// the window; past that the counter reports a floor, which the truncation flag
+// already declares the total to be.
+const piCountedWindowBytes = 64 << 10
+
+// piJoinOutputTail joins the text blocks of one Pi partial result, and keeps at most
+// the LAST limit bytes. A limit of zero or less keeps every byte.
+//
+// total is the summed length of those blocks, which the caller already walked them
+// for, so the builder allocates exactly what it keeps. A capped join therefore costs
+// the cap rather than the whole accumulated output.
+//
+// It reports whether the cap dropped earlier bytes.
+func piJoinOutputTail(blocks []piContentBlock, total, limit int) (string, bool) {
+	skip := 0
+	if limit > 0 && total > limit {
+		skip = total - limit
+	}
+	var joined strings.Builder
+	joined.Grow(total - skip)
+	for _, block := range blocks {
+		if block.Type != PiContentBlockText {
+			continue
+		}
+		text := block.Text
+		if skip > 0 {
+			if len(text) <= skip {
+				skip -= len(text)
+				continue
+			}
+			// The cut can land inside a rune, and a replacement character would then
+			// reach the browser. Move it to the next boundary. ClipTailBytes repairs
+			// a text that is already whole; here the join itself is what cuts, so the
+			// repair belongs at the cut and the text is never built whole.
+			for skip < len(text) && !utf8.RuneStart(text[skip]) {
+				skip++
+			}
+			text = text[skip:]
+			skip = 0
+		}
+		joined.WriteString(text)
+	}
+	return joined.String(), limit > 0 && total > limit
+}
+
 // handlePiToolExecutionUpdate counts Pi's cumulative partial result.
 func (a *PiAgent) handlePiToolExecutionUpdate(raw []byte) {
 	var env piToolUpdateEnvelope
@@ -470,10 +555,15 @@ func (a *PiAgent) handlePiToolExecutionUpdate(raw []byte) {
 		a.mu.Unlock()
 	}
 
-	var full strings.Builder
-	for _, c := range partial.Content {
-		if c.Type == PiContentBlockText {
-			full.WriteString(c.Text)
+	// Pi re-sends the WHOLE partial result on every update, so a join of every text
+	// block costs the accumulated output each time and the cost grows with the call.
+	// Sum the lengths instead, and join only what a report reads: the tail takes the
+	// last bytes alone, and the byte counter -- the one reader that can need more --
+	// runs on one of the two paths below.
+	textBytes := 0
+	for _, block := range partial.Content {
+		if block.Type == PiContentBlockText {
+			textBytes += len(block.Text)
 		}
 	}
 	var details struct {
@@ -482,12 +572,34 @@ func (a *PiAgent) handlePiToolExecutionUpdate(raw []byte) {
 			Truncated  bool  `json:"truncated"`
 		} `json:"truncation"`
 	}
-	if json.Unmarshal(partial.Details, &details) == nil && details.Truncation != nil && details.Truncation.TotalBytes > 0 {
+	decoded := json.Unmarshal(partial.Details, &details) == nil
+	// One flag for both reports. The counter used to take a hard-coded false while
+	// the tail took the real value, so a truncated Pi output broadcast an EXACT byte
+	// total for a window that was missing its head.
+	truncated := decoded && details.Truncation != nil && details.Truncation.Truncated
+	if decoded && details.Truncation != nil && details.Truncation.TotalBytes > 0 {
 		// totalBytes counts the full output even when the retained content is truncated.
 		a.sink.ReportProgress(OutputExactTotalProgress(env.ToolCallID, details.Truncation.TotalBytes))
-	} else if full.Len() > 0 {
-		observed := a.observeCumulativeOutput(env.ToolCallID, full.String(), false)
+	} else if textBytes > 0 {
+		// A snapshot that kept its head is append-only, so the counter takes it WHOLE
+		// and its length is the exact total. A truncated one is not append-only: the
+		// counter measures growth by the overlap of two snapshots, and the window caps
+		// what that scan allocates. See piCountedWindowBytes.
+		limit := 0
+		if truncated {
+			limit = piCountedWindowBytes
+		}
+		counted, _ := piJoinOutputTail(partial.Content, textBytes, limit)
+		observed := a.observeCumulativeOutput(env.ToolCallID, counted, truncated)
 		a.sink.ReportProgress(OutputTotalProgress(env.ToolCallID, observed.Total, observed.Minimum))
+	}
+	// Pi sends the partial result WHOLE on every update, so its last bytes are the
+	// tail. Pi's own truncation flag says whether earlier bytes are missing from it,
+	// and the cap here drops more of the head when the retained output is longer than
+	// a live tail needs.
+	if textBytes > 0 {
+		tail, clipped := piJoinOutputTail(partial.Content, textBytes, piLiveOutputLimit)
+		a.sink.ReportProgress(OutputTailProgress(env.ToolCallID, tail, truncated || clipped))
 	}
 
 	a.mu.Lock()
@@ -626,6 +738,193 @@ func (a *PiAgent) persistIncompletePiTools(completion MessageCompletion) {
 	}
 }
 
+// handlePiThinkingLevelChanged folds Pi's own thinking level back into the agent's
+// settings.
+//
+// Pi CLAMPS the level to what the model offers, so a model switch alone can move it:
+// `setModel` calls `setThinkingLevel`, which lowers a level the new model does not
+// support and then announces the value it settled on. LeapMux asked for neither the
+// switch nor the new level, and it kept its own `thinkingLevel` field, so the effort
+// segment went on showing a level the running agent had already left.
+//
+// The row itself stays out of the transcript. `PersistSettingsRefresh` announces the
+// change through the same settings pipeline every other axis uses, and a raw event row
+// beside that notification would state the same fact a second time.
+func (a *PiAgent) handlePiThinkingLevelChanged(raw []byte) {
+	var env struct {
+		Level string `json:"level"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil || env.Level == "" {
+		slog.Warn("pi thinking_level_changed unmarshal failed", "agent_id", a.agentID, "error", err)
+		return
+	}
+	a.publishPiSettings(func() bool {
+		if a.thinkingLevel == env.Level {
+			return false
+		}
+		a.thinkingLevel = env.Level
+		return true
+	})
+}
+
+// publishPiSettings states the three axes Pi reports, whenever a value the running
+// agent settled on differs from the one this worker holds.
+//
+// Two events reach it, and neither is a change LeapMux asked for: Pi clamps the
+// thinking level itself, and `setModel` can move the model with it. The snapshot and
+// the publish are shared because they MUST be -- the settings pipeline takes all three
+// axes at once, so a handler that published its own axis alone would blank the other
+// two.
+//
+// `apply` runs under mu and reports whether anything moved. Nothing publishes when
+// nothing moved, so a repeated event does not restate a setting.
+func (a *PiAgent) publishPiSettings(apply func() bool) {
+	a.mu.Lock()
+	changed := apply()
+	model, level, provider := a.model, a.thinkingLevel, a.provider
+	a.mu.Unlock()
+	if !changed {
+		return
+	}
+	a.sink.PersistSettingsRefresh(map[string]string{
+		OptionIDModel:    model,
+		OptionIDEffort:   level,
+		PiOptionProvider: provider,
+	})
+}
+
+// The session-file entry types Pi appends. Go reads them and the browser never
+// does -- an entry that a reader must see leaves this agent as a message or as a
+// settings refresh, in the shape every provider already writes -- so they stay
+// here rather than in `pi-protocol.json`.
+const (
+	// piEntryCustom and piEntryCustomMessage are an extension's own rows. The
+	// browser knows which of them it can draw; the worker keeps them all.
+	piEntryCustom        = "custom"
+	piEntryCustomMessage = "custom_message"
+	// piEntryModelChange states the model Pi settled on, which LeapMux did not
+	// necessarily ask for. pi 0.85.1 appends it inside setModel and emits no event
+	// for it, so applyModel reads get_state back instead; see
+	// handlePiModelChangeEntry.
+	piEntryModelChange = "model_change"
+	// The session-file entries this worker DROPS. Each one states a fact the event
+	// stream already states, so a row for it would draw raw JSON beside the row
+	// that says the same thing:
+	//
+	//   - `message` is the assistant and tool rows themselves.
+	//   - `compaction` repeats `compaction_start` and `compaction_end`.
+	//   - `branch_summary`, `label` and `session_info` are bookkeeping for the
+	//     session file.
+	//   - `thinking_level_change` repeats `thinking_level_changed`, which reaches the
+	//     settings pipeline.
+	//
+	// The drop list is spelled out rather than left to a `default` branch. An entry
+	// type a later Pi build adds is not on this list, so it reaches the transcript
+	// as an inspectable card instead of disappearing.
+	piEntryMessage             = "message"
+	piEntryCompaction          = "compaction"
+	piEntryBranchSummary       = "branch_summary"
+	piEntryLabel               = "label"
+	piEntrySessionInfo         = "session_info"
+	piEntryThinkingLevelChange = "thinking_level_change"
+	// piCustomTypeGoalFocus marks the extension entry that moves a session goal.
+	piCustomTypeGoalFocus = "pi-goal-focus"
+)
+
+// handlePiEntryAppended reads one session-file entry Pi wrote.
+//
+// In pi 0.85.1 the event carries a `custom` entry and nothing else. That build
+// emits `entry_appended` from ONE place, the extension runtime's appendEntry, and
+// appendEntry appends a custom entry. The session manager's own append path emits
+// nothing, so a message, a compaction, a model change, a session-info change and a
+// label change reach this worker through no event.
+//
+// The branches for those types therefore answer a build that BROADENS the event,
+// and each one keeps that build from drawing a second row. The drop list above
+// holds the entry types the event stream already states. An extension's own entry
+// reaches the transcript, because only the extension's own renderer knows what it
+// says. A model change reaches the SETTINGS pipeline instead of the transcript,
+// exactly as a thinking-level change does -- both announce a value the running
+// agent settled on.
+//
+// An entry type this worker does not know reaches the transcript, so a type a later
+// Pi build adds draws an inspectable card rather than disappearing.
+func (a *PiAgent) handlePiEntryAppended(raw []byte) {
+	var event struct {
+		Entry struct {
+			Type       string `json:"type"`
+			CustomType string `json:"customType"`
+			Provider   string `json:"provider"`
+			ModelID    string `json:"modelId"`
+		} `json:"entry"`
+	}
+	if err := json.Unmarshal(raw, &event); err != nil {
+		// The row still reaches the transcript. A Pi build that reshapes this
+		// envelope makes the struct above stop decoding, and returning here dropped
+		// EVERY session entry silently -- the only evidence a worker log line the
+		// reader never sees. The raw frame at least draws as an inspectable card.
+		slog.Warn("pi entry_appended unmarshal failed", "agent_id", a.agentID, "error", err)
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: raw}, SpanInfo{}); err != nil {
+			slog.Error("persist an unreadable Pi session entry", "agent_id", a.agentID, "error", err)
+		}
+		return
+	}
+	// ABOVE the switch, because `customType` is a field of EVERY entry. A goal marker
+	// that a later Pi build writes on a new entry type still refreshes the panel, and
+	// the panel otherwise keeps a goal the session already moved past.
+	if event.Entry.CustomType == piCustomTypeGoalFocus {
+		a.schedulePiGoalRefresh(false)
+	}
+	switch event.Entry.Type {
+	case piEntryCustom, piEntryCustomMessage:
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: raw}, SpanInfo{}); err != nil {
+			slog.Error("persist Pi session entry", "agent_id", a.agentID, "error", err)
+		}
+	case piEntryModelChange:
+		a.handlePiModelChangeEntry(event.Entry.Provider, event.Entry.ModelID)
+	case piEntryMessage, piEntryCompaction, piEntryBranchSummary, piEntryLabel,
+		piEntrySessionInfo, piEntryThinkingLevelChange:
+		// Dropped on purpose. The drop list above states the reason for each one.
+	default:
+		// The row reaches the transcript, for the reason the unmarshal path above
+		// states: a drop leaves the reader nothing and the worker a log line the
+		// reader never sees. The raw frame at least draws as an inspectable card,
+		// and the outer event switch answers an unknown EVENT the same way.
+		slog.Debug("pi session entry of an unknown type", "agent_id", a.agentID, "type", event.Entry.Type)
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: raw}, SpanInfo{}); err != nil {
+			slog.Error("persist an unknown Pi session entry", "agent_id", a.agentID, "type", event.Entry.Type, "error", err)
+		}
+	}
+}
+
+// handlePiModelChangeEntry folds the model Pi settled on back into the settings.
+//
+// It is the FORWARD-COMPATIBILITY path and it does not run against pi 0.85.1:
+// `entry_appended` carries a `custom` entry alone there, so the `model_change`
+// entry that setModel appends never arrives. applyModel reads Pi's state back
+// after the set_model round trip for exactly that reason, and this branch answers
+// a build that broadens the event.
+//
+// handlePiThinkingLevelChanged is the sibling, and it DOES run, because
+// `thinking_level_changed` is a real top-level event. That contrast is the whole
+// reason the two look different. Both fold back a value the running agent settled
+// on, and LeapMux asked for neither the switch nor the value.
+func (a *PiAgent) handlePiModelChangeEntry(provider, modelID string) {
+	if modelID == "" {
+		return
+	}
+	a.publishPiSettings(func() bool {
+		if a.model == modelID && (provider == "" || a.provider == provider) {
+			return false
+		}
+		a.model = modelID
+		if provider != "" {
+			a.provider = provider
+		}
+		return true
+	})
+}
+
 func (a *PiAgent) handlePiQueueUpdate(raw []byte) {
 	var env piQueueUpdateEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -657,6 +956,12 @@ func (a *PiAgent) handlePiExtensionUIRequest(raw []byte) {
 		if head.ID == "" {
 			slog.Warn("pi extension_ui_request dialog missing id",
 				"agent_id", a.agentID, "method", head.Method)
+			return
+		}
+		// The fresh-implementation settings dialog follows an approval this
+		// worker already answered for, and no ask-user-question call backs it,
+		// so it is consumed here rather than published.
+		if a.answerPiFreshSettingsDialog(head.ID, raw) {
 			return
 		}
 		question, answered := a.preparePiQuestionDialog(head.ID, raw)

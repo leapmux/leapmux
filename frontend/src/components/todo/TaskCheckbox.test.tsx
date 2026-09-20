@@ -2,7 +2,7 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { TaskCheckbox } from '~/components/todo/TaskCheckbox'
 
-describe('taskCheckbox', () => {
+describe('TaskCheckbox', () => {
   it('renders an empty checkbox for pending', () => {
     const { container } = render(() => <TaskCheckbox status="pending" />)
     const box = container.querySelector('[data-task-checkbox="pending"]')

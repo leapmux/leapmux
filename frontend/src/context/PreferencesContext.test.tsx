@@ -83,7 +83,7 @@ afterEach(() => {
   localStorageClearForTests()
 })
 
-describe('preferencesContext — browser-level theme override', () => {
+describe('PreferencesContext — browser-level theme override', () => {
   const DARK_NORD = { name: 'nord', mode: 'dark' } as const
   const DEFAULTS = { name: 'default', mode: 'system' } as const
 
@@ -177,7 +177,7 @@ describe('preferencesContext — browser-level theme override', () => {
 // The terminal theme is a SECOND appearance choice. It defaults to following
 // the UI, which is what makes the empty state's single picker move the terminal
 // too without writing to this key at all.
-describe('preferencesContext — terminal theme override', () => {
+describe('PreferencesContext — terminal theme override', () => {
   const MATCH_BOTH = { name: 'match-ui', mode: 'match-ui' } as const
 
   it('defaults to following the UI in both halves', () => {
@@ -221,7 +221,7 @@ describe('preferencesContext — terminal theme override', () => {
   })
 })
 
-describe('preferencesContext — browser-level diff view override', () => {
+describe('PreferencesContext — browser-level diff view override', () => {
   it('starts with no browser-level override and resolves to the account default', () => {
     const ctx = captureContext()
     expect(ctx.get().dual.diffView.browser()).toBeNull()
@@ -262,7 +262,7 @@ describe('preferencesContext — browser-level diff view override', () => {
   })
 })
 
-describe('preferencesContext — multiple prefs in one blob', () => {
+describe('PreferencesContext — multiple prefs in one blob', () => {
   it('writes multiple browser overrides to a single consolidated key', () => {
     const ctx = captureContext()
     ctx.get().dual.turnEndSound.setBrowser('none')
@@ -287,7 +287,7 @@ describe('preferencesContext — multiple prefs in one blob', () => {
   })
 })
 
-describe('preferencesContext — revealAfterDownload (default-on)', () => {
+describe('PreferencesContext — revealAfterDownload (default-on)', () => {
   // The save flow asks the OS to "reveal in Finder/Explorer" after
   // writing. Most users want it; we only persist an explicit `false`
   // when the user opts out — `undefined` is implicit consent.
@@ -365,7 +365,7 @@ describe('preferencesContext — revealAfterDownload (default-on)', () => {
   })
 })
 
-describe('preferencesContext — reload from API', () => {
+describe('PreferencesContext — reload from API', () => {
   it('runs reload() on mount without throwing when the API returns no values', async () => {
     // The default mock returns empty lists. Provider should tolerate that
     // without throwing and signal values should remain at defaults.
@@ -419,7 +419,7 @@ describe('preferencesContext — reload from API', () => {
   })
 })
 
-describe('preferencesContext — per-key account writes', () => {
+describe('PreferencesContext — per-key account writes', () => {
   it('writes the partial as JSON and applies the server effective value on success', async () => {
     updateUserSetting.mockResolvedValue({ value: settingValue('turn_end_sound', '"none"', true) })
     const ctx = captureContext()
@@ -495,7 +495,7 @@ describe('preferencesContext — per-key account writes', () => {
   })
 })
 
-describe('preferencesContext — font tiers', () => {
+describe('PreferencesContext — font tiers', () => {
   it('resolves fonts from the browser whole-object override before the account value', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
@@ -552,7 +552,7 @@ describe('preferencesContext — font tiers', () => {
 // the hub would refuse must not reach the screen either: a stored value is
 // editable by hand, survives a downgrade, and outlives the value set it was
 // written against.
-describe('preferencesContext — a stored browser value passes the same parse', () => {
+describe('PreferencesContext — a stored browser value passes the same parse', () => {
   it('refuses a browser value outside the allowed set and keeps the account value', async () => {
     localStorageSet(KEY_BROWSER_PREFS, { turnEndSound: 'chartreuse' })
     listUserSettings.mockResolvedValue({
@@ -598,7 +598,7 @@ describe('preferencesContext — a stored browser value passes the same parse', 
 // account halves off the golden file; this is the other parse, and it is the
 // one that reads a document a person can edit by hand. A value that got past
 // it would reach a `set_desktop_behavior` payload the Rust shell then refuses.
-describe('preferencesContext — the Desktop device tier', () => {
+describe('PreferencesContext — the Desktop device tier', () => {
   it('resolves the device value over the account one, and clears back', async () => {
     localStorageSet(KEY_BROWSER_PREFS, { trayOnClose: TRAY_ON_CLOSE_QUIT, trayEnabled: true })
     listUserSettings.mockResolvedValue({
@@ -674,7 +674,7 @@ describe('preferencesContext — the Desktop device tier', () => {
 // A key that no setting declares must not be counted as customized: the
 // badge would then sit over a value that no signal holds. A known key on
 // the same path records it, which is what makes the drop observable.
-describe('preferencesContext — an undeclared account key', () => {
+describe('PreferencesContext — an undeclared account key', () => {
   it('is not recorded as customized when a write returns it', async () => {
     updateUserSetting.mockResolvedValue({ value: settingValue('a_key_from_a_newer_hub', '"x"', true) })
     const ctx = captureContext()
@@ -757,7 +757,7 @@ describe('preferencesContext — an undeclared account key', () => {
 
 // Every browser-only boolean stores the value that DIFFERS from its
 // default, so a preference left alone costs no bytes.
-describe('preferencesContext — browser-only booleans', () => {
+describe('PreferencesContext — browser-only booleans', () => {
   it('showHiddenMessages defaults to off and stores only the opt-in', () => {
     const ctx = captureContext()
     expect(ctx.get().showHiddenMessages()).toBe(false)
@@ -792,7 +792,7 @@ describe('preferencesContext — browser-only booleans', () => {
   })
 })
 
-describe('preferencesContext — superseded account write replies', () => {
+describe('PreferencesContext — superseded account write replies', () => {
   // Each write takes its sequence when the user ASKS, and the per-key
   // queue holds the newer request until the older one settles. So the
   // reply to the older write arrives while the newer write is still in
@@ -871,7 +871,7 @@ describe('preferencesContext — superseded account write replies', () => {
 // what both sides read. A parse here that is narrower than the hub is a
 // live defect -- it refuses the hub's own stored document -- and a parse
 // that is wider puts a value on screen the hub would refuse.
-describe('preferencesContext — parses exactly what the hub declares', () => {
+describe('PreferencesContext — parses exactly what the hub declares', () => {
   // Read through the ONE helper that knows where the golden file lives and
   // what shape it holds. A second reader here re-declared both, so the
   // widening that added `unit` and `customId` to the file reached the
@@ -929,6 +929,8 @@ describe('preferencesContext — parses exactly what the hub declares', () => {
   /** The golden's limits for one numeric key, whichever pair its kind uses. */
   const boundsOf = (key: GoldenKey) => {
     const field = key.fields[0]
+    if (field === undefined)
+      throw new Error(`golden key ${key.key} declares no fields`)
     return { min: field.min ?? field.minF!, max: field.max ?? field.maxF! }
   }
 
@@ -945,6 +947,8 @@ describe('preferencesContext — parses exactly what the hub declares', () => {
   it('accepts both limits the hub declares, and refuses just outside them', async () => {
     for (const key of numericKeys) {
       const reader = numericReaders[key.key]
+      if (reader === undefined)
+        throw new Error(`no reader for ${key.key}`)
       const { min, max } = boundsOf(key)
       // A step that is small enough to land outside a 0.05-wide float limit
       // and large enough to be a different integer.
@@ -984,7 +988,9 @@ describe('preferencesContext — parses exactly what the hub declares', () => {
   it('accepts every enum value the hub declares', async () => {
     for (const key of enumKeys) {
       const reader = enumReaders[key.key]
-      for (const option of key.fields[0].enumValues ?? []) {
+      if (reader === undefined)
+        throw new Error(`no reader for ${key.key}`)
+      for (const option of key.fields[0]?.enumValues ?? []) {
         localStorageClearForTests()
         listUserSettings.mockResolvedValue({
           descriptors: [],
@@ -999,6 +1005,8 @@ describe('preferencesContext — parses exactly what the hub declares', () => {
   it('refuses a value outside the declared set and keeps the default', async () => {
     for (const key of enumKeys) {
       const reader = enumReaders[key.key]
+      if (reader === undefined)
+        throw new Error(`no reader for ${key.key}`)
       localStorageClearForTests()
       listUserSettings.mockResolvedValue({
         descriptors: [],
@@ -1057,7 +1065,7 @@ describe('preferencesContext — parses exactly what the hub declares', () => {
 // document for an enabled tier with no families is `{"enabled":true}` --
 // and that is the MANDATORY first state, because the stack row stays
 // hidden until the tier is on.
-describe('preferencesContext — font tier parse', () => {
+describe('PreferencesContext — font tier parse', () => {
   it('accepts the hub document for an enabled tier whose fonts key is absent', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
@@ -1171,7 +1179,7 @@ describe('preferencesContext — font tier parse', () => {
 // The key lives on its own, so its default is a DELETED key: storing
 // `true` would be an override in the opposite direction and would stop a
 // changed default from reaching a browser that never touched it.
-describe('preferencesContext — directoryPickerShowHidden', () => {
+describe('PreferencesContext — directoryPickerShowHidden', () => {
   it('defaults to true with nothing stored', () => {
     const ctx = captureContext()
     expect(ctx.get().directoryPickerShowHidden()).toBe(true)
@@ -1203,7 +1211,7 @@ describe('preferencesContext — directoryPickerShowHidden', () => {
   })
 })
 
-describe('preferencesContext — batchBrowserPrefWrites', () => {
+describe('PreferencesContext — batchBrowserPrefWrites', () => {
   it('applies every write in the body to one document', () => {
     const ctx = captureContext()
     ctx.get().batchBrowserPrefWrites(() => {
@@ -1262,7 +1270,7 @@ describe('preferencesContext — batchBrowserPrefWrites', () => {
 // decide which REQUEST the hub commits first, and `mutateUserPrefs` merges
 // the partial under a row lock, so the request that COMMITS LAST is the
 // one the hub keeps.
-describe('preferencesContext — per-key request ordering', () => {
+describe('PreferencesContext — per-key request ordering', () => {
   it('does not issue a second write for a key while the first is in flight', async () => {
     const first = deferred<{ value: unknown }>()
     const sent: string[] = []
@@ -1339,7 +1347,7 @@ describe('preferencesContext — per-key request ordering', () => {
 // A reload carries a snapshot of the WHOLE account, so two reloads with no
 // write between them carry identical per-key write stamps: those stamps
 // cannot separate them, and both replies applied in arrival order.
-describe('preferencesContext — superseded reloads', () => {
+describe('PreferencesContext — superseded reloads', () => {
   it('drops a stale reload reply over the newer one', async () => {
     const stale = deferred<{ descriptors: never[], values: unknown[] }>()
     listUserSettings.mockReturnValueOnce(stale.promise)
@@ -1398,7 +1406,7 @@ function deferred<T>() {
 // account's key an event belongs to, and following the wrong one is the
 // cross-tab shape of the leak account scoping exists to close. Here it also
 // covers every dual preference rather than the theme alone.
-describe('preferencesContext — cross-tab sync', () => {
+describe('PreferencesContext — cross-tab sync', () => {
   /**
    * Announce that another tab rewrote this account's prefs document.
    *
@@ -1577,7 +1585,7 @@ describe('preferencesContext — cross-tab sync', () => {
   })
 })
 
-describe('preferencesContext — the device tier follows the account', () => {
+describe('PreferencesContext — the device tier follows the account', () => {
   const OTHER = 'otheraccount'
 
   afterEach(() => {

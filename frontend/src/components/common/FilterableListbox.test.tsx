@@ -3,7 +3,7 @@ import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { FilterableListbox } from './FilterableListbox'
 
-describe('filterableListbox', () => {
+describe('FilterableListbox', () => {
   // Guards the highlighted-index clamp: the worker re-emits a shorter catalog on an optimistic
   // model switch, shrinking props.items under the listbox. Without clamping, highlightedIndex
   // keeps pointing past the end and Enter selects nothing (the index resolves to undefined).

@@ -23,7 +23,7 @@ function makeStubInstance(): TerminalInstance & { _log: string[] } {
     webglAllowed: false,
     transparentBackground: false,
     fontsReady: Promise.resolve(),
-    webglAddon: undefined,
+    // webglAddon stays absent (reads undefined), matching an instance without one.
     setConfirmLink: vi.fn(),
     dispose: vi.fn(),
     _log: log,

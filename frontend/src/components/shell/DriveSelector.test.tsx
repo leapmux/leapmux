@@ -32,7 +32,7 @@ function optionRows(): HTMLElement[] {
   return [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')]
 }
 
-describe('driveSelector', () => {
+describe('DriveSelector', () => {
   it('shows the current root on the trigger', () => {
     renderSelector({ value: 'D:\\', roots: ['C:\\', 'D:\\'] })
 

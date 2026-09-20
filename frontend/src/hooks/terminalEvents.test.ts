@@ -31,8 +31,8 @@ function deps(over: {
     selection,
     getActiveWorkspaceId: () => 'ws-1',
     view: { getTerminalTab: () => undefined },
-    isDetachedOnScreen: over.isDetachedOnScreen,
-    detachedOwnerOf: over.detachedOwnerOf,
+    ...(over.isDetachedOnScreen !== undefined ? { isDetachedOnScreen: over.isDetachedOnScreen } : {}),
+    ...(over.detachedOwnerOf !== undefined ? { detachedOwnerOf: over.detachedOwnerOf } : {}),
   }
 }
 

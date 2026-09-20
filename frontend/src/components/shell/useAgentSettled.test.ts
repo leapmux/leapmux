@@ -56,7 +56,7 @@ describe('useAgentSettled', () => {
 
     expect(play).toHaveBeenCalledTimes(1)
     expect(rang).toHaveLength(1)
-    expect(rang[0].detail).toMatchObject({
+    expect(rang[0]?.detail).toMatchObject({
       agentId: 'a-1',
       ownClientId: 'client-a',
       effectiveClientId: 'client-a',

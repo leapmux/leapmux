@@ -10,7 +10,7 @@ const GREEN = `${ESC}[32m`
 const RESET = `${ESC}[0m`
 const SPAN_TAG_RE = /<span/g
 
-describe('containsansi', () => {
+describe('containsAnsi', () => {
   it('detects a foreground color escape', () => {
     expect(containsAnsi(`${RED}hello${RESET}`)).toBe(true)
   })
@@ -61,7 +61,7 @@ describe('containsansi', () => {
   })
 })
 
-describe('renderansi', () => {
+describe('renderAnsi', () => {
   it('produces a <pre><code> wrapper for ANSI-bearing input', () => {
     const html = renderAnsi(`${RED}error${RESET}`)
     expect(html).toMatch(/<pre[^>]*>/)
@@ -166,7 +166,7 @@ describe('renderansi', () => {
   })
 })
 
-describe('renderansi shared token-style classes', () => {
+describe('renderAnsi shared token-style classes', () => {
   beforeEach(() => {
     _resetShikiStyleClassesForTest()
   })
@@ -194,7 +194,7 @@ describe('renderansi shared token-style classes', () => {
   })
 })
 
-describe('stripansi', () => {
+describe('stripAnsi', () => {
   it('strips CSI controls beyond SGR while preserving printable text', () => {
     expect(stripAnsi(`${GREEN}ok${RESET}${ESC}[2K\rnext${ESC}[A`)).toBe('ok\rnext')
   })
@@ -204,7 +204,7 @@ describe('stripansi', () => {
   })
 })
 
-describe('escapehtml', () => {
+describe('escapeHtml', () => {
   it('escapes & < > so user-supplied text is safe to inject into HTML', () => {
     expect(escapeHtml('a & b')).toBe('a &amp; b')
     expect(escapeHtml('<script>')).toBe('&lt;script&gt;')

@@ -450,7 +450,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           view,
           getActiveWorkspaceId: params.getActiveWorkspaceId,
           agentActivityStore,
-          onAgentSettled: params.onAgentSettled,
+          ...(params.onAgentSettled !== undefined ? { onAgentSettled: params.onAgentSettled } : {}),
         })
         break
       case 'catchUpStart':

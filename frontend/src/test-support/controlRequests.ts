@@ -11,7 +11,7 @@ import { screen, within } from '@solidjs/testing-library'
  *
  * - "Allow scope" — `~/components/chat/controls/PermissionDecisionActions`.
  * - "Allow as" — `ALLOW_AS_LABEL` in
- *   `~/components/chat/providers/codex/CodexControlRequest`.
+ *   `~/components/chat/providers/codex/CodexControlActions`.
  *
  * Each of those spells its name ONCE, so a rename there reaches every site that
  * renders the group. It does NOT reach this file: the union below is a separate

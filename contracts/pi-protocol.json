@@ -1,5 +1,5 @@
 {
-  "_readme": "Pi's RPC wire vocabulary, for the tables BOTH the Go provider and the TS renderer plugin read. Pi's stream is JSONL where every envelope carries a top-level `type` and an extension UI request carries a `method`, so those strings ARE the dispatch keys on both sides -- a drift between two hand copies stops a row rendering rather than failing a build. The Go-only vocabulary (the client->server `PiCommand*` names) stays in pi_protocol.go, per the contracts rule's one-side-only exemption. LeapMux does not own these values, so a change here follows Pi's protocol rather than leading it.",
+  "_readme": "Pi's RPC wire vocabulary, for the tables BOTH the Go provider and the TS renderer plugin read. Pi's stream is JSONL where every envelope carries a top-level `type` and an extension UI request carries a `method`, so those strings ARE the dispatch keys on both sides -- a drift between two hand copies stops a row rendering rather than failing a build. LeapMux owns the `supplement` key names: a retained call keeps its partial result, and a truncated one keeps the artifact files it refers to, beside the agent's own frame. `artifact` holds the fields of one stored artifact. `resultFields` holds the fields of Pi's own tool-execution frame, and of the result inside it, that the resolve reads on both sides to decide whether an artifact belongs on the row. `ToolCallID`, `ToolName` and `Result` are the frame's OWN three. They are here because the resolve reads them off Pi's bytes: indexing them with the LeapMux-owned supplement keys that share a spelling let a rename of a LeapMux name change how Pi's message is read. `contentBlock` and `blockTypes` hold the text block that restore writes the recovered output into. The Go-only vocabulary (the client->server `PiCommand*` names) stays in pi_protocol.go, per the contracts rule's one-side-only exemption. testdata/pi_message_content_conformance.json remains the executable spec for the RESOLVE itself. LeapMux does not own Pi's protocol values, so a change to them follows Pi's protocol rather than leading it.",
   "events": {
     "EntryAppended": "entry_appended",
     "AgentStart": "agent_start",
@@ -21,6 +21,12 @@
     "AutoRetryStart": "auto_retry_start",
     "AutoRetryEnd": "auto_retry_end",
     "QueueUpdate": "queue_update",
+    "BashExecutionUpdate": "bash_execution_update",
+    "SessionInfoChanged": "session_info_changed",
+    "ThinkingLevelChanged": "thinking_level_changed",
+    "SummarizationRetryScheduled": "summarization_retry_scheduled",
+    "SummarizationRetryAttemptStart": "summarization_retry_attempt_start",
+    "SummarizationRetryFinished": "summarization_retry_finished",
     "Response": "response"
   },
   "assistantEvents": {
@@ -52,7 +58,10 @@
     "Bash": "bash",
     "Read": "read",
     "Edit": "edit",
-    "Write": "write"
+    "Write": "write",
+    "PlanQuestion": "plan_mode_question",
+    "GoalQuestion": "goal_question",
+    "GoalQuestionnaire": "goal_questionnaire"
   },
   "planDialogs": {
     "ReadyTitle": "Proposed plan ready. What next?"
@@ -70,5 +79,161 @@
   "mcpApprovalText": {
     "TitlePrefix": "MCP: ",
     "ArgumentsMarker": "\n\nArguments:\n"
+  },
+  "supplement": {
+    "ToolCallID": "toolCallId",
+    "ToolName": "toolName",
+    "PartialResult": "partialResult",
+    "OutputFile": "outputFile",
+    "McpResultFile": "mcpResultFile"
+  },
+  "artifact": {
+    "Path": "path",
+    "Text": "text",
+    "Result": "result"
+  },
+  "resultFields": {
+    "ToolCallID": "toolCallId",
+    "ToolName": "toolName",
+    "Result": "result",
+    "Details": "details",
+    "Content": "content",
+    "OutputGuard": "outputGuard",
+    "McpResult": "mcpResult",
+    "Truncated": "truncated",
+    "FullOutputPath": "fullOutputPath",
+    "Omitted": "omitted",
+    "FullResultPath": "fullResultPath",
+    "Contents": "contents"
+  },
+  "contentBlock": {
+    "Type": "type",
+    "Text": "text"
+  },
+  "blockTypes": {
+    "Text": "text"
+  },
+  "structs": {
+    "PiToolArtifactSupplement": {
+      "doc": "PiToolArtifactSupplement is what a TRUNCATED Pi call keeps beside its own frame:\nthe files Pi wrote the full output to, which the row reads back in place of the\nclip. It identifies the call it belongs to, so a row cannot take another call's\nartifacts.",
+      "table": "supplement",
+      "fields": [
+        {
+          "key": "ToolCallID",
+          "type": "string"
+        },
+        {
+          "key": "ToolName",
+          "type": "string"
+        },
+        {
+          "key": "OutputFile",
+          "type": "json.RawMessage",
+          "omitempty": true
+        },
+        {
+          "key": "McpResultFile",
+          "type": "json.RawMessage",
+          "omitempty": true
+        }
+      ]
+    },
+    "PiIncompleteToolSupplement": {
+      "doc": "PiIncompleteToolSupplement is the partial result a tool call reported before its\nturn ended.\n\nPi puts a call's result on its tool_execution_end event and sends none when the\nturn ends first, so the last tool_execution_update is the only copy.",
+      "table": "supplement",
+      "fields": [
+        {
+          "key": "ToolCallID",
+          "type": "string"
+        },
+        {
+          "key": "ToolName",
+          "type": "string"
+        },
+        {
+          "key": "PartialResult",
+          "type": "json.RawMessage",
+          "omitempty": true
+        }
+      ]
+    },
+    "PiOutputArtifact": {
+      "doc": "PiOutputArtifact is one stored output file: where Pi wrote it, and what it holds.\n\n`Text` is a POINTER, because an artifact that holds the empty string is different\nfrom one the reader could not recover.",
+      "table": "artifact",
+      "fields": [
+        {
+          "key": "Path",
+          "type": "string"
+        },
+        {
+          "key": "Text",
+          "type": "*string"
+        }
+      ]
+    },
+    "PiMcpResultArtifact": {
+      "doc": "PiMcpResultArtifact is one stored MCP result, beside the path Pi wrote it to.",
+      "table": "artifact",
+      "fields": [
+        {
+          "key": "Path",
+          "type": "string"
+        },
+        {
+          "key": "Result",
+          "type": "json.RawMessage"
+        }
+      ]
+    },
+    "PiToolCallIdentity": {
+      "doc": "PiToolCallIdentity identifies the call one `tool_execution_*` frame describes.\n\nTwo decoders read these two keys off Pi's own frame, and a Go struct tag cannot\nhold a constant -- so each spelled them by hand and a rename of either word in\n`resultFields` would have moved one decoder and left the other. They embed this\ninstead.\n\n`result` is NOT here: the two readers give it different Go types (one takes the\nwhole value, the other takes its members), so one shared field cannot serve both.",
+      "table": "resultFields",
+      "fields": [
+        {
+          "key": "ToolCallID",
+          "type": "string"
+        },
+        {
+          "key": "ToolName",
+          "type": "string"
+        }
+      ]
+    },
+    "PiOutputGuard": {
+      "doc": "PiOutputGuard is the truncation notice Pi puts under `outputGuard` in a tool\nresult's `details`.\n\nA Go struct tag cannot hold a constant, so the decoder spelled both words by hand\nwhile the browser's reader imported the generated names. A rename of either word\nin `resultFields` moved one reader and left the other.\n\n`originalBytes` is NOT here: only Go reads it, so it crosses no language boundary\nand earns no contract entry. The decoder that embeds this states it itself.",
+      "table": "resultFields",
+      "fields": [
+        {
+          "key": "Truncated",
+          "type": "bool"
+        },
+        {
+          "key": "FullOutputPath",
+          "type": "string"
+        }
+      ]
+    },
+    "PiMcpResultOmission": {
+      "doc": "PiMcpResultOmission is the omission notice Pi puts under `mcpResult` in a tool\nresult's `details`.\n\nThe four keys below decide whether the full result went to a file instead of the\nframe. Both readers ask that question, and the Go one spelled every word by hand.\n\n`rawResultBytes` is NOT here, for the reason PiOutputGuard gives for\n`originalBytes`.",
+      "table": "resultFields",
+      "fields": [
+        {
+          "key": "Omitted",
+          "type": "bool"
+        },
+        {
+          "key": "FullResultPath",
+          "type": "string"
+        },
+        {
+          "key": "Content",
+          "type": "json.RawMessage"
+        },
+        {
+          "key": "Contents",
+          "type": "json.RawMessage"
+        }
+      ]
+    }
   }
 }

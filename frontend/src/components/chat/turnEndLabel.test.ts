@@ -18,7 +18,8 @@ describe('turnEndLabel', () => {
   it('keeps a zero duration and drops an absent one', () => {
     expect(turnEndLabel('ended', { durationMs: 0 })).toBe('Turn ended (0ms)')
     expect(turnEndLabel('ended', { durationMs: null })).toBe('Turn ended')
-    expect(turnEndLabel('ended', { durationMs: undefined })).toBe('Turn ended')
+    // An omitted duration is the absent form; the parts read it identically to null.
+    expect(turnEndLabel('ended', {})).toBe('Turn ended')
   })
 
   it('lists the qualifiers after the duration and drops the empty ones', () => {

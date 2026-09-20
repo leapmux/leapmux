@@ -1,43 +1,21 @@
-import type { Accessor, JSX } from 'solid-js'
-import type { RenderContext } from '../messageRenderers'
-import { createEffect, createMemo, createSignal, on, onCleanup } from 'solid-js'
+import type { JSX } from 'solid-js'
+import type { CommandLanguage } from '../model/tools/execute'
+import type { ToolResultRenderContext } from '../renderContext'
+import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
-import { COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT, commandInputNeedsExpansion as commandInputNeedsExpansionShared, isMultiLineCommand as isMultiLineCommandShared } from '../chatHeightShared'
-import { CommandHighlightHtml } from '../toolRenderers'
+import { COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT } from '../chatHeightShared'
+import { CommandHighlightHtml } from '../syntaxHighlight'
 import { commandInputCollapsed, commandInputCollapsedFade, toolInputSummary, toolResultContentAnsi } from '../toolStyles.css'
 
 function joinClasses(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(' ')
 }
 
-/** True when the command spans more than one hard line. */
-export function isMultiLineCommand(command: string | null | undefined): boolean {
-  return isMultiLineCommandShared(command)
-}
-
-/** True when a command should expose the full-command expansion affordance. */
-export function commandInputNeedsExpansion(command: string | null | undefined): boolean {
-  return commandInputNeedsExpansionShared(command)
-}
-
-export function createCommandInputExpansionState(command: Accessor<string | null | undefined>): {
-  commandExpandable: Accessor<boolean>
-  setSummaryOverflows: (overflowing: boolean) => void
-} {
-  const [summaryOverflows, setSummaryOverflows] = createSignal(false)
-  createEffect(on(command, () => setSummaryOverflows(false), { defer: true }))
-  const commandExpandable = createMemo(() => {
-    const value = command()
-    return !!value && (commandInputNeedsExpansion(value) || summaryOverflows())
-  })
-  return { commandExpandable, setSummaryOverflows }
-}
-
 function commandInputOverflowsCollapsedRows(el: HTMLElement): boolean {
   return el.scrollHeight > el.clientHeight + 1
 }
 
-export function collapsedCommandSummaryText(command: string): string {
+function collapsedCommandSummaryText(command: string): string {
   return command.replace(/^(?:[ \t]*\r?\n)+/, '')
 }
 
@@ -53,8 +31,8 @@ function scheduleOverflowMeasure(measure: () => void): () => void {
 /** Collapsed command summary: full text, clipped to three visual rows. */
 export function CommandInputSummary(props: {
   command: string
-  language?: 'bash' | 'powershell'
-  context?: RenderContext
+  language?: CommandLanguage
+  context?: ToolResultRenderContext
   collapsed?: boolean
   onOverflowChange?: (overflowing: boolean) => void
 }): JSX.Element {
@@ -62,6 +40,9 @@ export function CommandInputSummary(props: {
   const [overflowing, setOverflowing] = createSignal(false)
   const displayCommand = createMemo(() => props.collapsed ? collapsedCommandSummaryText(props.command) : props.command)
 
+  // The functional setter form reads the previous value WITHOUT tracking it, so a
+  // measurement that runs inside a reactive scope -- `elementRef` does -- cannot make
+  // that scope depend on the signal it writes.
   const setOverflowingState = (next: boolean): void => {
     setOverflowing((prev) => {
       if (prev !== next)
@@ -70,11 +51,19 @@ export function CommandInputSummary(props: {
     })
   }
 
+  /**
+   * Measure the COLLAPSED summary, and only the collapsed one.
+   *
+   * An expanded summary has no clip to measure, and reporting `false` for it destroyed
+   * the fact that made the row expandable in the first place. `ToolMessage` keeps this
+   * answer in `summaryOverflows` and reads it back as `expandable`, so the chevron
+   * disappeared the moment a reader used it: the row stayed at full height with no way
+   * to collapse it again. The last collapsed answer is the one the header needs, so an
+   * expanded row leaves it alone.
+   */
   const measureOverflow = (): void => {
-    if (!element || !props.collapsed) {
-      setOverflowingState(false)
+    if (!element || !props.collapsed)
       return
-    }
     setOverflowingState(commandInputOverflowsCollapsedRows(element))
   }
 
@@ -83,10 +72,8 @@ export function CommandInputSummary(props: {
     // but the row height should stay stable. The frame read catches the post-render
     // layout and avoids applying the fade to summaries that fit in three rows.
     const command = displayCommand()
-    if (!props.collapsed) {
-      setOverflowingState(false)
+    if (!props.collapsed)
       return command
-    }
     const cancel = scheduleOverflowMeasure(measureOverflow)
     onCleanup(cancel)
     return command
@@ -102,12 +89,13 @@ export function CommandInputSummary(props: {
 
   return (
     <CommandHighlightHtml
-      language={props.language}
+      {...(props.language !== undefined ? { language: props.language } : {})}
       class={joinClasses(toolInputSummary, props.collapsed && commandInputCollapsed, props.collapsed && overflowing() && commandInputCollapsedFade)}
       code={displayCommand()}
-      context={props.context}
-      dataCommandInputCollapsed={props.collapsed}
-      dataCommandInputOverflowing={props.collapsed && overflowing()}
+      {...(props.context !== undefined ? { context: props.context } : {})}
+      {...(props.collapsed !== undefined
+        ? { dataCommandInputCollapsed: props.collapsed, dataCommandInputOverflowing: props.collapsed && overflowing() }
+        : {})}
       elementRef={(el) => {
         element = el
         measureOverflow()
@@ -118,13 +106,13 @@ export function CommandInputSummary(props: {
 }
 
 /** Full command body shown after expanding a command input summary. */
-export function CommandInputBody(props: { command: string, language?: 'bash' | 'powershell', context?: RenderContext }): JSX.Element {
+export function CommandInputBody(props: { command: string, language?: CommandLanguage, context?: ToolResultRenderContext }): JSX.Element {
   return (
     <CommandHighlightHtml
-      language={props.language}
+      {...(props.language !== undefined ? { language: props.language } : {})}
       class={toolResultContentAnsi}
       code={props.command}
-      context={props.context}
+      {...(props.context !== undefined ? { context: props.context } : {})}
       maxHighlightChars={COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT}
     />
   )

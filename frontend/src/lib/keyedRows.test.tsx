@@ -118,7 +118,7 @@ describe('createKeyLookup', () => {
   })
 })
 
-describe('keyedFor', () => {
+describe('KeyedFor', () => {
   it('drops a row whose lookup comes back empty, without crashing it', () => {
     const [present, setPresent] = createSignal(true)
     render(() => (

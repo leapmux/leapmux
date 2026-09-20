@@ -14,7 +14,7 @@ function renderItem(reason: string | undefined, onClick = vi.fn()) {
   return { onClick, item: screen.getByTestId('item') }
 }
 
-describe('disabledReasonMenuItem', () => {
+describe('DisabledReasonMenuItem', () => {
   it('is usable and fires when there is no reason', () => {
     const { onClick, item } = renderItem(undefined)
 

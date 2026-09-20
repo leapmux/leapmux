@@ -277,7 +277,7 @@ describe('useChangeBranchInspect', () => {
       await flushMicrotasks()
       expect(workerRpc.inspectBranchChange).not.toHaveBeenCalled()
       expect(onError).toHaveBeenCalledTimes(1)
-      expect((onError.mock.calls[0][0] as Error).message).toMatch(/no resolved repo path/)
+      expect((onError.mock.calls[0]?.[0] as Error).message).toMatch(/no resolved repo path/)
       expect(inspect.branchesLoading()).toBe(false)
       dispose()
     })

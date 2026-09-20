@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { bucketWidth, computeOverscanPx, createViewportSizeObserver, measureSpaceToken } from './chatViewportGeometry'
 
-describe('chatviewportgeometry bucketWidth', () => {
+describe('chatViewportGeometry bucketWidth', () => {
   it('rounds a measured width to the nearest 8px bucket', () => {
     expect(bucketWidth(0)).toBe(0)
     expect(bucketWidth(8)).toBe(8)
@@ -12,7 +12,7 @@ describe('chatviewportgeometry bucketWidth', () => {
   })
 })
 
-describe('chatviewportgeometry computeOverscanPx', () => {
+describe('chatViewportGeometry computeOverscanPx', () => {
   it('floors short panes, scales mid panes, and caps tall ones', () => {
     expect(computeOverscanPx(0)).toBe(800) // pre-measurement frame -> floor
     expect(computeOverscanPx(-10)).toBe(800) // defensive -> floor
@@ -22,7 +22,7 @@ describe('chatviewportgeometry computeOverscanPx', () => {
   })
 })
 
-describe('chatviewportgeometry measureSpaceToken', () => {
+describe('chatViewportGeometry measureSpaceToken', () => {
   it('falls back when the probe has no resolvable height (jsdom reports 0)', () => {
     // jsdom's getBoundingClientRect reports height 0 for the detached probe, so the
     // token can't be measured and the caller's fallback is returned.
@@ -43,7 +43,7 @@ describe('chatviewportgeometry measureSpaceToken', () => {
   })
 })
 
-describe('chatviewportgeometry createViewportSizeObserver', () => {
+describe('chatViewportGeometry createViewportSizeObserver', () => {
   /** A controllable ResizeObserver the test triggers via emit(). */
   class FakeResizeObserver {
     cb: ResizeObserverCallback

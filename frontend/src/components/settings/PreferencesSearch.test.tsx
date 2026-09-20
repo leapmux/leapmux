@@ -6,7 +6,7 @@ afterEach(() => {
   cleanup()
 })
 
-describe('preferencesSearch', () => {
+describe('PreferencesSearch', () => {
   it('does not steal focus when / is typed in another input', () => {
     render(() => (
       <div>

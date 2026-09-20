@@ -11,7 +11,7 @@ import { installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVi
 
 installScrollTestEnv()
 
-describe('usechatscroll viewport restore', () => {
+describe('useChatScroll viewport restore', () => {
   it('jumps to the live tail on restore when the saved anchor was trimmed away', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
@@ -708,7 +708,7 @@ describe('usechatscroll viewport restore', () => {
     }))
 })
 
-describe('usechatscroll unmount save + visible-mount restore', () => {
+describe('useChatScroll unmount save + visible-mount restore', () => {
   // A tile split/merge or workspace switch REMOUNTS ChatView over a still-populated
   // store: the old instance saves its final viewport state from onCleanup
   // (onSaveViewportScroll) and the fresh instance -- which mounts VISIBLE, so the

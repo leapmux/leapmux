@@ -214,11 +214,19 @@ func claudeTaskUpdateEvent(content []byte, pairedToolUse func() []byte) (todoeve
 	if !result.Success || result.TaskID == "" {
 		return todoevents.Event{}, false
 	}
-	if result.StatusChange != nil && result.StatusChange.To == "deleted" {
-		return todoevents.Event{Kind: todoevents.KindDelete, ID: result.TaskID}, true
-	}
 	patch := todoevents.Patch{}
 	if result.StatusChange != nil {
+		// Through the shared table, not a second copy of the word.
+		// `StatusFromProviderWord` is where every provider's end-state spelling is
+		// decided -- `deleted`, `cancelled` and `canceled` all mean the same tombstone.
+		//
+		// The tombstone travels on the PATCH, like every other status, because one
+		// TaskUpdate frame states a status change AND the text fields together. An
+		// event shape that carried the id and the status ALONE dropped the rest of
+		// the frame: a TaskUpdate that cancelled a task and renamed it lost the new
+		// subject, the new active form and the new description. A row already
+		// tombstoned took no write at all, so the checklist and the sidebar kept the
+		// OLD text for the rest of the session.
 		status := todoevents.StatusFromProviderWord(result.StatusChange.To)
 		patch.Status = &status
 	}

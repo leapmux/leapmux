@@ -151,7 +151,8 @@ describe('isAgentCreateDisabled', () => {
   })
 
   it('treats a missing git intent as valid (dialog without git options)', () => {
-    expect(isAgentCreateDisabled({ ...valid, git: undefined })).toBe(false)
+    const { git: _git, ...withoutGitIntent } = valid
+    expect(isAgentCreateDisabled(withoutGitIntent)).toBe(false)
   })
 
   it('returns true when sessionIdError is set', () => {
@@ -333,7 +334,8 @@ describe('isTerminalCreateDisabled', () => {
   })
 
   it('treats a missing git intent as valid (dialog without git options)', () => {
-    expect(isTerminalCreateDisabled({ ...valid, git: undefined })).toBe(false)
+    const { git: _git, ...withoutGitIntent } = valid
+    expect(isTerminalCreateDisabled(withoutGitIntent)).toBe(false)
   })
 })
 

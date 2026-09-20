@@ -202,6 +202,9 @@ describe('createSharedInputQueues', () => {
 
     expect(sendA).toHaveBeenCalledTimes(1)
     expect(sendB).toHaveBeenCalledTimes(1)
-    expect(dec(sendB.mock.calls[0][2])).toBe('b')
+    const sentB = sendB.mock.calls[0]
+    if (sentB === undefined)
+      throw new Error('expected sendB to have been called once')
+    expect(dec(sentB[2])).toBe('b')
   })
 })

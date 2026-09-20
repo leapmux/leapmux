@@ -37,7 +37,7 @@ async function tamperAllSources(newSource: string): Promise<void> {
   db.close()
 }
 
-describe('renderartifactstore', () => {
+describe('renderArtifactStore', () => {
   beforeEach(() => {
     // A FRESH IndexedDB universe per test; the store must re-open against it.
     vi.stubGlobal('indexedDB', new IDBFactory())

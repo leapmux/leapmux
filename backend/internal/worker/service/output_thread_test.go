@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -305,4 +307,49 @@ func TestNotificationThreading_RepeatedIdenticalProviderScopedSkipsWrite(t *test
 	require.Len(t, rows, 1)
 	assert.Equal(t, seqAfterFirst, rows[0].Seq,
 		"identical ProviderScoped notifications must not bump the row's seq")
+}
+
+// notifThreadWrapper's `type` tag is the wrapper's discriminator, which the browser
+// reads back through NOTIFICATION_FIELD. A Go struct tag cannot hold the generated
+// constant, so this test is what keeps the tag and the contract together -- and it is
+// what lets wrapNotifContent's fallback spell the key from the constant.
+//
+// `old_seqs` and `messages` are LeapMux's own wrapper fields, which no contract table
+// holds, so they stay literals here.
+func TestNotifThreadWrapperTagsComeFromTheContract(t *testing.T) {
+	t.Parallel()
+
+	tags := make([]string, 0, 3)
+	for _, field := range reflect.VisibleFields(reflect.TypeOf(notifThreadWrapper{})) {
+		tags = append(tags, field.Tag.Get("json"))
+	}
+
+	assert.Equal(t, []string{contracts.NotificationFieldType, "old_seqs,omitempty", "messages"}, tags)
+}
+
+// The wrapper's `type` key is spelled twice: once as the struct tag that the success
+// path uses, and once in the hand-written fallback that wrapNotifContent returns when
+// the caller's bytes are not valid JSON. This test holds the two branches to the same
+// bytes, and the test above holds the tag to the contract.
+//
+// The fallback cannot come from json.Marshal, because the marshal that just failed is
+// the reason it runs.
+func TestWrapNotifContentFallbackMatchesTheStruct(t *testing.T) {
+	t.Parallel()
+
+	// json.RawMessage validates what it carries, so invalid bytes reach the fallback.
+	fallback := wrapNotifContent([]byte(`{"type":`))
+
+	encoded, err := json.Marshal(notifThreadWrapper{
+		Type:     notifThreadWrapperType,
+		Messages: []json.RawMessage{},
+	})
+	require.NoError(t, err)
+	assert.JSONEq(t, string(encoded), string(fallback))
+
+	// The fallback must still parse as a wrapper, because a caller stores it.
+	wrapper, err := unwrapNotifContent(fallback)
+	require.NoError(t, err)
+	assert.Equal(t, notifThreadWrapperType, wrapper.Type)
+	assert.Empty(t, wrapper.Messages)
 }

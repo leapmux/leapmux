@@ -328,7 +328,13 @@ describe('agent info card context row', () => {
     const sessionInfo: AgentSessionInfo = {
       get contextUsage() {
         reads += 1
-        return reads === 1 ? usage : undefined
+        // The value the guard admitted is GONE on any later read (the focus switch
+        // described above). Answering once and throwing after keeps that
+        // disappearance at least as observable as the undefined it used to return,
+        // while staying assignable to `contextUsage?: ContextUsageInfo`.
+        if (reads > 1)
+          throw new Error('contextUsage re-read')
+        return usage
       },
     }
     expect(() => render(() => (

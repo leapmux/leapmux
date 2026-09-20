@@ -27,6 +27,11 @@ import (
 // bgTaskOps, built once per OutputHandler.
 type bgTaskCache = registryCache[bgtask.Item]
 
+// bgTaskView is one background-task operation bound to the query handle it runs
+// on; see registryView for why a registry operation carries the handle rather
+// than taking it at each step.
+type bgTaskView = registryView[bgtask.Item]
+
 // bgItemFromRow projects a persisted agent_background_tasks row into the
 // in-memory Item shape. Used by the seed closure.
 func bgItemFromRow(r db.AgentBackgroundTask) bgtask.Item {
@@ -56,8 +61,8 @@ func bgItemFromRow(r db.AgentBackgroundTask) bgtask.Item {
 // queries so every cache instance shares the same type-specific behaviour.
 func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 	return registryOps[bgtask.Item]{
-		listRows: func(ctx context.Context, ownerID string, bucket int64, limit int32) ([]seedEntry[bgtask.Item], error) {
-			rows, err := h.queries.ListAgentBackgroundTasksByKindNewestFirst(ctx, db.ListAgentBackgroundTasksByKindNewestFirstParams{
+		listRows: func(ctx context.Context, q *db.Queries, ownerID string, bucket int64, limit int32) ([]seedEntry[bgtask.Item], error) {
+			rows, err := q.ListAgentBackgroundTasksByKindNewestFirst(ctx, db.ListAgentBackgroundTasksByKindNewestFirstParams{
 				OwnerAgentID: ownerID,
 				Kind:         leapmuxv1.BackgroundTaskKind(bucket),
 				Limit:        int64(limit),
@@ -71,8 +76,8 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 			}
 			return entries, nil
 		},
-		reclaimFinishedBelowSeq: func(ctx context.Context, ownerID string, bucket, seq int64) error {
-			_, err := h.queries.DeleteFinishedAgentBackgroundTasksBelowSeq(ctx, db.DeleteFinishedAgentBackgroundTasksBelowSeqParams{
+		reclaimFinishedBelowSeq: func(ctx context.Context, q *db.Queries, ownerID string, bucket, seq int64) error {
+			_, err := q.DeleteFinishedAgentBackgroundTasksBelowSeq(ctx, db.DeleteFinishedAgentBackgroundTasksBelowSeqParams{
 				MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
 				OwnerAgentID:   ownerID,
 				Kind:           leapmuxv1.BackgroundTaskKind(bucket),
@@ -85,8 +90,8 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 		isFinished: func(r bgtask.Item) bool {
 			return r.Status.IsFinished()
 		},
-		deleteByKey: func(ctx context.Context, ownerID, key string) error {
-			_, err := h.queries.DeleteAgentBackgroundTaskByRowKey(ctx, db.DeleteAgentBackgroundTaskByRowKeyParams{
+		deleteByKey: func(ctx context.Context, q *db.Queries, ownerID, key string) error {
+			_, err := q.DeleteAgentBackgroundTaskByRowKey(ctx, db.DeleteAgentBackgroundTaskByRowKeyParams{
 				OwnerAgentID: ownerID,
 				RowKey:       key,
 			})
@@ -100,11 +105,11 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 		// while its transcript is still readable.
 		retention: &registryRetention[bgtask.Item]{
 			keep: func(r bgtask.Item) bool { return r.ChildAgentID != "" },
-			load: func(ctx context.Context, ownerID, key string) (bgtask.Item, bool, error) {
-				return h.loadStoredBgTask(ctx, ownerID, key)
+			load: func(ctx context.Context, q *db.Queries, ownerID, key string) (bgtask.Item, bool, error) {
+				return h.loadStoredBgTask(ctx, q, ownerID, key)
 			},
-			reseq: func(ctx context.Context, ownerID, key string, seq int64) error {
-				return h.queries.ResequenceAgentBackgroundTask(ctx, db.ResequenceAgentBackgroundTaskParams{
+			reseq: func(ctx context.Context, q *db.Queries, ownerID, key string, seq int64) error {
+				return q.ResequenceAgentBackgroundTask(ctx, db.ResequenceAgentBackgroundTaskParams{
 					Seq:          seq,
 					OwnerAgentID: ownerID,
 					RowKey:       key,
@@ -130,8 +135,8 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 // callers need it for the same reason -- the cap limits the list, not the table
 // -- and one of them (registryOps.retention.load) is how every mutation reaches
 // a retained row.
-func (h *OutputHandler) loadStoredBgTask(ctx context.Context, ownerID, rowKey string) (bgtask.Item, bool, error) {
-	row, err := h.queries.GetAgentBackgroundTaskByRowKey(ctx, db.GetAgentBackgroundTaskByRowKeyParams{
+func (h *OutputHandler) loadStoredBgTask(ctx context.Context, q *db.Queries, ownerID, rowKey string) (bgtask.Item, bool, error) {
+	row, err := q.GetAgentBackgroundTaskByRowKey(ctx, db.GetAgentBackgroundTaskByRowKeyParams{
 		OwnerAgentID: ownerID,
 		RowKey:       rowKey,
 	})
@@ -196,7 +201,7 @@ func (h *OutputHandler) LoadBackgroundTasks(ctx context.Context, rootAgentID str
 	cache := h.bgTaskCache(rootAgentID)
 	cache.Mu.Lock()
 	defer cache.Mu.Unlock()
-	if err := cache.ensureSeededLocked(ctx, rootAgentID); err != nil {
+	if err := cache.on(h.queries, rootAgentID).ensureSeededLocked(ctx); err != nil {
 		return nil, err
 	}
 	return cache.snapshot(), nil
@@ -255,8 +260,13 @@ func (h *OutputHandler) applyBackgroundTaskUpsert(rootAgentID string, task bgtas
 // upsert applier is deliberately not a caller: it runs under a lock the caller
 // already holds, and its miss branch inserts instead of answering no-op.
 //
-// `mutate` receives the resolved row and an `admit` function, and it must call
-// `admit` at the point where it commits to a write. That order is the contract:
+// `mutate` receives the resolved row, the view bound to this operation's query
+// handle, and an `admit` function. Its own writes go through the view, so every
+// statement of one mutation -- the lookup, the re-admission, the eviction that
+// re-admission can force, and the applier's own UPDATE -- runs on one handle.
+//
+// It must call `admit` at the point where it commits to a write. That order is
+// the contract:
 // a retained row that left the display list is not put back for a mutation that
 // turns out to be a no-op, because re-admitting evicts a displayed row -- and
 // deletes an unlinked one from the table -- and the applier then reports
@@ -264,16 +274,17 @@ func (h *OutputHandler) applyBackgroundTaskUpsert(rootAgentID string, task bgtas
 // also the only route to a cache index, so an applier cannot write without it.
 func (h *OutputHandler) withBgTaskRow(
 	rootAgentID, rowKey string,
-	mutate func(ctx context.Context, cache *bgTaskCache, row bgtask.Item, displayed bool, admit func() (int, error)) (registryChange, error),
+	mutate func(ctx context.Context, reg bgTaskView, row bgtask.Item, displayed bool, admit func() (int, error)) (registryChange, error),
 ) (registryChange, error) {
 	ctx := h.bgTaskCtx()
 	cache := h.bgTaskCache(rootAgentID)
 	cache.Mu.Lock()
 	defer cache.Mu.Unlock()
-	if err := cache.ensureSeededLocked(ctx, rootAgentID); err != nil {
+	reg := cache.on(h.queries, rootAgentID)
+	if err := reg.ensureSeededLocked(ctx); err != nil {
 		return registryChange{}, err
 	}
-	row, idx, found, err := cache.findRowLocked(ctx, rootAgentID, rowKey)
+	row, idx, found, err := reg.findRowLocked(ctx, rowKey)
 	if err != nil {
 		return registryChange{}, err
 	}
@@ -285,10 +296,10 @@ func (h *OutputHandler) withBgTaskRow(
 			return idx, nil
 		}
 		var err error
-		idx, err = cache.admitRowLocked(ctx, rootAgentID, row)
+		idx, err = reg.admitRowLocked(ctx, row)
 		return idx, err
 	}
-	return mutate(ctx, cache, row, idx >= 0, admit)
+	return mutate(ctx, reg, row, idx >= 0, admit)
 }
 
 // applyBackgroundTaskStatus updates a row's status + active_form without
@@ -299,7 +310,8 @@ func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, st
 	// Upsert -- so `Upsert.Clean` cannot reach it and the cap has to be applied
 	// here as well. Same rule, same limit.
 	activeForm = validate.StripUnreadable(activeForm, bgtask.LabelByteLimit)
-	return h.withBgTaskRow(rootAgentID, rowKey, func(ctx context.Context, cache *bgTaskCache, existing bgtask.Item, displayed bool, admit func() (int, error)) (registryChange, error) {
+	return h.withBgTaskRow(rootAgentID, rowKey, func(ctx context.Context, reg bgTaskView, existing bgtask.Item, displayed bool, admit func() (int, error)) (registryChange, error) {
+		cache := reg.cache
 		// A final status is monotonic and absorbing: a late or replayed
 		// non-final status update (a duplicate task_progress, a replayed
 		// running upsert) must not resurrect a row that already reached a
@@ -319,7 +331,7 @@ func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, st
 		// warm-cache read after this transition returns the same stamp a cold-start
 		// read does (no Go-time.Now-vs-SQLite-strftime drift).
 		now := nowMillis()
-		if err := h.queries.UpdateAgentBackgroundTaskStatus(ctx, db.UpdateAgentBackgroundTaskStatusParams{
+		if err := reg.queries.UpdateAgentBackgroundTaskStatus(ctx, db.UpdateAgentBackgroundTaskStatusParams{
 			Status:       leapmuxv1.BackgroundTaskStatus(status),
 			ActiveForm:   activeForm,
 			UpdatedAt:    sqltime.NewSQLiteTime(now),
@@ -337,7 +349,7 @@ func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, st
 		// and the error propagates so the caller sees the incomplete transition;
 		// the idempotent stamp can be retried by any later final update.
 		if status.IsFinished() {
-			if err := h.queries.StampAgentBackgroundTaskEndedAt(ctx, db.StampAgentBackgroundTaskEndedAtParams{
+			if err := reg.queries.StampAgentBackgroundTaskEndedAt(ctx, db.StampAgentBackgroundTaskEndedAtParams{
 				MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
 				EndedAt:        sqltime.SQLiteNullTimeOf(now),
 				OwnerAgentID:   rootAgentID,
@@ -378,7 +390,8 @@ func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, st
 // The query's status-IN('pending','running') guard means a final row can never
 // be resurrected or re-closed. A no-op when the row is already final.
 func (h *OutputHandler) applyBackgroundTaskClose(rootAgentID, rowKey string, status bgtask.Status) (registryChange, error) {
-	return h.withBgTaskRow(rootAgentID, rowKey, func(ctx context.Context, cache *bgTaskCache, existing bgtask.Item, displayed bool, admit func() (int, error)) (registryChange, error) {
+	return h.withBgTaskRow(rootAgentID, rowKey, func(ctx context.Context, reg bgTaskView, existing bgtask.Item, displayed bool, admit func() (int, error)) (registryChange, error) {
+		cache := reg.cache
 		if existing.Status.IsFinished() {
 			return registryChange{rows: cache.snapshot()}, nil
 		}
@@ -387,7 +400,7 @@ func (h *OutputHandler) applyBackgroundTaskClose(rootAgentID, rowKey string, sta
 			return registryChange{}, err
 		}
 		now := nowMillis()
-		if err := h.queries.CloseAgentBackgroundTask(ctx, db.CloseAgentBackgroundTaskParams{
+		if err := reg.queries.CloseAgentBackgroundTask(ctx, db.CloseAgentBackgroundTaskParams{
 			MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
 			Status:         leapmuxv1.BackgroundTaskStatus(status),
 			EndedAt:        sqltime.SQLiteNullTimeOf(now),
@@ -425,14 +438,15 @@ func (h *OutputHandler) applyBackgroundTaskClose(rootAgentID, rowKey string, sta
 // Idempotent: an absent row and an already-active row both return an unchanged
 // no-op, which is what makes a duplicate revive harmless.
 func (h *OutputHandler) applyBackgroundTaskRevive(rootAgentID, rowKey string) (registryChange, error) {
-	return h.withBgTaskRow(rootAgentID, rowKey, func(ctx context.Context, cache *bgTaskCache, existing bgtask.Item, displayed bool, admit func() (int, error)) (registryChange, error) {
+	return h.withBgTaskRow(rootAgentID, rowKey, func(ctx context.Context, reg bgTaskView, existing bgtask.Item, displayed bool, admit func() (int, error)) (registryChange, error) {
+		cache := reg.cache
 		if !existing.Status.IsFinished() {
 			return registryChange{rows: cache.snapshot()}, nil
 		}
 		// One ms-floored instant for the DB write and the cache, so a warm-cache read
 		// matches a cold-start read (no Go-time.Now-vs-SQLite drift).
 		now := nowMillis()
-		rows, err := h.queries.ReviveAgentBackgroundTask(ctx, db.ReviveAgentBackgroundTaskParams{
+		rows, err := reg.queries.ReviveAgentBackgroundTask(ctx, db.ReviveAgentBackgroundTaskParams{
 			Status:         leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
 			MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
 			UpdatedAt:      sqltime.NewSQLiteTime(now),
@@ -443,7 +457,7 @@ func (h *OutputHandler) applyBackgroundTaskRevive(rootAgentID, rowKey string) (r
 			return registryChange{}, err
 		}
 		if rows == 0 {
-			return h.adoptStoredBgTaskRowLocked(ctx, cache, rootAgentID, rowKey, displayed, admit)
+			return h.adoptStoredBgTaskRowLocked(ctx, reg, rowKey, displayed, admit)
 		}
 		idx, err := admit()
 		if err != nil {
@@ -496,12 +510,13 @@ func (h *OutputHandler) applyBackgroundTaskRevive(rootAgentID, rowKey string) (r
 // nothing to broadcast -- and admitting it would evict a displayed row, and
 // delete an unlinked one, for a write that never happens.
 func (h *OutputHandler) adoptStoredBgTaskRowLocked(
-	ctx context.Context, cache *bgTaskCache, rootAgentID, rowKey string, displayed bool, admit func() (int, error),
+	ctx context.Context, reg bgTaskView, rowKey string, displayed bool, admit func() (int, error),
 ) (registryChange, error) {
+	cache := reg.cache
 	if !displayed {
 		return registryChange{rows: cache.snapshot()}, nil
 	}
-	stored, found, err := h.loadStoredBgTask(ctx, rootAgentID, rowKey)
+	stored, found, err := h.loadStoredBgTask(ctx, reg.queries, reg.ownerID, rowKey)
 	if err != nil {
 		return registryChange{}, err
 	}
@@ -546,7 +561,7 @@ func (h *OutputHandler) MarkAgentBackgroundTasksExited(rootAgentID string, stopp
 	ctx := h.bgTaskCtx()
 	cache := h.bgTaskCache(rootAgentID)
 	cache.Mu.Lock()
-	if err := cache.ensureSeededLocked(ctx, rootAgentID); err != nil {
+	if err := cache.on(h.queries, rootAgentID).ensureSeededLocked(ctx); err != nil {
 		cache.Mu.Unlock()
 		slog.Warn("mark background tasks exited: seed failed", "agent_id", rootAgentID, "error", err)
 		return
@@ -744,7 +759,7 @@ func (s *agentOutputSink) ensureChildAgentLocked(ctx context.Context, spawnSpanI
 	//    seeded flag makes later calls cheap), so it stays inside this brief
 	//    locked section.
 	cache.Mu.Lock()
-	if err := cache.ensureSeededLocked(ctx, s.rootAgentID); err != nil {
+	if err := cache.on(s.h.queries, s.rootAgentID).ensureSeededLocked(ctx); err != nil {
 		cache.Mu.Unlock()
 		return "", err
 	}
@@ -771,7 +786,7 @@ func (s *agentOutputSink) ensureChildAgentLocked(ctx context.Context, spawnSpanI
 	// it, which is right -- a question is not the activity that earns a place in
 	// the sidebar.
 	if providerChildKey != "" {
-		row, found, err := s.h.loadStoredBgTask(ctx, s.rootAgentID, providerChildKey)
+		row, found, err := s.h.loadStoredBgTask(ctx, s.h.queries, s.rootAgentID, providerChildKey)
 		if err != nil {
 			return "", err
 		}
@@ -882,7 +897,7 @@ func (s *agentOutputSink) linkRegistryRow(cache *bgTaskCache, providerChildKey, 
 	// the display list does not hold, is invisible to both halves of the guard.
 	// The cache re-check below closes that window for every displayed row, which
 	// is every row of all but the largest sessions.
-	stored, storedFound, err := s.h.loadStoredBgTask(s.h.bgTaskCtx(), s.rootAgentID, providerChildKey)
+	stored, storedFound, err := s.h.loadStoredBgTask(s.h.bgTaskCtx(), s.h.queries, s.rootAgentID, providerChildKey)
 	if err != nil {
 		slog.Warn("link registry row: read failed", "row_key", providerChildKey, "error", err)
 		return
@@ -962,7 +977,7 @@ func (s *agentOutputSink) ChildSink(childAgentID string) agent.ProviderServices 
 	child.restoreMessageSession()
 	child.progress = newGenerationProgressPublisher(func(info map[string]interface{}) {
 		s.h.broadcastAgentSessionInfo(childAgentID, info)
-	})
+	}, child.currentMessageSessionID)
 	if s.progressClosed {
 		child.progress.close()
 		return agent.NewProviderServices(child)
@@ -1125,8 +1140,8 @@ func (h *OutputHandler) persistSubagentEndDivider(childAgentID string, status bg
 		return
 	}
 	content, err := json.Marshal(map[string]string{
-		"type":   contracts.NotificationTypeSubagentEnded,
-		"status": bgtask.StatusWire(status),
+		contracts.NotificationFieldType:   contracts.NotificationTypeSubagentEnded,
+		contracts.NotificationFieldStatus: bgtask.StatusWire(status),
 	})
 	if err != nil {
 		slog.Warn("marshal subagent end divider", "child", childAgentID, "error", err)
@@ -1325,7 +1340,7 @@ func (s *agentOutputSink) LookupBackgroundTask(rowKey string) (string, bgtask.St
 	// restart leaves behind -- so the one call most likely to hit it is a revive
 	// for a subagent that finished in the previous process, and answering "no
 	// such row" there closes a live span and leaves the row finished.
-	if err := cache.ensureSeededLocked(s.h.bgTaskCtx(), s.rootAgentID); err != nil {
+	if err := cache.on(s.h.queries, s.rootAgentID).ensureSeededLocked(s.h.bgTaskCtx()); err != nil {
 		cache.Mu.Unlock()
 		return "", noStatus, false, fmt.Errorf("seed background tasks for %s: %w", s.rootAgentID, err)
 	}
@@ -1351,7 +1366,7 @@ func (s *agentOutputSink) LookupBackgroundTask(rowKey string) (string, bgtask.St
 	// This READS the retained row without re-admitting it to the display list,
 	// unlike the appliers: a lookup answers a question, and a question is not the
 	// activity that earns a place in the sidebar.
-	row, found, err := s.h.loadStoredBgTask(s.h.bgTaskCtx(), s.rootAgentID, rowKey)
+	row, found, err := s.h.loadStoredBgTask(s.h.bgTaskCtx(), s.h.queries, s.rootAgentID, rowKey)
 	if err != nil {
 		// A DB failure stays the THIRD answer, distinct from a miss, for the same
 		// reason the seed failure above does: a caller that reads "no such row"
@@ -1410,7 +1425,8 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 	var pendingBroadcast []bgtask.Item
 	cache := s.h.bgTaskCache(s.rootAgentID)
 	cache.Mu.Lock()
-	if err := cache.ensureSeededLocked(ctx, s.rootAgentID); err != nil {
+	reg := cache.on(s.h.queries, s.rootAgentID)
+	if err := reg.ensureSeededLocked(ctx); err != nil {
 		cache.Mu.Unlock()
 		return err
 	}
@@ -1422,7 +1438,7 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 	// parent's thinking indicator. The row already at newKey is the complete one --
 	// it carries the lifecycle that reached the rename -- so the DUPLICATE at
 	// oldKey loses and leaves the display list.
-	occupied, err := s.h.queries.CountAgentBackgroundTasksByRowKey(ctx, db.CountAgentBackgroundTasksByRowKeyParams{
+	occupied, err := reg.queries.CountAgentBackgroundTasksByRowKey(ctx, db.CountAgentBackgroundTasksByRowKeyParams{
 		OwnerAgentID: s.rootAgentID,
 		RowKey:       newKey,
 	})
@@ -1441,11 +1457,11 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 		// loser -- the conservative half, because an orphaned child costs a
 		// transcript nobody can reopen while a retained row costs one stale entry.
 		supersededChild := false
-		if loser, found, err := s.h.loadStoredBgTask(ctx, s.rootAgentID, oldKey); err != nil {
+		if loser, found, err := s.h.loadStoredBgTask(ctx, reg.queries, reg.ownerID, oldKey); err != nil {
 			slog.Warn("bgtask rename: read the losing row failed",
 				"owner", s.rootAgentID, "row_key", oldKey, "error", err)
 		} else if found && loser.ChildAgentID != "" {
-			winner, wfound, err := s.h.loadStoredBgTask(ctx, s.rootAgentID, newKey)
+			winner, wfound, err := s.h.loadStoredBgTask(ctx, reg.queries, reg.ownerID, newKey)
 			switch {
 			case err != nil:
 				slog.Warn("bgtask rename: read the winning row failed",
@@ -1475,7 +1491,7 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 		// status in this process), and the next cold-start seed reads it back
 		// beside the winner. The sidebar then lists one subagent twice, which is
 		// the failure the rename exists to prevent.
-		dropped, err := cache.deleteRowLocked(ctx, s.rootAgentID, oldKey, supersededChild)
+		dropped, err := reg.deleteRowLocked(ctx, oldKey, supersededChild)
 		if err != nil {
 			cache.Mu.Unlock()
 			return err
@@ -1489,7 +1505,7 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 		}
 		return nil
 	}
-	if _, err := s.h.queries.RenameAgentBackgroundTask(ctx, db.RenameAgentBackgroundTaskParams{
+	if _, err := reg.queries.RenameAgentBackgroundTask(ctx, db.RenameAgentBackgroundTaskParams{
 		RowKey:       newKey,
 		OwnerAgentID: s.rootAgentID,
 		RowKey_2:     oldKey,
@@ -1529,7 +1545,8 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 	// again for the life of the agent.
 	task = task.Clean()
 	ctx := h.bgTaskCtx()
-	if err := cache.ensureSeededLocked(ctx, rootAgentID); err != nil {
+	reg := cache.on(h.queries, rootAgentID)
+	if err := reg.ensureSeededLocked(ctx); err != nil {
 		return registryChange{}, err
 	}
 	// findRowLocked, not indexOf: a RETAINED row that left the display list is
@@ -1538,7 +1555,7 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 	// subagent, and its title and created_at would be rewritten from the replay.
 	// `found` and not `idx >= 0` decides that, which is why the cap branch below
 	// only ever runs for a genuinely new row.
-	existing, idx, found, err := cache.findRowLocked(ctx, rootAgentID, task.RowKey)
+	existing, idx, found, err := reg.findRowLocked(ctx, task.RowKey)
 	if err != nil {
 		return registryChange{}, err
 	}
@@ -1586,7 +1603,7 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 		// on the server while reporting changed=false, so no broadcast tells the
 		// client its list moved.
 		if idx < 0 {
-			if idx, err = cache.admitRowLocked(ctx, rootAgentID, existing); err != nil {
+			if idx, err = reg.admitRowLocked(ctx, existing); err != nil {
 				return registryChange{}, err
 			}
 		}
@@ -1604,7 +1621,7 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 		// its persisted row, which is the honest cost of a pool that is full of
 		// running work, and is what the warning records.
 		bucket := int64(merged.Kind)
-		evictedRow, dropped, err := cache.makeRoomLocked(ctx, rootAgentID, bucket)
+		evictedRow, dropped, err := reg.makeRoomLocked(ctx, bucket)
 		if err != nil {
 			return registryChange{}, err
 		}
@@ -1625,7 +1642,7 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 	if merged.Status.IsFinished() && merged.EndedAt.IsZero() {
 		merged.EndedAt = now
 	}
-	if err := h.queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{
+	if err := reg.queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{
 		OwnerAgentID:   rootAgentID,
 		RowKey:         task.RowKey,
 		Seq:            cache.nextSeq,

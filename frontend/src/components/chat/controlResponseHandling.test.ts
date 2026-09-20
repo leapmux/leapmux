@@ -496,7 +496,9 @@ describe('handleControlSend', () => {
       result.handleControlSend('')
 
       expect(onControlResponse).toHaveBeenCalledOnce()
-      const [, bytes] = onControlResponse.mock.calls[0]
+      const sendCall = onControlResponse.mock.calls[0]
+      expect(sendCall).toBeDefined()
+      const [, bytes] = sendCall ?? []
       const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
       expect(parsed).toMatchObject({
         type: 'control_response',
@@ -535,7 +537,8 @@ describe('handleControlSend', () => {
       // instance's own. The worker's idempotency claim then keys on THIS instance,
       // and no store re-derivation can pair it with a sibling that reuses the id.
       expect(onControlResponse).toHaveBeenCalledOnce()
-      expect(onControlResponse.mock.calls[0][0].claimToken).toBe('instance-token-7')
+      // Called once above; `?.` is the type-level guard alone.
+      expect(onControlResponse.mock.calls[0]?.[0].claimToken).toBe('instance-token-7')
       dispose()
     })
   })
@@ -564,7 +567,9 @@ describe('handleControlSend', () => {
 
         result.handleControlSend('Use a safer command')
 
-        const [, bytes] = onControlResponse.mock.calls[0]
+        const sendCall = onControlResponse.mock.calls[0]
+        expect(sendCall).toBeDefined()
+        const [, bytes] = sendCall ?? []
         expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({ result: { decision: 'cancel' } })
         expect(onSendMessage).not.toHaveBeenCalled()
         finishResponse()
@@ -597,7 +602,9 @@ describe('handleControlSend', () => {
           onSendControlFeedback,
         })
         result.handleControlSend('Revise the second step.')
-        const [, bytes] = onControlResponse.mock.calls[0]
+        const sendCall = onControlResponse.mock.calls[0]
+        expect(sendCall).toBeDefined()
+        const [, bytes] = sendCall ?? []
         expect(JSON.parse(new TextDecoder().decode(bytes))).toEqual({ type: 'extension_ui_response', id: 'plan', value: 'Stay in Plan mode' })
         expect(onSendControlFeedback).not.toHaveBeenCalled()
         finishResponse()
@@ -705,7 +712,9 @@ describe('handleControlSend', () => {
       result.handleControlSend('')
 
       expect(onControlResponse).toHaveBeenCalledOnce()
-      const [, bytes] = onControlResponse.mock.calls[0]
+      const sendCall = onControlResponse.mock.calls[0]
+      expect(sendCall).toBeDefined()
+      const [, bytes] = sendCall ?? []
       const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
       expect(parsed).toMatchObject({
         type: 'extension_ui_response',
@@ -745,7 +754,9 @@ describe('handleControlSend', () => {
       result.handleControlSend('')
 
       expect(onControlResponse).toHaveBeenCalledOnce()
-      const [, bytes] = onControlResponse.mock.calls[0]
+      const sendCall = onControlResponse.mock.calls[0]
+      expect(sendCall).toBeDefined()
+      const [, bytes] = sendCall ?? []
       const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
       expect(parsed).toMatchObject({
         jsonrpc: '2.0',
@@ -826,7 +837,9 @@ describe('handleControlSend', () => {
       result.handleControlSend('')
 
       expect(onControlResponse).toHaveBeenCalledOnce()
-      const [, bytes] = onControlResponse.mock.calls[0]
+      const sendCall = onControlResponse.mock.calls[0]
+      expect(sendCall).toBeDefined()
+      const [, bytes] = sendCall ?? []
       const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
       expect(parsed).toMatchObject({
         jsonrpc: '2.0',
@@ -999,13 +1012,13 @@ describe('activeControlSurface and activeControlProvider', () => {
     })
   })
 
-  it('leaves a payload no shared form answers to the provider plugin', () => {
+  it('reads a payload no shared form answers as a permission', () => {
     createRoot((dispose) => {
       const { result } = setup({
         agent: { agentProvider: AgentProvider.CLAUDE_CODE },
         controlRequests: [makeControlRequest('req-1', 'test-agent')],
       })
-      expect(result.activeControlSurface()).toEqual({ kind: 'plugin' })
+      expect(result.activeControlSurface()?.kind).toBe('permission')
       dispose()
     })
   })
@@ -1295,7 +1308,8 @@ describe('submitResponse payload fault', () => {
       expect(onControlResponse).not.toHaveBeenCalled()
       await result.recordResponse(request)
       expect(onControlResponse).toHaveBeenCalledOnce()
-      expect(onControlResponse.mock.calls[0][2]).toMatchObject({ recordOnly: true })
+      // Called once above; `?.` is the type-level guard alone.
+      expect(onControlResponse.mock.calls[0]?.[2]).toMatchObject({ recordOnly: true })
     }
     finally {
       dispose()

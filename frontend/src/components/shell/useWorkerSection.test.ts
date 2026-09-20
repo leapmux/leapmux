@@ -16,6 +16,17 @@ vi.mock('~/api/clients', () => ({
 }))
 
 const hubControlHandlers: Array<(frame: { events: HubControlEvent[] }) => void> = []
+
+/**
+ * The hub-control handler the connect registered; the throw keeps a missing
+ * registration failing loudly and doubles as the type-level guard.
+ */
+function invokeHubControl(frame: { events: HubControlEvent[] }): void {
+  const handler = hubControlHandlers[0]
+  if (handler === undefined)
+    throw new Error('expected a hub control handler')
+  handler(frame)
+}
 const mockSetConfirmKeyPin = vi.fn()
 const mockUnregisterKeyPin = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
@@ -114,7 +125,7 @@ describe('useWorkerSection', () => {
       await flush()
       const first = s.workers()[0]
 
-      hubControlHandlers[0]({ events: [HubControlEvent.WORKERS_CHANGED] })
+      invokeHubControl({ events: [HubControlEvent.WORKERS_CHANGED] })
       await flush()
 
       expect(mockListWorkers).toHaveBeenCalledTimes(2)
@@ -129,7 +140,7 @@ describe('useWorkerSection', () => {
       await flush()
       expect(mockListWorkers).toHaveBeenCalledTimes(1)
 
-      hubControlHandlers[0]({ events: [] })
+      invokeHubControl({ events: [] })
       await flush()
 
       expect(mockListWorkers).toHaveBeenCalledTimes(1)

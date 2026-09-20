@@ -1,4 +1,4 @@
-import type { McpToolCallSource } from '../../../results/mcpToolCall'
+import type { McpCallFacts } from '../../../model/mcpToolCall'
 import type { ZCodeRow } from './toolCommon'
 import { prettifyArgsJson, prettifyStructuredJson } from '~/lib/jsonFormat'
 import { pickObject, pickString } from '~/lib/jsonPick'
@@ -8,7 +8,7 @@ import { zcodeExtractTool, zcodeToolInput } from './toolCommon'
 import { zcodeDisplayImages, zcodeMcpContent } from './toolContent'
 
 export type ZCodeResultDisplay
-  = | { kind: 'mcp', source: McpToolCallSource, truncated: boolean }
+  = | { kind: 'mcp', source: McpCallFacts, truncated: boolean }
     | { kind: 'status', title: string, output: string, command?: string, status: 'success' | 'failed' | 'waiting' | 'stopped', truncated: boolean }
     | { kind: 'images', output: string, truncated: boolean }
 
@@ -33,6 +33,8 @@ export function zcodeResultDisplay(row: ZCodeRow): ZCodeResultDisplay | null {
       const failed = update.isError || display.status === 'failed' || !!error
       const targetApp = pickString(pickObject(display, 'targetApp'), 'displayName')
       const tool = pickString(display, 'toolName') || row.toolName
+      const joinedError = [error, suggestion].filter(Boolean).join('\n')
+      const structuredJson = prettifyStructuredJson(display.structuredContent)
       return {
         kind: 'mcp',
         truncated,
@@ -44,10 +46,10 @@ export function zcodeResultDisplay(row: ZCodeRow): ZCodeResultDisplay | null {
             ...(text ? [{ type: 'text' as const, text }] : []),
             ...zcodeDisplayImages(display).map(source => ({ type: 'image' as const, source })),
           ],
-          structuredJson: prettifyStructuredJson(display.structuredContent),
-          error: [error, suggestion].filter(Boolean).join('\n') || undefined,
-          status: failed ? 'failed' : 'completed',
-          durationMs: update.durationMs ?? undefined,
+          ...(structuredJson !== undefined ? { structuredJson } : {}),
+          ...(joinedError ? { error: joinedError } : {}),
+          ...(failed ? { failed: true } : {}),
+          ...(update.durationMs != null ? { durationMs: update.durationMs } : {}),
         },
       }
     }
@@ -62,15 +64,17 @@ export function zcodeResultDisplay(row: ZCodeRow): ZCodeResultDisplay | null {
         truncated,
       }
     }
-    case ZCODE_DISPLAY.TaskStop:
+    case ZCODE_DISPLAY.TaskStop: {
+      const command = pickString(display, 'command', undefined)
       return {
         kind: 'status',
         title: `Stopped task ${pickString(display, 'taskId')}`.trim(),
         output: pickString(display, 'message') || content,
-        command: pickString(display, 'command', undefined),
+        ...(command !== undefined ? { command } : {}),
         status: update.isError ? 'failed' : 'stopped',
         truncated,
       }
+    }
     case ZCODE_DISPLAY.LocalAgentMessage:
     case ZCODE_DISPLAY.RespondToCoordinator: {
       const failed = update.isError || display.status === 'failed'

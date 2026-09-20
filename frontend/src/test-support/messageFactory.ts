@@ -1,4 +1,4 @@
-import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentChatMessage, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { MESSAGE_METADATA_FIELD, NOTIFICATION_THREAD_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MarkType, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -46,5 +46,66 @@ export function makeControlResponseMessage(
         [MESSAGE_METADATA_FIELD.ControlRequestClaimToken]: 'claim-1',
       },
     }),
+  })
+}
+
+/**
+ * One transcript frame: the fields a provider's stored row carries, spelled the
+ * way a fixture states them and the way a scenario mutates them.
+ *
+ * `content` and `rawContent` are the two halves of one slot: the JSON-encodable
+ * payload, or bytes this test must not let the encoder touch (a malformed row,
+ * a captured wrapper). `supplemental` and `metadata` share the stored envelope
+ * the worker writes, exactly as `makeControlResponseMessage` spells it.
+ */
+interface TranscriptFrameFields {
+  id: string
+  provider: AgentProvider
+  seq?: bigint
+  source?: MessageSource
+  spanId?: string
+  spanType?: string
+  agentSessionId?: string
+  supplemental?: unknown
+  metadata?: unknown
+  supplementalRevision?: bigint
+  completion?: MessageCompletion
+}
+
+/** A transcript frame states one encoded payload source. */
+export type TranscriptFrame = TranscriptFrameFields & (
+  | { content: unknown, rawContent?: never }
+  | { content?: never, rawContent: Uint8Array }
+)
+
+/**
+ * One transcript frame as its stored `AgentChatMessage`.
+ *
+ * The message id, the provider and the sequence are the identity a scenario
+ * addresses a row by, so the default sequence keeps them unique per call site:
+ * `makeTranscriptMessage(frame, nextSeq())` walks an archive in order.
+ */
+export function makeTranscriptMessage(frame: TranscriptFrame, defaultSeq: bigint): AgentChatMessage {
+  const hasContent = Object.hasOwn(frame, 'content')
+  const hasRawContent = Object.hasOwn(frame, 'rawContent')
+  if (hasContent === hasRawContent)
+    throw new Error('A transcript frame must state exactly one of `content` or `rawContent`.')
+  const supplemental = frame.supplemental !== undefined || frame.metadata !== undefined
+  return makeMessage({
+    id: frame.id,
+    agentProvider: frame.provider,
+    seq: frame.seq ?? defaultSeq,
+    ...(frame.source !== undefined ? { source: frame.source } : {}),
+    ...(frame.spanId !== undefined ? { spanId: frame.spanId } : {}),
+    ...(frame.spanType !== undefined ? { spanType: frame.spanType } : {}),
+    ...(frame.agentSessionId !== undefined ? { agentSessionId: frame.agentSessionId } : {}),
+    content: frame.rawContent ?? rawContent(frame.content),
+    ...(supplemental
+      ? {
+          supplementalContent: rawContent({ provider: frame.supplemental, metadata: frame.metadata }),
+          supplementalRevision: frame.supplementalRevision ?? 1n,
+        }
+      : {}),
+    ...(frame.completion !== undefined ? { completion: frame.completion } : {}),
   })
 }

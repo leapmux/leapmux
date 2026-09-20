@@ -14,7 +14,7 @@ function authMethodOptions(): PillOptions<AuthMethod> {
     {
       key: 'passkey',
       label: 'Passkey',
-      disabledReason: blocker ? passkeyBlockerMessage(blocker) : undefined,
+      ...(blocker ? { disabledReason: passkeyBlockerMessage(blocker) } : {}),
     },
   ]
 }

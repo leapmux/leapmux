@@ -1,7 +1,10 @@
-import type { ReadFileResultSource } from '../../../results/readFileResult'
+import type { ReadFileResult } from '../../../model/readFileResult'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { ReadRequest } from '../../../model/tools/read'
+import type { ClaudeToolRow } from './toolCommon'
 import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { readFileSourceFromContent } from '../../../results/readFileResult'
-import { parseReadContent } from '../../../results/ReadResultView'
+import { parseReadContent, readFileResultFromContent } from '../../../model/readFileResult'
+import { claudeToolFailureResult } from './failure'
 
 /** Non-text Read variants that the catch-all renderer continues to handle. */
 const NON_TEXT_READ_TYPES = new Set(['image', 'notebook', 'pdf', 'parts', 'file_unchanged'])
@@ -9,11 +12,10 @@ const NON_TEXT_READ_TYPES = new Set(['image', 'notebook', 'pdf', 'parts', 'file_
 interface ClaudeReadInputArg {
   toolUseResult?: Record<string, unknown> | null
   resultContent: string
-  toolInput?: Record<string, unknown> | null
 }
 
 /**
- * Build a ReadFileResultSource from a Claude `Read` tool_result. Returns null
+ * Build a ReadFileResult from a Claude `Read` tool_result. Returns null
  * for non-text variants (image/notebook/pdf/parts/file_unchanged), letting
  * downstream renderers fall back to their existing handling for those.
  *
@@ -22,8 +24,8 @@ interface ClaudeReadInputArg {
  * fallback). When neither parses, `lines` is null and the body renders
  * `resultContent` as plain text.
  */
-export function claudeReadFromToolResult(args: ClaudeReadInputArg): ReadFileResultSource | null {
-  const { toolUseResult, resultContent, toolInput } = args
+export function claudeReadFromToolResult(args: ClaudeReadInputArg): ReadFileResult | null {
+  const { toolUseResult, resultContent } = args
 
   const variantType = pickString(toolUseResult, 'type')
   if (variantType && NON_TEXT_READ_TYPES.has(variantType))
@@ -36,18 +38,12 @@ export function claudeReadFromToolResult(args: ClaudeReadInputArg): ReadFileResu
   const file = pickObject(toolUseResult, 'file')
 
   if (file) {
-    const filePath = pickString(file, 'filePath')
     const fileContent = pickString(file, 'content')
     const startLine = pickNumber(file, 'startLine', 1)
-    const totalLines = pickNumber(file, 'totalLines', 0)
-    const numLines = pickNumber(file, 'numLines', 0)
     return {
-      ...readFileSourceFromContent({
-        filePath,
+      ...readFileResultFromContent({
         content: fileContent,
         startLine,
-        totalLines,
-        numLines,
         fallbackContent: resultContent,
       }),
       leading,
@@ -57,12 +53,37 @@ export function claudeReadFromToolResult(args: ClaudeReadInputArg): ReadFileResu
 
   // Subagent fallback: the raw resultContent's cat-n body, plus its reminders.
   return {
-    filePath: pickString(toolInput, 'file_path'),
     lines,
-    totalLines: 0,
-    numLines: 0,
     fallbackContent: resultContent,
     leading,
     trailing,
+  }
+}
+
+/**
+ * The read pair: the file it read and the range it asked for. A non-text read
+ * states no lines, and the row shows the pictures the result carried instead.
+ *
+ * A read that FAILED states its reason alone. The file viewer took it as the file's
+ * own body otherwise, which reads as a one-line file rather than as an error.
+ */
+export function claudeReadSpec(request: ReadRequest, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'read'> {
+  if (!result)
+    return { kind: 'read', request }
+  const failure = claudeToolFailureResult(result)
+  if (failure)
+    return { kind: 'read', request, result: failure, images: result.images }
+  // A non-text read -- an image, a notebook, a PDF -- states no lines, and the
+  // result keeps the text it carried beside the pictures in `images`. The
+  // record rides only when the result row carries one.
+  const source = claudeReadFromToolResult({
+    ...(result.toolUseResult !== undefined ? { toolUseResult: result.toolUseResult } : {}),
+    resultContent: result.resultContent,
+  }) ?? { lines: null, fallbackContent: result.resultContent }
+  return {
+    kind: 'read',
+    request,
+    result: source,
+    images: result.images,
   }
 }

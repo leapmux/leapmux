@@ -90,10 +90,8 @@ export function useWorkerDialog(options: UseWorkerDialogOptions = {}) {
   // because the type system guarantees the unused branch is undefined.
   const pi = options.pathInfo
   const pathInfo = useGitPathInfo(worker.workerId, worker.workingDir, {
-    remapWorktreeRoot: pi && 'remapWorktreeRoot' in pi && pi.remapWorktreeRoot === true
-      ? worker.setWorkingDir
-      : undefined,
-    seed: pi && 'seed' in pi ? pi.seed : undefined,
+    ...(pi?.remapWorktreeRoot === true ? { remapWorktreeRoot: worker.setWorkingDir } : {}),
+    ...(pi?.seed !== undefined ? { seed: pi.seed } : {}),
   })
   return { submit, worker, gitMode, pathInfo }
 }

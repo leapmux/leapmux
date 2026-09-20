@@ -119,6 +119,10 @@ export function createHrInputRule() {
     return new InputRule(
       HR_INPUT_RE,
       (state, _match, start, end) => {
+        const hrType = state.schema.nodes.hr
+        const paragraphType = state.schema.nodes.paragraph
+        if (!hrType || !paragraphType)
+          return null
         const $start = state.doc.resolve(start)
         // Don't trigger inside inline code marks (document marks or stored marks)
         const inlineCodeMark = state.schema.marks.inlineCode
@@ -134,7 +138,7 @@ export function createHrInputRule() {
           if (hasCodeMark)
             return null
         }
-        const hr = state.schema.nodes.hr.create()
+        const hr = hrType.create()
         const paragraphWillBeEmpty = $start.parent.content.size === end - start
 
         // Text (or a hard break) precedes the dashes — delete the
@@ -144,7 +148,7 @@ export function createHrInputRule() {
           const afterParagraph = tr.mapping.map($start.after($start.depth))
           tr.insert(afterParagraph, hr)
           // Insert a paragraph after the HR for continued editing
-          const para = state.schema.nodes.paragraph.create()
+          const para = paragraphType.create()
           tr.insert(afterParagraph + 1, para)
           tr.setSelection(TextSelection.create(tr.doc, afterParagraph + 2))
           return tr
@@ -180,7 +184,7 @@ export function createHrInputRule() {
         // Regular paragraph: replace with HR and add a paragraph after
         const paragraphStart = $start.before($start.depth)
         const paragraphEnd = $start.after($start.depth)
-        const para = state.schema.nodes.paragraph.create()
+        const para = paragraphType.create()
         const tr = state.tr.replaceWith(paragraphStart, paragraphEnd, [hr, para])
         tr.setSelection(TextSelection.create(tr.doc, paragraphStart + 2))
         return tr
@@ -201,6 +205,9 @@ export function createCodeBlockInputRule() {
     return new InputRule(
       CODE_BLOCK_INPUT_RE,
       (state, _match, start, end) => {
+        const codeBlockType = state.schema.nodes.code_block
+        if (!codeBlockType)
+          return null
         const $start = state.doc.resolve(start)
         // Don't trigger inside inline code marks (document marks or stored marks)
         const inlineCodeMark = state.schema.marks.inlineCode
@@ -216,7 +223,7 @@ export function createCodeBlockInputRule() {
           if (hasCodeMark)
             return null
         }
-        const codeBlock = state.schema.nodes.code_block.create()
+        const codeBlock = codeBlockType.create()
         const paragraphWillBeEmpty = $start.parent.content.size === end - start
 
         // Text (or a hard break) precedes the backticks — delete the
@@ -260,7 +267,7 @@ export function createCodeBlockInputRule() {
 
         // Regular paragraph: convert to code block
         const tr = state.tr.delete(start, end)
-        tr.setBlockType(start, start, state.schema.nodes.code_block)
+        tr.setBlockType(start, start, codeBlockType)
         return tr
       },
     )
@@ -295,10 +302,14 @@ interface MarkRuleOptions {
  */
 function codeAwareMarkRule(
   regexp: RegExp,
-  markType: MarkType,
+  // Schema mark lookups are `MarkType | undefined`; a rule whose mark is
+  // missing from the schema simply never fires.
+  markType: MarkType | undefined,
   options: MarkRuleOptions = {},
 ): InputRule {
   return new InputRule(regexp, (state: EditorState, match: RegExpMatchArray, start: number, end: number) => {
+    if (!markType)
+      return null
     // Guard: do not fire inside inline code
     const inlineCodeMark = state.schema.marks.inlineCode
     if (inlineCodeMark) {

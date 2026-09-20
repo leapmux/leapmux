@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
+import type { TodoItem } from '~/models/todo'
 import type { GoalSurface } from '~/stores/chatGoal'
-import type { TodoItem } from '~/stores/chatTodos'
 import { Show } from 'solid-js'
 import { GoalCard } from '~/components/goal/GoalCard'
 import * as styles from './GoalsAndTodos.css'
@@ -27,7 +27,12 @@ export const GoalsAndTodos: Component<GoalsAndTodosProps> = props => (
     <Show when={props.goal}>
       {/* The sidebar owns the live region. The popover renders the same goal
           silently, so one update causes one announcement. */}
-      {goal => <GoalCard goal={goal()} announce={props.announceGoal} />}
+      {goal => (
+        <GoalCard
+          goal={goal()}
+          {...(props.announceGoal !== undefined ? { announce: props.announceGoal } : {})}
+        />
+      )}
     </Show>
     {/* The rule appears only when it separates the card from a list. */}
     <Show when={props.goal !== undefined && props.todos.length > 0}>

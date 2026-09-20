@@ -2,14 +2,12 @@ import type { Accessor } from 'solid-js'
 import { createMemo } from 'solid-js'
 import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 
-export { hasMoreLinesThan } from './collapse'
-
 /**
  * Per-line character cap applied to the collapsed slice. The visual fade mask
  * (`toolResultCollapsed`) only clips height — the browser still lays out
  * everything inside the clipped box, so a single 3MB line (e.g., a grep hit
  * on a minified `.js.map`) tanks scroll perf even when the message looks
- * "collapsed." Clipping each retained line keeps DOM/layout cost bounded
+ * "collapsed." Clipping each retained line keeps DOM/layout cost capped
  * regardless of input size; expanded mode is unaffected.
  */
 export const COLLAPSED_LINE_CHAR_CAP = 240

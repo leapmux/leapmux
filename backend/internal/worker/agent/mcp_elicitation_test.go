@@ -11,7 +11,7 @@ import (
 )
 
 func TestResolveMCPElicitationResponse(t *testing.T) {
-	for _, method := range []string{contracts.MCPElicitationMethodACP, contracts.MCPElicitationMethodReasonix, contracts.MCPElicitationMethodCodex} {
+	for _, method := range []string{contracts.MCPElicitationMethodACP, contracts.MCPElicitationMethodCodex} {
 		for _, id := range []string{`"001"`, `"request-1"`, `9007199254740993`, `0`} {
 			request := []byte(`{"jsonrpc":"2.0","id":` + id + `,"method":"` + method + `","params":{"mode":"form"}}`)
 			_, requestID, ok := ExtractJSONRPCID(request)

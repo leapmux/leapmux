@@ -1,0 +1,180 @@
+{
+  "_readme": "The Cursor extension resolve, replayed by BOTH implementations: `cursorProvider.ResolveProviderData` in the Go worker and `cursorExtension` behind `acpToolSupplement` in the browser plugin. A `cursor/*` frame arrives on the stdout reader one row after the call it describes, and the worker stores it beside that row; both sides then check that the envelope IDENTIFIES the row before they read it. The gate is the same one the shared ACP resolve applies, and a divergence draws a `cursor/update_todos` row as a plain tool call with no checklist -- which is exactly what happened while the worker wrote an identity-free envelope. `resolved` is what the worker's resolve answers; `extension` is what the browser reads back, or null for an envelope that reaches no row.",
+  "cases": [
+    {
+      "name": "an extension frame reaches the row it names",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "supplement": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "cursorExtension": {
+          "method": "cursor/update_todos",
+          "params": {
+            "toolCallId": "call-1",
+            "todos": [
+              {
+                "id": "1",
+                "content": "Create a.txt",
+                "status": "completed"
+              }
+            ],
+            "merge": false
+          }
+        }
+      },
+      "resolved": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "cursorExtension": {
+          "method": "cursor/update_todos",
+          "params": {
+            "toolCallId": "call-1",
+            "todos": [
+              {
+                "id": "1",
+                "content": "Create a.txt",
+                "status": "completed"
+              }
+            ],
+            "merge": false
+          }
+        }
+      },
+      "extension": {
+        "method": "cursor/update_todos",
+        "params": {
+          "toolCallId": "call-1",
+          "todos": [
+            {
+              "id": "1",
+              "content": "Create a.txt",
+              "status": "completed"
+            }
+          ],
+          "merge": false
+        }
+      }
+    },
+    {
+      "name": "an extension stored beside another call reaches no row",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "supplement": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-2",
+        "status": "completed",
+        "cursorExtension": {
+          "method": "cursor/update_todos",
+          "params": {
+            "toolCallId": "call-1",
+            "todos": [
+              {
+                "id": "1",
+                "content": "Create a.txt",
+                "status": "completed"
+              }
+            ],
+            "merge": false
+          }
+        }
+      },
+      "resolved": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "extension": null
+    },
+    {
+      "name": "an extension from before the status moved on reaches no row",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "supplement": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "pending",
+        "cursorExtension": {
+          "method": "cursor/update_todos",
+          "params": {
+            "toolCallId": "call-1",
+            "todos": [
+              {
+                "id": "1",
+                "content": "Create a.txt",
+                "status": "completed"
+              }
+            ],
+            "merge": false
+          }
+        }
+      },
+      "resolved": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "extension": null
+    },
+    {
+      "name": "an extension that names no call reaches no row",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "supplement": {
+        "cursorExtension": {
+          "method": "cursor/update_todos",
+          "params": {
+            "toolCallId": "call-1",
+            "todos": [
+              {
+                "id": "1",
+                "content": "Create a.txt",
+                "status": "completed"
+              }
+            ],
+            "merge": false
+          }
+        }
+      },
+      "resolved": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "extension": null
+    },
+    {
+      "name": "a supplement that carries no extension leaves the frame alone",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "supplement": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "resolved": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "extension": null
+    }
+  ]
+}

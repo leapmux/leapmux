@@ -133,6 +133,8 @@ describe('confirmButton', () => {
     ))
 
     const [confirmButton, cancelButton] = screen.getAllByRole('button')
+    if (confirmButton === undefined || cancelButton === undefined)
+      throw new Error('expected the confirm and cancel buttons to render')
     fireEvent.click(confirmButton)
     expect(confirmButton).toHaveTextContent('Confirm?')
 

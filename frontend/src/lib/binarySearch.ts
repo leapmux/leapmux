@@ -61,5 +61,8 @@ export function smallestIndexWhere(n: number, pred: (mid: number) => boolean, fa
  * restrict the search to a prefix.
  */
 export function lowerBoundBySeq(items: readonly { seq: bigint }[], target: bigint, hi: number = items.length): number {
-  return smallestIndexWhere(hi, mid => items[mid].seq >= target, hi)
+  return smallestIndexWhere(hi, (mid) => {
+    const item = items[mid]
+    return item !== undefined && item.seq >= target
+  }, hi)
 }

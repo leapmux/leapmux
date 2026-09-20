@@ -1,17 +1,40 @@
 import type { JSXElement } from 'solid-js'
-import type { ResultDividerModel } from './providers/registry'
-import type { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { TurnEnd } from './model/divider'
+import { Show } from 'solid-js'
+import { pluralize } from '~/lib/plural'
 import { resultDivider, resultErrorDetail } from './messageStyles.css'
-import { pluginFor } from './providers/registry'
+
+/**
+ * What the turn cost, stated beside the rule.
+ *
+ * The worker measures both for every provider and nothing drew either before: the tool
+ * count was parsed and dropped, and the cost reached the session totals alone. A turn
+ * that used no tool states none rather than "0 tools", because a reader learns nothing
+ * from a zero they did not ask about.
+ *
+ * The DURATION is deliberately absent. Every provider already writes it into its own
+ * label -- "Turn ended (12s)" -- so a second copy here would say it twice.
+ */
+function dividerTotals(meta: TurnEnd['meta']): string {
+  if (!meta)
+    return ''
+  const parts: string[] = []
+  if (meta.numToolUses !== undefined && meta.numToolUses > 0)
+    parts.push(pluralize(meta.numToolUses, 'tool'))
+  // Four decimals, the same precision the agent info card states a session total in.
+  if (meta.costUsd !== undefined && meta.costUsd > 0)
+    parts.push(`$${meta.costUsd.toFixed(4)}`)
+  return parts.join(' \u00B7 ')
+}
 
 /**
  * The single renderer for a `result_divider` (turn-end) message across providers.
- * Draws a {@link ResultDividerModel}: the label in danger color when `isError`,
- * optionally followed by a `<pre>` detail block. The danger color is an inline
+ * Draws a {@link TurnEnd}: the label in danger color when `isError`, the turn totals
+ * beside it, and optionally a `<pre>` detail block. The danger color is an inline
  * style (not a class) on purpose -- it preserves the exact markup the four
  * per-provider divider renderers emitted before they were unified onto this model.
  */
-function ResultDivider(props: { model: ResultDividerModel }): JSXElement {
+export function ResultDivider(props: { model: TurnEnd }): JSXElement {
   return (
     <>
       {/*
@@ -26,22 +49,11 @@ function ResultDivider(props: { model: ResultDividerModel }): JSXElement {
         style={props.model.isError ? { color: 'var(--danger)' } : undefined}
       >
         {props.model.label}
+        <Show when={dividerTotals(props.model.meta)}>
+          {totals => <span data-testid="result-divider-totals">{totals()}</span>}
+        </Show>
       </div>
       {props.model.detail && <pre class={resultErrorDetail}>{props.model.detail}</pre>}
     </>
   )
-}
-
-/**
- * Render a `result_divider` via the provider's `resultDivider` hook -- the sole
- * render path for the category. MessageBubble special-cases the category and
- * falls back to the raw-JSON renderer when this returns null (an unrecognized
- * turn-end shape). Dispatches strictly by the message's own provider: a message
- * only reaches here after classifyMessage produced `result_divider`, which it
- * does only for a registered provider, so there is no Claude fallback.
- */
-export function renderResultDivider(parsed: unknown, agentProvider?: AgentProvider, completion?: MessageCompletion): JSXElement | null {
-  const plugin = pluginFor(agentProvider)
-  const model = plugin?.resultDivider?.(parsed, completion)
-  return model ? <ResultDivider model={model} /> : null
 }

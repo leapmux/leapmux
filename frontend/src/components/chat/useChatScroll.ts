@@ -659,7 +659,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // Arm/extend/disarm the stale-native shift record for this write (an 'anchor-repin'
     // larger than a screen arms it; other sources invalidate it).
     staleNativeTranslator.noteProgrammaticWrite({
-      source,
+      ...(source !== undefined ? { source } : {}),
       beforeTop,
       afterTop,
       clientHeight: beforeClientHeight,
@@ -1468,8 +1468,8 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // streaming block or startup banner.)
     const rawScrollTop = !atBot && a === null ? scrollTop : undefined
     return {
-      anchor: a ?? undefined,
-      rawScrollTop,
+      ...(a !== null ? { anchor: a } : {}),
+      ...(rawScrollTop !== undefined ? { rawScrollTop } : {}),
       atBottom: atBot,
       hasMoreNewer: !!opts.hasNewerMessages?.(),
     }

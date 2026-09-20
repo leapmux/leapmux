@@ -47,7 +47,7 @@ function checkedIds(): string[] {
     .map(el => el.getAttribute('data-testid') ?? '')
 }
 
-describe('externalAppMenuItems', () => {
+describe('ExternalAppMenuItems', () => {
   // The file manager is a different KIND of target from an editor. Sorting it
   // in among them by name would file "Finder" between "Cursor" and "Visual
   // Studio Code", where nothing tells the reader why it is there.

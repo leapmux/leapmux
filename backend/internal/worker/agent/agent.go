@@ -325,6 +325,11 @@ type StoredMessage struct {
 type TranscriptServices interface {
 	// ReadToolRequest resolves the persisted opener. A missing opener returns nil without an error.
 	ReadToolRequest(spanID string) (*StoredMessage, error)
+	// ReadToolResult resolves the LATEST persisted row of one tool-call span, which is
+	// the row a result supplement enriches. ReadToolRequest resolves the FIRST row of
+	// the same span, so the two answer different questions and neither substitutes for
+	// the other. A span with no row returns nil without an error.
+	ReadToolResult(spanID string) (*StoredMessage, error)
 	PersistMessage(source leapmuxv1.MessageSource, content MessageContent, span SpanInfo) error
 	// EnrichMessage stores rendering data separately from the original provider bytes.
 	// It returns false when the original content or supplemental revision no longer matches.
@@ -731,7 +736,7 @@ func NewProviderServices(services providerServiceFacets) ProviderServices {
 // `bgtask.ValidateRowKey` turned an unusable provider key from a silent rewrite
 // into an error, so every one of these writes gained a failure mode it did not
 // have before -- and every provider takes its key straight from the agent's own
-// JSON with no length bound of its own. A bare `_ =` therefore meant a refused
+// JSON with no length limit of its own. A bare `_ =` therefore meant a refused
 // row simply never appeared in the sidebar, or a finished subagent never left
 // the Running state, with nothing anywhere to say why: the failure mode the
 // refusal was chosen to AVOID, moved from the data to the diagnosis.

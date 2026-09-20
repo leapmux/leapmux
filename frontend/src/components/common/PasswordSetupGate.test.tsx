@@ -30,7 +30,7 @@ function fillPassword(pw = 'correct-horse-battery-staple') {
   fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: pw } })
 }
 
-describe('passwordSetupGate', () => {
+describe('PasswordSetupGate', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockSetInitialSoloPassword.mockResolvedValue({

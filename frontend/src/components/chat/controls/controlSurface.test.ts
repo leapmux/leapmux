@@ -29,13 +29,38 @@ describe('controlSurface', () => {
     expect(surface?.kind).toBe('elicitation')
   })
 
-  it('leaves everything else to the provider plugin', () => {
+  // Everything a shared form does not answer is a PERMISSION, read by the provider's
+  // own `extractControl`. It used to be the opaque `plugin` kind, which said only
+  // "the plugin draws this" and let each provider's component decide what that meant.
+  it('reads everything else as a permission the provider extracted', () => {
     const surface = controlSurface(
       request({ request: { tool_name: 'Bash', input: { command: 'pwd' } } }),
       AgentProvider.CLAUDE_CODE,
       undefined,
     )
-    expect(surface).toEqual({ kind: 'plugin' })
+    expect(surface).toEqual({
+      kind: 'permission',
+      permission: { title: 'Bash', input: { command: 'pwd' }, command: 'pwd', options: [] },
+    })
+  })
+
+  /*
+   * The generic fallback states NO arguments.
+   *
+   * It used to pass `request.payload`, which is the whole JSON-RPC envelope, so the
+   * banner headed it "Arguments" while the Allow button beside it sent
+   * `payload.request.input ?? {}` -- the two halves of one banner read two different
+   * parts of the payload, and the half the reader saw was not the half the agent got.
+   */
+  it('states no arguments for a payload no provider reads', () => {
+    // A provider whose plugin recognizes nothing in this envelope.
+    const surface = controlSurface(request({ unknown_envelope: { nothing: 'here' } }), AgentProvider.GOOSE, undefined)
+    expect(surface).toEqual({ kind: 'permission', permission: { options: [] } })
+  })
+
+  it('states no arguments for a provider with no plugin at all', () => {
+    const surface = controlSurface(request({ request: { tool_name: 'Bash' } }), undefined, undefined)
+    expect(surface).toEqual({ kind: 'permission', permission: { options: [] } })
   })
 
   it('reports nothing for a request the store already removed', () => {
@@ -73,7 +98,7 @@ describe('createControlSurface', () => {
     expect(surface.surface()?.kind).toBe('question')
 
     setCurrent(request({ request: { tool_name: 'Bash', input: { command: 'pwd' } } }))
-    expect(surface.surface()).toEqual({ kind: 'plugin' })
+    expect(surface.surface()?.kind).toBe('permission')
 
     setCurrent(null)
     expect(surface.surface()).toBeUndefined()

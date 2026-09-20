@@ -102,11 +102,14 @@ test.describe('Worktree Lifecycle', () => {
 
     // Get the initial agent that was auto-created with the workspace
     const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    const agent = agents[0]
+    if (agent === undefined)
+      throw new Error('expected the workspace agent to be listed')
 
-    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
+    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agent.id)
     expect(inspect.shouldPrompt).toBe(true)
     expect(inspect.worktreePath).toContain('test-repo-autoclean-worktrees/autoclean-branch')
-    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id, WorktreeAction.REMOVE)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agent.id, WorktreeAction.REMOVE)
 
     await waitForPathDeleted(worktreeDir)
     await waitForPathDeleted(join(repoDir, '.git', 'refs', 'heads', 'autoclean-branch'))
@@ -149,9 +152,12 @@ test.describe('Worktree Lifecycle', () => {
 
     // Now close the agent (last tab)
     const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
+    const agent = agents[0]
+    if (agent === undefined)
+      throw new Error('expected the workspace agent to be listed')
+    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agent.id)
     expect(inspect.shouldPrompt).toBe(true)
-    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id, WorktreeAction.REMOVE)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agent.id, WorktreeAction.REMOVE)
 
     await waitForPathDeleted(worktreeDir)
     await waitForPathDeleted(join(repoDir, '.git', 'refs', 'heads', 'shared-branch'))
@@ -180,12 +186,15 @@ test.describe('Worktree Lifecycle', () => {
 
     // Get the auto-created agent
     const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    const agent = agents[0]
+    if (agent === undefined)
+      throw new Error('expected the workspace agent to be listed')
 
-    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
+    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agent.id)
     expect(inspect.shouldPrompt).toBe(true)
     expect(inspect.branchName).toBe('manual-branch')
 
-    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id, WorktreeAction.REMOVE)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agent.id, WorktreeAction.REMOVE)
 
     await waitForPathDeleted(manualWorktreeDir)
     expect(branchExists(repoDir, 'manual-branch')).toBe(false)
@@ -201,16 +210,19 @@ test.describe('Worktree Lifecycle', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir)
 
     const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    const agent = agents[0]
+    if (agent === undefined)
+      throw new Error('expected the workspace agent to be listed')
 
-    const cleanInspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
+    const cleanInspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agent.id)
     expect(cleanInspect.shouldPrompt).toBe(false)
 
     writeFileSync(join(repoDir, 'dirty-branch.txt'), 'dirty\n')
-    const dirtyInspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
+    const dirtyInspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agent.id)
     expect(dirtyInspect.shouldPrompt).toBe(true)
     expect(dirtyInspect.hasUncommittedChanges).toBe(true)
 
-    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agent.id)
     expect(existsSync(join(repoDir, 'dirty-branch.txt'))).toBe(true)
   })
 
@@ -237,13 +249,16 @@ test.describe('Worktree Lifecycle', () => {
     writeFileSync(join(worktreeDir, 'dirty.txt'), 'uncommitted change\n')
 
     const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
+    const agent = agents[0]
+    if (agent === undefined)
+      throw new Error('expected the workspace agent to be listed')
+    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agent.id)
 
     expect(inspect.shouldPrompt).toBe(true)
     expect(inspect.worktreePath).toContain('test-repo-dirty-worktrees/dirty-branch')
     expect(inspect.hasUncommittedChanges).toBe(true)
 
-    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agent.id)
     expect(existsSync(worktreeDir)).toBe(true)
   })
 
@@ -275,14 +290,17 @@ test.describe('Worktree Lifecycle', () => {
     execSync('git commit -m "local only"', { cwd: worktreeDir })
 
     const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
+    const agent = agents[0]
+    if (agent === undefined)
+      throw new Error('expected the workspace agent to be listed')
+    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agent.id)
 
     expect(inspect.shouldPrompt).toBe(true)
     expect(inspect.canPush).toBe(false)
     expect(inspect.unpushedCommitCount).toBe(0)
     expect(existsSync(worktreeDir)).toBe(true)
 
-    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agent.id)
     expect(existsSync(worktreeDir)).toBe(true)
   })
 
@@ -327,12 +345,15 @@ test.describe('Worktree Lifecycle', () => {
     execSync('git push -u origin unpushed-branch', { cwd: worktreeDir })
 
     const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
+    const agent = agents[0]
+    if (agent === undefined)
+      throw new Error('expected the workspace agent to be listed')
+    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agent.id)
     expect(inspect.shouldPrompt).toBe(true)
     expect(inspect.hasUncommittedChanges).toBe(true)
 
-    await pushBranchViaAPI(hubUrl, adminToken, workerId, agents[0].workingDir)
-    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    await pushBranchViaAPI(hubUrl, adminToken, workerId, agent.workingDir)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agent.id)
 
     // Read the result from the BARE REMOTE, not from the worktree. Closing the
     // last tab of a worktree workspace removes the worktree directory, so these

@@ -74,7 +74,7 @@ function randomLowBits(): number {
   const crypto = globalThis.crypto
   if (crypto && typeof crypto.getRandomValues === 'function') {
     // Uint16Array gives 16 bits of randomness; mask down to TAB_BITS.
-    return crypto.getRandomValues(new Uint16Array(1))[0] & TAB_MASK
+    return (crypto.getRandomValues(new Uint16Array(1))[0] ?? 0) & TAB_MASK
   }
   return Math.floor(Math.random() * (TAB_MASK + 1))
 }

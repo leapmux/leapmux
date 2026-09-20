@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 // acpToolRequestContent records the last published request for conditional updates.
@@ -35,12 +37,12 @@ func (b *acpBase) enrichACPToolRequest(toolID string, fields map[string]json.Raw
 	if err := json.Unmarshal(previous.original, &original); err != nil {
 		return
 	}
-	supplement := acpToolSupplement(original)
+	supplement := newACPToolSupplement(original)
 	if len(previous.supplemental) > 0 && json.Unmarshal(previous.supplemental, &supplement) != nil {
 		return
 	}
 	changed := false
-	for _, key := range []string{"title", "kind", "rawInput", "locations"} {
+	for _, key := range contracts.ACPSupplementRequestKeys {
 		value, exists := fields[key]
 		current, supplemented := supplement[key]
 		if !supplemented {
@@ -76,15 +78,4 @@ func (b *acpBase) enrichACPToolRequest(toolID string, fields map[string]json.Raw
 		b.toolRequestContents[toolID] = &acpToolRequestContent{original: previous.original, supplemental: next, revision: previous.revision + 1}
 	}
 	b.turnMu.Unlock()
-}
-
-// acpToolSupplement identifies the original message without duplicating its payload.
-func acpToolSupplement(original map[string]json.RawMessage) map[string]json.RawMessage {
-	supplement := make(map[string]json.RawMessage)
-	for _, key := range []string{"sessionUpdate", "toolCallId", "status"} {
-		if value, exists := original[key]; exists {
-			supplement[key] = value
-		}
-	}
-	return supplement
 }

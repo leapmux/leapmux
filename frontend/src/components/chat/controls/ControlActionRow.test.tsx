@@ -15,7 +15,7 @@ describe('actionButtonClass', () => {
   })
 })
 
-describe('controlActionRow', () => {
+describe('ControlActionRow', () => {
   it('renders navigation only while its conditional content exists', () => {
     const [visible, setVisible] = createSignal(false)
     render(() => <ControlActionRow navigation={<Show when={visible()}><span>Page 1</span></Show>} primary={<button>Submit</button>} />)
@@ -32,7 +32,12 @@ describe('controlActionRow', () => {
 
     const row = screen.getByTestId('control-footer')
     expect(row).toBeInTheDocument()
-    expect(screen.getByTestId('allow').parentElement?.parentElement).toBe(row)
+    // The decisions are one group that never splits across a wrap: the button,
+    // the group, the decision row, the footer.
+    const button = screen.getByTestId('allow')
+    const group = button.parentElement
+    expect(group?.className).toContain('controlFooterPrimaryDecisions')
+    expect(group?.parentElement).toBe(row.firstElementChild)
   })
 
   it('omits an absent secondary group', () => {
@@ -68,7 +73,9 @@ describe('controlActionRow', () => {
 
     const choice = screen.getByTestId('choice')
     const allow = screen.getByTestId('allow')
-    expect(choice.parentElement?.parentElement).toBe(allow.parentElement)
+    // Both groups sit inside the decision row, the choices before the decisions.
+    const decisions = allow.closest('[class*="controlFooterDecisions"]')
+    expect(choice.closest('[class*="controlFooterDecisions"]')).toBe(decisions)
     expect(choice.compareDocumentPosition(allow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 

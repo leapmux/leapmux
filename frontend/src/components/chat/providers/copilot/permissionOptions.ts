@@ -1,13 +1,13 @@
-import type { WirePermissionOption } from '../../controls/permissionOptionLabels'
 import type { ControlResponseSender } from '~/components/chat/controls/types'
-import { COPILOT_APPROVAL_SCOPE, COPILOT_DECISION, COPILOT_EVENT } from '~/generated/contracts/copilot-protocol'
-import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { buildControlResponseEnvelope, CONTROL_REJECTED_BY_USER_MESSAGE } from '~/utils/controlResponse'
+import type { PermissionOption } from '~/components/chat/model/controlPrompt'
 import {
   KIND_ALLOW_ALWAYS,
   KIND_ALLOW_ONCE,
   KIND_REJECT_ONCE,
-} from '../../controls/permissionOptionLabels'
+} from '~/components/chat/model/controlPrompt'
+import { COPILOT_APPROVAL_SCOPE, COPILOT_DECISION, COPILOT_EVENT } from '~/generated/contracts/copilot-protocol'
+import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { buildControlResponseEnvelope, CONTROL_REJECTED_BY_USER_MESSAGE } from '~/utils/controlResponse'
 import { sendResponse } from '../../controls/types'
 import { copilotEvent } from './protocol'
 
@@ -48,17 +48,33 @@ const DECISION_KINDS: Record<string, string> = {
   [COPILOT_DECISION.Reject]: KIND_REJECT_ONCE,
 }
 
-/** The option a saved decision word identifies, or the kind alone when the request never offered it. */
+/**
+ * The option a saved decision word identifies, or the kind alone when the request never
+ * offered it.
+ *
+ * `Object.hasOwn` on BOTH tables, never a bare index read. `copilotToolKind` states the
+ * same reason at its own fallback in `./toolKinds`. The decision word is wire data off a
+ * PERSISTED row, so `toString`, `constructor`, `valueOf` and `__proto__` all reach here,
+ * and each one answers a FUNCTION from `Object.prototype`. A function is neither
+ * `undefined` nor null, so an index read passes both an `=== undefined` guard and a `??`
+ * fallback -- and `copilotControlResponseSummary` then calls `startsWith` on that
+ * function, which throws the whole message to the error boundary.
+ */
 export function copilotDecisionOption(
   payload: Record<string, unknown> | undefined,
   decision: string,
-): WirePermissionOption | undefined {
+): PermissionOption | undefined {
+  if (!Object.hasOwn(DECISION_OPTION_IDS, decision))
+    return undefined
+  // `hasOwn` proved the key is the table's own and every own value is a string; the
+  // guard is for the TYPE alone, which still types the read as possibly undefined.
   const optionId = DECISION_OPTION_IDS[decision]
   if (optionId === undefined)
     return undefined
+  const kind = Object.hasOwn(DECISION_KINDS, decision) ? DECISION_KINDS[decision] : ''
   const offered = payload ? copilotPermissionOptions(payload) : []
   return offered.find(option => option.optionId === optionId)
-    ?? { optionId, kind: DECISION_KINDS[decision] ?? '' }
+    ?? { optionId, kind: kind ?? '' }
 }
 
 /** The permission request one control payload carries, or undefined for another kind. */
@@ -103,9 +119,9 @@ function copilotOffersSessionApproval(request: Record<string, unknown> | undefin
  * decisions the runtime accepts for that request. The kinds are the shared
  * vocabulary the decision row lays out; the ids are what the answer carries back.
  */
-export function copilotPermissionOptions(payload: Record<string, unknown>): WirePermissionOption[] {
+export function copilotPermissionOptions(payload: Record<string, unknown>): PermissionOption[] {
   const request = copilotPermission(payload)
-  const options: WirePermissionOption[] = [
+  const options: PermissionOption[] = [
     { optionId: COPILOT_ALLOW_ONCE, kind: KIND_ALLOW_ONCE, name: 'Allow once' },
   ]
   // The two wider scopes need the same approval rule, so a request that can express

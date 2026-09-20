@@ -1,7 +1,8 @@
-import type { SearchResultSource } from '../../../results/searchResult'
+import type { SearchResult } from '../../../model/searchResult'
 import type { ZCodeRow } from './toolCommon'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { pickString } from '~/lib/jsonPick'
+import { searchOutputMode } from '../../../model/searchOutputMode'
 import { zcodeExtractTool, zcodeToolInput } from './toolCommon'
 
 const GLOB_TRUNCATION = '(Results are truncated. Consider using a more specific path or pattern.)'
@@ -11,22 +12,26 @@ const COUNT_FOOTER = new RegExp(`\\n\\nFound (\\d+) total occurrences? across (\
 const CONTENT_FOOTER = new RegExp(`\\n\\n\\[Showing results with pagination = (${PAGINATION})\\]$`)
 
 /** Read ZCode's native search formatter without interpreting matches as metadata. */
-export function extractZCodeSearch(row: ZCodeRow): SearchResultSource | null {
+export function extractZCodeSearch(row: ZCodeRow): SearchResult | null {
   const update = zcodeExtractTool(row.parsed)
   if (!update || update.isError || (row.toolName !== ZCODE_TOOL.Glob && row.toolName !== ZCODE_TOOL.Grep))
     return null
   const input = zcodeToolInput(row)
   const original = update.result?.content ?? ''
   const text = original
-  const source: SearchResultSource = {
-    variant: row.toolName === ZCODE_TOOL.Glob ? 'glob' : 'grep',
-    pattern: pickString(input, 'pattern'),
+  const source: SearchResult = {
     filenames: [],
     content: '',
     numFiles: 0,
     numLines: 0,
     truncated: update.result?.truncated ?? false,
     fallbackContent: original,
+    // POSITIVE EVIDENCE only: this build knows ZCode's empty wording for `glob`
+    // alone, which the branch below states. No transcript in `testdata/` records
+    // what the grep modes print when they match nothing, so every other branch
+    // recognizes an empty result only from an empty body. Tighten this predicate
+    // once a real transcript states that wording -- do not guess one.
+    empty: text.trim() === '',
   }
   if (row.toolName === ZCODE_TOOL.Glob) {
     const lines = text ? text.split('\n').filter(line => line !== '') : []
@@ -34,12 +39,22 @@ export function extractZCodeSearch(row: ZCodeRow): SearchResultSource | null {
       lines.pop()
       source.truncated = true
     }
-    source.filenames = text === 'No files found' ? [] : lines
+    // The wording ZCode prints for a glob that matched no file, which this branch
+    // already reads to empty the list. The flag states the same fact for the row.
+    const statedNothing = text === 'No files found'
+    source.filenames = statedNothing ? [] : lines
     source.numFiles = source.filenames.length
+    source.empty ||= statedNothing
     return source
   }
-  const mode = pickString(input, 'output_mode') || 'files_with_matches'
-  source.mode = mode
+  // An unrecognized `output_mode` now narrows to `undefined` instead of keeping the
+  // raw word; both still fall through to the content branch below, exactly as an
+  // absent mode always did.
+  const declared = pickString(input, 'output_mode')
+  const mode = declared ? searchOutputMode(declared) : 'files_with_matches'
+  // An unrecognized word leaves the mode unstated rather than explicitly undefined.
+  if (mode !== undefined)
+    source.mode = mode
   if (mode === 'files_with_matches') {
     const match = FILES_HEADER.exec(text)
     if (match) {
@@ -48,7 +63,8 @@ export function extractZCodeSearch(row: ZCodeRow): SearchResultSource | null {
       if (Number.isSafeInteger(count)) {
         source.filenames = filenames
         source.numFiles = count
-        source.notice = match[2]
+        if (match[2] !== undefined)
+          source.notice = match[2]
       }
     }
     return source
@@ -60,9 +76,10 @@ export function extractZCodeSearch(row: ZCodeRow): SearchResultSource | null {
       const files = Number(match[2])
       if (Number.isSafeInteger(matches) && Number.isSafeInteger(files)) {
         source.content = text.slice(0, match.index)
-        source.numMatches = matches
+        source.matchCount = matches
         source.numFiles = files
-        source.notice = match[3]
+        if (match[3] !== undefined)
+          source.notice = match[3]
       }
     }
     return source
@@ -70,6 +87,7 @@ export function extractZCodeSearch(row: ZCodeRow): SearchResultSource | null {
   // Context and multiline searches do not expose enough data for a reliable match count.
   const pagination = CONTENT_FOOTER.exec(text)
   source.content = pagination ? text.slice(0, pagination.index) : original
-  source.notice = pagination?.[1]
+  if (pagination?.[1] !== undefined)
+    source.notice = pagination[1]
   return source
 }

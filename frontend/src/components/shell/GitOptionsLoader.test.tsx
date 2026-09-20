@@ -23,7 +23,7 @@ function stubGitInfo(opts: {
   }
 }
 
-describe('gitOptionsLoader', () => {
+describe('GitOptionsLoader', () => {
   it('renders the spinner while loading is true', () => {
     const gitInfo = stubGitInfo({ loading: () => true, showGitOptions: () => false })
     render(() => <GitOptionsLoader gitInfo={gitInfo}>{() => <div data-testid="body">body</div>}</GitOptionsLoader>)

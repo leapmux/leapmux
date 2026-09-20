@@ -1,4 +1,4 @@
-import type { AgentResultSource } from '../../../results/agentResult'
+import type { AgentRun } from '../../../model/tools/agent'
 import { PI_CUSTOM_TYPE, PI_EVENT } from '~/generated/contracts/pi-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { formatDuration, formatNumber } from '../../../rendererUtils'
@@ -21,9 +21,12 @@ function notificationReports(content: string): Map<string, string> {
     const root = document.documentElement
     const ids = [...root.children].filter(child => child.tagName === 'task-id')
     const results = [...root.children].filter(child => child.tagName === 'result')
-    if (ids.length !== 1 || results.length !== 1 || ids[0].children.length || results[0].children.length)
+    // The length checks prove both elements exist; the null tests are type-level guards alone.
+    const idElement = ids[0]
+    const resultElement = results[0]
+    if (ids.length !== 1 || results.length !== 1 || !idElement || !resultElement || idElement.children.length || resultElement.children.length)
       continue
-    const id = ids[0].textContent ?? ''
+    const id = idElement.textContent ?? ''
     if (!id || duplicateIds.has(id))
       continue
     if (reports.has(id)) {
@@ -31,13 +34,13 @@ function notificationReports(content: string): Map<string, string> {
       duplicateIds.add(id)
       continue
     }
-    reports.set(id, results[0].textContent ?? '')
+    reports.set(id, resultElement.textContent ?? '')
   }
   return reports
 }
 
 /** Adapt individual and grouped child completions to the shared agent result component. */
-function extractSubagentNotificationSources(payload: Record<string, unknown>): AgentResultSource[] | null {
+function extractSubagentNotificationSources(payload: Record<string, unknown>): AgentRun[] | null {
   const message = piVisibleCustomMessage(payload)
   if (message?.customType !== PI_CUSTOM_TYPE.SubagentNotification)
     return null
@@ -46,7 +49,7 @@ function extractSubagentNotificationSources(payload: Record<string, unknown>): A
     return null
   const reports = notificationReports(piContentText(payload, 'text'))
   const entries = [details, ...(Array.isArray(details.others) ? details.others : [])]
-  const sources: AgentResultSource[] = []
+  const sources: AgentRun[] = []
   for (const entry of entries) {
     if (!isObject(entry))
       continue
@@ -54,13 +57,13 @@ function extractSubagentNotificationSources(payload: Record<string, unknown>): A
     const status = pickString(entry, 'status')
     if (!id || !status)
       continue
-    const metadata: AgentResultSource['metadata'] = [{ label: 'Agent ID', value: id }]
-    for (const [key, label] of [['toolUses', 'Tool uses'], ['turnCount', 'Turns'], ['maxTurns', 'Maximum turns'], ['totalTokens', 'Tokens'], ['durationMs', 'Duration']]) {
+    const metadata: AgentRun['metadata'] = [{ label: 'Agent ID', value: id }]
+    for (const [key, label] of [['toolUses', 'Tool uses'], ['turnCount', 'Turns'], ['maxTurns', 'Maximum turns'], ['totalTokens', 'Tokens'], ['durationMs', 'Duration']] as const) {
       const value = entry[key]
       if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
         metadata.push({ label, value: key === 'durationMs' ? formatDuration(value) : formatNumber(value) })
     }
-    for (const [key, label] of [['outputFile', 'Transcript'], ['error', 'Error']]) {
+    for (const [key, label] of [['outputFile', 'Transcript'], ['error', 'Error']] as const) {
       const value = pickString(entry, key)
       if (value)
         metadata.push({ label, value })
@@ -69,7 +72,7 @@ function extractSubagentNotificationSources(payload: Record<string, unknown>): A
       description: pickString(entry, 'description').trim(),
       agentId: id,
       registryKey: id,
-      status: status === 'error' ? 'failed' : status === 'aborted' || status === 'steered' ? 'partial' : status,
+      statusLabel: status === 'error' ? 'failed' : status === 'aborted' || status === 'steered' ? 'partial' : status,
       outcome: status === 'completed' ? 'completed' : status === 'error' ? 'failed' : status === 'stopped' ? 'stopped' : status === 'running' || status === 'queued' ? 'running' : 'unknown',
       metadata,
       body: reports.get(id) ?? pickString(entry, 'resultPreview'),
@@ -78,10 +81,11 @@ function extractSubagentNotificationSources(payload: Record<string, unknown>): A
   return sources.length ? sources : null
 }
 
-const notificationCache = new WeakMap<Record<string, unknown>, AgentResultSource[] | null>()
+const notificationCache = new WeakMap<Record<string, unknown>, AgentRun[] | null>()
 
 /** Classification, rendering, and copying share one parse of each immutable message. */
-export function piSubagentNotificationSources(payload: Record<string, unknown>): AgentResultSource[] | null {
+/** The finished subagents one consolidated notification reports. */
+export function piSubagentNotifications(payload: Record<string, unknown>): AgentRun[] | null {
   const cached = notificationCache.get(payload)
   if (cached !== undefined)
     return cached

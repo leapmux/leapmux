@@ -15,7 +15,7 @@ function makeActions(overrides: Partial<TileActions> = {}): TileActions {
   }
 }
 
-describe('tileActionsMenu', () => {
+describe('TileActionsMenu', () => {
   it('hides split items when canSplit is false', () => {
     render(() => (
       <TileActionsMenu

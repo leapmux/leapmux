@@ -27,7 +27,7 @@ describe('keyPinStore', () => {
     commit()
     const pins = localStorageGet<Record<string, { publicKeyHex: string }>>(KEY_KEY_PINS) ?? {}
     expect(Object.keys(pins)).toEqual(['w1'])
-    expect(pins.w1.publicKeyHex.length).toBeGreaterThan(0)
+    expect(pins.w1?.publicKeyHex.length).toBeGreaterThan(0)
   })
 
   it('matching pin returns a no-op commit', async () => {
@@ -46,16 +46,17 @@ describe('keyPinStore', () => {
     const confirmKeyPin = vi.fn().mockResolvedValue('accept' as const)
     const store = new KeyPinStore({ confirmKeyPin })
     ;(await store.resolve('w1', bundle(1)))()
-    const before = localStorageGet<Record<string, { publicKeyHex: string }>>(KEY_KEY_PINS)!.w1.publicKeyHex
+    const readPin = () => localStorageGet<Record<string, { publicKeyHex: string }>>(KEY_KEY_PINS)?.w1?.publicKeyHex
+    const before = readPin()
 
     const commit = await store.resolve('w1', bundle(9))
     expect(confirmKeyPin).toHaveBeenCalledOnce()
     expect(confirmKeyPin).toHaveBeenCalledWith('w1', expect.any(String), expect.any(String))
     // Deferred-commit fence: the pin stays on the old key until the caller
     // proves the session and runs commit (open-time Ping contract).
-    expect(localStorageGet<Record<string, { publicKeyHex: string }>>(KEY_KEY_PINS)!.w1.publicKeyHex).toBe(before)
+    expect(readPin()).toBe(before)
     commit()
-    const after = localStorageGet<Record<string, { publicKeyHex: string }>>(KEY_KEY_PINS)!.w1.publicKeyHex
+    const after = readPin()
     expect(after).not.toBe(before)
   })
 

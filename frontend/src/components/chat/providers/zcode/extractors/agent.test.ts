@@ -43,7 +43,7 @@ describe('zcode agent result extraction', () => {
   })
 
   it('uses the prompt for a native background launch', () => {
-    expect(result(launch)).toMatchObject({ outcome: 'running', status: 'launched asynchronously', agentId: 'agent_child', body: 'Read the entry points.', bodyLabel: 'Prompt' })
+    expect(result(launch)).toMatchObject({ outcome: 'running', statusLabel: 'launched asynchronously', agentId: 'agent_child', body: 'Read the entry points.', bodyLabel: 'Prompt' })
   })
 
   it('keeps a completed report that quotes a background launch', () => {

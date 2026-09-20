@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { ContextUsageInfo } from '~/stores/agentSession.store'
+import type { ContextUsageInfo } from '~/models/agentSession'
 import Info from 'lucide-solid/icons/info'
 import { createMemo, Show } from 'solid-js'
 import { pluginFor } from '~/components/chat/providers/registry'
@@ -19,7 +19,7 @@ export const DEFAULT_CONTEXT_WINDOW = 200_000
 // The autocompact buffer (percentage of the context window a provider reserves)
 // is declared per-provider in its plugin; default 0 for providers with none.
 export function contextBufferPct(agentProvider?: AgentProvider): number {
-  return pluginFor(agentProvider)?.contextBufferPct ?? 0
+  return pluginFor(agentProvider)?.session?.contextBufferPct ?? 0
 }
 
 /** Resolve the effective context window from usage data, model metadata, or the default. */
@@ -107,10 +107,19 @@ export const ContextUsageGrid: Component<ContextUsageGridProps> = (props) => {
     const pct = percentage()
     return pct != null ? `Context: ${Math.round(pct)}%` : undefined
   })
+  // Set only when there is a tooltip to show: an explicit `undefined` is not
+  // assignable to the optional `text` under exactOptionalPropertyTypes. One
+  // read of `tooltip`, so the branch keeps the narrowed type.
+  const tooltipProps = () => {
+    const text = tooltip()
+    return text === undefined ? {} : { text }
+  }
 
   return (
     <Show when={percentage() != null} fallback={<Info size={props.size} />}>
-      <Tooltip text={tooltip()} ariaLabel>
+      {/* The `Show` guarantees a percentage, so `tooltip()` is set whenever
+          this renders. */}
+      <Tooltip {...tooltipProps()} ariaLabel>
         <PipGrid size={props.size} fills={fills()} testId="context-usage-grid" />
       </Tooltip>
     </Show>

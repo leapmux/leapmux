@@ -113,7 +113,7 @@ describe('scrub debounce ordering', () => {
   })
 })
 
-describe('createthumbdrag', () => {
+describe('createThumbDrag', () => {
   it('captures the pointer and applies the initial position, live-scrolling in-window', () => {
     const { el, handle, setDrag, previewScrollTo } = setup()
     handle.start(7, 100) // clientY 100 of 400 -> fraction 0.25 -> seqF 1 + 0.25*4 = 2 (in window)
@@ -371,7 +371,8 @@ describe('createthumbdrag', () => {
     up(el, 100)
     expect(onEnd).toHaveBeenCalledTimes(1)
     // onEnd frees the "drag active" guard before onRelease starts the seek.
-    expect(onEnd.mock.invocationCallOrder[0]).toBeLessThan(onRelease.mock.invocationCallOrder[0])
+    // Each fired exactly once above; `?? -1` is the type-level guard alone.
+    expect(onEnd.mock.invocationCallOrder[0] ?? -1).toBeLessThan(onRelease.mock.invocationCallOrder[0] ?? -1)
     // A later cancel() (unmount) must NOT fire onEnd again -- the guard clears only once.
     handle.cancel()
     expect(onEnd).toHaveBeenCalledTimes(1)

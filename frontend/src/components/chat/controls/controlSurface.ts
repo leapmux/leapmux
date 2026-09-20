@@ -1,28 +1,28 @@
 import type { Accessor } from 'solid-js'
 import type { MessageContextResolver } from '../messageContextResolver'
-import type { ControlQuestion } from './AskUserQuestionControl'
-import type { ElicitationRequest } from './elicitationForm'
+import type { ControlPrompt } from '../model/controlPrompt'
+import type { ActiveQuestionControl } from './AskUserQuestionControl'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ControlRequest } from '~/stores/control.store'
 import { createMemo } from 'solid-js'
 import { controlRequestProvider } from '~/stores/control.store'
 import { useControlRequestSource } from '../controlRequestSource'
+import { useControlRequestToolSpan } from '../controlRequestToolSpan'
 import { pluginFor } from '../providers/registry'
 import { controlQuestion } from './AskUserQuestionControl'
 
 /**
- * Which control surface answers ONE request: the question form, the elicitation
- * form, or the provider's own plugin.
+ * Which control surface answers ONE request.
  *
- * `plugin` is the answer for everything else, and it carries no payload of its
- * own: the banner renders the plugin's components and the composer asks the
- * plugin for its editor purpose.
+ * It is the shared control model, with the QUESTION variant carrying its send path
+ * beside the questions: a question is answered through the provider's own
+ * `askUserQuestion` capability, and the banner and the composer both need it.
+ * Every other variant is drawn and answered from the model alone.
  */
 export type ControlSurface
-  = | { kind: 'question', question: ControlQuestion }
-    | { kind: 'elicitation', elicitation: ElicitationRequest }
-    | { kind: 'plugin' }
+  = | { kind: 'question', question: ActiveQuestionControl }
+    | Exclude<ControlPrompt, { kind: 'question' }>
 
 /**
  * The ONE classifier. The banner and the composer both call it, with the same
@@ -40,6 +40,7 @@ export function controlSurface(
   request: ControlRequest | null | undefined,
   agentProvider: AgentProvider | undefined,
   source: ParsedMessageContent | undefined,
+  toolRequest?: ParsedMessageContent,
 ): ControlSurface | undefined {
   if (!request)
     return undefined
@@ -47,11 +48,41 @@ export function controlSurface(
   // plugins for the same request. A caller that already resolved the provider
   // loses nothing: the request's own provider wins either way.
   const provider = controlRequestProvider(request, agentProvider)
+  // The question keeps its own path, because the capability it carries is the SEND
+  // path and not content: the composer submits through it.
   const question = controlQuestion(request, provider, source)
   if (question)
     return { kind: 'question', question }
-  const elicitation = pluginFor(provider)?.elicitation?.(request.payload, source)
-  return elicitation ? { kind: 'elicitation', elicitation } : { kind: 'plugin' }
+  const plugin = pluginFor(provider)
+  // The elicitation keeps its own step for the same reason the question does: it is a
+  // cross-provider hook with one meaning, every provider registers it, and the
+  // composer reads the same hook to pick its editor. Seven copies inside
+  // `extractControl` would be seven chances to forget it.
+  const elicitation = plugin?.controls?.elicitation?.(request.payload, source)
+  if (elicitation)
+    return { kind: 'elicitation', elicitation }
+  // The optional reads are set only when they hold a message: an absent source
+  // and an absent tool span are different facts from explicit `undefined` ones
+  // under exactOptionalPropertyTypes, and every extractor treats them the same.
+  const extracted = plugin?.controls?.extractControl?.({
+    payload: request.payload,
+    ...(source === undefined ? {} : { source }),
+    ...(toolRequest === undefined ? {} : { request: toolRequest }),
+  })
+  if (extracted)
+    return extracted
+  // A provider that reads nothing leaves the generic permission row: the shared
+  // Allow/Deny pair, and no arguments. `extractControl` can no longer answer a
+  // question -- `ExtractedControlRequest` excludes that variant, so
+  // `askUserQuestion.isRequest` above is the one recognizer.
+  //
+  // It states NO `input`, and that is the whole point of the branch. It used to pass
+  // `request.payload`, which is the whole JSON-RPC envelope, so the banner headed it
+  // "Arguments" while the Allow button beside it sent `payload.request.input ?? {}`
+  // -- the two halves of one banner read two different parts of the payload, and the
+  // half the reader saw was not the half the agent received. `ControlJson` hides an
+  // empty value, so the banner now draws the decision alone.
+  return { kind: 'permission', permission: { options: [] } }
 }
 
 /** The classification of ONE live control request, as reactive accessors. */
@@ -86,6 +117,7 @@ export function createControlSurface(
 ): LiveControlSurface {
   const provider = createMemo(() => controlRequestProvider(request(), agentProvider()))
   const source = useControlRequestSource(request, messageContext, provider)
-  const surface = createMemo(() => controlSurface(request(), provider(), source()))
+  const toolRequest = useControlRequestToolSpan(request, messageContext, provider)
+  const surface = createMemo(() => controlSurface(request(), provider(), source(), toolRequest()))
   return { provider, surface }
 }

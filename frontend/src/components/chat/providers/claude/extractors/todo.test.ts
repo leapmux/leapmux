@@ -1,57 +1,40 @@
 import { describe, expect, it } from 'vitest'
-import { claudeTodoWriteFromInput } from './todo'
+import { claudeTodoItems } from './todo'
 
-describe('claudeTodoWriteFromInput', () => {
+describe('claudeTodoItems', () => {
   it('returns null for null/undefined input', () => {
-    expect(claudeTodoWriteFromInput(null)).toBeNull()
-    expect(claudeTodoWriteFromInput(undefined)).toBeNull()
+    expect(claudeTodoItems(null)).toBeNull()
+    expect(claudeTodoItems(undefined)).toBeNull()
   })
 
   it('returns null when todos is missing or not an array', () => {
-    expect(claudeTodoWriteFromInput({})).toBeNull()
-    expect(claudeTodoWriteFromInput({ todos: 'oops' as unknown as never[] })).toBeNull()
-    expect(claudeTodoWriteFromInput({ other: 1 })).toBeNull()
+    expect(claudeTodoItems({})).toBeNull()
+    expect(claudeTodoItems({ todos: 'oops' as unknown as never[] })).toBeNull()
+    expect(claudeTodoItems({ other: 1 })).toBeNull()
   })
 
+  // An empty list is a list the agent CLEARED, which the row words for itself.
+  // Null is the different answer "this payload holds no list at all".
   it('extracts an empty todos list (empty state)', () => {
-    expect(claudeTodoWriteFromInput({ todos: [] })).toEqual({
-      toolName: 'TodoWrite',
-      title: '0 tasks',
-      todos: [],
-    })
+    expect(claudeTodoItems({ todos: [] })).toEqual([])
   })
 
-  it('extracts statuses and pluralizes the title', () => {
-    const source = claudeTodoWriteFromInput({
+  it('extracts each status and keys every row', () => {
+    expect(claudeTodoItems({
       todos: [
         { content: 'Do A', status: 'pending', activeForm: 'Doing A' },
         { content: 'Do B', status: 'in_progress', activeForm: 'Doing B' },
         { content: 'Do C', status: 'completed', activeForm: 'Doing C' },
       ],
-    })
-    expect(source).toEqual({
-      toolName: 'TodoWrite',
-      title: '3 tasks',
-      todos: [
-        { rowKey: '0:Do A', content: 'Do A', status: 'pending', activeForm: 'Doing A' },
-        { rowKey: '1:Do B', content: 'Do B', status: 'in_progress', activeForm: 'Doing B' },
-        { rowKey: '2:Do C', content: 'Do C', status: 'completed', activeForm: 'Doing C' },
-      ],
-    })
-  })
-
-  it('singularizes for one task', () => {
-    const source = claudeTodoWriteFromInput({
-      todos: [{ content: 'X', status: 'pending', activeForm: 'Xing' }],
-    })
-    expect(source?.title).toBe('1 task')
+    })).toEqual([
+      { rowKey: '0:Do A', content: 'Do A', status: 'pending', activeForm: 'Doing A' },
+      { rowKey: '1:Do B', content: 'Do B', status: 'in_progress', activeForm: 'Doing B' },
+      { rowKey: '2:Do C', content: 'Do C', status: 'completed', activeForm: 'Doing C' },
+    ])
   })
 
   it('coerces missing fields to empty strings and unknown statuses to pending', () => {
-    const source = claudeTodoWriteFromInput({
-      todos: [{ status: 'unknown' }],
-    })
-    expect(source?.todos).toEqual([
+    expect(claudeTodoItems({ todos: [{ status: 'unknown' }] })).toEqual([
       { rowKey: '0:', content: '', status: 'pending', activeForm: '' },
     ])
   })

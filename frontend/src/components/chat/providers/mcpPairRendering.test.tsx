@@ -1,10 +1,10 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { toolOutcomeLabel } from '~/components/chat/toolOutcomeLabel'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolComplete, copilotToolStart } from '~/test-support/copilotFixtures'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { renderMessageContent } from '../messageRenderers'
+import { renderMessageContent } from '../messageContentRenderer'
+import { toolOutcomeLabel } from '../results/toolOutcomeLabel'
 import { toolUseHeader } from '../toolStyles.css'
 import { providerFor } from './registry'
 import { input } from './testUtils'
@@ -14,6 +14,8 @@ import './testMocks'
 function mcpMessages(provider: AgentProvider) {
   const args = { query: 'rendering' }
   const content = [{ type: 'text', text: '**Result:** Tool rendering.' }]
+  // The literal above holds one block, so the indexed read never misses at runtime.
+  const firstText = content[0]?.text ?? ''
   if (provider === AgentProvider.CLAUDE_CODE) {
     return {
       spanType: 'mcp__Docs__lookup',
@@ -36,14 +38,14 @@ function mcpMessages(provider: AgentProvider) {
     return {
       spanType: 'mcp__Docs__lookup',
       request: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'call', toolName: 'mcp__Docs__lookup', input: args } },
-      result: { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', result: { success: true, content: content[0].text, display: { kind: 'mcp_tool', serverName: 'Docs', toolName: 'lookup' } } } },
+      result: { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', result: { success: true, content: firstText, display: { kind: 'mcp_tool', serverName: 'Docs', toolName: 'lookup' } } } },
     }
   }
   if (provider === AgentProvider.GITHUB_COPILOT) {
     return {
       spanType: 'Docs__lookup',
       request: copilotToolStart('call', 'Docs__lookup', args),
-      result: copilotToolComplete('call', { result: { content: content[0].text, contents: content } }),
+      result: copilotToolComplete('call', { result: { content: firstText, contents: content } }),
     }
   }
   return {
@@ -76,10 +78,16 @@ describe.each([
   it('renders one header and one argument section for the pair', () => {
     const { request, result, spanType } = mcpMessages(provider)
     const plugin = providerFor(provider)!
-    const sources = (current: Record<string, unknown>) => testMessageSources({ current: () => input(current), request: () => input(request), result: () => input(result) })
+    const sources = (current: Record<string, unknown>, role: 'request' | 'result') => testMessageSources({
+      current: () => input(current),
+      request: () => input(request),
+      result: () => input(result),
+      role: () => role,
+      visibleRows: () => ({ request: true, result: true }),
+    })
     const { container } = render(() => [
-      renderMessageContent(request, { premeasureMode: true, spanType, sources: sources(request) }, plugin.classify(input(request)), provider),
-      renderMessageContent(result, { premeasureMode: true, spanType, sources: sources(result) }, plugin.classify(input(result)), provider),
+      renderMessageContent(request, { premeasureMode: true, spanType, sources: sources(request, 'request') }, plugin?.transcript.classify(input(request)), provider),
+      renderMessageContent(result, { premeasureMode: true, spanType, sources: sources(result, 'result') }, plugin?.transcript.classify(input(result)), provider),
     ])
     expect(container.querySelectorAll(`.${toolUseHeader}`)).toHaveLength(1)
     expect(container.textContent?.match(/Arguments/g)).toHaveLength(1)
@@ -92,9 +100,9 @@ describe.each([
 it('identifies Codex request and result roles before either counterpart loads', () => {
   const { request, result } = mcpMessages(AgentProvider.CODEX)
   const plugin = providerFor(AgentProvider.CODEX)!
-  expect(plugin.spanRole?.(input(request))).toBe('opener')
-  expect(plugin.spanRole?.(input(result))).toBe('result')
-  expect(plugin.relatedMessages?.(input(result))).toEqual(['request'])
+  expect(plugin?.transcript.spanRole?.(input(request))).toBe('request')
+  expect(plugin?.transcript.spanRole?.(input(result))).toBe('result')
+  expect(plugin?.transcript.relatedMessages?.(input(result))).toEqual(['request'])
 })
 
 it('does not use arguments from a different Pi tool call', () => {
@@ -105,7 +113,7 @@ it('does not use arguments from a different Pi tool call', () => {
     premeasureMode: true,
     spanType,
     sources: testMessageSources({ request: () => input(other) }),
-  }, plugin.classify(input(result)), AgentProvider.PI))
+  }, plugin?.transcript.classify(input(result)), AgentProvider.PI))
   expect(container.textContent).not.toContain('foreign argument')
   expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toContain('lookup')
 })
@@ -118,7 +126,7 @@ it('does not use a Claude request from another call', () => {
     premeasureMode: true,
     spanType,
     sources: testMessageSources({ request: () => input(other) }),
-  }, plugin.classify(input(result)), AgentProvider.CLAUDE_CODE))
+  }, plugin?.transcript.classify(input(result)), AgentProvider.CLAUDE_CODE))
   expect(container.textContent).not.toContain('foreign argument')
   expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toContain('lookup')
 })
@@ -129,7 +137,7 @@ it.each([AgentProvider.PI, AgentProvider.ZCODE])('does not repeat a synthetic fa
     ? { type: 'tool_execution_end', toolCallId: 'call', toolName: 'lookup', isError: true, result: { content: [{ type: 'text', text: 'Access denied' }] } }
     : { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', result: { success: false, content: 'Access denied', display: { kind: 'mcp_tool', serverName: 'Docs', toolName: 'lookup' } } } }
   const plugin = providerFor(provider)!
-  const { container } = render(() => renderMessageContent(result, { premeasureMode: true, spanType, sources: testMessageSources({ request: () => input(request) }) }, plugin.classify(input(result)), provider))
+  const { container } = render(() => renderMessageContent(result, { premeasureMode: true, spanType, sources: testMessageSources({ request: () => input(request) }) }, plugin?.transcript.classify(input(result)), provider))
   expect(container.textContent).toContain(toolOutcomeLabel('failed'))
   expect(container.textContent).toContain('Access denied')
   expect(container.textContent).not.toContain('Tool call failed')
@@ -145,7 +153,7 @@ describe('retained MCP completion', () => {
       premeasureMode: true,
       spanType,
       sources: testMessageSources({ current: () => parsed, request: () => input(request) }),
-    }, plugin.classify(parsed), provider, MessageCompletion.INTERRUPTED))
+    }, plugin?.transcript.classify(parsed), provider, MessageCompletion.INTERRUPTED))
     expect(container.textContent?.match(/Interrupted/g)).toHaveLength(1)
     expect(container.textContent).not.toContain('Text truncated')
     expect(container.textContent).not.toContain('Failed')

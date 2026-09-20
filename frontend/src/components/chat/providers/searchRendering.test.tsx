@@ -1,10 +1,10 @@
-import type { MessageCategory } from '../messageClassification'
-import type { RenderContext } from '../messageRenderers'
+import type { MessageCategory } from '../messageClassifier'
+import type { MessageContentRenderContext } from '../messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import './claude'
-import './opencode'
+import './claude/plugin'
+import './opencode/plugin'
 import './testMocks'
 
 vi.mock('~/lib/shikiWorkerClient', () => ({
@@ -15,9 +15,9 @@ vi.mock('~/lib/tokenCache', () => ({
   getCachedTokens: () => null,
 }))
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../messageContentRenderer')
 
-function renderClaudeToolResult(parsed: Record<string, unknown>, context?: RenderContext) {
+function renderClaudeToolResult(parsed: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }
   const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
   return render(() => result)
@@ -34,13 +34,8 @@ function makeResult(toolUseResult: Record<string, unknown> | undefined, content:
   }
 }
 
-function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: RenderContext) {
-  const category: MessageCategory = {
-    kind: 'tool_use',
-    toolName: (toolUse.kind as string) || 'tool_call_update',
-    toolUse,
-    content: [],
-  }
+function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(toolUse, context, category, AgentProvider.OPENCODE)
   return render(() => result)
 }

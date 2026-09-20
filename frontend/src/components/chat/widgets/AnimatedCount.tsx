@@ -85,7 +85,9 @@ const DigitColumn: Component<{ digit: number, enter: boolean, paused: boolean }>
     const cellPx = stripEl.getBoundingClientRect().height / STRIP_CELLS
     if (!cellPx)
       return null
-    return Number.parseFloat(m[1]) / cellPx
+    // The capture group is mandatory in the matrix pattern; `?? ''` is the
+    // type-level guard alone.
+    return Number.parseFloat(m[1] ?? '') / cellPx
   }
 
   // Commit an offset (in cells, negative = up) to the strip WITHOUT animating:

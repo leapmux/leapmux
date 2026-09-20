@@ -25,10 +25,14 @@ func TestJSONRPCControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testing
 				receive = newCursorAgentWithSink(sink).HandleOutput
 				method = contracts.CursorMethodAskQuestion
 			case "reasonix":
+				// Reasonix sends the STANDARD Agent Client Protocol elicitation, so its
+				// requests reach the shared dispatcher rather than its own extra-method
+				// hook. Its identity rule is therefore the shared one, exercised here
+				// through the same path a live request takes.
 				a := &ReasonixAgent{}
 				a.sink = sink
-				receive = func(content []byte) { a.handleExtraMethod(parseLine(content)) }
-				method = contracts.MCPElicitationMethodReasonix
+				receive = a.HandleOutput
+				method = contracts.MCPElicitationMethodACP
 			}
 			ids := []string{`7`, `"7"`, `0`, `"0"`, `9007199254740993`, `"9007199254740993"`, `""`, `"json:7"`}
 			seen := make(map[string]bool)

@@ -19,6 +19,18 @@
   "configIds": {
     "ToolApproval": "tool_approval"
   },
+  "_unread": {
+    "approvalValues": {
+      "Ask": {
+        "sides": ["ts"],
+        "why": "the browser spells `Yolo` alone, for the bypass preset it builds; Reasonix itself labels the three choices on the option group the worker forwards, so no browser code words this one"
+      },
+      "Auto": {
+        "sides": ["ts"],
+        "why": "the browser spells `Yolo` alone, for the bypass preset it builds; Reasonix itself labels the three choices on the option group the worker forwards, so no browser code words this one"
+      }
+    }
+  },
   "approvalValues": {
     "Ask": "ask",
     "Auto": "auto",

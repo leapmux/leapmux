@@ -9,7 +9,7 @@ import {
   WARMUP_TICK_MS,
 } from './chatPremeasureWarmup'
 
-describe('chatpremeasurewarmup', () => {
+describe('chatPremeasureWarmup', () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })
@@ -25,7 +25,7 @@ describe('chatpremeasurewarmup', () => {
     enabled?: boolean
   }) {
     const ids = Array.from({ length: opts.count }, (_, i) => `m${i}`)
-    const entries = ids.map(id => ({ msg: { id } } as ClassifiedEntry))
+    const entries = ids.map(id => ({ message: { id } } as ClassifiedEntry))
     const items = ids.map(id => ({ id, hasSpanLines: false, heightKey: `k-${id}` } as VirtualItem))
     const measured = new Set<string>()
     const [enabled, setEnabled] = createSignal(opts.enabled ?? true)
@@ -106,7 +106,7 @@ describe('chatpremeasurewarmup', () => {
     expect(h.currentIds()).toEqual([]) // whole window covered by the band
 
     const moreIds = Array.from({ length: 12 }, (_, i) => `m${i}`)
-    h.setEntriesSig(moreIds.map(id => ({ msg: { id } } as ClassifiedEntry)))
+    h.setEntriesSig(moreIds.map(id => ({ message: { id } } as ClassifiedEntry)))
     h.setItemsSig(moreIds.map(id => ({ id, hasSpanLines: false, heightKey: `k-${id}` } as VirtualItem)))
     vi.advanceTimersByTime(WARMUP_IDLE_DELAY_MS)
     expect(h.currentIds()).toEqual(['m6', 'm7', 'm8', 'm9', 'm10', 'm11'])

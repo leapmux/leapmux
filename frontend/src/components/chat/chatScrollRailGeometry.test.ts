@@ -37,7 +37,7 @@ function prepOf(seqs: bigint[], rowPx = 100): PreparedGeometry {
   return prepareGeometry(geoOf(seqs, rowPx))
 }
 
-describe('chatscrollrailgeometry', () => {
+describe('chatScrollRailGeometry', () => {
   describe('seq at content y', () => {
     it('returns the row seq at a row boundary and interpolates within a row', () => {
       const prep = prepOf([1n, 2n, 3n, 4n, 5n])

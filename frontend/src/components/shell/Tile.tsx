@@ -160,7 +160,8 @@ export const Tile: Component<TileProps> = (props) => {
             // eslint-disable-next-line solid/reactivity -- queueMicrotask runs the callback synchronously off the event handler; we don't depend on signal tracking inside it.
             onMakeGridClick={() => queueMicrotask(() => requestOpenGridPopover(tinyGridAnchorRef))}
             makeGridLabel="Make a grid…"
-            pop={props.pop}
+            // Omitted when the tile cannot pop: the prop takes no explicit undefined.
+            {...(props.pop !== undefined ? { pop: props.pop } : {})}
           />
         </DropdownMenu>
       </Show>

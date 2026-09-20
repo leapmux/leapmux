@@ -102,7 +102,7 @@ function lastLabelled(label: string): HTMLElement {
 // `~/components/common/ElevationPromptHost.test.tsx`. This file mocks
 // `userClient` directly, which bypasses the transport entirely, so a prompt
 // assertion here would test a wrapper rather than the rule.
-describe('accountPasskeys', () => {
+describe('AccountPasskeys', () => {
   beforeEach(() => {
     HTMLDialogElement.prototype.showModal = vi.fn(function (this: HTMLDialogElement) {
       this.open = true
@@ -352,7 +352,7 @@ function reasonOf(el: Element): string {
  * used to arrive AFTER the click, worded for a server log, and (once the
  * session was already elevated) as the only thing the dialog ever said.
  */
-describe('accountPasskeys on a page that cannot run a ceremony', () => {
+describe('AccountPasskeys on a page that cannot run a ceremony', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetSystemInfoMock()
@@ -469,7 +469,7 @@ describe('accountPasskeys on a page that cannot run a ceremony', () => {
  * and it left the next dialog with a restricted call to copy the same
  * reasoning. `ElevationPromptHost` owns the stack now.
  */
-describe('accountPasskeys opens its dialogs on the click', () => {
+describe('AccountPasskeys opens its dialogs on the click', () => {
   beforeEach(() => {
     HTMLDialogElement.prototype.showModal = vi.fn(function (this: HTMLDialogElement) {
       this.open = true

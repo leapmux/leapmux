@@ -1,37 +1,43 @@
 import { describe, expect, it } from 'vitest'
-import { NOTIFICATION_TYPE, WORKER_AUTHORED_NOTIFICATION_TYPES } from '~/generated/contracts/worker-vocab'
-import { isPlainNotificationType, isWorkerAuthoredNotification } from './notificationTypes'
+import { NOTIFICATION_TYPE, WORKER_WRITTEN_NOTIFICATION_TYPES } from '~/generated/contracts/worker-vocab'
+import { isPlainNotificationType, isWorkerWrittenNotification } from './notificationTypes'
 
-describe('isWorkerAuthoredNotification', () => {
+describe('isWorkerWrittenNotification', () => {
   it('accepts every type the contract states the worker is the sole writer of', () => {
-    for (const type of WORKER_AUTHORED_NOTIFICATION_TYPES)
-      expect(isWorkerAuthoredNotification({ type })).toBe(true)
+    for (const type of WORKER_WRITTEN_NOTIFICATION_TYPES)
+      expect(isWorkerWrittenNotification({ type })).toBe(true)
   })
 
   // An agent writes this one, so a plugin gets to decide what it means.
   it('refuses an agent-emitted type', () => {
-    expect(isWorkerAuthoredNotification({ type: NOTIFICATION_TYPE.Interrupted })).toBe(false)
+    expect(isWorkerWrittenNotification({ type: NOTIFICATION_TYPE.Interrupted })).toBe(false)
   })
 
   it('refuses a row that is not an object with a string type', () => {
-    expect(isWorkerAuthoredNotification(null)).toBe(false)
-    expect(isWorkerAuthoredNotification('goal_updated')).toBe(false)
-    expect(isWorkerAuthoredNotification({ type: 7 })).toBe(false)
-    expect(isWorkerAuthoredNotification({})).toBe(false)
+    expect(isWorkerWrittenNotification(null)).toBe(false)
+    expect(isWorkerWrittenNotification('goal_updated')).toBe(false)
+    expect(isWorkerWrittenNotification({ type: 7 })).toBe(false)
+    expect(isWorkerWrittenNotification({})).toBe(false)
   })
 })
 
 describe('isPlainNotificationType', () => {
-  it('accepts the types every provider renders the same way', () => {
-    for (const type of [
+  // The whole set, from the whole vocabulary, in both directions. A type added to the
+  // set and not listed here fails, and so does a type dropped from it. Each of these is
+  // also a type `isNotificationThreadWrapper` accepts, which `messageUtils.test.ts`
+  // pins: this set answers for ONE message, and that one keeps a thread's other
+  // members.
+  it('accepts exactly the types every provider renders the same way', () => {
+    const accepted = Object.values(NOTIFICATION_TYPE).filter(isPlainNotificationType).sort()
+    expect(accepted).toStrictEqual([
       NOTIFICATION_TYPE.SettingsChanged,
       NOTIFICATION_TYPE.ContextCleared,
       NOTIFICATION_TYPE.Interrupted,
       NOTIFICATION_TYPE.AgentError,
       NOTIFICATION_TYPE.PlanUpdated,
       NOTIFICATION_TYPE.Compacting,
-    ])
-      expect(isPlainNotificationType(type)).toBe(true)
+      NOTIFICATION_TYPE.PlanExecution,
+    ].sort())
   })
 
   // Claude Code applies its own hidden test to a rate-limit row, so one answer for

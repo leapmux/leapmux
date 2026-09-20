@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { collectE2EFiles } from '~/test-support/e2eFiles'
 import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 import { isPlaywrightSpec, isUnitTest, siblingModulePath } from '~/test-support/testFileNaming'
+import { NODE_TEST_FILES } from '../../vitest.node'
 
 // Repo layout guard: the file EXTENSION decides which runner collects a test,
 // everywhere in the repo. `.spec.ts` is Playwright, `.test.ts` is vitest.
@@ -17,10 +18,11 @@ import { isPlaywrightSpec, isUnitTest, siblingModulePath } from '~/test-support/
 // reaching back across the tree with a relative import.
 //
 // Now the extension decides, and the two runners cannot both claim a file --
-// or both skip one. Three cases below, one for each way back into that hole:
+// or both skip one. Four cases below, one for each way back into that hole:
 // a spec that strays out of `tests/e2e/`, a `.test.ts` under `tests/e2e/` that
-// names no module it tests (a mistyped E2E spec, which vitest now collects and
-// Playwright ignores), and a runner config that stops enforcing its half.
+// identifies no module it tests (a mistyped E2E spec, which vitest now collects and
+// Playwright ignores), a runner config that stops enforcing its half, and a
+// `NODE_TEST_FILES` entry that identifies a file no longer there.
 
 const srcRoot = join(frontendRoot, 'src')
 
@@ -36,14 +38,14 @@ describe('test file naming', () => {
 
     expect(
       strays,
-      'A `.spec` file names itself a Playwright spec, but `testDir` is `tests/e2e`, so '
+      'A `.spec` file declares itself a Playwright spec, but `testDir` is `tests/e2e`, so '
       + 'Playwright never sees these. Rename them to `.test.ts` (vitest) or move them '
       + `under tests/e2e/:\n  ${strays.join('\n  ')}`,
     ).toEqual([])
   })
 
   it('co-locates every .test.ts under tests/e2e with the module it tests', () => {
-    // `mail.test.ts` must sit beside `mail.ts`. A file that names no sibling is
+    // `mail.test.ts` must sit beside `mail.ts`. A file that identifies no sibling is
     // almost always a spec whose author typed `.test.ts`: vitest would collect
     // it, its Playwright fixtures would be undefined, and Playwright itself
     // would never run it.
@@ -86,7 +88,26 @@ describe('test file naming', () => {
     ).toContain('testMatch: \'**/*.spec.ts\'')
   })
 
+  /**
+   * Every `NODE_TEST_FILES` entry identifies a file that exists.
+   *
+   * The list is the node project's `include` AND the dom project's `exclude`
+   * (`vitest.config.ts`), so an entry that identifies nothing is invisible: the test
+   * it meant to place keeps running under jsdom, passing, just slower. Five entries
+   * rotted that way: two pointed at a module a rename moved, and three pointed at a
+   * file that no longer exists. Nothing reported it, because a stale entry cannot fail.
+   */
+  it('points every node-project entry at a file that exists', () => {
+    const stale = NODE_TEST_FILES.filter(entry => !existsSync(join(frontendRoot, entry)))
+    expect(
+      stale,
+      'A `NODE_TEST_FILES` entry that identifies no file silently leaves its test in the '
+      + 'jsdom project. Repoint the entry at the module\'s new path, or delete it.',
+    ).toEqual([])
+  })
+
   it('finds the files it judges, so no case above passes vacuously', () => {
+    expect(NODE_TEST_FILES.length).toBeGreaterThan(100)
     // Both walks return an empty array for a directory that moved, and an
     // empty array satisfies every emptiness assertion above.
     expect(collectFiles(srcRoot, { matches: isUnitTest }).length).toBeGreaterThan(100)

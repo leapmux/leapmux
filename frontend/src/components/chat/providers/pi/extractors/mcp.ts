@@ -1,4 +1,5 @@
 import type { ContentBlock } from '~/lib/contentBlocks'
+import { PI_RESULT_FIELD } from '~/generated/contracts/pi-protocol'
 import { asContentArray } from '~/lib/contentBlocks'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { PI_MCP_TOOL } from '../protocol'
@@ -6,13 +7,13 @@ import { PI_MCP_TOOL } from '../protocol'
 /** pi-mcp-adapter supplies identity on proxy and direct tool results. */
 export function isPiMcpAdapter(toolName: string, details: Record<string, unknown> | null | undefined): boolean {
   return toolName === PI_MCP_TOOL.Gateway || toolName === PI_MCP_TOOL.Script
-    || (!!pickString(details, 'server') && (!!pickString(details, 'tool') || !!pickString(details, 'resourceUri') || !!pickObject(details, 'mcpResult')))
+    || (!!pickString(details, 'server') && (!!pickString(details, 'tool') || !!pickString(details, 'resourceUri') || !!pickObject(details, PI_RESULT_FIELD.McpResult)))
 }
 
 /** Rendering and the image viewer must read the same native MCP content. */
 export function piNativeMcpContent(toolName: string, result: Record<string, unknown> | null | undefined): ContentBlock[] | null {
-  const details = pickObject(result, 'details')
-  const native = pickObject(details, 'mcpResult')
+  const details = pickObject(result, PI_RESULT_FIELD.Details)
+  const native = pickObject(details, PI_RESULT_FIELD.McpResult)
   if (!isPiMcpAdapter(toolName, details) || !native || native.omitted === true)
     return null
   const content = asContentArray(native.content)

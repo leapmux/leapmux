@@ -21,13 +21,11 @@ describe('acpReadFromToolCall', () => {
       ],
     })
     expect(source).toEqual({
-      filePath: '/tmp/a.ts',
+
       lines: [
         { num: 1, text: 'foo' },
         { num: 2, text: 'bar' },
       ],
-      totalLines: 0,
-      numLines: 0,
       fallbackContent: '1\tfoo\n2\tbar\n',
       leading: [],
       trailing: [],
@@ -42,10 +40,8 @@ describe('acpReadFromToolCall', () => {
       ],
     })
     expect(source).toEqual({
-      filePath: '/tmp/a.ts',
+
       lines: null,
-      totalLines: 0,
-      numLines: 0,
       fallbackContent: 'plain text body',
       leading: [],
       trailing: [],
@@ -65,10 +61,8 @@ describe('acpReadFromToolCall', () => {
       content: [{ type: 'content', content: { text: '1\thi\n' } }],
     })
     expect(source).toEqual({
-      filePath: '',
+
       lines: [{ num: 1, text: 'hi' }],
-      totalLines: 0,
-      numLines: 0,
       fallbackContent: '1\thi\n',
       leading: [],
       trailing: [],

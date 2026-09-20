@@ -74,7 +74,7 @@ const { FileViewer } = await import('~/components/fileviewer/FileViewer')
 
 const MAX = 256 * 1024
 
-describe('fileViewer dispatch with unsupported view', () => {
+describe('FileViewer dispatch with unsupported view', () => {
   beforeEach(() => {
     statFileImpl.mockReset()
     readFileImpl.mockReset()
@@ -88,7 +88,7 @@ describe('fileViewer dispatch with unsupported view', () => {
     readFileImpl.mockResolvedValue(readResp(bytes))
     render(() => <FileViewer workerId="w1" filePath="/repo/screenshot.png" />)
     await waitFor(() => expect(screen.getByTestId('image-view')).toBeInTheDocument())
-    expect(readFileImpl.mock.calls[0][1].limit).toBeGreaterThanOrEqual(BigInt(bytes.length))
+    expect(readFileImpl.mock.calls[0]?.[1].limit).toBeGreaterThanOrEqual(BigInt(bytes.length))
     expect(screen.queryByText('This image is too large to preview.')).not.toBeInTheDocument()
   })
 

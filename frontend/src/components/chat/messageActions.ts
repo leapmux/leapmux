@@ -90,10 +90,17 @@ export interface MessageAction {
  * content), then Quote, then the view toggles. The toolbar reorders it for a
  * mirrored row; see the grid note there.
  *
- * Provider-specific extraction stays where it belongs: `onCopyMarkdown`/`onReply`
- * come from `plugin.extractQuotableText` and `onCopyContent` from
- * `plugin.toolResultMeta().copyableContent`, both resolved by `MessageBubble`
- * before they reach this function. Nothing here parses a provider's shapes.
+ * Provider-specific extraction stays where it belongs, and `MessageBubble` resolves
+ * all three texts before they reach this function:
+ *
+ * - `onCopyMarkdown` comes from `quotableTextForRow(row)` (`results/rowText.ts`), which
+ *   answers for the PROSE rows alone.
+ * - `onCopyContent` comes from the tool call's `toolCallMeta().copyableContent`, and
+ *   `copyContentLabel` from the `copyLabel` of that same derivation.
+ * - `onReply` takes the prose text when the row states one, and that same tool-call
+ *   getter otherwise -- so a tool row quotes exactly what its Copy button writes.
+ *
+ * Nothing here parses a provider's shapes.
  */
 export function buildMessageActions(
   caller: ToolHeaderActionsCallerProps | undefined,

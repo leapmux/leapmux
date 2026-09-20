@@ -14,7 +14,7 @@ import { Tooltip } from './Tooltip'
 // `:popover-open` matches interceptor) come from vitest.setup.ts, which runs
 // before every test file.
 
-describe('dropdownMenu', () => {
+describe('DropdownMenu', () => {
   it('renders trailing shortcut text in menu item content', () => {
     render(() => (
       <button role="menuitem">
@@ -281,7 +281,7 @@ describe('dropdownMenu', () => {
   })
 })
 
-describe('dropdownMenu nested-submenu dismiss', () => {
+describe('DropdownMenu nested-submenu dismiss', () => {
   it('marks every trigger it renders, so an enclosing popover can recognize one', () => {
     render(() => (
       <DropdownMenu
@@ -372,7 +372,7 @@ describe('dropdownMenu nested-submenu dismiss', () => {
   })
 })
 
-describe('dropdownMenu content-click dismiss', () => {
+describe('DropdownMenu content-click dismiss', () => {
   it('does not dismiss a div popover on a click inside its content', async () => {
     // A `div` popover is a panel of content. Dismissing on a click would make
     // its text unselectable: the press starts the selection and the release
@@ -424,7 +424,7 @@ describe('dropdownMenu content-click dismiss', () => {
   })
 })
 
-describe('dropdownMenu contextMenuFor', () => {
+describe('DropdownMenu contextMenuFor', () => {
   /**
    * Render a row plus a menu whose `contextMenuFor` points at it. The row gets a
    * stubbed rect because jsdom does no layout and the press anchor is built from
@@ -624,7 +624,7 @@ describe('dropdownMenu contextMenuFor', () => {
   })
 })
 
-describe('dropdownMenuCheckableItem', () => {
+describe('DropdownMenuCheckableItem', () => {
   it('renders a menuitemcheckbox with aria-checked and a checked indicator', () => {
     render(() => <DropdownMenuCheckableItem kind="checkbox" label="Show status bar" checked onSelect={() => {}} />)
 
@@ -818,7 +818,7 @@ describe('dropdownMenuCheckableItem', () => {
 // option made a menu wider than the dialog that opened it, and a list of fifty
 // ran off the bottom of the screen with the rows past the edge unreachable --
 // `calcPopoverPosition` clamps where a popover STARTS, not how large it grows.
-describe('dropdownMenu size caps', () => {
+describe('DropdownMenu size caps', () => {
   const MENU = 'sized-menu'
 
   beforeAll(() => {
@@ -831,7 +831,7 @@ describe('dropdownMenu size caps', () => {
         <DropdownMenu
           aria-label="Things"
           data-testid={MENU}
-          matchTriggerWidth={opts.matchTriggerWidth}
+          {...(opts.matchTriggerWidth !== undefined ? { matchTriggerWidth: opts.matchTriggerWidth } : {})}
           trigger={p => <button {...p} type="button">Open</button>}
         >
           <li>Alpha</li>
@@ -950,7 +950,7 @@ describe('dropdownMenu size caps', () => {
 // showing is `display: none`. Arrowing onto such an item calls `.focus()` on a
 // hidden element, which is a silent no-op: the roving focus stalls at that
 // index and type-ahead matches text nobody can see.
-describe('dropdownMenu roving focus across a nested submenu', () => {
+describe('DropdownMenu roving focus across a nested submenu', () => {
   function renderNested() {
     render(() => (
       <DropdownMenu

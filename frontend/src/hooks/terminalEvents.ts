@@ -65,11 +65,12 @@ export function applyTerminalStatusChange(
   streamWorkerId = '',
 ): void {
   const workerId = existingTab?.workerId || streamWorkerId || ''
-  upsertRepoGitFromProtoStatus(repoGitStore, workerId, sc.gitStatus, {
-    migrateErrorHintFrom: existingTab
-      ? migrateErrorHintFromForResolvedRepo(workerId, existingTab, sc.gitStatus)
-      : undefined,
-  })
+  const migrateHint = existingTab
+    ? migrateErrorHintFromForResolvedRepo(workerId, existingTab, sc.gitStatus)
+    : undefined
+  upsertRepoGitFromProtoStatus(repoGitStore, workerId, sc.gitStatus, migrateHint !== undefined
+    ? { migrateErrorHintFrom: migrateHint }
+    : {})
   if (sc.gitStatus?.toplevel)
     metadata.patch(terminalId, { gitToplevel: sc.gitStatus.toplevel })
   switch (sc.status) {
@@ -120,7 +121,9 @@ function isWorkspaceActiveTerminal(
   terminalId: string,
   selection: TabSelectionStore,
   getActiveWorkspaceId: () => string | null,
-  view?: { getTerminalTab: (id: string) => { tileId?: string, workspaceId?: string } | undefined },
+  // `getTerminalTab` returns a TerminalTab whose optional fields may be
+  // explicitly undefined (the proto convention), so the view param admits it.
+  view?: { getTerminalTab: (id: string) => { tileId?: string | undefined, workspaceId?: string | undefined } | undefined },
   isDetachedOnScreen?: (terminalId: string) => boolean,
 ): boolean {
   // Asked FIRST, because a quake terminal has no tile and would otherwise
@@ -133,7 +136,12 @@ function isWorkspaceActiveTerminal(
   if (tab?.tileId) {
     // Tile-placed: the shared on-screen rule (same source as tabWatchMode).
     return isTabOnScreen(
-      { tileId: tab.tileId, workspaceId: tab.workspaceId, type: TabType.TERMINAL, id: terminalId },
+      {
+        tileId: tab.tileId,
+        ...(tab.workspaceId !== undefined ? { workspaceId: tab.workspaceId } : {}),
+        type: TabType.TERMINAL,
+        id: terminalId,
+      },
       getActiveWorkspaceId(),
       tileId => selection.activeKeyForTile(tileId),
     )
@@ -146,7 +154,7 @@ interface TerminalBadgeDeps {
   metadata: TabMetadataStore
   selection: TabSelectionStore
   getActiveWorkspaceId: () => string | null
-  view?: { getTerminalTab: (id: string) => { tileId?: string, workspaceId?: string } | undefined }
+  view?: { getTerminalTab: (id: string) => { tileId?: string | undefined, workspaceId?: string | undefined } | undefined }
   /**
    * Whether a terminal with no tab is on screen: the quake shell behind an open
    * panel whose working directory the focused tab shares.

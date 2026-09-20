@@ -70,7 +70,9 @@ import type {
  * and no failing test -- exactly the wrong default for a module whose stated
  * purpose is that the next high-frequency register is cheap BY DEFAULT.
  */
-type FieldCase<T extends { field: { case?: string } }> = Exclude<T['field']['case'], undefined>
+// `case` includes the generated oneof's "no member selected" variant, where
+// case is present with value undefined.
+type FieldCase<T extends { field: { case?: string | undefined } }> = Exclude<T['field']['case'], undefined>
 
 /**
  * What the hub's register semantics make TRUE of one field, in one value.

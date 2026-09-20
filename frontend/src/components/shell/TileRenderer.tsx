@@ -69,6 +69,20 @@ import { Tile } from './Tile'
 import { cleanupAfterWindowDisposal, focusTile as focusTileShared } from './tileLifecycle'
 
 /**
+ * Conditional spread body for an optional prop: the key stays omitted while
+ * the value reads undefined, which is what prop types declared without
+ * explicit undefined require. A helper (not a hoisted read) keeps each
+ * spread's getter reactivity.
+ */
+function optionalProp<K extends string, V>(key: K, value: V | undefined): { [P in K]?: V } {
+  if (value === undefined)
+    return {}
+  const withKey: { [P in K]?: V } = {}
+  withKey[key] = value
+  return withKey
+}
+
+/**
  * Why a non-steerable subagent's composer is dead. The composer states it as the
  * box's own placeholder, on the `[+]` menu's attach item, and on every settings
  * submenu, so the input never claims a lost connection for a transcript that was
@@ -614,7 +628,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
       },
       fetchFileImage: (path, signal) => readWorkerImage(workerId, path, view.getAgentTab(agentId)?.workingDir, signal),
       subscribe: observer => chatStore.subscribeMessages(agentId, observer),
-      todo: taskId => chatStore.todos.getById(bgRootFor(agentId), taskId),
       backgroundTask: rowKey => backgroundRows().get(rowKey),
       progress: identity => chatStore.getToolProgress(agentId, identity),
     })
@@ -670,6 +683,35 @@ export function createTileRenderer(opts: TileRendererOpts) {
     }
   }
 
+  /**
+   * The tab bar's new-tab config, rebuilt per read so the loaded lists stay
+   * reactive. The optional fields are omitted while their loads answer
+   * undefined: TabBar's prop types take no explicit undefined.
+   */
+  const buildNewTabProps = () => {
+    const providers = agentOps.availableProviders()
+    const shells = termOps.availableShells()
+    const defaultShell = termOps.defaultShell()
+    const loadingProvider = newAgentLoadingProvider()
+    return {
+      showAddButton: isActiveWorkspaceMutatable(),
+      onNewAgent: agentOps.handleOpenAgent,
+      onNewTerminal: termOps.handleOpenTerminal,
+      onNewTerminalWithShell: termOps.handleOpenTerminalWithShell,
+      // An empty target: the tab bar acts on the tab the user is looking
+      // at, so both dialogs follow the current tab context.
+      onNewAgentAdvanced: () => newAgentDialog.open({}),
+      onNewTerminalAdvanced: () => newTerminalDialog.open({}),
+      ...(providers !== undefined ? { availableProviders: providers } : {}),
+      ...(shells !== undefined ? { availableShells: shells } : {}),
+      ...(defaultShell !== undefined ? { defaultShell } : {}),
+      ...(loadingProvider !== undefined ? { newAgentLoadingProvider: loadingProvider } : {}),
+      newTerminalLoading: newTerminalLoading(),
+      newShellLoading: newShellLoading(),
+      hasActiveTabContext: !!getCurrentTabContext().workerId,
+    }
+  }
+
   const createTabBarForTile = (tileId: string, actions?: () => TileActions) => {
     // Reactive accessor either way: callers from `renderTile` pass their
     // own memo (so predicate updates propagate to surviving leaves); the
@@ -692,31 +734,17 @@ export function createTileRenderer(opts: TileRendererOpts) {
         }}
         onClose={handleTabClose}
         onRename={(tab, title) => renameTab({ view, metadata }, tab, title)}
-        newTab={{
-          showAddButton: isActiveWorkspaceMutatable(),
-          onNewAgent: agentOps.handleOpenAgent,
-          onNewTerminal: termOps.handleOpenTerminal,
-          onNewTerminalWithShell: termOps.handleOpenTerminalWithShell,
-          // An empty target: the tab bar acts on the tab the user is looking
-          // at, so both dialogs follow the current tab context.
-          onNewAgentAdvanced: () => newAgentDialog.open({}),
-          onNewTerminalAdvanced: () => newTerminalDialog.open({}),
-          availableProviders: agentOps.availableProviders(),
-          availableShells: termOps.availableShells(),
-          defaultShell: termOps.defaultShell(),
-          newAgentLoadingProvider: newAgentLoadingProvider(),
-          newTerminalLoading: newTerminalLoading(),
-          newShellLoading: newShellLoading(),
-          hasActiveTabContext: !!getCurrentTabContext().workerId,
-        }}
-        mobile={isMobileLayout()
+        newTab={buildNewTabProps()}
+        {...(isMobileLayout()
           ? {
-              sheetOpen: () => mobileOverlay.overlay() === 'sheet',
-              onToggleDrawer: mobileOverlay.toggleDrawer,
-              onToggleSheet: mobileOverlay.toggleSheet,
-              onCloseSheet: mobileOverlay.closeSheet,
+              mobile: {
+                sheetOpen: () => mobileOverlay.overlay() === 'sheet',
+                onToggleDrawer: mobileOverlay.toggleDrawer,
+                onToggleSheet: mobileOverlay.toggleSheet,
+                onCloseSheet: mobileOverlay.closeSheet,
+              },
             }
-          : undefined}
+          : {})}
         tileActions={liveActions()}
         tabPop={tab => tabPopFor(tileId, tab)}
       />
@@ -832,15 +860,26 @@ export function createTileRenderer(opts: TileRendererOpts) {
             const messages = () => messageContext(agent()?.workerId ?? '', agentId)
             // The rail reads this object several times per frame. Compute its sequence range once per change.
             // Stable preview handlers avoid new closures on each read.
-            const railPreviewFor = (seq: bigint) => getCachedMarkPreview(agentId, seq)
-            const railWarmPreview = (seq: bigint) => {
-              const workerId = agent()?.workerId
-              if (!workerId)
-                return
+            const railPreviewFor = (seq: bigint) => {
               const resolver = messages()
-              if (resolver)
-                warmMarkPreview(agentId, seq, resolver)
+              return getCachedMarkPreview(agentId, seq, resolver?.peek(seq)?.revision)
             }
+            let pendingPreviewSeq: bigint | undefined
+            const warmPendingPreview = () => {
+              const resolver = messages()
+              const seq = pendingPreviewSeq
+              if (resolver === undefined || seq === undefined)
+                return
+              pendingPreviewSeq = undefined
+              void warmMarkPreview(agentId, seq, resolver)
+            }
+            const railWarmPreview = (seq: bigint) => {
+              pendingPreviewSeq = seq
+              warmPendingPreview()
+            }
+            // A dot can open before the agent tab receives its worker id. Keep that
+            // warm request and retry it when the message resolver becomes available.
+            createEffect(warmPendingPreview)
             // One evaluation per change, and one stable array identity.
             //
             // `agentLifecycle` below is a plain object literal, so Solid treats
@@ -867,10 +906,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
             const goalSurface = createMemo<GoalSurface | undefined>(() => {
               const rootId = bgRootFor(agentId)
               const surface: GoalSurface = {
-                current: goalFor(agentId),
+                // `current` is optional without undefined; the goal store
+                // answering undefined means the agent has none.
+                ...optionalProp('current', goalFor(agentId)),
                 progress: goalProgressFor(agentId),
                 actions: goalActionsFor(agentId),
-                onAction: onGoalAction ? action => onGoalAction(rootId, action) : undefined,
+                // Absent, not undefined: the field is optional without
+                // undefined, and absence is what makes the surface read-only.
+                ...(onGoalAction !== undefined ? { onAction: (action: GoalAction) => onGoalAction(rootId, action) } : {}),
               }
               return hasGoalSurface(surface) ? surface : undefined
             })
@@ -898,22 +941,26 @@ export function createTileRenderer(opts: TileRendererOpts) {
               // hold nothing -- the same rule the sidebar applies, through the
               // same helper. See goalSurface above for why it is a memo.
               get goal() { return goalSurface() },
-              onOpenSubagent: onOpenBackgroundTask,
+              // Both callbacks stay omitted when the shell wired none: the
+              // prop types take no explicit undefined.
+              ...(onOpenBackgroundTask !== undefined ? { onOpenSubagent: onOpenBackgroundTask } : {}),
               // The WORKER travels with the agent, from the tab that owns this
               // transcript. Reading it from the focused tile instead would take
               // it from a different tab: a click lands on this button before the
               // tile's own `onFocus` runs, because that handler sits on the tile
               // and fires on the bubble. The image would then be registered
               // against a worker that has no such agent.
-              onOpenImage: onOpenChatImage
-              // eslint-disable-next-line solid/reactivity -- the click must read the tab's current worker
-                ? image => onOpenChatImage({
-                  ...image,
-                  agentId,
-                  workerId: agent()?.workerId ?? '',
-                  workingDir: agent()?.workingDir ?? '',
-                })
-                : undefined,
+              ...(onOpenChatImage !== undefined
+                ? {
+                    onOpenImage: (image: { seq: bigint, index: number, filePath?: string, title: string }) =>
+                      onOpenChatImage({
+                        ...image,
+                        agentId,
+                        workerId: agent()?.workerId ?? '',
+                        workingDir: agent()?.workingDir ?? '',
+                      }),
+                  }
+                : {}),
               get todos() { return todosFor(agentId) },
             }
 
@@ -972,7 +1019,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     messages={chatStore.getMessages(agentId)}
                     messageVersion={chatStore.getMessageVersion(agentId)}
                     tabActive={agentTab()?.id === agentId}
-                    workingDir={agent()?.workingDir}
+                    {...optionalProp('workingDir', agent()?.workingDir)}
                     homeDir={workerInfoStore.getHomeDir(agent()?.workerId ?? '')}
                     pagination={{
                       hasOlderMessages: chatStore.hasOlderMessages(agentId),
@@ -988,7 +1035,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                       onJumpToSeq: (seq, signal) => chatStore.jumpToMessagesAroundSeq(agent()?.workerId ?? '', agentId, seq, signal),
                     }}
                     rail={railProps()}
-                    savedViewportScroll={chatStore.viewportScroll.get(agentId)}
+                    {...optionalProp('savedViewportScroll', chatStore.viewportScroll.get(agentId))}
                     onClearSavedViewportScroll={() => chatStore.viewportScroll.clear(agentId)}
                     // Unmount save (tile split/merge, workspace switch): keep the
                     // reading position for the remount's restoreOnMount. The store gates
@@ -1006,9 +1053,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
                         forceScrollToBottomRef.set(api.forceScrollToBottom)
                       }
                     }}
-                    messageContext={messages()}
-                    onQuote={isActiveWorkspaceArchived() ? undefined : quoteIntoComposer}
-                    onReply={isActiveWorkspaceArchived() ? undefined : quoteIntoComposer}
+                    {...optionalProp('messageContext', messages())}
+                    // Archived workspaces keep the transcript read-only: the
+                    // quote/reply hooks stay omitted rather than undefined.
+                    {...(isActiveWorkspaceArchived() ? {} : { onQuote: quoteIntoComposer, onReply: quoteIntoComposer })}
                     agentLifecycle={agentLifecycle}
                   />
                 </Show>
@@ -1070,23 +1118,27 @@ export function createTileRenderer(opts: TileRendererOpts) {
                   filePath={filePath()}
                   rootPath={fileRootPath()}
                   homeDir={fileHomeDir()}
-                  displayMode={ft()?.displayMode}
+                  {...optionalProp('displayMode', ft()?.displayMode)}
                   onDisplayModeChange={mode => metadata.patch(fileTabId, { displayMode: mode })}
-                  onQuote={isActiveWorkspaceArchived()
-                    ? undefined
-                    : (text, startLine, endLine) => {
-                        if (startLine != null && endLine != null) {
-                          insertIntoMruAgentEditor(mruEditorDeps, formatFileQuote(fileRelPath(), startLine, endLine, text))
-                        }
-                      }}
-                  onMention={isActiveWorkspaceArchived()
-                    ? undefined
-                    : () => {
-                        insertIntoMruAgentEditor(mruEditorDeps, formatFileMention(fileRelPath()), 'inline')
-                      }}
-                  fileViewMode={ft()?.fileViewMode}
-                  fileDiffBase={ft()?.fileDiffBase}
-                  gitFileStatus={gitEntry()}
+                  {...(isActiveWorkspaceArchived()
+                    ? {}
+                    : {
+                        onQuote: (text: string, startLine?: number, endLine?: number) => {
+                          if (startLine != null && endLine != null) {
+                            insertIntoMruAgentEditor(mruEditorDeps, formatFileQuote(fileRelPath(), startLine, endLine, text))
+                          }
+                        },
+                      })}
+                  {...(isActiveWorkspaceArchived()
+                    ? {}
+                    : {
+                        onMention: () => {
+                          insertIntoMruAgentEditor(mruEditorDeps, formatFileMention(fileRelPath()), 'inline')
+                        },
+                      })}
+                  {...optionalProp('fileViewMode', ft()?.fileViewMode)}
+                  {...optionalProp('fileDiffBase', ft()?.fileDiffBase)}
+                  {...optionalProp('gitFileStatus', gitEntry())}
                   hasStagedAndUnstaged={hasStagedAndUnstaged()}
                   onFileViewModeChange={mode => metadata.patch(fileTabId, { fileViewMode: mode })}
                   onFileDiffBaseChange={base => metadata.patch(fileTabId, { fileDiffBase: base })}
@@ -1119,7 +1171,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     agentId={it()?.imageAgentId ?? ''}
                     seq={it()?.imageSeq ?? 0n}
                     imageIndex={it()?.imageIndex ?? 0}
-                    title={it()?.title}
+                    {...optionalProp('title', it()?.title)}
                     messages={messageContext(it()?.workerId ?? '', it()?.imageAgentId ?? '')}
                   />
                 </Show>
@@ -1222,7 +1274,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       workspaceId: activeWorkspace()?.id ?? '',
       workspaceTabs: () => view.forWorkspace(activeWorkspace()?.id ?? ''),
       repoGitStore,
-      isWorkerKnownOnline: branchCallbacks?.isWorkerKnownOnline,
+      ...(branchCallbacks?.isWorkerKnownOnline !== undefined ? { isWorkerKnownOnline: branchCallbacks.isWorkerKnownOnline } : {}),
     })
     const branchDisabledReason = () => branchAction().disabledReason
     // The menu takes its actions already bound to this branch. `buildRef` is
@@ -1239,16 +1291,33 @@ export function createTileRenderer(opts: TileRendererOpts) {
         : undefined
     }
     const focusedAgentTab = () => view.getAgentTab(agentId())
+    // The panel's optional props take no explicit undefined, so each
+    // maybe-undefined value omits its key instead.
+    const editorOptionalProps = () => {
+      const tab = focusedAgentTab()
+      const queue = agentInputQueueStore.get(agentId())
+      const control = controlStore.getRequests(agentId())
+      const sessionInfo = agentSessionStore.getInfo(agentId())
+      const activity = agentActivityStore.publishedState(agentId())
+      return {
+        ...optionalProp('agent', agentTabToInfo(tab)),
+        ...optionalProp('inputQueue', queue),
+        ...optionalProp('gitTab', tab),
+        ...optionalProp('controlRequests', control),
+        ...optionalProp('agentSessionInfo', sessionInfo),
+        ...optionalProp('agentActivity', activity),
+        ...optionalProp('branchActions', branchMenuActions()),
+        ...(subagentReadOnly() ? { disabledReason: SUBAGENT_NO_MESSAGES_HINT } : {}),
+      }
+    }
     return (
       <AgentEditorPanel
-        messageContext={messageContext(focusedAgentTab()?.workerId ?? '', agentId())}
         suppressAutoFocus={isTabEditing}
         agentId={agentId()}
-        agent={agentTabToInfo(focusedAgentTab())}
-        inputQueue={agentInputQueueStore.get(agentId())}
+        {...editorOptionalProps()}
+        {...optionalProp('messageContext', messageContext(focusedAgentTab()?.workerId ?? '', agentId()))}
         queueClientId={opts.clientId()}
         repoGitStore={repoGitStore}
-        gitTab={focusedAgentTab()}
         onSendMessage={queueOps.sendMessage}
         onSendControlFeedback={queueOps.sendControlFeedback}
         onBeginQueueEdit={queueOps.beginQueueEdit}
@@ -1263,19 +1332,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
         addFilesRef={(fn) => { addFilesRef.set(fn) }}
         addDropDataTransferRef={(fn) => { addDropDataTransferRef.set(fn) }}
         triggerSendRef={(fn) => { triggerSendRef.set(fn) }}
-        disabledReason={subagentReadOnly() ? SUBAGENT_NO_MESSAGES_HINT : undefined}
         focusRef={(fn) => { focusEditorRef.set(fn) }}
-        controlRequests={controlStore.getRequests(agentId())}
         onControlResponse={agentOps.handleControlResponse}
         onSettingChange={change => agentOps.handleAgentSettingChange(agentId(), change)}
         onInterrupt={() => agentOps.handleInterrupt(agentId())}
         canInterrupt={agentTabSupportsInterrupt(focusedAgentTab())}
         settingsLoading={settingsLoading.loading()}
-        agentSessionInfo={agentSessionStore.getInfo(agentId())}
-        agentActivity={agentActivityStore.publishedState(agentId())}
-        branchActions={branchMenuActions()}
         branchWorkerId={branchAction().workerId ?? ''}
-        branchDisabledReason={branchDisabledReason()}
+        {...optionalProp('branchDisabledReason', branchDisabledReason())}
         containerHeight={props.containerHeight}
       />
     )
@@ -1310,7 +1374,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
             selection.setActive(tab)
           }
         }}
-        pop={pop()}
+        {...optionalProp('pop', pop())}
       >
         {renderTileContent(tileId)}
       </Tile>

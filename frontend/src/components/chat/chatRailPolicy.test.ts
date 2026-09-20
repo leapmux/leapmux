@@ -5,7 +5,7 @@ import { MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import { canRenderSeqRailThumb, clusterMarks, dotClustersEqual, nearestDotWithin, resolveScrollbarOwner } from './chatRailPolicy'
 import { rowStartSeqs } from './chatScrollRailGeometry'
 
-describe('chatrailpolicy', () => {
+describe('chatRailPolicy', () => {
   describe('cluster marks', () => {
     it('places one dot per spread-out mark, centered on its band on the thumb-centre axis', () => {
       // rail 400, fixed thumb 24 -> centre travels [12, 388] (travel 376).
@@ -98,10 +98,15 @@ describe('chatrailpolicy', () => {
       expect(dotClustersEqual(base, base.map(d => ({ ...d })))).toBe(true)
     })
     it('is false when any dot field or the length differs', () => {
-      expect(dotClustersEqual(base, [{ ...base[0] }, { ...base[1], topPx: 217 }])).toBe(false)
-      expect(dotClustersEqual(base, [{ ...base[0] }, { ...base[1], count: 4 }])).toBe(false)
-      expect(dotClustersEqual(base, [{ ...base[0] }, { ...base[1], seq: 5n }])).toBe(false)
-      expect(dotClustersEqual(base, [base[0]])).toBe(false)
+      // Both fixture dots exist by construction above; the guard is type-level alone.
+      const first = base[0]
+      const second = base[1]
+      if (first === undefined || second === undefined)
+        throw new Error('fixture dots missing')
+      expect(dotClustersEqual(base, [{ ...first }, { ...second, topPx: 217 }])).toBe(false)
+      expect(dotClustersEqual(base, [{ ...first }, { ...second, count: 4 }])).toBe(false)
+      expect(dotClustersEqual(base, [{ ...first }, { ...second, seq: 5n }])).toBe(false)
+      expect(dotClustersEqual(base, [first])).toBe(false)
     })
   })
 
@@ -128,7 +133,7 @@ describe('chatrailpolicy', () => {
     })
   })
 
-  describe('resolvescrollbarowner', () => {
+  describe('resolveScrollbarOwner', () => {
     const items = (seqs: bigint[]): VirtualItem[] => seqs.map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
     // The window-shape half of ScrollbarOwnerInputs (itemCount + precomputed rowSeqs), so a test
     // states a window as its seqs and mirrors how ChatView memoizes rowStartSeqs once per commit.

@@ -68,8 +68,10 @@ function parkSendInputOnce(opts: { failAfterRelease?: boolean } = {}): { release
 
 interface TabOverrides {
   id?: string
-  cols?: number
-  rows?: number
+  // Explicit undefined overwrites the seeded 100x30 in the fixture spread,
+  // which is how a test asks for a tab with no dims at all.
+  cols?: number | undefined
+  rows?: number | undefined
 }
 
 const disposers: Array<() => void> = []
@@ -240,7 +242,7 @@ function seedActiveRepoTab(s: ReturnType<typeof setupForOpen>) {
   s.selection.setActiveById(TabType.TERMINAL, 'active-tab')
 }
 
-describe('useterminaloperations.handleopenterminal', () => {
+describe('useTerminalOperations.handleopenterminal', () => {
   it('happy path: opens a terminal, adds the tab, and flips loading false in the finally', async () => {
     const loadingFlips: boolean[] = []
     const { ops, view } = setupForOpen({
@@ -252,7 +254,7 @@ describe('useterminaloperations.handleopenterminal', () => {
     expect(openTerminalMock).toHaveBeenCalledTimes(1)
     // Shell is empty (default-shell quick action). shellStartDir is
     // forwarded as empty string when the caller didn't pass one.
-    expect(openTerminalMock.mock.calls[0][1]).toMatchObject({
+    expect(openTerminalMock.mock.calls[0]?.[1]).toMatchObject({
       workerId: 'worker-1',
       workingDir: '/tmp',
       shell: '',
@@ -272,7 +274,7 @@ describe('useterminaloperations.handleopenterminal', () => {
   it('forwards an explicit shellStartDir to both the RPC and the tab seed', async () => {
     const { ops, view } = setupForOpen()
     await ops.handleOpenTerminal('/work/dir')
-    expect(openTerminalMock.mock.calls[0][1].shellStartDir).toBe('/work/dir')
+    expect(openTerminalMock.mock.calls[0]?.[1].shellStartDir).toBe('/work/dir')
     const newTab = view.getTerminalTab('new-tid')
     expect(newTab?.shellStartDir).toBe('/work/dir')
   })
@@ -363,13 +365,13 @@ describe('useterminaloperations.handleopenterminal', () => {
     })
     await ops.handleOpenTerminal()
     expect(showWarnToastMock).toHaveBeenCalledTimes(1)
-    expect(showWarnToastMock.mock.calls[0][0]).toMatch(/open terminal/i)
+    expect(showWarnToastMock.mock.calls[0]?.[0]).toMatch(/open terminal/i)
     // Finally must run so the spinner doesn't get stuck.
     expect(loadingFlips).toEqual([true, false])
   })
 })
 
-describe('useterminaloperations.handleopenterminalwithshell', () => {
+describe('useTerminalOperations.handleopenterminalwithshell', () => {
   it('forwards the picked shell to the RPC and uses the shell-loading setter', async () => {
     const shellLoadingFlips: boolean[] = []
     const terminalLoadingFlips: boolean[] = []
@@ -381,7 +383,7 @@ describe('useterminaloperations.handleopenterminalwithshell', () => {
     await ops.handleOpenTerminalWithShell('/bin/zsh')
 
     expect(openTerminalMock).toHaveBeenCalledTimes(1)
-    expect(openTerminalMock.mock.calls[0][1].shell).toBe('/bin/zsh')
+    expect(openTerminalMock.mock.calls[0]?.[1].shell).toBe('/bin/zsh')
     // The shell-picker path does NOT seed shellStartDir onto the tab,
     // so a later restart re-uses the working directory the worker had
     // at launch rather than a stale per-shell override.
@@ -403,8 +405,8 @@ describe('useterminaloperations.handleopenterminalwithshell', () => {
     await ops.handleOpenTerminalWithShell('/bin/zsh', { workerId: 'worker-2', workingDir: '/other/worktree' })
 
     expect(openTerminalMock).toHaveBeenCalledTimes(1)
-    expect(openTerminalMock.mock.calls[0][0]).toBe('worker-2')
-    expect(openTerminalMock.mock.calls[0][1]).toMatchObject({
+    expect(openTerminalMock.mock.calls[0]?.[0]).toBe('worker-2')
+    expect(openTerminalMock.mock.calls[0]?.[1]).toMatchObject({
       workerId: 'worker-2',
       workingDir: '/other/worktree',
       shell: '/bin/zsh',
@@ -416,8 +418,8 @@ describe('useterminaloperations.handleopenterminalwithshell', () => {
 
     await ops.handleOpenTerminalWithShell('/bin/zsh')
 
-    expect(openTerminalMock.mock.calls[0][0]).toBe('worker-1')
-    expect(openTerminalMock.mock.calls[0][1]).toMatchObject({ workingDir: '/tmp' })
+    expect(openTerminalMock.mock.calls[0]?.[0]).toBe('worker-1')
+    expect(openTerminalMock.mock.calls[0]?.[1]).toMatchObject({ workingDir: '/tmp' })
   })
 
   // The dialog is the fallback when neither the target nor the context resolves
@@ -432,18 +434,18 @@ describe('useterminaloperations.handleopenterminalwithshell', () => {
 
     expect(openTerminalMock).not.toHaveBeenCalled()
     expect(dialogOpen).toHaveBeenCalledTimes(1)
-    expect(dialogOpen.mock.calls[0][0]).toEqual({ workingDir: '/other/worktree' })
+    expect(dialogOpen.mock.calls[0]?.[0]).toEqual({ workingDir: '/other/worktree' })
   })
 })
 
-describe('useterminaloperations.handleterminalinput', () => {
+describe('useTerminalOperations.handleterminalinput', () => {
   it('routes input to sendInput when status is READY', async () => {
     const { ops } = setup(TerminalStatus.READY)
     await ops.handleTerminalInput('tid-1', new Uint8Array([0x61])) // 'a'
     expect(sendInputMock).toHaveBeenCalledTimes(1)
     expect(restartTerminalMock).not.toHaveBeenCalled()
-    const arg = sendInputMock.mock.calls[0][1]
-    expect(arg.terminalId).toBe('tid-1')
+    const arg = sendInputMock.mock.calls[0]?.[1]
+    expect(arg?.terminalId).toBe('tid-1')
   })
 
   it('keeps one SendInput in flight per terminal so the PTY sees arrival order', async () => {
@@ -468,8 +470,8 @@ describe('useterminaloperations.handleterminalinput', () => {
 
     // The queued bytes left together, in the order they were typed.
     expect(sendInputMock).toHaveBeenCalledTimes(2)
-    expect(new TextDecoder().decode(sendInputMock.mock.calls[0][1].data)).toBe('\uC548')
-    expect(new TextDecoder().decode(sendInputMock.mock.calls[1][1].data)).toBe('\uB155!')
+    expect(new TextDecoder().decode(sendInputMock.mock.calls[0]?.[1].data)).toBe('\uC548')
+    expect(new TextDecoder().decode(sendInputMock.mock.calls[1]?.[1].data)).toBe('\uB155!')
   })
 
   it('starts a fresh queue once a burst has drained', async () => {
@@ -481,8 +483,8 @@ describe('useterminaloperations.handleterminalinput', () => {
     await ops.handleTerminalInput('tid-1', new TextEncoder().encode('b'))
 
     expect(sendInputMock).toHaveBeenCalledTimes(2)
-    expect(new TextDecoder().decode(sendInputMock.mock.calls[0][1].data)).toBe('a')
-    expect(new TextDecoder().decode(sendInputMock.mock.calls[1][1].data)).toBe('b')
+    expect(new TextDecoder().decode(sendInputMock.mock.calls[0]?.[1].data)).toBe('a')
+    expect(new TextDecoder().decode(sendInputMock.mock.calls[1]?.[1].data)).toBe('b')
   })
 
   it('retries a failed batch once so a transient RPC failure loses nothing', async () => {
@@ -499,7 +501,7 @@ describe('useterminaloperations.handleterminalinput', () => {
     // typed while it was failing.
     await expect(first).resolves.toBeUndefined()
     expect(sendInputMock).toHaveBeenCalledTimes(2)
-    expect(new TextDecoder().decode(sendInputMock.mock.calls[1][1].data)).toBe('ab')
+    expect(new TextDecoder().decode(sendInputMock.mock.calls[1]?.[1].data)).toBe('ab')
   })
 
   it('stops draining when the terminal exits mid-burst', async () => {
@@ -532,7 +534,7 @@ describe('useterminaloperations.handleterminalinput', () => {
     await first
 
     expect(sendInputMock).toHaveBeenCalledTimes(2)
-    expect(new TextDecoder().decode(sendInputMock.mock.calls[1][1].data)).toBe('b')
+    expect(new TextDecoder().decode(sendInputMock.mock.calls[1]?.[1].data)).toBe('b')
   })
 
   it('sends each batch without a per-RPC timeout override', async () => {
@@ -544,7 +546,7 @@ describe('useterminaloperations.handleterminalinput', () => {
     await ops.handleTerminalInput('tid-1', new TextEncoder().encode('a'))
 
     expect(sendInputMock).toHaveBeenCalledTimes(1)
-    expect(sendInputMock.mock.calls[0][2]).toBeUndefined()
+    expect(sendInputMock.mock.calls[0]?.[2]).toBeUndefined()
   })
 
   it('keeps one queue per terminal across hook instances', async () => {
@@ -567,7 +569,7 @@ describe('useterminaloperations.handleterminalinput', () => {
     parked.release()
     await first
     expect(sendInputMock).toHaveBeenCalledTimes(2)
-    expect(new TextDecoder().decode(sendInputMock.mock.calls[1][1].data)).toBe('b')
+    expect(new TextDecoder().decode(sendInputMock.mock.calls[1]?.[1].data)).toBe('b')
   })
 
   it('calls restartTerminal when Enter (CR) is pressed on an EXITED terminal', async () => {
@@ -575,7 +577,7 @@ describe('useterminaloperations.handleterminalinput', () => {
     await ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))
     expect(restartTerminalMock).toHaveBeenCalledTimes(1)
     expect(sendInputMock).not.toHaveBeenCalled()
-    const arg = restartTerminalMock.mock.calls[0][1]
+    const arg = restartTerminalMock.mock.calls[0]?.[1]
     expect(arg).toMatchObject({
       terminalId: 'tid-1',
       cols: 100,
@@ -642,7 +644,7 @@ describe('useterminaloperations.handleterminalinput', () => {
 
     expect(view.getTerminalTab('tid-1')).toMatchObject({ cols: 120, rows: 40 })
     expect(resizeTerminalMock).toHaveBeenCalledTimes(1)
-    expect(resizeTerminalMock.mock.calls[0][1]).toMatchObject({
+    expect(resizeTerminalMock.mock.calls[0]?.[1]).toMatchObject({
       terminalId: 'tid-1',
       cols: 120,
       rows: 40,
@@ -680,7 +682,7 @@ describe('useterminaloperations.handleterminalinput', () => {
     await expect(ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))).resolves.toBeUndefined()
     expect(restartTerminalMock).toHaveBeenCalledTimes(1)
     expect(showWarnToastMock).toHaveBeenCalledTimes(1)
-    expect(showWarnToastMock.mock.calls[0][0]).toMatch(/restart/i)
+    expect(showWarnToastMock.mock.calls[0]?.[0]).toMatch(/restart/i)
   })
 
   it('does not call any RPC when the tab is missing', async () => {
@@ -716,13 +718,13 @@ describe('useterminaloperations.handleterminalinput', () => {
     const { ops } = setup(TerminalStatus.EXITED, { cols: undefined, rows: undefined })
     await ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))
     expect(restartTerminalMock).toHaveBeenCalledTimes(1)
-    const arg = restartTerminalMock.mock.calls[0][1]
-    expect(arg.cols).toBe(80)
-    expect(arg.rows).toBe(25)
+    const arg = restartTerminalMock.mock.calls[0]?.[1]
+    expect(arg?.cols).toBe(80)
+    expect(arg?.rows).toBe(25)
   })
 })
 
-describe('useterminaloperations.availableshells', () => {
+describe('useTerminalOperations.availableshells', () => {
   it('loads shells from listAvailableShells on mount when a worker is present', async () => {
     listAvailableShellsMock.mockResolvedValueOnce({
       shells: ['/bin/zsh', '/bin/bash'],
@@ -770,7 +772,7 @@ describe('terminal bell via watch events', () => {
   })
 })
 
-describe('useterminaloperations.handleterminalclose', () => {
+describe('useTerminalOperations.handleterminalclose', () => {
   it('removes the terminal tab synchronously and fires closeTerminal with KEEP by default', () => {
     const { ops, view, add } = setup()
     add('term-close', { workerId: 'w-1' })

@@ -165,7 +165,9 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       backgroundTasksLoaded: boolean
       backgroundTasks: ProtoBackgroundTaskItem[]
       goalLoaded: boolean
-      goal?: ProtoAgentGoal
+      // `| undefined` mirrors the proto response: an absent goal arrives as an
+      // explicitly-undefined key, and replaceGoal takes undefined to mean "clear".
+      goal?: ProtoAgentGoal | undefined
       goalSupportedActions: ProtoAgentGoalAction[]
       goalUpdatedAt: string
     },

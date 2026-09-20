@@ -158,13 +158,15 @@ function PillOption(props: {
       onClick={props.onClick}
       onFocus={props.onFocus}
     >
-      <PillOptionContent label={props.label} icon={props.icon} />
+      <PillOptionContent label={props.label} {...(props.icon !== undefined ? { icon: props.icon } : {})} />
     </button>
   )
 
   return (
     <Show when={tooltipText()} fallback={pill()}>
-      {text => <Tooltip text={text()} ariaLabel={tooltipName()} showWhen={tooltipShowWhen()}>{pill()}</Tooltip>}
+      {/* `''` for the absent name: `Tooltip` decides by truthiness, so an empty
+          label is the same "no name" as no key while the read stays reactive. */}
+      {text => <Tooltip text={text()} ariaLabel={tooltipName() ?? ''} showWhen={tooltipShowWhen()}>{pill()}</Tooltip>}
     </Show>
   )
 }
@@ -458,7 +460,7 @@ export function PillGroup<K>(props: {
                         }}
                         data-label={option().label}
                       >
-                        <PillOptionContent label={option().label} icon={option().icon} />
+                        <PillOptionContent label={option().label} {...(option().icon !== undefined ? { icon: option().icon } : {})} />
                       </span>
                     )}
                   </Show>
@@ -481,7 +483,7 @@ export function PillGroup<K>(props: {
                 separated={index() > 0}
                 small={props.small === true}
                 label={option().label}
-                icon={option().icon}
+                {...(option().icon !== undefined ? { icon: option().icon } : {})}
                 onClick={() => select(key)}
                 onFocus={() => setFocusedKey({ value: key })}
                 ref={(element) => {

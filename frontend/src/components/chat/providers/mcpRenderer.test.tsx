@@ -1,10 +1,11 @@
-import type { MessageCategory } from '../messageClassification'
+import type { MessageCategory } from '../messageClassifier'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { toolUseHeader } from '~/components/chat/toolStyles.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import './testMocks'
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../messageContentRenderer')
 
 // ---------------------------------------------------------------------------
 // MCP name parsing (unit tests for inline utilities via rendered output)
@@ -40,12 +41,7 @@ function makeMcpToolResult(content: string) {
   }
 }
 
-const toolUseCategory: MessageCategory = {
-  kind: 'tool_use',
-  toolName: 'mcp__claude_ai_Tavily__tavily_research',
-  toolUse: { name: 'mcp__claude_ai_Tavily__tavily_research', input: { input: 'Go OIDC libraries comparison' } },
-  content: [],
-}
+const toolUseCategory: MessageCategory = { kind: 'tool_use' }
 
 const toolResultCategory: MessageCategory = { kind: 'tool_result' }
 
@@ -73,12 +69,7 @@ describe('mcp tool_use rendering', () => {
       query: 'golang oidc',
     })
 
-    const category: MessageCategory = {
-      kind: 'tool_use',
-      toolName: 'mcp__github__search__repos',
-      toolUse: { name: 'mcp__github__search__repos', input: { query: 'golang oidc' } },
-      content: [],
-    }
+    const category: MessageCategory = { kind: 'tool_use' }
 
     const { container } = render(() =>
       renderMessageContent(parsed, { spanType: 'mcp__github__search__repos' }, category, AgentProvider.CLAUDE_CODE),
@@ -97,21 +88,18 @@ describe('mcp tool_use rendering', () => {
       input: 'Go OIDC libraries comparison',
     })
 
-    const category: MessageCategory = {
-      kind: 'tool_use',
-      toolName: 'mcp__claude_ai_Tavily__tavily_research',
-      toolUse: { name: 'mcp__claude_ai_Tavily__tavily_research', input: { model: 'pro', input: 'Go OIDC libraries comparison' } },
-      content: [],
-    }
+    const category: MessageCategory = { kind: 'tool_use' }
 
     const { container } = render(() =>
       renderMessageContent(parsed, { spanType: 'mcp__claude_ai_Tavily__tavily_research' }, category, AgentProvider.CLAUDE_CODE),
     )
 
-    const text = container.textContent || ''
-    // Should show "input" value, not "model" value
-    expect(text).toContain('Go OIDC libraries comparison')
-    expect(text).not.toContain('"pro"')
+    const header = container.querySelector(`.${toolUseHeader}`)?.textContent || ''
+    // The TITLE hint shows the "input" value, not the "model" value. The pending
+    // row's Arguments block below it states every argument, by design.
+    expect(header).toContain('Go OIDC libraries comparison')
+    expect(header).not.toContain('"pro"')
+    expect(container.textContent || '').toContain('Go OIDC libraries comparison')
   })
 
   it('should render unknown non-MCP tools with tool name', () => {
@@ -119,12 +107,7 @@ describe('mcp tool_use rendering', () => {
       description: 'Do something',
     })
 
-    const category: MessageCategory = {
-      kind: 'tool_use',
-      toolName: 'SomeNewTool',
-      toolUse: { name: 'SomeNewTool', input: { description: 'Do something' } },
-      content: [],
-    }
+    const category: MessageCategory = { kind: 'tool_use' }
 
     const { container } = render(() =>
       renderMessageContent(parsed, { spanType: 'SomeNewTool' }, category, AgentProvider.CLAUDE_CODE),
@@ -141,12 +124,7 @@ describe('mcp tool_use rendering', () => {
       command: 'ls -la',
     })
 
-    const category: MessageCategory = {
-      kind: 'tool_use',
-      toolName: 'Bash',
-      toolUse: { name: 'Bash', input: { description: 'List files', command: 'ls -la' } },
-      content: [],
-    }
+    const category: MessageCategory = { kind: 'tool_use' }
 
     const { container } = render(() =>
       renderMessageContent(parsed, { spanType: 'Bash' }, category, AgentProvider.CLAUDE_CODE),

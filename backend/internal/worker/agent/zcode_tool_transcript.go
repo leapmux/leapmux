@@ -199,13 +199,11 @@ func zcodeToolResultSupplement(original []byte, record zcodeToolRecord) ([]byte,
 	if !valid {
 		return nil, fmt.Errorf("invalid ZCode tool result")
 	}
-	encoded, err := json.Marshal(map[string]any{
-		"type": contracts.ZCodeEventToolUpdated,
-		"payload": map[string]string{
-			"kind": ref.Kind, "toolCallId": ref.ToolCallID,
-		},
-		"nativeTool": record.native,
-		"artifacts":  record.artifacts,
+	encoded, err := json.Marshal(contracts.ZCodeToolResultEnvelope{
+		Type:       contracts.ZCodeEventToolUpdated,
+		Payload:    contracts.ZCodeSupplementRef{Kind: ref.Kind, ToolCallID: ref.ToolCallID},
+		NativeTool: record.native,
+		Artifacts:  record.artifacts,
 	})
 	if err != nil {
 		return nil, err

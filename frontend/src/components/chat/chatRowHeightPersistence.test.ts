@@ -60,7 +60,7 @@ function storedRow(id: string, heightKey: string, height: number): [string, stri
   return [id, fnv1a32Hex(heightKey), height]
 }
 
-describe('chatrowheightpersistence', () => {
+describe('chatRowHeightPersistence', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     localStorageDrop(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)
@@ -431,7 +431,7 @@ describe('chatrowheightpersistence', () => {
 
     const stored = await readStored()
     expect(stored?.rows).toHaveLength(PERSISTED_ROW_HEIGHTS_MAX)
-    expect(stored?.rows[0][0]).toBe('r0') // 'stale' (inserted first) was shed
+    expect(stored?.rows[0]?.[0]).toBe('r0') // 'stale' (inserted first) was shed
     expect(stored?.rows.some(([id]) => id === 'stale')).toBe(false)
     h.dispose()
   })

@@ -36,6 +36,14 @@ import { openTabInFocusedTile } from './openTabInFocusedTile'
 import { warnUnlessPlaceableTab } from './placeableTabGuard'
 import '~/components/chat/providers'
 
+/**
+ * The proto close responses carry `result` as present-but-undefined when the
+ * wire omitted the field; `awaitCloseResult` takes the key absent, so strip it.
+ */
+function closeResultView<T extends { result?: CloseTabResult | undefined }>(resp: T): { result?: CloseTabResult } {
+  return resp.result === undefined ? {} : { result: resp.result }
+}
+
 export interface UseAgentOperationsProps {
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
   agentInputQueueStore: ReturnType<typeof createAgentInputQueueStore>
@@ -457,8 +465,14 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     // enforces the "never store empty" invariant (an empty value deletes the key rather than
     // blanking the group with a spurious '' override).
     let optimistic = agent.optionValues
-    for (const key of keys)
-      optimistic = setOptionValue(optimistic, key, sets[key])
+    for (const key of keys) {
+      const value = sets[key]
+      // Unreachable — key comes from Object.keys(sets) — and '' would carry
+      // meaning here, so the guard skips instead of defaulting.
+      if (value === undefined)
+        continue
+      optimistic = setOptionValue(optimistic, key, value)
+    }
     props.metadata.patch(agentId, { optionValues: optimistic })
 
     const requestVersions = beginSettingRequest(agentId, keys)
@@ -611,7 +625,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       emitRemoveTabs(TabType.AGENT, ids)
     }, () => {})
 
-    return awaitCloseResult(rpc, 'Failed to close agent')
+    return awaitCloseResult(rpc.then(closeResultView), 'Failed to close agent')
   }
 
   return {

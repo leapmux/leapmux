@@ -61,13 +61,16 @@ describe('stored ZCode tool content', () => {
     delete supplemental.artifacts[uri]
     const images = zcodeToolResultImages(row)
     expect(images).toHaveLength(1)
-    expect(images[0].url).toBeUndefined()
+    expect(images[0]?.url).toBeUndefined()
     expect(zcodeMcpContent(row)?.map(item => item.type)).toEqual(['text', 'image', 'text'])
   })
 
   it('accepts image MIME types without case sensitivity', () => {
     const { row, supplemental } = fixture()
-    supplemental.nativeTool.data.state.attachments[0].mime = 'IMAGE/PNG'
+    // The fixture above stores one attachment; the guard is the type-level one alone.
+    const attachment = supplemental.nativeTool.data.state.attachments[0]
+    if (attachment !== undefined)
+      attachment.mime = 'IMAGE/PNG'
     expect(zcodeToolResultImages(row)).toHaveLength(1)
   })
 
@@ -110,7 +113,10 @@ describe('stored ZCode tool content', () => {
     expect(zcodeMcpContent(row)).toBeNull()
     layout.push({ type: 'attachment', attachmentIndex: -1 })
     expect(zcodeMcpContent(row)).toBeNull()
-    layout[0].attachmentIndex = 10
+    // The push above is the one entry, so the guard is the type-level one alone.
+    const pushed = layout[0]
+    if (pushed !== undefined)
+      pushed.attachmentIndex = 10
     expect(zcodeMcpContent(row)).toBeNull()
   })
 

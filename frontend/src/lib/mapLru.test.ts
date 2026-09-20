@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { capMapInsertionOrder, lruGet, lruSet } from './mapLru'
 
-describe('capmapinsertionorder', () => {
+describe('capMapInsertionOrder', () => {
   it('returns the same map untouched while within the cap', () => {
     const map = new Map<string, number>([['a', 1], ['b', 2]])
     const result = capMapInsertionOrder(map, 5)
@@ -67,7 +67,7 @@ describe('capmapinsertionorder', () => {
   })
 })
 
-describe('lruget', () => {
+describe('lruGet', () => {
   it('returns undefined and leaves the map untouched on a miss', () => {
     const map = new Map<string, number>([['a', 1], ['b', 2]])
     expect(lruGet(map, 'z')).toBeUndefined()
@@ -88,7 +88,7 @@ describe('lruget', () => {
   })
 })
 
-describe('lruset', () => {
+describe('lruSet', () => {
   it('inserts a new key at the MRU end and caps oldest-first', () => {
     const map = new Map<string, number>()
     for (let i = 0; i < 4; i++)

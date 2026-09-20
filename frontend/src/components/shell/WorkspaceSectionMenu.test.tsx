@@ -88,7 +88,7 @@ function inProgressItems(): string[] {
   return itemsOf('sidebar-section-menu-workspaces_in_progress-popover')
 }
 
-describe('workspaceSectionMenu', () => {
+describe('WorkspaceSectionMenu', () => {
   beforeEach(() => {
     localStorageClearForTests()
     setStorageAccountForTests('u-1')

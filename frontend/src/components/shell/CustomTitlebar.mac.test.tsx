@@ -63,7 +63,7 @@ function renderTitlebar() {
   return result.container.firstElementChild as HTMLElement
 }
 
-describe('customTitlebar macOS traffic-light inset', () => {
+describe('CustomTitlebar macOS traffic-light inset', () => {
   it('reserves the 78px inset for the native traffic lights when windowed', () => {
     const titlebar = renderTitlebar()
     expect(titlebar.style.paddingLeft).toBe('78px')

@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { TabBusyReason } from './tabBusyProbe'
 import type { InspectLastTabCloseResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import type { TabType as TabTypeT } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type { PathFlavor } from '~/lib/paths'
 import { createMemo, createUniqueId, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
@@ -21,6 +22,15 @@ import { warningText } from '~/styles/shared.css'
 import { TabBusyDetails } from './TabBusyDetails'
 
 const log = createLogger('LastTabCloseDialog')
+
+/**
+ * `BranchStatusInfo`'s `flavor` takes no explicit undefined, so the key stays
+ * omitted until the worker reports its OS. A helper (not a hoisted read)
+ * keeps the spread's getter reactivity.
+ */
+function flavorProps(flavor: PathFlavor | undefined): { flavor?: PathFlavor } {
+  return flavor === undefined ? {} : { flavor }
+}
 
 export type LastTabCloseChoice = 'cancel' | 'schedule-delete' | 'close-anyway'
 
@@ -151,8 +161,8 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
             branchName: props.state.branchName,
             directory: directory(),
             homeDir: homeDir(),
-            flavor: flavor(),
-            gitState: props.state.gitState,
+            ...(flavorProps(flavor())),
+            ...(props.state.gitState !== undefined ? { gitState: props.state.gitState } : {}),
           }}
           affectedTabs={{
             agents: props.state.tabType === TabType.AGENT ? 1 : 0,
@@ -229,7 +239,7 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
           <ConfirmButton
             data-variant="danger"
             disabled={Boolean(removalBlockedReason())}
-            blocked={removalBlockedReason() ? { reason: removalBlockedReason()!, reasonId: blockedReasonId } : undefined}
+            {...(removalBlockedReason() !== '' ? { blocked: { reason: removalBlockedReason(), reasonId: blockedReasonId } } : {})}
             onClick={handleScheduleDelete}
           >
             Delete worktree

@@ -404,6 +404,8 @@ describe('createBrowserRows bindings', () => {
     const { prefs, setBrowserTheme, setAccountTheme, resetTheme } = themePrefs(true)
     const bindings = bindingsOf(prefs)
     const theme = bindings['appearance.theme']
+    if (theme === undefined)
+      throw new Error('no appearance.theme binding')
     expect(theme.overridden).toBeDefined()
     expect(theme.clearOverride).toBeDefined()
 
@@ -437,6 +439,8 @@ describe('createBrowserRows bindings', () => {
   it('hides the account Reset while a dual row edits its browser tier', () => {
     const { prefs } = themePrefs(true)
     const theme = bindingsOf(prefs)['appearance.theme']
+    if (theme === undefined)
+      throw new Error('no appearance.theme binding')
     expect(theme.customized!()).toBe(true)
 
     theme.beginOverride!()
@@ -449,7 +453,10 @@ describe('createBrowserRows bindings', () => {
 
   it('reports no customization for a key the account tier does not store', () => {
     const { prefs } = themePrefs(false)
-    expect(bindingsOf(prefs)['appearance.theme'].customized!()).toBe(false)
+    const theme = bindingsOf(prefs)['appearance.theme']
+    if (theme === undefined)
+      throw new Error('no appearance.theme binding')
+    expect(theme.customized!()).toBe(false)
   })
 
   // The reset RPC deletes the WHOLE `{enabled, fonts}` document -- there is
@@ -458,18 +465,24 @@ describe('createBrowserRows bindings', () => {
   // instead of rendering a plain button.
   it('marks both halves of a font tier as resetting the whole key', () => {
     const bindings = bindingsOf(makeFakePrefs() as unknown as PreferencesState)
-    expect(bindings['appearance.uiFonts'].resetsWholeKey).toBe('ui_fonts')
-    expect(bindings['appearance.uiFontStack'].resetsWholeKey).toBe('ui_fonts')
-    expect(bindings['appearance.monoFonts'].resetsWholeKey).toBe('mono_fonts')
-    expect(bindings['appearance.monoFontStack'].resetsWholeKey).toBe('mono_fonts')
+    expect(bindings['appearance.uiFonts']?.resetsWholeKey).toBe('ui_fonts')
+    expect(bindings['appearance.uiFontStack']?.resetsWholeKey).toBe('ui_fonts')
+    expect(bindings['appearance.monoFonts']?.resetsWholeKey).toBe('mono_fonts')
+    expect(bindings['appearance.monoFontStack']?.resetsWholeKey).toBe('mono_fonts')
   })
 
   // A scalar dual row IS its key, so its Reset removes exactly what the row
   // shows and the plain button is exact.
   it('leaves a scalar dual row with a plain Reset', () => {
     const bindings = bindingsOf(makeFakePrefs() as unknown as PreferencesState)
-    expect(bindings['appearance.theme'].resetsWholeKey).toBeUndefined()
-    expect(bindings['advanced.debugLogging'].resetsWholeKey).toBeUndefined()
+    const theme = bindings['appearance.theme']
+    const debugLogging = bindings['advanced.debugLogging']
+    // The reads expect undefined, so the keys must be proven present first:
+    // `?.` would let a missing row pass as "no whole-key reset".
+    if (theme === undefined || debugLogging === undefined)
+      throw new Error('missing a scalar dual binding')
+    expect(theme.resetsWholeKey).toBeUndefined()
+    expect(debugLogging.resetsWholeKey).toBeUndefined()
   })
 
   it('font stack rows write whole-object tiers', () => {
@@ -491,9 +504,13 @@ describe('createBrowserRows bindings', () => {
     } as unknown as PreferencesState
 
     const bindings = bindingsOf(prefs)
-    bindings['appearance.monoFontStack'].set(['B', 'C'])
+    const monoFontStack = bindings['appearance.monoFontStack']
+    const monoFonts = bindings['appearance.monoFonts']
+    if (monoFontStack === undefined || monoFonts === undefined)
+      throw new Error('missing a mono font binding')
+    monoFontStack.set(['B', 'C'])
     expect(setAccountMonoFonts).toHaveBeenCalledWith({ enabled: true, fonts: ['B', 'C'] })
-    bindings['appearance.monoFonts'].set(false)
+    monoFonts.set(false)
     expect(setAccountMonoFonts).toHaveBeenLastCalledWith({ enabled: false, fonts: ['A'] })
 
     // Override tier merges into the whole browser object, never half of it.
@@ -502,7 +519,10 @@ describe('createBrowserRows bindings', () => {
       dual: { ...base.dual, monoFonts: monoTier(() => ({ enabled: true, fonts: ['A'] })) },
     } as unknown as PreferencesState
     const over = bindingsOf(overridden)
-    over['appearance.monoFontStack'].set(['Z'])
+    const overriddenStack = over['appearance.monoFontStack']
+    if (overriddenStack === undefined)
+      throw new Error('no appearance.monoFontStack binding')
+    overriddenStack.set(['Z'])
     expect(setBrowserMonoFont).toHaveBeenCalledWith({ enabled: true, fonts: ['Z'] })
   })
 })

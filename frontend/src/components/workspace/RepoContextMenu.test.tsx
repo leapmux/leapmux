@@ -74,7 +74,7 @@ function itemsOf(testId: string): string[] {
     .map(el => el.textContent?.trim() ?? '')
 }
 
-describe('repoContextMenu', () => {
+describe('RepoContextMenu', () => {
   // The same three sections a branch row's menu carries, in the same order: a
   // repository with one checkout and the branch inside it offer the same
   // things, and two shapes for that would be two shapes to learn.

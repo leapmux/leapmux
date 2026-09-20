@@ -153,7 +153,10 @@ describe('createScrollActivity', () => {
   })
 
   it('accepts only a same-tick scroll when no momentum grace is configured', () => {
-    const activity = setup({ momentumGraceMs: undefined })
+    // Grace 0, not an explicit undefined: `createScrollActivity` reads the field as
+    // `?? 0`, so the two are one configuration, and 0 states it without overriding
+    // the spread's GRACE_MS default with a value the prop type rejects.
+    const activity = setup({ momentumGraceMs: 0 })
 
     // A scroll dispatched in the same tick as its input is part of that gesture.
     activity.noteInput()

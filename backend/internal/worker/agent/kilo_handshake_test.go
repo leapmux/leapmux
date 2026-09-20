@@ -19,12 +19,19 @@ import (
 	"github.com/leapmux/leapmux/internal/util/optionids"
 )
 
-func installFakeKiloACP(t *testing.T, scenario string) {
+// installFakeKiloACP puts a fake `kilo` on PATH. `envFile`, when given, makes the
+// launcher dump the environment it was started with, so a test can assert what
+// LeapMux actually hands the daemon.
+func installFakeKiloACP(t *testing.T, scenario string, envFile ...string) {
 	t.Helper()
 
 	dir := t.TempDir()
 	launcher := filepath.Join(dir, "kilo")
-	script := fmt.Sprintf("#!/bin/sh\nLEAPMUX_KILO_TEST_SCENARIO=%q exec %q -test.run=TestHelperProcessKiloACP --\n", scenario, os.Args[0])
+	dump := ""
+	if len(envFile) > 0 && envFile[0] != "" {
+		dump = fmt.Sprintf("env > %q\n", envFile[0])
+	}
+	script := fmt.Sprintf("#!/bin/sh\n%sLEAPMUX_KILO_TEST_SCENARIO=%q exec %q -test.run=TestHelperProcessKiloACP --\n", dump, scenario, os.Args[0])
 	require.NoError(t, os.WriteFile(launcher, []byte(script), 0o755))
 
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

@@ -135,7 +135,7 @@ export const SetGoalDialog: Component<SetGoalDialogProps> = (props) => {
           ariaLabelledBy={hintId}
           // Supply the initial document during construction.
           // A saved draft could replace the current objective with abandoned text.
-          initialMarkdown={props.initialObjective}
+          {...(props.initialObjective !== undefined ? { initialMarkdown: props.initialObjective } : {})}
           onSend={submit}
           // Let submit explain why it rejects an empty document.
           allowEmptySend

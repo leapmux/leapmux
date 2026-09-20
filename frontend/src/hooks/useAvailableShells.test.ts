@@ -242,7 +242,7 @@ describe('useAvailableShells', () => {
         setWorkerId('A')
         await flush()
         expect(onError).toHaveBeenCalledTimes(1)
-        expect((onError.mock.calls[0][0] as Error).message).toBe('worker offline')
+        expect((onError.mock.calls[0]?.[0] as Error).message).toBe('worker offline')
         expect(hook.shells()).toEqual([])
         expect(hook.loading()).toBe(false)
         dispose()

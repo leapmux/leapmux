@@ -91,7 +91,7 @@ beforeEach(() => {
   sessionStorageClearForTests()
 })
 
-describe('directoryTree', () => {
+describe('DirectoryTree', () => {
   /**
    * A background refresh must not re-create the rows it did not change.
    *
@@ -150,7 +150,7 @@ describe('directoryTree', () => {
   })
 })
 
-describe('directoryTree sorting', () => {
+describe('DirectoryTree sorting', () => {
   const root = '/repo-sort'
 
   // Chosen so that name, size, modified and type each produce a DIFFERENT
@@ -362,7 +362,7 @@ describe('directoryTree sorting', () => {
  * The root row has no parent listing in this tree, so it stats itself. Without
  * that it would be the one directory whose three-dot menu showed nothing.
  */
-describe('directoryTree root row info', () => {
+describe('DirectoryTree root row info', () => {
   const root = '/repo-root-info'
 
   /**
@@ -474,7 +474,7 @@ describe('directoryTree root row info', () => {
  * `showHidden && !isVisible` fast path in front of it were unreachable from
  * the unit suite. Inverting either subexpression kept the suite green.
  */
-describe('directoryTree filtering', () => {
+describe('DirectoryTree filtering', () => {
   const root = '/repo-filter'
   const entries = [
     entry(root, 'visible.ts'),
@@ -495,8 +495,8 @@ describe('directoryTree filtering', () => {
         rootPath={root}
         selectedPath=""
         onSelect={() => {}}
-        showHiddenFiles={props.showHiddenFiles}
-        isVisible={props.isVisible}
+        {...(props.showHiddenFiles !== undefined ? { showHiddenFiles: props.showHiddenFiles } : {})}
+        {...(props.isVisible !== undefined ? { isVisible: props.isVisible } : {})}
       />
     ))
   }
@@ -573,8 +573,10 @@ function mockChain(dirs: Record<string, ReturnType<typeof entry>[]>, separator =
     }
     return {
       listings: chain
-        .filter(path => dirs[path] !== undefined)
-        .map(path => ({ path, entries: dirs[path], truncated: false, totalEntries: dirs[path].length })),
+        .flatMap((path) => {
+          const entries = dirs[path]
+          return entries !== undefined ? [{ path, entries, truncated: false, totalEntries: entries.length }] : []
+        }),
     }
   })
 }
@@ -602,7 +604,7 @@ function renderTree(props: Partial<Parameters<typeof DirectoryTree>[0]> & { root
   ))
 }
 
-describe('directoryTree reveal', () => {
+describe('DirectoryTree reveal', () => {
   const root = '/'
 
   it('expands toward revealPath when nothing is selected', async () => {
@@ -660,12 +662,12 @@ describe('directoryTree reveal', () => {
 
     await waitFor(() => expect(rowFor('home')).toBeTruthy())
     expect(listDirectory).toHaveBeenCalledTimes(1)
-    expect(listDirectory.mock.calls[0][1]).toMatchObject({ path: '/' })
-    expect(listDirectory.mock.calls[0][1].fromRoot).toBeUndefined()
+    expect(listDirectory.mock.calls[0]?.[1]).toMatchObject({ path: '/' })
+    expect(listDirectory.mock.calls[0]?.[1].fromRoot).toBeUndefined()
   })
 })
 
-describe('directoryTree chain loading', () => {
+describe('DirectoryTree chain loading', () => {
   it('fetches the whole root-to-reveal chain in one request', async () => {
     mockChain({
       '/': [dirEntry('/', 'home')],
@@ -678,7 +680,7 @@ describe('directoryTree chain loading', () => {
 
     await waitFor(() => expect(rowFor('proj')).toBeTruthy())
     expect(listDirectory).toHaveBeenCalledTimes(1)
-    expect(listDirectory.mock.calls[0][1]).toMatchObject({ path: '/home/alice/proj', fromRoot: '/' })
+    expect(listDirectory.mock.calls[0]?.[1]).toMatchObject({ path: '/home/alice/proj', fromRoot: '/' })
   })
 
   it('does not re-request when every chain directory is cached', async () => {
@@ -838,7 +840,7 @@ describe('directoryTree chain loading', () => {
     await waitFor(() => expect(rowFor('src')).toBeTruthy())
     await settle()
     expect(listDirectory).toHaveBeenCalledTimes(1)
-    expect(listDirectory.mock.calls[0][1]).toMatchObject({ path: '/tmp/ws/src', fromRoot: '/tmp/ws' })
+    expect(listDirectory.mock.calls[0]?.[1]).toMatchObject({ path: '/tmp/ws/src', fromRoot: '/tmp/ws' })
   })
 
   /**
@@ -870,7 +872,7 @@ describe('directoryTree chain loading', () => {
     setShowFiles(true)
 
     await waitFor(() => expect(listDirectory).toHaveBeenCalledTimes(2))
-    expect(listDirectory.mock.calls[1][1]).toMatchObject({ path: '/', dirsOnly: false })
+    expect(listDirectory.mock.calls[1]?.[1]).toMatchObject({ path: '/', dirsOnly: false })
     await waitFor(() => expect(rowFor('home')).toBeTruthy())
   })
 
@@ -909,7 +911,7 @@ describe('directoryTree chain loading', () => {
   })
 })
 
-describe('directoryTree request de-duplication', () => {
+describe('DirectoryTree request de-duplication', () => {
   /**
    * The chain loader and the per-node cascade both react to the same reveal
    * target, so on a selection change they ask for the same directories in the
@@ -928,8 +930,10 @@ describe('directoryTree request de-duplication', () => {
       const chain = req.fromRoot ? ['/', '/home', '/home/alice'] : [req.path]
       return {
         listings: chain
-          .filter(path => dirs[path] !== undefined)
-          .map(path => ({ path, entries: dirs[path], truncated: false, totalEntries: dirs[path].length })),
+          .flatMap((path) => {
+            const entries = dirs[path]
+            return entries !== undefined ? [{ path, entries, truncated: false, totalEntries: entries.length }] : []
+          }),
       }
     })
 
@@ -971,8 +975,10 @@ describe('directoryTree request de-duplication', () => {
       const chain = req.fromRoot ? ['/', '/home'] : [req.path]
       return {
         listings: chain
-          .filter(path => dirs[path] !== undefined)
-          .map(path => ({ path, entries: dirs[path], truncated: false, totalEntries: dirs[path].length })),
+          .flatMap((path) => {
+            const entries = dirs[path]
+            return entries !== undefined ? [{ path, entries, truncated: false, totalEntries: entries.length }] : []
+          }),
       }
     })
 
@@ -992,7 +998,7 @@ describe('directoryTree request de-duplication', () => {
   })
 })
 
-describe('directoryTree at a filesystem root', () => {
+describe('DirectoryTree at a filesystem root', () => {
   it('labels a posix root row with the root itself', async () => {
     mockChain({ '/': [dirEntry('/', 'home')] })
 
@@ -1026,7 +1032,7 @@ describe('directoryTree at a filesystem root', () => {
 
     await waitFor(() => expect(rowFor('proj')).toBeTruthy())
     expect(listDirectory).toHaveBeenCalledTimes(1)
-    expect(listDirectory.mock.calls[0][1]).toMatchObject({ path: 'C:\\Users\\alice', fromRoot: 'C:\\' })
+    expect(listDirectory.mock.calls[0]?.[1]).toMatchObject({ path: 'C:\\Users\\alice', fromRoot: 'C:\\' })
   })
 
   it('keys sessionStorage on the worker as well as the root path', async () => {
@@ -1064,7 +1070,7 @@ describe('directoryTree at a filesystem root', () => {
   })
 })
 
-describe('directoryTree canonicalized chain', () => {
+describe('DirectoryTree canonicalized chain', () => {
   /**
    * The worker canonicalizes what it lists, and a symlink BELOW the root
    * changes the level count with it (`/tmp/ws` is two levels under `/`,
@@ -1108,7 +1114,7 @@ describe('directoryTree canonicalized chain', () => {
   })
 })
 
-describe('directoryTree refresh', () => {
+describe('DirectoryTree refresh', () => {
   /**
    * The refresh path used to call the RPC directly, so it carried neither the
    * worker guard nor the in-flight claim. Two workers routinely share a root
@@ -1163,7 +1169,7 @@ describe('directoryTree refresh', () => {
   })
 })
 
-describe('directoryTree unreadable directories', () => {
+describe('DirectoryTree unreadable directories', () => {
   function nodeError(): string | undefined {
     return document.querySelector('[data-testid="tree-node-error"]')?.textContent ?? undefined
   }
@@ -1267,7 +1273,7 @@ describe('directoryTree unreadable directories', () => {
   })
 })
 
-describe('directoryTree failure handling', () => {
+describe('DirectoryTree failure handling', () => {
   /**
    * A directory the caller cannot read fails every time it is asked, and a
    * tree rooted at `/` puts several of those in front of every user
@@ -1323,7 +1329,7 @@ describe('directoryTree failure handling', () => {
   })
 })
 
-describe('directoryTree win32 separators', () => {
+describe('DirectoryTree win32 separators', () => {
   /**
    * `PathInput` submits whatever the user typed, so a win32 selection reaches
    * the tree spelled `C:/Users/alice` while the worker's own listings spell it
@@ -1345,7 +1351,7 @@ describe('directoryTree win32 separators', () => {
     // the normalization the chain collapses to the root alone, so the request
     // carries no from_root and `C:\Users` is never listed.
     await waitFor(() => expect(rowFor('alice')).toBeTruthy())
-    expect(listDirectory.mock.calls[0][1].fromRoot).toBe('C:\\')
+    expect(listDirectory.mock.calls[0]?.[1].fromRoot).toBe('C:\\')
   })
 
   // The worker reports a name in its own case; a typed path need not match it.
@@ -1364,7 +1370,7 @@ describe('directoryTree win32 separators', () => {
   })
 })
 
-describe('directoryTree expandPath', () => {
+describe('DirectoryTree expandPath', () => {
   const root = '/expand-handle'
   const storeKey = `${PREFIX_DIRECTORY_TREE}w1:${root}:dirs`
 
@@ -1475,7 +1481,7 @@ describe('directoryTree expandPath', () => {
   })
 })
 
-describe('directoryTree keyboard navigation', () => {
+describe('DirectoryTree keyboard navigation', () => {
   const root = '/aria'
 
   /**

@@ -203,7 +203,9 @@ const nodeRegisterHandlers: Record<string, NodeFieldHandler> = {
   },
 }
 
-function applySetNodeRegister(state: UserCrdtState, op: { nodeId: string, field: { case?: string, value?: unknown } }, hlc: HLC): void {
+// The structural op shapes below model the GENERATED oneof `field`, whose
+// "no member selected" variant carries `case: undefined` explicitly.
+function applySetNodeRegister(state: UserCrdtState, op: { nodeId: string, field: { case?: string | undefined, value?: unknown } }, hlc: HLC): void {
   const rec = ensureNode(state, op.nodeId)
   if (!hlcIsZero(rec.tombstoneAt))
     return
@@ -248,7 +250,7 @@ const tabRegisterHandlers: Record<string, TabFieldHandler> = {
   },
 }
 
-function applySetTabRegister(state: UserCrdtState, op: { tabType: number, tabId: string, field: { case?: string, value?: unknown } }, hlc: HLC): void {
+function applySetTabRegister(state: UserCrdtState, op: { tabType: number, tabId: string, field: { case?: string | undefined, value?: unknown } }, hlc: HLC): void {
   const rec = ensureTab(state, op.tabId, op.tabType)
   if (rec.tabType !== op.tabType)
     return
@@ -337,7 +339,7 @@ const floatingWindowRegisterHandlers: Record<string, FloatingWindowFieldHandler>
   },
 }
 
-function applySetFloatingWindowRegister(state: UserCrdtState, op: { windowId: string, field: { case?: string, value?: unknown } }, hlc: HLC): void {
+function applySetFloatingWindowRegister(state: UserCrdtState, op: { windowId: string, field: { case?: string | undefined, value?: unknown } }, hlc: HLC): void {
   const rec = ensureFloatingWindow(state, op.windowId)
   if (!hlcIsZero(rec.tombstoneAt))
     return
@@ -364,7 +366,7 @@ function applyTombstoneFloatingWindow(state: UserCrdtState, windowId: string, hl
  * callers preserve immutable identity fields (e.g. Tab's `tabType`)
  * across the wipe.
  */
-function applyTombstoneRecord<R extends { tombstoneAt?: HLC }>(
+function applyTombstoneRecord<R extends { tombstoneAt?: HLC | undefined }>(
   map: Record<string, R>,
   id: string,
   hlc: HLC,

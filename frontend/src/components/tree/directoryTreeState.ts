@@ -39,6 +39,8 @@ export function sameTreeEntries(a: readonly TreeNodeData[], b: readonly TreeNode
   for (let i = 0; i < a.length; i++) {
     const x = a[i]
     const y = b[i]
+    if (x === undefined || y === undefined)
+      return false
     // size and modTime are part of the comparison because the tree SORTS and
     // DISPLAYS them: without them, a file whose contents changed but whose
     // name did not would keep its stale size in the three-dot menu and its

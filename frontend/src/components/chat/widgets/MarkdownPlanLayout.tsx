@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import type { RenderContext } from '../messageRenderers'
+import type { PlanRenderContext } from '../renderContext'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { createMemo, Show } from 'solid-js'
 import { useCopyButton } from '~/hooks/useCopyButton'
@@ -15,7 +15,7 @@ export interface MarkdownPlanLayoutProps {
   title: string
   /** Markdown body of the plan. Empty string suppresses the body and copy/reply actions. */
   planText: string
-  context?: RenderContext
+  context?: PlanRenderContext
 }
 
 /**
@@ -38,10 +38,13 @@ export function MarkdownPlanLayout(props: MarkdownPlanLayoutProps): JSX.Element 
       title={props.title}
       alwaysVisible={true}
       bordered={false}
-      context={props.context}
+      {...(props.context === undefined ? {} : { context: props.context })}
       headerActions={{
-        onReply: props.planText && props.context?.onReply ? handleReply : undefined,
-        onCopyMarkdown: props.planText ? copy : undefined,
+        // Set only when the plan draws them: an explicit `undefined` is not
+        // assignable to an optional prop, and the actions row reads absent
+        // the same.
+        ...(props.planText && props.context?.onReply ? { onReply: handleReply } : {}),
+        ...(props.planText ? { onCopyMarkdown: copy } : {}),
         markdownCopied: copied(),
       }}
     >

@@ -97,6 +97,9 @@ describe('singleton installs', () => {
       const [dir] = installedCopies(name)
 
       expect(dir, `patchedDependencies names ${name}, which is not installed`).toBeTruthy()
+      // Narrowing only: the expect above has already failed the test by here.
+      if (dir === undefined)
+        continue
 
       const installed = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')).version
       expect(

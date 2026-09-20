@@ -1,10 +1,20 @@
 import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
+import type { Tab } from '~/stores/tab.types'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { positionAtInsertIdx } from '~/lib/lexorank'
 import { emitMoveTabToWorkspace } from '~/stores/tabOps'
 import { removeEmptyFloatingWindow } from './tileLifecycle'
+
+/**
+ * Position-only view for the lexorank helpers, whose items take an optional
+ * `position` without explicit undefined. A tab may carry an explicit undefined
+ * (the proto convention), so omit the key rather than pass it through.
+ */
+function tabPositionView(tab: Tab): { position?: string } {
+  return tab.position === undefined ? {} : { position: tab.position }
+}
 
 export interface UseCrossWorkspaceMoveArgs {
   getActiveWorkspaceId: () => string | null
@@ -101,7 +111,7 @@ export function useCrossWorkspaceMove(args: UseCrossWorkspaceMoveArgs): {
     // both workspaces' views — reflect it immediately, whether or not the
     // tab's worker is reachable.
     const tileTabs = view.forTile(resolvedTargetTileId)
-    const resolvedTargetPosition = positionAtInsertIdx(tileTabs, tileTabs.length)
+    const resolvedTargetPosition = positionAtInsertIdx(tileTabs.map(tabPositionView), tileTabs.length)
     emitMoveTabToWorkspace(tab.type, tab.id, resolvedTargetTileId, resolvedTargetPosition)
 
     // Focus the destination tile in the DESTINATION workspace's slot. The

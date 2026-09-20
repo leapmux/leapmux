@@ -3,7 +3,7 @@ import { render, screen } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { LabeledField } from '~/components/common/LabeledField'
 
-describe('labeledField', () => {
+describe('LabeledField', () => {
   it('draws the label, the actions and the control in one frame', () => {
     render(() => (
       <LabeledField label="Shell" actions={<button type="button">Refresh</button>}>

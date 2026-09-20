@@ -25,9 +25,11 @@ describe('claudeWebSearchFromToolResult', () => {
         { url: 'https://b.example/page', title: 'B' },
       ],
       summary: 'Final summary text',
-      query: 'how to widget',
       durationSeconds: 1.5,
     })
+    // The echoed query stays OUT of the result: the request states what the call
+    // looked for, and two copies could state two different things.
+    expect(source).not.toHaveProperty('query')
   })
 
   it('deduplicates links by URL', () => {

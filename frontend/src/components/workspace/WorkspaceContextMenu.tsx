@@ -80,7 +80,7 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
     if (!menuOpen())
       return []
     return listRepoStartPoints(props.getTabs(), props.repoGitStore, {
-      workerInfoFn: props.workerInfoFn,
+      ...(props.workerInfoFn !== undefined ? { workerInfoFn: props.workerInfoFn } : {}),
     })
   })
 
@@ -162,7 +162,7 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
     const startItem = (label: string, testId: string, run: (at: WorkspaceStartAt) => void) => (
       <DisabledReasonMenuItem
         reason={reason()}
-        data-testid={repos().length > 1 ? undefined : testId}
+        {...(repos().length > 1 ? {} : { 'data-testid': testId })}
         onClick={() => run(at())}
       >
         {label}
@@ -197,7 +197,7 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
   return (
     <DropdownMenu
       trigger={rowContextMenuTrigger({ 'data-testid': 'workspace-row-menu-trigger' })}
-      contextMenuFor={props.contextMenuFor}
+      {...(props.contextMenuFor !== undefined ? { contextMenuFor: props.contextMenuFor } : {})}
       onToggle={setMenuOpen}
       data-testid="workspace-context-menu"
     >

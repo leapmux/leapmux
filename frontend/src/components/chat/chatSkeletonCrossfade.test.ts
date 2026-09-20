@@ -3,7 +3,7 @@ import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createDelayedSet, createFlingSkeletonRegistry, createLingerSet, createRowUpgradePhase } from './chatSkeletonCrossfade'
 
-describe('chatskeletoncrossfade', () => {
+describe('chatSkeletonCrossfade', () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })
@@ -11,7 +11,7 @@ describe('chatskeletoncrossfade', () => {
     vi.useRealTimers()
   })
 
-  describe('createlingerset', () => {
+  describe('createLingerSet', () => {
     it('lingers an id that leaves the active set, then drops it after lingerMs', () => {
       const [active, setActive] = createSignal<string[]>(['a', 'b'])
       let lingering!: () => ReadonlySet<string>
@@ -64,7 +64,7 @@ describe('chatskeletoncrossfade', () => {
     })
   })
 
-  describe('createdelayedset', () => {
+  describe('createDelayedSet', () => {
     it('adds an id only after it has stayed active for delayMs', () => {
       const [active, setActive] = createSignal<string[]>([])
       let delayed!: () => ReadonlySet<string>
@@ -209,7 +209,7 @@ describe('chatskeletoncrossfade', () => {
     })
   })
 
-  describe('createrowupgradephase', () => {
+  describe('createRowUpgradePhase', () => {
     it('starts real when the row is not entering mid-fling', () => {
       const [fast] = createSignal(false)
       let phase!: () => string
@@ -285,7 +285,7 @@ describe('chatskeletoncrossfade', () => {
     })
   })
 
-  describe('createflingskeletonregistry', () => {
+  describe('createFlingSkeletonRegistry', () => {
     const measuredVirt = (fast: () => boolean, measured: (id: string) => boolean = () => true) =>
       ({ fastScrollActive: fast, hasMeasuredHeight: measured })
 

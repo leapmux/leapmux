@@ -36,7 +36,7 @@ function renderMenu(disabledReason?: string, isWorktree = false) {
       isWorktree={isWorktree}
       workerId="w-1"
       actions={actions}
-      disabledReason={disabledReason}
+      {...(disabledReason !== undefined ? { disabledReason } : {})}
     />
   ))
   // Before the menu opens, the only button rendered is the trigger.
@@ -78,7 +78,7 @@ async function openMenu(trigger: HTMLElement) {
   await Promise.resolve()
 }
 
-describe('branchContextMenu', () => {
+describe('BranchContextMenu', () => {
   // One item per git mode, so the label the user picks states the radio they
   // then see. A single "Change branch..." made the mode invisible until the
   // dialog opened.
@@ -327,7 +327,7 @@ describe('branchContextMenu', () => {
 // The `Repository` section acts on the checkout the branch sits in. It is the
 // same block the workspace row menu and the repository row menu render, so a
 // user learns it once and knows all three.
-describe('branchContextMenu repository section', () => {
+describe('BranchContextMenu repository section', () => {
   function renderWithRepository(overrides: Partial<{ isLocal: boolean, originUrl: string, disabledReason: string }> = {}) {
     const actions = stubBranchMenuActions()
     const result = render(withPreferences(() => (
@@ -335,7 +335,7 @@ describe('branchContextMenu repository section', () => {
         isWorktree={false}
         workerId="w-1"
         actions={actions}
-        disabledReason={overrides.disabledReason}
+        {...(overrides.disabledReason !== undefined ? { disabledReason: overrides.disabledReason } : {})}
         repository={() => ({
           gitToplevel: '/home/me/leapmux',
           originUrl: overrides.originUrl ?? 'https://example.com/o/r.git',

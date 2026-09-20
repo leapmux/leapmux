@@ -1,4 +1,6 @@
-import type { AgentResultSource } from '../../../results/agentResult'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { AgentRequest, AgentRun } from '../../../model/tools/agent'
+import type { ClaudeToolRow } from './toolCommon'
 import { asContentArray, joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject, pickString, stringArray } from '~/lib/jsonPick'
 
@@ -128,9 +130,9 @@ export function claudeAgentResultBody(source: ClaudeAgentResult): string {
 }
 
 /** Adapt Claude's launch and completion records to the shared agent body. */
-export function claudeAgentResultSource(source: ClaudeAgentResult): AgentResultSource {
+export function claudeAgentRun(source: ClaudeAgentResult): AgentRun {
   const launch = claudeAgentResultIsLaunch(source)
-  const metadata: AgentResultSource['metadata'] = []
+  const metadata: AgentRun['metadata'] = []
   if (source.agentId)
     metadata.push({ label: 'Agent ID', value: source.agentId })
   if (source.taskId)
@@ -151,10 +153,31 @@ export function claudeAgentResultSource(source: ClaudeAgentResult): AgentResultS
   return {
     description: source.description,
     agentId: source.agentId || source.taskId,
-    status: source.status === 'async_launched' ? 'launched asynchronously' : source.status === 'remote_launched' ? 'launched remotely' : source.status,
+    statusLabel: source.status === 'async_launched' ? 'launched asynchronously' : source.status === 'remote_launched' ? 'launched remotely' : source.status,
     outcome: source.status === 'completed' ? 'completed' : source.status === 'failed' || source.status === 'error' ? 'failed' : launch ? 'running' : 'unknown',
     metadata,
     body: claudeAgentResultBody(source),
-    bodyLabel: launch ? 'Prompt' : undefined,
+    // A launch has no report; the prompt is the only thing it can say about the work.
+    ...(launch ? { bodyLabel: 'Prompt' } : {}),
+  }
+}
+
+/** The agent pair: the launch, and the report the subagent wrote. */
+export function claudeAgentSpec(request: AgentRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'agent'> {
+  if (!result)
+    return { kind: 'agent', request }
+  const source = claudeAgentFromToolResult(result.toolUseResult, result.resultContent, args.input)
+  if (source)
+    return { kind: 'agent', request, result: { agents: [claudeAgentRun(source)] } }
+  // A report this build cannot structure still states its words: the subagent's
+  // answer is prose, and the row draws it as the run it finished. The OUTCOME
+  // comes from the row, not from the fact that the parse fell through -- a refused
+  // or crashed subagent arrives in exactly this unstructured shape, and claiming
+  // `completed` for it drew a green check over an error message.
+  const failed = result.isError === true
+  return {
+    kind: 'agent',
+    request,
+    result: { agents: [{ description: request.description, agentId: '', statusLabel: failed ? 'failed' : 'completed', outcome: failed ? 'failed' : 'completed', metadata: [], body: result.resultContent }] },
   }
 }

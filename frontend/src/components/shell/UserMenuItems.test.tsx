@@ -67,7 +67,7 @@ afterEach(() => {
   cleanup()
 })
 
-describe('userMenuItems', () => {
+describe('UserMenuItems', () => {
   it('always offers About and Preferences', () => {
     render(() => <UserMenuItems />)
     expect(screen.getByRole('menuitem', { name: /About/ })).toBeInTheDocument()

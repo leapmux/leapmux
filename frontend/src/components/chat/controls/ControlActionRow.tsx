@@ -38,7 +38,7 @@ export const ControlActionRow: Component<ControlActionRowProps> = (props) => {
           <Show when={leading.toArray().length > 0}>
             <div class={styles.controlRequestSwitches}>{leading()}</div>
           </Show>
-          {primary()}
+          <div class={styles.controlFooterPrimaryDecisions}>{primary()}</div>
         </div>
       </Show>
     </div>

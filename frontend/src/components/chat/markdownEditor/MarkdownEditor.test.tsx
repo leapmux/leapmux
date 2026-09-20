@@ -72,7 +72,7 @@ afterEach(() => {
  * A throw after the await would therefore leave the browser with an unhandled
  * rejection instead of a message.
  */
-describe('markdownEditor send', () => {
+describe('MarkdownEditor send', () => {
   it('retains a hidden input draft and prevents focus and submission until the input returns', async () => {
     const [hidden, setHidden] = createSignal(true)
     const onSend = vi.fn()
@@ -177,7 +177,7 @@ describe('markdownEditor send', () => {
 // makes the negative case a real assertion rather than a race the test happens
 // to win: at that point an unsuppressed editor already holds the keyboard, and
 // the first case proves it.
-describe('markdownEditor autofocus', () => {
+describe('MarkdownEditor autofocus', () => {
   const FOCUS_KEY = 'markdown-editor-focus'
 
   afterEach(() => {
@@ -196,7 +196,7 @@ describe('markdownEditor autofocus', () => {
           surface="chat"
           draftKey={{ key: FOCUS_KEY }}
           onSend={() => {}}
-          suppressAutoFocus={suppressAutoFocus}
+          {...(suppressAutoFocus === undefined ? {} : { suppressAutoFocus })}
           imperative={{ onReady: () => { ready = true } }}
         />
       </PreferencesProvider>
@@ -229,7 +229,7 @@ describe('markdownEditor autofocus', () => {
 // prose. `prevDraftKey` names the key whose document is on screen, so it may
 // only move when a replace actually lands -- and the save that every swap runs
 // first reads it.
-describe('markdownEditor draft key swaps', () => {
+describe('MarkdownEditor draft key swaps', () => {
   const KEY_A = 'swap-key-a'
   const KEY_B = 'swap-key-b'
   const KEY_C = 'swap-key-c'
@@ -296,7 +296,7 @@ describe('markdownEditor draft key swaps', () => {
  * another. What separates them is one prop, because the two markers below are
  * one fact -- see `MarkdownEditorSurface`.
  */
-describe('markdownEditor surface', () => {
+describe('MarkdownEditor surface', () => {
   it('marks the chat composer as the chat input', async () => {
     const { container } = render(() => (
       <PreferencesProvider>

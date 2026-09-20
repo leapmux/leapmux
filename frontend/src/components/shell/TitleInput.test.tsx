@@ -15,7 +15,7 @@ function renderTitleInput(generate: () => string = () => 'Agent Gabe') {
   return { dispose }
 }
 
-describe('titleInput', () => {
+describe('TitleInput', () => {
   it('renders the generated title in the input', () => {
     renderTitleInput()
     expect(screen.getByTestId('title-input')).toHaveValue('Agent Gabe')
@@ -92,7 +92,7 @@ describe('titleInput', () => {
   })
 })
 
-describe('titleInput error accessibility', () => {
+describe('TitleInput error accessibility', () => {
   // The error also DISABLES Create, so a user who cannot see the red text gets
   // a dead button and no reason. The input must therefore report itself
   // invalid and point at the message.

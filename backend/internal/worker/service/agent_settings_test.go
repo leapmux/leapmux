@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -345,8 +346,8 @@ func TestUpdateAgentSettings_BroadcastsGenericExtraSettingChanges(t *testing.T) 
 	assert.Equal(t, "safe", change["old"])
 	assert.Equal(t, "fast", change["new"])
 	assert.Equal(t, "opencode_mode", change["label"])
-	assert.Equal(t, "safe", change["oldLabel"])
-	assert.Equal(t, "fast", change["newLabel"])
+	assert.Equal(t, "safe", change["old_label"])
+	assert.Equal(t, "fast", change["new_label"])
 }
 
 // TestUpdateAgentSettings_CursorModelSwitchOmitsEffortChange reproduces the spurious
@@ -597,22 +598,22 @@ func TestUpdateAgentSettings_EmptyOptionValueIsNoOp(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options: marshalOptions(map[string]string{
-			agent.OptionIDModel:            "gpt-5.5",
-			agent.CodexOptionSandboxPolicy: agent.CodexSandboxReadOnly,
+			agent.OptionIDModel:                "gpt-5.5",
+			contracts.CodexOptionSandboxPolicy: agent.CodexSandboxReadOnly,
 		}),
 	}))
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  "agent-1",
-		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.CodexOptionSandboxPolicy: ""}},
+		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{contracts.CodexOptionSandboxPolicy: ""}},
 	}, w)
 
 	require.Empty(t, w.errors)
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 	assert.Equal(t, agent.CodexSandboxReadOnly,
-		parseOptions(dbAgent.Options)[agent.CodexOptionSandboxPolicy],
+		parseOptions(dbAgent.Options)[contracts.CodexOptionSandboxPolicy],
 		"an empty option value on the edit path is a no-op, not a destructive delete")
 }
 
@@ -818,7 +819,7 @@ func TestUpdateAgentSettings_OfflineEffortLabelUsesNewModelCatalog(t *testing.T)
 	changes := lastSettingsChangedChanges(t, w)
 	effortChange, ok := changes[agent.OptionIDEffort].(map[string]any)
 	require.True(t, ok, "the effort change must be reported")
-	assert.Equal(t, "High", effortChange["newLabel"],
+	assert.Equal(t, "High", effortChange["new_label"],
 		"the effort label resolves against the new model's catalog, not a leaked raw id")
 }
 
@@ -933,7 +934,7 @@ func TestUpdateAgentSettings_KeepsKnownProviderExtra(t *testing.T) {
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: "agent-1",
 		Settings: &leapmuxv1.AgentSettings{
-			Options: map[string]string{agent.CodexOptionSandboxPolicy: agent.CodexSandboxReadOnly},
+			Options: map[string]string{contracts.CodexOptionSandboxPolicy: agent.CodexSandboxReadOnly},
 		},
 	}, w)
 
@@ -941,7 +942,7 @@ func TestUpdateAgentSettings_KeepsKnownProviderExtra(t *testing.T) {
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 	assert.Equal(t, agent.CodexSandboxReadOnly,
-		parseOptions(dbAgent.Options)[agent.CodexOptionSandboxPolicy],
+		parseOptions(dbAgent.Options)[contracts.CodexOptionSandboxPolicy],
 		"a known Codex provider extra (sandbox_policy) must be persisted, not stripped")
 }
 
@@ -1386,12 +1387,12 @@ func TestSettleConfirmedOptions_DropsReconciledAwayProviderDefault(t *testing.T)
 
 	// confirmedOptions alone re-fills the sandbox provider default for the unsurfaced axis...
 	reStamped := confirmedOptions(codex, requested, confirmed)
-	assert.Equal(t, agent.CodexDefaultSandboxPolicy, reStamped[agent.CodexOptionSandboxPolicy],
+	assert.Equal(t, contracts.CodexOptionDefaultSandboxPolicy, reStamped[contracts.CodexOptionSandboxPolicy],
 		"confirmedOptions re-stamps the provider default for the unsurfaced sandbox axis")
 
 	// ...while settleConfirmedOptions reconciles it away because the session doesn't surface it.
 	settled := settleConfirmedOptions(codex, requested, surfacedOptions(confirmed))
-	_, hasSandbox := settled[agent.CodexOptionSandboxPolicy]
+	_, hasSandbox := settled[contracts.CodexOptionSandboxPolicy]
 	assert.False(t, hasSandbox, "an unsurfaced provider-default axis is dropped, not resurrected")
 	assert.Equal(t, "gpt-5", settled[agent.OptionIDModel], "the always-live model axis is kept")
 }
@@ -1720,8 +1721,8 @@ func TestUpdateAgentSettings_BroadcastsGoosePermissionModeLabels(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "auto", change["old"])
 	assert.Equal(t, "approve", change["new"])
-	assert.Equal(t, "Auto", change["oldLabel"])
-	assert.Equal(t, "Approve", change["newLabel"])
+	assert.Equal(t, "Auto", change["old_label"])
+	assert.Equal(t, "Approve", change["new_label"])
 }
 
 // TestNotifyPermissionModeChanged_ResolvesLabels verifies the SERVER-initiated mode
@@ -1755,8 +1756,8 @@ func TestNotifyPermissionModeChanged_ResolvesLabels(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "auto", change["old"])
 	assert.Equal(t, "approve", change["new"])
-	assert.Equal(t, "Auto", change["oldLabel"], "labels are resolved at the emit site, not left to the frontend cache")
-	assert.Equal(t, "Approve", change["newLabel"])
+	assert.Equal(t, "Auto", change["old_label"], "labels are resolved at the emit site, not left to the frontend cache")
+	assert.Equal(t, "Approve", change["new_label"])
 	assert.Equal(t, "Mode", change["label"])
 }
 
@@ -2221,4 +2222,29 @@ func TestResolveOptionValueLabel(t *testing.T) {
 	// A nil persisted catalog is tolerated: live still resolves, missing falls to raw.
 	assert.Equal(t, "Sonnet", resolveOptionValueLabel(live, nil, agent.OptionIDModel, "sonnet"))
 	assert.Equal(t, "opus[1m]", resolveOptionValueLabel(live, nil, agent.OptionIDModel, "opus[1m]"))
+}
+
+// optionChangeEntry's json tags ARE the settings_changed payload keys, and the browser
+// reads the same five through NOTIFICATION_FIELD. A Go struct tag cannot hold the
+// generated constant, so this test is what keeps the tags and the contract together.
+//
+// NotifyPermissionModeChanged builds two of the five from the constants when its row
+// fetch fails and it falls back to the bare ids. Without this pin, a rename would move
+// that branch and leave this struct on the old word, and one notification type would
+// then carry two different key sets.
+func TestOptionChangeEntryTagsComeFromTheContract(t *testing.T) {
+	t.Parallel()
+
+	tags := make([]string, 0, 5)
+	for _, field := range reflect.VisibleFields(reflect.TypeOf(optionChangeEntry{})) {
+		tags = append(tags, field.Tag.Get("json"))
+	}
+
+	assert.Equal(t, []string{
+		contracts.NotificationFieldOld,
+		contracts.NotificationFieldNew,
+		contracts.NotificationFieldOldLabel,
+		contracts.NotificationFieldNewLabel,
+		contracts.NotificationFieldLabel,
+	}, tags)
 }

@@ -51,6 +51,8 @@ export function createTabSelectionStore(view: TabView, metadata: TabMetadataStor
     if (tabs.length === 0)
       return null
     let best = tabs[0]
+    if (best === undefined)
+      return null
     for (const t of tabs) {
       if ((t.mru ?? 0) > (best.mru ?? 0))
         best = t

@@ -58,7 +58,7 @@ async function confirmDialog(name: string, action: string): Promise<void> {
   fireEvent.click(await within(dialog).findByRole('button', { name: 'Confirm?' }))
 }
 
-describe('accountConnectedApps', () => {
+describe('AccountConnectedApps', () => {
   beforeEach(() => {
     HTMLDialogElement.prototype.showModal = vi.fn(function (this: HTMLDialogElement) {
       this.open = true
@@ -352,7 +352,7 @@ describe('accountConnectedApps', () => {
  * had a line of its own, a one-year service credential and one that never
  * expires read exactly alike on this page.
  */
-describe('accountConnectedApps deadlines', () => {
+describe('AccountConnectedApps deadlines', () => {
   const renewing = timestampFromDate(new Date('2026-04-01T00:00:00Z'))
   const fixed = timestampFromDate(new Date('2027-02-15T00:00:00Z'))
 

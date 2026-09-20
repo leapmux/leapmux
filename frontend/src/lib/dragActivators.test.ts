@@ -23,13 +23,25 @@ function pressOn(pointerType: string, el?: Element): PointerEvent {
   return event
 }
 
+/**
+ * Dispatch a press through row-body activators. The handler is optional on the
+ * activators' type, but every test here drives `onPointerdown`, so a missing
+ * one is a harness failure rather than a swallow to assert around.
+ */
+function firePress(activators: ReturnType<typeof rowBodyActivators>, event: PointerEvent): void {
+  const onPointerdown = activators.onPointerdown
+  if (onPointerdown === undefined)
+    throw new Error('expected rowBodyActivators to expose onPointerdown')
+  onPointerdown(event)
+}
+
 describe('rowBodyActivators', () => {
   it('passes a mouse press that starts on the row itself', () => {
     const handler = vi.fn()
     const activators = rowBodyActivators({ onPointerdown: handler })
     const row = document.createElement('div')
 
-    activators.onPointerdown(pressOn('mouse', row))
+    firePress(activators, pressOn('mouse', row))
 
     expect(handler).toHaveBeenCalledOnce()
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ pointerType: 'mouse' }))
@@ -40,7 +52,7 @@ describe('rowBodyActivators', () => {
     const activators = rowBodyActivators({ onPointerdown: handler })
     const row = document.createElement('div')
 
-    activators.onPointerdown(pressOn('touch', row))
+    firePress(activators, pressOn('touch', row))
 
     expect(handler).not.toHaveBeenCalled()
   })
@@ -50,7 +62,7 @@ describe('rowBodyActivators', () => {
     const activators = rowBodyActivators({ onPointerdown: handler })
     const row = document.createElement('div')
 
-    activators.onPointerdown(pressOn('pen', row))
+    firePress(activators, pressOn('pen', row))
 
     expect(handler).toHaveBeenCalledOnce()
   })
@@ -62,7 +74,7 @@ describe('rowBodyActivators', () => {
     const input = document.createElement('input')
     row.appendChild(input)
 
-    activators.onPointerdown(pressOn('mouse', input))
+    firePress(activators, pressOn('mouse', input))
 
     expect(handler).not.toHaveBeenCalled()
   })
@@ -74,7 +86,7 @@ describe('rowBodyActivators', () => {
     const button = document.createElement('button')
     row.appendChild(button)
 
-    activators.onPointerdown(pressOn('mouse', button))
+    firePress(activators, pressOn('mouse', button))
 
     expect(handler).not.toHaveBeenCalled()
   })
@@ -94,7 +106,7 @@ describe('rowBodyActivators', () => {
 
       // The press lands on a descendant, the way it does inside a real
       // editor. `closest` walks up to the host that carries the attribute.
-      activators.onPointerdown(pressOn('mouse', inner))
+      firePress(activators, pressOn('mouse', inner))
 
       expect(handler, `contenteditable="${spelling}"`).not.toHaveBeenCalled()
     }
@@ -117,7 +129,7 @@ describe('rowBodyActivators', () => {
     wrapper.appendChild(button)
     row.appendChild(wrapper)
 
-    activators.onPointerdown(pressOn('mouse', wrapper))
+    firePress(activators, pressOn('mouse', wrapper))
 
     expect(handler).not.toHaveBeenCalled()
   })
@@ -130,7 +142,7 @@ describe('rowBodyActivators', () => {
     grip.setAttribute('data-drag-handle', '')
     row.appendChild(grip)
 
-    activators.onPointerdown(pressOn('mouse', grip))
+    firePress(activators, pressOn('mouse', grip))
 
     expect(handler).not.toHaveBeenCalled()
   })
@@ -163,7 +175,7 @@ describe('rowBodyActivators', () => {
       const row = document.createElement('div')
       row.appendChild(host)
 
-      activators.onPointerdown(pressOn('mouse', target))
+      firePress(activators, pressOn('mouse', target))
 
       expect(handler, label).not.toHaveBeenCalled()
     }

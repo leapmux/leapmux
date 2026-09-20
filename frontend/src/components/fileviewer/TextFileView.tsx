@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import type { ParsedCatLine } from '~/components/chat/results/ReadResultView'
+import type { NumberedFileLine } from '../chat/model/readFileResult'
 import { createMemo } from 'solid-js'
 import { ReadResultView } from '~/components/chat/results/ReadResultView'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
@@ -13,7 +13,7 @@ export function TextFileView(props: {
 }): JSX.Element {
   const text = createMemo(() => new TextDecoder().decode(props.content))
 
-  const lines = createMemo((): ParsedCatLine[] => {
+  const lines = createMemo((): NumberedFileLine[] => {
     const raw = text()
     if (!raw)
       return []

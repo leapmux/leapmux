@@ -5,7 +5,7 @@ import {
   piAskAnswerValue,
   piCancelResponse,
   piConfirmResponse,
-  piControlResponseDisplay,
+  piControlResponseSummary,
   piValueResponse,
   sendPiExtensionResponse,
 } from './controlResponse'
@@ -70,20 +70,20 @@ describe('pi controlResponse helpers', () => {
   })
 })
 
-describe('piControlResponseDisplay', () => {
+describe('piControlResponseSummary', () => {
   it('preserves native text whitespace and distinguishes an explicit empty answer', () => {
     for (const method of ['select', 'input', 'editor']) {
       for (const value of ['  first line\n\tsecond line\n  ', '   '])
-        expect(piControlResponseDisplay(cr(method, { value }))).toEqual({ kind: 'label', text: value })
-      expect(piControlResponseDisplay(cr(method, { value: '' }))).toEqual({ kind: 'label', text: 'Empty answer' })
-      expect(piControlResponseDisplay(cr(method, {}))).toBeNull()
+        expect(piControlResponseSummary(cr(method, { value }))).toEqual({ kind: 'label', text: value })
+      expect(piControlResponseSummary(cr(method, { value: '' }))).toEqual({ kind: 'label', text: 'Empty answer' })
+      expect(piControlResponseSummary(cr(method, {}))).toBeNull()
     }
   })
 
   it('requires an explicit confirmation and uses shared decision labels', () => {
-    expect(piControlResponseDisplay(cr('confirm', {}))).toBeNull()
-    expect(piControlResponseDisplay(cr('confirm', { confirmed: true }))).toEqual({ kind: 'label', text: 'Approved' })
-    expect(piControlResponseDisplay(cr('confirm', { confirmed: false }))).toEqual({ kind: 'label', text: 'Rejected' })
+    expect(piControlResponseSummary(cr('confirm', {}))).toBeNull()
+    expect(piControlResponseSummary(cr('confirm', { confirmed: true }))).toEqual({ kind: 'label', text: 'Approved' })
+    expect(piControlResponseSummary(cr('confirm', { confirmed: false }))).toEqual({ kind: 'label', text: 'Rejected' })
   })
   it.each([
     ['Implement here', 'Approved'],
@@ -91,7 +91,7 @@ describe('piControlResponseDisplay', () => {
     ['Stay in Plan mode', 'Rejected'],
     ['Export plan…', 'Export plan…'],
   ])('renders the plan decision %s as %s', (value, expected) => {
-    expect(piControlResponseDisplay({ ...cr('select', { value }), request: {
+    expect(piControlResponseSummary({ ...cr('select', { value }), request: {
       type: 'extension_ui_request',
       method: 'select',
       title: 'Proposed plan ready. What next?',
@@ -101,33 +101,33 @@ describe('piControlResponseDisplay', () => {
   })
 
   it('labels a cancellation regardless of method', () => {
-    expect(piControlResponseDisplay(cr('confirm', { cancelled: true }))).toEqual({ kind: 'label', text: 'Cancelled' })
+    expect(piControlResponseSummary(cr('confirm', { cancelled: true }))).toEqual({ kind: 'label', text: 'Cancelled' })
   })
 
   it('shows the confirmed decision', () => {
-    expect(piControlResponseDisplay(cr('confirm', { confirmed: true }))).toEqual({ kind: 'label', text: 'Approved' })
-    expect(piControlResponseDisplay(cr('confirm', { confirmed: false }))).toEqual({ kind: 'label', text: 'Rejected' })
+    expect(piControlResponseSummary(cr('confirm', { confirmed: true }))).toEqual({ kind: 'label', text: 'Approved' })
+    expect(piControlResponseSummary(cr('confirm', { confirmed: false }))).toEqual({ kind: 'label', text: 'Rejected' })
   })
 
   it('shows the typed value for select / input / editor dialogs', () => {
-    expect(piControlResponseDisplay(cr('select', { value: '  Blue  ' }))).toEqual({ kind: 'label', text: '  Blue  ' })
-    expect(piControlResponseDisplay(cr('input', { value: 'note' }))).toEqual({ kind: 'label', text: 'note' })
-    expect(piControlResponseDisplay(cr('editor', { value: 'body' }))).toEqual({ kind: 'label', text: 'body' })
+    expect(piControlResponseSummary(cr('select', { value: '  Blue  ' }))).toEqual({ kind: 'label', text: '  Blue  ' })
+    expect(piControlResponseSummary(cr('input', { value: 'note' }))).toEqual({ kind: 'label', text: 'note' })
+    expect(piControlResponseSummary(cr('editor', { value: 'body' }))).toEqual({ kind: 'label', text: 'body' })
   })
 
   it('preserves whitespace and leaves unknown methods unresolved', () => {
-    expect(piControlResponseDisplay(cr('select', { value: '   ' }))).toEqual({ kind: 'label', text: '   ' })
-    expect(piControlResponseDisplay(cr('mystery', { value: 'x' }))).toBeNull()
-    expect(piControlResponseDisplay(cr('confirm', undefined))).toBeNull()
+    expect(piControlResponseSummary(cr('select', { value: '   ' }))).toEqual({ kind: 'label', text: '   ' })
+    expect(piControlResponseSummary(cr('mystery', { value: 'x' }))).toBeNull()
+    expect(piControlResponseSummary(cr('confirm', undefined))).toBeNull()
   })
 
   it('recovers the dialog from the response shape when the request is gone', () => {
     // A native response can supply its value even when the matching request is unavailable.
     const gone = (response: Record<string, unknown>): PersistedControlResponse => ({ claimToken: 'claim-1', requestId: 'r', request: undefined, response })
-    expect(piControlResponseDisplay(gone({ confirmed: true }))).toEqual({ kind: 'label', text: 'Approved' })
-    expect(piControlResponseDisplay(gone({ confirmed: false }))).toEqual({ kind: 'label', text: 'Rejected' })
-    expect(piControlResponseDisplay(gone({ value: 'note' }))).toEqual({ kind: 'label', text: 'note' })
-    expect(piControlResponseDisplay(gone({ cancelled: true }))).toEqual({ kind: 'label', text: 'Cancelled' })
-    expect(piControlResponseDisplay(gone({}))).toBeNull()
+    expect(piControlResponseSummary(gone({ confirmed: true }))).toEqual({ kind: 'label', text: 'Approved' })
+    expect(piControlResponseSummary(gone({ confirmed: false }))).toEqual({ kind: 'label', text: 'Rejected' })
+    expect(piControlResponseSummary(gone({ value: 'note' }))).toEqual({ kind: 'label', text: 'note' })
+    expect(piControlResponseSummary(gone({ cancelled: true }))).toEqual({ kind: 'label', text: 'Cancelled' })
+    expect(piControlResponseSummary(gone({}))).toBeNull()
   })
 })

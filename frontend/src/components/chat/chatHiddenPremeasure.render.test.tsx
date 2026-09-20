@@ -1,5 +1,5 @@
 import type { ClassifiedEntry } from './chatEntryCache'
-import type { MessageCategory } from './messageClassification'
+import type { MessageCategory } from './messageClassifier'
 import type { VirtualItem } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { render, screen } from '@solidjs/testing-library'
@@ -15,7 +15,7 @@ function entryWithSpanLines(
   source: MessageSource = MessageSource.AGENT,
 ): ClassifiedEntry {
   return {
-    msg: { id: 'm1', seq: 1n, spanId: 'span-1', source } as AgentChatMessage,
+    message: { id: 'm1', seq: 1n, spanId: 'span-1', source } as AgentChatMessage,
     category: { kind } as MessageCategory,
     parsedSpanLines: Array.from({ length: lineCount }, (_, i) => ({
       span_id: `s${i}`,
@@ -265,7 +265,7 @@ describe('chat hidden premeasure rendering', () => {
       const candidates = [
         { entry: entryWithSpanLines(0), item: { id: 'm1', hasSpanLines: false, heightKey: 'k1' } as VirtualItem },
         {
-          entry: { ...entryWithSpanLines(0), msg: { id: 'm2', seq: 2n, spanId: 'span-2' } as AgentChatMessage } as ClassifiedEntry,
+          entry: { ...entryWithSpanLines(0), message: { id: 'm2', seq: 2n, spanId: 'span-2' } as AgentChatMessage } as ClassifiedEntry,
           item: { id: 'm2', hasSpanLines: false, heightKey: 'k2' } as VirtualItem,
         },
       ]
@@ -278,8 +278,13 @@ describe('chat hidden premeasure rendering', () => {
         />
       ))
       const rowEls = Array.from(container.firstElementChild!.children) as HTMLElement[]
-      vi.spyOn(rowEls[0], 'getBoundingClientRect').mockImplementation(() => ({ height: height1 }) as DOMRect)
-      vi.spyOn(rowEls[1], 'getBoundingClientRect').mockImplementation(() => ({ height: height2 }) as DOMRect)
+      // Two candidates mounted above, so both rows exist; the guards are type-level alone.
+      const row1 = rowEls[0]
+      const row2 = rowEls[1]
+      if (row1 === undefined || row2 === undefined)
+        throw new Error('expected the two premeasure rows to mount')
+      vi.spyOn(row1, 'getBoundingClientRect').mockImplementation(() => ({ height: height1 }) as DOMRect)
+      vi.spyOn(row2, 'getBoundingClientRect').mockImplementation(() => ({ height: height2 }) as DOMRect)
 
       // Both rows share one frame (not one rAF per row), and both commits see the
       // heights read against the SAME clean layout.
@@ -349,7 +354,7 @@ describe('chat hidden premeasure rendering', () => {
       frames.shift()?.(0)
 
       expect(onMeasure).toHaveBeenCalledWith('m1', 10, 'k1', expect.any(Number), false)
-      expect(observers[0].disconnected).toBe(true)
+      expect(observers[0]?.disconnected).toBe(true)
 
       height = 42
       imageComplete = true
@@ -419,12 +424,16 @@ describe('chat hidden premeasure rendering', () => {
       expect(onMeasure).toHaveBeenCalledWith('m1', 12, 'k1', expect.any(Number), true)
 
       height = 36
-      observers[0].callback([], observers[0] as unknown as ResizeObserver)
+      // The render above constructed exactly one observer; the guards are type-level alone.
+      const observer = observers[0]
+      if (observer === undefined)
+        throw new Error('expected the resize observer to be constructed')
+      observer.callback([], observer as unknown as ResizeObserver)
       frames.shift()?.(16)
 
       expect(onMeasure).toHaveBeenLastCalledWith('m1', 36, 'k1', expect.any(Number), true)
       unmount()
-      expect(observers[0].disconnected).toBe(true)
+      expect(observer.disconnected).toBe(true)
     }
     finally {
       if (originalRaf)

@@ -1,0 +1,398 @@
+{
+  "_readme": "The Codex joined-output resolve, replayed by BOTH implementations: `codexProvider.ResolveProviderData` in the Go worker and `resolveCodexMessage` in the browser plugin. Codex fills `aggregatedOutput` only on a COMPLETED item, so a turn that ends first leaves the started item with no output and the worker's join is the only copy. A divergence between the two copies draws a retained command row with its output missing and states nothing about why. Each case gives the frame Codex sent, the envelope the worker stored beside it, and the object both sides must produce. The key names come from contracts/codex-protocol.json; these cases pin the BEHAVIOUR the names carry.",
+  "cases": [
+    {
+      "name": "the joined output lands on the item it names",
+      "original": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "commandExecution",
+          "command": "ls -1",
+          "status": "in_progress"
+        }
+      },
+      "supplemental": {
+        "itemId": "item-1",
+        "itemType": "commandExecution",
+        "aggregatedOutput": "a.go\nb.go\n"
+      },
+      "expected": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "commandExecution",
+          "command": "ls -1",
+          "status": "in_progress",
+          "aggregatedOutput": "a.go\nb.go\n"
+        }
+      }
+    },
+    {
+      "name": "a joined output replaces the output the item already carries",
+      "original": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "commandExecution",
+          "aggregatedOutput": "partial"
+        }
+      },
+      "supplemental": {
+        "itemId": "item-1",
+        "itemType": "commandExecution",
+        "aggregatedOutput": "complete"
+      },
+      "expected": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "commandExecution",
+          "aggregatedOutput": "complete"
+        }
+      }
+    },
+    {
+      "name": "another item's output cannot reach the row",
+      "original": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "commandExecution",
+          "command": "ls -1"
+        }
+      },
+      "supplemental": {
+        "itemId": "item-2",
+        "itemType": "commandExecution",
+        "aggregatedOutput": "a.go\n"
+      },
+      "expected": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "commandExecution",
+          "command": "ls -1"
+        }
+      }
+    },
+    {
+      "name": "another item type cannot reach the row",
+      "original": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "commandExecution",
+          "command": "ls -1"
+        }
+      },
+      "supplemental": {
+        "itemId": "item-1",
+        "itemType": "fileChange",
+        "aggregatedOutput": "a.go\n"
+      },
+      "expected": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "commandExecution",
+          "command": "ls -1"
+        }
+      }
+    },
+    {
+      "name": "an envelope that names no item reaches no row",
+      "original": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "commandExecution",
+          "command": "ls -1"
+        }
+      },
+      "supplemental": {
+        "itemId": "",
+        "itemType": "commandExecution",
+        "aggregatedOutput": "a.go\n"
+      },
+      "expected": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "commandExecution",
+          "command": "ls -1"
+        }
+      }
+    },
+    {
+      "name": "an envelope that carries no output reaches no row",
+      "original": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "commandExecution",
+          "command": "ls -1"
+        }
+      },
+      "supplemental": {
+        "itemId": "item-1",
+        "itemType": "commandExecution",
+        "aggregatedOutput": ""
+      },
+      "expected": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "commandExecution",
+          "command": "ls -1"
+        }
+      }
+    },
+    {
+      "name": "an item id that is not text reaches no row",
+      "original": {
+        "threadId": "thread-1",
+        "item": {
+          "id": 7,
+          "type": "commandExecution"
+        }
+      },
+      "supplemental": {
+        "itemId": "7",
+        "itemType": "commandExecution",
+        "aggregatedOutput": "a.go\n"
+      },
+      "expected": {
+        "threadId": "thread-1",
+        "item": {
+          "id": 7,
+          "type": "commandExecution"
+        }
+      }
+    },
+    {
+      "name": "an item type that is not text reaches no row",
+      "original": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": 7
+        }
+      },
+      "supplemental": {
+        "itemId": "item-1",
+        "itemType": "",
+        "aggregatedOutput": "a.go\n"
+      },
+      "expected": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": 7
+        }
+      }
+    },
+    {
+      "name": "an envelope field that is not text reaches no row",
+      "original": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "commandExecution",
+          "command": "ls -1"
+        }
+      },
+      "supplemental": {
+        "itemId": "item-1",
+        "itemType": 7,
+        "aggregatedOutput": "a.go\n"
+      },
+      "expected": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "commandExecution",
+          "command": "ls -1"
+        }
+      }
+    },
+    {
+      "name": "an item that states no type reaches no row",
+      "original": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1"
+        }
+      },
+      "supplemental": {
+        "itemId": "item-1",
+        "itemType": "commandExecution",
+        "aggregatedOutput": "a.go\n"
+      },
+      "expected": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1"
+        }
+      }
+    },
+    {
+      "name": "a frame that carries no item reaches no row",
+      "original": {
+        "threadId": "thread-1"
+      },
+      "supplemental": {
+        "itemId": "item-1",
+        "itemType": "commandExecution",
+        "aggregatedOutput": "a.go\n"
+      },
+      "expected": {
+        "threadId": "thread-1"
+      }
+    },
+    {
+      "name": "an envelope that states no type joins only an item that states none either",
+      "original": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": ""
+        }
+      },
+      "supplemental": {
+        "itemId": "item-1",
+        "aggregatedOutput": "a.go\n"
+      },
+      "expected": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "",
+          "aggregatedOutput": "a.go\n"
+        }
+      }
+    },
+    {
+      "name": "an item whose type is null joins an envelope that states none",
+      "original": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": null,
+          "command": "ls -1"
+        }
+      },
+      "supplemental": {
+        "itemId": "item-1",
+        "aggregatedOutput": "a.go\n"
+      },
+      "expected": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": null,
+          "command": "ls -1",
+          "aggregatedOutput": "a.go\n"
+        }
+      }
+    },
+    {
+      "name": "an item whose type is null refuses an envelope that names one",
+      "original": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": null,
+          "command": "ls -1"
+        }
+      },
+      "supplemental": {
+        "itemId": "item-1",
+        "itemType": "commandExecution",
+        "aggregatedOutput": "a.go\n"
+      },
+      "expected": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": null,
+          "command": "ls -1"
+        }
+      }
+    },
+    {
+      "name": "an item whose id is null names nothing and reaches no row",
+      "original": {
+        "threadId": "thread-1",
+        "item": {
+          "id": null,
+          "type": "commandExecution"
+        }
+      },
+      "supplemental": {
+        "itemId": "item-1",
+        "itemType": "commandExecution",
+        "aggregatedOutput": "a.go\n"
+      },
+      "expected": {
+        "threadId": "thread-1",
+        "item": {
+          "id": null,
+          "type": "commandExecution"
+        }
+      }
+    },
+    {
+      "name": "an envelope whose item type is null states none",
+      "original": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "",
+          "command": "ls -1"
+        }
+      },
+      "supplemental": {
+        "itemId": "item-1",
+        "itemType": null,
+        "aggregatedOutput": "a.go\n"
+      },
+      "expected": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "",
+          "command": "ls -1",
+          "aggregatedOutput": "a.go\n"
+        }
+      }
+    },
+    {
+      "name": "the frame's other fields survive the join",
+      "original": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "commandExecution",
+          "command": "ls -1"
+        },
+        "requestId": "req-9"
+      },
+      "supplemental": {
+        "itemId": "item-1",
+        "itemType": "commandExecution",
+        "aggregatedOutput": "a.go\n"
+      },
+      "expected": {
+        "threadId": "thread-1",
+        "item": {
+          "id": "item-1",
+          "type": "commandExecution",
+          "command": "ls -1",
+          "aggregatedOutput": "a.go\n"
+        },
+        "requestId": "req-9"
+      }
+    }
+  ]
+}

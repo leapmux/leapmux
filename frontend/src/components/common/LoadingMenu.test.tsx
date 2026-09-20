@@ -359,7 +359,7 @@ describe('the one-of-N menu (LoadingMenu)', () => {
   })
 })
 
-describe('loadingMenu keyboard contract', () => {
+describe('LoadingMenu keyboard contract', () => {
   // What retiring the native `<select>` took away. A `<select>` gave arrow
   // keys, Home/End and type-ahead for free; a keyboard user was left Tabbing
   // through every option, which on a twelve-shell machine is twelve presses to
@@ -491,7 +491,7 @@ describe('loadingMenu keyboard contract', () => {
   })
 })
 
-describe('loadingMenu filter threshold', () => {
+describe('LoadingMenu filter threshold', () => {
   it('grows a filter box once the list is long enough to be work to scan', () => {
     const many = Array.from({ length: 12 }, (_, i) => ({ value: `v${i}`, label: `Option ${i}` }))
     renderMenu({ options: many })

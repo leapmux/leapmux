@@ -9,7 +9,7 @@
 // message concerns), so any surface that needs a short snippet of a longer body
 // can reuse it.
 //
-// Extracted from `~/components/chat/markPreviewShared` -- the scroll-rail mark preview
+// Extracted for the scroll-rail mark preview -- the preview
 // was its first caller, which is why the exported names keep the `preview` prefix.
 // ---------------------------------------------------------------------------
 
@@ -152,7 +152,7 @@ export function truncatePreview(text: string | null | undefined): string | null 
     newlineRun = 0
   }
 
-  while (out.length > 0 && /\s/u.test(out[out.length - 1]))
+  while (out.length > 0 && /\s/u.test(out[out.length - 1] ?? ''))
     out.pop()
   if (out.length === 0)
     return null

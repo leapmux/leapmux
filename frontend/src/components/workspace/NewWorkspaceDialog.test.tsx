@@ -138,7 +138,7 @@ async function submitDialog(): Promise<void> {
   fireEvent.click(createButton)
 }
 
-describe('newWorkspaceDialog', () => {
+describe('NewWorkspaceDialog', () => {
   it('opens the agent on the new workspace\'s worker', async () => {
     // Channels hold no workspace set. A workspace created after the channel opens must accept OpenAgent without an announcement.
     // The first agent must work without a separate repair request.
@@ -399,7 +399,7 @@ describe('newWorkspaceDialog', () => {
       fireEvent.click(createButton)
 
       await waitFor(() => expect(workerRpc.openAgent).toHaveBeenCalledOnce())
-      expect(vi.mocked(workerRpc.openAgent).mock.calls[0][1])
+      expect(vi.mocked(workerRpc.openAgent).mock.calls[0]?.[1])
         .toMatchObject({ workerId: WORKER_ID, workingDir: REPO_DIR })
     })
 

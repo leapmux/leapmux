@@ -52,7 +52,7 @@ function findSidebarPanel(side: 'left' | 'right'): HTMLElement {
   return screen.getByTestId(`mobile-drawer-${side}`)
 }
 
-describe('mobileLayout', () => {
+describe('MobileLayout', () => {
   it('renders both sidebars closed by default', () => {
     renderMobile({})
 

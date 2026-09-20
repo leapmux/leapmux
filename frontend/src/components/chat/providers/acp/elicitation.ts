@@ -1,10 +1,16 @@
-import type { ElicitationRequest } from '../../controls/elicitationForm'
+import type { ElicitationRequest } from '~/components/chat/model/controlPrompt'
 import { MCP_ELICITATION_METHOD } from '~/generated/contracts/mcp-elicitation'
 import { pickObject, pickString } from '~/lib/jsonPick'
 
-/** ACP and Reasonix use the MCP form fields without changing their types. */
+/**
+ * Every Agent Client Protocol provider's elicitation, in the MCP form fields.
+ *
+ * Reasonix is one of them: it sends the standard `elicitation/create` rather than
+ * a vendor method, verified against its source tree. A second method used to be
+ * tested here and matched nothing.
+ */
 export function acpElicitation(payload: Record<string, unknown>): ElicitationRequest | undefined {
-  if (payload.method !== MCP_ELICITATION_METHOD.ACP && payload.method !== MCP_ELICITATION_METHOD.Reasonix)
+  if (payload.method !== MCP_ELICITATION_METHOD.ACP)
     return undefined
   const params: Record<string, unknown> = pickObject(payload, 'params', {})
   return {

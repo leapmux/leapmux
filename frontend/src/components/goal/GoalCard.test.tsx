@@ -9,7 +9,7 @@ function goal(over: Partial<SessionGoal> = {}): SessionGoal {
 
 const ALL: GoalAction[] = ['set', 'clear', 'pause', 'resume']
 
-describe('goalCard', () => {
+describe('GoalCard', () => {
   it('shows the objective and its status', () => {
     const { getByTestId } = render(() => (
       <GoalCard goal={{ current: goal(), progress: {}, actions: ALL }} />
@@ -185,8 +185,8 @@ describe('goalCard', () => {
     ))
     const live = container.querySelectorAll('[role="status"][aria-live="polite"]')
     expect(live.length).toBe(1)
-    expect(live[0].textContent).toContain('every test passes')
-    expect(live[0].textContent).toContain('notSatisfied')
+    expect(live[0]?.textContent).toContain('every test passes')
+    expect(live[0]?.textContent).toContain('notSatisfied')
   })
 
   /**

@@ -44,7 +44,7 @@ function renderDialog(blockedReason?: () => string | undefined) {
     <NewTerminalDialog
       defaultWorkerId="w-1"
       defaultWorkingDir="/tmp"
-      blockedReason={blockedReason}
+      {...(blockedReason !== undefined ? { blockedReason } : {})}
       onCreated={() => {}}
       onClose={() => {}}
       repoGitStore={createRepoGitStore()}
@@ -57,7 +57,7 @@ async function findCreateButton(): Promise<HTMLButtonElement> {
   return screen.getByRole('button', { name: 'Create' }) as HTMLButtonElement
 }
 
-describe('newTerminalDialog tab-placement guard', () => {
+describe('NewTerminalDialog tab-placement guard', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
@@ -93,7 +93,7 @@ describe('newTerminalDialog tab-placement guard', () => {
   })
 })
 
-describe('newTerminalDialog title', () => {
+describe('NewTerminalDialog title', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
@@ -151,7 +151,7 @@ describe('newTerminalDialog title', () => {
   })
 })
 
-describe('newTerminalDialog shell field', () => {
+describe('NewTerminalDialog shell field', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })

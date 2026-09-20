@@ -351,7 +351,8 @@ export class PendingOpsManager {
       pendingBatches: [],
       currentEpoch: 1n,
     }
-    this.notify = notify
+    if (notify !== undefined)
+      this.notify = notify
   }
 
   /**
@@ -364,7 +365,10 @@ export class PendingOpsManager {
    * contract between them lived only in the caller's comments.
    */
   attachRecorder(hooks: RecorderHooks | null): void {
-    this.attached = hooks ?? undefined
+    if (hooks === null)
+      delete this.attached
+    else
+      this.attached = hooks
   }
 
   /** Record a confirmed frame, unless this is hydrate() replaying the log. */
@@ -383,7 +387,7 @@ export class PendingOpsManager {
    * pass partial initializers like `{ atHlc }`.
    */
   private recordFrame(event: MessageInitShape<typeof WatchUserEventSchema>['event']): void {
-    this.record(create(WatchUserEventSchema, { event }))
+    this.record(create(WatchUserEventSchema, { ...(event !== undefined ? { event } : {}) }))
   }
 
   /**
@@ -398,7 +402,9 @@ export class PendingOpsManager {
    * not pass an epoch here.
    */
   private advanceWatermark(hlc: HLC | undefined): void {
-    this.state.resumeWatermark = hlcMax(this.state.resumeWatermark, hlc)
+    const next = hlcMax(this.state.resumeWatermark, hlc)
+    if (next !== undefined)
+      this.state.resumeWatermark = next
   }
 
   /**
@@ -438,7 +444,11 @@ export class PendingOpsManager {
     // (overwriting any stale pre-reconnect value). This also covers the FALLBACK
     // path: when the hub could not resume, it sent `initial`, and the client's
     // watermark is re-seeded here from the fresh snapshot.
-    this.state.resumeWatermark = hlcClone(materialized.maxHlc as never)
+    const snapshotWatermark = hlcClone(materialized.maxHlc as never)
+    if (snapshotWatermark !== undefined)
+      this.state.resumeWatermark = snapshotWatermark
+    else
+      delete this.state.resumeWatermark
     // A bootstrap discards every pre-existing confirmed-state lineage: clear the
     // own-batch dedup key so a freshly-echoed batch isn't suppressed by an id
     // carried over from before the reset, and clear any pending batches (the
@@ -479,7 +489,11 @@ export class PendingOpsManager {
     // the clock so the next Tick is strictly greater.
     this.state.confirmedState = payload.state
     this.state.currentEpoch = payload.currentEpoch
-    this.state.resumeWatermark = hlcClone(payload.watermark)
+    const checkpointWatermark = hlcClone(payload.watermark)
+    if (checkpointWatermark !== undefined)
+      this.state.resumeWatermark = checkpointWatermark
+    else
+      delete this.state.resumeWatermark
     if (payload.state.maxHlc)
       this.clock.observe(payload.state.maxHlc)
     // A fresh hydrate clears the pending set + own-batch dedup key: the
@@ -740,6 +754,10 @@ export class PendingOpsManager {
       return
     }
     const batch = this.state.pendingBatches[idx]
+    if (batch === undefined) {
+      this.notify?.()
+      return
+    }
     const byOpId = new Map<string, CommittedOp>()
     for (const c of committed.committed) byOpId.set(c.opId, c)
     for (const op of batch.ops) {

@@ -83,7 +83,15 @@ function guardRow(primitive: DragPrimitive | undefined, axis: DragAxis): Guarded
     ref: el => primitive?.ref?.(el),
     bodyActivators: () => primitive?.dragActivators,
     gripActivators: () => primitive?.dragActivators,
-    style: () => (primitive ? maybeTransformStyle(axisTransform(primitive.transform, axis) as { x: number, y: number }) : {}),
+    // Project the transform out of the library's CSSProperties: our style
+    // contract is transform-only, and exactOptionalPropertyTypes rejects the
+    // library's `transform?: string | undefined` at the boundary.
+    style: () => {
+      if (!primitive)
+        return {}
+      const { transform } = maybeTransformStyle(axisTransform(primitive.transform, axis) as { x: number, y: number })
+      return transform === undefined ? {} : { transform }
+    },
     get isActiveDraggable() {
       return primitive?.isActiveDraggable ?? false
     },

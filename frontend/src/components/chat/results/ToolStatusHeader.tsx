@@ -1,6 +1,6 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
-import type { RenderContext } from '../messageRenderers'
+import type { ToolResultRenderContext } from '../renderContext'
 import { Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { inlineFlex } from '~/styles/shared.css'
@@ -9,12 +9,12 @@ import { toolInputText, toolMessage, toolUseHeader, toolUseIcon } from '../toolS
 /**
  * Whether this row must state its own outcome.
  *
- * `RenderContext.completionHeader` says that the row ABOVE already draws the retained
+ * `ToolResultRenderContext.completionHeader` says that the row ABOVE already draws the retained
  * completion, so a header here would state the same outcome a second time. Prefer
  * {@link ToolOutcomeHeader}, which applies this itself; read the predicate only where
  * the answer picks between two layouts rather than drawing one header.
  */
-export function drawsOwnOutcome(context: RenderContext | undefined): boolean {
+export function drawsOwnOutcome(context: ToolResultRenderContext | undefined): boolean {
   return !context?.completionHeader
 }
 
@@ -30,7 +30,7 @@ export function ToolOutcomeHeader(props: {
   when: boolean
   icon: LucideIcon
   title: JSX.Element | string
-  context?: RenderContext
+  context?: ToolResultRenderContext
 }): JSX.Element {
   return (
     <Show when={props.when && drawsOwnOutcome(props.context)}>

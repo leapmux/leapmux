@@ -16,6 +16,10 @@ func (s *agentOutputSink) ReadToolRequest(spanID string) (*agent.StoredMessage, 
 	return s.h.readToolRequest(s.agentID, s.currentMessageSessionID(), spanID)
 }
 
+func (s *agentOutputSink) ReadToolResult(spanID string) (*agent.StoredMessage, error) {
+	return s.h.readToolResult(s.agentID, s.currentMessageSessionID(), spanID)
+}
+
 func (s *agentOutputSink) restoreMessageSession() {
 	if s.h.queries == nil {
 		return
@@ -58,15 +62,35 @@ func (h *OutputHandler) readToolRequest(agentID, sessionID, spanID string) (*age
 	row, err := h.queries.GetAgentMessageBySpanIDAndSource(bgCtx(), db.GetAgentMessageBySpanIDAndSourceParams{
 		AgentID: agentID, AgentSessionID: sessionID, SpanID: spanID, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 	})
+	return storedSpanMessage(agentID, spanID, "request", row, err)
+}
+
+// readToolResult is the sibling lookup for the LAST row of a span -- the row that
+// carries the tool's result, and the row every result supplement enriches.
+func (h *OutputHandler) readToolResult(agentID, sessionID, spanID string) (*agent.StoredMessage, error) {
+	if spanID == "" {
+		return nil, nil
+	}
+	row, err := h.queries.GetLatestMessageByAgentSpanAndSource(bgCtx(), db.GetLatestMessageByAgentSpanAndSourceParams{
+		AgentID: agentID, AgentSessionID: sessionID, SpanID: spanID, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+	})
+	return storedSpanMessage(agentID, spanID, "result", row, err)
+}
+
+// storedSpanMessage decodes one message row for the two span reads above.
+//
+// kind identifies the read in a log line and in an error, so a failure states WHICH of the
+// two rows of a span could not be read.
+func storedSpanMessage(agentID, spanID, kind string, row db.Message, err error) (*agent.StoredMessage, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read tool request: %w", err)
+		return nil, fmt.Errorf("read tool %s: %w", kind, err)
 	}
 	original, err := msgcodec.Decompress(row.Content, row.ContentCompression)
 	if err != nil {
-		return nil, fmt.Errorf("decode tool request: %w", err)
+		return nil, fmt.Errorf("decode tool %s: %w", kind, err)
 	}
 	content := agent.MessageContent{Original: original}
 	if len(row.SupplementalContent) > 0 {
@@ -75,7 +99,7 @@ func (h *OutputHandler) readToolRequest(agentID, sessionID, spanID string) (*age
 			content, decodeErr = agent.DecodeMessageSupplement(original, supplemental)
 		}
 		if decodeErr != nil {
-			slog.Warn("decode tool request supplement", "agent_id", agentID, "span_id", spanID, "error", decodeErr)
+			slog.Warn("decode tool "+kind+" supplement", "agent_id", agentID, "span_id", spanID, "error", decodeErr)
 		}
 	}
 	content.AgentSessionID = row.AgentSessionID

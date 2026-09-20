@@ -371,7 +371,7 @@ describe('dialog', () => {
 
   // ----- DialogColumns layout ---------------------------------------------
 
-  it('dialogColumns renders both panels in two-column mode', () => {
+  it('draws both panels of a DialogColumns in two-column mode', () => {
     const { container } = render(() => (
       <DialogColumns
         left={<span data-testid="left">L</span>}
@@ -385,7 +385,7 @@ describe('dialog', () => {
     expect(container.querySelector('[data-testid="right"]')).not.toBeNull()
   })
 
-  it('dialogColumns skips the right panel in single-column mode (no empty <div> in DOM)', () => {
+  it('skips the right panel of a DialogColumns in single-column mode, leaving no empty div', () => {
     const { container } = render(() => (
       <DialogColumns
         twoColumn={false}
@@ -404,7 +404,7 @@ describe('dialog', () => {
     expect(container.querySelector('[data-testid="left"]')).not.toBeNull()
   })
 
-  it('dialogColumns skips the right panel when right is undefined even in two-column mode', () => {
+  it('skips the right panel of a DialogColumns when right is undefined, even in two-column mode', () => {
     const { container } = render(() => (
       <DialogColumns
         left={<span data-testid="left">L</span>}

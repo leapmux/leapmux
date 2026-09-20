@@ -18,7 +18,8 @@ import { AGENT_TITLE_PREFIX, TAB_NAMES, TERMINAL_TITLE_PREFIX } from '~/generate
  * which an earlier rule matched against this same pattern and overwrote.
  */
 function randomTabName(): string {
-  return TAB_NAMES[Math.floor(Math.random() * TAB_NAMES.length)]
+  // The generated pool is non-empty; the fallback satisfies noUncheckedIndexedAccess.
+  return TAB_NAMES[Math.floor(Math.random() * TAB_NAMES.length)] ?? ''
 }
 
 export function randomAgentTitle(): string {

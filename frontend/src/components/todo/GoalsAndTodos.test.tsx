@@ -1,5 +1,5 @@
+import type { TodoItem } from '~/models/todo'
 import type { GoalSurface } from '~/stores/chatGoal'
-import type { TodoItem } from '~/stores/chatTodos'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { classSelector } from '~/test-support/composedClass'
@@ -15,16 +15,15 @@ const todo: TodoItem = {
   activeForm: '',
 }
 
-function surface(over: Partial<GoalSurface> = {}): GoalSurface {
-  return {
-    current: { objective: 'Ship the release', status: 'active' },
-    progress: {},
-    actions: ['set', 'clear'],
-    ...over,
-  }
+// A loose record, not `Partial<GoalSurface>`: a case below deliberately passes
+// `current: undefined` -- the key EXISTS, with no stored goal -- which
+// `exactOptionalPropertyTypes` keeps out of the typed shape.
+function surface(over: Record<string, unknown> = {}): GoalSurface {
+  const base: GoalSurface = { current: { objective: 'Ship the release', status: 'active' }, progress: {}, actions: ['set', 'clear'] }
+  return Object.assign(base, over)
 }
 
-describe('goalsAndTodos', () => {
+describe('GoalsAndTodos', () => {
   it('renders the card, separator, and list in that order', () => {
     const { getByTestId } = render(() => (
       <GoalsAndTodos variant="sidebar" goal={surface()} todos={[todo]} />

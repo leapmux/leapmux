@@ -41,36 +41,48 @@ describe('agentWatchEntry', () => {
   })
 })
 
-function agent(overrides: Partial<Extract<Tab, { type: TabType.AGENT }>> = {}): Tab {
+/**
+ * Fixture overrides: `undefined` CLEARs a defaulted optional field (absence
+ * keeps the default), so the map allows it where the tab type does not.
+ */
+type TabOverrides<T> = { [K in keyof T]?: T[K] | undefined }
+
+function agent(overrides: TabOverrides<Extract<Tab, { type: TabType.AGENT }>> = {}): Tab {
+  const { type, id, workspaceId, ...rest } = overrides
   return {
-    type: TabType.AGENT,
-    id: 'a1',
-    workspaceId: 'ws-1',
+    // Required fields never clear, so default them explicitly; the trailing
+    // spread applies only to optional fields, where an explicit undefined
+    // override clears the default (the fixture's documented purpose).
+    type: type ?? TabType.AGENT,
+    id: id ?? 'a1',
+    workspaceId: workspaceId ?? 'ws-1',
     tileId: 'tile-1',
     workerId: 'w1',
-    ...overrides,
+    ...rest,
   }
 }
 
-function terminal(overrides: Partial<Extract<Tab, { type: TabType.TERMINAL }>> = {}): Tab {
+function terminal(overrides: TabOverrides<Extract<Tab, { type: TabType.TERMINAL }>> = {}): Tab {
+  const { type, id, workspaceId, ...rest } = overrides
   return {
-    type: TabType.TERMINAL,
-    id: 't1',
-    workspaceId: 'ws-1',
+    type: type ?? TabType.TERMINAL,
+    id: id ?? 't1',
+    workspaceId: workspaceId ?? 'ws-1',
     tileId: 'tile-1',
     workerId: 'w1',
-    ...overrides,
+    ...rest,
   }
 }
 
-function file(overrides: Partial<Extract<Tab, { type: TabType.FILE }>> = {}): Tab {
+function file(overrides: TabOverrides<Extract<Tab, { type: TabType.FILE }>> = {}): Tab {
+  const { type, id, workspaceId, ...rest } = overrides
   return {
-    type: TabType.FILE,
-    id: 'f1',
-    workspaceId: 'ws-1',
+    type: type ?? TabType.FILE,
+    id: id ?? 'f1',
+    workspaceId: workspaceId ?? 'ws-1',
     tileId: 'tile-1',
     workerId: 'w1',
-    ...overrides,
+    ...rest,
   }
 }
 
@@ -144,12 +156,12 @@ describe('buildWatchPlans', () => {
     it('folds a detached terminal into its worker plan', () => {
       const plans = buildWatchPlans([], 'ws-1', () => null, { detachedTerminals: detached(WatchMode.FULL) })
       expect(plans.get('w1')?.terminals.map(t => t.terminalId)).toEqual(['q1'])
-      expect(plans.get('w1')?.terminals[0].mode).toBe(WatchMode.FULL)
+      expect(plans.get('w1')?.terminals[0]?.mode).toBe(WatchMode.FULL)
     })
 
     it('carries the mode the caller decided', () => {
       const plans = buildWatchPlans([], 'ws-1', () => null, { detachedTerminals: detached(WatchMode.NOTIFY) })
-      expect(plans.get('w1')?.terminals[0].mode).toBe(WatchMode.NOTIFY)
+      expect(plans.get('w1')?.terminals[0]?.mode).toBe(WatchMode.NOTIFY)
     })
 
     it('shares a worker plan with the placed tabs', () => {
@@ -169,7 +181,7 @@ describe('buildWatchPlans', () => {
           detachedTerminals: detached(WatchMode.FULL),
         },
       )
-      expect(plans.get('w1')?.terminals[0].afterOffset).toBe(BigInt(0))
+      expect(plans.get('w1')?.terminals[0]?.afterOffset).toBe(BigInt(0))
       expect(plans.get('w1')?.terminalResync.has('q1')).toBe(true)
     })
 
@@ -184,7 +196,7 @@ describe('buildWatchPlans', () => {
           detachedTerminals: detached(WatchMode.FULL),
         },
       )
-      expect(plans.get('w1')?.terminals[0].afterOffset).toBe(BigInt(500))
+      expect(plans.get('w1')?.terminals[0]?.afterOffset).toBe(BigInt(500))
     })
 
     it('skips an entry with no worker or no terminal id', () => {
@@ -206,8 +218,8 @@ describe('buildWatchPlans', () => {
         agentWindowTailSeq: () => 9n,
       })
       const entry = plans.get('w1')!.agents[0]
-      expect(entry.cursorSeq).toBe(7n)
-      expect(entry.windowTailSeq).toBe(9n)
+      expect(entry?.cursorSeq).toBe(7n)
+      expect(entry?.windowTailSeq).toBe(9n)
     })
 
     // The panel opening and closing is exactly a mode flip, and the plan has to
@@ -278,8 +290,11 @@ describe('buildWatchPlans', () => {
     const getAgentTab = (id: string): AgentTab | undefined => {
       if (id === 'child-1')
         return child as AgentTab
-      if (id === 'root-1')
-        return { ...child, id: 'root-1', parentAgentId: undefined } as AgentTab
+      if (id === 'root-1') {
+        // The root has no parent of its own: drop the key the child carried.
+        const { parentAgentId: _childParent, ...root } = child as AgentTab
+        return { ...root, id: 'root-1' }
+      }
       return undefined
     }
     const plans = buildWatchPlans([child], 'ws-1', () => '1:child-1', { getAgentTab })
@@ -309,7 +324,7 @@ describe('buildWatchPlans', () => {
     const plans = buildWatchPlans(tabs, 'ws-1', activeKey, { getAgentTab })
     const rootEntries = plans.get('w1')!.agents.filter(a => a.agentId === 'root-1')
     expect(rootEntries).toHaveLength(1)
-    expect(rootEntries[0].mode).toBe(WatchMode.NOTIFY)
+    expect(rootEntries[0]?.mode).toBe(WatchMode.NOTIFY)
   })
 })
 
@@ -366,7 +381,7 @@ describe('terminal resync plans', () => {
     })
     const plan = plans.get('w1')!
     expect(plan.terminals).toHaveLength(1)
-    expect(plan.terminals[0].afterOffset).toBe(BigInt(0))
+    expect(plan.terminals[0]?.afterOffset).toBe(BigInt(0))
     expect(plan.terminalResync.has('t1')).toBe(true)
   })
 })

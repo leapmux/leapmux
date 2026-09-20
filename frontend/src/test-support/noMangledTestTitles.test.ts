@@ -5,19 +5,28 @@ import { describe, expect, it } from 'vitest'
 import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 
 // Test-name guard: `test/prefer-lowercase-title` (from the antfu ESLint config)
-// rejects a suite or case title that starts with a capital, and its `--fix`
-// lowercases character 0 and nothing else. A title that opens with a name which
-// must keep its capital therefore comes back misspelled --
-// `DEFAULT_MONO_FONT_FAMILY` became `dEFAULT_MONO_FONT_FAMILY`,
-// `OAuthCompleteSignupPage` became `oAuthCompleteSignupPage`, `IPv4` became
-// `iPv4`. Eleven such names accumulated across the suite before anyone noticed,
-// because each one reads as a plausible identifier at a glance and the fix
-// leaves the file lint-clean.
+// rejects a CASE title that starts with a capital, and its `--fix` lowercases
+// character 0 and nothing else. A title that opens with a name which must keep
+// its capital therefore comes back misspelled -- `DEFAULT_MONO_FONT_FAMILY`
+// became `dEFAULT_MONO_FONT_FAMILY`, `OAuthCompleteSignupPage` became
+// `oAuthCompleteSignupPage`, `IPv4` became `iPv4`. Eleven such names accumulated
+// across the suite before anyone noticed, because each one reads as a plausible
+// identifier at a glance and the fix leaves the file lint-clean.
+//
+// A `describe` is exempt from that rule now (see `eslint.config.ts`), because a
+// suite identifies the SYMBOL under test and must be able to spell it. Both signatures
+// below still cover describe titles: the rule is off, and the damage it already
+// did is not.
 //
 // This guard fails the suite on the mangle signature itself: a title whose
 // first character is lowercase and whose second is uppercase. That is what the
 // autofix produces and what no deliberate title looks like, apart from a real
 // camelCase identifier -- see CAMEL_CASE_IDENTIFIERS below.
+//
+// It then checks a SECOND signature that the autofix cannot make, and that this
+// one is blind to: a name whose capitals were ALL removed by hand, which leaves
+// a lowercase run with no uppercase second letter to catch. See the block above
+// `findFlattenedTitles`.
 //
 // It covers `tests/e2e/` as well as `src/`. The ESLint rule does not run on
 // Playwright specs at all, so a mangled title copied into one would otherwise
@@ -96,7 +105,7 @@ function skipParens(source: string, open: number): number {
   let depth = 0
   for (let i = open; i < source.length; i++) {
     const ch = source[i]
-    if (QUOTES.has(ch)) {
+    if (ch !== undefined && QUOTES.has(ch)) {
       i = skipString(source, i) - 1
       continue
     }
@@ -115,17 +124,17 @@ function skipParens(source: string, open: number): number {
 /** Reads the quoted title at or after `from`, or null when that argument is not a string literal. */
 function readTitle(source: string, from: number): { title: string, start: number } | null {
   let i = from
-  while (i < source.length && /\s/.test(source[i]))
+  while (i < source.length && /\s/.test(source[i] ?? ''))
     i++
-  if (!QUOTES.has(source[i]))
+  if (!QUOTES.has(source[i] ?? ''))
     return null
   const end = skipString(source, i)
   return { title: source.slice(i + 1, end - 1), start: i + 1 }
 }
 
-/** Extracts every suite and case title from one file and keeps the mangled ones. */
-export function findMangledTitles(source: string, path: string): MangledTitle[] {
-  const found: MangledTitle[] = []
+/** Every suite and case title in one file, with the line each one sits on. */
+function findTitles(source: string): Array<{ title: string, line: number }> {
+  const found: Array<{ title: string, line: number }> = []
   // A fresh RegExp per call: a shared /g/ literal carries `lastIndex` between
   // calls and would skip matches in the next file.
   const scanner = new RegExp(TITLE_CALL.source, 'g')
@@ -141,11 +150,103 @@ export function findMangledTitles(source: string, path: string): MangledTitle[] 
       if (source[afterFirstCall] === '(')
         read = readTitle(source, afterFirstCall + 1)
     }
-    if (read !== null && isMangledTitle(read.title))
-      found.push({ path, line: source.slice(0, read.start).split('\n').length, title: read.title })
+    if (read !== null)
+      found.push({ title: read.title, line: source.slice(0, read.start).split('\n').length })
     match = scanner.exec(source)
   }
   return found
+}
+
+/** Extracts every suite and case title from one file and keeps the mangled ones. */
+export function findMangledTitles(source: string, path: string): MangledTitle[] {
+  return findTitles(source)
+    .filter(found => isMangledTitle(found.title))
+    .map(found => ({ path, ...found }))
+}
+
+// The SECOND signature, and nothing about the lint autofix produces it. A title
+// whose first word is a known identifier with every capital removed --
+// `mcpToolCallDisplayName` written `mcptoolcalldisplayname` -- reads as a word
+// nobody can search for, and 162 of them accumulated. The autofix cannot make
+// one, because it only ever lowercases character 0.
+//
+// "Known" is what keeps this precise. A long lowercase first word is no evidence
+// on its own: `describe('classifies an empty payload')` opens with ten lowercase
+// letters and is exactly right, and `describe('lostpointercapture')` states a DOM
+// event whose real spelling has no capitals at all. So the rule asks a different
+// question -- does this word match an identifier THIS FILE already knows? -- and
+// the answer comes from the file's own imports plus the module it sits beside.
+
+/** An identifier built from more than one word, which is the only kind a title can flatten. */
+const MULTI_WORD = /[a-z][A-Z]|_/
+
+/**
+ * Whether a name carries more than one word, so a title could have flattened it.
+ *
+ * A lowercase-to-uppercase step or an underscore, over the WHOLE name. NOT "holds a
+ * capital after the first character": that reads `PI`, `CODEX` and `ZCODE` as
+ * multi-word, and a suite legitimately called `describe('pi tool presentation')` would
+ * then be rejected for flattening a constant it never mentions. It also keeps a
+ * one-word component out: `describe('tooltip')` beside `Tooltip` is an ordinary title.
+ */
+function isMultiWord(name: string): boolean {
+  return MULTI_WORD.test(name)
+}
+
+/**
+ * The local binding of every import in one file: named, aliased, default and namespace.
+ *
+ * The LOCAL name, because that is the one a title would refer to. An import written
+ * `{ parseMcpToolName as parseName }` is known here as `parseName`.
+ */
+function importedNames(source: string): string[] {
+  const names: string[] = []
+  // No `\s+` on either side of the capture: whitespace is inside `[^'"]`, so the two
+  // could exchange characters and `regexp/no-super-linear-backtracking` rejects that.
+  // The word boundaries do the same job and cannot backtrack. `\bfrom\b` is lazy-bounded
+  // and anchored on the quote that follows it, so `{ fromEntries }` and even
+  // `{ from }` reach the real specifier -- that quote is the whole test, which is why
+  // `from` needs no closing `\b` of its own.
+  for (const clause of source.matchAll(/\bimport\b([^'"]+?)\bfrom\s*['"]/g)) {
+    const text = clause[1]
+    if (text === undefined)
+      continue
+    for (const namespace of text.matchAll(/\*\s+as\s+([\w$]+)/g)) {
+      const name = namespace[1]
+      if (name !== undefined)
+        names.push(name)
+    }
+    const braces = /\{([^}]*)\}/.exec(text)
+    for (const entry of (braces?.[1] ?? '').split(',')) {
+      const binding = entry.trim().replace(/^type\s+/, '')
+      if (binding)
+        names.push(/\bas\s+([\w$]+)$/.exec(binding)?.[1] ?? binding)
+    }
+    const head = text.split(/[{,]/)[0]?.trim() ?? ''
+    if (/^[\w$]+$/.test(head))
+      names.push(head)
+  }
+  return names
+}
+
+/** Every title whose first word is a known multi-word identifier with its capitals dropped. */
+export function findFlattenedTitles(source: string, path: string): MangledTitle[] {
+  const sibling = path.split('/').at(-1)?.replace(TEST_FILE, '') ?? ''
+  const known = new Map<string, string>()
+  for (const name of [...importedNames(source), sibling]) {
+    if (isMultiWord(name))
+      known.set(name.toLowerCase(), name)
+  }
+  return findTitles(source).flatMap((found) => {
+    const firstWord = FIRST_WORD.exec(found.title)?.[0] ?? ''
+    // Entirely lowercase, so a title that merely opens with a lowercase letter --
+    // every legal one does -- is not evidence. Only a word that dropped the
+    // capitals it should carry reaches the lookup.
+    if (firstWord === '' || firstWord !== firstWord.toLowerCase())
+      return []
+    const correct = known.get(firstWord)
+    return correct === undefined || correct === firstWord ? [] : [{ path, ...found }]
+  })
 }
 
 /** Every unit test and e2e spec under the guarded roots, as an absolute path. */
@@ -281,5 +382,92 @@ describe('test-title casing', () => {
     const source = callSite('describe', 'lANGUAGES')
     expect(findMangledTitles(source, 'a.test.ts')).toHaveLength(1)
     expect(findMangledTitles(source, 'b.test.ts')).toHaveLength(1)
+  })
+})
+
+// Builds an import line without writing one into this file, for the same reason
+// `callSite` exists: the tree scan reads this module too.
+function importLine(names: string, from = './module'): string {
+  return ['import', `{ ${names} }`, 'from', `'${from}'`].join(' ')
+}
+
+describe('test-title flattening', () => {
+  it('has no title that dropped an identifier\'s capitals, under src/ or tests/', () => {
+    const offenders: MangledTitle[] = []
+    for (const file of collectTestFiles())
+      offenders.push(...findFlattenedTitles(readFileSync(file, 'utf8'), posixRelative(frontendRoot, file)))
+
+    const detail = offenders.map(o => `${o.path}:${o.line}  ${JSON.stringify(o.title)}`).join('\n  ')
+    expect(
+      offenders,
+      'A title opened with a name this file knows, spelled with every capital removed '
+      + '(mcpToolCallDisplayName -> mcptoolcalldisplayname). Nobody can search for that word, and '
+      + 'no lint rule produces it. Write the identifier\'s own casing when it starts with a '
+      + 'lowercase letter (`describe(\'mcpToolCallDisplayName\')`); when it starts with a capital, '
+      + 'lead with a lowercase phrase and put the name after it '
+      + `(\`describe('the chat row skeleton (ChatRowSkeleton)')\`):\n  ${detail}`,
+    ).toEqual([])
+  })
+
+  it('reports a flattened import, with the line it sits on', () => {
+    const source = [importLine('mcpToolCallDisplayName'), '', callSite('describe', 'mcptoolcalldisplayname')].join('\n')
+    expect(findFlattenedTitles(source, 'x.test.ts')).toEqual([
+      { path: 'x.test.ts', line: 3, title: 'mcptoolcalldisplayname' },
+    ])
+  })
+
+  it('reports a flattened module name, which no import states', () => {
+    const source = callSite('describe', 'chatpremeasurebands')
+    expect(findFlattenedTitles(source, 'chatPremeasureBands.test.ts')).toHaveLength(1)
+    // The same title beside a module whose name it does not flatten is nobody's business.
+    expect(findFlattenedTitles(source, 'unrelated.test.ts')).toEqual([])
+  })
+
+  it('reads the LOCAL name of an aliased import', () => {
+    const source = [importLine('parseMcpToolName as parseToolName'), callSite('it', 'parsetoolname splits the pair')].join('\n')
+    expect(findFlattenedTitles(source, 'x.test.ts')).toHaveLength(1)
+    // `parsemcptoolname` is the name at the OTHER end of the alias, which this file
+    // never binds, so a title that used it would describe something else.
+    expect(findFlattenedTitles(callSite('it', 'parsemcptoolname splits the pair'), 'x.test.ts')).toEqual([])
+  })
+
+  /**
+   * The three shapes a long lowercase first word takes that are NOT a defect.
+   *
+   * Each one is why this rule asks about the file's own identifiers rather than about
+   * the word's length: an ordinary sentence, a real name that carries no capital, and a
+   * one-word identifier whose lowercase form is the correct title.
+   */
+  it('accepts an ordinary phrase, a genuinely lowercase name, and a one-word identifier', () => {
+    expect(findFlattenedTitles(callSite('it', 'classifies an empty payload'), 'x.test.ts')).toEqual([])
+    const domEvent = [importLine('releasePointer'), callSite('describe', 'lostpointercapture')].join('\n')
+    expect(findFlattenedTitles(domEvent, 'x.test.ts')).toEqual([])
+    const oneWord = [importLine('Tooltip'), callSite('describe', 'tooltip')].join('\n')
+    expect(findFlattenedTitles(oneWord, 'Tooltip.test.tsx')).toEqual([])
+  })
+
+  /**
+   * A name in one case throughout is one word, whatever its case is.
+   *
+   * `PI` and `CODEX` hold a capital after character 0, so a multi-word test that asked
+   * only that would read them as two words and reject the 28 suites called
+   * `describe('pi ...')` for flattening a constant none of them mentions.
+   */
+  it('accepts a lowercase word that folds onto an all-caps constant', () => {
+    const source = [importLine('PI_EVENT, PI'), callSite('describe', 'pi tool presentation')].join('\n')
+    expect(findFlattenedTitles(source, 'createToolCall.test.ts')).toEqual([])
+  })
+
+  it('accepts the identifier written in its own casing', () => {
+    const camel = [importLine('mcpToolCallDisplayName'), callSite('describe', 'mcpToolCallDisplayName')].join('\n')
+    expect(findFlattenedTitles(camel, 'x.test.ts')).toEqual([])
+    // A `describe` leads with a PascalCase name now that the lint rule ignores describe
+    // titles, and this rule asks for exactly the spelling the file binds.
+    const pascal = [importLine('ChatRowSkeleton'), callSite('describe', 'ChatRowSkeleton')].join('\n')
+    expect(findFlattenedTitles(pascal, 'ChatRowSkeleton.test.tsx')).toEqual([])
+  })
+
+  it('ignores a name that no import and no sibling module states', () => {
+    expect(findFlattenedTitles(callSite('describe', 'sometotallyunknownthing'), 'x.test.ts')).toEqual([])
   })
 })

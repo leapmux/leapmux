@@ -1,14 +1,17 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { parseMessageContent } from '~/lib/messageParser'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
-import './providers/claude'
-import './providers/opencode'
+import { classifyMessage, toClassificationInput } from './messageClassifier'
+import { resolveMessageForRendering } from './providers/registry'
+import './providers/claude/plugin'
+import './providers/opencode/plugin'
 import './providers/cursor/plugin'
 import './providers/testMocks'
 
-const { imageFromMessage, messageToolResultImages, resolveChatImage } = await import('./chatImageResolve')
+const { messageToolResultImages, resolveChatImage } = await import('./chatImageResolve')
 
 const PNG = 'iVBORw0KGgo='
 
@@ -33,7 +36,7 @@ function claudeImageMessage(datas: string[], seq = 7n): AgentChatMessage {
 
 const ref = { workerId: 'w1', agentId: 'a1', seq: 7n, imageIndex: 0 }
 
-describe('messageToolResultImages', () => {
+describe('messageToolResultImages indexing', () => {
   it('routes through the message provider plugin, keeping wire order', () => {
     expect(messageToolResultImages(claudeImageMessage(['first', 'second'])).map(i => i.data))
       .toEqual(['first', 'second'])
@@ -50,13 +53,58 @@ describe('messageToolResultImages', () => {
   })
 })
 
-describe('imageFromMessage', () => {
+/**
+ * Classification and extraction read the SAME resolved payload.
+ *
+ * An image tab addresses a picture by its index in the row the transcript drew, so the
+ * two have to read one payload. This reader resolved the payload for the extraction
+ * and classified the ORIGINAL bytes, and the categories a provider's own
+ * `resolveMessage` changes then disagreed: an Agent Client Protocol result that
+ * arrives inside its native wrapper classified as `unknown` on the raw envelope, the
+ * extractor was handed that category, and every picture on the row disappeared.
+ */
+describe('messageToolResultImages over a resolved payload', () => {
+  const inner = {
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'c1',
+    status: 'completed',
+    kind: 'read',
+    rawInput: { filePath: '/p/shot.png' },
+    content: [{ type: 'content', content: { type: 'image', mimeType: 'image/png', data: PNG } }],
+  }
+
+  function openCodeMessage(content: unknown): AgentChatMessage {
+    return makeMessage({ agentProvider: AgentProvider.OPENCODE, spanId: 'c1', content: rawContent(content) })
+  }
+
+  it('reads a wrapped result into the same images as the unwrapped one', () => {
+    // The two messages state ONE call. `unwrapACPResult` is the single reader of the
+    // native envelope, so the row and its pictures cannot depend on which form the
+    // daemon sent.
+    const wrapped = messageToolResultImages(openCodeMessage({ id: 'n1', role: 'result', seq: 3, content: inner }))
+    // The picture itself, before the two readings are compared: two readings that
+    // each lost it agree on an empty list, and the comparison alone pins nothing.
+    expect(wrapped.map(source => source.data)).toEqual([PNG])
+    expect(wrapped).toEqual(messageToolResultImages(openCodeMessage(inner)))
+  })
+
+  it('reads a wrapped result into the row the transcript classified', () => {
+    const message = openCodeMessage({ id: 'n1', role: 'result', seq: 3, content: inner })
+    const resolved = resolveMessageForRendering(parseMessageContent(message), AgentProvider.OPENCODE)
+    // The transcript classifies the RESOLVED payload, which is the row the reader
+    // clicked. The resolver must reach the same one.
+    expect(classifyMessage(toClassificationInput(resolved, message)).kind).toBe('tool_use')
+    expect(messageToolResultImages(message).map(source => source.data)).toEqual([PNG])
+  })
+})
+
+describe('messageToolResultImages', () => {
   it('picks the image at the index', () => {
-    expect(imageFromMessage(claudeImageMessage(['first', 'second']), 1)?.data).toBe('second')
+    expect(messageToolResultImages(claudeImageMessage(['first', 'second']))[1]?.data).toBe('second')
   })
 
   it('is null when the index is past the end', () => {
-    expect(imageFromMessage(claudeImageMessage(['only']), 3)).toBeNull()
+    expect(messageToolResultImages(claudeImageMessage(['only']))[3]).toBeUndefined()
   })
 })
 

@@ -1,6 +1,8 @@
+import type { QuestionPrompt } from '../../model/question'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { PI_DIALOG_METHOD, PI_EVENT, PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { questionsFromRecords } from '../questionRecords'
 
 interface SourceOption {
   label: string
@@ -23,6 +25,62 @@ export function piQuestionOptionLine(option: SourceOption, index: number): strin
   return `${index + 1}. ${option.label} — ${option.description}`
 }
 
+/**
+ * The question records one of Pi's four question tools sends.
+ *
+ * Each of them states a LIST under `questions`. A tool that asks exactly one states
+ * the record at the root instead, so the root is read as a list of one -- which
+ * yields nothing when it carries no `question` field either.
+ */
+function piQuestionRecords(args: Record<string, unknown>): Record<string, unknown>[] {
+  const questions = args.questions
+  return Array.isArray(questions) ? questions.filter(isObject) : [args]
+}
+
+/**
+ * The questions a Pi call asked, in the shape the shared body builder reads.
+ *
+ * Pi's four question tools -- `ask_user_question`, `plan_mode_question`,
+ * `goal_question` and `goal_questionnaire` -- spell one question the way
+ * {@link piQuestionFromSource} reads it below, so the field names stay in this one
+ * module. An option carries a sentence and a worked example beside its label, and the
+ * row draws BOTH: the control surface above it does, so a reader who comes back to
+ * the row has to be able to tell what the alternatives actually were.
+ */
+export function piQuestionsFromArgs(args: Record<string, unknown>): QuestionPrompt[] {
+  return questionsFromRecords(
+    piQuestionRecords(args),
+    (record) => {
+      const header = text(pickString(record, 'header'))
+      return { ...(header ? { header } : {}), question: text(pickString(record, 'question')) }
+    },
+    (option) => {
+      const label = text(pickString(option, 'label'))
+      if (!label)
+        return null
+      const description = text(pickString(option, 'description'))
+      const preview = pickString(option, 'preview', undefined)
+      return {
+        label,
+        ...(description ? { description } : {}),
+        ...(preview !== undefined ? { preview } : {}),
+      }
+    },
+  )
+}
+
+/**
+ * The header words a question row states, or none when the row composes its own.
+ *
+ * One question IS the header, because the row has room for it and nothing else states
+ * it. Several cannot share one line, so the shared renderer states their count, and
+ * this gives it nothing to override.
+ */
+export function piQuestionTitle(questions: QuestionPrompt[]): string | undefined {
+  // One question is the list; the `length === 1` test pins the indexed read.
+  return questions.length === 1 ? questions[0]?.question : undefined
+}
+
 /** Validate the source against the dialog before adding omitted option previews. */
 export function piQuestionFromSource(dialog: Record<string, unknown>, source?: ParsedMessageContent): PiSourceQuestion | undefined {
   const original = source?.parentObject
@@ -40,9 +98,15 @@ export function piQuestionFromSource(dialog: Record<string, unknown>, source?: P
       continue
     if (!value.options.every(option => isObject(option) && typeof option.label === 'string' && typeof option.description === 'string'))
       continue
-    const options: SourceOption[] = value.options.map((option) => {
-      const row = option as Record<string, unknown>
-      return { label: text(pickString(row, 'label')), description: text(pickString(row, 'description')), preview: pickString(row, 'preview', undefined) }
+    // `filter(isObject)` drops nothing: the test above already refused a list that
+    // holds a non-object. It is what states the element type, in place of an assertion.
+    const options: SourceOption[] = value.options.filter(isObject).map((row) => {
+      const preview = pickString(row, 'preview', undefined)
+      return {
+        label: text(pickString(row, 'label')),
+        description: text(pickString(row, 'description')),
+        ...(preview !== undefined ? { preview } : {}),
+      }
     })
     const header = text(pickString(value, 'header'))
     const prompt = text(value.question)

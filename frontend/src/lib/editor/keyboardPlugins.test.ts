@@ -74,7 +74,11 @@ function getDoc(): { topNodeName: string, level?: number, html: string } {
     level = first?.attrs.level as number | undefined
     html = view.dom.innerHTML
   })
-  return { topNodeName, level, html }
+  return {
+    topNodeName,
+    ...(level !== undefined ? { level } : {}),
+    html,
+  }
 }
 
 describe('tab key plugin — paragraph', () => {

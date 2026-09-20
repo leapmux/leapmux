@@ -1,27 +1,27 @@
 import type { FileImageLoadOptions, FileImageReader } from './fileImageResolver'
-import type { SpanRole } from './providers/registry'
+import type { ToolSpanRowPresence } from './model/row'
+import type {} from './providers/registry'
+import type { ResolvedMessageContent } from './rowExtractionTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { MessageSpanIdentity } from '~/lib/messageSpan'
+import type { MessageRevision, MessageSpanIdentity, ToolSpanRole, ToolSpanSide } from '~/lib/messageSpan'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
-import type { TodoItem } from '~/stores/chatTodos'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
-import type { SpanMessageRevision, ToolMessageSide } from '~/stores/chatTypes'
 import { batch, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { parseMessageContent } from '~/lib/messageParser'
 import { messageSpanIdentity, messageSpanKey } from '~/lib/messageSpan'
 import { preferNewerSupplement } from '~/stores/chatMessageOrder'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
 import { createFileImageResolver } from './fileImageResolver'
-import { parsedMessageForRendering, pluginFor } from './providers/registry'
+import { pluginFor, resolvedSpanRole, resolveMessageForRendering } from './providers/registry'
 
 /** A message and the revision of the data that its renderer receives. */
 export interface ResolvedMessage {
   message: AgentChatMessage
   original: ParsedMessageContent
-  parsed: ParsedMessageContent
-  revision: SpanMessageRevision
+  resolved: ResolvedMessageContent
+  revision: MessageRevision
 }
 
 /** The data sources for one agent. Entity getters read live stores. */
@@ -44,29 +44,31 @@ export interface MessageContextSources {
   messages: () => AgentChatMessage[]
   messageVersion: () => number
   contentVersion: (messageId: string) => number
-  spanMessage: (identity: MessageSpanIdentity, side: ToolMessageSide) => AgentChatMessage | undefined
+  spanMessage: (identity: MessageSpanIdentity, side: ToolSpanSide) => AgentChatMessage | undefined
   messageBySeq: (seq: bigint) => AgentChatMessage | undefined
   fetchSpan: (identity: MessageSpanIdentity, signal: AbortSignal) => Promise<AgentChatMessage[]>
   fetchMessage: (seq: bigint, signal: AbortSignal) => Promise<AgentChatMessage | undefined>
   fetchFileImage: FileImageReader
   subscribe: (observer: (message: AgentChatMessage) => void) => () => void
-  todo: (taskId: string) => TodoItem | undefined
   backgroundTask: (rowKey: string) => BackgroundTaskItem | undefined
   progress: (identity: MessageSpanIdentity) => ToolProgressEntry | undefined
 }
 
 /** One resolution path for tool renderers, image tabs, and message previews. */
 export interface MessageContextResolver {
-  current: (message: AgentChatMessage, parsed?: ParsedMessageContent) => ResolvedMessage
+  resolvedMessage: (message: AgentChatMessage, parsed?: ParsedMessageContent) => ResolvedMessage
+  role: (message: AgentChatMessage, parsed?: ParsedMessageContent) => ToolSpanRole
+  visibleRows: (identity: MessageSpanIdentity) => ToolSpanRowPresence
   request: (identity: MessageSpanIdentity) => ResolvedMessage | undefined
   result: (identity: MessageSpanIdentity) => ResolvedMessage | undefined
   loadSpan: (identity: MessageSpanIdentity) => Promise<void>
   loadRelated: (message: AgentChatMessage, parsed?: ParsedMessageContent) => Promise<void>
   retainSpan: (identity: MessageSpanIdentity) => () => void
+  /** Retain a rendered row's span across a keyed component remount. */
+  retainRenderSpan: (identity: MessageSpanIdentity) => () => void
   retainMessage: (seq: bigint) => () => void
   peek: (seq: bigint) => ResolvedMessage | undefined
   message: (seq: bigint) => Promise<ResolvedMessage | undefined>
-  todo: (taskId: string) => TodoItem | undefined
   backgroundTask: (rowKey: string) => BackgroundTaskItem | undefined
   progress: (identity: MessageSpanIdentity) => ToolProgressEntry | undefined
   contentVersion: (messageId: string) => number
@@ -76,35 +78,30 @@ export interface MessageContextResolver {
 
 /** Reactive sources for one rendered row. Only the consuming component subscribes. */
 export interface MessageRenderSources {
-  current: () => ParsedMessageContent | undefined
-  request: () => ParsedMessageContent | undefined
-  result: () => ParsedMessageContent | undefined
-  role: () => SpanRole
+  current: () => ResolvedMessageContent | undefined
+  request: () => ResolvedMessageContent | undefined
+  result: () => ResolvedMessageContent | undefined
+  role: () => ToolSpanRole
+  visibleRows: () => ToolSpanRowPresence
   fileImage: MessageContextResolver['fileImage']
   cachedFileImage: MessageContextResolver['cachedFileImage']
-  todo: MessageContextResolver['todo']
   backgroundTask: MessageContextResolver['backgroundTask']
   progress: () => ToolProgressEntry | undefined
 }
 
-export function createMessageRenderSources(resolver: () => MessageContextResolver | undefined, message: () => AgentChatMessage, current: () => ParsedMessageContent): MessageRenderSources {
+export function createMessageRenderSources(resolver: () => MessageContextResolver | undefined, message: () => AgentChatMessage, current: () => ResolvedMessageContent): MessageRenderSources {
   const span = () => messageSpanIdentity(message())
   return {
     current,
-    request: () => resolver()?.request(span())?.parsed,
-    result: () => resolver()?.result(span())?.parsed,
+    request: () => resolver()?.request(span())?.resolved,
+    result: () => resolver()?.result(span())?.resolved,
     role: () => {
-      const context = resolver()
       const own = message()
-      if (context?.result(messageSpanIdentity(own))?.message.id === own.id)
-        return 'result'
-      if (context?.request(messageSpanIdentity(own))?.message.id === own.id)
-        return 'opener'
-      return pluginFor(own.agentProvider)?.spanRole?.(current()) ?? 'other'
+      return resolver()?.role(own) ?? resolvedSpanRole(current(), own.agentProvider)
     },
+    visibleRows: () => resolver()?.visibleRows(span()) ?? { request: false, result: false },
     fileImage: (path, options) => resolver()?.fileImage(path, { ...options, reference: message().id }) ?? Promise.reject(new Error('The image source is unavailable')),
     cachedFileImage: path => resolver()?.cachedFileImage(path, message().id),
-    todo: taskId => resolver()?.todo(taskId),
     backgroundTask: rowKey => resolver()?.backgroundTask(rowKey),
     progress: () => resolver()?.progress(messageSpanIdentity(message())),
   }
@@ -132,13 +129,18 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
   const resolved = new Map<string, ResolvedCacheEntry>()
   const loadedSpans = new Set<string>()
   const leases = new Map<string, number>()
+  const renderGraceSpans = new Set<string>()
   const messageLeases = new Map<bigint, number>()
   const inflight = new Map<string, { controller: AbortController, promise: Promise<unknown> }>()
   const spans = createSpanIndex()
   const [cacheVersion, setCacheVersion] = createSignal(0)
   let disposed = false
+  let pruneTimer: ReturnType<typeof setTimeout> | undefined
 
   function clear(): void {
+    if (pruneTimer !== undefined)
+      clearTimeout(pruneTimer)
+    pruneTimer = undefined
     fileImages.clear()
     for (const request of inflight.values())
       request.controller.abort()
@@ -147,6 +149,7 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     resolved.clear()
     loadedSpans.clear()
     leases.clear()
+    renderGraceSpans.clear()
     messageLeases.clear()
     spans.reindex(source.scopeKey, [])
     setCacheVersion(value => value + 1)
@@ -162,7 +165,7 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     const value: ResolvedMessage = {
       message,
       original,
-      parsed: parsedMessageForRendering(original, message.agentProvider),
+      resolved: resolveMessageForRendering(original, message.agentProvider),
       revision: { id: message.id, seq: message.seq, contentVersion: version, supplementalRevision: message.supplementalRevision },
     }
     if (cache)
@@ -182,6 +185,30 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
         latest = cached
     }
     return reference(latest, latest === message ? parsed : undefined)
+  }
+
+  function role(message: AgentChatMessage, parsed?: ParsedMessageContent): ToolSpanRole {
+    const selected = current(message, parsed)
+    const identity = messageSpanIdentity(selected.message)
+    if (related(identity, 'result')?.message.id === selected.message.id)
+      return 'result'
+    if (related(identity, 'request')?.message.id === selected.message.id)
+      return 'request'
+    return resolvedSpanRole(selected.resolved, selected.message.agentProvider)
+  }
+
+  function visibleRows(identity: MessageSpanIdentity): ToolSpanRowPresence {
+    const key = messageSpanKey(identity)
+    let request = false
+    let result = false
+    for (const message of source.messages()) {
+      if (messageSpanKey(message) !== key)
+        continue
+      const rowRole = role(message)
+      request ||= rowRole === 'request'
+      result ||= rowRole === 'result'
+    }
+    return { request, result }
   }
 
   function remember(messages: AgentChatMessage[]): void {
@@ -216,14 +243,14 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     }
   }
 
-  function related(identity: MessageSpanIdentity, side: ToolMessageSide): ResolvedMessage | undefined {
+  function related(identity: MessageSpanIdentity, side: ToolSpanSide): ResolvedMessage | undefined {
     source.messageVersion()
     cacheVersion()
     if (!identity.spanId || disposed)
       return undefined
     const matches = (message: AgentChatMessage | undefined) => message && messageSpanKey(message) === messageSpanKey(identity) ? message : undefined
     const resident = matches(source.spanMessage(identity, side))
-    const cached = matches(side === 'request' ? spans.getOpenerMessage(source.scopeKey, identity) : spans.getResultMessage(source.scopeKey, identity))
+    const cached = matches(side === 'request' ? spans.getRequestMessage(source.scopeKey, identity) : spans.getResultMessage(source.scopeKey, identity))
     const message = newestRelatedMessage(resident, cached)
     return message ? reference(message) : undefined
   }
@@ -249,6 +276,8 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     remember(messages.filter(message => messageLeases.has(message.seq)))
     const retainedSpans = new Set(messages.filter(message => message.spanId).map(messageSpanKey))
     for (const spanId of leases.keys())
+      retainedSpans.add(spanId)
+    for (const spanId of renderGraceSpans)
       retainedSpans.add(spanId)
     const retainedIds = new Set(messages.map(message => message.id))
     let changed = false
@@ -372,7 +401,29 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     })
   }
 
-  function retain<Key>(counts: Map<Key, number>, key: Key): () => void {
+  /**
+   * Prune after Solid completes the current task.
+   *
+   * A sibling arrival changes a classified entry and remounts its row. The old row
+   * releases its lease before the replacement row takes the same lease. Immediate
+   * pruning drops the fetched sibling during that transfer and restores the stale row.
+   * Solid can mount the replacement row in a microtask. A separate grace set protects
+   * the span from another consumer's immediate prune during that interval. A task
+   * timer then clears the grace set and prunes from the final lease set.
+   */
+  function schedulePrune(): void {
+    if (pruneTimer !== undefined || disposed)
+      return
+    pruneTimer = setTimeout(() => {
+      pruneTimer = undefined
+      if (disposed)
+        return
+      renderGraceSpans.clear()
+      prune(source.messages())
+    }, 0)
+  }
+
+  function retain<Key>(counts: Map<Key, number>, key: Key, onLastRelease: (counts: Map<Key, number>, key: Key) => void): () => void {
     counts.set(key, (counts.get(key) ?? 0) + 1)
     let released = false
     return () => {
@@ -380,16 +431,19 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
         return
       released = true
       const count = counts.get(key) ?? 0
-      if (count <= 1)
-        counts.delete(key)
-      else
+      if (count <= 1) {
+        onLastRelease(counts, key)
+      }
+      else {
         counts.set(key, count - 1)
-      prune(source.messages())
+      }
     }
   }
 
   return {
-    current,
+    resolvedMessage: current,
+    role,
+    visibleRows,
     fileImage: (path, options) => disposed ? Promise.reject(new DOMException('The image resolver is no longer active', 'AbortError')) : fileImages.load(path, options),
     cachedFileImage: fileImages.peek,
     request: identity => related(identity, 'request'),
@@ -397,19 +451,36 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     loadSpan,
     loadRelated: (message, parsed) => untrack(async () => {
       const resolved = current(message, parsed)
-      const sides = pluginFor(message.agentProvider)?.relatedMessages?.(resolved.parsed) ?? []
+      const sides = pluginFor(message.agentProvider)?.transcript.relatedMessages?.(resolved.resolved) ?? []
       if (sides.some(side => related(messageSpanIdentity(message), side) === undefined))
         await loadSpan(messageSpanIdentity(message))
     }),
     retainSpan: (identity) => {
       if (!identity.spanId || disposed)
         return () => undefined
-      return retain(leases, messageSpanKey(identity))
+      return retain(leases, messageSpanKey(identity), (counts, key) => {
+        counts.delete(key)
+        prune(source.messages())
+      })
+    },
+    retainRenderSpan: (identity) => {
+      if (!identity.spanId || disposed)
+        return () => undefined
+      const key = messageSpanKey(identity)
+      renderGraceSpans.delete(key)
+      return retain(leases, key, (counts, releasedKey) => {
+        counts.delete(releasedKey)
+        renderGraceSpans.add(releasedKey)
+        schedulePrune()
+      })
     },
     retainMessage: seq => untrack(() => {
       if (seq <= 0n || disposed)
         return () => undefined
-      const release = retain(messageLeases, seq)
+      const release = retain(messageLeases, seq, (counts, key) => {
+        counts.delete(key)
+        prune(source.messages())
+      })
       const resident = source.messageBySeq(seq)
       if (resident)
         remember([resident])
@@ -423,7 +494,6 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       return message ? reference(message, undefined, false) : undefined
     },
     message,
-    todo: taskId => disposed ? undefined : source.todo(taskId),
     backgroundTask: rowKey => disposed ? undefined : source.backgroundTask(rowKey),
     // The lookup takes the WHOLE span identity, because the store keys an entry
     // by the provider session and the span together. The producer states the

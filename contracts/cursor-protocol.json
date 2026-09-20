@@ -1,10 +1,115 @@
 {
-  "_readme": "Cursor owns these ACP tool identifiers and JSON-RPC method names. The worker and frontend use them to identify subagent launches and to classify the control requests Cursor raises. Only the two methods that BOTH sides dispatch on live here -- cursor/update_todos, cursor/task and cursor/generate_image reach the worker alone, so they stay Go constants.",
+  "_readme": "Cursor owns these ACP tool identifiers and JSON-RPC method names. The worker and frontend use them to identify subagent launches, to classify the control requests Cursor raises, and to read the extension frames the worker stores on a tool row. LeapMux owns the supplement field name that carries one of those frames into the row's supplemental content, and the `storedTool` keys of the record it builds under the shared ACP `rawOutput` key -- the worker writes that record from Cursor's own transcript and the browser plugin reads it back. `storedBlock` and `blockTypes` identify the transcript block the worker matches by id and the browser plugin then re-reads out of the same record. The nested Cursor-owned fields inside it (`cursor`, `highLevelToolCallResult`, `imageDescriptions`) stay out: the worker copies them without spelling them, so only one language reads them and the contracts rule exempts them. `extensionFrame` holds the fields of the frame stored under `cursorExtension`: the worker writes the method beside its params, and the browser dispatches on that one field instead of guessing the frame from the keys it finds. `toolCallId` and `todos` are the params' own two: the worker matches the frame to a row by the id, and the browser draws the checklist from the rows.",
   "toolNames": {
     "Task": "task"
   },
   "methods": {
     "AskQuestion": "cursor/ask_question",
-    "CreatePlan": "cursor/create_plan"
+    "CreatePlan": "cursor/create_plan",
+    "UpdateTodos": "cursor/update_todos",
+    "Task": "cursor/task",
+    "GenerateImage": "cursor/generate_image"
+  },
+  "supplement": {
+    "Extension": "cursorExtension"
+  },
+  "storedTool": {
+    "Content": "content",
+    "ToolArguments": "toolArguments",
+    "ProviderOptions": "providerOptions"
+  },
+  "storedBlock": {
+    "Type": "type",
+    "ToolCallID": "toolCallId",
+    "ToolName": "toolName"
+  },
+  "blockTypes": {
+    "ToolCall": "tool-call",
+    "ToolResult": "tool-result"
+  },
+  "extensionFrame": {
+    "Method": "method",
+    "Params": "params",
+    "ToolCallID": "toolCallId",
+    "Todos": "todos"
+  },
+  "_unread": {
+    "extensionFrame": {
+      "ToolCallID": {
+        "sides": ["ts"],
+        "why": "the worker matches the frame to a row by this id BEFORE it stores the frame, so the browser reads the frame off the row it already belongs to and never compares the id again"
+      }
+    },
+    "storedBlock": {
+      "ToolName": {
+        "sides": ["go"],
+        "why": "the worker matches a block to a row by id alone; the browser reads the name off the matched block to title an MCP result row, which is the only surface that states it"
+      }
+    }
+  },
+  "structs": {
+    "CursorStoredToolOutput": {
+      "doc": "CursorStoredToolOutput is the record LeapMux builds from Cursor's own transcript\nand stores under the shared ACP `rawOutput` key.\n\n`ProviderOptions` keeps Cursor's own nested record whole and unread, because the\nfrontend owns tool-specific extraction.",
+      "table": "storedTool",
+      "fields": [
+        {
+          "key": "Content",
+          "type": "[]json.RawMessage"
+        },
+        {
+          "key": "ToolArguments",
+          "type": "json.RawMessage",
+          "omitempty": true
+        },
+        {
+          "key": "ProviderOptions",
+          "type": "json.RawMessage",
+          "omitempty": true
+        }
+      ]
+    },
+    "CursorStoredExtension": {
+      "doc": "CursorStoredExtension is what the worker writes into the row's supplemental\ncontent for one `cursor/*` extension frame.\n\nThe method rides with the params, so the browser dispatches on one field instead\nof guessing the frame from the keys it finds.",
+      "table": "extensionFrame",
+      "fields": [
+        {
+          "key": "Method",
+          "type": "string"
+        },
+        {
+          "key": "Params",
+          "type": "json.RawMessage"
+        }
+      ]
+    },
+    "CursorExtensionParams": {
+      "doc": "CursorExtensionParams is the `params` of one `cursor/*` extension frame.\n\nEvery one of the three methods states the call it belongs to, and\n`cursor/update_todos` adds the rows. The worker matches the frame to a row by the\nid; the browser reads the rows back out of the stored frame.\n\n`Todos` stays raw, because the to-do item's own three fields are the shared\nto-do vocabulary and not Cursor's. `merge` is absent for the opposite reason:\nthe worker applies it and the browser deliberately draws no flag from it, so it\nis a one-side value that the contracts rule exempts.",
+      "table": "extensionFrame",
+      "fields": [
+        {
+          "key": "ToolCallID",
+          "type": "string"
+        },
+        {
+          "key": "Todos",
+          "type": "json.RawMessage",
+          "omitempty": true
+        }
+      ]
+    },
+    "CursorToolContent": {
+      "doc": "CursorToolContent is one block of Cursor's own transcript.\n\nThe worker matches a block to a row by id, and the browser plugin re-reads the\nsame two fields out of the record it stores.",
+      "table": "storedBlock",
+      "fields": [
+        {
+          "key": "Type",
+          "type": "string"
+        },
+        {
+          "key": "ToolCallID",
+          "type": "string"
+        }
+      ]
+    }
   }
 }

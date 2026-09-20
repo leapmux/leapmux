@@ -427,7 +427,7 @@ async function seedFromSibling(
   clientId: string,
   opts: HydrationOptions,
 ): Promise<HydrationPayload | null> {
-  const candidates = await listSeedCandidates(userId, clientId, { limit: opts.limit })
+  const candidates = await listSeedCandidates(userId, clientId, { ...(opts.limit !== undefined ? { limit: opts.limit } : {}) })
   for (const candidate of candidates) {
     const read = await readCheckpoint(userId, candidate.clientId)
     // Narrow ONCE, here, so everything below reads the candidate's bytes off a

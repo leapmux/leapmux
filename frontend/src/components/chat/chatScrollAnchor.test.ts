@@ -30,7 +30,7 @@ function rows(seqs: number[]): AnchorRow[] {
   return seqs.map(s => ({ id: `m${s}`, seq: BigInt(s) }))
 }
 
-describe('chatscrollanchor', () => {
+describe('chatScrollAnchor', () => {
   it('captures and resolves a within-row anchor round-trip', () => {
     const geo = fakeGeo(rows([10, 20, 30]))
     // scrollTop 250 -> row index 2 (stride 120 -> [240, 360)), 10px into the body.
@@ -68,18 +68,19 @@ describe('chatscrollanchor', () => {
     function varGeo(heights: number[]): AnchorOffsetGeometry {
       const offs = [0]
       for (const h of heights)
-        offs.push(offs[offs.length - 1] + h)
+        offs.push((offs[offs.length - 1] ?? 0) + h)
       const list: AnchorRow[] = heights.map((_, i) => ({ id: `m${i}`, seq: BigInt(i) }))
       return {
         list,
         indexOfId: id => list.findIndex(r => r.id === id),
-        offsetOfIndex: i => offs[Math.max(0, Math.min(i, heights.length))],
+        offsetOfIndex: i => offs[Math.max(0, Math.min(i, heights.length))] ?? 0,
         heightOfIndex: i => heights[i] ?? 0,
         gapAfter: () => 0,
         indexAtOffset: (y) => {
           let idx = 0
           for (let i = 0; i < heights.length; i++) {
-            if (offs[i] <= y)
+            // The bound keeps `i` inside offs (offs[0] is 0); `?? 0` is the type-level guard alone.
+            if ((offs[i] ?? 0) <= y)
               idx = i
             else
               break

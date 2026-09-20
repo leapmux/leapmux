@@ -29,7 +29,7 @@ function pipFills(container: HTMLElement): (string | null)[] {
   return [...container.querySelectorAll('rect')].map(r => r.getAttribute('fill'))
 }
 
-describe('themeSwatch', () => {
+describe('ThemeSwatch', () => {
   it('fills the nine pips from the variant palette, in token order', () => {
     const variant = variantById('default-light')
     const { container } = render(() => <ThemeSwatch variant={variant} />)
@@ -126,7 +126,7 @@ describe('themeSwatch', () => {
   })
 })
 
-describe('themeSwatch palette invariants (every catalogue variant)', () => {
+describe('ThemeSwatch palette invariants (every catalogue variant)', () => {
   it('covers the whole catalogue', () => {
     expect(ALL_VARIANTS.length).toBeGreaterThanOrEqual(30)
     expect(SWATCH_TOKENS).toHaveLength(PIP_GRID_PIPS)

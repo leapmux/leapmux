@@ -1,21 +1,23 @@
 import { render, waitFor } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { CURSOR_METHOD, CURSOR_SUPPLEMENT } from '~/generated/contracts/cursor-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { pngBase64 } from '~/test-support/pngFixture'
+import { providerRowImages, providerToolMeta } from '~/test-support/toolCallFixture'
 import { ChatImageViewer } from '../../ChatImageViewer'
-import { renderMessageContent } from '../../messageRenderers'
+import { renderMessageContent } from '../../messageContentRenderer'
 import { providerFor } from '../registry'
-import { input, toolMessageInput } from '../testUtils'
+import { input } from '../testUtils'
 import './plugin'
 import '../testMocks'
 
 function renderTool(fields: Record<string, unknown>, supplemental?: Record<string, unknown>) {
   const tool = { sessionUpdate: 'tool_call_update', status: 'completed', toolCallId: 'cursor-tool', ...fields }
   const parsed = { ...input(tool), supplementalContent: supplemental ? { sessionUpdate: tool.sessionUpdate, status: tool.status, toolCallId: tool.toolCallId, ...supplemental } : undefined }
-  const category = providerFor(AgentProvider.CURSOR)!.classify(parsed)
+  const category = providerFor(AgentProvider.CURSOR)!.transcript.classify(parsed)
   return render(() => renderMessageContent(tool, { premeasureMode: true, sources: testMessageSources({ current: () => parsed }) }, category, AgentProvider.CURSOR))
 }
 
@@ -52,12 +54,13 @@ describe('cursor native tool rendering', () => {
       }
     }
 
-    function renderRow(tool: Record<string, unknown>, role: 'opener' | 'result', result?: Record<string, unknown>) {
+    function renderRow(tool: Record<string, unknown>, role: 'request' | 'result', result?: Record<string, unknown>) {
       const parsed = parse(tool)
-      const category = providerFor(AgentProvider.CURSOR)!.classify(parsed)
+      const category = providerFor(AgentProvider.CURSOR)!.transcript.classify(parsed)
       const sources = testMessageSources({
         current: () => parsed,
         role: () => role,
+        visibleRows: () => ({ request: role === 'request', result: role === 'result' || result !== undefined }),
         ...(result ? { result: () => parse(result) } : {}),
       })
       return render(() => renderMessageContent(tool, { premeasureMode: true, sources }, category, AgentProvider.CURSOR))
@@ -66,13 +69,13 @@ describe('cursor native tool rendering', () => {
     // While the approval is open there is no completing row, so the proposing row is where
     // the reader has to be able to read the plan.
     it('renders the recovered plan while the call is still open', () => {
-      const { container } = renderRow(call, 'opener')
+      const { container } = renderRow(call, 'request')
       expect(container.textContent).toContain('PLANMARKER-7')
       expect(container.textContent).toContain('Seed an Unreleased section.')
     })
 
     it('names the row by the plan it writes', () => {
-      expect(renderRow(call, 'opener').container.textContent).toContain('Add CHANGELOG.md')
+      expect(renderRow(call, 'request').container.textContent).toContain('Add CHANGELOG.md')
     })
 
     // Once the call completes, the completing row draws the plan and the proposing row
@@ -82,12 +85,12 @@ describe('cursor native tool rendering', () => {
     })
 
     it('does not repeat the plan on the proposing row once a result exists', () => {
-      const { container } = renderRow(call, 'opener', done)
+      const { container } = renderRow(call, 'request', done)
       expect(container.textContent).not.toContain('PLANMARKER-7')
     })
 
     // The whole plan as JSON is what a reader saw where the plan belonged.
-    it.each([['opener', call], ['result', done]] as const)('states no raw arguments on the %s row', (role, tool) => {
+    it.each([['request', call], ['result', done]] as const)('states no raw arguments on the %s row', (role, tool) => {
       expect(renderRow(tool, role).container.textContent).not.toContain('"_toolName"')
     })
   })
@@ -154,10 +157,31 @@ describe('cursor native tool rendering', () => {
     expect(container.querySelector('img')?.getAttribute('alt')).toBe('A red square')
     expect(container.textContent).toContain('A red square')
     expect(container.querySelector('strong')?.textContent).toBe('caption')
-    const row = toolMessageInput({ sessionUpdate: 'tool_call_update', toolCallId: 'cursor-tool', status: 'completed', ...fields })
-    row.parsed.supplementalContent = { sessionUpdate: 'tool_call_update', toolCallId: 'cursor-tool', status: 'completed', rawOutput }
-    expect(providerFor(AgentProvider.CURSOR)!.toolResultImages?.(row)?.map(image => image.data)).toEqual([data])
-    expect(providerFor(AgentProvider.CURSOR)!.toolResultMeta?.({ kind: 'tool_use', toolUse: {}, toolName: 'image', content: [] }, row)?.copyableContent()).toContain('A red square')
+    const payload = { sessionUpdate: 'tool_call_update', toolCallId: 'cursor-tool', status: 'completed', ...fields }
+    const supplementalContent = { sessionUpdate: 'tool_call_update', toolCallId: 'cursor-tool', status: 'completed', rawOutput }
+    expect(providerRowImages(AgentProvider.CURSOR, payload, { supplementalContent }).map(image => image.data)).toEqual([data])
+    expect(providerToolMeta(AgentProvider.CURSOR, payload, { supplementalContent })?.copyableContent()).toContain('A red square')
+  })
+
+  // The picture a `generateImage` call produced must reach the reader. The row sets
+  // `images` from the runtime's own frame, and the shared list draws them -- but it is
+  // skipped for a Model Context Protocol body, which is what an uncategorized Cursor
+  // call built. So the row carried the image and drew nothing.
+  it('draws the picture a generateImage call produced', () => {
+    const { container } = renderTool(
+      { kind: 'other', rawInput: { _toolName: 'generateImage', description: 'A cat' } },
+      {
+        [CURSOR_SUPPLEMENT.Extension]: {
+          method: CURSOR_METHOD.GenerateImage,
+          params: { toolCallId: 'cursor-tool', description: 'A cat', filePath: '/tmp/cat.png' },
+        },
+      },
+    )
+    // The picture has no bytes here, so the view draws its placeholder. That the
+    // placeholder appears at all is the proof: the row used to skip the whole list.
+    expect(container.textContent, 'the produced picture must reach the reader').toContain('[image]')
+    // And the dump it drew instead is gone. The title already states the prompt.
+    expect(container.textContent).not.toContain('_toolName')
   })
 
   it('opens the native image with its description as alternative text', async () => {
@@ -253,6 +277,9 @@ describe('cursor native tool rendering', () => {
   it('removes diff headers that Cursor includes in a new file', () => {
     const { container } = renderTool({
       kind: 'edit',
+      // The call states the file it writes. A file operation that names none is not
+      // one this build draws (invariant I7), and the header reads from the request.
+      rawInput: { path: '/project/new.py', content: 'answer = 42' },
       content: [{ type: 'diff', path: '/project/new.py', oldText: '-- /dev/null', newText: '++ b//project/new.py\nanswer = 42' }],
     })
     expect(container.textContent).toContain('answer = 42')

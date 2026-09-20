@@ -81,7 +81,7 @@ beforeEach(() => {
   resetSaveActionsSpies(spies)
 })
 
-describe('directoryTree context menu — web', () => {
+describe('DirectoryTree context menu — web', () => {
   it('renders the Download item for files but not directories', async () => {
     setupTree()
     const fileRow = await findRowByText('archive.zip')
@@ -94,7 +94,7 @@ describe('directoryTree context menu — web', () => {
   })
 })
 
-describe('directoryTree context menu — desktop', () => {
+describe('DirectoryTree context menu — desktop', () => {
   beforeEach(() => {
     spies.isTauriAppImpl.mockReturnValue(true)
   })

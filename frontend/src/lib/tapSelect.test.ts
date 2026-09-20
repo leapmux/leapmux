@@ -82,7 +82,7 @@ describe('attachTapSelect', () => {
   function tap(x: number, opts: TapOpts = {}) {
     const target = opts.on ?? para
     const rest = opts.releaseOn ?? target
-    const shared = { pointerType: opts.pointerType ?? 'touch', isPrimary: opts.isPrimary, y: 0 }
+    const shared = { pointerType: opts.pointerType ?? 'touch', y: 0, ...(opts.isPrimary !== undefined ? { isPrimary: opts.isPrimary } : {}) }
     target.dispatchEvent(pointerEvent('pointerdown', { ...shared, x }))
     if (opts.drift !== undefined)
       rest.dispatchEvent(pointerEvent('pointermove', { ...shared, x: x + opts.drift }))

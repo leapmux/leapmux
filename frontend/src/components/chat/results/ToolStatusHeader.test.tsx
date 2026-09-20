@@ -3,7 +3,7 @@ import CircleAlert from 'lucide-solid/icons/circle-alert'
 import { describe, expect, it } from 'vitest'
 import { drawsOwnOutcome, ToolOutcomeHeader } from './ToolStatusHeader'
 
-describe('tooloutcomeheader', () => {
+describe('ToolOutcomeHeader', () => {
   it('states the outcome when no enclosing renderer does', () => {
     const { container } = render(() => <ToolOutcomeHeader when icon={CircleAlert} title="Failed" />)
     expect(container.textContent).toContain('Failed')
@@ -24,7 +24,7 @@ describe('tooloutcomeheader', () => {
   })
 })
 
-describe('drawsownoutcome', () => {
+describe('drawsOwnOutcome', () => {
   it('answers for an absent context and for an unset flag', () => {
     expect(drawsOwnOutcome(undefined)).toBe(true)
     expect(drawsOwnOutcome({})).toBe(true)

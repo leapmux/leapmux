@@ -17,7 +17,7 @@ function statesLayout(box: HTMLElement, contentPx: number, boxPx: number) {
 
 const HOVER_DELAY_MS = 700
 
-describe('goalObjective', () => {
+describe('GoalObjective', () => {
   beforeEach(() => {
     installControllableResizeObserver()
   })

@@ -40,8 +40,8 @@ describe('elicitation form', () => {
       color: { type: 'string', oneOf: [{ const: 'b', title: 'Blue' }], default: 'b' },
       tags: { type: 'array', items: { type: 'string', enum: ['x', 'y'], enumNames: ['First', 'Second'] }, default: ['x'] },
     } })
-    expect(form.fields[0].options).toEqual([{ value: '"b"', label: 'Blue' }])
-    expect(form.fields[1].type).toBe('multiple')
+    expect(form.fields[0]?.options).toEqual([{ value: '"b"', label: 'Blue' }])
+    expect(form.fields[1]?.type).toBe('multiple')
     expect(form.read({})).toEqual({ content: { color: 'b', tags: ['x'] } })
     expect(form.read({ [key('color')]: '"unknown"' }).error).toBeTruthy()
   })

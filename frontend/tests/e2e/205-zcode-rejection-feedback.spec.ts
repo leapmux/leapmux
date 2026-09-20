@@ -45,7 +45,10 @@ test('rejects a native ZCode plan and delivers approval-shaped feedback as feedb
   const agent = `'${agentId.replaceAll('\'', '\'\'')}'`
   const rows = JSON.parse(execFileSync('sqlite3', ['-json', database, `SELECT state, feedback, hex(resolved_content) AS content FROM control_response_answers WHERE agent_id=${agent} AND feedback='approve'`], { encoding: 'utf8' }) || '[]') as Array<{ state: string, feedback: string, content: string }>
   expect(rows).toHaveLength(1)
-  expect(rows[0].state).toBe('completed')
-  expect(JSON.parse(Buffer.from(rows[0].content, 'hex').toString()).result.action).toBe('decline')
+  const [row] = rows
+  if (row === undefined)
+    throw new Error('expected exactly one stored approval feedback row')
+  expect(row.state).toBe('completed')
+  expect(JSON.parse(Buffer.from(row.content, 'hex').toString()).result.action).toBe('decline')
   expect(errors).toEqual([])
 })

@@ -607,7 +607,9 @@ describe('tooltip on a disabled control', () => {
   it('leaves the wrapper boxless when there is nothing to show', async () => {
     const [reason, setReason] = createSignal<string | undefined>(undefined)
     render(() => (
-      <Tooltip text={reason()}>
+      // `''`, not a conditional spread: the prop must stay reactive, and the
+      // empty string is `Tooltip`'s own "nothing to show".
+      <Tooltip text={reason() ?? ''}>
         <button type="button" disabled>Delete</button>
       </Tooltip>
     ))

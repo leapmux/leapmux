@@ -98,6 +98,8 @@ export function sameVirtualItems(a: VirtualItem[], b: VirtualItem[]): boolean {
   for (let i = 0; i < a.length; i++) {
     const x = a[i]
     const y = b[i]
+    if (x === undefined || y === undefined)
+      return false
     for (const k of GEOMETRY_KEYS) {
       if (x[k] !== y[k])
         return false
@@ -632,7 +634,10 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     if (i >= list.length - 1)
       return 0
     const next = list[i + 1]
-    if (messageBandKind(list[i].kind ?? '') && messageBandKind(next.kind ?? ''))
+    if (next === undefined)
+      return 0
+    const cur = list[i]
+    if (cur !== undefined && messageBandKind(cur.kind ?? '') && messageBandKind(next.kind ?? ''))
       return -BAND_BORDER_PX
     return next.hasSpanLines
       ? resolve(opts.gapSmallPx, DEFAULT_GAP_SMALL_PX)
@@ -654,8 +659,11 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     pruneStaleKeyedHeights(list)
     const n = list.length
     const indexById = new Map<string, number>()
-    for (let i = 0; i < n; i++)
-      indexById.set(list[i].id, i)
+    for (let i = 0; i < n; i++) {
+      const item = list[i]
+      if (item !== undefined)
+        indexById.set(item.id, i)
+    }
     return { list, indexById, n }
   })
 
@@ -667,8 +675,11 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     geomVersion()
     const { list, indexById, n } = rowIndex()
     const offsets = new Float64Array(n + 1)
-    for (let i = 0; i < n; i++)
-      offsets[i + 1] = offsets[i] + resolvedHeight(list[i]) + gapAfter(list, i)
+    for (let i = 0; i < n; i++) {
+      const item = list[i]
+      if (item !== undefined)
+        offsets[i + 1] = (offsets[i] ?? 0) + resolvedHeight(item) + gapAfter(list, i)
+    }
     // Rebuilding the offset map is an O(n) array fill (microseconds for any real n), so this
     // should never trip -- but instrumenting it rules the offset map IN or OUT as a stall
     // source instead of leaving it a suspect. Only a slow rebuild logs.
@@ -678,7 +689,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
 
   const totalHeight: Accessor<number> = () => {
     const g = geom()
-    return g.offsets[g.n]
+    return g.offsets[g.n] ?? 0
   }
 
   const offsetOfIndex = (index: number): number => {
@@ -686,8 +697,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     if (index <= 0)
       return 0
     if (index >= g.n)
-      return g.offsets[g.n]
-    return g.offsets[index]
+      return g.offsets[g.n] ?? 0
+    return g.offsets[index] ?? 0
   }
 
   const indexOfId = (id: string): number => geom().indexById.get(id) ?? -1
@@ -701,7 +712,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     const g = geom()
     if (index < 0 || index >= g.n)
       return estimateHeight()
-    return resolvedHeight(g.list[index])
+    const item = g.list[index]
+    return item !== undefined ? resolvedHeight(item) : estimateHeight()
   }
 
   const heightOfId = (id: string): number => heightOfIndex(indexOfId(id))
@@ -714,7 +726,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   const currentHeightKey = (id: string): string | undefined => {
     const g = geom()
     const index = g.indexById.get(id)
-    return index === undefined ? undefined : g.list[index].heightKey
+    const item = index === undefined ? undefined : g.list[index]
+    return item !== undefined ? item.heightKey : undefined
   }
 
   // The row's current estimate bucket -- used when recording its measurement so the
@@ -722,7 +735,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   const currentKind = (id: string): string => {
     const g = geom()
     const index = g.indexById.get(id)
-    return index === undefined ? DEFAULT_ESTIMATE_KIND : kindOf(g.list[index])
+    const item = index === undefined ? undefined : g.list[index]
+    return item !== undefined ? kindOf(item) : DEFAULT_ESTIMATE_KIND
   }
 
   const hasMeasuredHeight = (id: string): boolean => {
@@ -730,7 +744,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     const index = g.indexById.get(id)
     if (index === undefined)
       return false
-    return cachedMeasuredHeight(g.list[index]) !== undefined
+    const item = g.list[index]
+    return item !== undefined && cachedMeasuredHeight(item) !== undefined
   }
 
   // Debug-only: surface the measured height without exposing the generic fallback
@@ -739,12 +754,12 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     const rawMeasured = heightCache.get(id)
     const i = indexOfId(id)
     if (i < 0)
-      return { measured: rawMeasured?.height }
+      return rawMeasured !== undefined ? { measured: rawMeasured.height } : {}
     const item = geom().list[i]
-    const measured = rawMeasured !== undefined && rawMeasured.key === item.heightKey
+    const measured = item !== undefined && rawMeasured !== undefined && rawMeasured.key === item.heightKey
       ? rawMeasured.height
       : undefined
-    return { measured }
+    return measured !== undefined ? { measured } : {}
   }
 
   // Largest i in [0, n-1] with offsets[i] <= y (the row containing offset y).
@@ -752,7 +767,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     const g = geom()
     if (g.n === 0)
       return 0
-    return largestIndexWhere(g.n, mid => g.offsets[mid] <= y)
+    return largestIndexWhere(g.n, mid => (g.offsets[mid] ?? 0) <= y)
   }
 
   // The offset-engine surface the (extracted, pure) anchor math reads, over the
@@ -799,15 +814,15 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // to its last index, collapsing the slice to the last row alone for one frame,
     // until the browser clamps scrollTop and the re-pin corrects. (Negative
     // scrollTop from rubber-band overscroll already floors to row 0.)
-    const total = g.offsets[n]
+    const total = g.offsets[n] ?? 0
     const maxScrollTop = Math.max(0, total - clientHeight)
     const clampedTop = clamp(scrollTop, 0, maxScrollTop)
     const top = clampedTop - overTop
     const bottom = clampedTop + clientHeight + overBottom
     // First row extending past `top` (smallest i with offsets[i+1] > top), and one
     // past the last row starting before `bottom` (largest i with offsets[i] < bottom).
-    let start = smallestIndexWhere(n, mid => g.offsets[mid + 1] > top, n - 1)
-    let end = largestIndexWhere(n, mid => g.offsets[mid] < bottom) + 1
+    let start = smallestIndexWhere(n, mid => (g.offsets[mid + 1] ?? 0) > top, n - 1)
+    let end = largestIndexWhere(n, mid => (g.offsets[mid] ?? 0) < bottom) + 1
     if (start < 0)
       start = 0
     if (start > n - 1)
@@ -823,7 +838,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // Normal rows keep the pure pixel window; this adds at most two rows, only for
     // the oversized-row case.
     const guardBandPx = Math.max(overTop, overBottom)
-    if (guardBandPx > 0 && end === start + 1 && resolvedHeight(g.list[start]) > guardBandPx) {
+    const startItem = g.list[start]
+    if (guardBandPx > 0 && end === start + 1 && startItem !== undefined && resolvedHeight(startItem) > guardBandPx) {
       start = Math.max(0, start - 1)
       end = Math.min(n, end + 1)
     }
@@ -908,7 +924,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // insertion order; a plain set on an existing key would keep its old, stale
     // position and risk evicting a freshly-measured row).
     heightCache.delete(id)
-    heightCache.set(id, { key: heightKey, height, fallbackContribution: nextContribution, kind })
+    heightCache.set(id, { key: heightKey, height, kind, ...(nextContribution !== undefined ? { fallbackContribution: nextContribution } : {}) })
     if (prevEntry === undefined) {
       if (nextContribution !== undefined)
         heightEstimate.add(kind, nextContribution)
@@ -1012,6 +1028,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       if (index === undefined)
         continue
       const item = g.list[index]
+      if (item === undefined)
+        continue
       // Mirror primeHeight's guards: a live visible measurement is
       // authoritative, and the momentum-scroll deferral gate queues instead
       // of committing.

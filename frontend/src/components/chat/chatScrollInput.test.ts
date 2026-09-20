@@ -44,7 +44,7 @@ function setup() {
   return { ctx, el, extras, input: createScrollInput(ctx, extras), setAtBottom, writes }
 }
 
-describe('createscrollinput', () => {
+describe('createScrollInput', () => {
   it('pins Home jumps to the viewport-top anchor', () => {
     const { extras, input, setAtBottom, writes } = setup()
     const event = new KeyboardEvent('keydown', { key: 'Home', cancelable: true })

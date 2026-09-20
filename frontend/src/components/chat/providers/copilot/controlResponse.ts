@@ -1,4 +1,5 @@
-import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
+import type { ControlResponseSummary } from '../../model/controlResponse'
+import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { COPILOT_EVENT } from '~/generated/contracts/copilot-protocol'
 import { MCP_ELICITATION_ACTION } from '~/generated/contracts/mcp-elicitation'
 import { pickObject, pickString } from '~/lib/jsonPick'
@@ -21,7 +22,7 @@ const COPILOT_DECISION_CANCELLED = 'cancelled'
  * so the saved row carries the words the reader clicked. Every Agent Client Protocol
  * provider resolves a saved decision the same way, through the same helper.
  */
-export function copilotControlResponseDisplay(cr: PersistedControlResponse): ControlResponseDisplay | null {
+export function copilotControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
   const answer = pickObject(pickObject(cr.response, 'response'), 'response')
   if (!answer)
     return null

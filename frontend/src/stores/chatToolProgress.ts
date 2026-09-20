@@ -60,6 +60,17 @@ export interface ToolProgressEntry {
    */
   elapsedSeconds?: number
   retry?: ToolProgressRetry
+  /**
+   * The LAST text the tool printed, as the worker last broadcast it.
+   *
+   * Ephemeral, like every field here: the finished row carries the whole output
+   * through its own persisted result, and this is dropped the moment that row
+   * lands. Every provider that reports interim output sends it -- a shell
+   * command's stdout, a patch under construction, an MCP call's progress.
+   */
+  outputTail?: string
+  /** Output was lost BEFORE the tail, so the row says the text is a window. */
+  outputTruncated?: boolean
 }
 
 /**
@@ -74,6 +85,8 @@ export interface ToolProgressEntry {
 export interface ToolProgressUpdate extends MessageSpanIdentity {
   elapsedSeconds?: number
   retry?: ToolProgressRetry | null
+  outputTail?: string
+  outputTruncated?: boolean
 }
 
 export function createToolProgressStore() {
@@ -118,6 +131,13 @@ export function createToolProgressStore() {
           next.elapsedSeconds = update.elapsedSeconds
         if (update.retry != null)
           next.retry = update.retry
+        // The tail replaces rather than appends: the worker sends the text it
+        // wants shown, joined there, because only it knows where the previous
+        // frame of its own provider ended.
+        if (update.outputTail !== undefined)
+          next.outputTail = update.outputTail
+        if (update.outputTruncated !== undefined)
+          next.outputTruncated = update.outputTruncated
         return next
       })
       // The retry clear is a SEPARATE path set, not a `retry: undefined` in the

@@ -1,23 +1,10 @@
 import type { Schema } from '@cfworker/json-schema'
+import type { ElicitationRequest } from '../model/controlPrompt'
 import type { McpElicitationAction } from '~/generated/contracts/mcp-elicitation'
 import { Validator } from '@cfworker/json-schema'
 import { MCP_ELICITATION_ACTION } from '~/generated/contracts/mcp-elicitation'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { buildControlResponseEnvelope } from '~/utils/controlResponse'
-
-export interface ElicitationRequest {
-  purpose?: 'permission'
-  mode: string
-  title?: string
-  description?: string
-  message: string
-  server?: string
-  schema?: unknown
-  url?: string
-  arguments?: unknown
-  argumentNotice?: string
-  acceptChoices?: { key: string, label: string, metadata?: Record<string, unknown> }[]
-}
 
 export interface ElicitationOption {
   value: string
@@ -94,8 +81,11 @@ export function createElicitationForm(schema: unknown): ElicitationForm {
   return {
     fields,
     read(values) {
-      if (!validator)
-        return { error: schemaError }
+      if (!validator) {
+        // Every path that leaves the validator unset has set `schemaError`;
+        // `?? ''` is the type-level guard alone.
+        return { error: schemaError ?? '' }
+      }
       try {
         const entries: [string, unknown][] = []
         for (const field of fields) {

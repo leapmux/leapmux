@@ -183,7 +183,14 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // The mode this dialog falls back to on a (worker, path) reset. Picks
   // Current when enabled, else the first enabled mode (e.g.
   // ChangeBranchDialog excludes Current and defaults to SwitchBranch).
-  const defaultMode = (): GitMode => enabledModes().has(GitMode.Current) ? GitMode.Current : enabledModeList()[0]
+  const defaultMode = (): GitMode => {
+    if (enabledModes().has(GitMode.Current))
+      return GitMode.Current
+    // Unreachable — enabledModeList() never yields an empty array (see the
+    // comment above) — but the element access cannot prove it, so Current is
+    // the stand-in the has-check above already excluded.
+    return enabledModeList()[0] ?? GitMode.Current
+  }
 
   // Active mode is owned here, not in the parent. The seed comes from
   // `props.gitMode()`, read once with `untrack` so subsequent parent
@@ -482,7 +489,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
       remote={branchIndex().remote}
       loading={branchesLoading()}
       currentBranch={props.gitInfo.info().currentBranch}
-      showCurrent={selectProps.showCurrent}
+      {...(selectProps.showCurrent !== undefined ? { showCurrent: selectProps.showCurrent } : {})}
     />
   )
 
@@ -604,7 +611,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
               onChange={setSelectedWorktreePath}
               worktrees={worktrees()}
               loading={worktreesLoading()}
-              homeDir={props.homeDir}
+              {...(props.homeDir !== undefined ? { homeDir: props.homeDir } : {})}
             />
           </div>
         </ModeRadio>

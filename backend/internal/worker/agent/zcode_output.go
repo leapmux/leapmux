@@ -391,7 +391,7 @@ func (a *zcodeAgent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int
 	a.mu.Lock()
 	// Any batch summary that could still reference these arrived within the turn, so the
 	// marks are spent. A record that holds nothing else goes with them, which is what
-	// keeps the map bounded by one turn's calls rather than by the session's.
+	// keeps the map's size capped at one turn's calls rather than at the session's.
 	for id, tc := range a.toolCalls {
 		tc.final = false
 		if tc.name == "" && tc.input == nil {
@@ -553,6 +553,16 @@ func (a *zcodeAgent) handleZCodeToolUpdated(event zcodeEventEnvelope) {
 		return
 	}
 
+	// A `raw` frame is the app server's own escape hatch: it carries an opaque
+	// payload rather than the fields a row reads. It must not become the call's
+	// last frame -- a turn that ends while the call runs stores that frame as the
+	// row, and the reader would get an unrecognized card where the call's real
+	// state belongs.
+	if payload.Kind == contracts.ZCodeToolKindRaw {
+		slog.Debug("zcode raw tool.updated frame", "agent_id", a.agentID, "tool_call_id", payload.ToolCallID)
+		return
+	}
+
 	a.rememberZCodeToolFrame(payload.ToolCallID, event)
 
 	switch payload.Kind {
@@ -579,9 +589,11 @@ func (a *zcodeAgent) handleZCodeToolUpdated(event zcodeEventEnvelope) {
 
 // rememberZCodeToolFrame records the agent's own bytes for one tool call.
 //
-// Every kind that names a call passes through here, so a new kind cannot forget it.
-// A batch update names a LIST of calls rather than one, and its toolCallId is empty,
-// so it records nothing.
+// Every kind the switch in handleZCodeToolUpdated reads passes through here, so a
+// new case cannot forget it. A `raw` frame is the one exception: that handler drops
+// it BEFORE this call, because a raw frame must not become the row. A batch update
+// identifies a LIST of calls rather than one, and its toolCallId is empty, so it
+// records nothing.
 func (a *zcodeAgent) rememberZCodeToolFrame(toolCallID string, event zcodeEventEnvelope) {
 	if toolCallID == "" {
 		return
@@ -638,6 +650,31 @@ func (a *zcodeAgent) streamZCodeToolProgress(payload zcodeToolUpdated) {
 	tc.progress = payload
 	a.mu.Unlock()
 	sink := a.zcodeSinkForToolCall(payload.ToolCallID)
+	// The two tails are SEPARATE streams, each cut at a byte count rather than at a
+	// line end, so they join with a line break between them. Concatenating them
+	// would glue a mid-line stdout tail to the first stderr line and show one line
+	// that neither stream wrote.
+	if tail := zcodeJoinOutputTails(payload.StdoutTail, payload.StderrTail); tail != "" {
+		// Whether the app server DROPPED bytes, which its own counts answer. A tail
+		// is usually a window, but a short command's tail is its WHOLE output, and
+		// asserting the flag drew "earlier output was dropped" under a complete
+		// three-byte result. Compared per stream, because the join inserts a line
+		// break the byte counts do not carry.
+		//
+		// A frame that states no count at all is the third case: the size of what it
+		// dropped is unknown, so the tail stays a window -- the same reading that
+		// makes the byte total below a minimum.
+		var truncated bool
+		switch {
+		case payload.StdoutBytes > 0 || payload.StderrBytes > 0:
+			truncated = payload.StdoutBytes > int64(len(payload.StdoutTail)) || payload.StderrBytes > int64(len(payload.StderrTail))
+		case payload.OutputBytes > 0:
+			truncated = payload.OutputBytes > int64(len(payload.StdoutTail)+len(payload.StderrTail))
+		default:
+			truncated = true
+		}
+		sink.ReportProgress(OutputTailProgress(payload.ToolCallID, tail, truncated))
+	}
 	total := payload.OutputBytes
 	if total <= 0 {
 		total = saturatingAdd(payload.StdoutBytes, payload.StderrBytes)
@@ -767,7 +804,7 @@ func (a *zcodeAgent) applyZCodeToolBatch(event zcodeEventEnvelope, payload zcode
 }
 
 // zcodeBatchOutcome states what the batch summary lets LeapMux conclude about ONE of
-// the calls it names.
+// the calls it lists.
 //
 // The summary reports aggregate counts, so it cannot say WHICH call failed. A batch
 // with no error means every call in it succeeded; a batch with one means this call's
@@ -1119,4 +1156,16 @@ func (a *zcodeAgent) handleZCodeUserInputResolved(event zcodeEventEnvelope) {
 // `turn.completed`.
 func (a *zcodeAgent) handleZCodeStreamRecovery(event zcodeEventEnvelope) {
 	slog.Debug("zcode stream recovery", "agent_id", a.agentID, "payload_len", len(event.Payload))
+}
+
+// zcodeJoinOutputTails puts the two progress streams on their own lines.
+func zcodeJoinOutputTails(stdout, stderr string) string {
+	switch {
+	case stdout == "":
+		return stderr
+	case stderr == "":
+		return stdout
+	default:
+		return stdout + "\n" + stderr
+	}
 }

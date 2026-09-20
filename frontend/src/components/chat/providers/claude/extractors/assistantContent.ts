@@ -1,13 +1,12 @@
 import type { ContentBlock } from '~/lib/contentBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { asContentArray, getMessageContent, splitToolResultContent } from '~/lib/contentBlocks'
+import { getMessageContent } from '~/lib/contentBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 
 /**
  * Extract `message.content` array from a Claude `{type: 'assistant',
  * message: {content: [...]}}` envelope, or null when the shape doesn't
- * match. Used by Claude's `extractQuotableText` and by the AskUserQuestion
- * tool-result renderer.
+ * match. Used internally by `extractToolUseInfo` in this file.
  */
 export function getAssistantContent(parsed: unknown): ContentBlock[] | null {
   if (!isObject(parsed) || parsed.type !== 'assistant')
@@ -35,10 +34,9 @@ export function extractToolUseInfo(parsed: ParsedMessageContent, toolUseId?: str
   const toolUse = content.find(c => isObject(c) && c.type === 'tool_use' && (toolUseId === undefined || c.id === toolUseId))
   if (!toolUse)
     return null
-  const toolData = toolUse as Record<string, unknown>
   return {
-    toolName: pickString(toolData, 'name'),
-    input: pickObject(toolData, 'input', {}),
+    toolName: pickString(toolUse, 'name'),
+    input: pickObject(toolUse, 'input', {}),
   }
 }
 
@@ -47,63 +45,4 @@ export function extractPairedToolUseInfo(parsed: unknown, request?: ParsedMessag
   const result = getMessageContentArray(parsed)?.find(block => isObject(block) && block.type === 'tool_result')
   const id = pickString(result, 'tool_use_id')
   return id && request ? extractToolUseInfo(request, id) : null
-}
-
-/**
- * The text body of ONE Claude tool_result block's `content`: a plain string, or the joined text of a
- * nested Anthropic-style block array (text blocks). Returns null when neither yields text. The single
- * home for the string-vs-array unwrap -- the fiddly part -- shared by {@link extractToolResultText}
- * (the FIRST tool_result) and {@link joinToolResultText} (EVERY tool_result), so the two can't drift.
- *
- * IMAGE BLOCKS ARE EXCLUDED. This text reaches the clipboard (the toolbar's
- * copy) and the scroll rail's preview, and neither can do anything with a
- * megabyte of base64 -- a `Read` on a screenshot used to fill the clipboard
- * with one. The images are rendered as images instead; see
- * `claudeImagesFromToolResult`.
- */
-function toolResultBlockText(block: ContentBlock): string | null {
-  const inner = block.content
-  if (typeof inner === 'string')
-    return inner || null
-  const nested = asContentArray(inner)
-  if (!nested)
-    return null
-  return splitToolResultContent(nested, { text: 'text' }).text || null
-}
-
-/**
- * Pull the text content out of a Claude `tool_result` block inside a
- * parsed `{message:{content:[...]}}` envelope. Returns null when the
- * envelope carries no tool_result or its content has no text blocks.
- */
-export function extractToolResultText(parsed: Record<string, unknown> | null | undefined): string | null {
-  const content = getMessageContentArray(parsed)
-  if (!content)
-    return null
-  const tr = content.find(c => isObject(c) && c.type === 'tool_result')
-  return tr ? toolResultBlockText(tr) : null
-}
-
-/**
- * Join the textual body of EVERY tool_result block in a Claude
- * `{message:{content:[...]}}` envelope (distinct from {@link extractToolResultText},
- * which returns only the FIRST). Parallel tool calls join with a blank line. A
- * tool_result's `content` is either a plain string or a nested Anthropic-style block
- * array (text/image blocks); both are handled. Used by Claude's scroll-rail `previewText`
- * to preview a self-displaying control-response answer (AskUserQuestion / ExitPlanMode).
- * Returns null when there is no tool_result text.
- */
-export function joinToolResultText(parsed: Record<string, unknown> | null | undefined): string | null {
-  const content = getMessageContentArray(parsed)
-  if (!content)
-    return null
-  const parts: string[] = []
-  for (const block of content) {
-    if (!isObject(block) || block.type !== 'tool_result')
-      continue
-    const text = toolResultBlockText(block)
-    if (text)
-      parts.push(text)
-  }
-  return parts.length > 0 ? parts.join('\n\n') : null
 }

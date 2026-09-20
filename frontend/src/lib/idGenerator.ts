@@ -31,8 +31,8 @@ export function randomUUID(): string {
   }
   const b = new Uint8Array(16)
   crypto.getRandomValues(b)
-  b[6] = (b[6] & 0x0F) | 0x40 // version 4
-  b[8] = (b[8] & 0x3F) | 0x80 // RFC 4122 variant
+  b[6] = ((b[6] ?? 0) & 0x0F) | 0x40 // version 4
+  b[8] = ((b[8] ?? 0) & 0x3F) | 0x80 // RFC 4122 variant
   const hex = bytesToHex(b)
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }

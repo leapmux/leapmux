@@ -38,7 +38,7 @@ function harness() {
   return { rpc, marks, seeder }
 }
 
-describe('chatmessagemarkseeder', () => {
+describe('chatMessageMarkSeeder', () => {
   it('retries a first seed whose range stays indeterminate, then gives up after the bounded reschedules', async () => {
     vi.useFakeTimers()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)

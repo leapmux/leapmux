@@ -117,7 +117,7 @@ export interface WorkspaceStartPointSetup {
 export function startPointDialogSetup(sp: WorkspaceStartPoint): WorkspaceStartPointSetup {
   switch (sp.kind) {
     case 'directory':
-      return { workerId: sp.workerId }
+      return { ...(sp.workerId !== undefined ? { workerId: sp.workerId } : {}) }
     case 'repo':
       return {
         workerId: sp.workerId,

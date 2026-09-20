@@ -74,7 +74,7 @@ function tokenize(expr: string): Token[] {
   const tokens: Token[] = []
   let i = 0
   while (i < expr.length) {
-    const ch = expr[i]
+    const ch = expr[i] ?? ''
     if (ch === ' ' || ch === '\t') {
       i++
       continue
@@ -129,7 +129,7 @@ function tokenize(expr: string): Token[] {
     // Identifier: letters, digits, dots, underscores, hyphens
     if (IDENT_START_RE.test(ch)) {
       let ident = ''
-      while (i < expr.length && IDENT_CHAR_RE.test(expr[i])) {
+      while (i < expr.length && IDENT_CHAR_RE.test(expr[i] ?? '')) {
         ident += expr[i]
         i++
       }
@@ -156,7 +156,7 @@ class Parser {
     return this.tokens[this.pos]
   }
 
-  private consume(): Token {
+  private consume(): Token | undefined {
     return this.tokens[this.pos++]
   }
 
@@ -209,7 +209,8 @@ class Parser {
     }
 
     if (tok?.type === 'ident') {
-      const name = this.consume().value
+      this.consume()
+      const name = tok.value
 
       // Handle boolean literals
       if (name === 'true')
@@ -220,7 +221,8 @@ class Parser {
       // Check for comparison operators
       const next = this.peek()
       if (next?.type === 'op' && (next.value === '==' || next.value === '!=')) {
-        const op = this.consume().value
+        this.consume()
+        const op = next.value
         const valTok = this.consume()
         const val = valTok?.value ?? ''
         return op === '=='

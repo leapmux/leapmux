@@ -60,7 +60,7 @@ function injectedRules(): string {
   return readInjectedShikiRules()
 }
 
-describe('rendermarkdown shared token-style classes', () => {
+describe('renderMarkdown shared token-style classes', () => {
   beforeEach(() => {
     _resetMarkdownCache()
     _resetShikiStyleClassesForTest()
@@ -125,9 +125,11 @@ describe('rendermarkdown shared token-style classes', () => {
     await vi.waitFor(() => {
       expect(dispatchesFor(text)).toHaveLength(1)
     })
-    const [{ worker, id }] = dispatchesFor(text)
-    worker.onmessage?.({
-      data: { id, html: '<p>legacy fallback</p>', retryable: false, styles: {} },
+    const dispatch = dispatchesFor(text)[0]
+    if (dispatch === undefined)
+      throw new Error('expected a worker dispatch')
+    dispatch.worker.onmessage?.({
+      data: { id: dispatch.id, html: '<p>legacy fallback</p>', retryable: false, styles: {} },
     } as MessageEvent)
     await vi.waitFor(() => {
       expect(renderMarkdown(text)).toBe('<p>legacy fallback</p>')
@@ -148,9 +150,11 @@ describe('rendermarkdown shared token-style classes', () => {
     await vi.waitFor(() => {
       expect(dispatchesFor(text)).toHaveLength(1)
     })
-    const [{ worker, id }] = dispatchesFor(text)
-    worker.onmessage?.({
-      data: { id, html: '<p>oversized fallback</p>', retryable: false, styles: {} },
+    const dispatch = dispatchesFor(text)[0]
+    if (dispatch === undefined)
+      throw new Error('expected a worker dispatch')
+    dispatch.worker.onmessage?.({
+      data: { id: dispatch.id, html: '<p>oversized fallback</p>', retryable: false, styles: {} },
     } as MessageEvent)
     await vi.waitFor(() => {
       expect(renderMarkdown(text)).toBe('<p>oversized fallback</p>')
@@ -165,10 +169,12 @@ describe('rendermarkdown shared token-style classes', () => {
     renderMarkdown(text)
     await vi.waitFor(() => expect(dispatchesFor(text)).toHaveLength(1))
 
-    const { worker, id } = dispatchesFor(text)[0]
-    worker.onmessage?.({
+    const dispatch = dispatchesFor(text)[0]
+    if (dispatch === undefined)
+      throw new Error('expected a worker dispatch')
+    dispatch.worker.onmessage?.({
       data: {
-        id,
+        id: dispatch.id,
         html: '<pre class="shiki"><code><span class="sk-00000001-13">x</span></code></pre>',
         retryable: false,
         styles: { 'sk-00000001-13': '--shiki-light:#aaa' },
@@ -190,7 +196,7 @@ describe('rendermarkdown shared token-style classes', () => {
   })
 })
 
-describe('rendermarkdown syntax theme invalidation', () => {
+describe('renderMarkdown syntax theme invalidation', () => {
   beforeEach(() => {
     _resetMarkdownCache()
   })
@@ -230,7 +236,7 @@ describe('rendermarkdown syntax theme invalidation', () => {
   })
 })
 
-describe('rendermarkdown cache and gfm', () => {
+describe('renderMarkdown cache and gfm', () => {
   beforeEach(() => {
     _resetMarkdownCache()
   })

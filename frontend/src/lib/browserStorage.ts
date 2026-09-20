@@ -1068,7 +1068,7 @@ function readMirror(key: string, spec: LocalKeySpec): unknown | undefined {
     // the same row `localStorageSet` writes, so it must carry the same merge
     // policy: without it a refresh of a high-water mark whose mirror sits below
     // disk would write the smaller value back and un-fence the relay.
-    enqueueKvPut({ k: key, v: entry.v, e: entry.e }, { publish: false, monotonic: spec.monotonic })
+    enqueueKvPut({ k: key, v: entry.v, e: entry.e }, { publish: false, ...(spec.monotonic === true ? { monotonic: true } : {}) })
   }
   return cloneForRead(entry.v)
 }
@@ -1183,7 +1183,7 @@ export function localStorageSet(name: SyncLocalKey, value: unknown): StorageWrit
   if (spec.monotonic === true && typeof existing?.v === 'number' && typeof entry.v === 'number' && existing.v >= entry.v)
     entry.v = existing.v
   mirror.set(key, entry)
-  return enqueueKvPut({ k: key, v: entry.v, e: entry.e }, { publish: true, monotonic: spec.monotonic })
+  return enqueueKvPut({ k: key, v: entry.v, e: entry.e }, { publish: true, ...(spec.monotonic === true ? { monotonic: true } : {}) })
 }
 
 /**

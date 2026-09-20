@@ -1,13 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
-import { elementText, renderThreadHasIcon, renderThreadText } from './messageRenderTestUtils'
-import { notificationThreadMetrics, renderNotificationThread } from './notificationRenderers'
+import { elementText, renderThreadElement, renderThreadGlyph, renderThreadHasIcon, renderThreadText } from '~/test-support/messageRenderProbes'
 
-// Side-effect-register the Claude and Codex plugins so the provider pre-pass
-// (plugin.notificationThreadEntry) actually runs in the tests that pass an
-// agentProvider -- mirroring production, where renderNotificationThread is
-// always called with one.
+// Side-effect-register the Claude and Codex plugins so the provider extractor
+// (plugin?.transcript.notificationEntry) actually runs in the tests that pass an agentProvider
+// -- mirroring production, where renderNotificationThread is always called with one.
 await import('./providers/claude/plugin')
 await import('./providers/codex/plugin')
 
@@ -18,17 +16,27 @@ afterEach(() => {
   clearSettingsLabelCache()
 })
 
-// Provider-neutral aliases over the shared helpers (these cases drive the
-// shared switch directly, with no provider pre-pass).
-const renderText = (messages: unknown[]): string => renderThreadText(messages)
-const renderHasIcon = (messages: unknown[]): boolean => renderThreadHasIcon(messages)
-
-/** Check if the rendered output contains a specific substring. */
-function renderedContains(messages: unknown[], text: string): boolean {
-  return renderText(messages).includes(text)
+// These cases drive the pipeline the way production does: with the row's own
+// provider. A compaction boundary, a rate-limit event and an API retry are all
+// PROVIDER shapes, so the provider is what reads them -- the shared fallback switch
+// that used to answer for them is gone, and a message rendered without a provider
+// now correctly produces nothing.
+//
+// Claude is the default because most of the shapes below are Claude's own. The Codex
+// cases pass their own provider.
+function renderText(messages: unknown[], provider: AgentProvider = AgentProvider.CLAUDE_CODE): string {
+  return renderThreadText(messages, provider)
+}
+function renderHasIcon(messages: unknown[], provider: AgentProvider = AgentProvider.CLAUDE_CODE): boolean {
+  return renderThreadHasIcon(messages, provider)
 }
 
-describe('renderNotificationThread: compaction and context_cleared rendering', () => {
+/** Check if the rendered output contains a specific substring. */
+function renderedContains(messages: unknown[], text: string, provider?: AgentProvider): boolean {
+  return renderText(messages, provider).includes(text)
+}
+
+describe('the notification thread: compaction and context_cleared rendering', () => {
   // Note: The backend consolidation handles mutual exclusion between
   // compaction and context_cleared. The frontend simply renders what it receives.
 
@@ -89,7 +97,7 @@ describe('renderNotificationThread: compaction and context_cleared rendering', (
       method: 'item/started',
       params: { item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1', turnId: 'turn1' },
     }]
-    expect(renderText(messages)).toBe('Compacting context...')
+    expect(renderText(messages, AgentProvider.CODEX)).toBe('Compacting context...')
   })
 
   it('codex completed contextCompaction item renders the completed boundary', () => {
@@ -98,7 +106,7 @@ describe('renderNotificationThread: compaction and context_cleared rendering', (
       turnId: 'turn1',
       item: { type: 'contextCompaction', id: 'compact-1' },
     }]
-    expect(renderText(messages)).toBe('Context compacted')
+    expect(renderText(messages, AgentProvider.CODEX)).toBe('Context compacted')
   })
 
   it('codex item/started for non-compaction items does NOT match the compaction spinner', () => {
@@ -109,17 +117,18 @@ describe('renderNotificationThread: compaction and context_cleared rendering', (
     // commandExecution is not a notification — describer returns [], so the
     // thread renders empty. The point is we don't accidentally emit a
     // compaction spinner for unrelated item kinds.
-    expect(renderText(messages)).not.toContain('Compacting context')
+    expect(renderText(messages, AgentProvider.CODEX)).not.toContain('Compacting context')
   })
 
-  it('legacy synthesized {type:"compacting"} envelope no longer matches the spinner (accepted regression)', () => {
-    // Phase 4.1 stops emitting this shape; the shared switch deliberately has no
-    // arm for the bare `{type:"compacting"}` type, so old DB rows produce no
-    // entry. (Before notifications routed through this one renderer, such a row
-    // fell through to the raw-JSON bubble; now it simply renders nothing.) This
-    // test pins the migration boundary.
+  it('draws the spinner for the bare {type:"compacting"} envelope, whatever the provider', () => {
+    // `{type:"compacting"}` is LeapMux's OWN envelope, so `leapmuxNotificationEntry`
+    // reads it and no plugin has to. The type is in PLAIN_ROW_TYPES, so a classifier
+    // that meets one already answers `notification`; a neutral extractor with no case
+    // for it drew a row that held no block at all. Rows of this shape are still in the
+    // database, and the five providers of the Agent Client Protocol family supply no
+    // notification hook, so the neutral answer is the only one those rows can get.
     const messages = [{ type: 'compacting' }]
-    expect(renderText(messages)).not.toContain('Compacting context')
+    expect(renderText(messages, AgentProvider.CODEX)).toContain('Compacting context')
   })
 
   it('legacy synthesized {type:"system",subtype:"compact_boundary",threadId} from Codex still matches Claude\'s shape', () => {
@@ -222,14 +231,13 @@ describe('compaction token formatting: pre → post', () => {
   // -- compact_boundary through a provider pre-pass ------------------------
 
   it('renders a single compact_boundary the same with the Claude or Codex provider pre-pass', () => {
-    // Production always calls renderNotificationThread with an agentProvider, so
-    // the plugin notificationThreadEntry pre-pass runs before the shared switch.
-    // Both Claude and Codex return null for compact_boundary, so the shared
-    // switch produces the label regardless of provider.
+    // A row an older worker synthesized carries Claude's boundary shape whatever
+    // the agent was, and those rows are persisted. Both plugins therefore read it,
+    // and they must read it the same way.
     const msg = compactMsg({ trigger: 'auto', pre_tokens: 100000, post_tokens: 8000 })
     const expected = 'Context compacted (auto, 100.0k → 8.0k)'
-    expect(elementText(renderNotificationThread([msg], AgentProvider.CLAUDE_CODE))).toBe(expected)
-    expect(elementText(renderNotificationThread([msg], AgentProvider.CODEX))).toBe(expected)
+    expect(elementText(renderThreadElement([msg], AgentProvider.CLAUDE_CODE))).toBe(expected)
+    expect(elementText(renderThreadElement([msg], AgentProvider.CODEX))).toBe(expected)
   })
 
   it('microcompaction ignores a metadata wrapper under any key (Claude emits none)', () => {
@@ -304,7 +312,7 @@ describe('compaction token formatting: pre → post', () => {
   })
 })
 
-describe('renderNotificationThread: message ordering', () => {
+describe('the notification thread: message ordering', () => {
   it('context_cleared before settings_changed preserves order', () => {
     const messages = [
       { type: 'context_cleared' },
@@ -416,7 +424,7 @@ describe('renderNotificationThread: message ordering', () => {
       { type: 'context_cleared' },
     ]
     const text = renderText(messages)
-    const retryIdx = text.indexOf('API Retry')
+    const retryIdx = text.indexOf('API retry')
     const clearedIdx = text.indexOf('Context cleared')
     expect(retryIdx).toBeGreaterThanOrEqual(0)
     expect(clearedIdx).toBeGreaterThan(retryIdx)
@@ -429,7 +437,7 @@ describe('renderNotificationThread: message ordering', () => {
     ]
     const text = renderText(messages)
     const clearedIdx = text.indexOf('Context cleared')
-    const retryIdx = text.indexOf('API Retry')
+    const retryIdx = text.indexOf('API retry')
     expect(clearedIdx).toBeGreaterThanOrEqual(0)
     expect(retryIdx).toBeGreaterThan(clearedIdx)
   })
@@ -450,6 +458,16 @@ describe('single-message notification labels', () => {
     expect(renderText([{ type: 'context_cleared' }])).toBe('Context cleared')
   })
 
+  // A live status the provider stated in its own words -- Goose sends one for a
+  // provider switch. The worker normalizes it, so one row draws every provider's.
+  it('renders an agent status in the provider\'s own words', () => {
+    expect(renderText([{ type: 'agent_status', text: 'Switched provider' }])).toBe('Switched provider')
+  })
+
+  it('draws nothing for an agent status that states no words', () => {
+    expect(renderText([{ type: 'agent_status', text: '   ' }])).toBe('')
+  })
+
   it('renders agent_error with its error text', () => {
     expect(renderText([{ type: 'agent_error', error: 'boom' }])).toBe('boom')
   })
@@ -467,7 +485,7 @@ describe('single-message notification labels', () => {
  * writes them NEUTRAL, so this one renderer serves all five providers that
  * report a goal rather than a copy in each provider plugin.
  */
-describe('renderNotificationThread: goal transitions', () => {
+describe('the notification thread: goal transitions', () => {
   it('announces a new goal with its objective', () => {
     expect(renderText([{ type: 'goal_updated', objective: 'every test passes', goal_status: 'active' }]))
       .toBe('Goal set: every test passes')
@@ -555,7 +573,7 @@ describe('renderNotificationThread: goal transitions', () => {
   })
 })
 
-describe('renderNotificationThread: plan_updated', () => {
+describe('the notification thread: plan_updated', () => {
   it('without update_agent_title shows "Plan updated: <title>"', () => {
     const messages = [{ type: 'plan_updated', plan_title: 'My Plan', plan_file_path: '/p.md' }]
     expect(renderText(messages)).toBe('Plan updated: My Plan')
@@ -610,15 +628,15 @@ describe('renderNotificationThread: plan_updated', () => {
 describe('settings change formatting: inline label overrides', () => {
   const settingsMsg = (changes: Record<string, unknown>) => ({ type: 'settings_changed', changes })
 
-  it('thread path honors inline label / oldLabel / newLabel overrides', () => {
+  it('thread path honors inline label / old_label / new_label overrides', () => {
     // 'foo' is absent from the settings label cache, so without the inline
     // overrides this would fall back to "foo (a → b)".
-    const messages = [settingsMsg({ foo: { old: 'a', new: 'b', label: 'My Setting', oldLabel: 'Old!', newLabel: 'New!' } })]
+    const messages = [settingsMsg({ foo: { old: 'a', new: 'b', label: 'My Setting', old_label: 'Old!', new_label: 'New!' } })]
     expect(renderText(messages)).toBe('My Setting (Old! → New!)')
   })
 
   it('thread path uses the "(new)" fallback when there is no old value', () => {
-    const messages = [settingsMsg({ foo: { old: '', new: 'x', label: 'My Setting', newLabel: 'X!' } })]
+    const messages = [settingsMsg({ foo: { old: '', new: 'x', label: 'My Setting', new_label: 'X!' } })]
     expect(renderText(messages)).toBe('My Setting (X!)')
   })
 
@@ -627,22 +645,22 @@ describe('settings change formatting: inline label overrides', () => {
     // coerces the missing key to '', so firstSet is true and the "(new)"-only
     // form applies -- this exercises the shape the backend actually sends, which
     // the old:'' fixture above only approximates.
-    const messages = [settingsMsg({ foo: { new: 'x', label: 'My Setting', newLabel: 'X!' } })]
+    const messages = [settingsMsg({ foo: { new: 'x', label: 'My Setting', new_label: 'X!' } })]
     expect(renderText(messages)).toBe('My Setting (X!)')
   })
 
   it('keeps the arrow when the old value exists but its display resolves empty', () => {
-    // oldLabel:'' forces an empty old display; because the old VALUE exists this
+    // old_label:'' forces an empty old display; because the old VALUE exists this
     // is a real transition, not a first-time set, so it must NOT collapse to the
     // "(new)"-only form.
-    const messages = [settingsMsg({ foo: { old: 'a', new: 'b', oldLabel: '', newLabel: 'New!' } })]
+    const messages = [settingsMsg({ foo: { old: 'a', new: 'b', old_label: '', new_label: 'New!' } })]
     expect(renderText(messages)).toBe('foo ( → New!)')
   })
 
   it('honors an explicit empty-string label override instead of falling back to the key', () => {
     // An empty inline label is intentional and must win over displayLabel(key);
     // the old `||` treated '' as absent and showed the key instead.
-    const messages = [settingsMsg({ foo: { old: 'a', new: 'b', label: '', oldLabel: 'O', newLabel: 'N' } })]
+    const messages = [settingsMsg({ foo: { old: 'a', new: 'b', label: '', old_label: 'O', new_label: 'N' } })]
     expect(renderText(messages)).toBe('(O → N)')
   })
 
@@ -664,7 +682,10 @@ describe('settings change formatting: inline label overrides', () => {
   })
 })
 
-describe('notificationThreadMetrics (height-estimate body metrics)', () => {
+// A run of consecutive text children joins into ONE paragraph, and a divider draws
+// as its own block beside it. The row is sized by what it DRAWS, so a thread of ten
+// short children must not lay out as ten lines.
+describe('renderNotificationBlocks: the blocks a thread lays out', () => {
   const contextClearedMsg = { type: 'context_cleared' } // -> a text entry
   const compactBoundaryMsg = { // -> a divider entry
     type: 'system',
@@ -672,32 +693,28 @@ describe('notificationThreadMetrics (height-estimate body metrics)', () => {
     compact_metadata: { trigger: 'auto', pre_tokens: 100000 },
   }
 
-  it('coalesces consecutive text children into ONE block (not one per child)', () => {
-    // Three text-producing children render as a single comma-joined paragraph, so the
-    // block count stays 1 -- the whole point of the fix (no per-child inflation).
-    const one = notificationThreadMetrics([contextClearedMsg])
-    const three = notificationThreadMetrics([contextClearedMsg, contextClearedMsg, contextClearedMsg])
-    expect(one.blockCount).toBe(1)
-    expect(three.blockCount).toBe(1)
-    // The joined text grows with the children (+ the ', ' joiners), so a longer thread
-    // is still sized larger by text length even though the block count is unchanged.
-    expect(three.textLength).toBeGreaterThan(one.textLength)
+  it('joins consecutive text children into ONE comma-joined paragraph', () => {
+    const one = renderText([contextClearedMsg])
+    expect(one).not.toBe('')
+    expect(renderText([contextClearedMsg, contextClearedMsg, contextClearedMsg])).toBe([one, one, one].join(', '))
   })
 
-  it('counts a divider as its own block, separate from a text paragraph', () => {
-    const metrics = notificationThreadMetrics([compactBoundaryMsg, contextClearedMsg])
-    expect(metrics.blockCount).toBe(2) // one divider block + one text paragraph block
+  it('draws a divider as its own block beside the text paragraph', () => {
+    const both = renderText([compactBoundaryMsg, contextClearedMsg])
+    expect(both).toContain(renderText([contextClearedMsg]))
+    expect(renderHasIcon([compactBoundaryMsg, contextClearedMsg])).toBe(true)
   })
 
-  it('is empty for children that produce no render entries', () => {
-    expect(notificationThreadMetrics([null, 'not-an-object'])).toEqual({ textLength: 0, blockCount: 0 })
+  it('draws nothing for children that produce no entries', () => {
+    expect(renderThreadElement([null, 'not-an-object'])).toBeNull()
+    expect(renderText([null, 'not-an-object'])).toBe('')
   })
 })
 
 // The worker closes a subagent transcript with one subagent_ended notification.
 // It renders as a labelled rule in the turn-end divider style, with the same
 // status glyph the Background tasks list uses for that final status.
-describe('renderNotificationThread: subagent_ended', () => {
+describe('the notification thread: subagent_ended', () => {
   it('labels a completed subagent', () => {
     expect(renderText([{ type: 'subagent_ended', status: 'completed' }]))
       .toContain('Subagent completed')
@@ -728,5 +745,32 @@ describe('renderNotificationThread: subagent_ended', () => {
 
   it('renders as a divider row with a glyph, not plain text', () => {
     expect(renderHasIcon([{ type: 'subagent_ended', status: 'completed' }])).toBe(true)
+  })
+
+  // The model states the OUTCOME and `notificationRenderers` picks the glyph, so a
+  // map that answered two outcomes with one glyph would still pass every test
+  // above. Four outcomes a reader must tell apart draw four distinct glyphs.
+  it('draws a distinct glyph for each outcome it can name', () => {
+    const glyph = (status: string) => renderThreadGlyph([{ type: 'subagent_ended', status }])
+    const drawn = ['completed', 'failed', 'stopped', 'interrupted'].map(glyph)
+    expect(drawn.every(svg => svg !== null && svg !== '')).toBe(true)
+    expect(new Set(drawn).size).toBe(4)
+  })
+
+  // An unknown status states no outcome, so it shares the `stopped` glyph rather
+  // than claiming one of the other three.
+  it('draws the stopped glyph for a status it cannot name', () => {
+    expect(renderThreadGlyph([{ type: 'subagent_ended', status: 'who-knows' }]))
+      .toBe(renderThreadGlyph([{ type: 'subagent_ended', status: 'stopped' }]))
+  })
+
+  // The default is the compaction arrow, which every subagent outcome overrides.
+  it('overrides the default divider glyph', () => {
+    // A compact boundary arrives in Claude Code's own system shape, so this one
+    // fixture needs the provider the rest of the group can leave to the default.
+    const boundary = { type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto' } }
+    const compaction = renderThreadGlyph([boundary], AgentProvider.CLAUDE_CODE)
+    expect(compaction).not.toBeNull()
+    expect(renderThreadGlyph([{ type: 'subagent_ended', status: 'completed' }])).not.toBe(compaction)
   })
 })

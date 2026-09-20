@@ -1,5 +1,7 @@
-import type { ControlAnswerState, ControlResponseSender, Question } from '../../controls/types'
-import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
+import type { ControlAnswerState, ControlResponseSender } from '../../controls/types'
+import type { ControlResponseSummary } from '../../model/controlResponse'
+import type { ControlQuestion } from '../../model/question'
+import type { PersistedControlResponse } from '../../persistedControlResponse'
 import type { PillOptions } from '~/components/common/PillGroup'
 import { disambiguateLabels, isPillOptions, PILL_OPTION_LIMIT } from '~/components/common/PillGroup'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
@@ -67,7 +69,8 @@ export function codexDecisionKey(value: unknown): string {
     return 'unknown'
   if (typeof decision === 'string')
     return decision
-  return Object.keys(decision)[0]
+  // The parser admits an object decision only with exactly one key.
+  return Object.keys(decision)[0] ?? 'unknown'
 }
 
 /** Extract Codex approval params from the control request payload. */
@@ -88,12 +91,12 @@ export function sendCodexDecision(
 
 const CODEX_OTHER_OPTION_LABEL = 'None of the above'
 
-function hasCodexOtherOption(question: Question): boolean {
+function hasCodexOtherOption(question: ControlQuestion): boolean {
   const raw = question as unknown as Record<string, unknown>
   return raw.isOther === true && Array.isArray(question.options) && question.options.length > 0
 }
 
-function codexAnswerValues(question: Question, index: number, answerState: ControlAnswerState): string[] {
+function codexAnswerValues(question: ControlQuestion, index: number, answerState: ControlAnswerState): string[] {
   const selected = answerState.selections()[index] ?? []
   const customText = answerState.customTexts()[index]?.trim()
   const values = [...selected]
@@ -117,13 +120,16 @@ function codexAnswerValues(question: Question, index: number, answerState: Contr
 export function sendCodexUserInputResponse(
   onRespond: ControlResponseSender,
   requestId: string,
-  questions: Question[],
+  questions: ControlQuestion[],
   answerState: ControlAnswerState,
 ): Promise<void> {
   const answers: Record<string, { answers: string[] }> = {}
   for (let i = 0; i < questions.length; i++) {
-    const values = codexAnswerValues(questions[i], i, answerState)
-    const key = questions[i].id || questions[i].header || `q${i}`
+    const question = questions[i]
+    if (question === undefined)
+      continue
+    const values = codexAnswerValues(question, i, answerState)
+    const key = question.id || question.header || `q${i}`
     answers[key] = { answers: values }
   }
   return sendJsonRpcResult(onRespond, requestId, { answers })
@@ -303,7 +309,15 @@ export function resolveCodexDecisions(raw: unknown): ResolvedCodexDecisions {
   if (negative)
     consumed.add(negative)
   const additional = decisions.filter(decision => !consumed.has(decision))
-  return { negative, positive, allowChoices, additional }
+  // Each optional half is OMITTED rather than passed as `undefined`: the banner
+  // reads the key's absence as "no button of this polarity", which is the rule the
+  // doc above states.
+  return {
+    ...(negative !== undefined ? { negative } : {}),
+    ...(positive !== undefined ? { positive } : {}),
+    ...(allowChoices !== undefined ? { allowChoices } : {}),
+    additional,
+  }
 }
 
 export function codexRequestedPermissions(payload: Record<string, unknown>): Record<string, unknown> {
@@ -399,7 +413,7 @@ function codexDecisionText(request: Record<string, unknown> | undefined, respons
  * ({result:{decision:'decline'}}) -- so it falls through to the deny-with-feedback / decision-label
  * derivation. Null when none applies (the caller falls back to the neutral behavior/generic label).
  */
-export function codexControlResponseDisplay(cr: PersistedControlResponse): ControlResponseDisplay | null {
+export function codexControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
   const answers = codexUserInputAnswers(cr.request, cr.response)
   if (answers !== null)
     return label(answers)

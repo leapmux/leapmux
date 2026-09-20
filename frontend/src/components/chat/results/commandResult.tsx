@@ -1,139 +1,87 @@
 import type { JSX } from 'solid-js'
-import type { RenderContext } from '../messageRenderers'
+import type { CommandExit, CommandResult } from '../model/commandResult'
+import type { ToolCallStatus } from '../model/toolCallStatus'
+import type { ToolResultRenderContext } from '../renderContext'
+import Ban from 'lucide-solid/icons/ban'
 import Check from 'lucide-solid/icons/check'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
 import Terminal from 'lucide-solid/icons/terminal'
 import { createMemo, For, Show } from 'solid-js'
-import { normalizedCommandBody, normalizeProgressOutput, PROGRESS_MAX_ROWS } from '~/lib/normalizeProgressOutput'
-import { messageCompletionFromProto } from '../assembledMessage'
-import { cachedRenderValueForString } from '../messageRenderCache'
+import { normalizedCommandBody, PROGRESS_MAX_ROWS } from '~/lib/normalizeProgressOutput'
 import { getToolResultExpanded } from '../messageRenderers'
+import { commandExit, commandIsError } from '../model/commandResult'
+import { isFinishedToolCallStatus } from '../model/toolCallStatus'
 import { formatDuration, joinMetaParts } from '../rendererUtils'
-import { toolOutcomeLabel } from '../toolOutcomeLabel'
 import { toolInputSummary, toolMessage } from '../toolStyles.css'
 import { TRUNCATION_NOTICE } from '../truncationNotice'
 import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 import { CollapsibleContent } from './CollapsibleContent'
 import { EMPTY_RESULT_NOTICE } from './emptyResultNotice'
+import { toolOutcomeLabel } from './toolOutcomeLabel'
 import { drawsOwnOutcome, ToolHeaderRow, ToolStatusHeader } from './ToolStatusHeader'
 import { useCollapsedLines } from './useCollapsedLines'
 
-/**
- * Provider-neutral source for a command-execution result (Claude `Bash`,
- * Codex `commandExecution`, ACP `execute`).
- *
- * `output` is the raw stream (may contain ANSI). Claude's structured Bash
- * payload separates `stdout`/`stderr`; the body concatenates them via
- * `output` for now and surfaces `stderr` for future styling.
- */
-export interface CommandResultSource {
-  output: string
-  /** A referenced output stream could not be recovered. This is different from an empty stream. */
-  outputUnavailable?: boolean
-  /** Claude only: stderr separated from stdout. */
-  stderr?: string
-  exitCode?: number | null
-  durationMs?: number | null
-  /** The provider retained only a suffix of the command output. */
-  truncated?: boolean
-  /** True when the command was interrupted by the user (Ctrl-C). */
-  interrupted?: boolean
-  /** Resolved error state. */
-  isError: boolean
+const normalizedByCommand = new WeakMap<CommandResult, ReturnType<typeof normalizedCommandBody>>()
+const MAX_CACHED_NORMALIZED_CHARS = 4 * 1024 * 1024
+
+export function commandCollapseThreshold(hadCarriageReturns: boolean): number {
+  return hadCarriageReturns ? PROGRESS_MAX_ROWS : COLLAPSED_RESULT_ROWS
 }
 
-export interface CommandResultEntry {
-  label?: string
-  source: CommandResultSource
+export function normalizedCommandOutput(command: CommandResult): ReturnType<typeof normalizedCommandBody> {
+  const cached = normalizedByCommand.get(command)
+  if (cached !== undefined)
+    return cached
+  const normalized = normalizedCommandBody(command.output)
+  if (normalized.text.length <= MAX_CACHED_NORMALIZED_CHARS)
+    normalizedByCommand.set(command, normalized)
+  return normalized
+}
+
+export function commandOutputIsCollapsible(command: CommandResult): boolean {
+  const { text, hadCarriageReturns } = normalizedCommandOutput(command)
+  return hasMoreLinesThan(text, commandCollapseThreshold(hadCarriageReturns))
+}
+
+export function commandStatusLabel(status: ToolCallStatus, exit: CommandExit): string {
+  if (status === 'declined')
+    return toolOutcomeLabel('declined')
+  if (status === 'cancelled')
+    return toolOutcomeLabel('interrupted')
+  if (typeof exit.exitCode === 'number' && exit.exitCode !== 0)
+    return toolOutcomeLabel('failed', `exit ${exit.exitCode}`)
+  if (exit.signal)
+    return toolOutcomeLabel('failed', exit.signal)
+  if (status === 'failed')
+    return toolOutcomeLabel('failed')
+  return toolOutcomeLabel('succeeded')
 }
 
 /** Keep separate process output and status when one tool call owns several commands. */
-export function CommandResultList(props: { entries: CommandResultEntry[], context?: RenderContext }): JSX.Element {
+export function CommandResultList(props: { entries: CommandResult[], status: ToolCallStatus, context?: ToolResultRenderContext }): JSX.Element {
   return (
     <For each={props.entries}>
       {entry => (
         <>
           <Show when={entry.label}>{label => <ToolHeaderRow icon={Terminal} title={label()} />}</Show>
-          <CommandResultBody source={entry.source} context={props.context} />
+          <CommandResultBody source={entry} status={props.status} {...(props.context !== undefined ? { context: props.context } : {})} />
         </>
       )}
     </For>
   )
 }
 
-/**
- * The row count below which {@link CommandResultBody} stops collapsing: widened to
- * {@link PROGRESS_MAX_ROWS} when the output carried `\r`-overwrites (so the head/`…`/
- * tail rows the normalize step just produced aren't sliced back off), else the plain
- * {@link COLLAPSED_RESULT_ROWS}. The body and the toolbar's `collapsible` check
- * (`commandOutputIsCollapsible`) must agree on this threshold or the expand button
- * hides over output the body actually clips -- so both read it from here.
- */
-export function commandCollapseThreshold(hadCarriageReturns: boolean): number {
-  return hadCarriageReturns ? PROGRESS_MAX_ROWS : COLLAPSED_RESULT_ROWS
-}
-
-/**
- * Mirror of {@link CommandResultBody}'s collapse decision for tool-meta
- * `collapsible` checks. `hasMoreLinesThan` against raw `\n`s under-counts
- * when output contains `\r`-overwrites (progress bars, `git rebase`, etc.)
- * because the body normalizes those into separate lines at render time —
- * leaving the toolbar's expand button hidden over output the body actually
- * clips. Use this helper for any provider feeding `CommandResultBody` so
- * the meta and the body agree.
- */
-export function commandOutputIsCollapsible(text: string): boolean {
-  const { text: normalized, hadCarriageReturns } = normalizeProgressOutput(text)
-  return hasMoreLinesThan(normalized, commandCollapseThreshold(hadCarriageReturns))
-}
-
-/**
- * Resolve the canonical "is this command an error?" boolean shared by ACP
- * `execute` and Codex `commandExecution`: failed-status OR known non-zero
- * exit code. Both extractors agreed on this rule independently; centralizing
- * it keeps them from drifting.
- */
-export function commandIsError(status: string | undefined, exitCode: number | null | undefined): boolean {
-  if (status === 'failed')
-    return true
-  return typeof exitCode === 'number' && exitCode !== 0
-}
-
-/**
- * Canonical status label:
- *  - interrupted → "Interrupted"
- *  - exitCode known and non-zero → "Error (exit N)"
- *  - isError without known exit code → "Error"
- *  - else → "Success"
- */
-export function commandStatusLabel(source: CommandResultSource): string {
-  if (source.interrupted)
-    return toolOutcomeLabel('interrupted')
-  if (typeof source.exitCode === 'number' && source.exitCode !== 0)
-    return toolOutcomeLabel('failed', `exit ${source.exitCode}`)
-  if (source.isError)
-    return toolOutcomeLabel('failed')
-  return toolOutcomeLabel('succeeded')
-}
-
 export function CommandResultBody(props: {
-  source: CommandResultSource
-  context?: RenderContext
+  source: CommandResult
+  status: ToolCallStatus
+  context?: ToolResultRenderContext
 }): JSX.Element {
   // The shared normalize-then-strip transform (order matters: normalize CR
   // overwrites first so a leading bare `\r` becomes a `\n` that strip can then
-  // trim). normalizedCommandBody is the single source every command-result
-  // renderer path uses, so the body can't drift.
-  const body = createMemo(() => {
-    const context = props.context
-    const output = props.source.output
-    return cachedRenderValueForString(
-      context,
-      'commandResult.normalizedBody',
-      output,
-      () => normalizedCommandBody(output),
-    )
-  })
+  // trim). `normalizedCommandOutput` is the single memoized source every
+  // command-result reader uses -- the body here and the toolbar's collapsibility
+  // check alike -- so the two cannot drift.
+  const body = createMemo(() => normalizedCommandOutput(props.source))
   const normalized = createMemo(() => body().text)
   const expanded = () => getToolResultExpanded(props.context)
   // After CR normalization the output has at most PROGRESS_MAX_ROWS rows
@@ -144,16 +92,14 @@ export function CommandResultBody(props: {
     expanded,
     threshold: () => commandCollapseThreshold(body().hadCarriageReturns),
   })
-  const source = () => {
-    const completion = messageCompletionFromProto(props.context?.sources?.current()?.completion)
-    return {
-      ...props.source,
-      interrupted: props.source.interrupted || completion === 'interrupted',
-      isError: props.source.isError || completion === 'error',
-    }
-  }
-  const statusIcon = () => source().isError || source().interrupted ? CircleAlert : Check
-  const statusLabel = () => commandStatusLabel(source())
+  // A refusal is not a failure, so it does not take the alert glyph: nothing went
+  // wrong, and the reader is the one who stopped the call. A command that ended
+  // with no error status can still report a non-zero exit code, and that word
+  // belongs in the label -- so the glyph reads the exit code too.
+  const exit = () => commandExit(props.source)
+  const commandFailed = () => props.status === 'failed' || commandIsError(exit())
+  const statusIcon = () => props.status === 'declined' ? Ban : props.status === 'cancelled' || commandFailed() ? CircleAlert : Check
+  const statusLabel = () => commandStatusLabel(props.status, exit())
   // Compared against the shared vocabulary, not a literal: a word that changed in one
   // place and not the other would hide the header for every failed command.
   const showStatusHeader = () => drawsOwnOutcome(props.context) && statusLabel() !== toolOutcomeLabel('succeeded')
@@ -165,12 +111,16 @@ export function CommandResultBody(props: {
   const emptyOutputHint = createMemo(() => {
     if (normalized())
       return null
+    // A call that has not returned yet has no empty output to state: the tail
+    // may still arrive.
+    if (!isFinishedToolCallStatus(props.status))
+      return null
     const dur = props.source.durationMs
-    const exit = props.source.exitCode
+    const code = props.source.exitCode
     return joinMetaParts([
       props.source.outputUnavailable ? '[output unavailable]' : EMPTY_RESULT_NOTICE,
       typeof dur === 'number' && formatDuration(dur),
-      typeof exit === 'number' && `exit ${exit}`,
+      typeof code === 'number' ? `exit ${code}` : props.source.signal,
     ])
   })
 
@@ -180,7 +130,7 @@ export function CommandResultBody(props: {
         when={normalized()}
         fallback={<Show when={emptyOutputHint()}>{hint => <div class={toolInputSummary}>{hint()}</div>}</Show>}
       >
-        <CollapsibleContent kind="ansi-or-pre" text={normalized()} display={display()} isCollapsed={isCollapsed()} context={props.context} />
+        <CollapsibleContent kind="ansi-or-pre" text={normalized()} display={display()} isCollapsed={isCollapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />
       </Show>
       <Show when={props.source.truncated}>
         <div class={toolInputSummary}>{TRUNCATION_NOTICE}</div>
@@ -188,7 +138,7 @@ export function CommandResultBody(props: {
     </>
   )
 
-  // Keep the status branch under <Show> so it re-runs when isError or
+  // Keep the status branch under <Show> so it re-runs when the status or
   // exitCode changes.
   return (
     <Show

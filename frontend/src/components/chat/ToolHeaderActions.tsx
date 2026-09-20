@@ -120,7 +120,13 @@ export function ToolHeaderActions(props: {
  */
 function swapPairs<T>(items: T[]): T[] {
   const out = items.slice()
-  for (let i = 0; i + 1 < out.length; i += 2)
-    [out[i], out[i + 1]] = [out[i + 1], out[i]]
+  for (let i = 0; i + 1 < out.length; i += 2) {
+    const left = out[i]
+    const right = out[i + 1]
+    if (left !== undefined && right !== undefined) {
+      out[i] = right
+      out[i + 1] = left
+    }
+  }
   return out
 }

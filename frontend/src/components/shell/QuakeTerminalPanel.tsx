@@ -181,7 +181,7 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
               // The panel takes focus while it is open, which is what makes
               // TerminalView focus the xterm on the way in.
               tileFocused={open()}
-              tabEditing={props.tabEditing}
+              {...(props.tabEditing !== undefined ? { tabEditing: props.tabEditing } : {})}
               confirmLink={props.confirmLink}
               getLastOffset={id => props.metadata.get(id)?.lastOffset}
               onInput={props.onInput}

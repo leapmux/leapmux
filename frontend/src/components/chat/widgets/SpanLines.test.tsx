@@ -1,11 +1,12 @@
 import type { SpanBridgeEntry } from '~/components/chat/widgets/SpanLineGapBridges'
+import type { SpanLine } from '~/components/chat/widgets/SpanLines'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { SpanLineGapBridges } from '~/components/chat/widgets/SpanLineGapBridges'
 import { bodySpanKey, shouldConnectSpanLineTop, SpanLines } from '~/components/chat/widgets/SpanLines'
 import { COL_SPACING, LINE_THICKNESS, NO_SPAN_MARGIN, ROW_BLEED_LEFT_VAR, rowBleedLeftStyle, spanColumnCenterX, spanLinesReservedWidth } from '~/components/chat/widgets/SpanLines.geometry'
 
-describe('spanLines', () => {
+describe('SpanLines', () => {
   it('renders nothing when lines array is empty', () => {
     const { container } = render(() => (
       <SpanLines lines={[]} />
@@ -25,6 +26,26 @@ describe('spanLines', () => {
     expect(wrapper).toBeInTheDocument()
     expect(wrapper!.children.length).toBe(1)
   })
+
+  // `line.type` comes off the worker's `span_lines` payload. A bare index answered
+  // `Object.prototype.toString` for a type spelled that way -- a truthy value, so the
+  // `||` fallback never ran and the function's source text landed in `class`.
+  it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty'])(
+    'falls back to the active style for the type %s, which names an Object.prototype member',
+    (type) => {
+      const columnClass = (lineType: string): string => {
+        const { container } = render(() => (
+          <SpanLines lines={[{ span_id: 'span-A', color: 1, type: lineType as SpanLine['type'] }]} />
+        ))
+        const wrapper = container.firstElementChild!
+        return wrapper.firstElementChild!.className
+      }
+      const fallback = columnClass(type)
+      expect(fallback).not.toContain('function')
+      expect(fallback).not.toContain('native code')
+      expect(fallback).toBe(columnClass('active'))
+    },
+  )
 
   it('renders correct number of columns with null entries', () => {
     const { container } = render(() => (
@@ -60,7 +81,7 @@ describe('spanLines', () => {
     // continues, so exactly one bridge renders — at that column's center.
     const entries: SpanBridgeEntry[] = [
       {
-        msg: { id: 'm1' },
+        message: { id: 'm1' },
         category: { kind: 'assistant_text' },
         parsedSpanLines: [
           { span_id: 'span-A', color: 1, type: 'connector_end' },
@@ -68,7 +89,7 @@ describe('spanLines', () => {
         ],
       },
       {
-        msg: { id: 'm2' },
+        message: { id: 'm2' },
         category: { kind: 'assistant_text' },
         parsedSpanLines: [
           null,
@@ -93,19 +114,19 @@ describe('spanLines', () => {
     expect(anchor.style.transform).toBe('translateY(240px)')
     const bridges = [...anchor.children] as HTMLElement[]
     expect(bridges).toHaveLength(1)
-    expect(bridges[0].style.left).toBe(`${spanColumnCenterX(1) - LINE_THICKNESS / 2}px`)
+    expect(bridges[0]?.style.left).toBe(`${spanColumnCenterX(1) - LINE_THICKNESS / 2}px`)
   })
 
   it('draws one bridge per continuing column', () => {
     const lineA = { span_id: 'span-A', color: 1, type: 'active' } as const
     const lineB = { span_id: 'span-B', color: 2, type: 'active' } as const
     const entries: SpanBridgeEntry[] = [
-      { msg: { id: 'm6' }, category: { kind: 'assistant_text' }, parsedSpanLines: [lineA, lineB] },
+      { message: { id: 'm6' }, category: { kind: 'assistant_text' }, parsedSpanLines: [lineA, lineB] },
     ]
     const { container } = render(() => (
       <SpanLineGapBridges
         entries={entries}
-        precedingEntry={{ msg: { id: 'm5' }, category: { kind: 'assistant_text' }, parsedSpanLines: [lineA, lineB] }}
+        precedingEntry={{ message: { id: 'm5' }, category: { kind: 'assistant_text' }, parsedSpanLines: [lineA, lineB] }}
         topOf={() => 300}
         hiddenOf={() => false}
         gapAboveOf={() => 8}
@@ -114,19 +135,19 @@ describe('spanLines', () => {
     const anchor = container.querySelector('[data-span-gap-bridges-for="m6"]') as HTMLElement
     const bridges = [...anchor.children] as HTMLElement[]
     expect(bridges).toHaveLength(2)
-    expect(bridges[0].style.left).toBe(`${spanColumnCenterX(0) - LINE_THICKNESS / 2}px`)
-    expect(bridges[1].style.left).toBe(`${spanColumnCenterX(1) - LINE_THICKNESS / 2}px`)
+    expect(bridges[0]?.style.left).toBe(`${spanColumnCenterX(0) - LINE_THICKNESS / 2}px`)
+    expect(bridges[1]?.style.left).toBe(`${spanColumnCenterX(1) - LINE_THICKNESS / 2}px`)
   })
 
   it('hides a bridge while its row is hidden-until-measured', () => {
     const line = { span_id: 'span-A', color: 1, type: 'active' } as const
     const entries: SpanBridgeEntry[] = [
-      { msg: { id: 'm3' }, category: { kind: 'assistant_text' }, parsedSpanLines: [line] },
+      { message: { id: 'm3' }, category: { kind: 'assistant_text' }, parsedSpanLines: [line] },
     ]
     const { container } = render(() => (
       <SpanLineGapBridges
         entries={entries}
-        precedingEntry={{ msg: { id: 'm2' }, category: { kind: 'assistant_text' }, parsedSpanLines: [line] }}
+        precedingEntry={{ message: { id: 'm2' }, category: { kind: 'assistant_text' }, parsedSpanLines: [line] }}
         topOf={() => 100}
         hiddenOf={() => true}
         gapAboveOf={() => 8}
@@ -140,7 +161,7 @@ describe('spanLines', () => {
   it('connects via the preceding tool body key even when that row has no matching column', () => {
     const entries: SpanBridgeEntry[] = [
       {
-        msg: { id: 'm4' },
+        message: { id: 'm4' },
         category: { kind: 'connector_end' },
         parsedSpanLines: [{ span_id: 'span-tool', color: 3, type: 'connector_end' }],
       },
@@ -151,7 +172,7 @@ describe('spanLines', () => {
         precedingEntry={{
           // A tool_use body: its bottom border is the span's rail, so the
           // closing row below connects via the body key, not a column match.
-          msg: { id: 'm3', spanId: 'span-tool', spanColor: 3 },
+          message: { id: 'm3', spanId: 'span-tool', spanColor: 3 },
           category: { kind: 'tool_use' },
           parsedSpanLines: [],
         }}
@@ -207,7 +228,11 @@ describe('rowBleedLeftStyle', () => {
   })
 
   it('grows with each rail, by exactly one column spacing', () => {
-    const at = (n: number) => Number.parseInt(rowBleedLeftStyle(n)[ROW_BLEED_LEFT_VAR].match(/\+ (\d+)px/)![1], 10)
+    const at = (n: number) => {
+      // `rowBleedLeftStyle` always sets the var and the pattern always matches
+      // its value; `?.` and `?? ''` are the type-level guards alone.
+      return Number.parseInt(rowBleedLeftStyle(n)[ROW_BLEED_LEFT_VAR]?.match(/\+ (\d+)px/)?.[1] ?? '', 10)
+    }
     expect(at(1) - at(0)).toBe(COL_SPACING)
     expect(at(3) - at(2)).toBe(COL_SPACING)
   })

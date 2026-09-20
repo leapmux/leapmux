@@ -172,7 +172,7 @@ export const Dialog: Component<DialogProps> = (props) => {
           icon={X}
           size="sm"
           class={styles.closeButton}
-          state={props.busy ? IconButtonState.Disabled : undefined}
+          {...(props.busy ? { state: IconButtonState.Disabled } : {})}
           onClick={() => beginClose()}
           aria-label="Close"
         />

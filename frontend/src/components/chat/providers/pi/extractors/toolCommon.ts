@@ -1,5 +1,5 @@
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { PI_EVENT } from '~/generated/contracts/pi-protocol'
+import { PI_EVENT, PI_RESULT_FIELD } from '~/generated/contracts/pi-protocol'
 import { asContentArray, splitToolResultContent } from '~/lib/contentBlocks'
 import { pickObject, pickString } from '~/lib/jsonPick'
 
@@ -45,15 +45,15 @@ export function piToolResultText(result: Record<string, unknown> | null | undefi
 export function piToolResult(result: Record<string, unknown> | null | undefined): PiToolResult {
   return {
     text: piToolResultText(result),
-    details: pickObject(result ?? undefined, 'details') ?? {},
+    details: pickObject(result ?? undefined, PI_RESULT_FIELD.Details) ?? {},
   }
 }
 
-// Memoize by payload identity. The same parsed payload is consumed by
-// `piToolResultMeta`, the result-body renderer, and per-tool extractors
-// (each calls `piExtractTool` again), so without a cache the content
-// blocks are walked multiple times per render. WeakMap-keyed so entries
-// are collected when the payload object is dropped from the chat store.
+// Memoize by payload identity. One row build walks the same parsed payload
+// through the kind dispatch and again through each per-tool extractor (every
+// one calls `piExtractTool`), so without a cache the content blocks are walked
+// several times per render. WeakMap-keyed so entries are collected when the
+// payload object is dropped from the chat store.
 const toolCache = new WeakMap<Record<string, unknown>, PiToolExecution | null>()
 
 /** Unwrap a tool_execution event payload into a normalized shape. */
@@ -76,8 +76,8 @@ export function piExtractTool(payload: Record<string, unknown> | null | undefine
     toolCallId,
     toolName,
     args,
-    result: result ? piToolResult(result) : undefined,
-    partialResult: partial ? piToolResult(partial) : undefined,
+    ...(result ? { result: piToolResult(result) } : {}),
+    ...(partial ? { partialResult: piToolResult(partial) } : {}),
     isError: payload.isError === true,
   }
   toolCache.set(payload, tool)

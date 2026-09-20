@@ -62,6 +62,15 @@ export interface NewTabMenuItemsProps {
 export const NewTabMenuItems: Component<NewTabMenuItemsProps> = (props) => {
   const disabled = () => Boolean(props.disabledReason)
 
+  // Spread-ready shortcut hints, read ONCE each: `getShortcutHintsText`
+  // answers undefined when the command has no binding, and the spread keeps
+  // `detail` absent then -- the row carries no empty trailing note. A second
+  // call beside the first could not be narrowed.
+  const detailProps = (commandId: string) => {
+    const hints = props.shortcuts ? getShortcutHintsText(commandId) : undefined
+    return hints !== undefined ? { detail: hints } : {}
+  }
+
   return (
     <>
       <li class={menuSectionHeader}>Agents</li>
@@ -105,7 +114,7 @@ export const NewTabMenuItems: Component<NewTabMenuItemsProps> = (props) => {
       <DisabledReasonMenuItem reason={props.disabledReason} onClick={() => props.onNewAgentAdvanced()}>
         <DropdownMenuItemContent
           label="New agent..."
-          detail={props.shortcuts ? getShortcutHintsText('app.newAgentDialog') : undefined}
+          {...detailProps('app.newAgentDialog')}
         />
       </DisabledReasonMenuItem>
       <hr />
@@ -113,7 +122,7 @@ export const NewTabMenuItems: Component<NewTabMenuItemsProps> = (props) => {
       <DisabledReasonMenuItem reason={props.disabledReason} onClick={() => props.onNewTerminalAdvanced()}>
         <DropdownMenuItemContent
           label="New terminal..."
-          detail={props.shortcuts ? getShortcutHintsText('app.newTerminalDialog') : undefined}
+          {...detailProps('app.newTerminalDialog')}
         />
       </DisabledReasonMenuItem>
       <For each={props.availableShells ?? []}>

@@ -16,9 +16,9 @@ function SidebarIcon(props: LucideProps & { divider: string, fill: string }) {
 export function PanelLeftFilled(props: LucideProps) {
   return (
     <SidebarIcon
-      divider="M9 3v18"
-      fill="M5 3H9V21H5A2 2 0 0 1 3 19V5A2 2 0 0 1 5 3Z"
       {...props}
+      divider="M9 3v18"
+      fill="M5 3H9V21H5A2 2 0 0 1 5 3Z"
     />
   )
 }
@@ -26,9 +26,9 @@ export function PanelLeftFilled(props: LucideProps) {
 export function PanelRightFilled(props: LucideProps) {
   return (
     <SidebarIcon
+      {...props}
       divider="M15 3v18"
       fill="M15 3H19A2 2 0 0 1 21 5V19A2 2 0 0 1 19 21H15Z"
-      {...props}
     />
   )
 }

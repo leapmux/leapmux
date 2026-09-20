@@ -48,7 +48,7 @@ describe('useAvailableProviders', () => {
         setWorkerId('A')
         await flush()
         expect(listAvailableProviders).toHaveBeenCalledTimes(1)
-        expect(listAvailableProviders.mock.calls[0][0]).toBe('A')
+        expect(listAvailableProviders.mock.calls[0]?.[0]).toBe('A')
         expect(hook.providers()).toEqual([AgentProvider.CLAUDE_CODE, AgentProvider.CODEX])
         expect(hook.loading()).toBe(false)
         dispose()

@@ -167,7 +167,9 @@ function makeFakePending(opts?: {
       // also seeds the watermark and epoch. A fake that omitted them described a
       // state the app never reaches, and let a cursor-source test pass against a
       // shape that could not occur.
-      resumeWatermark: opts?.watermark,
+      // Omitted when the harness passed no watermark, matching the target's
+      // optional-without-undefined shape.
+      ...(opts?.watermark !== undefined ? { resumeWatermark: opts.watermark } : {}),
       currentEpoch: opts?.epoch ?? 0n,
     },
   }
@@ -1012,7 +1014,7 @@ describe('useUserEvents (websocket dispatch)', () => {
       sock.sendEvent(create(WatchUserEventSchema, { event: { case: 'batchEnd', value: { atHlc } } }))
 
       expect(pending.consumeBatchEnd).toHaveBeenCalledTimes(1)
-      expect(pending.consumeBatchEnd.mock.calls[0][0]).toMatchObject({ physical: 400n, logical: 2n })
+      expect(pending.consumeBatchEnd.mock.calls[0]?.[0]).toMatchObject({ physical: 400n, logical: 2n })
       dispose()
     })
   })
@@ -1500,7 +1502,9 @@ describe('useUserEvents (desktop bridge path)', () => {
         pending: () => makeFakePending() as never,
       })
       await settleBridge()
-      const firstRelayId = bridge.openedRelayIds[0]
+      // settleBridge drained the connect, so the first relay exists; the
+      // fallback is the type-level guard alone.
+      const firstRelayId = bridge.openedRelayIds[0] ?? 0
 
       setUserId('user-2')
       await settleBridge()

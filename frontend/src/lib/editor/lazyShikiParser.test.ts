@@ -85,7 +85,7 @@ describe('createLazyShikiParser', () => {
 
   it('returns no decorations when no language is set', () => {
     const parser = createLazyShikiParser(createLazyOnigurumaHighlighter())
-    expect(parser({ content: 'x', language: undefined, pos: 0, size: 3 })).toEqual([])
+    expect(parser({ content: 'x', pos: 0, size: 3 })).toEqual([])
   })
 
   it('returns a promise while the grammar loads, then decorations with the shiki class + dual-theme vars', async () => {

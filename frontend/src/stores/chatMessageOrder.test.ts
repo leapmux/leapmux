@@ -50,7 +50,7 @@ describe('chatMessageOrder', () => {
 
   it('keeps a surviving shared span', () => {
     expect(prunableDroppedSpanIds(
-      [msg('opener', 1n, 'shared'), msg('old', 2n, 'old')],
+      [msg('request', 1n, 'shared'), msg('old', 2n, 'old')],
       [msg('result', 3n, 'shared')],
     )).toEqual(['old'])
   })

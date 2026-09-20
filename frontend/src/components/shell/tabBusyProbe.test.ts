@@ -251,9 +251,9 @@ describe('createTabBusyProbe', () => {
       ])
 
       expect(busy.map(b => b.tab.id)).toEqual(['a1', 't1'])
-      expect(busy[0].title).toBe('Refactor')
-      expect(busy[0].reason.kind).toBe('agent-turn')
-      expect(busy[1].reason.kind).toBe('terminal-processes')
+      expect(busy[0]?.title).toBe('Refactor')
+      expect(busy[0]?.reason.kind).toBe('agent-turn')
+      expect(busy[1]?.reason.kind).toBe('terminal-processes')
     })
 
     it('makes no request for a kind the set does not hold', async () => {

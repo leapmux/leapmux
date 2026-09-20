@@ -418,10 +418,11 @@ function bulkHarness(archivedIds: readonly string[], opts: {
       onSelectWorkspace: () => {},
       onRefreshWorkspaces: opts.onRefreshWorkspaces ?? (() => {}),
       onDeleteWorkspace: () => {},
-      onConfirmDelete: opts.onConfirmDelete,
-      onConfirmArchive: opts.onConfirmArchive,
-      onConfirmEmptyArchive: opts.onConfirmEmptyArchive,
-      onPostArchiveWorkspace: opts.onPostArchiveWorkspace,
+      // The optional callbacks stay omitted when the harness passed none.
+      ...(opts.onConfirmDelete !== undefined ? { onConfirmDelete: opts.onConfirmDelete } : {}),
+      ...(opts.onConfirmArchive !== undefined ? { onConfirmArchive: opts.onConfirmArchive } : {}),
+      ...(opts.onConfirmEmptyArchive !== undefined ? { onConfirmEmptyArchive: opts.onConfirmEmptyArchive } : {}),
+      ...(opts.onPostArchiveWorkspace !== undefined ? { onPostArchiveWorkspace: opts.onPostArchiveWorkspace } : {}),
     })
     return { dispose, ops, sectionStore }
   })
@@ -548,7 +549,7 @@ describe('useWorkspaceOperations moveWorkspace across the archive boundary', () 
 
     expect(mockMoveWorkspace).not.toHaveBeenCalled()
     expect(mockShowWarnToast).toHaveBeenCalledOnce()
-    expect(mockShowWarnToast.mock.calls[0][0]).toBe('Failed to unarchive workspace')
+    expect(mockShowWarnToast.mock.calls[0]?.[0]).toBe('Failed to unarchive workspace')
     h.dispose()
   })
 
@@ -577,7 +578,7 @@ describe('useWorkspaceOperations moveWorkspace across the archive boundary', () 
 
     expect(mockSetWorkspaceArchiveState).not.toHaveBeenCalled()
     expect(mockMoveWorkspace).toHaveBeenCalledOnce()
-    expect(mockMoveWorkspace.mock.calls[0][0]).toMatchObject({ workspaceId: 'w1', sectionId: 's-archived' })
+    expect(mockMoveWorkspace.mock.calls[0]?.[0]).toMatchObject({ workspaceId: 'w1', sectionId: 's-archived' })
     h.dispose()
   })
 
@@ -650,7 +651,11 @@ describe('useWorkspaceOperations unarchiveAll', () => {
     // be in flight before the first release.
     for (let i = 0; i < 3; i++) {
       await vi.waitFor(() => expect(releases).toHaveLength(i + 1))
-      releases[i]()
+      // The waitFor above proves the release landed; the throw is the type-level guard alone.
+      const release = releases[i]
+      if (release === undefined)
+        throw new Error('expected a queued release')
+      release()
     }
     await done
     expect(maxInFlight).toBe(1)
@@ -696,7 +701,7 @@ describe('useWorkspaceOperations unarchiveAll', () => {
     await h.ops.unarchiveAll()
     expect(mockSetWorkspaceArchiveState).toHaveBeenCalledTimes(3)
     expect(mockShowWarnToast).toHaveBeenCalledTimes(1)
-    expect(mockShowWarnToast.mock.calls[0][0]).toBe('Failed to unarchive workspace')
+    expect(mockShowWarnToast.mock.calls[0]?.[0]).toBe('Failed to unarchive workspace')
     h.dispose()
   })
 })
@@ -816,7 +821,7 @@ describe('useWorkspaceOperations emptyArchive', () => {
     await h.ops.emptyArchive()
     expect(mockDeleteWorkspace).toHaveBeenCalledTimes(3)
     expect(mockShowWarnToast).toHaveBeenCalledTimes(1)
-    expect(mockShowWarnToast.mock.calls[0][0]).toBe('Failed to delete workspace')
+    expect(mockShowWarnToast.mock.calls[0]?.[0]).toBe('Failed to delete workspace')
     h.dispose()
   })
 })
@@ -1049,7 +1054,7 @@ describe('useWorkspaceOperations handleWorkspaceDragEnd', () => {
     setWorkspaceSortOrder({ key: 'name', direction: 'asc' })
     drop(h, 'a', 's-progress', 'c', 's-other')
     expect(mockMoveWorkspace).toHaveBeenCalledOnce()
-    expect(mockMoveWorkspace.mock.calls[0][0].sectionId).toBe('s-other')
+    expect(mockMoveWorkspace.mock.calls[0]?.[0].sectionId).toBe('s-other')
     h.dispose()
   })
 
@@ -1059,7 +1064,7 @@ describe('useWorkspaceOperations handleWorkspaceDragEnd', () => {
     setSectionFilterQuery('s-progress', 'a')
     drop(h, 'a', 's-progress', 'c', 's-other')
     expect(mockMoveWorkspace).toHaveBeenCalledOnce()
-    expect(mockMoveWorkspace.mock.calls[0][0].sectionId).toBe('s-other')
+    expect(mockMoveWorkspace.mock.calls[0]?.[0].sectionId).toBe('s-other')
     h.dispose()
   })
 
@@ -1104,7 +1109,7 @@ describe('useWorkspaceOperations handleWorkspaceDragEnd', () => {
     await Promise.resolve()
     expect(mockSetWorkspaceArchiveState).not.toHaveBeenCalled()
     expect(mockMoveWorkspace).toHaveBeenCalledOnce()
-    expect(mockMoveWorkspace.mock.calls[0][0].sectionId).toBe('s-archived')
+    expect(mockMoveWorkspace.mock.calls[0]?.[0].sectionId).toBe('s-archived')
     h.dispose()
   })
 })

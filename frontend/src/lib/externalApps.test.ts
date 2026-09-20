@@ -119,7 +119,7 @@ describe('loadExternalApps', () => {
     const second = await loadExternalApps(true)
     // Different displayName → must be a new reference so Solid re-renders.
     expect(second[0]).not.toBe(first[0])
-    expect(second[0].displayName).toBe('Visual Studio Code')
+    expect(second[0]?.displayName).toBe('Visual Studio Code')
   })
 })
 

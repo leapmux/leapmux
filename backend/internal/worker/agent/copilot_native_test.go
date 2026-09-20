@@ -194,8 +194,13 @@ func TestCopilotAnswersNoOrphanResponse(t *testing.T) {
 		200*time.Millisecond, 5*time.Millisecond, "a response is nobody's request and draws no reply")
 }
 
-// syncBuffer records what the agent wrote to the process. A reply travels on a
-// goroutine of its own in some paths, so the reads take a lock.
+// syncBuffer records what the agent wrote to the process, and stands in for stdin
+// where a test inspects the frames.
+//
+// The reads take a lock because `processBase` performs every write on ONE goroutine
+// of its own, and a DETACHED write returns before that goroutine has run. A test
+// that held a plain `bytes.Buffer` raced its own agent, and the race detector then
+// reported it against whichever test ran at that moment.
 type syncBuffer struct {
 	mu   sync.Mutex
 	text strings.Builder
@@ -211,4 +216,15 @@ func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.text.String()
+}
+
+// Close satisfies io.WriteCloser, so this stands in for a process's stdin.
+func (b *syncBuffer) Close() error { return nil }
+
+// Reset drops what the agent wrote, for a case that asserts about the frames after
+// a point rather than about all of them.
+func (b *syncBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.text.Reset()
 }

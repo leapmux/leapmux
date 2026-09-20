@@ -472,12 +472,17 @@ func TestHandleZCodeOutput_ToolProgress_UsesNativeTotal(t *testing.T) {
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
 		`{"kind":"progress","toolCallId":"c1","outputBytes":11,"stdoutTail":"line1\nline2"}`))
 
+	// Each frame reports TWO things: the byte total the meter counts, and the text
+	// the running row draws. The tail is NOT truncated here: the app server's own
+	// byte count equals the tail it sent, so nothing was dropped before it.
 	updates := sink.ProgressUpdates()
-	require.Len(t, updates, 2)
-	assert.Equal(t, ProgressOutputTotal, updates[0].Operation)
-	assert.Equal(t, int64(5), updates[0].Value)
-	assert.Equal(t, int64(11), updates[1].Value)
-	assert.False(t, updates[1].Minimum)
+	require.Len(t, updates, 4)
+	assert.Equal(t, OutputTailProgress("c1", "line1", false), updates[0])
+	assert.Equal(t, ProgressOutputTotal, updates[1].Operation)
+	assert.Equal(t, int64(5), updates[1].Value)
+	assert.Equal(t, OutputTailProgress("c1", "line1\nline2", false), updates[2])
+	assert.Equal(t, int64(11), updates[3].Value)
+	assert.False(t, updates[3].Minimum)
 }
 
 func TestHandleZCodeOutput_ToolProgress_MarksTailOnlyCountAsMinimum(t *testing.T) {
@@ -490,9 +495,10 @@ func TestHandleZCodeOutput_ToolProgress_MarksTailOnlyCountAsMinimum(t *testing.T
 		`{"kind":"progress","toolCallId":"c1","stdoutTail":"tail"}`))
 
 	updates := sink.ProgressUpdates()
-	require.Len(t, updates, 1)
-	assert.Equal(t, int64(4), updates[0].Value)
-	assert.True(t, updates[0].Minimum)
+	require.Len(t, updates, 2)
+	assert.Equal(t, OutputTailProgress("c1", "tail", true), updates[0])
+	assert.Equal(t, int64(4), updates[1].Value)
+	assert.True(t, updates[1].Minimum)
 }
 
 func TestHandleZCodeOutput_ToolProgress_RoutesToChild(t *testing.T) {
@@ -513,9 +519,12 @@ func TestHandleZCodeOutput_ToolProgress_RoutesToChild(t *testing.T) {
 	child, ok := sink.ChildSink(childIDs[0]).(*testSink)
 	require.True(t, ok)
 	updates := child.ProgressUpdates()
-	require.Len(t, updates, 2)
+	require.Len(t, updates, 3)
 	assert.Equal(t, ProgressModelReset, updates[0].Operation)
-	assert.Equal(t, int64(3), updates[1].Value)
+	// The tail follows the counter into the CHILD's own sink, so the subagent's
+	// row draws its live output where the subagent's transcript is.
+	assert.Equal(t, OutputTailProgress("sub-1", "one", false), updates[1])
+	assert.Equal(t, int64(3), updates[2].Value)
 }
 
 // --- tool completion ---
@@ -1258,4 +1267,26 @@ func TestHandleZCodeOutput_StreamRecoveryTakesNoAction(t *testing.T) {
 			assert.Equal(t, 0, sink.NotificationCount())
 		})
 	}
+}
+
+// A `raw` frame carries an opaque payload rather than the fields a row reads. It
+// must not become the call's last frame: a turn that ends while the call runs
+// stores that frame as the row, and the reader would get an unrecognized card
+// where the call's real state belongs.
+func TestHandleZCodeOutput_RawToolFrameIsNotRetained(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"c1","toolName":"Bash","input":{"command":"ls"}}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
+		`{"kind":"raw","toolCallId":"c1","payload":{"anything":true}}`))
+
+	a.mu.Lock()
+	frame := string(a.zcodeToolCallLocked("c1").lastFrame)
+	a.mu.Unlock()
+	assert.NotContains(t, frame, `"raw"`)
+	assert.Contains(t, frame, `"scheduled"`, "the last frame a reader can draw stays")
 }

@@ -5,11 +5,11 @@ import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { createPremeasureQueue } from './chatPremeasureQueue'
 
-describe('chatpremeasurequeue', () => {
+describe('chatPremeasureQueue', () => {
   function makeHarness(ids: string[]) {
     const measured = new Set<string>()
     const items = ids.map(id => ({ id, hasSpanLines: false, heightKey: `k-${id}` } as VirtualItem))
-    const entries = new Map(ids.map(id => [id, { msg: { id } } as ClassifiedEntry]))
+    const entries = new Map(ids.map(id => [id, { message: { id } } as ClassifiedEntry]))
     const itemById = new Map(items.map(item => [item.id, item]))
     const candidate = (id: string): ChatDomPremeasureCandidate => ({ entry: entries.get(id)!, item: itemById.get(id)! })
     const [ranged, setRanged] = createSignal<ChatDomPremeasureCandidate[]>([])

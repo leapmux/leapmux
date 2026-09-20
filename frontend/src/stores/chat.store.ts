@@ -1,13 +1,13 @@
 import type { ChatRailData } from './chatMessageMarks'
 import type { ToolProgressEntry, ToolProgressUpdate } from './chatToolProgress'
-import type { SavedViewportScroll, ToolMessageSide } from './chatTypes'
+import type { SavedViewportScroll } from './chatTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { MessageSpanIdentity } from '~/lib/messageSpan'
+import type { MessageSpanIdentity, ToolSpanSide } from '~/lib/messageSpan'
 import { toBinary } from '@bufbuild/protobuf'
 import { batch, untrack } from 'solid-js'
 import { createStore, produce, unwrap } from 'solid-js/store'
 import { forgetMarkPreview } from '~/components/chat/chatMarkPreview'
-import { invalidateMessageClassificationCache } from '~/components/chat/messageClassification'
+import { invalidateMessageClassificationCache } from '~/components/chat/messageClassifier'
 import { CATCH_UP_GAP_LIMIT, MESSAGE_PAGE_LIMIT } from '~/generated/contracts/chat-history'
 import { AgentChatMessageSchema, MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import { lowerBoundBySeq } from '~/lib/binarySearch'
@@ -171,7 +171,7 @@ export function createChatStore() {
   const markSeeder = createMessageMarkSeeder({ marks: messageMarks })
 
   /**
-   * Non-reactive index linking each tool span's opener (tool_use) and result
+   * Non-reactive index linking each tool span's request (tool_use) and result
    * (tool_result) by spanId, plus the shared per-message parse cache. Owned by a
    * dedicated module (createSpanIndex); the store only keeps it in step with the
    * in-memory window via reindexSpans.
@@ -273,7 +273,7 @@ export function createChatStore() {
    * reorders messages (trim, prepend, window replace) must reindex: otherwise
    * trimmed-away messages leak into the index (growing it unbounded and
    * defeating the windowing's memory goal). createSpanIndex routes by message
-   * classification, so a re-fetched opener can't be misfiled as a result.
+   * classification, so a re-fetched request cannot be misfiled as a result.
    */
   function reindexSpans(agentId: string) {
     spanIdx.reindex(agentId, state.messagesByAgent[agentId] ?? [])
@@ -436,8 +436,11 @@ export function createChatStore() {
    * and reinserts it so the visible order follows the sequence.
    */
   function updateExistingMessage(agentId: string, prev: AgentChatMessage[], existingIdx: number, message: AgentChatMessage): boolean {
-    if (prev[existingIdx].seq === message.seq) {
-      const proxy = prev[existingIdx]
+    const existing = prev[existingIdx]
+    if (existing === undefined)
+      return false
+    if (existing.seq === message.seq) {
+      const proxy = existing
       if (preferNewerSupplement(proxy, message) === proxy)
         return false
       // A duplicate/replayed broadcast can re-deliver a byte-identical row (same id,
@@ -493,6 +496,8 @@ export function createChatStore() {
    */
   function handleReseqMovedBeyondWindow(agentId: string, prev: AgentChatMessage[], existingIdx: number) {
     const dropped = prev[existingIdx]
+    if (dropped === undefined)
+      return
     setState('messagesByAgent', agentId, prev.filter((_, i) => i !== existingIdx))
     // Reclaim the content version when the row leaves the window. A notification
     // can receive an in-place update before it moves to a new sequence.
@@ -540,9 +545,9 @@ export function createChatStore() {
       invalidateNewSupplements(prevWindow, next)
       setState('messagesByAgent', agentId, next)
       // Rebuild the span index over the merged, seq-ascending window rather than
-      // incrementally indexing only the fetched page: a prepended opener whose
+      // incrementally indexing only the fetched page: a prepended request whose
       // result is already in the window would otherwise be misfiled, and the
-      // 'older' prepend never re-establishes opener-first ordering on its own.
+      // 'older' prepend never re-establishes request-first ordering on its own.
       reindexSpans(agentId)
       const merged = state.messagesByAgent[agentId] ?? []
       for (const message of fetched)
@@ -603,9 +608,9 @@ export function createChatStore() {
       }
     },
 
-    getSpanMessage(agentId: string, identity: MessageSpanIdentity, side: ToolMessageSide): AgentChatMessage | undefined {
+    getSpanMessage(agentId: string, identity: MessageSpanIdentity, side: ToolSpanSide): AgentChatMessage | undefined {
       void state.messageVersion[agentId]
-      return side === 'request' ? spanIdx.getOpenerMessage(agentId, identity) : spanIdx.getResultMessage(agentId, identity)
+      return side === 'request' ? spanIdx.getRequestMessage(agentId, identity) : spanIdx.getResultMessage(agentId, identity)
     },
 
     getMessages(agentId: string): AgentChatMessage[] {

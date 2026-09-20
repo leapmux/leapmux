@@ -1,0 +1,129 @@
+{
+  "_readme": "The Cursor stored-tool supplement, pinned on BOTH sides of the language boundary. The worker reads Cursor's own transcript for a call the protocol left incomplete and stores the record under the shared ACP `rawOutput` key; the browser plugin reads it back. Neither side resolves this payload into the frame, so the STORED BYTES are the contract. `TestCursorStoredToolConformance` asserts the worker writes `supplement` for `record`, and the browser's `cursorStoredToolOutput` asserts it reads `expected` out of the same bytes. A `null` in `expected` states a field the reader must answer as absent. The key names come from contracts/cursor-protocol.json and contracts/acp-protocol.json.",
+  "cases": [
+    {
+      "name": "a stored result keeps its content, its arguments and Cursor's own record",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "record": {
+        "content": {
+          "type": "tool-result",
+          "toolCallId": "call-1",
+          "toolName": "read_file",
+          "result": "answer = 42\n"
+        },
+        "arguments": {
+          "path": "/project/sample.py"
+        },
+        "result": {
+          "providerOptions": {
+            "cursor": {
+              "highLevelToolCallResult": {
+                "output": {
+                  "success": {}
+                }
+              }
+            }
+          }
+        }
+      },
+      "supplement": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "rawOutput": {
+          "content": [
+            {
+              "type": "tool-result",
+              "toolCallId": "call-1",
+              "toolName": "read_file",
+              "result": "answer = 42\n"
+            }
+          ],
+          "toolArguments": {
+            "path": "/project/sample.py"
+          },
+          "providerOptions": {
+            "cursor": {
+              "highLevelToolCallResult": {
+                "output": {
+                  "success": {}
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected": {
+        "content": [
+          {
+            "type": "tool-result",
+            "toolCallId": "call-1",
+            "toolName": "read_file",
+            "result": "answer = 42\n"
+          }
+        ],
+        "toolArguments": {
+          "path": "/project/sample.py"
+        },
+        "providerOptions": {
+          "cursor": {
+            "highLevelToolCallResult": {
+              "output": {
+                "success": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "a record with no arguments and no native options stores its content alone",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-2",
+        "status": "failed"
+      },
+      "record": {
+        "content": {
+          "type": "tool-result",
+          "toolCallId": "call-2",
+          "toolName": "bash",
+          "result": ""
+        },
+        "arguments": null,
+        "result": {}
+      },
+      "supplement": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-2",
+        "status": "failed",
+        "rawOutput": {
+          "content": [
+            {
+              "type": "tool-result",
+              "toolCallId": "call-2",
+              "toolName": "bash",
+              "result": ""
+            }
+          ]
+        }
+      },
+      "expected": {
+        "content": [
+          {
+            "type": "tool-result",
+            "toolCallId": "call-2",
+            "toolName": "bash",
+            "result": ""
+          }
+        ],
+        "toolArguments": null,
+        "providerOptions": null
+      }
+    }
+  ]
+}

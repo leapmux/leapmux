@@ -144,7 +144,10 @@ interface TreeContextValue {
    * precedence and the chain loader and the per-node cascade share one input.
    */
   revealTarget: () => string
-  homeDir?: string
+  // The four below are live getters on the context object, so the property
+  // always exists and an explicit undefined is the only "not set" the getters
+  // can express.
+  homeDir?: string | undefined
   flavor: () => PathFlavor
   scrollContainer?: HTMLDivElement
   gitStatusStore: () => ReturnType<typeof createRepoGitStore>
@@ -166,9 +169,9 @@ interface TreeContextValue {
   isVisible: () => ((path: string) => boolean) | undefined
   refreshVersion: () => number
   onSelect: (path: string) => void
-  onFileOpen?: (path: string) => void
-  onMention?: (path: string) => void
-  onOpenTerminal?: (dirPath: string) => void
+  onFileOpen?: ((path: string) => void) | undefined
+  onMention?: ((path: string) => void) | undefined
+  onOpenTerminal?: ((dirPath: string) => void) | undefined
   isNodeExpanded: (path: string) => boolean
   setNodeExpanded: (path: string, expanded: boolean) => void
   getChildren: (path: string) => TreeNodeData[] | undefined
@@ -244,17 +247,17 @@ const TreeContextMenu: Component<{
   const tree = useTree()
   return (
     <FileActionsMenu
-      contextMenuFor={props.contextMenuFor}
+      {...(props.contextMenuFor !== undefined ? { contextMenuFor: props.contextMenuFor } : {})}
       workerId={tree.workerId}
       path={props.path}
       flavor={tree.flavor()}
       isDir={props.isDir}
       rootPath={tree.rootPath}
-      homeDir={tree.homeDir}
-      size={props.size}
-      modTime={props.modTime}
-      onMention={tree.onMention}
-      onOpenTerminal={tree.onOpenTerminal}
+      {...(tree.homeDir !== undefined ? { homeDir: tree.homeDir } : {})}
+      {...(props.size !== undefined ? { size: props.size } : {})}
+      {...(props.modTime !== undefined ? { modTime: props.modTime } : {})}
+      {...(tree.onMention !== undefined ? { onMention: tree.onMention } : {})}
+      {...(tree.onOpenTerminal !== undefined ? { onOpenTerminal: tree.onOpenTerminal } : {})}
       triggerClass={menuTrigger}
       triggerTestId="tree-context-button"
       itemTestIdPrefix="tree"
@@ -958,19 +961,25 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     if (index < 0)
       return
     const row = rows[index]
+    if (row === undefined)
+      return
     switch (e.key) {
-      case 'ArrowDown':
-        if (index + 1 < rows.length) {
+      case 'ArrowDown': {
+        const next = rows[index + 1]
+        if (next !== undefined) {
           e.preventDefault()
-          focusRow(rows[index + 1].path)
+          focusRow(next.path)
         }
         break
-      case 'ArrowUp':
-        if (index > 0) {
+      }
+      case 'ArrowUp': {
+        const prev = rows[index - 1]
+        if (prev !== undefined) {
           e.preventDefault()
-          focusRow(rows[index - 1].path)
+          focusRow(prev.path)
         }
         break
+      }
       case 'ArrowRight': {
         if (!row.isDir)
           break
@@ -995,14 +1004,20 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
         if (row.parent)
           focusRow(row.parent)
         break
-      case 'Home':
+      case 'Home': {
         e.preventDefault()
-        focusRow(rows[0].path)
+        const first = rows[0]
+        if (first !== undefined)
+          focusRow(first.path)
         break
-      case 'End':
+      }
+      case 'End': {
         e.preventDefault()
-        focusRow(rows[rows.length - 1].path)
+        const last = rows[rows.length - 1]
+        if (last !== undefined)
+          focusRow(last.path)
         break
+      }
       case 'Enter':
       case ' ': {
         e.preventDefault()

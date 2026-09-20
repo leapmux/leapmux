@@ -66,7 +66,9 @@ describe('useDeleteBranchInspect', () => {
         onError: () => {},
       })
       await flushMicrotasks()
-      const [, req] = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
+      const inspectCall = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
+      expect(inspectCall).toBeDefined()
+      const [, req] = inspectCall ?? []
       expect(req).toMatchObject({
         path: '/repo',
         branchNameHint: 'doomed',
@@ -85,7 +87,9 @@ describe('useDeleteBranchInspect', () => {
         onError: () => {},
       })
       await flushMicrotasks()
-      const [, req] = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
+      const inspectCall = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
+      expect(inspectCall).toBeDefined()
+      const [, req] = inspectCall ?? []
       expect(req).toMatchObject({ branchNameHint: '' })
       dispose()
     })
@@ -151,8 +155,8 @@ describe('useDeleteBranchInspect', () => {
       await flushMicrotasks()
       expect(workerRpc.inspectBranchDeletion).not.toHaveBeenCalled()
       expect(onError).toHaveBeenCalledTimes(1)
-      expect(onError.mock.calls[0][0]).toBeInstanceOf(Error)
-      expect((onError.mock.calls[0][0] as Error).message).toMatch(/no resolved repo path/)
+      expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error)
+      expect((onError.mock.calls[0]?.[0] as Error).message).toMatch(/no resolved repo path/)
       expect(inspect.info()).toBeNull()
       dispose()
     })

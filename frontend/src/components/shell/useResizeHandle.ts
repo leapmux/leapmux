@@ -105,14 +105,20 @@ export function useResizeHandle(options: UseResizeHandleOptions): UseResizeHandl
     const container = containerRef()
     if (!container)
       return
-    setDraggingHandleIndex(handleIndex)
-    document.body.style.cursor = 'row-resize'
 
     const expandedIds = expandableSectionIds().filter(sid => isOpen(sid))
     const currentSizes = expandedSizes()
 
     const aboveId = expandedIds[handleIndex]
     const belowId = expandedIds[handleIndex + 1]
+    // A handle only renders between two expanded sections, so both ids exist;
+    // the early return is the type-level guard alone.
+    if (aboveId === undefined || belowId === undefined)
+      return
+
+    setDraggingHandleIndex(handleIndex)
+    document.body.style.cursor = 'row-resize'
+
     const aboveSize = currentSizes.get(aboveId) ?? 0
     const belowSize = currentSizes.get(belowId) ?? 0
     const pairTotal = aboveSize + belowSize

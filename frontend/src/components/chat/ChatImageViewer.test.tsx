@@ -6,7 +6,7 @@ import { MAX_INLINE_IMAGE_BASE64_LEN } from '~/lib/imageBlocks'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { ChatImageViewer, decodeImageBytes } from './ChatImageViewer'
-import './providers/claude'
+import './providers/claude/plugin'
 import './providers/testMocks'
 
 // A one-pixel PNG's first bytes; only the decode matters here, not the image.
@@ -114,7 +114,7 @@ function renderViewer(message: AgentChatMessage | undefined) {
   return { ...result, fetchMessage }
 }
 
-describe('chatImageViewer', () => {
+describe('ChatImageViewer', () => {
   it('draws the image the reference points at, resolved from the loaded window', async () => {
     const { container, fetchMessage } = renderViewer(
       claudeImageMessage([{ type: 'image', data: PNG_BASE64, mimeType: 'image/png' }]),

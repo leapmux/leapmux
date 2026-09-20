@@ -567,7 +567,7 @@ function FileManagerIcon(props: { size: number, class?: string }): JSX.Element {
   // also brings lucide's `aria-hidden` default, so the row's accessible name
   // stays the application's name alone.
   return (
-    <SvgIconFrame size={props.size} class={props.class} style={iconStyle(props.size)}>
+    <SvgIconFrame size={props.size} {...(props.class !== undefined ? { class: props.class } : {})} style={iconStyle(props.size)}>
       <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
     </SvgIconFrame>
   )
@@ -579,7 +579,7 @@ function FileManagerIcon(props: { size: number, class?: string }): JSX.Element {
 // manager has an entry of its own.
 function GenericAppIcon(props: { size: number, class?: string }): JSX.Element {
   return (
-    <SvgIconFrame size={props.size} class={props.class} style={iconStyle(props.size)}>
+    <SvgIconFrame size={props.size} {...(props.class !== undefined ? { class: props.class } : {})} style={iconStyle(props.size)}>
       <path d="m16 18 6-6-6-6" />
       <path d="m8 6-6 6 6 6" />
     </SvgIconFrame>
@@ -588,7 +588,7 @@ function GenericAppIcon(props: { size: number, class?: string }): JSX.Element {
 
 // Bind each JBIcon variant to its spec so all entries share the same
 // `(size, class) => JSX` signature.
-const jb = (spec: JBSpec): IconComponent => p => <JBIcon size={p.size} class={p.class} spec={spec} />
+const jb = (spec: JBSpec): IconComponent => p => <JBIcon size={p.size} {...(p.class !== undefined ? { class: p.class } : {})} spec={spec} />
 
 // `satisfies Record<ExternalAppId, IconComponent>` enforces at compile time
 // that every supported application has an icon — adding an id to
@@ -624,5 +624,5 @@ export function ExternalAppIcon(props: ExternalAppIconProps): JSX.Element {
   const size = () => props.size ?? 16
   const component = (): IconComponent =>
     (props.id && EXTERNAL_APP_ICONS[props.id as ExternalAppId]) || GenericAppIcon
-  return <Dynamic component={component()} size={size()} class={props.class} />
+  return <Dynamic component={component()} size={size()} {...(props.class !== undefined ? { class: props.class } : {})} />
 }

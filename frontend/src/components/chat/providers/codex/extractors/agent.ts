@@ -1,18 +1,18 @@
-import type { AgentRequestSource } from '../../../results/AgentRequestMessage'
-import type { AgentResultSource } from '../../../results/agentResult'
+import type { AgentRequest, AgentRun, AgentRunStatus } from '../../../model/tools/agent'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import { CODEX_COLLAB_ITEM, CODEX_ITEM } from '~/generated/contracts/codex-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pickObject, pickString, stringArray } from '~/lib/jsonPick'
 import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
-import { CODEX_ITEM, CODEX_STATUS } from '~/types/toolMessages'
 import { messageCompletionFromProto } from '../../../assembledMessage'
-import { extractItem } from '../renderHelpers'
+import { CODEX_STATUS } from '../itemVocabulary'
+import { extractItem } from './item'
 
 /** Only a matching call with the expected role can supply missing fields. */
 export function codexAgentCounterpart(item: Record<string, unknown>, parsed: ParsedMessageContent | undefined, role: 'request' | 'result'): Record<string, unknown> | null {
   const candidate = extractItem(parsed?.parentObject)
   const id = pickString(item, 'id')
-  if (!id || candidate?.id !== id || candidate.type !== CODEX_ITEM.COLLAB_AGENT_TOOL_CALL)
+  if (!id || candidate?.id !== id || candidate.type !== CODEX_ITEM.CollabAgentToolCall)
     return null
   const tool = pickString(item, 'tool')
   const otherTool = pickString(candidate, 'tool')
@@ -36,8 +36,8 @@ export function resolveCodexAgentItem(item: Record<string, unknown>, counterpart
     if (resolved[field] == null || resolved[field] === '')
       resolved[field] = counterpart[field]
   }
-  if (!stringArray(resolved.receiverThreadIds).some(id => id.trim() !== ''))
-    resolved.receiverThreadIds = counterpart.receiverThreadIds
+  if (!stringArray(resolved[CODEX_COLLAB_ITEM.ReceiverThreadIDs]).some(id => id.trim() !== ''))
+    resolved[CODEX_COLLAB_ITEM.ReceiverThreadIDs] = counterpart[CODEX_COLLAB_ITEM.ReceiverThreadIDs]
   return resolved
 }
 
@@ -53,7 +53,7 @@ const TOOL_LABELS: Record<string, string> = {
   listAgents: 'List agents',
 }
 
-function agentMetadata(item: Record<string, unknown>): AgentResultSource['metadata'] {
+function agentMetadata(item: Record<string, unknown>): AgentRun['metadata'] {
   const model = pickString(item, 'model')
   const effort = pickString(item, 'reasoningEffort')
   return [
@@ -62,39 +62,45 @@ function agentMetadata(item: Record<string, unknown>): AgentResultSource['metada
   ]
 }
 
-export function codexAgentRequest(item: Record<string, unknown>): AgentRequestSource {
+export function codexAgentRequest(item: Record<string, unknown>): AgentRequest {
   const tool = pickString(item, 'tool')
-  const targets = stringArray(item.receiverThreadIds).filter(id => id.trim() !== '')
+  const targets = stringArray(item[CODEX_COLLAB_ITEM.ReceiverThreadIDs]).filter(id => id.trim() !== '')
+  // A SPAWN with one target created one background task, and that task's title says
+  // what the subagent does. Without it every spawn row reads "Subagent", because the
+  // description above is the tool's own label. The other tools act ON agents that
+  // already exist, so none of them created the row a title could come from.
+  const registryKey = tool === 'spawnAgent' && targets.length === 1 ? targets[0] : undefined
   return {
-    toolName: tool || 'Agent tool',
     description: pickString(TOOL_LABELS, tool) || tool || 'Agent tool',
     prompt: pickString(item, 'prompt'),
     metadata: [...targets.map(value => ({ label: 'Agent ID', value })), ...agentMetadata(item)],
+    ...(registryKey !== undefined ? { registryKey } : {}),
   }
 }
 
-const AGENT_STATES: Record<string, { status: string, outcome: AgentResultSource['outcome'] }> = {
-  pendingInit: { status: 'starting', outcome: 'running' },
-  running: { status: 'running', outcome: 'running' },
-  completed: { status: 'completed', outcome: 'completed' },
-  errored: { status: 'failed', outcome: 'failed' },
-  interrupted: { status: 'interrupted', outcome: 'stopped' },
-  shutdown: { status: 'stopped', outcome: 'stopped' },
-  notFound: { status: 'not found', outcome: 'failed' },
+/** Each native child state as the two words a run's card states: its label and its outcome. */
+const AGENT_STATES: Record<string, { statusLabel: string, outcome: AgentRunStatus }> = {
+  pendingInit: { statusLabel: 'starting', outcome: 'running' },
+  running: { statusLabel: 'running', outcome: 'running' },
+  completed: { statusLabel: 'completed', outcome: 'completed' },
+  errored: { statusLabel: 'failed', outcome: 'failed' },
+  interrupted: { statusLabel: 'interrupted', outcome: 'stopped' },
+  shutdown: { statusLabel: 'stopped', outcome: 'stopped' },
+  notFound: { statusLabel: 'not found', outcome: 'failed' },
 }
 
 /** The call's completion does not establish that any child agent completed. */
-export function codexAgentResults(item: Record<string, unknown>): AgentResultSource[] {
-  const states = pickObject(item, 'agentsStates') ?? {}
-  const ids = [...new Set([...stringArray(item.receiverThreadIds), ...Object.keys(states)])].filter(id => id.trim() !== '')
+export function codexAgentResults(item: Record<string, unknown>): AgentRun[] {
+  const states = pickObject(item, CODEX_COLLAB_ITEM.AgentsStates) ?? {}
+  const ids = [...new Set([...stringArray(item[CODEX_COLLAB_ITEM.ReceiverThreadIDs]), ...Object.keys(states)])].filter(id => id.trim() !== '')
   return ids.map((id) => {
     const state = pickObject(states, id)
     const nativeStatus = pickString(state, 'status')
     const launch = item.tool === 'spawnAgent' && item.status === 'completed'
     const knownState = Object.hasOwn(AGENT_STATES, nativeStatus) ? AGENT_STATES[nativeStatus] : undefined
     const resolved = knownState ?? (launch && !nativeStatus
-      ? { status: 'launched asynchronously', outcome: 'running' as const }
-      : { status: nativeStatus || 'status unavailable', outcome: 'unknown' as const })
+      ? { statusLabel: 'launched asynchronously', outcome: 'running' as const }
+      : { statusLabel: nativeStatus || 'status unavailable', outcome: 'unknown' as const })
     const report = pickString(state, 'message')
     const showPrompt = launch && resolved.outcome === 'running' && !report
     return {
@@ -104,7 +110,7 @@ export function codexAgentResults(item: Record<string, unknown>): AgentResultSou
       registryKey: id,
       metadata: [{ label: 'Agent ID', value: id }, ...agentMetadata(item)],
       body: report || (showPrompt ? pickString(item, 'prompt') : ''),
-      bodyLabel: showPrompt ? 'Prompt' : undefined,
+      ...(showPrompt ? { bodyLabel: 'Prompt' } : {}),
     }
   })
 }

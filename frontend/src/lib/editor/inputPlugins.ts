@@ -44,6 +44,8 @@ export function createSelectionWrapPlugin() {
           if (BRACKET_PAIRS[text]) {
             const open = text === ')' || text === ']' || text === '}' ? BRACKET_PAIRS[text] : text
             const close = BRACKET_PAIRS[open]
+            if (close === undefined)
+              return false
             // Insert close bracket first (higher pos) to avoid mapping issues
             const tr = state.tr
             tr.insertText(close, to)
@@ -259,9 +261,13 @@ export function createListItemEnterPlugin(refs: Pick<PluginRefs, 'getEnterMode'>
           const tr = state.tr.delete(paragraphStart, paragraphEnd)
 
           const afterListItem = tr.mapping.map($from.after(listItemDepth))
-          const newItem = state.schema.nodes.list_item.create(
+          const listItemType = state.schema.nodes.list_item
+          const paragraphType = state.schema.nodes.paragraph
+          if (!listItemType || !paragraphType)
+            return false
+          const newItem = listItemType.create(
             null,
-            state.schema.nodes.paragraph.create(),
+            paragraphType.create(),
           )
           tr.insert(afterListItem, newItem)
           // Position cursor inside the new list_item's paragraph: afterListItem + 1 (list_item open) + 1 (paragraph open)

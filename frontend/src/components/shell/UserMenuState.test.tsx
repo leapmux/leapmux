@@ -188,7 +188,7 @@ describe('preferences address', () => {
  * router and the platform bridge. The same shape as the guard in
  * `ElevationPromptHost.test.tsx`, which pins the sibling registration.
  */
-describe('preferencesAddress mounting', () => {
+describe('PreferencesAddress mounting', () => {
   const srcRoot = join(frontendRoot, 'src')
   // A JSX MOUNT, never the bare name: this module defines the component and
   // several files carry prose about it, and neither is a mount.

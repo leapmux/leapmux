@@ -9,9 +9,9 @@ import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartP
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
+import type { TodoItem } from '~/models/todo'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { GoalSurface } from '~/stores/chatGoal'
-import type { TodoItem } from '~/stores/chatTodos'
 import type { createRepoGitStore, GitFilterTab } from '~/stores/repoGit.store'
 import type { createSectionStore } from '~/stores/section.store'
 import type { TabItemOps } from '~/stores/tab.types'
@@ -54,7 +54,8 @@ export interface SidebarElementsOpts {
   onFileOpen: (path: string, openSource?: GitFilterTab) => void
   isActiveWorkspaceArchived: boolean
   gitStatusStore: ReturnType<typeof createRepoGitStore>
-  activeFilePath?: string
+  /** Always provided via a reactive getter; undefined when no file tab is active. */
+  activeFilePath: string | undefined
   hasActiveFileTab: boolean
   showGoalsAndTodos: boolean
   activeTodos: TodoItem[]
@@ -154,9 +155,9 @@ export function buildCommonSidebarProps(opts: SidebarElementsOpts, display?: Sid
   const commonProps = mergeProps(opts, {
     get isCollapsed() { return display?.isCollapsed() ?? false },
     onExpand: display?.onExpand ?? (() => {}),
-    initialOpenSections: display?.initialOpenSections,
-    initialSectionSizes: display?.initialSectionSizes,
-    onSectionStateChange: display?.onStateChange,
+    ...(display?.initialOpenSections !== undefined ? { initialOpenSections: display.initialOpenSections } : {}),
+    ...(display?.initialSectionSizes !== undefined ? { initialSectionSizes: display.initialSectionSizes } : {}),
+    ...(display?.onStateChange !== undefined ? { onSectionStateChange: display.onStateChange } : {}),
     get workerId() { return opts.getCurrentTabContext().workerId },
     get workingDir() { return opts.getCurrentTabContext().workingDir },
     get gitToplevel() { return opts.getCurrentTabContext().gitToplevel },

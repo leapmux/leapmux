@@ -28,7 +28,7 @@ vi.mock('~/api/platformBridge', () => ({
   },
 }))
 
-describe('tauriRelayWebSocket', () => {
+describe('TauriRelayWebSocket', () => {
   beforeEach(() => {
     bridgeMocks.closeHandler = undefined
     bridgeMocks.onEvent.mockReset()
@@ -401,8 +401,8 @@ describe('tauriRelayWebSocket', () => {
 
     // Both buffered frames flushed, in send order, after OPEN.
     expect(bridgeMocks.sendChannelMessage).toHaveBeenCalledTimes(2)
-    expect(bridgeMocks.sendChannelMessage.mock.calls[0][0]).not.toBe('')
-    expect(bridgeMocks.sendChannelMessage.mock.calls[1][0]).not.toBe('')
+    expect(bridgeMocks.sendChannelMessage.mock.calls[0]?.[0]).not.toBe('')
+    expect(bridgeMocks.sendChannelMessage.mock.calls[1]?.[0]).not.toBe('')
   })
 
   it('drops sends after close', async () => {

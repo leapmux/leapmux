@@ -1,3 +1,4 @@
+import type { BrowserContextOptions } from '@playwright/test'
 import type { DevServerHandle } from './helpers/devServer'
 import type { TlsProxyHandle } from './helpers/tlsProxy'
 import { test as base, expect } from '@playwright/test'
@@ -43,11 +44,15 @@ const test = base.extend<{ server: DevServerHandle, tlsProxy: TlsProxyHandle }>(
     await use(tlsProxy.url)
   },
   context: async ({ browser, baseURL }, use) => {
-    const context = await browser.newContext({
-      baseURL,
+    const options: BrowserContextOptions = {
       // Ephemeral self-signed cert minted by startTlsProxy.
       ignoreHTTPSErrors: true,
-    })
+    }
+    // `baseURL` is optional on the fixture type; set it only when present so
+    // the options stay assignable under exactOptionalPropertyTypes.
+    if (baseURL !== undefined)
+      options.baseURL = baseURL
+    const context = await browser.newContext(options)
     await use(context)
     await context.close()
   },

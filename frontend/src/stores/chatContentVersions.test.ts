@@ -2,7 +2,7 @@ import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { createContentVersionStore } from '~/stores/chatContentVersions'
 
-describe('chatcontentversions', () => {
+describe('chatContentVersions', () => {
   it('defaults to 0 and increments on each bump', () => {
     createRoot((dispose) => {
       const store = createContentVersionStore()

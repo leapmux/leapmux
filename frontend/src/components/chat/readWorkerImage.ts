@@ -44,5 +44,6 @@ export async function readWorkerImage(workerId: string, path: string, workingDir
   if (!RENDERABLE_IMAGE_MIME_TYPES.has(mimeType))
     throw new Error('The image file format is not supported')
   const data = uint8ArrayToBase64(content)
-  return { filePath, data, mimeType, dimensions: sniffImageDimensionsFromBase64(data) ?? undefined }
+  const dimensions = sniffImageDimensionsFromBase64(data) ?? undefined
+  return { filePath, data, mimeType, ...(dimensions !== undefined ? { dimensions } : {}) }
 }

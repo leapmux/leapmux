@@ -59,6 +59,22 @@ describe('wireRunningToolToUpdate', () => {
       .toBe('other-session')
   })
 
+  // The live output of a running call. An EMPTY tail is a real state -- a command
+  // that has printed nothing yet -- so the key's presence decides, not its text.
+  it('reads the output tail and its truncation flag', () => {
+    expect(wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, output_tail: 'building...\n', output_truncated: true }))
+      .toEqual({ ...span('toolu_A'), outputTail: 'building...\n', outputTruncated: true })
+    expect(wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, output_tail: '' }))
+      .toEqual({ ...span('toolu_A'), outputTail: '', outputTruncated: false })
+  })
+
+  // A heartbeat states no tail, and it must leave the one the last output frame
+  // reported alone -- the two families report disjoint facts about one call.
+  it('leaves the tail off an update that states none', () => {
+    expect(wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, elapsed_seconds: 30 }))
+      .toEqual({ ...span('toolu_A'), elapsedSeconds: 30 })
+  })
+
   // A payload that states no session reads as '', which is also what
   // messageSpanKey gives a row that carries none. The two still meet at one key.
   it('reads a missing or unusable agent session as an empty string', () => {
@@ -326,7 +342,7 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
       const s = boundaryStores()
       expect(running(s.chatStore)).toHaveLength(2)
       const msg = agentMessage({ type: 'result', subtype: 'success' })
-      handleResultDivider('a1', msg, parseMessageContent(msg), s, 'live')
+      handleResultDivider('a1', msg, parseMessageContent(msg), s)
       expectNothingLive(s)
       dispose()
     })
@@ -388,7 +404,7 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
       const s = boundaryStores()
       s.chatStore.applyToolProgress('a2', { ...span('toolu_A'), elapsedSeconds: 30 })
       const msg = agentMessage({ type: 'result', subtype: 'success' })
-      handleResultDivider('a1', msg, parseMessageContent(msg), s, 'live')
+      handleResultDivider('a1', msg, parseMessageContent(msg), s)
       expect(running(s.chatStore)).toHaveLength(0)
       expect(s.chatStore.getToolProgress('a2', span('toolu_A'))?.elapsedSeconds).toBe(30)
       dispose()
@@ -412,6 +428,22 @@ describe('dropFinishedToolProgress', () => {
         { spanId: 'toolu_A' },
       )
       dropFinishedToolProgress('a1', msg, parseMessageContent(msg), chatStore)
+      expect(chatStore.getToolProgress('a1', span('toolu_A'))).toBeUndefined()
+      dispose()
+    })
+  })
+
+  // The drop reads the role of the RESOLVED parse, so a result whose bytes only
+  // the merge exposes still clears the entry a reader was watching.
+  it('drops the span from the resolved result role', () => {
+    createRoot((dispose) => {
+      const chatStore = seeded()
+      const msg = agentMessage(
+        { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_A', content: 'ok' }] }, tool_use_result: { stdout: 'recovered' } },
+        { spanId: 'toolu_A' },
+      )
+      const parsed = parseMessageContent(msg)
+      dropFinishedToolProgress('a1', msg, parsed, chatStore)
       expect(chatStore.getToolProgress('a1', span('toolu_A'))).toBeUndefined()
       dispose()
     })

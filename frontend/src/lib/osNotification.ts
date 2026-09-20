@@ -88,7 +88,7 @@ export function notifyOs(opts: { title: string, body: string, tag?: string }): v
     return
   }
   try {
-    const notification = new Notification(opts.title, { body: opts.body, tag: opts.tag })
+    const notification = new Notification(opts.title, { body: opts.body, ...(opts.tag !== undefined ? { tag: opts.tag } : {}) })
     void notification
   }
   catch {

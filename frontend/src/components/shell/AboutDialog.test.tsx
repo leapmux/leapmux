@@ -28,7 +28,7 @@ afterEach(() => {
   cleanup()
 })
 
-describe('aboutDialog', () => {
+describe('AboutDialog', () => {
   it('lists leapmux.dev immediately before the GitHub URL under Homepage', () => {
     render(() => <AboutDialog onClose={() => {}} />)
 

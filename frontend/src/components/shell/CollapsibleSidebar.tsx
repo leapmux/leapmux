@@ -310,7 +310,8 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
               if (index() === 0 || expandedCount() < 2)
                 return false
               const ids = expandableSectionIds()
-              if (!isOpen(ids[index() - 1]))
+              const prevId = ids[index() - 1]
+              if (prevId === undefined || !isOpen(prevId))
                 return false
               return ids.slice(index()).some(sid => isOpen(sid))
             }
@@ -332,8 +333,9 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
               const ids = expandableSectionIds()
               const expandedIds = ids.filter(sid => isOpen(sid))
               for (let i = index() - 1; i >= 0; i--) {
-                if (isOpen(ids[i]))
-                  return expandedIds.indexOf(ids[i])
+                const earlierId = ids[i]
+                if (earlierId !== undefined && isOpen(earlierId))
+                  return expandedIds.indexOf(earlierId)
               }
               return -1
             }

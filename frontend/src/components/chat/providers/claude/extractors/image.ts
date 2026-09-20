@@ -65,7 +65,13 @@ function claudeStructuredImage(toolUseResult: Record<string, unknown> | null | u
   if (!data)
     return null
   const dimensions = claudeImageDimensions(file)
-  return dimensions ? { data, mimeType, dimensions } : { data, mimeType }
+  // Each optional half rides only when the payload stated it; older CLIs omit
+  // the MIME type and the dimensions both.
+  return {
+    data,
+    ...(mimeType !== undefined ? { mimeType } : {}),
+    ...(dimensions ? { dimensions } : {}),
+  }
 }
 
 /**
@@ -90,7 +96,7 @@ function claudeImageDimensions(file: Record<string, unknown> | null): { width: n
 }
 
 /**
- * `Provider.toolResultImages` for Claude: every image in a tool_result row,
+ * `claudeToolResultImages`: every image in a Claude tool_result row,
  * walked from the raw parsed message.
  *
  * Runs in two places -- the row renderer, and the image tab resolving index N
@@ -112,10 +118,13 @@ export function claudeToolResultImages(
   const toolResult = content.find(block => isObject(block) && block.type === 'tool_result')
   if (!toolResult)
     return []
-  const blocks = asContentArray((toolResult as Record<string, unknown>).content)
+  const blocks = asContentArray(toolResult.content)
+  const toolInput = extractPairedToolUseInfo(parsed, toolUseParsed)?.input
   return claudeImagesFromToolResult({
-    toolUseResult: pickObject(parsed, 'tool_use_result') ?? undefined,
+    // `null` is the arg type's own "no structured payload", which `pickObject`
+    // already answers with; `undefined` would state an absent key instead.
+    toolUseResult: pickObject(parsed, 'tool_use_result'),
     blockImages: blocks ? splitToolResultContent(blocks, { text: 'text' }).images : [],
-    toolInput: extractPairedToolUseInfo(parsed, toolUseParsed)?.input,
+    ...(toolInput !== undefined ? { toolInput } : {}),
   })
 }

@@ -63,9 +63,9 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
       side="left"
       isCollapsed={props.isCollapsed}
       onExpand={props.onExpand}
-      initialOpenSections={props.initialOpenSections}
-      initialSectionSizes={props.initialSectionSizes}
-      onStateChange={props.onSectionStateChange}
+      {...(props.initialOpenSections !== undefined ? { initialOpenSections: props.initialOpenSections } : {})}
+      {...(props.initialSectionSizes !== undefined ? { initialSectionSizes: props.initialSectionSizes } : {})}
+      {...(props.onSectionStateChange !== undefined ? { onStateChange: props.onSectionStateChange } : {})}
       expandSectionRef={expandSectionRef}
     />
   )

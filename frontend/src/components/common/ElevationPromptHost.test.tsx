@@ -76,7 +76,7 @@ function dismissPrompt() {
   fireEvent.click(within(promptDialog()).getByRole('button', { name: /close/i }))
 }
 
-describe('elevationPromptHost', () => {
+describe('ElevationPromptHost', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     // RE-ESTABLISHED per test, not left to the factory above: a test that

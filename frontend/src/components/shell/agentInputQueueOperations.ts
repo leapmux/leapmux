@@ -43,7 +43,9 @@ export function createAgentInputQueueOperations(deps: {
    * leaves the panel on a stale queue until the next broadcast arrives. A
    * failure shows one warning and rethrows, so the caller still sees it.
    */
-  const runQueueRpc = async <T extends { snapshot?: AgentInputQueueSnapshot }>(label: string, call: () => Promise<T>): Promise<T> => {
+  // The generated response types declare `snapshot?: ... | undefined` (proto
+  // field presence), so the constraint must admit an explicit undefined too.
+  const runQueueRpc = async <T extends { snapshot?: AgentInputQueueSnapshot | undefined }>(label: string, call: () => Promise<T>): Promise<T> => {
     let response: T
     try {
       response = await call()
@@ -56,7 +58,9 @@ export function createAgentInputQueueOperations(deps: {
     return response
   }
   // The one handler whose caller needs the response: the composer loads the
-  // full text and the attachments of the input that it starts to edit.
+  // full text and the attachments of the input that it starts to edit. The
+  // response object is handed through UNCHANGED -- the composer's edit session
+  // keys off it, so no member is rebuilt or dropped here.
   const beginQueueEdit = (item: QueuedAgentInput, takeover: boolean) =>
     runQueueRpc('Failed to edit queued input', () => workerRpc.beginQueuedAgentInputEdit(queueWorkerID(item), {
       agentId: item.agentId,

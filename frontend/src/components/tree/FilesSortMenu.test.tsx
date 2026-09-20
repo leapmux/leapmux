@@ -22,7 +22,7 @@ function checked(testId: string): boolean {
   return screen.getByTestId(testId).getAttribute('aria-checked') === 'true'
 }
 
-describe('filesSortMenu', () => {
+describe('FilesSortMenu', () => {
   it('checks the radio matching the current order', () => {
     renderMenu({ key: 'size', direction: 'desc' })
     expect(checked('files-sort-key-size')).toBe(true)

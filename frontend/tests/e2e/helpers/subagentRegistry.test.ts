@@ -34,8 +34,10 @@ const LOCATOR = /page\.locator\(\s*(['"`])((?:(?!\1).)*)\1/g
 const TEST_ID = /page\.getByTestId\(\s*(['"`])((?:(?!\1).)*)\1/g
 
 function selectorsIn(text: string): string[] {
+  // Group 2 always participates (a starred group matches empty rather than
+  // abstaining), so the fallback is type-level only.
   return [
-    ...[...text.matchAll(LOCATOR)].map(match => match[2]),
+    ...[...text.matchAll(LOCATOR)].map(match => match[2] ?? ''),
     ...[...text.matchAll(TEST_ID)].map(match => `[data-testid="${match[2]}"]`),
   ]
 }

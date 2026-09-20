@@ -173,6 +173,8 @@ export function isBinaryContent(bytes: Uint8Array): boolean {
   let nonPrintable = 0
   for (let i = 0; i < checkLen; i++) {
     const b = bytes[i]
+    if (b === undefined)
+      break
     if (b === 0)
       return true
     if (b < 7 || (b > 14 && b < 32 && b !== 27))

@@ -367,7 +367,10 @@ test.describe('Quake-mode terminal', () => {
       const bg = getComputedStyle(el).backgroundColor
       const rgba = bg.match(/^rgba?\(([^)]*)\)$/)
       if (rgba) {
-        const parts = rgba[1].split(/[,/]/).map(part => part.trim()).filter(Boolean)
+        const rawParts = rgba[1]
+        if (rawParts === undefined)
+          return 1
+        const parts = rawParts.split(/[,/]/).map(part => part.trim()).filter(Boolean)
         return parts.length === 4 ? Number(parts[3]) : 1
       }
       const srgb = bg.match(/\/\s*([\d.]+)\s*\)$/)

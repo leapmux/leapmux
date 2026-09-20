@@ -207,6 +207,8 @@ describe('downloadFileFromWorker', () => {
     await downloadFileFromWorker('w1', '/repo/short.bin', undefined, onProgress)
 
     const lastCall = onProgress.mock.calls[onProgress.mock.calls.length - 1]
+    if (lastCall === undefined)
+      throw new Error('expected an onProgress call')
     expect(lastCall[0]).toBe(4096)
     expect(lastCall[1]).toBe(4096)
   })
@@ -323,7 +325,10 @@ for (const c of SAVE_FN_CASES) {
       await c.fn('w1', '/repo/x.bin')
 
       expect(fileSaveWriteImpl).toHaveBeenCalledTimes(1)
-      const written = fileSaveWriteImpl.mock.calls[0][1] as Uint8Array
+      const firstWrite = fileSaveWriteImpl.mock.calls[0]
+      if (firstWrite === undefined)
+        throw new Error('expected a single write call')
+      const written = firstWrite[1] as Uint8Array
       expect(written.buffer).toBe(bytes.buffer)
     })
 
@@ -337,7 +342,10 @@ for (const c of SAVE_FN_CASES) {
       await c.fn('w1', '/repo/x.bin')
 
       expect(fileSaveWriteImpl).toHaveBeenCalledTimes(1)
-      const written = fileSaveWriteImpl.mock.calls[0][1] as Uint8Array
+      const firstWrite = fileSaveWriteImpl.mock.calls[0]
+      if (firstWrite === undefined)
+        throw new Error('expected a single write call')
+      const written = firstWrite[1] as Uint8Array
       expect(written.buffer).not.toBe(big)
       expect(written.byteOffset).toBe(0)
       expect(written.byteLength).toBe(128)
@@ -361,11 +369,11 @@ for (const c of SAVE_FN_CASES) {
       const done = c.fn('w1', '/repo/big.bin')
       await vi.waitFor(() => expect(writeReleases.length).toBe(1))
       expect(readFileImpl.mock.calls.length).toBeGreaterThan(1)
-      writeReleases[0]()
+      writeReleases[0]?.()
       await vi.waitFor(() => expect(writeReleases.length).toBe(2))
-      writeReleases[1]()
+      writeReleases[1]?.()
       await vi.waitFor(() => expect(writeReleases.length).toBe(3))
-      writeReleases[2]()
+      writeReleases[2]?.()
       await done
       expect(fileSaveCommitImpl).toHaveBeenCalledWith(c.id)
     })

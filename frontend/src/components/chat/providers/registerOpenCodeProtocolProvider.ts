@@ -1,13 +1,23 @@
+import type { OpenCodeFamilyToolKinds } from './opencode/extractors/toolCall'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
 import { registerACPProvider } from './acp/registerACPProvider'
-import { extractOpenCodeQuestions, OpenCodeControlActions, OpenCodeControlContent, sendOpenCodeQuestionRejectResponse, sendOpenCodeQuestionResponse } from './opencode/OpenCodeControlRequest'
-import { opencodeControlResponseDisplay } from './opencode/questionAnswers'
-import { openCodeToolAdapter } from './opencode/toolPresentation'
+import { extractOpenCodeQuestions, sendOpenCodeQuestionRejectResponse, sendOpenCodeQuestionResponse } from './opencode/askUserQuestion'
+import { openCodeControlResponseSummary } from './opencode/controlResponse'
+import { openCodeExtractControl } from './opencode/extractControl'
+import { openCodeToolCallAdapterFor } from './opencode/extractors/toolCall'
 
 interface OpenCodeProtocolOptions {
   provider: AgentProvider
   /** Default primary-agent option, e.g. `'build'` for OpenCode, `'code'` for Kilo. */
   defaultPrimaryAgent: string
+  /**
+   * The kinds this provider knows that the shared protocol layer does not state.
+   *
+   * The two daemons share a wire format and run different TOOL SETS, so the identity
+   * table is the one part of the family adapter that is per-provider.
+   */
+  toolKinds?: OpenCodeFamilyToolKinds
 }
 
 const PRIMARY_AGENT_KEY = 'primaryAgent'
@@ -21,20 +31,21 @@ const PLAN_PRIMARY_AGENT = 'plan'
 export function registerOpenCodeProtocolProvider(opts: OpenCodeProtocolOptions): void {
   registerACPProvider({
     provider: opts.provider,
-    toolAdapter: openCodeToolAdapter,
+    toolCallAdapter: openCodeToolCallAdapterFor(opts.toolKinds),
     settingsConfig: {
       kind: 'optionGroup',
       optionGroupKey: PRIMARY_AGENT_KEY,
       defaultValue: opts.defaultPrimaryAgent,
     },
-    ControlContent: OpenCodeControlContent,
-    ControlActions: OpenCodeControlActions,
+    // The two daemons answer a permission with one of their own option ids, and
+    // send one back when the request itself offered none.
+    extractControl: openCodeExtractControl,
     planValue: PLAN_PRIMARY_AGENT,
     // OpenCode and Kilo share the question-answer derivation from this single registration site
     // (mirroring the backend's questionRequestContext hook), so it can't drift per provider.
-    controlResponseDisplay: opencodeControlResponseDisplay,
+    controlResponseDisplay: openCodeControlResponseSummary,
     questionHandling: {
-      isRequest: payload => payload?.type === 'question.asked',
+      isRequest: payload => payload?.type === OPENCODE_EVENT.QuestionAsked,
       extractQuestions: extractOpenCodeQuestions,
       sendAnswer: (request, sendControlResponse, questions, answerState) =>
         sendOpenCodeQuestionResponse(sendControlResponse, request.requestId, questions, answerState),

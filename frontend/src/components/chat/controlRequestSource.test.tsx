@@ -10,7 +10,16 @@ import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { useControlRequestSource } from './controlRequestSource'
 
 const sourceMessage = (seq: bigint, marker: string, provider = AgentProvider.PI) => makeMessage({ id: `source-${seq}-${marker}`, seq, agentProvider: provider, content: rawContent({ marker }) })
-const request = (sourceSeq?: bigint, claimToken = 'first'): ControlRequest => ({ agentId: 'agent', requestId: 'request', claimToken, payload: {}, sourceSeq })
+function request(sourceSeq?: bigint, claimToken = 'first'): ControlRequest {
+  return {
+    agentId: 'agent',
+    requestId: 'request',
+    claimToken,
+    payload: {},
+    // Omitted (not undefined) when no source seq is stated.
+    ...(sourceSeq !== undefined ? { sourceSeq } : {}),
+  }
+}
 
 afterEach(() => {
   vi.useRealTimers()
@@ -28,7 +37,8 @@ describe('control source resolution', () => {
     const { container } = render(() => <View />)
     if (location === 'fetched') {
       await waitFor(() => expect(fetchMessage).toHaveBeenCalledOnce())
-      await fetchMessage.mock.results[0].value
+      // The wait above guarantees the result; `?.` is the type-level guard alone.
+      await fetchMessage.mock.results[0]?.value
     }
     expect(container.textContent).toBe('No source')
   })
@@ -96,7 +106,8 @@ describe('control source resolution', () => {
     await waitFor(() => expect(fetchMessage).toHaveBeenCalledOnce())
     setCurrent(request(undefined, 'second'))
     resolve(sourceMessage(7n, 'stale'))
-    await fetchMessage.mock.results[0].value
+    // The wait above guaranteed the fetch; `?.` is the type-level guard alone.
+    await fetchMessage.mock.results[0]?.value
     expect(container.textContent).toBe('No source')
   })
 

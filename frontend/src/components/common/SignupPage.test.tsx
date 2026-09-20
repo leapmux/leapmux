@@ -64,7 +64,7 @@ function renderSignupPage() {
   ))
 }
 
-describe('signupPage', () => {
+describe('SignupPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockIsSignupEnabled.mockReturnValue(true)

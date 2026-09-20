@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { todoList } from '~/components/todo/TodoList.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { renderMessageContent } from '../messageRenderers'
+import { renderMessageContent } from '../messageContentRenderer'
 import { toolUseHeader } from '../toolStyles.css'
 import { providerFor } from './registry'
 import { input } from './testUtils'
@@ -21,11 +21,16 @@ describe.each([AgentProvider.CLAUDE_CODE, AgentProvider.ZCODE])('paired to-do la
       : { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', result: { success: true, content: 'Todos updated' } } }
     const plugin = providerFor(provider)!
     const parsed = (message: Record<string, unknown>) => ({ ...input(message), spanType: 'TodoWrite' })
-    const sources = testMessageSources({ request: () => parsed(request), result: () => parsed(result) })
+    const sources = (role: 'request' | 'result') => testMessageSources({
+      request: () => parsed(request),
+      result: () => parsed(result),
+      role: () => role,
+      visibleRows: () => ({ request: true, result: true }),
+    })
     const { container } = render(() => (
       <>
-        <div data-row="request">{renderMessageContent(request, { premeasureMode: true, spanType: 'TodoWrite', sources }, plugin.classify(parsed(request)), provider)}</div>
-        <div data-row="result">{renderMessageContent(result, { premeasureMode: true, spanType: 'TodoWrite', sources }, plugin.classify(parsed(result)), provider)}</div>
+        <div data-row="request">{renderMessageContent(request, { premeasureMode: true, spanType: 'TodoWrite', sources: sources('request') }, plugin?.transcript.classify(parsed(request)), provider)}</div>
+        <div data-row="result">{renderMessageContent(result, { premeasureMode: true, spanType: 'TodoWrite', sources: sources('result') }, plugin?.transcript.classify(parsed(result)), provider)}</div>
       </>
     ))
     expect(container.querySelectorAll(`.${toolUseHeader}`)).toHaveLength(1)

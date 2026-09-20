@@ -116,7 +116,7 @@ function baseProps(overrides: BasePropsOverrides = {}): ChatScrollRailProps {
   }
 }
 
-describe('chatScrollRail', () => {
+describe('ChatScrollRail', () => {
   it('renders nothing when not loaded', () => {
     const { container } = render(() => <ChatScrollRail {...baseProps({ loaded: false })} />)
     expect(container.querySelector('[data-testid="chat-scroll-rail"]')).toBeNull()
@@ -159,12 +159,13 @@ describe('chatScrollRail', () => {
     expect(dots.length).toBe(2)
     // Dots sit on the thumb-CENTRE axis: fixed thumb 24px -> centre travels [12, 388].
     // dotFraction(2)=0.3 -> 12+0.3*376=124.8; dotFraction(4)=0.7 -> 275.2.
+    // `?.` reads are the type-level guard alone; dots.length is asserted above.
     expect((dots[0] as HTMLElement).style.top).toBe('125px')
-    expect(dots[0].getAttribute('data-seq')).toBe('2')
-    expect(dots[0].getAttribute('data-mark-type')).toBe(String(MarkType.USER_MESSAGE))
+    expect(dots[0]?.getAttribute('data-seq')).toBe('2')
+    expect(dots[0]?.getAttribute('data-mark-type')).toBe(String(MarkType.USER_MESSAGE))
     expect((dots[1] as HTMLElement).style.top).toBe('275px')
-    expect(dots[1].getAttribute('data-seq')).toBe('4')
-    expect(dots[1].getAttribute('data-mark-type')).toBe(String(MarkType.CONTROL_RESPONSE))
+    expect(dots[1]?.getAttribute('data-seq')).toBe('4')
+    expect(dots[1]?.getAttribute('data-mark-type')).toBe(String(MarkType.CONTROL_RESPONSE))
   })
 
   it('keeps the same dot DOM nodes when maxSeq bumps without moving a dot pixel (no per-row rebuild)', () => {
@@ -201,8 +202,9 @@ describe('chatScrollRail', () => {
     const { container } = render(() => <ChatScrollRail {...baseProps({ minSeq: 1n, maxSeq: 100_000n, marks })} />)
     const dots = container.querySelectorAll('[data-testid="chat-scroll-rail-dot"]')
     expect(dots.length).toBe(1)
-    expect(dots[0].getAttribute('data-count')).toBe('3')
-    expect(dots[0].getAttribute('aria-label')).toBe('3 messages')
+    // `?.` reads are the type-level guard alone; dots.length is asserted above.
+    expect(dots[0]?.getAttribute('data-count')).toBe('3')
+    expect(dots[0]?.getAttribute('aria-label')).toBe('3 messages')
     // The cluster gets the extra-ring variant class so it reads as multiple.
     expect((dots[0] as HTMLElement).className).toContain(styles.dotCluster)
   })
@@ -266,7 +268,8 @@ describe('chatScrollRail', () => {
     expect(onJumpToSeq).toHaveBeenCalledWith(2n)
     await tick()
     expect(then).toHaveBeenCalledTimes(1)
-    expect(typeof then.mock.calls[0][1]).toBe('function') // the onRejected half
+    // The call always exists at this point; `?.` is the type-level guard alone.
+    expect(typeof then.mock.calls[0]?.[1]).toBe('function') // the onRejected half
   })
 
   it('ignores a keyboard activation while a drag is live (no rival seek)', () => {
@@ -413,7 +416,8 @@ describe('chatScrollRail', () => {
     rail.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 60 }))
 
     expect(onScrollWheel).toHaveBeenCalledTimes(1)
-    expect(onScrollWheel.mock.calls[0][0].deltaY).toBe(60)
+    // The call exists (asserted above); `?.` is the type-level guard alone.
+    expect(onScrollWheel.mock.calls[0]?.[0].deltaY).toBe(60)
   })
 
   it('normalizes line-mode and page-mode wheel deltas to pixels', () => {
@@ -998,29 +1002,35 @@ describe('chatScrollRail', () => {
   it('labels each dot for accessibility by its mark type', () => {
     const { container } = render(() => <ChatScrollRail {...baseProps()} />)
     const dots = container.querySelectorAll('[data-testid="chat-scroll-rail-dot"]')
-    expect(dots[0].getAttribute('aria-label')).toBe('Your message')
-    expect(dots[1].getAttribute('aria-label')).toBe('Your response')
+    // `?.` reads are the type-level guard alone; baseProps() renders one dot per mark.
+    expect(dots[0]?.getAttribute('aria-label')).toBe('Your message')
+    expect(dots[1]?.getAttribute('aria-label')).toBe('Your response')
   })
 
   it('describes a focused dot by the preview card its focus opened', () => {
     const previewFor = (seq: bigint) => (seq === 2n ? 'the first message' : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const dots = container.querySelectorAll('[data-testid="chat-scroll-rail-dot"]')
-    expect(dots[0].getAttribute('aria-describedby')).toBeNull()
+    // `?.` reads are the type-level guard alone; baseProps() renders one dot per mark.
+    expect(dots[0]?.getAttribute('aria-describedby')).toBeNull()
 
     // This rail gives FOCUS its own open channel, so the card is a surface the keyboard reaches by
     // design. Without the description a screen-reader user hears "Your message" and never the
     // message -- the whole content the feature exists to show.
-    fireEvent.focus(dots[0])
+    const [firstDot, secondDot] = dots
+    if (firstDot === undefined || secondDot === undefined)
+      throw new Error('expected both dots to mount')
+
+    fireEvent.focus(firstDot)
     const card = container.querySelector('[data-testid="chat-scroll-rail-preview"]')!
     expect(card.id).not.toBe('')
-    expect(dots[0].getAttribute('aria-describedby')).toBe(card.id)
+    expect(firstDot.getAttribute('aria-describedby')).toBe(card.id)
     expect(card.textContent).toContain('the first message')
     // Only the dot the card actually describes claims it.
-    expect(dots[1].getAttribute('aria-describedby')).toBeNull()
+    expect(secondDot.getAttribute('aria-describedby')).toBeNull()
 
-    fireEvent.blur(dots[0])
-    expect(dots[0].getAttribute('aria-describedby')).toBeNull()
+    fireEvent.blur(firstDot)
+    expect(firstDot.getAttribute('aria-describedby')).toBeNull()
   })
 
   it('hides the rail when the whole conversation is loaded and fits (thumb would be full)', () => {
@@ -1098,7 +1108,7 @@ describe('chatScrollRail', () => {
   })
 })
 
-describe('chatScrollRail dot preview card', () => {
+describe('ChatScrollRail dot preview card', () => {
   /** Hover the first dot -- the card opens IMMEDIATELY (no show-delay), and returns it. */
   function hoverFirstDot(container: HTMLElement): HTMLElement | null {
     const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
@@ -1418,9 +1428,13 @@ describe('chatScrollRail dot preview card', () => {
     const previewFor = (seq: bigint) => (seq === 2n ? 'message two' : seq === 4n ? 'message four' : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const dots = container.querySelectorAll('[data-testid="chat-scroll-rail-dot"]')
-    fireEvent.pointerEnter(dots[0])
+    // baseProps() renders one dot per mark; the guard is type-level alone.
+    const [firstDot, secondDot] = dots
+    if (firstDot === undefined || secondDot === undefined)
+      throw new Error('expected both dots to mount')
+    fireEvent.pointerEnter(firstDot)
     const card = container.querySelector('[data-testid="chat-scroll-rail-preview"]') as HTMLElement
-    fireEvent.pointerLeave(dots[0])
+    fireEvent.pointerLeave(firstDot)
     fireEvent.pointerEnter(card)
 
     fireEvent.pointerDown(card)
@@ -1428,13 +1442,13 @@ describe('chatScrollRail dot preview card', () => {
     // drags the pointer straight across them. Re-targeting the card here would swap its body under
     // the reader's own selection -- and the selection dies with the text nodes it pointed at.
     fireEvent.pointerLeave(card)
-    fireEvent.pointerEnter(dots[1])
+    fireEvent.pointerEnter(secondDot)
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toHaveTextContent('message two')
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).not.toHaveTextContent('message four')
 
     // Once the press ends the dots have their say again, so this is a hold, not a permanent lock.
     fireEvent.pointerUp(window)
-    fireEvent.pointerEnter(dots[1])
+    fireEvent.pointerEnter(secondDot)
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toHaveTextContent('message four')
   })
 
@@ -1443,9 +1457,13 @@ describe('chatScrollRail dot preview card', () => {
     const previewFor = (seq: bigint) => (seq === 2n ? 'message two' : seq === 4n ? 'message four' : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const dots = container.querySelectorAll('[data-testid="chat-scroll-rail-dot"]')
-    fireEvent.pointerEnter(dots[0])
-    fireEvent.pointerLeave(dots[0])
-    fireEvent.pointerEnter(dots[1])
+    // baseProps() renders one dot per mark; the guard is type-level alone.
+    const [firstDot, secondDot] = dots
+    if (firstDot === undefined || secondDot === undefined)
+      throw new Error('expected both dots to mount')
+    fireEvent.pointerEnter(firstDot)
+    fireEvent.pointerLeave(firstDot)
+    fireEvent.pointerEnter(secondDot)
     const cards = container.querySelectorAll('[data-testid="chat-scroll-rail-preview"]')
     expect(cards.length).toBe(1) // never two, and never the old one for a moment longer
     expect(cards[0]).toHaveTextContent('message four')
@@ -1458,13 +1476,17 @@ describe('chatScrollRail dot preview card', () => {
     const previewFor = (seq: bigint) => (seq === 2n ? 'message two' : seq === 4n ? 'message four' : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const dots = container.querySelectorAll('[data-testid="chat-scroll-rail-dot"]')
-    fireEvent.pointerEnter(dots[0])
+    // baseProps() renders one dot per mark; the guard is type-level alone.
+    const [firstDot, secondDot] = dots
+    if (firstDot === undefined || secondDot === undefined)
+      throw new Error('expected both dots to mount')
+    fireEvent.pointerEnter(firstDot)
     const card = container.querySelector('[data-testid="chat-scroll-rail-preview"]') as HTMLElement
     expect(card.style.top).toBe('125px')
     card.scrollTop = 150 // the reader scrolled deep into this dot's preview
 
-    fireEvent.pointerLeave(dots[0])
-    fireEvent.pointerEnter(dots[1])
+    fireEvent.pointerLeave(firstDot)
+    fireEvent.pointerEnter(secondDot)
 
     // <Show> is not keyed, so the same element carries the next dot. Both of these would pass
     // silently if the card froze its props at creation: the card would sit at the first dot's Y,
@@ -1626,7 +1648,11 @@ describe('chatScrollRail dot preview card', () => {
     ])
     const { container } = render(() => <ChatScrollRail {...baseProps({ marks: marks(), previewFor })} />)
     const dots = container.querySelectorAll('[data-testid="chat-scroll-rail-dot"]')
-    fireEvent.pointerEnter(dots[0])
+    // Two marks above, so the dot exists; the guard is type-level alone.
+    const [firstDot] = dots
+    if (firstDot === undefined)
+      throw new Error('expected the first dot to mount')
+    fireEvent.pointerEnter(firstDot)
     const card = container.querySelector('[data-testid="chat-scroll-rail-preview"]') as HTMLElement
     fireEvent.pointerDown(card)
 

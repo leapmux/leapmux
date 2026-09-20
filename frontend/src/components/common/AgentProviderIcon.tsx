@@ -225,37 +225,41 @@ export interface AgentProviderIconProps {
 }
 
 export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
+  // Conditional spread so an absent `class` stays absent: these prop types
+  // treat a present-but-undefined class differently under
+  // exactOptionalPropertyTypes, and lucide's own props are not ours to widen.
+  const classProps = () => (props.class !== undefined ? { class: props.class } : {})
   return (
-    <Switch fallback={<Bot size={props.size} class={props.class} style={iconStyle(props.size)} />}>
+    <Switch fallback={<Bot size={props.size} {...classProps()} style={iconStyle(props.size)} />}>
       <Match when={props.provider === AgentProvider.CLAUDE_CODE}>
-        <ClaudeCodeIcon size={props.size} class={props.class} />
+        <ClaudeCodeIcon size={props.size} {...classProps()} />
       </Match>
       <Match when={props.provider === AgentProvider.CODEX}>
-        <CodexIcon size={props.size} class={props.class} />
+        <CodexIcon size={props.size} {...classProps()} />
       </Match>
       <Match when={props.provider === AgentProvider.OPENCODE}>
-        <OpenCodeIcon size={props.size} class={props.class} />
+        <OpenCodeIcon size={props.size} {...classProps()} />
       </Match>
       <Match when={props.provider === AgentProvider.GITHUB_COPILOT}>
-        <GitHubCopilotIcon size={props.size} class={props.class} />
+        <GitHubCopilotIcon size={props.size} {...classProps()} />
       </Match>
       <Match when={props.provider === AgentProvider.CURSOR}>
-        <CursorIcon size={props.size} class={props.class} />
+        <CursorIcon size={props.size} {...classProps()} />
       </Match>
       <Match when={props.provider === AgentProvider.GOOSE}>
-        <GooseIcon size={props.size} class={props.class} />
+        <GooseIcon size={props.size} {...classProps()} />
       </Match>
       <Match when={props.provider === AgentProvider.KILO}>
-        <KiloIcon size={props.size} class={props.class} />
+        <KiloIcon size={props.size} {...classProps()} />
       </Match>
       <Match when={props.provider === AgentProvider.PI}>
-        <PiIcon size={props.size} class={props.class} />
+        <PiIcon size={props.size} {...classProps()} />
       </Match>
       <Match when={props.provider === AgentProvider.REASONIX}>
-        <ReasonixIcon size={props.size} class={props.class} />
+        <ReasonixIcon size={props.size} {...classProps()} />
       </Match>
       <Match when={props.provider === AgentProvider.ZCODE}>
-        <ZCodeIcon size={props.size} class={props.class} />
+        <ZCodeIcon size={props.size} {...classProps()} />
       </Match>
     </Switch>
   )

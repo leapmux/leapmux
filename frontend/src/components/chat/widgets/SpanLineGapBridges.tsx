@@ -11,7 +11,7 @@ import { LINE_THICKNESS, SPAN_BRIDGE_GAP_VAR, spanColumnCenterX } from './SpanLi
  * entry-cache module.
  */
 export interface SpanBridgeEntry {
-  msg: { id: string, spanId?: string, spanColor?: number }
+  message: { id: string, spanId?: string, spanColor?: number }
   parsedSpanLines: (SpanLine | null)[]
   category: { kind: string }
 }
@@ -57,7 +57,7 @@ export const SpanLineGapBridges: Component<SpanLineGapBridgesProps> = props => (
       const previousLines = createMemo(() => previous()?.parsedSpanLines ?? [])
       const previousBodyKey = createMemo(() => {
         const p = previous()
-        return p?.category.kind === 'tool_use' ? bodySpanKey(p.msg.spanId, p.msg.spanColor) : undefined
+        return p?.category.kind === 'tool_use' ? bodySpanKey(p.message.spanId, p.message.spanColor) : undefined
       })
       // Per column: does its vertical rail continue from the row above? Memoized
       // because both the <Show> gate and the <Index> below read it each render.
@@ -69,13 +69,13 @@ export const SpanLineGapBridges: Component<SpanLineGapBridgesProps> = props => (
           <div
             class={spanGapBridgeRow}
             style={{
-              transform: `translateY(${props.topOf(entry.msg.id)}px)`,
-              visibility: props.hiddenOf(entry.msg.id) ? 'hidden' : undefined,
+              transform: `translateY(${props.topOf(entry.message.id)}px)`,
+              visibility: props.hiddenOf(entry.message.id) ? 'hidden' : undefined,
               // Published once per ROW, not per column: every segment in this
               // anchor spans the same gap.
-              [SPAN_BRIDGE_GAP_VAR]: `${props.gapAboveOf(entry.msg.id)}px`,
+              [SPAN_BRIDGE_GAP_VAR]: `${props.gapAboveOf(entry.message.id)}px`,
             }}
-            data-span-gap-bridges-for={entry.msg.id}
+            data-span-gap-bridges-for={entry.message.id}
           >
             <Index each={connecting()}>
               {(isConnecting, col) => (

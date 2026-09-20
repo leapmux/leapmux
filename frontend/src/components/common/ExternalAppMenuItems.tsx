@@ -80,7 +80,7 @@ export const ExternalAppMenuItems: Component<ExternalAppMenuItemsProps> = (props
         data-testid={`${props.testIdPrefix}-refresh`}
       >
         <span class={styles.refreshRow}>
-          <RefreshCw size={14} class={props.refreshing() ? spinner : undefined} />
+          <RefreshCw size={14} {...(props.refreshing() ? { class: spinner } : {})} />
           <span>Refresh app list</span>
         </span>
       </button>

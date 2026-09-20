@@ -35,7 +35,7 @@ function renderField(props: Partial<Parameters<typeof RecaptchaV3Field>[0]> = {}
   ))
 }
 
-describe('recaptchaV3Field', () => {
+describe('RecaptchaV3Field', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.clearAllMocks()

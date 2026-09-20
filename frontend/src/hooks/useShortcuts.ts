@@ -141,7 +141,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
   const cleanups: (() => void)[] = []
 
   function cmd(id: string, title: string, handler: () => void | Promise<void>, category?: string) {
-    cleanups.push(registerCommand({ id, title, handler, category }))
+    cleanups.push(registerCommand({ id, title, handler, ...(category !== undefined ? { category } : {}) }))
   }
 
   // Agent/terminal shortcuts require an active workspace. When none is active,

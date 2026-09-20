@@ -175,12 +175,13 @@ export function makeRowVirtualizer(initialHeights: number[]) {
   const cumOffsets = () => {
     const out = [0]
     for (const h of heights())
-      out.push(out[out.length - 1] + h)
+      out.push((out[out.length - 1] ?? 0) + h)
     return out
   }
   const total = () => {
     const o = cumOffsets()
-    return o[o.length - 1]
+    // cumOffsets always holds at least its leading 0; `?? 0` is the type-level guard alone.
+    return o[o.length - 1] ?? 0
   }
   // Row id encodes the window GENERATION so a replaced window's ids stop resolving (the
   // real virtualizer keys the offset map by row id; a re-fetched window has fresh rows).
@@ -204,7 +205,8 @@ export function makeRowVirtualizer(initialHeights: number[]) {
       indexAtOffset: (y) => {
         let idx = 0
         for (let i = 0; i < hs.length; i++) {
-          if (offs[i] <= y)
+          // The bound keeps `i` inside offs (offs[0] is 0); `?? 0` is the type-level guard alone.
+          if ((offs[i] ?? 0) <= y)
             idx = i
           else
             break
@@ -212,7 +214,7 @@ export function makeRowVirtualizer(initialHeights: number[]) {
         return idx
       },
       indexOfId,
-      offsetOfIndex: i => offs[Math.max(0, Math.min(i, hs.length))],
+      offsetOfIndex: i => offs[Math.max(0, Math.min(i, hs.length))] ?? 0,
       heightOfIndex: i => hs[i] ?? 0,
       gapAfter: () => 0,
     }

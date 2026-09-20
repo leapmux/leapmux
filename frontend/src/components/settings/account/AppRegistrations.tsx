@@ -443,7 +443,7 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
             cursor,
             limit: PAGE_SIZE,
             includeRevoked: true,
-            visibility: reach,
+            ...(reach === undefined ? {} : { visibility: reach }),
           })
           openRegistrationEnabled = resp.openRegistrationEnabled
           return { items: resp.apps, nextCursor: resp.nextCursor }

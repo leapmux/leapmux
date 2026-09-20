@@ -53,9 +53,9 @@ describe('placeWorkspaceInSection', () => {
     placeWorkspaceInSection(deps, 'ws-1', 'sec-1')
 
     await vi.waitFor(() => expect(deps.loadWorkspaces).toHaveBeenCalled())
-    const arg = vi.mocked(sectionClient.moveWorkspace).mock.calls[0][0]
+    const arg = vi.mocked(sectionClient.moveWorkspace).mock.calls[0]?.[0]
     expect(arg).toMatchObject({ workspaceId: 'ws-1', sectionId: 'sec-1' })
-    expect((arg.position ?? '') > 'u', 'the new rank must sort after the last item').toBe(true)
+    expect((arg?.position ?? '') > 'u', 'the new rank must sort after the last item').toBe(true)
   })
 
   it('gives an empty section a valid rank rather than an empty string', async () => {
@@ -63,7 +63,7 @@ describe('placeWorkspaceInSection', () => {
     placeWorkspaceInSection(deps, 'ws-1', 'sec-1')
 
     await vi.waitFor(() => expect(deps.loadWorkspaces).toHaveBeenCalled())
-    expect(vi.mocked(sectionClient.moveWorkspace).mock.calls[0][0].position).not.toBe('')
+    expect(vi.mocked(sectionClient.moveWorkspace).mock.calls[0]?.[0].position).not.toBe('')
   })
 
   it('warns when the move fails, and still refreshes', async () => {

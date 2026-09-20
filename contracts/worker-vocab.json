@@ -1,5 +1,5 @@
 {
-  "_readme": "Single source of truth for the worker's wire vocabulary: the notification-type tokens the platform persists inside notification envelopes (the Go agent package's NotificationType* constants and the browser's NOTIFICATION_TYPE are generated from this file), the notification-thread wrapper discriminator, the one Codex rateLimitReachedType that lifts on a timer, and the model sentinels. workerAuthoredNotificationTypes lists the types the WORKER is the sole writer of -- the browser keeps a standalone-row set from it, and a type moves between the two regimes by editing this file, not by editing a per-side list. Adding a notification type is: one entry here, task generate, and both sides' dispatch switches compile against it. GoalUpdated/GoalCleared are worker-authored on purpose: five providers report a session goal in five different wire shapes, and persisting each verbatim would put every provider's goal parsing in that provider's renderer. The worker normalizes once and writes a neutral row, so the browser has ONE goal renderer. goalStatusTokens and goalTransitions are the session goal's two payload vocabularies. The worker writes both inside the goal_updated notification -- goal_status is the neutral status the row stores, goal_transition is what the change DID -- and notificationRenderers reads both to build the transcript line. Both were hand-written on the two sides before this contract existed, and the status tokens are ALSO the SQL CHECK list on agents.goal_status, which the generator cannot emit; keep that third spelling in step by hand. goal_transition is a separate vocabulary from the status because several different changes land on one status: a resume and a first set both end `active`, and only the applier, which holds the row from before the write, can tell them apart. Every token here has a producer in goalTransitionKind; a token nothing writes is a label the browser can never render, so add one only with the branch that emits it.",
+  "_readme": "Single source of truth for the worker's wire vocabulary: the notification-type tokens the platform persists inside notification envelopes (the Go agent package's NotificationType* constants and the browser's NOTIFICATION_TYPE are generated from this file), the notification-thread wrapper discriminator, the one Codex rateLimitReachedType that lifts on a timer, and the model sentinels. workerWrittenNotificationTypes lists the types the WORKER is the sole writer of -- the browser keeps a standalone-row set from it, and a type moves between the two regimes by editing this file, not by editing a per-side list. Adding a notification type is: one entry here, task generate, and both sides' dispatch switches compile against it. GoalUpdated/GoalCleared are worker-written on purpose: five providers report a session goal in five different wire shapes, and persisting each verbatim would put every provider's goal parsing in that provider's renderer. The worker normalizes once and writes a neutral row, so the browser has ONE goal renderer. goalStatusTokens and goalTransitions are the session goal's two payload vocabularies. The worker writes both inside the goal_updated notification -- goal_status is the neutral status the row stores, goal_transition is what the change DID -- and notificationRenderers reads both to build the transcript line. Both were hand-written on the two sides before this contract existed, and the status tokens are ALSO the SQL CHECK list on agents.goal_status, which the generator cannot emit; keep that third spelling in step by hand. goal_transition is a separate vocabulary from the status because several different changes land on one status: a resume and a first set both end `active`, and only the applier, which holds the row from before the write, can tell them apart. Every token here has a producer in goalTransitionKind; a token nothing writes is a label the browser can never render, so add one only with the branch that emits it. AgentStatus is worker-written for the same reason the goal pair is: a provider states a live status in its own shape -- Goose sends a `status_message` notice, Reasonix a session phase -- and persisting each verbatim would put that parsing in that provider's renderer. The worker normalizes once, so the browser has ONE status row. It carries `text` alone, because a status IS a sentence. `notificationFields` holds every payload key the worker writes onto a notification and the browser reads back, `type` and `label` among them: the envelope discriminator was hand-spelled at 31 Go writers beside a generated NotificationType* value, and `label` sits in the settings_changed entry beside `old_label` and `new_label`, which already came from here. Every value is snake_case, and the schema refuses anything else: this table CHOOSES the wire key and the Go struct tags follow it, so a new entry cannot pick its own convention. The goal family is the reason it is not two entries: the worker's own comment at output_goal.go says `goal_transition` exists so a RESUMED goal does not announce itself as a new one, and a rename of that key alone restores exactly that regression.",
   "notificationTypes": {
     "AgentError": "agent_error",
     "SettingsChanged": "settings_changed",
@@ -14,7 +14,8 @@
     "RateLimitEvent": "rate_limit_event",
     "SubagentEnded": "subagent_ended",
     "GoalUpdated": "goal_updated",
-    "GoalCleared": "goal_cleared"
+    "GoalCleared": "goal_cleared",
+    "AgentStatus": "agent_status"
   },
   "goalStatusTokens": {
     "None": "",
@@ -32,10 +33,12 @@
     "Blocked": "blocked",
     "Achieved": "achieved"
   },
-  "workerAuthoredNotificationTypes": [
+  "workerWrittenNotificationTypes": [
     "SubagentEnded",
     "GoalUpdated",
-    "GoalCleared"
+    "GoalCleared",
+    "StopIgnored",
+    "AgentStatus"
   ],
   "assembledMessage": {
     "fields": {
@@ -44,19 +47,69 @@
       "Text": "text",
       "Completion": "completion"
     },
-    "types": { "Assembled": "assembled_message" },
-    "kinds": { "Text": "text", "Reasoning": "reasoning", "Plan": "plan" },
-    "completions": { "Complete": "complete", "Interrupted": "interrupted", "Error": "error" }
+    "types": {
+      "Assembled": "assembled_message"
+    },
+    "kinds": {
+      "Text": "text",
+      "Reasoning": "reasoning",
+      "Plan": "plan"
+    },
+    "completions": {
+      "Complete": "complete",
+      "Interrupted": "interrupted",
+      "Error": "error"
+    }
   },
   "toolOutcome": {
-    "fields": { "Source": "source", "Outcome": "outcome" },
-    "sources": { "BatchSummary": "batch_summary" },
-    "outcomes": { "Succeeded": "succeeded", "Unknown": "unknown" }
+    "fields": {
+      "Source": "source",
+      "Outcome": "outcome"
+    },
+    "sources": {
+      "BatchSummary": "batch_summary"
+    },
+    "outcomes": {
+      "Succeeded": "succeeded",
+      "Unknown": "unknown"
+    }
   },
   "notificationThreadWrapperType": "notification_thread",
-  "messageMetadataFields": { "DurationMs": "duration_ms", "ToolUses": "num_tool_uses", "ControlRequestID": "control_request_id", "ControlRequestClaimToken": "control_request_claim_token", "PlanApprovalSettings": "plan_approval_settings", "ToolOutcome": "tool_outcome" },
-  "messageSupplementFields": { "Provider": "provider", "Metadata": "metadata" },
-  "rpcMethods": { "GetAgentSpanMessages": "GetAgentSpanMessages" },
+  "messageMetadataFields": {
+    "DurationMs": "duration_ms",
+    "ToolUses": "num_tool_uses",
+    "ControlRequestID": "control_request_id",
+    "ControlRequestClaimToken": "control_request_claim_token",
+    "PlanApprovalSettings": "plan_approval_settings",
+    "ToolOutcome": "tool_outcome",
+    "TodoSnapshot": "todo_snapshot"
+  },
+  "notificationFields": {
+    "Type": "type",
+    "PlanTitle": "plan_title",
+    "PlanFilePath": "plan_file_path",
+    "UpdateAgentTitle": "update_agent_title",
+    "Objective": "objective",
+    "GoalStatus": "goal_status",
+    "StatusDetail": "status_detail",
+    "GoalTransition": "goal_transition",
+    "Changes": "changes",
+    "Old": "old",
+    "New": "new",
+    "OldLabel": "old_label",
+    "NewLabel": "new_label",
+    "Label": "label",
+    "Error": "error",
+    "Text": "text",
+    "Status": "status"
+  },
+  "messageSupplementFields": {
+    "Provider": "provider",
+    "Metadata": "metadata"
+  },
+  "rpcMethods": {
+    "GetAgentSpanMessages": "GetAgentSpanMessages"
+  },
   "codexRateLimitReachedTimeWindow": "rate_limit_reached",
   "modelSentinels": {
     "accountDefaultModel": "default",

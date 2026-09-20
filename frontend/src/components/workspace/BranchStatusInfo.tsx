@@ -97,8 +97,8 @@ export const BranchStatusInfo: Component<BranchStatusInfoProps> = (props) => {
         isWorktree={props.branch.isWorktree}
         name={props.branch.branchName}
         directory={props.branch.directory}
-        homeDir={props.branch.homeDir}
-        flavor={props.branch.flavor}
+        {...(props.branch.homeDir !== undefined ? { homeDir: props.branch.homeDir } : {})}
+        {...(props.branch.flavor !== undefined ? { flavor: props.branch.flavor } : {})}
       />
       <Show when={props.branch.gitState}>
         {gs => (

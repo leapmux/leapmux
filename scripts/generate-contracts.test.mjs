@@ -9,7 +9,7 @@
 // `generate()` uses the real contracts directory in its integration test.
 // validate-json.test.mjs tests its rule table against the real tree too.
 
-import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'bun:test'
@@ -24,6 +24,7 @@ import {
   checkListen,
   checkProviderProtocol,
   checkProviders,
+  checkProviderStructs,
   checkRetry,
   checkScopes,
   checkSessionInfo,
@@ -73,6 +74,7 @@ import {
   RETRY_GO_NAMES,
   RETRY_TS_NAMES,
   SESSION_INFO_TABLES,
+  unreadKeys,
   usernameConstName,
   WIRE_GO_NAMES,
   WIRE_TS_NAMES,
@@ -477,11 +479,155 @@ describe('checkProviderProtocol', () => {
     expect(checkProviderProtocol(spec, { ...ok(), events: { A: 'plan' } })).toEqual({})
   })
 
-  it('rejects a defaultMode that names no mode', () => {
+  // A DEFAULTS table states one starting value for each axis of the table it points
+  // at. Its keys are axes, so two of them may rest at the same word, and the repeated
+  // literal above is not a fault here.
+  describe('defaultsFor', () => {
+    const withDefaults = {
+      name: 'test-protocol',
+      tables: [{ key: 'events' }, { key: 'modes' }, { key: 'options' }, { key: 'optionDefaults', defaultsFor: 'options' }],
+    }
+    const complete = () => ({
+      ...ok(),
+      options: { Mode: 'mode', Tier: 'tier' },
+      optionDefaults: { Mode: 'default', Tier: 'default' },
+    })
+
+    it('accepts one default for each axis, repeated literals included', () => {
+      expect(checkProviderProtocol(withDefaults, complete())).toEqual({})
+    })
+
+    it('rejects an axis that states no default', () => {
+      const missing = complete()
+      delete missing.optionDefaults.Tier
+      expectContractError(() => checkProviderProtocol(withDefaults, missing), 'options.Tier has no entry in optionDefaults')
+    })
+
+    it('rejects a default that supplies no axis', () => {
+      const extra = complete()
+      extra.optionDefaults.Ghost = 'nobody'
+      expectContractError(() => checkProviderProtocol(withDefaults, extra), 'optionDefaults.Ghost supplies a default for no key of options')
+    })
+
+    it('rejects a defaultsFor that points at no declared table', () => {
+      const dangling = {
+        name: 'test-protocol',
+        tables: [{ key: 'events' }, { key: 'modes' }, { key: 'optionDefaults', defaultsFor: 'options' }],
+      }
+      expectContractError(
+        () => checkProviderProtocol(dangling, { ...ok(), optionDefaults: { Mode: 'default' } }),
+        'states defaultsFor "options", which is not a declared table',
+      )
+    })
+  })
+
+  it('rejects a defaultMode that specifies no mode', () => {
     expectContractError(
       () => checkProviderProtocol(spec, { ...ok(), defaultMode: 'Nope' }),
       'defaultMode "Nope" is not a key of modes',
     )
+  })
+
+  // `readers` must be compared as a SET. READER_SIDES holds two sides, so
+  // `['ts', 'ts']` has the length of the whole set: a length test took it for a
+  // two-sided table, demanded no readersWhy, and the per-element test accepted each
+  // 'ts'. The same hole was open for `['go', 'go']`.
+  it('rejects a table that lists one reader twice', () => {
+    const repeated = { ...spec, tables: [{ key: 'events', readers: ['ts', 'ts'] }, { key: 'modes' }] }
+    expectContractError(() => checkProviderProtocol(repeated, ok()), 'lists a reader twice')
+  })
+
+  it('still demands readersWhy from a one-sided table', () => {
+    const oneSided = { ...spec, tables: [{ key: 'events', readers: ['ts'] }, { key: 'modes' }] }
+    expectContractError(() => checkProviderProtocol(oneSided, ok()), 'must say why in readersWhy')
+  })
+
+  // A goSlice table emits `var <Prefix><Table>Keys` beside its constants, so a key
+  // called Keys emits a const and a var of one name and the generated package stops
+  // compiling -- with the error against a file that states no contract.
+  it('rejects a key called Keys on a goSlice table', () => {
+    const sliced = {
+      ...spec,
+      goPrefix: 'Test',
+      tables: [{ key: 'events', goTable: 'Event', goSlice: true }, { key: 'modes', goTable: 'Mode' }],
+    }
+    expectContractError(
+      () => checkProviderProtocol(sliced, { ...ok(), events: { A: 'a', Keys: 'keys' } }),
+      'collides with the ordered key slice TestEventKeys',
+    )
+  })
+
+  it('accepts a key called Keys on a table that is not a goSlice one', () => {
+    expect(checkProviderProtocol(spec, { ...ok(), events: { A: 'a', Keys: 'keys' } })).toEqual({})
+  })
+
+  it('rejects a goTagPin on a table with no go reader', () => {
+    const pinned = {
+      ...spec,
+      tables: [{ key: 'events', readers: ['ts'], readersWhy: 'the browser alone reads this vocabulary', goTagPin: 'x_test.go' }, { key: 'modes' }],
+    }
+    expectContractError(() => checkProviderProtocol(pinned, ok()), 'does not list go as a reader')
+  })
+
+  it('rejects a goTagPin that is not the path of a Go test', () => {
+    const pinned = { ...spec, tables: [{ key: 'events', goTagPin: 'backend/x.go' }, { key: 'modes' }] }
+    expectContractError(() => checkProviderProtocol(pinned, ok()), 'must give goTagPin as the path')
+  })
+})
+
+describe('_unread exemptions', () => {
+  const spec = {
+    name: 'test-protocol',
+    tables: [{ key: 'events' }, { key: 'modes', readers: ['ts'], readersWhy: 'the browser alone words these modes' }],
+  }
+  const ok = over => ({ events: { A: 'a' }, modes: { Plan: 'plan', Build: 'build' }, defaultMode: 'Build', ...over })
+  const why = 'the worker matches the row before it reads this key, so the browser never compares it'
+
+  it('accepts an exemption that points at a real key and a declared side', () => {
+    expect(checkProviderProtocol(spec, ok({ _unread: { events: { A: { sides: ['go'], why } } } }))).toEqual({})
+  })
+
+  it('rejects an exemption for a table the spec does not declare', () => {
+    expectContractError(
+      () => checkProviderProtocol(spec, ok({ _unread: { absent: { A: { sides: ['go'], why } } } })),
+      '_unread.absent is not a declared table',
+    )
+  })
+
+  // An exemption that outlives its key is a claim about nothing, and the next reader
+  // cannot tell it from a key somebody forgot to restore.
+  it('rejects an exemption for a key the table no longer carries', () => {
+    expectContractError(
+      () => checkProviderProtocol(spec, ok({ _unread: { events: { Gone: { sides: ['go'], why } } } })),
+      '_unread.events.Gone is not a key of the events table',
+    )
+  })
+
+  it('rejects an exemption for a side the table does not declare as a reader', () => {
+    expectContractError(
+      () => checkProviderProtocol(spec, ok({ _unread: { modes: { Plan: { sides: ['go'], why } } } })),
+      'which the modes table does not declare as a reader at all',
+    )
+  })
+
+  it('rejects an exemption with no reason worth reading', () => {
+    expectContractError(
+      () => checkProviderProtocol(spec, ok({ _unread: { events: { A: { sides: ['go'], why: 'because' } } } })),
+      '_unread.events.A.why must say what reads the key instead',
+    )
+  })
+
+  it('rejects an exemption that excuses no side', () => {
+    expectContractError(
+      () => checkProviderProtocol(spec, ok({ _unread: { events: { A: { sides: [], why } } } })),
+      'must list at least one side',
+    )
+  })
+
+  it('reads every exemption back as the set of sides that skip the key', () => {
+    const contract = ok({ _unread: { events: { A: { sides: ['go'], why } } } })
+    expect(unreadKeys(contract).get('events.A')).toEqual(new Set(['go']))
+    expect(unreadKeys(ok()).size).toBe(0)
   })
 })
 
@@ -678,6 +824,7 @@ describe('generate', () => {
       'backend/generated/contracts/chat-history.go',
       'backend/generated/contracts/claude-protocol.go',
       'backend/generated/contracts/codex-bypass.go',
+      'backend/generated/contracts/codex-protocol.go',
       'backend/generated/contracts/copilot-protocol.go',
       'backend/generated/contracts/cursor-protocol.go',
       'backend/generated/contracts/desktop.go',
@@ -686,6 +833,7 @@ describe('generate', () => {
       'backend/generated/contracts/headers.go',
       'backend/generated/contracts/listen.go',
       'backend/generated/contracts/mcp-elicitation.go',
+      'backend/generated/contracts/opencode-protocol.go',
       'backend/generated/contracts/pi-protocol.go',
       'backend/generated/contracts/providers.go',
       'backend/generated/contracts/reasonix-protocol.go',
@@ -708,6 +856,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/chat-history.ts',
       'frontend/src/generated/contracts/claude-protocol.ts',
       'frontend/src/generated/contracts/codex-bypass.ts',
+      'frontend/src/generated/contracts/codex-protocol.ts',
       'frontend/src/generated/contracts/copilot-protocol.ts',
       'frontend/src/generated/contracts/cursor-protocol.ts',
       'frontend/src/generated/contracts/desktop.ts',
@@ -716,6 +865,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/headers.ts',
       'frontend/src/generated/contracts/listen.ts',
       'frontend/src/generated/contracts/mcp-elicitation.ts',
+      'frontend/src/generated/contracts/opencode-protocol.ts',
       'frontend/src/generated/contracts/pi-protocol.ts',
       'frontend/src/generated/contracts/providers.ts',
       'frontend/src/generated/contracts/reasonix-protocol.ts',
@@ -776,6 +926,185 @@ describe('generate', () => {
     cpSync(join(ROOT, 'contracts'), partial, { recursive: true })
     rmSync(join(partial, 'desktop.json'))
     expectContractError(() => generate(partial, DESCRIPTOR), 'desktop.json')
+  })
+
+  it('fails loudly when a contract file no domain reads is added', () => {
+    // The inverse of the check above, and the one nothing caught: a contract that
+    // validates against a sibling schema but that no DOMAINS entry registers emits
+    // NOTHING. `task lint` passes, `validate-json` passes, and the constants it
+    // declares reach neither language.
+    const extra = mkdtempSync(join(tmpdir(), 'contracts-extra-'))
+    cpSync(join(ROOT, 'contracts'), extra, { recursive: true })
+    writeFileSync(join(extra, 'not-registered.json'), '{"_readme":"x"}')
+    expectContractError(() => generate(extra, DESCRIPTOR), 'not-registered.json')
+  })
+
+  it('reads the real contracts dir with no unregistered file', () => {
+    expect(() => generate(join(ROOT, 'contracts'), DESCRIPTOR)).not.toThrow()
+  })
+})
+
+describe('checkProviderStructs', () => {
+  // One domain, reduced to what a struct needs. The rest of a provider contract rides
+  // along in the real files, so a rule that fires for the wrong reason still fails.
+  const spec = {
+    name: 'probe-protocol',
+    goPrefix: 'Probe',
+    tsPrefix: 'PROBE',
+    title: 'Probe',
+    tables: [
+      { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'ProbeSupplementField', doc: 'x' },
+      { key: 'nested', goTable: 'Nested', tsTable: 'NESTED', tsType: 'ProbeNestedField', doc: 'y' },
+    ],
+  }
+  const contract = over => ({
+    supplement: { ToolCallID: 'toolCallId', Output: 'output' },
+    nested: { Path: 'path' },
+    ...over,
+  })
+  const withStructs = structs => contract({ structs })
+
+  it('accepts a struct whose every field names a key of its table', () => {
+    expect(() => checkProviderStructs(spec, withStructs({
+      Probe: { table: 'supplement', fields: [{ key: 'ToolCallID', type: 'string' }] },
+    }))).not.toThrow()
+  })
+
+  it('accepts a field that names its OWN table, for a nested record', () => {
+    expect(() => checkProviderStructs(spec, withStructs({
+      Probe: {
+        table: 'supplement',
+        fields: [{ key: 'ToolCallID', type: 'string' }, { key: 'Path', type: 'string', table: 'nested' }],
+      },
+    }))).not.toThrow()
+  })
+
+  // The whole point: a field that identifies no key would emit a tag the browser never
+  // reads, which is the drift the generated struct exists to remove.
+  it('rejects a field that names no key of its table', () => {
+    expectContractError(() => checkProviderStructs(spec, withStructs({
+      Probe: { table: 'supplement', fields: [{ key: 'Missing', type: 'string' }] },
+    })), 'is not a key of the supplement table')
+  })
+
+  it('rejects a table the domain does not declare', () => {
+    expectContractError(() => checkProviderStructs(spec, withStructs({
+      Probe: { table: 'absent', fields: [{ key: 'ToolCallID', type: 'string' }] },
+    })), 'is not a declared table')
+  })
+
+  it('rejects a Go type a generated struct may not take', () => {
+    expectContractError(() => checkProviderStructs(spec, withStructs({
+      Probe: { table: 'supplement', fields: [{ key: 'ToolCallID', type: 'chan int' }] },
+    })), 'is not one a generated struct may take')
+  })
+
+  it('rejects a reference to a struct the domain does not declare', () => {
+    expectContractError(() => checkProviderStructs(spec, withStructs({
+      Probe: { table: 'supplement', fields: [{ key: 'ToolCallID', type: '#Absent' }] },
+    })), 'which this domain does not declare')
+  })
+
+  it('rejects one key listed twice', () => {
+    expectContractError(() => checkProviderStructs(spec, withStructs({
+      Probe: {
+        table: 'supplement',
+        fields: [{ key: 'ToolCallID', type: 'string' }, { key: 'ToolCallID', type: 'string' }],
+      },
+    })), 'lists ToolCallID twice')
+  })
+
+  // A struct that takes a constant's name redeclares it, and the compiler then
+  // reports the GENERATED file, which states no contract and no domain.
+  it('rejects a struct name that collides with a constant the domain emits', () => {
+    expectContractError(() => checkProviderStructs(spec, withStructs({
+      ProbeSupplementOutput: { table: 'supplement', fields: [{ key: 'Output', type: 'string' }] },
+    })), 'takes the name of a constant or key slice this domain already emits')
+  })
+
+  // `emitGoProviderProtocol` emits `var <Prefix><Table>Keys` for a goSlice table, and
+  // that var shares the package with the structs. The collision guard tested the
+  // struct names against the CONSTANTS alone, so this name was open in both
+  // directions.
+  it('rejects a struct name that collides with a goSlice key slice', () => {
+    const sliced = {
+      ...spec,
+      tables: [{ ...spec.tables[0], goSlice: true }, spec.tables[1]],
+    }
+    expectContractError(() => checkProviderStructs(sliced, withStructs({
+      ProbeSupplementKeys: { table: 'supplement', fields: [{ key: 'Output', type: 'string' }] },
+    })), 'takes the name of a constant or key slice this domain already emits')
+  })
+
+  // A `#Name` field emits BY VALUE, so Go rejects a cycle as an invalid recursive
+  // type -- against the generated file, at build time, long after generation passed.
+  it('rejects a struct that refers to itself by value', () => {
+    expectContractError(() => checkProviderStructs(spec, withStructs({
+      Probe: { table: 'supplement', fields: [{ key: 'ToolCallID', type: '#Probe' }] },
+    })), 'is a cycle of by-value references')
+  })
+
+  it('rejects a cycle that runs through a second struct', () => {
+    expectContractError(() => checkProviderStructs(spec, withStructs({
+      Probe: { table: 'supplement', fields: [{ key: 'ToolCallID', type: '#Other' }] },
+      Other: { table: 'nested', fields: [{ key: 'Path', type: '#Probe' }] },
+    })), 'Probe -> Other -> Probe')
+  })
+
+  // A slice header and a map header are pointers, so either one breaks the recursion
+  // and Go compiles the struct.
+  it('accepts a self-reference behind a slice', () => {
+    expect(() => checkProviderStructs(spec, withStructs({
+      Probe: { table: 'supplement', fields: [{ key: 'ToolCallID', type: '[]#Probe' }] },
+    }))).not.toThrow()
+  })
+
+  it('accepts a self-reference behind a map', () => {
+    expect(() => checkProviderStructs(spec, withStructs({
+      Probe: { table: 'supplement', fields: [{ key: 'ToolCallID', type: 'map[string]#Probe' }] },
+    }))).not.toThrow()
+  })
+
+  // Two structs that refer to ONE third struct is a diamond, not a cycle. A walk that
+  // took every second visit for a cycle would refuse it.
+  it('accepts two structs that refer to the same third one', () => {
+    expect(() => checkProviderStructs(spec, withStructs({
+      Leaf: { table: 'nested', fields: [{ key: 'Path', type: 'string' }] },
+      Left: { table: 'supplement', fields: [{ key: 'ToolCallID', type: '#Leaf' }] },
+      Right: { table: 'supplement', fields: [{ key: 'Output', type: '#Leaf' }] },
+    }))).not.toThrow()
+  })
+
+  it('accepts a domain that declares no struct at all', () => {
+    expect(() => checkProviderStructs(spec, contract())).not.toThrow()
+  })
+})
+
+describe('emitted structs', () => {
+  const files = generate(join(ROOT, 'contracts'), DESCRIPTOR)
+
+  // The tags come from the table, so the struct and the browser's reader move together.
+  it('takes each json tag from the contract table', () => {
+    const go = files['backend/generated/contracts/codex-protocol.go']
+    expect(go).toContain('type CodexToolSupplement struct {')
+    expect(go).toContain('ItemID           string `json:"itemId"`')
+    expect(go).toContain('AggregatedOutput string `json:"aggregatedOutput"`')
+  })
+
+  it('carries omitempty only where the contract asks for it', () => {
+    const go = files['backend/generated/contracts/pi-protocol.go']
+    expect(go).toContain('ToolCallID    string          `json:"toolCallId"`')
+    expect(go).toContain('OutputFile    json.RawMessage `json:"outputFile,omitempty"`')
+  })
+
+  it('imports encoding/json only for a domain whose structs need it', () => {
+    expect(files['backend/generated/contracts/pi-protocol.go']).toContain('import "encoding/json"')
+    expect(files['backend/generated/contracts/codex-protocol.go']).not.toContain('import "encoding/json"')
+  })
+
+  it('resolves a struct reference to the generated type', () => {
+    expect(files['backend/generated/contracts/zcode-protocol.go'])
+      .toContain('NativeTool ZCodeStoredTool')
   })
 })
 
@@ -1226,11 +1555,12 @@ describe('checkSessionInfo', () => {
 describe('checkWorkerVocab / checkDesktop', () => {
   const workerVocab = overrides => ({
     notificationTypes: { AgentError: 'agent_error' },
-    workerAuthoredNotificationTypes: ['AgentError'],
+    workerWrittenNotificationTypes: ['AgentError'],
     goalStatusTokens: { None: '', Running: 'running' },
     goalTransitions: { GoalCreated: 'goal_created', GoalUpdated: 'goal_updated' },
     messageMetadataFields: { DurationMs: 'duration_ms', ToolUses: 'num_tool_uses' },
     messageSupplementFields: { Provider: 'provider', Metadata: 'metadata' },
+    notificationFields: { PlanTitle: 'plan_title', PlanFilePath: 'plan_file_path' },
     assembledMessage: {
       fields: { Type: 'type', Kind: 'kind', Text: 'text', Completion: 'completion' },
       types: { Assembled: 'assembled_message' },
@@ -1295,16 +1625,16 @@ describe('checkWorkerVocab / checkDesktop', () => {
     }), 'devFrontendUrl must be a non-empty URL string')
   })
 
-  it('rejects a worker-authored type that is not a notification type', () => {
+  it('rejects a worker-written type that is not a notification type', () => {
     expectContractError(() => checkWorkerVocab(workerVocab({
-      workerAuthoredNotificationTypes: ['NotAType'],
+      workerWrittenNotificationTypes: ['NotAType'],
     })), 'not a notificationTypes key')
   })
 
   it('rejects two notification types sharing one token', () => {
     expectContractError(() => checkWorkerVocab(workerVocab({
       notificationTypes: { A: 'same_token', B: 'same_token' },
-      workerAuthoredNotificationTypes: ['A'],
+      workerWrittenNotificationTypes: ['A'],
     })), 'share one wire token')
   })
 
@@ -1320,6 +1650,12 @@ describe('checkWorkerVocab / checkDesktop', () => {
     expectContractError(() => checkWorkerVocab(workerVocab({
       modelSentinels: { accountDefaultModel: 'same', effortAuto: 'same' },
     })), 'sentinels must be distinct')
+  })
+
+  it('rejects duplicate notification fields', () => {
+    expectContractError(() => checkWorkerVocab(workerVocab({
+      notificationFields: { PlanTitle: 'same', PlanFilePath: 'same' },
+    })), 'two notification fields share one wire token')
   })
 
   it('rejects duplicate assembled-message tokens', () => {

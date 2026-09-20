@@ -1,37 +1,39 @@
-import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { assembledMessageRow } from '~/test-support/assembledMessages'
+import { providerQuotableText } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
-import { acpResultDivider } from '../acp/renderers'
-import { describeACPProviderBasics } from '../acp/testUtils'
+import { acpResultDivider } from '../acp/extractors/resultDivider'
+import { describeACPProviderBasics, renderACPRow } from '../acp/testUtils'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 
-import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from './OpenCodeControlRequest'
+import { sendOpenCodeQuestionResponse } from './askUserQuestion'
 // Side-effect import to register the OpenCode plugin.
 import './plugin'
 
-describe('opencode extractQuotableText (acpExtractQuotableText)', () => {
-  const plugin = providerFor(AgentProvider.OPENCODE)!
-
+describe('opencode quotable text', () => {
   it('reads parent.content string for user_content / plan_execution', () => {
-    expect(plugin.extractQuotableText!({ kind: 'user_content' }, input({ content: 'hi' }))).toBe('hi')
-    expect(plugin.extractQuotableText!({ kind: 'plan_execution' }, input({ content: 'plan' }))).toBe('plan')
+    expect(providerQuotableText(AgentProvider.OPENCODE, { content: 'hi' }, { category: { kind: 'user_content' } })).toBe('hi')
+    expect(providerQuotableText(AgentProvider.OPENCODE, { content: 'plan' }, { category: { kind: 'plan_execution' } })).toBe('plan')
   })
 
-  // An assistant row carries the assembled-message envelope, which MessageBubble
-  // quotes before it consults any plugin. The plugin returns null so the two paths
-  // cannot disagree about the same text.
-  it('leaves assistant text and reasoning to the assembled-message path', () => {
+  // An assistant row carries LeapMux's own assembled-message envelope, which the
+  // worker writes and no provider ever sends. The OpenCode extractor reads no such
+  // row, and it does not have to: the SHARED extraction answers the envelope ahead of
+  // every plugin, so the text reaches the reader through one path. Each surface used
+  // to parse the envelope itself, and the completion marker landed inside the words on
+  // one and in a note beside them on another.
+  it('reads assistant text and reasoning through the shared assembled path', () => {
     const text = assembledMessageRow('text', 'Hello')
     const reasoning = assembledMessageRow('reasoning', 'thinking')
-    expect(plugin.extractQuotableText!({ kind: 'assistant_text' }, input(text))).toBeNull()
-    expect(plugin.extractQuotableText!({ kind: 'assistant_thinking' }, input(reasoning))).toBeNull()
+    expect(providerQuotableText(AgentProvider.OPENCODE, text, { category: { kind: 'assistant_text' } })).toBe('Hello')
+    expect(providerQuotableText(AgentProvider.OPENCODE, reasoning, { category: { kind: 'assistant_thinking' } })).toBe('thinking')
   })
 
   it('returns null for non-quotable categories', () => {
-    expect(plugin.extractQuotableText!({ kind: 'hidden' }, input({ content: 'x' }))).toBeNull()
+    expect(providerQuotableText(AgentProvider.OPENCODE, { content: 'x' }, { category: { kind: 'hidden' } })).toBeNull()
   })
 })
 
@@ -43,16 +45,16 @@ describe('opencode classify', () => {
   describeACPProviderBasics(AgentProvider.OPENCODE, { text: true, image: true, pdf: true, binary: true })
 
   // The neutral {isSynthetic, controlResponse} row -> control_response classification is provider-
-  // agnostic and lives in classifyMessage (see messageClassification.test.ts); this plugin test
+  // agnostic and lives in classifyMessage (see messageClassifier.test.ts); this plugin test
   // covers only OpenCode's own controlResponseDisplay derivation.
   it('wires controlResponseDisplay: question answers, else the ACP permission path', () => {
-    expect(plugin.controlResponseDisplay!({
+    expect(plugin?.controls?.controlResponseDisplay!({
       claimToken: 'claim-1',
       requestId: 'q1',
       request: { type: 'question.asked', properties: { questions: [{ header: 'Task' }] } },
       response: { result: { answers: [['Build']] } },
     })).toEqual({ kind: 'label', text: 'Task: Build' })
-    expect(plugin.controlResponseDisplay!({
+    expect(plugin?.controls?.controlResponseDisplay!({
       claimToken: 'claim-1',
       requestId: '7',
       request: { method: 'session/request_permission', params: { options: [{ optionId: 'proceed_once', name: 'Allow once' }] } },
@@ -70,12 +72,7 @@ describe('opencode classify', () => {
       locations: [],
       rawInput: {},
     }
-    expect(plugin.classify(input(parent))).toEqual({
-      kind: 'tool_use',
-      toolName: 'execute',
-      toolUse: parent,
-      content: [],
-    })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'tool_use' })
   })
 
   it('classifies tool_call without kind using fallback toolName', () => {
@@ -85,12 +82,7 @@ describe('opencode classify', () => {
       title: 'custom_tool',
       status: 'pending',
     }
-    expect(plugin.classify(input(parent))).toEqual({
-      kind: 'tool_use',
-      toolName: 'tool_call',
-      toolUse: parent,
-      content: [],
-    })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'tool_use' })
   })
 
   it('classifies tool_call_update completed as tool_use', () => {
@@ -102,12 +94,7 @@ describe('opencode classify', () => {
       title: 'bash',
       content: [{ type: 'content', content: { type: 'text', text: 'output' } }],
     }
-    expect(plugin.classify(input(parent))).toEqual({
-      kind: 'tool_use',
-      toolName: 'execute',
-      toolUse: parent,
-      content: [],
-    })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'tool_use' })
   })
 
   it('classifies tool_call_update failed as tool_use', () => {
@@ -117,12 +104,7 @@ describe('opencode classify', () => {
       status: 'failed',
       kind: 'execute',
     }
-    expect(plugin.classify(input(parent))).toEqual({
-      kind: 'tool_use',
-      toolName: 'execute',
-      toolUse: parent,
-      content: [],
-    })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'tool_use' })
   })
 
   it('hides tool_call_update in_progress', () => {
@@ -132,7 +114,7 @@ describe('opencode classify', () => {
       status: 'in_progress',
       kind: 'execute',
     }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('classifies a retained in-progress tool update as tool output', () => {
@@ -142,12 +124,7 @@ describe('opencode classify', () => {
       status: 'in_progress',
       kind: 'execute',
     }
-    expect(plugin.classify({ ...input(parent), completion: MessageCompletion.INTERRUPTED })).toEqual({
-      kind: 'tool_use',
-      toolName: 'execute',
-      toolUse: parent,
-      content: [],
-    })
+    expect(plugin?.transcript.classify({ ...input(parent), completion: MessageCompletion.INTERRUPTED })).toEqual({ kind: 'tool_use' })
   })
 
   it('classifies plan as tool_use', () => {
@@ -157,12 +134,7 @@ describe('opencode classify', () => {
         { priority: 'medium', status: 'pending', content: 'Step 1' },
       ],
     }
-    expect(plugin.classify(input(parent))).toEqual({
-      kind: 'tool_use',
-      toolName: 'plan',
-      toolUse: parent,
-      content: [],
-    })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'tool_use' })
   })
 
   it('hides usage_update', () => {
@@ -171,7 +143,7 @@ describe('opencode classify', () => {
       used: 1000,
       size: 128000,
     }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('hides available_commands_update', () => {
@@ -179,7 +151,7 @@ describe('opencode classify', () => {
       sessionUpdate: 'available_commands_update',
       availableCommands: [],
     }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('hides user_message_chunk', () => {
@@ -187,7 +159,7 @@ describe('opencode classify', () => {
       sessionUpdate: 'user_message_chunk',
       content: { type: 'text', text: 'hello' },
     }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('classifies result divider (stopReason)', () => {
@@ -195,54 +167,44 @@ describe('opencode classify', () => {
       stopReason: 'end_turn',
       usage: { totalTokens: 100 },
     }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'result_divider' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'result_divider' })
   })
 
   it('does not classify a non-string stopReason as a result divider', () => {
     // The gate requires a *string* stopReason (matching acpResultDivider's
     // pickString read, mirroring the Codex turn.status gate): a non-string value
     // is a malformed turn-end, not a divider this provider can label.
-    expect(plugin.classify(input({ stopReason: 5 }))).toEqual({ kind: 'unknown' })
-  })
-
-  it('hides system init', () => {
-    const parent = { type: 'system', subtype: 'init' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
-  })
-
-  it('classifies system notification', () => {
-    const parent = { type: 'system', subtype: 'compact_boundary' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+    expect(plugin?.transcript.classify(input({ stopReason: 5 }))).toEqual({ kind: 'unknown' })
   })
 
   it('classifies settings_changed as notification', () => {
     const parent = { type: 'settings_changed' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
   })
 
   it('classifies agent_error as notification', () => {
     const parent = { type: 'agent_error', error: 'something went wrong' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
   })
 
   it('classifies user content', () => {
     const parent = { content: 'Hello agent' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'user_content' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'user_content' })
   })
 
   it('hides hidden user content', () => {
     const parent = { content: 'internal', hidden: true }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('hides JSON-RPC response envelope', () => {
     const parent = { id: 5, result: { outcome: { optionId: 'once' } } }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('returns unknown for unrecognized parent', () => {
     const parent = { something: 'weird' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'unknown' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'unknown' })
   })
 
   it('handles notification thread wrappers', () => {
@@ -250,7 +212,7 @@ describe('opencode classify', () => {
       old_seqs: [1],
       messages: [{ type: 'interrupted' }],
     }
-    expect(plugin.classify(input(undefined, wrapper))).toEqual({
+    expect(plugin?.transcript.classify(input(undefined, wrapper))).toEqual({
       kind: 'notification',
       messages: wrapper.messages,
     })
@@ -258,35 +220,63 @@ describe('opencode classify', () => {
 
   it('hides empty wrapper', () => {
     const wrapper = { old_seqs: [], messages: [] }
-    expect(plugin.classify(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
+  })
+})
+
+/**
+ * THE SHAPE BELOW IS ONE NO DAEMON OF THIS FAMILY SENDS. These cases are not live
+ * coverage, and a reader must not take them as evidence that OpenCode emits a `system`
+ * frame. It does not, and neither does Kilo, Goose, Reasonix or Cursor: all five answer
+ * pure JSON-RPC, and no `sessionUpdate` vocabulary of theirs holds the word. Each
+ * object here is hand-built, in Claude Code's stream-json shape.
+ *
+ * The guard they cover stays because the worker admits the frame by construction --
+ * `handleACPOutput`'s default persists one stdout line byte for byte and never reads a
+ * top-level `type`. `isHiddenACPNotification` in `../acp/classification` holds the
+ * whole standing property, including the print-mode frames Cursor's bundle builds.
+ * These cases pin the guard's answer so a later edit cannot quietly drop it.
+ */
+describe('the system-frame guard (opencode)', () => {
+  const plugin = providerFor(AgentProvider.OPENCODE)!
+
+  it('hides the init lifecycle frame', () => {
+    const parent = { type: 'system', subtype: 'init' }
+    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'hidden' })
   })
 
-  it('hides a final (non-compacting) system status standalone', () => {
-    // Parity with Claude/Codex: the trailing {subtype:status, status:null} that
-    // ends a compaction carries nothing to render, so it must not surface as a
-    // notification (which would fall back to a raw-JSON bubble).
+  it('draws a system frame the hidden rules do not match', () => {
+    const parent = { type: 'system', subtype: 'compact_boundary' }
+    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'notification', messages: [parent] })
+  })
+
+  it('hides a final (non-compacting) status standalone', () => {
+    // The trailing {subtype:status, status:null} that ends a compaction carries
+    // nothing to draw, so it must not surface as a notification that holds no block.
     const parent = { type: 'system', subtype: 'status', status: null }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'hidden' })
   })
 
-  it('keeps an in-progress compacting system status visible', () => {
+  it('keeps an in-progress compacting status visible', () => {
     const parent = { type: 'system', subtype: 'status', status: 'compacting' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'notification', messages: [parent] })
   })
 
-  it('hides a terminal system status when consolidated into a notification thread', () => {
+  // The standalone answer and the threaded answer must agree. A frame hidden on its
+  // own stays hidden once the worker threads it.
+  it('hides a final status once a notification thread holds it', () => {
     const statusMsg = { type: 'system', subtype: 'status', status: null }
     const wrapper = { old_seqs: [9], messages: [statusMsg] }
-    expect(plugin.classify(input(statusMsg, wrapper))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(statusMsg, wrapper))).toStrictEqual({ kind: 'hidden' })
   })
 
-  it('drops a hidden system message from a thread but keeps the visible notification', () => {
+  it('drops a hidden system frame from a thread but keeps the visible notification', () => {
     const interrupted = { type: 'interrupted' }
     const initMsg = { type: 'system', subtype: 'init' }
     const wrapper = { old_seqs: [1, 2], messages: [initMsg, interrupted] }
-    // init is hidden; interrupted (a base notification type) keeps the thread alive.
-    expect(plugin.classify(input(initMsg, wrapper)))
-      .toEqual({ kind: 'notification', messages: [interrupted] })
+    // init is hidden; interrupted, a base notification type, keeps the thread alive.
+    expect(plugin?.transcript.classify(input(initMsg, wrapper)))
+      .toStrictEqual({ kind: 'notification', messages: [interrupted] })
   })
 })
 
@@ -311,7 +301,7 @@ describe('opencode result divider', () => {
   })
 
   it('is registered as the plugin resultDivider hook', () => {
-    expect(plugin.resultDivider!({ stopReason: 'end_turn' })).toEqual({ label: 'Turn ended' })
+    expect(plugin?.transcript.extractDivider!({ stopReason: 'end_turn' })).toEqual({ label: 'Turn ended' })
   })
 })
 
@@ -328,9 +318,9 @@ describe('opencode tool_call renderer', () => {
       locations: [],
       rawInput: {},
     }
-    const category = plugin.classify(input(toolUse))
+    const category = plugin?.transcript.classify(input(toolUse))
     expect(category.kind).toBe('tool_use')
-    const { container } = render(() => plugin.renderMessage!(category, toolUse))
+    const { container } = renderACPRow(AgentProvider.OPENCODE, toolUse)
     expect(container.textContent).toContain('bash')
   })
 
@@ -341,8 +331,7 @@ describe('opencode tool_call renderer', () => {
       title: 'custom_tool',
       status: 'pending',
     }
-    const category = plugin.classify(input(toolUse))
-    const { container } = render(() => plugin.renderMessage!(category, toolUse))
+    const { container } = renderACPRow(AgentProvider.OPENCODE, toolUse)
     expect(container.textContent).toContain('custom_tool')
   })
 })
@@ -351,15 +340,15 @@ describe('opencode plan mode', () => {
   const plugin = providerFor(AgentProvider.OPENCODE)!
 
   it('reads the current mode from optionValues.primaryAgent', () => {
-    expect(plugin.planMode?.currentMode({ optionValues: { primaryAgent: 'plan' } })).toBe('plan')
-    expect(plugin.planMode?.currentMode({ optionValues: {} })).toBe('build')
+    expect(plugin?.configuration?.planMode?.currentMode({ optionValues: { primaryAgent: 'plan' } })).toBe('plan')
+    expect(plugin?.configuration?.planMode?.currentMode({ optionValues: {} })).toBe('build')
   })
 
   it('declares primaryAgent as the plan-mode group with plan/build values', () => {
     // The generic settings panel renders the primaryAgent option group and
     // dispatches changes through the host; the provider only declares which
     // group + values drive plan mode.
-    expect(plugin.planMode).toMatchObject({
+    expect(plugin?.configuration?.planMode).toMatchObject({
       groupKey: 'primaryAgent',
       planValue: 'plan',
       defaultValue: 'build',
@@ -367,7 +356,7 @@ describe('opencode plan mode', () => {
   })
 
   it('renders the primaryAgent group as the trigger mode segment', () => {
-    expect(plugin.triggerModeGroupKey).toBe('primaryAgent')
+    expect(plugin?.configuration?.triggerModeGroupKey).toBe('primaryAgent')
   })
 })
 
@@ -392,9 +381,9 @@ describe('opencode tool_call_update renderer', () => {
       },
       content: [{ type: 'content', content: { type: 'text', text: 'abc123 fix something\ndef456 add feature' } }],
     }
-    const category = plugin.classify(input(toolUse))
+    const category = plugin?.transcript.classify(input(toolUse))
     expect(category.kind).toBe('tool_use')
-    const { container } = render(() => plugin.renderMessage!(category, toolUse))
+    const { container } = renderACPRow(AgentProvider.OPENCODE, toolUse)
     expect(container.textContent).toContain('Shows recent commit messages')
     expect(container.textContent).toContain('git log --oneline -5')
   })
@@ -410,8 +399,7 @@ describe('opencode tool_call_update renderer', () => {
       rawOutput: { error: 'command failed', metadata: { exit: 1 } },
       content: [],
     }
-    const category = plugin.classify(input(toolUse))
-    const { container } = render(() => plugin.renderMessage!(category, toolUse))
+    const { container } = renderACPRow(AgentProvider.OPENCODE, toolUse)
     expect(container.textContent).toContain('Run failing command')
     expect(container.textContent).toContain('false')
   })
@@ -427,7 +415,7 @@ describe('opencode tool_call_update renderer', () => {
         { type: 'diff', path: 'src/main.ts', oldText: 'const a = 1', newText: 'const a = 2' },
       ],
     }
-    const category = plugin.classify(input(toolUse))
+    const category = plugin?.transcript.classify(input(toolUse))
     expect(category.kind).toBe('tool_use')
   })
 
@@ -440,8 +428,7 @@ describe('opencode tool_call_update renderer', () => {
       title: 'simple command',
       content: [{ type: 'content', content: { type: 'text', text: 'output' } }],
     }
-    const category = plugin.classify(input(toolUse))
-    const { container } = render(() => plugin.renderMessage!(category, toolUse))
+    const { container } = renderACPRow(AgentProvider.OPENCODE, toolUse)
     expect(container.textContent).toContain('simple command')
   })
 
@@ -463,8 +450,7 @@ describe('opencode tool_call_update renderer', () => {
       },
       content: [{ type: 'content', content: { type: 'text', text: 'Found 24 matches\n...' } }],
     }
-    const category = plugin.classify(input(toolUse))
-    const { container } = render(() => plugin.renderMessage!(category, toolUse))
+    const { container } = renderACPRow(AgentProvider.OPENCODE, toolUse)
     expect(container.textContent).toContain('UpdateSettings')
   })
 
@@ -486,8 +472,7 @@ describe('opencode tool_call_update renderer', () => {
       },
       content: [{ type: 'content', content: { type: 'text', text: '537: func foo() {\n538:   return\n539: }' } }],
     }
-    const category = plugin.classify(input(toolUse))
-    const { container } = render(() => plugin.renderMessage!(category, toolUse))
+    const { container } = renderACPRow(AgentProvider.OPENCODE, toolUse)
     expect(container.textContent).toContain('backend/agent.go')
   })
 
@@ -501,8 +486,7 @@ describe('opencode tool_call_update renderer', () => {
       content: [],
       rawOutput: { output: 'everything ok', metadata: { exit: 0 } },
     }
-    const category = plugin.classify(input(toolUse))
-    const { container } = render(() => plugin.renderMessage!(category, toolUse))
+    const { container } = renderACPRow(AgentProvider.OPENCODE, toolUse)
     expect(container.textContent).toContain('check status')
   })
 })
@@ -515,7 +499,7 @@ describe('opencode isAskUserQuestion', () => {
       type: 'question.asked',
       properties: { questions: [] },
     }
-    expect(plugin.askUserQuestion!.isRequest(payload)).toBe(true)
+    expect(plugin?.controls?.askUserQuestion!.isRequest(payload)).toBe(true)
   })
 
   it('returns false for permission requests', () => {
@@ -523,15 +507,15 @@ describe('opencode isAskUserQuestion', () => {
       method: 'requestPermission',
       params: { toolCall: { toolCallId: 'tc-1' } },
     }
-    expect(plugin.askUserQuestion!.isRequest(payload)).toBe(false)
+    expect(plugin?.controls?.askUserQuestion!.isRequest(payload)).toBe(false)
   })
 
   it('returns false for regular messages', () => {
-    expect(plugin.askUserQuestion!.isRequest({})).toBe(false)
+    expect(plugin?.controls?.askUserQuestion!.isRequest({})).toBe(false)
   })
 })
 
-describe('sendOpenCodePermissionResponse', () => {
+describe('the opencode permission sender', () => {
   function decode(bytes: Uint8Array): Record<string, unknown> {
     return JSON.parse(new TextDecoder().decode(bytes))
   }
@@ -542,7 +526,7 @@ describe('sendOpenCodePermissionResponse', () => {
       captured = content
     })
 
-    await sendOpenCodePermissionResponse(onRespond, '5', 'once')
+    await providerFor(AgentProvider.OPENCODE)!.controls?.sendPermissionOption!(onRespond, '5', 'once')
 
     expect(onRespond).toHaveBeenCalledOnce()
     const parsed = decode(captured!)
@@ -559,7 +543,7 @@ describe('sendOpenCodePermissionResponse', () => {
       captured = content
     })
 
-    await sendOpenCodePermissionResponse(onRespond, '7', 'reject')
+    await providerFor(AgentProvider.OPENCODE)!.controls?.sendPermissionOption!(onRespond, '7', 'reject')
 
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
@@ -575,7 +559,7 @@ describe('sendOpenCodePermissionResponse', () => {
       captured = content
     })
 
-    await sendOpenCodePermissionResponse(onRespond, '9', 'always')
+    await providerFor(AgentProvider.OPENCODE)!.controls?.sendPermissionOption!(onRespond, '9', 'always')
 
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
@@ -591,7 +575,7 @@ describe('sendOpenCodePermissionResponse', () => {
       captured = content
     })
 
-    await sendOpenCodePermissionResponse(onRespond, 'abc', 'once')
+    await providerFor(AgentProvider.OPENCODE)!.controls?.sendPermissionOption!(onRespond, 'abc', 'once')
 
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
@@ -626,5 +610,53 @@ describe('sendOpenCodeQuestionResponse', () => {
         answers: [['Build'], ['Dev']],
       },
     })
+  })
+})
+
+/*
+ * The worker publishes a question the daemon raised on its own event stream, in the
+ * event's own shape. The recognizer here is what turns that stored payload back into
+ * a question, so the two must agree exactly -- they live in different languages, and
+ * a drift between them shows up as a banner that never opens.
+ *
+ * The daemon's ACP stream carries no question at all: its adapter handles four event
+ * types and none is a question, so the worker reads the daemon's HTTP event stream
+ * for these. See openCodeQuestions in the Go worker.
+ */
+describe('opencode question recognition', () => {
+  const capability = () => providerFor(AgentProvider.OPENCODE)?.controls?.askUserQuestion
+
+  // The exact payload openCodeQuestions.publish stores.
+  const published = {
+    type: OPENCODE_EVENT.QuestionAsked,
+    properties: {
+      id: 'que_1',
+      sessionID: 'ses_9',
+      questions: [{ question: 'Which one?', header: 'Task', options: [{ label: 'Inspect', description: 'Look only' }], multiple: true }],
+    },
+  }
+
+  it('recognizes the payload the worker publishes', () => {
+    expect(capability()?.isRequest(published)).toBe(true)
+  })
+
+  it('reads the questions, and maps the daemon multiple flag to multiSelect', () => {
+    expect(capability()?.extractQuestions(published)).toEqual([
+      {
+        question: 'Which one?',
+        header: 'Task',
+        options: [{ label: 'Inspect', description: 'Look only' }],
+        multiple: true,
+        multiSelect: true,
+      },
+    ])
+  })
+
+  it.each([
+    ['a settled question', { type: OPENCODE_EVENT.QuestionReplied, properties: { requestID: 'que_1' } }],
+    ['a permission request', { type: 'permission.asked', properties: { id: 'per_1' } }],
+    ['an empty payload', {}],
+  ])('refuses %s', (_name, payload) => {
+    expect(capability()?.isRequest(payload)).toBeFalsy()
   })
 })

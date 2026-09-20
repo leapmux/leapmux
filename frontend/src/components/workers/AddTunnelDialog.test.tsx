@@ -52,7 +52,7 @@ function renderDialog(overrides?: { store?: Partial<TunnelStore>, onClose?: () =
   return { store, onClose, onCreated }
 }
 
-describe('addTunnelDialog', () => {
+describe('AddTunnelDialog', () => {
   it('renders with port forwarding selected by default', () => {
     renderDialog()
     const portFwdRadio = screen.getByDisplayValue('port_forward') as HTMLInputElement
@@ -288,7 +288,7 @@ describe('addTunnelDialog', () => {
   })
 })
 
-describe('addTunnelDialog bind address validation', () => {
+describe('AddTunnelDialog bind address validation', () => {
   // The parser itself (Go-compatible net.ParseIP mirroring, `::` compression,
   // IPv4-mapped loopback) is tested at its own level in ~/lib/ipAddress.test.ts. What
   // the dialog owns is wiring it to the field and surfacing the message.

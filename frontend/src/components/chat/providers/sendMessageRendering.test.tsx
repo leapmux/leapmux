@@ -1,13 +1,13 @@
-import type { MessageCategory } from '../messageClassification'
-import type { RenderContext } from '../messageRenderers'
+import type { MessageCategory } from '../messageClassifier'
+import type { MessageContentRenderContext } from '../messageContentRenderer'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { testMessageSources } from '~/test-support/messageRenderSources'
+import { subagentsFrom } from '../renderContext'
 import './testMocks'
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../messageContentRenderer')
 
 /** Half of an astral character, left behind by a cut between the pair. */
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
@@ -24,22 +24,22 @@ function subagentRow(over: Partial<BackgroundTaskItem> = {}): BackgroundTaskItem
   }
 }
 
-function renderToolUse(input: Record<string, unknown>, context?: RenderContext): HTMLElement {
+function renderToolUse(input: Record<string, unknown>, context?: MessageContentRenderContext): HTMLElement {
   const msg = {
     type: 'assistant',
     message: {
       content: [{ type: 'tool_use', id: 'test-sendmessage', name: 'SendMessage', input }],
     },
   }
-  const content = msg.message.content as Array<Record<string, unknown>>
-  const category: MessageCategory = {
-    kind: 'tool_use',
-    toolName: 'SendMessage',
-    toolUse: content[0],
-    content,
-  }
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(msg, context, category, AgentProvider.CLAUDE_CODE)
   return render(() => result).container
+}
+
+/** The context of one case, from the subagent host it states. Every host here names a handler, so the navigation is never undefined at runtime. */
+function withSubagents(host: Parameters<typeof subagentsFrom>[0]): MessageContentRenderContext {
+  const subagents = subagentsFrom(host)
+  return subagents === undefined ? {} : { subagents }
 }
 
 describe('claude SendMessage tool_use rendering', () => {
@@ -109,7 +109,7 @@ describe('claude SendMessage tool_use rendering', () => {
   it('shows the recipient the way the Background tasks list shows it', () => {
     const container = renderToolUse(
       { to: 'a1b2c3d4e5f60718', message: 'keep going' },
-      { onOpenSubagent: vi.fn(), sources: testMessageSources({ backgroundTask: () => subagentRow() }) },
+      withSubagents({ openSubagent: vi.fn(), backgroundTask: () => subagentRow() }),
     )
     expect(container.textContent).toContain('Explore the parser')
   })
@@ -119,7 +119,7 @@ describe('claude SendMessage tool_use rendering', () => {
     const row = subagentRow()
     const container = renderToolUse(
       { to: 'a1b2c3d4e5f60718', message: 'keep going' },
-      { onOpenSubagent, sources: testMessageSources({ backgroundTask: () => row }) },
+      withSubagents({ openSubagent: onOpenSubagent, backgroundTask: () => row }),
     )
     const button = container.querySelector<HTMLButtonElement>('[data-testid="send-message-recipient"]')
     expect(button).not.toBeNull()
@@ -132,7 +132,7 @@ describe('claude SendMessage tool_use rendering', () => {
   it('renders an unresolvable recipient as plain text', () => {
     const container = renderToolUse(
       { to: 'bridge:another-machine', message: 'keep going' },
-      { onOpenSubagent: vi.fn(), sources: testMessageSources({ backgroundTask: () => undefined }) },
+      withSubagents({ openSubagent: vi.fn(), backgroundTask: () => undefined }),
     )
     expect(container.querySelector('[data-testid="send-message-recipient"]')).toBeNull()
     expect(container.textContent).toContain('bridge:another-machine')
@@ -141,10 +141,13 @@ describe('claude SendMessage tool_use rendering', () => {
   // A shell row has no transcript, and a subagent row whose provider never
   // linked one has nothing to open either.
   it('is not clickable for a row that owns no transcript', () => {
-    for (const row of [subagentRow({ childAgentId: undefined }), subagentRow({ kind: 'shell' })]) {
+    // A subagent row whose provider never linked one carries no child id at all.
+    const rowWithoutLink = subagentRow()
+    delete rowWithoutLink.childAgentId
+    for (const row of [rowWithoutLink, subagentRow({ kind: 'shell' })]) {
       const container = renderToolUse(
         { to: 'a1b2c3d4e5f60718', message: 'keep going' },
-        { onOpenSubagent: vi.fn(), sources: testMessageSources({ backgroundTask: () => row }) },
+        withSubagents({ openSubagent: vi.fn(), backgroundTask: () => row }),
       )
       expect(container.querySelector('[data-testid="send-message-recipient"]')).toBeNull()
     }
@@ -155,7 +158,7 @@ describe('claude SendMessage tool_use rendering', () => {
   it('is not clickable when the host supplied no open handler', () => {
     const container = renderToolUse(
       { to: 'a1b2c3d4e5f60718', message: 'keep going' },
-      { sources: testMessageSources({ backgroundTask: () => subagentRow() }) },
+      withSubagents({ backgroundTask: () => subagentRow() }),
     )
     expect(container.querySelector('[data-testid="send-message-recipient"]')).toBeNull()
     expect(container.textContent).toContain('Explore the parser')

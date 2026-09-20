@@ -160,7 +160,9 @@ export function disposeTerminalInstance(id: string, opts?: { captureScreen?: boo
   // it attaches the layer after open(), and this is the only teardown
   // chokepoint.
   instance.ime?.dispose()
-  instance.ime = undefined
+  // `delete`, not `= undefined`: the field is optional without `undefined`,
+  // so omitting the key is the spelling for "no IME layer".
+  delete instance.ime
   instance.dispose()
   instances.delete(id)
   screenApplied.delete(id)
@@ -365,7 +367,7 @@ if (typeof window !== 'undefined') {
  * than calling `terminal.open()` again (which is no-op-on-second-call and
  * would leave the canvas detached in the previous, unmounted container).
  */
-const TerminalContainer: Component<{
+interface TerminalContainerProps {
   terminalId: string
   active: boolean
   visible: boolean
@@ -373,8 +375,8 @@ const TerminalContainer: Component<{
    * Whether the enclosing tile is the layout-focused tile. The xterm
    * focus effect below gates on this so a terminal that becomes the
    * active tab on its tile as a SIDE EFFECT (e.g. the user dragged a
-   * different tab away and MRU rotated the terminal to the top of
-   * the source tile) doesn't steal keyboard focus from wherever the
+   * different tab away and MRU rotated the terminal to the top of the
+   * source tile) doesn't steal keyboard focus from wherever the
    * user is actually working. Clicking the terminal's tab still moves
    * `focusedTileId` to its tile first, so the common case still ends
    * with the cursor blinking in xterm.
@@ -397,7 +399,9 @@ const TerminalContainer: Component<{
   onResize: (id: string, cols: number, rows: number) => void
   onContentReady: (id: string) => void
   confirmLink: UntrustedLinkConfirm
-}> = (props) => {
+}
+
+const TerminalContainer: Component<TerminalContainerProps> = (props) => {
   let ref: HTMLDivElement | undefined
 
   onMount(() => {
@@ -412,10 +416,12 @@ const TerminalContainer: Component<{
       instance = createTerminalInstance({
         fontFamily: props.fontFamily,
         fontSize: props.fontSize,
-        cols: props.cols,
-        rows: props.rows,
+        ...(props.cols !== undefined ? { cols: props.cols } : {}),
+        ...(props.rows !== undefined ? { rows: props.rows } : {}),
         theme: props.theme,
-        transparentBackground: props.transparentBackground,
+        ...(props.transparentBackground !== undefined
+          ? { transparentBackground: props.transparentBackground }
+          : {}),
       })
       instances.set(id, instance)
       notifyTerminalInstanceReady(id)
@@ -813,6 +819,32 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
             // recomputes (tabView compares with `shallowEqual`), so the memo
             // settles on `===` and the propagation stops here.
             const terminal = createMemo(() => terminalById().get(id))
+            // The optional half of the row's props, with ABSENT keys rather
+            // than undefined values, which is what exactOptionalPropertyTypes
+            // demands. A getter so Solid's spread stays deferred and each
+            // prop read re-runs only what it needs.
+            const rowOptionalProps = (): Partial<TerminalContainerProps> => {
+              const tab = terminal()
+              const optional: Partial<TerminalContainerProps> = {}
+              if (props.tabEditing !== undefined)
+                optional.tabEditing = props.tabEditing
+              if (tab?.screen !== undefined)
+                optional.screen = tab.screen
+              if (props.getLastOffset !== undefined) {
+                const lastOffset = props.getLastOffset(id)
+                if (lastOffset !== undefined)
+                  optional.lastOffset = lastOffset
+              }
+              if (tab?.cols !== undefined)
+                optional.cols = tab.cols
+              if (tab?.rows !== undefined)
+                optional.rows = tab.rows
+              if (props.transparentBackground !== undefined)
+                optional.transparentBackground = props.transparentBackground
+              if (tab?.startupMessage !== undefined)
+                optional.startupMessage = tab.startupMessage
+              return optional
+            }
             return (
               <Switch
                 fallback={(
@@ -821,19 +853,13 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
                     active={id === props.activeTerminalId}
                     visible={props.visible}
                     tileFocused={props.tileFocused}
-                    tabEditing={props.tabEditing}
-                    screen={terminal()?.screen}
-                    lastOffset={props.getLastOffset?.(id)}
-                    cols={terminal()?.cols}
-                    rows={terminal()?.rows}
+                    {...rowOptionalProps()}
                     fontFamily={preferences.monoFontFamily()}
                     fontSize={DEFAULT_FONT_SIZE}
                     theme={props.transparentBackground ? transparentTerminalTheme() : terminalTheme()}
-                    transparentBackground={props.transparentBackground}
                     contentReady={(terminal()?.contentReady ?? false)
                       || terminal()?.status === TerminalStatus.EXITED
                       || terminal()?.status === TerminalStatus.DISCONNECTED}
-                    startupMessage={terminal()?.startupMessage}
                     onInput={props.onInput}
                     onResize={props.onResize}
                     onContentReady={props.onContentReady}

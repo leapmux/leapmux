@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	utilid "github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -85,13 +86,6 @@ type acpTerminalSession struct {
 	done chan struct{}
 }
 
-type acpTerminalResult struct {
-	Output    string  `json:"output"`
-	Truncated bool    `json:"truncated"`
-	ExitCode  *int    `json:"exitCode,omitempty"`
-	Signal    *string `json:"signal,omitempty"`
-}
-
 type acpTerminalServices interface {
 	ProgressServices
 	BackgroundTaskServices
@@ -118,7 +112,7 @@ type acpTerminalHost struct {
 
 	terminalsMu        sync.Mutex
 	terminals          map[string]*acpTerminalSession
-	completedTerminals map[string]acpTerminalResult
+	completedTerminals map[string]contracts.ACPTerminalResult
 	terminalsClosed    bool
 }
 
@@ -197,28 +191,15 @@ func (s *acpTerminalSession) appendOutput(p []byte) {
 	s.bufSize += len(p)
 }
 
-// truncateACPTerminalOutput drops the oldest bytes so retained is at most
-// limit bytes, cutting at a UTF-8 character boundary (ACP requirement).
-// limit == 0 retains nothing.
-func truncateACPTerminalOutput(buf []byte, limit int) []byte {
-	if limit == 0 {
-		return nil
-	}
-	if limit < 0 || len(buf) <= limit {
-		return buf
-	}
-	start := len(buf) - limit
-	for start < len(buf) && !utf8.RuneStart(buf[start]) {
-		start++
-	}
-	if start >= len(buf) {
-		return nil
-	}
-	out := make([]byte, len(buf)-start)
-	copy(out, buf[start:])
-	return out
-}
-
+// snapshot copies the retained tail out of the ring buffer.
+//
+// It COPIES on purpose: the returned string must not hold the ring buffer, whose
+// bytes appendOutput overwrites on the next read.
+//
+// The ring keeps the last byteLimit bytes, so its oldest byte can be a
+// continuation byte of a rune whose leading byte the ring already dropped. ACP
+// requires a cut at a character boundary, so the loop below discards that partial
+// rune and reports the loss.
 func (s *acpTerminalSession) snapshot() (output string, truncated bool, exitCode *int, signal *string, exited bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -579,15 +560,15 @@ func (b *acpTerminalHost) rememberCompletedTerminal(sess *acpTerminalSession) {
 	output, truncated, exitCode, signal, _ := sess.snapshot()
 	b.terminalsMu.Lock()
 	if b.completedTerminals == nil {
-		b.completedTerminals = make(map[string]acpTerminalResult)
+		b.completedTerminals = make(map[string]contracts.ACPTerminalResult)
 	}
-	b.completedTerminals[sess.id] = acpTerminalResult{
+	b.completedTerminals[sess.id] = contracts.ACPTerminalResult{
 		Output: output, Truncated: truncated, ExitCode: exitCode, Signal: signal,
 	}
 	b.terminalsMu.Unlock()
 }
 
-func (b *acpTerminalHost) takeCompletedTerminal(terminalID string) (acpTerminalResult, bool) {
+func (b *acpTerminalHost) takeCompletedTerminal(terminalID string) (contracts.ACPTerminalResult, bool) {
 	b.terminalsMu.Lock()
 	defer b.terminalsMu.Unlock()
 	result, ok := b.completedTerminals[terminalID]
@@ -605,7 +586,7 @@ func (b *acpTerminalHost) takeCompletedTerminal(terminalID string) (acpTerminalR
 //
 // A terminal LeapMux no longer holds returns false, and the row states that nothing can
 // be read for it. That is the one case "unavailable" describes.
-func (b *acpTerminalHost) terminalResultFor(terminalID string) (acpTerminalResult, bool) {
+func (b *acpTerminalHost) terminalResultFor(terminalID string) (contracts.ACPTerminalResult, bool) {
 	if result, present := b.takeCompletedTerminal(terminalID); present {
 		return result, true
 	}
@@ -613,10 +594,10 @@ func (b *acpTerminalHost) terminalResultFor(terminalID string) (acpTerminalResul
 	session := b.terminals[terminalID]
 	b.terminalsMu.Unlock()
 	if session == nil {
-		return acpTerminalResult{}, false
+		return contracts.ACPTerminalResult{}, false
 	}
 	output, truncated, exitCode, signal, _ := session.snapshot()
-	return acpTerminalResult{Output: output, Truncated: truncated, ExitCode: exitCode, Signal: signal}, true
+	return contracts.ACPTerminalResult{Output: output, Truncated: truncated, ExitCode: exitCode, Signal: signal}, true
 }
 
 func (b *acpTerminalHost) clearCompletedTerminals() {

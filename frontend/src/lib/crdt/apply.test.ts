@@ -96,80 +96,80 @@ describe('applyOp', () => {
     const state = newState('user')
     const op = setNodeKindOp('n1', NodeKind.LEAF, 10n, 0n, 'a')
     applyOp(state, op)
-    expect(state.nodes.n1.kind?.value).toBe(NodeKind.LEAF)
+    expect(state.nodes.n1?.kind?.value).toBe(NodeKind.LEAF)
     applyOp(state, op)
-    expect(state.nodes.n1.kind?.value).toBe(NodeKind.LEAF)
+    expect(state.nodes.n1?.kind?.value).toBe(NodeKind.LEAF)
   })
 
   it('higher HLC wins LWW', () => {
     const state = newState('user')
     applyOp(state, setNodePositionOp('n1', 'A', 10n, 0n, 'a'))
     applyOp(state, setNodePositionOp('n1', 'B', 20n, 0n, 'b'))
-    expect(state.nodes.n1.position?.value).toBe('B')
+    expect(state.nodes.n1?.position?.value).toBe('B')
   })
 
   it('lower HLC drops on existing register', () => {
     const state = newState('user')
     applyOp(state, setNodePositionOp('n1', 'B', 20n, 0n, 'b'))
     applyOp(state, setNodePositionOp('n1', 'A', 10n, 0n, 'a'))
-    expect(state.nodes.n1.position?.value).toBe('B')
+    expect(state.nodes.n1?.position?.value).toBe('B')
   })
 
   it('parent_id is set-once at the apply layer', () => {
     const state = newState('user')
     applyOp(state, setNodeParentOp('n1', 'P1', 10n, 0n, 'a'))
     applyOp(state, setNodeParentOp('n1', 'P2', 20n, 0n, 'b'))
-    expect(state.nodes.n1.parentId).toBe('P1')
+    expect(state.nodes.n1?.parentId).toBe('P1')
   })
 
   it('tombstone clears registers and drops later sets', () => {
     const state = newState('user')
     applyOp(state, setNodePositionOp('n1', 'A', 10n, 0n, 'a'))
     applyOp(state, tombstoneNodeOp('n1', 20n, 0n, 'a'))
-    expect(state.nodes.n1.position).toBeUndefined()
+    expect(state.nodes.n1?.position).toBeUndefined()
     applyOp(state, setNodePositionOp('n1', 'C', 30n, 0n, 'a'))
-    expect(state.nodes.n1.position).toBeUndefined()
+    expect(state.nodes.n1?.position).toBeUndefined()
   })
 
   it('a Set with HLC older than the existing tombstone drops too', () => {
     const state = newState('user')
     applyOp(state, tombstoneNodeOp('n1', 30n, 0n, 'a'))
     applyOp(state, setNodePositionOp('n1', 'X', 20n, 0n, 'a'))
-    expect(state.nodes.n1.position).toBeUndefined()
+    expect(state.nodes.n1?.position).toBeUndefined()
   })
 
   it('tab tile_id LWW', () => {
     const state = newState('user')
     applyOp(state, setTabTileIdOp('t1', 'A', 10n, 0n, 'a'))
     applyOp(state, setTabTileIdOp('t1', 'B', 20n, 0n, 'b'))
-    expect(state.tabs.t1.tileId?.value).toBe('B')
+    expect(state.tabs.t1?.tileId?.value).toBe('B')
   })
 
   it('tab tombstone clears registers', () => {
     const state = newState('user')
     applyOp(state, setTabTileIdOp('t1', 'A', 10n, 0n, 'a'))
     applyOp(state, tombstoneTabOp('t1', 20n, 0n, 'a'))
-    expect(state.tabs.t1.tileId).toBeUndefined()
+    expect(state.tabs.t1?.tileId).toBeUndefined()
   })
 
   it('revive clears a newer tombstone and lets later sets land', () => {
     const state = newState('user')
     applyOp(state, setTabTileIdOp('t1', 'A', 10n, 0n, 'a'))
     applyOp(state, tombstoneTabOp('t1', 20n, 0n, 'a'))
-    expect(state.tabs.t1.tombstoneAt).toBeDefined()
+    expect(state.tabs.t1?.tombstoneAt).toBeDefined()
     // Revive at a newer HLC clears the tombstone.
     applyOp(state, reviveTabOp('t1', 30n, 0n, 'a'))
-    expect(state.tabs.t1.tombstoneAt).toBeUndefined()
+    expect(state.tabs.t1?.tombstoneAt).toBeUndefined()
     // A later set now lands (the tab is live again).
     applyOp(state, setTabTileIdOp('t1', 'B', 40n, 0n, 'a'))
-    expect(state.tabs.t1.tileId?.value).toBe('B')
+    expect(state.tabs.t1?.tileId?.value).toBe('B')
   })
 
   it('revive older than tombstone is a no-op (remove-wins for concurrent)', () => {
     const state = newState('user')
     applyOp(state, tombstoneTabOp('t1', 50n, 0n, 'a'))
     applyOp(state, reviveTabOp('t1', 40n, 0n, 'a'))
-    expect(state.tabs.t1.tombstoneAt).toBeDefined()
+    expect(state.tabs.t1?.tombstoneAt).toBeDefined()
   })
 
   it('tombstone older than a revive does not re-close a revived tab', () => {
@@ -180,13 +180,13 @@ describe('applyOp', () => {
     const state = newState('user')
     applyOp(state, tombstoneTabOp('t1', 10n, 0n, 'a'))
     applyOp(state, reviveTabOp('t1', 30n, 0n, 'a'))
-    expect(state.tabs.t1.tombstoneAt).toBeUndefined()
+    expect(state.tabs.t1?.tombstoneAt).toBeUndefined()
     // Tombstone at HLC 20 (older than the revive at 30): must NOT re-close.
     applyOp(state, tombstoneTabOp('t1', 20n, 0n, 'a'))
-    expect(state.tabs.t1.tombstoneAt).toBeUndefined()
+    expect(state.tabs.t1?.tombstoneAt).toBeUndefined()
     // A tombstone strictly newer than the revive still wins (genuine close).
     applyOp(state, tombstoneTabOp('t1', 40n, 0n, 'a'))
-    expect(state.tabs.t1.tombstoneAt).toBeDefined()
+    expect(state.tabs.t1?.tombstoneAt).toBeDefined()
   })
 
   it('a redelivered older revive does not regress revivedAt', () => {
@@ -197,29 +197,29 @@ describe('applyOp', () => {
     const state = newState('user')
     applyOp(state, tombstoneTabOp('t1', 10n, 0n, 'a'))
     applyOp(state, reviveTabOp('t1', 30n, 0n, 'a'))
-    expect(state.tabs.t1.tombstoneAt).toBeUndefined()
-    const revivedAt30 = state.tabs.t1.revivedAt
+    expect(state.tabs.t1?.tombstoneAt).toBeUndefined()
+    const revivedAt30 = state.tabs.t1?.revivedAt
     expect(revivedAt30).toBeDefined()
     // Redelivered revive at 25 (older than 30): must not change revivedAt.
     applyOp(state, reviveTabOp('t1', 25n, 0n, 'a'))
-    expect(state.tabs.t1.revivedAt).toBe(revivedAt30)
+    expect(state.tabs.t1?.revivedAt).toBe(revivedAt30)
     // A tombstone at 27 (newer than the stale 25, older than the real 30) must
     // not re-close the tab.
     applyOp(state, tombstoneTabOp('t1', 27n, 0n, 'a'))
-    expect(state.tabs.t1.tombstoneAt).toBeUndefined()
+    expect(state.tabs.t1?.tombstoneAt).toBeUndefined()
   })
 
   it('revive of an unseen tab materializes a live record', () => {
     const state = newState('user')
     applyOp(state, reviveTabOp('t-new', 10n, 0n, 'a'))
     expect(state.tabs['t-new']).toBeDefined()
-    expect(state.tabs['t-new'].tombstoneAt).toBeUndefined()
+    expect(state.tabs['t-new']?.tombstoneAt).toBeUndefined()
   })
 
   it('-0.0 normalizes to +0.0 on double registers', () => {
     const state = newState('user')
     applyOp(state, setFloatingXOp('w1', -0, 10n, 0n, 'a'))
-    const x = state.floatingWindows.w1.x?.value
+    const x = state.floatingWindows.w1?.x?.value
     // Object.is distinguishes -0 from +0; the apply layer must
     // canonicalize so the bit pattern is +0.
     expect(Object.is(x, -0)).toBe(false)
@@ -250,8 +250,8 @@ describe('applyOp', () => {
     })
     applyOp(state, op)
     expect(state.workspaces.w1).toBeDefined()
-    expect(state.workspaces.w1.workspaceId).toBe('w1')
-    expect(state.workspaces.w1.rootNodeId).toBe('root-w1')
+    expect(state.workspaces.w1?.workspaceId).toBe('w1')
+    expect(state.workspaces.w1?.rootNodeId).toBe('root-w1')
   })
 
   it('setWorkspaceRootNode preserves an already-set rootNodeId (set-once)', () => {
@@ -271,7 +271,7 @@ describe('applyOp', () => {
       },
     }))
     // Set-once semantics: the second register must not overwrite.
-    expect(state.workspaces.w1.rootNodeId).toBe('first-root')
+    expect(state.workspaces.w1?.rootNodeId).toBe('first-root')
   })
 
   // setWorkspaceRegister seeds the WorkspaceContentsRecord map entry. It is
@@ -289,8 +289,8 @@ describe('applyOp', () => {
       },
     }))
     expect(state.workspaces.w1).toBeDefined()
-    expect(state.workspaces.w1.workspaceId).toBe('w1')
-    expect(state.workspaces.w1.rootNodeId).toBe('')
+    expect(state.workspaces.w1?.workspaceId).toBe('w1')
+    expect(state.workspaces.w1?.rootNodeId).toBe('')
   })
 
   it('setWorkspaceRegister is idempotent and does not clobber a rooted record', () => {
@@ -311,7 +311,7 @@ describe('applyOp', () => {
         value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w1' }),
       },
     }))
-    expect(state.workspaces.w1.rootNodeId).toBe('root-w1')
+    expect(state.workspaces.w1?.rootNodeId).toBe('root-w1')
   })
 
   // tombstoneWorkspace removes the WorkspaceContentsRecord map entry — the

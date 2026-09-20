@@ -11,28 +11,23 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/util/version"
 )
 
-// Codex default option values.
-const (
-	CodexDefaultApprovalPolicy    = "on-request"
-	CodexDefaultSandboxPolicy     = "workspace-write"
-	CodexDefaultNetworkAccess     = "restricted"
-	CodexDefaultCollaborationMode = "default"
-	CodexDefaultServiceTier       = "default"
-	codexMemoriesFeature          = "memories"
-	codexMultiAgentV2Feature      = "multi_agent_v2"
-)
+// The approval policy a fresh Codex agent runs on. The ids and the defaults of the
+// four other axes live in contracts/codex-protocol.json, because the browser seeds a
+// new agent from the same values. This one stays here: LeapMux owns the approval
+// axis for every provider, and no browser code reads Codex's default for it.
+const CodexDefaultApprovalPolicy = "on-request"
 
+// The Codex CLI features the worker turns on at launch.
 const (
-	CodexOptionSandboxPolicy     = "sandbox_policy"
-	CodexOptionNetworkAccess     = "network_access"
-	CodexOptionCollaborationMode = "collaboration_mode"
-	CodexOptionServiceTier       = "service_tier"
+	codexMemoriesFeature     = "memories"
+	codexMultiAgentV2Feature = "multi_agent_v2"
 )
 
 // Codex sandbox policy values.
@@ -258,10 +253,10 @@ func StartCodex(ctx context.Context, opts Options, sink ProviderServices) (Agent
 	// 3. Use the permission mode directly as the Codex approval policy.
 	// The DB stores provider-native values (e.g. "never", "on-request", "untrusted" for Codex).
 	a.approvalPolicy = StringOrDefault(opts.PermissionMode(), CodexDefaultApprovalPolicy)
-	a.sandboxPolicy = StringOrDefault(opts.Options[CodexOptionSandboxPolicy], CodexDefaultSandboxPolicy)
-	a.networkAccess = StringOrDefault(opts.Options[CodexOptionNetworkAccess], CodexDefaultNetworkAccess)
-	a.collaborationMode = StringOrDefault(opts.Options[CodexOptionCollaborationMode], CodexDefaultCollaborationMode)
-	a.serviceTier = StringOrDefault(opts.Options[CodexOptionServiceTier], CodexDefaultServiceTier)
+	a.sandboxPolicy = StringOrDefault(opts.Options[contracts.CodexOptionSandboxPolicy], contracts.CodexOptionDefaultSandboxPolicy)
+	a.networkAccess = StringOrDefault(opts.Options[contracts.CodexOptionNetworkAccess], contracts.CodexOptionDefaultNetworkAccess)
+	a.collaborationMode = StringOrDefault(opts.Options[contracts.CodexOptionCollaborationMode], contracts.CodexOptionDefaultCollaborationMode)
+	a.serviceTier = StringOrDefault(opts.Options[contracts.CodexOptionServiceTier], contracts.CodexOptionDefaultServiceTier)
 
 	// 4. Send "thread/start" or "thread/resume" request.
 	threadParams := codexThreadParams(opts.Model(), opts.WorkingDir, a.approvalPolicy, a.sandboxPolicy, a.serviceTier)
@@ -462,7 +457,7 @@ func newCodexThreadResult(response codexThreadResponse) (codexThreadResult, erro
 		label string
 	}{
 		{response.Effort, OptionIDEffort, "reasoningEffort"},
-		{response.ServiceTier, CodexOptionServiceTier, "serviceTier"},
+		{response.ServiceTier, contracts.CodexOptionServiceTier, "serviceTier"},
 		{response.ApprovalPolicy, OptionIDPermissionMode, "approvalPolicy"},
 	} {
 		if len(target.raw) == 0 {
@@ -501,13 +496,13 @@ func decodeCodexThreadSandbox(raw json.RawMessage) (map[string]*string, error) {
 		return settings, nil
 	}
 	if string(raw) == "null" {
-		settings[CodexOptionSandboxPolicy] = nil
+		settings[contracts.CodexOptionSandboxPolicy] = nil
 		return settings, nil
 	}
 
 	var policy string
 	if json.Unmarshal(raw, &policy) == nil {
-		settings[CodexOptionSandboxPolicy] = &policy
+		settings[contracts.CodexOptionSandboxPolicy] = &policy
 		return settings, nil
 	}
 
@@ -522,7 +517,7 @@ func decodeCodexThreadSandbox(raw json.RawMessage) (map[string]*string, error) {
 	case "dangerFullAccess":
 		policy = CodexSandboxDangerFullAccess
 		network := CodexNetworkEnabled
-		settings[CodexOptionNetworkAccess] = &network
+		settings[contracts.CodexOptionNetworkAccess] = &network
 	case "workspaceWrite":
 		policy = CodexSandboxWorkspaceWrite
 	case "readOnly":
@@ -534,7 +529,7 @@ func decodeCodexThreadSandbox(raw json.RawMessage) (map[string]*string, error) {
 		// Preserve both stored values for a future Codex sandbox variant.
 		return settings, nil
 	}
-	settings[CodexOptionSandboxPolicy] = &policy
+	settings[contracts.CodexOptionSandboxPolicy] = &policy
 	return settings, nil
 }
 
@@ -1168,10 +1163,10 @@ var codexAxes = []codexAxis{
 	{id: OptionIDModel, get: func(a *CodexAgent) string { return a.model }, set: func(a *CodexAgent, v string) { a.model = v }, lifecyclePolicy: codexLifecycleAuthoritative},
 	{id: OptionIDEffort, get: func(a *CodexAgent) string { return a.effort }, set: func(a *CodexAgent, v string) { a.effort = v }, refreshFallback: codexEffortRefreshFallback, lifecyclePolicy: codexLifecycleWhenAutomatic, lifecycleDefault: EffortAuto},
 	{id: OptionIDPermissionMode, get: func(a *CodexAgent) string { return a.approvalPolicy }, set: func(a *CodexAgent, v string) { a.approvalPolicy = v }, lifecyclePolicy: codexLifecycleAuthoritative},
-	{id: CodexOptionSandboxPolicy, get: func(a *CodexAgent) string { return a.sandboxPolicy }, set: func(a *CodexAgent, v string) { a.sandboxPolicy = v }, defaultValue: CodexDefaultSandboxPolicy, lifecyclePolicy: codexLifecycleAuthoritative},
-	{id: CodexOptionNetworkAccess, get: func(a *CodexAgent) string { return a.networkAccess }, set: func(a *CodexAgent, v string) { a.networkAccess = v }, defaultValue: CodexDefaultNetworkAccess, lifecyclePolicy: codexLifecycleAuthoritative},
-	{id: CodexOptionCollaborationMode, get: func(a *CodexAgent) string { return a.collaborationMode }, set: func(a *CodexAgent, v string) { a.collaborationMode = v }, defaultValue: CodexDefaultCollaborationMode},
-	{id: CodexOptionServiceTier, get: func(a *CodexAgent) string { return a.serviceTier }, set: func(a *CodexAgent, v string) { a.serviceTier = v }, defaultValue: CodexDefaultServiceTier, lifecyclePolicy: codexLifecycleAuthoritative, lifecycleDefault: CodexDefaultServiceTier},
+	{id: contracts.CodexOptionSandboxPolicy, get: func(a *CodexAgent) string { return a.sandboxPolicy }, set: func(a *CodexAgent, v string) { a.sandboxPolicy = v }, defaultValue: contracts.CodexOptionDefaultSandboxPolicy, lifecyclePolicy: codexLifecycleAuthoritative},
+	{id: contracts.CodexOptionNetworkAccess, get: func(a *CodexAgent) string { return a.networkAccess }, set: func(a *CodexAgent, v string) { a.networkAccess = v }, defaultValue: contracts.CodexOptionDefaultNetworkAccess, lifecyclePolicy: codexLifecycleAuthoritative},
+	{id: contracts.CodexOptionCollaborationMode, get: func(a *CodexAgent) string { return a.collaborationMode }, set: func(a *CodexAgent, v string) { a.collaborationMode = v }, defaultValue: contracts.CodexOptionDefaultCollaborationMode},
+	{id: contracts.CodexOptionServiceTier, get: func(a *CodexAgent) string { return a.serviceTier }, set: func(a *CodexAgent, v string) { a.serviceTier = v }, defaultValue: contracts.CodexOptionDefaultServiceTier, lifecyclePolicy: codexLifecycleAuthoritative, lifecycleDefault: contracts.CodexOptionDefaultServiceTier},
 }
 
 // codexEffortRefreshFallback mirrors the model preset's implicit effort default.
@@ -1298,10 +1293,10 @@ func (a *CodexAgent) publishSettings() {
 		"model", vals[OptionIDModel],
 		"effort", vals[OptionIDEffort],
 		"approvalPolicy", vals[OptionIDPermissionMode],
-		"sandboxPolicy", vals[CodexOptionSandboxPolicy],
-		"networkAccess", vals[CodexOptionNetworkAccess],
-		"collaborationMode", vals[CodexOptionCollaborationMode],
-		"serviceTier", vals[CodexOptionServiceTier],
+		"sandboxPolicy", vals[contracts.CodexOptionSandboxPolicy],
+		"networkAccess", vals[contracts.CodexOptionNetworkAccess],
+		"collaborationMode", vals[contracts.CodexOptionCollaborationMode],
+		"serviceTier", vals[contracts.CodexOptionServiceTier],
 	)
 
 	a.sink.PersistSettingsRefresh(vals)
@@ -1569,20 +1564,20 @@ func init() {
 		codexDefaultModels,
 		[]*leapmuxv1.AvailableOptionGroup{
 			{
-				Id:           CodexOptionServiceTier,
+				Id:           contracts.CodexOptionServiceTier,
 				Label:        "Fast Mode",
-				DefaultValue: CodexDefaultServiceTier,
+				DefaultValue: contracts.CodexOptionDefaultServiceTier,
 				Mutable:      true,
 				Order:        OptionOrderProviderFirst,
 				Options: []*leapmuxv1.AvailableOption{
 					{Id: CodexServiceTierFast, Name: "On", Description: "Use Codex fast mode for future turns"},
-					{Id: CodexDefaultServiceTier, Name: "Off", Description: "Use the normal/default service tier"},
+					{Id: contracts.CodexOptionDefaultServiceTier, Name: "Off", Description: "Use the normal/default service tier"},
 				},
 			},
 			{
-				Id:           CodexOptionCollaborationMode,
+				Id:           contracts.CodexOptionCollaborationMode,
 				Label:        "Workflow",
-				DefaultValue: CodexDefaultCollaborationMode,
+				DefaultValue: contracts.CodexOptionDefaultCollaborationMode,
 				Mutable:      true,
 				Order:        OptionOrderProviderSecond,
 				Options: []*leapmuxv1.AvailableOption{
@@ -1603,9 +1598,9 @@ func init() {
 				},
 			},
 			{
-				Id:           CodexOptionSandboxPolicy,
+				Id:           contracts.CodexOptionSandboxPolicy,
 				Label:        "Sandbox Policy",
-				DefaultValue: CodexDefaultSandboxPolicy,
+				DefaultValue: contracts.CodexOptionDefaultSandboxPolicy,
 				Mutable:      true,
 				Order:        OptionOrderProviderFourth,
 				Options: []*leapmuxv1.AvailableOption{
@@ -1615,9 +1610,9 @@ func init() {
 				},
 			},
 			{
-				Id:           CodexOptionNetworkAccess,
+				Id:           contracts.CodexOptionNetworkAccess,
 				Label:        "Network Access",
-				DefaultValue: CodexDefaultNetworkAccess,
+				DefaultValue: contracts.CodexOptionDefaultNetworkAccess,
 				Mutable:      true,
 				Order:        OptionOrderProviderThird,
 				Options: []*leapmuxv1.AvailableOption{

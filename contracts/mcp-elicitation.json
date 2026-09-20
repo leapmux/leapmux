@@ -1,8 +1,7 @@
 {
-  "_readme": "MCP elicitation requests and responses use these native protocol values.",
+  "_readme": "MCP elicitation requests and responses use these native protocol values. Reasonix has no entry: it sends the STANDARD Agent Client Protocol `elicitation/create`, verified against its source tree, which contains no `_reasonix.io/mcp/*` method at all. The stale vendor name that used to sit here matched nothing, so the branch reading it was dead and the live requests arrived through the ACP branch beside it.",
   "methods": {
     "ACP": "elicitation/create",
-    "Reasonix": "_reasonix.io/mcp/request_interaction",
     "Codex": "mcpServer/elicitation/request"
   },
   "subtypes": {

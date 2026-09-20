@@ -33,6 +33,11 @@ const (
 	claudeMsgTypeControlResponse      = "control_response"
 	claudeMsgTypeToolProgress         = "tool_progress"
 	claudeMsgTypeActiveGoal           = "active_goal"
+	// claudeMsgTypeConversationReset is the command line interface's own word for
+	// what `/clear` and a plan exit both do: they start a new conversation and keep
+	// the session. LeapMux states the same fact as `context_cleared`, which every
+	// other provider already writes and the transcript already draws.
+	claudeMsgTypeConversationReset = "conversation_reset"
 )
 
 // claudeSystemSubtypeThinkingTokens is the `subtype` of the `system` telemetry
@@ -102,7 +107,7 @@ func (s *contextUsageSnapshot) adoptResultWindow(model string, cw int64) {
 
 // buildBroadcast assembles the context_usage broadcast payload from the current
 // snapshot and reports whether it should be sent. It returns (nil, false) when no
-// token usage has been recorded yet, or when the 10s debounce window has not elapsed
+// token usage is recorded yet, or when the 10s debounce window is not yet past
 // for a non-result message; a result message always broadcasts. When it decides to
 // broadcast it stamps LastBroadcast and includes context_window only when known
 // (> 0), matching the "omit when unknown" contract reseedWindow/adoptResultWindow
@@ -206,10 +211,31 @@ func (a *ClaudeCodeAgent) handleClaudeOutput(content []byte, msgType string) {
 	case claudeMsgTypeActiveGoal:
 		a.handleActiveGoal(content)
 
+	case claudeMsgTypeConversationReset:
+		a.claudeHandleConversationReset()
+
 	default:
 		// Drop an unknown type. `stream_event` only appears when the launch uses
 		// `--include-partial-messages`, which LeapMux does not enable.
 		slog.Debug("unhandled claude output type", "agent_id", a.agentID, "type", msgType)
+	}
+}
+
+// claudeHandleConversationReset persists the neutral context-cleared notice.
+//
+// The interface's own frame carries a `new_conversation_id`, which identifies
+// the conversation the CLI moved to and which nothing here follows: LeapMux
+// keeps ONE agent session across a clear, and the new id would only give the
+// transcript a second name for the same session. What a reader needs is the
+// boundary, which is exactly what `context_cleared` states.
+func (a *ClaudeCodeAgent) claudeHandleConversationReset() {
+	notice, err := json.Marshal(map[string]string{contracts.NotificationFieldType: contracts.NotificationTypeContextCleared})
+	if err != nil {
+		slog.Error("build claude context-cleared notice", "agent_id", a.agentID, "error", err)
+		return
+	}
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, notice); err != nil {
+		slog.Error("persist agent notification", "agent_id", a.agentID, "type", contracts.NotificationTypeContextCleared, "error", err)
 	}
 }
 
@@ -1038,7 +1064,7 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 	// Persist the raw `rate_limit_event` envelope verbatim as an
 	// agent-emitted notification. The frontend's claudeRateLimitsFromMessage
 	// (providers/claude/plugin.tsx) and claudeNotificationThreadEntry
-	// (providers/claude/notifications.tsx) read `rate_limit_info` from this raw
+	// (providers/claude/extractors/notification.ts) read `rate_limit_info` from this raw
 	// Claude-native shape (camelCase) -- the persisted side stays in the SDK's
 	// format so notification rendering remains a passthrough.
 	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {

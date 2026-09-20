@@ -124,11 +124,15 @@ describe('useWatchEventsStreams', () => {
     ]), { onEvent, onWorkerOnline })
     await flush()
     const previous = handles[0]
+    if (previous === undefined)
+      throw new Error('expected a replaced stream handle')
     previous._end()
     await vi.advanceTimersByTimeAsync(1000)
     await flush()
     expect(handles).toHaveLength(2)
     const current = handles[1]
+    if (current === undefined)
+      throw new Error('expected a live stream handle')
     onEvent.mockClear()
     onWorkerOnline.mockClear()
     const response = { event: { case: 'agentEvent', value: { agentId: 'a1' } } } as WatchEventsResponse

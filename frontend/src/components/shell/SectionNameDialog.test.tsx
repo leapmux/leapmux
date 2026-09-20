@@ -34,7 +34,7 @@ function submitButton(): HTMLButtonElement {
   return screen.getByRole('button', { name: /^(Create|Rename)$/ }) as HTMLButtonElement
 }
 
-describe('sectionNameDialog', () => {
+describe('SectionNameDialog', () => {
   it('opens empty and refuses an empty name when creating', () => {
     renderDialog(CREATE)
 

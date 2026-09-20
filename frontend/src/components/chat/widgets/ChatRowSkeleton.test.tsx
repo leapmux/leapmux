@@ -9,7 +9,7 @@ import {
   skeletonMaskSvg,
 } from './ChatRowSkeleton'
 
-describe('chatrowskeleton', () => {
+describe('ChatRowSkeleton', () => {
   it('derives deterministic, varied line widths within the 55-95% band', () => {
     const widths = Array.from({ length: 8 }, (_, i) => skeletonLineWidthPercent('m42', i))
     for (const width of widths) {
@@ -58,7 +58,7 @@ describe('chatrowskeleton', () => {
     // LOAD-BEARING: Oat's component selector is `[role=status].skeleton` — a
     // fill without the role renders 0-height and transparent (the
     // invisible-skeleton regression this pins against).
-    expect(fills[0].getAttribute('role')).toBe('status')
+    expect(fills[0]?.getAttribute('role')).toBe('status')
     // The mask itself is a jsdom-invisible style (cssstyle drops mask-*);
     // its content is pinned via skeletonMaskSvg above.
   })

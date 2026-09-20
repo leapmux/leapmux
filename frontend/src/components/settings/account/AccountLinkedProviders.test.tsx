@@ -33,7 +33,7 @@ const base = {
   oauthProviders: [] as { id: string, name: string, enabled: boolean }[],
 }
 
-describe('accountLinkedProviders', () => {
+describe('AccountLinkedProviders', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockUser.mockReturnValue(base)

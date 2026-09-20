@@ -6,7 +6,7 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('idlecallback', () => {
+describe('idleCallback', () => {
   it('uses requestIdleCallback when available', () => {
     const ric = vi.fn(() => 42)
     const cic = vi.fn()

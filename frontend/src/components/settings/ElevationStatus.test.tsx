@@ -22,7 +22,7 @@ vi.mock('~/context/AuthContext', () => ({
 const inTwoHours = () => timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
 const anHourAgo = () => timestampFromDate(new Date(Date.now() - 60 * 60 * 1000))
 
-describe('elevationStatus', () => {
+describe('ElevationStatus', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockDropElevation.mockResolvedValue(undefined)

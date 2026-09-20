@@ -24,7 +24,7 @@ const CAPTCHA_PROVIDERS: EnumOption[] = [
 
 const MENU = 'enum-control-menu'
 
-describe('enumControl menu branch', () => {
+describe('EnumControl menu branch', () => {
   it('commits the chosen option', () => {
     const onChange = vi.fn()
     render(() => (
@@ -128,7 +128,7 @@ describe('enumControl menu branch', () => {
   })
 })
 
-describe('enumControl help line', () => {
+describe('EnumControl help line', () => {
   // The schema declares a help line per enum value and carries it over the
   // wire, but a pill and a menu item each show a label only. One line under the
   // control serves both branches.

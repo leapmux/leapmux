@@ -132,7 +132,7 @@ describe('sessionOptionDetail', () => {
   })
 })
 
-describe('sessionSelect', () => {
+describe('SessionSelect', () => {
   it('offers one row per session, newest order preserved', () => {
     renderSelect({
       sessions: [

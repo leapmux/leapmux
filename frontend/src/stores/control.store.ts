@@ -151,7 +151,10 @@ export function createControlStore() {
             existing.sourceSeq = request.sourceSeq
           return
         }
-        list.push({ ...request, originalPayload: request.originalPayload?.slice() })
+        list.push({
+          ...request,
+          ...(request.originalPayload !== undefined ? { originalPayload: request.originalPayload.slice() } : {}),
+        })
       }))
     },
 

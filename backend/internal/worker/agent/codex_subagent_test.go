@@ -137,6 +137,34 @@ func TestCodex_ParseCollabToolCallToleratesNullPrompt(t *testing.T) {
 	assert.Empty(t, collab.Prompt)
 }
 
+// A wrongly typed field costs that FIELD, never the whole spawn.
+//
+// encoding/json fills every field it can read and then reports the one it could not,
+// so the id and the receiver list are already correct when the error arrives. Dropping
+// the item left the reader with a live subagent card the chat drew and no background
+// task row and no child transcript route behind it, because one agent state carried a
+// number where a word belongs.
+func TestCodex_ParseCollabToolCallKeepsTheFieldsThatDecoded(t *testing.T) {
+	t.Parallel()
+
+	collab := parseCollabToolCall(json.RawMessage(
+		`{"type":"collabAgentToolCall","tool":"spawnAgent","status":"inProgress",` +
+			`"receiverThreadIds":["thread-1"],"prompt":"Write the essay.",` +
+			`"agentsStates":{"thread-1":{"status":7}}}`))
+	require.NotNil(t, collab, "a wrongly typed agent state must not discard the item")
+	assert.Equal(t, []string{"thread-1"}, collab.ReceiverThreadIds, "the receiver list decoded before the bad field")
+	assert.Equal(t, "spawnAgent", collab.Tool)
+	assert.Equal(t, "Write the essay.", collab.Prompt)
+}
+
+// A SYNTAX error is different: no field was read, so there is nothing to keep.
+func TestCodex_ParseCollabToolCallRefusesBrokenJSON(t *testing.T) {
+	t.Parallel()
+
+	assert.Nil(t, parseCollabToolCall(json.RawMessage(`{"tool":"spawnAgent",`)))
+	assert.Nil(t, parseCollabToolCall(json.RawMessage(`["not an object"]`)))
+}
+
 func TestCodex_AgentPathTitleUsesTheLastNonEmptySegment(t *testing.T) {
 	t.Parallel()
 

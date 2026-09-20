@@ -21,7 +21,7 @@ export const WorktreeSelect: Component<WorktreeSelectProps> = props => (
     ariaLabel="Worktree"
     value={props.value}
     onChange={props.onChange}
-    loadingLabel={props.loading ? 'Loading worktrees...' : undefined}
+    {...(props.loading ? { loadingLabel: 'Loading worktrees...' } : {})}
     emptyLabel="No worktrees found"
     placeholder="Select a worktree..."
     options={props.worktrees.map(wt => ({

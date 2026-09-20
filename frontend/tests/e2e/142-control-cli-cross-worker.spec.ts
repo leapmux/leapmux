@@ -159,6 +159,8 @@ test.describe('control CLI cross-worker', () => {
   test('CLI agent-open on Worker B propagates to both browsers', async ({ browser, crossWorker }) => {
     const { harness, cli } = crossWorker
     const [workerA, workerB] = harness.workers
+    if (workerA === undefined || workerB === undefined)
+      throw new Error('expected the crossWorker harness to expose two workers')
 
     const workspaceId = await createWorkspace(harness, `xw-${Date.now()}`)
     let pages: Awaited<ReturnType<typeof openTwoBrowsers>> | null = null

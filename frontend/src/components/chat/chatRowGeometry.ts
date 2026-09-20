@@ -31,9 +31,9 @@ export type MessageBandKind = 'text' | 'thought'
  *
  * This is the ONE place that decides which kinds render as a band. The
  * virtualizer reads it to close the gap between two adjacent bands, and
- * messageClassification reads it to pick the row and bubble classes -- both
+ * messageClassifier reads it to pick the row and bubble classes -- both
  * from here, so the offset map and the borders can never disagree. It lives in
- * this leaf module (no imports) rather than in messageClassification, whose own
+ * this leaf module (no imports) rather than in messageClassifier, whose own
  * imports pull in every provider plugin: the virtualizer must stay clear of that
  * graph.
  *
@@ -61,39 +61,20 @@ export function messageBandKind(kind: string): MessageBandKind | undefined {
 export const BAND_BORDER_PX = 1
 
 /**
- * Per-row inputs that make a cached DOM measurement stale even when the message
- * id stays stable.
+ * Per-row inputs that make a row's CONTENT stale even when the message id stays
+ * stable.
+ *
+ * The one revision key from `chatRevisionKey.ts` -- the exact dependency set the
+ * row renders from -- plus the child-transcript flag, which re-classifies a
+ * forwarded row without touching any revision. Everything that caches anything
+ * derived from the row re-keys on these two; the UI state that changes only the
+ * row's HEIGHT lives on {@link HeightKeyInputs} instead, one level out, so an
+ * expand or a diff-view toggle re-measures the row without discarding work the
+ * click did not change.
  */
-export interface HeightKeyInputs {
-  /** Message seq -- a reseq / in-place consolidation bumps it. */
-  seq: bigint
-  /** A paired tool_use sibling is available. */
-  hasToolUseSibling: boolean
-  /**
-   * The paired tool_use opener's content version (0 for non-result rows / no
-   * opener). A tool_result can render from that opener, so the measurement cache
-   * must change when the opener changes.
-   */
-  toolUseContentVersion: number
-  /**
-   * Paired tool_use opener identity/seq/content-version token. Content version
-   * alone misses present-to-different-present sibling replacement at version 0.
-   */
-  toolUseRevisionKey: string
-  /** A paired tool_result sibling is available. */
-  hasToolResultSibling: boolean
-  /**
-   * The paired tool_result's content version (0 for non-opener rows / no result).
-   * Some tool_use rows render from hidden result data, so the measurement cache
-   * must change when that result changes.
-   */
-  toolResultContentVersion: number
-  /** Paired tool_result identity/seq/content-version token. */
-  toolResultRevisionKey: string
-  /** Per-message UI version -- a per-row expand / diff-view toggle bumps it. */
-  uiVersion: number
-  /** Content version -- a same-seq in-place body replacement bumps it. */
-  contentVersion: number
+export interface ContentKeyInputs {
+  /** The row's exact revision dependencies, as one string (see chatRevisionKey.ts). */
+  revisionKey: string
   /**
    * Whether the row was classified as part of a SUBAGENT's own transcript. The
    * flag re-classifies a forwarded row between a collapsed "Prompt" card and a
@@ -103,10 +84,28 @@ export interface HeightKeyInputs {
   isChildTranscript: boolean
 }
 
+/**
+ * Per-row inputs that make a cached DOM measurement stale even when the message
+ * id stays stable: the content signals, plus the row's own UI state.
+ */
+export interface HeightKeyInputs extends ContentKeyInputs {
+  /** Per-message UI version -- a per-row expand / diff-view toggle bumps it. */
+  uiVersion: number
+}
+
+export function buildContentKey(inputs: ContentKeyInputs): string {
+  return `${inputs.revisionKey}|${inputs.isChildTranscript ? 'k' : ''}`
+}
+
+/**
+ * The measurement key: the content key plus the UI version.
+ *
+ * The UI version is APPENDED rather than folded in, so the two keys cannot state
+ * different things about one content signal. A height key that was built field by
+ * field beside a content key would let the pair drift on the next field anyone adds.
+ */
 export function buildHeightKey(inputs: HeightKeyInputs): string {
-  const toolUseRevision = `${inputs.toolUseRevisionKey.length}:${inputs.toolUseRevisionKey}`
-  const toolResultRevision = `${inputs.toolResultRevisionKey.length}:${inputs.toolResultRevisionKey}`
-  return `${inputs.seq}|${inputs.hasToolUseSibling ? 's' : ''}|${inputs.toolUseContentVersion}|${toolUseRevision}|${inputs.hasToolResultSibling ? 'r' : ''}|${inputs.toolResultContentVersion}|${toolResultRevision}|${inputs.uiVersion}|${inputs.contentVersion}|${inputs.isChildTranscript ? 'k' : ''}`
+  return `${buildContentKey(inputs)}|${inputs.uiVersion}`
 }
 
 /**

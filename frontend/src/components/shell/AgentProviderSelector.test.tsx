@@ -23,7 +23,7 @@ vi.mock('~/components/common/DropdownMenu', () => ({
   ),
 }))
 
-describe('agentProviderSelector', () => {
+describe('AgentProviderSelector', () => {
   it('sorts providers alphabetically by label', () => {
     expect(sortAgentProvidersByName([
       AgentProvider.CODEX,

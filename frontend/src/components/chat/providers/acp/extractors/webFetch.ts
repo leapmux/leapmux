@@ -1,10 +1,11 @@
-import type { WebFetchResultSource } from '../../../results/webFetchResult'
+import type { FetchResult } from '../../../model/tools/fetch'
+import { ACP_SUPPLEMENT } from '~/generated/contracts/acp-protocol'
 import { pickObject } from '~/lib/jsonPick'
-import { webFetchFromObj } from '../../../results/webFetchResult'
+import { webFetchFromObj } from '../../../model/tools/fetch'
 import { collectAcpToolText } from '../content'
 
 /**
- * Build a WebFetchResultSource from an ACP `tool_call_update` of kind `fetch`.
+ * Build a FetchResult from an ACP `tool_call_update` of kind `fetch`.
  * Returns null when the payload doesn't carry a recognizable HTTP status
  * shape — letting the caller fall back to the generic text branch.
  *
@@ -14,10 +15,10 @@ import { collectAcpToolText } from '../content'
  */
 export function acpWebFetchFromToolCall(
   toolUse: Record<string, unknown> | null | undefined,
-): WebFetchResultSource | null {
+): FetchResult | null {
   if (!toolUse)
     return null
   const result = collectAcpToolText(toolUse, { rawObjects: false })
-  return webFetchFromObj(pickObject(toolUse, 'rawOutput'), { resultFallback: result })
+  return webFetchFromObj(pickObject(toolUse, ACP_SUPPLEMENT.RawOutput), { resultFallback: result })
     ?? (result ? { result } : null)
 }

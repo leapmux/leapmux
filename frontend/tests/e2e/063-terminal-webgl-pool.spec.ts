@@ -66,7 +66,10 @@ test.describe('Terminal WebGL context pool', () => {
     const { active, hidden } = await terminalIds(page)
     expect(active).toHaveLength(1)
     expect(hidden).toHaveLength(2)
-    await expect.poll(() => rendererFor(page, active[0])).toBe('webgl')
+    const activeId = active[0]
+    if (activeId === undefined)
+      throw new Error('expected exactly one active terminal')
+    await expect.poll(() => rendererFor(page, activeId)).toBe('webgl')
     for (const id of hidden)
       expect(await rendererFor(page, id)).toBe('dom')
 

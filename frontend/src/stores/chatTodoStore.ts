@@ -1,15 +1,59 @@
-import type { TodoItem } from './chatTodos'
+import type { JsonValue } from '@bufbuild/protobuf'
 import type { TodoItem as ProtoTodoItem } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { TodoItem } from '~/models/todo'
+import { fromJson } from '@bufbuild/protobuf'
+import { TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { shallowEqualArraysDeep } from '~/lib/shallowEqual'
+import { todoRowKey } from '~/models/todo'
 import { createPerAgentListStore } from './chatPerAgentStore'
-import { protoTodoToStore } from './chatTodos'
+
+export function protoTodoToItem(todo: ProtoTodoItem, index: number): TodoItem {
+  let status: TodoItem['status'] = 'pending'
+  if (todo.status === TodoStatus.IN_PROGRESS)
+    status = 'in_progress'
+  else if (todo.status === TodoStatus.COMPLETED)
+    status = 'completed'
+  else if (todo.status === TodoStatus.DELETED)
+    status = 'deleted'
+  const id = todo.id || undefined
+  const description = todo.description || undefined
+  return {
+    ...(id !== undefined ? { id } : {}),
+    rowKey: todoRowKey(id, index, todo.content),
+    content: todo.content,
+    status,
+    activeForm: todo.activeForm,
+    ...(description !== undefined ? { description } : {}),
+  }
+}
+
+export function protoJsonTodoToItem(value: unknown): TodoItem | null {
+  if (!isJsonValue(value))
+    return null
+  try {
+    return protoTodoToItem(fromJson(TodoItemSchema, value), 0)
+  }
+  catch {
+    return null
+  }
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number')
+    return true
+  if (Array.isArray(value))
+    return value.every(isJsonValue)
+  if (typeof value !== 'object')
+    return false
+  return Object.values(value).every(isJsonValue)
+}
 
 // ---------------------------------------------------------------------------
 // To-do list slice
 //
 // The latest server-authoritative to-do list per agent (delivered via the
 // cold-start ListAgentMessages page and AgentTodosChanged broadcasts). Wraps the
-// provider-neutral chatTodos model in a reactive slice; independent of the
+// provider-neutral to-do model in a reactive slice; independent of the
 // windowing invariants.
 // ---------------------------------------------------------------------------
 
@@ -38,7 +82,7 @@ export function createTodoStore() {
      * not the empty array `get` would report.
      */
     replace(agentId: string, protoTodos: ProtoTodoItem[]) {
-      const next = protoTodos.map(protoTodoToStore)
+      const next = protoTodos.map(protoTodoToItem)
       const prev = base.byAgent[agentId]
       if (prev && shallowEqualArraysDeep(prev, next))
         return

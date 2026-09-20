@@ -484,8 +484,12 @@ class MarkdownCutter {
       return null // indented code (or non-fence) -- no synthesizable closer
 
     const prefix = openerMatch[1]
-    const fenceRun = openerMatch[2]
-    const fenceChar = fenceRun[0]!
+    // Group 2 is a `{3,}` run, so a non-empty fenceRun always exists; the guard
+    // only satisfies noUncheckedIndexedAccess.
+    const fenceRun = openerMatch[2] ?? ''
+    const fenceChar = fenceRun[0]
+    if (fenceChar === undefined)
+      return null
     const fenceLen = fenceRun.length
 
     const openerLineNl = this.text.indexOf('\n', nodeStart)

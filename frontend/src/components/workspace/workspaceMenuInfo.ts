@@ -23,8 +23,11 @@ export function workspaceInfoRows(info: WorkspaceMenuInfo): MenuInfoRow[] {
     { label: 'Section:', value: info.sectionName },
     { label: 'Tabs:', value: String(info.tabCount) },
   ]
-  if (info.repos.length === 1)
-    rows.push({ label: 'Repository:', value: info.repos[0].label })
+  if (info.repos.length === 1) {
+    const only = info.repos[0]
+    if (only !== undefined)
+      rows.push({ label: 'Repository:', value: only.label })
+  }
   return rows
 }
 

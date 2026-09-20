@@ -59,8 +59,11 @@ export function tabWatchMode(
  * routed through here so they cannot drift (they had: the terminal path carried
  * an activeKeyForWorkspace fallback the agent path lacked).
  */
+// Tab-shaped input keeps `| undefined` optionals: tab rows carry explicit
+// undefined for absent fields (see tab.types.ts), so the param admits a whole
+// Tab without per-call-site rebuilding.
 export function isTabOnScreen(
-  tab: { tileId?: string, workspaceId?: string, type: TabType, id: string } | undefined,
+  tab: { tileId?: string | undefined, workspaceId?: string | undefined, type: TabType, id: string } | undefined,
   activeWorkspaceId: string | null,
   activeKeyForTile: (tileId: string) => string | null,
 ): boolean {

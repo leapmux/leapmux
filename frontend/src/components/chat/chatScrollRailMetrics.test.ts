@@ -24,7 +24,7 @@ function inRoot(body: (dispose: () => void) => Promise<void>): Promise<void> {
   })
 }
 
-describe('createrailmetrics', () => {
+describe('createRailMetrics', () => {
   it('samples the scroll container, and re-samples on a scroll event (after the coalescing frame)', () =>
     inRoot(async () => {
       const div = makeFakeScrollDiv()

@@ -268,7 +268,7 @@ func TestKnownOptionIDs(t *testing.T) {
 
 	codex := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
 	for _, id := range []string{OptionIDModel, OptionIDEffort, OptionIDPermissionMode,
-		CodexOptionSandboxPolicy, CodexOptionNetworkAccess, CodexOptionCollaborationMode, CodexOptionServiceTier} {
+		contracts.CodexOptionSandboxPolicy, contracts.CodexOptionNetworkAccess, contracts.CodexOptionCollaborationMode, contracts.CodexOptionServiceTier} {
 		assert.Truef(t, has(codex, id), "codex must allow %q", id)
 	}
 	assert.False(t, has(codex, OptionIDPrimaryAgent), "codex has no primary-agent axis")

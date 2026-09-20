@@ -63,7 +63,7 @@ func (a *zcodeAgent) supplementZCodeControlInput(toolCallID, toolName string, in
 		return false, fmt.Errorf("merge control tool input: %w", err)
 	}
 	// The merge added nothing, so the row's supplement already carries the input.
-	if bytes.Equal(combined, stored.Content.Supplemental) {
+	if JSONCanonicalEqual(combined, stored.Content.Supplemental) {
 		return true, nil
 	}
 	// A refused write leaves the row without the input, and its bool says so.
@@ -112,11 +112,9 @@ func zcodeToolInputSupplement(payload zcodeToolUpdated, inputs ...json.RawMessag
 	if len(missing) == 0 {
 		return nil, nil
 	}
-	return json.Marshal(map[string]any{
-		"type": contracts.ZCodeEventToolUpdated,
-		"payload": map[string]any{
-			"kind": payload.Kind, "toolCallId": payload.ToolCallID, "input": missing,
-		},
+	return json.Marshal(contracts.ZCodeToolInputEnvelope{
+		Type:    contracts.ZCodeEventToolUpdated,
+		Payload: contracts.ZCodeSupplementRef{Kind: payload.Kind, ToolCallID: payload.ToolCallID, Input: missing},
 	})
 }
 

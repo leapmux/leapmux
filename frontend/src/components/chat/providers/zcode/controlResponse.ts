@@ -1,8 +1,10 @@
-import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
-import { ZCODE_ACTION, ZCODE_ANSWER_FIELD, ZCODE_DECISION, ZCODE_INTERACTION, ZCODE_METHOD, ZCODE_PLAN_CONTROL, ZCODE_REPLY_FIELD } from '~/generated/contracts/zcode-protocol'
+import type { ControlResponseSummary } from '../../model/controlResponse'
+import type { PersistedControlResponse } from '../../persistedControlResponse'
+import { ZCODE_ACTION, ZCODE_ANSWER_FIELD, ZCODE_DECISION, ZCODE_METHOD, ZCODE_PLAN_CONTROL, ZCODE_REPLY_FIELD } from '~/generated/contracts/zcode-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { CONTROL_DECISION_WORDS, feedback, label } from '../../persistedControlResponse'
 import { zcodeQuestionRecords, zcodeQuestionText } from './askUserQuestion'
+import { zcodeExtractControl } from './extractControl'
 
 /** Match the installed provider's string and string-array answer normalization. */
 function normalizedAnswer(value: unknown): string | undefined {
@@ -29,7 +31,7 @@ function requestQuestions(payload: Record<string, unknown> | null | undefined): 
   return zcodeQuestionRecords(payload).map(zcodeQuestionText)
 }
 
-function questionAnswerDisplay(payload: Record<string, unknown> | null | undefined, content: Record<string, unknown> | null | undefined): ControlResponseDisplay | null {
+function questionAnswerDisplay(payload: Record<string, unknown> | null | undefined, content: Record<string, unknown> | null | undefined): ControlResponseSummary | null {
   if (!content)
     return null
   const answers = pickObject(content, ZCODE_ANSWER_FIELD.Map)
@@ -41,7 +43,13 @@ function questionAnswerDisplay(payload: Record<string, unknown> | null | undefin
   questions.forEach((question, index) => {
     if (!question)
       return
-    const value = answers?.[question] ?? content[`${ZCODE_ANSWER_FIELD.IndexedPrefix}${index}`]
+    // `hasOwn`, never a bare lookup: the key is the question text the AGENT wrote,
+    // and one that reads `toString` or `constructor` answers from `Object.prototype`
+    // for every plain object. That answer is a function, which normalizes to
+    // undefined -- and it short-circuits the positional fallback, so the reader's
+    // real answer disappeared from the saved summary.
+    const mapped = answers && Object.hasOwn(answers, question) ? answers[question] : undefined
+    const value = mapped ?? content[`${ZCODE_ANSWER_FIELD.IndexedPrefix}${index}`]
       ?? (questions.length === 1 ? content[ZCODE_ANSWER_FIELD.Single] : undefined)
     const answer = normalizedAnswer(value)
     if (answer !== undefined)
@@ -52,12 +60,11 @@ function questionAnswerDisplay(payload: Record<string, unknown> | null | undefin
 }
 
 /** Read the actual native reply. LeapMux stores the complete matching request separately. */
-export function zcodeControlResponseDisplay(cr: PersistedControlResponse): ControlResponseDisplay | null {
+export function zcodeControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
   const result = pickObject(cr.response, 'result')
   if (!result)
     return null
   const method = pickString(cr.request, 'method')
-  const params = pickObject(cr.request, 'params')
   // A permission answer reads the words its own buttons carried (`GenericToolActions`
   // draws Allow and Deny), and a plan approval reads the plan control's own pair.
   if (method === ZCODE_METHOD.RequestPermission) {
@@ -87,7 +94,11 @@ export function zcodeControlResponseDisplay(cr: PersistedControlResponse): Contr
   if (action !== ZCODE_ACTION.Accept)
     return null
   const content = pickObject(result, ZCODE_REPLY_FIELD.Content)
-  if (pickObject(params, 'schema')?.interaction === ZCODE_INTERACTION.PlanApproval) {
+  // The SAME reader the banner drew the request with. ZCode multiplexes the plan and
+  // the question over this one RPC, and the two surfaces read different fields of the
+  // stored request to tell them apart -- the tool name here, `schema.interaction`
+  // there. One request that carries only one of them made the two disagree.
+  if (zcodeExtractControl({ payload: cr.request ?? {} })?.kind === 'plan') {
     const answers = pickObject(content, ZCODE_ANSWER_FIELD.Map)
     const answer = normalizedAnswer(answers?.[ZCODE_PLAN_CONTROL.Question]
       ?? content?.[`${ZCODE_ANSWER_FIELD.IndexedPrefix}0`] ?? content?.[ZCODE_ANSWER_FIELD.Single])

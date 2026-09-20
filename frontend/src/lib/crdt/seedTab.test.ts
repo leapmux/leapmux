@@ -50,7 +50,7 @@ describe('seedTabIntoNewWorkspace', () => {
     expect(result?.rootNodeId).toBe('root-leaf-1')
     expect(result?.position).toBeTruthy()
     expect(enqueued).toHaveLength(1)
-    const ops = enqueued[0].ops
+    const ops = enqueued[0]?.ops ?? []
     expect(ops).toHaveLength(3)
     const cases = ops.map(o => o.body.case)
     expect(cases.every(c => c === 'setTabRegister')).toBe(true)
@@ -60,10 +60,10 @@ describe('seedTabIntoNewWorkspace', () => {
       return o.body.value.field?.case
     })
     expect(fieldCases).toEqual(['tileId', 'position', 'workerId'])
-    if (ops[0].body.case === 'setTabRegister' && ops[0].body.value.field?.case === 'tileId')
-      expect(ops[0].body.value.field.value).toBe('root-leaf-1')
-    if (ops[1].body.case === 'setTabRegister' && ops[1].body.value.field?.case === 'position')
-      expect(ops[1].body.value.field.value).toBe(result?.position)
+    if (ops[0]?.body.case === 'setTabRegister' && ops[0]?.body.value.field?.case === 'tileId')
+      expect(ops[0]?.body.value.field.value).toBe('root-leaf-1')
+    if (ops[1]?.body.case === 'setTabRegister' && ops[1]?.body.value.field?.case === 'position')
+      expect(ops[1]?.body.value.field.value).toBe(result?.position)
   })
 
   it('returns null when the bridge is unwired', async () => {
@@ -99,6 +99,6 @@ describe('seedTabIntoNewWorkspace', () => {
     expect(result).not.toBeNull()
     expect(result?.rootNodeId).toBe('root-leaf-2')
     expect(enqueued).toHaveLength(1)
-    expect(enqueued[0].ops).toHaveLength(2)
+    expect(enqueued[0]?.ops).toHaveLength(2)
   })
 })

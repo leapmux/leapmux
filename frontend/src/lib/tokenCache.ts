@@ -79,6 +79,8 @@ export function mergeLineTokens(lines: ReadonlyArray<ReadonlyArray<RawToken>>): 
     for (let i = 0; i < line.length; i++) {
       const token = line[i]
       const decl = decls[i]
+      if (token === undefined || decl === undefined)
+        continue
       const wsMergeable = RE_WHITESPACE_ONLY.test(token.content)
         && !hasVisibleBackground(decl) && !hasTextDecoration(decl)
       if (wsMergeable && i + 1 < line.length) {
@@ -107,11 +109,15 @@ export function mergeLineTokens(lines: ReadonlyArray<ReadonlyArray<RawToken>>): 
     for (let i = 0; i < wsMerged.length; i++) {
       const token = wsMerged[i]
       const decl = wsDecls[i]
+      if (token === undefined || decl === undefined)
+        continue
       const prevDecl = mergedDecls.length > 0 ? mergedDecls[mergedDecls.length - 1] : undefined
       if (prevDecl === decl && !hasTextDecoration(decl)) {
         const prev = merged[merged.length - 1]
-        merged[merged.length - 1] = { ...prev, content: prev.content + token.content }
-        continue
+        if (prev !== undefined) {
+          merged[merged.length - 1] = { ...prev, content: prev.content + token.content }
+          continue
+        }
       }
       merged.push(token)
       mergedDecls.push(decl)

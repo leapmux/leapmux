@@ -104,7 +104,7 @@ function rehypeExternalLinks() {
   return (tree: Root) => {
     visit(tree, 'element', (node, index, parent) => {
       if (node.tagName !== 'a')
-        return
+        return undefined
       const href = node.properties?.href
       if (typeof href === 'string' && HTTP_URL_RE.test(href)) {
         // No `properties ??= {}` guard: reaching here means `properties.href`
@@ -119,12 +119,14 @@ function rehypeExternalLinks() {
         // every markdown render path already ends with, so a future path
         // cannot forget it -- the same argument `withHardeningTail` makes.
         node.properties[UNTRUSTED_LINK_ATTRIBUTE] = ''
+        return undefined
       }
-      else if (parent && typeof index === 'number') {
+      if (parent && typeof index === 'number') {
         // Non-http(s) link — unwrap: replace <a> with its children
         parent.children.splice(index, 1, ...node.children)
         return index
       }
+      return undefined
     })
   }
 }
@@ -254,7 +256,10 @@ const FENCE_LANG_RE = /^[ \t>]*(?:`{3,}|~{3,})[ \t]*([^\s`~]+)/gm
  */
 export function extractFenceLanguages(text: string): string[] {
   const langs = new Set<string>()
-  for (const match of text.matchAll(FENCE_LANG_RE))
-    langs.add(match[1].toLowerCase())
+  for (const match of text.matchAll(FENCE_LANG_RE)) {
+    const lang = match[1]
+    if (lang !== undefined)
+      langs.add(lang.toLowerCase())
+  }
   return [...langs]
 }

@@ -4,7 +4,7 @@ import { createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { BlockedReasonNotice } from './BlockedReasonNotice'
 
-describe('blockedReasonNotice', () => {
+describe('BlockedReasonNotice', () => {
   it('renders the reason under the shared testid', () => {
     render(() => <BlockedReasonNotice reason="Create a workspace first." />)
     expect(screen.getByTestId('new-tab-blocked-reason')).toHaveTextContent('Create a workspace first.')

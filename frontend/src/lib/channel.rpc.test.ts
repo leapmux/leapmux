@@ -23,7 +23,7 @@ import {
 } from './channel.test-support'
 import { ChannelError } from './channelError'
 
-describe('channelManager call', () => {
+describe('ChannelManager call', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
@@ -72,7 +72,10 @@ describe('channelManager call', () => {
     const requestSentIndex = h.mockWs.sent.length - 1
 
     // Decrypt and verify the sent message.
-    const sentMsg = decodeWireMessage(h.mockWs.sent[requestSentIndex])
+    const sentFrame = h.mockWs.sent[requestSentIndex]
+    if (sentFrame === undefined)
+      throw new Error('expected a sent request frame')
+    const sentMsg = decodeWireMessage(sentFrame)
     expect(sentMsg.channelId).toBe(channelId)
     const pair = sessions.get(channelId)!
     const sentPlaintext = pair.responder.receive.decrypt(sentMsg.ciphertext)
@@ -234,7 +237,7 @@ describe('channelManager call', () => {
   })
 })
 
-describe('channelManager stream', () => {
+describe('ChannelManager stream', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
@@ -275,7 +278,7 @@ describe('channelManager stream', () => {
     h.sendStreamErrorFromWorker(channelId, handle.requestId, 'stream broke')
 
     expect(errorFn).toHaveBeenCalledOnce()
-    expect(errorFn.mock.calls[0][0].message).toBe('stream broke')
+    expect(errorFn.mock.calls[0]?.[0]?.message).toBe('stream broke')
   })
 
   it('should error the stream when the worker replies with a unary error', async () => {
@@ -293,7 +296,7 @@ describe('channelManager stream', () => {
     h.sendErrorResponseFromWorker(channelId, handle.requestId, 'workspace not accessible')
 
     expect(errorFn).toHaveBeenCalledOnce()
-    expect(errorFn.mock.calls[0][0].message).toBe('workspace not accessible')
+    expect(errorFn.mock.calls[0]?.[0]?.message).toBe('workspace not accessible')
     expect(channelInternals(h.mgr, channelId).streamListeners.has(handle.requestId)).toBe(false)
   })
 
@@ -403,7 +406,7 @@ describe('channelManager stream', () => {
   })
 })
 
-describe('channelManager message routing', () => {
+describe('ChannelManager message routing', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
@@ -430,7 +433,7 @@ describe('channelManager message routing', () => {
   })
 })
 
-describe('channelManager chunking', () => {
+describe('ChannelManager chunking', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
@@ -460,7 +463,10 @@ describe('channelManager chunking', () => {
     const sentAfter = h.mockWs.sent.length
     expect(sentAfter - sentBefore).toBe(1) // Just 1 frame
 
-    const msg = decodeWireMessage(h.mockWs.sent[sentAfter - 1])
+    const sentFrame = h.mockWs.sent[sentAfter - 1]
+    if (sentFrame === undefined)
+      throw new Error('expected a sent frame')
+    const msg = decodeWireMessage(sentFrame)
     expect(msg.flags).toBe(0) // UNSPECIFIED
 
     // Complete the call so it doesn't stay pending during cleanup.
@@ -725,7 +731,7 @@ describe('channelManager chunking', () => {
     h.mockWs.simulateMessage(encodeWireMessageWithFlags(channelId, chunk2, { correlationId: handle.requestId, flags: 1 }))
 
     expect(errorFn).toHaveBeenCalledOnce()
-    expect(errorFn.mock.calls[0][0].message).toContain('exceeds')
+    expect(errorFn.mock.calls[0]?.[0]?.message).toContain('exceeds')
 
     smallMgr.closeAll()
   })
@@ -866,7 +872,7 @@ describe('channelManager chunking', () => {
   })
 })
 
-describe('channelManager reassembly lifetime', () => {
+describe('ChannelManager reassembly lifetime', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
@@ -1057,7 +1063,7 @@ describe('channelManager reassembly lifetime', () => {
   })
 })
 
-describe('channelManager observability hooks onChannelError', () => {
+describe('ChannelManager observability hooks onChannelError', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
@@ -1072,8 +1078,8 @@ describe('channelManager observability hooks onChannelError', () => {
     await expect(callPromise).rejects.toThrow('rpc failed')
 
     expect(cb).toHaveBeenCalledOnce()
-    expect(cb.mock.calls[0][0]).toBe('w1')
-    expect(cb.mock.calls[0][1].source).toBe('rpc')
+    expect(cb.mock.calls[0]?.[0]).toBe('w1')
+    expect(cb.mock.calls[0]?.[1]?.source).toBe('rpc')
   })
 
   it('should fire on stream error (non-transport)', async () => {
@@ -1088,8 +1094,8 @@ describe('channelManager observability hooks onChannelError', () => {
     h.sendStreamErrorFromWorker(channelId, handle.requestId, 'stream broke')
 
     expect(cb).toHaveBeenCalledOnce()
-    expect(cb.mock.calls[0][0]).toBe('w1')
-    expect(cb.mock.calls[0][1].source).toBe('stream')
+    expect(cb.mock.calls[0]?.[0]).toBe('w1')
+    expect(cb.mock.calls[0]?.[1]?.source).toBe('stream')
   })
 
   it('should not fire after unsubscribe', async () => {

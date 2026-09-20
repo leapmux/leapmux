@@ -199,7 +199,7 @@ describe('createRepoGitStore', () => {
         const files = store.get(key)!.files
         expect(files.map(f => f.path)).toEqual(['a.txt', 'c.txt'])
         expect(files[0]).toBe(survivor)
-        expect(files[0].linesAdded).toBe(2)
+        expect(files[0]?.linesAdded).toBe(2)
 
         dispose()
       })

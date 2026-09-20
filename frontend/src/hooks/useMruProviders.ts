@@ -61,12 +61,16 @@ export function useMruProviders(
         result.push(p)
       }
       else if (ni < newcomers.length) {
-        result.push(newcomers[ni++])
+        const newcomer = newcomers[ni++]
+        if (newcomer !== undefined)
+          result.push(newcomer)
       }
     }
     // Append remaining newcomers if prevDisplay was shorter
     while (ni < newcomers.length) {
-      result.push(newcomers[ni++])
+      const newcomer = newcomers[ni++]
+      if (newcomer !== undefined)
+        result.push(newcomer)
     }
 
     prevDisplay = result

@@ -9,13 +9,15 @@
  *     value, so an option always has something to click.
  *   - Give the plugin ONE reader that both its registry hook and its control
  *     components call, so the two surfaces cannot disagree about what is on screen.
- *   - Give the saved-answer display (`zcodeControlResponseDisplay`) the SAME question
+ *   - Give the saved-answer display (`zcodeControlResponseSummary`) the SAME question
  *     list, in the same order, that the reader answered.
  */
 
-import type { Question } from '../../controls/types'
+import type { ControlQuestion, QuestionPrompt } from '../../model/question'
+import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { getToolInput } from '~/utils/controlResponse'
+import { getToolInput, getToolName } from '~/utils/controlResponse'
+import { questionsFromRecords } from '../questionRecords'
 
 /**
  * The options of one question, with the value/label pair repaired.
@@ -26,7 +28,7 @@ import { getToolInput } from '~/utils/controlResponse'
  * other keeps the option answerable; an option with neither is dropped, because it
  * has nothing to send.
  */
-function zcodeOptions(question: Record<string, unknown>): Question['options'] {
+function zcodeOptions(question: Record<string, unknown>): ControlQuestion['options'] {
   const options = question.options
   if (!Array.isArray(options))
     return []
@@ -47,7 +49,7 @@ function zcodeOptions(question: Record<string, unknown>): Question['options'] {
  * that the request declares.
  *
  * This is the ONE question list of the provider. The control surface answers this list,
- * and `zcodeControlResponseDisplay` reads the saved answer back through it. A second
+ * and `zcodeControlResponseSummary` reads the saved answer back through it. A second
  * list lets the two surfaces disagree about which question one answer belongs to, and
  * the positional `answer_<index>` fallback then shows an answer under the wrong
  * question.
@@ -83,12 +85,46 @@ export function zcodeQuestionText(question: Record<string, unknown>): string {
 }
 
 /**
- * Build the `Question[]` for a stored ZCode user-input control request.
+ * The questions of an `AskUserQuestion` TOOL CALL, for the row that draws it.
+ *
+ * The control surface reads the stored control REQUEST, which carries the same
+ * questions under `params`. This reads the tool call's own input instead, because a
+ * transcript row is built from the tool frame and the control request is a separate
+ * message that a replay may not have beside it.
+ *
+ * ZCode's option sets `value` to the label, so either field standing in for the
+ * other keeps the option readable -- the same repair `zcodeOptions` makes for the
+ * answerable list.
+ */
+export function zcodeQuestionsFromToolInput(input: Record<string, unknown>): QuestionPrompt[] {
+  return questionsFromRecords(
+    input.questions,
+    (question) => {
+      const header = pickString(question, 'header')
+      return { ...(header ? { header } : {}), question: zcodeQuestionText(question) }
+    },
+    (option) => {
+      const label = pickString(option, 'label') || pickString(option, 'value')
+      if (!label)
+        return null
+      const description = pickString(option, 'description')
+      const preview = pickString(option, 'preview')
+      return {
+        label,
+        ...(description ? { description } : {}),
+        ...(preview ? { preview } : {}),
+      }
+    },
+  )
+}
+
+/**
+ * Build the `ControlQuestion[]` for a stored ZCode user-input control request.
  *
  * Returns an empty array for a request that declares no question -- a plan approval
  * reaches the plan surface instead, which needs none.
  */
-export function zcodeQuestionsFromPayload(payload: Record<string, unknown>): Question[] {
+export function zcodeQuestionsFromPayload(payload: Record<string, unknown>): ControlQuestion[] {
   return zcodeQuestionRecords(payload).flatMap((raw) => {
     const text = zcodeQuestionText(raw)
     // The answer is keyed by the question TEXT, so a question with neither text nor
@@ -96,7 +132,7 @@ export function zcodeQuestionsFromPayload(payload: Record<string, unknown>): Que
     if (!text)
       return []
     const header = pickString(raw, 'header')
-    const built: Question = {
+    const built: ControlQuestion = {
       question: text,
       options: zcodeOptions(raw),
     }
@@ -106,4 +142,16 @@ export function zcodeQuestionsFromPayload(payload: Record<string, unknown>): Que
       built.multiSelect = true
     return [built]
   })
+}
+
+/**
+ * Whether a stored ZCode control payload is the AskUserQuestion prompt.
+ *
+ * ZCode multiplexes three prompts over two RPCs, and the worker records which one
+ * arrived as the request's TOOL NAME. `zcodeExtractControl` switches on the same
+ * name; this one answers the shared question capability, which the composer reads
+ * to pick its editor.
+ */
+export function zcodeIsAskUserQuestion(payload: Record<string, unknown>): boolean {
+  return getToolName(payload) === ZCODE_TOOL.AskUserQuestion
 }

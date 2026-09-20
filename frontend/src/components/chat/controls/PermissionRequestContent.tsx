@@ -1,4 +1,5 @@
 import type { ParentComponent } from 'solid-js'
+import type { PermissionPrompt } from '../model/controlPrompt'
 import type { ControlRequest } from '~/stores/control.store'
 import { createMemo, Show } from 'solid-js'
 import { isObject } from '~/lib/jsonPick'
@@ -7,16 +8,18 @@ import { CollapsibleText } from './CollapsibleText'
 import { ControlJson } from './ControlJson'
 import { canAnswerControlRequest } from './controlResponseState'
 
-export interface PermissionRequestSource {
-  title?: string
-  reason?: string
-  command?: string
-  workingDirectory?: string
-  input?: unknown
-}
-
-/** Render permission details after the provider identifies the operation and its native fields. */
-export const PermissionRequestContent: ParentComponent<{ request: ControlRequest, source: PermissionRequestSource }> = (props) => {
+/**
+ * The permission body: what the call is, why it needs approval, and its arguments.
+ *
+ * It draws every field of the model's permission EXCEPT the options, which are the
+ * answers -- those belong to the actions half, beside the buttons that send one.
+ * The elicitation form draws the same body for an input request, which states no
+ * options at all.
+ */
+export const PermissionRequestContent: ParentComponent<{
+  request: ControlRequest
+  source: Omit<PermissionPrompt, 'options'>
+}> = (props) => {
   const details = createMemo(() => {
     const { input, command } = props.source
     if (command === undefined || !isObject(input) || input.command !== command)

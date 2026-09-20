@@ -15,12 +15,15 @@ afterEach(() => {
 
 type Handlers = { [K in 'onNewAgent' | 'onNewAgentAdvanced' | 'onNewTerminalWithShell' | 'onNewTerminalAdvanced']: Mock<NewTabMenuItemsProps[K]> }
 
+// Optional keys accept an explicit `undefined`: these tests use it as the
+// "still unknown" fixture, distinct from leaving the key out (which takes the
+// defaults below), so the fixture shape spells that difference out.
 function renderItems(overrides: {
-  availableProviders?: AgentProvider[]
-  availableShells?: string[]
-  defaultShell?: string
-  shortcuts?: boolean
-  disabledReason?: string
+  availableProviders?: AgentProvider[] | undefined
+  availableShells?: string[] | undefined
+  defaultShell?: string | undefined
+  shortcuts?: boolean | undefined
+  disabledReason?: string | undefined
 } = {}) {
   const handlers: Handlers = {
     onNewAgent: vi.fn(),
@@ -36,11 +39,11 @@ function renderItems(overrides: {
   const result = render(() => (
     <menu>
       <NewTabMenuItems
-        availableProviders={providers}
-        availableShells={shells}
-        defaultShell={defaultShell}
-        shortcuts={overrides.shortcuts}
-        disabledReason={overrides.disabledReason}
+        {...(providers !== undefined ? { availableProviders: providers } : {})}
+        {...(shells !== undefined ? { availableShells: shells } : {})}
+        {...(defaultShell !== undefined ? { defaultShell } : {})}
+        {...(overrides.shortcuts !== undefined ? { shortcuts: overrides.shortcuts } : {})}
+        {...(overrides.disabledReason !== undefined ? { disabledReason: overrides.disabledReason } : {})}
         {...handlers}
       />
     </menu>
@@ -55,7 +58,7 @@ function item(label: string): HTMLElement {
   return el!
 }
 
-describe('newTabMenuItems', () => {
+describe('NewTabMenuItems', () => {
   it('renders both section headers', () => {
     renderItems()
     expect(screen.getByText('Agents')).toBeInTheDocument()

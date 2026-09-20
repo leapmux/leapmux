@@ -1,10 +1,11 @@
-import type { Component } from 'solid-js'
-import type { WirePermissionOption } from './permissionOptionLabels'
+import type { Accessor, Component } from 'solid-js'
 import type { ActionsProps, ControlResponseSender } from './types'
+import type { PermissionOption } from '~/components/chat/model/controlPrompt'
 
 import { createMemo } from 'solid-js'
+import { isAllowPermissionKind, isRejectPermissionKind } from '~/components/chat/model/controlPrompt'
 import { ControlDecisionFooter } from './ControlDecisionFooter'
-import { isAllowPermissionKind, isRejectPermissionKind, permissionOptionLabel } from './permissionOptionLabels'
+import { permissionOptionLabel } from './permissionOptionLabels'
 import {
   allowScopePillOptions,
   decisionLabel,
@@ -14,29 +15,28 @@ import {
 import { buildSessionPermissionPill, createSessionPermissionPresetChoice, respondThenApplyPermissionPreset } from './permissionPresets'
 import { CONTROL_ALLOW_CHOICE_ID, createControlChoice } from './types'
 
-/** Sends one selected option as the provider's permission reply (ACP- and OpenCode-family envelopes are the same). */
+/** Sends ONE chosen option as this provider's permission reply, in its own envelope. */
 export type SendPermissionOption = (
   onRespond: ControlResponseSender,
   requestId: string,
   optionId: string,
 ) => Promise<void>
 
-/** Reads a request's wire options; each provider extracts its own payload shape. */
-export type PermissionOptionsGetter = (payload: Record<string, unknown>) => WirePermissionOption[]
-
 /**
- * The shared decision row for a wire-options permission request: scope pills
- * (Once / Always / Session / Project), the permission pill group (Unchanged /
- * Smart / Bypass), Deny / Allow, and one extra button per option no slot or
- * group consumed. The ACP and OpenCode families differ only in their payload
- * extraction and sender, so each provider passes its `options` getter and `send`
- * and keeps its wire specifics in its own file.
+ * The shared decision row for a permission request whose runtime states its own
+ * answers: scope pills (Once / Always / Session / Project), the permission pill
+ * group (Unchanged / Smart / Bypass), Deny / Allow, and one extra button per option
+ * no slot or group consumed.
+ *
+ * The options arrive from the control model, which each provider's `extractControl`
+ * filled -- so no wire shape is read here. The provider states `send` beside them,
+ * because the envelope that carries one id back is its own.
  */
 export const PermissionDecisionActions: Component<ActionsProps & {
-  options: PermissionOptionsGetter
+  options: Accessor<PermissionOption[]>
   send: SendPermissionOption
 }> = (props) => {
-  const layout = createMemo(() => layoutPermissionOptions(props.options(props.request.payload)))
+  const layout = createMemo(() => layoutPermissionOptions(props.options()))
   const permissionChoice = createSessionPermissionPresetChoice(props)
   const scopeChoice = createControlChoice(() => props.answerState, CONTROL_ALLOW_CHOICE_ID)
 
@@ -54,7 +54,9 @@ export const PermissionDecisionActions: Component<ActionsProps & {
       return undefined
     return scope.some(option => option.optionId === scopeChoice.choice())
       ? scopeChoice.choice()
-      : scope[0].optionId
+      // `allowScope` is built as `[once, ...always]`, so a first pill always
+      // exists; `?.` is the type-level guard alone.
+      : scope[0]?.optionId
   }
   const permissionPill = createMemo(() => buildSessionPermissionPill(props.presets, permissionChoice))
 
@@ -64,7 +66,7 @@ export const PermissionDecisionActions: Component<ActionsProps & {
   // answer reaches it. Only an ALLOW-kind option — the request's positive action
   // family — applies a preset: an extra answer option decides nothing about
   // future permissions.
-  const handleOption = async (option: WirePermissionOption | undefined) => {
+  const handleOption = async (option: PermissionOption | undefined) => {
     if (!option)
       return
     if (isAllowPermissionKind(option.kind)) {
@@ -92,12 +94,15 @@ export const PermissionDecisionActions: Component<ActionsProps & {
           : undefined
       }}
       permissionPill={() => layout().positive ? permissionPill() : undefined}
-      negativeAction={layout().negative
-        ? { label: decisionLabel(layout(), 'reject'), testId: 'control-deny-btn', onSelect: () => handleDecision('reject') }
-        : undefined}
-      positiveAction={layout().positive
-        ? { label: decisionLabel(layout(), 'allow'), testId: 'control-allow-btn', onSelect: () => handleDecision('allow') }
-        : undefined}
+      // The decision slots are passed only when the layout filled them: an
+      // explicit `undefined` is not assignable to an optional prop under
+      // exactOptionalPropertyTypes, and the footer reads absent the same.
+      {...(layout().negative
+        ? { negativeAction: { label: decisionLabel(layout(), 'reject'), testId: 'control-deny-btn', onSelect: () => handleDecision('reject') } }
+        : {})}
+      {...(layout().positive
+        ? { positiveAction: { label: decisionLabel(layout(), 'allow'), testId: 'control-allow-btn', onSelect: () => handleDecision('allow') } }
+        : {})}
       additionalActions={() => layout().additional.map(option => ({
         label: permissionOptionLabel(option),
         testId: `control-decision-${option.optionId}`,

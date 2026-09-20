@@ -74,8 +74,12 @@ export async function readWorkerFile(options: {
 
   let next = 0
   const readRemainingRanges = async (): Promise<void> => {
-    while (next < ranges.length && !pages.signal.aborted)
-      await readRange(ranges[next++])
+    while (next < ranges.length && !pages.signal.aborted) {
+      const range = ranges[next++]
+      if (range === undefined)
+        throw new Error('The file could not be read completely')
+      await readRange(range)
+    }
   }
 
   try {

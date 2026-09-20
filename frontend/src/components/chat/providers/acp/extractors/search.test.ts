@@ -16,14 +16,14 @@ describe('acpSearchFromToolCall', () => {
       rawOutput: { metadata: { matches: 7 } },
     })
     expect(source).toEqual({
-      variant: 'search',
       filenames: [],
       content: '',
       numFiles: 0,
       numLines: 0,
-      matches: 7,
+      matchCount: 7,
       truncated: false,
       fallbackContent: '',
+      empty: true,
     })
   })
 
@@ -32,7 +32,7 @@ describe('acpSearchFromToolCall', () => {
       content: [{ type: 'content', content: { text: 'opaque text' } }],
     })
     expect(source?.fallbackContent).toBe('opaque text')
-    expect(source?.matches).toBeUndefined()
+    expect(source?.matchCount).toBeUndefined()
   })
 
   it('captures rawOutput.output as fallback when no metadata.matches', () => {
@@ -40,5 +40,26 @@ describe('acpSearchFromToolCall', () => {
       rawOutput: { output: 'raw' },
     })
     expect(source?.fallbackContent).toBe('raw')
+  })
+})
+
+/**
+ * Whether the extractor RECOGNIZED an empty result.
+ *
+ * The protocol states a `matches` TOTAL rather than a sentence, and the shared tables
+ * read no empty wording for any provider of this family. An empty body is therefore
+ * the one empty result this build can recognize -- the same positive evidence the
+ * renderer required before the flag existed. A stated zero reaches the row through
+ * `matchCount`, which the search summary words on its own.
+ */
+describe('acpSearchFromToolCall empty results', () => {
+  it('recognizes an empty result from an empty body', () => {
+    expect(acpSearchFromToolCall({ rawOutput: { metadata: { matches: 0 } } })?.empty).toBe(true)
+  })
+
+  it('states no empty result for a body it did not classify', () => {
+    const source = acpSearchFromToolCall({ content: [{ type: 'content', content: { text: 'nothing matched' } }] })
+    expect(source?.empty).toBe(false)
+    expect(source?.fallbackContent).toBe('nothing matched')
   })
 })

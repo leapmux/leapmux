@@ -17,19 +17,19 @@ describe('cursor provider', () => {
   describeACPProviderBasics(AgentProvider.CURSOR, { text: true, image: true, pdf: true, binary: true })
 
   it('maps plan mode to agent/plan values', () => {
-    expect(plugin.planMode?.currentMode({ optionValues: { permissionMode: 'plan' } })).toBe('plan')
-    expect(plugin.planMode?.currentMode({ optionValues: { permissionMode: '' } })).toBe('agent')
+    expect(plugin?.configuration?.planMode?.currentMode({ optionValues: { permissionMode: 'plan' } })).toBe('plan')
+    expect(plugin?.configuration?.planMode?.currentMode({ optionValues: { permissionMode: '' } })).toBe('agent')
   })
 
   it('recognizes cursor ask-question control payloads', () => {
-    expect(plugin.askUserQuestion?.isRequest({ method: 'cursor/ask_question' })).toBe(true)
-    expect(plugin.askUserQuestion?.isRequest({ method: 'cursor/create_plan' })).toBe(false)
+    expect(plugin?.controls?.askUserQuestion?.isRequest({ method: 'cursor/ask_question' })).toBe(true)
+    expect(plugin?.controls?.askUserQuestion?.isRequest({ method: 'cursor/create_plan' })).toBe(false)
   })
 
   it('declares plan mode on the permissionMode group and defaults to agent', () => {
     // The generic settings panel renders the permissionMode group Cursor reports;
     // the provider only declares the plan-mode mapping and its default mode.
-    expect(plugin.planMode).toMatchObject({
+    expect(plugin?.configuration?.planMode).toMatchObject({
       groupKey: 'permissionMode',
       planValue: 'plan',
       defaultValue: 'agent',
@@ -37,15 +37,21 @@ describe('cursor provider', () => {
   })
 
   it('renders the permissionMode group as the trigger mode segment', () => {
-    expect(plugin.triggerModeGroupKey).toBe('permissionMode')
+    expect(plugin?.configuration?.triggerModeGroupKey).toBe('permissionMode')
   })
 
   it('uses Oat small metrics for create-plan decisions', () => {
-    render(() => plugin.ControlActions!({
+    const payload = { method: 'cursor/create_plan', params: {} }
+    // Cursor claims its create-plan and nothing else. A permission beside it takes
+    // the shared decision row, and its ask-question takes the shared question form --
+    // a wider claim would answer a question with a plan verdict.
+    expect(plugin?.controls?.controlActionsFor!({ method: 'session/request_permission', params: {} })).toBeUndefined()
+    expect(plugin?.controls?.controlActionsFor!({ method: 'cursor/ask_question', params: {} })).toBeUndefined()
+    render(() => plugin?.controls?.controlActionsFor!(payload)!({
       request: {
         requestId: 'cursor-plan-1',
         agentId: 'cursor-1',
-        payload: { method: 'cursor/create_plan', params: {} },
+        payload,
       },
       answerState: createControlAnswerState(),
       onRespond: async () => {},
@@ -59,10 +65,10 @@ describe('cursor provider', () => {
   })
 
   // The neutral {isSynthetic, controlResponse} row -> control_response classification is provider-
-  // agnostic and lives in classifyMessage (see messageClassification.test.ts); this covers only
+  // agnostic and lives in classifyMessage (see messageClassifier.test.ts); this covers only
   // Cursor's own controlResponseDisplay derivation.
   it('derives Cursor-specific control-response labels', () => {
-    expect(plugin.controlResponseDisplay!({
+    expect(plugin?.controls?.controlResponseDisplay!({
       claimToken: 'claim-1',
       requestId: '7',
       request: { method: 'cursor/create_plan' },

@@ -182,16 +182,16 @@ func (h *OutputHandler) applyGoalUpdateFromRow(agentID string, provider leapmuxv
 		return
 	}
 	h.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
-		"type":          contracts.NotificationTypeGoalUpdated,
-		"objective":     update.Objective,
-		"goal_status":   agent.GoalStatusWire(update.Status),
-		"status_detail": update.StatusDetail,
+		contracts.NotificationFieldType:         contracts.NotificationTypeGoalUpdated,
+		contracts.NotificationFieldObjective:    update.Objective,
+		contracts.NotificationFieldGoalStatus:   agent.GoalStatusWire(update.Status),
+		contracts.NotificationFieldStatusDetail: update.StatusDetail,
 		// The transition KIND, so the transcript can say what happened rather
 		// than guess it from the resulting status. Without it a resume -- which
 		// changes the status to `active` and nothing else -- reads as "Goal
 		// set: X" two rows under "Goal paused: X", announcing a new goal for an
 		// objective nobody replaced.
-		"goal_transition": goalTransitionKind(row, update),
+		contracts.NotificationFieldGoalTransition: goalTransitionKind(row, update),
 	})
 }
 
@@ -203,7 +203,7 @@ func goalTransitionKind(row db.GetAgentGoalRow, update agent.GoalUpdate) string 
 	// Derived HERE rather than taken as a parameter. The caller computed it from
 	// these same two values, and a signature that accepted it would let a second
 	// caller pass an identity answer that disagrees with the update -- which
-	// names the wrong verb in the transcript and nothing catches it.
+	// states the wrong verb in the transcript and nothing catches it.
 	sameIdentity := sameGoalIdentity(row, update)
 	// Reaching a status case below means the STATUS is what moved: the caller
 	// only asks after a transition, and the two cases above take the objective
@@ -272,8 +272,8 @@ func (h *OutputHandler) clearGoal(agentID string, provider leapmuxv1.AgentProvid
 		return
 	}
 	h.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
-		"type":      contracts.NotificationTypeGoalCleared,
-		"objective": row.GoalObjective,
+		contracts.NotificationFieldType:      contracts.NotificationTypeGoalCleared,
+		contracts.NotificationFieldObjective: row.GoalObjective,
 	})
 }
 

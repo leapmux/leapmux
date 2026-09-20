@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 func TestACPToolRequestReceivesLateInputBeforeCompletion(t *testing.T) {
@@ -33,7 +35,7 @@ func TestACPToolResultPreservesOriginalTerminalReference(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 	agent.handleToolCall(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"command","kind":"execute","rawInput":{"command":"printf output"}}`))
 	exitCode := 0
-	agent.completedTerminals = map[string]acpTerminalResult{"terminal": {Output: "output", ExitCode: &exitCode}}
+	agent.completedTerminals = map[string]contracts.ACPTerminalResult{"terminal": {Output: "output", ExitCode: &exitCode}}
 	original := json.RawMessage(`{ "sessionUpdate": "tool_call_update", "toolCallId": "command", "status": "completed", "content": [{"type":"terminal","terminalId":"terminal"}], "rawOutput":{"providerField":9007199254740993} }`)
 	agent.handleToolCallUpdate(original)
 	require.Len(t, sink.Messages(), 2)

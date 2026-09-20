@@ -1,8 +1,7 @@
-import type { TodoItem } from '~/stores/chatTodos'
 import { render, waitFor } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
+import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
@@ -22,25 +21,28 @@ function resultMessage() {
 }
 
 describe('message context rendering', () => {
-  it('updates a task title through the live entity source', async () => {
+  it('keeps a TaskUpdate card on its persisted snapshot', async () => {
     const message = makeMessage({
       id: 'task-update',
       seq: 3n,
       spanId: 'task-call',
       agentProvider: AgentProvider.CLAUDE_CODE,
       content: rawContent({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'task-call', name: 'TaskUpdate', input: { taskId: '42', status: 'completed' } }] } }),
+      supplementalContent: rawContent({ metadata: { [MESSAGE_METADATA_FIELD.TodoSnapshot]: {
+        id: '42',
+        content: 'Persisted task title',
+        status: 'TODO_STATUS_COMPLETED',
+        activeForm: '',
+        description: 'Persisted description',
+      } } }),
+      supplementalRevision: 1n,
     })
-    const [todo, setTodo] = createSignal<TodoItem>({ id: '42', rowKey: '42', content: 'Original task title', status: 'pending', activeForm: '' })
-    const context = testMessageContext({ messages: () => [message], todo: id => id === '42' ? todo() : undefined })
+    const context = testMessageContext({ messages: () => [message] })
     const { container } = render(() => (
       <PreferencesProvider><MessageBubble message={message} host={{ messages: context }} /></PreferencesProvider>
     ))
-    await waitFor(() => expect(container.textContent).toContain('Original task title'))
-    await context.loadRelated(message)
-    setTodo({ id: '42', rowKey: '42', content: 'Revised task title', status: 'completed', activeForm: '' })
-    await waitFor(() => expect(container.textContent).toContain('Revised task title'))
-    expect(container.textContent).not.toContain('Original task title')
-    expect(message.supplementalRevision).toBe(0n)
+    await waitFor(() => expect(container.textContent).toContain('Persisted task title'))
+    expect(container.textContent).toContain('Persisted description')
   })
 
   it('loads an edit request outside the visible history window', async () => {

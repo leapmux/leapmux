@@ -1,11 +1,13 @@
-import type { SpanRole } from '../../registry'
+import type {} from '../../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { TodoItem } from '~/stores/chatTodos'
-import { ZCODE_EVENT, ZCODE_TOOL_KIND, ZCODE_TOOL_PREFIX } from '~/generated/contracts/zcode-protocol'
+import type { ToolSpanRole } from '~/lib/messageSpan'
+import type { TodoItem } from '~/models/todo'
+import { rawTodosToItems } from '~/components/chat/normalizers/todo'
+import { ZCODE_EVENT, ZCODE_STORED_PART, ZCODE_STORED_PART_STATUS, ZCODE_STORED_PART_TYPE, ZCODE_STORED_TOOL, ZCODE_SUPPLEMENT, ZCODE_SUPPLEMENT_PAYLOAD, ZCODE_TOOL_KIND, ZCODE_TOOL_PREFIX } from '~/generated/contracts/zcode-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { rawTodosToItems } from '~/stores/chatTodos'
 import { parseToolOutcome } from '../../../toolOutcome'
 import { retainedRowIsFinal } from '../../registry'
+import { zcodeToolSupplement } from '../toolSupplement'
 
 /**
  * The `payload` of a `tool.updated` event, normalized across its six kinds.
@@ -20,7 +22,7 @@ import { retainedRowIsFinal } from '../../registry'
  *   batch     → {toolCallIds, successCount, errorCount}
  *
  * A `result` carries no tool name, so the result renderers resolve the name from the span
- * (`RenderContext.spanType`, which the worker sets from the tool name) or from the
+ * (`RowExtractionContext.spanType`, which the worker sets from the tool name) or from the
  * paired `scheduled` row -- never from the result payload itself.
  */
 export interface ZCodeToolUpdate {
@@ -64,14 +66,21 @@ export interface ZCodeEnvelope {
   payload: Record<string, unknown>
 }
 
-/** Unwrap a persisted ZCode row into its event type and payload. */
+/**
+ * Unwrap a persisted ZCode row into its event type and payload.
+ *
+ * The two key names are contract constants, because the WORKER writes this same
+ * envelope for a retained tool row (contracts/zcode-protocol.json `supplement`) and
+ * the Go tags are pinned to the same table. A rename on one side alone left every
+ * retained row drawing with no native record and nothing to say why.
+ */
 export function zcodeEnvelope(parsed: unknown): ZCodeEnvelope | null {
   if (!isObject(parsed))
     return null
-  const type = pickString(parsed, 'type')
+  const type = pickString(parsed, ZCODE_SUPPLEMENT.Type)
   if (!type)
     return null
-  return { type, payload: pickObject(parsed, 'payload') ?? {} }
+  return { type, payload: pickObject(parsed, ZCODE_SUPPLEMENT.Payload) ?? {} }
 }
 
 function zcodeToolResult(result: Record<string, unknown>): ZCodeToolResult {
@@ -259,7 +268,11 @@ export function zcodeToolInput(row: ZCodeRow): Record<string, unknown> {
   if (request && Object.keys(request).length > 0)
     return request
   const stored = pickObject(zcodeNativeTool(row)?.state, 'input')
-  if (stored)
+  // EMPTY is not an answer, exactly as it is not one for the two lookups above. An
+  // empty record short-circuited the result-row lookup that exists for this case, so
+  // a Bash row drew `command: ''` and a Read row `path: ''` while the arguments sat
+  // in the store the next lookup reads.
+  if (stored && Object.keys(stored).length > 0)
     return stored
   const current = zcodeExtractTool(row.parsed)
   const result = zcodeExtractTool(row.result?.parentObject)
@@ -313,12 +326,11 @@ export function zcodeNativeTool(row: ZCodeRow): {
 } | null {
   const original = zcodeExtractTool(row.parsed)
   const extra = zcodeEnvelope(row.supplemental)
-  const supplement = isObject(row.supplemental) ? row.supplemental : undefined
-  const native = pickObject(supplement, 'nativeTool')
-  const data = pickObject(native, 'data')
-  const state = pickObject(data, 'state')
-  const sessionId = pickString(native, 'sessionId')
-  const messageId = pickString(native, 'messageId')
+  const { nativeTool: native, artifacts } = zcodeToolSupplement(row.supplemental)
+  const data = pickObject(native, ZCODE_STORED_TOOL.Data)
+  const state = pickObject(data, ZCODE_STORED_PART.State)
+  const sessionId = pickString(native, ZCODE_STORED_TOOL.SessionID)
+  const messageId = pickString(native, ZCODE_STORED_TOOL.MessageID)
   const ownPayload = zcodeEnvelope(row.parsed)?.payload
   const requestPayload = zcodePairedRequest(row.parsed, row.toolUseParsed)
     ? zcodeEnvelope(row.toolUseParsed?.parentObject)?.payload
@@ -335,20 +347,22 @@ export function zcodeNativeTool(row: ZCodeRow): {
   if (!nativeCallId)
     return null
   if (!original || !original.toolCallId || extra?.type !== ZCODE_EVENT.ToolUpdated
-    || extra.payload.kind !== original.kind || extra.payload.toolCallId !== original.toolCallId
-    || data?.type !== 'tool' || data.callID !== nativeCallId
-    || !pickString(data, 'tool') || (row.toolName && data.tool !== row.toolName)
+    || extra.payload[ZCODE_SUPPLEMENT_PAYLOAD.Kind] !== original.kind
+    || extra.payload[ZCODE_SUPPLEMENT_PAYLOAD.ToolCallID] !== original.toolCallId
+    || data?.[ZCODE_STORED_PART.Type] !== ZCODE_STORED_PART_TYPE.Tool
+    || data[ZCODE_STORED_PART.CallID] !== nativeCallId
+    || !pickString(data, ZCODE_STORED_PART.Tool) || (row.toolName && data[ZCODE_STORED_PART.Tool] !== row.toolName)
     || !sessionId || !messageId || !state
-    || state.status !== (original.isError ? 'error' : 'completed')) {
+    || state[ZCODE_STORED_PART.Status] !== (original.isError ? ZCODE_STORED_PART_STATUS.Error : ZCODE_STORED_PART_STATUS.Completed)) {
     return null
   }
-  return { sessionId, messageId, state, artifacts: pickObject(supplement, 'artifacts') }
+  return { sessionId, messageId, state, artifacts: artifacts ?? null }
 }
 
 /**
  * The tool.updated kinds that OPEN a span rather than close it.
  *
- * `scheduled` is the opener. `result`, `error`, and `batch` are final.
+ * `scheduled` is the request. `result`, `error`, and `batch` are final.
  * The Worker consumes `started` and `progress` for live counters.
  *
  * A RETAINED row is final whatever its kind. A turn that ends while the call runs
@@ -363,11 +377,11 @@ export function zcodeNativeTool(row: ZCodeRow): {
  * with no message store. The kind then decides, which is what the agent's own frames
  * say.
  */
-export function zcodeToolSpanRole(kind: string, parsed: ParsedMessageContent | undefined): SpanRole {
+export function zcodeToolSpanRole(kind: string, parsed: ParsedMessageContent | undefined): ToolSpanRole {
   if (retainedRowIsFinal(parsed?.completion) || parseToolOutcome(parsed?.messageMetadata) !== null)
     return 'result'
   if (kind === ZCODE_TOOL_KIND.Scheduled)
-    return 'opener'
+    return 'request'
   if (kind === ZCODE_TOOL_KIND.Result || kind === ZCODE_TOOL_KIND.Error || kind === ZCODE_TOOL_KIND.Batch)
     return 'result'
   return 'other'

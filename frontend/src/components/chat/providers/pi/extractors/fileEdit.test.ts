@@ -10,7 +10,7 @@ describe('extractPiEdit', () => {
     { edits: JSON.stringify({ oldText: 'before', newText: 'after' }) },
   ])('accepts the edit form that Pi normalizes before execution: %j', (args) => {
     const result = extractPiEdit({ type: 'tool_execution_start', toolCallId: 'call', toolName: 'edit', args: { path: '/project/file.ts', ...args } })
-    expect(result?.sources).toEqual([{ filePath: '/project/file.ts', structuredPatch: null, oldStr: 'before', newStr: 'after' }])
+    expect(result).toEqual([{ filePath: '/project/file.ts', structuredPatch: null, oldStr: 'before', newStr: 'after' }])
   })
 
   it('combines an edits array with the legacy singleton fields', () => {
@@ -20,14 +20,14 @@ describe('extractPiEdit', () => {
       oldText: 'three',
       newText: '',
     } })
-    expect(result?.sources.map(source => [source.oldStr, source.newStr])).toEqual([['one', 'two'], ['three', '']])
+    expect(result?.map(source => [source.oldStr, source.newStr])).toEqual([['one', 'two'], ['three', '']])
   })
 
   it('returns null for non-edit tool', () => {
     expect(extractPiEdit({ type: 'tool_execution_end', toolCallId: 'c', toolName: 'bash' })).toBeNull()
   })
 
-  it('extracts edits as FileEditDiffSources', () => {
+  it('extracts edits as FileEditDiffs', () => {
     const out = extractPiEdit({
       type: 'tool_execution_end',
       toolCallId: 'c',
@@ -42,14 +42,10 @@ describe('extractPiEdit', () => {
       result: { content: [{ type: 'text', text: 'patched' }], details: {} },
       isError: false,
     })
-    expect(out).toEqual({
-      path: '/repo/src/foo.ts',
-      sources: [
-        { filePath: '/repo/src/foo.ts', structuredPatch: null, oldStr: 'old', newStr: 'new' },
-        { filePath: '/repo/src/foo.ts', structuredPatch: null, oldStr: 'a', newStr: 'b' },
-      ],
-      isError: false,
-    })
+    expect(out).toEqual([
+      { filePath: '/repo/src/foo.ts', structuredPatch: null, oldStr: 'old', newStr: 'new' },
+      { filePath: '/repo/src/foo.ts', structuredPatch: null, oldStr: 'a', newStr: 'b' },
+    ])
   })
 
   it('handles missing args.edits gracefully', () => {
@@ -59,7 +55,7 @@ describe('extractPiEdit', () => {
       toolName: 'edit',
       args: { path: '/repo/x' },
     })
-    expect(out?.sources).toEqual([])
+    expect(out).toEqual([])
   })
 })
 
@@ -75,6 +71,7 @@ describe('extractPiWrite', () => {
     expect(out).toEqual({
       filePath: '/tmp/foo',
       structuredPatch: null,
+      operation: 'add',
       oldStr: '',
       newStr: 'data\n',
     })
@@ -82,7 +79,7 @@ describe('extractPiWrite', () => {
 })
 
 describe('extractPiRead', () => {
-  it('packs the result into a ReadFileResultSource and surfaces the requested range', () => {
+  it('states the file as a ReadFileResult, numbered from the requested offset', () => {
     const out = extractPiRead({
       type: 'tool_execution_end',
       toolCallId: 'c',
@@ -91,15 +88,8 @@ describe('extractPiRead', () => {
       result: { content: [{ type: 'text', text: 'contents' }], details: {} },
     })
     expect(out).toEqual({
-      source: {
-        filePath: '/repo/x',
-        lines: [{ num: 10, text: 'contents' }],
-        totalLines: 0,
-        numLines: 0,
-        fallbackContent: 'contents',
-      },
-      offset: 10,
-      limit: 50,
+      lines: [{ num: 10, text: 'contents' }],
+      fallbackContent: 'contents',
     })
   })
 
@@ -111,27 +101,20 @@ describe('extractPiRead', () => {
       result: { content: [{ type: 'text', text: 'line1\nline2' }], details: {} },
     }, { path: '/repo/x', offset: 20, limit: 2 })
     expect(out).toEqual({
-      source: {
-        filePath: '/repo/x',
-        lines: [{ num: 20, text: 'line1' }, { num: 21, text: 'line2' }],
-        totalLines: 0,
-        numLines: 0,
-        fallbackContent: 'line1\nline2',
-      },
-      offset: 20,
-      limit: 2,
+      lines: [{ num: 20, text: 'line1' }, { num: 21, text: 'line2' }],
+      fallbackContent: 'line1\nline2',
     })
   })
 
-  it('treats missing offset/limit as null', () => {
+  it('numbers from line 1 when the input asked for no offset', () => {
     const out = extractPiRead({
       type: 'tool_execution_end',
       toolCallId: 'c',
       toolName: 'read',
       args: { path: '/repo/x' },
+      result: { content: [{ type: 'text', text: 'first\nsecond' }], details: {} },
     })
-    expect(out?.offset).toBeNull()
-    expect(out?.limit).toBeNull()
+    expect(out?.lines).toEqual([{ num: 1, text: 'first' }, { num: 2, text: 'second' }])
   })
 })
 
@@ -183,8 +166,8 @@ describe('piResolveDiffSources', () => {
     const payload = end({ result: { details: { diff } } })
     const out = piResolveDiffSources(payload, toolUseParsed(startEdit))
     expect(out).toHaveLength(1)
-    expect(out[0].filePath).toBe('/repo/x.ts')
-    expect(out[0].structuredPatch).not.toBeNull()
+    expect(out[0]?.filePath).toBe('/repo/x.ts')
+    expect(out[0]?.structuredPatch).not.toBeNull()
   })
 
   it('returns no diff sources for a failed execution (renders error text)', () => {

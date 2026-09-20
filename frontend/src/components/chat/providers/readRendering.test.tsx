@@ -1,12 +1,13 @@
-import type { MessageCategory } from '../messageClassification'
-import type { RenderContext } from '../messageRenderers'
+import type { MessageCategory } from '../messageClassifier'
+import type { MessageContentRenderContext } from '../messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import './claude'
-import './opencode'
-import './pi'
+import { resolveMessageForRendering } from './registry'
+import './claude/plugin'
+import './opencode/plugin'
+import './pi/plugin'
 import './testMocks'
 
 vi.mock('~/lib/shikiWorkerClient', () => ({
@@ -18,9 +19,9 @@ vi.mock('~/lib/tokenCache', () => ({
   makeKey: (lang: string, code: string) => `${lang}\0${code}`,
 }))
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../messageContentRenderer')
 
-function renderClaudeToolResult(parsed: Record<string, unknown>, context?: RenderContext) {
+function renderClaudeToolResult(parsed: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }
   const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
   return render(() => result)
@@ -37,24 +38,19 @@ function makeReadResult(toolUseResult: Record<string, unknown> | undefined, cont
   }
 }
 
-function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: RenderContext) {
-  const category: MessageCategory = {
-    kind: 'tool_use',
-    toolName: (toolUse.kind as string) || 'tool_call_update',
-    toolUse,
-    content: [],
-  }
+function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(toolUse, context, category, AgentProvider.OPENCODE)
   return render(() => result)
 }
 
 function parsed(parentObject: Record<string, unknown>) {
-  return {
+  return resolveMessageForRendering({
     rawText: JSON.stringify(parentObject),
     topLevel: parentObject,
     parentObject,
     wrapper: null,
-  }
+  }, AgentProvider.PI)
 }
 
 function renderPiReadResult(content: string, startArgs: Record<string, unknown> = {}) {
@@ -138,13 +134,14 @@ describe('claude Read tool_result rendering', () => {
     const { container } = renderClaudeToolResult(parsed, { spanType: 'Read', getMessageUiState: () => true })
     const alerts = container.querySelectorAll('[role="alert"]')
     expect(alerts.length).toBe(2)
+    // The length check above pins both indices; `?.` is the type-level guard alone.
     // Leading system-reminder -> default info (no data-variant), title-cased label.
-    expect(alerts[0].hasAttribute('data-variant')).toBe(false)
-    expect(alerts[0].querySelector('strong')?.textContent).toBe('System Reminder')
-    expect(alerts[0].textContent).toContain('[Truncated: PARTIAL view]')
+    expect(alerts[0]?.hasAttribute('data-variant')).toBe(false)
+    expect(alerts[0]?.querySelector('strong')?.textContent).toBe('System Reminder')
+    expect(alerts[0]?.textContent).toContain('[Truncated: PARTIAL view]')
     // Trailing read-error -> data-variant="error", "Read Error" label.
-    expect(alerts[1].getAttribute('data-variant')).toBe('error')
-    expect(alerts[1].querySelector('strong')?.textContent).toBe('Read Error')
+    expect(alerts[1]?.getAttribute('data-variant')).toBe('error')
+    expect(alerts[1]?.querySelector('strong')?.textContent).toBe('Read Error')
     // The file body still renders.
     expect(container.querySelector('[class*="codeView"]')).not.toBeNull()
   })

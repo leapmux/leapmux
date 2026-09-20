@@ -1,57 +1,62 @@
+import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
-import type { RenderContext } from '../messageRenderers'
-import Check from 'lucide-solid/icons/check'
-import CircleAlert from 'lucide-solid/icons/circle-alert'
+import type { TaskResult, TaskStatus } from '../model/tools/task'
+import type { ToolResultRenderContext } from '../renderContext'
 import ClockFading from 'lucide-solid/icons/clock-fading'
-import OctagonX from 'lucide-solid/icons/octagon-x'
 import { Show } from 'solid-js'
 import { getToolResultExpanded } from '../messageRenderers'
+import { toolMessage } from '../toolStyles.css'
 import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 import { CollapsibleContent } from './CollapsibleContent'
+import { ENDED_OUTCOME_ICON } from './endedOutcomeIcon'
 import { CommandInputBody } from './multiLineCommandBody'
 import { ToolStatusHeader } from './ToolStatusHeader'
 import { useCollapsedLines } from './useCollapsedLines'
 
 /**
- * A tool result that states an OUTCOME of its own instead of returning data.
+ * One glyph for each outcome. Annotated, so a fifth outcome fails the build here.
  *
- * A background task that stopped, a message that reached a peer, a retrieval that
- * timed out: each one answers with a state and a short note, and neither the command
- * body nor the plain text body states that state. The row draws the state as its own
- * header, so the reader gets the answer before the note.
- *
- * The four outcomes are a closed set, because the icon table below reads them. They
- * are not the tool-row outcome of `toolOutcomeLabel`, which says how the CALL ended: a
- * call that succeeded can report a task that stopped.
+ * The three ENDED glyphs come from the shared table, which the subagent card reads
+ * too: the two used to spell the same three mappings under different words, so a
+ * change to the "it stopped" glyph reached one card and not the other.
  */
-export interface StatusResultSource {
-  /** The state, in the words of the surface that reports it. */
-  title: string
-  outcome: 'succeeded' | 'failed' | 'waiting' | 'stopped'
-  /** A command the reported operation ran. The row draws it above the note. */
-  command?: string
-  output: string
+const OUTCOME_ICON: Record<TaskStatus, LucideIcon> = {
+  ...ENDED_OUTCOME_ICON,
+  // A task surface that has not answered yet. The subagent card has no glyph for its
+  // own `running`, because absence is what tells it the run has not ended.
+  running: ClockFading,
 }
 
-const OUTCOME_ICON = { succeeded: Check, failed: CircleAlert, waiting: ClockFading, stopped: OctagonX }
-
-/** Whether the note holds more than the collapsed row shows. */
-export function statusResultCollapsible(source: StatusResultSource): boolean {
-  return hasMoreLinesThan(source.output, COLLAPSED_RESULT_ROWS)
+/** Whether a task note exceeds the collapsed display. */
+export function taskResultCollapsible(result: TaskResult): boolean {
+  return hasMoreLinesThan(result.output, COLLAPSED_RESULT_ROWS)
 }
 
-/** Draw the reported state, the command it acted on, and the note below both. */
-export function StatusResultBody(props: { source: StatusResultSource, context?: RenderContext }): JSX.Element {
+export function StatusResultBody(props: { source: TaskResult, context?: ToolResultRenderContext }): JSX.Element {
   const output = () => props.source.output
   const collapsed = useCollapsedLines({ text: output, expanded: () => getToolResultExpanded(props.context) })
-  return (
-    <ToolStatusHeader icon={OUTCOME_ICON[props.source.outcome]} title={props.source.title}>
+  const body = () => (
+    <>
       <Show when={props.source.command}>
-        {command => <CommandInputBody command={command()} context={props.context} />}
+        {command => <CommandInputBody command={command()} {...(props.context !== undefined ? { context: props.context } : {})} />}
       </Show>
       <Show when={output()}>
-        <CollapsibleContent kind="ansi-or-pre" text={output()} display={collapsed.display()} isCollapsed={collapsed.isCollapsed()} context={props.context} />
+        <CollapsibleContent kind="ansi-or-pre" text={output()} display={collapsed.display()} isCollapsed={collapsed.isCollapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />
       </Show>
-    </ToolStatusHeader>
+    </>
+  )
+  // A header needs WORDS. `TaskResult.title` is optional -- the surface states no state
+  // word for some answers -- and drawing the header anyway put a lone coloured glyph
+  // above the note, which tells a reader that something ended and not what. The note
+  // keeps its own wrapper, and the row's shared outcome header states the call's
+  // outcome instead (`taskRenderer.statesOwnOutcome` asks exactly this question).
+  return (
+    <Show when={props.source.title} fallback={<div class={toolMessage}>{body()}</div>}>
+      {title => (
+        <ToolStatusHeader icon={OUTCOME_ICON[props.source.outcome]} title={title()}>
+          {body()}
+        </ToolStatusHeader>
+      )}
+    </Show>
   )
 }

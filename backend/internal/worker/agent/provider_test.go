@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 )
@@ -332,13 +333,13 @@ func TestPlanApprovalOptions_PerProvider(t *testing.T) {
 	t.Parallel()
 	provider := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	for _, mode := range []string{"", "on-request", "untrusted", "never"} {
-		expected := map[string]string{CodexOptionCollaborationMode: CodexCollaborationDefault}
+		expected := map[string]string{contracts.CodexOptionCollaborationMode: CodexCollaborationDefault}
 		if mode != "" {
 			expected[OptionIDPermissionMode] = mode
 		}
 		if mode == "never" {
-			expected[CodexOptionNetworkAccess] = CodexNetworkEnabled
-			expected[CodexOptionSandboxPolicy] = CodexSandboxDangerFullAccess
+			expected[contracts.CodexOptionNetworkAccess] = CodexNetworkEnabled
+			expected[contracts.CodexOptionSandboxPolicy] = CodexSandboxDangerFullAccess
 		}
 		assert.Equal(t, expected, provider.PlanApprovalOptions(mode), "permission mode %q", mode)
 	}

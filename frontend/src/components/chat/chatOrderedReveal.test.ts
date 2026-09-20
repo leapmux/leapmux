@@ -2,7 +2,7 @@ import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { createOrderedTailReveal } from './chatOrderedReveal'
 
-describe('chatorderedreveal', () => {
+describe('chatOrderedReveal', () => {
   /**
    * Drive the gate from a plain reactive model: `ids` is the ordered slice and
    * `loading` is the set of rows still awaiting their own measurement. Returns

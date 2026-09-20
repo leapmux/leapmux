@@ -109,7 +109,7 @@ describe('tabOps', () => {
         // applied on enqueue the tab would not exist anywhere until the hub
         // acked it, and every optimistic open would flicker.
         expect(harness.pending.state.speculativeState.tabs.a1).toBeDefined()
-        expect(harness.pending.state.speculativeState.tabs.a1.tileId?.value).toBe(harness.rootTileId)
+        expect(harness.pending.state.speculativeState.tabs.a1?.tileId?.value).toBe(harness.rootTileId)
       })
     })
 
@@ -131,7 +131,7 @@ describe('tabOps', () => {
 
         expect(batchCount(harness)).toBe(before + 1)
         expect(lastOps(harness)).toHaveLength(1)
-        expect(lastOps(harness)[0].body.case).toBe('tombstoneTab')
+        expect(lastOps(harness)[0]?.body.case).toBe('tombstoneTab')
       })
     })
 

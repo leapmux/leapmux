@@ -20,12 +20,19 @@ import (
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 )
 
-func installFakeOpenCodeACP(t *testing.T, scenario string) {
+// installFakeOpenCodeACP puts a fake `opencode` on PATH. `envFile`, when given,
+// makes the launcher dump the environment it was started with, so a test can
+// assert what LeapMux actually hands the daemon.
+func installFakeOpenCodeACP(t *testing.T, scenario string, envFile ...string) {
 	t.Helper()
 
 	dir := t.TempDir()
 	launcher := filepath.Join(dir, "opencode")
-	script := fmt.Sprintf("#!/bin/sh\nLEAPMUX_OPENCODE_TEST_SCENARIO=%q exec %q -test.run=TestHelperProcessOpenCodeACP --\n", scenario, os.Args[0])
+	dump := ""
+	if len(envFile) > 0 && envFile[0] != "" {
+		dump = fmt.Sprintf("env > %q\n", envFile[0])
+	}
+	script := fmt.Sprintf("#!/bin/sh\n%sLEAPMUX_OPENCODE_TEST_SCENARIO=%q exec %q -test.run=TestHelperProcessOpenCodeACP --\n", dump, scenario, os.Args[0])
 	require.NoError(t, os.WriteFile(launcher, []byte(script), 0o755))
 
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

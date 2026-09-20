@@ -108,7 +108,7 @@ describe('chordFromEvent', () => {
   })
 })
 
-describe('keybindingsControl', () => {
+describe('KeybindingsControl', () => {
   beforeEach(() => {
     resetCommands()
     registerCommand({ id: 'app.newAgent', title: 'New Agent', category: 'App', handler: () => {} })

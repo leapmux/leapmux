@@ -20,7 +20,7 @@ function renderView(overrides: Partial<Parameters<typeof UnsupportedFileView>[0]
   return render(() => <UnsupportedFileView {...props} />)
 }
 
-describe('unsupportedFileView', () => {
+describe('UnsupportedFileView', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
   })

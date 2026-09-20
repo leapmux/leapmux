@@ -27,32 +27,47 @@ export interface TabTypeIconProps {
 // distinguishable from its root parent at a glance.
 export const TabTypeIcon: Component<TabTypeIconProps> = (props) => {
   const tokenSize = (): IconSizeName => props.size ?? 'sm'
+  // Spread as a getter so the class stays ABSENT when unset, and the read
+  // stays reactive, rather than freezing the decision at mount.
+  const classProps = () => (props.class !== undefined ? { class: props.class } : {})
   return (
     <Switch>
       <Match when={isAgentTab(props.tab) ? props.tab : false}>
-        {tab => (
-          <span class={styles.wrapper}>
-            <AgentProviderIcon
-              provider={tab().agentProvider}
-              size={iconSize[tokenSize()]}
-              class={props.class}
-            />
-            <Show when={isSubagentTab(tab())}>
-              <span class={styles.subagentOverlay}>
-                <CornerDownRight size={Math.round(iconSize[tokenSize()] * 0.6)} />
-              </span>
-            </Show>
-          </span>
-        )}
+        {(tab) => {
+          // Spread-ready provider, as a GETTER like `classProps` below: the
+          // row updates in place (the tree's fingerprint skips provider
+          // changes), so the read must stay in the spread's reactive scope.
+          // One read per evaluation keeps presence and value decided
+          // together -- a second `tab().agentProvider` beside the first
+          // could not be narrowed.
+          const providerProps = () => {
+            const provider = tab().agentProvider
+            return provider !== undefined ? { provider } : {}
+          }
+          return (
+            <span class={styles.wrapper}>
+              <AgentProviderIcon
+                {...providerProps()}
+                size={iconSize[tokenSize()]}
+                {...classProps()}
+              />
+              <Show when={isSubagentTab(tab())}>
+                <span class={styles.subagentOverlay}>
+                  <CornerDownRight size={Math.round(iconSize[tokenSize()] * 0.6)} />
+                </span>
+              </Show>
+            </span>
+          )
+        }}
       </Match>
       <Match when={props.tab.type === TabType.FILE}>
-        <Icon icon={FileText} size={tokenSize()} class={props.class} />
+        <Icon icon={FileText} size={tokenSize()} {...classProps()} />
       </Match>
       <Match when={props.tab.type === TabType.IMAGE}>
-        <Icon icon={ImageIcon} size={tokenSize()} class={props.class} />
+        <Icon icon={ImageIcon} size={tokenSize()} {...classProps()} />
       </Match>
       <Match when={props.tab.type === TabType.TERMINAL}>
-        <Icon icon={Terminal} size={tokenSize()} class={props.class} />
+        <Icon icon={Terminal} size={tokenSize()} {...classProps()} />
       </Match>
     </Switch>
   )

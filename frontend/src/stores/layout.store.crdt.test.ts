@@ -30,7 +30,7 @@ describe('createLayoutStore (projection-driven)', () => {
       if (store.state.root.type === 'split') {
         expect(store.state.root.direction).toBe('horizontal')
         expect(store.state.root.children.length).toBe(2)
-        expect(store.state.root.children[1].id).toBe(childB)
+        expect(store.state.root.children[1]?.id).toBe(childB)
       }
     }, { rootTileId: 'root-leaf' })
   })

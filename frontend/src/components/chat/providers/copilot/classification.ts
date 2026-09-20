@@ -1,4 +1,4 @@
-import type { MessageCategory } from '../../messageClassification'
+import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../registry'
 import { COPILOT_EVENT, COPILOT_EVENT_PREFIX } from '~/generated/contracts/copilot-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
@@ -6,7 +6,7 @@ import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isNotificationThreadWrapper } from '../../messageUtils'
 import { turnEndLabel } from '../../turnEndLabel'
 import { retainedRowIsFinal } from '../registry'
-import { describeCopilotNotification } from './notification'
+import { describeCopilotNotification } from './extractors/notification'
 import { copilotEvent } from './protocol'
 
 /**
@@ -27,6 +27,26 @@ export const COPILOT_NOTIFICATION_TYPES = new Set<string>([
   COPILOT_EVENT.SubagentCompleted,
   COPILOT_EVENT.SubagentFailed,
   COPILOT_EVENT.SystemNotification,
+  // An MCP server that needs the reader to sign in, or whose headers expired. Each
+  // one BLOCKS that server's tools until the reader acts, so it is the clearest case
+  // in the whole set: a row that stayed silent would leave a tool failing for a
+  // reason nothing on screen states.
+  COPILOT_EVENT.McpOauthRequired,
+  COPILOT_EVENT.McpOauthCompleted,
+  COPILOT_EVENT.McpHeadersRefreshRequired,
+  COPILOT_EVENT.McpHeadersRefreshCompleted,
+  // The runtime moved the Auto tier, or could not. Either changes which model
+  // answers, which is a fact about the turn the reader reads.
+  COPILOT_EVENT.SessionAutoTierRecommendation,
+  COPILOT_EVENT.SessionAutoTierSwitchFailed,
+  // A prompt the reader scheduled with /every or /after. The schedule runs later and
+  // owns no other surface, so the transcript is where it is recorded.
+  COPILOT_EVENT.SessionScheduleCreated,
+  COPILOT_EVENT.SessionScheduleCancelled,
+  COPILOT_EVENT.SessionScheduleRearmed,
+  // An extension's own notification. The runtime states nothing about what it means,
+  // so the row shows the name and the source that produced it.
+  COPILOT_EVENT.SessionCustomNotification,
 ])
 
 /**
@@ -44,7 +64,11 @@ export const COPILOT_NOTIFICATION_TYPES = new Set<string>([
  *     row that already renders the launch, and `subagent.configured` states the model
  *     and effort that launch runs under -- a model change, which reaches the settings
  *     panel and not the chat, exactly as `session.model_change` does.
- *   - Every control COMPLETION announces an answer the control surface recorded.
+ *   - A control COMPLETION announces an answer the control surface recorded.
+ *     `permission.completed` is the exception and is NOT listed: five of its nine
+ *     outcomes are that answer, and the other four are refusals the runtime made on
+ *     its own, which no row states. Its describer hides the first five and draws the
+ *     rest, so the hiding is per OUTCOME rather than per type.
  *   - A title change would fight LeapMux's own naming, and a to-do or plan change
  *     states only THAT the list moved: the `update_todo` tool call carries the list.
  */
@@ -77,14 +101,92 @@ const COPILOT_HIDDEN_TYPES = new Set<string>([
   // `Task completed:` with the summary this event repeats.
   COPILOT_EVENT.SessionTaskComplete,
   COPILOT_EVENT.Abort,
-  COPILOT_EVENT.PermissionCompleted,
   COPILOT_EVENT.UserInputCompleted,
   COPILOT_EVENT.ExitPlanModeCompleted,
   COPILOT_EVENT.ElicitationCompleted,
   // A user message the runtime echoes back. LeapMux persists the user's own row when
   // it delivers the input, so this one would double it.
   COPILOT_EVENT.UserMessage,
+
+  // --- Everything below reaches a row today and drew raw JSON ----------------
+  // The worker persists every event the runtime does not mark ephemeral, and the
+  // browser drew a raw-JSON bubble for each type it could not identify. The runtime
+  // declares 131 of them and LeapMux spelled 52, so an ordinary Copilot turn wrote
+  // several of these.
+
+  // Lifecycle and streaming. Each states a transition that another row already
+  // draws: the message itself, the tool row, the turn-end divider.
+  COPILOT_EVENT.AssistantMessageStart,
+  COPILOT_EVENT.AssistantIdle,
+  COPILOT_EVENT.AssistantIntent,
+  COPILOT_EVENT.AssistantServerToolProgress,
+  COPILOT_EVENT.McpAppToolCallComplete,
+
+  // Registry and configuration. Each states that a LIST moved -- the tools, the
+  // skills, the extensions, the custom agents, the MCP servers, the slash commands.
+  // The settings panel and the tool rows read those lists; a transcript row would
+  // say only that something changed, which a reader cannot act on.
+  COPILOT_EVENT.CapabilitiesChanged,
+  COPILOT_EVENT.CommandsChanged,
+  COPILOT_EVENT.SessionToolsUpdated,
+  COPILOT_EVENT.SessionSkillsLoaded,
+  COPILOT_EVENT.SessionExtensionsLoaded,
+  COPILOT_EVENT.SessionCustomAgentsUpdated,
+  COPILOT_EVENT.SessionExtensionsAttachmentsPushed,
+  COPILOT_EVENT.SessionMcpServersLoaded,
+  COPILOT_EVENT.SessionMcpServerStatusChanged,
+  COPILOT_EVENT.SessionMcpServerRemoved,
+  COPILOT_EVENT.SessionMcpServerNeedsReconnect,
+  COPILOT_EVENT.McpToolsListChanged,
+  COPILOT_EVENT.McpResourcesListChanged,
+  COPILOT_EVENT.McpPromptsListChanged,
+  COPILOT_EVENT.SessionBackgroundTasksChanged,
+  COPILOT_EVENT.PendingMessagesModified,
+  COPILOT_EVENT.SubagentSelected,
+  COPILOT_EVENT.SubagentDeselected,
+  COPILOT_EVENT.ToolSearchActivated,
+
+  // Accounting and policy the meter or the settings panel reads, not the chat.
+  COPILOT_EVENT.SessionUsageCheckpoint,
+  COPILOT_EVENT.SessionContextChanged,
+  COPILOT_EVENT.SessionCompletionReceipt,
+  COPILOT_EVENT.SessionManagedSettingsResolved,
+  COPILOT_EVENT.SessionManagedSettingsEnforced,
+  COPILOT_EVENT.SessionAutoModeResolved,
+  COPILOT_EVENT.SessionRemoteSteerableChanged,
+  COPILOT_EVENT.SessionModeNoticeDelivered,
+
+  // Session bookkeeping: a file the runtime wrote for itself, a rewind it recorded,
+  // a handoff between clients, an asset it stored. None is conversation.
+  COPILOT_EVENT.SessionBinaryAsset,
+  COPILOT_EVENT.SessionSnapshotRewind,
+  COPILOT_EVENT.SessionWorkspaceFileChanged,
+  COPILOT_EVENT.SessionHandoff,
+  COPILOT_EVENT.UiEphemeralQuery,
+
+  // Control COMPLETIONS, for the same reason the four above them are hidden: each
+  // announces an answer that the control surface already recorded.
+  COPILOT_EVENT.SamplingCompleted,
+  COPILOT_EVENT.ExternalToolCompleted,
+  COPILOT_EVENT.CommandQueued,
+  COPILOT_EVENT.CommandCompleted,
+  COPILOT_EVENT.AutoModeSwitchCompleted,
+  COPILOT_EVENT.SessionLimitsExhaustedCompleted,
 ])
+
+/**
+ * The event families where every member takes the same answer, so the contract holds
+ * the PREFIX rather than one constant per member.
+ *
+ * Two of them are the runtime's own trace. The other four are the experiments the
+ * model plan holds out of scope -- a canvas, a Fusion route, a factory run. LeapMux
+ * renders none of them, and each drew a raw-JSON bubble until this rule identified it.
+ *
+ * The WHOLE contract table, not a list of its members: `COPILOT_EVENT_PREFIX` exists
+ * for exactly this rule, so a hand-written copy beside it was a second place to add
+ * the next prefix -- and the copy that forgot one let that family through silently.
+ */
+const COPILOT_RUNTIME_PREFIXES: readonly string[] = Object.values(COPILOT_EVENT_PREFIX)
 
 /**
  * Reports whether an event type belongs to a family that describes the RUNTIME.
@@ -100,7 +202,7 @@ const COPILOT_HIDDEN_TYPES = new Set<string>([
 function copilotDescribesRuntime(type: string): boolean {
   if (type === COPILOT_EVENT.ModelCallFailure)
     return false
-  return type.startsWith(COPILOT_EVENT_PREFIX.ModelTrace) || type.startsWith(COPILOT_EVENT_PREFIX.Hook)
+  return COPILOT_RUNTIME_PREFIXES.some(prefix => type.startsWith(prefix))
 }
 
 /**
@@ -112,13 +214,32 @@ const COPILOT_CONTROL_REQUEST_TYPES = new Set<string>([
   COPILOT_EVENT.UserInputRequested,
   COPILOT_EVENT.ExitPlanModeRequested,
   COPILOT_EVENT.ElicitationRequested,
+  // The runtime asks for five more answers on the same `<name>.requested` pattern,
+  // each with a `requestId` it waits on. LeapMux publishes no control request for
+  // them yet -- that is the control-request work phase C holds -- so the row states
+  // the ASK and the turn stalls until the runtime gives up. A raw-JSON bubble stated
+  // the same stall and named nothing.
+  COPILOT_EVENT.SamplingRequested,
+  COPILOT_EVENT.ExternalToolRequested,
+  COPILOT_EVENT.CommandExecute,
+  COPILOT_EVENT.AutoModeSwitchRequested,
+  COPILOT_EVENT.SessionLimitsExhaustedRequested,
+  COPILOT_EVENT.ToolUserRequested,
 ])
 
 /** True for a Copilot event that belongs in a notification thread. */
 function copilotNotifies(entry: unknown): boolean {
   const event = copilotEvent(entry)
   return !!event && (COPILOT_NOTIFICATION_TYPES.has(event.type) || COPILOT_CONTROL_REQUEST_TYPES.has(event.type)
-    || event.type === COPILOT_EVENT.SkillInvoked || event.type === COPILOT_EVENT.SystemMessage)
+    || event.type === COPILOT_EVENT.SkillInvoked || event.type === COPILOT_EVENT.SystemMessage
+    // A permission the runtime refused on its own reaches no control surface, so this
+    // event is the only place it is ever stated. Its describer reads null for the
+    // outcomes a reader DID answer, which the caller hides.
+    || event.type === COPILOT_EVENT.PermissionCompleted
+    // Nobody was asked, so no control surface and no response row records it. The
+    // transcript is the only place a reader learns that one approval admitted a
+    // second call.
+    || event.type === COPILOT_EVENT.PermissionCarriedForward)
 }
 
 export function classifyCopilotMessage(input: ClassificationInput): MessageCategory {
@@ -170,7 +291,7 @@ export function classifyCopilotMessage(input: ClassificationInput): MessageCateg
       // frame again. See copilotSpanRole.
       if (retainedRowIsFinal(input.completion))
         return { kind: 'tool_result' }
-      return { kind: 'tool_use', toolName: pickString(event.data, 'toolName') || 'tool', toolUse: parent, content: [] }
+      return { kind: 'tool_use' }
     case COPILOT_EVENT.ToolCompleted:
       return { kind: 'tool_result' }
     case COPILOT_EVENT.SessionIdle:
@@ -184,18 +305,6 @@ export function classifyCopilotMessage(input: ClassificationInput): MessageCateg
   if (COPILOT_HIDDEN_TYPES.has(event.type) || copilotDescribesRuntime(event.type))
     return { kind: 'hidden' }
   return { kind: 'unknown' }
-}
-
-/** The text a quoted Copilot row carries. */
-export function copilotQuotableText(category: MessageCategory, parsed: { parentObject?: Record<string, unknown> }): string | null {
-  const parent = parsed.parentObject
-  if (!parent)
-    return null
-  if (category.kind === 'assistant_text' || category.kind === 'assistant_thinking')
-    return pickString(copilotEvent(parent)?.data, 'content').trim() || null
-  if ((category.kind === 'user_content' || category.kind === 'plan_execution') && typeof parent.content === 'string')
-    return parent.content.trim() || null
-  return null
 }
 
 /**

@@ -356,8 +356,8 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             // have to fall through to the tab context.
             defaultWorkerId={target.workerId || props.getCurrentTabContext().workerId}
             defaultWorkingDir={target.workingDir || props.getCurrentTabContext().workingDir}
-            availableProviders={props.availableProviders}
-            onRefreshProviders={props.onRefreshProviders}
+            {...(props.availableProviders !== undefined ? { availableProviders: props.availableProviders } : {})}
+            {...(props.onRefreshProviders !== undefined ? { onRefreshProviders: props.onRefreshProviders } : {})}
             blockedReason={newTabBlockedReason}
             repoGitStore={props.repoGitStore}
             onCreated={(agent, opts) => {
@@ -410,8 +410,8 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             metadata={props.metadata}
             repoGitStore={props.repoGitStore}
             startPoint={payload.startPoint ?? { kind: 'directory' }}
-            availableProviders={props.availableProviders}
-            onRefreshProviders={props.onRefreshProviders}
+            {...(props.availableProviders !== undefined ? { availableProviders: props.availableProviders } : {})}
+            {...(props.onRefreshProviders !== undefined ? { onRefreshProviders: props.onRefreshProviders } : {})}
             onCreated={(workspaceId) => {
               props.dialogs.newWorkspace.close()
               placeWorkspaceInSection(
@@ -596,8 +596,8 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             branchName={state.branchName}
             isWorktree={state.isWorktree}
             initialMode={state.initialMode}
-            availableProviders={props.availableProviders}
-            onRefreshProviders={props.onRefreshProviders}
+            {...(props.availableProviders !== undefined ? { availableProviders: props.availableProviders } : {})}
+            {...(props.onRefreshProviders !== undefined ? { onRefreshProviders: props.onRefreshProviders } : {})}
             onBranchChanged={newBranch => props.onBranchChanged?.(state, newBranch)}
             // The reason answers for the workspace this dialog PLACES into, which
             // is the branch row's own and not necessarily the active one.

@@ -1,15 +1,11 @@
 import type { Component } from 'solid-js'
+import type { PlanPermission } from '../model/controlPrompt'
 import type { ControlRequest } from '~/stores/control.store'
 import { createMemo, For, Show } from 'solid-js'
 import { pluralize } from '~/lib/plural'
 import * as styles from '../ControlRequestBanner.css'
 import { CollapsibleList } from './CollapsibleList'
 import { canAnswerControlRequest } from './controlResponseState'
-
-export interface PlanPermission {
-  tool: string
-  prompt: string
-}
 
 /** Keep plan approval details here. The transcript contains the full plan. */
 export const PlanApprovalContent: Component<{ request: ControlRequest, permissions?: readonly PlanPermission[], details?: readonly string[] }> = (props) => {

@@ -294,16 +294,23 @@ export class ChannelManager {
       onFatalClose: info => this.notifyFatalClose(info),
     })
 
+    // Omit unset handshake overrides rather than passing them as undefined
+    // (exactOptionalPropertyTypes); ChannelSession defaults absent ones.
+    const sessionOpts: ChannelSessionOpts = {}
+    if (opts?.handshake1 !== undefined)
+      sessionOpts.handshake1 = opts.handshake1
+    if (opts?.handshake2 !== undefined)
+      sessionOpts.handshake2 = opts.handshake2
+    if (opts?.classicHandshake1 !== undefined)
+      sessionOpts.classicHandshake1 = opts.classicHandshake1
+    if (opts?.classicHandshake2 !== undefined)
+      sessionOpts.classicHandshake2 = opts.classicHandshake2
+
     this.session = new ChannelSession({
       sendToWire: buf => this.relay.send(buf),
       closeChannel: channelId => this.closeChannel(channelId),
       onSendFailure: (ch, err) => this.onSendFailure(ch as ActiveChannel, err),
-    }, {
-      handshake1: opts?.handshake1,
-      handshake2: opts?.handshake2,
-      classicHandshake1: opts?.classicHandshake1,
-      classicHandshake2: opts?.classicHandshake2,
-    })
+    }, sessionOpts)
 
     this.rpc = new ChannelRpcMux({
       send: (ch, plaintext, requestId) => this.session.sendEncryptedMessage(ch as ActiveChannel, plaintext, requestId),
@@ -320,8 +327,8 @@ export class ChannelManager {
       relay: this.relay,
       pool: this.pool,
       expectedUserId: () => this.expectedUserIdFn(),
-      testPayloadBudget: this.testPayloadBudget,
-      testReassembledCeiling: this.testReassembledCeiling,
+      ...(this.testPayloadBudget !== undefined ? { testPayloadBudget: this.testPayloadBudget } : {}),
+      ...(this.testReassembledCeiling !== undefined ? { testReassembledCeiling: this.testReassembledCeiling } : {}),
       verifySession: ch => this.verifySession(ch),
       evictGhost: (channelId, reason) => this.evictGhost(channelId, reason),
       notifyStateChange: () => this.notifyStateChange(),

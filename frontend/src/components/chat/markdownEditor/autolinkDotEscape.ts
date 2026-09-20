@@ -85,15 +85,18 @@ export function unescapeAutolinkDots(markdown: string): string {
   let fence = ''
   const out = lines.map((line) => {
     const match = FENCE_LINE.exec(line)
+    // The fence group is mandatory in FENCE_LINE, so a match always fills it;
+    // `?? ''` is the type-level guard alone.
+    const marker = match?.[1] ?? ''
     if (fence) {
       // Inside a fence: a line that opens with the same fence character and is at
       // least as long closes it. Everything here is verbatim either way.
-      if (match && match[1][0] === fence[0] && match[1].length >= fence.length)
+      if (match && marker[0] === fence[0] && marker.length >= fence.length)
         fence = ''
       return line
     }
     if (match) {
-      fence = match[1]
+      fence = marker
       return line
     }
     return unescapeLine(line)

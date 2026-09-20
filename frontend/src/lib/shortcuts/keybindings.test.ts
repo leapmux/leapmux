@@ -78,10 +78,10 @@ describe('mergeKeybindings', () => {
     const result = mergeKeybindings(DEFAULTS, overrides)
     const newAgentBindings = result.filter(b => b.command === 'app.newAgent')
     expect(newAgentBindings).toHaveLength(2)
-    expect(newAgentBindings[0].key).toBe('$mod+n')
-    expect(newAgentBindings[0].when).toBe('!dialogOpen')
-    expect(newAgentBindings[1].key).toBe('$mod+Shift+n')
-    expect(newAgentBindings[1].when).toBe('editorFocused')
+    expect(newAgentBindings[0]?.key).toBe('$mod+n')
+    expect(newAgentBindings[0]?.when).toBe('!dialogOpen')
+    expect(newAgentBindings[1]?.key).toBe('$mod+Shift+n')
+    expect(newAgentBindings[1]?.when).toBe('editorFocused')
   })
 
   it('inherits default when-clause for multi-override entries without when', () => {
@@ -92,8 +92,8 @@ describe('mergeKeybindings', () => {
     const result = mergeKeybindings(DEFAULTS, overrides)
     const newAgentBindings = result.filter(b => b.command === 'app.newAgent')
     expect(newAgentBindings).toHaveLength(2)
-    expect(newAgentBindings[0].when).toBe('!dialogOpen') // inherited from default
-    expect(newAgentBindings[1].when).toBe('editorFocused') // explicit
+    expect(newAgentBindings[0]?.when).toBe('!dialogOpen') // inherited from default
+    expect(newAgentBindings[1]?.when).toBe('editorFocused') // explicit
   })
 
   it('unbinds default when all overrides have empty key', () => {
@@ -113,7 +113,7 @@ describe('mergeKeybindings', () => {
     const result = mergeKeybindings(DEFAULTS, overrides)
     const newAgentBindings = result.filter(b => b.command === 'app.newAgent')
     expect(newAgentBindings).toHaveLength(1)
-    expect(newAgentBindings[0].key).toBe('$mod+Shift+n')
+    expect(newAgentBindings[0]?.key).toBe('$mod+Shift+n')
   })
 
   it('supports multiple overrides for new commands not in defaults', () => {

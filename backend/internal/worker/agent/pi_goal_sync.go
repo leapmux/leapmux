@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 )
@@ -25,6 +26,32 @@ type piGoalSync struct {
 	// the goal-file cache.
 	reader piGoalSessionReader
 	files  piGoalFileReader
+	// How long a pass waits for an unwritten transcript, and how many waits it
+	// spends before it gives up. Zero takes the default, so neither constructor
+	// states them and a test shortens the wait.
+	retryDelay time.Duration
+	retryLimit int
+}
+
+const (
+	// Pi writes the session file after its first assistant message. A recovery pass
+	// that lands before that write has no later hint to rely on, so it waits for the
+	// file. The product of the two is the patience: about five seconds, after which
+	// a transcript that never lands stops holding the refresh goroutine open.
+	piGoalRetryDelay = 250 * time.Millisecond
+	piGoalRetryLimit = 20
+)
+
+// retryPolicy states how a pass waits for a transcript Pi has not written yet.
+func (g *piGoalSync) retryPolicy() (time.Duration, int) {
+	delay, limit := g.retryDelay, g.retryLimit
+	if delay <= 0 {
+		delay = piGoalRetryDelay
+	}
+	if limit <= 0 {
+		limit = piGoalRetryLimit
+	}
+	return delay, limit
 }
 
 var piGoalCommands = map[GoalAction]string{
@@ -74,8 +101,8 @@ func (a *PiAgent) PerformGoalAction(action GoalAction, objective string) (GoalOu
 		if err != nil && !a.IsStopped() {
 			slog.Error("pi goal command failed", "agent_id", a.agentID, "command", command, "error", err)
 			a.sink.PersistLeapMuxNotification(map[string]any{
-				"type":  contracts.NotificationTypeAgentError,
-				"error": err.Error(),
+				contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+				contracts.NotificationFieldError: err.Error(),
 			})
 		}
 		// Pi applies the command before it answers, so the response is the first
@@ -122,17 +149,35 @@ func (a *PiAgent) schedulePiGoalRefresh(snapshot bool) {
 }
 
 func (a *PiAgent) runPiGoalRefresh() {
+	waits := 0
 	for {
 		a.mu.Lock()
+		// Every pass starts by asking whether it should still run. The wait below
+		// makes the window real: a stop that lands during it would otherwise spend
+		// one more command on a session that shuts down.
+		if a.goal.stopping || a.stopped || a.ctx.Err() != nil {
+			a.goal.running = false
+			a.mu.Unlock()
+			return
+		}
 		sessionID, path, directory := a.sessionID, a.sessionFile, a.workingDir
 		revision, snapshot := a.goal.revision, a.goal.snapshot
+		delay, limit := a.goal.retryPolicy()
 		a.goal.pending = false
 		a.mu.Unlock()
 		record, err := a.readPiGoalSnapshot(path, directory, sessionID)
-		published := false
-		if err == nil {
+		published, retry := false, false
+		switch {
+		case err == nil:
 			published = a.publishPiGoal(record, snapshot, &revision)
-		} else if a.ctx.Err() == nil && !a.IsStopped() {
+			waits = 0
+		case errors.Is(err, os.ErrNotExist) && waits < limit:
+			// Pi has not written the session file yet. NO hint follows a recovery pass,
+			// so the intent this pass carried is the only one the goal has: keep it and
+			// read again rather than leave the panel on an earlier process's state.
+			waits++
+			retry = true
+		case a.ctx.Err() == nil && !a.IsStopped():
 			slog.Warn("recover Pi goal state", "agent_id", a.agentID, "error", err)
 		}
 		a.mu.Lock()
@@ -143,12 +188,32 @@ func (a *PiAgent) runPiGoalRefresh() {
 		if published && revision == a.goal.revision {
 			a.goal.snapshot = false
 		}
+		if retry {
+			a.goal.pending = true
+		}
 		if a.goal.stopping || a.stopped || a.ctx.Err() != nil || !a.goal.pending {
 			a.goal.running = false
 			a.mu.Unlock()
 			return
 		}
 		a.mu.Unlock()
+		// The wait runs OUTSIDE the lock, so a hint that arrives during it still
+		// reaches the scheduling fields, and the check at the top of the next pass
+		// sees a stop that landed while it ran.
+		if retry {
+			a.waitForPiTranscript(delay)
+		}
+	}
+}
+
+// waitForPiTranscript pauses between two reads of a session file Pi has not
+// written yet. A cancelled context ends the wait early.
+func (a *PiAgent) waitForPiTranscript(delay time.Duration) {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-a.ctx.Done():
+	case <-timer.C:
 	}
 }
 

@@ -93,7 +93,8 @@ describe('createEditorLayout', () => {
   it('stays collapsed while the row is not measured yet', () => {
     // An unmeasured row reads as unlimited width, so the box starts collapsed
     // rather than flashing expanded before the first measurement lands.
-    withLayout({ rowWidth: undefined }, (layout) => {
+    // No `rowWidth` at all is the unmeasured case: the layout sees no row.
+    withLayout({}, (layout) => {
       layout.setDocStats({ multiLine: false, text: 'x'.repeat(500) })
       expect(layout.contentExpanded()).toBe(false)
     })

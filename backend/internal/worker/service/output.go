@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"google.golang.org/protobuf/encoding/protojson"
+
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -106,7 +108,16 @@ func wrapNotifContent(rawJSON []byte) []byte {
 	data, err := json.Marshal(w)
 	if err != nil {
 		slog.Warn("marshal notification wrapper", "error", err)
-		return []byte(`{"type":"` + notifThreadWrapperType + `","messages":[]}`)
+		// A hand-written copy of the envelope, because the fallback must not depend on
+		// the marshal that just failed.
+		//
+		// The `type` key comes from the contract, and the struct tag above spells the
+		// same key because a Go struct tag cannot hold a constant. Two tests keep the
+		// two copies together: TestNotifThreadWrapperTagsComeFromTheContract pins the
+		// tag to this constant, and TestWrapNotifContentFallbackMatchesTheStruct holds
+		// both branches to the same bytes. `messages` stays a literal, because it is
+		// LeapMux's own wrapper field and no contract table holds it.
+		return []byte(`{"` + contracts.NotificationFieldType + `":"` + notifThreadWrapperType + `","messages":[]}`)
 	}
 	return data
 }
@@ -136,6 +147,11 @@ func unwrapNotifContent(data []byte) (*notifThreadWrapper, error) {
 // "check existence -> DB write -> in-place mutation" sequences and guards the
 // lazy DB seed.
 type agentTodoCache = registryCache[cachedTodo]
+
+// agentTodoView is one to-do operation bound to the query handle it runs on; see
+// registryView for why a registry operation carries the handle rather than taking
+// it at each step.
+type agentTodoView = registryView[cachedTodo]
 
 // cachedTodo pairs an Item with the agent_todos `row_key` it persists
 // under. The row_key is the Item's ID when set (incremental Task*
@@ -665,7 +681,7 @@ func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentPro
 	s.restoreMessageSession()
 	s.progress = newGenerationProgressPublisher(func(info map[string]interface{}) {
 		h.broadcastAgentSessionInfo(agentID, info)
-	})
+	}, s.currentMessageSessionID)
 	h.sinksByAgent.Store(agentID, s)
 	if previous, replaced := h.rootSinks.Swap(agentID, s); replaced {
 		agentIDs := previous.(*agentOutputSink).closeProgressTree()
@@ -787,6 +803,18 @@ type agentOutputSink struct {
 // --- Provider-service facets ---
 
 func (s *agentOutputSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	// A closing row ends the call's live tail. The browser draws the result and
+	// drops its own live entry, so a tail broadcast after this row revives an entry
+	// the reader watched finish.
+	//
+	// The drop sits at the SINK rather than in each provider. A provider that
+	// reports an output completion already loses its tail there. Copilot reports
+	// none at all, and its spawn path writes this row and then skips CloseSpan
+	// below. Both hooks are needed, and together they cover every provider, so no
+	// provider has to remember.
+	if span.Closing && span.SpanID != "" {
+		s.progress.dropTail(span.SpanID)
+	}
 	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, source, s.scopeMessage(content), span, s.tracker)
 }
 
@@ -907,6 +935,9 @@ func (s *agentOutputSink) OpenSpan(spanID, parentSpanID string) {
 }
 
 func (s *agentOutputSink) CloseSpan(spanID string) {
+	// The call behind a closed span keeps no live tail. See PersistMessage for why
+	// the drop sits on both events.
+	s.progress.dropTail(spanID)
 	s.tracker.CloseSpan(spanID)
 }
 
@@ -1081,13 +1112,20 @@ func (s *agentOutputSink) NotifyPermissionModeChanged(oldMode, newMode string) {
 		return
 	}
 	// On a successful row fetch, resolve labels through the shared typed builder
-	// (optionGroupChangeEntry) so the {old,new,oldLabel,newLabel,label} keys are spelled in exactly
+	// (optionGroupChangeEntry) so the {old,new,old_label,new_label,label} keys are spelled in exactly
 	// one place -- a misspelled key is a compile error, not a silently-absent UI field -- the same
 	// goal the RPC-driven buildSettingsChanges path already relies on. On a fetch failure, fall back
 	// to the bare {old,new} ids (no label keys), so the frontend resolves labels from its cache
 	// rather than rendering blank for an explicit empty-string label (it honors an explicit "" over
-	// the cache; see notificationRenderers).
-	var change any = map[string]string{"old": oldMode, "new": newMode}
+	// the cache; see notificationRenderers). optionChangeEntry cannot supply that shape, because
+	// its five fields carry no `omitempty` and an empty label is not the same answer as an absent
+	// one.
+	//
+	// The fallback therefore spells two of the five keys again. It takes them from the contract,
+	// and TestOptionChangeEntryTagsComeFromTheContract pins the builder's struct tags to the same
+	// constants -- a Go struct tag cannot hold one, so a test is what keeps the two copies from
+	// drifting apart.
+	var change any = map[string]string{contracts.NotificationFieldOld: oldMode, contracts.NotificationFieldNew: newMode}
 	if dbAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID); err == nil {
 		groups := optionGroupsView(s.h.agents, &dbAgent, nil)
 		change = optionGroupChangeEntry(oldMode, newMode,
@@ -1095,8 +1133,8 @@ func (s *agentOutputSink) NotifyPermissionModeChanged(oldMode, newMode string) {
 			optionGroupLabelInGroups(groups, agent.OptionIDPermissionMode))
 	}
 	s.PersistLeapMuxNotification(map[string]interface{}{
-		"type": contracts.NotificationTypeSettingsChanged,
-		"changes": map[string]interface{}{
+		contracts.NotificationFieldType: contracts.NotificationTypeSettingsChanged,
+		contracts.NotificationFieldChanges: map[string]interface{}{
 			agent.OptionIDPermissionMode: change,
 		},
 	})
@@ -1743,8 +1781,6 @@ func createMessageRow(ctx context.Context, q *db.Queries, params db.CreateMessag
 type messageWrite struct {
 	params  db.CreateMessageParams
 	message *leapmuxv1.AgentChatMessage
-	content agent.MessageContent
-	span    agent.SpanInfo
 }
 
 // prepareMessage keeps one field mapping for ordinary writes and transactional writes.
@@ -1830,12 +1866,18 @@ func (h *OutputHandler) prepareMessage(agentID string, agentProvider leapmuxv1.A
 		AssembledKind:                  assembledKind,
 		Completion:                     completion,
 	}
-	return messageWrite{params: params, message: message, content: content, span: span}
+	return messageWrite{params: params, message: message}
 }
 
 // persistAndBroadcast stores the message before it broadcasts the event.
 // A nil tracker uses the agent's current span snapshot.
 func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo, tracker *SpanTracker) error {
+	provider := agent.ProviderFor(agentProvider)
+	resolved := agent.ResolveMessageContent(provider, content)
+	event, hasTodoEvent := provider.ExtractTodoEvent(span.SpanType, resolved, h.pairedToolUseLookup(agentID, span))
+	if hasTodoEvent {
+		return h.persistMessageWithTodoEvent(agentID, agentProvider, source, content, span, tracker, event)
+	}
 	write := h.prepareMessage(agentID, agentProvider, source, content, span, tracker)
 	seq, err := createMessageRow(bgCtx(), h.queries, write.params)
 	if err != nil {
@@ -1847,34 +1889,130 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 
 // publishMessageWrite runs only after the database commits the message.
 func (h *OutputHandler) publishMessageWrite(write messageWrite, seq int64) {
-	agentID, provider := write.params.AgentID, write.params.AgentProvider
+	agentID := write.params.AgentID
 	h.clearNotifThread(agentID)
 	write.message.Seq = seq
 	h.broadcastMessage(agentID, write.message)
-	// The committed transcript permits later reconciliation if the to-do update fails.
-	if err := h.applyTodoEventForMessage(agentID, provider, write.span, agent.ResolveMessageContent(agent.ProviderFor(provider), write.content)); err != nil {
-		slog.Warn("apply todo event", "agent_id", agentID, "span_type", write.span.SpanType, "error", err)
-	}
 }
 
-// applyTodoEventForMessage extracts a to-do event from the just-persisted
-// message, applies it to agent_todos, and broadcasts AgentTodosChanged
-// on mutation. No-ops (unknown-id update, unknown-id delete, empty
-// snapshot replay) skip the broadcast.
-func (h *OutputHandler) applyTodoEventForMessage(agentID string, provider leapmuxv1.AgentProvider, span agent.SpanInfo, contentJSON []byte) error {
-	if len(contentJSON) == 0 {
+// persistMessageWithTodoEvent stores one provider message and applies its extracted
+// to-do mutation while the canonical list stays locked. A TaskUpdate snapshot enters
+// the message's initial supplement before the transcript row commits.
+func (h *OutputHandler) persistMessageWithTodoEvent(
+	agentID string,
+	agentProvider leapmuxv1.AgentProvider,
+	source leapmuxv1.MessageSource,
+	content agent.MessageContent,
+	span agent.SpanInfo,
+	tracker *SpanTracker,
+	event todoevents.Event,
+) error {
+	ctx := bgCtx()
+	cache := h.todoCache(agentID)
+	cache.Mu.Lock()
+	reg := cache.on(h.queries, agentID)
+	if err := reg.ensureSeededLocked(ctx); err != nil {
+		cache.Mu.Unlock()
+		return err
+	}
+	var updateMutation todoUpdateMutation
+	if event.Kind == todoevents.KindUpdate {
+		mutation, ok := reduceTodoUpdate(cache.Rows, event)
+		if !ok {
+			cache.Mu.Unlock()
+			return fmt.Errorf("cannot persist TaskUpdate snapshot for unknown task %q", event.ID)
+		}
+		updateMutation = mutation
+		var err error
+		content, err = withTodoSnapshot(content, mutation.item)
+		if err != nil {
+			cache.Mu.Unlock()
+			return err
+		}
+	}
+
+	write := h.prepareMessage(agentID, agentProvider, source, content, span, tracker)
+	seq, err := createMessageRow(ctx, h.queries, write.params)
+	if err != nil {
+		cache.Mu.Unlock()
+		return err
+	}
+	var (
+		items   []todoevents.Item
+		mutated bool
+		todoErr error
+	)
+	if event.Kind == todoevents.KindUpdate {
+		items, mutated, todoErr = h.applyPreparedTodoUpdateLocked(ctx, reg, updateMutation)
+	} else {
+		items, mutated, todoErr = h.applyTodoEventLocked(ctx, reg, event)
+	}
+	cache.Mu.Unlock()
+
+	h.publishMessageWrite(write, seq)
+	if todoErr != nil {
+		slog.Warn("apply todo event", "agent_id", agentID, "span_type", span.SpanType, "error", todoErr)
 		return nil
 	}
-	// The to-do list is carried in each provider's own message shape, so the
-	// provider plugin reads it -- and states its own cheap discriminator, which is
-	// why no gate runs here. Shared code decides only what to do with the result.
-	// The paired tool_use is a DATABASE read, so it is handed over as a function:
-	// only the parsers that need the input pay for one.
-	ev, ok := agent.ProviderFor(provider).ExtractTodoEvent(
-		span.SpanType, contentJSON, h.pairedToolUseLookup(agentID, span))
-	if !ok {
-		return nil
+	if mutated {
+		h.broadcastTodoChange(agentID, items)
 	}
+	return nil
+}
+
+type todoUpdateMutation struct {
+	index  int
+	rowKey string
+	before todoevents.Item
+	item   todoevents.Item
+}
+
+func reduceTodoUpdate(rows []cachedTodo, event todoevents.Event) (todoUpdateMutation, bool) {
+	if event.Kind != todoevents.KindUpdate || event.ID == "" {
+		return todoUpdateMutation{}, false
+	}
+	idx := todoIndexByID(rows, event.ID)
+	if idx < 0 {
+		return todoUpdateMutation{}, false
+	}
+	row := rows[idx]
+	return todoUpdateMutation{
+		index:  idx,
+		rowKey: row.rowKey,
+		before: row.item,
+		item:   todoevents.ApplyPatch(row.item, event.Patch),
+	}, true
+}
+
+func withTodoSnapshot(content agent.MessageContent, item todoevents.Item) (agent.MessageContent, error) {
+	snapshot, err := protojson.Marshal(item.ToProto())
+	if err != nil {
+		return content, fmt.Errorf("encode todo snapshot: %w", err)
+	}
+	fields := make(map[string]json.RawMessage)
+	if len(content.Metadata) > 0 {
+		if err := json.Unmarshal(content.Metadata, &fields); err != nil {
+			return content, fmt.Errorf("decode message metadata for todo snapshot: %w", err)
+		}
+	}
+	fields[contracts.MessageMetadataFieldTodoSnapshot] = snapshot
+	metadata, err := json.Marshal(fields)
+	if err != nil {
+		return content, fmt.Errorf("encode message metadata for todo snapshot: %w", err)
+	}
+	content.Metadata = metadata
+	return content, nil
+}
+
+// applyExtractedTodoEvent applies one to-do event the CALLER already extracted, and
+// broadcasts AgentTodosChanged when it moved the list.
+//
+// Split from the function above for the enrichment path, which must extract the
+// event itself: it compares what the new supplement yields against what the row had
+// already yielded, so it holds the event before it decides to apply it. Handing the
+// bytes back would make a third extraction of one row, with a second database read
+// for the paired tool_use behind it.
+func (h *OutputHandler) applyExtractedTodoEvent(agentID string, ev todoevents.Event) error {
 	items, mutated, err := h.applyTodoEvent(agentID, ev)
 	if err != nil {
 		return err
@@ -1882,6 +2020,11 @@ func (h *OutputHandler) applyTodoEventForMessage(agentID string, provider leapmu
 	if !mutated {
 		return nil
 	}
+	h.broadcastTodoChange(agentID, items)
+	return nil
+}
+
+func (h *OutputHandler) broadcastTodoChange(agentID string, items []todoevents.Item) {
 	h.watcher.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_TodosChanged{
@@ -1891,7 +2034,6 @@ func (h *OutputHandler) applyTodoEventForMessage(agentID string, provider leapmu
 			},
 		},
 	})
-	return nil
 }
 
 // pairedToolUseLookup returns the reader a provider's to-do extractor calls to get
@@ -1927,159 +2069,174 @@ func (h *OutputHandler) pairedToolUseLookup(agentID string, span agent.SpanInfo)
 // applyTodoEvent persists a single to-do event into agent_todos AND
 // applies it to the in-memory mirror. Returns the post-mutation list
 // (so the caller can broadcast without re-fetching) and a `mutated`
-// flag that is false when the event was a no-op (unknown-id update,
-// unknown-id delete, empty id).
+// flag that is false when the event was a no-op (unknown-id update, empty
+// id, or a patch that changes nothing).
 func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]todoevents.Item, bool, error) {
 	ctx := bgCtx()
 	cache := h.todoCache(agentID)
 	cache.Mu.Lock()
 	defer cache.Mu.Unlock()
-	if err := cache.ensureSeededLocked(ctx, agentID); err != nil {
+	reg := cache.on(h.queries, agentID)
+	if err := reg.ensureSeededLocked(ctx); err != nil {
 		return nil, false, err
 	}
+	return h.applyTodoEventLocked(ctx, reg, ev)
+}
 
+func (h *OutputHandler) applyTodoEventLocked(ctx context.Context, reg agentTodoView, ev todoevents.Event) ([]todoevents.Item, bool, error) {
+	cache := reg.cache
 	switch ev.Kind {
 	case todoevents.KindSnapshot:
-		return h.applySnapshotLocked(ctx, agentID, cache, ev.Snapshot)
+		return h.applySnapshotLocked(ctx, reg, ev.Snapshot)
 
 	case todoevents.KindCreate, todoevents.KindDetail:
-		if ev.Item.ID == "" {
-			return nil, false, nil
-		}
-		existingIdx := todoIndexByID(cache.Rows, ev.Item.ID)
-		merged := ev.Item
-		if existingIdx >= 0 {
-			if ev.Kind == todoevents.KindDetail {
-				merged = todoevents.MergeDetail(cache.Rows[existingIdx].item, ev.Item)
-			}
-			// Idempotent replay: skip the DB write and the broadcast
-			// when the post-merge row equals the existing row.
-			if cache.Rows[existingIdx].item == merged {
-				return todoItems(cache.Rows), false, nil
-			}
-		} else if len(cache.Rows) >= todoevents.MaxTodos {
-			// At cap: evict the oldest finished row (completed or
-			// deleted) to make room for the new task. When no finished
-			// row exists, drop the new task and log so operators see
-			// the cap pressure.
-			evicted, err := h.evictOldestFinishedLocked(ctx, agentID, cache)
-			if err != nil {
-				return nil, false, err
-			}
-			if !evicted {
-				slog.Warn("agent_todos cap reached, no completed or deleted task to evict; dropping new task",
-					"agent_id", agentID, "task_id", ev.Item.ID, "cap", todoevents.MaxTodos)
-				return todoItems(cache.Rows), false, nil
-			}
-		}
-		// Pick the next seq from the in-memory mirror so a fresh insert
-		// gets the right ordering without a `MAX(seq)` round-trip. On
-		// CONFLICT the existing row's seq is preserved (the UPSERT
-		// excludes seq from the SET list), so the choice is harmless
-		// when we end up updating in place.
-		if err := h.queries.UpsertAgentTodo(ctx, db.UpsertAgentTodoParams{
-			AgentID:     agentID,
-			RowKey:      ev.Item.ID,
-			Seq:         cache.nextSeq,
-			TaskID:      ev.Item.ID,
-			Content:     merged.Content,
-			ActiveForm:  merged.ActiveForm,
-			Description: merged.Description,
-			Status:      leapmuxv1.TodoStatus(merged.Status.OrPending()),
-		}); err != nil {
+		mutated, err := h.upsertTodoLocked(ctx, reg, ev.Kind, ev.Item)
+		if err != nil {
 			return nil, false, err
 		}
-		if existingIdx < 0 {
-			cache.Rows = append(cache.Rows, cachedTodo{item: merged, rowKey: ev.Item.ID})
-			cache.nextSeq++
-		} else {
-			cache.Rows[existingIdx].item = merged
-		}
-		return todoItems(cache.Rows), true, nil
+		return todoItems(cache.Rows), mutated, nil
+
+	case todoevents.KindMerge:
+		return h.applyMergeLocked(ctx, reg, ev.Items)
 
 	case todoevents.KindUpdate:
-		if ev.ID == "" {
+		mutation, ok := reduceTodoUpdate(cache.Rows, ev)
+		if !ok {
 			return nil, false, nil
 		}
-		idx := todoIndexByID(cache.Rows, ev.ID)
-		if idx < 0 {
-			return nil, false, nil
-		}
-		merged := todoevents.ApplyPatch(cache.Rows[idx].item, ev.Patch)
-		// No-op patch (every Patch field nil or already-matching): skip
-		// the DB write and broadcast.
-		if merged == cache.Rows[idx].item {
-			return todoItems(cache.Rows), false, nil
-		}
-		if err := h.queries.UpdateAgentTodo(ctx, db.UpdateAgentTodoParams{
-			Content:     merged.Content,
-			ActiveForm:  merged.ActiveForm,
-			Description: merged.Description,
-			Status:      leapmuxv1.TodoStatus(merged.Status.OrPending()),
-			AgentID:     agentID,
-			RowKey:      cache.Rows[idx].rowKey,
-		}); err != nil {
-			return nil, false, err
-		}
-		cache.Rows[idx].item = merged
-		return todoItems(cache.Rows), true, nil
-
-	case todoevents.KindDelete:
-		if ev.ID == "" {
-			return nil, false, nil
-		}
-		idx := todoIndexByID(cache.Rows, ev.ID)
-		if idx < 0 {
-			return nil, false, nil
-		}
-		// Soft delete: mark the row deleted instead of removing it.
-		// Keeps the tombstone in the broadcast snapshot so the chat
-		// thread and sidebar can render a "deleted" visual, and lets
-		// the cap-eviction pool include deleted rows.
-		if cache.Rows[idx].item.Status == todoevents.StatusDeleted {
-			return nil, false, nil
-		}
-		if err := h.queries.UpdateAgentTodoStatus(ctx, db.UpdateAgentTodoStatusParams{
-			Status:  leapmuxv1.TodoStatus(todoevents.StatusDeleted),
-			AgentID: agentID,
-			RowKey:  cache.Rows[idx].rowKey,
-		}); err != nil {
-			return nil, false, err
-		}
-		cache.Rows[idx].item.Status = todoevents.StatusDeleted
-		return todoItems(cache.Rows), true, nil
+		return h.applyPreparedTodoUpdateLocked(ctx, reg, mutation)
 	}
 	return nil, false, nil
 }
 
+func (h *OutputHandler) applyPreparedTodoUpdateLocked(ctx context.Context, reg agentTodoView, mutation todoUpdateMutation) ([]todoevents.Item, bool, error) {
+	cache := reg.cache
+	if mutation.index < 0 || mutation.index >= len(cache.Rows) ||
+		cache.Rows[mutation.index].rowKey != mutation.rowKey ||
+		cache.Rows[mutation.index].item != mutation.before {
+		return nil, false, fmt.Errorf("prepared todo update no longer matches canonical task %q", mutation.item.ID)
+	}
+	// Skip the database write and broadcast for an empty or repeated patch.
+	if mutation.item == mutation.before {
+		return todoItems(cache.Rows), false, nil
+	}
+	if err := reg.queries.UpdateAgentTodo(ctx, db.UpdateAgentTodoParams{
+		Content:     mutation.item.Content,
+		ActiveForm:  mutation.item.ActiveForm,
+		Description: mutation.item.Description,
+		Status:      leapmuxv1.TodoStatus(mutation.item.Status.OrPending()),
+		AgentID:     reg.ownerID,
+		RowKey:      mutation.rowKey,
+	}); err != nil {
+		return nil, false, err
+	}
+	cache.Rows[mutation.index].item = mutation.item
+	return todoItems(cache.Rows), true, nil
+}
+
 // evictOldestFinishedLocked removes the oldest finished row (completed or
-// deleted) from the cache and the DB via the shared registryCache mechanics.
+// deleted) from the cache and the DB via the shared registryCache mechanics,
+// through the CALLER's view -- so an eviction a transaction forced rolls back
+// with it.
 // Returns false (with no error) when no finished row exists; the caller drops
 // the incoming event in that case. Logs the eviction for operator visibility.
 // Caller must hold the cache's mutex.
 //
-// agent_todos is a SINGLE-pool registry (todoOps sets no bucketOf), so "" identifies
+// agent_todos is a SINGLE-pool registry (todoOps sets no bucketOf), so 0 identifies
 // its one pool.
-func (h *OutputHandler) evictOldestFinishedLocked(ctx context.Context, agentID string, cache *agentTodoCache) (bool, error) {
+func (h *OutputHandler) evictOldestFinishedLocked(ctx context.Context, reg agentTodoView) (bool, error) {
 	// The generic returns the row it deleted, so the log reports that row rather
 	// than one a second scan here picked out.
-	evicted, evictedHappened, err := cache.evictOldestFinishedInBucketLocked(ctx, agentID, 0)
+	evicted, evictedHappened, err := reg.evictOldestFinishedInBucketLocked(ctx, 0)
 	if err != nil {
 		return false, err
 	}
 	if evictedHappened {
 		slog.Info("agent_todos cap reached; evicted oldest completed/deleted task",
-			"agent_id", agentID, "evicted_task_id", evicted.item.ID, "evicted_status", evicted.item.Status, "cap", todoevents.MaxTodos)
+			"agent_id", reg.ownerID, "evicted_task_id", evicted.item.ID, "evicted_status", evicted.item.Status, "cap", todoevents.MaxTodos)
 	}
 	return evictedHappened, nil
 }
 
+// upsertTodoLocked writes one row of a KindCreate, KindDetail or KindMerge event and
+// reports whether it changed anything. The caller holds cache.Mu.
+//
+// `reg` carries the handle the write goes through, and the eviction this can force
+// goes through the same one -- so a merge frame's whole set of writes lands in one
+// transaction. A single write that needs no transaction passes the view the caller
+// already holds.
+func (h *OutputHandler) upsertTodoLocked(ctx context.Context, reg agentTodoView, kind todoevents.EventKind, item todoevents.Item) (bool, error) {
+	cache := reg.cache
+	if item.ID == "" {
+		return false, nil
+	}
+	existingIdx := todoIndexByID(cache.Rows, item.ID)
+	merged := item
+	if existingIdx >= 0 {
+		if kind == todoevents.KindDetail {
+			merged = todoevents.MergeDetail(cache.Rows[existingIdx].item, item)
+		}
+		// Idempotent replay: skip the DB write and the broadcast
+		// when the post-merge row equals the existing row.
+		if cache.Rows[existingIdx].item == merged {
+			return false, nil
+		}
+	} else if len(cache.Rows) >= todoevents.MaxTodos {
+		// At cap: evict the oldest finished row (completed or
+		// deleted) to make room for the new task. When no finished
+		// row exists, drop the new task and log so operators see
+		// the cap pressure.
+		evicted, err := h.evictOldestFinishedLocked(ctx, reg)
+		if err != nil {
+			return false, err
+		}
+		if !evicted {
+			slog.Warn("agent_todos cap reached, no completed or deleted task to evict; dropping new task",
+				"agent_id", reg.ownerID, "task_id", item.ID, "cap", todoevents.MaxTodos)
+			return false, nil
+		}
+	}
+	// Pick the next seq from the in-memory mirror so a fresh insert
+	// gets the right ordering without a `MAX(seq)` round-trip. On
+	// CONFLICT the existing row's seq is preserved (the UPSERT
+	// excludes seq from the SET list), so the choice is harmless
+	// when we end up updating in place.
+	if err := reg.queries.UpsertAgentTodo(ctx, db.UpsertAgentTodoParams{
+		AgentID:     reg.ownerID,
+		RowKey:      item.ID,
+		Seq:         cache.nextSeq,
+		TaskID:      item.ID,
+		Content:     merged.Content,
+		ActiveForm:  merged.ActiveForm,
+		Description: merged.Description,
+		Status:      leapmuxv1.TodoStatus(merged.Status.OrPending()),
+	}); err != nil {
+		return false, err
+	}
+	if existingIdx < 0 {
+		cache.Rows = append(cache.Rows, cachedTodo{item: merged, rowKey: item.ID})
+		cache.nextSeq++
+	} else {
+		cache.Rows[existingIdx].item = merged
+	}
+	return true, nil
+}
+
 // applySnapshotLocked replaces every agent_todos row with the supplied
 // list, capped at todoevents.MaxTodos. The delete-all + N inserts are
-// wrapped in a transaction when h.db is set (production); tests that
-// construct the handler with a nil *sql.DB fall through to a
-// non-transactional loop.
-func (h *OutputHandler) applySnapshotLocked(ctx context.Context, agentID string, cache *agentTodoCache, snapshot []todoevents.Item) ([]todoevents.Item, bool, error) {
+// ONE transaction when h.db is set (production); tests that construct the
+// handler with a nil *sql.DB run the same loop without one.
+//
+// The cache moves only AFTER the write returns, so nothing here needs the
+// mirror that inTransactionLocked captures. It runs through the same helper
+// anyway, and the alternative -- a second, mirror-free helper beside it -- is
+// what this refuses. Two helpers make the caller decide, the decision is
+// invisible, and the day this body starts mutating the cache it would still
+// carry the one that cannot roll it back.
+//
+// Caller must hold cache.Mu.
+func (h *OutputHandler) applySnapshotLocked(ctx context.Context, reg agentTodoView, snapshot []todoevents.Item) ([]todoevents.Item, bool, error) {
+	cache := reg.cache
 	capped := snapshot
 	if len(capped) > todoevents.MaxTodos {
 		capped = capped[:todoevents.MaxTodos]
@@ -2090,8 +2247,13 @@ func (h *OutputHandler) applySnapshotLocked(ctx context.Context, agentID string,
 	if todoItemsEqual(cache.Rows, capped) {
 		return todoItems(cache.Rows), false, nil
 	}
-	if err := h.snapshotWriteToDB(ctx, agentID, capped); err != nil {
-		return nil, false, err
+	err := reg.inTransactionLocked(ctx, h.db, func(tx agentTodoView) error {
+		return h.snapshotWriteLocked(ctx, tx, capped)
+	})
+	if err != nil {
+		// The helper reports the registry and the stage ("commit agent_todos");
+		// only this caller knows WHICH grouped write failed.
+		return nil, false, fmt.Errorf("apply todo snapshot: %w", err)
 	}
 	cache.Rows = make([]cachedTodo, len(capped))
 	for i, it := range capped {
@@ -2101,25 +2263,47 @@ func (h *OutputHandler) applySnapshotLocked(ctx context.Context, agentID string,
 	return todoItems(cache.Rows), true, nil
 }
 
-func (h *OutputHandler) snapshotWriteToDB(ctx context.Context, agentID string, capped []todoevents.Item) error {
-	if h.db == nil {
-		return h.snapshotWriteNonTx(ctx, h.queries, agentID, capped)
-	}
-	tx, err := h.db.BeginTx(ctx, nil)
+// applyMergeLocked writes every row a merge frame lists, in ONE transaction.
+//
+// A merge frame states the new truth for the rows it lists, and a long checklist lists
+// many. One statement for each was one transaction for each -- every one a separate
+// commit, all of them under the cache lock -- where applySnapshotLocked's
+// delete-and-insert has always been a single unit. It is now the same unit, including
+// an eviction the cap forces on the way: the body writes through the view
+// inTransactionLocked binds to the transaction, so the eviction's DELETE lands in
+// this transaction with the upserts.
+//
+// The cache mirrors the table, and each upsert reads what the one before it left, so
+// the mirror moves as the transaction does. inTransactionLocked puts it back on a
+// failure: half a merge in memory over none of it in the table is a list nothing can
+// rebuild until the next cold seed, which for a live agent is never.
+//
+// Caller must hold cache.Mu.
+func (h *OutputHandler) applyMergeLocked(ctx context.Context, reg agentTodoView, items []todoevents.Item) ([]todoevents.Item, bool, error) {
+	mutated := false
+	err := reg.inTransactionLocked(ctx, h.db, func(tx agentTodoView) error {
+		for _, item := range items {
+			// KindCreate, so a listed row REPLACES the row that carries its ID. A merge
+			// frame states the new truth for the rows it lists, which MergeDetail's
+			// preserve-the-blank rule would refuse to write.
+			changed, err := h.upsertTodoLocked(ctx, tx, todoevents.KindCreate, item)
+			if err != nil {
+				return err
+			}
+			mutated = mutated || changed
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+		return nil, false, fmt.Errorf("apply todo merge: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }()
-	if err := h.snapshotWriteNonTx(ctx, h.queries.WithTx(tx), agentID, capped); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit snapshot: %w", err)
-	}
-	return nil
+	return todoItems(reg.cache.Rows), mutated, nil
 }
 
-func (h *OutputHandler) snapshotWriteNonTx(ctx context.Context, q *db.Queries, agentID string, capped []todoevents.Item) error {
+// snapshotWriteLocked deletes the owner's rows and inserts the capped list, on the
+// view's own handle. Caller must hold cache.Mu.
+func (h *OutputHandler) snapshotWriteLocked(ctx context.Context, reg agentTodoView, capped []todoevents.Item) error {
+	q, agentID := reg.queries, reg.ownerID
 	if err := q.DeleteAllAgentTodos(ctx, agentID); err != nil {
 		return fmt.Errorf("delete agent_todos: %w", err)
 	}
@@ -2181,8 +2365,8 @@ func (h *OutputHandler) todoCache(agentID string) *agentTodoCache {
 func (h *OutputHandler) todoOps() registryOps[cachedTodo] {
 	return registryOps[cachedTodo]{
 		// agent_todos is a SINGLE-pool registry, so `bucket` is always 0.
-		listRows: func(ctx context.Context, ownerID string, _ int64, limit int32) ([]seedEntry[cachedTodo], error) {
-			rows, err := h.queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{
+		listRows: func(ctx context.Context, q *db.Queries, ownerID string, _ int64, limit int32) ([]seedEntry[cachedTodo], error) {
+			rows, err := q.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{
 				AgentID: ownerID,
 				Limit:   int64(limit),
 			})
@@ -2200,8 +2384,8 @@ func (h *OutputHandler) todoOps() registryOps[cachedTodo] {
 		isFinished: func(r cachedTodo) bool {
 			return r.item.Status.IsFinished()
 		},
-		deleteByKey: func(ctx context.Context, ownerID, key string) error {
-			_, err := h.queries.DeleteAgentTodoByRowKey(ctx, db.DeleteAgentTodoByRowKeyParams{
+		deleteByKey: func(ctx context.Context, q *db.Queries, ownerID, key string) error {
+			_, err := q.DeleteAgentTodoByRowKey(ctx, db.DeleteAgentTodoByRowKeyParams{
 				AgentID: ownerID,
 				RowKey:  key,
 			})
@@ -2221,7 +2405,7 @@ func (h *OutputHandler) LoadTodos(ctx context.Context, agentID string) ([]todoev
 	cache := h.todoCache(agentID)
 	cache.Mu.Lock()
 	defer cache.Mu.Unlock()
-	if err := cache.ensureSeededLocked(ctx, agentID); err != nil {
+	if err := cache.on(h.queries, agentID).ensureSeededLocked(ctx); err != nil {
 		return nil, err
 	}
 	return todoItems(cache.Rows), nil
@@ -2472,8 +2656,8 @@ func (h *OutputHandler) broadcastMessage(agentID string, msg *leapmuxv1.AgentCha
 // One builder, so the replayed frame cannot differ from the live one.
 func sessionInfoEvent(agentID string, info map[string]interface{}) *leapmuxv1.AgentEvent {
 	content := map[string]interface{}{
-		"type": contracts.NotificationTypeAgentSessionInfo,
-		"info": info,
+		contracts.NotificationFieldType: contracts.NotificationTypeAgentSessionInfo,
+		"info":                          info,
 	}
 	contentJSON, err := json.Marshal(content)
 	if err != nil {
@@ -2674,12 +2858,12 @@ func (h *OutputHandler) updatePlan(agentID string, compressed []byte, compressio
 	}
 
 	payload := map[string]interface{}{
-		"type":           contracts.NotificationTypePlanUpdated,
-		"plan_title":     title,
-		"plan_file_path": canonicalPath,
+		contracts.NotificationFieldType:         contracts.NotificationTypePlanUpdated,
+		contracts.NotificationFieldPlanTitle:    title,
+		contracts.NotificationFieldPlanFilePath: canonicalPath,
 	}
 	if shouldAutoRename {
-		payload["update_agent_title"] = true
+		payload[contracts.NotificationFieldUpdateAgentTitle] = true
 	}
 	h.PersistLeapMuxNotification(agentID, agentRow.AgentProvider, payload)
 }
@@ -2862,8 +3046,8 @@ func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Prov
 		}
 		if len(effective) > 0 {
 			entry := map[string]interface{}{
-				"type":    contracts.NotificationTypeSettingsChanged,
-				"changes": effective,
+				contracts.NotificationFieldType:    contracts.NotificationTypeSettingsChanged,
+				contracts.NotificationFieldChanges: effective,
 			}
 			if data, err := json.Marshal(entry); err == nil {
 				entries = append(entries, indexedRaw{idx: settings.idx, raw: data})

@@ -157,11 +157,11 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
 
   return (
     <DropdownMenu
-      placement={props.placement}
+      {...(props.placement !== undefined ? { placement: props.placement } : {})}
       onToggle={setMenuOpen}
-      contextMenuFor={props.contextMenuFor}
+      {...(props.contextMenuFor !== undefined ? { contextMenuFor: props.contextMenuFor } : {})}
       trigger={moreHorizontalTrigger({
-        'class': props.triggerClass,
+        ...(props.triggerClass !== undefined ? { class: props.triggerClass } : {}),
         'data-testid': props.triggerTestId ?? 'file-actions-trigger',
       })}
     >

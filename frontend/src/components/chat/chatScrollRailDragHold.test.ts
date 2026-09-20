@@ -46,7 +46,7 @@ function inRoot(body: (dispose: () => void) => Promise<void>): Promise<void> {
   })
 }
 
-describe('createdragreleasehold', () => {
+describe('createDragReleaseHold', () => {
   it('begin() claims ownership and rejects a rival concurrent grab until end()', () =>
     createRoot((dispose) => {
       const hold = createDragReleaseHold()

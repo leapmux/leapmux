@@ -33,14 +33,15 @@ function renderSidebar(props: {
       side="left"
       isCollapsed={false}
       onExpand={() => {}}
-      initialOpenSections={props.initialOpenSections}
-      initialSectionSizes={props.initialSectionSizes}
-      onStateChange={props.onStateChange}
+      // The optional fixtures stay omitted when the harness passed none.
+      {...(props.initialOpenSections !== undefined ? { initialOpenSections: props.initialOpenSections } : {})}
+      {...(props.initialSectionSizes !== undefined ? { initialSectionSizes: props.initialSectionSizes } : {})}
+      {...(props.onStateChange !== undefined ? { onStateChange: props.onStateChange } : {})}
     />
   ))
 }
 
-describe('collapsibleSidebar', () => {
+describe('CollapsibleSidebar', () => {
   it('renders section headers', () => {
     renderSidebar({
       sections: [
@@ -117,7 +118,7 @@ describe('collapsibleSidebar', () => {
 
     // Click the summary of section B to collapse it
     const summaries = screen.getAllByText('Section B')
-    const summary = summaries[0].closest('[role="button"]')
+    const summary = summaries[0]?.closest('[role="button"]')
     if (summary) {
       fireEvent.click(summary)
     }
@@ -191,7 +192,11 @@ describe('collapsibleSidebar', () => {
 
     // Double-click the first handle
     const handles = screen.getAllByTestId('pane-resize-handle')
-    fireEvent.dblClick(handles[0])
+    // getAllByTestId throws when empty, so index 0 exists; the throw is the type-level guard alone.
+    const firstHandle = handles[0]
+    if (firstHandle === undefined)
+      throw new Error('expected a resize handle')
+    fireEvent.dblClick(firstHandle)
 
     expect(onStateChange).toHaveBeenCalled()
     const lastCall = onStateChange.mock.calls.at(-1)!

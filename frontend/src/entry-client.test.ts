@@ -63,7 +63,7 @@ describe('entry-client boot handoff', () => {
     await import('~/entry-client')
 
     expect(mount).toHaveBeenCalledTimes(1)
-    expect(mount.mock.calls[0][1]).toBe(document.getElementById('app'))
+    expect(mount.mock.calls[0]?.[1]).toBe(document.getElementById('app'))
     // The removal runs after mount returns, so mount still sees the splash.
     expect(splashAtMount).toEqual([true])
     expect(document.getElementById(BOOT_SPLASH_STATIC_ID)).toBeNull()

@@ -33,16 +33,16 @@ function renderRow(props: {
   const { container } = render(() => (
     <RowLabelWithStats
       label={props.label ?? 'feature/auth'}
-      tooltipLabel={props.tooltipLabel}
-      tooltipContent={props.tooltipContent}
-      showWhen={props.showWhen}
+      {...(props.tooltipLabel !== undefined ? { tooltipLabel: props.tooltipLabel } : {})}
+      {...(props.tooltipContent !== undefined ? { tooltipContent: props.tooltipContent } : {})}
+      {...(props.showWhen !== undefined ? { showWhen: props.showWhen } : {})}
       stats={props.stats ?? null}
     />
   ))
   return container.querySelector<HTMLElement>(`.${labelWithStats}`)!
 }
 
-describe('rowLabelWithStats', () => {
+describe('RowLabelWithStats', () => {
   // The pre-existing contract, and the one a shared component must not lose:
   // the repo group row, the directory tree and the files section all rely on a
   // tooltip that repeats the label ONLY when the label is truncated. Every one

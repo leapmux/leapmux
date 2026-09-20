@@ -117,7 +117,8 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
   const nearestRowIdBySeq = (seq: bigint): string | undefined => {
     const msgs = extras.messages()
     const idx = nearestServerRowIndexBySeq(msgs, seq)
-    return idx < 0 ? undefined : msgs[idx].id
+    // A matched index came from a scan over `msgs`, so it is in range; `?.` is the type-level guard alone.
+    return idx < 0 ? undefined : msgs[idx]?.id
   }
 
   /**

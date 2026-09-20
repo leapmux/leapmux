@@ -54,3 +54,65 @@ describe('extractPiSearch truncation notice', () => {
     expect(source?.notice).toBe('')
   })
 })
+
+/**
+ * Whether Pi RECOGNIZED an empty result. Pi states its own wording for each half.
+ *
+ * The renderer decided this by comparing the raw text against LeapMux's own summary
+ * prose, which put a provider's output format in the layer that knows no provider.
+ * The extractor already read both sentences to build the counters, so it states the
+ * fact instead.
+ */
+describe('extractPiSearch empty results', () => {
+  it('reads the wording a find prints when it matched no file', () => {
+    expect(extractPiSearch(searchResult(PI_SEARCH_TOOL.Find, 'No files found matching pattern'))?.empty).toBe(true)
+    expect(extractPiSearch(searchResult(PI_SEARCH_TOOL.Find, '(empty directory)'))?.empty).toBe(true)
+    expect(extractPiSearch(searchResult(PI_SEARCH_TOOL.Find, ''))?.empty).toBe(true)
+  })
+
+  it('reads the wording a grep prints when it matched nothing', () => {
+    expect(extractPiSearch(searchResult(PI_SEARCH_TOOL.Grep, 'No matches found'))?.empty).toBe(true)
+    expect(extractPiSearch(searchResult(PI_SEARCH_TOOL.Grep, ''))?.empty).toBe(true)
+  })
+
+  it('states no empty result for a search that found something', () => {
+    expect(extractPiSearch(searchResult(PI_SEARCH_TOOL.Find, 'src/a.ts'))?.empty).toBe(false)
+    expect(extractPiSearch(searchResult(PI_SEARCH_TOOL.Grep, 'a.ts:1:hit'))?.empty).toBe(false)
+  })
+})
+
+/**
+ * The field arithmetic a grep result carries: one count for the match LINES, and one for
+ * the distinct FILES they sit in.
+ *
+ * The two numbers differ the moment one file holds two matches, and the summary states
+ * both. `grepMatches` is the shared reading of grep's own `path:line:text` contract; the
+ * empty WORDING above it is Pi's own, and stays in this module.
+ */
+describe('extractPiSearch grep counters', () => {
+  it('counts the files apart from the matches', () => {
+    const source = extractPiSearch(searchResult(PI_SEARCH_TOOL.Grep, 'a.ts:1:hit\na.ts:7:hit\nb.ts:2:hit'))
+    expect(source?.numFiles).toBe(2)
+    expect(source?.numLines).toBe(3)
+    expect(source?.matchCount).toBe(3)
+  })
+
+  it('counts no line that states no match', () => {
+    const source = extractPiSearch(searchResult(PI_SEARCH_TOOL.Grep, 'a.ts:1:hit\n\nplain text with no line number'))
+    expect(source?.numFiles).toBe(1)
+    expect(source?.numLines).toBe(1)
+  })
+
+  it('leaves a colon inside the matched text out of the file count', () => {
+    const source = extractPiSearch(searchResult(PI_SEARCH_TOOL.Grep, 'a.ts:1:see http://example.com:8080/x\na.ts:2:plain'))
+    expect(source?.numFiles).toBe(1)
+    expect(source?.numLines).toBe(2)
+  })
+
+  // Absent, never zero: a body this build read no match out of is a different statement
+  // from a grep that matched nothing, and only Pi's own wording states the second one.
+  it('states no match total for a body it read no match out of', () => {
+    expect(extractPiSearch(searchResult(PI_SEARCH_TOOL.Grep, 'unreadable output'))?.matchCount).toBeUndefined()
+    expect(extractPiSearch(searchResult(PI_SEARCH_TOOL.Grep, 'No matches found'))?.matchCount).toBe(0)
+  })
+})

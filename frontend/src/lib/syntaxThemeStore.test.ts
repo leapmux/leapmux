@@ -223,6 +223,17 @@ describe('setSyntaxTheme', () => {
     expect(second).toHaveBeenCalled()
   })
 
+  it('stops invalidating after a listener unsubscribes', async () => {
+    const invalidate = vi.fn()
+    const unsubscribe = onSyntaxThemeChange(invalidate)
+    unsubscribe()
+    const next = syntaxThemePair().dark === 'github-dark'
+      ? { light: 'ayu-light', dark: 'ayu-dark' }
+      : { light: 'github-light', dark: 'github-dark' }
+    await setSyntaxTheme(next, fakeRegistrar())
+    expect(invalidate).not.toHaveBeenCalled()
+  })
+
   it('serializes overlapping changes so the last one wins', async () => {
     // Two quick changes must not interleave their register and point steps, or
     // the second could publish a pair whose themes the first had not finished

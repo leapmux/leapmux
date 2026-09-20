@@ -1,18 +1,19 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageSpanIdentity } from '~/lib/messageSpan'
-import type { TodoItem } from '~/stores/chatTodos'
 import { create } from '@bufbuild/protobuf'
-import { createEffect, createMemo, createRoot, createSignal, untrack } from 'solid-js'
+import { createEffect, createRoot, createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createChatStore } from '~/stores/chat.store'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
 import { createMessageContextResolver } from './messageContextResolver'
-import './providers/opencode'
+import './providers/opencode/plugin'
 
 const cleanups: Array<() => void> = []
 afterEach(() => cleanups.splice(0).forEach(dispose => dispose()))
+
+const waitForRenderPrune = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 
 function toolMessage(id: string, seq: bigint, side: 'request' | 'result', extra: MessageInitShape<typeof AgentChatMessageSchema> = {}): AgentChatMessage {
   const content = {
@@ -39,7 +40,6 @@ function fixture(initial: AgentChatMessage[] = []) {
     cleanups.push(dispose)
     const [messages, setMessages] = createSignal(initial)
     const [version, setVersion] = createSignal(0)
-    const [todo, setTodo] = createSignal<TodoItem>()
     const index = createSpanIndex()
     index.reindex('agent', initial)
     const observers = new Set<(message: AgentChatMessage) => void>()
@@ -50,7 +50,7 @@ function fixture(initial: AgentChatMessage[] = []) {
       messages,
       messageVersion: version,
       contentVersion: () => 0,
-      spanMessage: (spanId, side) => side === 'request' ? index.getOpenerMessage('agent', spanId) : index.getResultMessage('agent', spanId),
+      spanMessage: (spanId, side) => side === 'request' ? index.getRequestMessage('agent', spanId) : index.getResultMessage('agent', spanId),
       messageBySeq: seq => messages().find(message => message.seq === seq),
       fetchSpan,
       fetchMessage,
@@ -59,7 +59,6 @@ function fixture(initial: AgentChatMessage[] = []) {
         observers.add(observer)
         return () => observers.delete(observer)
       },
-      todo: () => todo(),
       backgroundTask: () => undefined,
       progress: () => undefined,
     })
@@ -67,7 +66,6 @@ function fixture(initial: AgentChatMessage[] = []) {
       resolver,
       fetchSpan,
       fetchMessage,
-      setTodo,
       dispose,
       emit: (message: AgentChatMessage) => observers.forEach(observer => observer(message)),
       replaceMessages: (next: AgentChatMessage[]) => {
@@ -155,7 +153,8 @@ describe('message context resolver', () => {
     fetchMessage.mockImplementationOnce(() => new Promise(resolve => finish = resolve))
     const pending = resolver.message(9n)
     dispose()
-    expect(fetchMessage.mock.calls[0][1].aborted).toBe(true)
+    // The call was made above; `?.` is the type-level guard alone.
+    expect(fetchMessage.mock.calls[0]?.[1].aborted).toBe(true)
     finish(toolMessage('late', 9n, 'result'))
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
   })
@@ -166,15 +165,20 @@ describe('message context resolver', () => {
     const { resolver, fetchSpan, dispose } = fixture()
     fetchSpan.mockResolvedValue([toolMessage('request', 8n, 'request')])
     const releaseSpan = resolver.retainSpan({ spanId: 'span', agentSessionId: '' })
+    const releaseRenderSpan = resolver.retainRenderSpan({ spanId: 'render-span', agentSessionId: '' })
     const releaseMessage = resolver.retainMessage(8n)
     await resolver.loadSpan({ spanId: 'span', agentSessionId: '' })
     expect(resolver.peek(8n)?.message.id).toBe('request')
+    releaseRenderSpan()
     dispose()
+    await waitForRenderPrune()
     expect(resolver.peek(8n)).toBeUndefined()
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })).toBeUndefined()
     expect(releaseSpan).not.toThrow()
+    expect(releaseRenderSpan).not.toThrow()
     expect(releaseMessage).not.toThrow()
     expect(resolver.retainSpan({ spanId: 'span', agentSessionId: '' })).not.toThrow()
+    expect(resolver.retainRenderSpan({ spanId: 'span', agentSessionId: '' })).not.toThrow()
     expect(resolver.retainMessage(8n)).not.toThrow()
     expect(resolver.peek(8n)).toBeUndefined()
   })
@@ -207,8 +211,19 @@ describe('message context resolver', () => {
     expect(fetchSpan).toHaveBeenCalledTimes(1)
     finish([result, request])
     await Promise.all([first, second])
-    expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.parsed.parentObject?.rawInput).toEqual({ filePath: '/project/file.ts' })
+    expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.resolved.parentObject?.rawInput).toEqual({ filePath: '/project/file.ts' })
     expect(resolver.result({ spanId: 'span', agentSessionId: '' })?.message.id).toBe('result')
+  })
+
+  it('keeps fetched sibling data separate from visible sibling rows', async () => {
+    const request = toolMessage('request', 1n, 'request')
+    const result = toolMessage('result', 2n, 'result')
+    const { resolver, fetchSpan } = fixture([result])
+    fetchSpan.mockResolvedValue([request, result])
+    await resolver.loadSpan({ spanId: 'span', agentSessionId: '' })
+    expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.message.id).toBe('request')
+    expect(resolver.visibleRows({ spanId: 'span', agentSessionId: '' })).toEqual({ request: false, result: true })
+    expect(resolver.role(result)).toBe('result')
   })
 
   it('keeps a live supplement when an older lookup response arrives later', async () => {
@@ -232,20 +247,8 @@ describe('message context resolver', () => {
     finish([request, result])
     await loading
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.message.supplementalRevision).toBe(2n)
-    expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.parsed.parentObject?.rawInput).toEqual({ filePath: '/project/recovered.ts' })
+    expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.resolved.parentObject?.rawInput).toEqual({ filePath: '/project/recovered.ts' })
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.original.parentObject?.rawInput).toEqual({ filePath: '/project/file.ts' })
-  })
-
-  it('keeps live task labels reactive', () => {
-    const { resolver, setTodo } = fixture()
-    createRoot((dispose) => {
-      cleanups.push(dispose)
-      const label = createMemo(() => resolver.todo('1')?.content)
-      setTodo({ rowKey: '1', id: '1', content: 'First title', status: 'pending', activeForm: '' })
-      expect(untrack(label)).toBe('First title')
-      setTodo({ rowKey: '1', id: '1', content: 'Renamed title', status: 'pending', activeForm: '' })
-      expect(untrack(label)).toBe('Renamed title')
-    })
   })
 
   it('does not cache a transient lookup failure as a missing request', async () => {
@@ -348,6 +351,29 @@ describe('message context resolver', () => {
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })).toBeUndefined()
   })
 
+  it('keeps fetched data through a same-turn span lease transfer', async () => {
+    const identity = { spanId: 'span', agentSessionId: '' }
+    const { resolver, fetchSpan, replaceMessages } = fixture([toolMessage('result', 2n, 'result')])
+    fetchSpan.mockResolvedValueOnce([toolMessage('request', 1n, 'request')])
+    const releaseFirst = resolver.retainRenderSpan(identity)
+    await resolver.loadSpan(identity)
+    replaceMessages([])
+
+    releaseFirst()
+    // Another consumer can prune the same span before Solid mounts the replacement
+    // row. The render grace must protect the fetched request from that prune.
+    const releaseImmediate = resolver.retainSpan(identity)
+    releaseImmediate()
+    await Promise.resolve()
+    const releaseSecond = resolver.retainRenderSpan(identity)
+    await waitForRenderPrune()
+    expect(resolver.request(identity)).toBeDefined()
+
+    releaseSecond()
+    await waitForRenderPrune()
+    expect(resolver.request(identity)).toBeUndefined()
+  })
+
   it('walks the window for a membership change, and not for an in-place body replacement', () => {
     const store = createChatStore()
     const agentId = 'agent'
@@ -369,7 +395,6 @@ describe('message context resolver', () => {
         fetchMessage: async () => undefined,
         fetchFileImage: async () => { throw new Error('The image source is unavailable') },
         subscribe: observer => store.subscribeMessages(agentId, observer),
-        todo: () => undefined,
         backgroundTask: () => undefined,
         progress: () => undefined,
       })

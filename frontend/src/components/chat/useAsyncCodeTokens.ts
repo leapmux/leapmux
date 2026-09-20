@@ -39,7 +39,7 @@ export interface AsyncCodeTokensOptions {
   /**
    * Whether this surface's row currently sits outside the near-viewport band —
    * passed to the tokenize worker gate as the low-priority thunk, so viewport
-   * code surfaces upgrade first (see RenderContext.rowOffscreen).
+   * code surfaces upgrade first (see MarkdownRenderContext.rowOffscreen).
    */
   rowOffscreen?: () => boolean
 }

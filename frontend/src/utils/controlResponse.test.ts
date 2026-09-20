@@ -8,7 +8,7 @@ function denyEnvelope(resp: Record<string, unknown>): { requestId: string, behav
   return { requestId: outer.request_id, behavior: outer.response.behavior, message: outer.response.message }
 }
 
-describe('builddenyresponse', () => {
+describe('buildDenyResponse', () => {
   it('fills the shared rejected-by-user placeholder for a bare deny (omitted or empty reason)', () => {
     // The Claude Code SDK converts a deny into a tool_result with is_error=true, and the Anthropic
     // API rejects empty content, so the message must never be empty -- a bare deny falls back to
@@ -37,7 +37,7 @@ describe('builddenyresponse', () => {
   })
 })
 
-describe('buildcontrolresponseenvelope', () => {
+describe('buildControlResponseEnvelope', () => {
   it('wraps one provider answer in the shared envelope', () => {
     // Copilot answers with an approval SCOPE and with a question ANSWER, which neither
     // the allow nor the deny builder can carry. Both go through this envelope.
@@ -59,7 +59,7 @@ describe('buildcontrolresponseenvelope', () => {
   })
 })
 
-describe('normalizerejectionmessage', () => {
+describe('normalizeRejectionMessage', () => {
   it('trims a typed reason and collapses the sentinel to ""', () => {
     expect(normalizeRejectionMessage('  looks unsafe  ')).toBe('looks unsafe')
     expect(normalizeRejectionMessage(CONTROL_REJECTED_BY_USER_MESSAGE)).toBe('')
@@ -68,7 +68,7 @@ describe('normalizerejectionmessage', () => {
   })
 })
 
-describe('decodecontrolbehaviorenvelope', () => {
+describe('decodeControlBehaviorEnvelope', () => {
   it('decodes an allow envelope with the request id', () => {
     expect(decodeControlBehaviorEnvelope({ response: { request_id: ' r ', response: { behavior: ' allow ' } } }))
       .toEqual({ requestId: 'r', behavior: 'allow', message: '' })

@@ -49,34 +49,34 @@ function renderMenu(opts: {
     <ComposerPlusMenu
       optionGroups={opts.groups ?? []}
       optionValues={opts.values ?? {}}
-      agentProvider={opts.provider}
-      onSettingChange={opts.settingsDispatcher === false ? undefined : onSettingChange}
+      {...(opts.provider === undefined ? {} : { agentProvider: opts.provider })}
+      {...(opts.settingsDispatcher === false ? {} : { onSettingChange })}
       onAttachFile={onAttachFile}
       canAttach={opts.canAttach ?? true}
-      disabledReason={opts.disabledReason}
-      attachmentDisabledReason={opts.attachmentDisabledReason}
-      settingsLoading={opts.settingsLoading}
+      {...(opts.disabledReason === undefined ? {} : { disabledReason: opts.disabledReason })}
+      {...(opts.attachmentDisabledReason === undefined ? {} : { attachmentDisabledReason: opts.attachmentDisabledReason })}
+      {...(opts.settingsLoading === undefined ? {} : { settingsLoading: opts.settingsLoading })}
       workingTree={{
         isWorktree: opts.isWorktree ?? false,
         name: opts.branchName ?? '',
         directory: opts.directory ?? '',
-        homeDir: opts.homeDir,
-        stats: opts.branchStats,
+        ...(opts.homeDir === undefined ? {} : { homeDir: opts.homeDir }),
+        ...(opts.branchStats === undefined ? {} : { stats: opts.branchStats }),
       }}
       branchActions={branchActions}
       branchWorkerId="w-1"
-      branchDisabledReason={opts.branchDisabledReason}
+      {...(opts.branchDisabledReason === undefined ? {} : { branchDisabledReason: opts.branchDisabledReason })}
       enterKeyMode={() => 'cmd-enter-sends'}
       onToggleEnterMode={onToggleEnterMode}
       showStatusBar={() => true}
       onToggleStatusBar={onToggleStatusBar}
-      agentInfo={opts.agentInfo ? () => <span data-testid="agent-info-rows" /> : undefined}
+      {...(opts.agentInfo ? { agentInfo: () => <span data-testid="agent-info-rows" /> } : {})}
     />
   ))
   return { ...rendered, onSettingChange, onAttachFile, onToggleEnterMode, onToggleStatusBar, branchActions }
 }
 
-describe('composerPlusMenu structure freeze', () => {
+describe('ComposerPlusMenu structure freeze', () => {
   const rowIds = () => screen.getAllByRole('menuitem', { hidden: true })
     .concat(screen.getAllByRole('menuitemcheckbox', { hidden: true }))
     .map(el => el.getAttribute('data-testid'))
@@ -91,7 +91,7 @@ describe('composerPlusMenu structure freeze', () => {
       <ComposerPlusMenu
         optionGroups={sources.groups()}
         optionValues={{}}
-        agentProvider={sources.provider}
+        {...(sources.provider === undefined ? {} : { agentProvider: sources.provider })}
         onSettingChange={vi.fn()}
         onAttachFile={vi.fn()}
         canAttach
@@ -276,7 +276,7 @@ function reasonOf(el: Element): string {
   return document.getElementById(describedBy!)?.textContent ?? ''
 }
 
-describe('composerPlusMenu', () => {
+describe('ComposerPlusMenu', () => {
   it('lists the settings submenus in backend order', () => {
     renderMenu({
       groups: [group('c', 'Gamma', 30), group('a', 'Alpha', 10), group('b', 'Beta', 20)],

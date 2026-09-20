@@ -1,4 +1,4 @@
-import type { ContextUsageInfo } from '~/stores/agentSession.store'
+import type { ContextUsageInfo } from '~/models/agentSession'
 import { cleanup, render } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -139,7 +139,7 @@ function meterOf(container: HTMLElement): string {
   return [rows.slice(0, 3), rows.slice(3, 6), rows.slice(6, 9)].map(r => r.join('')).join('/')
 }
 
-describe('contextUsageGrid rendering', () => {
+describe('ContextUsageGrid rendering', () => {
   it('falls back to the info icon when there is no usage yet', () => {
     const { container } = render(() => <ContextUsageGrid size={12} />)
     expect(container.querySelectorAll('rect')).toHaveLength(0)

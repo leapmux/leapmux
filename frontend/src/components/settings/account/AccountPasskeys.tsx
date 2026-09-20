@@ -422,7 +422,10 @@ export const AccountPasskeys: Component = () => {
           reason for anybody who never hovers.
         */}
         <div class={actionsFooter}>
-          <Tooltip text={blockedReason()}>
+          {/* `text?: string` refuses an explicit undefined; an empty text reads
+              as "no tooltip" (TooltipProps: empty text and content disable it),
+              so the absent reason passes as '' instead of undefined. */}
+          <Tooltip text={blockedReason() ?? ''}>
             <button
               type="button"
               onClick={openAdd}

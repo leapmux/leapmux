@@ -121,7 +121,10 @@ export function createBlockquoteBackspacePlugin() {
                 const hrPos = $from.before($from.depth) - 1 // HR is 1 node size, positioned right before the paragraph
                 const paraEnd = $from.after($from.depth)
                 const dashText = state.schema.text('---')
-                const dashPara = state.schema.nodes.paragraph.create(null, dashText)
+                const paragraphType = state.schema.nodes.paragraph
+                if (!paragraphType)
+                  return false
+                const dashPara = paragraphType.create(null, dashText)
                 const tr = state.tr.replaceWith(hrPos, paraEnd, dashPara)
                 // Place cursor at the end of "---" inside the new paragraph.
                 // The new paragraph starts at hrPos, so content starts at hrPos+1,
@@ -212,6 +215,8 @@ export function createTabKeyPlugin(refs: { onShiftTabInParagraph: () => void }) 
           if (listItemDepth >= 0) {
             event.preventDefault()
             const listItemType = state.schema.nodes.list_item
+            if (!listItemType)
+              return true
             if (!isShift) {
               sinkListItem(listItemType)(state, view.dispatch)
             }
@@ -226,7 +231,10 @@ export function createTabKeyPlugin(refs: { onShiftTabInParagraph: () => void }) 
             if ($from.node(d).type.name === 'blockquote') {
               event.preventDefault()
               if (!isShift) {
-                wrapIn(state.schema.nodes.blockquote)(state, view.dispatch)
+                const blockquoteType = state.schema.nodes.blockquote
+                if (!blockquoteType)
+                  return true
+                wrapIn(blockquoteType)(state, view.dispatch)
               }
               else {
                 lift(state, view.dispatch)
@@ -359,7 +367,10 @@ export function createCodeBlockEscapePlugin() {
 
           event.preventDefault()
           const afterCodeBlock = $from.after($from.depth)
-          const para = state.schema.nodes.paragraph.create()
+          const paragraphType = state.schema.nodes.paragraph
+          if (!paragraphType)
+            return true
+          const para = paragraphType.create()
           const tr = state.tr.insert(afterCodeBlock, para)
           tr.setSelection(TextSelection.create(tr.doc, afterCodeBlock + 1)).scrollIntoView()
           view.dispatch(tr)

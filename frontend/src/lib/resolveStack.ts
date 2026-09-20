@@ -25,8 +25,9 @@ export async function resolveStack(stack: string): Promise<string> {
   const urlsToFetch = new Set<string>()
   for (const line of lines) {
     const match = FRAME_RE.exec(line)
-    if (match)
-      urlsToFetch.add(match[1])
+    const url = match?.[1]
+    if (url !== undefined)
+      urlsToFetch.add(url)
   }
   await Promise.all(Array.from(urlsToFetch, url => getConsumer(url)))
 
@@ -39,6 +40,12 @@ export async function resolveStack(stack: string): Promise<string> {
     }
 
     const [, url, lineStr, colStr] = match
+    // FRAME_RE's captured groups are always present on a match; the guard
+    // satisfies noUncheckedIndexedAccess.
+    if (url === undefined || lineStr === undefined || colStr === undefined) {
+      resolved.push(line)
+      continue
+    }
     const lineNum = Number(lineStr)
     const colNum = Number(colStr)
 

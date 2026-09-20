@@ -77,7 +77,7 @@ async function elementUnder(page: Page, x: number, y: number): Promise<string> {
       return 'nothing'
     const owner = el.closest('[data-chat-scroll-container], [data-testid]')
     return `${el.tagName}|${owner?.getAttribute('data-testid') ?? (owner ? 'chat-scroll-container' : 'no-owner')}`
-  }, [x, y])
+  }, [x, y] as const)
 }
 
 /**

@@ -49,7 +49,7 @@ describe('listRepoCheckouts', () => {
     )
 
     expect(got).toHaveLength(1)
-    expect(got[0].label).toBe('main')
+    expect(got[0]?.label).toBe('main')
   })
 
   it('keeps a linked worktree apart from the main checkout, and marks it', () => {
@@ -83,7 +83,7 @@ describe('listRepoCheckouts', () => {
     const got = listRepoCheckouts([branch({ gitToplevel: '' }), branch()], ORIGIN, allLocal)
 
     expect(got).toHaveLength(1)
-    expect(got[0].gitToplevel).toBe('/home/me/leapmux')
+    expect(got[0]?.gitToplevel).toBe('/home/me/leapmux')
   })
 
   it('answers empty for no branches', () => {
@@ -93,8 +93,8 @@ describe('listRepoCheckouts', () => {
   it('carries an empty origin through for a repository with no remote', () => {
     const got = listRepoCheckouts([branch()], '', noneLocal)
 
-    expect(got[0].originUrl).toBe('')
-    expect(got[0].isLocal).toBe(false)
+    expect(got[0]?.originUrl).toBe('')
+    expect(got[0]?.isLocal).toBe(false)
   })
 
   // The tree's own disambiguation already lives in `displayLabel`; the mark is
@@ -106,6 +106,6 @@ describe('listRepoCheckouts', () => {
       allLocal,
     )
 
-    expect(got[0].label).toBe('main (worker-a)')
+    expect(got[0]?.label).toBe('main (worker-a)')
   })
 })

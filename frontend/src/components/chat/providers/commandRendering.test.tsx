@@ -1,28 +1,27 @@
 import type { MessageBubbleHost } from '../MessageBubble'
-import type { MessageCategory } from '../messageClassification'
-import type { RenderContext } from '../messageRenderers'
+import type { MessageCategory } from '../messageClassifier'
+import type { MessageContentRenderContext } from '../messageContentRenderer'
+import type { PreparedMessage } from '../rowPreparation'
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, waitFor } from '@solidjs/testing-library'
-import Terminal from 'lucide-solid/icons/terminal'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { toolMessageInput } from '~/components/chat/providers/testUtils'
 import { AgentChatMessageSchema, AgentProvider, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolComplete } from '~/test-support/copilotFixtures'
 import { testMessageSources } from '~/test-support/messageRenderSources'
+import { providerToolMeta } from '~/test-support/toolCallFixture'
 import { MessageBubble } from '../MessageBubble'
-import { claudeToolResultMeta } from './claude/toolResult'
-import { codexToolResultMeta } from './codex/toolResult'
-import { providerFor } from './registry'
+import { commandInputCollapsed, toolInputSummary } from '../toolStyles.css'
+import { providerFor, resolveMessageForRendering } from './registry'
 import { input } from './testUtils'
 import './index'
-import './claude'
-import './codex'
-import './opencode'
-import './pi'
+import './claude/plugin'
+import './codex/plugin'
+import './opencode/plugin'
+import './pi/plugin'
 import './testMocks'
 
-const normalizeProgressOutputCalls = vi.hoisted(() => vi.fn())
 const normalizedCommandBodyCalls = vi.hoisted(() => vi.fn())
 const tokenizeAsyncCalls = vi.hoisted(() => vi.fn())
 const tokenizeAsyncMock = vi.hoisted(() => vi.fn(async (lang: string, code: string) => {
@@ -58,10 +57,6 @@ vi.mock('~/lib/normalizeProgressOutput', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/lib/normalizeProgressOutput')>()
   return {
     ...actual,
-    normalizeProgressOutput: (text: string) => {
-      normalizeProgressOutputCalls(text)
-      return actual.normalizeProgressOutput(text)
-    },
     normalizedCommandBody: (text: string) => {
       normalizedCommandBodyCalls(text)
       return actual.normalizedCommandBody(text)
@@ -76,48 +71,63 @@ vi.mock('~/context/PreferencesContext', () => ({
   }),
 }))
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../messageContentRenderer')
 const { createMessageRenderCacheStore } = await import('../messageRenderCache')
-const { CommandHighlightHtml } = await import('../toolRenderers')
+const { CommandHighlightHtml } = await import('../syntaxHighlight')
 const { COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT } = await import('../chatHeightShared')
 const { CollapsibleContent } = await import('../results/CollapsibleContent')
 const { CommandInputBody, CommandInputSummary } = await import('../results/multiLineCommandBody')
-const { ToolUseMessage } = await import('./claude/toolUse/genericToolUse')
-const { ToolCallUpdateMessage } = await import('./acp/renderers/toolCallUpdate')
-const { PiToolExecutionRenderer } = await import('./pi/renderers/toolMessage')
+
+/**
+ * Render one Pi tool row through the dispatcher, the way a mounted row does.
+ *
+ * The payload arrives as a PROPS object. A case that drives it from a signal gives
+ * a getter, which is how Solid hands a reactive value to a function: the overflow
+ * guard below changes the command while the row is expanded, and the row must
+ * re-measure.
+ */
+function renderPiToolRow(props: { payload: Record<string, unknown> }) {
+  const plugin = providerFor(AgentProvider.PI)!
+  const parsed = () => props.payload
+  // The fragment is load-bearing. `render(fn)` CALLS `fn` once and inserts the result,
+  // so a bare call would freeze the row at its first payload; the JSX compiler wraps an
+  // expression inside a fragment in a memo, which is the same reactive shape
+  // `MessageBubble` gives the dispatcher in production.
+  return render(() => <>{renderMessageContent(parsed(), undefined, plugin?.transcript.classify(input(parsed())), AgentProvider.PI)}</>)
+}
 
 describe('pi command syntax', () => {
   it('uses PowerShell syntax for the PowerShell tool', async () => {
     tokenizeAsyncCalls.mockClear()
     const command = 'Get-ChildItem -Path .'
-    render(() => <PiToolExecutionRenderer parsed={{ type: 'tool_execution_start', toolName: 'powershell', toolCallId: 'ps', args: { command } }} />)
+    renderPiToolRow({ payload: { type: 'tool_execution_start', toolName: 'powershell', toolCallId: 'ps', args: { command } } })
     await waitFor(() => expect(tokenizeAsyncCalls).toHaveBeenCalled())
     expect(tokenizeAsyncCalls).toHaveBeenCalledWith('powershell', command)
   })
 })
 
-function renderClaudeToolResult(parsed: Record<string, unknown>, context?: RenderContext) {
+function renderClaudeToolResult(parsed: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }
   const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
   return render(() => result)
 }
 
-function renderClaudeToolUse(toolName: string, input: Record<string, unknown>, context?: RenderContext) {
-  const parsed = {
-    type: 'assistant',
-    message: {
-      role: 'assistant',
-      content: [{ type: 'tool_use', id: 'toolu_1', name: toolName, input }],
-    },
-  }
-  const category: MessageCategory = {
-    kind: 'tool_use',
-    toolName,
-    toolUse: { type: 'tool_use', id: 'toolu_1', name: toolName, input },
-    content: [],
-  }
-  const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
-  return render(() => result)
+/**
+ * Render one Claude tool_use row through the dispatcher, the way a mounted row does.
+ *
+ * The arguments arrive as a PROPS object, for the reason `renderPiToolRow` above
+ * gives, and the fragment is load-bearing for the reason it gives too.
+ */
+function renderClaudeToolUse(
+  toolName: string,
+  props: { input: Record<string, unknown> },
+  context?: MessageContentRenderContext,
+) {
+  const args = () => props.input
+  const toolUse = () => ({ type: 'tool_use', id: 'toolu_1', name: toolName, input: args() })
+  const parsed = () => ({ type: 'assistant', message: { role: 'assistant', content: [toolUse()] } })
+  const category = (): MessageCategory => ({ kind: 'tool_use' })
+  return render(() => <>{renderMessageContent(parsed(), context, category(), AgentProvider.CLAUDE_CODE)}</>)
 }
 
 function makeBashResult(toolUseResult: Record<string, unknown> | undefined, content: string, isError = false) {
@@ -131,15 +141,9 @@ function makeBashResult(toolUseResult: Record<string, unknown> | undefined, cont
   }
 }
 
-function renderCodexItem(item: Record<string, unknown>, context?: RenderContext) {
+function renderCodexItem(item: Record<string, unknown>, context?: MessageContentRenderContext) {
   const parsed = { item, threadId: 't1', turnId: 'r1' }
-  const toolName = String(item.type ?? 'codex')
-  const category: MessageCategory = {
-    kind: 'tool_use',
-    toolName,
-    toolUse: parsed,
-    content: [],
-  }
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(parsed, context, category, AgentProvider.CODEX)
   return render(() => result)
 }
@@ -156,30 +160,23 @@ function renderCodexMessageBubble(item: Record<string, unknown>, host?: MessageB
     spanId: 'cmd-span',
     spanType: String(item.type ?? ''),
   })
-  const category: MessageCategory = {
-    kind: 'tool_use',
-    toolName: String(item.type ?? 'codex'),
-    toolUse: parsed,
-    content: [],
-  }
+  // The prepared row ChatView would have supplied, stated rather than derived: this
+  // fixture carries no `item.id`, so Codex's own classifier calls it `unknown`, and
+  // these cases are about the mounted row's toolbar rather than the classification.
+  const content: ParsedMessageContent = { rawText: JSON.stringify(parsed), topLevel: parsed, parentObject: parsed, wrapper: null }
+  const prepared: PreparedMessage = { message, original: content, resolved: resolveMessageForRendering(content, AgentProvider.CODEX), category: { kind: 'tool_use' } }
   return render(() => (
     <MessageBubble
       message={message}
-      parsed={{ rawText: JSON.stringify(parsed), topLevel: parsed, parentObject: parsed, wrapper: null }}
-      category={category}
-      host={host}
-      premeasureMode={opts.premeasureMode}
+      prepared={prepared}
+      {...(host !== undefined ? { host } : {})}
+      {...(opts.premeasureMode !== undefined ? { premeasureMode: opts.premeasureMode } : {})}
     />
   ))
 }
 
-function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: RenderContext) {
-  const category: MessageCategory = {
-    kind: 'tool_use',
-    toolName: (toolUse.kind as string) || 'tool_call_update',
-    toolUse,
-    content: [],
-  }
+function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(toolUse, context, category, AgentProvider.OPENCODE)
   return render(() => result)
 }
@@ -206,6 +203,22 @@ async function settleCommandOverflowMeasure(): Promise<void> {
     await new Promise(resolve => requestAnimationFrame(resolve))
   await new Promise(resolve => setTimeout(resolve, 0))
   await Promise.resolve()
+}
+
+/** One OpenCode execute request, reactively, through the plugin the app renders with. */
+/**
+ * Render one OpenCode execute row through the dispatcher, the way a mounted row does.
+ *
+ * The arguments arrive as a PROPS object rather than a thunk. A case that drives
+ * them from a signal gives a getter, which is how Solid hands a reactive value to
+ * a function -- and the overflow guard below does exactly that: it changes the
+ * command while the row is expanded, and the row must re-measure.
+ */
+function renderOpenCodeUpdateCommand(props: { rawInput: Record<string, unknown> }) {
+  const args = () => props.rawInput
+  const category = { kind: 'tool_use' } as MessageCategory
+  const parsed = () => input({ sessionUpdate: 'tool_call', toolCallId: 'acp-1', status: 'pending', kind: 'execute', title: 'Run command', rawInput: args() })
+  return render(() => <>{renderMessageContent(parsed(), { sources: testMessageSources({ current: parsed }) }, category, AgentProvider.OPENCODE)}</>)
 }
 
 function showFullCommandButton(container: HTMLElement): HTMLButtonElement | null {
@@ -495,6 +508,49 @@ describe('command summary syntax highlighting selection stability', () => {
     expect(tokenizeAsyncCalls).toHaveBeenCalledWith('bash', 'echo selected')
   })
 
+  it('expands the command summary in place, clipping and unclipping one area', async () => {
+    const dims = mockCollapsedCommandOverflow()
+    try {
+      const { container } = renderClaudeToolUse('Bash', { input: { command: 'echo one\necho two\necho three\necho four' } })
+      await settleCommandOverflowMeasure()
+
+      const button = showFullCommandButton(container)
+      expect(button).not.toBeNull()
+      const summary = container.querySelector(`.${toolInputSummary}`)
+      expect(summary).not.toBeNull()
+      expect(summary!.classList.contains(commandInputCollapsed)).toBe(true)
+
+      fireEvent.click(button!)
+      await settleCommandOverflowMeasure()
+
+      // The SAME summary stays mounted -- now un-clipped -- and no second command
+      // body appears beside it: expanding un-clips the area the collapsed row
+      // showed, the way a result's expand un-clips its output.
+      const expanded = container.querySelector(`.${toolInputSummary}`)
+      expect(expanded).not.toBeNull()
+      expect(expanded!.classList.contains(commandInputCollapsed)).toBe(false)
+      expect(container.textContent ?? '').toContain('echo four')
+    }
+    finally {
+      dims.restore()
+    }
+  })
+
+  it('a paired Bash result draws the output alone, never the command again', () => {
+    const request = input({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'r1', name: 'Bash', input: { command: 'printf pair-only-marker', description: 'Say it' } }] },
+    })
+    const result = input(makeBashResult({ tool_name: 'Bash', stdout: 'the output words' }, 'the output words'))
+    const { container } = render(() => [
+      renderMessageContent(request, { sources: testMessageSources({ current: () => request, result: () => result, role: () => 'request', visibleRows: () => ({ request: true, result: true }) }) }, { kind: 'tool_use' }, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(result, { sources: testMessageSources({ current: () => result, request: () => request, role: () => 'result', visibleRows: () => ({ request: true, result: true }) }) }, { kind: 'tool_result' }, AgentProvider.CLAUDE_CODE),
+    ])
+    // The request states the command. The completing row states what it answered.
+    expect(container.textContent ?? '').toContain('the output words')
+    expect((container.textContent ?? '').match(/pair-only-marker/g)).toHaveLength(1)
+  })
+
   it('shows the full-command affordance when a short Claude Bash summary overflows after wrapping', async () => {
     const scrollHeight = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get')
     const clientHeight = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get')
@@ -502,7 +558,7 @@ describe('command summary syntax highlighting selection stability', () => {
       scrollHeight.mockReturnValue(96)
       clientHeight.mockReturnValue(58)
 
-      const { container } = renderClaudeToolUse('Bash', { command: 'echo short but visually wrapped' })
+      const { container } = renderClaudeToolUse('Bash', { input: { command: 'echo short but visually wrapped' } })
       await new Promise(resolve => setTimeout(resolve, 0))
 
       expect(container.querySelector('[aria-label="Show full command"]')).not.toBeNull()
@@ -517,15 +573,11 @@ describe('command summary syntax highlighting selection stability', () => {
     const dims = mockCollapsedCommandOverflow()
     try {
       const [command, setCommand] = createSignal('echo short but visually wrapped')
-      const { container } = render(() => (
-        <ToolUseMessage
-          toolName="Bash"
-          icon={Terminal}
-          title="Run command"
-          fullCommand={command()}
-          fallbackDisplay={null}
-        />
-      ))
+      const { container } = renderClaudeToolUse('Bash', {
+        get input() {
+          return { command: command() }
+        },
+      })
       await settleCommandOverflowMeasure()
       expect(showFullCommandButton(container)).not.toBeNull()
 
@@ -546,16 +598,11 @@ describe('command summary syntax highlighting selection stability', () => {
     const dims = mockCollapsedCommandOverflow()
     try {
       const [command, setCommand] = createSignal('echo short but visually wrapped')
-      const { container } = render(() => (
-        <PiToolExecutionRenderer
-          parsed={{
-            type: 'tool_execution_start',
-            toolCallId: 'call_bash_1',
-            toolName: 'bash',
-            args: { command: command() },
-          }}
-        />
-      ))
+      const { container } = renderPiToolRow({
+        get payload() {
+          return { type: 'tool_execution_start', toolCallId: 'call_bash_1', toolName: 'bash', args: { command: command() } }
+        },
+      })
       await settleCommandOverflowMeasure()
       expect(showFullCommandButton(container)).not.toBeNull()
 
@@ -576,20 +623,11 @@ describe('command summary syntax highlighting selection stability', () => {
     const dims = mockCollapsedCommandOverflow()
     try {
       const [command, setCommand] = createSignal('echo short but visually wrapped')
-      const { container } = render(() => (
-        <ToolCallUpdateMessage
-          toolUse={{
-            sessionUpdate: 'tool_call_update',
-            toolCallId: 'call_1',
-            kind: 'execute',
-            status: 'completed',
-            title: 'Run command',
-            rawInput: { command: command() },
-            rawOutput: { metadata: { exit: 0 } },
-            content: [],
-          }}
-        />
-      ))
+      const { container } = renderOpenCodeUpdateCommand({
+        get rawInput() {
+          return { command: command() }
+        },
+      })
       await settleCommandOverflowMeasure()
       expect(showFullCommandButton(container)).not.toBeNull()
 
@@ -682,7 +720,6 @@ describe('command summary syntax highlighting selection stability', () => {
 
 describe('command result scroll-critical rendering', () => {
   it('keeps completed Codex command output mounted while syntax highlighting is paused', () => {
-    normalizeProgressOutputCalls.mockClear()
     normalizedCommandBodyCalls.mockClear()
 
     const { container } = renderCodexItem({
@@ -723,7 +760,6 @@ describe('command result scroll-critical rendering', () => {
   })
 
   it('keeps completed Codex command toolbar metadata while scroll-critical', () => {
-    normalizeProgressOutputCalls.mockClear()
     normalizedCommandBodyCalls.mockClear()
 
     const { container } = renderCodexMessageBubble({
@@ -739,7 +775,9 @@ describe('command result scroll-critical rendering', () => {
     expect(container.querySelector('[data-command-result-deferred]')).toBeNull()
     expect(container.textContent ?? '').toContain('metadata-output')
     expect(container.querySelector('[aria-label="Expand"]')).not.toBeNull()
-    expect(normalizeProgressOutputCalls).toHaveBeenCalled()
+    // ONE transform answers both halves. The toolbar's collapse check reads
+    // `normalizedCommandBody`, the same function the body reads, so the two cannot
+    // disagree on whether the output clips -- and neither normalizes it twice.
     expect(normalizedCommandBodyCalls).toHaveBeenCalled()
   })
 
@@ -902,7 +940,7 @@ describe('command result collapsibility accounts for \\r-normalized line count',
   it('claude Bash: rebase progress (3 raw lines, 9 normalized lines) is reported as collapsible', () => {
     const stdout = 'From github.com:leapmux/leapmux\n * branch              main       -> FETCH_HEAD\nRebasing (1/6)\rRebasing (2/6)\rRebasing (3/6)\rRebasing (4/6)\rRebasing (5/6)\rRebasing (6/6)\rSuccessfully rebased and updated refs/heads/grid-layout.'
     const parsed = makeBashResult({ tool_name: 'Bash', stdout }, stdout)
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(parsed, 'Bash', undefined))
+    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, parsed, { spanType: 'Bash' })
     expect(meta?.collapsible).toBe(true)
   })
 
@@ -911,27 +949,27 @@ describe('command result collapsibility accounts for \\r-normalized line count',
     // the \r, so 4 ≤ 7 means the body shows everything; meta should agree.
     const stdout = 'Rebasing (1/4)\rRebasing (2/4)\rRebasing (3/4)\rDone'
     const parsed = makeBashResult({ tool_name: 'Bash', stdout }, stdout)
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(parsed, 'Bash', undefined))
+    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, parsed, { spanType: 'Bash' })
     expect(meta?.collapsible).toBe(false)
   })
 
   it('claude Bash: plain output preserves the standard 3-row collapse threshold', () => {
     const stdout = 'a\nb\nc\nd'
     const parsed = makeBashResult({ tool_name: 'Bash', stdout }, stdout)
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(parsed, 'Bash', undefined))
+    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, parsed, { spanType: 'Bash' })
     expect(meta?.collapsible).toBe(true)
   })
 
   it('claude Bash: plain output at the threshold (3 lines, no \\r) is NOT collapsible', () => {
     const stdout = 'a\nb\nc'
     const parsed = makeBashResult({ tool_name: 'Bash', stdout }, stdout)
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(parsed, 'Bash', undefined))
+    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, parsed, { spanType: 'Bash' })
     expect(meta?.collapsible).toBe(false)
   })
 
   it('codex commandExecution: rebase-style \\r progress is reported as collapsible', () => {
     const aggregatedOutput = 'From origin\n * branch    main       -> FETCH_HEAD\nRebasing (1/6)\rRebasing (2/6)\rRebasing (3/6)\rRebasing (4/6)\rRebasing (5/6)\rRebasing (6/6)\rDone.'
-    const meta = codexToolResultMeta({ kind: 'tool_use', toolName: 'commandExecution', toolUse: {}, content: [] }, toolMessageInput({ item: { type: 'commandExecution', status: 'completed', aggregatedOutput, exitCode: 0 } }, 'commandExecution', undefined))
+    const meta = providerToolMeta(AgentProvider.CODEX, { item: { type: 'commandExecution', status: 'completed', aggregatedOutput, exitCode: 0 } }, { spanType: 'commandExecution' })
     expect(meta?.collapsible).toBe(true)
   })
 })
@@ -956,13 +994,13 @@ describe('retained command completion', () => {
   it.each(cases)('uses the shared interrupted result for provider $provider', ({ provider, result, spanType }) => {
     const parsed = { ...input(result, null, provider), completion: MessageCompletion.INTERRUPTED }
     const plugin = providerFor(provider)!
-    expect(['tool_use', 'tool_result']).toContain(plugin.classify(parsed).kind)
-    expect(plugin.spanRole?.(parsed)).toBe('result')
+    expect(['tool_use', 'tool_result']).toContain(plugin?.transcript.classify(parsed).kind)
+    expect(plugin?.transcript.spanRole?.(parsed)).toBe('result')
     const { container } = render(() => renderMessageContent(result, {
       premeasureMode: true,
       spanType,
       sources: testMessageSources({ current: () => parsed }),
-    }, plugin.classify(parsed), provider, MessageCompletion.INTERRUPTED))
+    }, plugin?.transcript.classify(parsed), provider, MessageCompletion.INTERRUPTED))
     expect(container.textContent).toContain(output)
     expect(container.textContent).toContain('Interrupted')
     expect(container.textContent).not.toContain('Success')
@@ -994,7 +1032,7 @@ describe('canonical failure word across the two routes', () => {
       premeasureMode: true,
       spanType,
       sources: testMessageSources({ current: () => parsed }),
-    }, plugin.classify(parsed), provider, MessageCompletion.ERROR))
+    }, plugin?.transcript.classify(parsed), provider, MessageCompletion.ERROR))
     expect(container.textContent).toContain('Error')
     expect(container.textContent).not.toContain('Failed')
     expect(container.textContent).not.toContain('Success')
@@ -1020,7 +1058,7 @@ describe('retained file completion', () => {
     const { container } = render(() => renderMessageContent(result, {
       premeasureMode: true,
       sources: testMessageSources({ current: () => parsed }),
-    }, plugin.classify(parsed), provider, MessageCompletion.INTERRUPTED))
+    }, plugin?.transcript.classify(parsed), provider, MessageCompletion.INTERRUPTED))
     expect(container.textContent?.match(/Interrupted/g)).toHaveLength(1)
     expect(container.textContent).not.toMatch(/Failed|Error|Text truncated/)
     expect(container.textContent).toContain('partial file output')

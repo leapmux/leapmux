@@ -37,7 +37,9 @@ export interface DisabledReasonMenuItemProps {
  * follows it.
  */
 export const DisabledReasonMenuItem: Component<DisabledReasonMenuItemProps> = props => (
-  <Tooltip text={props.reason}>
+  // `''` rather than undefined: `Tooltip` decides by truthiness, and the
+  // empty string is its documented spelling for "nothing to show".
+  <Tooltip text={props.reason ?? ''}>
     <button
       type="button"
       role="menuitem"

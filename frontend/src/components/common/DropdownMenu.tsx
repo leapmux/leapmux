@@ -356,6 +356,13 @@ export function DropdownMenuCheckableItem(props: DropdownMenuCheckableItemProps)
     return testId === undefined ? undefined : `${testId}-label`
   }
 
+  // Spread-ready `testId`, read ONCE: a second `labelTestId()` call beside the
+  // first cannot be narrowed, so presence and value are decided together here.
+  const labelTestIdProps = () => {
+    const testId = labelTestId()
+    return testId !== undefined ? { testId } : {}
+  }
+
   return (
     <button
       // A <button> defaults to type="submit". This item toggles a preference, so
@@ -398,7 +405,9 @@ export function DropdownMenuCheckableItem(props: DropdownMenuCheckableItemProps)
           when={props.revealClippedLabel}
           fallback={<span class={clippedText} data-testid={labelTestId()}>{props.label}</span>}
         >
-          <ClippedText text={props.label} testId={labelTestId()} />
+          {/* `testId` spreads in only when derived, so an unlabeled row adds
+              no empty `data-testid` attribute to the span. */}
+          <ClippedText text={props.label} {...labelTestIdProps()} />
         </Show>
         {/* The callback form, and it is load-bearing: `Show` memoizes `when`,
             so `props.detail` is read ONCE per tracking cycle. A caller whose

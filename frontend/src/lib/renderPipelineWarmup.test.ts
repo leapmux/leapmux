@@ -21,7 +21,7 @@ const {
   WARMUP_FALLBACK_DELAY_MS,
 } = await import('./renderPipelineWarmup')
 
-describe('renderpipelinewarmup', () => {
+describe('renderPipelineWarmup', () => {
   beforeEach(() => {
     _resetWarmupForTest()
     vi.mocked(renderMarkdownInWorker).mockClear()

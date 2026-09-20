@@ -51,7 +51,7 @@ function renderQueue(overrides: {
     <AgentInputQueue
       snapshot={snapshot()}
       clientId="client-a"
-      activeEditInputId={overrides.activeEditInputId}
+      {...(overrides.activeEditInputId !== undefined ? { activeEditInputId: overrides.activeEditInputId } : {})}
       supportsSteering={overrides.supportsSteering ?? false}
       supportsPreemption={overrides.supportsPreemption ?? false}
       {...handlers}
@@ -64,7 +64,7 @@ function renderQueue(overrides: {
   }
 }
 
-describe('agentInputQueue', () => {
+describe('AgentInputQueue', () => {
   it('renders operation, state, text, and attachment metadata', () => {
     renderQueue({
       items: [item('compact', {

@@ -1,13 +1,12 @@
-import type { MessageCategory } from '../messageClassification'
-import type { RenderContext } from '../messageRenderers'
+import type { MessageCategory } from '../messageClassifier'
+import type { MessageContentRenderContext } from '../messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { toolMessageInput } from '~/components/chat/providers/testUtils'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { claudeToolResultMeta } from './claude/toolResult'
+import { providerToolMeta } from '~/test-support/toolCallFixture'
 import './testMocks'
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../messageContentRenderer')
 
 const LISTING = [
   '| Name | Kind | Status |',
@@ -23,13 +22,7 @@ function renderToolUseText(input: Record<string, unknown>): string {
       content: [{ type: 'tool_use', id: 'test-listagents', name: 'ListAgents', input }],
     },
   }
-  const content = msg.message.content as Array<Record<string, unknown>>
-  const category: MessageCategory = {
-    kind: 'tool_use',
-    toolName: 'ListAgents',
-    toolUse: content[0],
-    content,
-  }
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(msg, undefined, category, AgentProvider.CLAUDE_CODE)
   return render(() => result).container.textContent?.trim() ?? ''
 }
@@ -48,7 +41,7 @@ function listAgentsToolResult(resultContent: string, toolUseResult?: Record<stri
 function renderToolResult(
   resultContent: string,
   toolUseResult?: Record<string, unknown>,
-  context?: RenderContext,
+  context?: MessageContentRenderContext,
 ): HTMLElement {
   const msg = listAgentsToolResult(resultContent, toolUseResult)
   const category: MessageCategory = { kind: 'tool_result' }
@@ -105,17 +98,23 @@ describe('claude ListAgents tool_result rendering', () => {
   })
 })
 
-describe('claudeToolResultMeta for ListAgents', () => {
-  // The toolbar's expand button and Copy must act on the text the body shows,
-  // which is the structured listing whenever there is one.
-  it('reports a long listing as collapsible and copies it', () => {
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(listAgentsToolResult('', { listing: LISTING }), 'ListAgents', undefined))
-    expect(meta?.collapsible).toBe(true)
+describe('claude toolbar actions for ListAgents', () => {
+  // The toolbar's Copy must act on the text the body shows, which is the structured
+  // listing whenever there is one.
+  it('copies the listing the card drew', () => {
+    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, listAgentsToolResult('', { listing: LISTING }), { spanType: 'ListAgents' })
     expect(meta?.copyableContent()).toBe(LISTING)
   })
 
-  it('reports a one-line listing as not collapsible', () => {
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(listAgentsToolResult('', { listing: 'No agents are reachable.' }), 'ListAgents', undefined))
+  // A listing draws as a MARKDOWN body, which the row never clamps -- the table is
+  // the answer, and half a table states nothing. So the toolbar offers no Expand,
+  // whatever the listing's length. The rule this replaced counted the listing's
+  // lines and drew a button that revealed nothing.
+  it.each([
+    ['a long listing', LISTING],
+    ['a one-line listing', 'No agents are reachable.'],
+  ])('offers no expand for %s', (_name, listing) => {
+    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, listAgentsToolResult('', { listing }), { spanType: 'ListAgents' })
     expect(meta?.collapsible).toBe(false)
   })
 
@@ -124,7 +123,7 @@ describe('claudeToolResultMeta for ListAgents', () => {
   // offer a Copy button on a card whose body came from somewhere else, and yield
   // spaces.
   it('offers no Copy for a whitespace-only listing', () => {
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(listAgentsToolResult('', { listing: '   \n\t  ' }), 'ListAgents', undefined))
+    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, listAgentsToolResult('', { listing: '   \n\t  ' }), { spanType: 'ListAgents' })
     expect(meta?.hasCopyable).toBe(false)
     expect(meta?.copyableContent()).toBeNull()
   })

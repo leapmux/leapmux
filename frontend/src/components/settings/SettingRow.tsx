@@ -200,7 +200,7 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
             min={c.min}
             max={c.max}
             step={c.step}
-            unit={c.unit}
+            {...(c.unit === undefined ? {} : { unit: c.unit })}
             value={typeof props.binding.value() === 'number' ? props.binding.value() as number : c.min}
             onChange={commit}
           />
@@ -209,10 +209,10 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
         return (
           <NumberControl
             ariaLabel={d().label}
-            min={c.min}
-            max={c.max}
-            step={c.step}
-            unit={c.unit}
+            {...(c.min === undefined ? {} : { min: c.min })}
+            {...(c.max === undefined ? {} : { max: c.max })}
+            {...(c.step === undefined ? {} : { step: c.step })}
+            {...(c.unit === undefined ? {} : { unit: c.unit })}
             value={typeof props.binding.value() === 'number' ? props.binding.value() as number : undefined}
             onChange={commit}
           />
@@ -221,7 +221,7 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
         return (
           <TextControl
             ariaLabel={d().label}
-            placeholder={c.placeholder}
+            {...(c.placeholder === undefined ? {} : { placeholder: c.placeholder })}
             value={typeof props.binding.value() === 'string' ? props.binding.value() as string : undefined}
             onChange={commit}
           />

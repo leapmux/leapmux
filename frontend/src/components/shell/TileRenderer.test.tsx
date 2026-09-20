@@ -291,7 +291,7 @@ describe('message contexts in tiles', () => {
  * them. That is the same per-metadata-patch account-wide recomputation the tab
  * join was restructured to eliminate.
  */
-describe('tileRenderer mru agent context', () => {
+describe('TileRenderer mru agent context', () => {
   it('walks the MRU order once per tick, not once per file pane', async () => {
     const s = createSetup()
     const tileId = s.layoutStore.focusedTileId()!
@@ -329,7 +329,7 @@ describe('tileRenderer mru agent context', () => {
   })
 })
 
-describe('tileRenderer pane identity', () => {
+describe('TileRenderer pane identity', () => {
   it('keeps the agent pane mounted across a tab-metadata change', async () => {
     const s = createSetup()
     const tileId = s.layoutStore.focusedTileId()!
@@ -369,7 +369,7 @@ describe('tileRenderer pane identity', () => {
   })
 })
 
-describe('tileRenderer close-tile flow', () => {
+describe('TileRenderer close-tile flow', () => {
   it('opens the CloseTileDialog when closing a tile that has tabs', async () => {
     const s = createSetup()
     const leftTileId = s.layoutStore.focusedTileId()
@@ -617,7 +617,7 @@ describe('tileRenderer close-tile flow', () => {
  * enqueue handler owns this, and it must scroll BEFORE the RPC: a slow or a
  * failed enqueue must still land the reader on the tail.
  */
-describe('tileRenderer composer send', () => {
+describe('TileRenderer composer send', () => {
   it('scrolls the transcript to the live tail on a composer send', async () => {
     const s = createSetup()
     const tileId = s.layoutStore.focusedTileId()!
@@ -649,7 +649,7 @@ describe('tileRenderer composer send', () => {
  * string and had no short-circuit, so the strip showed a 400-byte title the
  * worker had cut to 128, and an untouched edit issued a write.
  */
-describe('tileRenderer tab rename', () => {
+describe('TileRenderer tab rename', () => {
   beforeEach(() => {
     renameAgent.mockClear()
     updateTerminalTitle.mockClear()

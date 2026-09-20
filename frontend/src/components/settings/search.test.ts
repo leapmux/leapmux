@@ -23,7 +23,13 @@ describe('matchSettings', () => {
   it('matches case-insensitively over the label', () => {
     const hits = match([entry({ label: 'Turn-end volume' })], 'VOLUME')
     expect(hits).toHaveLength(1)
-    expect(hits[0].entries[0].label).toBe('Turn-end volume')
+    const group = hits[0]
+    if (group === undefined)
+      throw new Error('no hit group')
+    const first = group.entries[0]
+    if (first === undefined)
+      throw new Error('no hit entry')
+    expect(first.label).toBe('Turn-end volume')
   })
 
   it('matches help, group title, keywords, and enum option labels', () => {
@@ -48,7 +54,10 @@ describe('matchSettings', () => {
     ]
     const hits = match(entries, 'label')
     expect(hits.map(g => g.navId)).toEqual(['appearance', 'advanced'])
-    expect(hits[0].entries.map(e => e.label)).toEqual(['Appearance label', 'Another'])
+    const appearance = hits[0]
+    if (appearance === undefined)
+      throw new Error('no hit group')
+    expect(appearance.entries.map(e => e.label)).toEqual(['Appearance label', 'Another'])
   })
 
   // The user group `advanced` and the admin group `admin-advanced` share the
@@ -95,12 +104,16 @@ describe('buildSearchIndex', () => {
       keywords: ['Sound'],
       optionLabels: ['Ding Dong'],
     })])
+    if (indexed === undefined)
+      throw new Error('no indexed entry')
     expect(indexed.haystack).toBe('turn-end volume playback volume notifications sound ding dong')
     expect(indexed.entry.label).toBe('Turn-End Volume')
   })
 
   it('tolerates an entry with no help, keywords, or option labels', () => {
     const [indexed] = buildSearchIndex([entry({ label: 'Theme' })])
+    if (indexed === undefined)
+      throw new Error('no indexed entry')
     expect(indexed.haystack).toBe('theme  appearance')
   })
 })

@@ -164,7 +164,20 @@ func (a *PiAgent) providerForModel(modelID string) string {
 	return PiDefaultProvider
 }
 
-// applyModel sends set_model and updates local state on success.
+// applyModel sends set_model, then reads Pi's own state back so the local
+// model, provider and thinking level hold what Pi settled on.
+//
+// The request is not the answer. set_model picks the thinking level for the new
+// model by itself, and a Pi build that resolves an alias or refuses a provider
+// settles on a model this caller did not name. get_state is the ONE route to
+// that answer: Pi has no `model_changed` event, and the `model_change` session
+// entry it appends reaches no `entry_appended` event either (see
+// handlePiModelChangeEntry). Recording the request instead left the model
+// segment showing a model the running agent had already left.
+//
+// The requested pair goes in FIRST, so a failed state read still moves off the
+// prior model. set_model already succeeded, so the prior model is certainly
+// wrong and the requested one is the best answer left.
 func (a *PiAgent) applyModel(modelID, providerID string, timeout time.Duration) error {
 	if providerID == "" {
 		providerID = a.providerForModel(modelID)
@@ -177,6 +190,13 @@ func (a *PiAgent) applyModel(modelID, providerID string, timeout time.Duration) 
 	a.model = modelID
 	a.provider = providerID
 	a.mu.Unlock()
+	stateRaw, err := a.sendPiCommand(PiCommandGetState, nil, timeout)
+	if err != nil {
+		slog.Warn("pi get_state after set_model failed; keeping the requested model",
+			"agent_id", a.agentID, "model", modelID, "error", err)
+		return nil
+	}
+	a.applyStateResponse(stateRaw)
 	return nil
 }
 

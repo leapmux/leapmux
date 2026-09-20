@@ -1,54 +1,68 @@
-import type { ControlResponseDisplay, PersistedControlResponse } from './persistedControlResponse'
+import type { ControlResponseSummary } from './model/controlResponse'
+import type { PersistedControlResponse } from './persistedControlResponse'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { renderControlResponseRow, renderMessageContent } from './messageRenderers'
+import { renderMessageContent } from './messageContentRenderer'
+import { renderControlResponseRow } from './messageRenderers'
+import { resolveControlResponseSummary } from './persistedControlResponse'
 // Register provider plugins so renderMessageContent can resolve a plugin's controlResponseDisplay.
 import '~/components/chat/providers'
 
-function row(parsed: PersistedControlResponse, display?: (cr: PersistedControlResponse) => ControlResponseDisplay | null) {
-  return render(() => <>{renderControlResponseRow(parsed, undefined, display)}</>)
+// The renderer takes the DISPLAY: layer 1 runs the provider's derivation and the
+// never-null chokepoint (~/components/chat/rowExtraction.ts), so the markup below is
+// all this function decides. The derivation and its three degradations are asserted
+// against `resolveControlResponseSummary` itself, in the describe after this one.
+function row(display: ControlResponseSummary) {
+  return render(() => <>{renderControlResponseRow(display, undefined)}</>)
 }
 
 const RESPONSE: PersistedControlResponse = { requestId: 'request-1', claimToken: 'claim-1', request: undefined, response: {} }
 
-describe('rendercontrolresponserow', () => {
+describe('renderControlResponseRow', () => {
   it('renders a label as line-broken plain text', () => {
-    const { container } = row(RESPONSE, () => ({ kind: 'label', text: 'Task: Build\nEnv: Dev' }))
+    const { container } = row({ kind: 'label', text: 'Task: Build\nEnv: Dev' })
     expect(container.textContent).toBe('Task: Build\nEnv: Dev')
   })
 
   it('renders feedback under the "Sent feedback:" lead as markdown', () => {
-    const { container } = row(RESPONSE, () => ({ kind: 'feedback', message: 'use ripgrep instead' }))
+    const { container } = row({ kind: 'feedback', message: 'use ripgrep instead' })
     expect(container.textContent).toContain('Sent feedback:')
     expect(container.textContent).toContain('use ripgrep instead')
   })
 
+  // An empty label is a row the reader cannot read anything out of, and the chokepoint
+  // above is what keeps one from arriving -- this states that the markup itself makes
+  // no attempt to repair it, so the guard stays where every caller passes through it.
+  it('draws the label it is given, with no repair of its own', () => {
+    const { container } = row({ kind: 'label', text: '' })
+    expect(container.querySelector('[data-testid="control-response-text"]')?.textContent).toBe('')
+  })
+})
+
+describe('resolveControlResponseSummary', () => {
   it('degrades to the neutral/generic fallback when the deriver returns null', () => {
     // No plugin display + an unrecognized response -> the generic label.
-    const { container } = row(RESPONSE, () => null)
-    expect(container.textContent).toBe('Responded')
+    expect(resolveControlResponseSummary(RESPONSE, () => null)).toEqual({ kind: 'label', text: 'Responded' })
   })
 
   it('degrades to the fallback when the deriver THROWS, never leaking raw JSON', () => {
-    // A derivation that throws on a malformed payload must NOT propagate to renderMessageContent's
-    // raw-JSON safety net (which would dump the {controlResponse:...} envelope at the user) -- it
-    // degrades to the same neutral fallback as a null return.
+    // A derivation that throws on a malformed payload must NOT propagate to the
+    // extraction's own guard, which would report the row as one LeapMux could not
+    // render -- it degrades to the same neutral fallback as a null return.
     const throwing = (): never => {
       throw new Error('bad payload')
     }
-    const { container } = row(RESPONSE, throwing)
-    expect(container.textContent).toBe('Responded')
+    expect(resolveControlResponseSummary(RESPONSE, throwing)).toEqual({ kind: 'label', text: 'Responded' })
   })
 
   it('uses the coarse behavior envelope as the fallback when no deriver is given', () => {
     const parsed = { ...RESPONSE, response: { response: { response: { behavior: 'allow' } } } }
-    const { container } = row(parsed, undefined)
-    expect(container.textContent).toBe('Allow')
+    expect(resolveControlResponseSummary(parsed, undefined)).toEqual({ kind: 'label', text: 'Allow' })
   })
 })
 
-describe('rendermessagecontent control_response dispatch', () => {
+describe('renderMessageContent control_response dispatch', () => {
   function renderRow(response: PersistedControlResponse, provider: AgentProvider) {
     return render(() => <>{renderMessageContent(response.response, undefined, { kind: 'control_response', response }, provider)}</>)
   }

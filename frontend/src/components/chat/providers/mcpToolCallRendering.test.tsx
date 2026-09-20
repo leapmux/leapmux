@@ -1,14 +1,15 @@
-import type { MessageCategory } from '../messageClassification'
-import type { RenderContext } from '../messageRenderers'
+import type { MessageCategory } from '../messageClassifier'
+import type { MessageContentRenderContext } from '../messageContentRenderer'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal, untrack } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pngBase64 } from '~/test-support/pngFixture'
-import { toolOutcomeLabel } from '../toolOutcomeLabel'
+import { imageActionsFrom } from '../renderContext'
+import { toolOutcomeLabel } from '../results/toolOutcomeLabel'
 import { toolResultCollapsed } from '../toolStyles.css'
-import './claude'
-import './codex'
+import './claude/plugin'
+import './codex/plugin'
 import './testMocks'
 
 vi.mock('~/lib/shikiWorkerClient', () => ({
@@ -19,9 +20,9 @@ vi.mock('~/lib/tokenCache', () => ({
   getCachedTokens: () => null,
 }))
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../messageContentRenderer')
 
-function renderClaudeToolResult(parsed: Record<string, unknown>, context?: RenderContext) {
+function renderClaudeToolResult(parsed: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }
   return render(() => renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE))
 }
@@ -36,15 +37,9 @@ function makeMcpToolResult(content: unknown, isError = false) {
   }
 }
 
-function renderCodexItem(item: Record<string, unknown>, context?: RenderContext) {
+function renderCodexItem(item: Record<string, unknown>, context?: MessageContentRenderContext) {
   const parsed = { item, threadId: 't1', turnId: 'r1' }
-  const toolName = String(item.type ?? 'codex')
-  const category: MessageCategory = {
-    kind: 'tool_use',
-    toolName,
-    toolUse: parsed,
-    content: [],
-  }
+  const category: MessageCategory = { kind: 'tool_use' }
   return render(() => renderMessageContent(parsed, context, category, AgentProvider.CODEX))
 }
 
@@ -109,9 +104,12 @@ describe('claude MCP tool_result rendering', () => {
     const parsed = makeMcpToolResult([
       { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' },
     ])
+    // `premeasurePass` is set, so the assembled actions are never undefined.
+    const images = imageActionsFrom({ premeasurePass: () => true })
     const { container } = renderClaudeToolResult(parsed, {
       spanType: 'mcp__playwright__screenshot',
       premeasureMode: true,
+      ...(images ? { images } : {}),
     })
     const img = container.querySelector('img')
     expect(img).not.toBeNull()

@@ -21,6 +21,8 @@ const resolveSolidRefreshVirtual = {
   resolveId(id: string) {
     if (id === '/@solid-refresh')
       return require.resolve('solid-refresh/dist/solid-refresh.mjs')
+    // Every other id stays unresolved, which hands it to the next plugin.
+    return undefined
   },
 }
 

@@ -113,7 +113,7 @@ function itemsOf(testId: string): string[] {
     .map(el => el.textContent?.trim() ?? '')
 }
 
-describe('workspaceContextMenu', () => {
+describe('WorkspaceContextMenu', () => {
   it('reads no tab of any workspace until it is OPENED', () => {
     // `DropdownMenu` renders children eagerly, so the items are in the DOM
     // either way -- what `onToggle` controls is the WORK. One of these mounts per

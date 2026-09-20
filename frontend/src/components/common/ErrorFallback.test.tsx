@@ -21,7 +21,7 @@ function errorWith(message: string, stack: string) {
   return error
 }
 
-describe('errorFallback', () => {
+describe('ErrorFallback', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resolveStack.mockImplementation(async (stack: string) => `resolved:\n${stack}`)
@@ -81,7 +81,10 @@ describe('errorFallback', () => {
 
   it('survives an error carrying no stack', () => {
     const error = new Error('stackless')
-    error.stack = undefined
+    // `delete`, not `= undefined`: the component reads the stack by value, and
+    // lib types `Error.stack` as `string`-or-absent, refusing an explicit
+    // `undefined` under exactOptionalPropertyTypes.
+    delete error.stack
     render(() => <ErrorFallback error={error} reset={() => {}} />)
 
     expect(screen.getByRole('alert').textContent).toContain('stackless')
@@ -98,7 +101,7 @@ describe('errorFallback', () => {
     // Blanked after construction: `unicorn/error-message` forbids writing the
     // `new Error('')` literal, but a handler can genuinely throw one.
     error.message = ''
-    error.stack = undefined
+    delete error.stack
     render(() => <ErrorFallback error={error} reset={() => {}} />)
 
     expect(screen.getByRole('alert').textContent).toContain('Unknown error')
@@ -119,7 +122,10 @@ describe('errorFallback', () => {
     fireEvent.click(screen.getByText(/boom/))
 
     await waitFor(() => expect(copyTextToClipboard).toHaveBeenCalled())
-    expect(copyTextToClipboard.mock.calls[0][0]).toContain('boom')
+    const copied = copyTextToClipboard.mock.calls[0]?.[0]
+    if (copied === undefined)
+      throw new Error('expected the copy to have run')
+    expect(copied).toContain('boom')
     expect(showInfoToast).toHaveBeenCalledWith('Stack trace copied to clipboard')
   })
 

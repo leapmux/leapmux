@@ -32,7 +32,7 @@ describe('viewToggle', () => {
       <ViewToggle mode="render" onToggle={onToggle} showSplit />
     ))
     const buttons = container.querySelectorAll('button')
-    buttons[1].click() // split
+    buttons[1]?.click() // split
     expect(onToggle).toHaveBeenCalledWith('split')
   })
 })

@@ -268,6 +268,14 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
   const isGitRepo = () => Boolean(props.gitStatusStore.focusedState()?.toplevel)
   const gitErrorHint = () => props.gitStatusStore.focusedState()?.errorHint || undefined
 
+  // Spread-ready `isVisible`, read ONCE: the memo answers undefined while the
+  // section is unfiltered, and the spread keeps the prop absent then -- a
+  // second `isVisible()` call beside the first could not be narrowed.
+  const isVisibleProps = () => {
+    const predicate = isVisible()
+    return predicate !== undefined ? { isVisible: predicate } : {}
+  }
+
   return (
     // `data-working-dir` carries the tab's own dir, which is empty until the
     // tab hydrates -- unlike the tree below, which roots at the worker's home
@@ -312,17 +320,17 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
                     selectedPath={props.fileTreePath}
                     onSelect={props.onFileSelect}
                     onFileOpen={path => props.onFileOpen?.(path, activeFilter())}
-                    onMention={props.onMention}
-                    onOpenTerminal={props.onOpenTerminal}
+                    {...(props.onMention !== undefined ? { onMention: props.onMention } : {})}
+                    {...(props.onOpenTerminal !== undefined ? { onOpenTerminal: props.onOpenTerminal } : {})}
                     rootPath={root()}
                     homeDir={props.homeDir}
                     flavor={props.flavor}
                     gitStatusStore={props.gitStatusStore}
-                    isVisible={isVisible()}
+                    {...isVisibleProps()}
                     showHiddenFiles={showHiddenFiles()}
                     sortOrder={sortOrder()}
-                    turnEndTrigger={props.turnEndTrigger}
-                    enabled={props.enabled}
+                    {...(props.turnEndTrigger !== undefined ? { turnEndTrigger: props.turnEndTrigger } : {})}
+                    {...(props.enabled !== undefined ? { enabled: props.enabled } : {})}
                     ref={(h) => { treeHandle = h }}
                   />
                 )}

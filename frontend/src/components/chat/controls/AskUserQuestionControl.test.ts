@@ -94,7 +94,7 @@ describe('controlQuestion', () => {
   it('returns the capability and the questions for a question payload', () => {
     const found = controlQuestion(question(), AgentProvider.CLAUDE_CODE)
     expect(found?.questions).toHaveLength(1)
-    expect(found?.questions[0].question).toBe('Which database?')
+    expect(found?.questions[0]?.question).toBe('Which database?')
     expect(found?.capability).toBeDefined()
   })
 

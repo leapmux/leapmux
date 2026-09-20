@@ -33,11 +33,17 @@ function canonicalize(state: UserCrdtState): string {
   const parts: string[] = []
   parts.push('nodes:')
   for (const k of Object.keys(state.nodes).sort()) {
-    parts.push(`${k}=${bytesToHex(toBinary(NodeRecordSchema, state.nodes[k]))};`)
+    const rec = state.nodes[k]
+    if (rec === undefined)
+      continue
+    parts.push(`${k}=${bytesToHex(toBinary(NodeRecordSchema, rec))};`)
   }
   parts.push('|tabs:')
   for (const k of Object.keys(state.tabs).sort()) {
-    parts.push(`${k}=${bytesToHex(toBinary(TabRecordSchema, state.tabs[k]))};`)
+    const rec = state.tabs[k]
+    if (rec === undefined)
+      continue
+    parts.push(`${k}=${bytesToHex(toBinary(TabRecordSchema, rec))};`)
   }
   return parts.join('')
 }
@@ -45,7 +51,7 @@ function canonicalize(state: UserCrdtState): string {
 function bytesToHex(bytes: Uint8Array): string {
   let out = ''
   for (let i = 0; i < bytes.length; i++) {
-    const b = bytes[i].toString(16)
+    const b = bytes[i]?.toString(16) ?? ''
     out += b.length === 1 ? `0${b}` : b
   }
   return out
@@ -62,7 +68,12 @@ function shuffle<T>(items: T[], seed: number): T[] {
   const out = items.slice()
   for (let i = out.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1))
-    ;[out[i], out[j]] = [out[j], out[i]]
+    const a = out[i]
+    const b = out[j]
+    if (a === undefined || b === undefined)
+      continue
+    out[i] = b
+    out[j] = a
   }
   return out
 }
@@ -124,12 +135,10 @@ describe('commute', () => {
   })
 
   it('set then Tombstone commutes with Tombstone then Set', () => {
-    const ops: CrdtOp[] = [
-      setPosOp('n1', 'A', 10n, 0n, 'a'),
-      tombstoneNode('n1', 20n, 0n, 'a'),
-    ]
-    const a = canonicalize(applyAll(ops))
-    const b = canonicalize(applyAll([ops[1], ops[0]]))
+    const set = setPosOp('n1', 'A', 10n, 0n, 'a')
+    const tomb = tombstoneNode('n1', 20n, 0n, 'a')
+    const a = canonicalize(applyAll([set, tomb]))
+    const b = canonicalize(applyAll([tomb, set]))
     expect(a).toBe(b)
   })
 
@@ -138,7 +147,7 @@ describe('commute', () => {
     const b = setPosOp('n1', 'from-b', 10n, 0n, 'bravo')
     const s1 = applyAll([a, b])
     const s2 = applyAll([b, a])
-    expect(s1.nodes.n1.position?.value).toBe('from-b')
-    expect(s2.nodes.n1.position?.value).toBe('from-b')
+    expect(s1.nodes.n1?.position?.value).toBe('from-b')
+    expect(s2.nodes.n1?.position?.value).toBe('from-b')
   })
 })

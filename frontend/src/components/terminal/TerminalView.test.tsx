@@ -132,13 +132,12 @@ function makeMockTerminalInstance(): TerminalInstance {
     webglAllowed: false,
     transparentBackground: false,
     fontsReady: Promise.resolve(),
-    webglAddon: undefined,
     setConfirmLink: vi.fn(),
     dispose: vi.fn(),
   }
 }
 
-describe('terminalView', () => {
+describe('TerminalView', () => {
   beforeEach(() => {
     mockCreateTerminalInstance.mockReset()
     // Reset shared pool state between tests (module-level singleton).
@@ -710,8 +709,8 @@ describe('terminalView', () => {
       id: 'term-late-screen',
       type: TabType.TERMINAL,
       workspaceId: 'ws-1',
-      // screen is undefined initially — ListTerminals hasn't returned yet.
-      screen: undefined,
+      // No `screen` key yet — ListTerminals hasn't returned, and an absent
+      // optional reads as undefined.
     }])
 
     render(() => (
@@ -851,17 +850,21 @@ describe('disposeTerminalInstance scrollback capture', () => {
 
     const captured: Array<{ id: string, text: string, parsedOffset?: number }> = []
     setTerminalScreenSink((id, screen, parsedOffset) => {
-      captured.push({ id, text: new TextDecoder().decode(screen), parsedOffset })
+      captured.push({
+        id,
+        text: new TextDecoder().decode(screen),
+        ...(parsedOffset !== undefined ? { parsedOffset } : {}),
+      })
     })
 
     disposeTerminalInstance('term-dispose')
 
     expect(captured).toHaveLength(1)
-    expect(captured[0].id).toBe('term-dispose')
-    expect(captured[0].text).toBe('scrollback-worth-keeping')
+    expect(captured[0]?.id).toBe('term-dispose')
+    expect(captured[0]?.text).toBe('scrollback-worth-keeping')
     // The offset the serialized screen actually covers rides along, so the
     // store can rewind lastOffset onto it.
-    expect(captured[0].parsedOffset).toBe(4321)
+    expect(captured[0]?.parsedOffset).toBe(4321)
     // And the instance really is gone — capturing must not keep it alive.
     expect(getTerminalInstance('term-dispose')).toBeUndefined()
   })
@@ -873,7 +876,9 @@ describe('disposeTerminalInstance scrollback capture', () => {
     // "already rendered" — so the capture waits for a parsed write instead
     // and the previous stored screen stays.
     const instance = await mount('term-midparse')
-    instance.lastParsedOffset = undefined
+    // `delete`, not `= undefined`: an absent optional is the spelling for
+    // "no write has parsed yet".
+    delete instance.lastParsedOffset
     mockBufferHasVisibleContent.mockReturnValue(true)
     mockSerializeXtermBuffer.mockReturnValue(new TextEncoder().encode('half-parsed'))
 
@@ -917,7 +922,7 @@ describe('disposeTerminalInstance scrollback capture', () => {
   })
 })
 
-describe('terminalView IME wiring', () => {
+describe('TerminalView IME wiring', () => {
   beforeEach(resetTerminalViewMocks)
 
   async function mount(id: string, onInput = vi.fn(), instance = makeMockTerminalInstance()) {
@@ -944,7 +949,10 @@ describe('terminalView IME wiring', () => {
   function keyHandler(instance: TerminalInstance): (e: KeyboardEvent) => boolean {
     const attach = instance.terminal.attachCustomKeyEventHandler as unknown as ReturnType<typeof vi.fn>
     expect(attach).toHaveBeenCalledTimes(1)
-    return attach.mock.calls[0][0]
+    const handler = attach.mock.calls[0]?.[0]
+    if (handler === undefined)
+      throw new Error('no custom key handler was attached')
+    return handler
   }
 
   it('attaches the key handler and the IME layer on every platform', async () => {
@@ -1054,7 +1062,7 @@ describe('terminalView IME wiring', () => {
 
     commit()
     expect(onInput).toHaveBeenCalledTimes(1)
-    expect(new TextDecoder().decode(onInput.mock.calls[0][1])).toBe('안')
+    expect(new TextDecoder().decode(onInput.mock.calls[0]?.[1])).toBe('안')
 
     // Snapshot replay must swallow composed input exactly as it swallows
     // ordinary keystrokes, or a reconnect replays the user's typing at the PTY.
@@ -1075,7 +1083,7 @@ describe('terminalView IME wiring', () => {
     // interleaves with the snapshot being replayed.
     instance.sendInput!(new TextEncoder().encode('\x01'))
     expect(onInput).toHaveBeenCalledTimes(1)
-    expect(onInput.mock.calls[0][0]).toBe('term-ime-sendgate')
+    expect(onInput.mock.calls[0]?.[0]).toBe('term-ime-sendgate')
 
     instance.suppressInput = true
     instance.sendInput!(new TextEncoder().encode('\x05'))
@@ -1102,7 +1110,7 @@ describe('terminalView IME wiring', () => {
 // input commits on BLUR, so anything that takes the keyboard from it ends the
 // rename -- and this effect re-runs on any change to active / visible /
 // tileFocused, which a sidebar toggle or a closing tile produces at any moment.
-describe('terminalView focus while a tab is being renamed', () => {
+describe('TerminalView focus while a tab is being renamed', () => {
   function renderWith(tabEditing: () => boolean) {
     const instance = makeMockTerminalInstance()
     mockCreateTerminalInstance.mockReturnValue(instance)

@@ -25,7 +25,7 @@ vi.mock('./editorSetup', async (importActual) => {
 
 const { MarkdownEditor } = await import('./MarkdownEditor')
 
-describe('markdownEditor build failure', () => {
+describe('MarkdownEditor build failure', () => {
   it('says the editor failed to load instead of leaving an empty box', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     const { container } = render(() => (

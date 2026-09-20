@@ -46,9 +46,9 @@ export const ConfirmDialog: Component<ConfirmDialogProps> = (props) => {
   return (
     <Dialog
       title={props.title}
-      busy={props.busy}
       onClose={() => props.onCancel()}
-      data-testid={props['data-testid']}
+      {...(props.busy !== undefined ? { busy: props.busy } : {})}
+      {...(props['data-testid'] !== undefined ? { 'data-testid': props['data-testid'] } : {})}
     >
       <form onSubmit={handleSubmit}>
         <section>{props.children}</section>

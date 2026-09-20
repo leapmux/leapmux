@@ -75,7 +75,8 @@ describe('the disabled-composer reason', () => {
   it('is stated by the owner', () => {
     // Read as source rather than imported: the constant is module-private, and
     // the point is that the sentence lives in exactly one file.
-    const owner = readFileSync(OWNERS[0], 'utf8')
+    // OWNERS is a literal two-entry array; `?? ''` is the type-level guard alone.
+    const owner = readFileSync(OWNERS[0] ?? '', 'utf8')
     expect(owner).toContain('SUBAGENT_NO_MESSAGES_HINT')
     expect(owner).toMatch(/This subagent .*accept messages\./)
   })

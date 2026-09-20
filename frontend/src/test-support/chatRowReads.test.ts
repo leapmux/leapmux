@@ -64,7 +64,11 @@ function chatLocatorNames(source: string): Set<string> {
   const names = new Set<string>()
   for (let grew = true; grew;) {
     grew = false
-    for (const [, name, expression] of source.matchAll(BINDING)) {
+    for (const match of source.matchAll(BINDING)) {
+      const name = match[1]
+      const expression = match[2]
+      if (name === undefined || expression === undefined)
+        continue
       if (names.has(name))
         continue
       const derived = [...names].some(known => new RegExp(`\\b${known}\\b`).test(expression))

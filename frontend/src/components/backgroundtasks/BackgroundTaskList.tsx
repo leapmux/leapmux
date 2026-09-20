@@ -131,10 +131,12 @@ function secondary(item: BackgroundTaskItem, title: string): string {
 
 // Explanatory tooltip for a final status whose bare label is ambiguous
 // (e.g. "Interrupted" really means the worker/agent process restarted).
-function secondaryTooltip(item: BackgroundTaskItem): string | undefined {
+// Returns '', never undefined, because ClippedText counts an empty detail
+// as absent.
+function secondaryTooltip(item: BackgroundTaskItem): string {
   if (isActiveBackgroundTaskStatus(item.status))
-    return undefined
-  return backgroundTaskEndTooltip(item.status)
+    return ''
+  return backgroundTaskEndTooltip(item.status) ?? ''
 }
 
 /** The status palette: queued, in progress, succeeded, failed. */

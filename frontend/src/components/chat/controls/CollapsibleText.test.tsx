@@ -7,7 +7,7 @@ function getPreText(): string {
   return document.querySelector('pre')?.textContent ?? ''
 }
 
-describe('collapsibleText', () => {
+describe('CollapsibleText', () => {
   it('renders full text when lines are within maxLines', () => {
     const text = 'line 1\nline 2\nline 3'
     render(() => <CollapsibleText text={text} maxLines={5} />)

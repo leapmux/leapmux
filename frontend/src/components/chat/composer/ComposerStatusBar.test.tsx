@@ -46,25 +46,25 @@ function renderBar(
     isWorktree: extra.isWorktree ?? false,
     name: extra.branchName ?? '',
     directory: extra.directory ?? '',
-    homeDir: extra.homeDir,
-    stats: extra.branchStats,
+    ...(extra.homeDir === undefined ? {} : { homeDir: extra.homeDir }),
+    ...(extra.branchStats === undefined ? {} : { stats: extra.branchStats }),
   }
   return render(() => (
     <ComposerStatusBar
-      agent={a}
+      {...(a === undefined ? {} : { agent: a })}
       workingTree={workingTree}
       optionValues={{}}
       onSettingChange={() => {}}
       branchActions={stubBranchMenuActions()}
       branchWorkerId="w-1"
       infoTrigger={() => <span data-testid="info" />}
-      disabledReason={extra.disabledReason}
-      branchDisabledReason={extra.branchDisabledReason}
+      {...(extra.disabledReason === undefined ? {} : { disabledReason: extra.disabledReason })}
+      {...(extra.branchDisabledReason === undefined ? {} : { branchDisabledReason: extra.branchDisabledReason })}
     />
   ))
 }
 
-describe('composerStatusBar', () => {
+describe('ComposerStatusBar', () => {
   it('renders a chip for each axis the agent offers', () => {
     renderBar(agent({
       optionGroups: [

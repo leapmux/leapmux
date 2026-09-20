@@ -26,7 +26,7 @@ function seekVirt(): ChatScrollVirtualizer {
   }
 }
 
-describe('usechatscroll jump to seq', () => {
+describe('useChatScroll jump to seq', () => {
   it('lands on an in-window seq: writes the resolved row top minus the align offset', () =>
     createRoot((dispose) => {
       const div = makeFakeScrollDiv()

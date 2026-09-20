@@ -146,7 +146,8 @@ export function useSectionToggle(options: UseSectionToggleOptions): UseSectionTo
         const ids = expandableSectionIds()
         const anyOpen = ids.some(id => isOpen(id))
         if (!anyOpen && ids.length > 0) {
-          setOpenSections(prev => ({ ...prev, [ids[0]]: true }))
+          // ids is non-empty here; the ?? is the type-level guard alone.
+          setOpenSections(prev => ({ ...prev, [ids[0] ?? '']: true }))
           notifyStateChange()
         }
       }

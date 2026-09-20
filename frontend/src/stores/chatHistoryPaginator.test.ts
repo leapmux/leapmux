@@ -138,12 +138,12 @@ function harness(init: {
   }
 }
 
-describe('chathistorypaginator', () => {
+describe('chatHistoryPaginator', () => {
   beforeEach(() => {
     listAgentMessages.mockReset()
   })
 
-  describe('catchuptotail is viewport-aware', () => {
+  describe('catchUpToTail is viewport-aware', () => {
     it('caps the oldest end to the CEILING (not the base), preserving a scrolled-up buffer', async () => {
       const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false })
       listAgentMessages.mockResolvedValue(page([makeMsg(2n)], false))
@@ -155,7 +155,7 @@ describe('chathistorypaginator', () => {
     })
   })
 
-  describe('catchuptotail settles a stranded live tail when the server is drained', () => {
+  describe('catchUpToTail settles a stranded live tail when the server is drained', () => {
     it('clamps the recorded tail to the window when an empty page leaves it short (no re-issue wedge)', async () => {
       // The reader is at the tail (hasMoreNewer false) but the recorded live tail (5)
       // sits ahead of the loaded window (1) -- a tail row deleted with an indeterminate
@@ -195,7 +195,7 @@ describe('chathistorypaginator', () => {
     })
   })
 
-  describe('catchuptotail re-anchors an over-limit gap', () => {
+  describe('catchUpToTail re-anchors an over-limit gap', () => {
     it('stops after one page, records the live tail, and skips the stale-tail clamp', async () => {
       const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false })
       const latestSeq = 2n + CATCH_UP_GAP_LIMIT + 1n
@@ -228,7 +228,7 @@ describe('chathistorypaginator', () => {
 
       expect(listAgentMessages).toHaveBeenCalledTimes(2)
       expect(h.getRecordedLiveTail()).toBe(latestSeq)
-      expect(h.state.messagesByAgent.a.at(-1)?.seq).toBe(latestSeq)
+      expect(h.state.messagesByAgent.a?.at(-1)?.seq).toBe(latestSeq)
       expect(h.caughtUpToLiveTail('a')).toBe(true)
       expect(h.settleToWindow).not.toHaveBeenCalled()
       expect(h.resetToEmptyIfStale).not.toHaveBeenCalled()
@@ -258,7 +258,7 @@ describe('chathistorypaginator', () => {
     })
   })
 
-  describe('jumptolatestmessages ties its re-anchor fetch to the watch signal', () => {
+  describe('jumpToLatestMessages ties its re-anchor fetch to the watch signal', () => {
     it('does NOT apply the latest page when the watch signal aborts mid-fetch (workspace switch)', async () => {
       // The empty-window re-anchor fires for a backgrounded agent; the user switches
       // workspaces mid-fetch, aborting the WatchEvents subscription. The fetch must
@@ -286,7 +286,7 @@ describe('chathistorypaginator', () => {
     })
   })
 
-  describe('jumptomessagesaroundseq centers the window on a seq', () => {
+  describe('jumpToMessagesAroundSeq centers the window on a seq', () => {
     // Route the two parallel fetches by anchor so a test can return distinct
     // before/after pages and assert the cursor values.
     function routeByAnchor(before: ReturnType<typeof page>, after: ReturnType<typeof page>) {
@@ -418,7 +418,7 @@ describe('chathistorypaginator', () => {
     })
   })
 
-  describe('catchuptotail is idempotent under the continuous reconcile effect', () => {
+  describe('catchUpToTail is idempotent under the continuous reconcile effect', () => {
     it('skips a re-kick while a catch-up is already draining the agent (no RPC thrash)', async () => {
       const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false })
       // The first page hangs so the catch-up stays in flight; the second kick (what the
@@ -495,7 +495,7 @@ describe('chathistorypaginator', () => {
     })
   })
 
-  describe('catchuptotail frees the single-flight slot at abort time', () => {
+  describe('catchUpToTail frees the single-flight slot at abort time', () => {
     it('lets a re-kick run instead of dropping it when a prior loop was aborted mid-await', async () => {
       const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false, caughtUp: () => false, liveGet: () => 9n })
       const watch = new AbortController()
@@ -548,7 +548,7 @@ describe('chathistorypaginator', () => {
   })
 })
 
-describe('linkwatchsignal', () => {
+describe('linkWatchSignal', () => {
   it('aborts the controller immediately when the watch signal is already aborted', () => {
     const watch = new AbortController()
     watch.abort()
@@ -622,7 +622,7 @@ describe('linkwatchsignal', () => {
  * failure as emptiness took the whole section off screen with nothing to say
  * why -- which a database missing a column did, leaving only a slog.Warn.
  */
-describe('chathistorypaginator background-task snapshot', () => {
+describe('chatHistoryPaginator background-task snapshot', () => {
   beforeEach(() => {
     listAgentMessages.mockReset()
   })

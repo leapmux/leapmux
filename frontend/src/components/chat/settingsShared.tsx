@@ -55,7 +55,7 @@ export function OptionGroupMenuItems(props: OptionGroupMenuItemsProps): JSX.Elem
                 kind="radio"
                 label={item().label}
                 checked={props.current === item().value}
-                disabled={props.disabled}
+                {...(props.disabled !== undefined ? { disabled: props.disabled } : {})}
                 data-testid={`${props.testIdPrefix}-${item().value}`}
                 onSelect={() => props.onChange(item().value)}
               />
@@ -100,7 +100,7 @@ export function OptionGroupMenuItems(props: OptionGroupMenuItemsProps): JSX.Elem
           testIdPrefix={props.testIdPrefix}
           onSelect={props.onChange}
           autoFocus
-          resetKey={props.openKey}
+          {...(props.openKey !== undefined ? { resetKey: props.openKey } : {})}
         />
       </Show>
     </Show>

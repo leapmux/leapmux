@@ -201,7 +201,7 @@ export function queueInsertForAgent(
   onDropped?: () => void,
 ): void {
   const existing = pendingInserts.get(agentId) ?? []
-  existing.push({ text, mode, onDropped })
+  existing.push({ text, mode, ...(onDropped !== undefined ? { onDropped } : {}) })
   pendingInserts.set(agentId, existing)
 }
 

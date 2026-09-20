@@ -178,7 +178,7 @@ describe('parsePiNumberedDiff', () => {
     ].join('\n')
     const hunks = parsePiNumberedDiff(diff)!
     expect(hunks).toHaveLength(2)
-    expect(hunks[0].lines).toEqual([' a'])
+    expect(hunks[0]?.lines).toEqual([' a'])
     expect(hunks[1]).toMatchObject({
       oldStart: 50,
       newStart: 50,
@@ -211,7 +211,7 @@ describe('parsePiNumberedDiff', () => {
       ' 999 wide',
     ].join('\n')
     const [hunk] = parsePiNumberedDiff(diff)!
-    expect(hunk.lines).toEqual([' small', '-mid', '+swap', ' wide'])
+    expect(hunk?.lines).toEqual([' small', '-mid', '+swap', ' wide'])
   })
 
   it('preserves trailing whitespace and content with special characters', () => {
@@ -221,7 +221,7 @@ describe('parsePiNumberedDiff', () => {
       '+2 with /slash and "quotes"',
     ].join('\n')
     const [hunk] = parsePiNumberedDiff(diff)!
-    expect(hunk.lines).toEqual([
+    expect(hunk?.lines).toEqual([
       ' has trailing  ',
       '-with\ttab',
       '+with /slash and "quotes"',

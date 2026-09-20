@@ -1,11 +1,11 @@
-import type { MessageCategory } from '../messageClassification'
+import type { MessageCategory } from '../messageClassifier'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import './testMocks'
 
-const { renderMessageContent } = await import('../messageRenderers')
-type RenderContext = import('../messageRenderers').RenderContext
+const { renderMessageContent } = await import('../messageContentRenderer')
+type MessageContentRenderContext = import('../messageContentRenderer').MessageContentRenderContext
 
 /** Construct a TaskStop tool_use assistant message. */
 function makeTaskStopMessage(input: Record<string, unknown> = {}) {
@@ -39,17 +39,16 @@ function makeTaskStopResult(resultContent: string) {
 }
 
 /** Render a TaskStop tool_use message and return its text content. */
-function renderToolUseText(input?: Record<string, unknown>, context?: RenderContext): string {
+function renderToolUseText(input?: Record<string, unknown>, context?: MessageContentRenderContext): string {
   const msg = makeTaskStopMessage(input)
-  const toolUse = (msg.message.content as Array<Record<string, unknown>>)[0]
-  const category: MessageCategory = { kind: 'tool_use', toolName: 'TaskStop', toolUse, content: msg.message.content as Array<Record<string, unknown>> }
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(msg, context, category, AgentProvider.CLAUDE_CODE)
   const { container } = render(() => result)
   return container.textContent?.trim() ?? ''
 }
 
 /** Render a TaskStop tool_result message and return its text content. */
-function renderToolResultText(resultContent: string, context?: RenderContext): string {
+function renderToolResultText(resultContent: string, context?: MessageContentRenderContext): string {
   const msg = makeTaskStopResult(resultContent)
   const category: MessageCategory = { kind: 'tool_result' }
   const result = renderMessageContent(msg, context, category, AgentProvider.CLAUDE_CODE)

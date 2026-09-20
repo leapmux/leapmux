@@ -12,9 +12,13 @@ import { queueEditDraftKey } from './attachments'
  * preview, so the full text arrives here.
  */
 export interface BeginQueueEditResult {
-  snapshot?: AgentInputQueueSnapshot
+  // The two scalar members admit an explicit undefined: the proto response the
+  // operations layer hands straight through carries its unset fields that way,
+  // and the reads below already treat undefined as absence. `attachments` stays
+  // a required array because protobuf-es always materializes repeated fields.
+  snapshot?: AgentInputQueueSnapshot | undefined
   attachments: Attachment[]
-  text?: string
+  text?: string | undefined
 }
 
 /**

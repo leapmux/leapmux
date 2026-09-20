@@ -1,93 +1,81 @@
-import type { TaskCardSource } from '../../../taskCardMessage'
-import type { TodoItem } from '~/stores/chatTodos'
+import type { TodoItem } from '~/models/todo'
+import { normalizeTodoStatus } from '~/components/chat/normalizers/todo'
 import { pickObject, pickString } from '~/lib/jsonPick'
-import { normalizeTodoStatus } from '~/stores/chatTodos'
-import { CLAUDE_TOOL } from '~/types/toolMessages'
+import { todoRowKey } from '~/models/todo'
 
 /**
- * Build a TaskCardSource for an inline TaskCreate card. Accepts the
- * tool_use input (always present once persisted) and the optional
- * tool_use_result envelope (present after the agent assigns the id).
+ * One Claude `Task*` call as a single-item checklist.
+ *
+ * The three tools act on ONE task each, and a reader wants the same two things
+ * from all of them: the state, and what the task says. That is a to-do row --
+ * the checkbox, the strike-through on a finished one, the description under the
+ * label -- so they draw through the shared checklist body rather than a card of
+ * their own. Each of the three answers from a different half of the span, which
+ * is why they stay three builders:
+ *
+ *   - `TaskCreate` states the whole task in its INPUT, before an id exists.
+ *   - `TaskUpdate` sends a patch, so the persisted post-update snapshot supplies
+ *     the complete task.
+ *   - `TaskGet` sends an id alone, so the task comes from the paired result.
  */
-export function buildTaskCreateSource(
+export function buildTaskCreateItem(
   toolUseInput: Record<string, unknown> | null | undefined,
   toolUseResult: Record<string, unknown> | null | undefined,
-): TaskCardSource {
+): TodoItem {
   const taskFromResult = pickObject(toolUseResult, 'task')
-  const subject = pickString(toolUseInput, 'subject') || pickString(taskFromResult, 'subject') || 'New task'
+  const content = pickString(toolUseInput, 'subject') || pickString(taskFromResult, 'subject') || 'New task'
+  const id = pickString(taskFromResult, 'task_id') || pickString(taskFromResult, 'id') || undefined
   const description = pickString(toolUseInput, 'description')
   return {
-    toolName: CLAUDE_TOOL.TASK_CREATE,
-    subject,
-    description: description || undefined,
+    // The id and the description ride only when the record stated them; a task
+    // before its answer carries neither.
+    ...(id !== undefined ? { id } : {}),
+    rowKey: todoRowKey(id, 0, content),
+    content,
     status: 'pending',
-    activeForm: pickString(toolUseInput, 'activeForm') || undefined,
+    activeForm: pickString(toolUseInput, 'activeForm'),
+    ...(description ? { description } : {}),
   }
 }
 
 /**
- * Build a TaskCardSource for an inline TaskUpdate card. Status flows
- * through `normalizeTodoStatus` (which canonicalizes `'deleted'` like
- * any other state). Falls back to the live todos store (via
- * `getTodoById`) for `subject` / `description` / `activeForm` on
- * status-only patches.
+ * The to-do a `TaskUpdate` leaves behind, or null when the patch identifies no task.
+ *
+ * The worker stores the complete post-update snapshot on the message. A status-only
+ * patch therefore keeps the subject, active form, and description that existed at
+ * that revision. Rendering never reads the current to-do store.
  */
-export function buildTaskUpdateSource(
-  toolUseInput: Record<string, unknown> | null | undefined,
-  toolUseResult: Record<string, unknown> | null | undefined,
-  getTodoById?: (taskId: string) => TodoItem | undefined,
-): TaskCardSource | null {
-  const taskId = pickString(toolUseInput, 'taskId') || pickString(toolUseResult, 'taskId')
-  if (!taskId)
-    return null
-
-  const stored = getTodoById?.(taskId)
-  const subject = pickString(toolUseInput, 'subject')
-    || stored?.content
-    || `Task #${taskId}`
-  const description = pickString(toolUseInput, 'description')
-    || stored?.description
-    || ''
-  const statusChange = pickObject(toolUseResult, 'statusChange')
-  const rawStatus = pickString(statusChange, 'to') || pickString(toolUseInput, 'status')
-  // No status info on this patch (metadata-only update): preserve the
-  // stored status so the card doesn't flip a completed/in_progress row
-  // back to pending.
-  const status = rawStatus ? normalizeTodoStatus(rawStatus) : (stored?.status ?? 'pending')
-
-  return {
-    toolName: CLAUDE_TOOL.TASK_UPDATE,
-    subject,
-    description: description || undefined,
-    status,
-    activeForm: pickString(toolUseInput, 'activeForm') || stored?.activeForm || undefined,
-  }
+export function buildTaskUpdateItem(
+  snapshot: TodoItem | undefined,
+): TodoItem | null {
+  return snapshot ?? null
 }
 
 /**
- * Build a TaskCardSource for a TaskGet card. TaskGet's input is
- * empty; the data lives in `tool_use_result.task`. Returns null when
- * the result hasn't arrived yet (pre-resolve renders nothing).
+ * The to-do a `TaskGet` read back, or null until its result lands.
+ *
+ * The input is an id alone, so there is nothing to draw before the answer
+ * arrives -- and a bubble that appeared with a placeholder and then changed
+ * would re-measure the row.
  */
-export function buildTaskGetSource(
+export function buildTaskGetItem(
   toolUseResult: Record<string, unknown> | null | undefined,
-): TaskCardSource | null {
+): TodoItem | null {
   const task = pickObject(toolUseResult, 'task')
   if (!task)
     return null
-  const subject = pickString(task, 'subject')
-  if (!subject)
+  const content = pickString(task, 'subject')
+  if (!content)
     return null
+  const id = pickString(task, 'task_id') || pickString(task, 'id') || undefined
   const description = pickString(task, 'description')
   return {
-    toolName: CLAUDE_TOOL.TASK_GET,
-    subject,
-    description: description || undefined,
+    // The id and the description ride only when the record stated them.
+    ...(id !== undefined ? { id } : {}),
+    rowKey: todoRowKey(id, 0, content),
+    content,
     status: normalizeTodoStatus(task.status),
+    activeForm: pickString(task, 'activeForm'),
+    ...(description ? { description } : {}),
   }
-}
-
-/** Pull the paired tool_result's `tool_use_result` envelope, if any. */
-export function readToolUseResult(parsed: { parentObject?: Record<string, unknown> } | null | undefined): Record<string, unknown> | null {
-  return pickObject(parsed?.parentObject, 'tool_use_result')
 }

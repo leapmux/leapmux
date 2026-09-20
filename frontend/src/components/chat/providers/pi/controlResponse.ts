@@ -14,8 +14,10 @@
  * trailing newline before forwarding to Pi's stdin.
  */
 
-import type { ControlAnswerState, ControlResponseSender, Question } from '../../controls/types'
-import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
+import type { ControlAnswerState, ControlResponseSender } from '../../controls/types'
+import type { ControlResponseSummary } from '../../model/controlResponse'
+import type { ControlQuestion } from '../../model/question'
+import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { PI_DIALOG_METHOD, PI_EVENT, PI_MCP_APPROVAL_CHOICE, PI_PLAN_ACTION } from '~/generated/contracts/pi-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { sendResponse } from '../../controls/types'
@@ -61,11 +63,12 @@ export function piCancelResponse(requestId: string): PiCancelledResponse {
  * Resolve the current answer value from a shared ControlAnswerState — prefers
  * the first selected option, falling back to the first custom-text entry.
  */
-export function piAskAnswerValue(answerState: ControlAnswerState, questions?: Question[], payload?: Record<string, unknown>): string {
+export function piAskAnswerValue(answerState: ControlAnswerState, questions?: ControlQuestion[], payload?: Record<string, unknown>): string {
   const selections = answerState.selections()[0] ?? []
   if (selections.length) {
     const multiSelect = questions?.[0]?.multiSelect || (payload?.method === PI_DIALOG_METHOD.Input && payload.placeholder === '1,3')
-    return multiSelect ? selections.join(',') : selections[0]
+    // The length test above pinned the first selection; `?? ''` is the type-level guard alone.
+    return multiSelect ? selections.join(',') : selections[0] ?? ''
   }
   return answerState.customTexts()[0] ?? ''
 }
@@ -83,7 +86,7 @@ export function sendPiExtensionResponse(
 }
 
 /** Read the native decision or exact text from a saved Pi response. */
-export function piControlResponseDisplay(cr: PersistedControlResponse): ControlResponseDisplay | null {
+export function piControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
   const response = cr.response
   if (!response)
     return null

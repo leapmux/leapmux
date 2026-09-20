@@ -23,7 +23,14 @@ function focusedEditor(): HTMLTextAreaElement {
 }
 
 function tap(target: EventTarget, opts: { x?: number, y?: number, pointerId?: number, isPrimary?: boolean } = {}) {
-  const down = { x: opts.x ?? 40, y: opts.y ?? 40, pointerId: opts.pointerId, isPrimary: opts.isPrimary, pointerType: 'touch' }
+  // Omit unset optional fields rather than passing undefined (exactOptionalPropertyTypes).
+  const down = {
+    x: opts.x ?? 40,
+    y: opts.y ?? 40,
+    pointerType: 'touch',
+    ...(opts.pointerId !== undefined ? { pointerId: opts.pointerId } : {}),
+    ...(opts.isPrimary !== undefined ? { isPrimary: opts.isPrimary } : {}),
+  }
   target.dispatchEvent(pointerEvent('pointerdown', down))
   target.dispatchEvent(pointerEvent('pointerup', down))
 }

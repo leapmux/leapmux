@@ -1,15 +1,10 @@
-import type { FileEditDiffSource } from '../../../results/fileEditDiff'
-import type { ReadFileResultSource } from '../../../results/readFileResult'
+import type { FileEditDiff } from '../../../model/fileEditDiff'
+import type { ReadFileResult } from '../../../model/readFileResult'
 import type { ZCodeRow } from './toolCommon'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { pickNumber, pickString } from '~/lib/jsonPick'
-import {
-  fileEditDiffFromNewFile,
-  fileEditHasDiff,
-  normalizeStructuredPatchHunks,
-} from '../../../results/fileEditDiff'
-import { readFileSourceFromContent } from '../../../results/readFileResult'
-import { parseCatNContent } from '../../../results/ReadResultView'
+import { fileEditDiffFromWholeFile, fileEditHasDiff, normalizeStructuredPatchHunks } from '../../../model/fileEditDiff'
+import { parseCatNContent, readFileResultFromContent } from '../../../model/readFileResult'
 import { ZCODE_DISPLAY } from '../protocol'
 import { zcodeExtractTool, zcodeToolInput } from './toolCommon'
 
@@ -22,8 +17,12 @@ const ZCODE_DIFF_TOOLS = new Set<string>([ZCODE_TOOL.Edit, ZCODE_TOOL.Write])
  * An explicit display supplies structured hunks for the shared diff view.
  * Edit and Write requests supply a fallback when the result omits its patch.
  * Failed calls return null so the renderer shows the error instead of an applied change.
+ *
+ * `ApplyPatch` cannot join {@link ZCODE_DIFF_TOOLS}, and no branch here can read its
+ * envelope: ONE patch can carry several files, and this answers one diff. Its changes
+ * are `ZCodeToolFacts.patchChanges`, which both halves of the card read as a list.
  */
-export function extractZCodeFileDiff(row: ZCodeRow): FileEditDiffSource | null {
+export function extractZCodeFileDiff(row: ZCodeRow): FileEditDiff | null {
   const update = zcodeExtractTool(row.parsed)
   if (!update || update.isError)
     return null
@@ -31,12 +30,7 @@ export function extractZCodeFileDiff(row: ZCodeRow): FileEditDiffSource | null {
   if (display && pickString(display, 'kind') === ZCODE_DISPLAY.FileDiff) {
     const hunks = normalizeStructuredPatchHunks(display.structuredPatch)
     if (hunks && hunks.length > 0) {
-      return {
-        filePath: pickString(display, 'filePath') || zcodeFilePath(row),
-        structuredPatch: hunks,
-        oldStr: '',
-        newStr: '',
-      }
+      return { filePath: pickString(display, 'filePath') || zcodeFilePath(row), structuredPatch: hunks }
     }
   }
   if (!ZCODE_DIFF_TOOLS.has(row.toolName))
@@ -48,8 +42,8 @@ export function extractZCodeFileDiff(row: ZCodeRow): FileEditDiffSource | null {
   // tool_use row, before the result exists.
   const input = zcodeToolInput(row)
   const filePath = pickString(input, 'file_path') || pickString(input, 'filePath')
-  const source: FileEditDiffSource = row.toolName === ZCODE_TOOL.Write
-    ? fileEditDiffFromNewFile(filePath, pickString(input, 'content'))
+  const source: FileEditDiff = row.toolName === ZCODE_TOOL.Write
+    ? fileEditDiffFromWholeFile(filePath, pickString(input, 'content'), 'add')
     : {
         filePath,
         structuredPatch: null,
@@ -75,13 +69,6 @@ export function zcodeFilePath(row: ZCodeRow): string {
   return pickString(input, 'file_path') || pickString(input, 'filePath')
 }
 
-/** A ZCode Read result plus the range its input asked for. */
-export interface ZCodeReadResult {
-  source: ReadFileResultSource
-  offset: number | null
-  limit: number | null
-}
-
 /**
  * Build a Read result from a persisted ZCode tool row.
  *
@@ -90,22 +77,18 @@ export interface ZCodeReadResult {
  * build that stops numbering -- the content is treated as plain text starting at the
  * requested offset, which is what the shared fallback renders.
  */
-export function extractZCodeRead(row: ZCodeRow): ZCodeReadResult | null {
+export function extractZCodeRead(row: ZCodeRow): ReadFileResult | null {
   const update = zcodeExtractTool(row.parsed)
   if (!update || update.isError)
     return null
   if (row.toolName !== ZCODE_TOOL.Read)
     return null
 
-  const input = zcodeToolInput(row)
-  const offset = pickNumber(input, 'offset')
-  const limit = pickNumber(input, 'limit')
-  const filePath = zcodeFilePath(row)
   const content = update.result?.content ?? ''
-
   const lines = parseCatNContent(content)
-  const source: ReadFileResultSource = lines
-    ? { filePath, lines, totalLines: 0, numLines: lines.length, fallbackContent: content }
-    : readFileSourceFromContent({ filePath, content, startLine: offset ?? 1 })
-  return { source, offset, limit }
+  if (lines)
+    return { lines, fallbackContent: content }
+  // An unnumbered body starts at the line the input asked for, which the request
+  // states too -- this reads it only to number the lines it returns.
+  return readFileResultFromContent({ content, startLine: pickNumber(zcodeToolInput(row), 'offset') ?? 1 })
 }

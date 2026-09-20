@@ -1,4 +1,4 @@
-import type { TodoItem } from '~/stores/chatTodos'
+import type { TodoItem } from '~/models/todo'
 import { render } from '@solidjs/testing-library'
 import { createStore } from 'solid-js/store'
 import { describe, expect, it, vi } from 'vitest'
@@ -8,7 +8,7 @@ import { clippedText } from '~/styles/shared.css'
 import { hoverForTooltip, stubClipped, stubFitting, unhoverTooltip } from '~/test-support/clipStub'
 import { classSelector } from '~/test-support/composedClass'
 
-describe('todoList', () => {
+describe('TodoList', () => {
   it('renders the deleted checkbox + strike-through for a deleted row', () => {
     const { container } = render(() => (
       <TodoList todos={[{ id: '1', rowKey: '1', content: 'gone task', status: 'deleted', activeForm: '' }]} />
@@ -152,7 +152,7 @@ describe('todoList', () => {
  * The hover target is the LABEL, not the whole row. `showWhen` measures its
  * target, so the tooltip has to hang off the element that does the clipping.
  */
-describe('todoList label tooltip', () => {
+describe('TodoList label tooltip', () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })

@@ -102,7 +102,9 @@ function sameChildLists(a: readonly LayoutNodeLocal[], b: readonly LayoutNodeLoc
   if (a.length !== b.length)
     return false
   for (let i = 0; i < a.length; i++) {
-    if (!sameLayoutNode(a[i], b[i]))
+    const x = a[i]
+    const y = b[i]
+    if (x === undefined || y === undefined || !sameLayoutNode(x, y))
       return false
   }
   return true
@@ -193,6 +195,8 @@ export function findHeirTileId(root: LayoutNodeLocal, closingTileId: string): st
   for (let i = path.length - 2; i >= 0; i--) {
     const parent = path[i]
     const child = path[i + 1]
+    if (parent === undefined || child === undefined)
+      continue
     const siblings = childrenOf(parent)
     const idx = siblings.findIndex(c => c.id === child.id)
     if (idx < 0)
@@ -328,6 +332,8 @@ function walkPredicates(
     const anchorIdx = node.cols - 1
     for (let i = 0; i < node.cells.length; i++) {
       const cell = node.cells[i]
+      if (cell === undefined)
+        continue
       const isAnchorCell = i === anchorIdx
       walkPredicates(
         ctx,
@@ -346,6 +352,8 @@ function walkPredicates(
   const anchorChildIdx = node.direction === 'vertical' ? lastIdx : 0
   for (let i = 0; i < node.children.length; i++) {
     const child = node.children[i]
+    if (child === undefined)
+      continue
     walkPredicates(
       ctx,
       child,

@@ -87,7 +87,7 @@ function openFlipsDuring(act: () => void): (string | null)[] {
   return flips
 }
 
-describe('quakeTerminalPanel', () => {
+describe('QuakeTerminalPanel', () => {
   // Lazy: a user who never presses the shortcut pays no xterm, no RPC and no
   // watch entry.
   it('renders nothing before the first open', () => {

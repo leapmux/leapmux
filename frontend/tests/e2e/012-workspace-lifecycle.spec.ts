@@ -11,7 +11,10 @@ test.describe('Workspace Lifecycle', () => {
     workspaceIds.push(await createWorkspaceViaAPI(hubUrl, adminToken, 'Lifecycle WS Gamma'))
     try {
       await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceIds[0])
+      const firstWorkspaceId = workspaceIds[0]
+      if (firstWorkspaceId === undefined)
+        throw new Error('expected the first created workspace id')
+      await openWorkspace(page, firstWorkspaceId)
 
       // All three workspaces should appear in the sidebar
       await expect(page.getByText('Lifecycle WS Alpha')).toBeVisible()

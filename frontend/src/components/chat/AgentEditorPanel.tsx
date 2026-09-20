@@ -365,7 +365,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // menu item cannot diverge in what they switch.
   const permissionPresets = createMemo<PermissionPresetController | undefined>(() => {
     const presets = props.agent?.agentProvider
-      ? providerFor(props.agent.agentProvider)?.permissionPresets
+      ? providerFor(props.agent.agentProvider)?.controls?.permissionPresets
       : undefined
     const usable = usablePresets(presets, props.agent?.optionGroups)
     // The preset the session already has on. A control request's pill group
@@ -373,7 +373,11 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     // catalog and the confirmed values.
     const active = activePermissionPreset(usable, props.agent?.optionGroups, currentOptionValues())
     return Object.keys(usable).length > 0
-      ? { ...usable, apply: props.onSettingChange, active }
+      ? {
+          ...usable,
+          ...(props.onSettingChange !== undefined ? { apply: props.onSettingChange } : {}),
+          ...(active !== undefined ? { active } : {}),
+        }
       : undefined
   })
 
@@ -385,7 +389,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       get agent() {
         return {
           optionValues: currentOptionValues(),
-          agentProvider: props.agent?.agentProvider,
+          ...(props.agent?.agentProvider !== undefined ? { agentProvider: props.agent.agentProvider } : {}),
         }
       },
       get controlRequests() { return props.controlRequests },
@@ -508,10 +512,10 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       name: git?.branchLabel ?? '',
       directory: git?.toplevel ?? '',
       homeDir: workerHomeDir(),
-      // Undefined rather than `flavorFromOs(undefined)`, which answers 'posix'
+      // Omitted rather than `flavor: flavorFromOs(undefined)`, which answers 'posix'
       // and would stop a Windows path compressing while the OS is unknown.
-      flavor: os ? flavorFromOs(os) : undefined,
-      stats: git?.diffStats,
+      ...(os ? { flavor: flavorFromOs(os) } : {}),
+      ...(git?.diffStats !== undefined ? { stats: git.diffStats } : {}),
     }
   })
   const info = useAgentInfoCard({
@@ -558,13 +562,21 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           data-testid="agent-info-trigger"
           {...triggerProps}
         >
-          <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} modelContextWindow={modelContextWindow()} agentProvider={props.agent?.agentProvider} size={iconSize.xs} />
+          <ContextUsageGrid
+            size={iconSize.xs}
+            {...(props.agentSessionInfo?.contextUsage !== undefined ? { contextUsage: props.agentSessionInfo.contextUsage } : {})}
+            {...(() => {
+              const ctxWindow = modelContextWindow()
+              return ctxWindow !== undefined ? { modelContextWindow: ctxWindow } : {}
+            })()}
+            {...(props.agent?.agentProvider !== undefined ? { agentProvider: props.agent.agentProvider } : {})}
+          />
           <Show when={info.urgentRateLimit()}>
             {rl => (
               <Tooltip
-                text={(() => {
+                {...(() => {
                   const resetsAt = getResetsAt(rl().info)
-                  return resetsAt ? formatResetTimestamp(resetsAt) : undefined
+                  return resetsAt ? { text: formatResetTimestamp(resetsAt) } : {}
                 })()}
               >
                 <span class={styles.rateLimitCountdown}>
@@ -610,11 +622,14 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           onResume={() => setQueuePaused(false)}
         />
         <AgentInputQueue
-          snapshot={props.inputQueue}
           clientId={props.queueClientId ?? ''}
-          activeEditInputId={queueEdit.activeEditingInput()?.id}
           supportsSteering={props.agent?.supportsSteering ?? false}
           supportsPreemption={props.agent?.supportsPreemption ?? false}
+          {...(props.inputQueue !== undefined ? { snapshot: props.inputQueue } : {})}
+          {...(() => {
+            const activeEditInputId = queueEdit.activeEditingInput()?.id
+            return activeEditInputId !== undefined ? { activeEditInputId } : {}
+          })()}
           onEdit={(item, takeover) => {
             queueEdit.loadQueueEdit(item, takeover, false)
           }}
@@ -649,12 +664,16 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         />
         <MarkdownEditor
           surface="chat"
-          suppressAutoFocus={props.suppressAutoFocus}
-          draftKey={{
-            agentId: props.agentId,
-            key: activeDraftKey(),
-            controlRequestId: ctrl.activeControlRequest()?.requestId,
-          }}
+          {...(props.suppressAutoFocus !== undefined ? { suppressAutoFocus: props.suppressAutoFocus } : {})}
+          draftKey={(() => {
+            const key = activeDraftKey()
+            const controlRequestId = ctrl.activeControlRequest()?.requestId
+            return {
+              agentId: props.agentId,
+              ...(key !== undefined ? { key } : {}),
+              ...(controlRequestId !== undefined ? { controlRequestId } : {}),
+            }
+          })()}
           onSend={ctrl.activeControlRequest() ? ctrl.handleControlSend : ctrl.handleSend}
           onAfterSend={queueEdit.handleAfterSend}
           onDraftKeyChanged={(key) => {
@@ -664,9 +683,13 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           }}
           disabled={disabled()}
           hideInput={ctrl.editorPurpose() === 'none'}
-          disabledPlaceholder={props.disabledReason}
+          {...(props.disabledReason !== undefined ? { disabledPlaceholder: props.disabledReason } : {})}
           onTogglePlanMode={ctrl.togglePlanMode}
-          pinnedHeight={editorMinHeightSignal()}
+          {...(() => {
+            // Read ONCE: a signal read in the condition and again in the value re-samples it.
+            const pinned = editorMinHeightSignal()
+            return pinned !== undefined ? { pinnedHeight: pinned } : {}
+          })()}
           maxHeight={editorHeight.maxEditorHeight()}
           onContentHeightChange={setEditorContentHeight}
           onContentChange={(has) => {
@@ -713,13 +736,19 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           // attachment. `MarkdownEditor` reads these handlers at event time, so
           // an absent `attachments` refuses the paste and the drop by itself.
           // `addFiles`'s second argument marks a pasted image, which changes its filename.
-          attachments={!ctrl.activeControlRequest() && !enqueueInFlight()
+          {...(!ctrl.activeControlRequest() && !enqueueInFlight()
             ? {
-                onPaste: files => addFiles(files, true),
-                onDrop: dataTransfer => void att.addDroppedDataTransfer(dataTransfer),
+                attachments: {
+                  onPaste: files => addFiles(files, true),
+                  onDrop: dataTransfer => void att.addDroppedDataTransfer(dataTransfer),
+                },
               }
-            : undefined}
-          placeholder={ctrl.editorPlaceholder()}
+            : {})}
+          {...(() => {
+            // Read ONCE: the placeholder is reactive and must not be re-sampled between check and value.
+            const placeholder = ctrl.editorPlaceholder()
+            return placeholder !== undefined ? { placeholder } : {}
+          })()}
           allowEmptySend={allowEmptySend()}
           // The keyed owner is what reacts in this slot. `createComponent`
           // untracks the element that this prop getter builds, so the editor's
@@ -735,13 +764,16 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             <Show when={ctrl.activeControlRequest()} keyed>
               {request => (
                 <ControlRequestContent
-                  messageContext={props.messageContext}
                   request={request}
                   answerState={answerState}
                   optionsDisabled={ctrl.editorPurpose() !== 'none' && hasContent()}
-                  agentProvider={ctrl.activeControlProvider()}
+                  {...(props.messageContext !== undefined ? { messageContext: props.messageContext } : {})}
+                  {...(() => {
+                    const agentProvider = ctrl.activeControlProvider()
+                    return agentProvider !== undefined ? { agentProvider } : {}
+                  })()}
                   controlSurface={ctrl.activeControlSurface()}
-                  onInterrupt={ctrl.showInterrupt() ? () => props.onInterrupt?.() : undefined}
+                  {...(ctrl.showInterrupt() ? { onInterrupt: () => props.onInterrupt?.() } : {})}
                 />
               )}
             </Show>
@@ -752,19 +784,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             <ComposerPlusMenu
               optionGroups={props.agent?.optionGroups}
               optionValues={currentOptionValues()}
-              agentProvider={props.agent?.agentProvider}
-              onSettingChange={props.onSettingChange}
               onAttachFile={() => fileInputRef?.click()}
               canAttach={!ctrl.activeControlRequest() && !enqueueInFlight()}
-              disabledReason={props.disabledReason}
-              attachmentDisabledReason={enqueueInFlight() ? 'Queueing input...' : undefined}
-              settingsLoading={props.settingsLoading}
               workingTree={workingTree()}
-              branchActions={props.branchActions}
-              branchWorkerId={props.branchWorkerId}
-              branchDisabledReason={props.branchDisabledReason}
-              // The stable function, not a rendered element — see the prop's doc.
-              agentInfo={info.showInfoTrigger() ? agentInfoRows : undefined}
               enterKeyMode={preferences.enterKeyMode}
               onToggleEnterMode={() => {
                 const next = preferences.enterKeyMode() === 'enter-sends' ? 'cmd-enter-sends' : 'enter-sends'
@@ -772,6 +794,16 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               }}
               showStatusBar={preferences.showComposerStatusBar}
               onToggleStatusBar={() => preferences.setShowComposerStatusBar(!preferences.showComposerStatusBar())}
+              {...(props.agent?.agentProvider !== undefined ? { agentProvider: props.agent.agentProvider } : {})}
+              {...(props.onSettingChange !== undefined ? { onSettingChange: props.onSettingChange } : {})}
+              {...(props.disabledReason !== undefined ? { disabledReason: props.disabledReason } : {})}
+              {...(enqueueInFlight() ? { attachmentDisabledReason: 'Queueing input...' } : {})}
+              {...(props.settingsLoading !== undefined ? { settingsLoading: props.settingsLoading } : {})}
+              {...(props.branchActions !== undefined ? { branchActions: props.branchActions } : {})}
+              {...(props.branchWorkerId !== undefined ? { branchWorkerId: props.branchWorkerId } : {})}
+              {...(props.branchDisabledReason !== undefined ? { branchDisabledReason: props.branchDisabledReason } : {})}
+              // The stable function, not a rendered element — see the prop's doc.
+              {...(info.showInfoTrigger() ? { agentInfo: agentInfoRows } : {})}
             />
           )}
           // Control requests use the full footer width.
@@ -787,18 +819,27 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                   node: () => (
                     <ControlRequestActions
                       request={request}
-                      messageContext={props.messageContext}
                       answerState={answerState}
-                      agentProvider={ctrl.activeControlProvider()}
-                      controlSurface={ctrl.activeControlSurface()}
                       onRespond={ctrl.respondTo(request)}
                       onRecordResponse={() => ctrl.recordResponse(request)}
                       hasEditorContent={ctrl.editorPurpose() !== 'none' && hasContent()}
                       onTriggerSend={() => { void triggerSend?.() }}
                       editorContentRef={() => editorContentRef}
-                      presets={permissionPresets()}
-                      contextUsage={props.agentSessionInfo?.contextUsage}
-                      modelContextWindow={modelContextWindow()}
+                      {...(props.messageContext !== undefined ? { messageContext: props.messageContext } : {})}
+                      {...(() => {
+                        const agentProvider = ctrl.activeControlProvider()
+                        return agentProvider !== undefined ? { agentProvider } : {}
+                      })()}
+                      controlSurface={ctrl.activeControlSurface()}
+                      {...(props.agentSessionInfo?.contextUsage !== undefined ? { contextUsage: props.agentSessionInfo.contextUsage } : {})}
+                      {...(() => {
+                        const presets = permissionPresets()
+                        return presets !== undefined ? { presets } : {}
+                      })()}
+                      {...(() => {
+                        const ctxWindow = modelContextWindow()
+                        return ctxWindow !== undefined ? { modelContextWindow: ctxWindow } : {}
+                      })()}
                     />
                   ),
                 }
@@ -874,15 +915,15 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       </div>
       <Show when={preferences.showComposerStatusBar()}>
         <ComposerStatusBar
-          agent={props.agent}
           workingTree={workingTree()}
           optionValues={currentOptionValues()}
-          onSettingChange={props.onSettingChange}
-          branchActions={props.branchActions}
-          branchWorkerId={props.branchWorkerId}
-          branchDisabledReason={props.branchDisabledReason}
-          disabledReason={props.disabledReason}
-          infoTrigger={info.showInfoTrigger() ? renderAgentInfoTrigger : undefined}
+          {...(props.agent !== undefined ? { agent: props.agent } : {})}
+          {...(props.onSettingChange !== undefined ? { onSettingChange: props.onSettingChange } : {})}
+          {...(props.branchActions !== undefined ? { branchActions: props.branchActions } : {})}
+          {...(props.branchWorkerId !== undefined ? { branchWorkerId: props.branchWorkerId } : {})}
+          {...(props.branchDisabledReason !== undefined ? { branchDisabledReason: props.branchDisabledReason } : {})}
+          {...(props.disabledReason !== undefined ? { disabledReason: props.disabledReason } : {})}
+          {...(info.showInfoTrigger() ? { infoTrigger: renderAgentInfoTrigger } : {})}
         />
       </Show>
       <Show when={uncertainRetry()}>

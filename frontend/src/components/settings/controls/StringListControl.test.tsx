@@ -8,7 +8,7 @@ afterEach(() => {
   cleanup()
 })
 
-describe('stringListControl', () => {
+describe('StringListControl', () => {
   it('shows an empty state when nothing is configured', () => {
     render(() => (
       <StringListControl value={[]} addLabel="Add font" ariaLabel="Fonts" onChange={vi.fn()} />
@@ -89,7 +89,10 @@ describe('stringListControl', () => {
     render(() => (
       <StringListControl value={['Inter', 'Roboto']} addLabel="Add font" ariaLabel="Fonts" onChange={onChange} />
     ))
-    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0])
+    const remove = screen.getAllByRole('button', { name: 'Remove' })[0]
+    if (remove === undefined)
+      throw new Error('missing remove button')
+    fireEvent.click(remove)
     expect(onChange).toHaveBeenCalledWith(['Roboto'])
   })
 
@@ -105,7 +108,8 @@ describe('stringListControl', () => {
     fireEvent.input(screen.getByPlaceholderText('Name'), { target: { value: 'Last' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add font' }))
     expect(onChange).toHaveBeenCalledWith([...atCapMinusOne, 'Last'])
-    expect(onChange.mock.calls[0][0]).toHaveLength(MAX_STRING_LIST_ITEMS)
+    const firstCall = onChange.mock.calls[0]
+    expect(firstCall?.[0]).toHaveLength(MAX_STRING_LIST_ITEMS)
     unmount()
 
     const atCap = Array.from({ length: MAX_STRING_LIST_ITEMS }, (_, i) => `Face ${i}`)
@@ -142,7 +146,7 @@ describe('stringListControl', () => {
  * so the priority order of a font stack -- the whole point of an ordered
  * list -- needed a mouse.
  */
-describe('stringListControl keyboard', () => {
+describe('StringListControl keyboard', () => {
   it('enter on a name starts the rename', () => {
     render(() => (
       <StringListControl value={['Inter']} addLabel="Add font" ariaLabel="Fonts" onChange={vi.fn()} />
@@ -204,7 +208,7 @@ describe('stringListControl keyboard', () => {
  * both, so a second name could be queued against a list the hub had not
  * accepted yet.
  */
-describe('stringListControl busy state', () => {
+describe('StringListControl busy state', () => {
   it('disables the add affordance while a write is in flight', async () => {
     const pending = deferred<void>()
     render(() => (

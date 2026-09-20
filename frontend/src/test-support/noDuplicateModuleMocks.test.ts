@@ -59,6 +59,8 @@ export function findDuplicateMocks(source: string): DuplicateMock[] {
   const linesByPath = new Map<string, number[]>()
   for (const match of code.matchAll(MOCK_CALL)) {
     const path = match[2]
+    if (path === undefined)
+      continue
     const lines = linesByPath.get(path) ?? []
     lines.push(lineNumberAt(code, match.index))
     linesByPath.set(path, lines)

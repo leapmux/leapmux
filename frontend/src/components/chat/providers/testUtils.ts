@@ -1,13 +1,12 @@
-import type { ClassificationInput, ToolMessageInput } from './registry'
+import type { ClassificationInput } from './registry'
 import type { AvailableOption, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { ParsedMessageContent } from '~/lib/messageParser'
 import { create } from '@bufbuild/protobuf'
 import {
   AgentProvider,
   AvailableOptionGroupSchema,
   AvailableOptionSchema,
 } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isObject } from '~/lib/jsonPick'
+import { resolveMessageForRendering } from './registry'
 
 /**
  * Build a ClassificationInput from a parent object and optional wrapper, for
@@ -26,18 +25,15 @@ export function input(
   agentProvider: AgentProvider = AgentProvider.CLAUDE_CODE,
   source?: MessageSource,
 ): ClassificationInput {
-  return {
+  // The one constructor of the resolved brand: a test's classification input
+  // reaches the same merge the production reader takes.
+  const resolved = resolveMessageForRendering({
     rawText: '',
     topLevel: parent ?? null,
     parentObject: parent,
     wrapper: wrapper ?? null,
-    agentProvider,
-    source,
-  }
-}
-
-export function toolMessageInput(parent: unknown, spanType?: string, request?: ParsedMessageContent): ToolMessageInput {
-  return { parsed: input(isObject(parent) ? parent : undefined), spanType, request }
+  }, agentProvider)
+  return { ...resolved, agentProvider, ...(source !== undefined ? { source } : {}) }
 }
 
 interface ModelOpts {

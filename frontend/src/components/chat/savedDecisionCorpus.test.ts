@@ -1,7 +1,7 @@
 import type { PersistedControlResponse } from './persistedControlResponse'
 import { describe, expect, it } from 'vitest'
 import { SAVED_DECISION_CORPUS } from '~/test-support/savedDecisionCorpus'
-import { resolveControlResponseDisplay } from './persistedControlResponse'
+import { resolveControlResponseSummary } from './persistedControlResponse'
 import { pluginFor } from './providers/registry'
 import './providers'
 
@@ -19,9 +19,9 @@ const WIRE_TOKEN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/
  */
 describe('saved decision corpus', () => {
   it.each(SAVED_DECISION_CORPUS)('reads $name back as its own words', (entry) => {
-    const display = resolveControlResponseDisplay(
+    const display = resolveControlResponseSummary(
       storedResponse(entry.request, entry.response),
-      pluginFor(entry.provider)?.controlResponseDisplay,
+      pluginFor(entry.provider)?.controls?.controlResponseDisplay,
     )
     expect(display).toEqual({ kind: 'label', text: entry.label })
   })
@@ -32,9 +32,9 @@ describe('saved decision corpus', () => {
   // carried -- `allow_once` where "Allow once" belongs. Each provider degrades to its own
   // canonical words or to the neutral fallback, and none to a raw token.
   it.each(SAVED_DECISION_CORPUS)('shows no wire token for $name when the request is absent', (entry) => {
-    const display = resolveControlResponseDisplay(
+    const display = resolveControlResponseSummary(
       storedResponse(undefined, entry.response),
-      pluginFor(entry.provider)?.controlResponseDisplay,
+      pluginFor(entry.provider)?.controls?.controlResponseDisplay,
     )
     expect(display.kind).toBe('label')
     if (display.kind === 'label') {

@@ -288,15 +288,16 @@ export function mergeNotes(defaultAddress: string, rows: AddressRow[]): MergeNot
 
   const notes: MergeNote[] = []
   addresses.forEach((address, i) => {
-    let into = absorber[i]
+    // absorber has one element per address, so `?? -1` is the type-level guard alone.
+    let into = absorber[i] ?? -1
     if (into < 0)
       return
     // Follow the chain to the address the hub actually binds. Coverage is
     // transitive and the tie-break above points every mutual pair backwards,
     // so this cannot cycle; the step limit makes that structural, not a claim.
-    for (let step = 0; step < addresses.length && absorber[into] >= 0; step++)
-      into = absorber[into]
-    notes.push({ absorbed: address, into: addresses[into] })
+    for (let step = 0; step < addresses.length && (absorber[into] ?? -1) >= 0; step++)
+      into = absorber[into] ?? -1
+    notes.push({ absorbed: address, into: addresses[into] ?? '' })
   })
   return notes
 }

@@ -61,7 +61,7 @@ describe('listRepoStartPoints', () => {
     ]
     const out = listRepoStartPoints(tabs, store)
     expect(out).toHaveLength(1)
-    expect(out[0].startPoint).toEqual({
+    expect(out[0]?.startPoint).toEqual({
       kind: 'repo',
       workerId: 'w1',
       gitToplevel: '/repo',
@@ -102,7 +102,7 @@ describe('listRepoStartPoints', () => {
       ])
       const out = listRepoStartPoints([tab({ gitToplevel: '/wt/feature' })], store)
       expect(out).toHaveLength(1)
-      expect(out[0].startPoint.isWorktree).toBe(true)
+      expect(out[0]?.startPoint.isWorktree).toBe(true)
     })
 
     it('keeps a worktree whose main checkout is on a DIFFERENT worker', () => {
@@ -236,13 +236,13 @@ describe('listRepoStartPoints', () => {
     it('labels an origin-backed repository the way the tree does', () => {
       const store = storeWith([{ gitToplevel: '/x', originUrl: 'git@github.com:org/leapmux.git' }])
       const out = listRepoStartPoints([tab({ gitToplevel: '/x' })], store)
-      expect(out[0].label).toBe('github.com/org/leapmux')
+      expect(out[0]?.label).toBe('github.com/org/leapmux')
     })
 
     it('labels an origin-less repository by its directory', () => {
       const store = storeWith([{ gitToplevel: '/home/me/alpha' }])
       const out = listRepoStartPoints([tab({ gitToplevel: '/home/me/alpha' })], store)
-      expect(out[0].label).toBe('alpha')
+      expect(out[0]?.label).toBe('alpha')
     })
 
     it('omits the worker while every entry is on one worker', () => {

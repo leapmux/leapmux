@@ -42,7 +42,7 @@ function affectedTabs(overrides: Partial<AffectedTabs> = {}): AffectedTabs {
   }
 }
 
-describe('branchStatusInfo', () => {
+describe('BranchStatusInfo', () => {
   it('names the main working tree a branch and gives its directory', () => {
     render(() => <BranchStatusInfo branch={branch()} affectedTabs={affectedTabs()} />)
 
@@ -72,9 +72,13 @@ describe('branchStatusInfo', () => {
   // The path used to render raw here while every other surface tilde-compressed
   // it, so the same directory read two ways in two places.
   it('leaves the directory absolute when the worker home dir is unknown', () => {
+    // An unknown home dir is the ABSENT field on a snapshot -- omitted, not
+    // written undefined -- which is how the row's worker lookup answers it.
+    const unknownHomeDir = branch()
+    delete unknownHomeDir.homeDir
     render(() => (
       <BranchStatusInfo
-        branch={branch({ homeDir: undefined })}
+        branch={unknownHomeDir}
         affectedTabs={affectedTabs()}
       />
     ))
@@ -219,9 +223,13 @@ describe('branchStatusInfo', () => {
   })
 
   it('hides the clean message when gitState is undefined (fast-path skipped)', () => {
+    // The fast path that skips the snapshot leaves the field ABSENT rather
+    // than writing undefined -- the component's Show reads either the same.
+    const skippedGitState = branch()
+    delete skippedGitState.gitState
     render(() => (
       <BranchStatusInfo
-        branch={branch({ gitState: undefined })}
+        branch={skippedGitState}
         affectedTabs={affectedTabs()}
       />
     ))

@@ -3,10 +3,13 @@ package service
 import (
 	"cmp"
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"slices"
 	"sync"
+
+	"github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
 // registryCache is the shared mechanics for a per-agent in-memory registry
@@ -71,26 +74,35 @@ type registryRetention[T any] struct {
 	keep func(T) bool
 	// load reads a persisted row back by key, so an operation on a row the cache
 	// no longer holds still finds it. found=false for a row that does not exist.
-	load func(ctx context.Context, ownerID, key string) (row T, found bool, err error)
+	load func(ctx context.Context, q *db.Queries, ownerID, key string) (row T, found bool, err error)
 	// reseq gives a re-admitted row a new seq, so the display list and the
 	// cold-start seed keep ONE ordering key. Without it a re-admitted row sat at
 	// the end of the list in memory while its stored seq still placed it outside
 	// the next seed's window.
-	reseq func(ctx context.Context, ownerID, key string, seq int64) error
+	reseq func(ctx context.Context, q *db.Queries, ownerID, key string, seq int64) error
 }
 
 // registryOps supplies the type-specific behaviour a registryCache needs. It is
-// built once per OutputHandler (the closures capture h.queries) and shared by
-// every cache instance of that registry type. Both the background-task registry
-// (bgTaskOps) and agent_todos (todoOps) supply one.
+// built once per OutputHandler and shared by every cache instance of that
+// registry type. Both the background-task registry (bgTaskOps) and agent_todos
+// (todoOps) supply one.
+//
+// Every op that touches the database takes its query handle as a PARAMETER, and
+// closes over none. The ops are built once, and a transaction lives for one call:
+// a caller that groups several writes runs them on `h.queries.WithTx(tx)` and every
+// write it drives -- including an eviction the registry decides on by itself --
+// lands inside that transaction. While the handle was captured, a caller could
+// only enclose the writes it issued directly, so a to-do merge frame that hit the
+// cap committed its upserts inside the transaction and its eviction outside it.
+// registryView is what hands the ops the right handle; see its own comment.
 type registryOps[T any] struct {
 	// listRows loads up to `limit` persisted rows for `ownerID` in one cap pool,
 	// newest first, projecting each into a stored item plus its persisted seq.
 	// `bucket` is 0 for a single-pool registry (bucketOf nil).
-	listRows func(ctx context.Context, ownerID string, bucket int64, limit int32) ([]seedEntry[T], error)
+	listRows func(ctx context.Context, q *db.Queries, ownerID string, bucket int64, limit int32) ([]seedEntry[T], error)
 	// reclaimFinishedBelowSeq deletes the pool's FINISHED rows older than `seq` --
 	// the surplus a seed window leaves behind. Optional: nil skips the pass.
-	reclaimFinishedBelowSeq func(ctx context.Context, ownerID string, bucket, seq int64) error
+	reclaimFinishedBelowSeq func(ctx context.Context, q *db.Queries, ownerID string, bucket, seq int64) error
 	// keyOf extracts the registry key (row_key / task id) from a stored row.
 	keyOf func(T) string
 	// setKey sets the registry key on a stored row (in place) for a rename.
@@ -98,7 +110,7 @@ type registryOps[T any] struct {
 	// isFinished reports whether a stored row is final (eligible for eviction).
 	isFinished func(T) bool
 	// deleteByKey deletes the persisted row for `key` under `ownerID`.
-	deleteByKey func(ctx context.Context, ownerID string, key string) error
+	deleteByKey func(ctx context.Context, q *db.Queries, ownerID string, key string) error
 	// retention makes some rows outlive the display cap in the store. Optional:
 	// nil means the cap is a storage bound too, and every evicted row is deleted.
 	retention *registryRetention[T]
@@ -118,6 +130,88 @@ type registryOps[T any] struct {
 	label string
 }
 
+// registryView binds one registryCache to the query handle and the owner that
+// ONE operation runs on. Every registry operation that touches the database is a
+// method here and takes no handle, so a caller states the handle once -- where it
+// decides between the handler's own and a transaction's -- and cannot state a
+// different one half way through the operation.
+//
+// That is what keeps a grouped write whole. A body inside inTransactionLocked
+// receives a view bound to the transaction's handle, so the writes the registry
+// decides on by ITSELF -- a cap eviction, a re-admission's reseq -- land in that
+// transaction with the caller's own writes. While each method took the handle as
+// a parameter, passing the handler's handle inside a transaction body compiled,
+// ran, and committed outside the transaction.
+//
+// The view carries no state of its own and copies freely, so a caller builds one
+// per operation rather than holding one.
+//
+// The caller must hold cache.Mu for as long as it uses the view, exactly as the
+// Locked methods below require.
+type registryView[T any] struct {
+	cache *registryCache[T]
+	// queries is the bound handle. A caller that issues a write of its own beside
+	// the registry's -- the to-do upsert, the background-task upsert -- takes the
+	// handle from HERE and never from the handler, so every write of one operation
+	// runs on one handle.
+	queries *db.Queries
+	// ownerID is the agent that owns the rows this view addresses.
+	ownerID string
+}
+
+// on binds the cache to a query handle and an owner. Caller must hold c.Mu.
+func (c *registryCache[T]) on(q *db.Queries, ownerID string) registryView[T] {
+	return registryView[T]{cache: c, queries: q, ownerID: ownerID}
+}
+
+// inTransactionLocked runs body on ONE query handle, and puts the cache's display
+// state back exactly as it found it when body fails.
+//
+// Half of that pairing used to be the caller's: capture a mirror, open the
+// transaction, restore on error. Only a comment said which callers owed the
+// mirror, and a caller that forgot it left a rolled-back write in memory -- a list
+// nothing can rebuild until the next cold seed, which for a live agent is never.
+// The two halves are one call now, so neither can be forgotten and the mirror
+// cannot go stale.
+//
+// body receives a view bound to the transaction's handle. Every write of the
+// operation goes through it, the registry's own included.
+//
+// A nil sdb runs body WITHOUT a transaction, on this view's handle. A handler
+// built with no *sql.DB (a unit test) takes that path, and the mirror still
+// protects it: a body that fails half way through leaves the same partial cache
+// either way.
+//
+// Caller must hold cache.Mu.
+func (v registryView[T]) inTransactionLocked(ctx context.Context, sdb *sql.DB, body func(tx registryView[T]) error) error {
+	mirror := v.cache.mirrorLocked()
+	if err := v.runBodyLocked(ctx, sdb, body); err != nil {
+		v.cache.restoreLocked(mirror)
+		return err
+	}
+	return nil
+}
+
+// runBodyLocked is inTransactionLocked without the mirror, split out so the
+// restore has ONE return path to guard. Caller must hold cache.Mu.
+func (v registryView[T]) runBodyLocked(ctx context.Context, sdb *sql.DB, body func(tx registryView[T]) error) error {
+	if sdb == nil {
+		return body(v)
+	}
+	tx, err := sdb.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin %s tx: %w", v.cache.ops.label, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := body(v.cache.on(v.queries.WithTx(tx), v.ownerID)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit %s: %w", v.cache.ops.label, err)
+	}
+	return nil
+}
+
 // bucket returns the cap pool a row belongs to (0 when the registry has only
 // one pool).
 func (c *registryCache[T]) bucket(row T) int64 {
@@ -133,7 +227,7 @@ func (c *registryCache[T]) inBucket(row T, bucket int64) bool {
 }
 
 // ensureSeededLocked loads the owner's existing rows from the DB on first touch.
-// On failure the cache stays unseeded so a later call retries. Caller must hold c.Mu.
+// On failure the cache stays unseeded so a later call retries. Caller must hold cache.Mu.
 // Seeds PER POOL, each to its own cap, because the registry caps each pool
 // independently. One global window has the wrong shape: an owner whose newest
 // `cap` rows all belong to one pool seeds every other pool EMPTY.
@@ -147,7 +241,8 @@ func (c *registryCache[T]) inBucket(row T, bucket int64) bool {
 // display list no longer shows. A reclaim failure is logged, not
 // returned: the cache is correctly seeded either way, and refusing to seed over
 // it would cost the registry its rows.
-func (c *registryCache[T]) ensureSeededLocked(ctx context.Context, ownerID string) error {
+func (v registryView[T]) ensureSeededLocked(ctx context.Context) error {
+	c, q, ownerID := v.cache, v.queries, v.ownerID
 	if c.seeded {
 		return nil
 	}
@@ -160,7 +255,7 @@ func (c *registryCache[T]) ensureSeededLocked(ctx context.Context, ownerID strin
 	// is meant to keep.
 	var loaded []seedEntry[T]
 	for _, bucket := range buckets {
-		entries, err := c.ops.listRows(ctx, ownerID, bucket, c.ops.cap)
+		entries, err := c.ops.listRows(ctx, q, ownerID, bucket, c.ops.cap)
 		if err != nil {
 			return err
 		}
@@ -169,7 +264,7 @@ func (c *registryCache[T]) ensureSeededLocked(ctx context.Context, ownerID strin
 			// surplus. Reclaim only when it IS full: a short window means the
 			// pool already fits, and there is nothing behind it.
 			oldest := entries[len(entries)-1].seq
-			if err := c.ops.reclaimFinishedBelowSeq(ctx, ownerID, bucket, oldest); err != nil {
+			if err := c.ops.reclaimFinishedBelowSeq(ctx, q, ownerID, bucket, oldest); err != nil {
 				slog.Warn("reclaim registry surplus", "registry", c.ops.label, "owner", ownerID, "pool", bucket, "error", err)
 			}
 		}
@@ -208,7 +303,7 @@ func (c *registryCache[T]) snapshot() []T {
 //
 // This answers "is the row DISPLAYED", which is not the same question as "does
 // the row exist" for a registry with retention. A mutation must ask
-// rowIndexLocked instead; indexOf is for a caller that genuinely means the
+// findRowLocked instead; indexOf is for a caller that genuinely means the
 // display list.
 func (c *registryCache[T]) indexOf(key string) int {
 	return slices.IndexFunc(c.Rows, func(r T) bool { return c.ops.keyOf(r) == key })
@@ -222,7 +317,7 @@ func (c *registryCache[T]) indexOf(key string) int {
 //   - found=true, idx=-1: the row is RETAINED in the store but left the display
 //     list. A caller that means to WRITE calls admitRowLocked to put it back.
 //
-// Caller must hold c.Mu.
+// Caller must hold cache.Mu.
 //
 // Every mutation resolves through here, and that is what keeps retention
 // honest. The cap made the cache a partial view of the table, so a mutation
@@ -239,7 +334,8 @@ func (c *registryCache[T]) indexOf(key string) int {
 // row -- and deletes an unlinked one from the table -- to make space for a write
 // that never happens, and the applier then reports changed=false, so no
 // broadcast tells the client its list moved.
-func (c *registryCache[T]) findRowLocked(ctx context.Context, ownerID, key string) (T, int, bool, error) {
+func (v registryView[T]) findRowLocked(ctx context.Context, key string) (T, int, bool, error) {
+	c, q, ownerID := v.cache, v.queries, v.ownerID
 	if idx := c.indexOf(key); idx >= 0 {
 		return c.Rows[idx], idx, true, nil
 	}
@@ -247,7 +343,7 @@ func (c *registryCache[T]) findRowLocked(ctx context.Context, ownerID, key strin
 	if c.ops.retention == nil {
 		return zero, -1, false, nil
 	}
-	row, found, err := c.ops.retention.load(ctx, ownerID, key)
+	row, found, err := c.ops.retention.load(ctx, q, ownerID, key)
 	if err != nil {
 		return zero, -1, false, fmt.Errorf("load retained %s row %s/%s: %w", c.ops.label, ownerID, key, err)
 	}
@@ -259,7 +355,7 @@ func (c *registryCache[T]) findRowLocked(ctx context.Context, ownerID, key strin
 
 // admitRowLocked returns a retained row to the display list and reports its new
 // index. Call it only at the point where a mutation commits to a write, because
-// it evicts to keep the pool at its cap. Caller must hold c.Mu.
+// it evicts to keep the pool at its cap. Caller must hold cache.Mu.
 //
 // The row goes to the END of the display list, and the pool evicts to stay at
 // its cap first. Both follow from what the list is for: a row that a mutation
@@ -274,12 +370,13 @@ func (c *registryCache[T]) findRowLocked(ctx context.Context, ownerID, key strin
 // row, and the next cold seed (newest rows by seq) dropped the re-admitted row
 // again, so a subagent a revive had just reopened vanished from the sidebar on
 // the next worker restart.
-func (c *registryCache[T]) admitRowLocked(ctx context.Context, ownerID string, row T) (int, error) {
-	if _, _, err := c.makeRoomLocked(ctx, ownerID, c.bucket(row)); err != nil {
+func (v registryView[T]) admitRowLocked(ctx context.Context, row T) (int, error) {
+	c, q, ownerID := v.cache, v.queries, v.ownerID
+	if _, _, err := v.makeRoomLocked(ctx, c.bucket(row)); err != nil {
 		return -1, err
 	}
 	if c.ops.retention != nil && c.ops.retention.reseq != nil {
-		if err := c.ops.retention.reseq(ctx, ownerID, c.ops.keyOf(row), c.nextSeq); err != nil {
+		if err := c.ops.retention.reseq(ctx, q, ownerID, c.ops.keyOf(row), c.nextSeq); err != nil {
 			return -1, fmt.Errorf("resequence %s row %s: %w", c.ops.label, c.ops.keyOf(row), err)
 		}
 		c.nextSeq++
@@ -292,7 +389,7 @@ func (c *registryCache[T]) admitRowLocked(ctx context.Context, ownerID string, r
 
 // deleteRowLocked removes the row at key from the display list, and from the
 // store unless ops.retention keeps it. Reports whether a displayed row left the
-// list. Caller must hold c.Mu.
+// list. Caller must hold cache.Mu.
 //
 // This is the ONE delete a Go caller reaches, so "a retained row survives a
 // delete" cannot be forgotten at a new call site: eviction and an explicit
@@ -305,15 +402,16 @@ func (c *registryCache[T]) admitRowLocked(ctx context.Context, ownerID string, r
 // that can compare the two rows knows it, which is why it is a parameter and not
 // a rule inside retention.keep: the predicate sees one row and cannot tell an
 // only index from a second copy of one. Pass false when nothing replaces the row.
-func (c *registryCache[T]) deleteRowLocked(ctx context.Context, ownerID, key string, superseded bool) (bool, error) {
-	row, idx, found, err := c.findRowLocked(ctx, ownerID, key)
+func (v registryView[T]) deleteRowLocked(ctx context.Context, key string, superseded bool) (bool, error) {
+	c := v.cache
+	row, idx, found, err := v.findRowLocked(ctx, key)
 	if err != nil {
 		return false, err
 	}
 	if !found {
 		return false, nil
 	}
-	if err := c.dropStoredRowLocked(ctx, ownerID, row, superseded); err != nil {
+	if err := v.dropStoredRowLocked(ctx, row, superseded); err != nil {
 		return false, fmt.Errorf("delete %s: %w", c.ops.label, err)
 	}
 	// Gone from the registry, so it is nobody's running work now.
@@ -331,17 +429,17 @@ func (c *registryCache[T]) deleteRowLocked(ctx context.Context, ownerID, key str
 // row of any status when the pool holds none. RETURNS the evicted row (ok=false
 // when nothing was evicted), so a caller can report which case it got by testing
 // isFinished on it rather than by re-deriving the preference. Caller must hold
-// c.Mu.
-func (c *registryCache[T]) makeRoomLocked(ctx context.Context, ownerID string, bucket int64) (T, bool, error) {
-	if !c.atCapForBucket(bucket) {
+// cache.Mu.
+func (v registryView[T]) makeRoomLocked(ctx context.Context, bucket int64) (T, bool, error) {
+	if !v.cache.atCapForBucket(bucket) {
 		var zero T
 		return zero, false, nil
 	}
-	evicted, ok, err := c.evictOldestFinishedInBucketLocked(ctx, ownerID, bucket)
+	evicted, ok, err := v.evictOldestFinishedInBucketLocked(ctx, bucket)
 	if err != nil || ok {
 		return evicted, ok, err
 	}
-	return c.evictOldestInBucketLocked(ctx, ownerID, bucket)
+	return v.evictOldestInBucketLocked(ctx, bucket)
 }
 
 // evictOldestFinishedInBucketLocked removes the first finished row (by slice
@@ -351,13 +449,14 @@ func (c *registryCache[T]) makeRoomLocked(ctx context.Context, ownerID string, b
 // row this method actually removed rather than re-running an equivalent scan of
 // its own -- two expressions of one predicate that agree only while nobody edits
 // either. Returns ok=false (no error) when the pool holds no finished row.
-// Caller must hold c.Mu.
+// Caller must hold cache.Mu.
 //
 // There is deliberately NO unscoped wrapper: with a bucketed registry, bucket 0
 // matches nothing, so a wrapper that hardcoded it would evict nothing and report
 // "no finished row" without an error or a log. Naming the pool is the caller's.
-func (c *registryCache[T]) evictOldestFinishedInBucketLocked(ctx context.Context, ownerID string, bucket int64) (T, bool, error) {
-	return c.evictFirstMatchLocked(ctx, ownerID, func(r T) bool {
+func (v registryView[T]) evictOldestFinishedInBucketLocked(ctx context.Context, bucket int64) (T, bool, error) {
+	c := v.cache
+	return v.evictFirstMatchLocked(ctx, func(r T) bool {
 		return c.inBucket(r, bucket) && c.ops.isFinished(r)
 	})
 }
@@ -367,29 +466,31 @@ func (c *registryCache[T]) evictOldestFinishedInBucketLocked(ctx context.Context
 // at all. The cap is a bound on the DISPLAY list, so the oldest entry leaves it
 // even while it runs; ops.retention decides whether the persisted row goes with
 // it. Same bucket and return contract as
-// evictOldestFinishedInBucketLocked. Caller must hold c.Mu.
-func (c *registryCache[T]) evictOldestInBucketLocked(ctx context.Context, ownerID string, bucket int64) (T, bool, error) {
-	return c.evictFirstMatchLocked(ctx, ownerID, func(r T) bool { return c.inBucket(r, bucket) })
+// evictOldestFinishedInBucketLocked. Caller must hold cache.Mu.
+func (v registryView[T]) evictOldestInBucketLocked(ctx context.Context, bucket int64) (T, bool, error) {
+	c := v.cache
+	return v.evictFirstMatchLocked(ctx, func(r T) bool { return c.inBucket(r, bucket) })
 }
 
 // evictFirstMatchLocked evicts the first row the predicate accepts, or reports
-// ok=false when none matches. Caller must hold c.Mu.
-func (c *registryCache[T]) evictFirstMatchLocked(ctx context.Context, ownerID string, match func(T) bool) (T, bool, error) {
-	evictIdx := slices.IndexFunc(c.Rows, match)
+// ok=false when none matches. Caller must hold cache.Mu.
+func (v registryView[T]) evictFirstMatchLocked(ctx context.Context, match func(T) bool) (T, bool, error) {
+	evictIdx := slices.IndexFunc(v.cache.Rows, match)
 	if evictIdx < 0 {
 		var zero T
 		return zero, false, nil
 	}
-	return c.evictAtLocked(ctx, ownerID, evictIdx)
+	return v.evictAtLocked(ctx, evictIdx)
 }
 
 // evictAtLocked removes the row at evictIdx from the capped display cache,
 // returning the row it removed. The persisted row goes with it UNLESS
 // ops.retention keeps it: eviction is a display bound, and a retained row stays
-// reachable through rowIndexLocked. Caller must hold c.Mu.
-func (c *registryCache[T]) evictAtLocked(ctx context.Context, ownerID string, evictIdx int) (T, bool, error) {
+// reachable through findRowLocked. Caller must hold cache.Mu.
+func (v registryView[T]) evictAtLocked(ctx context.Context, evictIdx int) (T, bool, error) {
+	c := v.cache
 	evicted := c.Rows[evictIdx]
-	if err := c.dropStoredRowLocked(ctx, ownerID, evicted, false); err != nil {
+	if err := v.dropStoredRowLocked(ctx, evicted, false); err != nil {
 		var zero T
 		return zero, false, fmt.Errorf("evict %s: %w", c.ops.label, err)
 	}
@@ -404,6 +505,40 @@ func (c *registryCache[T]) evictAtLocked(ctx context.Context, ownerID string, ev
 		c.evictedActive[c.ops.keyOf(evicted)] = struct{}{}
 	}
 	return evicted, true, nil
+}
+
+// registryMirror is the mutable display state of one cache, captured whole.
+//
+// A caller that groups several writes into a transaction mutates this mirror as it
+// goes, because each write reads the state the one before it left. A rollback must
+// therefore put the mirror back: the table is the truth, and a mirror that kept the
+// rolled-back rows would state a list nothing can rebuild until the next cold seed.
+type registryMirror[T any] struct {
+	rows          []T
+	nextSeq       int64
+	evictedActive map[string]struct{}
+}
+
+// mirrorLocked copies the mutable display state. Caller must hold c.Mu.
+func (c *registryCache[T]) mirrorLocked() registryMirror[T] {
+	var hidden map[string]struct{}
+	if c.evictedActive != nil {
+		hidden = make(map[string]struct{}, len(c.evictedActive))
+		for key := range c.evictedActive {
+			hidden[key] = struct{}{}
+		}
+	}
+	// The rows are COPIED, not aliased: `slices.Delete` and `append` both write
+	// through the backing array, so a restore that shared it would put back a slice
+	// whose elements the failed attempt had already moved.
+	return registryMirror[T]{rows: slices.Clone(c.Rows), nextSeq: c.nextSeq, evictedActive: hidden}
+}
+
+// restoreLocked puts the display state back to a captured mirror. Caller must hold c.Mu.
+func (c *registryCache[T]) restoreLocked(mirror registryMirror[T]) {
+	c.Rows = mirror.rows
+	c.nextSeq = mirror.nextSeq
+	c.evictedActive = mirror.evictedActive
 }
 
 // forgetEvictedActiveLocked drops key from the hidden-active set, for a row that
@@ -425,12 +560,13 @@ func (c *registryCache[T]) EvictedActiveCount() int32 {
 // superseded overrides retention: a surviving row already holds the index this
 // row would be kept for, so keeping it stores a permanent duplicate instead of
 // an only copy. See deleteRowLocked for why the caller decides this.
-// Caller must hold c.Mu.
-func (c *registryCache[T]) dropStoredRowLocked(ctx context.Context, ownerID string, row T, superseded bool) error {
+// Caller must hold cache.Mu.
+func (v registryView[T]) dropStoredRowLocked(ctx context.Context, row T, superseded bool) error {
+	c := v.cache
 	if !superseded && c.ops.retention != nil && c.ops.retention.keep(row) {
 		return nil
 	}
-	return c.ops.deleteByKey(ctx, ownerID, c.ops.keyOf(row))
+	return c.ops.deleteByKey(ctx, v.queries, v.ownerID, c.ops.keyOf(row))
 }
 
 // dropRowLocked removes the cached row at key WITHOUT touching the DB, for a

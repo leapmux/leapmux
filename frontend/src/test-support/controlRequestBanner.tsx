@@ -22,10 +22,27 @@ type HarnessActionsProps = Omit<BannerActionsProps, 'controlSurface'>
 
 export const ControlRequestContent: Component<HarnessContentProps> = (props) => {
   const live = createControlSurface(() => props.request, () => props.messageContext, () => props.agentProvider)
-  return <BannerContent {...props} agentProvider={live.provider()} controlSurface={live.surface()} />
+  // One narrowed read: spreading the call's result directly would carry an
+  // explicit undefined into `agentProvider?: AgentProvider`, which
+  // exactOptionalPropertyTypes refuses.
+  const provider = live.provider()
+  return (
+    <BannerContent
+      {...props}
+      {...(provider === undefined ? {} : { agentProvider: provider })}
+      controlSurface={live.surface()}
+    />
+  )
 }
 
 export const ControlRequestActions: Component<HarnessActionsProps> = (props) => {
   const live = createControlSurface(() => props.request, () => props.messageContext, () => props.agentProvider)
-  return <BannerActions {...props} agentProvider={live.provider()} controlSurface={live.surface()} />
+  const provider = live.provider()
+  return (
+    <BannerActions
+      {...props}
+      {...(provider === undefined ? {} : { agentProvider: provider })}
+      controlSurface={live.surface()}
+    />
+  )
 }

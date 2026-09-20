@@ -135,7 +135,10 @@ type toolTranscript struct {
 	retired    []*toolTranscript
 	sessionKey string
 	sessionID  string
-	pending    map[string]MessageContent
+	pending    map[string]pendingToolRow
+	// nextPendingEpoch stamps each entry that pending takes. It never restarts, not
+	// even for a new session, so no two entries of one transcript share a value.
+	nextPendingEpoch uint64
 	// stopWatch cancels the context watch that ends the worker. closeSupplementWorker
 	// calls it, so a child transcript that the caller cleaned up leaves nothing
 	// attached to the agent's context.
@@ -150,6 +153,31 @@ type toolTranscript struct {
 	// closed stops the worker for good. A closed transcript still enriches at the turn
 	// end, because the final pass runs on the caller's goroutine.
 	closed bool
+}
+
+// pendingToolRow is one persisted tool result that still waits for a supplement.
+//
+// revision is the row's supplemental revision as THIS transcript last left it. The
+// store pass sends it back with its own write, so a supplement that EnrichToolSpan
+// wrote out of band does not make the pass stale -- EnrichMessage refuses a write
+// whose PreviousRevision no longer matches the row, and a refused pass would drop
+// the store output for good, because finishPending clears what is left at the turn
+// end.
+//
+// epoch identifies THIS entry, and no replacement ever repeats one. Every writer
+// releases mu for its store round trip and then compares what it read against what
+// pending holds. The revision alone cannot make that comparison: a second row that
+// closes the same tool call enters at revision 0, which is the revision the first
+// one started at, so the compare would take the replacement for the entry it read.
+type pendingToolRow struct {
+	content  MessageContent
+	revision int64
+	epoch    uint64
+}
+
+// matches reports whether other is the same entry at the same revision.
+func (r pendingToolRow) matches(other pendingToolRow) bool {
+	return r.epoch == other.epoch && r.revision == other.revision
 }
 
 // toolTranscriptLocation states where one provider keeps the records of one session.
@@ -239,7 +267,7 @@ func (s *toolTranscript) adoptLocation() (string, bool, []*toolTranscript) {
 		s.sessionKey = location.sessionKey
 	}
 	if s.pending == nil {
-		s.pending = make(map[string]MessageContent)
+		s.pending = make(map[string]pendingToolRow)
 	}
 	return location.path, location.ready, orphans
 }
@@ -393,7 +421,10 @@ func (s *toolTranscript) PersistMessage(source leapmuxv1.MessageSource, content 
 		saved := content
 		saved.Original = append([]byte(nil), content.Original...)
 		saved.Supplemental = append([]byte(nil), content.Supplemental...)
-		s.pending[toolCallID] = saved
+		// A row this call just persisted carries revision 0: PersistMessage writes the
+		// supplement WITH the row, and only EnrichMessage increments the revision.
+		s.nextPendingEpoch++
+		s.pending[toolCallID] = pendingToolRow{content: saved, epoch: s.nextPendingEpoch}
 	}
 	return nil
 }
@@ -529,17 +560,17 @@ func (s *toolTranscript) PersistChildTurnEnd(childAgentID string, content Messag
 // runSupplementPass reads the provider's records once and enriches every stored row
 // that the read answered.
 //
-// It takes mu to copy the pending set, releases mu for the read, and takes mu again to
-// apply the records. The read is the only part that a slow provider store can stretch,
-// and the reader goroutine holds nothing while it runs.
+// It takes mu to copy the pending set and releases mu for the read. applySupplements
+// then takes mu for the bookkeeping of one record at a time. Neither the provider
+// read nor a store write runs under mu, so the reader goroutine waits for neither.
 func (s *toolTranscript) runSupplementPass(final bool) {
 	s.passMu.Lock()
 	defer s.passMu.Unlock()
 	s.mu.Lock()
 	path, ready, orphans := s.adoptLocation()
 	protocol := make(map[string]MessageContent, len(s.pending))
-	for id, content := range s.pending {
-		protocol[id] = content
+	for id, entry := range s.pending {
+		protocol[id] = entry.content
 	}
 	s.mu.Unlock()
 	retireToolTranscripts(orphans)
@@ -556,26 +587,30 @@ func (s *toolTranscript) runSupplementPass(final bool) {
 		// chance.
 		slog.Warn("Read stored tool records", "provider", s.source.providerName(), "final", final, "error", err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.applySupplementsLocked(records)
+	s.applySupplements(records)
 }
 
-// applySupplementsLocked writes each supplement the pass read into its stored row.
-// The caller holds mu.
-func (s *toolTranscript) applySupplementsLocked(records map[string][]byte) {
+// applySupplements writes each supplement the pass read into its stored row.
+//
+// It takes mu for the bookkeeping of ONE record and releases it for that record's
+// write. Each write is a SELECT and an UPDATE, so a turn with N pending rows
+// serialized N round trips under one acquisition, and every frame the reader
+// goroutine had waited for all of them. The caller must NOT hold mu.
+func (s *toolTranscript) applySupplements(records map[string][]byte) {
 	for id, enriched := range records {
-		content, found := s.pending[id]
+		s.mu.Lock()
+		entry, found := s.pending[id]
+		s.mu.Unlock()
 		if !found {
 			continue
 		}
-		combined, err := mergeToolSupplements(content.Supplemental, enriched)
+		_, enrichedRow, err := s.writeSupplement(MessageEnrichment{
+			SpanID: id, OriginalContent: entry.content.Original,
+			PreviousRevision: entry.revision,
+		}, entry.content.Supplemental, enriched)
 		if err != nil {
-			slog.Warn("Merge tool supplements", "provider", s.source.providerName(), "error", err)
-			continue
-		}
-		enrichedRow, err := s.EnrichMessage(MessageEnrichment{SpanID: id, OriginalContent: content.Original, SupplementalContent: combined})
-		if err != nil {
+			// ONE bad record never stops the pass: the other rows of the same turn
+			// still take their supplements.
 			slog.Warn("Enrich tool result", "provider", s.source.providerName(), "error", err)
 			continue
 		}
@@ -586,11 +621,153 @@ func (s *toolTranscript) applySupplementsLocked(records map[string][]byte) {
 			slog.Debug("Stored tool row refused the supplement", "provider", s.source.providerName(), "span_id", id)
 			continue
 		}
-		delete(s.pending, id)
+		// A compare-and-set, because mu was free while the write ran. An out-of-band
+		// EnrichToolSpan can have raised the entry's revision in the meantime, and
+		// that entry then describes a supplement this write does not carry. Dropping
+		// it would leave the next pass nothing to merge on top of.
+		s.mu.Lock()
+		if current, still := s.pending[id]; still && current.matches(entry) {
+			delete(s.pending, id)
+		}
+		s.mu.Unlock()
 	}
 }
 
+// EnrichToolSpan merges one out-of-band supplement into the row of a tool call.
+//
+// A provider calls this when it recovers a field OUTSIDE the store pass. Cursor is
+// the caller today: its `cursor/*` extension frames arrive on the stdout reader, one
+// per finished call, right after the update that completed the same toolCallId.
+//
+// It goes through the transcript because the transcript is the SINGLE WRITER of a
+// row's supplemental content. A direct EnrichMessage would raise the row's revision
+// under the store pass, and EnrichMessage refuses a write whose PreviousRevision no
+// longer matches the row. That refusal is permanent -- finishPending clears what is
+// left at the turn end -- so the store output, which is the whole diff or the whole
+// search result, would never reach the row.
+//
+// `build` takes the row's ORIGINAL frame and answers the bytes to merge. A caller
+// that must identify the frame it enriches -- so a later resolve can check that the
+// supplement belongs to this row -- cannot build those bytes before the transcript
+// resolves the row, and the transcript is the only holder of the frame in both the
+// pending and the settled case. It answers nil bytes to write nothing.
+//
+// It reports whether a row took the supplement.
+func (s *toolTranscript) EnrichToolSpan(spanID string, build func(original []byte) ([]byte, error)) (bool, error) {
+	if spanID == "" || build == nil {
+		return false, nil
+	}
+	// mu guards the map read ALONE. Both paths below make TWO database round trips,
+	// a SELECT and an UPDATE, and mu guards neither of them: the reader goroutine
+	// must never wait for a store query, because the wait becomes back-pressure on
+	// the provider's pipe. Holding mu across those queries stalled every frame that
+	// goroutine had for the length of both.
+	//
+	// passMu is not the answer either. Taking it here would make the reader wait for
+	// the supplement worker's read of the PROVIDER's store, which the doc on
+	// toolSupplementSource forbids.
+	//
+	// A racing writer costs this call its write rather than the row its content,
+	// because EnrichMessage refuses a write whose PreviousRevision no longer matches.
+	s.mu.Lock()
+	entry, waiting := s.pending[spanID]
+	s.mu.Unlock()
+	if !waiting {
+		// The span left `pending`, so no entry describes it and the ROW's own
+		// revision is the record. enrichSettledToolSpan reads it back.
+		return s.enrichSettledToolSpan(spanID, build)
+	}
+	extra, err := build(entry.content.Original)
+	if err != nil || len(extra) == 0 {
+		return false, err
+	}
+	combined, written, err := s.writeSupplement(MessageEnrichment{
+		SpanID: spanID, OriginalContent: entry.content.Original,
+		PreviousRevision: entry.revision,
+	}, entry.content.Supplemental, extra)
+	if err != nil || !written {
+		return written, err
+	}
+	// The entry STAYS pending, with the supplement and the revision this write left.
+	// The store pass then merges its records ON TOP of this supplement rather than
+	// over it, and its own write states a revision the row still carries.
+	//
+	// A compare-and-set, because mu was free while the write ran: the store pass can
+	// have taken the entry and dropped it in the meantime, and the turn end can have
+	// cleared it. A row that this transcript no longer tracks still took the write,
+	// so the report stays true either way.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, stillWaiting := s.pending[spanID]
+	if !stillWaiting || !current.matches(entry) {
+		return true, nil
+	}
+	current.content.Supplemental = combined
+	current.revision++
+	s.pending[spanID] = current
+	return true, nil
+}
+
+// enrichSettledToolSpan writes a supplement onto a row the transcript no longer
+// tracks.
+//
+// The supplement worker runs between two frames of the reader goroutine, so a pass
+// that answered this call already enriched its row and dropped the entry. The row
+// itself is then the only record of the revision, which is why this reads it back.
+//
+// It reads the LAST row of the span. The transcript enriches the row that CLOSES a
+// tool call, which ReadToolRequest -- the first row of the span -- is not.
+//
+// The caller holds NO lock: this reads the row and writes it back, and mu guards
+// neither. See EnrichToolSpan for why that is safe.
+func (s *toolTranscript) enrichSettledToolSpan(spanID string, build func(original []byte) ([]byte, error)) (bool, error) {
+	stored, err := s.ReadToolResult(spanID)
+	if err != nil {
+		return false, err
+	}
+	if stored == nil {
+		return false, nil
+	}
+	extra, err := build(stored.Content.Original)
+	if err != nil || len(extra) == 0 {
+		return false, err
+	}
+	_, written, err := s.writeSupplement(MessageEnrichment{
+		Seq: stored.Seq, SpanID: spanID, OriginalContent: stored.Content.Original,
+		PreviousRevision: stored.Revision,
+	}, stored.Content.Supplemental, extra)
+	return written, err
+}
+
+// writeSupplement merges `extra` over `base` and writes the result onto one row.
+//
+// The ONE merge-then-write in this file. Three callers reach it -- the store pass, the
+// out-of-band frame, and the settled row -- and each keeps its own bookkeeping
+// afterwards: the pass drops its entry, the out-of-band write keeps one with the new
+// revision, and the settled row has no entry at all. What they share is this: the
+// merge order, the wording of a merge failure, and the rule that `SupplementalContent`
+// on the enrichment is always the MERGED bytes. Three copies spelled all three, and
+// the merge-failure message differed in two of them.
+//
+// It answers the merged bytes as well, because a caller that keeps an entry must store
+// what it wrote rather than merge a second time.
+func (s *toolTranscript) writeSupplement(enrichment MessageEnrichment, base, extra []byte) ([]byte, bool, error) {
+	combined, err := mergeToolSupplements(base, extra)
+	if err != nil {
+		return nil, false, fmt.Errorf("merge tool supplement: %w", err)
+	}
+	enrichment.SupplementalContent = combined
+	written, err := s.EnrichMessage(enrichment)
+	return combined, written, err
+}
+
 // mergeToolSupplements preserves initial data when native records arrive later.
+//
+// The merged envelope's own keys come out SORTED, because it re-encodes through a map,
+// while a producer that marshals a struct keeps its declaration order. Each payload
+// inside passes through as raw bytes, so the agent's own frame is never re-encoded --
+// but the two envelopes then differ by key order for the same content, which is why
+// every caller that asks "did this change anything?" uses JSONCanonicalEqual.
 func mergeToolSupplements(initial, later []byte) ([]byte, error) {
 	if len(initial) == 0 {
 		return later, nil

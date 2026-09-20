@@ -50,7 +50,9 @@ vi.mock('@thisbeyond/solid-dnd', async () => {
     createDroppable: () => () => {},
     createDraggable: () => () => {},
     SortableProvider: (props: any) => <>{props.children}</>,
-    maybeTransformStyle: () => undefined,
+    // The real helper answers `{}` for a no-op transform and never undefined;
+    // the guarded row projects `transform` out of whatever it returns.
+    maybeTransformStyle: () => ({}),
   }
 })
 
@@ -183,6 +185,17 @@ vi.mock('~/components/shell/TabBar.css', () => ({
 
 function noop() {}
 
+/**
+ * getAllBy* throws rather than answering an empty list, so the index is in
+ * range whenever a query returned; the throw is the type-level guard alone.
+ */
+function nthOf<T>(list: T[], index: number): T {
+  const el = list[index]
+  if (el === undefined)
+    throw new Error(`expected index ${index} to exist`)
+  return el
+}
+
 const defaultProps = {
   tileId: 'tile-1',
   tabs: [] as any[],
@@ -271,7 +284,7 @@ describe('tabBar archived prop', () => {
 
     // The mocked DropdownMenu renders every variant's children inline, so the
     // glyph exists once per menu host — click the first.
-    await fireEvent.click(screen.getAllByTestId(`menu-new-agent-${AgentProvider.CODEX}`)[0])
+    await fireEvent.click(nthOf(screen.getAllByTestId(`menu-new-agent-${AgentProvider.CODEX}`), 0))
 
     expect(onNewAgent).toHaveBeenCalledWith(AgentProvider.CODEX)
   })
@@ -293,8 +306,8 @@ describe('tabBar archived prop', () => {
       </PreferencesProvider>
     ))
 
-    expect(screen.getAllByText('/bin/zsh')[0].closest('button')?.textContent).toContain('(default)')
-    await fireEvent.click(screen.getAllByText('/bin/bash')[0])
+    expect(nthOf(screen.getAllByText('/bin/zsh'), 0).closest('button')?.textContent).toContain('(default)')
+    await fireEvent.click(nthOf(screen.getAllByText('/bin/bash'), 0))
 
     expect(onNewTerminalWithShell).toHaveBeenCalledWith('/bin/bash')
   })
@@ -413,7 +426,7 @@ describe('tabBar archived prop', () => {
     const hiddenItems = screen.getAllByRole('menuitemcheckbox', { name: /Show hidden messages/ })
     expect(expandItems.length).toBeGreaterThan(0)
     expect(hiddenItems.length).toBeGreaterThan(0)
-    expect(expandItems[0].compareDocumentPosition(hiddenItems[0]) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+    expect(nthOf(expandItems, 0).compareDocumentPosition(nthOf(hiddenItems, 0)) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
   })
 
   it('toggles Expand agent thoughts and persists the browser preference', () => {
@@ -428,7 +441,7 @@ describe('tabBar archived prop', () => {
 
     // The toggles carry role=menuitemcheckbox, so a screen reader announces
     // their on/off state; the display-only indicator is aria-hidden.
-    const menuItem = screen.getAllByRole('menuitemcheckbox', { name: /Expand agent thoughts/ })[0]
+    const menuItem = nthOf(screen.getAllByRole('menuitemcheckbox', { name: /Expand agent thoughts/ }), 0)
     expect(menuItem).toHaveTextContent('Expand agent thoughts')
     expect(menuItem).toHaveAttribute('aria-checked', 'true')
     const checkbox = menuItem.querySelector('input[type="checkbox"]') as HTMLInputElement
@@ -570,10 +583,10 @@ describe('tabBar row identity', () => {
     ])
 
     const after = screen.getAllByTestId('tab')
-    expect(after[0], 'the row must be updated in place, not replaced').toBe(before[0])
-    expect(after[1], 'an untouched sibling must not be remounted either').toBe(before[1])
+    expect(nthOf(after, 0), 'the row must be updated in place, not replaced').toBe(nthOf(before, 0))
+    expect(nthOf(after, 1), 'an untouched sibling must not be remounted either').toBe(nthOf(before, 1))
     // ...and the change still reaches the DOM through the row's own reactivity.
-    expect(after[0].textContent).toContain('Agent Renamed')
+    expect(nthOf(after, 0).textContent).toContain('Agent Renamed')
   })
 
   it('remounts rows only when a tab is actually added, removed, or reordered', () => {
@@ -596,8 +609,8 @@ describe('tabBar row identity', () => {
 
     const after = screen.getAllByTestId('tab')
     expect(after).toHaveLength(3)
-    expect(after[0], 'adding a tab must not disturb the existing rows').toBe(before[0])
-    expect(after[1]).toBe(before[1])
+    expect(nthOf(after, 0), 'adding a tab must not disturb the existing rows').toBe(nthOf(before, 0))
+    expect(nthOf(after, 1)).toBe(nthOf(before, 1))
   })
 
   it('keeps the row that the user renames mounted through an unrelated tab\'s change', () => {
@@ -612,7 +625,7 @@ describe('tabBar row identity', () => {
     ))
 
     // Double-click opens the inline rename input on the agent row.
-    fireEvent.dblClick(screen.getAllByTestId('tab')[0])
+    fireEvent.dblClick(nthOf(screen.getAllByTestId('tab'), 0))
     const input = document.querySelector('input.tabEditInput') as HTMLInputElement
     expect(input, 'double-click must open the rename input').toBeTruthy()
     fireEvent.input(input, { target: { value: 'half-typed name' } })
@@ -718,7 +731,10 @@ describe('tabBar mobile variant', () => {
           onSelect={opts.onSelect ?? noop}
           onClose={opts.onClose ?? noop}
           onRename={opts.onRename ?? noop}
-          newTab={{ ...defaultProps.newTab, onNewAgentAdvanced: opts.onNewAgentAdvanced }}
+          newTab={{
+            ...defaultProps.newTab,
+            ...(opts.onNewAgentAdvanced !== undefined ? { onNewAgentAdvanced: opts.onNewAgentAdvanced } : {}),
+          }}
           mobile={{
             sheetOpen,
             onToggleDrawer: (side) => {
@@ -818,10 +834,10 @@ describe('tabBar mobile variant', () => {
     renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onSelect })
 
     fireEvent.click(screen.getByTestId('tab-chip'))
-    fireEvent.click(screen.getAllByTestId('tab-sheet-row')[1])
+    fireEvent.click(nthOf(screen.getAllByTestId('tab-sheet-row'), 1))
 
     expect(onSelect).toHaveBeenCalledOnce()
-    expect(onSelect.mock.calls[0][0].id).toBe('t1')
+    expect(onSelect.mock.calls[0]?.[0].id).toBe('t1')
     expect(screen.getByTestId('tab-sheet')).not.toHaveClass('sheetPanelOpen')
   })
 
@@ -830,10 +846,10 @@ describe('tabBar mobile variant', () => {
     renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onClose })
 
     fireEvent.click(screen.getByTestId('tab-chip'))
-    fireEvent.click(screen.getAllByTestId('tab-close')[0])
+    fireEvent.click(nthOf(screen.getAllByTestId('tab-close'), 0))
 
     expect(onClose).toHaveBeenCalledOnce()
-    expect(onClose.mock.calls[0][0].id).toBe('a1')
+    expect(onClose.mock.calls[0]?.[0].id).toBe('a1')
     // The sheet stays up: closing one tab is not a reason to hide the rest.
     expect(screen.getByTestId('tab-sheet')).toHaveClass('sheetPanelOpen')
   })
@@ -934,7 +950,7 @@ describe('tabBar mobile variant', () => {
     // Close the last tab from inside the sheet. The chip unmounts with the
     // last tab, so the sheet must close itself rather than stay open with
     // no bar control left to dismiss it by.
-    fireEvent.click(screen.getAllByTestId('tab-close')[0])
+    fireEvent.click(nthOf(screen.getAllByTestId('tab-close'), 0))
 
     expect(screen.queryByTestId('tab-chip')).toBeNull()
     expect(screen.getByTestId('tab-sheet')).not.toHaveClass('sheetPanelOpen')
@@ -976,7 +992,7 @@ describe('tabBar mobile variant', () => {
     renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onRename })
 
     fireEvent.click(screen.getByTestId('tab-chip'))
-    const row = screen.getAllByTestId('tab-sheet-row')[1]
+    const row = nthOf(screen.getAllByTestId('tab-sheet-row'), 1)
     fireEvent.click(within(row).getByTestId('tab-menu-rename'))
 
     const input = within(row).getByTestId('tab-rename-input') as HTMLInputElement
@@ -985,8 +1001,8 @@ describe('tabBar mobile variant', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
 
     expect(onRename).toHaveBeenCalledOnce()
-    expect(onRename.mock.calls[0][0].id).toBe('t1')
-    expect(onRename.mock.calls[0][1]).toBe('Terminal Liam II')
+    expect(onRename.mock.calls[0]?.[0].id).toBe('t1')
+    expect(onRename.mock.calls[0]?.[1]).toBe('Terminal Liam II')
     // The edit ended: the row shows a label again, not an input.
     expect(within(row).queryByTestId('tab-rename-input')).toBeNull()
   })
@@ -1000,7 +1016,7 @@ describe('tabBar mobile variant', () => {
     renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onRename })
 
     fireEvent.click(screen.getByTestId('tab-chip'))
-    const row = screen.getAllByTestId('tab-sheet-row')[1]
+    const row = nthOf(screen.getAllByTestId('tab-sheet-row'), 1)
     fireEvent.click(within(row).getByTestId('tab-menu-rename'))
     const input = within(row).getByTestId('tab-rename-input') as HTMLInputElement
     fireEvent.input(input, { target: { value: 'half-typed' } })
@@ -1019,7 +1035,7 @@ describe('tabBar mobile variant', () => {
     renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onRename })
 
     fireEvent.click(screen.getByTestId('tab-chip'))
-    const row = screen.getAllByTestId('tab-sheet-row')[1]
+    const row = nthOf(screen.getAllByTestId('tab-sheet-row'), 1)
     fireEvent.click(within(row).getByTestId('tab-menu-rename'))
     const input = within(row).getByTestId('tab-rename-input') as HTMLInputElement
     fireEvent.input(input, { target: { value: 'Terminal Liam III' } })
@@ -1027,7 +1043,7 @@ describe('tabBar mobile variant', () => {
     fireEvent.pointerDown(document.body)
 
     expect(onRename).toHaveBeenCalledOnce()
-    expect(onRename.mock.calls[0][1]).toBe('Terminal Liam III')
+    expect(onRename.mock.calls[0]?.[1]).toBe('Terminal Liam III')
     expect(within(row).queryByTestId('tab-rename-input')).toBeNull()
   })
 
@@ -1041,7 +1057,7 @@ describe('tabBar mobile variant', () => {
     renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onRename })
 
     fireEvent.click(screen.getByTestId('tab-chip'))
-    const row = screen.getAllByTestId('tab-sheet-row')[1]
+    const row = nthOf(screen.getAllByTestId('tab-sheet-row'), 1)
     fireEvent.click(within(row).getByTestId('tab-menu-rename'))
     expect(within(row).getByTestId('tab-rename-input')).toBeInTheDocument()
 
@@ -1058,7 +1074,7 @@ describe('tabBar mobile variant', () => {
     renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onRename })
 
     fireEvent.click(screen.getByTestId('tab-chip'))
-    const row = screen.getAllByTestId('tab-sheet-row')[1]
+    const row = nthOf(screen.getAllByTestId('tab-sheet-row'), 1)
     fireEvent.click(within(row).getByTestId('tab-menu-rename'))
     const input = within(row).getByTestId('tab-rename-input') as HTMLInputElement
     fireEvent.input(input, { target: { value: 'Terminal Liam IV' } })
@@ -1068,7 +1084,7 @@ describe('tabBar mobile variant', () => {
     fireEvent.focusIn(document.body)
 
     expect(onRename).toHaveBeenCalledOnce()
-    expect(onRename.mock.calls[0][1]).toBe('Terminal Liam IV')
+    expect(onRename.mock.calls[0]?.[1]).toBe('Terminal Liam IV')
     expect(within(row).queryByTestId('tab-rename-input')).toBeNull()
   })
 
@@ -1078,7 +1094,7 @@ describe('tabBar mobile variant', () => {
     renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onRename })
 
     fireEvent.click(screen.getByTestId('tab-chip'))
-    const row = screen.getAllByTestId('tab-sheet-row')[1]
+    const row = nthOf(screen.getAllByTestId('tab-sheet-row'), 1)
     fireEvent.click(within(row).getByTestId('tab-menu-rename'))
     const input = within(row).getByTestId('tab-rename-input') as HTMLInputElement
     fireEvent.input(input, { target: { value: 'still typing' } })
@@ -1139,26 +1155,26 @@ describe('tabBar strip drag handles', () => {
     expect(sortables).toHaveLength(2)
     // Node registration goes through .ref — the call form would attach the
     // sensor activators wholesale, which is exactly what the split avoids.
-    expect(sortables[0].ref).toHaveBeenCalledWith(rows[0])
+    expect(nthOf(sortables, 0).ref).toHaveBeenCalledWith(rows[0])
 
     const presses = () => sortables.reduce((sum, s) => sum + s.onPointerdown.mock.calls.length, 0)
     // A touch press on the row body never reaches the sensor: it belongs to
     // the scroller and the long-press menu.
-    rows[0].dispatchEvent(pointerPress('touch'))
+    nthOf(rows, 0).dispatchEvent(pointerPress('touch'))
     expect(presses()).toBe(0)
     // The grip carries the raw activators. A touch press forwards from the
     // grip and is skipped again where it BUBBLES into the row body — exactly
     // one activation for a finger.
-    grips[0].dispatchEvent(pointerPress('touch'))
+    nthOf(grips, 0).dispatchEvent(pointerPress('touch'))
     expect(presses()).toBe(1)
     // A mouse press on the grip forwards from the grip alone: the guarded
     // body skips presses whose target is the grip, so one press activates
     // the sensor exactly once no matter the pointer type.
-    grips[0].dispatchEvent(pointerPress('mouse'))
+    nthOf(grips, 0).dispatchEvent(pointerPress('mouse'))
     expect(presses()).toBe(2)
     // The guarded body forwards a mouse press that starts on the row itself:
     // the desktop drag path.
-    rows[0].dispatchEvent(pointerPress('mouse'))
+    nthOf(rows, 0).dispatchEvent(pointerPress('mouse'))
     expect(presses()).toBe(3)
   })
 })
@@ -1191,15 +1207,15 @@ describe('tabBar click after drag', () => {
 
     // Flip the row into a drag and back out — the state a real drag is in
     // when the pointer lifts and the browser fires the click.
-    createdSortables()[0].setIsActiveDraggable(true)
-    createdSortables()[0].setIsActiveDraggable(false)
+    nthOf(createdSortables(), 0).setIsActiveDraggable(true)
+    nthOf(createdSortables(), 0).setIsActiveDraggable(false)
     await flush()
 
-    fireEvent.click(screen.getAllByTestId('tab')[0])
+    fireEvent.click(nthOf(screen.getAllByTestId('tab'), 0))
     expect(onSelect, 'the click right after a drag is the drag\'s, not a selection').not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getAllByTestId('tab')[0])
+    fireEvent.click(nthOf(screen.getAllByTestId('tab'), 0))
     expect(onSelect, 'the suppression lasts exactly one click').toHaveBeenCalledOnce()
-    expect(onSelect.mock.calls[0][0].id).toBe('a1')
+    expect(onSelect.mock.calls[0]?.[0].id).toBe('a1')
   })
 })

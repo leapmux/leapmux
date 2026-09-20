@@ -1,7 +1,7 @@
 import type { Component, JSX } from 'solid-js'
 import type { DropdownMenuProps } from './DropdownMenu'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
-import { createSignal, Show } from 'solid-js'
+import { createSignal, Show, splitProps } from 'solid-js'
 import { menuSubTrigger, menuSubTriggerLabel } from '~/styles/shared.css'
 import { DropdownMenu } from './DropdownMenu'
 import { Icon } from './Icon'
@@ -62,18 +62,25 @@ export interface SubMenuProps extends ForwardedMenuProps {
  */
 export const SubMenu: Component<SubMenuProps> = (props) => {
   const [open, setOpen] = createSignal(false)
+  // The forwarded half, split out so it can be spread onto `DropdownMenu`
+  // as-is: each optional key stays absent when the caller did not set it,
+  // which a per-prop pass with `undefined` values would violate under
+  // exactOptionalPropertyTypes.
+  const [, menuProps] = splitProps(props, [
+    'label',
+    'data-testid',
+    'popoverTestId',
+    'onToggle',
+    'children',
+  ])
   return (
     <DropdownMenu
-      as={props.as}
-      class={props.class}
-      placement={props.placement}
-      matchTriggerWidth={props.matchTriggerWidth}
+      {...menuProps}
       onToggle={(open) => {
         setOpen(open)
         props.onToggle?.(open)
       }}
-      data-testid={props.popoverTestId}
-      aria-label={props['aria-label']}
+      {...(props.popoverTestId !== undefined ? { 'data-testid': props.popoverTestId } : {})}
       trigger={triggerProps => (
         <button
           type="button"

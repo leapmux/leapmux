@@ -104,17 +104,17 @@ function renderPanel(options: RenderPanelOptions = {}) {
         agent={agent({
           workerId,
           agentProvider: options.agentProvider ?? AgentProvider.CLAUDE_CODE,
-          optionGroups: options.optionGroups,
+          ...(options.optionGroups !== undefined ? { optionGroups: options.optionGroups } : {}),
         })}
         repoGitStore={repoGitStore}
         gitTab={gitTab}
         onSendMessage={() => {}}
-        controlRequests={options.controlStore?.getRequests('a1')}
-        onControlResponse={options.onControlResponse}
-        onSettingChange={options.onSettingChange}
-        onInterrupt={options.onInterrupt}
-        agentActivity={options.agentActivity}
-        inputQueue={options.inputQueue}
+        {...(options.controlStore !== undefined ? { controlRequests: options.controlStore.getRequests('a1') } : {})}
+        {...(options.onControlResponse !== undefined ? { onControlResponse: options.onControlResponse } : {})}
+        {...(options.onSettingChange !== undefined ? { onSettingChange: options.onSettingChange } : {})}
+        {...(options.onInterrupt !== undefined ? { onInterrupt: options.onInterrupt } : {})}
+        {...(options.agentActivity !== undefined ? { agentActivity: options.agentActivity } : {})}
+        {...(options.inputQueue !== undefined ? { inputQueue: options.inputQueue } : {})}
         branchActions={stubBranchMenuActions()}
         branchWorkerId={workerId}
       />
@@ -185,7 +185,7 @@ async function waitForControlActionsReady() {
 // updates the outermost stale ancestor before the memo itself. The banner slot
 // has no such ancestor, because `createComponent` untracks the element that its
 // prop getter builds.
-describe('agentEditorPanel control request lifecycle', () => {
+describe('AgentEditorPanel control request lifecycle', () => {
   it('reports an unavailable response handler without accepting the request', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, { requestId: 'permission', payload: toolRequestPayload('Bash'), claimToken: 'claim' })
@@ -324,8 +324,9 @@ describe('agentEditorPanel control request lifecycle', () => {
     await waitForControlActionsReady()
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    const [request, content] = onControlResponse.mock.calls[0]
-    const claimToken = request.claimToken
+    // The click above produced the call; `?? []` is the type-level guard alone.
+    const [request, content] = onControlResponse.mock.calls[0] ?? []
+    const claimToken = request?.claimToken
     expect(claimToken).toBe('claim-2')
     // `buildAllowResponse` adds the key only for a checked switch, so its
     // absence is what proves the cancelled instance's choice did not carry.
@@ -349,10 +350,11 @@ describe('agentEditorPanel control request lifecycle', () => {
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     expect(onControlResponse).toHaveBeenCalledOnce()
-    const [request, content] = onControlResponse.mock.calls[0]
-    expect(request.agentId).toBe('a1')
-    expect(request.requestId).toBe('plan-1')
-    expect(request.claimToken).toBe('claim-1')
+    // Called once above; `?? []` is the type-level guard alone.
+    const [request, content] = onControlResponse.mock.calls[0] ?? []
+    expect(request?.agentId).toBe('a1')
+    expect(request?.requestId).toBe('plan-1')
+    expect(request?.claimToken).toBe('claim-1')
     expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).toMatchObject({
       response: { request_id: 'plan-1', response: { behavior: 'allow' } },
     })
@@ -371,9 +373,10 @@ describe('agentEditorPanel control request lifecycle', () => {
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     expect(onControlResponse).toHaveBeenCalledOnce()
-    const [request] = onControlResponse.mock.calls[0]
-    expect(request.requestId).toBe('plan-1')
-    expect(request.claimToken).toBeUndefined()
+    // Called once above; `?? []` is the type-level guard alone.
+    const [request] = onControlResponse.mock.calls[0] ?? []
+    expect(request?.requestId).toBe('plan-1')
+    expect(request?.claimToken).toBeUndefined()
   })
 
   // An unavailable handler must not discard a response that the user cannot deliver.
@@ -559,7 +562,8 @@ describe('agentEditorPanel control request lifecycle', () => {
     fireEvent.click(approve)
 
     await waitFor(() => expect(onControlResponse).toHaveBeenCalledOnce())
-    const [, content, options] = onControlResponse.mock.calls[0]
+    // Called once above; `?? []` is the type-level guard alone.
+    const [, content, options] = onControlResponse.mock.calls[0] ?? []
     expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).not.toHaveProperty('permissionMode')
     expect(options).toHaveProperty(
       'planApproval.permissionMode',
@@ -629,7 +633,9 @@ describe('agentEditorPanel control request lifecycle', () => {
 
     await vi.waitFor(async () => expect(await localStorageLoad(key)).toBeUndefined())
     // The choice still reached the response; only the saved copy is gone.
-    const [, content, options] = onControlResponse.mock.calls[0]
+    const planCall = onControlResponse.mock.calls[0]
+    expect(planCall).toBeDefined()
+    const [, content, options] = planCall ?? []
     expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).not.toHaveProperty('clearContext')
     expect(options).toHaveProperty('planApproval.clearContext', true)
   })
@@ -644,7 +650,10 @@ describe('agentEditorPanel control request lifecycle', () => {
   it('empties the answers for a question that reuses the request id', async () => {
     const controlStore = createControlStore()
     const revised = questionRequestPayload()
-    ;(revised.request as { input: { questions: { question: string }[] } }).input.questions[0].question = 'Which cache?'
+    // The fixture always carries one question; the guard is the type-level check alone.
+    const firstQuestion = (revised.request as { input: { questions: { question: string }[] } }).input.questions[0]
+    if (firstQuestion !== undefined)
+      firstQuestion.question = 'Which cache?'
     addControlRequest(controlStore, { requestId: 'ask-1', payload: questionRequestPayload(), claimToken: 'claim-1' })
     addControlRequest(controlStore, { requestId: 'ask-1', payload: revised, claimToken: 'claim-2' })
     renderPanel({ controlStore })

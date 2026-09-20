@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -10,7 +11,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
@@ -55,6 +58,26 @@ func marshalJSON(t *testing.T, v any) []byte {
 	b, err := json.Marshal(v)
 	require.NoError(t, err)
 	return b
+}
+
+func TestReduceTodoUpdateBuildsThePostUpdateMutation(t *testing.T) {
+	t.Parallel()
+
+	status := todoevents.StatusInProgress
+	rows := []cachedTodo{{
+		item:   todoevents.Item{ID: "1", Content: "Run tests", Status: todoevents.StatusPending},
+		rowKey: "1",
+	}}
+	mutation, ok := reduceTodoUpdate(rows, todoevents.Event{
+		Kind:  todoevents.KindUpdate,
+		ID:    "1",
+		Patch: todoevents.Patch{Status: &status},
+	})
+
+	require.True(t, ok)
+	assert.Equal(t, 0, mutation.index)
+	assert.Equal(t, todoevents.StatusInProgress, mutation.item.Status)
+	assert.Equal(t, todoevents.StatusPending, rows[0].item.Status, "preparing the mutation must not update the canonical list")
 }
 
 func TestOutputTodos_TodoWriteSnapshotPersists(t *testing.T) {
@@ -131,7 +154,7 @@ func TestOutputTodos_ZCodeStreamedInputReachesTheProjection(t *testing.T) {
 	assert.Equal(t, "Recovered task", rows[0].Content)
 }
 
-// ZCode names its to-do tool exactly as Claude Code does and takes the same input,
+// ZCode spells its to-do tool exactly as Claude Code does and takes the same input,
 // but it carries it in its OWN `tool.updated` envelope -- so the list only reaches
 // the sidebar because the extraction is dispatched through the provider plugin.
 func TestOutputTodos_ZCodeToolUpdatedSnapshotPersists(t *testing.T) {
@@ -412,6 +435,120 @@ func TestOutputTodos_TaskUpdateStatusOnlyPreservesActiveForm(t *testing.T) {
 	assert.Equal(t, "Running tests", rows[0].ActiveForm, "activeForm must survive a status-only patch")
 }
 
+func TestOutputTodos_TaskUpdatePersistsItsPostUpdateSnapshotAtomically(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-snapshot", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	sink := svc.Output.NewSink("agent-snapshot", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+
+	createUse := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskCreate","input":{"subject":"Run tests","activeForm":"Running tests","description":"Full suite"}}]}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: createUse}, agent.SpanInfo{SpanID: "create", SpanType: "TaskCreate"}))
+	createResult := []byte(`{"type":"user","message":{"content":[]},"tool_use_result":{"task":{"id":"1","subject":"Run tests"}}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: createResult}, agent.SpanInfo{SpanID: "create", SpanType: "TaskCreate"}))
+
+	updateUse := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskUpdate","input":{"taskId":"1","status":"in_progress"}}]}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: updateUse}, agent.SpanInfo{SpanID: "update", SpanType: "TaskUpdate"}))
+	updateResult := []byte(`{"type":"user","message":{"content":[]},"tool_use_result":{"success":true,"taskId":"1","updatedFields":["status"],"statusChange":{"from":"pending","to":"in_progress"}}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: updateResult}, agent.SpanInfo{SpanID: "update", SpanType: "TaskUpdate"}))
+
+	messages, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-snapshot", Seq: 0, Limit: 100})
+	require.NoError(t, err)
+	var update db.Message
+	for _, message := range messages {
+		if message.SpanID == "update" && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_USER {
+			update = message
+			break
+		}
+	}
+	require.NotEmpty(t, update.ID)
+	supplement, err := msgcodec.Decompress(update.SupplementalContent, update.SupplementalContentCompression)
+	require.NoError(t, err)
+	decoded, err := agent.DecodeMessageSupplement(updateResult, supplement)
+	require.NoError(t, err)
+	var metadata map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(decoded.Metadata, &metadata))
+	require.Contains(t, metadata, "todo_snapshot")
+	assert.JSONEq(t, `{"id":"1","content":"Run tests","status":"TODO_STATUS_IN_PROGRESS","activeForm":"Running tests","description":"Full suite"}`, string(metadata["todo_snapshot"]))
+}
+
+func TestOutputTodos_TaskUpdateMessageFailureDoesNotMutateTodo(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-message-failure", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	sink := svc.Output.NewSink("agent-message-failure", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	createUse := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskCreate","input":{"subject":"Keep pending"}}]}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: createUse}, agent.SpanInfo{SpanID: "create", SpanType: "TaskCreate"}))
+	createResult := []byte(`{"type":"user","message":{"content":[]},"tool_use_result":{"task":{"id":"1","subject":"Keep pending"}}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: createResult}, agent.SpanInfo{SpanID: "create", SpanType: "TaskCreate"}))
+	updateUse := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskUpdate","input":{"taskId":"1","status":"in_progress"}}]}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: updateUse}, agent.SpanInfo{SpanID: "update", SpanType: "TaskUpdate"}))
+	_, err := svc.DB.ExecContext(ctx, `CREATE TRIGGER fail_task_update_message BEFORE INSERT ON messages WHEN NEW.span_id = 'update' BEGIN SELECT RAISE(ABORT, 'message unavailable'); END`)
+	require.NoError(t, err)
+
+	updateResult := []byte(`{"type":"user","message":{"content":[]},"tool_use_result":{"success":true,"taskId":"1","statusChange":{"from":"pending","to":"in_progress"}}}`)
+	err = sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: updateResult}, agent.SpanInfo{SpanID: "update", SpanType: "TaskUpdate"})
+	require.ErrorContains(t, err, "message unavailable")
+	rows, err := svc.Queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{AgentID: "agent-message-failure", Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusPending), rows[0].Status)
+}
+
+func TestOutputTodos_TaskUpdateRegistryFailureKeepsSnapshottedMessage(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-registry-failure", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	sink := svc.Output.NewSink("agent-registry-failure", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	createUse := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskCreate","input":{"subject":"Saved transcript"}}]}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: createUse}, agent.SpanInfo{SpanID: "create", SpanType: "TaskCreate"}))
+	createResult := []byte(`{"type":"user","message":{"content":[]},"tool_use_result":{"task":{"id":"1","subject":"Saved transcript"}}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: createResult}, agent.SpanInfo{SpanID: "create", SpanType: "TaskCreate"}))
+	updateUse := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskUpdate","input":{"taskId":"1","status":"in_progress"}}]}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: updateUse}, agent.SpanInfo{SpanID: "update", SpanType: "TaskUpdate"}))
+	_, err := svc.DB.ExecContext(ctx, `CREATE TRIGGER fail_task_update_registry BEFORE UPDATE ON agent_todos BEGIN SELECT RAISE(ABORT, 'registry unavailable'); END`)
+	require.NoError(t, err)
+
+	updateResult := []byte(`{"type":"user","message":{"content":[]},"tool_use_result":{"success":true,"taskId":"1","statusChange":{"from":"pending","to":"in_progress"}}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: updateResult}, agent.SpanInfo{SpanID: "update", SpanType: "TaskUpdate"}))
+
+	todos, err := svc.Queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{AgentID: "agent-registry-failure", Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, todos, 1)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusPending), todos[0].Status)
+	messages, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-registry-failure", Seq: 0, Limit: 100})
+	require.NoError(t, err)
+	var persisted db.Message
+	for _, message := range messages {
+		if message.SpanID == "update" && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_USER {
+			persisted = message
+			break
+		}
+	}
+	require.NotEmpty(t, persisted.ID)
+	supplement, err := msgcodec.Decompress(persisted.SupplementalContent, persisted.SupplementalContentCompression)
+	require.NoError(t, err)
+	decoded, err := agent.DecodeMessageSupplement(updateResult, supplement)
+	require.NoError(t, err)
+	var metadata map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(decoded.Metadata, &metadata))
+	assert.JSONEq(t, `{"id":"1","content":"Saved transcript","status":"TODO_STATUS_IN_PROGRESS"}`, string(metadata["todo_snapshot"]))
+}
+
 func TestOutputTodos_TaskUpdateDeletedSoftDeletesRow(t *testing.T) {
 	t.Parallel()
 
@@ -551,6 +688,179 @@ func TestOutputTodos_AcpPlanSnapshotPopulates(t *testing.T) {
 	assert.Equal(t, "one", rows[0].Content)
 	assert.Equal(t, "two", rows[1].Content)
 	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusCompleted), rows[1].Status)
+}
+
+// cursorTodoRow persists the row that CLOSES one Cursor tool call and returns the
+// bytes the enrichment must state back as the original content.
+func cursorTodoRow(t *testing.T, sink agent.ProviderServices, toolCallID string) []byte {
+	t.Helper()
+	original := marshalJSON(t, map[string]any{
+		"sessionUpdate": "tool_call_update", "toolCallId": toolCallID, "status": "completed",
+	})
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: original}, agent.SpanInfo{SpanID: toolCallID, Closing: true}))
+	return original
+}
+
+// cursorTodoSupplement is what the Cursor worker stores for one cursor/update_todos
+// frame: the method beside its params under the contract's own key, and the identity
+// of the row it belongs to. A supplement that identifies no row reaches none, on either
+// side of the language boundary.
+func cursorTodoSupplement(t *testing.T, toolCallID, params string) []byte {
+	t.Helper()
+	return marshalJSON(t, map[string]any{
+		contracts.ACPSupplementIdentitySessionUpdate: "tool_call_update",
+		contracts.ACPSupplementIdentityToolCallID:    toolCallID,
+		contracts.ACPSupplementIdentityStatus:        "completed",
+		contracts.CursorSupplementExtension: map[string]any{
+			"method": contracts.CursorMethodUpdateTodos,
+			"params": json.RawMessage(params),
+		},
+	})
+}
+
+// Cursor's to-do list reaches the row as a SUPPLEMENT, one frame after the tool call
+// it describes, because the `merge` flag travels on that frame alone. Nothing else
+// applies a to-do event at an enrichment, so without this path the list stays empty.
+func TestOutputTodos_CursorExtensionFrameFeedsTheStore(t *testing.T) {
+	t.Parallel()
+
+	sink, _, listRows := setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
+	original := cursorTodoRow(t, sink, "call-1")
+	replace := `{"toolCallId":"call-1","todos":[` +
+		`{"id":"1","content":"one","status":"in_progress"},` +
+		`{"id":"2","content":"two","status":"pending"}],"merge":false}`
+	written, err := sink.EnrichMessage(agent.MessageEnrichment{
+		SpanID: "call-1", OriginalContent: original, SupplementalContent: cursorTodoSupplement(t, "call-1", replace),
+	})
+	require.NoError(t, err)
+	require.True(t, written)
+
+	rows := listRows()
+	require.Len(t, rows, 2)
+	assert.Equal(t, "one", rows[0].Content)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusInProgress), rows[0].Status)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusPending), rows[1].Status)
+}
+
+// A merge frame states the rows that CHANGED. Reading it as a snapshot would delete
+// every row it stayed silent about, which is every row after the first update.
+func TestOutputTodos_CursorMergeFrameLeavesTheRowsItOmits(t *testing.T) {
+	t.Parallel()
+
+	sink, _, listRows := setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
+	first := cursorTodoRow(t, sink, "call-1")
+	replace := `{"toolCallId":"call-1","todos":[` +
+		`{"id":"1","content":"one","status":"in_progress"},` +
+		`{"id":"2","content":"two","status":"pending"},` +
+		`{"id":"3","content":"three","status":"pending"}],"merge":false}`
+	written, err := sink.EnrichMessage(agent.MessageEnrichment{
+		SpanID: "call-1", OriginalContent: first, SupplementalContent: cursorTodoSupplement(t, "call-1", replace),
+	})
+	require.NoError(t, err)
+	require.True(t, written)
+
+	second := cursorTodoRow(t, sink, "call-2")
+	merge := `{"toolCallId":"call-2","todos":[` +
+		`{"id":"1","content":"one","status":"completed"},` +
+		`{"id":"2","content":"two","status":"in_progress"}],"merge":true}`
+	written, err = sink.EnrichMessage(agent.MessageEnrichment{
+		SpanID: "call-2", OriginalContent: second, SupplementalContent: cursorTodoSupplement(t, "call-2", merge),
+	})
+	require.NoError(t, err)
+	require.True(t, written)
+
+	rows := listRows()
+	require.Len(t, rows, 3, "the row the merge frame omitted stays")
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusCompleted), rows[0].Status)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusInProgress), rows[1].Status)
+	assert.Equal(t, "three", rows[2].Content)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusPending), rows[2].Status)
+}
+
+// The SECOND enrichment of one row must not replay the frame the FIRST one carried.
+//
+// A supplement survives the next enrichment -- mergeToolSupplements replaces only the
+// keys that collide -- so the cursor/update_todos frame EnrichToolSpan wrote is still
+// on the row when the turn-end store pass enriches it again with the tool record.
+// Guarding on the ORIGINAL content alone found nothing both times, so the second pass
+// re-applied the first frame's merge:false snapshot: every row the later merge frames
+// added was deleted and every status they changed was reverted.
+func TestOutputTodos_EnrichmentNeverReplaysTheFrameTheSupplementAlreadyCarried(t *testing.T) {
+	t.Parallel()
+
+	sink, _, listRows := setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
+	first := cursorTodoRow(t, sink, "call-1")
+	snapshot := `{"toolCallId":"call-1","todos":[` +
+		`{"id":"1","content":"one","status":"in_progress"},` +
+		`{"id":"2","content":"two","status":"pending"}],"merge":false}`
+	written, err := sink.EnrichMessage(agent.MessageEnrichment{
+		SpanID: "call-1", OriginalContent: first, SupplementalContent: cursorTodoSupplement(t, "call-1", snapshot),
+	})
+	require.NoError(t, err)
+	require.True(t, written)
+
+	second := cursorTodoRow(t, sink, "call-2")
+	merge := `{"toolCallId":"call-2","todos":[` +
+		`{"id":"3","content":"three","status":"pending"}],"merge":true}`
+	written, err = sink.EnrichMessage(agent.MessageEnrichment{
+		SpanID: "call-2", OriginalContent: second, SupplementalContent: cursorTodoSupplement(t, "call-2", merge),
+	})
+	require.NoError(t, err)
+	require.True(t, written)
+	require.Len(t, listRows(), 3, "the merge frame added its row")
+
+	// The store pass enriches call-1 a SECOND time. Its supplement still carries the
+	// snapshot -- mergeToolSupplements keeps a key nothing collides with -- and the
+	// tool record is the extra key beside it.
+	combined := marshalJSON(t, map[string]any{
+		contracts.CursorSupplementExtension: map[string]any{
+			"method": contracts.CursorMethodUpdateTodos,
+			"params": json.RawMessage(snapshot),
+		},
+		"rawOutput": map[string]any{"content": []any{}},
+	})
+	_, err = sink.EnrichMessage(agent.MessageEnrichment{
+		SpanID: "call-1", OriginalContent: first, SupplementalContent: combined, PreviousRevision: 1,
+	})
+	require.NoError(t, err)
+
+	rows := listRows()
+	require.Len(t, rows, 3, "the re-enrichment must not delete the row the merge frame added")
+	assert.Equal(t, "three", rows[2].Content)
+}
+
+// An enrichment may only introduce an event the original content does not yield. A
+// row whose own bytes already carried the list was applied when it was persisted, and
+// restating it later would overwrite a newer list with an older one -- the store pass
+// enriches a row long after the rows that follow it land.
+func TestOutputTodos_EnrichmentNeverReplaysTheListTheRowAlreadyCarried(t *testing.T) {
+	t.Parallel()
+
+	sink, _, listRows := setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE)
+	stale := marshalJSON(t, map[string]any{
+		"sessionUpdate": "plan",
+		"entries":       []any{map[string]any{"content": "stale", "status": "pending"}},
+	})
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: stale}, agent.SpanInfo{SpanID: "call-1", Closing: true}))
+	fresh := marshalJSON(t, map[string]any{
+		"sessionUpdate": "plan",
+		"entries":       []any{map[string]any{"content": "fresh", "status": "completed"}},
+	})
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: fresh}, agent.SpanInfo{SpanID: "call-2", Closing: true}))
+	require.Equal(t, "fresh", listRows()[0].Content)
+
+	written, err := sink.EnrichMessage(agent.MessageEnrichment{
+		SpanID: "call-1", OriginalContent: stale, SupplementalContent: []byte(`{"rawOutput":{"content":[]}}`),
+	})
+	require.NoError(t, err)
+	require.True(t, written)
+
+	rows := listRows()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "fresh", rows[0].Content, "the enriched older row must not restore its own list")
 }
 
 // Note: AgentTodosChanged broadcast is a one-line call adjacent to the
@@ -1113,4 +1423,162 @@ func TestPairedToolUseLookup_MemoizesTheMiss(t *testing.T) {
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 		agent.MessageContent{Original: marshalJSON(t, map[string]any{"type": "assistant"})}, agent.SpanInfo{SpanID: "span-1"}))
 	assert.Nil(t, read(), "the answer is fixed for the message being extracted")
+}
+
+// A merge frame states the new truth for the rows it lists, and it lands whole or not
+// at all. One statement per row was one COMMIT per row, so a frame that failed partway
+// left the earlier rows in the table and the rest of the frame nowhere -- a list the
+// agent never stated. The out-of-range status is how this test makes the write fail:
+// agent_todos.status carries a CHECK of 1..4.
+func TestOutputTodos_AMergeFrameLandsWholeOrNotAtAll(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	listRows := func() []db.AgentTodo {
+		t.Helper()
+		rows, err := svc.Queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{AgentID: "agent-1", Limit: 1000})
+		require.NoError(t, err)
+		return rows
+	}
+
+	_, _, err := svc.Output.applyTodoEvent("agent-1", todoevents.Event{
+		Kind:  todoevents.KindMerge,
+		Items: []todoevents.Item{{ID: "t1", Content: "one", Status: todoevents.StatusPending}},
+	})
+	require.NoError(t, err)
+	require.Len(t, listRows(), 1)
+
+	_, _, err = svc.Output.applyTodoEvent("agent-1", todoevents.Event{
+		Kind: todoevents.KindMerge,
+		Items: []todoevents.Item{
+			{ID: "t2", Content: "two", Status: todoevents.StatusPending},
+			{ID: "t3", Content: "three", Status: todoevents.Status(9)},
+		},
+	})
+	require.Error(t, err, "an out-of-range status must fail the column CHECK")
+
+	rows := listRows()
+	require.Len(t, rows, 1, "the frame rolled back, so neither of its rows landed")
+	assert.Equal(t, "t1", rows[0].TaskID)
+
+	// The cache mirrors the table, and it moved as the transaction did. A rollback
+	// that left `t2` in memory would state a list nothing can rebuild.
+	cache := svc.Output.todoCache("agent-1")
+	cache.Mu.Lock()
+	defer cache.Mu.Unlock()
+	require.Len(t, cache.Rows, 1, "the mirror rolled back with the transaction")
+	assert.Equal(t, "t1", cache.Rows[0].item.ID)
+}
+
+// The eviction the cap forces is part of the frame's transaction, which is the whole
+// reason registryOps takes its query handle as a parameter. While the ops closed over
+// the handler's own handle, a transaction opened here enclosed the upserts and not the
+// DELETE -- so a frame that rolled back still destroyed the row it evicted.
+func TestOutputTodos_AFailedMergeKeepsTheRowItsCapEvicted(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	taskIDs := func() map[string]struct{} {
+		t.Helper()
+		rows, err := svc.Queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{AgentID: "agent-1", Limit: 1000})
+		require.NoError(t, err)
+		ids := make(map[string]struct{}, len(rows))
+		for _, r := range rows {
+			ids[r.TaskID] = struct{}{}
+		}
+		return ids
+	}
+
+	// A full pool of FINISHED rows, so the next insert must evict one.
+	snapshot := make([]todoevents.Item, todoevents.MaxTodos)
+	for i := range snapshot {
+		snapshot[i] = todoevents.Item{ID: fmt.Sprintf("t%d", i+1), Content: fmt.Sprintf("task %d", i+1), Status: todoevents.StatusCompleted}
+	}
+	_, _, err := svc.Output.applyTodoEvent("agent-1", todoevents.Event{Kind: todoevents.KindSnapshot, Snapshot: snapshot})
+	require.NoError(t, err)
+	require.Len(t, taskIDs(), todoevents.MaxTodos)
+
+	// The first row forces the eviction of `t1`; the second fails the CHECK.
+	_, _, err = svc.Output.applyTodoEvent("agent-1", todoevents.Event{
+		Kind: todoevents.KindMerge,
+		Items: []todoevents.Item{
+			{ID: "fresh", Content: "fresh", Status: todoevents.StatusPending},
+			{ID: "bad", Content: "bad", Status: todoevents.Status(9)},
+		},
+	})
+	require.Error(t, err)
+
+	ids := taskIDs()
+	assert.Contains(t, ids, "t1", "the eviction rolled back with the frame that caused it")
+	assert.NotContains(t, ids, "fresh", "the row the eviction made room for rolled back too")
+	assert.Len(t, ids, todoevents.MaxTodos)
+
+	// And the mirror agrees with the table, including the row it had evicted.
+	cache := svc.Output.todoCache("agent-1")
+	cache.Mu.Lock()
+	defer cache.Mu.Unlock()
+	require.Len(t, cache.Rows, todoevents.MaxTodos)
+	assert.Equal(t, "t1", cache.Rows[0].item.ID, "the evicted row is back at the head of the mirror")
+}
+
+// inTransactionLocked owns BOTH halves of a grouped write: the transaction and
+// the mirror that a rollback restores. The pairing used to be the caller's, and
+// only a comment said which callers owed the mirror -- so a caller that took the
+// transaction and forgot the mirror left a rolled-back write in memory, which is
+// a list nothing can rebuild until the next cold seed.
+//
+// This drives the helper itself rather than one caller that happens to use it,
+// so the guarantee is pinned where it now lives. The body mutates the cache and
+// then fails, which is the shape every grouped write has: each write reads what
+// the one before it left.
+func TestRegistryCache_AFailedTransactionBodyRestoresTheCacheAndWritesNothing(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	_, _, err := svc.Output.applyTodoEvent("agent-1", todoevents.Event{
+		Kind: todoevents.KindCreate,
+		Item: todoevents.Item{ID: "t1", Content: "one", Status: todoevents.StatusPending},
+	})
+	require.NoError(t, err)
+
+	cache := svc.Output.todoCache("agent-1")
+	cache.Mu.Lock()
+	defer cache.Mu.Unlock()
+	require.NotNil(t, svc.Output.db, "the transaction branch is the one under test")
+	reg := cache.on(svc.Output.queries, "agent-1")
+	before := slices.Clone(cache.Rows)
+	beforeSeq := cache.nextSeq
+
+	wantErr := errors.New("the body refused")
+	err = reg.inTransactionLocked(ctx, svc.Output.db, func(tx agentTodoView) error {
+		_, upsertErr := svc.Output.upsertTodoLocked(ctx, tx, todoevents.KindCreate,
+			todoevents.Item{ID: "t2", Content: "two", Status: todoevents.StatusPending})
+		require.NoError(t, upsertErr)
+		require.Len(t, cache.Rows, 2, "the body moved the mirror before it failed")
+		return wantErr
+	})
+	require.ErrorIs(t, err, wantErr)
+
+	assert.Equal(t, before, cache.Rows, "the mirror is back at its pre-transaction state")
+	assert.Equal(t, beforeSeq, cache.nextSeq, "and so is the seq the next insert takes")
+
+	rows, err := svc.Queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{AgentID: "agent-1", Limit: 1000})
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "the transaction rolled back, so the body's write never landed")
+	assert.Equal(t, "t1", rows[0].TaskID)
 }

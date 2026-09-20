@@ -1,7 +1,7 @@
+import type { TodoItem } from '~/models/todo'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 /// <reference types="vitest/globals" />
 import type { GoalAction, GoalProgress, SessionGoal } from '~/stores/chatGoal'
-import type { TodoItem } from '~/stores/chatTodos'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
@@ -23,9 +23,9 @@ function renderVisible(thinkingTokens?: number, outputBytes?: number, outputByte
       <ThinkingIndicator
         visible={true}
         paused={true}
-        thinkingTokens={thinkingTokens}
-        outputBytes={outputBytes}
-        outputBytesMinimum={outputBytesMinimum}
+        {...(thinkingTokens === undefined ? {} : { thinkingTokens })}
+        {...(outputBytes === undefined ? {} : { outputBytes })}
+        {...(outputBytesMinimum === undefined ? {} : { outputBytesMinimum })}
       />
     ))
   }
@@ -192,21 +192,27 @@ describe('thinking indicator chips', () => {
     onGoalAction?: (action: GoalAction) => void
     goalSupported?: boolean
   }) {
+    // `goal` and its companions are destructured out: they shape the
+    // `GoalSurface` this helper assembles below rather than pass through.
+    // eslint-disable-next-line solid/reactivity -- plain fixture object, not a reactive proxy; the one-time read is the intent.
+    const { goal, goalProgress, goalActions, onGoalAction, goalSupported, ...rest } = props
     globalThis.requestAnimationFrame = (() => 0) as typeof globalThis.requestAnimationFrame
     try {
       return render(() => (
         <ThinkingIndicator
           visible={true}
           paused={true}
-          {...props}
-          goal={props.goalSupported === true || props.goal !== undefined
+          {...rest}
+          {...(goalSupported === true || goal !== undefined
             ? {
-                current: props.goal,
-                progress: props.goalProgress ?? {},
-                actions: props.goalActions ?? [],
-                onAction: props.onGoalAction,
+                goal: {
+                  ...(goal === undefined ? {} : { current: goal }),
+                  progress: goalProgress ?? {},
+                  actions: goalActions ?? [],
+                  ...(onGoalAction === undefined ? {} : { onAction: onGoalAction }),
+                },
               }
-            : undefined}
+            : {})}
         />
       ))
     }
@@ -310,7 +316,7 @@ describe('thinking indicator chips', () => {
 
     expect(hide).toHaveBeenCalled()
     expect(onOpenSubagent).toHaveBeenCalledOnce()
-    expect(onOpenSubagent.mock.calls[0][0].rowKey).toBe('a')
+    expect(onOpenSubagent.mock.calls[0]?.[0].rowKey).toBe('a')
   })
 
   /**

@@ -351,10 +351,10 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                             currentSectionId={props.sectionId}
                             getTabs={() => tabsFor(id)}
                             repoGitStore={props.repoGitStore}
-                            workerInfoFn={props.workerInfoFn}
-                            isWorkerOnline={props.isWorkerKnownOnline}
+                            {...(props.workerInfoFn !== undefined ? { workerInfoFn: props.workerInfoFn } : {})}
+                            {...(props.isWorkerKnownOnline !== undefined ? { isWorkerOnline: props.isWorkerKnownOnline } : {})}
                             isLocalWorkerFn={props.isLocalWorkerFn}
-                            startActions={props.startActions}
+                            {...(props.startActions !== undefined ? { startActions: props.startActions } : {})}
                             onRename={() => props.onRename(workspace())}
                             onMoveTo={targetSectionId => props.onMoveTo(id, targetSectionId)}
                             onArchive={() => props.onArchive(id)}
@@ -386,7 +386,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                           if (id !== props.activeWorkspaceId)
                             props.onSelect(id)
                         }}
-                        tabItemOps={props.tabItemOps}
+                        {...(props.tabItemOps !== undefined ? { tabItemOps: props.tabItemOps } : {})}
                         // Per WORKSPACE, not per sidebar: this section lists
                         // several, and only some of them are archived. The tab
                         // bar derives its own copy the same way, from
@@ -394,10 +394,10 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                         // tabs it renders.
                         archived={props.isArchived(id)}
                         workspaceId={id}
-                        workerInfoFn={props.workerInfoFn}
-                        isWorkerKnownOnline={props.isWorkerKnownOnline}
+                        {...(props.workerInfoFn !== undefined ? { workerInfoFn: props.workerInfoFn } : {})}
+                        {...(props.isWorkerKnownOnline !== undefined ? { isWorkerKnownOnline: props.isWorkerKnownOnline } : {})}
                         isLocalWorkerFn={props.isLocalWorkerFn}
-                        branchActions={props.branchActions}
+                        {...(props.branchActions !== undefined ? { branchActions: props.branchActions } : {})}
                         repoGitStore={props.repoGitStore}
                       />
                     </div>

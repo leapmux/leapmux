@@ -1,111 +1,34 @@
-import type { RateLimitInfo } from '~/stores/agentSession.store'
-import { CODEX_RATE_LIMIT_REACHED_TIME_WINDOW } from '~/generated/contracts/worker-vocab'
+import type { RateLimitInfo } from '~/models/agentSession'
 import { formatLocalDateTime } from '~/lib/dateFormat'
-import { pickObject } from '~/lib/jsonPick'
 
-/** JSON-RPC method name for Codex rate-limit notifications. */
-export const CODEX_RATE_LIMITS_METHOD = 'account/rateLimits/updated'
-
-export const RATE_LIMIT_TYPE_LABELS: Record<string, string> = {
+const RATE_LIMIT_TYPE_LABELS: Record<string, string> = {
   five_hour: '5-hour',
   seven_day: '7-day',
 }
 
-export const RATE_LIMIT_POPOVER_LABELS: Record<string, string> = {
+const RATE_LIMIT_POPOVER_LABELS: Record<string, string> = {
   five_hour: '5-Hour Rate Limit',
   seven_day: '7-Day Rate Limit',
 }
 
-/** Window-duration-to-type mapping for Codex rate limits. */
-const WINDOW_DURATION_TYPES: Record<number, string> = { 300: 'five_hour', 10080: 'seven_day' }
-
-/** Codex rate-limit tier keys, ordered from most-restrictive to least-restrictive. */
-const CODEX_RATE_LIMIT_TIER_KEYS = ['primary', 'secondary'] as const
-export type CodexRateLimitTierKey = typeof CODEX_RATE_LIMIT_TIER_KEYS[number]
-
-export interface CodexRateLimitTierEntry {
-  key: CodexRateLimitTierKey
-  tier: Record<string, unknown>
-  info: RateLimitInfo
-}
-
 /**
- * Walk the `params.rateLimits.{primary,secondary}` tiers of a Codex
- * `account/rateLimits/updated` payload, yielding the parsed `RateLimitInfo`
- * for each tier that's present. Skips tiers whose payload is missing or
- * not an object. Used by both the notification renderer and the all-allowed
- * predicate so the tier-walking shape lives in one place.
+ * The short words for a rate-limit type, or undefined for one this build does not
+ * know.
+ *
+ * `Object.hasOwn`, not a bare index: two producers feed `rateLimitType` unconstrained
+ * wire text, and `"toString"` resolves to `Object.prototype.toString` -- a truthy
+ * value, so the caller's own fallback never ran and the label rendered as the
+ * function's source text.
  */
-export function* iterCodexRateLimitTiers(payload: Record<string, unknown> | null | undefined): Generator<CodexRateLimitTierEntry> {
-  const rl = pickObject(pickObject(payload, 'params'), 'rateLimits')
-  if (!rl)
-    return
-  for (const key of CODEX_RATE_LIMIT_TIER_KEYS) {
-    const tier = pickObject(rl, key)
-    if (!tier)
-      continue
-    yield { key, tier, info: codexTierToRateLimitInfo(tier) }
-  }
+export function rateLimitTypeLabel(rateLimitType: string | undefined): string | undefined {
+  const key = rateLimitType ?? ''
+  return Object.hasOwn(RATE_LIMIT_TYPE_LABELS, key) ? RATE_LIMIT_TYPE_LABELS[key] : undefined
 }
 
-/**
- * The one Codex `rateLimitReachedType` that lifts on the rolling-window timer
- * (the others are billing/usage caps). Contracts/worker-vocab.json owns the
- * token; used to elevate a rounded-under-100 window to "exceeded".
- */
-
-/**
- * Codex `rateLimitReachedType` values (snake_case, from the v2 RateLimitSnapshot)
- * mapped to display labels. The time-window key reads the contract constant;
- * the others are billing/usage caps that a reset timer won't clear. Newer
- * Codex builds emit this snapshot-level field; older builds omit it.
- */
-export const CODEX_RATE_LIMIT_REACHED_LABELS: Record<string, string> = {
-  [CODEX_RATE_LIMIT_REACHED_TIME_WINDOW]: 'Rate limit reached',
-  workspace_owner_credits_depleted: 'Out of credits',
-  workspace_member_credits_depleted: 'Out of credits',
-  workspace_owner_usage_limit_reached: 'Usage limit reached',
-  workspace_member_usage_limit_reached: 'Usage limit reached',
-}
-
-/**
- * Read the snapshot-level `rateLimitReachedType` from a Codex
- * `account/rateLimits/updated` payload. This is Codex's authoritative
- * "an actual limit was hit" signal -- present even when no rolling window is over
- * its threshold (e.g. credit depletion) -- so it must be surfaced independently
- * of the per-tier usedPercent classification. Returns undefined when absent or
- * empty (older Codex builds, or a routine non-blocking update).
- */
-export function codexRateLimitReachedType(payload: Record<string, unknown> | null | undefined): string | undefined {
-  const rl = pickObject(pickObject(payload, 'params'), 'rateLimits')
-  const t = rl?.rateLimitReachedType
-  return typeof t === 'string' && t.length > 0 ? t : undefined
-}
-
-/** Human-readable label for a Codex rateLimitReachedType, with a generic fallback. */
-export function formatCodexRateLimitReached(reachedType: string): string {
-  return CODEX_RATE_LIMIT_REACHED_LABELS[reachedType] ?? 'Rate limit reached'
-}
-
-/** Convert a Codex rate limit tier to RateLimitInfo. */
-export function codexTierToRateLimitInfo(tier: Record<string, unknown>): RateLimitInfo {
-  // `tier` is wire-shaped `Record<string, unknown>`, so coerce defensively rather than
-  // `as number`: a non-numeric usedPercent (a malformed/replayed payload) would otherwise
-  // produce a NaN utilization and an 'allowed' status that disagrees with the backend's
-  // typed float64 classification. A missing/non-numeric windowDurationMins falls back to
-  // an empty type key (no `NaN_hour`).
-  const usedPercent = typeof tier.usedPercent === 'number' ? tier.usedPercent : 0
-  const windowMins = typeof tier.windowDurationMins === 'number' ? tier.windowDurationMins : undefined
-  const rateLimitType = windowMins === undefined
-    ? ''
-    : WINDOW_DURATION_TYPES[windowMins]
-      ?? (windowMins >= 1440 ? `${Math.round(windowMins / 1440)}_day` : `${Math.round(windowMins / 60)}_hour`)
-  return {
-    rateLimitType,
-    utilization: usedPercent / 100,
-    resetsAt: typeof tier.resetsAt === 'number' ? tier.resetsAt : undefined,
-    status: usedPercent >= 100 ? 'exceeded' : usedPercent >= 80 ? 'allowed_warning' : 'allowed',
-  }
+/** The popover heading for a rate-limit type, or undefined for one this build does not know. */
+export function rateLimitPopoverLabel(rateLimitType: string | undefined): string | undefined {
+  const key = rateLimitType ?? ''
+  return Object.hasOwn(RATE_LIMIT_POPOVER_LABELS, key) ? RATE_LIMIT_POPOVER_LABELS[key] : undefined
 }
 
 /** Format seconds remaining as d:hh:mm or h:mm. Returns null if remaining time <= 0. */
@@ -162,7 +85,7 @@ export function formatRateLimitMessage(info: RateLimitInfo): string {
   const { status, rateLimitType, utilization, isUsingOverage } = info
   const resetsAt = isUsingOverage ? info.overageResetsAt : info.resetsAt
 
-  const knownLabel = RATE_LIMIT_TYPE_LABELS[rateLimitType ?? '']
+  const knownLabel = rateLimitTypeLabel(rateLimitType)
   const prefix = knownLabel
     ? `${knownLabel} rate limit`
     : rateLimitType ? `Rate limit (${rateLimitType})` : 'Rate limit'
