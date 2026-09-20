@@ -9,6 +9,7 @@ import { isJsonRpcResponseObject } from '../acp/classification'
 import { extractItem } from './extractors/item'
 import { codexPlanItemMarkdown, codexTurnPlanParams, codexTurnPlanTodos } from './extractors/plan'
 import { codexReasoningHasText } from './extractors/row'
+import { codexMcpOauthIsFailureOrUnknown, codexMcpStartupIsFailureOrUnknown } from './mcpNotifications'
 import { CODEX_RATE_LIMITS_METHOD, codexRateLimitReachedType, iterCodexRateLimitTiers } from './rateLimits'
 
 const CODEX_TURN_FAILED_NOTIFICATION = 'Codex turn failed'
@@ -53,6 +54,7 @@ const CODEX_NOTIF_METHODS = new Set<string>([
   CODEX_METHOD.SkillsChanged,
   CODEX_METHOD.RemoteControlStatusChanged,
   CODEX_METHOD.ThreadTokenUsageUpdated,
+  CODEX_METHOD.McpServerOauthLoginCompleted,
   CODEX_METHOD.ThreadNameUpdated,
   CODEX_METHOD.McpServerStartupStatusUpdated,
   // The two the notification reader already builds an entry for -- a `retry` entry
@@ -66,10 +68,9 @@ const CODEX_NOTIF_METHODS = new Set<string>([
 /**
  * Codex-emitted methods that should not appear in the chat: turn/thread
  * lifecycle, metadata invalidations (skills), connection status
- * (remoteControl), and hook lifecycle. Persisted upstream; classified out
- * here -- both standalone (the classify `method` gate) and inside a
- * consolidated thread (isCodexHiddenNotificationThreadMessage), so the two
- * paths agree.
+ * (remoteControl), and hook lifecycle. Transcript history can contain these
+ * methods, so classify them out both standalone and inside a consolidated thread.
+ * The two paths must agree.
  *
  * Module-private. It once fed the browser's working-state heuristic as well,
  * which had to skip anything the chat hides; the Worker now publishes that
@@ -86,6 +87,7 @@ const CODEX_HIDDEN_LIFECYCLE_METHODS = new Set<string>([
   CODEX_METHOD.RemoteControlStatusChanged,
   CODEX_METHOD.HookStarted,
   CODEX_METHOD.HookCompleted,
+  CODEX_METHOD.McpToolCallProgress,
   CODEX_THREAD_COMPACTED_METHOD,
 ])
 
@@ -144,8 +146,9 @@ function isCodexRateLimitAllAllowed(m: Record<string, unknown>): boolean {
  *  - lifecycle/metadata methods (CODEX_HIDDEN_LIFECYCLE_METHODS): thread/started,
  *    turn/started, thread/{status,name,settings,tokenUsage}/updated,
  *    thread/compacted, skills/changed, remoteControl/status/changed,
- *    hook/{started,completed} -- transient signals persisted upstream, never
- *    rendered in chat.
+ *    hook/{started,completed}, MCP progress, and successful MCP lifecycle
+ *    notifications -- transient signals that a Worker can store, never rendered
+ *    in chat.
  *  - a final (non-compacting) system status (see isFinalCompactingStatus).
  *  - the "Codex turn failed" agent_error (surfaced via the result divider).
  *  - an all-allowed rate-limit update (no throttle to show).
@@ -156,6 +159,10 @@ function isCodexRateLimitAllAllowed(m: Record<string, unknown>): boolean {
 function isCodexHiddenNotificationThreadMessage(m: unknown): boolean {
   if (!isObject(m))
     return false
+  if (m.method === CODEX_METHOD.McpServerStartupStatusUpdated && !codexMcpStartupIsFailureOrUnknown(m))
+    return true
+  if (m.method === CODEX_METHOD.McpServerOauthLoginCompleted && !codexMcpOauthIsFailureOrUnknown(m))
+    return true
   if (CODEX_HIDDEN_LIFECYCLE_METHODS.has(pickString(m, 'method')))
     return true
   if (isFinalCompactingStatus(m))
@@ -243,7 +250,7 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
   const subtype = pickString(parent, 'subtype')
   const method = pickString(parent, 'method')
 
-  // Lifecycle methods are transient signals; persist upstream, hide here.
+  // Transcript history can contain lifecycle methods. Keep them hidden.
   if (CODEX_HIDDEN_LIFECYCLE_METHODS.has(method))
     return { kind: 'hidden' }
 
@@ -314,7 +321,10 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
   }
 
   if (method === CODEX_METHOD.McpServerStartupStatusUpdated)
-    return { kind: 'notification', messages: [parent] }
+    return codexMcpStartupIsFailureOrUnknown(parent) ? { kind: 'notification', messages: [parent] } : { kind: 'hidden' }
+
+  if (method === CODEX_METHOD.McpServerOauthLoginCompleted)
+    return codexMcpOauthIsFailureOrUnknown(parent) ? { kind: 'notification', messages: [parent] } : { kind: 'hidden' }
 
   // The LeapMux envelope every provider answers the same way. The shared predicate is
   // the one list: a copy here held six of the seven types and drew the raw frame for

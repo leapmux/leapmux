@@ -760,10 +760,21 @@ function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInpu
   // pairs that word with a finished span's pictures is a draft the validating
   // builder refuses: the row degraded to the generic card and lost the picture.
   // The role's answer states the outcome the frame's own words cannot.
-  const resultItem = sides.result ? extractItem(sides.result.parentObject) : null
+  const candidateResultItem = sides.result ? extractItem(sides.result.parentObject) : null
+  // A result frame belongs to this call only when both identity fields match. A
+  // corrupt span must not mark this call as answered or project another call's data.
+  const matchingResultItem = candidateResultItem
+    && pickString(candidateResultItem, 'id') === pickString(item, 'id')
+    && pickString(candidateResultItem, 'type') === pickString(item, 'type')
+    ? candidateResultItem
+    : null
+  // A closing fileChange is the authoritative full item: it carries the original
+  // change list and states which changes landed. Other Codex item kinds keep their
+  // existing per-frame projections even though the lifecycle sees their result.
+  const projectedResultItem = item.type === CODEX_ITEM.FileChange ? matchingResultItem : null
   // The call reads EVERY side the store resolved: a request row whose result has
   // landed carries it, so its prompt stays compact behind the same expand control.
-  const answered = atomicResult || sides.role === 'result' || isCodexFinishedStatus(statusWord) || !!resultItem
+  const answered = atomicResult || sides.role === 'result' || isCodexFinishedStatus(statusWord) || !!matchingResultItem
   // A row that carries the landed result is a row of a FINISHED call, whatever its
   // own frame still says: the validating builder refuses an in-progress envelope
   // over a result, and the degrade it answers would trade the typed card for the
@@ -777,7 +788,7 @@ function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInpu
     rowFinal,
     resultFrameLanded: answered,
   }
-  const call = codexToolCall(codexToolFacts(item, rowFinal, sides), lifecycle)
+  const call = codexToolCall(codexToolFacts(projectedResultItem ?? item, rowFinal || !!projectedResultItem, sides), lifecycle)
   return toolCallRow(call, role, sides.visibleRows)
 }
 

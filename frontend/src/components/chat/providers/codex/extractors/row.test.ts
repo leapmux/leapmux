@@ -12,12 +12,16 @@ import { CODEX_TOOL_READERS, codexExtractRow, codexItemKind, codexReasoningHasTe
 
 const NO_SIDES: ToolSpanContext = { request: undefined, result: undefined, role: 'other', visibleRows: { request: false, result: false } }
 
+function parsedItem(item: Record<string, unknown>, completion?: MessageCompletion) {
+  return { wrapper: null, topLevel: { item }, parentObject: { item }, rawText: '', supplementalContent: undefined, messageMetadata: undefined, completion }
+}
+
 // The completion rides BOTH carriers, the way the pipeline delivers it: the parser
 // copies it onto the parsed message, and the row extractor takes it as its own field.
 // The span's `finished` test reads the first and the row status reads the second, so a
 // fixture that set one alone exercised half of a retained row.
 function toolRow(item: Record<string, unknown>, completion?: MessageCompletion): ToolCallRow | null {
-  const parsed = { wrapper: null, topLevel: { item }, parentObject: { item }, rawText: '', supplementalContent: undefined, messageMetadata: undefined, completion }
+  const parsed = parsedItem(item, completion)
   const row: ChatRow | null = codexExtractRow({
     resolved: parsed,
     category: { kind: 'tool_use' },
@@ -101,6 +105,30 @@ describe('codex retained outcome', () => {
  */
 describe('codex fileChange results', () => {
   const change = { path: 'src/a.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-old\n+new' }
+
+  function pairedRequestRow(resultFields: Record<string, unknown>): ToolCallRow | null {
+    const request = parsedItem({ type: CODEX_ITEM.FileChange, id: 'change-1', status: CODEX_STATUS.IN_PROGRESS, changes: [change] })
+    const result = parsedItem({ type: CODEX_ITEM.FileChange, id: 'change-1', status: CODEX_STATUS.COMPLETED, changes: [change], ...resultFields })
+    const row = codexExtractRow({
+      resolved: request,
+      category: { kind: 'tool_use' },
+      span: { request, result, role: 'request', visibleRows: { request: true, result: true } },
+    } as never)
+    return row?.kind === 'tool' ? row : null
+  }
+
+  it('uses a matching completed sibling as the merged call result', () => {
+    const row = pairedRequestRow({})
+    expect(row?.call.status).toBe('completed')
+    expect(row?.call.result).toMatchObject({ changes: [{ filePath: 'src/a.ts' }] })
+  })
+
+  it.each([
+    ['another item id', { id: 'change-2' }],
+    ['another item type', { type: CODEX_ITEM.CommandExecution }],
+  ])('does not merge a completed sibling for %s', (_name, fields) => {
+    expect(pairedRequestRow(fields)?.call.result).toBeUndefined()
+  })
 
   it('draws the diff of a change that landed', () => {
     const row = toolRow({ type: CODEX_ITEM.FileChange, status: 'completed', changes: [change] })

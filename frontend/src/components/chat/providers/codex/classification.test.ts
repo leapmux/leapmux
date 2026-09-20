@@ -240,22 +240,61 @@ describe('classifyCodexMessage', () => {
     expect(result).toEqual({ kind: 'notification', messages: [parent] })
   })
 
-  it('classifies MCP startup starting notifications as visible', () => {
+  it('hides MCP startup starting notifications', () => {
     const parent = {
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'starting', error: null },
     }
+    expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides MCP startup terminal states that are not failures', () => {
+    for (const status of ['ready', 'cancelled']) {
+      const parent = {
+        method: 'mcpServer/startupStatus/updated',
+        params: { name: 'codex_apps', status, error: null },
+      }
+      expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'hidden' })
+    }
+  })
+
+  it('keeps MCP startup failures visible', () => {
+    const parent = {
+      method: 'mcpServer/startupStatus/updated',
+      params: { name: 'codex_apps', status: 'failed', error: 'boom' },
+    }
     expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
   })
 
-  it('classifies MCP startup terminal notifications as visible', () => {
-    for (const status of ['ready', 'failed', 'cancelled']) {
-      const parent = {
-        method: 'mcpServer/startupStatus/updated',
-        params: { name: 'codex_apps', status, error: status === 'failed' ? 'boom' : null },
-      }
-      expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+  it('hides MCP tool-call progress notifications', () => {
+    expect(classifyCodexMessage(input({
+      method: 'item/mcpToolCall/progress',
+      params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'mcp-1', message: 'Working' },
+    }))).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides successful MCP OAuth completion and keeps failures visible', () => {
+    const success = { method: 'mcpServer/oauthLogin/completed', params: { name: 'docs', success: true } }
+    const failure = { method: 'mcpServer/oauthLogin/completed', params: { name: 'docs', success: false, error: 'authorization failed' } }
+    expect(classifyCodexMessage(input(success))).toEqual({ kind: 'hidden' })
+    expect(classifyCodexMessage(input(failure))).toEqual({ kind: 'notification', messages: [failure] })
+  })
+
+  it('filters non-failure MCP entries from a notification thread', () => {
+    const startupFailure = { method: 'mcpServer/startupStatus/updated', params: { name: 'broken', status: 'failed', error: 'boom' } }
+    const oauthFailure = { method: 'mcpServer/oauthLogin/completed', params: { name: 'docs', success: false, error: 'denied' } }
+    const wrapper = {
+      old_seqs: [],
+      messages: [
+        { method: 'mcpServer/startupStatus/updated', params: { name: 'ready', status: 'ready' } },
+        { method: 'item/mcpToolCall/progress', params: { itemId: 'mcp-1', message: 'Working' } },
+        { method: 'mcpServer/oauthLogin/completed', params: { name: 'docs', success: true } },
+        startupFailure,
+        oauthFailure,
+      ],
     }
+    expect(classifyCodexMessage(input(undefined, wrapper)))
+      .toEqual({ kind: 'notification', messages: [startupFailure, oauthFailure] })
   })
 
   it('classifies compacting as notification', () => {

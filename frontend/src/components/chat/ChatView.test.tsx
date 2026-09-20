@@ -1547,7 +1547,7 @@ describe('ChatView', () => {
 
   it('keeps both codex commandExecution start and completed messages in history', () => {
     const messages = [
-      makeCodexCommandMessage({ id: 'cmd-start', seq: 1n, spanId: 'cmd-1', status: 'in_progress' }),
+      makeCodexCommandMessage({ id: 'cmd-start', seq: 1n, spanId: 'cmd-1', status: 'inProgress' }),
       makeCodexCommandMessage({ id: 'cmd-done', seq: 2n, spanId: 'cmd-1', status: 'completed', aggregatedOutput: 'done\n' }),
     ]
 
@@ -1640,7 +1640,7 @@ describe('ChatView', () => {
 
   it('keeps both codex fileChange start and completed messages in history', () => {
     const messages = [
-      makeCodexFileChangeMessage({ id: 'fc-start', seq: 1n, spanId: 'fc-1', status: 'in_progress' }),
+      makeCodexFileChangeMessage({ id: 'fc-start', seq: 1n, spanId: 'fc-1', status: 'inProgress' }),
       makeCodexFileChangeMessage({ id: 'fc-done', seq: 2n, spanId: 'fc-1', status: 'completed' }),
     ]
 
@@ -1658,13 +1658,36 @@ describe('ChatView', () => {
     expect(screen.getByText('old')).toBeInTheDocument()
   })
 
-  it('does not render a diff in the codex fileChange start message', () => {
+  it('draws a paired codex fileChange diff only on the result row', () => {
+    const changes = [{
+      path: 'a.txt',
+      kind: 'update',
+      diff: '@@ -1 +1 @@\n-codexPairedOld\n+codexPairedNew',
+    }]
+    const messages = [
+      makeCodexFileChangeMessage({ id: 'fc-start', seq: 1n, spanId: 'fc-1', status: 'inProgress', changes }),
+      makeCodexFileChangeMessage({ id: 'fc-done', seq: 2n, spanId: 'fc-1', status: 'completed', changes }),
+    ]
+    const messageContext = testMessageContext({ messages: () => messages })
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} messageContext={messageContext} />
+      </PreferencesProvider>
+    ))
+
+    expect(view.container).not.toHaveTextContent('Requested changes')
+    expect(screen.getAllByText('codexPairedOld')).toHaveLength(1)
+    expect(screen.getAllByText('codexPairedNew')).toHaveLength(1)
+  })
+
+  it('renders a lone codex fileChange request as requested changes', () => {
     const messages = [
       makeCodexFileChangeMessage({
         id: 'fc-start',
         seq: 1n,
         spanId: 'fc-1',
-        status: 'in_progress',
+        status: 'inProgress',
         changes: [{ path: 'a.txt', kind: 'update', diff: '@@ -1 +1 @@\n-old\n+new' }],
       }),
     ]
@@ -1707,7 +1730,7 @@ describe('ChatView', () => {
         id: 'fc-start',
         seq: 1n,
         spanId: 'fc-1',
-        status: 'in_progress',
+        status: 'inProgress',
         changes: [{ path: '/repo/src/new-file.ts', kind: { type: 'add' }, diff: 'export const hello = "world"\n' }],
       }),
     ]
@@ -1753,7 +1776,7 @@ describe('ChatView', () => {
         id: 'fc-start',
         seq: 1n,
         spanId: 'fc-1',
-        status: 'in_progress',
+        status: 'inProgress',
         changes: [{ path: '/repo/src/old-file.ts', kind: { type: 'delete' }, diff: 'export const old = true\n' }],
       }),
     ]

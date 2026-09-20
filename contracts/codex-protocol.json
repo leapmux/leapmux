@@ -44,6 +44,8 @@
     "ThreadSettingsUpdated": "thread/settings/updated",
     "TurnPlanUpdated": "turn/plan/updated",
     "ThreadTokenUsageUpdated": "thread/tokenUsage/updated",
+    "McpToolCallProgress": "item/mcpToolCall/progress",
+    "McpServerOauthLoginCompleted": "mcpServer/oauthLogin/completed",
     "McpServerStartupStatusUpdated": "mcpServer/startupStatus/updated",
     "SkillsChanged": "skills/changed",
     "RemoteControlStatusChanged": "remoteControl/status/changed",

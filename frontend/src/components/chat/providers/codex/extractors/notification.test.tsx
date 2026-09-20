@@ -11,18 +11,18 @@ const renderText = (messages: unknown[]): string => renderThreadText(messages, A
 describe('codex single MCP startup status', () => {
   // A standalone Codex notification renders through the same
   // renderNotificationThread path as a consolidated one (a one-element thread).
-  it('renders starting status', () => {
+  it('does not render starting status', () => {
     expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'starting', error: null },
-    }])).toBe('Starting MCP server: codex_apps')
+    }])).toBe('')
   })
 
-  it('renders ready status', () => {
+  it('does not render ready status', () => {
     expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'ready', error: null },
-    }])).toBe('MCP server ready: codex_apps')
+    }])).toBe('')
   })
 
   it('renders failed status with error', () => {
@@ -32,11 +32,11 @@ describe('codex single MCP startup status', () => {
     }])).toBe('MCP server failed to start: codex_apps (boom)')
   })
 
-  it('renders cancelled status', () => {
+  it('does not render cancelled status', () => {
     expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'cancelled', error: null },
-    }])).toBe('MCP server startup cancelled: codex_apps')
+    }])).toBe('')
   })
 
   it('supports nested upstream-style status payloads', () => {
@@ -55,13 +55,11 @@ describe('codex single MCP startup status', () => {
     }])).toBe('MCP server status update (warming): codex_apps (still booting)')
   })
 
-  it('renders a name-less startup as the bare prefix, with no "unknown" placeholder', () => {
-    // A startup notification with no server name has nothing to group under the
-    // prefix, so it renders the prefix alone rather than "<prefix>: unknown".
+  it('does not render a name-less ready status', () => {
     expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { status: 'ready', error: null },
-    }])).toBe('MCP server ready')
+    }])).toBe('')
   })
 
   it('renders a name-less failed startup with its error suffix and no placeholder', () => {
@@ -78,10 +76,8 @@ describe('codex single MCP startup status', () => {
     }])).toBe('MCP server status update (warming) (still booting)')
   })
 
-  // The state comes straight off the wire, and the prefix table is a plain object.
-  // `in` WALKS the prototype chain and `Object.hasOwn` does not, so the guard used to
-  // admit `toString` past its own cast -- and the read then rendered the function's
-  // own source text as the prefix of the line.
+  // These values are JavaScript prototype property names. Treat each as an unknown
+  // wire state, never as a property lookup that supplies function source text.
   it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty'])('falls back for a state called %s', (state) => {
     expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
@@ -127,6 +123,22 @@ describe('codex rate-limit reached-type notifications', () => {
   })
 })
 
+describe('codex MCP OAuth notifications', () => {
+  it('does not render a successful login', () => {
+    expect(renderText([{
+      method: 'mcpServer/oauthLogin/completed',
+      params: { name: 'docs', success: true },
+    }])).toBe('')
+  })
+
+  it('renders a failed login', () => {
+    expect(renderText([{
+      method: 'mcpServer/oauthLogin/completed',
+      params: { name: 'docs', success: false, error: 'authorization failed' },
+    }])).toBe('MCP OAuth login failed for docs: authorization failed')
+  })
+})
+
 describe('renderNotificationThread (Codex provider): MCP startup grouping', () => {
   it('does not render skills or remote-control metadata entries', () => {
     const text = renderText([
@@ -150,11 +162,11 @@ describe('renderNotificationThread (Codex provider): MCP startup grouping', () =
       { method: 'mcpServer/startupStatus/updated', params: { name: 'codex_apps', status: 'ready', error: null } },
       { method: 'mcpServer/startupStatus/updated', params: { name: 'other', status: 'failed', error: 'boom' } },
     ])
-    expect(text).toContain('MCP server ready: codex_apps')
+    expect(text).not.toContain('codex_apps')
     expect(text).toContain('MCP server failed to start: other (boom)')
   })
 
-  it('groups multiple servers by startup state', () => {
+  it('groups only failed servers', () => {
     const text = renderText([
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_a', status: 'starting', error: null } },
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_b', status: 'starting', error: null } },
@@ -163,12 +175,12 @@ describe('renderNotificationThread (Codex provider): MCP startup grouping', () =
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_e', status: 'failed', error: 'boom' } },
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_f', status: 'failed', error: 'bad gateway' } },
     ])
-    expect(text).toContain('Starting MCP server: server_a, server_b')
-    expect(text).toContain('MCP server ready: server_c, server_d')
+    expect(text).not.toContain('server_a')
+    expect(text).not.toContain('server_c')
     expect(text).toContain('MCP server failed to start: server_e (boom), server_f (bad gateway)')
   })
 
-  it('preserves ordering around non-startup notifications while grouping startup states', () => {
+  it('keeps visible notifications when non-failed startup states disappear', () => {
     const text = renderText([
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_a', status: 'starting', error: null } },
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_b', status: 'starting', error: null } },
@@ -176,11 +188,6 @@ describe('renderNotificationThread (Codex provider): MCP startup grouping', () =
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_c', status: 'ready', error: null } },
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_d', status: 'ready', error: null } },
     ])
-    const startingIdx = text.indexOf('Starting MCP server: server_a, server_b')
-    const clearedIdx = text.indexOf('Context cleared')
-    const readyIdx = text.indexOf('MCP server ready: server_c, server_d')
-    expect(startingIdx).toBeGreaterThanOrEqual(0)
-    expect(clearedIdx).toBeGreaterThan(startingIdx)
-    expect(readyIdx).toBeGreaterThan(clearedIdx)
+    expect(text).toBe('Context cleared')
   })
 })

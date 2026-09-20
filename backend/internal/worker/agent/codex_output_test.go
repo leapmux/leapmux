@@ -36,7 +36,7 @@ func TestCodexControlPublicationFailureReturnsProtocolError(t *testing.T) {
 	assert.Empty(t, sink.PublishedControls())
 }
 
-type startupStatusGuardSink struct {
+type notificationPersistGuardSink struct {
 	testSink
 	t *testing.T
 }
@@ -101,8 +101,8 @@ func (s *blockingCodexEnsureSink) EnsureChildAgent(spawnSpanID, providerChildKey
 	return s.testSink.EnsureChildAgent(spawnSpanID, providerChildKey, title)
 }
 
-func (s *startupStatusGuardSink) PersistMessage(source leapmuxv1.MessageSource, content MessageContent, span SpanInfo) error {
-	s.t.Fatalf("startup status notification must not be persisted as a regular message: source=%v content=%s", source, string(content.Original))
+func (s *notificationPersistGuardSink) PersistMessage(source leapmuxv1.MessageSource, content MessageContent, span SpanInfo) error {
+	s.t.Fatalf("notification must not be persisted as a regular message: source=%v content=%s", source, string(content.Original))
 	return nil
 }
 
@@ -257,21 +257,75 @@ func TestHandleCodexOutput_ContextCompactionStartPersistsRawAsAgent(t *testing.T
 		"raw JSON-RPC envelope must be preserved verbatim — synthesized {type:\"compacting\"} discarded item.id and threadId")
 }
 
-func TestHandleCodexOutput_McpStartupStatusPersistsAsAgent(t *testing.T) {
+func TestHandleCodexOutput_McpStartupNonFailuresDoNotReachTheTranscript(t *testing.T) {
 	t.Parallel()
 
-	sink := &startupStatusGuardSink{t: t}
+	for _, status := range []string{`"starting"`, `"ready"`, `"cancelled"`, `{"state":"ready"}`} {
+		sink := &notificationPersistGuardSink{t: t}
+		agent := newCodexAgentWithSink(sink)
+
+		input := fmt.Sprintf(`{"method":"mcpServer/startupStatus/updated","params":{"name":"codex_apps","status":%s}}`, status)
+		handleCodexOutput(agent, parseLine([]byte(input)))
+
+		assert.Zero(t, sink.NotificationCount(), status)
+		assert.Zero(t, sink.MessageCount(), status)
+	}
+}
+
+func TestHandleCodexOutput_McpStartupFailuresPersistAsAgent(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []string{`"failed"`, `"futureFailure"`, `{"state":"failed","error":"nested failure"}`} {
+		sink := &notificationPersistGuardSink{t: t}
+		agent := newCodexAgentWithSink(sink)
+
+		input := fmt.Sprintf(`{"method":"mcpServer/startupStatus/updated","params":{"name":"codex_apps","status":%s,"error":"startup failed"}}`, status)
+		handleCodexOutput(agent, parseLine([]byte(input)))
+
+		require.Equal(t, 1, sink.NotificationCount(), status)
+		require.Zero(t, sink.MessageCount(), status)
+		last := sink.LastNotification()
+		assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source)
+		assert.JSONEq(t, input, string(last.Content), "the raw failure envelope stays available")
+	}
+}
+
+func TestHandleCodexOutput_McpProgressDoesNotReachTheTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
-	input := `{"method":"mcpServer/startupStatus/updated","params":{"name":"codex_apps","status":"ready"}}`
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/mcpToolCall/progress","params":{"threadId":"main-thread","turnId":"turn-1","itemId":"mcp-1","message":"Working"}}`)))
+
+	assert.Zero(t, sink.NotificationCount())
+	assert.Zero(t, sink.MessageCount())
+}
+
+func TestHandleCodexOutput_McpOauthSuccessDoesNotReachTheTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"mcpServer/oauthLogin/completed","params":{"name":"docs","threadId":"main-thread","success":true}}`)))
+
+	assert.Zero(t, sink.NotificationCount())
+	assert.Zero(t, sink.MessageCount())
+}
+
+func TestHandleCodexOutput_McpOauthFailurePersistsAsAgent(t *testing.T) {
+	t.Parallel()
+
+	sink := &notificationPersistGuardSink{t: t}
+	agent := newCodexAgentWithSink(sink)
+	input := `{"method":"mcpServer/oauthLogin/completed","params":{"name":"docs","threadId":"main-thread","success":false,"error":"authorization failed"}}`
+
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	require.Equal(t, 1, sink.NotificationCount())
-	require.Equal(t, 0, sink.MessageCount())
-	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
-		"Codex-emitted MCP startup-status updates must persist as AGENT (not LEAPMUX)")
-	assert.JSONEq(t, input, string(last.Content), "raw JSON-RPC envelope must be preserved verbatim")
+	require.Zero(t, sink.MessageCount())
+	assert.JSONEq(t, input, string(sink.LastNotification().Content))
 }
 
 func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsAgent(t *testing.T) {
@@ -1372,6 +1426,63 @@ func TestHandleCodexOutput_ReasoningPersistFailureKeepsLiveStream(t *testing.T) 
 	assert.False(t, stillLocked, "a completed reasoning item must release bookkeeping after a persist error")
 }
 
+func TestHandleCodexOutput_EmptyReasoningItemsDoNotPersist(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "started item",
+			input: `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"reasoning","id":"reason-1","summary":[],"content":[]}}}`,
+		},
+		{
+			name:  "completed item with no text fields",
+			input: `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"reasoning","id":"reason-1"}}}`,
+		},
+		{
+			name:  "completed item with empty arrays",
+			input: `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"reasoning","id":"reason-1","summary":[],"content":[]}}}`,
+		},
+		{
+			name:  "completed item with blank entries",
+			input: `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"reasoning","id":"reason-1","summary":[" ","\n"],"content":["\t"],"text":"  "}}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &testSink{}
+			agent := newCodexAgentWithSink(sink)
+			agent.threadID = "main-thread"
+
+			handleCodexOutput(agent, parseLine([]byte(tc.input)))
+
+			assert.Zero(t, sink.MessageCount())
+			assert.Zero(t, sink.NotificationCount())
+		})
+	}
+}
+
+func TestHandleCodexOutput_ReasoningItemsWithVisibleTextPersist(t *testing.T) {
+	t.Parallel()
+
+	for _, item := range []string{
+		`{"type":"reasoning","id":"reason-1","summary":["summary"],"content":[]}`,
+		`{"type":"reasoning","id":"reason-1","summary":[" "],"content":["content"]}`,
+		`{"type":"reasoning","id":"reason-1","summary":[],"content":[],"text":"legacy text"}`,
+	} {
+		sink := &testSink{}
+		agent := newCodexAgentWithSink(sink)
+		agent.threadID = "main-thread"
+
+		handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":`+item+`}}`)))
+
+		assert.Equal(t, 1, sink.MessageCount(), item)
+	}
+}
+
 func TestHandleCodexOutput_FileChangeOutputDelta(t *testing.T) {
 	t.Parallel()
 
@@ -1459,7 +1570,7 @@ func TestHandleCodexOutput_ApprovalWithoutID(t *testing.T) {
 	assert.Equal(t, 0, sink.PublishedControlCount())
 }
 
-func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T) {
+func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsageWithoutPersisting(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -1469,12 +1580,8 @@ func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T)
 	agent.threadID = "thread-1"
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	require.Equal(t, 1, sink.NotificationCount())
-	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
-		"Codex-emitted thread/tokenUsage/updated must persist as AGENT")
-	assert.JSONEq(t, input, string(last.Content),
-		"raw envelope must be preserved so reconnect/catch-up sees full token usage detail")
+	require.Zero(t, sink.NotificationCount())
+	require.Zero(t, sink.MessageCount())
 	require.Equal(t, 1, sink.SessionInfoCount())
 
 	info := sink.LastSessionInfo()
@@ -1487,6 +1594,55 @@ func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T)
 	// Codex's own total for the live request. The browser prefers it to the sum of
 	// the counts, so the gauge states what Codex measured.
 	require.Equal(t, int64(23), usage["context_tokens"])
+}
+
+func TestHandleCodexOutput_ThreadStatusChangedDoesNotReachTheTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "thread-1"
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"thread/status/changed","params":{"threadId":"thread-1","status":{"type":"active","activeFlags":["waitingOnApproval"]}}}`)))
+
+	assert.Zero(t, sink.MessageCount())
+	assert.Zero(t, sink.NotificationCount())
+	assert.Zero(t, sink.SessionInfoCount())
+	assert.Empty(t, sink.TurnActives())
+}
+
+func TestHandleCodexOutput_SuccessfulHookLifecycleDoesNotReachTheTranscript(t *testing.T) {
+	t.Parallel()
+
+	for _, input := range []string{
+		`{"method":"hook/started","params":{"threadId":"thread-1","turnId":"turn-1","run":{"id":"hook-1","status":"running"}}}`,
+		`{"method":"hook/completed","params":{"threadId":"thread-1","turnId":"turn-1","run":{"id":"hook-1","status":"completed"}}}`,
+	} {
+		sink := &testSink{}
+		agent := newCodexAgentWithSink(sink)
+		agent.threadID = "thread-1"
+
+		handleCodexOutput(agent, parseLine([]byte(input)))
+
+		assert.Zero(t, sink.MessageCount(), input)
+		assert.Zero(t, sink.NotificationCount(), input)
+	}
+}
+
+func TestHandleCodexOutput_UnsuccessfulHookCompletionPersists(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []string{"failed", "blocked", "stopped"} {
+		sink := &testSink{}
+		agent := newCodexAgentWithSink(sink)
+		agent.threadID = "thread-1"
+		input := fmt.Sprintf(`{"method":"hook/completed","params":{"threadId":"thread-1","turnId":"turn-1","run":{"id":"hook-1","status":%q,"statusMessage":"hook did not complete"}}}`, status)
+
+		handleCodexOutput(agent, parseLine([]byte(input)))
+
+		require.Equal(t, 1, sink.MessageCount(), status)
+		assert.JSONEq(t, input, string(sink.Messages()[0].Content))
+	}
 }
 
 // Codex reports a cache WRITE beside the cache read, and it reached nothing: the

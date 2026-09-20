@@ -20,18 +20,17 @@ import (
 var codexRetryableDisconnectPattern = regexp.MustCompile(`^stream disconnected before completion(?:$|[^[:alnum:]].*)`)
 
 // codexSystemMetadataMethods are Codex-emitted JSON-RPC notifications that
-// carry agent/system metadata (auto-compaction, lifecycle, MCP startup, skills
-// invalidation, remote-control status). They share one handler — persist
+// carry agent/system metadata (auto-compaction, lifecycle, skills invalidation,
+// remote-control status). They share one handler — persist
 // verbatim as agent-emitted notifications. Methods with extra side effects
 // (rate-limit, token-usage broadcasts) keep dedicated cases below. A method
 // that this table omits falls to the default branch and lands in the transcript
 // as a raw JSON-RPC bubble.
 var codexSystemMetadataMethods = map[string]struct{}{
-	contracts.CodexMethodThreadCompacted:               {},
-	contracts.CodexMethodThreadNameUpdated:             {},
-	contracts.CodexMethodSkillsChanged:                 {},
-	contracts.CodexMethodRemoteControlStatusChanged:    {},
-	contracts.CodexMethodMcpServerStartupStatusUpdated: {},
+	contracts.CodexMethodThreadCompacted:            {},
+	contracts.CodexMethodThreadNameUpdated:          {},
+	contracts.CodexMethodSkillsChanged:              {},
+	contracts.CodexMethodRemoteControlStatusChanged: {},
 }
 
 // handleCodexOutput processes a single parsed JSONL notification from the Codex app-server.
@@ -89,7 +88,29 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 		a.handleTurnCompleted(line.Params)
 
 	case contracts.CodexMethodThreadTokenUsageUpdated:
-		a.handleTokenUsageUpdated(line.Raw, line.Params)
+		a.handleTokenUsageUpdated(line.Params)
+
+	case contracts.CodexMethodMcpToolCallProgress:
+		// The item itself carries the finished result. Persisting progress creates
+		// unrelated raw rows and gives the transcript no failure information.
+
+	case contracts.CodexMethodMcpServerOauthLoginCompleted:
+		a.handleMcpOauthLoginCompleted(line.Raw, line.Params)
+
+	case contracts.CodexMethodMcpServerStartupStatusUpdated:
+		a.handleMcpStartupStatusUpdated(line.Raw, line.Params)
+
+	case contracts.CodexMethodThreadStatusChanged:
+		// turn/started and turn/completed own the Worker's turn state. Codex sends
+		// this second lifecycle view around the same turn, so it adds no state for
+		// the transcript, the thinking indicator, or turn-end detection.
+
+	case contracts.CodexMethodHookStarted:
+		// A hook start has no outcome and no transcript content. Keep the matching
+		// unsuccessful completion below, which carries the failure details.
+
+	case contracts.CodexMethodHookCompleted:
+		a.handleHookCompleted(line.Raw, line.Params)
 
 	case codexMethodThreadSettingsUpdated:
 		a.handleThreadSettingsUpdated(line.Params)
@@ -685,7 +706,7 @@ func (a *CodexAgent) handleCodexItemStartedForSink(
 			slog.Error("codex persist compacting notification", "agent_id", agentID, "error", err)
 		}
 	case contracts.CodexItemTypeCommandExecution, contracts.CodexItemTypeFileChange, contracts.CodexItemTypeMcpToolCall, contracts.CodexItemTypeDynamicToolCall, contracts.CodexItemTypeImageGeneration, contracts.CodexItemTypeImageView, contracts.CodexItemTypeReasoning:
-		persistSharedItemStarted(sink, event.params, event.itemType, event.itemID, agentID)
+		persistSharedItemStarted(sink, event, agentID)
 	case contracts.CodexItemTypeCollabAgentToolCall:
 		collab := parseCollabToolCall(event.item)
 		spawns := collab != nil && collab.Tool == codexCollabToolSpawnAgent
@@ -788,7 +809,7 @@ func (a *CodexAgent) handleCodexItemCompletedForSink(
 			a.collabAgentsStatesToRegistry(collab)
 		}
 	case contracts.CodexItemTypeReasoning:
-		a.persistCompletedReasoningItem(sink, event.params, event.itemID, agentID)
+		a.persistCompletedReasoningItem(sink, event, agentID)
 	case contracts.CodexItemTypeContextCompaction:
 		if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, event.raw); err != nil {
 			slog.Error("codex persist contextCompaction/completed", "agent_id", agentID, "error", err)
@@ -1261,7 +1282,7 @@ func isRetryableCodexTurnFailure(message string) bool {
 }
 
 // handleTokenUsageUpdated processes thread/tokenUsage/updated notifications.
-func (a *CodexAgent) handleTokenUsageUpdated(content []byte, params json.RawMessage) {
+func (a *CodexAgent) handleTokenUsageUpdated(params json.RawMessage) {
 	var notif struct {
 		ThreadID   string `json:"threadId"`
 		TurnID     string `json:"turnId"`
@@ -1287,12 +1308,6 @@ func (a *CodexAgent) handleTokenUsageUpdated(content []byte, params json.RawMess
 	}
 	if !a.isMainThreadID(notif.ThreadID) {
 		return
-	}
-
-	// Persist the raw Codex notification so reconnect/catch-up can rehydrate
-	// context usage from history. Codex-emitted metadata → AGENT source.
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
-		slog.Error("codex persist tokenUsage", "agent_id", a.agentID, "error", err)
 	}
 
 	// Codex reports the cached part inside InputTokens, so the uncached remainder
@@ -1330,6 +1345,65 @@ func (a *CodexAgent) handleTokenUsageUpdated(content []byte, params json.RawMess
 	a.sink.BroadcastSessionInfo(map[string]interface{}{
 		contracts.SessionInfoKeyContextUsage: usage,
 	})
+}
+
+// handleHookCompleted drops successful outcomes and preserves every other state.
+func (a *CodexAgent) handleHookCompleted(content []byte, params json.RawMessage) {
+	var notification struct {
+		Run struct {
+			Status string `json:"status"`
+		} `json:"run"`
+	}
+	if json.Unmarshal(params, &notification) == nil && notification.Run.Status == "completed" {
+		return
+	}
+	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: content}, SpanInfo{}); err != nil {
+		slog.Error("codex persist non-completed hook", "agent_id", a.agentID, "error", err)
+	}
+}
+
+// handleMcpOauthLoginCompleted keeps only failures and unknown future outcomes.
+func (a *CodexAgent) handleMcpOauthLoginCompleted(content []byte, params json.RawMessage) {
+	var notification struct {
+		Success *bool `json:"success"`
+	}
+	if json.Unmarshal(params, &notification) == nil && notification.Success != nil && *notification.Success {
+		return
+	}
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
+		slog.Error("codex persist MCP OAuth failure", "agent_id", a.agentID, "error", err)
+	}
+}
+
+// handleMcpStartupStatusUpdated keeps only failures and unknown future states.
+func (a *CodexAgent) handleMcpStartupStatusUpdated(content []byte, params json.RawMessage) {
+	switch codexMcpStartupState(params) {
+	case "starting", "ready", "cancelled":
+		return
+	}
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
+		slog.Error("codex persist MCP startup failure", "agent_id", a.agentID, "error", err)
+	}
+}
+
+func codexMcpStartupState(params json.RawMessage) string {
+	var notification struct {
+		Status json.RawMessage `json:"status"`
+	}
+	if json.Unmarshal(params, &notification) != nil {
+		return ""
+	}
+	var state string
+	if json.Unmarshal(notification.Status, &state) == nil {
+		return state
+	}
+	var nested struct {
+		State string `json:"state"`
+	}
+	if json.Unmarshal(notification.Status, &nested) == nil {
+		return nested.State
+	}
+	return ""
 }
 
 func (a *CodexAgent) isMainThreadID(threadID string) bool {
@@ -1932,15 +2006,18 @@ func discardCompletedCodexGeneration(buffer *GenerationBuffer, itemType, itemID 
 }
 
 // persistSharedItemStarted applies item starts that share parent and child behavior.
-func persistSharedItemStarted(sink ToolSpanServices, params json.RawMessage, itemType, itemID, agentID string) {
-	switch itemType {
+func persistSharedItemStarted(sink ToolSpanServices, event codexItemEvent, agentID string) {
+	switch event.itemType {
 	case contracts.CodexItemTypeCommandExecution, contracts.CodexItemTypeFileChange, contracts.CodexItemTypeMcpToolCall, contracts.CodexItemTypeDynamicToolCall, contracts.CodexItemTypeImageGeneration, contracts.CodexItemTypeImageView:
-		if err := openToolSpan(sink, MessageContent{Original: params}, itemID, itemType, false); err != nil {
-			slog.Error("codex persist item/started", "agent_id", agentID, "type", itemType, "error", err)
+		if err := openToolSpan(sink, MessageContent{Original: event.params}, event.itemID, event.itemType, false); err != nil {
+			slog.Error("codex persist item/started", "agent_id", agentID, "type", event.itemType, "error", err)
 		}
 	case contracts.CodexItemTypeReasoning:
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: params}, SpanInfo{
-			SpanID: itemID, SpanType: itemType,
+		if !codexReasoningItemHasText(event.item) {
+			return
+		}
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: event.params}, SpanInfo{
+			SpanID: event.itemID, SpanType: event.itemType,
 		}); err != nil {
 			slog.Error("codex persist reasoning/started", "agent_id", agentID, "error", err)
 		}
@@ -1968,14 +2045,17 @@ func persistSharedItemCompleted(sink toolLifecycleServices, params json.RawMessa
 	}
 }
 
-// persistCompletedReasoningItem stores the provider's authoritative item.
-func (a *CodexAgent) persistCompletedReasoningItem(sink generationServices, params json.RawMessage, itemID, agentID string) {
-	sink.ReportProgress(CompleteModelProgress(itemID))
-	err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: params}, SpanInfo{
-		SpanID: itemID, SpanType: contracts.CodexItemTypeReasoning,
-	})
+// persistCompletedReasoningItem stores the provider's authoritative item when it has visible text.
+func (a *CodexAgent) persistCompletedReasoningItem(sink generationServices, event codexItemEvent, agentID string) {
+	sink.ReportProgress(CompleteModelProgress(event.itemID))
+	var persistErr error
+	if codexReasoningItemHasText(event.item) {
+		persistErr = sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: event.params}, SpanInfo{
+			SpanID: event.itemID, SpanType: contracts.CodexItemTypeReasoning,
+		})
+	}
 	a.mu.Lock()
-	suffix := "\x00" + itemID
+	suffix := "\x00" + event.itemID
 	for key := range a.reasoningStreamKind {
 		if strings.HasSuffix(key, suffix) {
 			delete(a.reasoningStreamKind, key)
@@ -1986,10 +2066,29 @@ func (a *CodexAgent) persistCompletedReasoningItem(sink generationServices, para
 		}
 	}
 	a.mu.Unlock()
-	if err != nil {
-		slog.Error("codex persist reasoning/completed", "agent_id", agentID, "error", err)
+	if persistErr != nil {
+		slog.Error("codex persist reasoning/completed", "agent_id", agentID, "error", persistErr)
 		return
 	}
+}
+
+func codexReasoningItemHasText(item json.RawMessage) bool {
+	var reasoning struct {
+		Summary []string `json:"summary"`
+		Content []string `json:"content"`
+		Text    string   `json:"text"`
+	}
+	if json.Unmarshal(item, &reasoning) != nil {
+		return false
+	}
+	for _, entries := range [][]string{reasoning.Summary, reasoning.Content} {
+		for _, entry := range entries {
+			if strings.TrimSpace(entry) != "" {
+				return true
+			}
+		}
+	}
+	return strings.TrimSpace(reasoning.Text) != ""
 }
 
 // extractCodexItem extracts the item and routing fields from one item event.
