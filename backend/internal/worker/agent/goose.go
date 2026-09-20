@@ -196,16 +196,6 @@ func (a *GooseCLIAgent) clearGooseToolOutput(toolCallID string) {
 	a.mu.Unlock()
 }
 
-// gooseToolOutputTail is everything one running call has printed, and whether
-// output was lost before it. The tests read it; gooseToolOutput answers the shared
-// hook from the same state, under the same lock as the write that produced it.
-func (a *GooseCLIAgent) gooseToolOutputTail(toolCallID string) (string, bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	state := a.gooseOutput[toolCallID]
-	return state.tail, state.tailLostBytes
-}
-
 // gooseToolNotification is the `_meta.toolNotification` envelope every live update
 // of a running Goose call rides in.
 //

@@ -30,6 +30,15 @@ func newGooseAgentForRPC(t *testing.T) (*GooseCLIAgent, func() []recordedRequest
 	)
 }
 
+// gooseToolOutputTail reads the state that the production observation returns.
+// It stays in this Unix-only test file because no production caller needs it.
+func gooseToolOutputTail(a *GooseCLIAgent, toolCallID string) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	state := a.gooseOutput[toolCallID]
+	return state.tail, state.tailLostBytes
+}
+
 func TestGooseToolOutputProgressCountsSequencedMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -56,7 +65,7 @@ func TestGooseToolOutputTailJoinsTheChunksItCounted(t *testing.T) {
 	t.Parallel()
 
 	a := &GooseCLIAgent{}
-	tail, truncated := a.gooseToolOutputTail("tool-1")
+	tail, truncated := gooseToolOutputTail(a, "tool-1")
 	assert.Equal(t, "", tail)
 	assert.False(t, truncated)
 
@@ -70,19 +79,19 @@ func TestGooseToolOutputTailJoinsTheChunksItCounted(t *testing.T) {
 	}`)}
 	_, ok := a.gooseToolOutput(first)
 	require.True(t, ok)
-	tail, truncated = a.gooseToolOutputTail("tool-1")
+	tail, truncated = gooseToolOutputTail(a, "tool-1")
 	assert.Equal(t, "first\n", tail)
 	assert.False(t, truncated)
 
 	_, ok = a.gooseToolOutput(second)
 	require.True(t, ok)
-	tail, truncated = a.gooseToolOutputTail("tool-1")
+	tail, truncated = gooseToolOutputTail(a, "tool-1")
 	assert.Equal(t, "first\nsecond\n", tail)
 	assert.True(t, truncated, "the provider said it dropped output before this chunk")
 
 	// The call ends, and its live text ends with it.
 	a.clearGooseToolOutput("tool-1")
-	tail, _ = a.gooseToolOutputTail("tool-1")
+	tail, _ = gooseToolOutputTail(a, "tool-1")
 	assert.Equal(t, "", tail)
 }
 
@@ -101,7 +110,7 @@ func TestGooseToolOutputTailKeepsTheEndWhenItGrowsPastTheCap(t *testing.T) {
 		_, ok := a.gooseToolOutput(update)
 		require.True(t, ok)
 	}
-	tail, truncated := a.gooseToolOutputTail("tool-1")
+	tail, truncated := gooseToolOutputTail(a, "tool-1")
 	assert.LessOrEqual(t, len(tail), gooseLiveOutputLimit)
 	assert.True(t, strings.HasSuffix(tail, "tail-marker"))
 	assert.True(t, truncated)
