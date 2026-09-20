@@ -1915,14 +1915,16 @@ func (h *OutputHandler) persistMessageWithTodoEvent(
 		cache.Mu.Unlock()
 		return err
 	}
+	var updateMutation todoUpdateMutation
 	if event.Kind == todoevents.KindUpdate {
-		snapshot, ok := todoUpdateSnapshot(cache.Rows, event)
+		mutation, ok := reduceTodoUpdate(cache.Rows, event)
 		if !ok {
 			cache.Mu.Unlock()
 			return fmt.Errorf("cannot persist TaskUpdate snapshot for unknown task %q", event.ID)
 		}
+		updateMutation = mutation
 		var err error
-		content, err = withTodoSnapshot(content, snapshot)
+		content, err = withTodoSnapshot(content, mutation.item)
 		if err != nil {
 			cache.Mu.Unlock()
 			return err
@@ -1935,7 +1937,16 @@ func (h *OutputHandler) persistMessageWithTodoEvent(
 		cache.Mu.Unlock()
 		return err
 	}
-	items, mutated, todoErr := h.applyTodoEventLocked(ctx, reg, event)
+	var (
+		items   []todoevents.Item
+		mutated bool
+		todoErr error
+	)
+	if event.Kind == todoevents.KindUpdate {
+		items, mutated, todoErr = h.applyPreparedTodoUpdateLocked(ctx, reg, updateMutation)
+	} else {
+		items, mutated, todoErr = h.applyTodoEventLocked(ctx, reg, event)
+	}
 	cache.Mu.Unlock()
 
 	h.publishMessageWrite(write, seq)
@@ -1949,15 +1960,28 @@ func (h *OutputHandler) persistMessageWithTodoEvent(
 	return nil
 }
 
-func todoUpdateSnapshot(rows []cachedTodo, event todoevents.Event) (todoevents.Item, bool) {
-	if event.ID == "" {
-		return todoevents.Item{}, false
+type todoUpdateMutation struct {
+	index  int
+	rowKey string
+	before todoevents.Item
+	item   todoevents.Item
+}
+
+func reduceTodoUpdate(rows []cachedTodo, event todoevents.Event) (todoUpdateMutation, bool) {
+	if event.Kind != todoevents.KindUpdate || event.ID == "" {
+		return todoUpdateMutation{}, false
 	}
 	idx := todoIndexByID(rows, event.ID)
 	if idx < 0 {
-		return todoevents.Item{}, false
+		return todoUpdateMutation{}, false
 	}
-	return todoevents.ApplyPatch(rows[idx].item, event.Patch), true
+	row := rows[idx]
+	return todoUpdateMutation{
+		index:  idx,
+		rowKey: row.rowKey,
+		before: row.item,
+		item:   todoevents.ApplyPatch(row.item, event.Patch),
+	}, true
 }
 
 func withTodoSnapshot(content agent.MessageContent, item todoevents.Item) (agent.MessageContent, error) {
@@ -2076,35 +2100,38 @@ func (h *OutputHandler) applyTodoEventLocked(ctx context.Context, reg agentTodoV
 		return h.applyMergeLocked(ctx, reg, ev.Items)
 
 	case todoevents.KindUpdate:
-		if ev.ID == "" {
+		mutation, ok := reduceTodoUpdate(cache.Rows, ev)
+		if !ok {
 			return nil, false, nil
 		}
-		idx := todoIndexByID(cache.Rows, ev.ID)
-		if idx < 0 {
-			return nil, false, nil
-		}
-		merged := todoevents.ApplyPatch(cache.Rows[idx].item, ev.Patch)
-		// No-op patch (every Patch field nil or already-matching): skip
-		// the DB write and broadcast. A repeated tombstone lands here --
-		// StatusDeleted over a row that already carries it changes
-		// nothing, so the row takes no second write.
-		if merged == cache.Rows[idx].item {
-			return todoItems(cache.Rows), false, nil
-		}
-		if err := reg.queries.UpdateAgentTodo(ctx, db.UpdateAgentTodoParams{
-			Content:     merged.Content,
-			ActiveForm:  merged.ActiveForm,
-			Description: merged.Description,
-			Status:      leapmuxv1.TodoStatus(merged.Status.OrPending()),
-			AgentID:     reg.ownerID,
-			RowKey:      cache.Rows[idx].rowKey,
-		}); err != nil {
-			return nil, false, err
-		}
-		cache.Rows[idx].item = merged
-		return todoItems(cache.Rows), true, nil
+		return h.applyPreparedTodoUpdateLocked(ctx, reg, mutation)
 	}
 	return nil, false, nil
+}
+
+func (h *OutputHandler) applyPreparedTodoUpdateLocked(ctx context.Context, reg agentTodoView, mutation todoUpdateMutation) ([]todoevents.Item, bool, error) {
+	cache := reg.cache
+	if mutation.index < 0 || mutation.index >= len(cache.Rows) ||
+		cache.Rows[mutation.index].rowKey != mutation.rowKey ||
+		cache.Rows[mutation.index].item != mutation.before {
+		return nil, false, fmt.Errorf("prepared todo update no longer matches canonical task %q", mutation.item.ID)
+	}
+	// Skip the database write and broadcast for an empty or repeated patch.
+	if mutation.item == mutation.before {
+		return todoItems(cache.Rows), false, nil
+	}
+	if err := reg.queries.UpdateAgentTodo(ctx, db.UpdateAgentTodoParams{
+		Content:     mutation.item.Content,
+		ActiveForm:  mutation.item.ActiveForm,
+		Description: mutation.item.Description,
+		Status:      leapmuxv1.TodoStatus(mutation.item.Status.OrPending()),
+		AgentID:     reg.ownerID,
+		RowKey:      mutation.rowKey,
+	}); err != nil {
+		return nil, false, err
+	}
+	cache.Rows[mutation.index].item = mutation.item
+	return todoItems(cache.Rows), true, nil
 }
 
 // evictOldestFinishedLocked removes the oldest finished row (completed or

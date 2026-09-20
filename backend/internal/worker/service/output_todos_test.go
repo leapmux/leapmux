@@ -60,6 +60,26 @@ func marshalJSON(t *testing.T, v any) []byte {
 	return b
 }
 
+func TestReduceTodoUpdateBuildsThePostUpdateMutation(t *testing.T) {
+	t.Parallel()
+
+	status := todoevents.StatusInProgress
+	rows := []cachedTodo{{
+		item:   todoevents.Item{ID: "1", Content: "Run tests", Status: todoevents.StatusPending},
+		rowKey: "1",
+	}}
+	mutation, ok := reduceTodoUpdate(rows, todoevents.Event{
+		Kind:  todoevents.KindUpdate,
+		ID:    "1",
+		Patch: todoevents.Patch{Status: &status},
+	})
+
+	require.True(t, ok)
+	assert.Equal(t, 0, mutation.index)
+	assert.Equal(t, todoevents.StatusInProgress, mutation.item.Status)
+	assert.Equal(t, todoevents.StatusPending, rows[0].item.Status, "preparing the mutation must not update the canonical list")
+}
+
 func TestOutputTodos_TodoWriteSnapshotPersists(t *testing.T) {
 	t.Parallel()
 
