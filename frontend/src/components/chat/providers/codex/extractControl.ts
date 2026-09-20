@@ -6,6 +6,11 @@ import { codexRequestedPermissions, getCodexParams } from './controlResponse'
 /** The tool name Codex gives its plan-mode prompt. */
 const CODEX_PLAN_MODE_PROMPT = 'CodexPlanModePrompt'
 
+/** Whether one control request is Codex's plan-mode prompt. */
+export function isCodexPlanModePrompt(payload: Record<string, unknown>): boolean {
+  return getToolName(payload) === CODEX_PLAN_MODE_PROMPT
+}
+
 /**
  * The approval methods Codex sends, and the operation each one identifies.
  *
@@ -22,7 +27,7 @@ const CODEX_PERMISSIONS_APPROVAL = 'item/permissions/requestApproval'
 /** `Provider.extractControl` for Codex. */
 export function codexExtractControl(input: ControlExtractionInput): ExtractedControlRequest | null {
   const { payload } = input
-  if (getToolName(payload) === CODEX_PLAN_MODE_PROMPT)
+  if (isCodexPlanModePrompt(payload))
     return { kind: 'plan' }
   const params = getCodexParams(payload)
   const method = pickString(payload, 'method')

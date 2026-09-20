@@ -87,6 +87,7 @@ const ALLOWED_ARCHITECTURE_SAMPLES: LintSample[] = [
   { label: 'checked builder tool call assertion', file: 'src/components/chat/model/createToolCall.ts', source: 'value as ToolCall' },
   { label: 'plugin imported related hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'import { related } from \'./spanRole\'\nconst plugin = { transcript: { relatedMessages: related } }' },
   { label: 'plugin imported hook factory', file: 'src/components/chat/providers/probe/plugin.ts', source: 'import { related } from \'./spanRole\'\nconst plugin = { transcript: { relatedMessages: related() } }' },
+  { label: 'registration factory parameter hook', file: 'src/components/chat/providers/probe/registerProbeProvider.ts', source: 'export function registerProbeProvider(opts: { spanRole: () => string }) {\n  const plugin = { transcript: { spanRole: opts.spanRole } }\n  return plugin\n}' },
   { label: 'imported capability helper', file: 'src/components/chat/auditProbe.ts', source: 'import { agentTabSupportsInterrupt } from \'~/stores/tab.helpers\'\nvoid agentTabSupportsInterrupt(undefined)' },
 ]
 
@@ -106,6 +107,12 @@ const REGISTRATION_SAMPLES: LintSample[] = [
   { label: 'plugin inline related hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const plugin = { transcript: { relatedMessages: () => [] } }' },
   { label: 'plugin inline role hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const plugin = { transcript: { spanRole() { return \'other\' } } }' },
   { label: 'plugin local named hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const spanRole = () => \'other\'\nconst plugin = { transcript: { spanRole } }' },
+  { label: 'plugin inline control-response hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const plugin = { controls: { buildControlResponse() { return {} } } }' },
+  { label: 'plugin inline question hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const plugin = { controls: { askUserQuestion: { sendAnswer: async () => {} } } }' },
+  { label: 'plugin local control hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const buildControlResponse = () => ({})\nconst plugin = { controls: { buildControlResponse } }' },
+  { label: 'plugin inline session hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const plugin = { session: { contextUsageFromMessage: () => null } }' },
+  { label: 'plugin inline configuration hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const plugin = { configuration: { planMode: { currentMode: () => \'plan\' } } }' },
+  { label: 'plugin future inline hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const plugin = { transcript: { hookAddedLater: () => null } }' },
   { label: 'registration factory inline role hook', file: 'src/components/chat/providers/probe/registerProbeProvider.ts', source: 'const plugin = { transcript: { spanRole() { return \'other\' } } }' },
 ]
 

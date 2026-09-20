@@ -279,8 +279,6 @@ const noForbiddenAssertion = createRule<[], 'forbiddenAssertion'>({
   },
 })
 
-const HOOKS = new Set(['resolveMessage', 'spanRole', 'relatedMessages', 'classify', 'extractRow', 'extractDivider', 'notificationEntry', 'lifecycle'])
-
 const pluginRegistrationOnly = createRule<[], 'inlineHook'>({
   name: 'plugin-registration-only',
   meta: {
@@ -291,29 +289,58 @@ const pluginRegistrationOnly = createRule<[], 'inlineHook'>({
   },
   defaultOptions: [],
   create(context) {
-    if (!/\/components\/chat\/providers\/[^/]+\/(?:plugin|register[A-Za-z0-9]*Provider)\.ts$/.test(context.filename.replaceAll('\\', '/')))
+    const filename = context.filename.replaceAll('\\', '/')
+    const registrationFile = /\/components\/chat\/providers\/[^/]+\/(?:plugin|register[A-Za-z0-9]*Provider)\.ts$/.test(filename)
+    if (!registrationFile)
       return {}
+    const services = ESLintUtils.getParserServices(context)
+    const checker = services.program.getTypeChecker()
     const importedBindings = new Set<string>()
+    const registrationParameters = new Set<string>()
     for (const statement of context.sourceCode.ast.body) {
-      if (statement.type !== AST_NODE_TYPES.ImportDeclaration)
-        continue
-      for (const specifier of statement.specifiers)
-        importedBindings.add(specifier.local.name)
+      if (statement.type === AST_NODE_TYPES.ImportDeclaration) {
+        for (const specifier of statement.specifiers)
+          importedBindings.add(specifier.local.name)
+      }
+      const declaration = statement.type === AST_NODE_TYPES.ExportNamedDeclaration ? statement.declaration : statement
+      if (declaration?.type === AST_NODE_TYPES.FunctionDeclaration && declaration.id?.name.startsWith('register')) {
+        for (const parameter of declaration.params) {
+          if (parameter.type === AST_NODE_TYPES.Identifier)
+            registrationParameters.add(parameter.name)
+        }
+      }
     }
-    const arrivesFromImport = (node: TSESTree.Node): boolean => {
+    const isCallable = (node: TSESTree.Node): boolean => {
+      const tsNode = services.esTreeNodeToTSNodeMap.get(node)
+      return checker.getTypeAtLocation(tsNode).getCallSignatures().length > 0
+    }
+    const arrivesFromApprovedSource = (node: TSESTree.Node): boolean => {
       if (node.type === AST_NODE_TYPES.Identifier)
-        return importedBindings.has(node.name)
-      if (node.type === AST_NODE_TYPES.CallExpression)
-        return arrivesFromImport(node.callee)
-      if (node.type !== AST_NODE_TYPES.MemberExpression)
-        return false
-      let object: TSESTree.Expression = node.object
-      while (object.type === AST_NODE_TYPES.MemberExpression)
-        object = object.object
-      return object.type === AST_NODE_TYPES.Identifier && importedBindings.has(object.name)
+        return importedBindings.has(node.name) || registrationParameters.has(node.name)
+      if (node.type === AST_NODE_TYPES.CallExpression) {
+        return arrivesFromApprovedSource(node.callee)
+          && node.arguments.every(argument => argument.type !== AST_NODE_TYPES.SpreadElement
+            && (!isCallable(argument) || arrivesFromApprovedSource(argument)))
+      }
+      if (node.type === AST_NODE_TYPES.LogicalExpression)
+        return arrivesFromApprovedSource(node.left) && arrivesFromApprovedSource(node.right)
+      if (node.type === AST_NODE_TYPES.ConditionalExpression)
+        return arrivesFromApprovedSource(node.consequent) && arrivesFromApprovedSource(node.alternate)
+      if (node.type === AST_NODE_TYPES.TSAsExpression || node.type === AST_NODE_TYPES.TSTypeAssertion || node.type === AST_NODE_TYPES.TSNonNullExpression)
+        return arrivesFromApprovedSource(node.expression)
+      if (node.type === AST_NODE_TYPES.ChainExpression)
+        return arrivesFromApprovedSource(node.expression)
+      if (node.type === AST_NODE_TYPES.MemberExpression) {
+        let object: TSESTree.Expression = node.object
+        while (object.type === AST_NODE_TYPES.MemberExpression)
+          object = object.object
+        return object.type === AST_NODE_TYPES.Identifier
+          && (importedBindings.has(object.name) || registrationParameters.has(object.name))
+      }
+      return false
     }
     const checkHook = (node: TSESTree.Node, key: string, value: TSESTree.Node): void => {
-      if (HOOKS.has(key) && !arrivesFromImport(value))
+      if (isCallable(value) && !arrivesFromApprovedSource(value))
         context.report({ node, messageId: 'inlineHook', data: { hook: key } })
     }
     return {

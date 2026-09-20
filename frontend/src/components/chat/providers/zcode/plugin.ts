@@ -1,17 +1,12 @@
 import type { ProviderPlugin } from '../capabilities'
-import { ZCODE_DEFAULT_MODE, ZCODE_MODE } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { buildDenyResponse, getToolInput } from '~/utils/controlResponse'
-import { buildAskAnswers } from '../../controls/AskUserQuestionControl'
-import { sendResponse } from '../../controls/types'
 import { registerProvider } from '../registry'
-import { zcodeIsAskUserQuestion, zcodeQuestionsFromPayload } from './askUserQuestion'
 import { classifyZCodeMessage } from './classification'
-import { zcodeControlResponseSummary } from './controlResponse'
-import { zcodeExtractControl } from './extractControl'
 import { zcodeNotificationEntry } from './extractors/notification'
 import { zcodeResultDivider } from './extractors/resultDivider'
 import { zcodeExtractRow } from './extractors/row'
+import { zcodeConfiguration } from './pluginConfiguration'
+import { zcodeControls } from './pluginControls'
 import { resolveZCodeMessage } from './resolveMessage'
 import { zcodeContextUsageFromMessage } from './sessionMetadata'
 import { zcodeRelatedMessages, zcodeSpanRole } from './spanRole'
@@ -26,49 +21,11 @@ const zcodePlugin: ProviderPlugin = {
     notificationEntry: zcodeNotificationEntry,
     extractDivider: zcodeResultDivider,
   },
-  controls: {
-    controlResponseDisplay: zcodeControlResponseSummary,
-    askUserQuestion: {
-      isRequest: zcodeIsAskUserQuestion,
-      extractQuestions: zcodeQuestionsFromPayload,
-      sendAnswer: (request, sendControlResponse, questions, answerState) =>
-        sendResponse(sendControlResponse, buildAskAnswers(answerState, questions, getToolInput(request.payload), request.requestId)),
-      sendReject: (request, sendControlResponse, message) =>
-        sendResponse(sendControlResponse, buildDenyResponse(request.requestId, message)),
-    },
-    // Composer send is always a rejection. The placeholder says "Type a rejection
-    // reason...", Allow lives on its own button, and an empty send is a deny with
-    // no extra message. Claude's empty-send-is-allow does not apply.
-    buildControlResponse(_payload, content, requestId) {
-      return buildDenyResponse(requestId, content)
-    },
-    extractControl: zcodeExtractControl,
-    permissionPresets: { bypass: { sets: { permissionMode: ZCODE_MODE.Yolo } } },
-  },
+  controls: zcodeControls,
   session: {
     contextUsageFromMessage: zcodeContextUsageFromMessage,
   },
-  configuration: {
-    // Text is inlined into the prompt and an image rides `session/send.attachments`.
-    // A PDF is refused: the app-server's normalizer knows image, video, file and audio
-    // and nothing else, so a PDF arrives as a generic file -- decoded as text (binary
-    // garbage to the model) when small, and dropped with no message when large.
-    attachments: {
-      text: true,
-      image: true,
-      pdf: false,
-      binary: false,
-    },
-    // ZCode's mode axis rides LeapMux's permission-mode channel, so the mode chip and
-    // the plan toggle drive `session/setMode`.
-    triggerModeGroupKey: 'permissionMode',
-    planMode: {
-      groupKey: 'permissionMode',
-      currentMode: agent => agent.optionValues?.permissionMode ?? ZCODE_DEFAULT_MODE,
-      planValue: ZCODE_MODE.Plan,
-      defaultValue: ZCODE_DEFAULT_MODE,
-    },
-  },
+  configuration: zcodeConfiguration,
 }
 
 registerProvider(AgentProvider.ZCODE, zcodePlugin)
