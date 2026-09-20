@@ -13,9 +13,9 @@ import { acpControlResponseSummary } from './controlResponse'
 import { acpElicitation } from './elicitation'
 import { acpExtractControl, acpPermissionSpanId } from './extractControl'
 import { acpResultDivider } from './extractors/resultDivider'
-import { acpExtractRow } from './extractors/row'
-import { acpToolCallNeedsResult, acpToolFinished, resolveACPMessage } from './extractors/toolCall'
-import { ACP_SESSION_UPDATE } from './updateVocabulary'
+import { createACPRowExtractor } from './extractors/row'
+import { resolveACPMessage } from './extractors/toolCall'
+import { acpSpanRole, createACPRelatedMessagesReader } from './spanRole'
 
 /**
  * Per-provider settings configuration for an ACP provider. The discriminator
@@ -169,25 +169,9 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
       classify: classifyACPMessage(
         opts.classifyToolCallUpdate ? { classifyToolCallUpdate: opts.classifyToolCallUpdate } : {},
       ),
-      spanRole: (parsed) => {
-        const tool = parsed.parentObject
-        if (tool?.sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL)
-          return acpToolFinished(tool, parsed.completion) ? 'result' : 'request'
-        if (tool?.sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL_UPDATE && acpToolFinished(tool, parsed.completion))
-          return 'result'
-        return 'other'
-      },
-      relatedMessages: (parsed) => {
-        const tool = parsed.parentObject
-        if (!tool)
-          return []
-        if (acpToolFinished(tool, parsed.completion))
-          return ['request']
-        return (tool.sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL && acpToolCallNeedsResult(tool, opts.toolCallAdapter, parsed.supplementalContent))
-          ? ['result']
-          : []
-      },
-      extractRow: input => acpExtractRow(input, opts.toolCallAdapter),
+      spanRole: acpSpanRole,
+      relatedMessages: createACPRelatedMessagesReader(opts.toolCallAdapter),
+      extractRow: createACPRowExtractor(opts.toolCallAdapter),
       extractDivider: acpResultDivider,
     },
     controls,

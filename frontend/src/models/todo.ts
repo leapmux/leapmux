@@ -1,9 +1,14 @@
+import type { JsonValue } from '@bufbuild/protobuf'
+import type { TodoItem as ProtoTodoItem } from '~/generated/proto/leapmux/v1/agent_pb'
+import { fromJson } from '@bufbuild/protobuf'
+import { TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+
 // ---------------------------------------------------------------------------
 // The provider-neutral to-do list model.
 //
-// This module owns domain data and semantic calculations. The chat normalizer
-// owns provider wire conversion. The chat store owns protobuf conversion. The
-// to-do component owns display ordering and labels.
+// This module owns domain data, protobuf conversion, and semantic calculations.
+// The chat normalizer owns provider wire conversion. The to-do component owns
+// display ordering and labels.
 // ---------------------------------------------------------------------------
 
 export interface TodoItem {
@@ -32,6 +37,49 @@ export interface TodoItem {
   activeForm: string
   /** Long-form description from Claude Task* tools; absent elsewhere. */
   description?: string
+}
+
+/** Convert one protobuf to-do into the provider-neutral model. */
+export function protoTodoToItem(todo: ProtoTodoItem, index: number): TodoItem {
+  let status: TodoItem['status'] = 'pending'
+  if (todo.status === TodoStatus.IN_PROGRESS)
+    status = 'in_progress'
+  else if (todo.status === TodoStatus.COMPLETED)
+    status = 'completed'
+  else if (todo.status === TodoStatus.DELETED)
+    status = 'deleted'
+  const id = todo.id || undefined
+  const description = todo.description || undefined
+  return {
+    ...(id !== undefined ? { id } : {}),
+    rowKey: todoRowKey(id, index, todo.content),
+    content: todo.content,
+    status,
+    activeForm: todo.activeForm,
+    ...(description !== undefined ? { description } : {}),
+  }
+}
+
+/** Decode one protobuf JSON to-do into the provider-neutral model. */
+export function protoJsonTodoToItem(value: unknown): TodoItem | null {
+  if (!isJsonValue(value))
+    return null
+  try {
+    return protoTodoToItem(fromJson(TodoItemSchema, value), 0)
+  }
+  catch {
+    return null
+  }
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number')
+    return true
+  if (Array.isArray(value))
+    return value.every(isJsonValue)
+  if (typeof value !== 'object')
+    return false
+  return Object.values(value).every(isJsonValue)
 }
 
 /**

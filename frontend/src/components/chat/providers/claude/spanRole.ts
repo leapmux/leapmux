@@ -1,5 +1,5 @@
+import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import type {} from '../registry'
-import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ToolSpanRole } from '~/lib/messageSpan'
 import { getMessageContent } from '~/lib/contentBlocks'
 import { isObject } from '~/lib/jsonPick'
@@ -21,7 +21,7 @@ const REQUEST_NEEDS_RESULT: ReadonlySet<string> = new Set([
  * that holds BOTH blocks is the request because it carries the tool input. Returning on the first
  * tool_result would mis-bucket it as a result and drop its input.
  */
-export function claudeSpanRole(parsed: ParsedMessageContent): ToolSpanRole {
+export function claudeSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
   const blocks = getMessageContent(parsed.parentObject ?? undefined)
   if (!blocks)
     return 'other'
@@ -38,7 +38,7 @@ export function claudeSpanRole(parsed: ParsedMessageContent): ToolSpanRole {
   return hasToolUse ? 'request' : hasToolResult ? 'result' : 'other'
 }
 
-export function claudeRelatedMessages(parsed: ParsedMessageContent) {
+export function claudeRelatedMessages(parsed: ResolvedMessageContent) {
   if (claudeSpanRole(parsed) === 'result')
     return ['request'] as const
   const tool = canonicalClaudeToolName(extractToolUseInfo(parsed)?.toolName ?? '')

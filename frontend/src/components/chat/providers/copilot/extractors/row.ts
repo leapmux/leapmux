@@ -45,7 +45,7 @@ export function copilotExtractRow(input: RowExtractionInput): ChatRow | null {
 }
 
 /**
- * Resolve all three sides of one Copilot tool span into rows.
+ * Resolve the current row and its paired rows into one Copilot tool call.
  *
  * A RESULT event states no tool name and no arguments of its own, so it reads them off
  * the paired start. The REQUEST resolves against ITSELF, which is what a request's own

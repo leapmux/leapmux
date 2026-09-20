@@ -68,27 +68,19 @@ export interface PrepareMessageOptions extends ClassificationContext {
 /** What reading a prepared message into a row needs beyond the message itself. */
 export interface PreparedRowOptions {
   /**
-   * The three sides of this row's tool span, already resolved.
+   * The request and result of this row's tool span, already resolved.
    *
-   * Absent for a reader that resolved no siblings, and {@link soleSide} then states
-   * this message as the span's only side. Supply it to state a sibling, or to state a
-   * role the frame itself does not claim -- the image tab reads every span as
-   * FINISHED, because a provider that states no picture before completion resolves
-   * every image tab to nothing otherwise. The `role` reaches the provider, which
-   * decides what to do with it; it does not overwrite the drawn row's own role.
+   * This value is absent when a reader resolved no sibling. In that case,
+   * {@link soleSpan} derives the role and visible rows from this message.
    */
   span?: ToolSpanContext
 }
 
 /**
- * The span sides for a reader that resolved no sibling rows.
+ * Build the span context for a reader that resolved no sibling rows.
  *
- * `current` is the RESOLVED payload and never absent, which is the correction this
- * carries: a plugin reads `sides.current` for the supplemental half -- the body
- * LeapMux recovered when the provider's own frame carried none -- and for the row's
- * own role. The scroll rail left the sides empty, so every provider that recovers a
- * body into supplemental content previewed its frame without it, and a Codex row
- * previewed under the wrong role.
+ * The extraction input already carries this message's resolved content. This
+ * context therefore states only its role and its presence in the loaded window.
  */
 function soleSpan(prepared: PreparedMessage): ToolSpanContext {
   const role = resolvedSpanRole(prepared.resolved, prepared.message.agentProvider)

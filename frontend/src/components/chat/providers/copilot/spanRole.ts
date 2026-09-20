@@ -1,4 +1,4 @@
-import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import { COPILOT_EVENT } from '~/generated/contracts/copilot-protocol'
 import { retainedRowIsFinal } from '../registry'
 import { copilotToolRow } from './extractors/toolCall'
@@ -11,7 +11,7 @@ import { copilotEvent } from './protocol'
  * row, because the runtime sends no completion for it. The completion column is what
  * separates the two copies.
  */
-export function copilotSpanRole(parsed: ParsedMessageContent) {
+export function copilotSpanRole(parsed: ResolvedMessageContent) {
   switch (copilotEvent(parsed.parentObject)?.type) {
     case COPILOT_EVENT.ToolStarted:
       return retainedRowIsFinal(parsed.completion) ? 'result' as const : 'request' as const
@@ -22,7 +22,7 @@ export function copilotSpanRole(parsed: ParsedMessageContent) {
   }
 }
 
-export function copilotRelatedMessages(parsed: ParsedMessageContent) {
+export function copilotRelatedMessages(parsed: ResolvedMessageContent) {
   const role = copilotSpanRole(parsed)
   if (role === 'result')
     return ['request'] as const

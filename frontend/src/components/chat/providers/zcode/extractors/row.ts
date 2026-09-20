@@ -45,7 +45,7 @@ export function zcodeExtractRow(input: RowExtractionInput): ChatRow | null {
 }
 
 /**
- * Resolve all three sides of one ZCode tool span into rows.
+ * Resolve the current row and its paired rows into one ZCode tool call.
  *
  * A SCHEDULED row IS the request of its own span, and the store resolves no separate
  * one for it -- so the row itself stands in, which is what lets a still-open call

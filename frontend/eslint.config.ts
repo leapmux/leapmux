@@ -87,6 +87,7 @@ export default antfu({
           'src/components/chat/model/auditProbe.ts',
           'src/components/chat/providers/auditProbe.ts',
           'src/components/chat/providers/probe/plugin.ts',
+          'src/components/chat/providers/probe/registerProbeProvider.ts',
           'src/components/chat/results/auditProbe.ts',
         ],
       },

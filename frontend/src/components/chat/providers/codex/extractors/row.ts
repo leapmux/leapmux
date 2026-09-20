@@ -349,7 +349,7 @@ export interface CodexToolFacts {
    * asked the item alone dropped the output of every call the reader stopped.
    */
   finished: boolean
-  /** The three sides of the row's span. An agent call reads its counterpart from here. */
+  /** The row's span context. An agent call reads its counterpart from here. */
   sides: ToolSpanContext
   /** The header words a status-shaped item states, or none for a type the table omits. */
   statusTitle: string | undefined

@@ -4,8 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { normalizeTodoStatus, rawTodosToItems } from '~/components/chat/normalizers/todo'
 import { sortTodos, todoDisplayLabel } from '~/components/todo/todoPresentation'
 import { TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isFinishedTodoStatus, todoProgress, todoRowKey } from '~/models/todo'
-import { protoTodoToItem } from '~/stores/chatTodoStore'
+import { isFinishedTodoStatus, protoTodoToItem, todoProgress, todoRowKey } from '~/models/todo'
 
 describe('TodoItem', () => {
   describe('normalizeTodoStatus', () => {

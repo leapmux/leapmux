@@ -38,6 +38,11 @@ export function acpExtractRow(input: RowExtractionInput, callAdapter?: ACPToolCa
   return null
 }
 
+/** Bind one provider's tool adapter to the shared ACP row reader. */
+export function createACPRowExtractor(callAdapter?: ACPToolCallAdapter): (input: RowExtractionInput) => ChatRow | null {
+  return input => acpExtractRow(input, callAdapter)
+}
+
 /**
  * The checklist row an ACP `plan` update becomes.
  *

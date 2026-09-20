@@ -8,9 +8,9 @@ import type { TodoItem } from '~/models/todo'
 // ---------------------------------------------------------------------------
 // The INPUT side of row extraction.
 //
-// These types describe what an extractor READS: a parsed provider payload, the
-// classification the shared classifier reached, the sides of a tool span, the
-// live to-do list. None of them is part of what extraction PRODUCES, and
+// These types describe what an extractor reads: a parsed provider payload, the
+// shared classification, the tool span, and an optional task snapshot. None of
+// them is part of what extraction produces, and
 // `model/row.ts` holds only the latter -- so a provider-neutral output model no
 // longer has to import `ParsedMessageContent` for a field the renderer never
 // sees.
@@ -62,7 +62,7 @@ export interface RowExtractionInput {
   resolved: ResolvedMessageContent
   /** The classification the shared classifier already reached for this row. */
   category: MessageCategory
-  /** The three sides of this row's tool span, plus this row's place among them. */
+  /** The request and result of this row's tool span, plus this row's role. */
   span: ToolSpanContext
   /** The worker's `span_type` column, which identifies the tool on every span row. */
   spanType?: string
@@ -72,13 +72,4 @@ export interface RowExtractionInput {
   todoSnapshot?: TodoItem
   /** Why a required task snapshot could not be read. */
   todoSnapshotDiagnostic?: string
-  /**
-   * The live to-do store, by task id.
-   *
-   * Session metadata rather than row content, and it arrives here for one reason:
-   * a provider that sends a PATCH -- Claude's `TaskUpdate` -- states only the
-   * fields that changed, so the row has to read the rest from the list the store
-   * already holds. Without it a patch that moved a task to `completed` drew
-   * `Task #<id>` where the subject belongs.
-   */
 }

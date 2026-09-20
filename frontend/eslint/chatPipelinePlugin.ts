@@ -1,8 +1,8 @@
 import type { TSESLint, TSESTree } from '@typescript-eslint/utils'
-import type ts from 'typescript'
 import { dirname, extname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AST_NODE_TYPES, ESLintUtils } from '@typescript-eslint/utils'
+import ts from 'typescript'
 
 const createRule = ESLintUtils.RuleCreator(name => `https://leapmux.dev/eslint/${name}`)
 const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -131,6 +131,82 @@ const noProviderDecision = createRule<[], 'providerDecision'>({
     }
     const report = (node: TSESTree.Node) => context.report({ node, messageId: 'providerDecision' })
     const providerWireToken = /^(?:(?:cursor|_goose|mcp)\/[a-z_/]+|_reasonix\.io\/[a-z_/]+|session\/(?:update|request_permission|new|prompt|load)|interaction\/requestUserInput|tool_call_update|agent_message_chunk|agent_thought_chunk|available_commands_update|session_info_update|config_option_update|commandExecution|fileChange|mcpToolCall|dynamicToolCall|collabAgentToolCall|entry_appended|tool_execution_start|tool_execution_end|agent_settled|compaction_start|compaction_end|tool_use_result|compact_boundary)$/
+    const tsIsProvider = (node: ts.Node): boolean =>
+      typeContainsName(checker, checker.getTypeAtLocation(node), /(?:^|\.)AgentProvider(?:$|\.)/)
+      || /\bAgentProvider\b/.test(node.getText())
+    const tsIsProviderMember = (node: ts.Node): boolean => {
+      if (/\bAgentProvider\s*\./.test(node.getText()))
+        return true
+      return /^(?:\w+\.)*AgentProvider\.[A-Z0-9_]+$/.test(checker.typeToString(checker.getTypeAtLocation(node)))
+    }
+    const declarationMakesProviderDecision = (declaration: ts.Declaration): boolean => {
+      let decision = false
+      const visit = (node: ts.Node): void => {
+        if (decision)
+          return
+        if (ts.isBinaryExpression(node)
+          && [ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken].includes(node.operatorToken.kind)
+          && (tsIsProvider(node.left) || tsIsProvider(node.right))
+          && (tsIsProviderMember(node.left) || tsIsProviderMember(node.right))) {
+          decision = true
+          return
+        }
+        if (ts.isSwitchStatement(node) && tsIsProvider(node.expression)) {
+          decision = true
+          return
+        }
+        if (ts.isElementAccessExpression(node) && node.argumentExpression !== undefined && tsIsProvider(node.argumentExpression)) {
+          decision = true
+          return
+        }
+        if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+          const method = node.expression.name.text
+          if ((method === 'get' || method === 'has' || method === 'includes')
+            && (tsIsProvider(node.expression.expression) || node.arguments.some(tsIsProvider))) {
+            decision = true
+            return
+          }
+        }
+        if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && providerWireToken.test(node.text)) {
+          decision = true
+          return
+        }
+        ts.forEachChild(node, visit)
+      }
+      visit(declaration)
+      return decision
+    }
+    const symbolAtExpression = (node: ts.Expression): ts.Symbol | undefined => {
+      let current = node
+      while (ts.isParenthesizedExpression(current) || ts.isAsExpression(current) || ts.isTypeAssertionExpression(current) || ts.isNonNullExpression(current) || ts.isSatisfiesExpression(current))
+        current = current.expression
+      const symbolNode = ts.isPropertyAccessExpression(current) ? current.name : current
+      return checker.getSymbolAtLocation(symbolNode)
+    }
+    const symbolMakesProviderDecision = (initial: ts.Symbol | undefined, seen = new Set<ts.Symbol>()): boolean => {
+      if (initial === undefined)
+        return false
+      const symbol = (initial.flags & ts.SymbolFlags.Alias) !== 0 ? checker.getAliasedSymbol(initial) : initial
+      if (seen.has(symbol))
+        return false
+      seen.add(symbol)
+      if (symbol.declarations?.some(declarationMakesProviderDecision))
+        return true
+      for (const declaration of symbol.declarations ?? []) {
+        if (ts.isVariableDeclaration(declaration) && declaration.initializer !== undefined
+          && symbolMakesProviderDecision(symbolAtExpression(declaration.initializer), seen)) {
+          return true
+        }
+      }
+      return false
+    }
+    const helperMakesProviderDecision = (node: TSESTree.CallExpression): boolean => {
+      const tsCall = services.esTreeNodeToTSNodeMap.get(node)
+      if ((checker.getTypeAtLocation(tsCall).flags & ts.TypeFlags.BooleanLike) === 0)
+        return false
+      const tsCallee = services.esTreeNodeToTSNodeMap.get(node.callee)
+      return symbolMakesProviderDecision(symbolAtExpression(tsCallee))
+    }
     return {
       BinaryExpression(node) {
         if (['==', '===', '!=', '!=='].includes(node.operator)
@@ -144,13 +220,21 @@ const noProviderDecision = createRule<[], 'providerDecision'>({
           report(node)
       },
       CallExpression(node) {
+        if (helperMakesProviderDecision(node)) {
+          report(node)
+          return
+        }
         if (node.callee.type !== AST_NODE_TYPES.MemberExpression || node.callee.computed)
           return
         const method = node.callee.property.type === AST_NODE_TYPES.Identifier ? node.callee.property.name : ''
-        if ((method === 'has' || method === 'includes')
+        if ((method === 'get' || method === 'has' || method === 'includes')
           && (isProvider(node.callee.object) || node.arguments.some(argument => argument.type !== AST_NODE_TYPES.SpreadElement && isProvider(argument)))) {
           report(node)
         }
+      },
+      MemberExpression(node) {
+        if (node.computed && isProvider(node.property))
+          report(node)
       },
       Property(node) {
         if (node.computed && isProvider(node.key))
@@ -201,13 +285,13 @@ const pluginRegistrationOnly = createRule<[], 'inlineHook'>({
   name: 'plugin-registration-only',
   meta: {
     type: 'problem',
-    docs: { description: 'Keep provider plugin modules registration-only.' },
+    docs: { description: 'Keep provider registration modules registration-only.' },
     schema: [],
     messages: { inlineHook: 'Import the {{hook}} hook from a job-specific provider module.' },
   },
   defaultOptions: [],
   create(context) {
-    if (!/\/components\/chat\/providers\/[^/]+\/plugin\.ts$/.test(context.filename.replaceAll('\\', '/')))
+    if (!/\/components\/chat\/providers\/[^/]+\/(?:plugin|register[A-Za-z0-9]*Provider)\.ts$/.test(context.filename.replaceAll('\\', '/')))
       return {}
     const importedBindings = new Set<string>()
     for (const statement of context.sourceCode.ast.body) {
@@ -219,6 +303,8 @@ const pluginRegistrationOnly = createRule<[], 'inlineHook'>({
     const arrivesFromImport = (node: TSESTree.Node): boolean => {
       if (node.type === AST_NODE_TYPES.Identifier)
         return importedBindings.has(node.name)
+      if (node.type === AST_NODE_TYPES.CallExpression)
+        return arrivesFromImport(node.callee)
       if (node.type !== AST_NODE_TYPES.MemberExpression)
         return false
       let object: TSESTree.Expression = node.object

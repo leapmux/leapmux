@@ -76,7 +76,7 @@ export interface ClaudeCallFacts {
   args: ClaudeToolRow
   /** The paired RESULT row, or undefined while the call runs. */
   result: ClaudeToolRow | undefined
-  /** What the row reads beyond its own bytes: the paired payload and the to-do store. */
+  /** What the row reads beyond its own bytes: the paired payload and the task snapshot. */
   context: ClaudeRowContext
 }
 

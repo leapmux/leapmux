@@ -86,20 +86,27 @@ const ALLOWED_ARCHITECTURE_SAMPLES: LintSample[] = [
   { label: 'registry resolved content assertion', file: 'src/components/chat/providers/registry.ts', source: 'value as ResolvedMessageContent' },
   { label: 'checked builder tool call assertion', file: 'src/components/chat/model/createToolCall.ts', source: 'value as ToolCall' },
   { label: 'plugin imported related hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'import { related } from \'./spanRole\'\nconst plugin = { transcript: { relatedMessages: related } }' },
+  { label: 'plugin imported hook factory', file: 'src/components/chat/providers/probe/plugin.ts', source: 'import { related } from \'./spanRole\'\nconst plugin = { transcript: { relatedMessages: related() } }' },
+  { label: 'imported capability helper', file: 'src/components/chat/auditProbe.ts', source: 'import { agentTabSupportsInterrupt } from \'~/stores/tab.helpers\'\nvoid agentTabSupportsInterrupt(undefined)' },
 ]
 
 const PROVIDER_DECISION_SAMPLES: LintSample[] = [
   { label: 'provider alias comparison', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nconst selected: AgentProvider = AgentProvider.CODEX\nvoid (selected === AgentProvider.CLAUDE_CODE)' },
   { label: 'provider array includes', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nconst providers: AgentProvider[] = [AgentProvider.CODEX]\nvoid providers.includes(AgentProvider.CLAUDE_CODE)' },
   { label: 'provider set has', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nconst providers = new Set<AgentProvider>()\nvoid providers.has(AgentProvider.CODEX)' },
+  { label: 'provider map get', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nconst providers = new Map<AgentProvider, string>()\nvoid providers.get(AgentProvider.CODEX)' },
+  { label: 'provider table lookup', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nconst selected: AgentProvider = AgentProvider.CODEX\nconst labels: Partial<Record<AgentProvider, string>> = {}\nvoid labels[selected]' },
   { label: 'provider switch alias', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nconst selected: AgentProvider = AgentProvider.CODEX\nswitch (selected) { case AgentProvider.CODEX: break }' },
   { label: 'destructured provider comparison', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nconst { CODEX: codex, CLAUDE_CODE: claude } = AgentProvider\nvoid (codex === claude)' },
+  { label: 'imported provider helper', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nimport { isCodexProvider } from \'~/test-support/lintFixtures/providerDecision\'\nconst selected: AgentProvider = AgentProvider.CODEX\nvoid isCodexProvider(selected)' },
+  { label: 'aliased imported provider helper', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nimport { isCodexProvider } from \'~/test-support/lintFixtures/providerDecision\'\nconst selected: AgentProvider = AgentProvider.CODEX\nconst matchesProvider = isCodexProvider\nvoid matchesProvider(selected)' },
 ]
 
 const REGISTRATION_SAMPLES: LintSample[] = [
   { label: 'plugin inline related hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const plugin = { transcript: { relatedMessages: () => [] } }' },
   { label: 'plugin inline role hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const plugin = { transcript: { spanRole() { return \'other\' } } }' },
   { label: 'plugin local named hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const spanRole = () => \'other\'\nconst plugin = { transcript: { spanRole } }' },
+  { label: 'registration factory inline role hook', file: 'src/components/chat/providers/probe/registerProbeProvider.ts', source: 'const plugin = { transcript: { spanRole() { return \'other\' } } }' },
 ]
 
 const ARCHITECTURE_RULE_IDS = new Set([

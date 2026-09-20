@@ -57,10 +57,9 @@ export function messageMarkPreviewText(message: AgentChatMessage): string | null
   // .catch that is reserved for TRANSIENT RPC failures, which would re-fetch the same dot
   // forever instead of caching '' once. Catch it here so both paths cache a label.
   try {
-    // No `sides`, so the preparation states this message as its span's only side (see
-    // `soleSide`). That is not an omission: a marked message is usually outside the
-    // loaded window, so its sibling is not loaded, and resolving one would put a span
-    // fetch behind every hover.
+    // No span context is available, so preparation derives this message's role and
+    // visible-row presence. A marked message is usually outside the loaded window.
+    // Resolving its sibling would put a span fetch behind every hover.
     const { extraction } = prepareChatRow(message)
     const preview = rowPreviewText(extraction)
     if (preview === null)

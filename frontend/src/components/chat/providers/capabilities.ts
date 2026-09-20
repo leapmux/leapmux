@@ -148,7 +148,7 @@ export interface ProviderTranscriptCapability {
   spanRole: (parsed: ResolvedMessageContent) => ToolSpanRole
 
   /** Linked messages that this row needs for rendering. Omit for self-contained rows. */
-  relatedMessages?: (parsed: ParsedMessageContent) => readonly ToolSpanSide[]
+  relatedMessages?: (parsed: ResolvedMessageContent) => readonly ToolSpanSide[]
 
   /**
    * Read one message of this provider's wire format into the shared row model.

@@ -1,5 +1,5 @@
+import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import type {} from '../registry'
-import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ToolSpanRole } from '~/lib/messageSpan'
 import { ZCODE_EVENT, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { pickString } from '~/lib/jsonPick'
@@ -23,7 +23,7 @@ const ZCODE_REQUESTS_WITH_TITLES = new Set<string>([
  * because both halves arrive as the same event type -- a content-block scan would
  * bucket every one of them the same way.
  */
-export function zcodeSpanRole(parsed: ParsedMessageContent): ToolSpanRole {
+export function zcodeSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
   if (zcodeControlPlanText(parsed.parentObject) !== null)
     return 'request'
   const envelope = zcodeEnvelope(parsed.parentObject)
@@ -32,7 +32,7 @@ export function zcodeSpanRole(parsed: ParsedMessageContent): ToolSpanRole {
   return zcodeToolSpanRole(pickString(envelope.payload, 'kind'), parsed)
 }
 
-export function zcodeRelatedMessages(parsed: ParsedMessageContent) {
+export function zcodeRelatedMessages(parsed: ResolvedMessageContent) {
   if (zcodeControlPlanText(parsed.parentObject) !== null)
     return []
   const role = zcodeSpanRole(parsed)

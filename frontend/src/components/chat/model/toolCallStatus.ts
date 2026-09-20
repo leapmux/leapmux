@@ -5,8 +5,8 @@ import type { ProviderToolOutcome, ToolOutcome } from './toolOutcome'
  *
  * A CLOSED set, for the reason {@link ToolKind} gives: the header tests the value
  * against three words, so a typo such as `'canceled'` compiled into a header that
- * silently never drew. The empty string is the state "the provider states no
- * status. An Agent Client Protocol update that omits the field sends this state.
+ * silently never drew. `unstated` means that the provider states no status.
+ * An Agent Client Protocol update that omits the field sends this state.
  *
  * `declined` is the call a reader REFUSED, so the tool never ran. It is not a
  * failure: no command produced an exit code and no patch touched a file. Codex

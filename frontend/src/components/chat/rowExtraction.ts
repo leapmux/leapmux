@@ -7,7 +7,7 @@ import type { AgentProvider, MessageCompletion as ProtoMessageCompletion } from 
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { isObject } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
-import { protoJsonTodoToItem } from '~/stores/chatTodoStore'
+import { protoJsonTodoToItem } from '~/models/todo'
 import { messageCompletionFromProto, parseAssembledMessage } from './assembledMessage'
 import { leapmuxUserRow } from './leapmuxRows'
 import { dividerMetaFromMessage } from './model/divider'
@@ -17,11 +17,11 @@ import { pluginFor } from './providers/registry'
 
 const logger = createLogger('rowExtraction')
 
-/** The three sides a caller resolved no span for. */
+/** The empty span context for a caller that resolved no sibling row. */
 const NO_SPAN: ToolSpanContext = { request: undefined, result: undefined, role: 'other', visibleRows: { request: false, result: false } }
 
 export interface RowExtractionOptions {
-  /** The three sides of this row's tool span, already resolved. */
+  /** The request and result of this row's tool span, already resolved. */
   span?: ToolSpanContext
   /** The worker's `span_type` column, which identifies the tool on every span row. */
   spanType?: string

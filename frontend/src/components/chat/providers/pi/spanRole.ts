@@ -1,5 +1,5 @@
+import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import type {} from '../registry'
-import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ToolSpanRole } from '~/lib/messageSpan'
 import { PI_EVENT } from '~/generated/contracts/pi-protocol'
 import { pickString } from '~/lib/jsonPick'
@@ -11,7 +11,7 @@ import { retainedRowIsFinal } from '../registry'
  * would mis-bucket it as `other` -- routing by `type` files it as a result regardless of arrival
  * order.
  */
-export function piSpanRole(parsed: ParsedMessageContent): ToolSpanRole {
+export function piSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
   const type = pickString(parsed.parentObject, 'type')
   if (type === PI_EVENT.ToolExecutionEnd)
     return 'result'
@@ -22,7 +22,7 @@ export function piSpanRole(parsed: ParsedMessageContent): ToolSpanRole {
   return retainedRowIsFinal(parsed.completion) ? 'result' : 'request'
 }
 
-export function piRelatedMessages(parsed: ParsedMessageContent) {
+export function piRelatedMessages(parsed: ResolvedMessageContent) {
   const role = piSpanRole(parsed)
   return role === 'result' ? ['request'] as const : role === 'request' ? ['result'] as const : []
 }

@@ -138,10 +138,9 @@ describe('prepareMessage', () => {
 })
 
 describe('extractPreparedRow', () => {
-  // The scroll rail resolves no siblings, and it used to state NO sides at all -- so a
-  // plugin that reads `sides.current` for the recovered half of a retained row read
-  // nothing. The default states this message as its span's only side.
-  it('states the prepared row as its own span side', () => {
+  // The scroll rail resolves no siblings. The default still states this message's
+  // role and its presence in the loaded window.
+  it('states the prepared row role and visible-row presence', () => {
     const prepared = prepareMessage(message({ provider: AgentProvider.OPENCODE, content: ACP_INNER }))
     const row = extractedRow(extractPreparedRow(prepared))
     expect(row?.kind).toBe('tool')

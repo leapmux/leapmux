@@ -205,7 +205,8 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     // and the image tab read the row from ONE resolved payload. The resolver is
     // absent outside ChatView (a test, an isolated preview), and preparation then
     // resolves the payload itself.
-    const prepared = prepareMessage(selected?.message ?? message, {
+    const selectedMessage = selected?.message ?? message
+    const prepared = prepareMessage(selectedMessage, {
       ...(selected === undefined ? {} : { original: selected.original, resolved: selected.resolved }),
       isChildTranscript: deps.isChildTranscript?.() ?? false,
     })
@@ -214,14 +215,14 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     // (the shared proxy reads the CURRENT value, so it can't detect an in-place
     // rail change). A string compare, so a window-replace new instance with an
     // identical payload still reuses while an in-place change re-parses.
-    const parsedSpanLines = cached && cached.spanLinesRef === message.spanLines
+    const parsedSpanLines = cached && cached.spanLinesRef === selectedMessage.spanLines
       ? cached.parsedSpanLines
-      : parseSpanLines(message.spanLines)
+      : parseSpanLines(selectedMessage.spanLines)
     return {
       ...prepared,
       parsedSpanLines,
       freshness,
-      spanLinesRef: (selected?.message ?? message).spanLines,
+      spanLinesRef: selectedMessage.spanLines,
     }
   }
   /**

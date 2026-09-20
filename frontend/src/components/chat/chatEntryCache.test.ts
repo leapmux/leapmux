@@ -162,6 +162,8 @@ describe('createClassifiedEntryCache', () => {
     createRoot((dispose) => {
       const stale = zcodeScheduledExitPlanMode()
       const selected = zcodeScheduledExitPlanMode('Use the selected supplement')
+      stale.spanLines = '[{"type":"active","span_id":"stale"}]'
+      selected.spanLines = '[{"type":"add"}]'
       const selectedPrepared = prepareMessage(selected)
       const cache = createTestClassifiedEntryCache({
         messages: () => [stale],
@@ -177,6 +179,7 @@ describe('createClassifiedEntryCache', () => {
       const entry = cache.visibleEntries()[0]!
       expect(entry.message).toBe(selected)
       expect(entry.category.kind).toBe('assistant_plan')
+      expect(entry.parsedSpanLines).toEqual([{ type: 'add' }])
       expect(entry.freshness.revisionKey).toContain('|7|1')
       dispose()
     })

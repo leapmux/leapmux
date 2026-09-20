@@ -2,7 +2,13 @@ import type { ClassificationInput } from './providers/registry'
 import type { ResolvedMessageContent, RowExtractionInput } from './rowExtractionTypes'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { acpSpanRole, createACPRelatedMessagesReader } from './providers/acp/spanRole'
+import { claudeRelatedMessages, claudeSpanRole } from './providers/claude/spanRole'
+import { codexRelatedMessages, codexSpanRole } from './providers/codex/spanRole'
+import { copilotRelatedMessages, copilotSpanRole } from './providers/copilot/spanRole'
+import { piRelatedMessages, piSpanRole } from './providers/pi/spanRole'
 import { resolveMessageForRendering } from './providers/registry'
+import { zcodeRelatedMessages, zcodeSpanRole } from './providers/zcode/spanRole'
 
 // The RESOLVED-PAYLOAD boundary, compile-only.
 //
@@ -32,6 +38,32 @@ declare const spanRoleHook: (parsed: ResolvedMessageContent) => string
 // @ts-expect-error The role reader sees the merged payload; a raw parse would pair the span on stale bytes.
 const rawToSpanRole: string = spanRoleHook(RAW)
 void rawToSpanRole
+
+// Raw parses cannot reach an exported transcript hook through a direct import.
+// @ts-expect-error ACP span roles read the merged payload.
+void acpSpanRole(RAW)
+// @ts-expect-error ACP related-message selection reads the merged payload.
+void createACPRelatedMessagesReader()(RAW)
+// @ts-expect-error Claude span roles read the merged payload.
+void claudeSpanRole(RAW)
+// @ts-expect-error Claude related-message selection reads the merged payload.
+void claudeRelatedMessages(RAW)
+// @ts-expect-error Codex span roles read the merged payload.
+void codexSpanRole(RAW)
+// @ts-expect-error Codex related-message selection reads the merged payload.
+void codexRelatedMessages(RAW)
+// @ts-expect-error Copilot span roles read the merged payload.
+void copilotSpanRole(RAW)
+// @ts-expect-error Copilot related-message selection reads the merged payload.
+void copilotRelatedMessages(RAW)
+// @ts-expect-error Pi span roles read the merged payload.
+void piSpanRole(RAW)
+// @ts-expect-error Pi related-message selection reads the merged payload.
+void piRelatedMessages(RAW)
+// @ts-expect-error ZCode span roles read the merged payload.
+void zcodeSpanRole(RAW)
+// @ts-expect-error ZCode related-message selection reads the merged payload.
+void zcodeRelatedMessages(RAW)
 
 // A raw parse cannot reach `extractRow` -- not its payload slot, and not a side.
 // @ts-expect-error Extraction reads the merged payload; a raw parse would extract a row its own category never saw.
