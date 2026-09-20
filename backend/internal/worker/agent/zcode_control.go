@@ -410,12 +410,13 @@ func (a *zcodeAgent) replyZCodeUserInput(id json.RawMessage, behavior string, re
 // answerProviderRuntimeHeaders answers the app-server's request for freshly-minted
 // provider credentials.
 //
-// LeapMux mints none: it reads ZCode's own configuration and forwards the API key it
-// finds there, which the app-server already holds through the provider registry. So
-// the honest answer is "no headers" -- with `authorized` set only when that inline
-// key actually exists, because reporting an authorization LeapMux cannot back would
-// make the app-server retry a request that can never succeed.
+// Legacy builds already hold the inline key from workspace/updateProviderRegistry,
+// so their reply reports authorization only. ZCode 0.16.9 keeps account credentials
+// in the host and requires the key in `requestAuth` for each model request.
 func (a *zcodeAgent) answerProviderRuntimeHeaders(id, params json.RawMessage) {
+	a.mu.Lock()
+	accountConfig := a.accountProviderConfig
+	a.mu.Unlock()
 	var req struct {
 		ProviderID string `json:"providerId"`
 	}
@@ -425,11 +426,31 @@ func (a *zcodeAgent) answerProviderRuntimeHeaders(id, params json.RawMessage) {
 		// `authorized: true` for a provider it holds no credential for, and the turn would
 		// fail later with an authentication error from the model provider instead of here.
 		slog.Warn("zcode provider runtime headers unmarshal failed", "agent_id", a.agentID, "error", err)
-		if err := a.sendZCodeReply(id, map[string]any{
+		var result any = map[string]any{
 			"headers":    map[string]string{},
 			"authorized": false,
 			"error":      "leapmux could not read the provider runtime headers request",
-		}); err != nil {
+		}
+		if accountConfig {
+			result = map[string]any{
+				"headersApplied": false,
+				"errorMessage":   "leapmux could not read the provider runtime headers request",
+			}
+		}
+		if err := a.sendZCodeReply(id, result); err != nil {
+			slog.Warn("zcode provider runtime headers reply failed", "agent_id", a.agentID, "error", err)
+		}
+		return
+	}
+	if accountConfig {
+		apiKey, ok := a.catalog.inlineAPIKey(req.ProviderID)
+		result := map[string]any{"headersApplied": ok}
+		if ok {
+			result["requestAuth"] = map[string]string{"apiKey": apiKey}
+		} else {
+			result["errorMessage"] = fmt.Sprintf("leapmux holds no credential for provider %q; sign in with ZCode again", req.ProviderID)
+		}
+		if err := a.sendZCodeReply(id, result); err != nil {
 			slog.Warn("zcode provider runtime headers reply failed", "agent_id", a.agentID, "error", err)
 		}
 		return
@@ -453,6 +474,18 @@ func (a *zcodeAgent) answerProviderRuntimeHeaders(id, params json.RawMessage) {
 // It is answered rather than ignored: the app-server blocks the tool behind it, and
 // a declared unavailability lets it fall through to the servers it can reach.
 func (a *zcodeAgent) answerOfficialMcpAuthHeaders(id json.RawMessage) {
+	a.mu.Lock()
+	accountConfig := a.accountProviderConfig
+	a.mu.Unlock()
+	if accountConfig {
+		if err := a.sendZCodeReply(id, map[string]any{
+			"ok":     false,
+			"reason": ZCodeOfficialAuthUnavailable,
+		}); err != nil {
+			slog.Warn("zcode official mcp auth reply failed", "agent_id", a.agentID, "error", err)
+		}
+		return
+	}
 	if err := a.sendZCodeReply(id, map[string]any{
 		"status":  ZCodeOfficialAuthUnavailable,
 		"headers": map[string]string{},

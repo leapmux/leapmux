@@ -397,20 +397,21 @@ describe('BackgroundTaskList', () => {
 })
 
 /**
- * The kind tabs. A registry that mixes subagents with background shells reads
- * as one undifferentiated list, and the two are looked for separately: a
- * subagent row is a transcript to open, a shell row is a command to check on.
+ * The kind tabs. A mixed registry reads as one undifferentiated list without
+ * them. A subagent opens a transcript, a shell row reports a command, and a
+ * workflow row reports a multi-agent run.
  */
 describe('BackgroundTaskList kind tabs', () => {
   const mixed = [
     row({ rowKey: 'agent', kind: 'subagent', title: 'Review the diff', childAgentId: 'c1' }),
     row({ rowKey: 'shell', kind: 'shell', title: 'npm test' }),
+    row({ rowKey: 'workflow', kind: 'workflow', title: 'Review pipeline' }),
   ]
 
   it('shows every kind on the All tab', () => {
     const { container, getByTestId } = renderList({ tasks: mixed })
     expect(getByTestId('bg-task-filter-all')).toHaveAttribute('aria-selected', 'true')
-    expect(container.querySelectorAll('[data-testid="bg-task-row"]')).toHaveLength(2)
+    expect(container.querySelectorAll('[data-testid="bg-task-row"]')).toHaveLength(3)
   })
 
   it('shows only subagent rows on the Subagents tab', () => {
@@ -429,6 +430,16 @@ describe('BackgroundTaskList kind tabs', () => {
     expect(rows.map(el => el.getAttribute('data-kind'))).toEqual(['shell'])
   })
 
+  it('shows only workflow rows on the Workflows tab', () => {
+    const { container, getByTestId } = renderList({ tasks: mixed })
+    fireEvent.click(getByTestId('bg-task-filter-workflow'))
+    const rows = [...container.querySelectorAll('[data-testid="bg-task-row"]')]
+    expect(rows.map(el => el.getAttribute('data-kind'))).toEqual(['workflow'])
+    expect(rowsText(container)).toContain('Review pipeline')
+    expect(rows[0]?.tagName).toBe('DIV')
+    expect(rows[0]?.querySelector('svg.lucide-workflow')).not.toBeNull()
+  })
+
   // An empty tab must say so. Rendering nothing leaves a blank box that reads
   // as a rendering fault rather than as "there are none of these".
   it('states that a tab with no rows is empty, per kind', () => {
@@ -439,6 +450,10 @@ describe('BackgroundTaskList kind tabs', () => {
 
     fireEvent.click(getByTestId('bg-task-filter-subagent'))
     expect(container.querySelectorAll('[data-testid="bg-task-row"]')).toHaveLength(1)
+
+    fireEvent.click(getByTestId('bg-task-filter-workflow'))
+    expect(container.querySelectorAll('[data-testid="bg-task-row"]')).toHaveLength(0)
+    expect(rowsText(container)).toBe('No workflows')
   })
 
   it('states that an empty registry is empty on the All tab', () => {

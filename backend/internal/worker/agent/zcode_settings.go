@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,8 +20,7 @@ import (
 var errNoZCodeSession = errors.New("agent has no ZCode session")
 
 // newInvalidZCodeModelError reports a model id the catalog does not hold. The
-// message gives the id, because the usual cause is a model that the user's
-// `~/.zcode/v2/config.json` no longer lists.
+// message gives the id because the usual cause is a stale model selection.
 func newInvalidZCodeModelError(modelID string) error {
 	return fmt.Errorf("ZCode's configuration lists no model %q", modelID)
 }
@@ -89,14 +89,12 @@ func zcodeEffortTier(value, label, description string) *EffortInfo {
 	return &EffortInfo{Id: value, Name: name, Description: description}
 }
 
-// zcodeFallbackModels is the static seed the settings popover shows before an
-// agent runs.
+// zcodeFallbackModels is the static seed that the settings popover shows before
+// an agent runs.
 //
-// It is deliberately EMPTY. Every ZCode model comes from the user's own
-// `~/.zcode/v2/config.json` -- the provider ids, the model ids and the thought
-// levels are all theirs -- so a hardcoded entry would name a model that a given
-// installation does not have, and picking it would fail the launch. An empty
-// catalog renders no model group until the agent reports its real one.
+// It is deliberately empty. ZCode owns the provider ids, model ids, and thought
+// levels. A hardcoded entry can identify a model that the installation does not
+// have. An empty catalog renders no model group until the agent reports one.
 var zcodeFallbackModels []*ModelInfo
 
 // zcodeStaticOptionGroups returns the option groups that do NOT depend on a
@@ -151,6 +149,33 @@ type zcodeThoughtLevelOption struct {
 	Description string `json:"description"`
 }
 
+// zcodeAvailableModel is one live model option in the settings snapshot. The
+// legacy fields stay for older builds. ZCode 0.16.9 nests media support under
+// properties.inputFormat and states every model's reasoning levels here.
+type zcodeAvailableModel struct {
+	Ref            zcodeModelRef `json:"ref"`
+	Label          string        `json:"label"`
+	ProviderLabel  string        `json:"providerLabel"`
+	Description    string        `json:"description"`
+	ContextWindow  int64         `json:"contextWindow"`
+	SupportsImages bool          `json:"supportsImages"`
+	SupportsPdf    bool          `json:"supportsPdf"`
+	DisabledReason string        `json:"disabledReason"`
+	Reasoning      *struct {
+		Levels       []zcodeThoughtLevelOption `json:"levels"`
+		DefaultLevel string                    `json:"defaultLevel"`
+	} `json:"reasoning"`
+	Properties *struct {
+		InputFormat struct {
+			SupportsText  bool `json:"supportsText"`
+			SupportsImage bool `json:"supportsImage"`
+			SupportsVideo bool `json:"supportsVideo"`
+			SupportsAudio bool `json:"supportsAudio"`
+			SupportsPdf   bool `json:"supportsPdf"`
+		} `json:"inputFormat"`
+	} `json:"properties"`
+}
+
 // zcodeSettingsSnapshot is the `settings` object every state-changing session RPC
 // returns, and that the top-level state.updated notification patches.
 //
@@ -158,9 +183,8 @@ type zcodeThoughtLevelOption struct {
 // changed -- an absent axis must leave the agent's value alone, which a value type
 // could not express.
 type zcodeSettingsSnapshot struct {
-	// AppliedProviderRevision echoes the registry revision the session resolved its
-	// credential from. A mismatch with our own revision means the registry push has
-	// not landed yet.
+	// AppliedProviderRevision is the legacy registry revision that supplied the
+	// session credential.
 	AppliedProviderRevision string `json:"appliedProviderRevision"`
 	Mode                    *struct {
 		// Current is the AUTHORITATIVE mode. `session.mode` is the creation-time
@@ -168,18 +192,9 @@ type zcodeSettingsSnapshot struct {
 		Current string `json:"current"`
 	} `json:"mode"`
 	Model *struct {
-		Current   zcodeModelRef `json:"current"`
-		Available []struct {
-			Ref            zcodeModelRef `json:"ref"`
-			Label          string        `json:"label"`
-			ProviderLabel  string        `json:"providerLabel"`
-			Description    string        `json:"description"`
-			ContextWindow  int64         `json:"contextWindow"`
-			SupportsImages bool          `json:"supportsImages"`
-			SupportsPdf    bool          `json:"supportsPdf"`
-			DisabledReason string        `json:"disabledReason"`
-		} `json:"available"`
-		LastUsed *zcodeModelRef `json:"lastUsed"`
+		Current   zcodeModelRef         `json:"current"`
+		Available []zcodeAvailableModel `json:"available"`
+		LastUsed  *zcodeModelRef        `json:"lastUsed"`
 	} `json:"model"`
 	ThoughtLevel *struct {
 		Enabled      bool                      `json:"enabled"`
@@ -207,6 +222,7 @@ func (a *zcodeAgent) applySettingsSnapshotLocked(snap *zcodeSettingsSnapshot) {
 		a.modeObserved = true
 	}
 	if m := snap.Model; m != nil {
+		a.mergeZCodeLiveModelsLocked(m.Available, m.Current)
 		if m.Current.ModelID != "" {
 			a.model = zcodeModelID(m.Current.ProviderID, m.Current.ModelID)
 		} else if ref := m.LastUsed; ref != nil && ref.ModelID != "" && a.model == "" {
@@ -264,20 +280,158 @@ func (a *zcodeAgent) applySettingsSnapshotLocked(snap *zcodeSettingsSnapshot) {
 	}
 }
 
-// zcodeModelsForUI returns the model catalog to surface, with the CURRENT model's
-// effort tiers replaced by the levels the app-server reported for it.
+// mergeZCodeLiveModelsLocked folds a live model list into the catalog cache.
 //
-// The configured `reasoning.variants` are the base list, because they cover every
-// model. The live `settings.thoughtLevel.available` covers only the running model,
-// and where the two disagree the live one is authoritative -- it is what the next
-// setThoughtLevel will accept.
+// ZCode's create snapshot lists all models. A later setModel response can list
+// only the selected model, so an absent entry in a later response does not remove
+// an entry that the running app server already offered.
+func (a *zcodeAgent) mergeZCodeLiveModelsLocked(available []zcodeAvailableModel, current zcodeModelRef) {
+	if len(available) == 0 {
+		return
+	}
+	modalities := make(map[string][]string, len(a.liveModalities)+len(available))
+	for id, values := range a.liveModalities {
+		modalities[id] = slices.Clone(values)
+	}
+	refs := make(map[string]zcodeModelRef, len(a.liveModelRefs)+len(available))
+	for id, ref := range a.liveModelRefs {
+		refs[id] = ref
+	}
+	models := make([]*ModelInfo, 0, len(available)+len(a.liveModels))
+	seen := make(map[string]struct{}, len(available))
+	currentID := zcodeModelID(current.ProviderID, current.ModelID)
+	for _, wire := range available {
+		if wire.Ref.ProviderID == "" || wire.Ref.ModelID == "" {
+			continue
+		}
+		id := zcodeModelID(wire.Ref.ProviderID, wire.Ref.ModelID)
+		info := &ModelInfo{
+			Id:            id,
+			DisplayName:   zcodeModelDisplayName(wire.Label, wire.ProviderLabel),
+			Description:   wire.Description,
+			ContextWindow: wire.ContextWindow,
+			IsDefault:     id == currentID,
+			Hidden:        wire.DisabledReason != "",
+		}
+		if info.DisplayName == "" {
+			info.DisplayName = zcodeModelDisplayName(wire.Ref.ModelID, wire.ProviderLabel)
+		}
+		if wire.Reasoning != nil && len(wire.Reasoning.Levels) > 0 {
+			levels := make([]*EffortInfo, 0, len(wire.Reasoning.Levels))
+			for _, level := range wire.Reasoning.Levels {
+				if level.Value != "" {
+					levels = append(levels, zcodeEffortTier(level.Value, level.Label, level.Description))
+				}
+			}
+			if len(levels) > 0 {
+				info.SupportedEfforts = zcodeEffortsWithAuto(levels)
+				info.DefaultEffort = wire.Reasoning.DefaultLevel
+				if info.DefaultEffort == "" {
+					info.DefaultEffort = EffortAuto
+				}
+			}
+		}
+		input := []string{zcodeModalityText}
+		if wire.Properties != nil {
+			input = input[:0]
+			formats := wire.Properties.InputFormat
+			if formats.SupportsText {
+				input = append(input, zcodeModalityText)
+			}
+			if formats.SupportsImage {
+				input = append(input, zcodeModalityImage)
+			}
+			if formats.SupportsPdf {
+				input = append(input, zcodeModalityPDF)
+			}
+			if formats.SupportsVideo {
+				input = append(input, "video")
+			}
+			if formats.SupportsAudio {
+				input = append(input, "audio")
+			}
+		} else {
+			if wire.SupportsImages {
+				input = append(input, zcodeModalityImage)
+			}
+			if wire.SupportsPdf {
+				input = append(input, zcodeModalityPDF)
+			}
+		}
+		models = append(models, info)
+		modalities[id] = input
+		refs[id] = wire.Ref
+		seen[id] = struct{}{}
+	}
+	for _, model := range a.liveModels {
+		if model == nil {
+			continue
+		}
+		if _, ok := seen[model.Id]; ok {
+			continue
+		}
+		clone := *model
+		clone.IsDefault = clone.Id == currentID
+		models = append(models, &clone)
+	}
+	a.liveModels = models
+	a.liveModelRefs = refs
+	a.liveModalities = modalities
+}
+
+// resolveZCodeModelIDLocked resolves a model against the live catalog first and
+// then the legacy configuration. Caller holds a.mu.
+func (a *zcodeAgent) resolveZCodeModelIDLocked(model string) (string, bool) {
+	model = normalizeZCodeModelID(model)
+	if model == "" {
+		return "", false
+	}
+	if a.accountProviderConfig {
+		if providerID, modelID, ok := splitZCodeModelID(model); ok {
+			if accountID, mapped := a.catalog.accountProviderID(providerID); mapped {
+				model = zcodeModelID(accountID, modelID)
+			}
+		}
+	}
+	if _, ok := a.liveModelRefs[model]; ok {
+		return model, true
+	}
+	if _, _, composite := splitZCodeModelID(model); !composite {
+		for _, info := range a.liveModels {
+			if _, modelID, ok := splitZCodeModelID(info.GetId()); ok && modelID == model {
+				return info.GetId(), true
+			}
+		}
+	}
+	return a.catalog.resolveModelID(model)
+}
+
+// zcodeDefaultThoughtLevelLocked returns the live model default when available.
+// Caller holds a.mu.
+func (a *zcodeAgent) zcodeDefaultThoughtLevelLocked(modelID string) string {
+	for _, model := range a.liveModels {
+		if model.GetId() == modelID {
+			return model.DefaultEffort
+		}
+	}
+	return a.catalog.defaultThoughtLevel(modelID)
+}
+
+// zcodeModelsForUI returns the live model catalog when the app server supplied
+// one. It falls back to the legacy desktop configuration.
+//
+// The live thought-level axis covers only the running model. It replaces that
+// model's levels because it is what the next setThoughtLevel request accepts.
 func (a *zcodeAgent) zcodeModelsForUI() ([]*ModelInfo, string, string) {
 	a.mu.Lock()
 	current, level := a.model, a.thoughtLevel
 	observed, observedDefault := a.observedThoughtLevels, a.observedThoughtDefault
+	models := a.catalog.Models
+	if len(a.liveModels) > 0 {
+		models = slices.Clone(a.liveModels)
+	}
 	a.mu.Unlock()
 
-	models := a.catalog.Models
 	if len(observed) == 0 || current == "" {
 		return models, current, level
 	}
@@ -322,40 +476,53 @@ func (a *zcodeAgent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 // applyZCodeModel pins the session's model and reports what the app-server settled
 // on.
 //
-// The runtimeModel overlay carries the provider entry WITH its inline API key, so
-// the switch resolves a credential immediately instead of racing the workspace-scoped
-// registry push.
+// Legacy builds receive a runtimeModel overlay with the inline key. ZCode 0.16.9
+// owns the provider registry and strictly refuses that field, so its request carries
+// only the model reference.
 func (a *zcodeAgent) applyZCodeModel(modelID string, timeout time.Duration) error {
-	resolved, ok := a.catalog.resolveModelID(modelID)
+	a.mu.Lock()
+	resolved, ok := a.resolveZCodeModelIDLocked(modelID)
+	sessionID, level := a.sessionID, a.thoughtLevel
+	accountConfig := a.accountProviderConfig
+	ref := a.liveModelRefs[resolved]
+	defaultLevel := a.zcodeDefaultThoughtLevelLocked(resolved)
+	a.mu.Unlock()
 	if !ok {
 		return newInvalidZCodeModelError(modelID)
 	}
-	a.mu.Lock()
-	sessionID, level := a.sessionID, a.thoughtLevel
-	a.mu.Unlock()
 	if sessionID == "" {
 		return errNoZCodeSession
 	}
 
-	overlay, ok := a.catalog.runtimeModelFor(resolved, a.registryRevision, time.Now().UnixMilli())
-	if !ok {
-		return newInvalidZCodeModelError(modelID)
-	}
-	// A concrete level rides along so a model switch does not drop it. Auto resolves
-	// to the model's OWN declared default, because a session that is told no level at
-	// all runs on the app-server's fallback -- the lowest level, not the default the
-	// model declares.
-	if level != "" && level != EffortAuto {
-		overlay.ThoughtLevel = level
+	var params map[string]any
+	if accountConfig {
+		if ref.ModelID == "" {
+			providerID, providerModelID, valid := splitZCodeModelID(resolved)
+			if !valid {
+				return newInvalidZCodeModelError(modelID)
+			}
+			ref = zcodeModelRef{ProviderID: providerID, ModelID: providerModelID}
+		}
+		params = map[string]any{"sessionId": sessionID, "model": ref}
 	} else {
-		overlay.ThoughtLevel = a.catalog.defaultThoughtLevel(resolved)
+		overlay, found := a.catalog.runtimeModelFor(resolved, a.registryRevision, time.Now().UnixMilli())
+		if !found {
+			return newInvalidZCodeModelError(modelID)
+		}
+		// A concrete level rides along so a legacy model switch does not drop it.
+		if level != "" && level != EffortAuto {
+			overlay.ThoughtLevel = level
+		} else {
+			overlay.ThoughtLevel = defaultLevel
+		}
+		params = map[string]any{
+			"sessionId":    sessionID,
+			"model":        overlay.Model,
+			"runtimeModel": overlay,
+		}
 	}
 
-	raw, err := a.sendZCodeRequest(ZCodeMethodSetModel, map[string]any{
-		"sessionId":    sessionID,
-		"model":        overlay.Model,
-		"runtimeModel": overlay,
-	}, timeout)
+	raw, err := a.sendZCodeRequest(ZCodeMethodSetModel, params, timeout)
 	if err != nil {
 		return err
 	}

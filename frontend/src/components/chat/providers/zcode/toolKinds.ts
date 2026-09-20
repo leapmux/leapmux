@@ -57,6 +57,18 @@ const ZCODE_TOOL_KINDS: ReadonlyMap<string, ToolKind> = new Map<string, ToolKind
   [ZCODE_TOOL.CronUpdate, 'trigger'],
   [ZCODE_TOOL.CronDelete, 'trigger'],
   [ZCODE_TOOL.Skill, 'skill'],
+  // Dynamic workflows are background tasks. Their management helpers use the
+  // same task card. The snippet tool uses the execution card.
+  [ZCODE_TOOL.CreateWorkflow, 'task'],
+  [ZCODE_TOOL.AmendWorkflow, 'task'],
+  [ZCODE_TOOL.SaveWorkflow, 'task'],
+  [ZCODE_TOOL.ListWorkflowRuns, 'task'],
+  [ZCODE_TOOL.GetWorkflowRun, 'task'],
+  [ZCODE_TOOL.ResumeWorkflowRun, 'task'],
+  [ZCODE_TOOL.ListSavedWorkflows, 'task'],
+  [ZCODE_TOOL.ListModels, 'task'],
+  [ZCODE_TOOL.EvalWorkflowSnippet, 'execute'],
+  [ZCODE_TOOL.ResolveWorkflowQuestion, 'task'],
 ])
 
 /** The kind of one ZCode tool. An empty name states no kind; an unknown one is uncategorized. */

@@ -578,7 +578,7 @@ CREATE TABLE agent_background_tasks (
     owner_agent_id  TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE, -- ROOT main agent
     row_key         TEXT NOT NULL,  -- provider linkage key (tool_use id / thread id / session id / task id)
     seq             INTEGER NOT NULL,
-    kind            INTEGER NOT NULL CHECK (kind BETWEEN 1 AND 2), -- BackgroundTaskKind ordinal (SUBAGENT | SHELL)
+    kind            INTEGER NOT NULL CHECK (kind BETWEEN 1 AND 3), -- BackgroundTaskKind ordinal (SUBAGENT | SHELL | WORKFLOW)
     child_agent_id  TEXT NOT NULL DEFAULT '', -- set for subagent rows that own a transcript
     parent_agent_id TEXT NOT NULL DEFAULT '', -- immediate parent agent id ('' == the owner itself)
     group_key       TEXT NOT NULL DEFAULT '', -- workflow/phase grouping key

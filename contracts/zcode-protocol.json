@@ -95,7 +95,17 @@
     "CronCreate": "CronCreate",
     "CronList": "CronList",
     "CronUpdate": "CronUpdate",
-    "CronDelete": "CronDelete"
+    "CronDelete": "CronDelete",
+    "CreateWorkflow": "CreateWorkflow",
+    "AmendWorkflow": "AmendWorkflow",
+    "SaveWorkflow": "SaveWorkflow",
+    "ListSavedWorkflows": "ListSavedWorkflows",
+    "ListModels": "ListModels",
+    "EvalWorkflowSnippet": "EvalWorkflowSnippet",
+    "ListWorkflowRuns": "ListWorkflowRuns",
+    "GetWorkflowRun": "GetWorkflowRun",
+    "ResumeWorkflowRun": "ResumeWorkflowRun",
+    "ResolveWorkflowQuestion": "ResolveWorkflowQuestion"
   },
   "modes": {
     "Plan": "plan",

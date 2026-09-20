@@ -46,6 +46,12 @@ const (
 	// `node:sqlite`, so an override that cannot work fails at launch resolution instead
 	// of two RPCs later.
 	zcodeNodeEnvOverride = "LEAPMUX_ZCODE_NODE"
+
+	// These are ZCode's own process-level provider configuration overrides. ZCode
+	// 0.16.9 requires them for the desktop bundle because its script-local fallback
+	// paths do not point at the file that the application ships.
+	zcodeBuiltinProviderConfigEnv  = "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE"
+	zcodePersonalProviderConfigEnv = "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE"
 )
 
 // zcodeBinaryCandidates is the PATH name probed in step 2 above. It is registered with the
@@ -173,7 +179,11 @@ func resolveZCodeLaunchWith(
 	// 2. A `zcode` launcher on PATH.
 	onPath := deps.probeName(ctx, shellPath, loginShell, zcodeBinaryCandidates[0])
 	if onPath == probeYes {
-		return launchSpec{Program: zcodeBinaryCandidates[0]}, launchFound
+		spec := launchSpec{Program: zcodeBinaryCandidates[0]}
+		if script, found := findZCodeScript(deps.fileExists); found {
+			spec.Env = zcodeProviderConfigEnv(script, deps)
+		}
+		return spec, launchFound
 	}
 
 	// 3. The bundled script plus an interpreter that has node:sqlite.
@@ -226,7 +236,13 @@ func resolveZCodeInterpreter(
 	deps zcodeResolveDeps,
 	sawInconclusive bool,
 ) (launchSpec, launchResolution) {
-	search := zcodeInterpreterSearch{ctx: ctx, script: script, deps: deps, sawInconclusive: sawInconclusive}
+	search := zcodeInterpreterSearch{
+		ctx:             ctx,
+		script:          script,
+		deps:            deps,
+		sawInconclusive: sawInconclusive,
+		launchEnv:       zcodeProviderConfigEnv(script, deps),
+	}
 
 	if node := strings.TrimSpace(deps.getenv(zcodeNodeEnvOverride)); node != "" {
 		if spec, ok := search.try(zcodeInterpreter{program: node}); ok {
@@ -269,16 +285,20 @@ type zcodeInterpreterSearch struct {
 	script          string
 	deps            zcodeResolveDeps
 	sawInconclusive bool
+	launchEnv       []string
 }
 
 func (s *zcodeInterpreterSearch) try(candidates ...zcodeInterpreter) (launchSpec, bool) {
 	for _, c := range candidates {
 		res := s.deps.probeInterpreter(s.ctx, c.program, c.env)
 		if res == probeYes {
+			env := make([]string, 0, len(c.env)+len(s.launchEnv))
+			env = append(env, c.env...)
+			env = append(env, s.launchEnv...)
 			return launchSpec{
 				Program:    c.program,
 				PrefixArgs: []string{s.script},
-				Env:        c.env,
+				Env:        env,
 			}, true
 		}
 		if !res.settled() {
@@ -286,6 +306,56 @@ func (s *zcodeInterpreterSearch) try(candidates ...zcodeInterpreter) (launchSpec
 		}
 	}
 	return launchSpec{}, false
+}
+
+// zcodeProviderConfigEnv returns the provider paths that make the Node bundle
+// use the files that ZCode installed.
+//
+// ZCode 0.16.9 checks `<glm>/provider` and a five-parent fallback. The macOS
+// application ships the release at `<Resources>/config/provider`, so neither
+// check can succeed. Setting both paths also stops the CLI from copying the
+// built-in release to a versioned runtime path. The stable source path lets the
+// account-provider handshake identify the same built-in revision later.
+func zcodeProviderConfigEnv(script string, deps zcodeResolveDeps) []string {
+	builtin := strings.TrimSpace(deps.getenv(zcodeBuiltinProviderConfigEnv))
+	if builtin == "" {
+		var ok bool
+		builtin, ok = findZCodeBuiltinProviderConfig(script, deps.fileExists)
+		if !ok {
+			return nil
+		}
+	}
+	env := []string{zcodeBuiltinProviderConfigEnv + "=" + builtin}
+	if personal := strings.TrimSpace(deps.getenv(zcodePersonalProviderConfigEnv)); personal != "" {
+		return append(env, zcodePersonalProviderConfigEnv+"="+personal)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return env
+	}
+	return append(env, zcodePersonalProviderConfigEnv+"="+
+		filepath.Join(home, ".zcode", "v2", "provider_config.json"))
+}
+
+// findZCodeBuiltinProviderConfig returns the first installed provider release.
+func findZCodeBuiltinProviderConfig(script string, exists func(string) bool) (string, bool) {
+	for _, path := range zcodeBuiltinProviderConfigCandidates(script) {
+		if exists(path) {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+// zcodeBuiltinProviderConfigCandidates covers both layouts that the Node bundle
+// can use and the sibling `config` layout that ZCode 3.14.0 installs.
+func zcodeBuiltinProviderConfigCandidates(script string) []string {
+	dir := filepath.Dir(script)
+	return []string{
+		filepath.Join(dir, "provider", "zcode-builtin.json"),
+		filepath.Join(filepath.Dir(dir), "config", "provider", "zcode-builtin.json"),
+		filepath.Clean(filepath.Join(dir, "..", "..", "..", "..", "..", "config", "provider", "zcode-builtin.json")),
+	}
 }
 
 // result is the verdict once no candidate worked. An inconclusive probe anywhere makes the

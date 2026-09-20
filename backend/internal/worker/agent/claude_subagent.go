@@ -45,11 +45,10 @@ func claudeToolSpawnsSubagent(toolName string) bool {
 }
 
 // The task_type values a Claude task_started event carries. local_bash is a
-// shell, which is NOT the same as a BACKGROUNDED shell; local_agent is a Task
-// subagent; local_workflow is a Workflow run. Only local_bash is NOT a spawn, so
-// the code tests for that one and treats every other value -- including one this
-// list does not carry -- as a spawn that owns no span and gets a child
-// transcript.
+// shell, which is not the same as a backgrounded shell. local_agent is a Task
+// subagent, and local_workflow is a Workflow run. A shell keeps its tool span.
+// Every other type gives the span back. A workflow owns no child transcript,
+// while an agent or an unknown spawn type does.
 //
 // A foreground shell reports local_bash too, once the command runs for 2
 // seconds. claudeHandleTaskEvent gives the mechanism and says why the registry
@@ -90,7 +89,7 @@ type claudeTaskUsage struct {
 // event was consumed (so the caller skips the normal persist path); false for
 // any non-task system line so it falls through unchanged.
 //
-// Findings (Claude 2.1.220, --forward-subagent-text):
+// Findings (Claude 2.1.220 live probes; 2.1.277 bundle and launch checks):
 //   - task_started {task_id, tool_use_id, task_type, description, workflow_name?}
 //     fires for Task subagents (local_agent), shells (local_bash, foreground
 //     ones included), and Workflow runs (local_workflow).
@@ -193,8 +192,11 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	restart := a.restartEvidenceFor(ev)
 
 	startedKind := bgtask.KindSubagent
-	if ev.TaskType == claudeTaskTypeBash {
+	switch ev.TaskType {
+	case claudeTaskTypeBash:
 		startedKind = bgtask.KindShell
+	case claudeTaskTypeWorkflow:
+		startedKind = bgtask.KindWorkflow
 	}
 	// The span every forwarded envelope of THIS run carries, which is what the
 	// tool_use index has to hold. On a first start the event's own tool_use_id is

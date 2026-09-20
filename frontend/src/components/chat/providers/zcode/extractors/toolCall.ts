@@ -335,7 +335,9 @@ export const ZCODE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ZCodeToolFacts> 
   execute: (args, facts): ToolRequestByKind['execute'] => {
     const description = pickString(args, 'description')
     return {
-      command: pickString(args, 'command'),
+      command: facts.toolName === ZCODE_TOOL.EvalWorkflowSnippet
+        ? pickString(args, 'code') || pickString(args, 'path')
+        : pickString(args, 'command'),
       ...(ZCODE_SANDBOX_TOOLS.has(facts.toolName) ? { language: 'javascript' } : {}),
       ...(description ? { description } : {}),
     }
@@ -372,8 +374,16 @@ export const ZCODE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ZCodeToolFacts> 
   // other stops it. The shared entry answers `other` for every call.
   task: (args, facts): ToolRequestByKind['task'] => {
     const taskId = pickString(args, 'task_id') || pickString(args, 'taskId')
+      || pickString(args, 'run_id') || pickString(args, 'question_id') || pickString(args, 'name')
+    const listsWorkflows = facts.toolName === ZCODE_TOOL.ListSavedWorkflows
+      || facts.toolName === ZCODE_TOOL.ListModels
+      || facts.toolName === ZCODE_TOOL.ListWorkflowRuns
     return {
-      action: facts.displayHint === ZCODE_DISPLAY.TaskStop ? 'stop' : facts.displayHint === ZCODE_DISPLAY.TaskOutput ? 'output' : 'other',
+      action: facts.displayHint === ZCODE_DISPLAY.TaskStop
+        ? 'stop'
+        : facts.displayHint === ZCODE_DISPLAY.TaskOutput
+          ? 'output'
+          : listsWorkflows ? 'list' : 'other',
       ...(taskId ? { taskId } : {}),
     }
   },

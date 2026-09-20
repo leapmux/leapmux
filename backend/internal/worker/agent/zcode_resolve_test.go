@@ -172,6 +172,32 @@ func TestResolveZCodeLaunch_BundledRuntimeIsPreferredOverPathNode(t *testing.T) 
 		"a complete installation spawns ONE subprocess and never touches the shell")
 }
 
+// ZCode 0.16.9 moved the built-in provider release beside `glm`, while its CLI
+// still searches only below `glm` and at a path that resolves from the filesystem
+// root. The launcher must state the real file explicitly. It must also state the
+// personal file, because the CLI skips the broken discovery only when both paths
+// are present.
+func TestResolveZCodeLaunch_BundledScriptCarriesProviderConfigPaths(t *testing.T) {
+	t.Parallel()
+
+	stub := newZCodeStubDeps()
+	script, bundled := zcodeStubScript()
+	require.NotEmpty(t, bundled)
+	config := filepath.Join(filepath.Dir(filepath.Dir(script)), "config", "provider", "zcode-builtin.json")
+	stub.files[script] = true
+	stub.files[config] = true
+	stub.files[bundled[0]] = true
+	stub.interpreters[bundled[0]] = probeYes
+
+	spec, res := stub.resolve(t)
+	require.Equal(t, launchFound, res)
+	assert.Contains(t, spec.Env, "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE="+config)
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	assert.Contains(t, spec.Env, "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE="+
+		filepath.Join(home, ".zcode", "v2", "provider_config.json"))
+}
+
 // An installation whose runtime was stripped still launches through a `node` from the
 // LOGIN shell -- where a version manager's node lives, which the worker's own environment
 // does not have.

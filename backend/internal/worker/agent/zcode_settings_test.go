@@ -84,6 +84,67 @@ func TestApplySettingsSnapshot_ReadsTheAuthoritativeCurrentFields(t *testing.T) 
 		"auto leads the list as the send-nothing sentinel, then the levels strongest first -- the same order the configured catalog uses, so the menu does not reorder itself when the first snapshot lands")
 }
 
+func TestApplySettingsSnapshot_BuildsTheCurrentProtocolModelCatalog(t *testing.T) {
+	t.Parallel()
+
+	a := newZCodeTestAgent(t, &recordingControlSink{})
+	a.mu.Lock()
+	a.accountProviderConfig = true
+	a.mu.Unlock()
+	zcodeApplySettings(t, a, `{
+      "model": {
+        "current": {"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3"},
+        "available": [
+          {
+            "ref":{"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3"},
+            "label":"GLM-5.3", "providerLabel":"Z.AI Individual Coding Plan",
+            "contextWindow":200000,
+            "reasoning":{"levels":[{"value":"low","label":"low"},{"value":"max","label":"max"}],"defaultLevel":"max"},
+            "properties":{"inputFormat":{"supportsText":true,"supportsImage":false,"supportsVideo":false,"supportsAudio":false,"supportsPdf":false}}
+          },
+          {
+            "ref":{"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3-Flash"},
+            "label":"GLM-5.3 Flash", "providerLabel":"Z.AI Individual Coding Plan",
+            "contextWindow":128000,
+            "properties":{"inputFormat":{"supportsText":true,"supportsImage":true,"supportsVideo":true,"supportsAudio":false,"supportsPdf":false}}
+          }
+        ]
+      },
+      "thoughtLevel":{"enabled":true,"current":"max","available":[{"value":"low"},{"value":"max"}]}
+    }`)
+
+	models, current, effort := a.zcodeModelsForUI()
+	require.Len(t, models, 2)
+	assert.Equal(t, "account:zai-individual-coding-plan/GLM-5.3", current)
+	assert.Equal(t, "max", effort)
+	assert.Equal(t, "GLM-5.3 (Z.AI Individual Coding Plan)", models[0].DisplayName)
+	assert.Equal(t, []string{EffortAuto, "max", "low"}, effortIDs(models[0].SupportedEfforts))
+	assert.Equal(t, int64(200000), models[0].ContextWindow)
+
+	a.mu.Lock()
+	resolved, ok := a.resolveZCodeModelIDLocked("builtin:zai-coding-plan/GLM-5.3-Flash")
+	flashModalities := a.liveModalities["account:zai-individual-coding-plan/GLM-5.3-Flash"]
+	a.mu.Unlock()
+	assert.True(t, ok)
+	assert.Equal(t, "account:zai-individual-coding-plan/GLM-5.3-Flash", resolved)
+	assert.Contains(t, flashModalities, zcodeModalityImage)
+
+	// A setModel response can narrow `available` to the selected model. It must not
+	// erase the sibling that the create snapshot already offered.
+	zcodeApplySettings(t, a, `{
+      "model": {
+        "current": {"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3"},
+        "available": [{
+          "ref":{"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3"},
+          "label":"GLM-5.3", "providerLabel":"Z.AI Individual Coding Plan",
+          "properties":{"inputFormat":{"supportsText":true,"supportsImage":false,"supportsVideo":false,"supportsAudio":false,"supportsPdf":false}}
+        }]
+      }
+    }`)
+	models, _, _ = a.zcodeModelsForUI()
+	assert.Len(t, models, 2)
+}
+
 // The two lists of levels are built in two places -- the configured catalog
 // (zcodeModelInfo) and this snapshot -- and the second REPLACES the first for the
 // running model. Ordered differently, the menu would reorder itself the moment
@@ -584,6 +645,38 @@ func TestApplyZCodeModel_OverlayCarriesTheLevelAndAutoResolvesTheDefault(t *test
 			assert.Equal(t, "zai-key", params.RuntimeModel.Provider.APIKey.Value)
 		})
 	}
+}
+
+func TestApplyZCodeModel_AccountConfigOmitsTheLegacyRuntimeModel(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, &recordingControlSink{}, stdin)
+	a.mu.Lock()
+	a.accountProviderConfig = true
+	a.mu.Unlock()
+	zcodeApplySettings(t, a, `{
+      "model": {
+        "current":{"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3"},
+        "available":[{
+          "ref":{"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3"},
+          "label":"GLM-5.3", "providerLabel":"Z.AI Individual Coding Plan",
+          "properties":{"inputFormat":{"supportsText":true,"supportsImage":false,"supportsVideo":false,"supportsAudio":false,"supportsPdf":false}}
+        }]
+      }
+    }`)
+
+	a.cancel()
+	_ = a.applyZCodeModel("builtin:zai-coding-plan/GLM-5.3", 0)
+
+	requests := stdin.Requests(t)
+	require.Len(t, requests, 1)
+	var params map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
+	assert.NotContains(t, params, "runtimeModel", "ZCode 0.16.9 rejects this legacy field")
+	var model zcodeModelRef
+	require.NoError(t, json.Unmarshal(params["model"], &model))
+	assert.Equal(t, zcodeModelRef{ProviderID: "account:zai-individual-coding-plan", ModelID: "GLM-5.3"}, model)
 }
 
 // A model that declares NO default level gets no level: the overlay must not invent

@@ -2,6 +2,8 @@ package agent
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -9,6 +11,85 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestZCodeProviderSetupFallsBackToAccountConfig(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, &recordingControlSink{}, stdin)
+	a.catalog = zcodeTestCatalog(t, `{
+      "provider": {
+        "builtin:zai-coding-plan": {
+          "kind": "anthropic", "enabled": true,
+          "options": {"apiKey": "plan-key"},
+          "models": {"GLM-5.3": {}}
+        }
+      }
+    }`)
+	a.registryRevision = "leapmux-test"
+	a.builtinProviderConfigPath = filepath.Join(t.TempDir(), "zcode-builtin.json")
+	require.NoError(t, os.WriteFile(a.builtinProviderConfigPath, []byte(`{"revision":30}`), 0o600))
+
+	refuseZCodeRequest(t, a, stdin, ZCodeMethodUpdateProviderRegistry,
+		ZCodeErrMethodNotFound, "Method not found")
+	answerZCodeRequest(t, a, stdin, ZCodeMethodUpdateAccountConfig,
+		`{"receivedRevision":"leapmux-test","providerCount":1,"status":"received"}`)
+
+	require.NoError(t, a.pushProviderRegistry(zcodeTestRPCTimeout))
+	a.mu.Lock()
+	accountConfig := a.accountProviderConfig
+	a.mu.Unlock()
+	assert.True(t, accountConfig)
+	requests := stdin.Requests(t)
+	require.Len(t, requests, 2)
+	assert.Equal(t, ZCodeMethodUpdateProviderRegistry, requests[0].Method)
+	assert.Equal(t, ZCodeMethodUpdateAccountConfig, requests[1].Method)
+	var params zcodeAccountProviderPayload
+	require.NoError(t, json.Unmarshal(requests[1].Params, &params))
+	assert.Contains(t, params.Providers, "account:zai-individual-coding-plan")
+}
+
+func TestZCodeProviderSetupRejectsAMismatchedAccountRevision(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, &recordingControlSink{}, stdin)
+	a.catalog = zcodeTestCatalog(t, `{
+      "provider": {
+        "builtin:zai-coding-plan": {
+          "kind": "anthropic", "enabled": true,
+          "options": {"apiKey": "plan-key"},
+          "models": {"GLM-5.3": {}}
+        }
+      }
+    }`)
+	a.registryRevision = "leapmux-test"
+	a.builtinProviderConfigPath = filepath.Join(t.TempDir(), "zcode-builtin.json")
+	require.NoError(t, os.WriteFile(a.builtinProviderConfigPath, []byte(`{"revision":30}`), 0o600))
+
+	refuseZCodeRequest(t, a, stdin, ZCodeMethodUpdateProviderRegistry,
+		ZCodeErrMethodNotFound, "Method not found")
+	answerZCodeRequest(t, a, stdin, ZCodeMethodUpdateAccountConfig,
+		`{"receivedRevision":"another-revision","providerCount":1,"status":"received"}`)
+
+	err := a.pushProviderRegistry(zcodeTestRPCTimeout)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `returned revision "another-revision"`)
+	a.mu.Lock()
+	accountConfig := a.accountProviderConfig
+	a.mu.Unlock()
+	assert.False(t, accountConfig)
+}
+
+func TestZCodeLaunchEnvValueTakesTheFinalDuplicate(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "/new", zcodeLaunchEnvValue([]string{
+		"PATH=/bin",
+		zcodeBuiltinProviderConfigEnv + "=/old",
+		zcodeBuiltinProviderConfigEnv + "=/new",
+	}, zcodeBuiltinProviderConfigEnv))
+}
 
 func TestZCodeInterrupt_IdleIsANoop(t *testing.T) {
 	t.Parallel()
@@ -355,6 +436,62 @@ func TestZCodeOpenSession_WithoutAHandleGoesStraightToCreate(t *testing.T) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	assert.Equal(t, "sess-new", a.sessionID)
+}
+
+func TestZCodeOpenSession_AccountConfigEnablesDynamicWorkflows(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, &recordingControlSink{}, stdin)
+	a.catalog = zcodeTestCatalog(t, `{
+      "provider": {
+        "builtin:zai-coding-plan": {
+          "kind": "anthropic", "enabled": true,
+          "options": {"apiKey": "plan-key"},
+          "models": {"GLM-5.3": {}}
+        }
+      }
+    }`)
+	a.mu.Lock()
+	a.accountProviderConfig = true
+	a.sessionID = ""
+	a.model = "builtin:zai-coding-plan/GLM-5.3"
+	a.mu.Unlock()
+
+	answerZCodeRequest(t, a, stdin, ZCodeMethodSessionCreate,
+		`{"session":{"sessionId":"sess-new"},"runtime":{"eventSeq":0}}`)
+	require.NoError(t, a.openSession("", zcodeTestRPCTimeout))
+
+	requests := stdin.Requests(t)
+	require.Len(t, requests, 1)
+	var params map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
+	var dynamicWorkflowEnabled bool
+	require.NoError(t, json.Unmarshal(params["dynamicWorkflowEnabled"], &dynamicWorkflowEnabled))
+	assert.True(t, dynamicWorkflowEnabled)
+	assert.NotContains(t, params, "model", "the live account snapshot decides whether the provider is an individual or a team plan")
+}
+
+func TestZCodeResumeSession_AccountConfigEnablesDynamicWorkflows(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, &recordingControlSink{}, stdin)
+	a.mu.Lock()
+	a.accountProviderConfig = true
+	a.mu.Unlock()
+
+	answerZCodeRequest(t, a, stdin, ZCodeMethodSessionResume,
+		`{"session":{"sessionId":"sess-existing"},"runtime":{"eventSeq":4}}`)
+	require.NoError(t, a.openSession("sess-existing", zcodeTestRPCTimeout))
+
+	requests := stdin.Requests(t)
+	require.Len(t, requests, 1)
+	var params map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
+	var enabled bool
+	require.NoError(t, json.Unmarshal(params["dynamicWorkflowEnabled"], &enabled))
+	assert.True(t, enabled)
 }
 
 // A create that produces no session is fatal, unlike a resume that fails: Start

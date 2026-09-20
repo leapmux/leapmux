@@ -309,6 +309,40 @@ func TestClaude_TaskNotificationWithOutputFileKeepsTheShellKind(t *testing.T) {
 	assert.Equal(t, bgtask.KindShell, tasks[0].Kind)
 }
 
+// A dynamic workflow uses the same final notification path. The notification
+// carries no task_type, so the task index must preserve the workflow kind.
+func TestClaude_TaskNotificationWithOutputFileKeepsTheWorkflowKind(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_started",
+		"task_id": "workflow-1",
+		"tool_use_id": "tu-workflow",
+		"task_type": "local_workflow",
+		"workflow_name": "probe",
+		"description": "Protocol probe"
+	}`))
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_notification",
+		"task_id": "workflow-1",
+		"tool_use_id": "tu-workflow",
+		"status": "stopped",
+		"output_file": "/tmp/workflow-1.log",
+		"summary": "Protocol probe"
+	}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.KindWorkflow, tasks[0].Kind)
+	assert.Equal(t, bgtask.StatusStopped, tasks[0].Status)
+	assert.Equal(t, "/tmp/workflow-1.log", tasks[0].Description)
+	assert.Empty(t, tasks[0].ChildAgentID)
+}
+
 // background_tasks_changed is a LEVEL signal with replace semantics: it lists
 // the tasks the CLI counts as live BACKGROUND work, and it drops a task whose
 // isBackgrounded is false. A foreground shell -- which the CLI registers as a
@@ -772,11 +806,15 @@ func TestClaude_WorkflowTaskStartedWithoutToolUseIDClosesNothing(t *testing.T) {
 		"type": "system",
 		"subtype": "task_started",
 		"task_id": "task-wf",
-		"task_type": "local_workflow",
-		"workflow_name": "review"
+		"task_type": "local_workflow"
 	}`))
 
 	assert.Empty(t, sink.ClosedSpans())
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.KindWorkflow, tasks[0].Kind)
+	assert.Empty(t, tasks[0].GroupKey, "a workflow name is optional")
+	assert.Empty(t, tasks[0].ChildAgentID)
 }
 
 // The child transcript reserves its tool_use color under the SPAWN span, not at

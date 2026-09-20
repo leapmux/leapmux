@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -119,7 +120,16 @@ func (a *zcodeAgent) checkZCodeImageSupport(model string, attachment classifiedA
 		// would not be.
 		return nil
 	}
-	if a.catalog.acceptsInputModality(model, zcodeModalityImage) {
+	a.mu.Lock()
+	declared, live := a.liveModalities[normalizeZCodeModelID(model)]
+	a.mu.Unlock()
+	accepts := false
+	if live {
+		accepts = slices.Contains(declared, zcodeModalityImage)
+	} else {
+		accepts = a.catalog.acceptsInputModality(model, zcodeModalityImage)
+	}
+	if accepts {
 		return nil
 	}
 	return fmt.Errorf("the ZCode model %s does not accept image attachments (%s); choose a model that declares image input",

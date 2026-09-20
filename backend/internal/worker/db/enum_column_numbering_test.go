@@ -89,8 +89,8 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 		},
 		{
 			column:       "agent_background_tasks.kind",
-			check:        "CHECK (kind BETWEEN 1 AND 2)",
-			lastAccepted: int32(leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL),
+			check:        "CHECK (kind BETWEEN 1 AND 3)",
+			lastAccepted: int32(leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_WORKFLOW),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.BackgroundTaskKind_name),
 		},
 		{

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -8,22 +9,23 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
-// ZCode's credentials and model catalog live in the desktop application's own
-// configuration file, `~/.zcode/v2/config.json`. The app-server holds none of its
-// own: the desktop application pushes them with workspace/updateProviderRegistry
-// before it creates a session, and without that push every turn fails with
-// `provider_not_configured`.
+// ZCode's legacy credentials and model catalog live in the desktop application's
+// `~/.zcode/v2/config.json`. Builds before 0.16.9 receive that catalog through
+// workspace/updateProviderRegistry. ZCode 0.16.9 loads its built-in and personal
+// catalogs itself, while the host supplies account entitlement and request auth.
 //
-// This file READS that configuration and translates it into the two payloads the
-// app-server accepts. LeapMux never writes it: it is another application's file,
-// and a user who changes a provider in ZCode must not find the change reverted.
+// This file reads that configuration and translates it into both protocol forms.
+// LeapMux never writes it because ZCode owns the file.
 
 // zcodeConfigRelPath is the configuration file's path under the user's home
 // directory.
 var zcodeConfigRelPath = []string{".zcode", "v2", "config.json"}
+
+var zcodeDesktopSettingsRelPath = []string{".zcode", "v2", "setting.json"}
 
 // zcodeConfigPath returns the configuration file's absolute path for a home
 // directory, or "" when no home directory is known.
@@ -39,6 +41,12 @@ func zcodeConfigPath(homeDir string) string {
 // zcodeConfigFile is the subset of ZCode's configuration LeapMux reads.
 type zcodeConfigFile struct {
 	Provider map[string]zcodeConfigProvider `json:"provider"`
+}
+
+type zcodeDesktopSettingsFile struct {
+	ProviderFamilyConnectionSelections map[string]struct {
+		Kind string `json:"kind"`
+	} `json:"providerFamilyConnectionSelections"`
 }
 
 type zcodeConfigProvider struct {
@@ -88,8 +96,8 @@ func (m zcodeConfigModel) priority() (float64, bool) {
 
 // --- the wire shape ---
 
-// zcodeRegistryProvider is one entry of the workspace/updateProviderRegistry
-// payload.
+// zcodeRegistryProvider is one entry of the legacy
+// workspace/updateProviderRegistry payload.
 //
 // The app-server validates it STRICTLY: an unknown field, a `kind` outside its
 // enumeration, or an empty `models` array refuses the whole request, not just the
@@ -103,6 +111,10 @@ type zcodeRegistryProvider struct {
 	Source     string               `json:"source,omitempty"`
 	APIKey     *zcodeRegistryAPIKey `json:"apiKey,omitempty"`
 	Models     []zcodeRegistryModel `json:"models"`
+	// Enabled is the desktop preference that selected this provider. The legacy
+	// registry payload does not carry it, but the account-provider bridge needs it
+	// to state which plan is current.
+	Enabled bool `json:"-"`
 }
 
 // zcodeRegistryAPIKey is the app-server's tagged union for a credential. `inline`
@@ -146,7 +158,7 @@ type zcodeModelRef struct {
 	ModelID    string `json:"modelId"`
 }
 
-// zcodeRuntimeModel is the per-request overlay session/setModel takes.
+// zcodeRuntimeModel is the legacy per-request overlay session/setModel takes.
 //
 // It exists because the registry push is workspace-scoped and asynchronous, while
 // setModel must resolve a credential NOW: the overlay carries the provider (with
@@ -180,6 +192,160 @@ type zcodeCatalog struct {
 	// refs maps a composite model id back to its {providerId, modelId} pair and the
 	// provider entry that carries its credential.
 	refs map[string]zcodeModelRef
+	// accountPlanKinds selects the current coding-plan provider for each family.
+	// It comes from ZCode's setting.json and distinguishes an individual plan from
+	// a team plan, which the legacy provider id folds into one word.
+	accountPlanKinds map[string]string
+}
+
+// zcodeAccountProviderConfig is one entry of the account-provider snapshot that
+// ZCode 0.16.9 accepts through provider/updateAccountConfig. The built-in release
+// supplies the API shape and labels. The host supplies only entitlement and an
+// optional model subset.
+type zcodeAccountProviderConfig struct {
+	BuiltinModelIDs []string `json:"builtinModelIds,omitempty"`
+	Access          struct {
+		Type     string `json:"type"`
+		Entitled bool   `json:"entitled"`
+	} `json:"access"`
+}
+
+type zcodeAccountProviderState struct {
+	Availability      string `json:"availability"`
+	Entitled          bool   `json:"entitled"`
+	Current           bool   `json:"current"`
+	UnavailableReason string `json:"unavailableReason,omitempty"`
+}
+
+type zcodeAccountProviderPayload struct {
+	Revision                    string                                `json:"revision"`
+	BasedOnZCodeBuiltinRevision string                                `json:"basedOnZCodeBuiltinRevision"`
+	Providers                   map[string]zcodeAccountProviderConfig `json:"providers"`
+	States                      map[string]zcodeAccountProviderState  `json:"states"`
+}
+
+// zcodeAccountProviderID maps the legacy desktop configuration identifiers onto
+// the account-provider identifiers in ZCode 0.16.9.
+func (c zcodeCatalog) accountProviderID(providerID string) (string, bool) {
+	switch providerID {
+	case "builtin:zai-coding-plan":
+		if c.accountPlanKinds["zai"] == "team-coding-plan" {
+			return "account:zai-team-coding-plan", true
+		}
+		return "account:zai-individual-coding-plan", true
+	case "builtin:zai-start-plan":
+		return "account:zai-start-plan", true
+	case "builtin:bigmodel-coding-plan":
+		if c.accountPlanKinds["bigmodel"] == "team-coding-plan" {
+			return "account:bigmodel-team-coding-plan", true
+		}
+		return "account:bigmodel-individual-coding-plan", true
+	case "builtin:bigmodel-start-plan":
+		return "account:bigmodel-start-plan", true
+	default:
+		return "", false
+	}
+}
+
+// zcodeLegacyProviderID maps a new account provider back to the configuration
+// entry that holds its runtime API key.
+func zcodeLegacyProviderID(providerID string) string {
+	switch providerID {
+	case "account:zai-individual-coding-plan", "account:zai-team-coding-plan", "account:zai-offpeak-idle-plan":
+		return "builtin:zai-coding-plan"
+	case "account:zai-start-plan":
+		return "builtin:zai-start-plan"
+	case "account:bigmodel-individual-coding-plan", "account:bigmodel-team-coding-plan", "account:bigmodel-offpeak-idle-plan":
+		return "builtin:bigmodel-coding-plan"
+	case "account:bigmodel-start-plan":
+		return "builtin:bigmodel-start-plan"
+	default:
+		return providerID
+	}
+}
+
+// accountProviderPayload builds the host-owned provider snapshot that replaced
+// workspace/updateProviderRegistry in ZCode 0.16.9.
+func (c zcodeCatalog) accountProviderPayload(builtinPath, revision string) (zcodeAccountProviderPayload, error) {
+	basedOn, err := zcodeBuiltinProviderRevision(builtinPath)
+	if err != nil {
+		return zcodeAccountProviderPayload{}, err
+	}
+	payload := zcodeAccountProviderPayload{
+		Revision:                    revision,
+		BasedOnZCodeBuiltinRevision: basedOn,
+		Providers:                   map[string]zcodeAccountProviderConfig{},
+		States:                      map[string]zcodeAccountProviderState{},
+	}
+	for _, provider := range c.Providers {
+		accountID, ok := c.accountProviderID(provider.ProviderID)
+		if !ok || provider.APIKey == nil || provider.APIKey.Value == "" {
+			continue
+		}
+		entry := zcodeAccountProviderConfig{BuiltinModelIDs: make([]string, 0, len(provider.Models))}
+		entry.Access.Type = "zhipu-account"
+		entry.Access.Entitled = provider.Enabled
+		for _, model := range provider.Models {
+			entry.BuiltinModelIDs = append(entry.BuiltinModelIDs, model.ModelID)
+		}
+		payload.Providers[accountID] = entry
+		state := zcodeAccountProviderState{
+			Availability: "available",
+			Entitled:     provider.Enabled,
+			Current:      provider.Enabled,
+		}
+		if !provider.Enabled {
+			state.Availability = "unavailable"
+			state.UnavailableReason = "not-entitled"
+		}
+		payload.States[accountID] = state
+	}
+	return payload, nil
+}
+
+// zcodeBuiltinProviderRevision reproduces the revision that ZCode's provider
+// source derives from the release number and the absolute active file path.
+func zcodeBuiltinProviderRevision(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("ZCode did not expose its built-in provider configuration path")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve ZCode built-in provider configuration %s: %w", path, err)
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return "", fmt.Errorf("read ZCode built-in provider configuration %s: %w", abs, err)
+	}
+	var release struct {
+		Revision *int64 `json:"revision"`
+	}
+	if err := json.Unmarshal(data, &release); err != nil {
+		return "", fmt.Errorf("parse ZCode built-in provider configuration %s: %w", abs, err)
+	}
+	if release.Revision == nil {
+		return "", fmt.Errorf("ZCode built-in provider configuration %s has no revision", abs)
+	}
+	if *release.Revision < 0 {
+		return "", fmt.Errorf("ZCode built-in provider configuration %s has a negative revision", abs)
+	}
+	pathHash := sha256.Sum256([]byte(filepath.Clean(abs)))
+	return "zcode-builtin:" + strconv.FormatInt(*release.Revision, 10) + ":" + fmt.Sprintf("%x", pathHash), nil
+}
+
+// inlineAPIKey returns the credential for a legacy or account provider id.
+func (c zcodeCatalog) inlineAPIKey(providerID string) (string, bool) {
+	providerID = zcodeLegacyProviderID(providerID)
+	for _, provider := range c.Providers {
+		if providerID != "" && provider.ProviderID != providerID {
+			continue
+		}
+		if provider.APIKey != nil && provider.APIKey.Source == zcodeAPIKeySourceInline && provider.APIKey.Value != "" {
+			return provider.APIKey.Value, true
+		}
+	}
+	return "", false
 }
 
 // zcodeModelIDSeparator joins a provider id and a model id into the single string
@@ -287,10 +453,9 @@ type zcodeProviderSkip struct {
 
 // loadZCodeCatalog reads and translates ZCode's configuration.
 //
-// An absent file, an unreadable one, and a malformed one are all reported as
-// errors: without a provider registry every turn fails with a message that identifies
-// the app-server rather than the missing configuration, so the caller states the
-// real cause at startup.
+// An absent file, an unreadable one, and a malformed one are all errors. Legacy
+// builds need its whole registry. Current builds still need its account API key
+// for interaction/requestProviderRuntimeHeaders.
 func loadZCodeCatalog(homeDir string) (zcodeCatalog, error) {
 	path := zcodeConfigPath(homeDir)
 	if path == "" {
@@ -308,10 +473,37 @@ func loadZCodeCatalog(homeDir string) (zcodeCatalog, error) {
 		return zcodeCatalog{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	catalog, skipped := buildZCodeCatalog(cfg)
+	catalog.accountPlanKinds = loadZCodeAccountPlanKinds(homeDir)
 	if len(catalog.Providers) == 0 {
 		return catalog, fmt.Errorf("no ZCode model provider in %s is usable%s", path, zcodeSkipDetail(skipped))
 	}
 	return catalog, nil
+}
+
+// loadZCodeAccountPlanKinds reads the plan selection that disambiguates the
+// legacy `*-coding-plan` provider. The file is optional because an API-key-only
+// installation does not need this information.
+func loadZCodeAccountPlanKinds(homeDir string) map[string]string {
+	if homeDir == "" {
+		return nil
+	}
+	path := filepath.Join(append([]string{homeDir}, zcodeDesktopSettingsRelPath...)...)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var settings zcodeDesktopSettingsFile
+	if json.Unmarshal(data, &settings) != nil {
+		return nil
+	}
+	out := make(map[string]string, len(settings.ProviderFamilyConnectionSelections))
+	for family, selection := range settings.ProviderFamilyConnectionSelections {
+		kind := strings.TrimSpace(selection.Kind)
+		if kind == "individual-coding-plan" || kind == "team-coding-plan" {
+			out[strings.TrimSpace(family)] = kind
+		}
+	}
+	return out
 }
 
 // zcodeSkipDetail renders why each configured provider was dropped, as a suffix to the
@@ -425,6 +617,7 @@ func buildZCodeCatalog(cfg zcodeConfigFile) (zcodeCatalog, []zcodeProviderSkip) 
 			Label:      zcodeProviderLabel(c.providerID, c.provider.Name, nameCount[strings.TrimSpace(c.provider.Name)] > 1),
 			Source:     zcodeRegistrySource(c.provider.Source),
 			APIKey:     &zcodeRegistryAPIKey{Source: zcodeAPIKeySourceInline, Value: c.apiKey},
+			Enabled:    c.enabled,
 			// An empty slice, never nil: the app-server's schema requires the
 			// `models` ARRAY, and a nil slice marshals as `null`, which its
 			// validator refuses for the whole request.

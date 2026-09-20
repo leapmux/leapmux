@@ -18,11 +18,13 @@ import (
 
 // ZCode client->server methods.
 const (
-	// ZCodeMethodUpdateProviderRegistry pushes the model providers (with inline API
-	// keys) that the session may use. Without it every turn fails with
-	// `provider_not_configured`: the app-server holds no credentials of its own, the
-	// desktop application supplies them, and no environment variable substitutes.
+	// ZCodeMethodUpdateProviderRegistry is the legacy model-provider push. Builds
+	// before 0.16.9 require it and receive inline API keys through it.
 	ZCodeMethodUpdateProviderRegistry = "workspace/updateProviderRegistry"
+	// ZCodeMethodUpdateAccountConfig replaced the workspace registry push in
+	// 0.16.9. The app server loads built-in and personal providers itself. Its
+	// host supplies the active account plans with this method.
+	ZCodeMethodUpdateAccountConfig = "provider/updateAccountConfig"
 
 	ZCodeMethodSessionCreate = "session/create"
 	ZCodeMethodSessionResume = "session/resume"
@@ -45,10 +47,8 @@ const (
 const (
 	ZCodeMethodRequestRuntimePreferences = "session/requestRuntimePreferences"
 	// ZCodeMethodRequestProviderRuntimeHeaders asks the client for freshly-minted
-	// OAuth headers for a start-plan provider. LeapMux mints none -- it reads the
-	// desktop configuration and forwards the API key it finds there -- so the reply
-	// reports whether that inline key is present instead of leaving the request
-	// unanswered (which stalls the turn).
+	// credentials for an account provider. A legacy build already holds the inline
+	// key. ZCode 0.16.9 requires the host to return it as requestAuth.
 	ZCodeMethodRequestProviderRuntimeHeaders = "interaction/requestProviderRuntimeHeaders"
 	// ZCodeMethodRequestOfficialMcpAuthHeaders asks for credentials for ZCode's
 	// hosted MCP servers, which LeapMux likewise does not hold.
@@ -165,6 +165,8 @@ const (
 	ZCodeInputSourceSubagent         = "subagent"
 	ZCodeInputSourceSubagentMessage  = "subagent_message"
 	ZCodeInputSourceTodoReminder     = "todo_reminder"
+	ZCodeInputSourceWorkflowLaunch   = "workflow_launch"
+	ZCodeInputSourceSharedContext    = "shared_context"
 )
 
 // ZCodeToolSourceSubagent marks a tool.updated that belongs to a SUBAGENT rather
@@ -176,6 +178,7 @@ const ZCodeToolSourceSubagent = "subagent"
 const (
 	ZCodeTaskKindBash     = "bash"
 	ZCodeTaskKindSubagent = "subagent"
+	ZCodeTaskKindWorkflow = "workflow"
 )
 
 // ZCode turn results (turn.completed.resultType).
@@ -219,10 +222,9 @@ const (
 	ZCodeErrRuntimeUnavailable = -32031
 )
 
-// ZCodeOfficialAuthUnavailable is the status LeapMux reports for ZCode's hosted MCP
-// servers, whose credentials only the desktop application holds. Declaring the
-// unavailability lets the app-server fall through to the servers it can reach; an
-// unanswered request would block the tool for good.
+// ZCodeOfficialAuthUnavailable is the reason LeapMux reports for ZCode's hosted
+// MCP servers, whose credentials only the desktop application holds. Legacy builds
+// use the same word in their `status` field.
 const ZCodeOfficialAuthUnavailable = "official_auth_unavailable"
 
 // ZCodeCauseProviderNotConfigured is the `turn.failed` cause for a session whose

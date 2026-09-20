@@ -18,7 +18,7 @@ import { isSubagentTab, rootAgentIdFor } from './tab.helpers'
 
 export interface BackgroundTaskItem {
   rowKey: string
-  kind: 'subagent' | 'shell'
+  kind: 'subagent' | 'shell' | 'workflow'
   childAgentId?: string
   parentAgentId?: string
   groupKey?: string
@@ -58,7 +58,7 @@ export interface GroupedBackgroundTasks {
 export function protoBackgroundTaskToStore(t: ProtoBackgroundTaskItem): BackgroundTaskItem {
   const item: BackgroundTaskItem = {
     rowKey: t.id,
-    kind: t.kind === BackgroundTaskKind.SHELL ? 'shell' : 'subagent',
+    kind: normalizeBackgroundTaskKind(t.kind),
     title: t.title,
     activity: t.activeForm,
     status: normalizeBackgroundTaskStatus(t.status),
@@ -73,6 +73,17 @@ export function protoBackgroundTaskToStore(t: ProtoBackgroundTaskItem): Backgrou
   assignDefined(item, 'updatedAt', t.updatedAt || undefined)
   assignDefined(item, 'endedAt', t.endedAt || undefined)
   return item
+}
+
+function normalizeBackgroundTaskKind(kind: BackgroundTaskKind): BackgroundTaskItem['kind'] {
+  switch (kind) {
+    case BackgroundTaskKind.SHELL:
+      return 'shell'
+    case BackgroundTaskKind.WORKFLOW:
+      return 'workflow'
+    default:
+      return 'subagent'
+  }
 }
 
 function normalizeBackgroundTaskStatus(s: BackgroundTaskStatus): BackgroundTaskItem['status'] {

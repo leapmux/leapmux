@@ -15,13 +15,14 @@ import * as styles from './BackgroundTaskPanel.css'
  * empty messages have to be one declaration for that to be impossible.
  *
  * A new kind still needs two things this cannot force: a case in
- * `protoBackgroundTaskToStore`, and a case in the kind-icon `Show` inside
+ * `protoBackgroundTaskToStore`, and a case in the kind-icon `Switch` inside
  * `./BackgroundTaskList.tsx`.
  */
 const LIST_TABS_META: Record<BackgroundTaskKindFilter, { label: string, empty: string }> = {
   all: { label: 'All', empty: 'No background tasks' },
   subagent: { label: 'Subagents', empty: 'No subagents' },
   shell: { label: 'Shell', empty: 'No shell commands' },
+  workflow: { label: 'Workflows', empty: 'No workflows' },
 }
 
 // FilterTabBar reconciles this list by reference. Keep one module-level list so
@@ -40,8 +41,8 @@ export interface BackgroundTaskPanelProps {
 }
 
 /**
- * BackgroundTaskPanel is an agent's background-task registry: its subagents and
- * its shell commands, behind one filter per kind.
+ * BackgroundTaskPanel is an agent's background-task registry. It shows subagents,
+ * shell commands, and workflows behind one filter per kind.
  *
  * Shared by the sidebar section and the ThinkingIndicator popover. It owns the
  * tab bar and the scrolling region; `BackgroundTaskList` renders the rows. The

@@ -59,6 +59,11 @@ describe('protoBackgroundTaskToStore', () => {
     expect(got.status).toBe('completed')
   })
 
+  it('maps workflow kind', () => {
+    const got = protoBackgroundTaskToStore(proto({ id: 'r1', kind: BackgroundTaskKind.WORKFLOW, status: BackgroundTaskStatus.RUNNING }))
+    expect(got.kind).toBe('workflow')
+  })
+
   it('collapses empty optionals to undefined', () => {
     const got = protoBackgroundTaskToStore(proto({ id: 'r1', status: BackgroundTaskStatus.PENDING, title: 't' }))
     expect(got.childAgentId).toBeUndefined()
