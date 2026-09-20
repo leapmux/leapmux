@@ -385,7 +385,6 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     syntaxHighlightingPaused: () => props.host?.syntaxHighlightingPaused?.() ?? false,
     textSelectionActive: () => props.host?.textSelectionActive?.() ?? false,
     get spanColor() { return props.message.spanColor },
-    get spanType() { return props.message.spanType },
     get getMessageUiState() { return props.host?.getMessageUiState },
     get setMessageUiState() { return props.premeasureMode ? undefined : props.host?.setMessageUiState },
     get premeasureMode() { return props.premeasureMode === true },
