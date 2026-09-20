@@ -26,7 +26,7 @@ export function acpPermissionToolCall(payload: Record<string, unknown>): Record<
  * on it. `layoutPermissionOptions` and `permissionOptionLabel` both dereference
  * `option.kind` with no guard, so a `null` element threw the whole banner into the
  * ErrorBoundary. A STRING `options` is quieter and worse: its `length` is the length
- * of the string, so {@link acpPermissionIR} read the payload as a permission request,
+ * of the string, so {@link acpPermissionPrompt} read the payload as a permission request,
  * the layout iterated the CHARACTERS, and the decision row drew one empty button for
  * each of them. An element that is no object cannot state a kind, so it is dropped.
  */
@@ -56,7 +56,7 @@ export function acpPermissionOptions(payload: Record<string, unknown>): Permissi
  *
  * Returns null for a payload that is no permission request at all.
  */
-export function acpPermissionIR(input: ControlExtractionInput): PermissionPrompt | null {
+export function acpPermissionPrompt(input: ControlExtractionInput): PermissionPrompt | null {
   const original = acpPermissionToolCall(input.payload)
   const options = acpPermissionOptions(input.payload)
   // A permission request states a tool call, an option list, or both. A payload with
@@ -91,7 +91,7 @@ export function acpPermissionIR(input: ControlExtractionInput): PermissionPrompt
  * requests it does not answer itself, exactly as its control component did.
  */
 export function acpExtractControl(input: ControlExtractionInput): ExtractedControlRequest | null {
-  const permission = acpPermissionIR(input)
+  const permission = acpPermissionPrompt(input)
   return permission ? { kind: 'permission', permission } : null
 }
 

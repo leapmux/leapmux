@@ -94,7 +94,7 @@ export const ROW_KIND_FOR_CATEGORY: Record<MessageCategory['kind'], DrawnRowKind
  * `{ kind: 'hidden' }` ROW for it now, so every reader of layer 1 gets "this row
  * draws nothing" without knowing the category.
  */
-const DRAWN_OUTSIDE_THE_ROW_IR = new Set<MessageCategory['kind']>(['unsupported_provider'])
+const DRAWN_OUTSIDE_THE_CHAT_ROW = new Set<MessageCategory['kind']>(['unsupported_provider'])
 
 /**
  * The row kind a reader SEES for one category and the outcome layer 1 answered.
@@ -111,7 +111,7 @@ const DRAWN_OUTSIDE_THE_ROW_IR = new Set<MessageCategory['kind']>(['unsupported_
 export function drawnRowKind(category: MessageCategory['kind'], extraction: ChatRowExtraction): DrawnRowKind {
   if (extraction.kind === 'row')
     return extraction.row.kind
-  return DRAWN_OUTSIDE_THE_ROW_IR.has(category) ? 'hidden' : 'unrecognized'
+  return DRAWN_OUTSIDE_THE_CHAT_ROW.has(category) ? 'hidden' : 'unrecognized'
 }
 
 /**

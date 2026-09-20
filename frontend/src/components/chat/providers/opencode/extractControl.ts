@@ -1,6 +1,6 @@
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
 import type { PermissionOption } from '~/components/chat/model/controlPrompt'
-import { acpPermissionIR } from '../acp/extractControl'
+import { acpPermissionPrompt } from '../acp/extractControl'
 
 /**
  * The pair OpenCode itself answers with, for a request that offers no options.
@@ -22,7 +22,7 @@ const DEFAULT_OPTIONS: readonly PermissionOption[] = [
  * Allow/Deny pair sends neither, so the pair is stated here instead.
  */
 export function openCodeExtractControl(input: ControlExtractionInput): ExtractedControlRequest | null {
-  const permission = acpPermissionIR(input)
+  const permission = acpPermissionPrompt(input)
   if (!permission)
     return null
   return {

@@ -188,7 +188,7 @@ describe('copilotToolCall shell results', () => {
 })
 
 describe('copilotToolCall search results', () => {
-  function grepModel(context: Record<string, unknown>): SearchResult {
+  function grepResult(context: Record<string, unknown>): SearchResult {
     const row = resultRow(COPILOT_TOOL.Grep, { pattern: 'hit', ...context }, {
       result: { content: 'a.ts:1:hit\nb.ts:2:hit' },
     })
@@ -207,14 +207,14 @@ describe('copilotToolCall search results', () => {
     ['null', { C: null }],
     ['a word', { C: 'all' }],
   ])('counts the matched lines when the context argument is %s', (_label, context) => {
-    expect(grepModel(context)?.matchCount).toBe(2)
+    expect(grepResult(context)?.matchCount).toBe(2)
   })
 
   it.each([
     ['a number', { C: 2 }],
     ['a numeric string', { after_context: '3' }],
   ])('drops the match count when the context argument states one as %s', (_label, context) => {
-    expect(grepModel(context)?.matchCount).toBeUndefined()
+    expect(grepResult(context)?.matchCount).toBeUndefined()
   })
 
   it('keeps the drive prefix while it counts unnumbered Windows paths', () => {
