@@ -627,14 +627,13 @@ describe('createClassifiedEntryCache', () => {
         messages,
         showHiddenMessages: () => false,
       })
-      // Read ONLY hasVisibleEntries() -- never visibleEntries(). It still caches
-      // r1 (classified while scanning for the first visible row).
+      // Read only hasVisibleEntries(). Its derivation materializes visibleEntries,
+      // which classifies and caches r1.
       expect(cache.hasVisibleEntries()).toBe(true)
       expect(cache.getEntry('r1')).toBeDefined()
 
-      // r1 leaves the window. Reading ONLY hasVisibleEntries() again must prune it
-      // -- the prune is no longer exclusive to visibleEntries(), so the cache can't
-      // leak departed-id entries for a consumer that reads only this accessor.
+      // r1 leaves the window. Reading hasVisibleEntries() again must run the shared
+      // visible-entry path and prune it.
       setMessages([assistantText('a1', 2n, 'hi')])
       expect(cache.hasVisibleEntries()).toBe(true)
       expect(cache.getEntry('r1')).toBeUndefined()
@@ -768,7 +767,7 @@ describe('createClassifiedEntryCache', () => {
     })
   })
 
-  it('hasVisibleEntries reports presence without depending on visibleEntries()', () => {
+  it('hasVisibleEntries reports presence from visibleEntries()', () => {
     createRoot((dispose) => {
       const visible = createTestClassifiedEntryCache({
         messages: () => [assistantText('a1', 1n, 'hi')],

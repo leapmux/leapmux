@@ -150,7 +150,7 @@ export interface ClassifiedEntryCacheDeps {
 export interface ClassifiedEntryCache {
   /** Visible classified entries for the current window (reactive). */
   visibleEntries: Accessor<ClassifiedEntry[]>
-  /** Whether ANY message would render — cheaper than materializing visibleEntries(). */
+  /** Whether any message renders, derived from the same visible entry list. */
   hasVisibleEntries: Accessor<boolean>
   /** The cached entry for a message id (used by scroll/debug logging). */
   getEntry: (id: string) => ClassifiedEntry | undefined
@@ -243,9 +243,9 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
    * Drop cached entries for ids no longer in the window, EVERY run (no size
    * guard): a window that swaps out and in the SAME number of ids leaves size
    * unchanged, so a `size >` shortcut would never fire and would leak the departed
-   * entries -- the exact "reading ONLY hasVisibleEntries keeps the cache bounded"
-   * contract walkWindow must honor. The cache is window-sized (<= a few hundred),
-   * so the unconditional sweep is trivial.
+   * entries. `hasVisibleEntries` derives from `visibleEntries`, so either public
+   * accessor runs this same pruning path. The cache is window-sized (<= a few
+   * hundred), so the unconditional sweep is trivial.
    */
   const pruneToWindow = (present: Set<string>) => {
     for (const id of entryCache.keys()) {
