@@ -74,7 +74,10 @@ describe('classifyMessage', () => {
 
   describe('notification (consolidated thread)', () => {
     it('classifies wrapper with settings_changed first message', () => {
-      const result = classifyMessage(input(undefined, wrapper({ type: 'settings_changed' })))
+      const result = classifyMessage(input(undefined, wrapper({
+        type: 'settings_changed',
+        changes: { model: { old: 'a', new: 'b' } },
+      })))
       expect(result.kind).toBe('notification')
     })
 
@@ -111,14 +114,13 @@ describe('classifyMessage', () => {
 
     it('filters allowed rate_limit from mixed notification thread', () => {
       const msgs = [
-        { type: 'settings_changed', changes: {} },
+        { type: 'context_cleared' },
         { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } },
       ]
       const result = classifyMessage(input(undefined, { old_seqs: [], messages: msgs }))
       expect(result.kind).toBe('notification')
       if (result.kind === 'notification') {
-        expect(result.messages).toHaveLength(1)
-        expect((result.messages[0] as Record<string, unknown>).type).toBe('settings_changed')
+        expect(result.entries).toStrictEqual([{ kind: 'context-cleared' }])
       }
     })
 
@@ -150,12 +152,12 @@ describe('classifyMessage', () => {
       expect(result.kind).toBe('hidden')
     })
 
-    it('returns messages array in the notification category', () => {
-      const msgs = [{ type: 'settings_changed' }, { type: 'other' }]
+    it('returns parsed entries in the notification category', () => {
+      const msgs = [{ type: 'context_cleared' }, { type: 'interrupted' }]
       const result = classifyMessage(input(undefined, { old_seqs: [], messages: msgs }))
       expect(result.kind).toBe('notification')
       if (result.kind === 'notification') {
-        expect(result.messages).toStrictEqual(msgs)
+        expect(result.entries).toStrictEqual([{ kind: 'context-cleared' }, { kind: 'text', text: 'Interrupted' }])
       }
     })
   })
@@ -319,9 +321,9 @@ describe('classifyMessage', () => {
       expect(result.kind).toBe('notification')
     })
 
-    it('classifies system with unknown subtype as notification', () => {
+    it('keeps a system subtype with no notification entry for the last-resort card', () => {
       const result = classifyMessage(input({ type: 'system', subtype: 'something_else' }))
-      expect(result.kind).toBe('notification')
+      expect(result).toEqual({ kind: 'notification', entries: [] })
     })
 
     it('classifies system status compacting as notification', () => {
@@ -340,7 +342,10 @@ describe('classifyMessage', () => {
     })
 
     it('classifies settings_changed as notification', () => {
-      const result = classifyMessage(input({ type: 'settings_changed' }))
+      const result = classifyMessage(input({
+        type: 'settings_changed',
+        changes: { model: { old: 'a', new: 'b' } },
+      }))
       expect(result.kind).toBe('notification')
     })
 
@@ -539,20 +544,22 @@ describe('classifyMessage', () => {
     it.each(ALL_PROVIDERS)('classifies subagent_ended as a notification for provider %s', (provider) => {
       const result = classifyMessage(input(divider, null, provider))
       expect(result.kind).toBe('notification')
-      expect(result.kind === 'notification' && result.messages).toEqual([divider])
+      expect(result.kind === 'notification' && result.entries).toHaveLength(1)
     })
 
     it.each(ALL_PROVIDERS)('classifies subagent_report as a notification for provider %s', (provider) => {
       const result = classifyMessage(input(report, null, provider))
       expect(result.kind).toBe('notification')
-      expect(result.kind === 'notification' && result.messages).toEqual([report])
+      expect(result.kind === 'notification' && result.entries).toEqual([
+        { kind: 'subagent-report', label: 'Reviewer', text: 'Report' },
+      ])
     })
 
     it('carries every final status through unchanged', () => {
       for (const status of ['completed', 'failed', 'stopped', 'interrupted']) {
         const parent = { type: 'subagent_ended', status }
         const result = classifyMessage(input(parent))
-        expect(result.kind === 'notification' && result.messages).toEqual([parent])
+        expect(result.kind === 'notification' && result.entries).toHaveLength(1)
       }
     })
 
@@ -581,8 +588,11 @@ describe('classifyMessage', () => {
       expect(result.kind).toBe('notification')
     })
 
-    it.each(['goal_updated', 'goal_cleared', 'stop_ignored'])('classifies a wrapped %s', (type) => {
-      const notification = { type, text: 'stated' }
+    it.each([
+      { type: 'goal_updated', objective: 'Ship it', goal_status: 'active' },
+      { type: 'goal_cleared', objective: 'Ship it' },
+      { type: 'stop_ignored' },
+    ])('classifies a wrapped $type', (notification) => {
       const result = classifyMessage(input(notification, wrapper(notification)))
       expect(result.kind).toBe('notification')
     })
@@ -592,7 +602,7 @@ describe('classifyMessage', () => {
     it('yields to a notification thread wrapper', () => {
       const result = classifyMessage(input(divider, wrapper({ type: 'interrupted' })))
       expect(result.kind).toBe('notification')
-      expect(result.kind === 'notification' && result.messages).toEqual([{ type: 'interrupted' }])
+      expect(result.kind === 'notification' && result.entries).toEqual([{ kind: 'text', text: 'Interrupted' }])
     })
   })
 })

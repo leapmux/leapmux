@@ -5,10 +5,11 @@ import type { AlertVariant } from '~/components/common/Alert'
 import { createMemo, For, Show } from 'solid-js'
 import { Alert } from '~/components/common/Alert'
 import { getToolResultExpanded, shouldPauseSyntaxHighlighting } from '../messageRenderers'
-import { toolMessage, toolResultCollapsed, toolResultContentPre } from '../toolStyles.css'
+import { toolMessage, toolResultCollapsed } from '../toolStyles.css'
+import { CollapsibleContent } from './CollapsibleContent'
 import { EMPTY_RESULT_NOTICE } from './emptyResultNotice'
 import { ReadResultView } from './ReadResultView'
-import { useCollapsedItems } from './useCollapsedLines'
+import { useCollapsedItems, useCollapsedLines } from './useCollapsedLines'
 
 // Stable empty fallback so memo equality holds when `lines` is null --
 // otherwise every read re-allocates `[]` and downstream `displayItems`
@@ -40,6 +41,8 @@ export function ReadFileResultBody(props: {
 }): JSX.Element {
   const expanded = () => getToolResultExpanded(props.context)
   const items = createMemo<NumberedFileLine[]>(() => props.source.lines ?? (EMPTY_LINES as NumberedFileLine[]))
+  const fallbackText = () => props.source.fallbackContent || EMPTY_RESULT_NOTICE
+  const fallback = useCollapsedLines({ text: fallbackText, expanded })
   // An empty list draws the fallback the same way an absent one does, so the body
   // states a refused read's reason instead of nothing.
   const hasParsedLines = () => props.source.lines !== null && props.source.lines.length > 0
@@ -60,7 +63,7 @@ export function ReadFileResultBody(props: {
       </Show>
       <Show
         when={hasParsedLines() && items().length > 0}
-        fallback={<div class={toolResultContentPre}>{props.source.fallbackContent || EMPTY_RESULT_NOTICE}</div>}
+        fallback={<CollapsibleContent kind="pre" text={fallbackText()} display={fallback.display()} isCollapsed={fallback.isCollapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />}
       >
         <ReadResultView
           lines={displayItems()}

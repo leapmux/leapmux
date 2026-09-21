@@ -9,7 +9,7 @@ import { expect, ZCODE_E2E_SKIP_REASON, zcodeTest } from './zcode-fixtures'
 
 zcodeTest.skip(!!ZCODE_E2E_SKIP_REASON, ZCODE_E2E_SKIP_REASON || '')
 
-zcodeTest.describe('ZCode subagent lifecycle', () => {
+zcodeTest.describe('zcode subagent lifecycle', () => {
   zcodeTest('routes the prompt, tools, and final report into the child tab', async ({
     authenticatedZCodeWorkspace,
     page,

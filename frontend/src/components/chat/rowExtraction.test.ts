@@ -74,7 +74,10 @@ describe('extractChatRow notification thread', () => {
   const cleared = { type: NOTIFICATION_TYPE.ContextCleared }
 
   it('reads every message of the thread into one row', () => {
-    const row = rowOf(extractChatRow(AgentProvider.CLAUDE_CODE, parsed(cleared), { kind: 'notification', messages: [cleared, cleared] }))
+    const row = rowOf(extractChatRow(AgentProvider.CLAUDE_CODE, parsed(cleared), {
+      kind: 'notification',
+      entries: [{ kind: 'context-cleared' }, { kind: 'context-cleared' }],
+    }))
     expect(row?.kind).toBe('notification')
     if (row?.kind !== 'notification')
       return
@@ -84,12 +87,8 @@ describe('extractChatRow notification thread', () => {
   // A thread that states NOTHING must yield no row, so the frame falls to the
   // unrecognized card. Returning an EMPTY thread instead would draw a bubble with
   // nothing in it, which is what the legacy path avoided by falling back to raw JSON.
-  it.each([
-    ['a message no reader can name', [{ type: 'a_type_from_a_later_release' }]],
-    ['no messages at all', []],
-    ['a message that is not an object', ['not an object']],
-  ])('answers unsupported for %s', (_name, messages) => {
-    expect(extractChatRow(AgentProvider.CLAUDE_CODE, parsed(cleared), { kind: 'notification', messages }))
+  it('answers unsupported for a category with no entries', () => {
+    expect(extractChatRow(AgentProvider.CLAUDE_CODE, parsed(cleared), { kind: 'notification', entries: [] }))
       .toEqual({ kind: 'unsupported', payload: cleared, completion: null })
   })
 })

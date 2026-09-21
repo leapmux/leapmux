@@ -5,6 +5,7 @@ import { createMemo, For, Show } from 'solid-js'
 import { relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { getToolResultExpanded } from '../messageRenderers'
+import { LIMITED_TEXT_DISPLAY_NOTICE, limitTextForDisplay } from '../safeTextDisplay'
 import {
   toolMessage,
   toolResultCollapsed,
@@ -12,8 +13,8 @@ import {
   toolResultPrompt,
 } from '../toolStyles.css'
 import { TRUNCATION_NOTICE } from '../truncationNotice'
-import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
-import { useCollapsedItems, useCollapsedLines } from './useCollapsedLines'
+import { COLLAPSED_RESULT_ROWS } from './collapse'
+import { textNeedsCollapse, useCollapsedItems, useCollapsedLines } from './useCollapsedLines'
 
 function structuredLines(source: SearchResult) {
   return source.lines?.length ? source.lines : null
@@ -36,7 +37,7 @@ export function searchResultCollapsible(source: SearchResult): boolean {
   const lines = structuredLines(source)
   if (lines)
     return lines.length > COLLAPSED_RESULT_ROWS
-  return hasMoreLinesThan(searchResultText(source), COLLAPSED_RESULT_ROWS)
+  return textNeedsCollapse(searchResultText(source))
 }
 
 /** Reusable file paths with optional provider-supplied details. */
@@ -154,9 +155,9 @@ export function SearchResultBody(props: {
   })
   const filenameCollapse = useCollapsedItems<string>({ items: filenames, expanded })
   const contentCollapse = useCollapsedLines({ text: content, expanded })
+  const safeContent = createMemo(() => limitTextForDisplay(contentCollapse.display()))
   const isCollapsed = () => filenameCollapse.isCollapsed() || contentCollapse.isCollapsed()
   const displayFilenames = filenameCollapse.displayItems
-  const displayContent = contentCollapse.display
   // ONE wrapper per path, kept for as long as the row lives. `FileListView` takes
   // entries and a search result holds bare paths, so the two met through a `map` that
   // built fresh objects on every read -- and `<For>` keys by REFERENCE, so a streaming
@@ -179,8 +180,11 @@ export function SearchResultBody(props: {
       <Show when={displayFilenames().length > 0}>
         <FileListView entries={fileEntries()} {...(props.context !== undefined ? { context: props.context } : {})} />
       </Show>
-      <Show when={displayContent()}>
-        <div class={toolResultContentPre}>{displayContent()}</div>
+      <Show when={safeContent().text}>
+        <div class={toolResultContentPre}>{safeContent().text}</div>
+      </Show>
+      <Show when={!isCollapsed() && safeContent().limited}>
+        <div class={toolResultPrompt}>{LIMITED_TEXT_DISPLAY_NOTICE}</div>
       </Show>
       <Show when={props.source.notice || props.source.truncated}>
         <div class={toolResultPrompt}>{props.source.notice || TRUNCATION_NOTICE}</div>

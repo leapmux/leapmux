@@ -1,3 +1,4 @@
+import type { NotificationEntry } from './model/notification'
 import type { PersistedControlResponse } from './persistedControlResponse'
 import type { ClassificationContext, ClassificationInput } from './providers/registry'
 import type { ResolvedMessageContent } from './rowExtractionTypes'
@@ -6,13 +7,14 @@ import { AssembledMessageKind, MessageSource } from '~/generated/proto/leapmux/v
 import { parseMessageContent } from '~/lib/messageParser'
 import { isWorkerWrittenNotification } from '~/lib/notificationTypes'
 import { parseAssembledMessage } from './assembledMessage'
+import { classifyNotifications } from './notificationClassification'
 import { parsePersistedControlResponse } from './persistedControlResponse'
 import { pluginFor, resolveMessageForRendering } from './providers/registry'
 import './providers'
 
 export type MessageCategory
   = | { kind: 'hidden' }
-    | { kind: 'notification', messages: unknown[] }
+    | { kind: 'notification', entries: NotificationEntry[] }
     | { kind: 'tool_use' }
     | { kind: 'tool_result' }
     | { kind: 'agent_prompt' }
@@ -79,7 +81,7 @@ export function classifyMessage(input: ClassificationInput, context?: Classifica
   if (!plugin)
     return isLeapMuxUserPayload(input) ? { kind: 'user_content' } : { kind: 'unsupported_provider' }
   if (!input.wrapper && isWorkerWrittenNotification(input.parentObject))
-    return { kind: 'notification', messages: [input.parentObject] }
+    return classifyNotifications([input.parentObject], input.agentProvider, plugin.transcript.notificationEntry)
   return plugin.transcript.classify(input, context)
 }
 

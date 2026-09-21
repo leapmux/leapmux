@@ -1,6 +1,6 @@
 import type { ToolKindRenderer } from './renderer'
 import Globe from 'lucide-solid/icons/globe'
-import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../collapse'
+import { textNeedsCollapse } from '../useCollapsedLines'
 import { WebFetchResultBody } from '../webFetchResult'
 import { renderUrlTitle } from './titleParts'
 
@@ -15,7 +15,7 @@ export const fetchRenderer: ToolKindRenderer<'fetch'> = {
   },
   resultMeta(call) {
     return {
-      collapsible: hasMoreLinesThan(call.result.result, COLLAPSED_RESULT_ROWS),
+      collapsible: textNeedsCollapse(call.result.result),
       hasDiff: false,
       copyableContent: () => call.result.result || null,
     }

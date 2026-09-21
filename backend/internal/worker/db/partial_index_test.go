@@ -169,6 +169,7 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 		"idx_agents_closed_at":            "no query filters on closed_at through this index",
 		"idx_agents_open_working_dir":     "no query filters on working_dir through this index",
 		"idx_agent_input_queue_one_edit":  "a uniqueness constraint, enforced on write rather than read",
+		"idx_messages_idempotency_key":    "a uniqueness constraint, enforced on write rather than read",
 		"idx_worktrees_path":              "a uniqueness constraint, enforced on write rather than read",
 		"idx_worktrees_deleted_at":        "no query filters on deleted_at through this index",
 		"idx_terminals_closed_at":         "no query filters on closed_at through this index",

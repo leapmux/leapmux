@@ -151,7 +151,7 @@ func TestReasonixTaskCompletionClosesRegistry(t *testing.T) {
 		{name: "native cancellation", status: "completed", output: "Subagent reference: sa_example\nSubagent outcome: status=cancelled retryable=false", want: bgtask.StatusStopped},
 		{name: "transport failure", status: "failed", output: "Unavailable", want: bgtask.StatusFailed},
 		{name: "transport cancellation", status: "cancelled", want: bgtask.StatusStopped},
-		{name: "background acknowledgement", status: "completed", background: true, output: "Started background task \"job-1\" (Inspect sample).", want: bgtask.StatusRunning},
+		{name: "background acknowledgement", status: "completed", background: true, output: "Started background task \"job-1\" (Inspect sample).", want: bgtask.StatusCompleted},
 		{name: "background failure", status: "failed", background: true, output: "Cannot start", want: bgtask.StatusFailed},
 		{name: "progress", status: "in_progress", output: "Working", want: bgtask.StatusRunning},
 		{name: "unstructured result", status: "completed", output: "Report\nSubagent outcome: status=failed retryable=false", want: bgtask.StatusCompleted},

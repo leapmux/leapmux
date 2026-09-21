@@ -43,6 +43,22 @@ describe('search result display', () => {
     expect(container.textContent).toMatch(/truncated/i)
   })
 
+  it('limits a large expanded search body', () => {
+    const content = `SEARCH_HEAD\n${'x'.repeat(100_000)}\nSEARCH_TAIL`
+    const { container } = render(() => (
+      <SearchResultBody
+        kind="search"
+        source={source({ content })}
+        context={{ getMessageUiState: () => true }}
+      />
+    ))
+
+    expect(container.textContent!.length).toBeLessThan(content.length)
+    expect(container.textContent).toContain('SEARCH_HEAD')
+    expect(container.textContent).toContain('SEARCH_TAIL')
+    expect(container.textContent).toContain('Display limited')
+  })
+
   /**
    * The body never repeats the summary, whatever whitespace surrounds it.
    *

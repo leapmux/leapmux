@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   codexRateLimitReachedType,
   codexTierToRateLimitInfo,
-  formatCodexRateLimitReached,
   iterCodexRateLimitTiers,
 } from './rateLimits'
 
@@ -116,16 +115,5 @@ describe('codexRateLimitReachedType', () => {
     expect(codexRateLimitReachedType({ params: { rateLimits: { rateLimitReachedType: '' } } })).toBeUndefined()
     expect(codexRateLimitReachedType({})).toBeUndefined()
     expect(codexRateLimitReachedType(null)).toBeUndefined()
-  })
-})
-
-describe('formatCodexRateLimitReached', () => {
-  it('maps known reached-types to labels', () => {
-    expect(formatCodexRateLimitReached('rate_limit_reached')).toBe('Rate limit reached')
-    expect(formatCodexRateLimitReached('workspace_member_credits_depleted')).toBe('Out of credits')
-    expect(formatCodexRateLimitReached('workspace_owner_usage_limit_reached')).toBe('Usage limit reached')
-  })
-  it('falls back to a generic label for an unknown reached-type', () => {
-    expect(formatCodexRateLimitReached('some_future_type')).toBe('Rate limit reached')
   })
 })

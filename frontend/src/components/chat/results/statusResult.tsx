@@ -6,12 +6,11 @@ import ClockFading from 'lucide-solid/icons/clock-fading'
 import { Show } from 'solid-js'
 import { getToolResultExpanded } from '../messageRenderers'
 import { toolMessage } from '../toolStyles.css'
-import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 import { CollapsibleContent } from './CollapsibleContent'
 import { ENDED_OUTCOME_ICON } from './endedOutcomeIcon'
 import { CommandInputBody } from './multiLineCommandBody'
 import { ToolStatusHeader } from './ToolStatusHeader'
-import { useCollapsedLines } from './useCollapsedLines'
+import { textNeedsCollapse, useCollapsedLines } from './useCollapsedLines'
 
 /**
  * One glyph for each outcome. Annotated, so a fifth outcome fails the build here.
@@ -29,7 +28,7 @@ const OUTCOME_ICON: Record<TaskStatus, LucideIcon> = {
 
 /** Whether a task note exceeds the collapsed display. */
 export function taskResultCollapsible(result: TaskResult): boolean {
-  return hasMoreLinesThan(result.output, COLLAPSED_RESULT_ROWS)
+  return textNeedsCollapse(result.output)
 }
 
 export function StatusResultBody(props: { source: TaskResult, context?: ToolResultRenderContext }): JSX.Element {

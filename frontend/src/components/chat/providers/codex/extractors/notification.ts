@@ -6,7 +6,6 @@ import { getInnerMessage } from '~/lib/messageParser'
 import { compactionMetaFromBoundary } from '../../../model/notification'
 import { codexHookIsFailureOrUnknown } from '../hookNotifications'
 import { codexMcpOauthIsFailureOrUnknown, codexMcpStartupIsFailureOrUnknown } from '../mcpNotifications'
-import { CODEX_RATE_LIMITS_METHOD, codexRateLimitEntries } from '../rateLimits'
 
 const STARTUP_METHOD = CODEX_METHOD.McpServerStartupStatusUpdated
 
@@ -101,6 +100,8 @@ function codexCompactionPhase(m: Record<string, unknown>): CompactionPhase | nul
   // rows are persisted, so Codex still reads its own history.
   if (m.type === 'system' && m.subtype === 'compact_boundary')
     return 'end'
+  if (m.type === 'system' && m.subtype === 'status' && m.status === 'compacting')
+    return 'start'
   const item = pickObject(m, 'item') ?? pickObject(pickObject(m, 'params'), 'item')
   if (item?.type !== CODEX_ITEM.ContextCompaction)
     return null
@@ -144,9 +145,6 @@ export function codexNotificationEntry(msg: Record<string, unknown>): Notificati
   const hookFailure = hookFailureEntry(msg)
   if (hookFailure)
     return [hookFailure]
-
-  if (msg.method === CODEX_RATE_LIMITS_METHOD)
-    return codexRateLimitEntries(msg)
 
   const phase = codexCompactionPhase(msg)
   if (phase) {

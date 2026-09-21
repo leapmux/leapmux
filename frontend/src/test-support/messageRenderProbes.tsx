@@ -2,7 +2,7 @@ import type { JSXElement } from 'solid-js'
 import type { ResolvedMessageContent } from '~/components/chat/rowExtractionTypes'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { render } from '@solidjs/testing-library'
-import { flattenNotificationEntries } from '~/components/chat/notificationEntries'
+import { flattenNotificationEntries, notificationEntriesFor } from '~/components/chat/notificationEntries'
 import { renderNotificationBlocks } from '~/components/chat/notificationRenderers'
 import { resolveMessageForRendering } from '~/components/chat/providers/registry'
 import { ResultDivider } from '~/components/chat/resultDividerRenderers'
@@ -34,7 +34,9 @@ function parsedOf(parsed: unknown, provider?: AgentProvider): ResolvedMessageCon
  * are about. Null when the thread states nothing, exactly as the transcript row is.
  */
 export function renderThreadElement(messages: unknown[], provider?: AgentProvider): JSXElement | null {
-  const row = extractedRow(extractChatRow(provider, parsedOf(undefined, provider), { kind: 'notification', messages }, {}))
+  const agentProvider = provider ?? AgentProvider.CLAUDE_CODE
+  const entries = messages.flatMap(message => isObject(message) ? notificationEntriesFor(message, agentProvider) : [])
+  const row = extractedRow(extractChatRow(provider, parsedOf(undefined, provider), { kind: 'notification', entries }, {}))
   return row?.kind === 'notification' ? renderNotificationBlocks(flattenNotificationEntries(row.thread.entries)) : null
 }
 

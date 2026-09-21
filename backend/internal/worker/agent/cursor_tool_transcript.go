@@ -9,6 +9,13 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 )
 
+const cursorPendingTaskReportLimit = 256
+
+type cursorTaskReportState struct {
+	extensionSeen bool
+	report        string
+}
+
 // cursorToolSource reads Cursor's tool records out of one session's own store.
 type cursorToolSource struct {
 	noopToolSupplementSource
@@ -102,15 +109,10 @@ func (a *CursorCLIAgent) observeCursorTaskRecord(toolCallID string, record curso
 		return
 	}
 	a.mu.Lock()
-	if a.reportedTaskCalls[toolCallID] {
-		a.mu.Unlock()
-		return
-	}
-	if a.taskStoreReports == nil {
-		a.taskStoreReports = make(map[string]string)
-	}
-	a.taskStoreReports[toolCallID] = report
-	allowed := a.taskReportExtensions[toolCallID]
+	state := a.cursorTaskReportStateLocked(toolCallID)
+	state.report = report
+	a.taskReports[toolCallID] = state
+	allowed := state.extensionSeen
 	a.mu.Unlock()
 	if allowed {
 		a.persistReadyCursorTaskReport(toolCallID, report)
@@ -119,11 +121,10 @@ func (a *CursorCLIAgent) observeCursorTaskRecord(toolCallID string, record curso
 
 func (a *CursorCLIAgent) noteCursorTaskExtension(toolCallID string) {
 	a.mu.Lock()
-	if a.taskReportExtensions == nil {
-		a.taskReportExtensions = make(map[string]bool)
-	}
-	a.taskReportExtensions[toolCallID] = true
-	report := a.taskStoreReports[toolCallID]
+	state := a.cursorTaskReportStateLocked(toolCallID)
+	state.extensionSeen = true
+	a.taskReports[toolCallID] = state
+	report := state.report
 	a.mu.Unlock()
 	if report != "" {
 		a.persistReadyCursorTaskReport(toolCallID, report)
@@ -131,30 +132,35 @@ func (a *CursorCLIAgent) noteCursorTaskExtension(toolCallID string) {
 }
 
 func (a *CursorCLIAgent) persistReadyCursorTaskReport(toolCallID, report string) {
-	a.mu.Lock()
-	if a.reportedTaskCalls[toolCallID] {
-		a.mu.Unlock()
-		return
-	}
-	a.mu.Unlock()
-	childID, _, found, err := a.sink.LookupBackgroundTask(toolCallID)
+	_, err := a.sink.PersistSubagentReport(SubagentReportWrite{
+		ReportID: toolCallID,
+		RowKey:   toolCallID,
+		Target:   SubagentReportChildTranscript,
+		Report:   SubagentReport{Label: "Cursor subagent", Text: report},
+	})
 	if err != nil {
-		slog.Warn("cursor task report child lookup failed", "agent_id", a.agentID, "tool_call_id", toolCallID, "error", err)
-		return
-	}
-	if !found || childID == "" {
-		return
-	}
-	if !persistSubagentReport(a.sink.ChildSink(childID), subagentReport{Label: "Cursor subagent", Text: report}) {
+		slog.Warn("cursor task report persist failed", "agent_id", a.agentID, "tool_call_id", toolCallID, "error", err)
 		return
 	}
 	a.mu.Lock()
-	if a.reportedTaskCalls == nil {
-		a.reportedTaskCalls = make(map[string]bool)
-	}
-	a.reportedTaskCalls[toolCallID] = true
-	delete(a.taskStoreReports, toolCallID)
+	a.taskReports[toolCallID] = cursorTaskReportState{extensionSeen: true}
 	a.mu.Unlock()
+}
+
+func (a *CursorCLIAgent) cursorTaskReportStateLocked(toolCallID string) cursorTaskReportState {
+	if a.taskReports == nil {
+		a.taskReports = make(map[string]cursorTaskReportState)
+	}
+	if state, ok := a.taskReports[toolCallID]; ok {
+		return state
+	}
+	if len(a.taskReports) >= cursorPendingTaskReportLimit {
+		for candidate := range a.taskReports {
+			delete(a.taskReports, candidate)
+			break
+		}
+	}
+	return cursorTaskReportState{}
 }
 
 func cursorTaskReport(content json.RawMessage) string {

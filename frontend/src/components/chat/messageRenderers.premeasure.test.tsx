@@ -29,6 +29,23 @@ describe('markdown text premeasure mode', () => {
     expect(renderMarkdown).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ['visible', undefined],
+    ['premeasure', { premeasureMode: true }],
+  ] as const)('uses a limited plain-text display for large %s markdown', (_label, context) => {
+    const text = `<script>unsafe</script>\n${'x'.repeat(100_000)}\ntail`
+    const { container } = render(() => <MarkdownText text={text} {...(context === undefined ? {} : { context })} />)
+
+    expect(container.textContent!.length).toBeLessThan(text.length)
+    expect(container.textContent).toContain('Display limited')
+    expect(container.textContent).toContain('unsafe')
+    expect(container.textContent).toContain('tail')
+    expect(container.querySelector('script')).toBeNull()
+    expect(vi.mocked(renderMarkdown).mock.calls.length).toBe(0)
+    expect(vi.mocked(renderMarkdownCachedOrPlain).mock.calls.length).toBe(0)
+    expect(vi.mocked(renderMarkdownPlain).mock.calls.length).toBe(0)
+  })
+
   it('uses stable plain markdown without subscribing to cached-highlight updates while text is selected', () => {
     const { container } = render(() => <MarkdownText text={'```ts\nx\n```'} context={{ textSelectionActive: () => true }} />)
 

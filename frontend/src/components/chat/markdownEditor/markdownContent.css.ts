@@ -6,6 +6,7 @@ import {
 } from '~/lib/rehypeBlockRemoteImages'
 import { codeBlockCode, codeBlockPre, codeWrap } from '~/styles/codeBlock'
 import { iconSize } from '~/styles/tokens'
+import { LARGE_TEXT_DISPLAY_CLASS } from '../safeTextDisplay'
 import { codeSurface } from '../shikiTokenColors.css'
 
 export const markdownContent = style({
@@ -21,6 +22,14 @@ globalStyle(`${markdownContent} pre code`, codeBlockCode)
 // Scoped to markdownContent so the Milkdown EDITOR (which shares codeBlockCode) keeps
 // horizontal scroll for a stable caret while typing.
 globalStyle(`${markdownContent} pre code`, codeWrap)
+
+globalStyle(`.${LARGE_TEXT_DISPLAY_CLASS}`, {
+  ...codeWrap,
+  margin: 0,
+  fontFamily: 'inherit',
+  fontSize: 'inherit',
+  lineHeight: 'inherit',
+})
 
 // Shiki dual-theme support via CSS variables (color only -- the wrapper owns the bg).
 //

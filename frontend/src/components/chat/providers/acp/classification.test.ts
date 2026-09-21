@@ -34,8 +34,16 @@ describe('session updates the worker consumes (ACP)', () => {
 describe('rows LeapMux itself wrote (ACP)', () => {
   it('classifies each plain notification type as a notification', () => {
     const classify = classifyACPMessage()
-    for (const type of ['interrupted', 'settings_changed', 'context_cleared', 'agent_error', 'plan_updated', 'compacting'])
-      expect(classify(input({ type }))).toEqual({ kind: 'notification', messages: [{ type }] })
+    const notifications = [
+      { type: 'interrupted' },
+      { type: 'settings_changed', changes: { model: { old: 'a', new: 'b' } } },
+      { type: 'context_cleared' },
+      { type: 'agent_error', error: 'failed' },
+      { type: 'plan_updated', plan_title: 'Plan' },
+      { type: 'compacting' },
+    ]
+    for (const notification of notifications)
+      expect(classify(input(notification)).kind).toBe('notification')
   })
 
   it('leaves an unknown type to the fallback', () => {
@@ -97,7 +105,7 @@ describe('the plan_execution notification (ACP)', () => {
     const classify = classifyACPMessage()
     const wrapper = { old_seqs: [], messages: [planExecution] }
     expect(classify(input(planExecution, wrapper)))
-      .toStrictEqual({ kind: 'notification', messages: [planExecution] })
+      .toStrictEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Executing plan' }] })
   })
 
   // The thread test is what keeps the OTHER members of a thread. A per-message test
@@ -109,7 +117,10 @@ describe('the plan_execution notification (ACP)', () => {
     const compacting = { type: 'compacting' }
     const wrapper = { old_seqs: [], messages: [compacting, planExecution] }
     expect(classify(input(compacting, wrapper)))
-      .toStrictEqual({ kind: 'notification', messages: [compacting, planExecution] })
+      .toStrictEqual({
+        kind: 'notification',
+        entries: [{ kind: 'compaction', phase: 'start' }, { kind: 'text', text: 'Executing plan' }],
+      })
   })
 
   // The per-message answer, which the classifier reaches for an unwrapped row and for
@@ -118,6 +129,6 @@ describe('the plan_execution notification (ACP)', () => {
   it('classifies an unwrapped plan_execution row as a notification', () => {
     const classify = classifyACPMessage()
     expect(classify(input(planExecution)))
-      .toStrictEqual({ kind: 'notification', messages: [planExecution] })
+      .toStrictEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Executing plan' }] })
   })
 })

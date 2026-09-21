@@ -472,7 +472,10 @@ func (a *PiAgent) handlePiToolExecutionStart(raw []byte) {
 		slog.Error("pi persist tool_execution_start", "agent_id", a.agentID, "error", err)
 	}
 	if env.ToolName == contracts.PiToolAgent {
-		piEnsureSubagentChild(a.sink, env.ToolCallID, description, piExtractPrompt(input))
+		piEnsureSubagentChild(
+			a.sink, env.ToolCallID, env.ToolCallID, env.ToolCallID,
+			description, piExtractPrompt(input),
+		)
 	}
 }
 

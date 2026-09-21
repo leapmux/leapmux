@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -128,6 +129,8 @@ func TestCursorTaskStoreResultPersistsTheReportInTheChildTranscript(t *testing.T
 	reports := child.LeapMuxNotifications()
 	require.Len(t, reports, 1)
 	assert.Equal(t, "The parser is in parser.go.", reports[0]["text"])
+	assert.Empty(t, a.taskReports["task-call"].report,
+		"a stored report retains no report text after persistence")
 }
 
 func TestCursorTaskStoreReplayDoesNotDuplicateAChildReport(t *testing.T) {
@@ -146,6 +149,18 @@ func TestCursorTaskStoreReplayDoesNotDuplicateAChildReport(t *testing.T) {
 	require.True(t, ok)
 	assert.Empty(t, child.LeapMuxNotifications(),
 		"session/load replays the stored Task result but not cursor/task, so it must not copy the report again")
+}
+
+func TestCursorTaskStoreReplayKeepsPendingReportsBounded(t *testing.T) {
+	t.Parallel()
+
+	a := newCursorTestAgent(&testSink{})
+	for i := range cursorPendingTaskReportLimit + 20 {
+		a.observeCursorTaskRecord(fmt.Sprintf("task-%d", i), cursorToolRecord{content: json.RawMessage(
+			`{"type":"tool-result","toolName":"Task","result":"<response>Report</response>"}`,
+		)})
+	}
+	assert.LessOrEqual(t, len(a.taskReports), cursorPendingTaskReportLimit)
 }
 
 func TestCursorTaskExtensionConsumesAReportThatTheStoreFoundFirst(t *testing.T) {

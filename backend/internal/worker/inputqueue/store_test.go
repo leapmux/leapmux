@@ -47,13 +47,24 @@ func TestInitialSchemaCreatesDurableInputQueue(t *testing.T) {
 			`SELECT COUNT(*) FROM sqlite_master WHERE name = ?`, object).Scan(&count))
 		assert.Equal(t, 1, count, object)
 	}
-	var deliveryErrorColumns, fingerprintColumns int
+	var deliveryErrorColumns, legacyInputFingerprintColumns, legacyDedupKeyColumns, idempotencyKeyColumns int
 	require.NoError(t, database.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'delivery_error'`).Scan(&deliveryErrorColumns))
 	require.NoError(t, database.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'input_fingerprint'`).Scan(&fingerprintColumns))
+		`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'input_fingerprint'`).Scan(&legacyInputFingerprintColumns))
+	require.NoError(t, database.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'dedup_key'`).Scan(&legacyDedupKeyColumns))
+	require.NoError(t, database.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'idempotency_key'`).Scan(&idempotencyKeyColumns))
 	assert.Zero(t, deliveryErrorColumns)
-	assert.Equal(t, 1, fingerprintColumns)
+	assert.Zero(t, legacyInputFingerprintColumns)
+	assert.Zero(t, legacyDedupKeyColumns)
+	assert.Equal(t, 1, idempotencyKeyColumns)
+	var idempotencyIndexSQL string
+	require.NoError(t, database.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_master WHERE name = 'idx_messages_idempotency_key'`).Scan(&idempotencyIndexSQL))
+	assert.Contains(t, idempotencyIndexSQL,
+		"ON messages(agent_id, agent_session_id, idempotency_key) WHERE idempotency_key <> ''")
 	var editIndexSQL string
 	require.NoError(t, database.QueryRowContext(ctx,
 		`SELECT sql FROM sqlite_master WHERE name = 'idx_agent_input_queue_one_edit'`).Scan(&editIndexSQL))
@@ -154,7 +165,7 @@ func TestStoreTruncatesSnapshotTextButEditReturnsFullText(t *testing.T) {
 func TestStoreEnqueueRetryRemainsIdempotentAfterAcceptance(t *testing.T) {
 	t.Parallel()
 
-	_, store := newStoreFixture(t)
+	database, store := newStoreFixture(t)
 	ctx := context.Background()
 	input := NewItem{
 		ID: "input-1", AgentID: "agent-1",
@@ -167,6 +178,10 @@ func TestStoreEnqueueRetryRemainsIdempotentAfterAcceptance(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 	require.NoError(t, err)
+	var idempotencyKey string
+	require.NoError(t, database.QueryRowContext(ctx,
+		`SELECT idempotency_key FROM messages WHERE id = ?`, input.ID).Scan(&idempotencyKey))
+	assert.Regexp(t, `^input:[0-9a-f]{64}$`, idempotencyKey)
 
 	snapshot, err := store.Enqueue(ctx, input)
 	require.NoError(t, err)
@@ -175,6 +190,41 @@ func TestStoreEnqueueRetryRemainsIdempotentAfterAcceptance(t *testing.T) {
 	conflicting.Attachments = []Attachment{{Filename: "note.txt", MimeType: "text/plain", Data: []byte("different")}}
 	_, err = store.Enqueue(ctx, conflicting)
 	assert.ErrorIs(t, err, ErrConflict)
+}
+
+func TestStoreAcceptKeepsIdenticalContentFromDistinctInputs(t *testing.T) {
+	t.Parallel()
+
+	database, store := newStoreFixture(t)
+	ctx := context.Background()
+	for _, inputID := range []string{"input-1", "input-2"} {
+		_, err := store.Enqueue(ctx, NewItem{
+			ID: inputID, AgentID: "agent-1",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+			Text: "same content",
+		})
+		require.NoError(t, err)
+		prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+		require.NoError(t, err)
+		require.NotNil(t, prepared)
+		_, _, err = store.Accept(ctx, *prepared, DispatchResult{})
+		require.NoError(t, err)
+	}
+
+	rows, err := database.QueryContext(ctx, `SELECT idempotency_key FROM messages ORDER BY id`)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, rows.Close()) }()
+	var keys []string
+	for rows.Next() {
+		var key string
+		require.NoError(t, rows.Scan(&key))
+		keys = append(keys, key)
+	}
+	require.NoError(t, rows.Err())
+	require.Len(t, keys, 2)
+	assert.Regexp(t, `^input:[0-9a-f]{64}$`, keys[0])
+	assert.Regexp(t, `^input:[0-9a-f]{64}$`, keys[1])
+	assert.NotEqual(t, keys[0], keys[1])
 }
 
 func TestStoreTextOnlyRetryTreatsEmptyAndNilAttachmentsAsEqual(t *testing.T) {

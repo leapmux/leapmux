@@ -243,7 +243,8 @@ func openCodeSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubag
 		Status:        acpFinalStatus(tcu.Status),
 		CloseRow:      true,
 		Mode:          acpModeCloseOnly,
-		Report: subagentReport{
+		ReportID:      tcu.ToolCallID,
+		Report: SubagentReport{
 			Text: openCodeSubagentReport(acpToolCallText(tcu.Content), background),
 		},
 	}

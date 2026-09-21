@@ -200,7 +200,7 @@ describe('a thread of permission completions', () => {
     const category = thread(answered, refused)
     if (category.kind !== 'notification')
       throw new Error('a refusal the reader never saw must reach a row')
-    expect(category.messages).toEqual([refused])
+    expect(category.entries).toEqual(copilotNotificationEntry(refused))
   })
 })
 

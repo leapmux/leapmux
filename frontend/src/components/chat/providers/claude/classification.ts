@@ -4,7 +4,8 @@ import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
-import { claudeSystemSubtypeHidden } from './extractors/notification'
+import { classifyNotifications } from '../../notificationClassification'
+import { claudeNotificationEntry, claudeSystemSubtypeHidden } from './extractors/notification'
 import { claudeExitPlanText } from './extractors/plan'
 import { canonicalClaudeToolName, claudeToolRowHidden } from './toolKinds'
 
@@ -84,16 +85,16 @@ const CLAUDE_NOTIFICATION_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
       return { kind: 'hidden' }
     if (isHiddenClaudeNotification(parent))
       return { kind: 'hidden' }
-    return { kind: 'notification', messages: [parent] }
+    return classifyNotifications([parent], input.agentProvider, claudeNotificationEntry)
   },
-  rate_limit_event(parent) {
+  rate_limit_event(parent, input) {
     if (isHiddenClaudeNotification(parent))
       return { kind: 'hidden' }
-    return { kind: 'notification', messages: [parent] }
+    return classifyNotifications([parent], input.agentProvider, claudeNotificationEntry)
   },
   // `/clear`, and the plan exit that starts a new conversation. A transcript
   // recorded before the worker rewrote it still carries this type.
-  conversation_reset: parent => ({ kind: 'notification', messages: [parent] }),
+  conversation_reset: (parent, input) => classifyNotifications([parent], input.agentProvider, claudeNotificationEntry),
   result: () => ({ kind: 'result_divider' }),
 }
 
@@ -190,7 +191,7 @@ export function classifyClaudeCodeMessage(
     const msgs = wrapper.messages.filter(m => !isObject(m) || !isHiddenClaudeNotification(m))
     if (msgs.length === 0)
       return { kind: 'hidden' }
-    return { kind: 'notification', messages: msgs }
+    return classifyNotifications(msgs, input.agentProvider, claudeNotificationEntry)
   }
 
   if (!parentObject)
@@ -212,7 +213,7 @@ export function classifyClaudeCodeMessage(
   // the one list, and it sits at the same depth the table above sits at, so a plain row
   // still preempts the compact-summary read below.
   if (isPlainNotificationType(type))
-    return { kind: 'notification', messages: [parentObject] }
+    return classifyNotifications([parentObject], input.agentProvider, claudeNotificationEntry)
 
   // Compact summary preempts content-shaped types.
   if (parentObject.isCompactSummary === true)

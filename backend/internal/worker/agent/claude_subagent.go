@@ -234,7 +234,7 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 		spawnSpanID = a.claudeRestartSpawnSpan(known.childID)
 	}
 	// Both ids: the spawn span the restarted run forwards under, and the id the
-	// event itself carried. See claudeTaskIndex.taskToolUse for why a restart
+	// event itself carried. See claudeTaskIndex.runs.taskToolUse for why a restart
 	// needs each of them. They are the same string on a first start.
 	pendingEnd, hasPending := a.tasks.startTask(ev.TaskID, startedKind, spawnSpanID, ev.ToolUseID)
 	if restart.restarted() {
@@ -803,7 +803,10 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 	if msgType == claudeMsgTypeAssistant {
 		if toolUseID, report, ok := claudeSubagentHandback(env); ok {
 			if a.tasks.rememberHandbackToolUse(spawnSpanID, taskID, toolUseID, env.TaskDescription, report) {
-				persistSubagentReport(childSink, subagentReport{Label: env.TaskDescription, Text: report})
+				persistSubagentReport(childSink, SubagentReportWrite{
+					ReportID: toolUseID,
+					Report:   SubagentReport{Label: env.TaskDescription, Text: report},
+				})
 			}
 			return
 		}
@@ -917,9 +920,10 @@ func claudeSubagentHandback(env *messageEnvelope) (toolUseID, report string, ok 
 }
 
 type claudePendingHandback struct {
-	taskID string
-	label  string
-	report string
+	taskID            string
+	handbackToolUseID string
+	label             string
+	report            string
 }
 
 func (a *ClaudeCodeAgent) persistClaudeHandbackResult(env *messageEnvelope) {
@@ -927,9 +931,9 @@ func (a *ClaudeCodeAgent) persistClaudeHandbackResult(env *messageEnvelope) {
 	if !ok {
 		return
 	}
-	report := subagentReport{Label: pending.label, Text: pending.report, Status: outcome}
+	report := SubagentReport{Label: pending.label, Text: pending.report, Status: outcome}
 	if outcome == "send" || outcome == "flagged" {
-		persistSubagentReport(a.sink, report)
+		persistSubagentReport(a.sink, SubagentReportWrite{ReportID: pending.handbackToolUseID, Report: report})
 	}
 }
 
@@ -950,7 +954,14 @@ func (a *ClaudeCodeAgent) persistClaudePeerHandbackResult(env *messageEnvelope) 
 	if env.Origin.Flagged {
 		status = "flagged"
 	}
-	persistSubagentReport(a.sink, subagentReport{Label: label, Text: text, Status: status})
+	reportID := subagentReportContentID("claude-peer", env.Origin.SenderTaskID, text)
+	if found {
+		reportID = pending.handbackToolUseID
+	}
+	persistSubagentReport(a.sink, SubagentReportWrite{
+		ReportID: reportID,
+		Report:   SubagentReport{Label: label, Text: text, Status: status},
+	})
 	return true
 }
 
@@ -966,120 +977,48 @@ func claudePeerHandbackText(body string) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-// claudeTaskIndex is everything this agent knows about a Claude task, in one
-// value with one mutex.
-//
-// These maps index one concept. They were fields on the agent under
-// processBase.mu, which also guards process lifecycle, model, and effort.
-// Grouping them states the shared lifetime rule in one
-// place (forgetTaskIndex drops the run-scoped entries; childTask and
-// finishedTasks describe things that outlive a run) rather than in five field
-// comments that a reader has to collect.
-//
-// A zero value is usable: every write lazily builds its map, so the many sites
-// that build a ClaudeCodeAgent without StartClaudeCode need no constructor.
+// claudeTaskRunIndex owns one run's task kind, routing ids, and reordered end.
+// A restart can add both its original spawn id and its SendMessage id. Both ids
+// must resolve the run, and run completion must remove both.
+type claudeTaskRunIndex struct {
+	taskToolUse map[string]map[string]struct{}
+	toolUseTask map[string]string
+	taskKind    map[string]bgtask.Kind
+	pendingEnd  map[string]bgtask.Status
+}
+
+// claudeTaskTranscriptIndex outlives a run. It lets a restarted task recover
+// its durable child transcript after the run-specific tool ids disappear.
+type claudeTaskTranscriptIndex struct {
+	childTask map[string]string
+}
+
+// claudeTaskRestartIndex owns process-lifetime evidence. finishedShells rejects
+// hydration replays, pendingByTask lets each transcript clear only its own
+// restart intent, and sendMessageCalls keeps late task_started events classified.
+type claudeTaskRestartIndex struct {
+	finishedShells   map[string]struct{}
+	pendingByTask    map[string]map[string]struct{}
+	sendMessageCalls map[string]struct{}
+}
+
+// claudeTaskHandbackIndex owns a report from the child's handback call until
+// the parent result states its delivery outcome.
+type claudeTaskHandbackIndex struct {
+	toolUses map[string]struct{}
+	pending  map[string]claudePendingHandback
+	tasks    map[string]string
+}
+
+// claudeTaskIndex keeps one mutex because a task transition updates more than
+// one lifecycle at once. The nested values make each lifetime explicit without
+// introducing lock ordering between them. The zero value is usable.
 type claudeTaskIndex struct {
-	mu sync.Mutex
-	// Subagent (Task/Workflow) index. Maps a Claude task_id <-> every tool_use id
-	// that identifies its run. Used to route forwarded subagent output into the
-	// right child transcript and to drive the background-task registry.
-	//
-	// One id normally: the SPAWN span, which every forwarded envelope carries as
-	// parent_tool_use_id. A RESTART collects a second one, because task_started
-	// re-registers the task under the call that restarted it (the parent's
-	// SendMessage) while the CLI keeps running the agent under the toolUseId it
-	// recorded at the original spawn. Indexing the restart call ALONE left the
-	// restarted run unresolvable and gave it a second registry row; indexing the
-	// spawn alone would strand a forwarded envelope that ever arrived under the
-	// restart call. So both go in, and either resolves the run.
-	//
-	// A SET on the task side, so forgetTaskIndex drops every id a run collected
-	// rather than the last one written. Guarded by i.mu. NOT cleared at turn end
-	// (background tasks outlive turns); entries dropped on the final
-	// task_notification.
-	taskToolUse map[string]map[string]struct{} // task_id -> tool_use ids
-	toolUseTask map[string]string              // tool_use_id -> task_id
-	// childTask indexes the same link from the CHILD transcript side, so a
-	// forwarded envelope resolves its registry row when the tool_use index
-	// cannot. routeSubagentMessage reads it for EVERY envelope whose spawn span
-	// the tool_use index misses, which is the state a restart leaves whenever
-	// handleClaudeTaskStarted could not read the spawn span back -- an unlinked
-	// registry row, or a child row the read failed on. Without it the envelope
-	// opens a second registry row for a transcript the first row already carries.
-	// Guarded by i.mu, and NOT dropped at a completion: the entry describes the
-	// transcript, which outlives every run of it.
-	childTask map[string]string // child_agent_id -> task_id
-	// finishedTasks holds the id of every backgrounded SHELL this process gave a
-	// final status. A wake block identifies the shell whose completion restarted
-	// a subagent, and confirming that id here is what separates a real wake from
-	// a resumed session's hydration burst, which replays prompts that identify
-	// tasks of a PREVIOUS process.
-	//
-	// Shells only. Recording every finished task let a SUBAGENT's own id satisfy
-	// the proof, and a hydration burst replays that subagent's own wake prompt --
-	// so the one impostor the discriminator exists to exclude walked through it.
-	// Guarded by i.mu; never cleared, and limited to the shells one process ran.
-	finishedTasks map[string]struct{} // shell task_id this process finalized
-	// taskKind remembers what task_started said a task IS, because only
-	// task_started carries task_type. A later task_notification has to upsert
-	// the row again (to record a shell's output_file) and would otherwise have
-	// to guess the kind -- guessing "shell" there rewrote every Task subagent's
-	// row into a shell one, since notifications fire for subagents too.
-	// Guarded by i.mu; dropped with the rest of the index on the closing
-	// notification.
-	taskKind map[string]bgtask.Kind // task_id -> kind
-	// pendingTaskEnd holds a final status for a Task subagent whose result
-	// message arrived BEFORE its task_started (a forward of the child's final
-	// result can race past a reordered task_started). Keyed by spawn tool_use id
-	// so the late task_started can close the row it just opened. Guarded by i.mu.
-	pendingTaskEnd map[string]bgtask.Status // spawn tool_use_id -> final status
-	// pendingRestart holds the task ids the in-flight SendMessage calls addressed.
-	// A task_started for a task already in a final status is a REVIVE only when
-	// the id is armed here; see claudeArmRestartsFromBlocks for why the tool call
-	// is the evidence and the event alone is not. Guarded by i.mu.
-	//
-	// The VALUE is the SET of transcripts that armed it: "" for the root, the
-	// spawn span id for a subagent. Each transcript's own turn end drops only its
-	// own arms, because a subagent outlives the root turn it was spawned in --
-	// clearing on the root's result alone dropped a live subagent's arm before
-	// its task_started could fire it, and left that arm standing for the agent's
-	// life while the root sat idle.
-	//
-	// A set and not one scope, because two transcripts can address one recipient
-	// inside a single root turn. With one scope the second sender overwrote the
-	// first, and whichever turn ended first dropped an arm the other still
-	// needed.
-	pendingRestart map[string]map[string]struct{} // task_id -> the spawn spans that armed it ("" == root)
-	// sendMessageCalls holds the tool_use id of every in-flight SendMessage call,
-	// with the transcript that made it. handleClaudeTaskStarted asks it whether
-	// an event's tool_use_id is a restart call rather than the spawn span that
-	// created the task, and two decisions turn on the answer: the span close, and
-	// whether the id may reach EnsureChildAgent.
-	//
-	// The SPAN tracker cannot answer it. A subagent's own SendMessage records its
-	// span type on that child's tracker, while handleClaudeTaskStarted reads the
-	// ROOT sink -- which answers "" for an id it never saw, and "" is what a
-	// spawn also answers there. Recording the call where the block is parsed
-	// covers both transcripts with one index.
-	//
-	// NOT cleared at a turn end, although pendingRestart is. A tool_use id is
-	// unique per call, so an id recorded as a SendMessage can never later identify
-	// a spawn -- which is the only thing a retained entry could get wrong. Clearing
-	// it made the answer depend on WHICH TURN the task_started landed in: a CLI
-	// that concludes the recipient's run first can emit the event after the sending
-	// turn ended, and every decision below then read the id as a spawn. That opened
-	// a child transcript keyed by a call that is not a spawn, and freed a rail the
-	// call still holds. Limited to the SendMessage calls of one session, the same
-	// limit finishedTasks accepts. Guarded by i.mu.
-	sendMessageCalls map[string]struct{} // tool_use ids of SendMessage calls
-	// handbackToolUses identifies acknowledgements for reports that await the
-	// parent Agent result's delivery outcome.
-	handbackToolUses map[string]struct{}
-	// pendingHandbacks enforces Claude's one-report contract until the parent
-	// Agent result states how Claude delivered the report.
-	pendingHandbacks map[string]claudePendingHandback
-	// handbackTasks resolves a background peer-result sender to its spawn span.
-	handbackTasks map[string]string
+	mu          sync.Mutex
+	runs        claudeTaskRunIndex
+	transcripts claudeTaskTranscriptIndex
+	restarts    claudeTaskRestartIndex
+	handbacks   claudeTaskHandbackIndex
 }
 
 func (i *claudeTaskIndex) rememberHandbackToolUse(spawnSpanID, taskID, toolUseID, label, report string) bool {
@@ -1088,20 +1027,22 @@ func (i *claudeTaskIndex) rememberHandbackToolUse(spawnSpanID, taskID, toolUseID
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.handbackToolUses == nil {
-		i.handbackToolUses = make(map[string]struct{})
+	if i.handbacks.toolUses == nil {
+		i.handbacks.toolUses = make(map[string]struct{})
 	}
-	i.handbackToolUses[toolUseID] = struct{}{}
-	if i.pendingHandbacks == nil {
-		i.pendingHandbacks = make(map[string]claudePendingHandback)
+	i.handbacks.toolUses[toolUseID] = struct{}{}
+	if i.handbacks.pending == nil {
+		i.handbacks.pending = make(map[string]claudePendingHandback)
 	}
-	if _, duplicate := i.pendingHandbacks[spawnSpanID]; !duplicate {
-		i.pendingHandbacks[spawnSpanID] = claudePendingHandback{taskID: taskID, label: label, report: report}
+	if _, duplicate := i.handbacks.pending[spawnSpanID]; !duplicate {
+		i.handbacks.pending[spawnSpanID] = claudePendingHandback{
+			taskID: taskID, handbackToolUseID: toolUseID, label: label, report: report,
+		}
 		if taskID != "" {
-			if i.handbackTasks == nil {
-				i.handbackTasks = make(map[string]string)
+			if i.handbacks.tasks == nil {
+				i.handbacks.tasks = make(map[string]string)
 			}
-			i.handbackTasks[taskID] = spawnSpanID
+			i.handbacks.tasks[taskID] = spawnSpanID
 		}
 		return true
 	}
@@ -1115,7 +1056,7 @@ func (i *claudeTaskIndex) isHandbackEcho(spawnSpanID string, env *messageEnvelop
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	pending, ok := i.pendingHandbacks[spawnSpanID]
+	pending, ok := i.handbacks.pending[spawnSpanID]
 	return ok && strings.TrimSpace(blocks[0].Text) == strings.TrimSpace(pending.report)
 }
 
@@ -1126,10 +1067,10 @@ func (i *claudeTaskIndex) consumeHandbackToolResult(env *messageEnvelope) bool {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if _, ok := i.handbackToolUses[blocks[0].ToolUseID]; !ok {
+	if _, ok := i.handbacks.toolUses[blocks[0].ToolUseID]; !ok {
 		return false
 	}
-	delete(i.handbackToolUses, blocks[0].ToolUseID)
+	delete(i.handbacks.toolUses, blocks[0].ToolUseID)
 	return true
 }
 
@@ -1147,7 +1088,7 @@ func (i *claudeTaskIndex) takeHandbackForAgentResult(env *messageEnvelope) (clau
 		if block.Type != "tool_result" || block.ToolUseID == "" {
 			continue
 		}
-		pending, ok := i.pendingHandbacks[block.ToolUseID]
+		pending, ok := i.handbacks.pending[block.ToolUseID]
 		if !ok {
 			continue
 		}
@@ -1163,8 +1104,8 @@ func (i *claudeTaskIndex) takeHandbackForPeerResult(taskID string) (claudePendin
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	spawnSpanID := i.handbackTasks[taskID]
-	pending, ok := i.pendingHandbacks[spawnSpanID]
+	spawnSpanID := i.handbacks.tasks[taskID]
+	pending, ok := i.handbacks.pending[spawnSpanID]
 	if !ok {
 		return claudePendingHandback{}, false
 	}
@@ -1173,9 +1114,10 @@ func (i *claudeTaskIndex) takeHandbackForPeerResult(taskID string) (claudePendin
 }
 
 func (i *claudeTaskIndex) deletePendingHandbackLocked(spawnSpanID string, pending claudePendingHandback) {
-	delete(i.pendingHandbacks, spawnSpanID)
-	if pending.taskID != "" && i.handbackTasks[pending.taskID] == spawnSpanID {
-		delete(i.handbackTasks, pending.taskID)
+	delete(i.handbacks.pending, spawnSpanID)
+	delete(i.handbacks.toolUses, pending.handbackToolUseID)
+	if pending.taskID != "" && i.handbacks.tasks[pending.taskID] == spawnSpanID {
+		delete(i.handbacks.tasks, pending.taskID)
 	}
 }
 
@@ -1204,10 +1146,10 @@ func (i *claudeTaskIndex) deletePendingHandbackLocked(spawnSpanID string, pendin
 func (i *claudeTaskIndex) startTask(taskID string, kind bgtask.Kind, spawnSpanID, eventToolUseID string) (bgtask.Status, bool) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.taskKind == nil {
-		i.taskKind = make(map[string]bgtask.Kind)
+	if i.runs.taskKind == nil {
+		i.runs.taskKind = make(map[string]bgtask.Kind)
 	}
-	i.taskKind[taskID] = kind
+	i.runs.taskKind[taskID] = kind
 	pending := bgtask.StatusPending
 	found := false
 	// The spawn span first, so it decides the status when both ids hold a close.
@@ -1216,8 +1158,8 @@ func (i *claudeTaskIndex) startTask(taskID string, kind bgtask.Kind, spawnSpanID
 			continue
 		}
 		i.indexToolUseLocked(taskID, toolUseID)
-		if status, ok := i.pendingTaskEnd[toolUseID]; ok {
-			delete(i.pendingTaskEnd, toolUseID)
+		if status, ok := i.runs.pendingEnd[toolUseID]; ok {
+			delete(i.runs.pendingEnd, toolUseID)
 			if !found {
 				pending, found = status, true
 			}
@@ -1229,17 +1171,17 @@ func (i *claudeTaskIndex) startTask(taskID string, kind bgtask.Kind, spawnSpanID
 // indexToolUseLocked records one tool_use id as an identifier of taskID, in both
 // directions. Caller must hold i.mu.
 func (i *claudeTaskIndex) indexToolUseLocked(taskID, toolUseID string) {
-	if i.taskToolUse == nil {
-		i.taskToolUse = make(map[string]map[string]struct{})
+	if i.runs.taskToolUse == nil {
+		i.runs.taskToolUse = make(map[string]map[string]struct{})
 	}
-	if i.toolUseTask == nil {
-		i.toolUseTask = make(map[string]string)
+	if i.runs.toolUseTask == nil {
+		i.runs.toolUseTask = make(map[string]string)
 	}
-	if i.taskToolUse[taskID] == nil {
-		i.taskToolUse[taskID] = make(map[string]struct{})
+	if i.runs.taskToolUse[taskID] == nil {
+		i.runs.taskToolUse[taskID] = make(map[string]struct{})
 	}
-	i.taskToolUse[taskID][toolUseID] = struct{}{}
-	i.toolUseTask[toolUseID] = taskID
+	i.runs.taskToolUse[taskID][toolUseID] = struct{}{}
+	i.runs.toolUseTask[toolUseID] = taskID
 }
 
 // taskIDForToolUse resolves the registry row_key (Claude task_id) for a
@@ -1251,7 +1193,7 @@ func (i *claudeTaskIndex) taskIDForToolUse(toolUseID string) string {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	return i.toolUseTask[toolUseID]
+	return i.runs.toolUseTask[toolUseID]
 }
 
 // The wake block the CLI hands a subagent when one of that subagent's own
@@ -1320,13 +1262,13 @@ func (i *claudeTaskIndex) rememberFinishedShellTask(taskID string) {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.taskKind[taskID] != bgtask.KindShell {
+	if i.runs.taskKind[taskID] != bgtask.KindShell {
 		return
 	}
-	if i.finishedTasks == nil {
-		i.finishedTasks = make(map[string]struct{})
+	if i.restarts.finishedShells == nil {
+		i.restarts.finishedShells = make(map[string]struct{})
 	}
-	i.finishedTasks[taskID] = struct{}{}
+	i.restarts.finishedShells[taskID] = struct{}{}
 }
 
 // claudeWakeRestartedTask reports whether this task_started is the CLI waking a
@@ -1338,7 +1280,7 @@ func (i *claudeTaskIndex) claudeWakeRestartedTask(ev *claudeTaskEnvelope) bool {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	_, seen := i.finishedTasks[shellTaskID]
+	_, seen := i.restarts.finishedShells[shellTaskID]
 	return seen
 }
 
@@ -1350,10 +1292,10 @@ func (i *claudeTaskIndex) rememberTaskChild(taskID, childID string) {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.childTask == nil {
-		i.childTask = make(map[string]string)
+	if i.transcripts.childTask == nil {
+		i.transcripts.childTask = make(map[string]string)
 	}
-	i.childTask[childID] = taskID
+	i.transcripts.childTask[childID] = taskID
 }
 
 // taskIDForChild resolves the registry row_key for a child transcript id.
@@ -1364,7 +1306,7 @@ func (i *claudeTaskIndex) taskIDForChild(childID string) string {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	return i.childTask[childID]
+	return i.transcripts.childTask[childID]
 }
 
 // forgetTaskIndex drops EVERY tool_use id of a task from both directions of the
@@ -1381,17 +1323,22 @@ func (i *claudeTaskIndex) forgetTaskIndex(taskID string) {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	for tuid := range i.taskToolUse[taskID] {
+	for tuid := range i.runs.taskToolUse[taskID] {
 		// Only an id that still resolves to THIS task. A restart reads its spawn
 		// span back from the child row, so a task can index an id its own event
 		// never carried, and two tasks can hold the same id in their sets. The
 		// later writer owns toolUseTask, and dropping its entry here would leave
 		// every forwarded envelope of a LIVE run unresolved.
-		if i.toolUseTask[tuid] == taskID {
-			delete(i.toolUseTask, tuid)
+		if i.runs.toolUseTask[tuid] == taskID {
+			delete(i.runs.toolUseTask, tuid)
 		}
 	}
-	delete(i.taskToolUse, taskID)
+	delete(i.runs.taskToolUse, taskID)
+	if spawnSpanID := i.handbacks.tasks[taskID]; spawnSpanID != "" {
+		if pending, ok := i.handbacks.pending[spawnSpanID]; ok {
+			i.deletePendingHandbackLocked(spawnSpanID, pending)
+		}
+	}
 	// childTask deliberately SURVIVES. It describes the transcript, not the run,
 	// and a transcript is permanent: a restarted run's forwarded envelopes still
 	// have to identify this row, and the spawn span the tool_use index carried is
@@ -1399,7 +1346,7 @@ func (i *claudeTaskIndex) forgetTaskIndex(taskID string) {
 	// the entry that keeps a restart from opening a second row. Limited to the
 	// number of subagents this agent spawned, which is the same limit as the
 	// child sinks the sink already holds.
-	delete(i.taskKind, taskID)
+	delete(i.runs.taskKind, taskID)
 }
 
 // kindForTask returns what task_started said this task is, or KindUnspecified
@@ -1410,7 +1357,7 @@ func (i *claudeTaskIndex) forgetTaskIndex(taskID string) {
 func (i *claudeTaskIndex) kindForTask(taskID string) bgtask.Kind {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	return i.taskKind[taskID]
+	return i.runs.taskKind[taskID]
 }
 
 // claudeSendMessageInput is the part of a SendMessage tool_use input this code
@@ -1464,17 +1411,17 @@ func (a *ClaudeCodeAgent) claudeArmRestartsFromBlocks(env *messageEnvelope, arme
 }
 
 // rememberSendMessageCall records one SendMessage tool_use id for the life of the
-// agent. See claudeTaskIndex.sendMessageCalls for why it outlives the turn.
+// agent. See claudeTaskIndex.restarts.sendMessageCalls for why it outlives the turn.
 func (i *claudeTaskIndex) rememberSendMessageCall(toolUseID string) {
 	if toolUseID == "" {
 		return
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.sendMessageCalls == nil {
-		i.sendMessageCalls = make(map[string]struct{})
+	if i.restarts.sendMessageCalls == nil {
+		i.restarts.sendMessageCalls = make(map[string]struct{})
 	}
-	i.sendMessageCalls[toolUseID] = struct{}{}
+	i.restarts.sendMessageCalls[toolUseID] = struct{}{}
 }
 
 // claudeRestartCall reports whether toolUseID is an in-flight SendMessage call,
@@ -1490,7 +1437,7 @@ func (i *claudeTaskIndex) claudeRestartCall(toolUseID string) bool {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	_, ok := i.sendMessageCalls[toolUseID]
+	_, ok := i.restarts.sendMessageCalls[toolUseID]
 	return ok
 }
 
@@ -1545,13 +1492,13 @@ func (i *claudeTaskIndex) armClaudeRestart(to, armedBy string) {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.pendingRestart == nil {
-		i.pendingRestart = make(map[string]map[string]struct{})
+	if i.restarts.pendingByTask == nil {
+		i.restarts.pendingByTask = make(map[string]map[string]struct{})
 	}
-	if i.pendingRestart[to] == nil {
-		i.pendingRestart[to] = make(map[string]struct{})
+	if i.restarts.pendingByTask[to] == nil {
+		i.restarts.pendingByTask[to] = make(map[string]struct{})
 	}
-	i.pendingRestart[to][armedBy] = struct{}{}
+	i.restarts.pendingByTask[to][armedBy] = struct{}{}
 }
 
 // takeClaudeRestart reports whether an in-flight SendMessage addressed taskID,
@@ -1566,10 +1513,10 @@ func (i *claudeTaskIndex) takeClaudeRestart(taskID string) bool {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if _, ok := i.pendingRestart[taskID]; !ok {
+	if _, ok := i.restarts.pendingByTask[taskID]; !ok {
 		return false
 	}
-	delete(i.pendingRestart, taskID)
+	delete(i.restarts.pendingByTask, taskID)
 	return true
 }
 
@@ -1590,16 +1537,16 @@ func (i *claudeTaskIndex) clearClaudeRestarts(armedBy string) {
 	// last sender does. A recipient two transcripts addressed stays armed until
 	// both of their turns end, so the earlier one cannot cancel the later one's
 	// restart.
-	for to, scopes := range i.pendingRestart {
+	for to, scopes := range i.restarts.pendingByTask {
 		delete(scopes, armedBy)
 		if len(scopes) == 0 {
-			delete(i.pendingRestart, to)
+			delete(i.restarts.pendingByTask, to)
 		}
 	}
 	// The CALLS do not go with the arms. An arm is a permission to reopen a row,
 	// and it must expire with the turn that granted it. A recorded call is a FACT
 	// about one tool_use id, and a tool_use id is unique per call, so the fact
-	// stays true for the life of the agent. See claudeTaskIndex.sendMessageCalls.
+	// stays true for the life of the agent. See claudeTaskIndex.restarts.sendMessageCalls.
 }
 
 // recordPendingTaskEnd remembers a final status for a Task subagent whose
@@ -1613,8 +1560,8 @@ func (i *claudeTaskIndex) recordPendingTaskEnd(spawnToolUseID string, status bgt
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.pendingTaskEnd == nil {
-		i.pendingTaskEnd = make(map[string]bgtask.Status)
+	if i.runs.pendingEnd == nil {
+		i.runs.pendingEnd = make(map[string]bgtask.Status)
 	}
-	i.pendingTaskEnd[spawnToolUseID] = status
+	i.runs.pendingEnd[spawnToolUseID] = status
 }

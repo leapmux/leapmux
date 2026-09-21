@@ -983,7 +983,7 @@ func TestACP_SubagentReportLookupFailureWritesNoUnverifiedReport(t *testing.T) {
 	sink.lookupErr = errors.New("registry read failed")
 	b.applySubagentObservation(&acpSubagentObservation{
 		RowKey: "task-call", Status: bgtask.StatusCompleted, CloseRow: true,
-		Mode: acpModeCloseOnly, Report: subagentReport{Text: "Unverified report"},
+		Mode: acpModeCloseOnly, ReportID: "call-1", Report: SubagentReport{Text: "Unverified report"},
 	})
 
 	assert.Empty(t, child.LeapMuxNotifications())

@@ -774,7 +774,10 @@ func (a *CodexAgent) persistCodexChildReport(route codexChildRoute, event codexI
 	}
 	label, fresh := a.recordCodexChildReportCandidate(event.threadID, event.itemID, message.Text, message.Phase == "final_answer")
 	if fresh {
-		persistSubagentReport(route.parentSink, subagentReport{Label: label, Text: message.Text})
+		persistSubagentReport(route.parentSink, SubagentReportWrite{
+			ReportID: event.itemID,
+			Report:   SubagentReport{Label: label, Text: message.Text},
+		})
 	}
 }
 
@@ -991,8 +994,11 @@ func (a *CodexAgent) handleChildTurnCompleted(threadID string, params json.RawMe
 	completion := codexTurnCompletion(params)
 	a.flushCodexChildGeneration(threadID, completion)
 	a.persistIncompleteCodexTools(threadID, false, completion)
-	if label, report, ok := a.takeCodexChildReportCandidate(threadID); ok {
-		persistSubagentReport(route.parentSink, subagentReport{Label: label, Text: report})
+	if reportID, label, report, ok := a.takeCodexChildReportCandidate(threadID); ok {
+		persistSubagentReport(route.parentSink, SubagentReportWrite{
+			ReportID: reportID,
+			Report:   SubagentReport{Label: label, Text: report},
+		})
 	}
 	if err := route.childSink.PersistTurnEnd(MessageContent{Original: params}, SpanInfo{}); err != nil {
 		slog.Warn("codex persist child turn/completed", "agent_id", a.agentID, "thread", threadID, "error", err)
@@ -1547,34 +1553,9 @@ func (a *CodexAgent) handleErrorNotification(params json.RawMessage) {
 	}
 }
 
-// handleRateLimitsUpdated processes account/rateLimits/updated notifications.
-// The raw content is persisted as-is via PersistNotification, and converted
-// rate limit info is broadcast via BroadcastSessionInfo for the live popover.
-//
-// The transcript takes a row for each CHANGE. Codex sends the snapshot after every
-// model call, so an ordinary turn with one tool call reported it twice with identical
-// numbers, and the reader saw the same sentence twice. The live surfaces below take
-// every report: the popover must stay correct for a subscriber that arrives late, and
-// the resume decision reads the newest snapshot whether or not it moved.
+// handleRateLimitsUpdated publishes account state to live session surfaces and
+// schedules automatic continuation. Account snapshots never become transcript rows.
 func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMessage) {
-	var envelope struct {
-		RateLimits json.RawMessage `json:"rateLimits"`
-	}
-	// An envelope this build cannot read compares as changed, so such a frame still
-	// reaches the reader, and it leaves the remembered snapshot alone.
-	readable := json.Unmarshal(params, &envelope) == nil
-	if !readable || !jsonEqual(a.lastRateLimits, envelope.RateLimits) {
-		if readable {
-			// Copy: the raw message points into the read buffer, which the next line
-			// overwrites.
-			a.lastRateLimits = append(json.RawMessage(nil), envelope.RateLimits...)
-		}
-		// Persist the raw Codex notification — agent-emitted metadata, AGENT source.
-		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
-			slog.Error("codex persist rateLimits", "agent_id", a.agentID, "error", err)
-		}
-	}
-
 	// Extract and convert tiers for live session info broadcast.
 	var notif struct {
 		RateLimits struct {

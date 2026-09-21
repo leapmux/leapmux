@@ -5,13 +5,13 @@ import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
+import { classifyNotifications } from '../../notificationClassification'
 import { isJsonRpcResponseObject } from '../acp/classification'
 import { extractItem } from './extractors/item'
+import { codexNotificationEntry } from './extractors/notification'
 import { codexPlanItemMarkdown, codexTurnPlanParams, codexTurnPlanTodos } from './extractors/plan'
 import { codexReasoningHasText } from './extractors/row'
-import { codexHookIsFailureOrUnknown } from './hookNotifications'
-import { codexMcpOauthIsFailureOrUnknown, codexMcpStartupIsFailureOrUnknown } from './mcpNotifications'
-import { CODEX_RATE_LIMITS_METHOD, codexRateLimitReachedType, iterCodexRateLimitTiers } from './rateLimits'
+import { CODEX_RATE_LIMITS_METHOD } from './rateLimits'
 
 const CODEX_TURN_FAILED_NOTIFICATION = 'Codex turn failed'
 
@@ -90,6 +90,7 @@ const CODEX_HIDDEN_TRANSCRIPT_METHODS = new Set<string>([
   CODEX_METHOD.HookStarted,
   CODEX_METHOD.McpToolCallProgress,
   CODEX_METHOD.RawResponseItemCompleted,
+  CODEX_RATE_LIMITS_METHOD,
   CODEX_THREAD_COMPACTED_METHOD,
 ])
 
@@ -120,60 +121,15 @@ function isCodexNotifThread(wrapper: { messages: unknown[] } | null): wrapper is
   })
 }
 
-/** Returns true when a Codex rate limit message has all tiers below the warning threshold. */
-function isCodexRateLimitAllAllowed(m: Record<string, unknown>): boolean {
-  if (m.method !== CODEX_RATE_LIMITS_METHOD)
-    return false
-  // An authoritative reached-type (rate limit / credits / usage cap) is a real
-  // block -- never hide it, even when every rolling window is under threshold.
-  if (codexRateLimitReachedType(m))
-    return false
-  for (const { info } of iterCodexRateLimitTiers(m)) {
-    if (info.status !== 'allowed')
-      return false
-  }
-  return true
-}
-
-/**
- * Per-message hidden rules for a Codex notification, applied by the
- * consolidated-thread filter so a notification that is hidden on its own stays
- * hidden once Hub threads it into a `notification_thread` wrapper -- mirroring
- * Claude's isHiddenClaudeNotification. Without this the two paths drift: the
- * standalone classifier hides lifecycle methods and final statuses while the
- * thread filter kept them, so a thread of only-hidden entries surfaced as a
- * `notification` that renders nothing and falls back to a raw-JSON bubble.
- *
- * Hides:
- *  - hidden protocol methods (CODEX_HIDDEN_TRANSCRIPT_METHODS): thread/started,
- *    turn/started, thread/{status,name,settings,tokenUsage}/updated,
- *    thread/compacted, skills/changed, remoteControl/status/changed,
- *    hook/started, MCP progress, successful hook completions, and successful MCP
- *    lifecycle notifications, and raw response items that canonical item events
- *    already represent.
- *  - a final (non-compacting) system status (see isFinalCompactingStatus).
- *  - the "Codex turn failed" agent_error (surfaced via the result divider).
- *  - an all-allowed rate-limit update (no throttle to show).
- *
- * The full wrapper is still preserved verbatim for "Copy Raw JSON" (that reads
- * `parsed.rawText`, not the filtered category messages), so nothing is lost.
- */
+// The Worker also represents a failed turn in its divider. Remove that normalized
+// notification before extraction so one failure does not draw twice. The method
+// sets above own frames with no surface; codexNotificationEntry owns visible outcomes.
 function isCodexHiddenNotificationThreadMessage(m: unknown): boolean {
   if (!isObject(m))
     return false
-  if (m.method === CODEX_METHOD.McpServerStartupStatusUpdated && !codexMcpStartupIsFailureOrUnknown(m))
-    return true
-  if (m.method === CODEX_METHOD.McpServerOauthLoginCompleted && !codexMcpOauthIsFailureOrUnknown(m))
-    return true
-  if (m.method === CODEX_METHOD.HookCompleted && !codexHookIsFailureOrUnknown(m))
-    return true
-  if (CODEX_HIDDEN_TRANSCRIPT_METHODS.has(pickString(m, 'method')))
-    return true
-  if (isFinalCompactingStatus(m))
-    return true
   if (m.type === NOTIFICATION_TYPE.AgentError && m.error === CODEX_TURN_FAILED_NOTIFICATION)
     return true
-  return isCodexRateLimitAllAllowed(m)
+  return false
 }
 
 type CodexItemClassifier = (item: Record<string, unknown>) => MessageCategory
@@ -226,6 +182,8 @@ const CODEX_ITEM_CLASSIFIERS: Record<string, CodexItemClassifier> = {
 export function classifyCodexMessage(input: ClassificationInput): MessageCategory {
   const parent = input.parentObject
   const wrapper = input.wrapper
+  const notification = (messages: readonly unknown[], empty: 'notification' | 'hidden' = 'notification'): MessageCategory =>
+    classifyNotifications(messages, input.agentProvider, codexNotificationEntry, empty)
 
   // Empty wrapper — hide. This runs BEFORE the thread test, which narrows `wrapper`
   // to `null` on its false path. The thread test refuses an empty wrapper anyway, so
@@ -236,9 +194,7 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
   // Notification threads (settings_changed, context_cleared, etc.)
   if (isCodexNotifThread(wrapper)) {
     const msgs = wrapper.messages.filter(m => !isCodexHiddenNotificationThreadMessage(m))
-    return msgs.length === 0
-      ? { kind: 'hidden' }
-      : { kind: 'notification', messages: msgs }
+    return notification(msgs, 'hidden')
   }
 
   if (!parent)
@@ -266,14 +222,14 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
   // from replayed history; `warning` has no worker case at all and arrives raw on
   // every session.
   if (method === CODEX_METHOD.Error || method === CODEX_METHOD.Warning)
-    return { kind: 'notification', messages: [parent] }
+    return notification([parent])
 
   if (type === 'system') {
     if (subtype === 'init' || subtype === 'task_notification')
       return { kind: 'hidden' }
     if (isFinalCompactingStatus(parent))
       return { kind: 'hidden' }
-    return { kind: 'notification', messages: [parent] }
+    return notification([parent])
   }
 
   if (type === NOTIFICATION_TYPE.AgentError && parent.error === CODEX_TURN_FAILED_NOTIFICATION)
@@ -301,7 +257,7 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
   const itemType = item ? pickString(item, 'type', undefined) : undefined
   if (item && itemType) {
     if (itemType === CODEX_ITEM.ContextCompaction)
-      return { kind: 'notification', messages: [parent] }
+      return notification([parent])
     // `Object.hasOwn`, not a bare read: `itemType` comes straight off the wire,
     // and a value that spells an `Object.prototype` member answers with a function
     // the call below would then run.
@@ -319,25 +275,20 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
     return { kind: 'user_content' }
   }
 
-  // Codex method-based notifications
-  if (method === CODEX_RATE_LIMITS_METHOD) {
-    return isCodexRateLimitAllAllowed(parent) ? { kind: 'hidden' } : { kind: 'notification', messages: [parent] }
-  }
-
   if (method === CODEX_METHOD.McpServerStartupStatusUpdated)
-    return codexMcpStartupIsFailureOrUnknown(parent) ? { kind: 'notification', messages: [parent] } : { kind: 'hidden' }
+    return notification([parent], 'hidden')
 
   if (method === CODEX_METHOD.McpServerOauthLoginCompleted)
-    return codexMcpOauthIsFailureOrUnknown(parent) ? { kind: 'notification', messages: [parent] } : { kind: 'hidden' }
+    return notification([parent], 'hidden')
 
   if (method === CODEX_METHOD.HookCompleted)
-    return codexHookIsFailureOrUnknown(parent) ? { kind: 'notification', messages: [parent] } : { kind: 'hidden' }
+    return notification([parent], 'hidden')
 
   // The LeapMux envelope every provider answers the same way. The shared predicate is
   // the one list: a copy here held six of the seven types and drew the raw frame for
   // `plan_execution`.
   if (isPlainNotificationType(type))
-    return { kind: 'notification', messages: [parent] }
+    return notification([parent])
 
   return { kind: 'unknown' }
 }

@@ -18,7 +18,9 @@ import { isSubagentTab, rootAgentIdFor } from './tab.helpers'
 
 export interface BackgroundTaskItem {
   rowKey: string
-  kind: 'subagent' | 'shell' | 'workflow'
+  kind: 'subagent' | 'shell' | 'workflow' | 'unknown'
+  /** The wire ordinal when this client does not know the kind. */
+  rawKind?: number
   childAgentId?: string
   parentAgentId?: string
   groupKey?: string
@@ -56,13 +58,15 @@ export interface GroupedBackgroundTasks {
 // empty optionals to ABSENCE (not a present-undefined key) so shallow-equal
 // comparisons, which compare key counts first, stay stable.
 export function protoBackgroundTaskToStore(t: ProtoBackgroundTaskItem): BackgroundTaskItem {
+  const normalizedKind = normalizeBackgroundTaskKind(t.kind)
   const item: BackgroundTaskItem = {
     rowKey: t.id,
-    kind: normalizeBackgroundTaskKind(t.kind),
+    kind: normalizedKind.kind,
     title: t.title,
     activity: t.activeForm,
     status: normalizeBackgroundTaskStatus(t.status),
   }
+  assignDefined(item, 'rawKind', normalizedKind.rawKind)
   assignDefined(item, 'childAgentId', t.childAgentId || undefined)
   assignDefined(item, 'parentAgentId', t.parentAgentId || undefined)
   assignDefined(item, 'groupKey', t.groupKey || undefined)
@@ -75,14 +79,16 @@ export function protoBackgroundTaskToStore(t: ProtoBackgroundTaskItem): Backgrou
   return item
 }
 
-function normalizeBackgroundTaskKind(kind: BackgroundTaskKind): BackgroundTaskItem['kind'] {
+function normalizeBackgroundTaskKind(kind: BackgroundTaskKind): Pick<BackgroundTaskItem, 'kind' | 'rawKind'> {
   switch (kind) {
+    case BackgroundTaskKind.SUBAGENT:
+      return { kind: 'subagent' }
     case BackgroundTaskKind.SHELL:
-      return 'shell'
+      return { kind: 'shell' }
     case BackgroundTaskKind.WORKFLOW:
-      return 'workflow'
+      return { kind: 'workflow' }
     default:
-      return 'subagent'
+      return { kind: 'unknown', rawKind: Number(kind) }
   }
 }
 
@@ -155,10 +161,10 @@ export function shouldShowBackgroundTasksSection(
 /**
  * Which kind of row the background-task list shows: one kind, or every kind.
  *
- * Derived from the row's own `kind` rather than spelled out, so a third kind
- * reaches the filter (and its tab) by adding it to `BackgroundTaskItem` alone.
+ * Unknown wire kinds remain visible under All but get no behavior-specific tab.
+ * Add a supported kind here only when the panel also supplies its label and icon.
  */
-export type BackgroundTaskKindFilter = 'all' | BackgroundTaskItem['kind']
+export type BackgroundTaskKindFilter = 'all' | 'subagent' | 'shell' | 'workflow'
 
 // filterBackgroundTasksByKind returns the rows the given tab shows. `all`
 // returns the input array itself, so the identity a memo upstream established

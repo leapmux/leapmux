@@ -9,10 +9,8 @@ import * as styles from './BackgroundTaskPanel.css'
 /**
  * Every tab: its label, and what the region says when it holds no rows.
  *
- * A `Record` over the kind union, so a new `BackgroundTaskItem['kind']` fails
- * to compile until it has both. A plain array type-checked with any subset,
- * which let a new kind ship reachable only through All -- the tab list and the
- * empty messages have to be one declaration for that to be impossible.
+ * A `Record` over the supported filter vocabulary, so a new filter fails to
+ * compile until it has both. Unknown wire kinds stay under All and get no tab.
  *
  * A new kind still needs two things this cannot force: a case in
  * `protoBackgroundTaskToStore`, and a case in the kind-icon `Switch` inside

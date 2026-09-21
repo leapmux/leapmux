@@ -142,7 +142,7 @@ func TestZCodeSubagent_BackgroundLaunchIsNotAChildReport(t *testing.T) {
 	assert.Empty(t, child.LeapMuxNotifications())
 }
 
-func TestZCodeSubagent_MessageEventRoutesToTheChildAndHandsBackToTheParent(t *testing.T) {
+func TestZCodeSubagent_MessageEventRoutesToTheChild(t *testing.T) {
 	t.Parallel()
 
 	sink := &recordingControlSink{}
@@ -157,15 +157,49 @@ func TestZCodeSubagent_MessageEventRoutesToTheChildAndHandsBackToTheParent(t *te
 	require.NotEmpty(t, rows[0].ChildAgentID)
 	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
 	require.True(t, ok)
-	require.Len(t, child.Messages(), 2)
+	require.Len(t, child.Messages(), 1)
 	assert.JSONEq(t, `{"content":"Find the parser."}`, string(child.Messages()[0].Content))
-	var assembled map[string]string
-	require.NoError(t, json.Unmarshal(child.Messages()[1].Content, &assembled))
-	assert.Equal(t, string(AssembledMessageKindText), assembled[contracts.AssembledMessageFieldKind])
-	assert.Equal(t, "The parser is in parser.go.", assembled[contracts.AssembledMessageFieldText])
-	reports := sink.Notifications()
+	reports := child.LeapMuxNotifications()
 	require.Len(t, reports, 1)
 	assert.Equal(t, "The parser is in parser.go.", reports[0]["text"])
+	assert.Empty(t, sink.LeapMuxNotifications(), "the foreground Agent result owns the parent handback")
+}
+
+func TestZCodeSubagent_LifecycleAndAgentResultPersistOneReport(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+		`{"agentId":"agent-1","agentType":"Explore","parentToolCallId":"spawn-1","message":"1 file"}`))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated, zcodeSpawnResult))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	require.Len(t, child.Messages(), 1, "the child keeps only its prompt as a plain message")
+	require.Len(t, child.LeapMuxNotifications(), 1,
+		"the Agent result must not copy a lifecycle report into the child a second time")
+	assert.Empty(t, sink.LeapMuxNotifications(), "the foreground Agent result owns the parent handback")
+}
+
+func TestZCodeSubagent_FinalLifecycleClosesWithoutAnAgentResult(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
+		`{"kind":"result","toolCallId":"spawn-1","result":{"success":true,"content":"Async agent launched successfully.\nagentId: agent-1"}}`))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated,
+		`{"agentId":"agent-1","agentType":"Explore","parentToolCallId":"spawn-1","status":"completed","message":"Done."}`))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+	require.Len(t, sink.LeapMuxNotifications(), 1, "a background run has no later Agent result for the parent")
 }
 
 func TestZCodeSubagent_FailedLifecycleNotificationStaysInTheChild(t *testing.T) {
@@ -262,7 +296,7 @@ func TestZCodeChildIndex_ZeroValueIsUsable(t *testing.T) {
 	assert.False(t, ok)
 	_, ok = index.takeChild("nothing")
 	assert.False(t, ok)
-	assert.Empty(t, index.takeTitle("nothing"))
+	assert.Empty(t, index.title("nothing"))
 	index.forgetTool("nothing")
 	index.clear()
 
@@ -406,8 +440,7 @@ func TestZCodeSubagent_ASpawnWithNoToolCallsPersistsItsPromptAndReport(t *testin
 	require.Len(t, sink.ChildAgentIDs(), 1)
 
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated, zcodeSpawnResult))
-	assert.Empty(t, a.children.takeTitle("spawn-1"), "the label is dropped when the spawn ends")
-	assert.Empty(t, a.children.titles)
+	assert.Empty(t, a.children.title("spawn-1"), "the label is dropped when the spawn ends")
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
 	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)

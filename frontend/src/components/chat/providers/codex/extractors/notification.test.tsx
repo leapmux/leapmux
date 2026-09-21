@@ -8,6 +8,13 @@ const { renderThreadText } = await import('~/test-support/messageRenderProbes')
 
 const renderText = (messages: unknown[]): string => renderThreadText(messages, AgentProvider.CODEX)
 
+describe('codex compaction status', () => {
+  it('renders an in-progress status as the compaction start', () => {
+    expect(renderText([{ type: 'system', subtype: 'status', status: 'compacting' }]))
+      .toBe('Compacting context...')
+  })
+})
+
 describe('codex single MCP startup status', () => {
   // A standalone Codex notification renders through the same
   // renderNotificationThread path as a consolidated one (a one-element thread).
@@ -93,10 +100,8 @@ describe('codex single MCP startup status', () => {
   })
 })
 
-describe('codex rate-limit reached-type notifications', () => {
-  it('surfaces credit depletion even when no window is over threshold', () => {
-    // Windows are well under threshold, so without the reached-type this would
-    // render nothing -- the authoritative signal keeps the block visible.
+describe('codex rate-limit transcript rows', () => {
+  it('does not render credit depletion', () => {
     expect(renderText([{
       method: 'account/rateLimits/updated',
       params: {
@@ -105,11 +110,11 @@ describe('codex rate-limit reached-type notifications', () => {
           primary: { usedPercent: 20, windowDurationMins: 300 },
         },
       },
-    }])).toBe('Out of credits')
+    }])).toBe('')
   })
 
-  it('does not double-report when a tier line already conveys the throttle', () => {
-    const text = renderText([{
+  it('does not render a depleted window', () => {
+    expect(renderText([{
       method: 'account/rateLimits/updated',
       params: {
         rateLimits: {
@@ -117,9 +122,7 @@ describe('codex rate-limit reached-type notifications', () => {
           primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: 4102444800 },
         },
       },
-    }])
-    expect(text).toContain('5-hour rate limit')
-    expect(text).not.toContain('Rate limit reached')
+    }])).toBe('')
   })
 })
 

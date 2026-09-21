@@ -1,5 +1,6 @@
 import type { Accessor } from 'solid-js'
 import { createMemo } from 'solid-js'
+import { hasLineLongerThan } from '../safeTextDisplay'
 import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 
 /**
@@ -12,6 +13,11 @@ import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
  */
 export const COLLAPSED_LINE_CHAR_CAP = 240
 const TRUNCATION_INDICATOR = '…'
+
+/** Whether a body exceeds either the row limit or one collapsed line. */
+export function textNeedsCollapse(text: string, threshold: number = COLLAPSED_RESULT_ROWS): boolean {
+  return hasMoreLinesThan(text, threshold) || hasLineLongerThan(text, COLLAPSED_LINE_CHAR_CAP)
+}
 
 /**
  * Emit `text`'s `\n`-separated lines, replacing any line longer than `cap`
@@ -107,7 +113,7 @@ function resolveThreshold(threshold: number | Accessor<number> | undefined): Acc
  */
 export function useCollapsedFlag(opts: UseCollapsedLinesOptions): Accessor<boolean> {
   const readThreshold = resolveThreshold(opts.threshold)
-  return createMemo(() => !opts.expanded() && hasMoreLinesThan(opts.text(), readThreshold()))
+  return createMemo(() => !opts.expanded() && textNeedsCollapse(opts.text(), readThreshold()))
 }
 
 export interface UseCollapsedItemsOptions<T> {

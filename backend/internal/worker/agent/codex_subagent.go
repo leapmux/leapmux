@@ -247,7 +247,7 @@ func (a *CodexAgent) upsertCollabChildRow(up bgtask.Upsert) error {
 // handleCodexSubAgentActivity handles a v2 subAgentActivity item (registry
 // only; never persisted). The started item is the V2 spawn authority: it
 // supplies the spawn call ID, child thread ID, and canonical task path. The
-// completed item closes the run. Interacted and interrupted remain resumable.
+// completed and interrupted items close the run. Interacted keeps it active.
 func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage, parentThreadID string) bool {
 	var act struct {
 		Type          string `json:"type"`
@@ -276,6 +276,13 @@ func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage, parentThr
 		})
 		return true
 	}
+	if act.Kind == "interrupted" {
+		a.completeCodexChildRun(act.AgentThreadID, codexChildTransition{
+			status:     bgtask.StatusFailed,
+			completion: MessageCompletionError,
+		})
+		return true
+	}
 
 	transition := codexChildTransition{status: bgtask.StatusRunning}
 	switch act.Kind {
@@ -288,9 +295,6 @@ func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage, parentThr
 		}
 	case "interacted":
 		transition.activity = "received input"
-		a.activateCollabChild(act.AgentThreadID)
-	case "interrupted":
-		transition.activity = "paused"
 		a.activateCollabChild(act.AgentThreadID)
 	default:
 		// An unknown activity still proves that the child exists. Do not infer
@@ -362,7 +366,7 @@ func (a *CodexAgent) recordCodexChildReportCandidate(threadID, itemID, text stri
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	state := a.collabChildren[threadID]
-	if state == nil || state.agentPath == "" {
+	if state == nil || state.childAgentID == "" {
 		return "", false
 	}
 	state.reportCandidateItemID = itemID
@@ -371,19 +375,25 @@ func (a *CodexAgent) recordCodexChildReportCandidate(threadID, itemID, text stri
 		return "", false
 	}
 	state.lastReportItemID = itemID
-	return state.displayTitle(), true
+	label := state.displayTitle()
+	state.reportCandidateItemID = ""
+	state.reportCandidateText = ""
+	return label, true
 }
 
-func (a *CodexAgent) takeCodexChildReportCandidate(threadID string) (label, text string, ok bool) {
+func (a *CodexAgent) takeCodexChildReportCandidate(threadID string) (reportID, label, text string, ok bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	state := a.collabChildren[threadID]
-	if state == nil || state.agentPath == "" || state.reportCandidateItemID == "" ||
+	if state == nil || state.childAgentID == "" || state.reportCandidateItemID == "" ||
 		state.reportCandidateItemID == state.lastReportItemID || strings.TrimSpace(state.reportCandidateText) == "" {
-		return "", "", false
+		return "", "", "", false
 	}
 	state.lastReportItemID = state.reportCandidateItemID
-	return state.displayTitle(), state.reportCandidateText, true
+	reportID, label, text = state.reportCandidateItemID, state.displayTitle(), state.reportCandidateText
+	state.reportCandidateItemID = ""
+	state.reportCandidateText = ""
+	return reportID, label, text, true
 }
 
 func codexAgentPathTitle(agentPath string) string {
@@ -537,6 +547,8 @@ func (a *CodexAgent) finishCollabChildRun(threadID string) {
 		state.pendingEventBytes = 0
 		state.pendingOutputDropped = false
 		state.pendingGenerationBytes = 0
+		state.reportCandidateItemID = ""
+		state.reportCandidateText = ""
 		state.generationBuffer.Reset()
 	}
 	a.mu.Unlock()

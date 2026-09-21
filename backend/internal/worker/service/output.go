@@ -5,6 +5,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1696,6 +1698,41 @@ func (s *agentOutputSink) PersistLeapMuxNotification(content map[string]interfac
 	s.h.PersistLeapMuxNotification(s.agentID, s.agentProvider, content)
 }
 
+func (s *agentOutputSink) PersistSubagentReport(write agent.SubagentReportWrite) (bool, error) {
+	payload, err := write.NotificationPayload()
+	if err != nil || payload == nil {
+		return false, err
+	}
+	if write.Target == agent.SubagentReportChildTranscript {
+		childID, _, found, lookupErr := s.LookupBackgroundTask(write.RowKey)
+		if lookupErr != nil {
+			return false, lookupErr
+		}
+		if !found || childID == "" {
+			return false, fmt.Errorf("subagent report child for row %q is unavailable", write.RowKey)
+		}
+		write.Target = agent.SubagentReportCurrentTranscript
+		childSink := s.ChildSink(childID)
+		if childSink == nil {
+			return false, fmt.Errorf("subagent report child %q is unavailable", childID)
+		}
+		return childSink.PersistSubagentReport(write)
+	}
+	contentJSON, err := json.Marshal(payload)
+	if err != nil {
+		return false, fmt.Errorf("marshal subagent report: %w", err)
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(write.ReportID)))
+	idempotencyKey := fmt.Sprintf("subagent-report:%x", sum)
+	mu := s.h.notifMutex(s.agentID)
+	mu.Lock()
+	defer mu.Unlock()
+	return s.h.createNotificationStandaloneWithIdempotencyKey(
+		s.agentID, s.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX,
+		contentJSON, idempotencyKey,
+	)
+}
+
 func (s *agentOutputSink) StorePlanModeToolUse(toolUseID, targetMode string) {
 	s.h.planModeToolUse.Store(toolUseID, targetMode)
 }
@@ -2590,6 +2627,10 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 // createNotificationStandalone creates a new standalone notification message.
 // It always broadcasts on success, so it reports broadcast=true.
 func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, contentJSON []byte) (bool, error) {
+	return h.createNotificationStandaloneWithIdempotencyKey(agentID, agentProvider, source, contentJSON, "")
+}
+
+func (h *OutputHandler) createNotificationStandaloneWithIdempotencyKey(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, contentJSON []byte, idempotencyKey string) (bool, error) {
 	msgID := id.Generate()
 	wrapped := wrapNotifContent(contentJSON)
 	compressed, compressionType := msgcodec.Compress(wrapped)
@@ -2598,13 +2639,19 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 	// Capture currently-active spans so the notification renders with
 	// passthrough vertical bars instead of breaking the column.
 	spanLines := h.snapshotPassthroughSpanLines(agentID)
+	agentSessionID := ""
+	if idempotencyKey != "" {
+		agentSessionID = h.messageSessionID(agentID)
+	}
 
 	seq, err := createMessageRow(bgCtx(), h.queries, db.CreateMessageParams{
 		ID:                 msgID,
 		AgentID:            agentID,
+		AgentSessionID:     agentSessionID,
 		Source:             source,
 		Content:            compressed,
 		ContentCompression: compressionType,
+		IdempotencyKey:     idempotencyKey,
 		Depth:              0,
 		SpanID:             "",
 		ParentSpanID:       "",
@@ -2613,6 +2660,9 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 		AgentProvider:      agentProvider,
 		CreatedAt:          sqltime.NewSQLiteTime(now),
 	})
+	if errors.Is(err, sql.ErrNoRows) && idempotencyKey != "" {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}

@@ -26,8 +26,9 @@ import (
 // the `Agent` tool's own result. So the parent keeps the spawn card and the result,
 // and the subagent's work goes to a child transcript that opens from it.
 //
-// The subagent writes no assistant text on this stream -- its report IS the `Agent`
-// tool's result -- so the child transcript holds the spawn prompt and the tool cards.
+// Current builds can send the report through a subagent lifecycle event before the
+// `Agent` result repeats it. The child transcript holds the prompt, tool cards, and
+// one durable report identity across both paths.
 
 // zcodeChildIndex remembers which transcript a subagent's rows belong to.
 //
@@ -38,51 +39,72 @@ import (
 // tool call, so that id has to be enough on its own.
 //
 // The zero value is usable: every map is created on first write, under the lock.
+type zcodeSpawnRecord struct {
+	childAgentID string
+	title        string
+	toolCallIDs  map[string]struct{}
+	background   bool
+}
+
 type zcodeChildIndex struct {
 	mu sync.Mutex
-	// children maps a spawn's tool-call id to its child transcript. That id is also
-	// the span the spawn card owns and the registry row key, so the row the child
-	// linkage lands on and the row the spawn's own result closes are one row.
-	children map[string]string
-	// tools maps ONE of the subagent's tool calls to the same transcript, so a
-	// closing row lands where its opening row went.
-	tools map[string]string
-	// titles holds the label the SPAWN stated until the spawn ends. The spawn
-	// supplies the task title ("file census"). The subagent updates describe
-	// commands. They must not replace the task title.
-	titles map[string]string
+	// spawns owns every fact whose lifetime is one Agent call.
+	spawns map[string]*zcodeSpawnRecord
+	// toolSpawns resolves a child tool call back to its owning spawn record.
+	toolSpawns map[string]string
+}
+
+func (i *zcodeChildIndex) spawnLocked(spawnToolCallID string) *zcodeSpawnRecord {
+	if i.spawns == nil {
+		i.spawns = make(map[string]*zcodeSpawnRecord)
+	}
+	record := i.spawns[spawnToolCallID]
+	if record == nil {
+		record = &zcodeSpawnRecord{}
+		i.spawns[spawnToolCallID] = record
+	}
+	return record
 }
 
 func (i *zcodeChildIndex) child(spawnToolCallID string) (string, bool) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	childID, ok := i.children[spawnToolCallID]
-	return childID, ok
+	record := i.spawns[spawnToolCallID]
+	if record == nil || record.childAgentID == "" {
+		return "", false
+	}
+	return record.childAgentID, true
 }
 
 // rememberChild records the transcript of a spawn, and of one tool call inside it.
 func (i *zcodeChildIndex) rememberChild(spawnToolCallID, toolCallID, childAgentID string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.children == nil {
-		i.children = map[string]string{}
-	}
-	i.children[spawnToolCallID] = childAgentID
+	record := i.spawnLocked(spawnToolCallID)
+	record.childAgentID = childAgentID
 	if toolCallID == "" {
 		return
 	}
-	if i.tools == nil {
-		i.tools = map[string]string{}
+	if record.toolCallIDs == nil {
+		record.toolCallIDs = make(map[string]struct{})
 	}
-	i.tools[toolCallID] = childAgentID
+	record.toolCallIDs[toolCallID] = struct{}{}
+	if i.toolSpawns == nil {
+		i.toolSpawns = make(map[string]string)
+	}
+	i.toolSpawns[toolCallID] = spawnToolCallID
 }
 
 // toolChild returns the transcript one of a subagent's tool calls belongs to.
 func (i *zcodeChildIndex) toolChild(toolCallID string) (string, bool) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	childID, ok := i.tools[toolCallID]
-	return childID, ok
+	spawnToolCallID := i.toolSpawns[toolCallID]
+	record := i.spawns[spawnToolCallID]
+	if record == nil || record.childAgentID == "" {
+		return "", false
+	}
+	return record.childAgentID, true
 }
 
 // forgetTool drops a finished tool call. The transcript stays: the subagent is still
@@ -90,16 +112,26 @@ func (i *zcodeChildIndex) toolChild(toolCallID string) (string, bool) {
 func (i *zcodeChildIndex) forgetTool(toolCallID string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	delete(i.tools, toolCallID)
+	spawnToolCallID := i.toolSpawns[toolCallID]
+	delete(i.toolSpawns, toolCallID)
+	if record := i.spawns[spawnToolCallID]; record != nil {
+		delete(record.toolCallIDs, toolCallID)
+	}
 }
 
 // takeChild returns a spawn's transcript and drops it, when the spawn ends.
 func (i *zcodeChildIndex) takeChild(spawnToolCallID string) (string, bool) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	childID, ok := i.children[spawnToolCallID]
-	delete(i.children, spawnToolCallID)
-	return childID, ok
+	record := i.spawns[spawnToolCallID]
+	if record == nil {
+		return "", false
+	}
+	delete(i.spawns, spawnToolCallID)
+	for toolCallID := range record.toolCallIDs {
+		delete(i.toolSpawns, toolCallID)
+	}
+	return record.childAgentID, record.childAgentID != ""
 }
 
 func (i *zcodeChildIndex) rememberTitle(spawnToolCallID, title string) {
@@ -108,42 +140,48 @@ func (i *zcodeChildIndex) rememberTitle(spawnToolCallID, title string) {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.titles == nil {
-		i.titles = map[string]string{}
+	record := i.spawnLocked(spawnToolCallID)
+	if record.title == "" {
+		record.title = title
 	}
-	if i.titles[spawnToolCallID] == "" {
-		i.titles[spawnToolCallID] = title
-	}
-}
-
-// takeTitle returns the label the spawn stated, and drops it.
-func (i *zcodeChildIndex) takeTitle(spawnToolCallID string) string {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	title := i.titles[spawnToolCallID]
-	delete(i.titles, spawnToolCallID)
-	return title
 }
 
 func (i *zcodeChildIndex) title(spawnToolCallID string) string {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	return i.titles[spawnToolCallID]
+	if record := i.spawns[spawnToolCallID]; record != nil {
+		return record.title
+	}
+	return ""
 }
 
 // forgetTitle drops a spawn's label when the spawn ends.
 func (i *zcodeChildIndex) forgetTitle(spawnToolCallID string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	delete(i.titles, spawnToolCallID)
+	if record := i.spawns[spawnToolCallID]; record != nil {
+		record.title = ""
+	}
+}
+
+func (i *zcodeChildIndex) markBackground(spawnToolCallID string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.spawnLocked(spawnToolCallID).background = true
+}
+
+func (i *zcodeChildIndex) isBackground(spawnToolCallID string) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	record := i.spawns[spawnToolCallID]
+	return record != nil && record.background
 }
 
 func (i *zcodeChildIndex) clear() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	clear(i.children)
-	clear(i.tools)
-	clear(i.titles)
+	clear(i.spawns)
+	clear(i.toolSpawns)
 }
 
 // zcodeToolSpawnsSubagent reports whether a tool call STARTS a subagent.
@@ -208,24 +246,6 @@ func (a *zcodeAgent) handleZCodeSubagentLifecycle(event zcodeEventEnvelope) {
 	if !ok {
 		return
 	}
-
-	report := strings.TrimSpace(payload.Message)
-	if report == "" {
-		report = strings.TrimSpace(payload.Text)
-	}
-	if report == "" && payload.Status == "" {
-		report = strings.TrimSpace(payload.SummaryText)
-	}
-	if report != "" {
-		raw, err := MarshalAssembledMessage(AssembledMessageKindText, report, MessageCompletionComplete)
-		if err != nil {
-			slog.Warn("zcode subagent message marshal failed", "agent_id", a.agentID, "child_agent_id", childID, "error", err)
-		} else if err := a.sink.PersistChildMessage(childID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{}); err != nil {
-			slog.Warn("zcode subagent message persist failed", "agent_id", a.agentID, "child_agent_id", childID, "error", err)
-		}
-		persistSubagentReport(a.sink, subagentReport{Label: childTitle, Text: report})
-	}
-
 	status := bgtask.StatusRunning
 	final := false
 	switch payload.Status {
@@ -236,23 +256,57 @@ func (a *zcodeAgent) handleZCodeSubagentLifecycle(event zcodeEventEnvelope) {
 	case "cancelled", "stopped":
 		status, final = bgtask.StatusStopped, true
 	}
-	// The Agent tool result owns the durable final status and report. A stopped
-	// lifecycle event can arrive first. Finalizing here would make that later
-	// result look like a replay and suppress the child report.
+
+	report := strings.TrimSpace(payload.Message)
+	if report == "" {
+		report = strings.TrimSpace(payload.Text)
+	}
+	if report == "" {
+		report = strings.TrimSpace(payload.SummaryText)
+	}
+	if report != "" {
+		reportID := subagentReportContentID("zcode", payload.ParentToolCallID, report)
+		persistSubagentReport(a.sink, SubagentReportWrite{
+			ReportID: reportID,
+			RowKey:   payload.ParentToolCallID,
+			Target:   SubagentReportChildTranscript,
+			Report:   SubagentReport{Label: childTitle, Text: report},
+		})
+		if final && a.children.isBackground(payload.ParentToolCallID) {
+			persistSubagentReport(a.sink, SubagentReportWrite{
+				ReportID: reportID,
+				Report:   SubagentReport{Label: childTitle, Text: report},
+			})
+		}
+	}
 	if final {
 		if failure := strings.TrimSpace(payload.Error); failure != "" {
-			raw, err := MarshalAssembledMessage(AssembledMessageKindText, failure, MessageCompletionError)
-			if err != nil {
-				slog.Warn("zcode subagent failure marshal failed", "agent_id", a.agentID, "child_agent_id", childID, "error", err)
-			} else if err := a.sink.PersistChildMessage(childID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{}); err != nil {
-				slog.Warn("zcode subagent failure persist failed", "agent_id", a.agentID, "child_agent_id", childID, "error", err)
-			}
+			a.persistZCodeChildText(childID, failure, MessageCompletionError)
 		}
+		logRegistryRefusal("zcode", "close", a.sink.CloseBackgroundTask(payload.ParentToolCallID, status))
+		a.children.takeChild(payload.ParentToolCallID)
+		a.children.forgetTitle(payload.ParentToolCallID)
+		a.sink.CleanupChildAgent(childID)
 		return
 	}
+	a.upsertZCodeSubagent(payload.ParentToolCallID, childID, childTitle)
+}
+
+func (a *zcodeAgent) persistZCodeChildText(childID, text string, completion MessageCompletion) {
+	raw, err := MarshalAssembledMessage(AssembledMessageKindText, text, completion)
+	if err != nil {
+		slog.Warn("zcode subagent text marshal failed", "agent_id", a.agentID, "child_agent_id", childID, "error", err)
+		return
+	}
+	if err := a.sink.PersistChildMessage(childID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{}); err != nil {
+		slog.Warn("zcode subagent text persist failed", "agent_id", a.agentID, "child_agent_id", childID, "error", err)
+	}
+}
+
+func (a *zcodeAgent) upsertZCodeSubagent(rowKey, childID, title string) {
 	logRegistryRefusal("zcode", "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
-		RowKey: payload.ParentToolCallID, Kind: bgtask.KindSubagent, Title: childTitle,
-		Status: status, ChildAgentID: childID,
+		RowKey: rowKey, Kind: bgtask.KindSubagent, Title: title,
+		Status: bgtask.StatusRunning, ChildAgentID: childID,
 	}))
 }
 
@@ -292,13 +346,7 @@ func (a *zcodeAgent) zcodeSubagentChild(payload zcodeToolUpdated) (string, bool)
 	// The subagent's OWN tool call is aliased to the same transcript, so its closing row
 	// and any batch summary that lists it land where its opening row went.
 	a.children.rememberChild(rowKey, payload.ToolCallID, childID)
-	logRegistryRefusal("zcode", "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
-		RowKey:       rowKey,
-		Kind:         bgtask.KindSubagent,
-		Title:        title,
-		Status:       bgtask.StatusRunning,
-		ChildAgentID: childID,
-	}))
+	a.upsertZCodeSubagent(rowKey, childID, title)
 	return childID, true
 }
 
@@ -420,10 +468,7 @@ func (a *zcodeAgent) openZCodeToolCallInto(sink ToolSpanServices, event zcodeEve
 		// The spawn already identifies one conversation. Create its transcript now,
 		// so a child that answers without any tool call still has a prompt and report.
 		if childID, childTitle, ok := a.ensureZCodeSubagentTranscript(payload.ToolCallID, payload.ToolCallID, title); ok {
-			logRegistryRefusal("zcode", "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
-				RowKey: payload.ToolCallID, Kind: bgtask.KindSubagent, Title: childTitle,
-				Status: bgtask.StatusRunning, ChildAgentID: childID,
-			}))
+			a.upsertZCodeSubagent(payload.ToolCallID, childID, childTitle)
 		}
 	}
 	supplemental, err := zcodeToolInputSupplement(payload, input)
@@ -490,6 +535,9 @@ func (a *zcodeAgent) closeZCodeToolCallInto(sink toolLifecycleServices, event zc
 	sink.CloseSpan(payload.ToolCallID)
 
 	backgroundLaunch := zcodeAgentLaunchedInBackground(payload)
+	if backgroundLaunch {
+		a.children.markBackground(payload.ToolCallID)
+	}
 	if !backgroundLaunch {
 		a.persistZCodeSubagentReport(payload)
 		a.applyZCodeSubagentEnd(payload, recovered)
@@ -531,14 +579,12 @@ func (a *zcodeAgent) persistZCodeSubagentReport(payload zcodeToolUpdated) {
 	if zcodeAgentLaunchedInBackground(payload) {
 		return
 	}
-	childID, status, found, err := a.sink.LookupBackgroundTask(payload.ToolCallID)
-	if err != nil {
-		slog.Warn("zcode subagent report lookup failed", "agent_id", a.agentID, "row_key", payload.ToolCallID, "error", err)
-		return
-	}
-	if found && childID != "" && !status.IsFinished() {
-		persistSubagentReport(a.sink.ChildSink(childID), subagentReport{Text: result.Content})
-	}
+	persistSubagentReport(a.sink, SubagentReportWrite{
+		ReportID: subagentReportContentID("zcode", payload.ToolCallID, strings.TrimSpace(result.Content)),
+		RowKey:   payload.ToolCallID,
+		Target:   SubagentReportChildTranscript,
+		Report:   SubagentReport{Text: result.Content},
+	})
 }
 
 // zcodeSpawnTitle labels the subagent an `Agent` call starts: the description the

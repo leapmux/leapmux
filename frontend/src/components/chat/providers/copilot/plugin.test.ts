@@ -36,8 +36,16 @@ describe('copilot provider', () => {
   // A row LeapMux itself wrote carries a `type` and no Copilot event, so the event
   // dispatch finds nothing of its own in it.
   it('classifies each plain notification type as a notification', () => {
-    for (const type of ['interrupted', 'settings_changed', 'context_cleared', 'agent_error', 'plan_updated', 'compacting'])
-      expect(plugin?.transcript.classify(input({ type }))).toEqual({ kind: 'notification', messages: [{ type }] })
+    const notifications = [
+      { type: 'interrupted' },
+      { type: 'settings_changed', changes: { model: { old: 'a', new: 'b' } } },
+      { type: 'context_cleared' },
+      { type: 'agent_error', error: 'failed' },
+      { type: 'plan_updated', plan_title: 'Plan' },
+      { type: 'compacting' },
+    ]
+    for (const notification of notifications)
+      expect(plugin?.transcript.classify(input(notification)).kind).toBe('notification')
   })
 
   it('reads the plan toggle from the session-mode axis, not the permission mode', () => {

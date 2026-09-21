@@ -1641,7 +1641,8 @@ type acpSubagentObservation struct {
 	// Report is the final report that the provider returned to the parent. The
 	// shared translator copies it into the child transcript. The parent keeps its
 	// native tool result, so the report stays visible in both conversations.
-	Report subagentReport
+	ReportID string
+	Report   SubagentReport
 }
 
 func (b *acpBase) handleToolCall(update json.RawMessage) {
@@ -1961,13 +1962,11 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 			}
 		}
 	}
-	status := bgtask.StatusUnspecified
-	found := false
 	lookupOK := true
 	if obs.Report.Text != "" || (obs.CloseRow && childAgentID == "") {
 		var resolvedChildID string
 		var err error
-		resolvedChildID, status, found, err = b.sink.LookupBackgroundTask(rowKey)
+		resolvedChildID, _, _, err = b.sink.LookupBackgroundTask(rowKey)
 		if err != nil {
 			slog.Warn("acp subagent child lookup failed", "provider", b.providerName, "row_key", rowKey, "error", err)
 			lookupOK = false
@@ -1976,8 +1975,13 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 		}
 	}
 	if obs.Report.Text != "" {
-		if lookupOK && childAgentID != "" && (!found || !status.IsFinished()) {
-			persistSubagentReport(b.sink.ChildSink(childAgentID), obs.Report)
+		if lookupOK && childAgentID != "" {
+			persistSubagentReport(b.sink, SubagentReportWrite{
+				ReportID: obs.ReportID,
+				RowKey:   rowKey,
+				Target:   SubagentReportChildTranscript,
+				Report:   obs.Report,
+			})
 		}
 	}
 	if obs.CloseRow {

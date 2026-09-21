@@ -89,6 +89,10 @@ function injectCopyButtons(container: HTMLElement): Array<() => void> {
   for (const pre of preElements) {
     if (pre.querySelector('.copy-code-button'))
       continue
+    // A large Markdown body degrades to one plain-text preview in a <pre>. Its row
+    // action copies the complete source; a code button here would copy the limited view.
+    if (pre.hasAttribute('data-large-text-display'))
+      continue
     // Skip shiki <pre> inside tool messages — copy is handled by ToolHeaderActions.
     if (pre.closest('[data-tool-message]'))
       continue

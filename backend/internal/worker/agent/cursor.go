@@ -38,14 +38,11 @@ type CursorCLIAgent struct {
 	// one keeps its entry -- one bool and one id -- for the life of the agent,
 	// which matches how acpBase's subagentPrompts holds a spawn's prompt.
 	taskToolCalls map[string]bool
-	// reportedTaskCalls prevents a repeated store pass from copying one Task
-	// report into the child transcript twice. Guarded by acpBase.mu.
-	reportedTaskCalls map[string]bool
-	// taskReportExtensions identifies live cursor/task extension frames. Cursor
-	// does not replay them on session/load, so this is the durable-report copy's
-	// replay guard. taskStoreReports holds a store result that arrived first.
-	taskReportExtensions map[string]bool
-	taskStoreReports     map[string]string
+	// taskReports joins the live cursor/task extension with the local-store
+	// result. Cursor replays the store record but not the extension, so only a
+	// state that saw both can publish a report. Guarded by acpBase.mu and capped
+	// in cursor_tool_transcript.go.
+	taskReports map[string]cursorTaskReportState
 
 	// transcript is the sink that configure installed, held under its own type so
 	// the extension handler can reach EnrichToolSpan. The transcript is the single
@@ -64,9 +61,7 @@ func (a *CursorCLIAgent) clearTaskToolCalls() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	clear(a.taskToolCalls)
-	clear(a.reportedTaskCalls)
-	clear(a.taskReportExtensions)
-	clear(a.taskStoreReports)
+	clear(a.taskReports)
 }
 
 // rememberTaskToolCall notes that toolCallID is Cursor's `task` tool.

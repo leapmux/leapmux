@@ -2,8 +2,8 @@ import type { ToolCallRow } from '../../model/row'
 import type { ToolKindMeta } from './renderer'
 import { rowDrawsRequest, rowDrawsResult, rowHasResultRow } from '../../model/derivations'
 import { isToolFailureResult, isUnparsedToolResult } from '../../model/toolCall'
-import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../collapse'
 import { contentBlocksCopyable } from '../genericToolCall'
+import { textNeedsCollapse } from '../useCollapsedLines'
 import { dispatchToolCall } from './index'
 
 /**
@@ -41,7 +41,7 @@ export interface ToolCallMeta extends ToolResultMeta {
 
 /** The meta a ToolFailureResult or an UnparsedToolResult offers: one plain text block. */
 export function plainMeta(text: string): ToolKindMeta {
-  return { collapsible: hasMoreLinesThan(text, COLLAPSED_RESULT_ROWS), hasDiff: false, copyableContent: () => text || null }
+  return { collapsible: textNeedsCollapse(text), hasDiff: false, copyableContent: () => text || null }
 }
 
 /** One row's copyable text, and the words that describe the side which stated it. */

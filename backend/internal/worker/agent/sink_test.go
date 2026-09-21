@@ -149,6 +149,8 @@ type testSink struct {
 	// byte-identically into the existing thread tail (no frontend clear). Default
 	// false: notifications report a broadcast, like a normal standalone persist.
 	notifSuppressBroadcast bool
+	// reportIDs models the database uniqueness rule for provider-neutral reports.
+	reportIDs map[string]struct{}
 }
 
 func (*testSink) providerServices() {}
@@ -540,6 +542,37 @@ func (s *testSink) PersistLeapMuxNotification(info map[string]interface{}) {
 		cp[k] = v
 	}
 	s.leapMuxNotifications = append(s.leapMuxNotifications, cp)
+}
+
+func (s *testSink) PersistSubagentReport(write SubagentReportWrite) (bool, error) {
+	payload, err := write.NotificationPayload()
+	if err != nil || payload == nil {
+		return false, err
+	}
+	if write.Target == SubagentReportChildTranscript {
+		childID, _, found, lookupErr := s.LookupBackgroundTask(write.RowKey)
+		if lookupErr != nil {
+			return false, lookupErr
+		}
+		if !found || childID == "" {
+			return false, fmt.Errorf("subagent report child for row %q is unavailable", write.RowKey)
+		}
+		write.Target = SubagentReportCurrentTranscript
+		return s.ChildSink(childID).PersistSubagentReport(write)
+	}
+	s.mu.Lock()
+	if s.reportIDs == nil {
+		s.reportIDs = make(map[string]struct{})
+	}
+	reportID := strings.TrimSpace(write.ReportID)
+	if _, duplicate := s.reportIDs[reportID]; duplicate {
+		s.mu.Unlock()
+		return false, nil
+	}
+	s.reportIDs[reportID] = struct{}{}
+	s.mu.Unlock()
+	s.PersistLeapMuxNotification(payload)
+	return true, nil
 }
 func (s *testSink) StorePlanModeToolUse(toolUseID, targetMode string) {
 	s.planModeToolUses.Store(toolUseID, targetMode)
@@ -1305,6 +1338,7 @@ func (noopSink) PersistSettingsRefresh(optionmap.Map)                           
 func (noopSink) BroadcastStatusActive(string)                                      {}
 func (noopSink) BroadcastSessionInfo(map[string]interface{})                       {}
 func (noopSink) PersistLeapMuxNotification(map[string]interface{})                 {}
+func (noopSink) PersistSubagentReport(SubagentReportWrite) (bool, error)           { return true, nil }
 func (noopSink) StorePlanModeToolUse(string, string)                               {}
 func (noopSink) LoadAndDeletePlanModeToolUse(string) (string, bool)                { return "", false }
 func (noopSink) UpdatePlan([]byte, leapmuxv1.ContentCompression, string)           {}

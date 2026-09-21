@@ -5,15 +5,13 @@ import type { ExpandableToolLayoutContext, RowRenderContext } from './renderCont
 import type { ChatRowExtraction } from './rowExtraction'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
 import MessageSquare from 'lucide-solid/icons/message-square'
-import { createMemo, untrack } from 'solid-js'
+import { untrack } from 'solid-js'
 import { assertNever } from '~/lib/assertNever'
-import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { completionMarker } from './assembledMessage'
 import {
   MarkdownText,
   PlanExecutionMessage,
   renderControlResponseRow,
-  renderMarkdownForContext,
   ThinkingMessage,
   UnrecognizedMessage,
   UserContentMessage,
@@ -23,12 +21,12 @@ import { MESSAGE_UI_KEY } from './messageUiKeys'
 import { flattenNotificationEntries } from './notificationEntries'
 import { renderNotificationBlocks } from './notificationRenderers'
 import { ResultDivider } from './resultDividerRenderers'
-import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './results/collapse'
+import { CollapsibleContent } from './results/CollapsibleContent'
 import { ToolMessage } from './results/ToolMessage'
 import { toolOutcomeLabel } from './results/toolOutcomeLabel'
 import { ToolStatusHeader } from './results/ToolStatusHeader'
+import { textNeedsCollapse } from './results/useCollapsedLines'
 import { toolOutcomeNote } from './toolOutcome'
-import { toolResultCollapsed, toolResultContent } from './toolStyles.css'
 import { MarkdownPlanLayout } from './widgets/MarkdownPlanLayout'
 import { ToolUseLayout } from './widgets/ToolUseLayout'
 
@@ -97,8 +95,7 @@ export function AgentPromptView(props: { prompt: AgentPrompt, context?: Expandab
   const stateKey = untrack(() => props.context?.expandUiKey ?? MESSAGE_UI_KEY.AGENT_PROMPT)
   const [expanded, setExpanded] = useSharedExpandedState(() => props.context, stateKey)
   const text = () => props.prompt.prompt
-  const isCollapsed = () => !expanded() && hasMoreLinesThan(text(), COLLAPSED_RESULT_ROWS)
-  const html = createMemo(() => renderMarkdownForContext(text(), props.context))
+  const isCollapsed = () => !expanded() && textNeedsCollapse(text())
   // The title states WHAT the subagent was asked to do when the provider said so.
   // `Prompt` alone is what every provider fell back to, and it named nothing.
   const title = () => [props.prompt.description, props.prompt.agentType].filter(Boolean).join(' · ') || 'Prompt'
@@ -112,12 +109,12 @@ export function AgentPromptView(props: { prompt: AgentPrompt, context?: Expandab
       onToggleExpand={() => setExpanded(v => !v)}
       {...(props.context !== undefined ? { context: props.context } : {})}
     >
-      <div
-        class={`${toolResultContent}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}
-        ref={props.prompt.promptFormat === 'pre' ? undefined : cachedInnerHtml(html)}
-      >
-        {props.prompt.promptFormat === 'pre' ? text() : undefined}
-      </div>
+      <CollapsibleContent
+        kind={props.prompt.promptFormat === 'pre' ? 'pre' : 'markdown-tool-result'}
+        text={text()}
+        isCollapsed={isCollapsed()}
+        {...(props.context !== undefined ? { context: props.context } : {})}
+      />
     </ToolUseLayout>
   )
 }

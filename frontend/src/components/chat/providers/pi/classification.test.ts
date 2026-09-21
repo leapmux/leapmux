@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
-import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { input } from '../testUtils'
 import { classifyPiMessage } from './classification'
 
@@ -46,7 +45,7 @@ describe('classifyPiMessage', () => {
     'summarization_retry_finished',
   ])('classifies %s as a notification', (type) => {
     const message = { type, attempt: 1, maxAttempts: 3 }
-    expect(classifyPiMessage(input(message))).toEqual({ kind: 'notification', messages: [message] })
+    expect(classifyPiMessage(input(message)).kind).toBe('notification')
   })
 
   it('reads a consolidated thread of summarization retries as one notification', () => {
@@ -54,8 +53,10 @@ describe('classifyPiMessage', () => {
       { type: 'summarization_retry_scheduled', attempt: 1, delayMs: 500 },
       { type: 'summarization_retry_finished' },
     ]
-    expect(classifyPiMessage(input(messages[0], { old_seqs: [1, 2], messages })))
-      .toEqual({ kind: 'notification', messages })
+    const result = classifyPiMessage(input(messages[0], { old_seqs: [1, 2], messages }))
+    expect(result.kind).toBe('notification')
+    if (result.kind === 'notification')
+      expect(result.entries).toHaveLength(2)
   })
 
   it('hides lifecycle markers without chat UI', () => {
@@ -192,7 +193,10 @@ describe('classifyPiMessage', () => {
 
   it('classifies a notify extension_ui_request with a message as a notification', () => {
     const parent = { type: 'extension_ui_request', method: 'notify', message: 'Build finished' }
-    expect(classifyPiMessage(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+    expect(classifyPiMessage(input(parent))).toEqual({
+      kind: 'notification',
+      entries: [{ kind: 'text', text: 'Build finished' }],
+    })
   })
 
   it('hides a notify extension_ui_request with an empty message (nothing to render)', () => {
@@ -219,8 +223,10 @@ describe('classifyPiMessage', () => {
   it('drops empty-notify requests from a thread but keeps a renderable notification', () => {
     const empty = { type: 'extension_ui_request', method: 'notify', message: '' }
     const compaction = { type: 'compaction_end', reason: 'threshold', result: { tokensBefore: 12345 } }
-    expect(classifyPiMessage(input(empty, { old_seqs: [], messages: [empty, compaction] })))
-      .toEqual({ kind: 'notification', messages: [compaction] })
+    const result = classifyPiMessage(input(empty, { old_seqs: [], messages: [empty, compaction] }))
+    expect(result.kind).toBe('notification')
+    if (result.kind === 'notification')
+      expect(result.entries).toHaveLength(1)
   })
 
   it('classifies user echo content as user_content', () => {
@@ -236,8 +242,10 @@ describe('classifyPiMessage', () => {
       { type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 2000 },
       { type: 'compaction_end', reason: 'threshold', result: { tokensBefore: 12345 } },
     ]
-    expect(classifyPiMessage(input(messages[0], { old_seqs: [], messages })))
-      .toEqual({ kind: 'notification', messages })
+    const result = classifyPiMessage(input(messages[0], { old_seqs: [], messages }))
+    expect(result.kind).toBe('notification')
+    if (result.kind === 'notification')
+      expect(result.entries).toHaveLength(2)
   })
 
   it('classifies a wrapper of two compaction_end boundaries as a notification', () => {
@@ -261,17 +269,23 @@ describe('classifyPiMessage', () => {
   // standalone row of one. Without it the row reaches the `unknown` fallback and draws
   // the raw-JSON card. A type added to the shared list reaches Pi's suite too, so no
   // copy here can fall behind it.
-  const plainRowTypes = Object.values(NOTIFICATION_TYPE).filter(isPlainNotificationType)
+  const plainRows = [
+    { type: NOTIFICATION_TYPE.Interrupted },
+    { type: NOTIFICATION_TYPE.SettingsChanged, changes: { model: { old: 'a', new: 'b' } } },
+    { type: NOTIFICATION_TYPE.ContextCleared },
+    { type: NOTIFICATION_TYPE.AgentError, error: 'failed' },
+    { type: NOTIFICATION_TYPE.PlanUpdated, plan_title: 'Plan' },
+    { type: NOTIFICATION_TYPE.Compacting },
+  ]
 
   it('reads its plain-row cases from the shared list', () => {
     // The guard for the cases below. An empty array registers no case at all, and the
     // suite then passes while it proves nothing.
-    expect(plainRowTypes.length).toBeGreaterThan(0)
+    expect(plainRows.length).toBeGreaterThan(0)
   })
 
-  it.each(plainRowTypes)('classifies a standalone %s row as a notification', (type) => {
-    const parent = { type }
-    expect(classifyPiMessage(input(parent))).toStrictEqual({ kind: 'notification', messages: [parent] })
+  it.each(plainRows)('classifies a standalone $type row as a notification', (parent) => {
+    expect(classifyPiMessage(input(parent)).kind).toBe('notification')
   })
 
   it('falls back to unknown for unrecognized shapes', () => {

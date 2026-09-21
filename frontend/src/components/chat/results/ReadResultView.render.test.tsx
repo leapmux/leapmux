@@ -93,6 +93,20 @@ describe('ReadResultView syntax highlighting', () => {
     expect(container.querySelector('.sk-read-test')).toBeNull()
   })
 
+  it('limits one large file line before it reaches tokenization or the DOM', async () => {
+    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
+    const text = `READ_HEAD${'x'.repeat(100_000)}READ_TAIL`
+    const { container } = render(() => (
+      <ReadResultView lines={[{ num: 1, text }]} filePath="example.ts" />
+    ))
+
+    expect(container.textContent!.length).toBeLessThan(text.length)
+    expect(container.textContent).toContain('READ_HEAD')
+    expect(container.textContent).toContain('READ_TAIL')
+    expect(container.textContent).toContain('Display limited')
+    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', expect.not.stringContaining('x'.repeat(10_000)), expect.any(Function))
+  })
+
   it('keeps existing tokens when syntax highlighting is paused after highlight completes', async () => {
     const [paused, setPaused] = createSignal(false)
     const { container } = render(() => (

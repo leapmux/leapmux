@@ -495,7 +495,7 @@ describe('the notification thread: goal transitions', () => {
 
   // The verb states WHAT changed, so a status flip does not read as a fresh
   // goal being set.
-  it('names the transition for each terminal status', () => {
+  it('names the transition for each finished status', () => {
     expect(renderText([{ type: 'goal_updated', objective: 'x', goal_status: 'done' }]))
       .toBe('Goal achieved: x')
     expect(renderText([{ type: 'goal_updated', objective: 'x', goal_status: 'paused' }]))

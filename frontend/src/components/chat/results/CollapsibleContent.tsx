@@ -1,14 +1,15 @@
 import type { JSX } from 'solid-js'
 import type { MarkdownRenderContext } from '../renderContext'
-import { createMemo, Match, Switch } from 'solid-js'
+import { createMemo, Match, Show, Switch } from 'solid-js'
 import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { containsAnsi, renderAnsi, stripAnsi } from '~/lib/renderAnsi'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { markdownContent } from '../markdownEditor/markdownContent.css'
 import { getCachedRenderValueForString, setCachedRenderValueForString } from '../messageRenderCache'
 import { renderMarkdownForContext, shouldPauseSyntaxHighlighting } from '../messageRenderers'
+import { LIMITED_TEXT_DISPLAY_NOTICE, limitTextForDisplay } from '../safeTextDisplay'
 import { JsonHighlightHtml } from '../syntaxHighlight'
-import { toolResultCollapsed, toolResultContent, toolResultContentAnsi, toolResultContentPre } from '../toolStyles.css'
+import { toolResultCollapsed, toolResultContent, toolResultContentAnsi, toolResultContentPre, toolResultPrompt } from '../toolStyles.css'
 import { canHighlightBySize } from './collapse'
 
 /**
@@ -19,12 +20,11 @@ import { canHighlightBySize } from './collapse'
  * - `'markdown'`: render as markdown via `renderMarkdown` inside the
  *   `markdownContent` wrapper (used for assistant text).
  * - `'markdown-tool-result'`: render as markdown inside the `toolResultContent`
- *   wrapper (the styling used for WebFetch / Agent tool result bodies). The
- *   full text is always rendered; only the fade class differs.
+ *   wrapper (the styling used for WebFetch / Agent tool result bodies). A large
+ *   value uses the shared limited plain-text display.
  * - `'json'`: JSON highlighted as token spans (via the async token worker)
- *   inside the shared `toolResultContentAnsi` wrapper. Like the markdown
- *   variants, the full text is always rendered (slicing mid-token would break
- *   the output); only the fade class differs.
+ *   inside the shared `toolResultContentAnsi` wrapper. A large value uses the
+ *   same display limits as plain text.
  */
 export type CollapsibleContentKind = 'ansi-or-pre' | 'pre' | 'markdown' | 'markdown-tool-result' | 'json'
 
@@ -38,9 +38,8 @@ export interface CollapsibleContentProps {
   /**
    * Display text — already truncated/sliced by the caller via `useCollapsedLines`.
    * Required for the slice-based kinds (`'pre'`, `'ansi-or-pre'`, `'markdown'`);
-   * omit for `'markdown-tool-result'` and `'json'`, which always render the
-   * full `text` and only flip the fade class. When omitted, slice-based kinds
-   * fall back to rendering `text` in full.
+   * omit for `'markdown-tool-result'` and `'json'`, which derive their display
+   * from `text`. When omitted, slice-based kinds also use `text`.
    */
   display?: string
   /** When true, applies the `toolResultCollapsed` fade class. */
@@ -61,8 +60,11 @@ export interface CollapsibleContentProps {
 export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element {
   const collapsedClass = () => props.isCollapsed ? ` ${toolResultCollapsed}` : ''
   const slice = () => props.display ?? props.text
+  const safeDisplay = createMemo(() => limitTextForDisplay(slice()))
+  const safeText = () => safeDisplay().text
+  const rawDisplayLimited = () => props.kind !== 'markdown' && props.kind !== 'markdown-tool-result' && safeDisplay().limited
   const isAnsi = createMemo(() => props.kind === 'ansi-or-pre' && containsAnsi(props.text))
-  const ansiPlainText = createMemo(() => isAnsi() ? stripAnsi(slice()) : slice())
+  const ansiPlainText = createMemo(() => isAnsi() ? stripAnsi(safeText()) : safeText())
   const pauseSyntax = () => shouldPauseSyntaxHighlighting(props.context)
   // The highlight namespace carries the syntax theme generation, for the same
   // reason `markdownCacheNamespace` does: `renderAnsi` bakes the resolved pair's
@@ -92,41 +94,47 @@ export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element 
     setCachedRenderValueForString(props.context, ansiHighlightNs(), text, html)
     return setCachedRenderValueForString(props.context, 'ansi-displayed:collapsibleContent', text, html)
   }
-  const renderedAnsiHtml = createMemo(() => isAnsi() ? ansiHtml(slice()) : undefined)
-  const markdownHtml = (text: string) => renderMarkdownForContext(text, props.context)
-  const markdownSliceHtml = createMemo(() => markdownHtml(slice()))
-  const markdownFullHtml = createMemo(() => markdownHtml(props.text))
+  const renderedAnsiHtml = createMemo(() => isAnsi() ? ansiHtml(safeText()) : undefined)
+  // Keep these as accessors. A Solid memo runs immediately and would parse both
+  // Markdown forms for every plain, ANSI, and JSON body before Switch selects one.
+  const markdownSliceHtml = () => renderMarkdownForContext(slice(), props.context)
+  const markdownFullHtml = () => renderMarkdownForContext(props.text, props.context)
   const JsonContent = () => (
     <JsonHighlightHtml
       class={`${toolResultContentAnsi}${collapsedClass()}`}
-      code={props.text}
+      code={safeText()}
       {...(props.context !== undefined ? { context: props.context } : {})}
     />
   )
 
   return (
-    <Switch>
-      <Match when={props.kind === 'markdown'}>
-        <div class={`${markdownContent}${collapsedClass()}`} ref={cachedInnerHtml(markdownSliceHtml)} />
-      </Match>
-      <Match when={props.kind === 'markdown-tool-result'}>
-        {/* Markdown bodies don't truncate by lines (would slice mid-block); the
-            full text is rendered and only the fade class differs by `isCollapsed`. */}
-        <div class={`${toolResultContent}${collapsedClass()}`} ref={cachedInnerHtml(markdownFullHtml)} />
-      </Match>
-      <Match when={props.kind === 'json'}>
-        {/* Same as 'markdown-tool-result': render full shiki HTML; visual clip via fade. */}
-        <JsonContent />
-      </Match>
-      <Match when={props.kind === 'pre'}>
-        <div class={`${toolResultContentPre}${collapsedClass()}`}>{slice()}</div>
-      </Match>
-      <Match when={renderedAnsiHtml()}>
-        {html => <div class={`${toolResultContentAnsi}${collapsedClass()}`} ref={cachedInnerHtml(html)} />}
-      </Match>
-      <Match when={props.kind === 'ansi-or-pre'}>
-        <div class={`${toolResultContentPre}${collapsedClass()}`}>{ansiPlainText()}</div>
-      </Match>
-    </Switch>
+    <>
+      <Switch>
+        <Match when={props.kind === 'markdown'}>
+          <div class={`${markdownContent}${collapsedClass()}`} ref={cachedInnerHtml(markdownSliceHtml)} />
+        </Match>
+        <Match when={props.kind === 'markdown-tool-result'}>
+          {/* Normal Markdown bodies render in full. The shared Markdown guard changes
+              an unsafe body to a limited plain-text display before parsing. */}
+          <div class={`${toolResultContent}${collapsedClass()}`} ref={cachedInnerHtml(markdownFullHtml)} />
+        </Match>
+        <Match when={props.kind === 'json'}>
+          {/* The token surface receives only the safe display text. */}
+          <JsonContent />
+        </Match>
+        <Match when={props.kind === 'pre'}>
+          <div class={`${toolResultContentPre}${collapsedClass()}`}>{safeText()}</div>
+        </Match>
+        <Match when={renderedAnsiHtml()}>
+          {html => <div class={`${toolResultContentAnsi}${collapsedClass()}`} ref={cachedInnerHtml(html)} />}
+        </Match>
+        <Match when={props.kind === 'ansi-or-pre'}>
+          <div class={`${toolResultContentPre}${collapsedClass()}`}>{ansiPlainText()}</div>
+        </Match>
+      </Switch>
+      <Show when={!props.isCollapsed && rawDisplayLimited()}>
+        <div class={toolResultPrompt}>{LIMITED_TEXT_DISPLAY_NOTICE}</div>
+      </Show>
+    </>
   )
 }

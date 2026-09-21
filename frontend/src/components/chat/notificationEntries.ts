@@ -60,9 +60,19 @@ export function notificationEntriesFor(
   message: Record<string, unknown>,
   agentProvider: AgentProvider | undefined,
 ): NotificationEntry[] {
-  return leapmuxNotificationEntry(message, agentProvider)
-    ?? pluginFor(agentProvider)?.transcript.notificationEntry?.(message)
-    ?? []
+  return notificationEntriesForReader(
+    message,
+    agentProvider,
+    pluginFor(agentProvider)?.transcript.notificationEntry,
+  )
+}
+
+export function notificationEntriesForReader(
+  message: Record<string, unknown>,
+  agentProvider: AgentProvider | undefined,
+  providerReader?: (message: Record<string, unknown>) => NotificationEntry[],
+): NotificationEntry[] {
+  return leapmuxNotificationEntry(message, agentProvider) ?? providerReader?.(message) ?? []
 }
 
 /**

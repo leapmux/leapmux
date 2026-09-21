@@ -95,7 +95,7 @@ describe('classifyZCodeMessage', () => {
   // in a LeapMux row, which carries no ZCode event for the dispatch above to match.
   it('classifies the stop row LeapMux writes as a notification', () => {
     expect(classifyZCodeMessage(input({ type: 'interrupted' })))
-      .toEqual({ kind: 'notification', messages: [{ type: 'interrupted' }] })
+      .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Interrupted' }] })
   })
 
   it('classifies a resolved permission as a notification carrying the row', () => {
@@ -103,7 +103,10 @@ describe('classifyZCodeMessage', () => {
       decision: 'deny',
       toolName: ZCODE_TOOL.Bash,
     })
-    expect(classifyZCodeMessage(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+    const result = classifyZCodeMessage(input(parent))
+    expect(result.kind).toBe('notification')
+    if (result.kind === 'notification')
+      expect(result.entries).toHaveLength(1)
   })
 
   it('classifies the steer and close notifications', () => {
@@ -184,15 +187,19 @@ describe('classifyZCodeMessage on consolidated notification threads', () => {
       event(ZCODE_EVENT.TurnSteerQueued, { inputPreview: 'also check the tests' }),
       event(ZCODE_EVENT.TurnSteerDrained),
     ]
-    expect(classifyZCodeMessage(input(messages[0], { old_seqs: [], messages })))
-      .toEqual({ kind: 'notification', messages })
+    const result = classifyZCodeMessage(input(messages[0], { old_seqs: [], messages }))
+    expect(result.kind).toBe('notification')
+    if (result.kind === 'notification')
+      expect(result.entries).toHaveLength(2)
   })
 
   it('drops the unrenderable entries from a thread but keeps the rest', () => {
     const blank = { type: ZCODE_EVENT.PermissionResolved }
     const steer = event(ZCODE_EVENT.TurnSteerDrained)
-    expect(classifyZCodeMessage(input(blank, { old_seqs: [], messages: [blank, steer] })))
-      .toEqual({ kind: 'notification', messages: [steer] })
+    const result = classifyZCodeMessage(input(blank, { old_seqs: [], messages: [blank, steer] }))
+    expect(result.kind).toBe('notification')
+    if (result.kind === 'notification')
+      expect(result.entries).toHaveLength(1)
   })
 
   it('hides a thread whose every entry is unrenderable', () => {

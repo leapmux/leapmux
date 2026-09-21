@@ -406,12 +406,13 @@ describe('BackgroundTaskList kind tabs', () => {
     row({ rowKey: 'agent', kind: 'subagent', title: 'Review the diff', childAgentId: 'c1' }),
     row({ rowKey: 'shell', kind: 'shell', title: 'npm test' }),
     row({ rowKey: 'workflow', kind: 'workflow', title: 'Review pipeline' }),
+    row({ rowKey: 'future', kind: 'unknown', rawKind: 99, title: 'Future task', childAgentId: 'c2' }),
   ]
 
   it('shows every kind on the All tab', () => {
     const { container, getByTestId } = renderList({ tasks: mixed })
     expect(getByTestId('bg-task-filter-all')).toHaveAttribute('aria-selected', 'true')
-    expect(container.querySelectorAll('[data-testid="bg-task-row"]')).toHaveLength(3)
+    expect(container.querySelectorAll('[data-testid="bg-task-row"]')).toHaveLength(4)
   })
 
   it('shows only subagent rows on the Subagents tab', () => {
@@ -438,6 +439,15 @@ describe('BackgroundTaskList kind tabs', () => {
     expect(rowsText(container)).toContain('Review pipeline')
     expect(rows[0]?.tagName).toBe('DIV')
     expect(rows[0]?.querySelector('svg.lucide-workflow')).not.toBeNull()
+  })
+
+  it('keeps an unknown kind neutral and static on the All tab', () => {
+    const { container, queryByTestId } = renderList({ tasks: mixed })
+    const unknown = container.querySelector('[data-kind="unknown"]')
+    expect(unknown?.tagName).toBe('DIV')
+    expect(unknown?.querySelector('svg')).not.toBeNull()
+    expect(unknown?.querySelector('svg.lucide-bot')).toBeNull()
+    expect(queryByTestId('bg-task-filter-unknown')).toBeNull()
   })
 
   // An empty tab must say so. Rendering nothing leaves a blank box that reads

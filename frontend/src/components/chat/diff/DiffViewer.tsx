@@ -11,7 +11,7 @@ import { ansiSyncTokenize } from '~/lib/ansiTokenize'
 import { guessLanguage } from '~/lib/languageMap'
 import { pluralize } from '~/lib/plural'
 import { shouldPauseSyntaxHighlighting } from '../messageRenderers'
-import { HIGHLIGHT_LINE_LIMIT } from '../results/collapse'
+import { canHighlightBySize } from '../results/collapse'
 import { useAsyncCodeTokens } from '../useAsyncCodeTokens'
 import { computeGapMap, computeSyntheticGapMap, countHunkLines, extractSidesFromHunks, groupByHunk } from './diffBuilder'
 import {
@@ -246,8 +246,8 @@ function DiffGapSummarySeparator(props: {
  * The diff viewer treats premeasure / scroll-pause / active-selection alike: keep
  * the already-applied tokens steady and defer any newly-computed ones (the `hold`
  * gate), rather than the hard `premeasure` skip (which drops applied tokens on a
- * hidden remeasure). The line-count cap is a coarse perf guard keyed off the whole
- * hunk set; an oversized diff renders plain.
+ * hidden remeasure). The shared size limits reject too many lines and one very
+ * large line. An oversized diff renders plain.
  */
 function useDiffTokens(
   hunks: () => StructuredPatchHunk[],
@@ -266,7 +266,9 @@ function useDiffTokens(
   })
   // Extract both sides once per hunk change; shared by the two per-side hooks.
   const sides = createMemo(() => extractSidesFromHunks(hunks()))
-  const eligible = createMemo((): boolean => countHunkLines(hunks()) <= HIGHLIGHT_LINE_LIMIT)
+  const eligible = createMemo((): boolean => countHunkLines(hunks()) > 0
+    && canHighlightBySize(sides().oldCode)
+    && canHighlightBySize(sides().newCode))
   const gate = (): TokenGate => ({ premeasure: false, hold: shouldPauseSyntaxHighlighting(context()) })
 
   // syncTokenize handles `ansi` (a `.log` file's language) on the main thread -- the

@@ -37,6 +37,13 @@ func TestPi_SubagentFromDetails_NilForNoStatus(t *testing.T) {
 	assert.Nil(t, piSubagentFromDetails(nil, "tc-1", "title"))
 }
 
+func TestPi_SubagentReportTextPreservesTextBlockBoundaries(t *testing.T) {
+	t.Parallel()
+
+	result := json.RawMessage(`{"content":[{"type":"text","text":"first"},{"type":"text","text":"second"}]}`)
+	assert.Equal(t, "first\nsecond", piSubagentReportText(result))
+}
+
 func TestPi_FinalStatus(t *testing.T) {
 	s, ok := piFinalStatus("completed")
 	assert.True(t, ok)

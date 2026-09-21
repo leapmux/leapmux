@@ -439,20 +439,26 @@ test.describe('provider tool rendering', () => {
     await expect.poll(() => chat.locator('img').evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(32)
   })
 
-  test('recovers complete output from a real Pi MCP artifact and retains it after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
+  test('recovers complete output from a real Pi MCP artifact and retains it after reload', async ({ page, context, authenticatedEmptyWorkspace, leapmuxServer }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
     const provider = AgentProvider.PI
     const directory = createTestDirectory('renderer-pi-artifact-')
-    const code = 'emit(Array.from({length:3000},(_,i)=>"artifact-line-"+i).join("\\n")+"\\n"+["PI","ARTIFACT","RECOVERED"].join("_"))'
+    const artifact = `${Array.from({ length: 3000 }, (_, index) => `artifact-line-${index}`).join('\n')}\nPI_ARTIFACT_RECOVERED`
+    const code = `emit(${JSON.stringify(artifact)})`
     await withScriptedPiTool(directory, 'mcpScript', { code }, async (settings) => {
       await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: provider, ...settings })
       await page.reload()
       await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
       await sendMessage(page, 'Run the artifact recovery check.')
       const chat = page.locator('[data-chat-scroll-container="true"]').filter({ visible: true })
-      const output = chat.locator('[data-seq]:not([data-band])').getByTestId('message-bubble').locator('p').filter({ hasText: 'artifact-line-0' })
+      const output = chat.locator('[data-seq]:not([data-band])').getByTestId('message-bubble').filter({ hasText: 'artifact-line-0' })
       await expect(output).toHaveCount(1)
       await expect(output).toContainText('artifact-line-2999')
       await expect(output).toContainText('PI_ARTIFACT_RECOVERED')
+      await expect(output).toContainText('Display limited to keep this page responsive.')
+      await output.locator('..').hover()
+      await output.locator('..').getByRole('button', { name: 'Copy', exact: true }).click()
+      await expect.poll(async () => (await page.evaluate(() => navigator.clipboard.readText())).includes(artifact)).toBe(true)
       await expect(chat.getByText('Protocol test complete.', { exact: true })).toBeVisible()
       await page.reload()
       await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
@@ -970,6 +976,51 @@ test.describe('provider tool rendering', () => {
     await expect(row.getByRole('button', { name: 'Copy', exact: true })).toHaveCount(0)
   })
 
+  test('keeps expanded large command and Markdown bodies responsive', async ({ page, context, authenticatedEmptyWorkspace, leapmuxServer }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-large-text-'), {
+      agentProvider: AgentProvider.CODEX,
+      ...realAgentOpenOptions(realAgentSettings(AgentProvider.CODEX)),
+    })
+    const commandOutput = `COMMAND_HEAD\n${'x'.repeat(100_000)}\nCOMMAND_TAIL`
+    const markdownOutput = `# Large Markdown\n\nMARKDOWN_HEAD\n${'y'.repeat(100_000)}\nMARKDOWN_TAIL`
+    const sequences = await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [
+      {
+        id: 'large-command',
+        provider: AgentProvider.CODEX,
+        spanId: 'large-command',
+        spanType: 'commandExecution',
+        content: { item: { id: 'large-command', type: 'commandExecution', status: 'completed', command: 'print large output', aggregatedOutput: commandOutput, exitCode: 0 } },
+      },
+      {
+        id: 'large-markdown',
+        provider: AgentProvider.CODEX,
+        spanId: 'large-markdown',
+        spanType: 'mcpToolCall',
+        content: { item: { id: 'large-markdown', type: 'mcpToolCall', status: 'completed', server: 'docs', tool: 'report', arguments: {}, result: { content: [{ type: 'text', text: markdownOutput }] } } },
+      },
+    ])
+
+    await page.reload()
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    for (const [index, source] of [[0, commandOutput], [1, markdownOutput]] as const) {
+      const row = page.locator(`[data-seq="${sequences[index]}"]`).filter({ visible: true })
+      await expect(row).toContainText(index === 0 ? 'COMMAND_HEAD' : 'MARKDOWN_HEAD')
+      await row.hover()
+      await row.getByRole('button', { name: 'Expand', exact: true }).click()
+      await expect(row.getByRole('button', { name: 'Collapse', exact: true })).toBeVisible()
+      await expect(row).toContainText(index === 0 ? 'COMMAND_TAIL' : 'MARKDOWN_TAIL')
+      await expect(row).toContainText('Display limited to keep this page responsive.')
+      expect((await row.textContent())!.length).toBeLessThan(source.length / 2)
+      await row.getByRole('button', { name: 'Copy', exact: true }).click()
+      await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(source)
+      await row.getByRole('button', { name: 'Collapse', exact: true }).click()
+    }
+    const markdownRow = page.locator(`[data-seq="${sequences[1]}"]`).filter({ visible: true })
+    await expect(markdownRow.locator('h1')).toHaveCount(0)
+    await expect(markdownRow).toContainText('# Large Markdown')
+  })
+
   test('renders a mirrored subagent report as Markdown in the parent transcript', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
     const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-subagent-report-'), {
       agentProvider: AgentProvider.CODEX,
@@ -991,6 +1042,37 @@ test.describe('provider tool rendering', () => {
     await expect(row).toContainText('Parser reviewer reported')
     await expect(row.locator('strong')).toHaveText('Report heading')
     await expect(row.locator('li')).toHaveText('Finding one')
+  })
+
+  test('hides retained Codex rate-limit transcript rows', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
+    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-rate-limit-hidden-'), {
+      agentProvider: AgentProvider.CODEX,
+      ...realAgentOpenOptions(realAgentSettings(AgentProvider.CODEX)),
+    })
+    const [rateLimitSeq] = await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [
+      {
+        id: 'rate-limit-update',
+        provider: AgentProvider.CODEX,
+        content: {
+          type: 'notification_thread',
+          messages: [{
+            method: 'account/rateLimits/updated',
+            params: { rateLimits: { primary: { usedPercent: 100, windowDurationMins: 300 } } },
+          }],
+          old_seqs: [],
+        },
+      },
+      {
+        id: 'visible-after-rate-limit',
+        provider: AgentProvider.CODEX,
+        content: { item: { type: 'agentMessage', id: 'visible-message', text: 'VISIBLE_AFTER_RATE_LIMIT' } },
+      },
+    ])
+
+    await page.reload()
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    await expect(page.getByText('VISIBLE_AFTER_RATE_LIMIT').filter({ visible: true })).toBeVisible()
+    await expect(page.locator(`[data-seq="${rateLimitSeq}"]`).filter({ visible: true })).toHaveCount(0)
   })
 
   test('uses a late supplement for the scroll-rail preview', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {

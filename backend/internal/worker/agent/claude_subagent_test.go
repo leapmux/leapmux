@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -124,25 +125,16 @@ func TestClaudePeerHandbackSurvivesMissingChildState(t *testing.T) {
 // the reorder close cannot silently regress to a leaked Running row.
 func TestClaude_PendingTaskEndRecordsAndConsumes(t *testing.T) {
 	t.Parallel()
-	a := &ClaudeCodeAgent{}
+	var index claudeTaskIndex
 
 	// A final result for spawn span "tu-1" arrives before task_started.
-	a.tasks.recordPendingTaskEnd("tu-1", bgtask.StatusCompleted)
-	assert.Len(t, a.tasks.pendingTaskEnd, 1)
-	assert.Equal(t, bgtask.StatusCompleted, a.tasks.pendingTaskEnd["tu-1"])
+	index.recordPendingTaskEnd("tu-1", bgtask.StatusCompleted)
 
-	// handleClaudeTaskStarted takes the entry inline. Simulate the take.
-	a.mu.Lock()
-	var got bgtask.Status
-	var ok bool
-	if s, present := a.tasks.pendingTaskEnd["tu-1"]; present {
-		got, ok = s, true
-		delete(a.tasks.pendingTaskEnd, "tu-1")
-	}
-	a.mu.Unlock()
+	got, ok := index.startTask("task-1", bgtask.KindSubagent, "tu-1", "tu-1")
 	assert.True(t, ok, "pending end taken on the late task_started")
 	assert.Equal(t, bgtask.StatusCompleted, got)
-	assert.Empty(t, a.tasks.pendingTaskEnd, "entry consumed so it cannot fire twice")
+	_, ok = index.startTask("task-1", bgtask.KindSubagent, "tu-1", "tu-1")
+	assert.False(t, ok, "entry consumed so it cannot fire twice")
 }
 
 // TestClaude_PendingTaskEndIgnoresEmptySpan verifies a result with no
@@ -152,7 +144,7 @@ func TestClaude_PendingTaskEndIgnoresEmptySpan(t *testing.T) {
 	t.Parallel()
 	a := &ClaudeCodeAgent{}
 	a.tasks.recordPendingTaskEnd("", bgtask.StatusCompleted)
-	assert.Nil(t, a.tasks.pendingTaskEnd, "no entry recorded for an empty spawn span")
+	assert.Nil(t, a.tasks.runs.pendingEnd, "no entry recorded for an empty spawn span")
 }
 
 // A forwarded child envelope can arrive BEFORE its task_started -- the same
@@ -1951,8 +1943,8 @@ func TestClaude_StartTaskWithoutAToolUseIDStillRecordsTheKind(t *testing.T) {
 	assert.Equal(t, bgtask.KindSubagent, idx.kindForTask("task-1"))
 	// The MAPS, not taskIDForToolUse(""), which answers "" from its own guard
 	// before it reads either one -- so it holds whatever startTask wrote.
-	assert.Empty(t, idx.toolUseTask, "no reverse entry is written under an empty key")
-	assert.Empty(t, idx.taskToolUse, "and no forward set either")
+	assert.Empty(t, idx.runs.toolUseTask, "no reverse entry is written under an empty key")
+	assert.Empty(t, idx.runs.taskToolUse, "and no forward set either")
 
 	// And with a spawn span the pair IS written, both ways.
 	idx.startTask("task-2", bgtask.KindShell, "tu-2", "tu-2")
@@ -1997,12 +1989,30 @@ func TestClaude_StartTaskIndexesEveryToolUseIDOfARun(t *testing.T) {
 	var idx claudeTaskIndex
 
 	idx.startTask("task-1", bgtask.KindSubagent, "tu-spawn", "tu-send")
+	idx.rememberTaskChild("task-1", "child-1")
 	assert.Equal(t, "task-1", idx.taskIDForToolUse("tu-spawn"))
 	assert.Equal(t, "task-1", idx.taskIDForToolUse("tu-send"))
 
 	idx.forgetTaskIndex("task-1")
 	assert.Empty(t, idx.taskIDForToolUse("tu-spawn"), "the closing notification drops the spawn span")
 	assert.Empty(t, idx.taskIDForToolUse("tu-send"), "and the call that restarted the task")
+	assert.Equal(t, "task-1", idx.taskIDForChild("child-1"), "the durable transcript link outlives the run")
+}
+
+func TestClaude_ForgetTaskIndexDropsAnUndeliveredHandback(t *testing.T) {
+	t.Parallel()
+
+	var idx claudeTaskIndex
+	idx.startTask("task-1", bgtask.KindSubagent, "spawn-1", "spawn-1")
+	require.True(t, idx.rememberHandbackToolUse("spawn-1", "task-1", "handback-1", "Reviewer", "Report"))
+
+	idx.forgetTaskIndex("task-1")
+
+	var echo messageEnvelope
+	echo.Message.RawContent = json.RawMessage(`[{"type":"text","text":"Report"}]`)
+	assert.False(t, idx.isHandbackEcho("spawn-1", &echo))
+	_, found := idx.takeHandbackForPeerResult("task-1")
+	assert.False(t, found)
 }
 
 // A final result can arrive before the task_started it belongs to, keyed by
@@ -2042,7 +2052,7 @@ func TestClaude_StartTakesTheSpawnSpansCloseWhenBothIDsHoldOne(t *testing.T) {
 	pending, hasPending := idx.startTask("task-1", bgtask.KindSubagent, "tu-spawn", "tu-send")
 	assert.True(t, hasPending)
 	assert.Equal(t, bgtask.StatusFailed, pending, "the spawn span decides, not the last id visited")
-	assert.Empty(t, idx.pendingTaskEnd, "and both entries are consumed")
+	assert.Empty(t, idx.runs.pendingEnd, "and both entries are consumed")
 }
 
 // A restart reads its spawn span back from the child row, so a task can index an

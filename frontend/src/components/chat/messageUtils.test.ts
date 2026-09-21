@@ -10,11 +10,11 @@ import { input } from './providers/testUtils'
 // paths). These cases pin the exact shape each provider relies on so the rule
 // can't drift out from under any of them.
 describe('isFinalCompactingStatus', () => {
-  it('is true for a terminal compaction status with status:null', () => {
+  it('is true for a finished compaction status with status:null', () => {
     expect(isFinalCompactingStatus({ type: 'system', subtype: 'status', status: null })).toBe(true)
   })
 
-  it('is true for a terminal status carrying compact_result', () => {
+  it('is true for a finished status carrying compact_result', () => {
     expect(isFinalCompactingStatus({ type: 'system', subtype: 'status', status: null, compact_result: 'success' })).toBe(true)
   })
 
@@ -118,7 +118,7 @@ describe('a notification thread whose only accepted type is compacting', () => {
     const classify = classifyACPMessage()
     const wrapper = { old_seqs: [], messages: [compacting, rateLimit] }
     expect(classify(input(compacting, wrapper)))
-      .toStrictEqual({ kind: 'notification', messages: [compacting, rateLimit] })
+      .toStrictEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'start' }] })
   })
 
   // The case above needs two members, and this is why. The per-message set answers for
@@ -127,8 +127,8 @@ describe('a notification thread whose only accepted type is compacting', () => {
   it('answers a one-member thread from the per-message set as well', () => {
     const classify = classifyACPMessage()
     expect(classify(input(compacting, { old_seqs: [], messages: [compacting] })))
-      .toStrictEqual({ kind: 'notification', messages: [compacting] })
+      .toStrictEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'start' }] })
     expect(classify(input(compacting)))
-      .toStrictEqual({ kind: 'notification', messages: [compacting] })
+      .toStrictEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'start' }] })
   })
 })

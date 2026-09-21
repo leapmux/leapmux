@@ -138,9 +138,9 @@ CREATE TABLE messages (
         CHECK (supplemental_content_compression BETWEEN 1 AND 2),
     supplemental_revision INTEGER NOT NULL DEFAULT 0
         CHECK (typeof(supplemental_revision) = 'integer' AND supplemental_revision >= 0),
-    -- Non-empty only for an accepted durable queue item. It keeps enqueue
-    -- retries idempotent after the queue item becomes a transcript row.
-    input_fingerprint   TEXT NOT NULL DEFAULT '',
+    -- A non-empty key identifies a message-producing operation that must stay
+    -- idempotent after a replay or restart. Its prefix identifies the producer.
+    idempotency_key     TEXT NOT NULL DEFAULT '',
     depth               INTEGER NOT NULL DEFAULT 0,
     span_id             TEXT NOT NULL DEFAULT '',
     parent_span_id      TEXT NOT NULL DEFAULT '',
@@ -173,6 +173,8 @@ CREATE INDEX idx_messages_span_id ON messages(agent_id, agent_session_id, span_i
 -- the (agent_id, ORDER BY seq ASC) scan of marked rows from the index alone.
 -- Partial (only marked rows) so the far-more-numerous unmarked inserts skip it.
 CREATE INDEX idx_messages_mark_type ON messages(agent_id, seq, mark_type) WHERE mark_type <> 0;
+CREATE UNIQUE INDEX idx_messages_idempotency_key
+    ON messages(agent_id, agent_session_id, idempotency_key) WHERE idempotency_key <> '';
 
 -- Durable conversational input. The state row exists even when the queue is
 -- empty, which keeps a manual pause until the user resumes the queue.

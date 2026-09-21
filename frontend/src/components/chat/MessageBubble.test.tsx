@@ -631,6 +631,25 @@ describe('messageBubble rawJson', () => {
     expect(content.querySelector(`.${codeCopyHostClass}`)).not.toBeInTheDocument()
   })
 
+  it('does not inject a partial-copy button into a large plain-text Markdown display', async () => {
+    const msg = makeMsg({
+      source: MessageSource.AGENT,
+      content: rawContent({ type: 'assistant', message: { content: [{ type: 'text', text: `MARKDOWN_HEAD${'x'.repeat(100_000)}MARKDOWN_TAIL` }] } }),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const content = screen.getByTestId('message-content')
+    expect(content.querySelector('pre[data-large-text-display]')).toBeInTheDocument()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(content.querySelector('.copy-code-button')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy Markdown', hidden: true })).toBeInTheDocument()
+  })
+
   it('re-injects the copy button after the content re-renders (async highlight swap)', async () => {
     const msg = makeMsg({
       source: MessageSource.AGENT,

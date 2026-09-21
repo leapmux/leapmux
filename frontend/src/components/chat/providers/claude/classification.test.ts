@@ -130,9 +130,9 @@ describe('classifyClaudeCodeMessage', () => {
       .toEqual({ kind: 'hidden' })
   })
 
-  it('hides a terminal compaction status (status=null, compact_result=success) standalone', () => {
+  it('hides a finished compaction status (status=null, compact_result=success) standalone', () => {
     // The user-facing "Context compacted (...)" line comes from the separate
-    // compact_boundary message; this terminal status carries nothing to show.
+    // compact_boundary message; this finished status carries nothing to show.
     const parent = {
       type: 'system',
       subtype: 'status',
@@ -142,7 +142,7 @@ describe('classifyClaudeCodeMessage', () => {
     expect(classifyClaudeCodeMessage(input(parent))).toEqual({ kind: 'hidden' })
   })
 
-  it('hides a terminal compaction status when Hub consolidates it into a notification thread', () => {
+  it('hides a finished compaction status when Hub consolidates it into a notification thread', () => {
     // Regression: the consolidated-thread branch must apply the same per-message
     // hidden rules as the standalone classifier. Before the shared predicate, a
     // status message that is hidden on its own leaked through the wrapper path as
@@ -165,24 +165,26 @@ describe('classifyClaudeCodeMessage', () => {
     const statusMsg = { type: 'system', subtype: 'status', status: null }
     const wrapper = { old_seqs: [301, 302], messages: [settingsMsg, statusMsg] }
     expect(classifyClaudeCodeMessage(input(settingsMsg, wrapper)))
-      .toEqual({ kind: 'notification', messages: [settingsMsg] })
+      .toEqual({ kind: 'notification', entries: [{ kind: 'settings-changed', changes: [{ label: 'Model', old: 'a', new: 'b' }] }] })
   })
 
   it('keeps the in-progress compacting status visible in a consolidated thread', () => {
     // status === 'compacting' is the live "Compacting context..." row; only the
-    // terminal (non-compacting) status is hidden.
+    // finished (non-compacting) status is hidden.
     const compactingMsg = { type: 'system', subtype: 'status', status: 'compacting' }
     const wrapper = { old_seqs: [305], messages: [compactingMsg] }
     expect(classifyClaudeCodeMessage(input(compactingMsg, wrapper)))
-      .toEqual({ kind: 'notification', messages: [compactingMsg] })
+      .toEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'start' }] })
   })
 
   it('drops an allowed rate_limit_event from a consolidated thread (regression guard)', () => {
     const allowed = { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } }
     const throttled = { type: 'rate_limit_event', rate_limit_info: { status: 'throttled', rateLimitType: 'primary' } }
     const wrapper = { old_seqs: [310, 311], messages: [throttled, allowed] }
-    expect(classifyClaudeCodeMessage(input(throttled, wrapper)))
-      .toEqual({ kind: 'notification', messages: [throttled] })
+    const result = classifyClaudeCodeMessage(input(throttled, wrapper))
+    expect(result.kind).toBe('notification')
+    if (result.kind === 'notification')
+      expect(result.entries).toHaveLength(1)
   })
 
   // The envelope `type` comes straight off the wire, and the two classifier tables are

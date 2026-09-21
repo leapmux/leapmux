@@ -581,7 +581,7 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 	assert.False(t, hasChild)
 	_, hasTool := a.children.toolChild("sub-1")
 	assert.False(t, hasTool)
-	assert.Empty(t, a.children.takeTitle("spawn-2"))
+	assert.Empty(t, a.children.title("spawn-2"))
 }
 
 func TestZCodeClearContextKeepsTheCurrentSessionWhenCreationFails(t *testing.T) {

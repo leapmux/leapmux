@@ -408,6 +408,36 @@ func TestHandleCodexOutput_MultiAgentV2PersistsPromptAndMirrorsFinalReport(t *te
 	assert.Equal(t, "parser-review", reports[0]["label"])
 }
 
+func TestHandleCodexOutput_V1ChildMirrorsFinalReportWithoutAnAgentPath(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"collabAgentToolCall","id":"spawn-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"Inspect the parser.","agentsStates":{}}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"child-1","turnId":"child-turn","item":{"type":"agentMessage","id":"report-1","text":"Parser report","phase":"final_answer"}}}`)))
+
+	reports := sink.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "Parser report", reports[0]["text"])
+	assert.Equal(t, "Inspect the parser.", reports[0]["label"])
+}
+
+func TestHandleCodexOutput_PublishedChildReportDropsRetainedText(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/reviewer"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"child-1","turnId":"child-turn","item":{"type":"agentMessage","id":"report-1","text":"A long report","phase":"final_answer"}}}`)))
+
+	agent.mu.Lock()
+	state := agent.collabChildren["child-1"]
+	require.NotNil(t, state)
+	assert.Empty(t, state.reportCandidateText)
+	assert.Empty(t, state.reportCandidateItemID)
+	agent.mu.Unlock()
+}
+
 func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsAgent(t *testing.T) {
 	t.Parallel()
 
@@ -475,17 +505,13 @@ func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
 	require.Equal(t, AutoContinueReasonRateLimit, schedule.Reason)
 	require.True(t, schedule.DueAt.Equal(time.Unix(1893456000, 0).UTC()))
 
-	// Raw notification persisted as AGENT (agent-emitted metadata).
-	require.Equal(t, 1, sink.NotificationCount())
-	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source)
-	assert.JSONEq(t, input, string(last.Content))
+	assert.Zero(t, sink.NotificationCount(), "account state must not become transcript history")
 }
 
 // Codex reports the account rate limits after EVERY model call, so one ordinary turn
 // with a tool call wrote the same sentence to the transcript twice. The snapshot is a
 // state, not an event: an unchanged one states nothing the previous row did not.
-func TestHandleCodexOutput_UnchangedRateLimitsReachTheTranscriptOnce(t *testing.T) {
+func TestHandleCodexOutput_RateLimitsStayOutOfTheTranscript(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -499,8 +525,7 @@ func TestHandleCodexOutput_UnchangedRateLimitsReachTheTranscriptOnce(t *testing.
 	handleCodexOutput(agent, parseLine([]byte(repeat)))
 	handleCodexOutput(agent, parseLine([]byte(changed)))
 
-	require.Equal(t, 2, sink.NotificationCount(), "the repeat writes no row; the changed snapshot does")
-	assert.JSONEq(t, changed, string(sink.LastNotification().Content))
+	require.Zero(t, sink.NotificationCount())
 	// The live surfaces still see every report: a late subscriber reads the
 	// broadcast, and the resume decision runs on each one.
 	assert.Equal(t, 3, sink.SessionInfoCount(), "every report refreshes the popover")
@@ -2629,29 +2654,21 @@ func TestCodexChildTurnRegistryStatus(t *testing.T) {
 	assert.Empty(t, transition.activity)
 }
 
-// TestCodexSubAgentActivity_InterruptedStaysRunning verifies the
-// subAgentActivity "interrupted" kind upserts a Running row (not final
-// StatusInterrupted), so a later "started" activity can resume it.
-func TestCodexSubAgentActivity_InterruptedStaysRunning(t *testing.T) {
+// Codex uses the activity item as its own liveness signal. Interrupted stops
+// liveness just like completed, so the registry must release the active count.
+func TestCodexSubAgentActivity_InterruptedFailsTheRun(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
 	a := newCodexAgentWithSink(sink)
-	item := json.RawMessage(`{"type":"subAgentActivity","agentThreadId":"thr-1","kind":"interrupted"}`)
+	started := json.RawMessage(`{"type":"subAgentActivity","id":"spawn-1","agentThreadId":"thr-1","agentPath":"/root/reviewer","kind":"started"}`)
+	assert.True(t, a.handleCodexSubAgentActivity(started, "main-thread"))
+	item := json.RawMessage(`{"type":"subAgentActivity","id":"interrupt-1","agentThreadId":"thr-1","agentPath":"/root/reviewer","kind":"interrupted"}`)
 	assert.True(t, a.handleCodexSubAgentActivity(item, "main-thread"), "consumed the activity item")
 	rows := sink.BackgroundTasks()
-	require.Len(t, rows, 1, "interrupted activity upserts one row")
-	assert.Equal(t, bgtask.StatusRunning, rows[0].Status, "interrupted stays Running (resumable)")
-	assert.False(t, rows[0].Status.IsFinished(), "resumable interrupt is not final")
-	assert.Equal(t, "paused", rows[0].ActiveForm)
-
-	// A subsequent started activity must update the SAME row (not be absorbed).
-	started := json.RawMessage(`{"type":"subAgentActivity","agentThreadId":"thr-1","kind":"started"}`)
-	assert.True(t, a.handleCodexSubAgentActivity(started, "main-thread"))
-	rows = sink.BackgroundTasks()
 	require.Len(t, rows, 1)
-	assert.Equal(t, bgtask.StatusRunning, rows[0].Status)
-	assert.Equal(t, "", rows[0].ActiveForm, "started cleared the paused activity line")
+	assert.Equal(t, bgtask.StatusFailed, rows[0].Status)
+	assert.True(t, rows[0].Status.IsFinished(), "the interrupted run no longer counts as active")
 }
 
 // subAgentActivity is the THIRD writer that reports a collab child active again,

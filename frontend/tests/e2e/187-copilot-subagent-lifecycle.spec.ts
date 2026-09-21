@@ -9,7 +9,7 @@ import { assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from './
 
 copilotTest.skip(!!COPILOT_E2E_SKIP_REASON, COPILOT_E2E_SKIP_REASON || '')
 
-copilotTest.describe('Copilot subagent lifecycle', () => {
+copilotTest.describe('copilot subagent lifecycle', () => {
   copilotTest('routes the prompt, response, and completion into the child tab', async ({
     authenticatedCopilotWorkspace,
     page,

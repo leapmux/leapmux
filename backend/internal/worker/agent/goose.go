@@ -568,7 +568,8 @@ func gooseSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagent
 			Status:   acpFinalStatus(tcu.Status),
 			CloseRow: true,
 			Mode:     acpModeCloseOnly,
-			Report:   subagentReport{Text: report},
+			ReportID: tcu.ToolCallID,
+			Report:   SubagentReport{Text: report},
 		}
 	}
 	if len(tcu.Meta) == 0 {

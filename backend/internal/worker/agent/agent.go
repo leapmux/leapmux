@@ -217,6 +217,7 @@ type toolLifecycleServices interface {
 type subagentServices interface {
 	ChildServices
 	BackgroundTaskServices
+	SessionServices
 }
 
 func openToolSpan(sink ToolSpanServices, content MessageContent, spanID, spanType string, spawns bool) error {
@@ -442,6 +443,9 @@ type SessionServices interface {
 	BroadcastStatusActive(sessionID string)
 	BroadcastSessionInfo(info map[string]interface{})
 	PersistLeapMuxNotification(content map[string]interface{})
+	// PersistSubagentReport stores one provider-neutral report exactly once.
+	// A child target resolves RowKey through the durable background-task registry.
+	PersistSubagentReport(write SubagentReportWrite) (stored bool, err error)
 }
 
 // PlanServices stores plan-mode state.

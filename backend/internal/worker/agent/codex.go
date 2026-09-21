@@ -102,13 +102,6 @@ type CodexAgent struct {
 	// response arrives. Non-nil only while CompactContext waits for acceptance.
 	compactionStartAck chan struct{}
 
-	// lastRateLimits is the rateLimits object of the newest account snapshot that
-	// reached the transcript. Codex reports the snapshot after every model call, and
-	// the value is a STATE: a report that repeats it states nothing new, so the row
-	// is written only when the state moves. outputMu guards it, as it guards every
-	// other field the output dispatch touches.
-	lastRateLimits json.RawMessage
-
 	approvalPolicy    string // Codex approval policy (stored as-is from DB)
 	sandboxPolicy     string // Codex sandbox policy (e.g. "workspace-write")
 	networkAccess     string // Codex network access ("restricted" or "enabled")

@@ -9,8 +9,10 @@ import {
   codeViewLine,
   codeViewLineNumber,
 } from '../markdownEditor/codeViewStyles.css'
+import { LIMITED_TEXT_DISPLAY_NOTICE, limitTextForDisplay, TEXT_DISPLAY_LINE_CHAR_LIMIT } from '../safeTextDisplay'
+import { toolResultPrompt } from '../toolStyles.css'
 import { useAsyncCodeTokens } from '../useAsyncCodeTokens'
-import { HIGHLIGHT_LINE_LIMIT } from './collapse'
+import { canHighlightBySize } from './collapse'
 
 /**
  * Syntax-highlighted code view for Read tool results.
@@ -29,20 +31,29 @@ export function ReadResultView(props: {
   /** Row outside the near-viewport band: tokenize at low worker priority. */
   rowOffscreen?: () => boolean
 }): JSX.Element {
+  const lineDisplays = createMemo(() => props.lines.map((line) => {
+    const display = limitTextForDisplay(line.text, {
+      maxChars: TEXT_DISPLAY_LINE_CHAR_LIMIT,
+      maxLineChars: TEXT_DISPLAY_LINE_CHAR_LIMIT,
+    })
+    return { line: display.limited ? { ...line, text: display.text } : line, limited: display.limited }
+  }))
+  const lines = createMemo(() => lineDisplays().map(display => display.line))
+  const displayLimited = createMemo(() => lineDisplays().some(display => display.limited))
   // Memoized (like useDiffTokens' `lang`) so the hook's 2-4 reads per reactive pass --
   // both effects' currentKey(), the seed, and syncTokenize -- don't each re-run extname()
   // + the EXT_TO_LANG lookup.
   const lang = createMemo(() => props.filePath ? guessLanguage(props.filePath) : undefined)
   // Memoized so the O(lines) join isn't rebuilt on every read -- the hook reads `code`
   // from both effects' currentKey() plus syncTokenize (2-3x per reactive pass).
-  const code = createMemo(() => props.lines.map(line => line.text).join('\n'))
+  const code = createMemo(() => lines().map(line => line.text).join('\n'))
 
   const tokenizedLines = useAsyncCodeTokens({
     lang,
     code,
-    // Line-count gate (very large files skip highlighting); lang presence is checked
-    // by the hook before this runs.
-    eligible: () => props.lines.length > 0 && props.lines.length <= HIGHLIGHT_LINE_LIMIT,
+    // Large files stay plain. The worker must not receive one short but multi-megabyte
+    // line merely because the line count is small.
+    eligible: () => lines().length > 0 && canHighlightBySize(code()),
     gate: () => ({
       premeasure: props.premeasureMode === true,
       hold: props.syntaxHighlightingPaused === true || props.textSelectionActive?.() === true,
@@ -57,15 +68,15 @@ export function ReadResultView(props: {
 
   // Dynamic line number column width based on the largest line number
   const lineNumWidth = createMemo(() => {
-    const maxNum = props.lines.length > 0
-      ? props.lines.at(-1)!.num
+    const maxNum = lines().length > 0
+      ? lines().at(-1)!.num
       : 0
     return `${Math.max(String(maxNum).length, 1)}ch`
   })
 
   return (
     <div class={codeViewContainer}>
-      <For each={props.lines}>
+      <For each={lines()}>
         {(line, index) => {
           const tokens = () => {
             const t = tokenizedLines()
@@ -99,6 +110,9 @@ export function ReadResultView(props: {
           )
         }}
       </For>
+      <Show when={displayLimited()}>
+        <div class={toolResultPrompt}>{LIMITED_TEXT_DISPLAY_NOTICE}</div>
+      </Show>
     </div>
   )
 }
