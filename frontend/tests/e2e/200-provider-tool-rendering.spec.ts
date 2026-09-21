@@ -1044,6 +1044,34 @@ test.describe('provider tool rendering', () => {
     await expect(row.locator('li')).toHaveText('Finding one')
   })
 
+  test('reveals messages after an empty Codex wait result', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
+    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-empty-codex-wait-'), {
+      agentProvider: AgentProvider.CODEX,
+      ...realAgentOpenOptions(realAgentSettings(AgentProvider.CODEX)),
+    })
+    const spanId = 'empty-wait'
+    const shared = {
+      id: spanId,
+      type: 'collabAgentToolCall',
+      tool: 'wait',
+      receiverThreadIds: [],
+      agentsStates: {},
+    }
+    const sequences = await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [
+      { id: 'empty-wait-request', provider: AgentProvider.CODEX, spanId, spanType: 'collabAgentToolCall', content: { item: { ...shared, status: 'inProgress' } } },
+      { id: 'empty-wait-result', provider: AgentProvider.CODEX, spanId, spanType: 'collabAgentToolCall', content: { item: { ...shared, status: 'completed' } } },
+      { id: 'after-empty-wait', provider: AgentProvider.CODEX, content: { item: { type: 'agentMessage', id: 'after-empty-wait', text: 'VISIBLE_AFTER_EMPTY_WAIT' } } },
+    ])
+
+    await page.reload()
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const chat = page.locator('[data-chat-scroll-container="true"]').filter({ visible: true })
+    const resultRow = page.locator(`[data-seq="${sequences[1]}"]`).filter({ visible: true })
+    await expect(resultRow).toContainText('Completed')
+    await expect(chat.getByText('VISIBLE_AFTER_EMPTY_WAIT', { exact: true }).filter({ visible: true })).toBeVisible()
+    await expect(chat.getByTestId('row-skeleton')).toHaveCount(0)
+  })
+
   test('hides retained Codex rate-limit transcript rows', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
     const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-rate-limit-hidden-'), {
       agentProvider: AgentProvider.CODEX,
