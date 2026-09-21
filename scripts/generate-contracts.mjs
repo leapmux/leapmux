@@ -483,6 +483,8 @@ export const SESSION_INFO_TABLES = [
   { json: 'keys', goPrefix: 'SessionInfoKey', ts: 'SESSION_INFO_KEY', tsType: 'SessionInfoKey', what: 'top-level `info` keys' },
   { json: 'contextUsageFields', goPrefix: 'ContextUsageField', ts: 'CONTEXT_USAGE_FIELD', tsType: 'ContextUsageField', what: 'fields of the context_usage object' },
   { json: 'rateLimitFields', goPrefix: 'RateLimitField', ts: 'RATE_LIMIT_FIELD', tsType: 'RateLimitField', what: 'fields of one rate_limits tier' },
+  { json: 'rateLimitUpdateFields', goPrefix: 'RateLimitUpdateField', ts: 'RATE_LIMIT_UPDATE_FIELD', tsType: 'RateLimitUpdateField', what: 'fields of the rate_limits update envelope' },
+  { json: 'rateLimitUpdateModes', goPrefix: 'RateLimitUpdateMode', ts: 'RATE_LIMIT_UPDATE_MODE', tsType: 'RateLimitUpdateMode', what: 'rate_limits update operations' },
   { json: 'runningToolFields', goPrefix: 'RunningToolField', ts: 'RUNNING_TOOL_FIELD', tsType: 'RunningToolField', what: 'fields of the running_tool object' },
   { json: 'runningToolRetryFields', goPrefix: 'RunningToolRetryField', ts: 'RUNNING_TOOL_RETRY_FIELD', tsType: 'RunningToolRetryField', what: 'fields of running_tool.retry' },
   { json: 'goalProgressFields', goPrefix: 'GoalProgressField', ts: 'GOAL_PROGRESS_FIELD', tsType: 'GoalProgressField', what: 'fields of the goal_progress object' },
@@ -671,6 +673,10 @@ const NotificationThreadWrapperType = ${jsonString(v.notificationThreadWrapperTy
 // lifts on the rolling-window timer (the others are billing/usage caps).
 const CodexRateLimitReachedTimeWindow = ${jsonString(v.codexRateLimitReachedTimeWindow)}
 
+// CodexRateLimitAccountBlockKey is the stable session-info member that carries
+// a billing or workspace block independently from the rolling windows.
+const CodexRateLimitAccountBlockKey = ${jsonString(v.codexRateLimitAccountBlockKey)}
+
 // GoalStatusToken* are the tokens the goal_updated notification payload
 // carries. They are NOT the storage format: agents.goal_status stores an
 // AgentGoalStatus ordinal, and agent.GoalStatusWire maps one onto the other.
@@ -769,6 +775,9 @@ export const NOTIFICATION_THREAD_TYPE = ${jsonString(v.notificationThreadWrapper
 
 /** The one Codex rateLimitReachedType that lifts on the rolling-window timer. */
 export const CODEX_RATE_LIMIT_REACHED_TIME_WINDOW = ${jsonString(v.codexRateLimitReachedTimeWindow)} as const
+
+/** Stable session-info member for a Codex billing or workspace block. */
+export const CODEX_RATE_LIMIT_ACCOUNT_BLOCK_KEY = ${jsonString(v.codexRateLimitAccountBlockKey)} as const
 
 /**
  * The tokens the worker ships in the goal_updated payload. The empty token

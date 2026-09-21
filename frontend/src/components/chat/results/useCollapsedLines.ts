@@ -1,5 +1,7 @@
 import type { Accessor } from 'solid-js'
 import { createMemo } from 'solid-js'
+import { snapUtf16CutBackward } from '~/lib/utf16Cut'
+import { hasLineLongerThan } from '../safeTextDisplay'
 import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 
 /**
@@ -13,6 +15,11 @@ import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 export const COLLAPSED_LINE_CHAR_CAP = 240
 const TRUNCATION_INDICATOR = '…'
 
+/** Whether a body exceeds either the row limit or one collapsed line. */
+export function textNeedsCollapse(text: string, threshold: number = COLLAPSED_RESULT_ROWS): boolean {
+  return hasMoreLinesThan(text, threshold) || hasLineLongerThan(text, COLLAPSED_LINE_CHAR_CAP)
+}
+
 /**
  * Emit `text`'s `\n`-separated lines, replacing any line longer than `cap`
  * with `<first cap chars>…`. Always allocates — callers that already know no
@@ -24,7 +31,8 @@ function emitClippedLines(text: string, cap: number): string {
   while (start <= text.length) {
     const next = text.indexOf('\n', start)
     const end = next === -1 ? text.length : next
-    parts.push(end - start > cap ? `${text.slice(start, start + cap)}${TRUNCATION_INDICATOR}` : text.slice(start, end))
+    const sliceEnd = snapUtf16CutBackward(text, start + cap)
+    parts.push(end - start > cap ? `${text.slice(start, sliceEnd)}${TRUNCATION_INDICATOR}` : text.slice(start, end))
     if (next === -1)
       break
     parts.push('\n')
@@ -107,7 +115,7 @@ function resolveThreshold(threshold: number | Accessor<number> | undefined): Acc
  */
 export function useCollapsedFlag(opts: UseCollapsedLinesOptions): Accessor<boolean> {
   const readThreshold = resolveThreshold(opts.threshold)
-  return createMemo(() => !opts.expanded() && hasMoreLinesThan(opts.text(), readThreshold()))
+  return createMemo(() => !opts.expanded() && textNeedsCollapse(opts.text(), readThreshold()))
 }
 
 export interface UseCollapsedItemsOptions<T> {

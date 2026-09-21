@@ -1,4 +1,5 @@
-import { cutAtCodeUnit, PREVIEW_ELLIPSIS } from './markdownSafeCut'
+import { PREVIEW_ELLIPSIS } from './markdownSafeCut'
+import { snapUtf16CutForward } from './utf16Cut'
 
 /**
  * The first line of `text`, capped at `limit` code units and given an ellipsis
@@ -9,7 +10,7 @@ import { cutAtCodeUnit, PREVIEW_ELLIPSIS } from './markdownSafeCut'
  * keeps paragraph structure and cuts on a grapheme boundary, which is the wrong
  * shape here because the caller wants exactly one line.
  *
- * `cutAtCodeUnit`, not `slice`. A raw slice at a fixed offset can land between
+ * `snapUtf16CutForward`, not a raw cut. A fixed offset can land between
  * the two halves of a surrogate pair, and an emoji or a CJK-extension character
  * in the model's prose then leaves a lone surrogate that the browser renders as
  * a replacement glyph. The backend's own equivalent (bgtask.TruncateRunes)
@@ -23,5 +24,5 @@ export function clipFirstLine(text: string, limit: number): string {
   // end of the line, where it renders as nothing and defeats a length check.
   // split-with-limit always yields at least one element; `?? ''` is for the type only.
   const line = (text.trim().split(/\r?\n/, 1)[0] ?? '').trim()
-  return line.length > limit ? `${cutAtCodeUnit(line, limit)}${PREVIEW_ELLIPSIS}` : line
+  return line.length > limit ? `${line.slice(0, snapUtf16CutForward(line, limit))}${PREVIEW_ELLIPSIS}` : line
 }

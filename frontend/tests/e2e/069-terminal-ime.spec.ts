@@ -156,4 +156,20 @@ test.describe('Terminal IME input', () => {
     await waitForTerminalText(page, 'ASCII_STILL_WORKS')
     await expectInputLog(page, 'echo ASCII_STILL_WORKS\r')
   })
+
+  test('negotiates CSI-u input and sends Shift+Enter as a distinct sequence', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    await openFocusedTerminal(page)
+
+    await page.keyboard.type('printf \'\\033[>1u\'; printf \'KITTY_\'\'MODE_ACTIVE\\n\'', { delay: 30 })
+    await page.keyboard.press('Enter')
+    await waitForTerminalText(page, 'KITTY_MODE_ACTIVE')
+    const beforeModifiedInput = await getInputLog(page)
+
+    await page.keyboard.press('Shift+Enter')
+    await expectInputLog(page, `${beforeModifiedInput}\x1B[13;2u`)
+
+    await page.keyboard.press('Enter')
+    await expectInputLog(page, `${beforeModifiedInput}\x1B[13;2u\r`)
+  })
 })

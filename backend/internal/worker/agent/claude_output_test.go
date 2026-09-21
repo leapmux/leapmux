@@ -578,6 +578,9 @@ func TestClaudeRateLimitEvent_BroadcastsSnakeCaseWire(t *testing.T) {
 	info := sink.LastSessionInfo()
 	rateLimits, ok := info["rate_limits"].(map[string]any)
 	require.True(t, ok, "broadcast must carry rate_limits in snake_case, got %#v", info)
+	assert.Equal(t, "merge", rateLimits["mode"])
+	rateLimits, ok = rateLimits["values"].(map[string]any)
+	require.True(t, ok, "rate_limits must carry a values map")
 
 	tier, ok := rateLimits["five_hour"].(map[string]any)
 	require.True(t, ok, "tier should be keyed by rate_limit_type")
@@ -2128,10 +2131,9 @@ func TestHandleOutput_TaskStartedLeavesTheDescriptionEmpty(t *testing.T) {
 	assert.Empty(t, tasks[0].Description)
 }
 
-// TestHandleOutput_TaskStartedCarriesWorkflowGroup verifies that a task_started
-// carrying a workflow_name populates the registry row's GroupKey/GroupLabel so
-// the sidebar groups workflow rows together.
-func TestHandleOutput_TaskStartedCarriesWorkflowGroup(t *testing.T) {
+// TestHandleOutput_TaskStartedUsesWorkflowKindAndGroup verifies that a
+// local_workflow event uses the workflow registry kind and carries its group.
+func TestHandleOutput_TaskStartedUsesWorkflowKindAndGroup(t *testing.T) {
 	t.Parallel()
 
 	sink := &outputTestSink{}
@@ -2144,9 +2146,11 @@ func TestHandleOutput_TaskStartedCarriesWorkflowGroup(t *testing.T) {
 	require.Len(t, tasks, 1)
 	row := tasks[0]
 	assert.Equal(t, "wf-1", row.RowKey)
+	assert.Equal(t, bgtask.KindWorkflow, row.Kind, "local_workflow maps to a Workflow-kind row")
 	assert.Equal(t, "workflow:release", row.GroupKey, "GroupKey derives from workflow_name")
 	assert.Equal(t, "release", row.GroupLabel, "GroupLabel is the workflow_name")
 	assert.Equal(t, "cut release", row.Title)
+	assert.Empty(t, row.ChildAgentID, "a workflow has no child transcript")
 }
 
 // TestHandleOutput_TaskProgressUpdatesActivityOnly verifies that task_progress

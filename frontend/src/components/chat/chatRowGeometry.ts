@@ -82,6 +82,8 @@ export interface ContentKeyInputs {
    * tab's parent link hydrates, so the measurement must re-key with it.
    */
   isChildTranscript: boolean
+  /** Revisions of the exact display-label groups that this row reads. */
+  settingsLabelRevision: string
 }
 
 /**
@@ -94,7 +96,7 @@ export interface HeightKeyInputs extends ContentKeyInputs {
 }
 
 export function buildContentKey(inputs: ContentKeyInputs): string {
-  return `${inputs.revisionKey}|${inputs.isChildTranscript ? 'k' : ''}`
+  return `${inputs.revisionKey}|${inputs.isChildTranscript ? 'k' : ''}|labels=${inputs.settingsLabelRevision}`
 }
 
 /**

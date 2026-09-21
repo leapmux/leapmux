@@ -2,8 +2,8 @@ import type { ToolCallRow } from '../../model/row'
 import type { ToolKindMeta } from './renderer'
 import { rowDrawsRequest, rowDrawsResult, rowHasResultRow } from '../../model/derivations'
 import { isToolFailureResult, isUnparsedToolResult } from '../../model/toolCall'
-import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../collapse'
 import { contentBlocksCopyable } from '../genericToolCall'
+import { textNeedsCollapse } from '../useCollapsedLines'
 import { dispatchToolCall } from './index'
 
 /**
@@ -41,7 +41,7 @@ export interface ToolCallMeta extends ToolResultMeta {
 
 /** The meta a ToolFailureResult or an UnparsedToolResult offers: one plain text block. */
 export function plainMeta(text: string): ToolKindMeta {
-  return { collapsible: hasMoreLinesThan(text, COLLAPSED_RESULT_ROWS), hasDiff: false, copyableContent: () => text || null }
+  return { collapsible: textNeedsCollapse(text), hasDiff: false, copyableContent: () => text || null }
 }
 
 /** One row's copyable text, and the words that describe the side which stated it. */
@@ -122,18 +122,16 @@ export function toolCallMeta(row: ToolCallRow): ToolCallMeta {
   // Expand opens whatever the row CLIPS, so the words come from the side that
   // holds it. Three cases, in this order:
   //
-  //  1. The row drew the kind's own result body. That body is what the toggle
-  //     opens, so it words the button -- and the request's words must not, or an
-  //     agent row whose result is short would offer "Show prompt" over a prompt
-  //     that a result row never draws.
+  //  1. The row drew a result body that CLIPS. That body is what the toggle opens,
+  //     so it words the button -- and the request's words must not.
   //  2. The row drew a failure or an unparsed payload as plain text, and that text
   //     is long enough to clip. `plainMeta` words nothing, so the button keeps the
   //     toolbar's own last resort.
-  //  3. Anything else clips the REQUEST: a paired request, a call that has not
-  //     returned, or a call whose turn ended before its result arrived. Reading the
-  //     words off the result side alone left those rows stating the bare word
-  //     "Expand" over a command that is the only thing they can un-clip.
-  const expandLabel = result
+  //  3. Anything else can only clip the REQUEST: a paired request, a call that has
+  //     not returned, a call whose turn ended before its result arrived, or a short
+  //     result beside a long request summary. Reading the words off the result side
+  //     alone left those rows stating the bare word "Expand" over the request.
+  const expandLabel = result?.collapsible
     ? result.expandLabel
     : fallback?.collapsible ? fallback.expandLabel : request.expandLabel
   return {

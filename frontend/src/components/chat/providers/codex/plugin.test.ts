@@ -539,20 +539,19 @@ describe('codex rateLimitsFromMessage', () => {
         },
       },
     }))
-    expect(result).toHaveLength(2)
-    expect(result![0]?.key).toBe('five_hour')
-    expect(result![0]?.info.utilization).toBeCloseTo(0.85)
-    expect(result![0]?.info.status).toBe('allowed_warning')
-    expect(result![1]?.key).toBe('seven_day')
-    expect(result![1]?.info.utilization).toBeCloseTo(0.04)
-    expect(result![1]?.info.status).toBe('allowed')
+    expect(result?.mode).toBe('replace')
+    expect(result?.values.five_hour?.utilization).toBeCloseTo(0.85)
+    expect(result?.values.five_hour?.status).toBe('allowed_warning')
+    expect(result?.values.seven_day?.utilization).toBeCloseTo(0.04)
+    expect(result?.values.seven_day?.status).toBe('allowed')
+    expect(result?.values.account_block).toEqual({})
   })
 
-  it('returns empty array without tiers', () => {
+  it('returns the account-block clearing entry without tiers', () => {
     expect(plugin?.session?.rateLimitsFromMessage!(parsed({
       method: 'account/rateLimits/updated',
       params: { rateLimits: {} },
-    }))).toEqual([])
+    }))).toEqual({ mode: 'replace', values: { account_block: {} } })
   })
 
   it('elevates the most-utilized window to exceeded when reached-type fires under 100%', () => {
@@ -566,9 +565,8 @@ describe('codex rateLimitsFromMessage', () => {
         },
       },
     }))
-    expect(result![0]?.key).toBe('five_hour')
-    expect(result![0]?.info.status).toBe('exceeded')
-    expect(result![1]?.info.status).toBe('allowed')
+    expect(result?.values.five_hour?.status).toBe('exceeded')
+    expect(result?.values.seven_day?.status).toBe('allowed')
   })
 
   it('does not elevate for non-time-window reached-type', () => {
@@ -581,7 +579,11 @@ describe('codex rateLimitsFromMessage', () => {
         },
       },
     }))
-    expect(result![0]?.info.status).toBe('allowed')
+    expect(result?.values.five_hour?.status).toBe('allowed')
+    expect(result?.values.account_block).toEqual({
+      rateLimitType: 'workspace_owner_credits_depleted',
+      status: 'exceeded',
+    })
   })
 
   it('returns null for a non-rate-limit method', () => {

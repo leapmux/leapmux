@@ -25,6 +25,7 @@ describe('SpanLines', () => {
     const wrapper = container.firstElementChild
     expect(wrapper).toBeInTheDocument()
     expect(wrapper!.children.length).toBe(1)
+    expect(wrapper!.firstElementChild).toHaveAttribute('data-span-line-column', '0')
   })
 
   // `line.type` comes off the worker's `span_lines` payload. A bare index answered
@@ -115,6 +116,7 @@ describe('SpanLines', () => {
     const bridges = [...anchor.children] as HTMLElement[]
     expect(bridges).toHaveLength(1)
     expect(bridges[0]?.style.left).toBe(`${spanColumnCenterX(1) - LINE_THICKNESS / 2}px`)
+    expect(bridges[0]).toHaveAttribute('data-span-gap-bridge-segment', '1')
   })
 
   it('draws one bridge per continuing column', () => {

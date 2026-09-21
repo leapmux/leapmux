@@ -40,6 +40,7 @@ export interface CompactionDetails {
  */
 export type NotificationEntry
   = | { kind: 'text', text: string }
+    | { kind: 'subagent-report', label?: string, text: string, status?: string }
   /**
    * A statement that COALESCES with its neighbours under one prefix. A run of
    * entries with the same `groupKey` collapses into `Prefix: a, b, c`.

@@ -10,10 +10,21 @@ import type { CommandResult } from '../commandResult'
  */
 export type CommandLanguage = 'bash' | 'powershell' | 'javascript' | 'sql'
 
+/** One operation that an execute request performs. */
+export type CommandAction
+  = | { kind: 'read', command: string, name: string, path: string }
+    | { kind: 'list', command: string, path?: string }
+    | { kind: 'search', command: string, query?: string, path?: string }
+    | { kind: 'unknown', command: string }
+
 export interface ExecuteRequest {
   command: string
   language?: CommandLanguage
   description?: string
   cwd?: string
+  /** The provider's best-effort breakdown of a compound command. */
+  actions?: CommandAction[]
+  /** The provider's process identifier. It can be opaque and is not necessarily numeric. */
+  processId?: string
 }
 export interface ExecuteResult { commands: CommandResult[], unresolvedTerminals: string[] }

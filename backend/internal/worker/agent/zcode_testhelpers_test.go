@@ -12,6 +12,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const zcodeBuiltinZAIAccountConfig = `{
+  "revision":30,
+  "config":{"providerConfigRules":{"providerRules":[
+    {"providerId":"account:zai-individual-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"individual-coding-plan"}}},
+    {"providerId":"account:zai-team-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"team-coding-plan"}}},
+    {"providerId":"account:zai-start-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"start-plan"}}}
+  ]}}
+}`
+
+func seedZCodeAccountBridgeForTests(catalog *zcodeCatalog) {
+	catalog.accountProviderIDs = map[string]string{
+		"builtin:zai-coding-plan": "account:zai-individual-coding-plan",
+	}
+	catalog.legacyProviderIDs = map[string]string{
+		"account:zai-individual-coding-plan": "builtin:zai-coding-plan",
+	}
+}
+
 // zcodeRecordedStdin is the stdin a test agent writes its requests to.
 //
 // A real pipe is not needed and a nil one would panic: an event handler can start an

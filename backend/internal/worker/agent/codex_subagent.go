@@ -42,6 +42,9 @@ const (
 	codexPendingItemCompleted
 	codexPendingTurnStarted
 	codexPendingTurnCompleted
+	codexPendingHookCompleted
+	codexPendingMcpOauthCompleted
+	codexPendingMcpStartupUpdated
 )
 
 type codexPendingChildEvent struct {
@@ -58,6 +61,7 @@ type codexChildState struct {
 	spawnCorrelationID     string
 	parentThreadID         string
 	childAgentID           string
+	resolvedRoute          *codexChildRoute
 	agentPath              string
 	promptTitle            string
 	prompt                 string
@@ -70,6 +74,9 @@ type codexChildState struct {
 	pendingEventBytes      int
 	pendingOutputDropped   bool
 	turnID                 string
+	lastReportItemID       string
+	reportCandidateItemID  string
+	reportCandidateText    string
 }
 
 func (s *codexChildState) displayTitle() string {
@@ -88,7 +95,8 @@ type codexChildRoute struct {
 
 // This file holds the Codex subagent integration: the legacy collab registry
 // adapter, the V2 activity lifecycle, direct-parent transcript routing, and the
-// child interruption. It keeps codex_output.go focused on item output.
+// child interruption. It keeps codex_output.go focused on event dispatch and
+// item lifecycle.
 
 // codexCollabTransition maps a collab agentsStates status to one child
 // transition. An interrupted child remains resumable.
@@ -241,7 +249,7 @@ func (a *CodexAgent) upsertCollabChildRow(up bgtask.Upsert) error {
 // handleCodexSubAgentActivity handles a v2 subAgentActivity item (registry
 // only; never persisted). The started item is the V2 spawn authority: it
 // supplies the spawn call ID, child thread ID, and canonical task path. The
-// completed item closes the run. Interacted and interrupted remain resumable.
+// completed and interrupted items close the run. Interacted keeps it active.
 func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage, parentThreadID string) bool {
 	var act struct {
 		Type          string `json:"type"`
@@ -270,18 +278,25 @@ func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage, parentThr
 		})
 		return true
 	}
+	if act.Kind == "interrupted" {
+		a.completeCodexChildRun(act.AgentThreadID, codexChildTransition{
+			status:     bgtask.StatusFailed,
+			completion: MessageCompletionError,
+		})
+		return true
+	}
 
 	transition := codexChildTransition{status: bgtask.StatusRunning}
 	switch act.Kind {
 	case "started":
+		if prompt := a.takeCodexSpawnPrompt(act.ID); prompt != "" {
+			a.rememberCollabChildPrompt(act.AgentThreadID, prompt)
+		}
 		if !a.registerCodexV2ChildStart(act.AgentThreadID, act.ID, parentThreadID) {
 			return true
 		}
 	case "interacted":
 		transition.activity = "received input"
-		a.activateCollabChild(act.AgentThreadID)
-	case "interrupted":
-		transition.activity = "paused"
 		a.activateCollabChild(act.AgentThreadID)
 	default:
 		// An unknown activity still proves that the child exists. Do not infer
@@ -310,6 +325,77 @@ func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage, parentThr
 		}
 	}
 	return true
+}
+
+func (a *CodexAgent) rememberCodexSpawnPrompt(callID, prompt string) {
+	if callID == "" || strings.TrimSpace(prompt) == "" {
+		return
+	}
+	a.mu.Lock()
+	if a.codexSpawnPrompts == nil {
+		a.codexSpawnPrompts = make(map[string]string)
+	}
+	a.codexSpawnPrompts[callID] = prompt
+	var threadID string
+	for id, state := range a.collabChildren {
+		if state != nil && state.spawnCorrelationID == callID {
+			state.prompt = prompt
+			threadID = id
+			break
+		}
+	}
+	a.mu.Unlock()
+
+	if threadID == "" {
+		return
+	}
+	if route, ok := a.lookupCodexChildRoute(threadID); ok {
+		if err := route.parentSink.PersistChildPrompt(route.agentID, prompt); err != nil {
+			slog.Warn("codex persist late V2 prompt failed", "thread", threadID, "error", err)
+		}
+	}
+}
+
+func (a *CodexAgent) takeCodexSpawnPrompt(callID string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	prompt := a.codexSpawnPrompts[callID]
+	delete(a.codexSpawnPrompts, callID)
+	return prompt
+}
+
+func (a *CodexAgent) recordCodexChildReportCandidate(threadID, itemID, text string, publishNow bool) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	state := a.collabChildren[threadID]
+	if state == nil || state.childAgentID == "" {
+		return "", false
+	}
+	state.reportCandidateItemID = itemID
+	state.reportCandidateText = text
+	if !publishNow || state.lastReportItemID == itemID {
+		return "", false
+	}
+	state.lastReportItemID = itemID
+	label := state.displayTitle()
+	state.reportCandidateItemID = ""
+	state.reportCandidateText = ""
+	return label, true
+}
+
+func (a *CodexAgent) takeCodexChildReportCandidate(threadID string) (reportID, label, text string, ok bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	state := a.collabChildren[threadID]
+	if state == nil || state.childAgentID == "" || state.reportCandidateItemID == "" ||
+		state.reportCandidateItemID == state.lastReportItemID || strings.TrimSpace(state.reportCandidateText) == "" {
+		return "", "", "", false
+	}
+	state.lastReportItemID = state.reportCandidateItemID
+	reportID, label, text = state.reportCandidateItemID, state.displayTitle(), state.reportCandidateText
+	state.reportCandidateItemID = ""
+	state.reportCandidateText = ""
+	return reportID, label, text, true
 }
 
 func codexAgentPathTitle(agentPath string) string {
@@ -356,6 +442,7 @@ func (a *CodexAgent) registerCodexV2ChildStart(threadID, spawnCorrelationID, par
 		parentThreadID = a.threadID
 	}
 	state.parentThreadID = parentThreadID
+	a.invalidateCodexChildRoutesLocked()
 	if state.phase != codexChildClosing {
 		a.activateCodexChildStateLocked(state)
 	}
@@ -463,9 +550,20 @@ func (a *CodexAgent) finishCollabChildRun(threadID string) {
 		state.pendingEventBytes = 0
 		state.pendingOutputDropped = false
 		state.pendingGenerationBytes = 0
+		state.reportCandidateItemID = ""
+		state.reportCandidateText = ""
 		state.generationBuffer.Reset()
+		a.invalidateCodexChildRoutesLocked()
 	}
 	a.mu.Unlock()
+}
+
+func (a *CodexAgent) invalidateCodexChildRoutesLocked() {
+	for _, state := range a.collabChildren {
+		if state != nil {
+			state.resolvedRoute = nil
+		}
+	}
 }
 
 // collabChildTitle returns the V2 path segment or the first V1 prompt line.

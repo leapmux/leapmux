@@ -58,6 +58,17 @@ describe('code surfaces are paired with their token colours', () => {
     expect(paired.length, 'no file declares a code surface -- has the helper been renamed?')
       .toBeGreaterThanOrEqual(6)
   })
+
+  it('restricts transparent syntax surfaces to inline command summaries', () => {
+    const transparent: string[] = []
+    for (const file of collectStyleFiles(srcRoot)) {
+      const source = readFileSync(file, 'utf8')
+      for (const match of source.matchAll(/codeSurface\(([^,\n]+), 'transparent'/g))
+        transparent.push(`${posixRelative(srcRoot, file)}: ${match[1]?.trim()}`)
+    }
+
+    expect(transparent).toEqual(['components/chat/toolStyles.css.ts: toolInputSummary'])
+  })
 })
 
 describe('the code palette is published where it is read', () => {

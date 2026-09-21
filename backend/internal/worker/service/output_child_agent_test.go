@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -92,6 +93,151 @@ func TestEnsureChildAgent_RegistryRowLinksChild(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, "task-1", rows[0].RowKey)
 	assert.Equal(t, childID, rows[0].ChildAgentID, "registry row links to the child agent id")
+}
+
+func TestPersistSubagentReportResolvesTheChildAndDeduplicatesDurably(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, sink := setupRootSink(t, "root-report")
+	childID, err := sink.EnsureChildAgent("spawn-1", "row-1", "Reviewer")
+	require.NoError(t, err)
+	write := agent.ChildSubagentReportWrite{
+		RowKey: "row-1",
+		Write: agent.SubagentReportWrite{
+			ReportID: "report-1",
+			Report:   agent.SubagentReport{Text: "Report"},
+		},
+	}
+	stored, err := sink.PersistChildSubagentReport(write)
+	require.NoError(t, err)
+	assert.True(t, stored)
+
+	secondSink := svc.Output.NewSink("root-report", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	stored, err = secondSink.PersistChildSubagentReport(write)
+	require.NoError(t, err)
+	assert.False(t, stored, "a new sink still reads the database uniqueness rule")
+
+	rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: childID})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Regexp(t, `^subagent-report:[0-9a-f]{64}$`, rows[0].IdempotencyKey)
+}
+
+func TestPersistSubagentReportUsesTheReportIdentity(t *testing.T) {
+	t.Parallel()
+
+	t.Run("one identity keeps its first content", func(t *testing.T) {
+		t.Parallel()
+		svc, sink := setupRootSink(t, "root-same-report")
+		first := agent.SubagentReportWrite{
+			ReportID: "report-1",
+			Report:   agent.SubagentReport{Text: "First report"},
+		}
+		stored, err := sink.PersistSubagentReport(first)
+		require.NoError(t, err)
+		assert.True(t, stored)
+		first.Report.Text = "Changed replay"
+		stored, err = sink.PersistSubagentReport(first)
+		require.NoError(t, err)
+		assert.False(t, stored)
+
+		messages := transcriptMessages(t, svc, "root-same-report")
+		require.Len(t, messages, 1)
+		wrapped, ok := messages[0]["messages"].([]any)
+		require.True(t, ok)
+		require.Len(t, wrapped, 1)
+		payload, ok := wrapped[0].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "First report", payload[contracts.NotificationFieldText])
+	})
+
+	t.Run("distinct identities keep identical content", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		svc, sink := setupRootSink(t, "root-distinct-reports")
+		for _, reportID := range []string{"report-1", "report-2"} {
+			stored, err := sink.PersistSubagentReport(agent.SubagentReportWrite{
+				ReportID: reportID,
+				Report:   agent.SubagentReport{Text: "Same report"},
+			})
+			require.NoError(t, err)
+			assert.True(t, stored)
+		}
+
+		rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "root-distinct-reports"})
+		require.NoError(t, err)
+		require.Len(t, rows, 2)
+		assert.Regexp(t, `^subagent-report:[0-9a-f]{64}$`, rows[0].IdempotencyKey)
+		assert.Regexp(t, `^subagent-report:[0-9a-f]{64}$`, rows[1].IdempotencyKey)
+		assert.NotEqual(t, rows[0].IdempotencyKey, rows[1].IdempotencyKey)
+	})
+}
+
+func TestPersistSubagentReportDeduplicatesConcurrentWriters(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, sink := setupRootSink(t, "root-concurrent-report")
+	childID, err := sink.EnsureChildAgent("spawn-1", "row-1", "Reviewer")
+	require.NoError(t, err)
+	write := agent.ChildSubagentReportWrite{
+		RowKey: "row-1",
+		Write: agent.SubagentReportWrite{
+			ReportID: "report-1",
+			Report:   agent.SubagentReport{Text: "Report"},
+		},
+	}
+
+	var wg sync.WaitGroup
+	var stored atomic.Int64
+	errs := make(chan error, 16)
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			wrote, writeErr := sink.PersistChildSubagentReport(write)
+			if writeErr != nil {
+				errs <- writeErr
+				return
+			}
+			if wrote {
+				stored.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for writeErr := range errs {
+		require.NoError(t, writeErr)
+	}
+	assert.Equal(t, int64(1), stored.Load())
+	rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: childID})
+	require.NoError(t, err)
+	assert.Len(t, rows, 1)
+}
+
+func TestPersistSubagentReportScopesIdentityToTheProviderSession(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, sink := setupRootSink(t, "root-session-report")
+	write := agent.SubagentReportWrite{
+		ReportID: "report-1",
+		Report:   agent.SubagentReport{Text: "Report"},
+	}
+	sink.UpdateSessionID("session-1")
+	stored, err := sink.PersistSubagentReport(write)
+	require.NoError(t, err)
+	assert.True(t, stored)
+	sink.UpdateSessionID("session-2")
+	stored, err = sink.PersistSubagentReport(write)
+	require.NoError(t, err)
+	assert.True(t, stored, "a provider can reuse an item id in a new session")
+
+	rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "root-session-report"})
+	require.NoError(t, err)
+	assert.Len(t, rows, 2)
 }
 
 // TestCleanupChildAgent_ReclaimsPerChildState verifies a final child close

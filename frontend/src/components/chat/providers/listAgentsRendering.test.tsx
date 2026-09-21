@@ -106,14 +106,15 @@ describe('claude toolbar actions for ListAgents', () => {
     expect(meta?.copyableContent()).toBe(LISTING)
   })
 
-  // A listing draws as a MARKDOWN body, which the row never clamps -- the table is
-  // the answer, and half a table states nothing. So the toolbar offers no Expand,
-  // whatever the listing's length. The rule this replaced counted the listing's
-  // lines and drew a button that revealed nothing.
-  it.each([
-    ['a long listing', LISTING],
-    ['a one-line listing', 'No agents are reachable.'],
-  ])('offers no expand for %s', (_name, listing) => {
+  // The Markdown body uses the same collapsed style as other prose. A long table
+  // needs an Expand action, or its lower rows stay clipped with no way to reveal them.
+  it('offers expand for a long listing', () => {
+    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, listAgentsToolResult('', { listing: LISTING }), { spanType: 'ListAgents' })
+    expect(meta?.collapsible).toBe(true)
+  })
+
+  it('offers no expand for a one-line listing', () => {
+    const listing = 'No agents are reachable.'
     const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, listAgentsToolResult('', { listing }), { spanType: 'ListAgents' })
     expect(meta?.collapsible).toBe(false)
   })

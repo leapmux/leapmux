@@ -26,12 +26,17 @@ interface Harness {
 
 let harnesses: Harness[] = []
 
-function createHarness(): Harness {
+function createHarness(options?: { kittyKeyboard?: boolean, beforeImeAttach?: (textarea: HTMLTextAreaElement) => void }): Harness {
   const container = document.createElement('div')
   document.body.appendChild(container)
 
-  const terminal = new Terminal({ cols: 80, rows: 24 })
+  const terminal = new Terminal({
+    cols: 80,
+    rows: 24,
+    ...(options?.kittyKeyboard ? { vtExtensions: { kittyKeyboard: true } } : {}),
+  })
   terminal.open(container)
+  options?.beforeImeAttach?.(terminal.textarea!)
 
   const sent: string[] = []
   const fromXterm: string[] = []
@@ -563,6 +568,42 @@ describe('attachTerminalIme', () => {
 
     expect(h.fromXterm).toEqual(['a'])
     expect(h.sent).toEqual([])
+  })
+
+  it('does not duplicate inserted text after CSI-u encoded the key', async () => {
+    const h = createHarness({ kittyKeyboard: true })
+    await new Promise<void>(resolve => h.terminal.write('\x1B[=31;1u', resolve))
+
+    keydown(h.textarea, { key: 'a', code: 'KeyA', keyCode: 65 })
+    input(h.textarea, 'insertText', 'a')
+
+    expect(h.fromXterm).toEqual(['\x1B[97;;97u'])
+    expect(h.sent).toEqual([])
+  })
+
+  it('does not duplicate shifted text after CSI-u encoded an alternate key', async () => {
+    const h = createHarness({ kittyKeyboard: true })
+    await new Promise<void>(resolve => h.terminal.write('\x1B[=31;1u', resolve))
+
+    keydown(h.textarea, { key: 'C', code: 'KeyC', keyCode: 67, shiftKey: true })
+    input(h.textarea, 'insertText', 'C')
+
+    expect(h.fromXterm).toEqual(['\x1B[99:67;2;67u'])
+    expect(h.sent).toEqual([])
+  })
+
+  it('does not treat an unrelated prevented key as a CSI-u emission', () => {
+    const h = createHarness({
+      beforeImeAttach: (textarea) => {
+        textarea.addEventListener('keydown', event => event.preventDefault(), { capture: true })
+      },
+    })
+
+    keydown(h.textarea, { key: 'C', code: 'KeyC', keyCode: 67 })
+    input(h.textarea, 'insertText', 'C')
+
+    expect(h.fromXterm).toEqual([])
+    expect(h.sent).toEqual(['C'])
   })
 
   it('leaves capital letters to xterm, which defers them to keypress', () => {

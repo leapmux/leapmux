@@ -1,11 +1,11 @@
 /**
  * 174 — Goose subagent registry + tool-request transcript.
  *
- * Goose surfaces tool REQUESTS (never results) over ACP via
+ * Goose surfaces tool requests (never results) over ACP via
  * _meta.toolNotification. The row IS clickable (it owns a tool-request
- * transcript): clicking opens a child tab showing "Requested tool: <name>"
- * cards. Worker-backed: the child agent exists with parent linkage. The child
- * composer is disabled (Goose is not steerable).
+ * transcript). The child also keeps the spawn prompt and final delegate report.
+ * Worker-backed: the child agent exists with parent linkage. The child composer
+ * is disabled because Goose is not steerable.
  */
 import { expect, GOOSE_E2E_SKIP_REASON, gooseTest } from './goose-fixtures'
 import {
@@ -49,22 +49,11 @@ gooseTest.describe('Goose subagent registry', () => {
     const row = await requireRegistryRow(gooseTest, page)
     const r = row!
 
-    // The row links to a tool-request transcript (child-agent-id) when Goose
-    // surfaces a subagent_tool_request. Best-effort: the link can lag or be
-    // absent if the subagent made no tool requests. Poll for the attribute
-    // (NOT Promise.race against a timer -- getAttribute resolves immediately
-    // with null and wins the race at t≈0).
-    let childId: string | null = null
-    try {
-      await expect.poll(async () => {
-        const v = await r.getAttribute('data-child-agent-id')
-        return v ?? ''
-      }).not.toBe('')
-      childId = await r.getAttribute('data-child-agent-id')
-    }
-    catch {
-      childId = null
-    }
+    // The spawn itself creates the transcript. A child that uses no tool still
+    // keeps its prompt and report.
+    await expect.poll(async () => await r.getAttribute('data-child-agent-id')).not.toBe('')
+    const childId = await r.getAttribute('data-child-agent-id')
+    expect(childId).not.toBeNull()
 
     if (childId) {
       // Click -> child tab opens adjacent to the parent.
@@ -83,13 +72,7 @@ gooseTest.describe('Goose subagent registry', () => {
       // pixels apart.
       await expect(page.getByText(noMessages, { exact: true })).toHaveCount(0)
 
-      // Quote routing out of a read-only transcript is NOT asserted here. Goose's
-      // child transcript carries only `subagent_tool_request` rows, and the ACP
-      // plugin returns no quotable text for that category, so no row in it ever
-      // renders a Quote action -- every locator for one matches zero elements.
-      // The guarded version of this check reported green while asserting
-      // nothing. The routing is covered where it has a real seam, in
-      // `editorRef.store.test.ts` and `tab.helpers.test.ts`.
+      await expect(page.getByText('Subagent reported', { exact: true })).toBeVisible()
     }
 
     await expectRowBecomesFinal(page, r)

@@ -51,6 +51,24 @@ interface AgentSessionStoreState {
   progressByAgent: Record<string, LiveGenerationProgress>
 }
 
+export interface AgentSessionUpdateOptions {
+  rateLimits?: {
+    mode: 'merge' | 'replace'
+    deleteKeys?: readonly string[]
+  }
+}
+
+function rateLimitMapsEqual(
+  left: Record<string, RateLimitInfo> | undefined,
+  right: Record<string, RateLimitInfo>,
+): boolean {
+  if (left === undefined)
+    return Object.keys(right).length === 0
+  if (Object.keys(left).length !== Object.keys(right).length)
+    return false
+  return Object.entries(right).every(([key, value]) => shallowEqual(left[key], value))
+}
+
 export function createAgentSessionStore() {
   const [state, setState] = createStore<AgentSessionStoreState>({
     infoByAgent: {},
@@ -165,7 +183,7 @@ export function createAgentSessionStore() {
       setState('progressByAgent', agentId, reconcile(progress))
     },
 
-    updateInfo(agentId: string, partial: Partial<AgentSessionInfo>) {
+    updateInfo(agentId: string, partial: Partial<AgentSessionInfo>, options: AgentSessionUpdateOptions = {}) {
       ensureLoaded(agentId)
       // Set by the updater, acted on AFTER it: `persist` reads the store, and
       // inside the updater the store still holds the pre-update value.
@@ -177,18 +195,18 @@ export function createAgentSessionStore() {
           if (value === undefined || value === null)
             continue
           if (key === 'rateLimits' && typeof value === 'object') {
-            // Deep-merge rateLimits: preserve existing entries, update/add new ones.
             const incoming = value as Record<string, RateLimitInfo>
             const existing = merged.rateLimits ?? {}
-            const next = { ...existing }
-            let rlChanged = false
+            // Provider boundaries state whether the frame is a partial merge
+            // or a full replacement. Empty tier objects remain valid values.
+            const rateLimitOptions = options.rateLimits ?? { mode: 'merge' as const }
+            const next = rateLimitOptions.mode === 'replace' ? {} : { ...existing }
             for (const [rlKey, rlInfo] of Object.entries(incoming)) {
-              if (!shallowEqual(existing[rlKey], rlInfo)) {
-                next[rlKey] = rlInfo
-                rlChanged = true
-              }
+              next[rlKey] = rlInfo
             }
-            if (rlChanged) {
+            for (const rlKey of rateLimitOptions.deleteKeys ?? [])
+              delete next[rlKey]
+            if (!rateLimitMapsEqual(merged.rateLimits, next)) {
               merged.rateLimits = next
               changed = true
             }

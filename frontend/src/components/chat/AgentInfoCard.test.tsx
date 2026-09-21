@@ -190,6 +190,26 @@ describe('agent info card rate-limit rows', () => {
     expect(text).toContain('resets in')
     expect(text).not.toContain('% used')
   })
+
+  it('renders a non-window Codex account block without a reset timer', () => {
+    const { container } = render(() => (
+      <InfoCardWithInfo
+        agent={agent(AgentProvider.CODEX, 's')}
+        agentSessionInfo={{
+          rateLimits: {
+            account_block: {
+              rateLimitType: 'workspace_owner_credits_depleted',
+              status: 'exceeded',
+            },
+          },
+        }}
+      />
+    ))
+
+    expect(container).toHaveTextContent('Rate Limit (workspace_owner_credits_depleted)')
+    expect(container).toHaveTextContent('Exceeded')
+    expect(container).not.toHaveTextContent('resets in')
+  })
 })
 
 describe('agent info card branch row', () => {

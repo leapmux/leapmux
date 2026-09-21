@@ -17,6 +17,7 @@ func reasonixSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservatio
 	}
 	var input struct {
 		Description string `json:"description"`
+		Prompt      string `json:"prompt"`
 	}
 	// Invalid or incomplete arguments keep the same launch layout.
 	title := ""
@@ -26,12 +27,13 @@ func reasonixSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservatio
 	if title == "" {
 		title = "Reasonix subagent"
 	}
-	// This registry path does not create a child transcript, so it retains no prompt copy.
 	return &acpSubagentObservation{
-		RowKey: tc.ToolCallID,
-		Title:  title,
-		Status: bgtask.StatusRunning,
-		Spawns: true,
+		RowKey:        tc.ToolCallID,
+		Title:         title,
+		Status:        bgtask.StatusRunning,
+		ChildAgentKey: tc.ToolCallID,
+		Prompt:        input.Prompt,
+		Spawns:        true,
 	}
 }
 
@@ -65,6 +67,7 @@ func reasonixSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubag
 	}
 	status := acpFinalStatus(tcu.Status)
 	toolName, rawInput := resolveReasonixTask(tcu.Title, tcu.RawInput)
+	backgroundLaunch := false
 	// A successful read-only task returns plain report text, not a status envelope.
 	if tcu.Status != "cancelled" && (tcu.Status != "completed" || toolName != contracts.ReasonixToolReadOnlyTask) {
 		outcome := reasonixOutcomeHeader.FindStringSubmatch(acpToolCallText(tcu.Content))
@@ -81,9 +84,35 @@ func reasonixSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubag
 			}
 			_ = json.Unmarshal(rawInput, &args)
 			if args.Background || strings.HasPrefix(acpToolCallText(tcu.Content), "Started background task ") {
-				return nil
+				backgroundLaunch = true
 			}
 		}
 	}
-	return &acpSubagentObservation{RowKey: tcu.ToolCallID, Status: status, CloseRow: true, Mode: acpModeCloseOnly}
+	hasOutcomeEnvelope := toolName != contracts.ReasonixToolReadOnlyTask
+	report := reasonixSubagentReport(acpToolCallText(tcu.Content), hasOutcomeEnvelope)
+	if backgroundLaunch {
+		// Reasonix exposes the launch call but does not forward the background
+		// job's later lifecycle over ACP. Close the observable call here so the
+		// registry does not claim that LeapMux still receives task updates. The
+		// acknowledgement is not the subagent's report.
+		report = ""
+	}
+	return &acpSubagentObservation{
+		RowKey: tcu.ToolCallID, Status: status, CloseRow: true, Mode: acpModeCloseOnly,
+		ReportID: tcu.ToolCallID,
+		Report:   SubagentReport{Text: report},
+	}
+}
+
+func reasonixSubagentReport(text string, hasOutcomeEnvelope bool) string {
+	text = strings.TrimSpace(text)
+	if !hasOutcomeEnvelope {
+		return text
+	}
+	text = reasonixOutcomeHeader.ReplaceAllString(text, "")
+	text = strings.TrimSpace(text)
+	if report, ok := strings.CutPrefix(text, "Final answer:"); ok {
+		return strings.TrimSpace(report)
+	}
+	return text
 }

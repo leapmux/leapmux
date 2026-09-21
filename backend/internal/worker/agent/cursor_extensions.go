@@ -71,6 +71,9 @@ func (a *CursorCLIAgent) handleCursorExtension(method string, params json.RawMes
 		slog.Debug("Cursor extension frame identifies no tool call", "method", method, "error", err)
 		return true
 	}
+	if method == contracts.CursorMethodTask {
+		a.noteCursorTaskExtension(frame.ToolCallID)
+	}
 	if a.transcript == nil {
 		// Only a test builds a Cursor agent with no transcript, and it does so to
 		// exercise the ack. Persisting from here would need the transcript's own

@@ -36,7 +36,7 @@ func TestCodexControlPublicationFailureReturnsProtocolError(t *testing.T) {
 	assert.Empty(t, sink.PublishedControls())
 }
 
-type startupStatusGuardSink struct {
+type notificationPersistGuardSink struct {
 	testSink
 	t *testing.T
 }
@@ -66,7 +66,8 @@ type codexEnsureCall struct {
 
 type recordingCodexEnsureSink struct {
 	*testSink
-	ensureCalls []codexEnsureCall
+	ensureCalls    []codexEnsureCall
+	childSinkCalls int
 }
 
 func (s *recordingCodexEnsureSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
@@ -76,6 +77,11 @@ func (s *recordingCodexEnsureSink) EnsureChildAgent(spawnSpanID, providerChildKe
 		title:            title,
 	})
 	return s.testSink.EnsureChildAgent(spawnSpanID, providerChildKey, title)
+}
+
+func (s *recordingCodexEnsureSink) ChildSink(childAgentID string) ProviderServices {
+	s.childSinkCalls++
+	return s.testSink.ChildSink(childAgentID)
 }
 
 func (s *transientCodexCloseFailureSink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
@@ -101,8 +107,8 @@ func (s *blockingCodexEnsureSink) EnsureChildAgent(spawnSpanID, providerChildKey
 	return s.testSink.EnsureChildAgent(spawnSpanID, providerChildKey, title)
 }
 
-func (s *startupStatusGuardSink) PersistMessage(source leapmuxv1.MessageSource, content MessageContent, span SpanInfo) error {
-	s.t.Fatalf("startup status notification must not be persisted as a regular message: source=%v content=%s", source, string(content.Original))
+func (s *notificationPersistGuardSink) PersistMessage(source leapmuxv1.MessageSource, content MessageContent, span SpanInfo) error {
+	s.t.Fatalf("notification must not be persisted as a regular message: source=%v content=%s", source, string(content.Original))
 	return nil
 }
 
@@ -257,21 +263,185 @@ func TestHandleCodexOutput_ContextCompactionStartPersistsRawAsAgent(t *testing.T
 		"raw JSON-RPC envelope must be preserved verbatim — synthesized {type:\"compacting\"} discarded item.id and threadId")
 }
 
-func TestHandleCodexOutput_McpStartupStatusPersistsAsAgent(t *testing.T) {
+func TestHandleCodexOutput_McpStartupNonFailuresDoNotReachTheTranscript(t *testing.T) {
 	t.Parallel()
 
-	sink := &startupStatusGuardSink{t: t}
+	for _, status := range []string{`"starting"`, `"ready"`, `"cancelled"`, `{"state":"ready"}`} {
+		sink := &notificationPersistGuardSink{t: t}
+		agent := newCodexAgentWithSink(sink)
+
+		input := fmt.Sprintf(`{"method":"mcpServer/startupStatus/updated","params":{"name":"codex_apps","status":%s}}`, status)
+		handleCodexOutput(agent, parseLine([]byte(input)))
+
+		assert.Zero(t, sink.NotificationCount(), status)
+		assert.Zero(t, sink.MessageCount(), status)
+	}
+}
+
+func TestHandleCodexOutput_McpStartupFailuresPersistAsAgent(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []string{`"failed"`, `"futureFailure"`, `{"state":"failed","error":"nested failure"}`} {
+		sink := &notificationPersistGuardSink{t: t}
+		agent := newCodexAgentWithSink(sink)
+
+		input := fmt.Sprintf(`{"method":"mcpServer/startupStatus/updated","params":{"name":"codex_apps","status":%s,"error":"startup failed"}}`, status)
+		handleCodexOutput(agent, parseLine([]byte(input)))
+
+		require.Equal(t, 1, sink.NotificationCount(), status)
+		require.Zero(t, sink.MessageCount(), status)
+		last := sink.LastNotification()
+		assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source)
+		assert.JSONEq(t, input, string(last.Content), "the raw failure envelope stays available")
+	}
+}
+
+func TestHandleCodexOutput_McpProgressDoesNotReachTheTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
-	input := `{"method":"mcpServer/startupStatus/updated","params":{"name":"codex_apps","status":"ready"}}`
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/mcpToolCall/progress","params":{"threadId":"main-thread","turnId":"turn-1","itemId":"mcp-1","message":"Working"}}`)))
+
+	assert.Zero(t, sink.NotificationCount())
+	assert.Zero(t, sink.MessageCount())
+}
+
+func TestHandleCodexOutput_McpOauthSuccessDoesNotReachTheTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"mcpServer/oauthLogin/completed","params":{"name":"docs","threadId":"main-thread","success":true}}`)))
+
+	assert.Zero(t, sink.NotificationCount())
+	assert.Zero(t, sink.MessageCount())
+}
+
+func TestHandleCodexOutput_McpOauthFailurePersistsAsAgent(t *testing.T) {
+	t.Parallel()
+
+	sink := &notificationPersistGuardSink{t: t}
+	agent := newCodexAgentWithSink(sink)
+	input := `{"method":"mcpServer/oauthLogin/completed","params":{"name":"docs","threadId":"main-thread","success":false,"error":"authorization failed"}}`
+
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	require.Equal(t, 1, sink.NotificationCount())
-	require.Equal(t, 0, sink.MessageCount())
-	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
-		"Codex-emitted MCP startup-status updates must persist as AGENT (not LEAPMUX)")
-	assert.JSONEq(t, input, string(last.Content), "raw JSON-RPC envelope must be preserved verbatim")
+	require.Zero(t, sink.MessageCount())
+	assert.JSONEq(t, input, string(sink.LastNotification().Content))
+}
+
+func TestHandleCodexOutput_SubagentFailuresRouteToTheChildTranscript(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "MCP OAuth",
+			input: `{"method":"mcpServer/oauthLogin/completed","params":{"name":"docs","threadId":"child-1","success":false,"error":"authorization failed"}}`,
+		},
+		{
+			name:  "MCP startup",
+			input: `{"method":"mcpServer/startupStatus/updated","params":{"threadId":"child-1","name":"docs","status":"failed","error":"startup failed"}}`,
+		},
+		{
+			name:  "hook",
+			input: `{"method":"hook/completed","params":{"threadId":"child-1","turnId":"child-turn","run":{"id":"hook-1","eventName":"preToolUse","handlerType":"command","sourcePath":"/hooks/check.sh","status":"failed","statusMessage":"hook failed","entries":[{"kind":"error","text":"permission denied"}]}}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &testSink{}
+			agent := newCodexAgentWithSink(sink)
+			handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"collabAgentToolCall","id":"spawn-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"inspect","agentsStates":{}}}}`)))
+			parentCount := sink.MessageCount()
+
+			handleCodexOutput(agent, parseLine([]byte(tc.input)))
+
+			assert.Equal(t, parentCount, sink.MessageCount(), "the parent transcript must not receive the child failure")
+			assert.Zero(t, sink.NotificationCount(), "the parent notification thread must stay unchanged")
+			child := sink.ChildSink("child-of-spawn-1").(*testSink)
+			require.Equal(t, 1, child.NotificationCount())
+			assert.JSONEq(t, tc.input, string(child.LastNotification().Content))
+		})
+	}
+}
+
+func TestHandleCodexOutput_SubagentFailureWaitsForItsRoute(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	failure := `{"method":"hook/completed","params":{"threadId":"child-1","turnId":"child-turn","run":{"id":"hook-1","status":"blocked","statusMessage":"policy blocked the hook"}}}`
+
+	handleCodexOutput(agent, parseLine([]byte(failure)))
+	assert.Zero(t, sink.MessageCount())
+	assert.Zero(t, sink.NotificationCount())
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/reviewer"}}}`)))
+
+	child := sink.ChildSink("child-of-spawn-1").(*testSink)
+	require.Equal(t, 1, child.NotificationCount())
+	assert.JSONEq(t, failure, string(child.LastNotification().Content))
+}
+
+func TestHandleCodexOutput_MultiAgentV2PersistsPromptAndMirrorsFinalReport(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","arguments":"{\"message\":\"Inspect the parser.\",\"task_name\":\"parser-review\"}","call_id":"spawn-1"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/parser-review"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"child-1","turnId":"child-turn","item":{"type":"agentMessage","id":"report-1","text":"**Parser report**\n\n- Finding","phase":null}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"child-turn","status":"completed","items":[],"error":null}}}`)))
+
+	child := sink.ChildSink("child-of-spawn-1").(*testSink)
+	childMessages := child.Messages()
+	require.Len(t, childMessages, 3, "the prompt must precede the native final report and turn end")
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, childMessages[0].Source)
+	assert.JSONEq(t, `{"content":"Inspect the parser."}`, string(childMessages[0].Content))
+	assert.Contains(t, string(childMessages[1].Content), "Parser report")
+
+	reports := sink.LeapMuxNotifications()
+	require.Len(t, reports, 1, "the direct parent receives one report copy")
+	assert.Equal(t, "subagent_report", reports[0]["type"])
+	assert.Equal(t, "**Parser report**\n\n- Finding", reports[0]["text"])
+	assert.Equal(t, "parser-review", reports[0]["label"])
+}
+
+func TestHandleCodexOutput_V1ChildMirrorsFinalReportWithoutAnAgentPath(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"collabAgentToolCall","id":"spawn-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"Inspect the parser.","agentsStates":{}}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"child-1","turnId":"child-turn","item":{"type":"agentMessage","id":"report-1","text":"Parser report","phase":"final_answer"}}}`)))
+
+	reports := sink.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "Parser report", reports[0]["text"])
+	assert.Equal(t, "Inspect the parser.", reports[0]["label"])
+}
+
+func TestHandleCodexOutput_PublishedChildReportDropsRetainedText(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/reviewer"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"child-1","turnId":"child-turn","item":{"type":"agentMessage","id":"report-1","text":"A long report","phase":"final_answer"}}}`)))
+
+	agent.mu.Lock()
+	state := agent.collabChildren["child-1"]
+	require.NotNil(t, state)
+	assert.Empty(t, state.reportCandidateText)
+	assert.Empty(t, state.reportCandidateItemID)
+	agent.mu.Unlock()
 }
 
 func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsAgent(t *testing.T) {
@@ -294,38 +464,32 @@ func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsAgent(t *testing.T) {
 		"raw envelope must be preserved so future renderers can read every field")
 }
 
-func TestHandleCodexOutput_MetadataNotificationsPersistRawAsAgent(t *testing.T) {
+func TestHandleCodexOutput_SkillsChangedDoesNotReachTranscript(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range []struct {
-		name  string
-		input string
-	}{
-		{
-			name:  "skills changed",
-			input: `{"method":"skills/changed","params":{}}`,
-		},
-		{
-			name:  "remote control status changed",
-			input: `{"method":"remoteControl/status/changed","params":{"status":"disabled","environmentId":null}}`,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			sink := &recordingControlSink{}
-			agent := newCodexAgentWithSink(sink)
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
 
-			handleCodexOutput(agent, parseLine([]byte(tc.input)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"skills/changed","params":{}}`)))
 
-			require.Equal(t, 1, sink.NotificationCount())
-			require.Equal(t, 0, sink.MessageCount(),
-				"Codex metadata notifications must not fall through to the default AGENT branch")
-			last := sink.LastNotification()
-			assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
-				"Codex-emitted metadata must persist as AGENT")
-			assert.JSONEq(t, tc.input, string(last.Content),
-				"raw JSON-RPC envelope must be preserved verbatim")
-		})
-	}
+	assert.Zero(t, sink.MessageCount())
+	assert.Zero(t, sink.NotificationCount())
+	assert.Zero(t, sink.SessionInfoCount())
+	assert.Empty(t, sink.TurnActives())
+}
+
+func TestHandleCodexOutput_RemoteControlStatusChangedDoesNotReachTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"remoteControl/status/changed","params":{"status":"disabled","serverName":"OpenAI","installationId":"install-1","environmentId":null}}`)))
+
+	assert.Zero(t, sink.MessageCount())
+	assert.Zero(t, sink.NotificationCount())
+	assert.Zero(t, sink.SessionInfoCount())
+	assert.Empty(t, sink.TurnActives())
 }
 
 func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
@@ -342,17 +506,13 @@ func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
 	require.Equal(t, AutoContinueReasonRateLimit, schedule.Reason)
 	require.True(t, schedule.DueAt.Equal(time.Unix(1893456000, 0).UTC()))
 
-	// Raw notification persisted as AGENT (agent-emitted metadata).
-	require.Equal(t, 1, sink.NotificationCount())
-	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source)
-	assert.JSONEq(t, input, string(last.Content))
+	assert.Zero(t, sink.NotificationCount(), "account state must not become transcript history")
 }
 
 // Codex reports the account rate limits after EVERY model call, so one ordinary turn
 // with a tool call wrote the same sentence to the transcript twice. The snapshot is a
 // state, not an event: an unchanged one states nothing the previous row did not.
-func TestHandleCodexOutput_UnchangedRateLimitsReachTheTranscriptOnce(t *testing.T) {
+func TestHandleCodexOutput_RateLimitsStayOutOfTheTranscript(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -366,8 +526,7 @@ func TestHandleCodexOutput_UnchangedRateLimitsReachTheTranscriptOnce(t *testing.
 	handleCodexOutput(agent, parseLine([]byte(repeat)))
 	handleCodexOutput(agent, parseLine([]byte(changed)))
 
-	require.Equal(t, 2, sink.NotificationCount(), "the repeat writes no row; the changed snapshot does")
-	assert.JSONEq(t, changed, string(sink.LastNotification().Content))
+	require.Zero(t, sink.NotificationCount())
 	// The live surfaces still see every report: a late subscriber reads the
 	// broadcast, and the resume decision runs on each one.
 	assert.Equal(t, 3, sink.SessionInfoCount(), "every report refreshes the popover")
@@ -390,6 +549,9 @@ func TestHandleCodexOutput_RateLimitBroadcastsSnakeCaseWire(t *testing.T) {
 	info := sink.LastSessionInfo()
 	rateLimits, ok := info["rate_limits"].(map[string]interface{})
 	require.True(t, ok, "broadcast must carry rate_limits in snake_case, got %#v", info)
+	assert.Equal(t, "replace", rateLimits["mode"])
+	rateLimits, ok = rateLimits["values"].(map[string]interface{})
+	require.True(t, ok, "rate_limits must carry a values map")
 
 	primary, ok := rateLimits["five_hour"].(map[string]interface{})
 	require.True(t, ok, "primary tier should be keyed by rate_limit_type=five_hour")
@@ -447,6 +609,15 @@ func TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels(t *testing.T) {
 	assert.Equal(t, 0, sink.AutoScheduleCount(), "credit depletion must not schedule an auto-continue")
 	require.Equal(t, 1, sink.AutoCancelCount())
 	assert.Equal(t, AutoContinueReasonRateLimit, sink.LastAutoCancel())
+	require.Equal(t, 1, sink.SessionInfoCount())
+	rateLimits, ok := sink.LastSessionInfo()["rate_limits"].(map[string]interface{})
+	require.True(t, ok)
+	rateLimits, ok = rateLimits["values"].(map[string]interface{})
+	require.True(t, ok)
+	accountBlock, ok := rateLimits["account_block"].(map[string]interface{})
+	require.True(t, ok, "the live account block must remain visible outside the hidden transcript")
+	assert.Equal(t, "workspace_owner_credits_depleted", accountBlock["rate_limit_type"])
+	assert.Equal(t, "exceeded", accountBlock["status"])
 }
 
 // TestHandleCodexOutput_ReachedTypeUsageLimitReachedCancels verifies a usage cap
@@ -483,6 +654,8 @@ func TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules(t *testing.T)
 
 	require.Equal(t, 1, sink.SessionInfoCount())
 	rateLimits, ok := sink.LastSessionInfo()["rate_limits"].(map[string]interface{})
+	require.True(t, ok)
+	rateLimits, ok = rateLimits["values"].(map[string]interface{})
 	require.True(t, ok)
 	primary, ok := rateLimits["five_hour"].(map[string]interface{})
 	require.True(t, ok)
@@ -716,6 +889,28 @@ func TestHandleCodexOutput_MultiAgentV2LifecycleOwnsTheChildTranscript(t *testin
 	rows = sink.BackgroundTasks()
 	require.Len(t, rows, 1)
 	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+}
+
+func TestCodexChildRouteReusesTheResolvedSink(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingCodexEnsureSink{testSink: &testSink{}}
+	agent := newCodexAgentWithSink(sink)
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/probe_child"}}}`)))
+	sink.childSinkCalls = 0
+
+	_, first := agent.lookupCodexChildRoute("child-thread")
+	_, second := agent.lookupCodexChildRoute("child-thread")
+
+	require.True(t, first)
+	require.True(t, second)
+	assert.Zero(t, sink.childSinkCalls, "a resolved active route must not rebuild its sink path per output event")
+
+	agent.finishCollabChildRun("child-thread")
+	sink.childSinkCalls = 0
+	_, rebuilt := agent.lookupCodexChildRoute("child-thread")
+	require.True(t, rebuilt)
+	assert.Equal(t, 1, sink.childSinkCalls, "run completion must invalidate the sink that cleanup retires")
 }
 
 func TestHandleCodexOutput_MultiAgentV2DoesNotRegisterTheRootPath(t *testing.T) {
@@ -1372,6 +1567,63 @@ func TestHandleCodexOutput_ReasoningPersistFailureKeepsLiveStream(t *testing.T) 
 	assert.False(t, stillLocked, "a completed reasoning item must release bookkeeping after a persist error")
 }
 
+func TestHandleCodexOutput_EmptyReasoningItemsDoNotPersist(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "started item",
+			input: `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"reasoning","id":"reason-1","summary":[],"content":[]}}}`,
+		},
+		{
+			name:  "completed item with no text fields",
+			input: `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"reasoning","id":"reason-1"}}}`,
+		},
+		{
+			name:  "completed item with empty arrays",
+			input: `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"reasoning","id":"reason-1","summary":[],"content":[]}}}`,
+		},
+		{
+			name:  "completed item with blank entries",
+			input: `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"reasoning","id":"reason-1","summary":[" ","\n"],"content":["\t"],"text":"  "}}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &testSink{}
+			agent := newCodexAgentWithSink(sink)
+			agent.threadID = "main-thread"
+
+			handleCodexOutput(agent, parseLine([]byte(tc.input)))
+
+			assert.Zero(t, sink.MessageCount())
+			assert.Zero(t, sink.NotificationCount())
+		})
+	}
+}
+
+func TestHandleCodexOutput_ReasoningItemsWithVisibleTextPersist(t *testing.T) {
+	t.Parallel()
+
+	for _, item := range []string{
+		`{"type":"reasoning","id":"reason-1","summary":["summary"],"content":[]}`,
+		`{"type":"reasoning","id":"reason-1","summary":[" "],"content":["content"]}`,
+		`{"type":"reasoning","id":"reason-1","summary":[],"content":[],"text":"legacy text"}`,
+	} {
+		sink := &testSink{}
+		agent := newCodexAgentWithSink(sink)
+		agent.threadID = "main-thread"
+
+		handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":`+item+`}}`)))
+
+		assert.Equal(t, 1, sink.MessageCount(), item)
+	}
+}
+
 func TestHandleCodexOutput_FileChangeOutputDelta(t *testing.T) {
 	t.Parallel()
 
@@ -1459,7 +1711,7 @@ func TestHandleCodexOutput_ApprovalWithoutID(t *testing.T) {
 	assert.Equal(t, 0, sink.PublishedControlCount())
 }
 
-func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T) {
+func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsageWithoutPersisting(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -1469,12 +1721,8 @@ func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T)
 	agent.threadID = "thread-1"
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	require.Equal(t, 1, sink.NotificationCount())
-	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
-		"Codex-emitted thread/tokenUsage/updated must persist as AGENT")
-	assert.JSONEq(t, input, string(last.Content),
-		"raw envelope must be preserved so reconnect/catch-up sees full token usage detail")
+	require.Zero(t, sink.NotificationCount())
+	require.Zero(t, sink.MessageCount())
 	require.Equal(t, 1, sink.SessionInfoCount())
 
 	info := sink.LastSessionInfo()
@@ -1487,6 +1735,56 @@ func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T)
 	// Codex's own total for the live request. The browser prefers it to the sum of
 	// the counts, so the gauge states what Codex measured.
 	require.Equal(t, int64(23), usage["context_tokens"])
+}
+
+func TestHandleCodexOutput_ThreadStatusChangedDoesNotReachTheTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "thread-1"
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"thread/status/changed","params":{"threadId":"thread-1","status":{"type":"active","activeFlags":["waitingOnApproval"]}}}`)))
+
+	assert.Zero(t, sink.MessageCount())
+	assert.Zero(t, sink.NotificationCount())
+	assert.Zero(t, sink.SessionInfoCount())
+	assert.Empty(t, sink.TurnActives())
+}
+
+func TestHandleCodexOutput_SuccessfulHookLifecycleDoesNotReachTheTranscript(t *testing.T) {
+	t.Parallel()
+
+	for _, input := range []string{
+		`{"method":"hook/started","params":{"threadId":"thread-1","turnId":"turn-1","run":{"id":"hook-1","status":"running"}}}`,
+		`{"method":"hook/completed","params":{"threadId":"thread-1","turnId":"turn-1","run":{"id":"hook-1","status":"completed"}}}`,
+	} {
+		sink := &testSink{}
+		agent := newCodexAgentWithSink(sink)
+		agent.threadID = "thread-1"
+
+		handleCodexOutput(agent, parseLine([]byte(input)))
+
+		assert.Zero(t, sink.MessageCount(), input)
+		assert.Zero(t, sink.NotificationCount(), input)
+	}
+}
+
+func TestHandleCodexOutput_UnsuccessfulHookCompletionPersists(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []string{"failed", "blocked", "stopped"} {
+		sink := &testSink{}
+		agent := newCodexAgentWithSink(sink)
+		agent.threadID = "thread-1"
+		input := fmt.Sprintf(`{"method":"hook/completed","params":{"threadId":"thread-1","turnId":"turn-1","run":{"id":"hook-1","status":%q,"statusMessage":"hook did not complete"}}}`, status)
+
+		handleCodexOutput(agent, parseLine([]byte(input)))
+
+		require.Equal(t, 1, sink.NotificationCount(), status)
+		assert.Zero(t, sink.MessageCount(), status)
+		assert.JSONEq(t, input, string(sink.LastNotification().Content))
+	}
 }
 
 // Codex reports a cache WRITE beside the cache read, and it reached nothing: the
@@ -2393,29 +2691,21 @@ func TestCodexChildTurnRegistryStatus(t *testing.T) {
 	assert.Empty(t, transition.activity)
 }
 
-// TestCodexSubAgentActivity_InterruptedStaysRunning verifies the
-// subAgentActivity "interrupted" kind upserts a Running row (not final
-// StatusInterrupted), so a later "started" activity can resume it.
-func TestCodexSubAgentActivity_InterruptedStaysRunning(t *testing.T) {
+// Codex uses the activity item as its own liveness signal. Interrupted stops
+// liveness just like completed, so the registry must release the active count.
+func TestCodexSubAgentActivity_InterruptedFailsTheRun(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
 	a := newCodexAgentWithSink(sink)
-	item := json.RawMessage(`{"type":"subAgentActivity","agentThreadId":"thr-1","kind":"interrupted"}`)
+	started := json.RawMessage(`{"type":"subAgentActivity","id":"spawn-1","agentThreadId":"thr-1","agentPath":"/root/reviewer","kind":"started"}`)
+	assert.True(t, a.handleCodexSubAgentActivity(started, "main-thread"))
+	item := json.RawMessage(`{"type":"subAgentActivity","id":"interrupt-1","agentThreadId":"thr-1","agentPath":"/root/reviewer","kind":"interrupted"}`)
 	assert.True(t, a.handleCodexSubAgentActivity(item, "main-thread"), "consumed the activity item")
 	rows := sink.BackgroundTasks()
-	require.Len(t, rows, 1, "interrupted activity upserts one row")
-	assert.Equal(t, bgtask.StatusRunning, rows[0].Status, "interrupted stays Running (resumable)")
-	assert.False(t, rows[0].Status.IsFinished(), "resumable interrupt is not final")
-	assert.Equal(t, "paused", rows[0].ActiveForm)
-
-	// A subsequent started activity must update the SAME row (not be absorbed).
-	started := json.RawMessage(`{"type":"subAgentActivity","agentThreadId":"thr-1","kind":"started"}`)
-	assert.True(t, a.handleCodexSubAgentActivity(started, "main-thread"))
-	rows = sink.BackgroundTasks()
 	require.Len(t, rows, 1)
-	assert.Equal(t, bgtask.StatusRunning, rows[0].Status)
-	assert.Equal(t, "", rows[0].ActiveForm, "started cleared the paused activity line")
+	assert.Equal(t, bgtask.StatusFailed, rows[0].Status)
+	assert.True(t, rows[0].Status.IsFinished(), "the interrupted run no longer counts as active")
 }
 
 // subAgentActivity is the THIRD writer that reports a collab child active again,

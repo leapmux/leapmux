@@ -11,7 +11,7 @@ import { For, Show } from 'solid-js'
 import { relativizePath } from '~/lib/paths'
 import { fileEditCopyableText, fileEditHasDiff, requestedFileChangesCopyable } from '../../model/fileEditDiff'
 import { toolCallStatusOutcome } from '../../model/toolCallStatus'
-import { toolInputSummary, toolInputText } from '../../toolStyles.css'
+import { toolInputText, toolResultPrompt } from '../../toolStyles.css'
 import { FileEditDiffBody, FileEditDiffTitle } from '../fileEditDiff'
 import { RequestedFileChanges } from '../requestedFileChanges'
 
@@ -45,7 +45,7 @@ export function FileChangesBody(props: { changes: FileEditDiff[], view: ToolRowV
       {source => (
         <>
           <Show when={props.changes.length > 1}>
-            <div class={toolInputSummary}><FileEditDiffTitle source={source} {...(props.view.context !== undefined ? { context: props.view.context } : {})} /></div>
+            <div class={toolResultPrompt}><FileEditDiffTitle source={source} {...(props.view.context !== undefined ? { context: props.view.context } : {})} /></div>
           </Show>
           <Show when={fileEditHasDiff(source)}><FileEditDiffBody source={source} diff={{ view: () => props.view.context?.diffView?.() ?? 'unified' }} {...(props.view.context !== undefined ? { context: props.view.context } : {})} /></Show>
         </>

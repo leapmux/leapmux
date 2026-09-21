@@ -178,13 +178,16 @@ describe('opencode classify', () => {
   })
 
   it('classifies settings_changed as notification', () => {
-    const parent = { type: 'settings_changed' }
-    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+    const parent = { type: 'settings_changed', changes: { model: { old: 'a', new: 'b' } } }
+    expect(plugin?.transcript.classify(input(parent)).kind).toBe('notification')
   })
 
   it('classifies agent_error as notification', () => {
     const parent = { type: 'agent_error', error: 'something went wrong' }
-    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({
+      kind: 'notification',
+      entries: [{ kind: 'text', text: 'something went wrong' }],
+    })
   })
 
   it('classifies user content', () => {
@@ -214,7 +217,7 @@ describe('opencode classify', () => {
     }
     expect(plugin?.transcript.classify(input(undefined, wrapper))).toEqual({
       kind: 'notification',
-      messages: wrapper.messages,
+      entries: [{ kind: 'text', text: 'Interrupted' }],
     })
   })
 
@@ -245,9 +248,9 @@ describe('the system-frame guard (opencode)', () => {
     expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'hidden' })
   })
 
-  it('draws a system frame the hidden rules do not match', () => {
+  it('keeps a system frame with no entry for the last-resort card', () => {
     const parent = { type: 'system', subtype: 'compact_boundary' }
-    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'notification', messages: [parent] })
+    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'notification', entries: [] })
   })
 
   it('hides a final (non-compacting) status standalone', () => {
@@ -257,9 +260,9 @@ describe('the system-frame guard (opencode)', () => {
     expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'hidden' })
   })
 
-  it('keeps an in-progress compacting status visible', () => {
+  it('keeps an in-progress compacting status for the last-resort card', () => {
     const parent = { type: 'system', subtype: 'status', status: 'compacting' }
-    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'notification', messages: [parent] })
+    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'notification', entries: [] })
   })
 
   // The standalone answer and the threaded answer must agree. A frame hidden on its
@@ -276,7 +279,7 @@ describe('the system-frame guard (opencode)', () => {
     const wrapper = { old_seqs: [1, 2], messages: [initMsg, interrupted] }
     // init is hidden; interrupted, a base notification type, keeps the thread alive.
     expect(plugin?.transcript.classify(input(initMsg, wrapper)))
-      .toStrictEqual({ kind: 'notification', messages: [interrupted] })
+      .toStrictEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Interrupted' }] })
   })
 })
 

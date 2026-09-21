@@ -21,9 +21,11 @@ import { renderMarkdownForContext } from './markdownRendering'
 import { attachmentItem, attachmentList, controlResponseLabel, controlResponseMessage, thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
 import { MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 import { CONTROL_RESPONSE_FEEDBACK_LEAD } from './persistedControlResponse'
+import { LIMITED_TEXT_DISPLAY_NOTICE, limitTextForDisplay } from './safeTextDisplay'
 import {
   toolInputText,
   toolResultContentPre,
+  toolResultPrompt,
   toolUseIcon,
 } from './toolStyles.css'
 import { ToolUseLayout } from './widgets/ToolUseLayout'
@@ -247,6 +249,7 @@ export function UnrecognizedMessage(props: {
     ? 'LeapMux could not render this row'
     : 'LeapMux has no display for this row'
   const [expanded, setExpanded] = useSharedExpandedState(() => props.context, MESSAGE_UI_KEY.UNRECOGNIZED_ROW)
+  const display = createMemo(() => limitTextForDisplay(text()))
 
   // The layout gets NO context on purpose. It would draw a second Copy JSON action from
   // it, and the message host already supplies that one in the bubble's own toolbar --
@@ -260,7 +263,10 @@ export function UnrecognizedMessage(props: {
       expanded={expanded()}
       onToggleExpand={() => setExpanded(v => !v)}
     >
-      <div class={toolResultContentPre}>{text()}</div>
+      <div class={toolResultContentPre}>{display().text}</div>
+      <Show when={display().limited}>
+        <div class={toolResultPrompt}>{LIMITED_TEXT_DISPLAY_NOTICE}</div>
+      </Show>
     </ToolUseLayout>
   )
 }

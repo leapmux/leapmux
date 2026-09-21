@@ -1,12 +1,13 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../registry'
 import { PI_EVENT } from '~/generated/contracts/pi-protocol'
-import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isNotificationThreadWrapper } from '../../messageUtils'
+import { notificationClassifierFor } from '../../notificationClassification'
 import { retainedRowIsFinal } from '../registry'
 import { piSubagentNotifications, piVisibleCustomMessage } from './extractors/customMessage'
-import { describePiNotification } from './extractors/notification'
+import { piNotificationEntry } from './extractors/notification'
 import { piPlanStatement } from './extractors/plan'
 import { piContentText, piIsThinkingOnly } from './messageContent'
 
@@ -74,25 +75,11 @@ const PI_NOTIFICATION_SURFACE_TYPES = new Set<string>([
   PI_EVENT.ExtensionUIRequest,
 ])
 
-/**
- * A Pi notification with nothing to render. The only Pi surface that can produce
- * no label is an `extension_ui_request` whose describePiNotification yields null
- * (e.g. a `notify` with an empty message) -- every other PI_NOTIFICATION_SURFACE
- * type always renders a line, and Claude-shaped types (settings_changed, ...) the
- * Pi describer doesn't own are drawn by the shared switch. Applied by both the
- * standalone classifier and the consolidated-thread filter so such a message is
- * hidden either way, instead of surfacing as a raw-JSON bubble.
- */
-function isHiddenPiNotification(m: unknown): boolean {
-  if (!isObject(m) || pickString(m, 'type') !== PI_EVENT.ExtensionUIRequest)
-    return false
-  return describePiNotification(m) === null
-}
-
 /** Pi message classification. */
 export function classifyPiMessage(input: ClassificationInput): MessageCategory {
   const parent = input.parentObject
   const wrapper = input.wrapper
+  const notification = notificationClassifierFor(input.agentProvider, piNotificationEntry)
 
   // An empty wrapper hides. This runs BEFORE the thread test, whose type predicate
   // narrows `wrapper` to `null` on its false path. The thread test refuses an empty
@@ -109,10 +96,7 @@ export function classifyPiMessage(input: ClassificationInput): MessageCategory {
     // Drop notifications that render nothing (an empty-message extension notify)
     // so a thread of only those collapses to `hidden` instead of falling back
     // to a raw-JSON bubble.
-    const msgs = wrapper.messages.filter(m => !isHiddenPiNotification(m))
-    if (msgs.length === 0)
-      return { kind: 'hidden' }
-    return { kind: 'notification', messages: msgs }
+    return notification(wrapper.messages, 'hidden')
   }
 
   if (!parent)
@@ -205,7 +189,7 @@ export function classifyPiMessage(input: ClassificationInput): MessageCategory {
   }
 
   if (PI_NOTIFICATION_EVENT_TYPES.has(type))
-    return { kind: 'notification', messages: [parent] }
+    return notification([parent], 'hidden')
 
   if (type === PI_EVENT.ExtensionUIRequest) {
     // Dialog requests are surfaced as control requests (handled outside the
@@ -213,9 +197,7 @@ export function classifyPiMessage(input: ClassificationInput): MessageCategory {
     // entries server-side. An informational request that yields a renderable
     // line is a notification; one with nothing to show (e.g. a notify with an
     // empty message) is hidden rather than surfaced as a raw-JSON bubble.
-    if (isHiddenPiNotification(parent))
-      return { kind: 'hidden' }
-    return { kind: 'notification', messages: [parent] }
+    return notification([parent], 'hidden')
   }
 
   // The LeapMux envelope, which every provider answers the same way.
@@ -230,7 +212,7 @@ export function classifyPiMessage(input: ClassificationInput): MessageCategory {
   // This rule answers for an UNWRAPPED row. The thread test at the top answers for a
   // threaded one, because `BASE_NOTIFICATION_TYPES` holds all of these types too.
   if (isPlainNotificationType(type))
-    return { kind: 'notification', messages: [parent] }
+    return notification([parent])
 
   return { kind: 'unknown' }
 }

@@ -1,8 +1,10 @@
 import type { ToolResultRenderContext } from '~/components/chat/renderContext'
+import { render } from '@solidjs/testing-library'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { ToolMessage } from '~/components/chat/results/ToolMessage'
 import { checkKindModule } from '~/test-support/kindTestHarness'
 import { elementText } from '~/test-support/messageRenderProbes'
-import { toolCallFixture } from '~/test-support/toolCallFixture'
+import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { subagentsFrom } from '../../renderContext'
 import { agentRenderer } from './agent'
 import { parsedCall } from './renderer'
@@ -35,6 +37,29 @@ describe('agent renderer', () => {
       throw new Error('The subagent test needs empty navigation capabilities')
     const empty: ToolResultRenderContext = { subagents: emptyNavigation }
     expect(elementText(agentRenderer.title(parsedCall(call), empty))).toContain('Subagent')
+  })
+
+  it('draws a completed outcome when a paired result lists no agents', () => {
+    const call = toolCallFixture('agent', {
+      request: { description: 'Wait for agents', prompt: '' },
+      result: { agents: [] },
+    })
+    const { container } = render(() => <ToolMessage row={toolRow(call, 'result', { request: true })} />)
+
+    expect(container.textContent).toContain('Completed')
+    expect(container.firstElementChild).not.toBeNull()
+  })
+
+  it('keeps the failed outcome for an empty paired result', () => {
+    const call = toolCallFixture('agent', {
+      status: 'failed',
+      request: { description: 'Wait for agents', prompt: '' },
+      result: { agents: [] },
+    })
+    const { container } = render(() => <ToolMessage row={toolRow(call, 'result', { request: true })} />)
+
+    expect(container.textContent).toContain('Error')
+    expect(container.textContent).not.toContain('Completed')
   })
 
   checkKindModule({

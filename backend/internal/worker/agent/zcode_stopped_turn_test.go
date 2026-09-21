@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -10,6 +11,17 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
+
+type failingZCodeNotificationSink struct {
+	*testSink
+}
+
+func (s *failingZCodeNotificationSink) PersistNotification(
+	leapmuxv1.MessageSource,
+	[]byte,
+) (bool, error) {
+	return false, errors.New("notification store unavailable")
+}
 
 // zcodeCapturedTimer replaces time.AfterFunc so a test fires the fallback itself.
 type zcodeCapturedTimer struct {
@@ -314,6 +326,21 @@ func TestZCodeStoppedTurn_WritesOneIgnoredRowWhenTheAgentKeepsSpeaking(t *testin
 	require.Len(t, notifications, 1, "one row per accepted stop, however many frames follow")
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, notifications[0].Source)
 	assert.JSONEq(t, `{"type":"`+contracts.NotificationTypeStopIgnored+`"}`, string(notifications[0].Content))
+	assert.Equal(t, 1, sink.InterruptIgnoredReports(),
+		"the ignored interrupt restores the activity that makes another Interrupt available")
+}
+
+func TestZCodeStoppedTurn_ReportsTheIgnoredInterruptWhenTheNotificationWriteFails(t *testing.T) {
+	t.Parallel()
+
+	sink := &failingZCodeNotificationSink{testSink: &testSink{}}
+	a := newZCodeTestAgentWithStdin(t, sink, &zcodeRecordedStdin{})
+
+	a.persistZCodeStopIgnoredRow()
+
+	assert.Equal(t, 1, sink.InterruptIgnoredReports(),
+		"a transcript failure must not leave the Interrupt button hidden")
+	assert.Empty(t, sink.PersistedNotifications())
 }
 
 // Escalation is the SECOND press. It may not fire while the first stop is still

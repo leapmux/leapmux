@@ -116,14 +116,19 @@ export const emptyState = style({
 })
 
 /**
- * A label that stays on ONE line: the browser clips the overflow at the right
- * edge and marks it with an ellipsis.
+ * A label that stays on ONE line. The browser clips horizontal overflow at the
+ * right edge and marks it with an ellipsis.
  *
  * `min-width: 0` is what lets a flex item shrink below the width of its own
  * text. Without it the item keeps its content width, the row grows instead, and
  * the ellipsis never appears -- the container scrolls sideways.
  *
- * Clipping HIDES text, so the full string needs another route to the reader.
+ * Clip the inline axis only. A compact caller can use a line box that is
+ * shorter than the font ink. Hidden vertical overflow then cuts off descenders.
+ * `overflow-x: hidden` cannot pair with visible vertical overflow because CSS
+ * computes the latter to `auto`. `clip` keeps the two axes independent.
+ *
+ * Clipping hides text, so the full string needs another route to the reader.
  * Pair this with `<Tooltip showWhen="clipped">`, which shows the tooltip only
  * while the label is actually clipped. `ClippedText` in
  * `~/components/common/ClippedText` pairs the two, and is what a caller should
@@ -144,7 +149,8 @@ export const emptyState = style({
  */
 export const clippedText = style({
   minWidth: 0,
-  overflow: 'hidden',
+  overflowX: 'clip',
+  overflowY: 'visible',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
 })

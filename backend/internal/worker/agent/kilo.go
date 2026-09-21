@@ -33,8 +33,8 @@ func StartKilo(ctx context.Context, opts Options, sink ProviderServices) (Agent,
 			a.modeChannel = modeChannelPrimaryAgent
 			a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
 			a.questions.configure(sink)
-			// Subagent spawn detection (registry-only; same ACP layer as
-			// OpenCode, so the same shape-detection helpers apply).
+			// Kilo uses the same task protocol as OpenCode. Its prompt and final
+			// result form the child transcript.
 			a.subagentFromToolCall = openCodeSubagentFromToolCall
 			a.subagentFromToolCallUpdate = openCodeSubagentFromToolCallUpdate
 		},

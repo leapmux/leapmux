@@ -810,6 +810,75 @@ func TestAnswerProviderRuntimeHeaders_ReportsAuthorizedOnlyWithAnInlineKey(t *te
 	}
 }
 
+func TestAnswerProviderRuntimeHeaders_AccountConfigReturnsRequestAuth(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, &recordingControlSink{}, stdin)
+	a.catalog = zcodeTestCatalog(t, `{
+      "provider": {
+        "builtin:zai-coding-plan": {
+          "kind": "anthropic", "enabled": true,
+          "options": {"apiKey": "plan-key"},
+          "models": {"GLM-5.3": {}}
+        }
+      }
+	    }`)
+	seedZCodeAccountBridgeForTests(&a.catalog)
+	a.mu.Lock()
+	a.accountProviderConfig = true
+	a.mu.Unlock()
+
+	a.HandleOutput(zcodeRequestLine(t, 13, ZCodeMethodRequestProviderRuntimeHeaders,
+		`{"providerId":"account:zai-individual-coding-plan"}`))
+
+	requests := stdin.Requests(t)
+	require.Len(t, requests, 1)
+	var result struct {
+		HeadersApplied bool `json:"headersApplied"`
+		RequestAuth    struct {
+			APIKey string `json:"apiKey"`
+		} `json:"requestAuth"`
+	}
+	require.NoError(t, json.Unmarshal(requests[0].Result, &result))
+	assert.True(t, result.HeadersApplied)
+	assert.Equal(t, "plan-key", result.RequestAuth.APIKey)
+}
+
+func TestAnswerProviderRuntimeHeaders_AccountConfigReportsAMissingCredential(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, &recordingControlSink{}, stdin)
+	a.catalog = zcodeTestCatalog(t, `{
+      "provider": {
+        "builtin:zai-coding-plan": {
+          "kind": "anthropic", "enabled": true,
+          "options": {"apiKey": "plan-key"},
+          "models": {"GLM-5.3": {}}
+        }
+      }
+    }`)
+	a.mu.Lock()
+	a.accountProviderConfig = true
+	a.mu.Unlock()
+
+	a.HandleOutput(zcodeRequestLine(t, 14, ZCodeMethodRequestProviderRuntimeHeaders,
+		`{"providerId":"account:bigmodel-individual-coding-plan"}`))
+
+	requests := stdin.Requests(t)
+	require.Len(t, requests, 1)
+	var result map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(requests[0].Result, &result))
+	var applied bool
+	require.NoError(t, json.Unmarshal(result["headersApplied"], &applied))
+	assert.False(t, applied)
+	assert.NotContains(t, result, "requestAuth")
+	var message string
+	require.NoError(t, json.Unmarshal(result["errorMessage"], &message))
+	assert.Contains(t, message, "account:bigmodel-individual-coding-plan")
+}
+
 // A malformed params object still gets an answer, because an unanswered request
 // blocks the app-server. The answer is an honest UNAUTHORIZED even when the catalog
 // holds keys: an undecodable request leaves the provider id empty, and an empty id
@@ -864,6 +933,26 @@ func TestAnswerOfficialMcpAuthHeaders_DeclaresUnavailable(t *testing.T) {
 	require.NoError(t, json.Unmarshal(requests[0].Result, &result))
 	assert.Equal(t, ZCodeOfficialAuthUnavailable, result["status"],
 		"a declared unavailability lets the app-server fall through to the servers it can reach")
+}
+
+func TestAnswerOfficialMcpAuthHeaders_AccountConfigUsesTheCurrentShape(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, &recordingControlSink{}, stdin)
+	a.mu.Lock()
+	a.accountProviderConfig = true
+	a.mu.Unlock()
+
+	a.HandleOutput(zcodeRequestLine(t, 15, ZCodeMethodRequestOfficialMcpAuthHeaders, `{}`))
+
+	requests := stdin.Requests(t)
+	require.Len(t, requests, 1)
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(requests[0].Result, &result))
+	assert.Equal(t, false, result["ok"])
+	assert.Equal(t, ZCodeOfficialAuthUnavailable, result["reason"])
+	assert.NotContains(t, result, "status")
 }
 
 // An unknown server request is answered with method-not-found rather than ignored,

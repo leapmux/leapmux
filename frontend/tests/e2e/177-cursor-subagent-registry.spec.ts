@@ -1,19 +1,20 @@
 /**
- * 177 — Cursor subagent registry (registry-only, added after the live-probe
- * upgrade).
+ * 177 — Cursor subagent transcript.
  *
  * Cursor's Task tool surfaces a spawn tool_call with rawInput._toolName ==
- * "task" and a title "Task: <desc>". Registry-only: no child transcript. The
- * observed toolCallId can contain an embedded newline; the neutral layer
- * sanitizes the row key, so data attributes must never contain a control char.
+ * "task" and a title "Task: <desc>". Its local store supplies the final report
+ * that ACP omits. The observed toolCallId can contain an embedded newline. The
+ * neutral layer sanitizes the row key, so data attributes contain no control char.
  */
 import { CURSOR_E2E_SKIP_REASON, cursorTest, expect } from './cursor-fixtures'
 import {
   expectNoRegistryRows,
-  expectRegistryOnlySubagentEnds,
+  expectRowBecomesFinal,
+  expectSectionPersists,
+  openChildTabFromRow,
   requireRegistryRow,
 } from './helpers/subagentRegistry'
-import { sendMessage, waitForAgentIdle } from './helpers/ui'
+import { sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
 
 cursorTest.skip(!!CURSOR_E2E_SKIP_REASON, CURSOR_E2E_SKIP_REASON || '')
 
@@ -41,6 +42,12 @@ cursorTest.describe('Cursor subagent registry', () => {
     const hasControlChar = Array.from(rowHtml).some(ch => ch.codePointAt(0)! < 0x20)
     expect(hasControlChar).toBe(false)
 
-    await expectRegistryOnlySubagentEnds(page, row)
+    await expectRowBecomesFinal(page, row)
+    await expectSectionPersists(page)
+    await expect.poll(async () => await row.getAttribute('data-child-agent-id')).not.toBe('')
+    await openChildTabFromRow(page, row)
+    await expect(userBubbles(page).filter({ hasText: 'PONG' })).toBeVisible()
+    if (await row.getAttribute('data-status') === 'completed')
+      await expect(page.getByText('Cursor subagent reported', { exact: true })).toBeVisible()
   })
 })

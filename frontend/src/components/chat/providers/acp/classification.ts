@@ -7,6 +7,7 @@ import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
 import { messageCompletionFromProto } from '../../assembledMessage'
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
+import { classifyNotifications } from '../../notificationClassification'
 import { unwrapACPResult } from './resultWrapper'
 import { ACP_SESSION_UPDATE } from './updateVocabulary'
 
@@ -131,7 +132,7 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
         const msgs = wrapper.messages.filter(m => !isHiddenACPNotification(m))
         if (msgs.length === 0)
           return { kind: 'hidden' }
-        return { kind: 'notification', messages: msgs }
+        return classifyNotifications(msgs, input.agentProvider)
       }
       if (wrapper.messages.length === 0)
         return { kind: 'hidden' }
@@ -198,11 +199,11 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
     if (type === 'system') {
       if (isHiddenACPNotification(parent))
         return { kind: 'hidden' }
-      return { kind: 'notification', messages: [parent] }
+      return classifyNotifications([parent], input.agentProvider)
     }
 
     if (isPlainNotificationType(type))
-      return { kind: 'notification', messages: [parent] }
+      return classifyNotifications([parent], input.agentProvider)
 
     if (!sessionUpdateValue && typeof parent.content === 'string') {
       if (parent.hidden === true)

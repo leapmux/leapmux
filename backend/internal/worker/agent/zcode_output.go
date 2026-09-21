@@ -862,6 +862,12 @@ func (a *zcodeAgent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 		Usage      *zcodeUsage `json:"usage"`
 
 		ContextWindow int64 `json:"contextWindow"`
+
+		// A subagent lifecycle or message event. The public protocol maps all
+		// three internal event types to session.updated, so their payload fields
+		// are the discriminator.
+		AgentID          string `json:"agentId"`
+		ParentToolCallID string `json:"parentToolCallId"`
 	}
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		slog.Warn("zcode session.updated unmarshal failed", "agent_id", a.agentID, "error", err)
@@ -871,6 +877,8 @@ func (a *zcodeAgent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 	switch {
 	case payload.TaskID != "":
 		a.handleZCodeBackgroundTask(event)
+	case payload.AgentID != "" && payload.ParentToolCallID != "":
+		a.handleZCodeSubagentLifecycle(event)
 	case payload.Content != nil && payload.StopReason != "":
 		a.flushZCodeGenerationKind(AssembledMessageKindReasoning, MessageCompletionComplete)
 		a.generationBuffer.DiscardKind(AssembledMessageKindText)
@@ -974,6 +982,7 @@ type zcodeBackgroundTask struct {
 	TaskKind       string `json:"taskKind"`
 	ChildSessionID string `json:"childSessionId"`
 	Command        string `json:"command"`
+	Description    string `json:"description"`
 	Status         string `json:"status"`
 	Blocked        bool   `json:"blocked"`
 	BlockedReason  string `json:"blockedReason"`
@@ -1010,9 +1019,9 @@ func zcodeBackgroundStatus(status string) (bgtask.Status, bool) {
 
 // handleZCodeBackgroundTask maintains the background-task registry row for one task.
 //
-// A `bash` task reuses the launch card it already has: its row is keyed by the
-// tool-call id, which is the span the transcript already shows. A `subagent` task
-// gets its own child transcript, because its output is a conversation of its own.
+// A `bash` task and a `workflow` task reuse the launch card they already have.
+// A `subagent` task gets its own child transcript because its output is a
+// conversation of its own.
 func (a *zcodeAgent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 	var task zcodeBackgroundTask
 	if err := json.Unmarshal(event.Payload, &task); err != nil {
@@ -1025,8 +1034,11 @@ func (a *zcodeAgent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 	status, final := zcodeBackgroundStatus(task.Status)
 
 	kind := bgtask.KindShell
-	if task.TaskKind == ZCodeTaskKindSubagent {
+	switch task.TaskKind {
+	case ZCodeTaskKindSubagent:
 		kind = bgtask.KindSubagent
+	case ZCodeTaskKindWorkflow:
+		kind = bgtask.KindWorkflow
 	}
 	title, titleIsCommand := zcodeBackgroundTitle(task)
 
@@ -1039,6 +1051,7 @@ func (a *zcodeAgent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 		Kind:           kind,
 		Title:          title,
 		TitleIsCommand: titleIsCommand,
+		Description:    strings.TrimSpace(task.Description),
 		Status:         status,
 	}
 	if task.Blocked && !final {
@@ -1066,6 +1079,7 @@ func (a *zcodeAgent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 				// Drop the index entry too, or the spawn's own result would clean up a
 				// transcript this path already tore down.
 				a.children.takeChild(rowKey)
+				a.children.forgetTitle(rowKey)
 			}
 		}
 	}
@@ -1073,12 +1087,15 @@ func (a *zcodeAgent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 	logRegistryRefusal("zcode", "upsert", a.sink.UpsertBackgroundTask(upsert))
 }
 
-// zcodeBackgroundTitle labels a background-task row with the command it runs, then
-// its tool name. titleIsCommand is true only for the command, which the app-server
-// hands over verbatim -- so the row can set it as code, and prose never is.
+// zcodeBackgroundTitle labels a background-task row with its command, description,
+// or tool name. titleIsCommand is true only for the command, which the app-server
+// supplies verbatim. The row can set that value as code without styling prose as code.
 func zcodeBackgroundTitle(task zcodeBackgroundTask) (title string, titleIsCommand bool) {
 	if cmd := strings.TrimSpace(task.Command); cmd != "" {
 		return bgtask.CleanTitleRunes(bgtask.FirstLine(cmd), 120), true
+	}
+	if description := strings.TrimSpace(task.Description); description != "" {
+		return description, false
 	}
 	return strings.TrimSpace(task.ToolName), false
 }

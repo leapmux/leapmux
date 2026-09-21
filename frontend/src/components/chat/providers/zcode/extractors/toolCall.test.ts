@@ -767,6 +767,24 @@ describe('a ZCode cron call', () => {
   })
 })
 
+describe('ZCode dynamic-workflow tools', () => {
+  it('renders a workflow launch as a background task', () => {
+    const call = presentationOf(ZCODE_TOOL.CreateWorkflow, { name: 'review', script: 'return "done"' }, { success: true, content: 'started' })
+    expect(call.kind).toBe('task')
+    expect(call.kind === 'task' ? call.request : undefined).toEqual({ action: 'other', taskId: 'review' })
+  })
+
+  it('renders workflow enumeration as a task list', () => {
+    const call = presentationOf(ZCODE_TOOL.ListWorkflowRuns, {}, { success: true, content: 'dwf-1' })
+    expect(call.kind === 'task' ? call.request.action : undefined).toBe('list')
+  })
+
+  it('renders a workflow snippet as executable code', () => {
+    const call = presentationOf(ZCODE_TOOL.EvalWorkflowSnippet, { code: 'return 1' }, { success: true, content: '1' })
+    expect(call.kind === 'execute' ? call.request.command : undefined).toBe('return 1')
+  })
+})
+
 // The tool name is the constant word `Skill` on this path, so the old fallback claimed
 // every unnamed call ran a skill called "Skill".
 describe('a ZCode skill call', () => {

@@ -150,6 +150,18 @@ describe('toolCallMeta', () => {
     expect(toolCallMeta(toolRow(longFailure)).expandLabel).toBeUndefined()
   })
 
+  it('keeps the request expand words when a typed result does not clip', () => {
+    const call = toolCallFixture('execute', {
+      request: {
+        command: 'compound command',
+        actions: [{ kind: 'read', command: 'cat a.ts', name: 'a.ts', path: '/repo/a.ts' }],
+      },
+      result: { commands: [{ output: 'short output' }], unresolvedTerminals: [] },
+    })
+
+    expect(toolCallMeta(toolRow(call)).expandLabel).toBe('Show all actions')
+  })
+
   // A running TodoWrite draws its whole checklist and has no result behind it, so
   // `resultMeta` never runs. The row had nothing to copy and nothing to quote.
   it('offers the carried checklist while no result answers the to-do call', () => {

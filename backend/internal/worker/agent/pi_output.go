@@ -471,6 +471,12 @@ func (a *PiAgent) handlePiToolExecutionStart(raw []byte) {
 	if err := openToolSpan(a.sink, MessageContent{Original: raw}, env.ToolCallID, env.ToolName, spawns); err != nil {
 		slog.Error("pi persist tool_execution_start", "agent_id", a.agentID, "error", err)
 	}
+	if env.ToolName == contracts.PiToolAgent {
+		piEnsureSubagentChild(
+			a.sink, env.ToolCallID, env.ToolCallID, env.ToolCallID,
+			description, piExtractPrompt(input),
+		)
+	}
 }
 
 // The longest live output tail Pi broadcasts, in bytes.
@@ -611,6 +617,12 @@ func (a *PiAgent) handlePiToolExecutionUpdate(raw []byte) {
 	// Other extensions also use status fields. Only Agent describes a child here.
 	if toolName == contracts.PiToolAgent {
 		if obs := piSubagentFromDetails(partial.Details, env.ToolCallID, a.toolCallTitle(env.ToolCallID)); obs != nil {
+			if obs.RowKey != env.ToolCallID {
+				if err := a.sink.RenameBackgroundTask(env.ToolCallID, obs.RowKey); err != nil {
+					slog.Warn("pi rename active subagent task failed", "agent_id", a.agentID, "tool_call", env.ToolCallID, "child_agent_id", obs.RowKey, "error", err)
+					obs.RowKey = env.ToolCallID
+				}
+			}
 			if err := a.sink.UpsertBackgroundTask(*obs); err != nil {
 				slog.Warn("pi subagent upsert failed", "agent_id", a.agentID, "tool_call", env.ToolCallID, "error", err)
 			}

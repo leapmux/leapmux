@@ -889,7 +889,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				if err := svc.forceStopAgentTurn(dbAgent); err != nil {
 					svc.Output.NoteAgentStopFailed(agentID, agentID)
 					slog.Warn("forced stop failed", "agent_id", agentID, "error", err)
-					sendFailedPrecondition(sender, "failed to force-stop the agent; press Stop again")
+					sendFailedPrecondition(sender, "failed to interrupt the agent process; press Interrupt again")
 					return
 				}
 				svc.cancelControlRequestsForStop(agentID)

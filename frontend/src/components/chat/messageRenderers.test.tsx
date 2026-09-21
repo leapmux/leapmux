@@ -283,6 +283,17 @@ describe('the row no renderer claimed', () => {
     expect(container.textContent).toContain('not.a.known.event')
   })
 
+  it('limits a large frame after the expand control opens it', () => {
+    const context: MessageContentRenderContext = { getMessageUiState: () => true, setMessageUiState: () => {} }
+    const source = `UNKNOWN_HEAD${'x'.repeat(100_000)}UNKNOWN_TAIL`
+    const { container } = render(() => renderMessageContent(source, context, { kind: 'unknown' } as MessageCategory))
+
+    expect(container.textContent!.length).toBeLessThan(source.length)
+    expect(container.textContent).toContain('UNKNOWN_HEAD')
+    expect(container.textContent).toContain('UNKNOWN_TAIL')
+    expect(container.textContent).toContain('Display limited')
+  })
+
   // A row that THREW is a different statement from one nobody claimed, and the card
   // separates them. It stays neutral about the cause, because both a defect in LeapMux
   // and content no parser accepts land here.

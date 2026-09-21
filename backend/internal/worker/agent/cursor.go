@@ -38,6 +38,11 @@ type CursorCLIAgent struct {
 	// one keeps its entry -- one bool and one id -- for the life of the agent,
 	// which matches how acpBase's subagentPrompts holds a spawn's prompt.
 	taskToolCalls map[string]bool
+	// taskReports joins the live cursor/task extension with the local-store
+	// result. Cursor replays the store record but not the extension, so only a
+	// state that saw both can publish a report. Guarded by acpBase.mu and capped
+	// in cursor_tool_transcript.go.
+	taskReports map[string]cursorTaskReportState
 
 	// transcript is the sink that configure installed, held under its own type so
 	// the extension handler can reach EnrichToolSpan. The transcript is the single
@@ -56,6 +61,7 @@ func (a *CursorCLIAgent) clearTaskToolCalls() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	clear(a.taskToolCalls)
+	clear(a.taskReports)
 }
 
 // rememberTaskToolCall notes that toolCallID is Cursor's `task` tool.
@@ -118,7 +124,12 @@ func StartCursorCLI(ctx context.Context, opts Options, sink ProviderServices) (A
 		base:         func(a *CursorCLIAgent) *acpBase { return &a.acpBase },
 		configure: func(a *CursorCLIAgent) {
 			storeQuery := StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir}
-			transcript := newCursorToolTranscript(ctx, a.sink, func() string { return cursorACPStorePath(storeQuery, a.currentSessionID()) })
+			transcript := newCursorToolTranscriptWithObserver(
+				ctx,
+				a.sink,
+				func() string { return cursorACPStorePath(storeQuery, a.currentSessionID()) },
+				a.observeCursorTaskRecord,
+			)
 			a.sink = transcript
 			a.transcript = transcript
 			// Cursor stores the normalized (display) model id, not the wire form. The
@@ -133,11 +144,8 @@ func StartCursorCLI(ctx context.Context, opts Options, sink ProviderServices) (A
 			a.modelDecorator = decorateCursorModel
 			a.modeChannel = modeChannelPermissionMode
 			a.extraMethod = a.handleExtraMethod
-			// Subagent registry (best-effort): Cursor's Task tool surfaces a spawn
-			// tool_call with rawInput._toolName == "task" and a title "Task: <desc>".
-			// Registry-only -- Cursor exposes no child-session metadata. The observed
-			// toolCallId can contain an embedded newline; the neutral layer sanitizes
-			// the row key.
+			// Cursor's Task tool supplies the prompt. Its local store supplies the
+			// report that ACP omits. The tool-call id links both to one child.
 			a.subagentFromToolCall = a.spawnObservation
 			a.subagentFromToolCallUpdate = a.finishedObservation
 			a.clearProviderState = func() {
@@ -360,8 +368,8 @@ func init() {
 // cursorSubagentFromToolCall detects Cursor's Task delegation tool_call
 // (rawInput._toolName == "task", title "Task: <description>"). The observed
 // toolCallId can contain an embedded newline; the neutral layer sanitizes row
-// keys before use, so no fixup is needed here. Registry-only: Cursor surfaces
-// no metadata/child linkage.
+// keys before use. The tool call is the child key because Cursor exposes no
+// separate child-session key.
 func cursorSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservation {
 	if !cursorToolCallIsTaskTool(tc.RawInput) {
 		return nil
@@ -370,11 +378,17 @@ func cursorSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservation 
 	if title == "" {
 		title = "Cursor subagent"
 	}
+	var input struct {
+		Prompt string `json:"prompt"`
+	}
+	_ = json.Unmarshal(tc.RawInput, &input)
 	return &acpSubagentObservation{
-		RowKey: tc.ToolCallID,
-		Title:  title,
-		Status: bgtask.StatusRunning,
-		Spawns: true,
+		RowKey:        tc.ToolCallID,
+		Title:         title,
+		Status:        bgtask.StatusRunning,
+		ChildAgentKey: tc.ToolCallID,
+		Prompt:        input.Prompt,
+		Spawns:        true,
 	}
 }
 

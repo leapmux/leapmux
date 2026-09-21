@@ -9,11 +9,10 @@ import { prettifyJson } from '~/lib/jsonFormat'
 import { getToolResultExpanded } from '../messageRenderers'
 import { isFinishedToolCallStatus } from '../model/toolCallStatus'
 import { toolInputSummary, toolMessage, toolResultError, toolResultPrompt } from '../toolStyles.css'
-import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 import { CollapsibleContent } from './CollapsibleContent'
 import { EMPTY_RESULT_NOTICE } from './emptyResultNotice'
 import { ImageResultView } from './imageResult'
-import { useCollapsedLines } from './useCollapsedLines'
+import { textNeedsCollapse, useCollapsedLines } from './useCollapsedLines'
 
 function contentText(item: McpContentItem): string {
   switch (item.type) {
@@ -37,7 +36,7 @@ export function genericResultCopyable(result: GenericToolResult): string {
 /** Whether a generic request or result exceeds the collapsed display. */
 export function genericResultCollapsible(result: GenericToolResult, argsJson: string): boolean {
   return [argsJson, result.structuredJson, result.error, ...result.content.map(item => item.type === 'image' ? undefined : item.type === 'resource' ? item.text : contentText(item))]
-    .some(text => text !== undefined && hasMoreLinesThan(text, COLLAPSED_RESULT_ROWS))
+    .some(text => text !== undefined && textNeedsCollapse(text))
 }
 
 function McpTextView(props: { text: string, markdown?: boolean, expanded: () => boolean, context?: ToolResultRenderContext }): JSX.Element {

@@ -2,6 +2,7 @@ import type { MarkdownRenderContext } from './renderContext'
 import { getCachedMarkdownHtml, renderMarkdown, renderMarkdownCachedOrPlain, renderMarkdownPlain } from '~/lib/renderMarkdown'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { cachedRenderValueForString, getCachedRenderValueForString, setCachedRenderValueForString } from './messageRenderCache'
+import { largeMarkdownPlainHtml, markdownNeedsPlainTextDisplay } from './safeTextDisplay'
 
 /** Return the per-row cache namespace for the current syntax theme. */
 export function markdownCacheNamespace(): string {
@@ -38,6 +39,14 @@ function rememberDisplayedMarkdown(
 
 /** Render markdown without replacing selected text or stale theme colors. */
 export function renderMarkdownForContext(text: string, context: MarkdownRenderContext | undefined): string {
+  if (markdownNeedsPlainTextDisplay(text)) {
+    return cachedRenderValueForString(
+      context,
+      'markdown-large-plain',
+      text,
+      () => largeMarkdownPlainHtml(text),
+    )
+  }
   if (context?.premeasureMode)
     return cachedRenderValueForString(context, 'markdown-plain', text, () => renderMarkdownPlain(text))
   if (isTextSelectionActive(context)) {

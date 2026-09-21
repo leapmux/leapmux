@@ -1,4 +1,5 @@
 import type { AgentProvider, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
+import { createSignal } from 'solid-js'
 import { getOrCreate } from '~/lib/getOrCreate'
 
 /**
@@ -24,9 +25,47 @@ import { getOrCreate } from '~/lib/getOrCreate'
 interface GroupLabelEntry {
   label?: string
   options: Map<string, string> // option id -> display name
+  revision: number
 }
 
 const optionGroupCache = new Map<AgentProvider, Map<string, GroupLabelEntry>>()
+const [settingsLabelRevision, setSettingsLabelRevision] = createSignal(0)
+
+/** Reactive version of the display-label catalog. */
+export const settingsLabelCacheRevision = settingsLabelRevision
+
+export interface SettingsLabelDependency {
+  provider: AgentProvider
+  groupId: string
+}
+
+const dependencyCollectors: Array<Map<string, SettingsLabelDependency>> = []
+
+function recordDependency(provider: AgentProvider, groupId: string): void {
+  const id = `${provider}:${groupId}`
+  for (const collector of dependencyCollectors)
+    collector.set(id, { provider, groupId })
+}
+
+/** Run one synchronous read and return the label groups that it consulted. */
+export function collectSettingsLabelDependencies<T>(read: () => T): { value: T, dependencies: SettingsLabelDependency[] } {
+  const collector = new Map<string, SettingsLabelDependency>()
+  dependencyCollectors.push(collector)
+  try {
+    return { value: read(), dependencies: [...collector.values()] }
+  }
+  finally {
+    dependencyCollectors.pop()
+  }
+}
+
+/** Build the current revision key for an exact set of label groups. */
+export function settingsLabelDependencyRevision(dependencies: readonly SettingsLabelDependency[]): string {
+  return [...dependencies]
+    .sort((left, right) => left.provider - right.provider || left.groupId.localeCompare(right.groupId))
+    .map(({ provider, groupId }) => `${provider}:${groupId}:${optionGroupCache.get(provider)?.get(groupId)?.revision ?? 0}`)
+    .join('|')
+}
 
 // Upper bound on retained option labels per (provider, group). The per-group option-id ->
 // name map can grow over a very long session with heavy churn (e.g. many distinct Cursor
@@ -48,7 +87,9 @@ const MAX_GROUPS_PER_PROVIDER = 64
  * keys least likely to be referenced by a still-visible row. Generic over the value so the
  * group-id dimension (sub-maps) is bounded the same way the option-id dimension (labels) is.
  */
-function setWithCap<V>(map: Map<string, V>, key: string, value: V, max: number): void {
+function setWithCap<V>(map: Map<string, V>, key: string, value: V, max: number): boolean {
+  const changed = !Object.is(map.get(key), value)
+  let evicted = false
   map.delete(key)
   map.set(key, value)
   while (map.size > max) {
@@ -56,7 +97,9 @@ function setWithCap<V>(map: Map<string, V>, key: string, value: V, max: number):
     if (oldest === undefined)
       break
     map.delete(oldest)
+    evicted = true
   }
+  return changed || evicted
 }
 
 /** Update the cache from an agent's option-group catalog (called when AgentInfo arrives). */
@@ -65,6 +108,8 @@ export function updateSettingsLabelCache(provider: AgentProvider, optionGroups?:
     return
   const groups = getOrCreate(optionGroupCache, provider, () => new Map<string, GroupLabelEntry>())
   const seenInPush = new Set<string>()
+  let changed = false
+  const nextRevision = settingsLabelRevision() + 1
   for (const group of optionGroups) {
     // A catalog carries one group per id (the backend dedups before broadcast). Defend against a
     // malformed catalog with two same-id groups by taking the FIRST and skipping later ones, so the
@@ -77,11 +122,15 @@ export function updateSettingsLabelCache(provider: AgentProvider, optionGroups?:
     // cycling distinct group ids can't grow the map without bound. The entry holds BOTH the
     // group's label and its option sub-map, so the single setWithCap below refreshes -- and, on
     // overflow, evicts -- the two together; neither can half-evict while the other is still live.
-    const entry = groups.get(group.id) ?? { options: new Map<string, string>() }
+    const existingEntry = groups.get(group.id)
+    const entry = existingEntry ?? { options: new Map<string, string>(), revision: nextRevision }
+    let groupChanged = existingEntry === undefined
     // Keep the previously-cached label when this push omits it (a label-less push still refreshes
     // the entry's LRU position via setWithCap below).
-    if (group.label)
+    if (group.label && entry.label !== group.label) {
       entry.label = group.label
+      groupChanged = true
+    }
     // Append-merge into the group's existing option sub-map rather than replacing it
     // wholesale: this cache exists to resolve labels for HISTORICAL settings_changed
     // notifications (re-rendered on scroll-back) whose payload carries no inline label.
@@ -93,10 +142,14 @@ export function updateSettingsLabelCache(provider: AgentProvider, optionGroups?:
     // so an evicted (long-unseen) id falls back to its raw value in an old row.
     for (const opt of group.options) {
       if (opt.name)
-        setWithCap(entry.options, opt.id, opt.name, MAX_LABELS_PER_GROUP)
+        groupChanged = setWithCap(entry.options, opt.id, opt.name, MAX_LABELS_PER_GROUP) || groupChanged
     }
-    setWithCap(groups, group.id, entry, MAX_GROUPS_PER_PROVIDER)
+    if (groupChanged)
+      entry.revision = nextRevision
+    changed = setWithCap(groups, group.id, entry, MAX_GROUPS_PER_PROVIDER) || groupChanged || changed
   }
+  if (changed)
+    setSettingsLabelRevision(value => value + 1)
 }
 
 /**
@@ -105,7 +158,10 @@ export function updateSettingsLabelCache(provider: AgentProvider, optionGroups?:
  * registrations into later cases.
  */
 export function clearSettingsLabelCache(): void {
+  if (optionGroupCache.size === 0)
+    return
   optionGroupCache.clear()
+  setSettingsLabelRevision(value => value + 1)
 }
 
 /**
@@ -116,11 +172,13 @@ export function clearSettingsLabelCache(): void {
 export function getCachedSettingsLabel(provider: AgentProvider | undefined, key: string, id: string): string | undefined {
   if (provider === undefined)
     return undefined
+  recordDependency(provider, key)
   return optionGroupCache.get(provider)?.get(key)?.options.get(id)
 }
 
 export function getCachedSettingsGroupLabel(provider: AgentProvider | undefined, key: string): string | undefined {
   if (provider === undefined)
     return undefined
+  recordDependency(provider, key)
   return optionGroupCache.get(provider)?.get(key)?.label
 }

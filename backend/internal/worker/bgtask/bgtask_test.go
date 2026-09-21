@@ -42,6 +42,7 @@ func TestKindOrdinalsMatchTheProtoEnum(t *testing.T) {
 		KindUnspecified: leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_UNSPECIFIED,
 		KindSubagent:    leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT,
 		KindShell:       leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL,
+		KindWorkflow:    leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_WORKFLOW,
 	} {
 		assert.Equal(t, want, leapmuxv1.BackgroundTaskKind(kind), "kind %s", kind)
 		assert.Equal(t, kind, Kind(want), "kind %s, back again", kind)
@@ -76,7 +77,7 @@ func TestBackgroundTaskFinalStatusesAreTheTopOfTheRange(t *testing.T) {
 func TestKindBucketsAreTheKindOrdinals(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, []int64{int64(KindSubagent), int64(KindShell)}, KindBuckets())
+	assert.Equal(t, []int64{int64(KindSubagent), int64(KindShell), int64(KindWorkflow)}, KindBuckets())
 	// 0 is the registry cache's single-pool sentinel, so no real pool may take it.
 	assert.NotContains(t, KindBuckets(), int64(0))
 }

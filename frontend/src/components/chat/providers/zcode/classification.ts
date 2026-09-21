@@ -4,9 +4,10 @@ import { ZCODE_EVENT } from '~/generated/contracts/zcode-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isNotificationThreadWrapper } from '../../messageUtils'
-import { describeZCodeNotification } from './extractors/notification'
+import { notificationClassifierFor } from '../../notificationClassification'
+import { zcodeNotificationEntry } from './extractors/notification'
 import { zcodePlanText } from './extractors/plan'
-import { zcodeEnvelope, zcodeToolSpanRole } from './extractors/toolCommon'
+import { zcodeToolSpanRole } from './extractors/toolCommon'
 import { zcodeAssistantText, zcodeIsBackgroundTask, zcodeIsModelResponse } from './messageContent'
 
 /**
@@ -58,24 +59,11 @@ const ZCODE_HIDDEN_TYPES = new Set<string>([
   ZCODE_EVENT.StreamRecoveryUpdated,
 ])
 
-/**
- * A ZCode notification row with nothing to render.
- *
- * The only surface that can produce no line is a `permission.resolved` the describer
- * does not recognize. Applied by the standalone classifier AND the consolidated-thread
- * filter, so such a row is hidden either way instead of surfacing as raw JSON.
- */
-function isHiddenZCodeNotification(msg: unknown): boolean {
-  const envelope = zcodeEnvelope(msg)
-  if (!envelope || !ZCODE_NOTIFICATION_TYPES.has(envelope.type))
-    return false
-  return describeZCodeNotification(msg) === null
-}
-
 /** ZCode message classification. */
 export function classifyZCodeMessage(input: ClassificationInput): MessageCategory {
   const parent = input.parentObject
   const wrapper = input.wrapper
+  const notification = notificationClassifierFor(input.agentProvider, zcodeNotificationEntry)
 
   // The empty-wrapper check runs FIRST so the type guard below stays the only
   // narrowing on `wrapper`: it narrows the false branch to null, which would make a
@@ -85,10 +73,7 @@ export function classifyZCodeMessage(input: ClassificationInput): MessageCategor
   if (isNotificationThreadWrapper(wrapper, ZCODE_NOTIFICATION_TYPES)) {
     // A thread of only unrenderable notifications collapses to hidden rather than
     // falling through to a raw-JSON bubble.
-    const messages = wrapper.messages.filter(m => !isHiddenZCodeNotification(m))
-    if (messages.length === 0)
-      return { kind: 'hidden' }
-    return { kind: 'notification', messages }
+    return notification(wrapper.messages, 'hidden')
   }
 
   if (!parent)
@@ -140,9 +125,7 @@ export function classifyZCodeMessage(input: ClassificationInput): MessageCategor
   }
 
   if (ZCODE_NOTIFICATION_TYPES.has(type)) {
-    if (isHiddenZCodeNotification(parent))
-      return { kind: 'hidden' }
-    return { kind: 'notification', messages: [parent] }
+    return notification([parent], 'hidden')
   }
 
   // A row in LeapMux's own envelope carries no ZCode event, so the dispatch above
@@ -150,7 +133,7 @@ export function classifyZCodeMessage(input: ClassificationInput): MessageCategor
   // is answered with an empty object and sometimes with no turn frame at all, and
   // the worker states that stop itself. See persistZCodeStopRow.
   if (isPlainNotificationType(type))
-    return { kind: 'notification', messages: [parent] }
+    return notification([parent])
 
   if (ZCODE_HIDDEN_TYPES.has(type))
     return { kind: 'hidden' }

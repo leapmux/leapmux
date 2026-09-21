@@ -8,6 +8,7 @@ import type { TabContext } from './tabContext'
 import type { TileActions, TilePopAction } from './TileActionsMenu'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
+import type { AgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
 import type { AgentLifecycleProps, ChatRailProps } from '~/components/chat/ChatView'
 import type { BranchMenuActions, BranchRefActions } from '~/components/workspace/branchActions'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -96,6 +97,7 @@ const SUBAGENT_NO_MESSAGES_HINT = 'This subagent doesn\'t accept messages.'
  * keep the implementation working against familiar names.
  */
 interface TileRendererOpts {
+  agentComposerActionStates: AgentComposerActionStateStore
   /** Reactive shell stores; stable for the renderer's lifetime. */
   stores: {
     view: TabView
@@ -1314,6 +1316,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       <AgentEditorPanel
         suppressAutoFocus={isTabEditing}
         agentId={agentId()}
+        actionStateStore={opts.agentComposerActionStates}
         {...editorOptionalProps()}
         {...optionalProp('messageContext', messageContext(focusedAgentTab()?.workerId ?? '', agentId()))}
         queueClientId={opts.clientId()}

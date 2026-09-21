@@ -24,15 +24,16 @@ import { OPTION_ID_PERMISSION_MODE } from './settingsGroups'
 /** What survives flattening: the two things a notification row lays out. */
 export type NotificationBlock
   = | { kind: 'text', text: string }
+    | { kind: 'subagent-report', label?: string, text: string, status?: string }
     | { kind: 'divider', text: string, loading?: boolean, icon?: NotificationIconHint }
 
 // Provider-neutral notification labels. Named constants so the wording lives in one
 // place and every reader refers to it by name.
 const CONTEXT_CLEARED_LABEL = 'Context cleared'
 const INTERRUPTED_LABEL = 'Interrupted'
-// The instruction matters as much as the fact: the second Stop press is the one the
+// The instruction matters as much as the fact: the second Interrupt press is the one the
 // worker escalates into a forced stop, and the row is where the reader learns that.
-const STOP_IGNORED_LABEL = 'Stop ignored — press Stop again to force it'
+const INTERRUPT_IGNORED_LABEL = 'Interrupt ignored — press Interrupt again to force it'
 const UNKNOWN_ERROR_LABEL = 'Unknown error'
 export const COMPACTING_LABEL = 'Compacting context...'
 // Claude Code emits no metadata for a microcompaction, so this label carries no
@@ -59,9 +60,19 @@ export function notificationEntriesFor(
   message: Record<string, unknown>,
   agentProvider: AgentProvider | undefined,
 ): NotificationEntry[] {
-  return leapmuxNotificationEntry(message, agentProvider)
-    ?? pluginFor(agentProvider)?.transcript.notificationEntry?.(message)
-    ?? []
+  return notificationEntriesForReader(
+    message,
+    agentProvider,
+    pluginFor(agentProvider)?.transcript.notificationEntry,
+  )
+}
+
+export function notificationEntriesForReader(
+  message: Record<string, unknown>,
+  agentProvider: AgentProvider | undefined,
+  providerReader?: (message: Record<string, unknown>) => NotificationEntry[],
+): NotificationEntry[] {
+  return leapmuxNotificationEntry(message, agentProvider) ?? providerReader?.(message) ?? []
 }
 
 /**
@@ -96,7 +107,7 @@ export function leapmuxNotificationEntry(
     case NOTIFICATION_TYPE.Interrupted:
       return [{ kind: 'text', text: INTERRUPTED_LABEL }]
     case NOTIFICATION_TYPE.StopIgnored:
-      return [{ kind: 'text', text: STOP_IGNORED_LABEL }]
+      return [{ kind: 'text', text: INTERRUPT_IGNORED_LABEL }]
     // A live status the provider reported in its own words. The worker
     // normalized it, so one row draws every provider's.
     case NOTIFICATION_TYPE.AgentStatus: {
@@ -105,6 +116,14 @@ export function leapmuxNotificationEntry(
     }
     case NOTIFICATION_TYPE.SubagentEnded:
       return [subagentEndedEntry(m)]
+    case NOTIFICATION_TYPE.SubagentReport: {
+      const text = pickString(m, NOTIFICATION_FIELD.Text).trim()
+      if (!text)
+        return []
+      const label = pickString(m, NOTIFICATION_FIELD.Label).trim()
+      const status = pickString(m, NOTIFICATION_FIELD.Status).trim()
+      return [{ kind: 'subagent-report', text, ...(label ? { label } : {}), ...(status ? { status } : {}) }]
+    }
     case NOTIFICATION_TYPE.PlanUpdated: {
       const label = planUpdatedLabel(m)
       return label !== null ? [{ kind: 'text', text: label }] : []
@@ -352,6 +371,13 @@ function blocksForEntry(entry: Exclude<NotificationEntry, { kind: 'group' }>): N
   switch (entry.kind) {
     case 'text':
       return [{ kind: 'text', text: entry.text }]
+    case 'subagent-report':
+      return [{
+        kind: 'subagent-report',
+        text: entry.text,
+        ...(entry.label ? { label: entry.label } : {}),
+        ...(entry.status ? { status: entry.status } : {}),
+      }]
     case 'divider':
       return [{
         kind: 'divider',

@@ -1,165 +1,12 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"maps"
-	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 )
-
-// ZCode's credentials and model catalog live in the desktop application's own
-// configuration file, `~/.zcode/v2/config.json`. The app-server holds none of its
-// own: the desktop application pushes them with workspace/updateProviderRegistry
-// before it creates a session, and without that push every turn fails with
-// `provider_not_configured`.
-//
-// This file READS that configuration and translates it into the two payloads the
-// app-server accepts. LeapMux never writes it: it is another application's file,
-// and a user who changes a provider in ZCode must not find the change reverted.
-
-// zcodeConfigRelPath is the configuration file's path under the user's home
-// directory.
-var zcodeConfigRelPath = []string{".zcode", "v2", "config.json"}
-
-// zcodeConfigPath returns the configuration file's absolute path for a home
-// directory, or "" when no home directory is known.
-func zcodeConfigPath(homeDir string) string {
-	if homeDir == "" {
-		return ""
-	}
-	return filepath.Join(append([]string{homeDir}, zcodeConfigRelPath...)...)
-}
-
-// --- the on-disk shape ---
-
-// zcodeConfigFile is the subset of ZCode's configuration LeapMux reads.
-type zcodeConfigFile struct {
-	Provider map[string]zcodeConfigProvider `json:"provider"`
-}
-
-type zcodeConfigProvider struct {
-	Name    string `json:"name"`
-	Kind    string `json:"kind"`
-	Source  string `json:"source"`
-	Enabled *bool  `json:"enabled"`
-	Options struct {
-		APIKey  string `json:"apiKey"`
-		BaseURL string `json:"baseURL"`
-	} `json:"options"`
-	Models map[string]zcodeConfigModel `json:"models"`
-}
-
-type zcodeConfigModel struct {
-	Name      string `json:"name"`
-	Reasoning *struct {
-		Enabled        bool     `json:"enabled"`
-		Variants       []string `json:"variants"`
-		DefaultVariant string   `json:"defaultVariant"`
-	} `json:"reasoning"`
-	Limit *struct {
-		Context int64 `json:"context"`
-		Output  int64 `json:"output"`
-	} `json:"limit"`
-	Modalities *struct {
-		Input  []string `json:"input"`
-		Output []string `json:"output"`
-	} `json:"modalities"`
-	// ZCode is the desktop application's own block. `priority` RANKS the models,
-	// lower first, and it is the only ordering ZCode's configuration states -- the
-	// map that holds the models has no order of its own. It decides which model a
-	// fresh session runs on, so it is read rather than ignored. See
-	// zcodeModelOrder.
-	ZCode *struct {
-		Priority *float64 `json:"priority"`
-	} `json:"zcode"`
-}
-
-// priority returns the model's rank and whether the configuration states one.
-func (m zcodeConfigModel) priority() (float64, bool) {
-	if m.ZCode == nil || m.ZCode.Priority == nil {
-		return 0, false
-	}
-	return *m.ZCode.Priority, true
-}
-
-// --- the wire shape ---
-
-// zcodeRegistryProvider is one entry of the workspace/updateProviderRegistry
-// payload.
-//
-// The app-server validates it STRICTLY: an unknown field, a `kind` outside its
-// enumeration, or an empty `models` array refuses the whole request, not just the
-// offending provider. Every field below is therefore normalized before it is sent.
-type zcodeRegistryProvider struct {
-	ProviderID string               `json:"providerId"`
-	Kind       string               `json:"kind"`
-	APIFormat  string               `json:"apiFormat,omitempty"`
-	BaseURL    string               `json:"baseURL,omitempty"`
-	Label      string               `json:"label,omitempty"`
-	Source     string               `json:"source,omitempty"`
-	APIKey     *zcodeRegistryAPIKey `json:"apiKey,omitempty"`
-	Models     []zcodeRegistryModel `json:"models"`
-}
-
-// zcodeRegistryAPIKey is the app-server's tagged union for a credential. `inline`
-// is the only member LeapMux can produce: the alternatives name a keychain entry
-// or an OAuth session that belongs to the desktop application.
-type zcodeRegistryAPIKey struct {
-	Source string `json:"source"`
-	Value  string `json:"value"`
-}
-
-// zcodeAPIKeySourceInline is the discriminator of the union member that carries the
-// key VALUE. The other members name a keychain entry, an environment variable, or a
-// server-side key, none of which LeapMux can resolve on the app-server's behalf.
-const zcodeAPIKeySourceInline = "inline"
-
-type zcodeRegistryModel struct {
-	ModelID         string                  `json:"modelId"`
-	Label           string                  `json:"label,omitempty"`
-	ContextWindow   int64                   `json:"contextWindow,omitempty"`
-	MaxOutputTokens int64                   `json:"maxOutputTokens,omitempty"`
-	Reasoning       *zcodeRegistryReasoning `json:"reasoning,omitempty"`
-	SupportsImages  bool                    `json:"supportsImages,omitempty"`
-	SupportsPdf     bool                    `json:"supportsPdf,omitempty"`
-	SupportsVideo   bool                    `json:"supportsVideo,omitempty"`
-}
-
-type zcodeRegistryReasoning struct {
-	Enabled      bool                  `json:"enabled"`
-	Levels       []zcodeReasoningLevel `json:"levels,omitempty"`
-	DefaultLevel string                `json:"defaultLevel,omitempty"`
-}
-
-type zcodeReasoningLevel struct {
-	Value string `json:"value"`
-	Label string `json:"label"`
-}
-
-// zcodeModelRef is the app-server's {providerId, modelId} pair.
-type zcodeModelRef struct {
-	ProviderID string `json:"providerId"`
-	ModelID    string `json:"modelId"`
-}
-
-// zcodeRuntimeModel is the per-request overlay session/setModel takes.
-//
-// It exists because the registry push is workspace-scoped and asynchronous, while
-// setModel must resolve a credential NOW: the overlay carries the provider (with
-// its inline key) alongside the model, so pinning a model never races the registry.
-type zcodeRuntimeModel struct {
-	Revision    string                `json:"revision"`
-	GeneratedAt int64                 `json:"generatedAt"`
-	Model       zcodeModelRef         `json:"model"`
-	Provider    zcodeRegistryProvider `json:"provider"`
-	// ThoughtLevel rides along so a create or a model switch applies the level in
-	// the SAME request. Omitted when empty, which keeps the app-server's own default.
-	ThoughtLevel string `json:"thoughtLevel,omitempty"`
-}
 
 // zcodeCatalog is the parsed, translated view of ZCode's configuration: the
 // registry payload plus the per-model capability facts LeapMux needs (thought
@@ -180,6 +27,14 @@ type zcodeCatalog struct {
 	// refs maps a composite model id back to its {providerId, modelId} pair and the
 	// provider entry that carries its credential.
 	refs map[string]zcodeModelRef
+	// accountPlanKinds selects the current coding-plan provider for each family.
+	// It comes from ZCode's setting.json and distinguishes an individual plan from
+	// a team plan, which the legacy provider id folds into one word.
+	accountPlanKinds map[string]string
+	// accountProviderIDs and legacyProviderIDs are the two directions of the
+	// bridge derived from the installed account-provider rules.
+	accountProviderIDs map[string]string
+	legacyProviderIDs  map[string]string
 }
 
 // zcodeModelIDSeparator joins a provider id and a model id into the single string
@@ -285,53 +140,6 @@ type zcodeProviderSkip struct {
 	Reason     string
 }
 
-// loadZCodeCatalog reads and translates ZCode's configuration.
-//
-// An absent file, an unreadable one, and a malformed one are all reported as
-// errors: without a provider registry every turn fails with a message that identifies
-// the app-server rather than the missing configuration, so the caller states the
-// real cause at startup.
-func loadZCodeCatalog(homeDir string) (zcodeCatalog, error) {
-	path := zcodeConfigPath(homeDir)
-	if path == "" {
-		return zcodeCatalog{}, fmt.Errorf("no home directory to read ZCode's configuration from")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return zcodeCatalog{}, fmt.Errorf("ZCode is not configured: %s does not exist (sign in with the ZCode application once)", path)
-		}
-		return zcodeCatalog{}, fmt.Errorf("read %s: %w", path, err)
-	}
-	var cfg zcodeConfigFile
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return zcodeCatalog{}, fmt.Errorf("parse %s: %w", path, err)
-	}
-	catalog, skipped := buildZCodeCatalog(cfg)
-	if len(catalog.Providers) == 0 {
-		return catalog, fmt.Errorf("no ZCode model provider in %s is usable%s", path, zcodeSkipDetail(skipped))
-	}
-	return catalog, nil
-}
-
-// zcodeSkipDetail renders why each configured provider was dropped, as a suffix to the
-// "no usable provider" error.
-//
-// The three skips have three different remedies -- add a key, add a model, use a
-// provider kind the app-server supports -- so one message that always says "carries no
-// API key" sends the user to re-enter a credential that is already correct. Returns ""
-// for a configuration that lists no provider at all, where there is nothing to explain.
-func zcodeSkipDetail(skipped []zcodeProviderSkip) string {
-	if len(skipped) == 0 {
-		return " (it lists no model provider)"
-	}
-	parts := make([]string, 0, len(skipped))
-	for _, s := range skipped {
-		parts = append(parts, fmt.Sprintf("%q %s", s.ProviderID, s.Reason))
-	}
-	return ": " + strings.Join(parts, "; ")
-}
-
 // buildZCodeCatalog translates a parsed configuration into the registry payload
 // and LeapMux's model catalog.
 //
@@ -425,6 +233,7 @@ func buildZCodeCatalog(cfg zcodeConfigFile) (zcodeCatalog, []zcodeProviderSkip) 
 			Label:      zcodeProviderLabel(c.providerID, c.provider.Name, nameCount[strings.TrimSpace(c.provider.Name)] > 1),
 			Source:     zcodeRegistrySource(c.provider.Source),
 			APIKey:     &zcodeRegistryAPIKey{Source: zcodeAPIKeySourceInline, Value: c.apiKey},
+			Enabled:    c.enabled,
 			// An empty slice, never nil: the app-server's schema requires the
 			// `models` ARRAY, and a nil slice marshals as `null`, which its
 			// validator refuses for the whole request.
@@ -748,43 +557,6 @@ func markZCodeDefaultModel(models []*ModelInfo) {
 	}
 }
 
-// registryPayload builds the workspace/updateProviderRegistry params.
-//
-// The providers, the revision, and the timestamp sit INSIDE a `registry` object:
-// a payload that puts them at the top level is refused by the app-server's
-// validator with an "unrecognized keys" report.
-func (c zcodeCatalog) registryPayload(workspace zcodeWorkspace, revision string, generatedAt int64) map[string]any {
-	return map[string]any{
-		"workspace": workspace,
-		"registry": map[string]any{
-			"providers":   c.Providers,
-			"generatedAt": generatedAt,
-			"revision":    revision,
-		},
-	}
-}
-
-// runtimeModelFor builds the session/setModel overlay for a composite model id, or
-// ok=false when the catalog does not hold it.
-func (c zcodeCatalog) runtimeModelFor(modelID, revision string, generatedAt int64) (zcodeRuntimeModel, bool) {
-	ref, ok := c.refs[modelID]
-	if !ok {
-		return zcodeRuntimeModel{}, false
-	}
-	for _, provider := range c.Providers {
-		if provider.ProviderID != ref.ProviderID {
-			continue
-		}
-		return zcodeRuntimeModel{
-			Revision:    revision,
-			GeneratedAt: generatedAt,
-			Model:       ref,
-			Provider:    provider,
-		}, true
-	}
-	return zcodeRuntimeModel{}, false
-}
-
 // hasInlineAPIKey reports whether the catalog carries a usable inline credential
 // for a provider id.
 //
@@ -865,16 +637,4 @@ func (c zcodeCatalog) acceptsInputModality(modelID, modality string) bool {
 		}
 	}
 	return false
-}
-
-// zcodeWorkspace is the app-server's workspace identity. Both fields carry the
-// same path: `workspaceKey` is the app-server's own index key, and the desktop
-// application sets it to the path.
-type zcodeWorkspace struct {
-	WorkspacePath string `json:"workspacePath"`
-	WorkspaceKey  string `json:"workspaceKey"`
-}
-
-func zcodeWorkspaceFor(dir string) zcodeWorkspace {
-	return zcodeWorkspace{WorkspacePath: dir, WorkspaceKey: dir}
 }

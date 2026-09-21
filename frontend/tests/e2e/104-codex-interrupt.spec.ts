@@ -1,15 +1,15 @@
 import { codexTest, expect } from './codex-fixtures'
+import { expectNoRegistryRows, waitForRegistryRow } from './helpers/subagentRegistry'
 import { messageBubbles, sendMessage } from './helpers/ui'
 
-codexTest.describe('Codex Interrupt', () => {
-  codexTest('send a prompt and interrupt mid-response', async ({ authenticatedCodexWorkspace, page }) => {
+codexTest.describe('codex interrupt', () => {
+  codexTest('sends a prompt and interrupts mid-response', async ({ authenticatedCodexWorkspace, page }) => {
     void authenticatedCodexWorkspace // fixture trigger
-    // Long prompt to ensure the interrupt window is wide enough that the
-    // Interrupt button is observable. If the button never appears, the
-    // assertion below must fail — do not gate it on isMaybeVisible.
+    // The long prompt keeps the interrupt window open. The assertion must fail
+    // if the button never appears.
     await sendMessage(page, 'Write a very detailed essay about the history of computing, at least 5000 words across multiple chapters with subheadings.')
 
-    // Click Interrupt — required to appear within the timeout.
+    // Click Interrupt. The button must appear within the test timeout.
     const interruptBtn = page.locator('[data-testid="interrupt-button"]')
     await expect(interruptBtn).toBeVisible()
     await interruptBtn.click()
@@ -22,5 +22,29 @@ codexTest.describe('Codex Interrupt', () => {
     await expect(interruptBtn).not.toBeVisible()
     const bubbles = messageBubbles(page)
     expect(await bubbles.count()).toBeGreaterThan(1)
+  })
+
+  codexTest('stops loading after root interruption while a subagent remains active', async ({ authenticatedCodexWorkspace, page }) => {
+    void authenticatedCodexWorkspace
+    await expectNoRegistryRows(page)
+
+    await sendMessage(page, [
+      'Use spawn_agent exactly once with task_name "interrupt_probe_child".',
+      'Tell the child to inspect every Go file under backend/internal/worker/agent and prepare a detailed report.',
+      'Use wait_agent until the child finishes.',
+    ].join(' '))
+
+    const row = await waitForRegistryRow(page)
+    await expect(row).toHaveAttribute('data-status', 'running')
+
+    const interruptBtn = page.locator('[data-testid="interrupt-button"]:visible')
+    await expect(interruptBtn).toBeVisible()
+    await interruptBtn.click()
+    await expect(interruptBtn).toHaveText('Interrupting...')
+
+    await expect(page.locator('[data-testid="result-divider"]:visible').filter({ hasText: /^Turn interrupted$/ })).toBeVisible()
+    await expect(interruptBtn).toBeEnabled()
+    await expect(interruptBtn).toHaveText('Interrupt')
+    await expect(row).toHaveAttribute('data-status', 'running')
   })
 })

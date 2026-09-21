@@ -16,6 +16,8 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
+const inputIdempotencyKeyPrefix = "input:"
+
 type Store struct {
 	db         *sql.DB
 	classifier CommandClassifier
@@ -152,10 +154,11 @@ func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) 
 		}
 		return commit()
 	}
-	var acceptedAgentID, acceptedFingerprint string
-	err = tx.QueryRowContext(ctx, `SELECT agent_id, input_fingerprint FROM messages WHERE id = ?`, input.ID).Scan(&acceptedAgentID, &acceptedFingerprint)
+	var acceptedAgentID, acceptedIdempotencyKey string
+	err = tx.QueryRowContext(ctx, `SELECT agent_id, idempotency_key FROM messages WHERE id = ?`, input.ID).Scan(&acceptedAgentID, &acceptedIdempotencyKey)
 	if err == nil {
-		if acceptedAgentID != input.AgentID || acceptedFingerprint == "" || acceptedFingerprint != inputFingerprint(input) {
+		if acceptedAgentID != input.AgentID || acceptedIdempotencyKey == "" ||
+			acceptedIdempotencyKey != inputIdempotencyKey(input) {
 			return Snapshot{}, ErrConflict
 		}
 		return commit()
@@ -932,11 +935,11 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO messages
-		(id, agent_id, seq, source, content, content_compression, input_fingerprint, depth, span_id,
+		(id, agent_id, seq, source, content, content_compression, idempotency_key, depth, span_id,
 		 parent_span_id, span_type, span_lines, span_color, agent_provider, mark_type, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', '', '', ?, 0, ?, ?, ?)`,
 		item.ID, item.AgentID, item.ReservedSeq, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		compressed, compression, inputFingerprint(NewItem{
+		compressed, compression, inputIdempotencyKey(NewItem{
 			ID: item.ID, AgentID: item.AgentID, Kind: item.Kind, Text: item.Text,
 			TargetMode: item.TargetMode, PrepareContext: item.PrepareContext,
 			ReclassifyOnEdit: item.ReclassifyOnEdit, Attachments: attachments,
@@ -1653,13 +1656,15 @@ func transcriptContent(item StoredItem, attachments []Attachment) ([]byte, error
 	return json.Marshal(content)
 }
 
-func inputFingerprint(input NewItem) string {
-	type fingerprintAttachment struct {
+// inputIdempotencyKey includes the input identity and content. A changed retry
+// gets a different key and conflicts with the existing message identifier.
+func inputIdempotencyKey(input NewItem) string {
+	type idempotencyAttachment struct {
 		Filename string `json:"filename"`
 		MimeType string `json:"mime_type"`
 		Data     []byte `json:"data"`
 	}
-	type fingerprintPayload struct {
+	type idempotencyPayload struct {
 		ID               string                   `json:"id"`
 		AgentID          string                   `json:"agent_id"`
 		Kind             leapmuxv1.AgentInputKind `json:"kind"`
@@ -1667,22 +1672,22 @@ func inputFingerprint(input NewItem) string {
 		TargetMode       string                   `json:"target_mode"`
 		PrepareContext   bool                     `json:"prepare_context"`
 		ReclassifyOnEdit bool                     `json:"reclassify_on_edit"`
-		Attachments      []fingerprintAttachment  `json:"attachments"`
+		Attachments      []idempotencyAttachment  `json:"attachments"`
 	}
-	attachments := make([]fingerprintAttachment, len(input.Attachments))
+	attachments := make([]idempotencyAttachment, len(input.Attachments))
 	for index := range input.Attachments {
-		attachments[index] = fingerprintAttachment(input.Attachments[index])
+		attachments[index] = idempotencyAttachment(input.Attachments[index])
 	}
-	data, err := json.Marshal(fingerprintPayload{
+	data, err := json.Marshal(idempotencyPayload{
 		ID: input.ID, AgentID: input.AgentID, Kind: input.Kind, Text: input.Text,
 		TargetMode: input.TargetMode, PrepareContext: input.PrepareContext,
 		ReclassifyOnEdit: input.ReclassifyOnEdit, Attachments: attachments,
 	})
 	if err != nil {
-		panic(fmt.Sprintf("marshal queued input fingerprint: %v", err))
+		panic(fmt.Sprintf("marshal queued input idempotency key: %v", err))
 	}
 	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	return inputIdempotencyKeyPrefix + hex.EncodeToString(sum[:])
 }
 
 func normalizeConstraintError(err error) error {

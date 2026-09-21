@@ -121,7 +121,7 @@ export const SpanLines: Component<SpanLinesProps> = (props) => {
           of recreating every column div the way reference-keyed <For> would.
         */}
         <Index each={props.lines}>
-          {line => <div class={classFor(line())} />}
+          {(line, column) => <div class={classFor(line())} data-span-line-column={column} />}
         </Index>
       </div>
     </Show>

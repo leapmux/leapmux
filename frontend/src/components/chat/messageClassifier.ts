@@ -1,18 +1,22 @@
+import type { NotificationEntry } from './model/notification'
 import type { PersistedControlResponse } from './persistedControlResponse'
 import type { ClassificationContext, ClassificationInput } from './providers/registry'
 import type { ResolvedMessageContent } from './rowExtractionTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { SettingsLabelDependency } from '~/lib/settingsLabelCache'
 import { AssembledMessageKind, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import { isWorkerWrittenNotification } from '~/lib/notificationTypes'
+import { collectSettingsLabelDependencies, settingsLabelCacheRevision, settingsLabelDependencyRevision } from '~/lib/settingsLabelCache'
 import { parseAssembledMessage } from './assembledMessage'
+import { classifyNotifications } from './notificationClassification'
 import { parsePersistedControlResponse } from './persistedControlResponse'
 import { pluginFor, resolveMessageForRendering } from './providers/registry'
 import './providers'
 
 export type MessageCategory
   = | { kind: 'hidden' }
-    | { kind: 'notification', messages: unknown[] }
+    | { kind: 'notification', entries: NotificationEntry[] }
     | { kind: 'tool_use' }
     | { kind: 'tool_result' }
     | { kind: 'agent_prompt' }
@@ -79,19 +83,30 @@ export function classifyMessage(input: ClassificationInput, context?: Classifica
   if (!plugin)
     return isLeapMuxUserPayload(input) ? { kind: 'user_content' } : { kind: 'unsupported_provider' }
   if (!input.wrapper && isWorkerWrittenNotification(input.parentObject))
-    return { kind: 'notification', messages: [input.parentObject] }
+    return classifyNotifications([input.parentObject], input.agentProvider, plugin.transcript.notificationEntry)
   return plugin.transcript.classify(input, context)
 }
 
-const classifyCache = new WeakMap<AgentChatMessage, MessageCategory>()
+const classifyCache = new WeakMap<AgentChatMessage, {
+  revision: string
+  dependencies: SettingsLabelDependency[]
+  category: MessageCategory
+}>()
 
 export function classifyAgentMessage(message: AgentChatMessage): MessageCategory {
+  settingsLabelCacheRevision()
   const cached = classifyCache.get(message)
-  if (cached)
-    return cached
-  const result = classifyMessage(toClassificationInput(resolveMessageForRendering(parseMessageContent(message), message.agentProvider), message))
-  classifyCache.set(message, result)
-  return result
+  const revision = settingsLabelDependencyRevision(cached?.dependencies ?? [])
+  if (cached?.revision === revision)
+    return cached.category
+  const collected = collectSettingsLabelDependencies(() =>
+    classifyMessage(toClassificationInput(resolveMessageForRendering(parseMessageContent(message), message.agentProvider), message)))
+  classifyCache.set(message, {
+    revision: settingsLabelDependencyRevision(collected.dependencies),
+    dependencies: collected.dependencies,
+    category: collected.value,
+  })
+  return collected.value
 }
 
 export function invalidateMessageClassificationCache(message: AgentChatMessage): void {

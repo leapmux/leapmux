@@ -2,13 +2,14 @@ import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { readInjectedShikiRules } from '~/lib/shikiStyleClass.testkit'
+import { EXPANDED_TEXT_DISPLAY_CHAR_LIMIT, EXPANDED_TEXT_DISPLAY_LINE_LIMIT } from '../safeTextDisplay'
 import { ReadResultView } from './ReadResultView'
 
 vi.mock('~/lib/shikiWorkerClient', () => ({
   tokenizeAsync: vi.fn().mockResolvedValue([[{ content: 'const x = 1', className: 'sk-read-test' }]]),
 }))
 
-describe('ReadResultView syntax highlighting', () => {
+describe('ReadResultView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
@@ -91,6 +92,54 @@ describe('ReadResultView syntax highlighting', () => {
 
     expect(container.textContent).toContain('const x = 1')
     expect(container.querySelector('.sk-read-test')).toBeNull()
+  })
+
+  it('limits one large file line before it reaches tokenization or the DOM', async () => {
+    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
+    const text = `READ_HEAD${'x'.repeat(100_000)}READ_TAIL`
+    const { container } = render(() => (
+      <ReadResultView lines={[{ num: 1, text }]} filePath="example.ts" />
+    ))
+
+    expect(container.textContent!.length).toBeLessThan(text.length)
+    expect(container.textContent).toContain('READ_HEAD')
+    expect(container.textContent).toContain('READ_TAIL')
+    expect(container.textContent).toContain('Display limited')
+    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', expect.not.stringContaining('x'.repeat(10_000)), expect.any(Function))
+  })
+
+  it('limits the total rows of an expanded structured read', () => {
+    const lines = Array.from({ length: EXPANDED_TEXT_DISPLAY_LINE_LIMIT + 500 }, (_, index) => ({
+      num: index + 1,
+      text: `line ${index + 1}`,
+    }))
+    const { container } = render(() => <ReadResultView lines={lines} />)
+
+    expect(container.querySelectorAll('[data-line-num]').length).toBeLessThanOrEqual(EXPANDED_TEXT_DISPLAY_LINE_LIMIT)
+    expect(container).toHaveTextContent('Display limited')
+    expect(container).not.toHaveTextContent(`line ${lines.length}`)
+  })
+
+  it('limits total characters across individually short file lines', () => {
+    const lineText = 'x'.repeat(100)
+    const lines = Array.from({ length: 900 }, (_, index) => ({ num: index + 1, text: lineText }))
+    const { container } = render(() => <ReadResultView lines={lines} />)
+
+    expect((container.textContent ?? '').length).toBeLessThan(EXPANDED_TEXT_DISPLAY_CHAR_LIMIT + 5_000)
+    expect(container).toHaveTextContent('Display limited')
+    expect(container.querySelectorAll('[data-line-num]').length).toBeLessThan(lines.length)
+  })
+
+  it('keeps a final short line that fits the remaining character budget', () => {
+    const lines = [
+      ...Array.from({ length: 15 }, (_, index) => ({ num: index + 1, text: 'x'.repeat(4_096) })),
+      { num: 16, text: 'y'.repeat(4_025) },
+      { num: 17, text: 'z' },
+    ]
+    const { container } = render(() => <ReadResultView lines={lines} />)
+
+    expect(container.querySelectorAll('[data-line-num]')).toHaveLength(lines.length)
+    expect(container).toHaveTextContent('z')
   })
 
   it('keeps existing tokens when syntax highlighting is paused after highlight completes', async () => {

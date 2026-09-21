@@ -5,6 +5,7 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { DragDropProvider } from '@thisbeyond/solid-dnd'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createAgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -110,6 +111,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
   const forceScrollToBottomRef = options.forceScrollToBottomRef ?? createImperativeRef<() => void>()
   return render(() => {
     const r = createTileRenderer({
+      agentComposerActionStates: createAgentComposerActionStateStore(),
       // Same factory production uses, so the test exercises the real
       // select-and-focus behaviour rather than a bare `setActive`.
       mruEditorDeps: mruAgentEditorDeps({

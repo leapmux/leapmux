@@ -2,8 +2,9 @@ import type { ToolKindRenderer } from './renderer'
 import Eye from 'lucide-solid/icons/eye'
 import { relativizePath } from '~/lib/paths'
 import { readFileBodyText } from '../../model/readFileResult'
-import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../collapse'
+import { COLLAPSED_RESULT_ROWS } from '../collapse'
 import { ReadFileResultBody } from '../readFileResult'
+import { COLLAPSED_LINE_CHAR_CAP, textNeedsCollapse } from '../useCollapsedLines'
 import { renderReadTitle } from './titleParts'
 
 export const readRenderer: ToolKindRenderer<'read'> = {
@@ -32,8 +33,8 @@ export const readRenderer: ToolKindRenderer<'read'> = {
       // measured zero lines for a refused read whose reason sits in
       // `fallbackContent`, and a long reason then never offered Expand.
       collapsible: (lines && lines.length > 0
-        ? lines.length > COLLAPSED_RESULT_ROWS
-        : hasMoreLinesThan(call.result.fallbackContent, COLLAPSED_RESULT_ROWS))
+        ? lines.length > COLLAPSED_RESULT_ROWS || lines.some(line => line.text.length > COLLAPSED_LINE_CHAR_CAP)
+        : textNeedsCollapse(call.result.fallbackContent))
       || reminders > 0,
       hasDiff: false,
       // Built INSIDE the closure. Hoisted, it joined every line of the file on every

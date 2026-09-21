@@ -1,5 +1,5 @@
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { RateLimitInfo } from '~/models/agentSession'
+import type { RateLimitInfo, RateLimitUpdate } from '~/models/agentSession'
 import { assignDefined, isObject, pickBoolean, pickNumber, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
 
@@ -45,12 +45,13 @@ export function claudeRateLimitInfo(info: Record<string, unknown>): RateLimitInf
  * it produced a tier keyed `unknown` whose every field was absent -- a row on the
  * usage meter that states nothing. A payload that is no record now yields no tier.
  */
-export function claudeRateLimitsFromMessage(parsed: ParsedMessageContent): { key: string, info: RateLimitInfo }[] | null {
+export function claudeRateLimitsFromMessage(parsed: ParsedMessageContent): RateLimitUpdate | null {
   const inner = getInnerMessage(parsed)
   if (!inner || inner.type !== 'rate_limit_event')
     return null
   const info = inner.rate_limit_info
   if (!isObject(info))
-    return []
-  return [{ key: pickString(info, 'rateLimitType') || 'unknown', info: claudeRateLimitInfo(info) }]
+    return { mode: 'merge', values: {} }
+  const key = pickString(info, 'rateLimitType') || 'unknown'
+  return { mode: 'merge', values: { [key]: claudeRateLimitInfo(info) } }
 }

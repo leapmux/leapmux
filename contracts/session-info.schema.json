@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "session-info.schema.json",
   "title": "agent_session_info wire vocabulary contract",
-  "description": "One table per object on the agent_session_info wire. Each entry maps a PascalCase contract name (the generated Go suffix and TS object key) to the snake_case token that travels on the wire. The generator additionally checks that no two entries in one table share a token.",
+  "description": "Each table defines one object on the agent_session_info wire. Each entry maps a PascalCase contract name to its snake_case wire token. The generator rejects duplicate tokens in one table.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,6 +10,8 @@
     "keys",
     "contextUsageFields",
     "rateLimitFields",
+    "rateLimitUpdateFields",
+    "rateLimitUpdateModes",
     "runningToolFields",
     "runningToolRetryFields",
     "goalProgressFields"
@@ -19,6 +21,8 @@
     "keys": { "$ref": "#/$defs/table" },
     "contextUsageFields": { "$ref": "#/$defs/table" },
     "rateLimitFields": { "$ref": "#/$defs/table" },
+    "rateLimitUpdateFields": { "$ref": "#/$defs/table" },
+    "rateLimitUpdateModes": { "$ref": "#/$defs/table" },
     "runningToolFields": { "$ref": "#/$defs/table" },
     "runningToolRetryFields": { "$ref": "#/$defs/table" },
     "goalProgressFields": { "$ref": "#/$defs/table" }

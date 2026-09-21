@@ -14,12 +14,12 @@ import { isFinishedToolCallStatus } from '../model/toolCallStatus'
 import { formatDuration, joinMetaParts } from '../rendererUtils'
 import { toolInputSummary, toolMessage } from '../toolStyles.css'
 import { TRUNCATION_NOTICE } from '../truncationNotice'
-import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
+import { COLLAPSED_RESULT_ROWS } from './collapse'
 import { CollapsibleContent } from './CollapsibleContent'
 import { EMPTY_RESULT_NOTICE } from './emptyResultNotice'
 import { toolOutcomeLabel } from './toolOutcomeLabel'
 import { drawsOwnOutcome, ToolHeaderRow, ToolStatusHeader } from './ToolStatusHeader'
-import { useCollapsedLines } from './useCollapsedLines'
+import { textNeedsCollapse, useCollapsedLines } from './useCollapsedLines'
 
 const normalizedByCommand = new WeakMap<CommandResult, ReturnType<typeof normalizedCommandBody>>()
 const MAX_CACHED_NORMALIZED_CHARS = 4 * 1024 * 1024
@@ -40,7 +40,7 @@ export function normalizedCommandOutput(command: CommandResult): ReturnType<type
 
 export function commandOutputIsCollapsible(command: CommandResult): boolean {
   const { text, hadCarriageReturns } = normalizedCommandOutput(command)
-  return hasMoreLinesThan(text, commandCollapseThreshold(hadCarriageReturns))
+  return textNeedsCollapse(text, commandCollapseThreshold(hadCarriageReturns))
 }
 
 export function commandStatusLabel(status: ToolCallStatus, exit: CommandExit): string {

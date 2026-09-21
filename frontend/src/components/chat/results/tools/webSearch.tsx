@@ -3,7 +3,8 @@ import type { ToolKindRenderer } from './renderer'
 import Globe from 'lucide-solid/icons/globe'
 import { Show } from 'solid-js'
 import { toolInputCode, toolInputText } from '../../toolStyles.css'
-import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../collapse'
+import { COLLAPSED_RESULT_ROWS } from '../collapse'
+import { textNeedsCollapse } from '../useCollapsedLines'
 import { WebSearchResultsBody } from '../webSearchResults'
 import { renderQueryTitle, renderUrlTitle } from './titleParts'
 
@@ -68,7 +69,7 @@ export const webSearchRenderer: ToolKindRenderer<'web_search'> = {
     return {
       collapsible: call.result.links.length > COLLAPSED_RESULT_ROWS
         || (call.request.queries?.length ?? 0) > 1
-        || hasMoreLinesThan(call.result.summary, COLLAPSED_RESULT_ROWS),
+        || textNeedsCollapse(call.result.summary),
       hasDiff: false,
       // Built INSIDE the closure. Hoisted, it joined every link's title and address on
       // every `toolCallMeta` call to answer whether a Copy button belongs on the row.

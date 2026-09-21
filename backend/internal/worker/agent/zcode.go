@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,14 +42,20 @@ type zcodeAgent struct {
 	// registry payload (with inline API keys) and the per-model capabilities. Read
 	// once at startup and never mutated, so it needs no lock.
 	catalog zcodeCatalog
-	// registryRevision labels this agent's registry push. The app-server compares
-	// `generatedAt` between pushes and ignores an older snapshot, so the revision
-	// only has to identify the pusher.
+	// registryRevision identifies this agent's provider configuration. Legacy
+	// builds use it on the workspace registry, and current builds use it on the
+	// account snapshot.
 	registryRevision string
+	// builtinProviderConfigPath identifies the installed release that the account
+	// provider snapshot overlays. Empty for a PATH launcher that owns its setup.
+	builtinProviderConfigPath string
 
 	// --- guarded by mu ---
 
-	sessionID string
+	// accountProviderConfig is true when the legacy registry method is absent and
+	// provider/updateAccountConfig completed. It selects the current request shapes.
+	accountProviderConfig bool
+	sessionID             string
 	// stateRevision is the app-server's optimistic-concurrency counter, taken
 	// from the last runtime state observed. session/goal sends it as
 	// expectedRevision so a goal write that races a change the agent just made
@@ -84,6 +91,11 @@ type zcodeAgent struct {
 	// model-dependent, so it overrides the catalog's variants for the running model.
 	observedThoughtLevels  []*EffortInfo
 	observedThoughtDefault string
+	// liveModels is the one normalized record per model id. liveModelOrder keeps
+	// the app-server's order without copying each record's metadata into parallel
+	// maps that can drift.
+	liveModels     map[string]zcodeLiveModelRecord
+	liveModelOrder []string
 
 	// toolCalls holds everything a.mu knows about each tool call, keyed by its id.
 	toolCalls     map[string]*zcodeToolCall
@@ -179,15 +191,16 @@ func StartZCode(ctx context.Context, opts Options, sink ProviderServices) (Agent
 	}
 
 	a := &zcodeAgent{
-		processBase:      newProcessBase(opts, "zcode", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
-		sink:             sink,
-		workingDir:       opts.WorkingDir,
-		workspace:        zcodeWorkspaceFor(opts.WorkingDir),
-		catalog:          catalog,
-		registryRevision: "leapmux-" + opts.AgentID,
-		mode:             contracts.ZCodeDefaultMode,
-		toolCalls:        map[string]*zcodeToolCall{},
-		pendingControls:  map[string]json.RawMessage{},
+		processBase:               newProcessBase(opts, "zcode", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
+		sink:                      sink,
+		workingDir:                opts.WorkingDir,
+		workspace:                 zcodeWorkspaceFor(opts.WorkingDir),
+		catalog:                   catalog,
+		registryRevision:          "leapmux-" + opts.AgentID,
+		builtinProviderConfigPath: zcodeLaunchEnvValue(cmd.Env, zcodeBuiltinProviderConfigEnv),
+		mode:                      contracts.ZCodeDefaultMode,
+		toolCalls:                 map[string]*zcodeToolCall{},
+		pendingControls:           map[string]json.RawMessage{},
 	}
 	a.sink = newModelProgressResetSink(a.sink)
 	storeLocation := zcodeToolStorePaths(StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir})
@@ -230,7 +243,7 @@ func StartZCode(ctx context.Context, opts Options, sink ProviderServices) (Agent
 
 	if err := a.pushProviderRegistry(timeout); err != nil {
 		cleanup()
-		return nil, a.formatStartupError(ZCodeMethodUpdateProviderRegistry, err)
+		return nil, a.formatStartupError("provider configuration", err)
 	}
 
 	if err := a.openSession(opts.ResumeSessionID, timeout); err != nil {
@@ -261,12 +274,28 @@ func StartZCode(ctx context.Context, opts Options, sink ProviderServices) (Agent
 	return a, nil
 }
 
+// zcodeLaunchEnvValue reads the final value of one launch variable. The final
+// duplicate is the value that an exec environment applies.
+func zcodeLaunchEnvValue(env []string, key string) string {
+	for i := len(env) - 1; i >= 0; i-- {
+		entry := env[i]
+		name, value, ok := strings.Cut(entry, "=")
+		if ok && name == key {
+			return value
+		}
+	}
+	return ""
+}
+
 // pushProviderRegistry hands the app-server the model providers it may use.
 func (a *zcodeAgent) pushProviderRegistry(timeout time.Duration) error {
 	params := a.catalog.registryPayload(a.workspace, a.registryRevision, time.Now().UnixMilli())
 	raw, err := a.sendZCodeRequest(ZCodeMethodUpdateProviderRegistry, params, timeout)
 	if err != nil {
-		return err
+		if !zcodeIsMethodNotFound(err) {
+			return err
+		}
+		return a.pushAccountProviderConfig(timeout)
 	}
 	var resp struct {
 		Status        string `json:"status"`
@@ -282,6 +311,40 @@ func (a *zcodeAgent) pushProviderRegistry(timeout time.Duration) error {
 		return fmt.Errorf("the app-server refused the provider registry")
 	}
 	slog.Debug("zcode provider registry applied", "agent_id", a.agentID, "status", resp.Status, "providers", resp.ProviderCount)
+	return nil
+}
+
+// pushAccountProviderConfig applies the host-owned account snapshot that replaced
+// workspace/updateProviderRegistry in ZCode 0.16.9.
+func (a *zcodeAgent) pushAccountProviderConfig(timeout time.Duration) error {
+	params, err := a.catalog.accountProviderPayload(a.builtinProviderConfigPath, a.registryRevision)
+	if err != nil {
+		return err
+	}
+	raw, err := a.sendZCodeRequest(ZCodeMethodUpdateAccountConfig, params, timeout)
+	if err != nil {
+		return err
+	}
+	var response struct {
+		ReceivedRevision string `json:"receivedRevision"`
+		ProviderCount    int    `json:"providerCount"`
+		Status           string `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return fmt.Errorf("decode ZCode account provider acknowledgement: %w", err)
+	}
+	if response.ReceivedRevision != params.Revision {
+		return fmt.Errorf("ZCode account provider acknowledgement returned revision %q, expected %q",
+			response.ReceivedRevision, params.Revision)
+	}
+	if response.Status != "received" && response.Status != "unchanged" {
+		return fmt.Errorf("ZCode account provider acknowledgement returned status %q", response.Status)
+	}
+	a.mu.Lock()
+	a.accountProviderConfig = true
+	a.mu.Unlock()
+	slog.Debug("zcode account provider configuration applied", "agent_id", a.agentID,
+		"status", response.Status, "providers", response.ProviderCount)
 	return nil
 }
 
@@ -347,6 +410,12 @@ func (a *zcodeAgent) openSession(resumeID string, timeout time.Duration) error {
 			"sessionId": resumeID,
 			"workspace": a.workspace,
 		}
+		a.mu.Lock()
+		accountConfig := a.accountProviderConfig
+		a.mu.Unlock()
+		if accountConfig {
+			params["dynamicWorkflowEnabled"] = true
+		}
 		raw, err := a.sendZCodeRequest(ZCodeMethodSessionResume, params, timeout)
 		if err != nil {
 			return resumeFailedError(resumeID, err)
@@ -372,13 +441,22 @@ func (a *zcodeAgent) openSession(resumeID string, timeout time.Duration) error {
 
 	params := map[string]any{"workspace": a.workspace}
 	a.mu.Lock()
-	mode, model := a.mode, a.model
+	mode, model, accountConfig := a.mode, a.model, a.accountProviderConfig
 	a.mu.Unlock()
+	if accountConfig {
+		params["dynamicWorkflowEnabled"] = true
+	}
 	if mode != "" {
 		params["mode"] = mode
 	}
-	if ref, ok := a.catalog.refs[model]; ok {
-		params["model"] = ref
+	// The legacy model id cannot identify whether the account now uses an
+	// individual or a team plan. Let the account registry select the initial
+	// model. applyStartupSettings re-applies an explicit request after the create
+	// snapshot supplies the live account-provider ids.
+	if !accountConfig {
+		if ref, ok := a.catalog.refs[model]; ok {
+			params["model"] = ref
+		}
 	}
 	raw, err := a.sendZCodeRequest(ZCodeMethodSessionCreate, params, timeout)
 	if err != nil {
@@ -721,7 +799,7 @@ const zcodeStoppedSilenceWindow = 30 * time.Second
 // session/stop that lands after those first moments aborts nothing: the tool
 // runs on, the runtime makes its next model call, and the turn completes as if
 // no stop was asked. Session events that keep arriving past this grace are that
-// no-op -- the row they trigger tells the reader to press Stop again, and the
+// no-op -- the row they trigger tells the reader to press Interrupt again, and the
 // second press is the one the worker may escalate into a forced restart.
 const zcodeStopIgnoredGrace = 3 * time.Second
 
@@ -1023,9 +1101,13 @@ func (a *zcodeAgent) persistZCodeStopRow() {
 //
 // The row is what turns the no-op from invisible to actionable: the turn keeps
 // running, so the transcript owes the reader an explanation and an instruction --
-// press Stop again, and the worker escalates that press into a forced stop. One
+// press Interrupt again, and the worker escalates that press into a forced stop. One
 // row per accepted stop, from refreshStoppedZCodeTurn's once-flag.
 func (a *zcodeAgent) persistZCodeStopIgnoredRow() {
+	// Restore the Worker's activity before the transcript write. The provider
+	// still runs the same turn even if persistence fails, so a database error
+	// must not leave the Interrupt button hidden from the user.
+	a.sink.ReportInterruptIgnored()
 	content, err := json.Marshal(map[string]string{contracts.NotificationFieldType: contracts.NotificationTypeStopIgnored})
 	if err != nil {
 		slog.Error("zcode marshal stop-ignored row", "agent_id", a.agentID, "error", err)

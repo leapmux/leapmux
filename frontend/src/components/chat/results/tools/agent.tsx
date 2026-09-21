@@ -6,9 +6,11 @@ import { For, Show } from 'solid-js'
 import { MESSAGE_UI_KEY } from '../../messageUiKeys'
 import { toolInputText, toolResultPrompt } from '../../toolStyles.css'
 import { AgentResultBody, agentRunStatesOutcome } from '../agentResult'
-import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../collapse'
 import { CollapsibleContent } from '../CollapsibleContent'
+import { ENDED_OUTCOME_ICON } from '../endedOutcomeIcon'
 import { ToolMetadata } from '../ToolMetadata'
+import { ToolStatusHeader } from '../ToolStatusHeader'
+import { textNeedsCollapse } from '../useCollapsedLines'
 
 /** The subagent title: what it was asked to do, and the type that was asked. */
 export function renderAgentTitle(description: string, subagentType?: string): JSX.Element | null {
@@ -41,7 +43,7 @@ export function renderAgentTitle(description: string, subagentType?: string): JS
 function AgentPromptBody(props: { request: AgentRequest, view: ToolRowView, hasResult: boolean }): JSX.Element {
   const promptLabel = () => props.request.promptLabel || 'Prompt'
   const hasPrompt = () => props.request.prompt.trim() !== ''
-  const longPrompt = () => hasMoreLinesThan(props.request.prompt, COLLAPSED_RESULT_ROWS)
+  const longPrompt = () => textNeedsCollapse(props.request.prompt)
   const expanded = (): boolean => props.view.expanded()
   return (
     <>
@@ -54,6 +56,11 @@ function AgentPromptBody(props: { request: AgentRequest, view: ToolRowView, hasR
   )
 }
 
+/** Whether a successful agent result needs one shared status instead of per-agent cards. */
+function isEmptyCompletedAgentResult(call: ResolvedCall<'agent'>): boolean {
+  return call.status === 'completed' && call.result.agents.length === 0
+}
+
 export const agentRenderer: ToolKindRenderer<'agent'> = {
   icon: Bot,
   label: 'Agent',
@@ -61,8 +68,10 @@ export const agentRenderer: ToolKindRenderer<'agent'> = {
   // `running` -- or whose state never arrived, which Codex reports as `status
   // unavailable` -- draws the neutral glyph and the child's own word, and says nothing
   // about how the CALL ended. One such card among several leaves the row incomplete,
-  // so the shared header states the call's outcome for it.
-  statesOwnOutcome: call => call.result.agents.length > 0 && call.result.agents.every(agentRunStatesOutcome),
+  // so the shared header states the call's outcome for it. A completed empty result
+  // draws its own status below because no agent card can state the outcome.
+  statesOwnOutcome: call => isEmptyCompletedAgentResult(call)
+    || (call.result.agents.length > 0 && call.result.agents.every(agentRunStatesOutcome)),
   requestExpandUiKey: MESSAGE_UI_KEY.AGENT_PROMPT,
   title(call, context) {
     // The registry title wins when the launch created one task: it says what the
@@ -90,13 +99,20 @@ export const agentRenderer: ToolKindRenderer<'agent'> = {
     )
   },
   result(call: ResolvedCall<'agent'>, view) {
-    return <For each={call.result.agents}>{agent => <AgentResultBody source={agent} {...(view.context !== undefined ? { context: view.context } : {})} />}</For>
+    return (
+      <Show
+        when={call.result.agents.length > 0}
+        fallback={isEmptyCompletedAgentResult(call) ? <ToolStatusHeader icon={ENDED_OUTCOME_ICON.completed} title="Completed" /> : null}
+      >
+        <For each={call.result.agents}>{agent => <AgentResultBody source={agent} {...(view.context !== undefined ? { context: view.context } : {})} />}</For>
+      </Show>
+    )
   },
   requestMeta(call: ParsedCall<'agent'>, hasResult: boolean): Partial<ToolKindMeta> {
     const hasPrompt = call.request.prompt.trim() !== ''
     const promptLabel = (call.request.promptLabel || 'Prompt').toLowerCase()
     const hasPromptOrMeta = hasPrompt || (call.request.metadata?.length ?? 0) > 0
-    const longPrompt = hasMoreLinesThan(call.request.prompt, COLLAPSED_RESULT_ROWS)
+    const longPrompt = textNeedsCollapse(call.request.prompt)
     return {
       collapsible: hasPromptOrMeta && (hasResult || longPrompt),
       // A launch with no prompt still offers its metadata, and "details" is the
@@ -108,7 +124,7 @@ export const agentRenderer: ToolKindRenderer<'agent'> = {
   },
   resultMeta(call: ResolvedCall<'agent'>): ToolKindMeta {
     return {
-      collapsible: call.result.agents.some(agent => hasMoreLinesThan(agent.body, COLLAPSED_RESULT_ROWS)),
+      collapsible: call.result.agents.some(agent => textNeedsCollapse(agent.body)),
       hasDiff: false,
       copyableContent: () => call.result.agents.map(agent => agent.body).filter(Boolean).join('\n\n') || null,
     }

@@ -67,6 +67,7 @@ export interface UseAgentOperationsProps {
   focusEditor?: () => void
   forceScrollToBottom?: () => void
   repoGitStore: ReturnType<typeof createRepoGitStore>
+  releaseAgentComposerActionState: (agentId: string) => void
 }
 
 export function useAgentOperations(props: UseAgentOperationsProps) {
@@ -556,6 +557,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     // id -- then paints a spinner and an Interrupt button before any hydration
     // reply arrives, on a run that may already have ended.
     props.agentActivityStore.forget(agentId)
+    props.releaseAgentComposerActionState(agentId)
   }
 
   // Close an agent.

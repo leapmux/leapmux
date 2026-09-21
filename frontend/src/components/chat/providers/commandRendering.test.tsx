@@ -144,8 +144,7 @@ function makeBashResult(toolUseResult: Record<string, unknown> | undefined, cont
 function renderCodexItem(item: Record<string, unknown>, context?: MessageContentRenderContext) {
   const parsed = { item, threadId: 't1', turnId: 'r1' }
   const category: MessageCategory = { kind: 'tool_use' }
-  const result = renderMessageContent(parsed, context, category, AgentProvider.CODEX)
-  return render(() => result)
+  return render(() => <>{renderMessageContent(parsed, context, category, AgentProvider.CODEX)}</>)
 }
 
 function renderCodexMessageBubble(item: Record<string, unknown>, host?: MessageBubbleHost, opts: { premeasureMode?: boolean } = {}) {

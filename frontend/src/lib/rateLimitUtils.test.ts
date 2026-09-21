@@ -163,6 +163,15 @@ describe('pickUrgentRateLimit', () => {
     })
     expect(picked?.info.rateLimitType).toBe('seven_day')
   })
+
+  it('keeps a non-window account block urgent without a reset timer', () => {
+    const picked = pickUrgentRateLimit({
+      account_block: { status: 'exceeded', rateLimitType: 'workspace_owner_credits_depleted' },
+    })
+
+    expect(picked?.info.rateLimitType).toBe('workspace_owner_credits_depleted')
+    expect(picked?.countdown).toBeNull()
+  })
 })
 
 describe('formatRateLimitMessage', () => {

@@ -32,6 +32,8 @@ export interface TooltipProps {
    * source (or if the plain-text form is preferable in some cases).
    */
   content?: JSX.Element
+  /** Build expensive rich content only while the tooltip is open. */
+  contentFactory?: () => JSX.Element
   /**
    * The id of an element that ALREADY states this reason on screen. When set,
    * the tooltip points `aria-describedby` at that element and renders no
@@ -308,7 +310,7 @@ export function Tooltip(props: TooltipProps) {
   let warnedInvalidChild = false
 
   /**
-   * The body, built ONCE per change rather than once per read.
+   * The visible body, built once per change rather than once per read.
    *
    * `content` is JSX passed as a prop, which Solid compiles to a lazy getter:
    * every read re-runs it and rebuilds the whole subtree. This component reads
@@ -316,13 +318,14 @@ export function Tooltip(props: TooltipProps) {
    * `aria-describedby` effect, the `Show` condition and the portal -- so four
    * subtrees were built and thrown away. Worse, the ones built inside `show`
    * are parented to this component's owner, so they lived until the tooltip
-   * unmounted and grew with every `mouseenter`. The memo makes each read free
-   * and holds one instance.
+   * unmounted and grew with every `mouseenter`. The memo makes each visible
+   * read free and holds one instance. A content factory stays dormant until
+   * `visible` becomes true, so an unopened tooltip creates no rich subtree.
    */
-  const contentEl = createMemo(() => props.content)
+  const contentEl = createMemo(() => visible() ? (props.contentFactory?.() ?? props.content) : undefined)
 
   /** Whether this tooltip has anything to show. */
-  const hasTooltipContent = () => Boolean(props.text || contentEl())
+  const hasTooltipContent = () => Boolean(props.text || props.content !== undefined || props.contentFactory !== undefined)
 
   /**
    * Whether the wrapper takes a real box instead of `display: contents`.

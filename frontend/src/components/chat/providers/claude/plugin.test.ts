@@ -239,7 +239,10 @@ describe('claude rateLimitsFromMessage', () => {
     expect(plugin?.session?.rateLimitsFromMessage!(parsed({
       type: 'rate_limit_event',
       rate_limit_info: { rateLimitType: 'five_hour', status: 'allowed_warning', utilization: 0.85 },
-    }))).toEqual([{ key: 'five_hour', info: { rateLimitType: 'five_hour', status: 'allowed_warning', utilization: 0.85 } }])
+    }))).toEqual({
+      mode: 'merge',
+      values: { five_hour: { rateLimitType: 'five_hour', status: 'allowed_warning', utilization: 0.85 } },
+    })
   })
 
   it('defaults the key to unknown when rateLimitType is missing', () => {
@@ -247,11 +250,11 @@ describe('claude rateLimitsFromMessage', () => {
       type: 'rate_limit_event',
       rate_limit_info: { status: 'exceeded' },
     }))
-    expect(result?.[0]?.key).toBe('unknown')
+    expect(result?.values.unknown).toBeDefined()
   })
 
   it('returns empty array when rate_limit_info is missing', () => {
-    expect(plugin?.session?.rateLimitsFromMessage!(parsed({ type: 'rate_limit_event' }))).toEqual([])
+    expect(plugin?.session?.rateLimitsFromMessage!(parsed({ type: 'rate_limit_event' }))).toEqual({ mode: 'merge', values: {} })
   })
 
   it('returns null for a non-rate_limit_event', () => {

@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"testing"
@@ -13,6 +15,131 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
+func TestClaudeSubagentHandbackPersistsOneSharedReportInBothTranscripts(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newTestAgent(sink)
+	agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Parser reviewer","prompt":"Inspect the parser."}`))
+	agent.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"handback-1","name":"SubagentHandback","input":{"message":"**Parser report**\n\n- Finding"}}]},"parent_tool_use_id":"spawn-1","task_description":"Parser reviewer"}`))
+	agent.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"handback-1","type":"tool_result","content":[{"type":"text","text":"{\"success\":true,\"message\":\"Report delivered to your caller.\"}"}]}]},"parent_tool_use_id":"spawn-1"}`))
+	agent.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"handback-2","name":"SubagentHandback","input":{"message":"duplicate report"}}]},"parent_tool_use_id":"spawn-1","task_description":"Parser reviewer"}`))
+	agent.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"handback-2","type":"tool_result","content":[{"type":"text","text":"{\"success\":false,\"message\":\"already delivered\"}"}]}]},"parent_tool_use_id":"spawn-1"}`))
+	assert.Empty(t, sink.LeapMuxNotifications(), "the child call alone does not prove that Claude delivered the report to the parent")
+	child := sink.ChildSink("child-of-spawn-1").(*testSink)
+	require.Len(t, child.LeapMuxNotifications(), 1, "the child transcript records the report where the child made it")
+	agent.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"spawn-1","type":"tool_result","content":[{"type":"text","text":"report delivered separately"}]}]},"tool_use_result":{"status":"completed","agentId":"task-1","handback":"send","content":[{"type":"text","text":"report delivered separately"}]}}`))
+
+	parentReports := sink.LeapMuxNotifications()
+	require.Len(t, parentReports, 1)
+	assert.Equal(t, "subagent_report", parentReports[0]["type"])
+	assert.Equal(t, "**Parser report**\n\n- Finding", parentReports[0]["text"])
+	assert.Equal(t, "Parser reviewer", parentReports[0]["label"])
+
+	childReports := child.LeapMuxNotifications()
+	require.Len(t, childReports, 1)
+	assert.Equal(t, "subagent_report", childReports[0]["type"])
+	assert.Equal(t, "**Parser report**\n\n- Finding", childReports[0]["text"])
+	assert.Equal(t, "Parser reviewer", childReports[0]["label"])
+	assert.NotContains(t, childReports[0], "status")
+	assert.Equal(t, "send", parentReports[0]["status"])
+	require.Len(t, child.Messages(), 1, "hand-back calls and acknowledgements must not render as tool rows")
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, child.Messages()[0].Source)
+}
+
+func TestClaudeSubagentHandbackRespectsTheDeliveryOutcome(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		outcome      string
+		wantInParent bool
+	}{
+		{outcome: "flagged", wantInParent: true},
+		{outcome: "withheld", wantInParent: false},
+	} {
+		t.Run(tc.outcome, func(t *testing.T) {
+			sink := &testSink{}
+			agent := newTestAgent(sink)
+			agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
+			agent.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"handback-1","name":"SubagentHandback","input":{"message":"Report"}}]},"parent_tool_use_id":"spawn-1","task_description":"Reviewer"}`))
+			agent.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"handback-1","type":"tool_result","content":"done"}]},"parent_tool_use_id":"spawn-1"}`))
+			agent.HandleOutput([]byte(fmt.Sprintf(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"spawn-1","type":"tool_result","content":"done"}]},"tool_use_result":{"handback":%q}}`, tc.outcome)))
+
+			child := sink.ChildSink("child-of-spawn-1").(*testSink)
+			require.Len(t, child.LeapMuxNotifications(), 1)
+			assert.NotContains(t, child.LeapMuxNotifications()[0], "status")
+			if tc.wantInParent {
+				require.Len(t, sink.LeapMuxNotifications(), 1)
+				assert.Equal(t, tc.outcome, sink.LeapMuxNotifications()[0]["status"])
+			} else {
+				assert.Empty(t, sink.LeapMuxNotifications())
+			}
+		})
+	}
+}
+
+func TestClaudeBackgroundSubagentHandbackUsesThePeerResultAndDropsTheChildEcho(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newTestAgent(sink)
+	agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
+	agent.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"handback-1","name":"SubagentHandback","input":{"message":"**Background report**\n\n- Finding"}}]},"parent_tool_use_id":"spawn-1","task_description":"Reviewer"}`))
+	agent.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"handback-1","type":"tool_result","content":"done"}]},"parent_tool_use_id":"spawn-1"}`))
+	agent.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"**Background report**\n\n- Finding"}]},"parent_tool_use_id":"spawn-1","task_description":"Reviewer"}`))
+	peerResult := `{"type":"result","subtype":"success","result":"done","origin":{"kind":"peer","from":"task-1","senderTaskId":"task-1","body":"[Subagent hand-back] The report follows:\n  **Background report**\n  \n  - Finding","handback":true}}`
+	agent.HandleOutput([]byte(peerResult))
+
+	child := sink.ChildSink("child-of-spawn-1").(*testSink)
+	require.Len(t, child.Messages(), 1, "the child echo must not duplicate the shared report")
+	require.Len(t, child.LeapMuxNotifications(), 1)
+
+	reports := sink.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "Reviewer", reports[0]["label"])
+	assert.Equal(t, "**Background report**\n\n- Finding", reports[0]["text"])
+	assert.Equal(t, "send", reports[0]["status"])
+	assert.Zero(t, sink.MessageCount(), "the peer result is a report carrier, not a turn-end divider")
+}
+
+func TestClaudePeerHandbackSurvivesMissingChildState(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newTestAgent(sink)
+	agent.HandleOutput([]byte(`{"type":"result","subtype":"success","result":"done","origin":{"kind":"peer","from":"orphan-reviewer","senderTaskId":"unknown-task","body":"SECURITY WARNING: review carefully\n[Subagent hand-back] The report follows:\n  **Recovered report**\n  \n  - Finding","handback":true,"flagged":true}}`))
+
+	reports := sink.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "orphan-reviewer", reports[0]["label"])
+	assert.Equal(t, "**Recovered report**\n\n- Finding", reports[0]["text"])
+	assert.Equal(t, "flagged", reports[0]["status"])
+	assert.Zero(t, sink.MessageCount())
+}
+
+func TestClaudePeerHandbackUsesEventIdentityAcrossRestarts(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newTestAgent(sink)
+	agent.HandleOutput([]byte(`{"type":"result","uuid":"report-1","origin":{"kind":"peer","from":"orphan-reviewer","senderTaskId":"unknown-task","body":"[Subagent hand-back] The report follows:\n  Draft report","handback":true}}`))
+	agent.HandleOutput([]byte(`{"type":"result","uuid":"report-2","origin":{"kind":"peer","from":"orphan-reviewer","senderTaskId":"unknown-task","body":"[Subagent hand-back] The report follows:\n  Corrected report","handback":true}}`))
+
+	assert.Len(t, sink.LeapMuxNotifications(), 2, "a restarted peer task must keep its new report")
+}
+
+func TestClaudePeerHandbackReplayKeepsOneEventIdentity(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newTestAgent(sink)
+	line := []byte(`{"type":"result","uuid":"report-1","origin":{"kind":"peer","from":"reviewer","senderTaskId":"task-1","body":"[Subagent hand-back] The report follows:\n  Report","handback":true}}`)
+	agent.HandleOutput(line)
+	agent.HandleOutput(line)
+
+	assert.Len(t, sink.LeapMuxNotifications(), 1, "one provider event must stay idempotent across replay")
+}
+
 // TestClaude_PendingTaskEndRecordsAndConsumes verifies the pending-end map
 // that closes a Task subagent row whose FINAL result arrived before its
 // task_started (a forward reorder). recordPendingTaskEnd stores the final
@@ -21,25 +148,16 @@ import (
 // the reorder close cannot silently regress to a leaked Running row.
 func TestClaude_PendingTaskEndRecordsAndConsumes(t *testing.T) {
 	t.Parallel()
-	a := &ClaudeCodeAgent{}
+	var index claudeTaskIndex
 
 	// A final result for spawn span "tu-1" arrives before task_started.
-	a.tasks.recordPendingTaskEnd("tu-1", bgtask.StatusCompleted)
-	assert.Len(t, a.tasks.pendingTaskEnd, 1)
-	assert.Equal(t, bgtask.StatusCompleted, a.tasks.pendingTaskEnd["tu-1"])
+	index.recordPendingTaskEnd("tu-1", bgtask.StatusCompleted)
 
-	// handleClaudeTaskStarted takes the entry inline. Simulate the take.
-	a.mu.Lock()
-	var got bgtask.Status
-	var ok bool
-	if s, present := a.tasks.pendingTaskEnd["tu-1"]; present {
-		got, ok = s, true
-		delete(a.tasks.pendingTaskEnd, "tu-1")
-	}
-	a.mu.Unlock()
+	got, ok := index.startTask("task-1", bgtask.KindSubagent, "tu-1", "tu-1")
 	assert.True(t, ok, "pending end taken on the late task_started")
 	assert.Equal(t, bgtask.StatusCompleted, got)
-	assert.Empty(t, a.tasks.pendingTaskEnd, "entry consumed so it cannot fire twice")
+	_, ok = index.startTask("task-1", bgtask.KindSubagent, "tu-1", "tu-1")
+	assert.False(t, ok, "entry consumed so it cannot fire twice")
 }
 
 // TestClaude_PendingTaskEndIgnoresEmptySpan verifies a result with no
@@ -49,7 +167,7 @@ func TestClaude_PendingTaskEndIgnoresEmptySpan(t *testing.T) {
 	t.Parallel()
 	a := &ClaudeCodeAgent{}
 	a.tasks.recordPendingTaskEnd("", bgtask.StatusCompleted)
-	assert.Nil(t, a.tasks.pendingTaskEnd, "no entry recorded for an empty spawn span")
+	assert.Nil(t, a.tasks.runs.pendingEnd, "no entry recorded for an empty spawn span")
 }
 
 // A forwarded child envelope can arrive BEFORE its task_started -- the same
@@ -307,6 +425,40 @@ func TestClaude_TaskNotificationWithOutputFileKeepsTheShellKind(t *testing.T) {
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
 	assert.Equal(t, bgtask.KindShell, tasks[0].Kind)
+}
+
+// A dynamic workflow uses the same final notification path. The notification
+// carries no task_type, so the task index must preserve the workflow kind.
+func TestClaude_TaskNotificationWithOutputFileKeepsTheWorkflowKind(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_started",
+		"task_id": "workflow-1",
+		"tool_use_id": "tu-workflow",
+		"task_type": "local_workflow",
+		"workflow_name": "probe",
+		"description": "Protocol probe"
+	}`))
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_notification",
+		"task_id": "workflow-1",
+		"tool_use_id": "tu-workflow",
+		"status": "stopped",
+		"output_file": "/tmp/workflow-1.log",
+		"summary": "Protocol probe"
+	}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.KindWorkflow, tasks[0].Kind)
+	assert.Equal(t, bgtask.StatusStopped, tasks[0].Status)
+	assert.Equal(t, "/tmp/workflow-1.log", tasks[0].Description)
+	assert.Empty(t, tasks[0].ChildAgentID)
 }
 
 // background_tasks_changed is a LEVEL signal with replace semantics: it lists
@@ -772,11 +924,15 @@ func TestClaude_WorkflowTaskStartedWithoutToolUseIDClosesNothing(t *testing.T) {
 		"type": "system",
 		"subtype": "task_started",
 		"task_id": "task-wf",
-		"task_type": "local_workflow",
-		"workflow_name": "review"
+		"task_type": "local_workflow"
 	}`))
 
 	assert.Empty(t, sink.ClosedSpans())
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.KindWorkflow, tasks[0].Kind)
+	assert.Empty(t, tasks[0].GroupKey, "a workflow name is optional")
+	assert.Empty(t, tasks[0].ChildAgentID)
 }
 
 // The child transcript reserves its tool_use color under the SPAWN span, not at
@@ -1810,8 +1966,8 @@ func TestClaude_StartTaskWithoutAToolUseIDStillRecordsTheKind(t *testing.T) {
 	assert.Equal(t, bgtask.KindSubagent, idx.kindForTask("task-1"))
 	// The MAPS, not taskIDForToolUse(""), which answers "" from its own guard
 	// before it reads either one -- so it holds whatever startTask wrote.
-	assert.Empty(t, idx.toolUseTask, "no reverse entry is written under an empty key")
-	assert.Empty(t, idx.taskToolUse, "and no forward set either")
+	assert.Empty(t, idx.runs.toolUseTask, "no reverse entry is written under an empty key")
+	assert.Empty(t, idx.runs.taskToolUse, "and no forward set either")
 
 	// And with a spawn span the pair IS written, both ways.
 	idx.startTask("task-2", bgtask.KindShell, "tu-2", "tu-2")
@@ -1856,12 +2012,30 @@ func TestClaude_StartTaskIndexesEveryToolUseIDOfARun(t *testing.T) {
 	var idx claudeTaskIndex
 
 	idx.startTask("task-1", bgtask.KindSubagent, "tu-spawn", "tu-send")
+	idx.rememberTaskChild("task-1", "child-1")
 	assert.Equal(t, "task-1", idx.taskIDForToolUse("tu-spawn"))
 	assert.Equal(t, "task-1", idx.taskIDForToolUse("tu-send"))
 
 	idx.forgetTaskIndex("task-1")
 	assert.Empty(t, idx.taskIDForToolUse("tu-spawn"), "the closing notification drops the spawn span")
 	assert.Empty(t, idx.taskIDForToolUse("tu-send"), "and the call that restarted the task")
+	assert.Equal(t, "task-1", idx.taskIDForChild("child-1"), "the durable transcript link outlives the run")
+}
+
+func TestClaude_ForgetTaskIndexDropsAnUndeliveredHandback(t *testing.T) {
+	t.Parallel()
+
+	var idx claudeTaskIndex
+	idx.startTask("task-1", bgtask.KindSubagent, "spawn-1", "spawn-1")
+	require.True(t, idx.rememberHandbackToolUse("spawn-1", "task-1", "handback-1", "Reviewer", "Report"))
+
+	idx.forgetTaskIndex("task-1")
+
+	var echo messageEnvelope
+	echo.Message.RawContent = json.RawMessage(`[{"type":"text","text":"Report"}]`)
+	assert.False(t, idx.isHandbackEcho("spawn-1", &echo))
+	_, found := idx.takeHandbackForPeerResult("task-1")
+	assert.False(t, found)
 }
 
 // A final result can arrive before the task_started it belongs to, keyed by
@@ -1901,7 +2075,7 @@ func TestClaude_StartTakesTheSpawnSpansCloseWhenBothIDsHoldOne(t *testing.T) {
 	pending, hasPending := idx.startTask("task-1", bgtask.KindSubagent, "tu-spawn", "tu-send")
 	assert.True(t, hasPending)
 	assert.Equal(t, bgtask.StatusFailed, pending, "the spawn span decides, not the last id visited")
-	assert.Empty(t, idx.pendingTaskEnd, "and both entries are consumed")
+	assert.Empty(t, idx.runs.pendingEnd, "and both entries are consumed")
 }
 
 // A restart reads its spawn span back from the child row, so a task can index an

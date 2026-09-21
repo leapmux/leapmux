@@ -1,7 +1,6 @@
-import type { NotificationEntry } from '../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { RateLimitInfo } from '~/models/agentSession'
-import { CODEX_RATE_LIMIT_REACHED_TIME_WINDOW } from '~/generated/contracts/worker-vocab'
+import type { RateLimitInfo, RateLimitUpdate } from '~/models/agentSession'
+import { CODEX_RATE_LIMIT_ACCOUNT_BLOCK_KEY, CODEX_RATE_LIMIT_REACHED_TIME_WINDOW } from '~/generated/contracts/worker-vocab'
 import { pickObject } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
 
@@ -46,20 +45,6 @@ export function* iterCodexRateLimitTiers(payload: Record<string, unknown> | null
 }
 
 /**
- * Codex `rateLimitReachedType` values (snake_case, from the v2 RateLimitSnapshot)
- * mapped to display labels. The time-window key reads the contract constant;
- * the others are billing/usage caps that a reset timer won't clear. Newer
- * Codex builds emit this snapshot-level field; older builds omit it.
- */
-export const CODEX_RATE_LIMIT_REACHED_LABELS: Record<string, string> = {
-  [CODEX_RATE_LIMIT_REACHED_TIME_WINDOW]: 'Rate limit reached',
-  workspace_owner_credits_depleted: 'Out of credits',
-  workspace_member_credits_depleted: 'Out of credits',
-  workspace_owner_usage_limit_reached: 'Usage limit reached',
-  workspace_member_usage_limit_reached: 'Usage limit reached',
-}
-
-/**
  * Read the snapshot-level `rateLimitReachedType` from a Codex
  * `account/rateLimits/updated` payload. This is Codex's authoritative
  * "an actual limit was hit" signal -- present even when no rolling window is over
@@ -71,13 +56,6 @@ export function codexRateLimitReachedType(payload: Record<string, unknown> | nul
   const rl = pickObject(pickObject(payload, 'params'), 'rateLimits')
   const t = rl?.rateLimitReachedType
   return typeof t === 'string' && t.length > 0 ? t : undefined
-}
-
-/** Human-readable label for a Codex rateLimitReachedType, with a generic fallback. */
-export function formatCodexRateLimitReached(reachedType: string): string {
-  // `Object.hasOwn`, not `??`: `reachedType` comes straight off the wire, and a
-  // value that spells an `Object.prototype` member would render as its function source.
-  return Object.hasOwn(CODEX_RATE_LIMIT_REACHED_LABELS, reachedType) ? CODEX_RATE_LIMIT_REACHED_LABELS[reachedType] ?? 'Rate limit reached' : 'Rate limit reached'
 }
 
 /** Convert a Codex rate limit tier to RateLimitInfo. */
@@ -103,29 +81,9 @@ export function codexTierToRateLimitInfo(tier: Record<string, unknown>): RateLim
 }
 
 /**
- * The rate-limit entries one Codex snapshot produces.
- *
- * A snapshot-level reached type (credits depleted, a usage cap, or a rate limit whose
- * window rounded under the threshold) is an authoritative block even when no per-tier
- * window is over its own threshold, so it surfaces when no tier line already conveys
- * the throttle.
- */
-export function codexRateLimitEntries(msg: Record<string, unknown>): NotificationEntry[] {
-  const tiers: RateLimitInfo[] = []
-  for (const { info } of iterCodexRateLimitTiers(msg)) {
-    if (info.rateLimitType && info.status !== 'allowed')
-      tiers.push(info)
-  }
-  if (tiers.length > 0)
-    return [{ kind: 'rate-limit', tiers }]
-  const reached = codexRateLimitReachedType(msg)
-  return reached ? [{ kind: 'text', text: formatCodexRateLimitReached(reached) }] : []
-}
-
-/**
  * Codex rate limits: {method:"account/rateLimits/updated", params:{rateLimits:{primary,secondary}}}.
  */
-export function codexRateLimitsFromMessage(parsed: ParsedMessageContent): { key: string, info: RateLimitInfo }[] | null {
+export function codexRateLimitsFromMessage(parsed: ParsedMessageContent): RateLimitUpdate | null {
   const inner = getInnerMessage(parsed)
   if (!inner || inner.method !== CODEX_RATE_LIMITS_METHOD)
     return null
@@ -147,5 +105,15 @@ export function codexRateLimitsFromMessage(parsed: ParsedMessageContent): { key:
     if (top)
       top.info = { ...top.info, status: 'exceeded' }
   }
-  return results
+  const reachedType = codexRateLimitReachedType(inner)
+  results.push({
+    key: CODEX_RATE_LIMIT_ACCOUNT_BLOCK_KEY,
+    info: reachedType !== undefined && reachedType !== CODEX_RATE_LIMIT_REACHED_TIME_WINDOW
+      ? { rateLimitType: reachedType, status: 'exceeded' }
+      : {},
+  })
+  return {
+    mode: 'replace',
+    values: Object.fromEntries(results.map(result => [result.key, result.info])),
+  }
 }

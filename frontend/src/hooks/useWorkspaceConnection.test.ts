@@ -10,7 +10,7 @@ import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
 import { AgentActivityState, AgentControlCancelRequestSchema, AgentProvider, AgentStatus, ContentCompression, ControlResponseState, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, handleActivityChanged, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlCancellation, handleControlRequest, handleResultDivider, resolveSettingsTabFields, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
+import { applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, handleActivityChanged, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlCancellation, handleControlRequest, handleResultDivider, resolveSettingsTabFields, wireRateLimitUpdateFromSessionInfo, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { applyTerminalStatusChange, handleTerminalBell, handleTerminalNotification, handleTerminalProgress, handleTerminalTitleChanged } from '~/hooks/terminalEvents'
 import { clearOfflineAgentState, collectWorkerOfflineTargets, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails, useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
@@ -1421,6 +1421,41 @@ describe('agentMessage sub-handlers', () => {
     })
   })
 
+  it('handleAgentSessionInfo replaces a full rate-limit snapshot', () => {
+    createRoot((dispose) => {
+      const stores = sessionInfoStores()
+      const first = agentMessage({
+        type: 'agent_session_info',
+        info: {
+          rate_limits: {
+            mode: 'replace',
+            values: {
+              five_hour: { status: 'allowed_warning' },
+              seven_day: { status: 'allowed' },
+            },
+          },
+        },
+      })
+      const second = agentMessage({
+        type: 'agent_session_info',
+        info: {
+          rate_limits: {
+            mode: 'replace',
+            values: { seven_day: { status: 'allowed' } },
+          },
+        },
+      })
+
+      handleAgentSessionInfo('a1', parseMessageContent(first), stores)
+      handleAgentSessionInfo('a1', parseMessageContent(second), stores)
+
+      expect(stores.agentSessionStore.getInfo('a1').rateLimits).toEqual({
+        seven_day: { status: 'allowed' },
+      })
+      dispose()
+    })
+  })
+
   it('handleAgentSessionInfo returns false for a persisted message (caller keeps processing it)', () => {
     createRoot((dispose) => {
       const msg = agentMessage({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } })
@@ -2245,40 +2280,60 @@ describe('wireSessionInfoToUpdates', () => {
   })
 
   it('deep-maps rate_limits tiers', () => {
-    const updates = wireSessionInfoToUpdates({
-      rate_limits: { five_hour: { status: 'allowed', utilization: 0.5 } },
+    const update = wireRateLimitUpdateFromSessionInfo({
+      rate_limits: { mode: 'merge', values: { five_hour: { status: 'allowed', utilization: 0.5 } } },
     })
-    expect(updates.rateLimits).toEqual({ five_hour: { status: 'allowed', utilization: 0.5 } })
+    expect(update).toEqual({
+      mode: 'merge',
+      values: { five_hour: { status: 'allowed', utilization: 0.5 } },
+    })
+  })
+
+  it('rejects a rate-limit update without a valid operation and values map', () => {
+    expect(wireRateLimitUpdateFromSessionInfo(undefined)).toBeUndefined()
+    expect(wireRateLimitUpdateFromSessionInfo({ rate_limits: [] })).toBeUndefined()
+    expect(wireRateLimitUpdateFromSessionInfo({
+      rate_limits: { mode: 'append', values: { five_hour: { status: 'allowed' } } },
+    })).toBeUndefined()
+    expect(wireRateLimitUpdateFromSessionInfo({
+      rate_limits: { mode: 'merge', values: [] },
+    })).toBeUndefined()
   })
 
   // All eight tier fields, so a translation that drops one is caught here rather
   // than by a blank cell in the rate-limit popover. Only two of the eight had any
   // coverage before.
   it('translates every rate_limits tier field to its camelCase name', () => {
-    const updates = wireSessionInfoToUpdates({
+    const update = wireRateLimitUpdateFromSessionInfo({
       rate_limits: {
-        five_hour: {
-          rate_limit_type: 'five_hour',
-          status: 'allowed_warning',
-          utilization: 0.87,
-          resets_at: 1_700_000_000,
-          surpassed_threshold: 0.8,
-          overage_status: 'allowed',
-          overage_resets_at: 1_700_003_600,
-          is_using_overage: true,
+        mode: 'replace',
+        values: {
+          five_hour: {
+            rate_limit_type: 'five_hour',
+            status: 'allowed_warning',
+            utilization: 0.87,
+            resets_at: 1_700_000_000,
+            surpassed_threshold: 0.8,
+            overage_status: 'allowed',
+            overage_resets_at: 1_700_003_600,
+            is_using_overage: true,
+          },
         },
       },
     })
-    expect(updates.rateLimits).toEqual({
-      five_hour: {
-        rateLimitType: 'five_hour',
-        status: 'allowed_warning',
-        utilization: 0.87,
-        resetsAt: 1_700_000_000,
-        surpassedThreshold: 0.8,
-        overageStatus: 'allowed',
-        overageResetsAt: 1_700_003_600,
-        isUsingOverage: true,
+    expect(update).toEqual({
+      mode: 'replace',
+      values: {
+        five_hour: {
+          rateLimitType: 'five_hour',
+          status: 'allowed_warning',
+          utilization: 0.87,
+          resetsAt: 1_700_000_000,
+          surpassedThreshold: 0.8,
+          overageStatus: 'allowed',
+          overageResetsAt: 1_700_003_600,
+          isUsingOverage: true,
+        },
       },
     })
   })
@@ -2296,43 +2351,51 @@ describe('wireSessionInfoToUpdates', () => {
    * Asserted on Object.keys for exactly that reason.
    */
   it('omits a tier field the payload does not carry, rather than setting it undefined', () => {
-    const updates = wireSessionInfoToUpdates({
-      rate_limits: { five_hour: { status: 'allowed', is_using_overage: false } },
+    const update = wireRateLimitUpdateFromSessionInfo({
+      rate_limits: { mode: 'merge', values: { five_hour: { status: 'allowed', is_using_overage: false } } },
     })
-    const tier = (updates.rateLimits as Record<string, Record<string, unknown>>).five_hour
+    const tier = update?.values.five_hour as Record<string, unknown> | undefined
     if (tier === undefined)
       throw new Error('expected the five_hour tier to be present')
     expect(Object.keys(tier).sort()).toEqual(['isUsingOverage', 'status'])
     // A real `false` still lands -- only an ABSENT key is dropped.
     expect(tier.isUsingOverage).toBe(false)
 
-    const sparse = wireSessionInfoToUpdates({ rate_limits: { five_hour: { status: 'allowed' } } })
-    const sparseTier = (sparse.rateLimits as Record<string, object>).five_hour
+    const sparse = wireRateLimitUpdateFromSessionInfo({
+      rate_limits: { mode: 'merge', values: { five_hour: { status: 'allowed' } } },
+    })
+    const sparseTier = sparse?.values.five_hour
     if (sparseTier === undefined)
       throw new Error('expected the five_hour tier to be present')
     expect(Object.keys(sparseTier)).toEqual(['status'])
   })
 
   it('drops a tier field whose wire value is the wrong type', () => {
-    const updates = wireSessionInfoToUpdates({
+    const update = wireRateLimitUpdateFromSessionInfo({
       rate_limits: {
-        five_hour: {
-          status: 'allowed',
-          utilization: '0.5',
-          resets_at: '1700000000',
-          is_using_overage: 'true',
-          surpassed_threshold: null,
+        mode: 'merge',
+        values: {
+          five_hour: {
+            status: 'allowed',
+            utilization: '0.5',
+            resets_at: '1700000000',
+            is_using_overage: 'true',
+            surpassed_threshold: null,
+          },
         },
       },
     })
-    expect(Object.keys((updates.rateLimits as Record<string, Record<string, unknown>>).five_hour ?? {})).toEqual(['status'])
+    expect(Object.keys(update?.values.five_hour ?? {})).toEqual(['status'])
   })
 
   it('skips a tier that is not an object at all', () => {
-    const updates = wireSessionInfoToUpdates({
-      rate_limits: { five_hour: { status: 'allowed' }, weekly: 'nonsense', monthly: null },
+    const update = wireRateLimitUpdateFromSessionInfo({
+      rate_limits: {
+        mode: 'merge',
+        values: { five_hour: { status: 'allowed' }, weekly: 'nonsense', monthly: null },
+      },
     })
-    expect(updates.rateLimits).toEqual({ five_hour: { status: 'allowed' } })
+    expect(update?.values).toEqual({ five_hour: { status: 'allowed' } })
   })
 
   it('skips keys that are absent or fail their type guard', () => {

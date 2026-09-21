@@ -1,8 +1,10 @@
 import type { Component, JSX } from 'solid-js'
 import type { BackgroundTaskItem, BackgroundTaskKindFilter } from '~/stores/chatBackgroundTasks'
 import Bot from 'lucide-solid/icons/bot'
+import CircleHelp from 'lucide-solid/icons/circle-help'
 import Terminal from 'lucide-solid/icons/terminal'
-import { createMemo, For, Show } from 'solid-js'
+import WorkflowIcon from 'lucide-solid/icons/workflow'
+import { createMemo, For, Match, Show, Switch } from 'solid-js'
 import { ClippedText } from '~/components/common/ClippedText'
 import { StatusDot } from '~/components/common/StatusDot'
 import { cleanName } from '~/lib/validate'
@@ -168,7 +170,7 @@ function statusDotClass(status: BackgroundTaskItem['status']): string {
  * groups by workflow/phase, and renders a kind icon, a title with its status dot
  * at the end of the title line, and a secondary line. Each line is held to one
  * line and clipped, and gives its full text on hover. Subagent rows with a
- * childAgentId are clickable buttons; shell rows are static.
+ * childAgentId are clickable buttons. Shell and workflow rows are static.
  *
  * BackgroundTaskPanel owns the tab bar and the root box. This component keeps
  * each row's identity stable across a broadcast.
@@ -223,15 +225,22 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
     const secondaryText = createMemo(() => secondary(item, title()))
     return (
       <>
-        {/* `Show`, not a function that returns one icon or the other: a kind
-            that changed would otherwise replace the element rather than swap
-            the branch. */}
-        <Show
-          when={item.kind === 'shell'}
-          fallback={<Bot class={styles.taskIcon} size={14} />}
-        >
-          <Terminal class={styles.taskIcon} size={14} />
-        </Show>
+        {/* `Switch`, not a function that returns an icon: a kind that changed
+            would otherwise replace the element instead of swapping the branch. */}
+        <Switch>
+          <Match when={item.kind === 'shell'}>
+            <Terminal class={styles.taskIcon} size={14} />
+          </Match>
+          <Match when={item.kind === 'workflow'}>
+            <WorkflowIcon class={styles.taskIcon} size={14} />
+          </Match>
+          <Match when={item.kind === 'subagent'}>
+            <Bot class={styles.taskIcon} size={14} />
+          </Match>
+          <Match when={item.kind === 'unknown'}>
+            <CircleHelp class={styles.taskIcon} size={14} />
+          </Match>
+        </Switch>
         <div class={styles.taskBody}>
           <div class={styles.titleRow}>
             <ClippedText text={title()} class={titleClass(item)} />

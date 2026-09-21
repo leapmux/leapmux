@@ -12,12 +12,16 @@ import { CODEX_TOOL_READERS, codexExtractRow, codexItemKind, codexReasoningHasTe
 
 const NO_SIDES: ToolSpanContext = { request: undefined, result: undefined, role: 'other', visibleRows: { request: false, result: false } }
 
+function parsedItem(item: Record<string, unknown>, completion?: MessageCompletion) {
+  return { wrapper: null, topLevel: { item }, parentObject: { item }, rawText: '', supplementalContent: undefined, messageMetadata: undefined, completion }
+}
+
 // The completion rides BOTH carriers, the way the pipeline delivers it: the parser
 // copies it onto the parsed message, and the row extractor takes it as its own field.
 // The span's `finished` test reads the first and the row status reads the second, so a
 // fixture that set one alone exercised half of a retained row.
 function toolRow(item: Record<string, unknown>, completion?: MessageCompletion): ToolCallRow | null {
-  const parsed = { wrapper: null, topLevel: { item }, parentObject: { item }, rawText: '', supplementalContent: undefined, messageMetadata: undefined, completion }
+  const parsed = parsedItem(item, completion)
   const row: ChatRow | null = codexExtractRow({
     resolved: parsed,
     category: { kind: 'tool_use' },
@@ -101,6 +105,30 @@ describe('codex retained outcome', () => {
  */
 describe('codex fileChange results', () => {
   const change = { path: 'src/a.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-old\n+new' }
+
+  function pairedRequestRow(resultFields: Record<string, unknown>): ToolCallRow | null {
+    const request = parsedItem({ type: CODEX_ITEM.FileChange, id: 'change-1', status: CODEX_STATUS.IN_PROGRESS, changes: [change] })
+    const result = parsedItem({ type: CODEX_ITEM.FileChange, id: 'change-1', status: CODEX_STATUS.COMPLETED, changes: [change], ...resultFields })
+    const row = codexExtractRow({
+      resolved: request,
+      category: { kind: 'tool_use' },
+      span: { request, result, role: 'request', visibleRows: { request: true, result: true } },
+    } as never)
+    return row?.kind === 'tool' ? row : null
+  }
+
+  it('uses a matching completed sibling as the merged call result', () => {
+    const row = pairedRequestRow({})
+    expect(row?.call.status).toBe('completed')
+    expect(row?.call.result).toMatchObject({ changes: [{ filePath: 'src/a.ts' }] })
+  })
+
+  it.each([
+    ['another item id', { id: 'change-2' }],
+    ['another item type', { type: CODEX_ITEM.CommandExecution }],
+  ])('does not merge a completed sibling for %s', (_name, fields) => {
+    expect(pairedRequestRow(fields)?.call.result).toBeUndefined()
+  })
 
   it('draws the diff of a change that landed', () => {
     const row = toolRow({ type: CODEX_ITEM.FileChange, status: 'completed', changes: [change] })
@@ -316,7 +344,22 @@ describe('CODEX_TOOL_READERS', () => {
 
   /** One item for each kind a Codex item takes, carrying the shared spellings beside Codex's own. */
   const CODEX_PROBE: Record<CodexReadKind, Record<string, unknown>> = {
-    execute: { type: CODEX_ITEM.CommandExecution, status: 'completed', command: '/bin/zsh -lc \'ls -1\'', cwd: '/repo', aggregatedOutput: 'a.ts\n', exitCode: 0, durationMs: 40, cmd: 'shared cmd', description: 'shared description' },
+    execute: {
+      type: CODEX_ITEM.CommandExecution,
+      status: 'completed',
+      command: '/bin/zsh -lc \'ls -1\'',
+      cwd: '/repo',
+      processId: 'process-79860',
+      commandActions: [
+        { type: 'read', command: 'sed -n \'1,5p\' src/a.ts', name: 'a.ts', path: '/repo/src/a.ts' },
+        { type: 'search', command: 'rg -n \'needle\' src', query: 'needle', path: 'src' },
+      ],
+      aggregatedOutput: 'a.ts\n',
+      exitCode: 0,
+      durationMs: 40,
+      cmd: 'shared cmd',
+      description: 'shared description',
+    },
     edit: { type: CODEX_ITEM.FileChange, status: 'completed', changes: [{ path: 'src/a.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-old\n+new' }, { path: 'src/b.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-x\n+y' }], filePath: '/shared.ts' },
     write: { type: CODEX_ITEM.FileChange, status: 'completed', changes: [{ path: 'src/new.ts', kind: 'add', diff: 'hello\n' }], filePath: '/shared.ts' },
     delete: { type: CODEX_ITEM.FileChange, status: 'failed', changes: [{ path: 'src/gone.ts', kind: 'delete', diff: 'body\n' }], aggregatedOutput: 'apply_patch: refused', filePath: '/shared.ts' },
@@ -389,13 +432,29 @@ describe('CODEX_TOOL_READERS', () => {
 
   it('unwraps the shell wrapper of a command and reads no shared description', () => {
     const payload = payloadOf('execute', CODEX_PROBE.execute)
-    expect(payload.request).toEqual({ command: 'ls -1', cwd: '/repo' })
+    expect(payload.request).toEqual({
+      command: 'ls -1',
+      cwd: '/repo',
+      processId: 'process-79860',
+      actions: [
+        { kind: 'read', command: 'sed -n \'1,5p\' src/a.ts', name: 'a.ts', path: '/repo/src/a.ts' },
+        { kind: 'search', command: 'rg -n \'needle\' src', query: 'needle', path: 'src' },
+      ],
+    })
     expect(payload.result).toEqual({ commands: [{ output: 'a.ts\n', exitCode: 0, durationMs: 40 }], unresolvedTerminals: [] })
   })
 
   it('states the command a call asked for and no output while it runs', () => {
     const payload = payloadOf('execute', CODEX_PROBE.execute, false)
-    expect(payload.request).toEqual({ command: 'ls -1', cwd: '/repo' })
+    expect(payload.request).toEqual({
+      command: 'ls -1',
+      cwd: '/repo',
+      processId: 'process-79860',
+      actions: [
+        { kind: 'read', command: 'sed -n \'1,5p\' src/a.ts', name: 'a.ts', path: '/repo/src/a.ts' },
+        { kind: 'search', command: 'rg -n \'needle\' src', query: 'needle', path: 'src' },
+      ],
+    })
     expect(payload.result).toBeUndefined()
   })
 

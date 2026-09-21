@@ -29,6 +29,47 @@ describe('useCollapsedLines', () => {
     })
   })
 
+  it('collapses one line that exceeds the collapsed character cap', () => {
+    createRoot((dispose) => {
+      const text = 'x'.repeat(COLLAPSED_LINE_CHAR_CAP + 100)
+      const { display, isCollapsed } = useCollapsedLines({
+        text: () => text,
+        expanded: () => false,
+      })
+      expect(isCollapsed()).toBe(true)
+      expect(display()).toBe(`${'x'.repeat(COLLAPSED_LINE_CHAR_CAP)}…`)
+      dispose()
+    })
+  })
+
+  it('keeps a collapsed slice outside a UTF-16 surrogate pair', () => {
+    createRoot((dispose) => {
+      const prefix = 'x'.repeat(COLLAPSED_LINE_CHAR_CAP - 1)
+      const { display } = useCollapsedLines({
+        text: () => `${prefix}😀`,
+        expanded: () => false,
+      })
+
+      expect(display()).toBe(`${prefix}…`)
+      expect(display()).not.toContain('\uFFFD')
+      dispose()
+    })
+  })
+
+  it('keeps three individually short lines open when their total exceeds one line cap', () => {
+    createRoot((dispose) => {
+      const line = 'x'.repeat(100)
+      const text = `${line}\n${line}\n${line}`
+      const { display, isCollapsed } = useCollapsedLines({
+        text: () => text,
+        expanded: () => false,
+      })
+      expect(isCollapsed()).toBe(false)
+      expect(display()).toBe(text)
+      dispose()
+    })
+  })
+
   it('shows the full body when expanded, regardless of length', () => {
     createRoot((dispose) => {
       const { display, isCollapsed } = useCollapsedLines({

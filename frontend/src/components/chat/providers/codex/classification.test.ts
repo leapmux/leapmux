@@ -71,7 +71,6 @@ describe('classifyCodexMessage', () => {
 
   it.each([
     'hook/started',
-    'hook/completed',
   ])('hides %s notifications', (method) => {
     const parent = {
       method,
@@ -83,6 +82,25 @@ describe('classifyCodexMessage', () => {
     }
     const result = classifyCodexMessage(input(parent))
     expect(result).toEqual({ kind: 'hidden' })
+  })
+
+  it('renders a failed hook completion as a notification', () => {
+    const parent = {
+      method: 'hook/completed',
+      params: { run: { status: 'failed', statusMessage: 'permission denied' } },
+    }
+    expect(classifyCodexMessage(input(parent))).toEqual({
+      kind: 'notification',
+      entries: [{ kind: 'status', text: 'Hook failed: permission denied' }],
+    })
+  })
+
+  it('hides a successful hook completion', () => {
+    const parent = {
+      method: 'hook/completed',
+      params: { run: { status: 'completed' } },
+    }
+    expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('classifies mixed wrappers when context_cleared follows a hidden Codex lifecycle event', () => {
@@ -97,7 +115,7 @@ describe('classifyCodexMessage', () => {
     // thread/started is a hidden lifecycle event, so it is dropped from the
     // rendered messages; the visible context_cleared keeps the thread alive.
     const result = classifyCodexMessage(input(undefined, wrapper))
-    expect(result).toEqual({ kind: 'notification', messages: [contextCleared] })
+    expect(result).toEqual({ kind: 'notification', entries: [{ kind: 'context-cleared' }] })
   })
 
   it('classifies a completed contextCompaction item as a notification thread', () => {
@@ -191,7 +209,10 @@ describe('classifyCodexMessage', () => {
     // wrapper is still preserved for "Copy Raw JSON" via parsed.rawText); only
     // the visible settings_changed survives.
     const result = classifyCodexMessage(input(undefined, wrapper))
-    expect(result).toEqual({ kind: 'notification', messages: [settingsChanged] })
+    expect(result).toEqual({
+      kind: 'notification',
+      entries: [{ kind: 'settings-changed', changes: [{ label: 'Model', old: 'a', new: 'b' }] }],
+    })
   })
 
   it('collapses a thread of only thread/name/updated + thread/tokenUsage/updated to hidden', () => {
@@ -208,23 +229,23 @@ describe('classifyCodexMessage', () => {
     expect(result).toEqual({ kind: 'hidden' })
   })
 
-  it('keeps high-usage rate limit notifications visible', () => {
+  it('hides high-usage rate limit transcript rows', () => {
     const parent = {
       method: 'account/rateLimits/updated',
       params: {
         rateLimits: {
           primary: {
             usedPercent: 85,
-            windowMinutes: 300,
+            windowDurationMins: 300,
           },
         },
       },
     }
     const result = classifyCodexMessage(input(parent))
-    expect(result).toEqual({ kind: 'notification', messages: [parent] })
+    expect(result).toEqual({ kind: 'hidden' })
   })
 
-  it('keeps a reached-type block visible even when all windows are under threshold', () => {
+  it('hides a reached-type block from the transcript', () => {
     // Credit depletion leaves the rolling windows with headroom, so the
     // all-allowed check would hide it; the authoritative reached-type must not.
     const parent = {
@@ -237,37 +258,86 @@ describe('classifyCodexMessage', () => {
       },
     }
     const result = classifyCodexMessage(input(parent))
-    expect(result).toEqual({ kind: 'notification', messages: [parent] })
+    expect(result).toEqual({ kind: 'hidden' })
   })
 
-  it('classifies MCP startup starting notifications as visible', () => {
+  it('hides MCP startup starting notifications', () => {
     const parent = {
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'starting', error: null },
     }
-    expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+    expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'hidden' })
   })
 
-  it('classifies MCP startup terminal notifications as visible', () => {
-    for (const status of ['ready', 'failed', 'cancelled']) {
+  it('hides MCP startup finished states that are not failures', () => {
+    for (const status of ['ready', 'cancelled']) {
       const parent = {
         method: 'mcpServer/startupStatus/updated',
-        params: { name: 'codex_apps', status, error: status === 'failed' ? 'boom' : null },
+        params: { name: 'codex_apps', status, error: null },
       }
-      expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+      expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'hidden' })
     }
+  })
+
+  it('keeps MCP startup failures visible', () => {
+    const parent = {
+      method: 'mcpServer/startupStatus/updated',
+      params: { name: 'codex_apps', status: 'failed', error: 'boom' },
+    }
+    const result = classifyCodexMessage(input(parent))
+    expect(result.kind).toBe('notification')
+    if (result.kind === 'notification')
+      expect(result.entries).toHaveLength(1)
+  })
+
+  it('hides MCP tool-call progress notifications', () => {
+    expect(classifyCodexMessage(input({
+      method: 'item/mcpToolCall/progress',
+      params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'mcp-1', message: 'Working' },
+    }))).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides successful MCP OAuth completion and keeps failures visible', () => {
+    const success = { method: 'mcpServer/oauthLogin/completed', params: { name: 'docs', success: true } }
+    const failure = { method: 'mcpServer/oauthLogin/completed', params: { name: 'docs', success: false, error: 'authorization failed' } }
+    expect(classifyCodexMessage(input(success))).toEqual({ kind: 'hidden' })
+    expect(classifyCodexMessage(input(failure))).toEqual({
+      kind: 'notification',
+      entries: [{ kind: 'status', text: 'MCP OAuth login failed for docs: authorization failed' }],
+    })
+  })
+
+  it('filters non-failure MCP entries from a notification thread', () => {
+    const startupFailure = { method: 'mcpServer/startupStatus/updated', params: { name: 'broken', status: 'failed', error: 'boom' } }
+    const oauthFailure = { method: 'mcpServer/oauthLogin/completed', params: { name: 'docs', success: false, error: 'denied' } }
+    const wrapper = {
+      old_seqs: [],
+      messages: [
+        { method: 'mcpServer/startupStatus/updated', params: { name: 'ready', status: 'ready' } },
+        { method: 'item/mcpToolCall/progress', params: { itemId: 'mcp-1', message: 'Working' } },
+        { method: 'mcpServer/oauthLogin/completed', params: { name: 'docs', success: true } },
+        startupFailure,
+        oauthFailure,
+      ],
+    }
+    const result = classifyCodexMessage(input(undefined, wrapper))
+    expect(result.kind).toBe('notification')
+    if (result.kind === 'notification')
+      expect(result.entries).toHaveLength(2)
   })
 
   it('classifies compacting as notification', () => {
     const parent = { type: 'compacting' }
     const result = classifyCodexMessage(input(parent))
-    expect(result).toEqual({ kind: 'notification', messages: [parent] })
+    expect(result).toEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'start' }] })
   })
 
   it('classifies compact_boundary system messages as notification', () => {
     const parent = { type: 'system', subtype: 'compact_boundary' }
     const result = classifyCodexMessage(input(parent))
-    expect(result).toEqual({ kind: 'notification', messages: [parent] })
+    expect(result.kind).toBe('notification')
+    if (result.kind === 'notification')
+      expect(result.entries[0]?.kind).toBe('compaction')
   })
 
   it('classifies turn/plan/updated as a Codex tool-use message', () => {
@@ -396,12 +466,12 @@ describe('classifyCodexMessage', () => {
     expect(classifyCodexMessage(input(settingsUpdated, wrapper))).toEqual({ kind: 'hidden' })
   })
 
-  it('hides a standalone terminal compaction status (status=null, compact_result=success)', () => {
+  it('hides a standalone finished compaction status (status=null, compact_result=success)', () => {
     const parent = { type: 'system', subtype: 'status', status: null, compact_result: 'success' }
     expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'hidden' })
   })
 
-  it('hides a terminal compaction status when consolidated into a notification thread', () => {
+  it('hides a finished compaction status when consolidated into a notification thread', () => {
     // Parity with the standalone classifier and with Claude: a status hidden on
     // its own stays hidden once Hub threads it, instead of leaking as raw JSON.
     const statusMsg = { type: 'system', subtype: 'status', status: null, compact_result: 'success' }
@@ -411,9 +481,9 @@ describe('classifyCodexMessage', () => {
 
   it('keeps the in-progress compacting status visible standalone and consolidated', () => {
     const compactingMsg = { type: 'system', subtype: 'status', status: 'compacting' }
-    expect(classifyCodexMessage(input(compactingMsg))).toEqual({ kind: 'notification', messages: [compactingMsg] })
+    expect(classifyCodexMessage(input(compactingMsg))).toEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'start' }] })
     const wrapper = { old_seqs: [305], messages: [compactingMsg] }
-    expect(classifyCodexMessage(input(compactingMsg, wrapper))).toEqual({ kind: 'notification', messages: [compactingMsg] })
+    expect(classifyCodexMessage(input(compactingMsg, wrapper))).toEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'start' }] })
   })
 
   it('drops a hidden thread/settings/updated from a thread but keeps the visible entry', () => {
@@ -424,7 +494,7 @@ describe('classifyCodexMessage', () => {
     const contextCleared = { type: 'context_cleared' }
     const wrapper = { old_seqs: [5, 6], messages: [settingsUpdated, contextCleared] }
     expect(classifyCodexMessage(input(settingsUpdated, wrapper)))
-      .toEqual({ kind: 'notification', messages: [contextCleared] })
+      .toEqual({ kind: 'notification', entries: [{ kind: 'context-cleared' }] })
   })
 
   it('hides plain JSON-RPC response envelopes', () => {

@@ -1455,6 +1455,8 @@ describe('checkSessionInfo', () => {
       keys: { TotalCostUsd: 'total_cost_usd', ThinkingTokens: 'thinking_tokens', RunningTool: 'running_tool' },
       contextUsageFields: { InputTokens: 'input_tokens' },
       rateLimitFields: { Status: 'status' },
+      rateLimitUpdateFields: { Mode: 'mode', Values: 'values' },
+      rateLimitUpdateModes: { Merge: 'merge', Replace: 'replace' },
       runningToolFields: { SpanId: 'span_id' },
       runningToolRetryFields: { Attempt: 'attempt' },
       goalProgressFields: { TokensUsed: 'tokens_used' },

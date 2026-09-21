@@ -4,8 +4,9 @@ import { create } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { ZCODE_EVENT, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
-import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentProvider, AvailableOptionGroupSchema, AvailableOptionSchema, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { invalidateMessageParseCache } from '~/lib/messageParser'
+import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { createClassifiedEntryCache, heightKeyForEntry, renderKeyForEntry } from './chatEntryCache'
 import { resolvedSpanRole } from './providers/registry'
 import { prepareMessage } from './rowPreparation'
@@ -57,6 +58,36 @@ function assistantText(id: string, seq: bigint, text: string): AgentChatMessage 
     contentCompression: ContentCompression.NONE,
     seq,
     agentProvider: AgentProvider.CLAUDE_CODE,
+  })
+}
+
+/** A Codex assistant row that reads no settings labels. */
+function codexAssistantText(): AgentChatMessage {
+  return create(AgentChatMessageSchema, {
+    id: 'codex-text',
+    source: MessageSource.AGENT,
+    content: new TextEncoder().encode(JSON.stringify({ item: { id: 'text-1', type: 'agentMessage', text: 'Hello' } })),
+    contentCompression: ContentCompression.NONE,
+    seq: 1n,
+    agentProvider: AgentProvider.CODEX,
+  })
+}
+
+/** A persisted settings change whose display names require provider metadata. */
+function settingsChangedNotification(): AgentChatMessage {
+  return create(AgentChatMessageSchema, {
+    id: 'settings-1',
+    source: MessageSource.LEAPMUX,
+    content: new TextEncoder().encode(JSON.stringify({
+      type: 'notification_thread',
+      messages: [{
+        type: 'settings_changed',
+        changes: { permissionMode: { old: 'default', new: 'plan' } },
+      }],
+    })),
+    contentCompression: ContentCompression.NONE,
+    seq: 1n,
+    agentProvider: AgentProvider.CODEX,
   })
 }
 
@@ -158,6 +189,60 @@ function createTestClassifiedEntryCache(
 }
 
 describe('createClassifiedEntryCache', () => {
+  it('rebuilds settings labels when provider option metadata arrives after history', () => {
+    createRoot((dispose) => {
+      clearSettingsLabelCache()
+      const cache = createTestClassifiedEntryCache({
+        messages: () => [settingsChangedNotification()],
+        showHiddenMessages: () => false,
+      })
+      const before = cache.visibleEntries()[0]!
+      expect(before.category).toMatchObject({
+        kind: 'notification',
+        entries: [{ kind: 'settings-changed', changes: [{ label: 'Permission Mode', old: 'default', new: 'plan' }] }],
+      })
+
+      updateSettingsLabelCache(AgentProvider.CODEX, [create(AvailableOptionGroupSchema, {
+        id: 'permissionMode',
+        label: 'Interaction Mode',
+        options: [
+          create(AvailableOptionSchema, { id: 'default', name: 'Default' }),
+          create(AvailableOptionSchema, { id: 'plan', name: 'Plan' }),
+        ],
+      })])
+
+      const after = cache.visibleEntries()[0]!
+      expect(after).not.toBe(before)
+      expect(after.category).toMatchObject({
+        kind: 'notification',
+        entries: [{ kind: 'settings-changed', changes: [{ label: 'Interaction Mode', old: 'Default', new: 'Plan' }] }],
+      })
+      clearSettingsLabelCache()
+      dispose()
+    })
+  })
+
+  it('keeps a same-provider row that does not read the changed label group', () => {
+    createRoot((dispose) => {
+      clearSettingsLabelCache()
+      const cache = createTestClassifiedEntryCache({
+        messages: () => [codexAssistantText()],
+        showHiddenMessages: () => false,
+      })
+      const before = cache.visibleEntries()[0]!
+
+      updateSettingsLabelCache(AgentProvider.CODEX, [create(AvailableOptionGroupSchema, {
+        id: 'permissionMode',
+        label: 'Interaction Mode',
+        options: [create(AvailableOptionSchema, { id: 'plan', name: 'Plan' })],
+      })])
+
+      expect(cache.visibleEntries()[0]).toBe(before)
+      clearSettingsLabelCache()
+      dispose()
+    })
+  })
+
   it('uses the resolver-selected message and revision as the row authority', () => {
     createRoot((dispose) => {
       const stale = zcodeScheduledExitPlanMode()

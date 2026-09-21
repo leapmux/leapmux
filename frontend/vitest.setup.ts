@@ -108,8 +108,8 @@ if (typeof globalThis.sessionStorage?.getItem !== 'function' && typeof jsdom !==
 // asks for that ruler now, since its width is what `FitAddon` reserves for the
 // scrollbar (see `scrollbarWidthPx` in `~/styles/tokens`). A null answer
 // there is not a degraded ruler, it is a terminal that cannot be constructed at
-// all. The stub carries only the calls the ruler makes on an empty decoration
-// set; anything else would be inventing a canvas nobody asserts on.
+// all. The DOM renderer also measures glyph widths through this context. The
+// stub gives each code unit a fixed width because jsdom supplies no font data.
 //
 // Every other context stays null, so the WebGL paths keep taking the branch
 // they took before.
@@ -119,6 +119,8 @@ function canvas2dStub(): CanvasRenderingContext2D {
     clearRect: () => {},
     fillRect: () => {},
     fillStyle: '',
+    font: '',
+    measureText: (text: string) => ({ width: text.length * 8 }) as TextMetrics,
   } as unknown as CanvasRenderingContext2D
 }
 

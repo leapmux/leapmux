@@ -36,6 +36,22 @@ describe('tooltip', () => {
     expect(button).not.toHaveAttribute('aria-describedby')
   })
 
+  it('builds rich content only after the tooltip opens', () => {
+    const contentFactory = vi.fn(() => <strong>Rich details</strong>)
+    render(() => (
+      <Tooltip text="Tooltip text" contentFactory={contentFactory}>
+        <button type="button">Trigger</button>
+      </Tooltip>
+    ))
+
+    expect(contentFactory).not.toHaveBeenCalled()
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Trigger' }))
+    vi.advanceTimersByTime(700)
+
+    expect(contentFactory).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('Rich details')
+  })
+
   it('dismisses immediately on click so it does not linger over a triggered menu', () => {
     render(() => (
       <Tooltip text="Tooltip text">

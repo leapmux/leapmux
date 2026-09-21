@@ -240,9 +240,8 @@ export async function waitForRegistryRow(page: Page, kind: 'subagent' | 'shell' 
 
 /**
  * Best-effort variant of waitForRegistryRow: returns the row locator if a
- * registry row appears, or null if the model did not spawn a subagent. Used by
- * registry-only specs where LLM non-cooperation (the model choosing not to use
- * its task tool) is an expected outcome, not a test bug -- the spec skips its
+ * registry row appears, or null if the model did not spawn a subagent. Real-model
+ * specs use this where model non-cooperation is an expected outcome. The spec skips its
  * spawn-dependent assertions when null is returned.
  */
 export async function tryWaitForRegistryRow(page: Page, kind: 'subagent' | 'shell' = 'subagent'): Promise<Locator | null> {
@@ -262,8 +261,8 @@ export async function tryWaitForRegistryRow(page: Page, kind: 'subagent' | 'shel
 /**
  * Wait for a registry row, or SKIP the spec when the model chose not to spawn.
  *
- * The nine specs that drive a real model all need this same three-line dance, so
- * it lives here once rather than being pasted a tenth time. Takes the spec's own
+ * The provider specs that drive a real model all need this same sequence. It
+ * lives here once. The helper takes the spec's own
  * `test` object (each provider suite extends its own fixtures) and returns a
  * non-null row, so the caller needs no `!`.
  */
@@ -349,75 +348,6 @@ export async function expectRowBecomesFinal(page: Page, row: Locator): Promise<v
   const label = END_LABELS[settled ?? '']
   if (label)
     await expect(row.filter({ hasText: label })).toBeVisible()
-}
-
-/**
- * Assert the row is registry-only: no child-agent-id, not a button, and
- * clicking it does not change the agent-tab count.
- */
-export async function expectRowNotClickable(page: Page, row: Locator): Promise<void> {
-  const childId = await row.getAttribute('data-child-agent-id')
-  expect(childId ?? '').toBe('')
-  // A registry-only row is not a <button>, so clicking it must not open a tab.
-  // Best-effort click (the row may not satisfy Playwright's actionability checks,
-  // which is itself evidence it is not interactive); the global timeout applies.
-  const tabsBefore = await page.locator('[data-testid="tab"][data-tab-type="agent"]').count()
-  await row.click().catch(() => {})
-  await page.waitForTimeout(500)
-  const tabsAfter = await page.locator('[data-testid="tab"][data-tab-type="agent"]').count()
-  expect(tabsAfter).toBe(tabsBefore)
-}
-
-/**
- * The shared tail of every REGISTRY-ONLY provider spec (172, 173, 175-177):
- * the row reaches a final status, the section survives it, the row is not
- * clickable, and the provider linked no child transcript.
- *
- * One helper rather than five copies, so a change to what "registry-only"
- * guarantees -- expectNoChildAgents was rewritten once already, after the
- * original version turned out to assert nothing -- lands in one place instead
- * of being pasted a sixth time by the next provider spec.
- *
- * Every caller asserts the final status strictly. `expectRowBecomesFinal` is an
- * `expect.poll` under the global timeout, so it IS the wait a still-settling row
- * needs -- demoting it to a warning for the specs that do not call
- * waitForAgentIdle first meant a row that never finished passed five of them.
- */
-export async function expectRegistryOnlySubagentEnds(
-  page: Page,
-  row: Locator,
-): Promise<void> {
-  await expectRowBecomesFinal(page, row)
-  await expectSectionPersists(page)
-  await expectRowNotClickable(page, row)
-  await expectNoChildAgents(page)
-}
-
-/**
- * Assert this provider linked NO child transcript to any of its subagent rows.
- *
- * Read off the registry rows, NOT from `listAgents`. `listAgents` resolves
- * strictly by the ids it is handed, and a registry-only provider's child --
- * the thing whose absence is under test -- never has a tab, so no id list
- * assembled from open tabs can contain one. Handing it the open tab ids
- * therefore asked the worker about the ROOT and filtered its answer for
- * children, which is 0 whether or not the provider misbehaved: the assertion
- * could not fail. Reading the rows is not a weaker check, it is the only one
- * available -- `data-child-agent-id` is the worker's own linkage, broadcast
- * from the background-task registry rather than derived from CRDT tab state.
- *
- * Requires at least one row, so an empty registry (nothing rendered yet, or a
- * selector that stopped matching) fails loudly instead of passing vacuously
- * for a second time.
- */
-export async function expectNoChildAgents(page: Page): Promise<void> {
-  const rows = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]')
-  await expect.poll(async () => rows.count()).toBeGreaterThan(0)
-
-  const childIds = await rows.evaluateAll(els =>
-    els.map(el => el.getAttribute('data-child-agent-id') ?? ''),
-  )
-  expect(childIds.filter(id => id !== '')).toEqual([])
 }
 
 /**

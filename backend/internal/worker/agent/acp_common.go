@@ -1638,6 +1638,11 @@ type acpSubagentObservation struct {
 	// ChildTranscriptPayload, when non-nil, persists to the child transcript
 	// via PersistChildMessage. Goose's tool REQUESTS use this.
 	ChildTranscriptPayload []byte
+	// Report is the final report that the provider returned to the parent. The
+	// shared translator copies it into the child transcript. The parent keeps its
+	// native tool result, so the report stays visible in both conversations.
+	ReportID string
+	Report   SubagentReport
 }
 
 func (b *acpBase) handleToolCall(update json.RawMessage) {
@@ -1879,8 +1884,7 @@ func acpObservationIsSpawn(obs *acpSubagentObservation) bool {
 }
 
 // applySubagentObservation translates a provider hook's neutral observation
-// into registry sink calls (and, for Goose, a best-effort child-transcript
-// persist). A nil observation is a no-op. The shared ACP final-status map
+// into registry and child-transcript calls. A nil observation is a no-op. The shared ACP final-status map
 // lives here so every provider agrees: completed->Completed, failed->Failed,
 // cancelled->Stopped.
 //
@@ -1893,42 +1897,55 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 	if obs == nil || obs.RowKey == "" || b.sink == nil {
 		return
 	}
-	// Resolve the child agent id once so both the upsert and the closing update
-	// can use it. Only the spawn observation carries ChildAgentKey; a close-only
-	// observation leaves it empty (the linkage persists in the registry row from
-	// spawn time, and the cleanup defers to root close for that path).
+	// Resolve the child agent id once so the upsert, report, and close use one transcript.
 	if obs.Prompt != "" {
 		b.subagentPrompts.remember(obs.RowKey, obs.Prompt)
 	}
+	rowKey := obs.RowKey
+	promptKey := obs.RowKey
+	// Rename the spawn row before child resolution. OpenCode and Kilo learn the
+	// child session id only on the final update. EnsureChildAgent must attach to
+	// that renamed row rather than create a second row beside it.
+	if obs.RenameFrom != "" && obs.RenameFrom != obs.RowKey {
+		promptKey = obs.RenameFrom
+		if err := b.sink.RenameBackgroundTask(obs.RenameFrom, obs.RowKey); err != nil {
+			slog.Warn("acp subagent rename failed", "provider", b.providerName, "from", obs.RenameFrom, "to", obs.RowKey, "error", err)
+			// Keep all later work on the row that still exists. Creating a child
+			// under the new key after a failed rename would split one task in two.
+			rowKey = obs.RenameFrom
+		}
+	}
 	childAgentID := ""
-	if obs.ChildAgentKey != "" && obs.Mode != acpModeCloseOnly && obs.RenameFrom == "" {
+	if obs.ChildAgentKey != "" && rowKey == obs.RowKey {
 		var err error
-		childAgentID, err = b.sink.EnsureChildAgent(obs.RowKey, obs.ChildAgentKey, obs.Title)
+		spawnSpanID := obs.RowKey
+		if obs.RenameFrom != "" {
+			spawnSpanID = obs.RenameFrom
+		}
+		childAgentID, err = b.sink.EnsureChildAgent(spawnSpanID, obs.ChildAgentKey, obs.Title)
 		if err != nil {
-			slog.Warn("acp subagent ensure child failed", "provider", b.providerName, "row_key", obs.RowKey, "error", err)
+			slog.Warn("acp subagent ensure child failed", "provider", b.providerName, "row_key", rowKey, "error", err)
 		}
 		// The child exists now, so spend the prompt the spawn remembered.
 		// PersistChildPrompt is a no-op once the transcript has a message, so a
 		// repeated observation cannot duplicate it.
 		if childAgentID != "" {
-			if prompt := b.subagentPrompts.take(obs.RowKey); prompt != "" {
+			if prompt := b.subagentPrompts.take(promptKey); prompt != "" {
 				if err := b.sink.PersistChildPrompt(childAgentID, prompt); err != nil {
-					slog.Warn("acp subagent prompt persist failed", "provider", b.providerName, "row_key", obs.RowKey, "error", err)
+					slog.Warn("acp subagent prompt persist failed", "provider", b.providerName, "row_key", rowKey, "error", err)
 				}
 			}
 		}
 	}
-	// A rename+close (RenameFrom set) operates on the existing spawn row, so it
-	// skips the upsert -- upserting RowKey would create a second row before the
-	// rename collapses the keys. acpModeCloseOnly skips the upsert for the same
-	// reason on a plain close.
+	// A rename+close operates on the existing spawn row. It skips the upsert
+	// because the rename already preserved the row's fields.
 	if obs.Mode != acpModeCloseOnly && obs.RenameFrom == "" {
 		kind := obs.Kind
 		if kind == bgtask.KindUnspecified {
 			kind = bgtask.KindSubagent
 		}
 		if err := b.sink.UpsertBackgroundTask(bgtask.Upsert{
-			RowKey:        obs.RowKey,
+			RowKey:        rowKey,
 			Kind:          kind,
 			ChildAgentID:  childAgentID,
 			ParentAgentID: b.agentID,
@@ -1937,12 +1954,35 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 			GroupKey:      obs.GroupKey,
 			Status:        obs.Status,
 		}); err != nil {
-			slog.Warn("acp subagent upsert failed", "provider", b.providerName, "row_key", obs.RowKey, "error", err)
+			slog.Warn("acp subagent upsert failed", "provider", b.providerName, "row_key", rowKey, "error", err)
 		}
 		if obs.ChildTranscriptPayload != nil && childAgentID != "" {
 			if err := b.sink.PersistChildMessage(childAgentID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, obs.ChildTranscriptPayload, SpanInfo{}); err != nil {
-				slog.Warn("acp subagent child persist failed", "provider", b.providerName, "row_key", obs.RowKey, "error", err)
+				slog.Warn("acp subagent child persist failed", "provider", b.providerName, "row_key", rowKey, "error", err)
 			}
+		}
+	}
+	lookupOK := true
+	if obs.Report.Text != "" || (obs.CloseRow && childAgentID == "") {
+		var resolvedChildID string
+		var err error
+		resolvedChildID, _, _, err = b.sink.LookupBackgroundTask(rowKey)
+		if err != nil {
+			slog.Warn("acp subagent child lookup failed", "provider", b.providerName, "row_key", rowKey, "error", err)
+			lookupOK = false
+		} else if childAgentID == "" {
+			childAgentID = resolvedChildID
+		}
+	}
+	if obs.Report.Text != "" {
+		if lookupOK && childAgentID != "" {
+			persistChildSubagentReport(b.sink, ChildSubagentReportWrite{
+				RowKey: rowKey,
+				Write: SubagentReportWrite{
+					ReportID: obs.ReportID,
+					Report:   obs.Report,
+				},
+			})
 		}
 	}
 	if obs.CloseRow {
@@ -1958,22 +1998,12 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 		if obs.RenameFrom != "" {
 			b.subagentPrompts.forget(obs.RenameFrom)
 		}
-		// Rename the spawn row to the final key first, so one row tracks the
-		// whole lifecycle. A no-op when RenameFrom is empty or matches RowKey.
-		// The rename runs before the close so the final status lands on the
-		// single renamed row.
-		if obs.RenameFrom != "" && obs.RenameFrom != obs.RowKey {
-			if err := b.sink.RenameBackgroundTask(obs.RenameFrom, obs.RowKey); err != nil {
-				slog.Warn("acp subagent rename failed", "provider", b.providerName, "from", obs.RenameFrom, "to", obs.RowKey, "error", err)
-			}
-		}
-		if err := b.sink.CloseBackgroundTask(obs.RowKey, obs.Status); err != nil {
-			slog.Warn("acp subagent close failed", "provider", b.providerName, "row_key", obs.RowKey, "error", err)
+		if err := b.sink.CloseBackgroundTask(rowKey, obs.Status); err != nil {
+			slog.Warn("acp subagent close failed", "provider", b.providerName, "row_key", rowKey, "error", err)
 		}
 		// Release the child's per-agent service state so a long-running root
 		// that cycles many subagents does not retain a stale SpanTracker + sink
-		// ref per closed child until the root itself closes. The transcript row
-		// survives. Only the spawn-observation close knows the child id.
+		// ref per closed child until the root itself closes. The transcript row survives.
 		if childAgentID != "" {
 			b.sink.CleanupChildAgent(childAgentID)
 		}

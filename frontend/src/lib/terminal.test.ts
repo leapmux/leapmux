@@ -39,10 +39,107 @@ afterEach(() => {
 })
 
 describe('createTerminalInstance', () => {
+  function openedKeyboardTerminal() {
+    const instance = createTerminalInstance()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    instance.terminal.open(container)
+    const sent: string[] = []
+    instance.terminal.onData(data => sent.push(data))
+    const write = (data: string) => new Promise<void>(resolve => instance.terminal.write(data, resolve))
+    const dispatchKey = (type: 'keydown' | 'keyup', init: KeyboardEventInit & { keyCode?: number }) => instance.terminal.textarea!.dispatchEvent(
+      new KeyboardEvent(type, { ...init, bubbles: true, cancelable: true }),
+    )
+    const dispose = () => {
+      instance.dispose()
+      container.remove()
+    }
+    return { dispatchKey, dispose, sent, write }
+  }
+
   it('initializes suppressInput to false', () => {
     const instance = createTerminalInstance()
     expect(instance.suppressInput).toBe(false)
     instance.dispose()
+  })
+
+  it('keeps legacy key encoding until the application enables CSI-u input', () => {
+    const terminal = openedKeyboardTerminal()
+    try {
+      terminal.dispatchKey('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, shiftKey: true })
+      expect(terminal.sent).toEqual(['\r'])
+    }
+    finally {
+      terminal.dispose()
+    }
+  })
+
+  it('encodes every browser modifier after the application enables CSI-u input', async () => {
+    const terminal = openedKeyboardTerminal()
+    try {
+      await terminal.write('\x1B[>1u')
+
+      for (const [modifier, expected] of [
+        [{ shiftKey: true }, '\x1B[13;2u'],
+        [{ altKey: true }, '\x1B[13;3u'],
+        [{ ctrlKey: true }, '\x1B[13;5u'],
+        [{ metaKey: true }, '\x1B[13;9u'],
+        [{ shiftKey: true, altKey: true, ctrlKey: true, metaKey: true }, '\x1B[13;16u'],
+      ] as const) {
+        terminal.dispatchKey('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, ...modifier })
+        expect(terminal.sent.splice(0)).toEqual([expected])
+      }
+    }
+    finally {
+      terminal.dispose()
+    }
+  })
+
+  it('supports every CSI-u enhancement for press, repeat, and release events', async () => {
+    const terminal = openedKeyboardTerminal()
+    try {
+      await terminal.write('\x1B[=31;1u')
+
+      terminal.dispatchKey('keydown', { key: 'A', code: 'KeyA', keyCode: 65, shiftKey: true, ctrlKey: true })
+      terminal.dispatchKey('keydown', { key: 'A', code: 'KeyA', keyCode: 65, shiftKey: true, ctrlKey: true, repeat: true })
+      terminal.dispatchKey('keyup', { key: 'A', code: 'KeyA', keyCode: 65, shiftKey: true, ctrlKey: true })
+      terminal.dispatchKey('keydown', { key: 'a', code: 'KeyA', keyCode: 65 })
+
+      expect(terminal.sent).toEqual([
+        '\x1B[97:65;6u',
+        '\x1B[97:65;6:2u',
+        '\x1B[97:65;6:3u',
+        '\x1B[97;;97u',
+      ])
+    }
+    finally {
+      terminal.dispose()
+    }
+  })
+
+  it('reports CSI-u modes from separate main-screen and alternate-screen stacks', async () => {
+    const terminal = openedKeyboardTerminal()
+    try {
+      const queryFlags = async (expected: number) => {
+        await terminal.write('\x1B[?u')
+        expect(terminal.sent.splice(0)).toEqual([`\x1B[?${expected}u`])
+      }
+
+      await queryFlags(0)
+      await terminal.write('\x1B[>1u')
+      await queryFlags(1)
+      await terminal.write('\x1B[?1049h')
+      await queryFlags(0)
+      await terminal.write('\x1B[>31u')
+      await queryFlags(31)
+      await terminal.write('\x1B[?1049l')
+      await queryFlags(1)
+      await terminal.write('\x1B[<u')
+      await queryFlags(0)
+    }
+    finally {
+      terminal.dispose()
+    }
   })
 
   it('suppresses onData forwarding during snapshot replay', async () => {
@@ -787,6 +884,21 @@ describe('terminal copy-on-select', () => {
 
       expect(copyTextToClipboard).toHaveBeenCalledOnce()
       expect(copyTextToClipboard.mock.calls[0]![0]).toBe('hello')
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  it('does not replace the clipboard when the selection becomes empty', async () => {
+    const { instance, dispose } = await openWithText('hello world')
+    try {
+      instance.terminal.select(0, 0, 5)
+      copyTextToClipboard.mockClear()
+
+      instance.terminal.clearSelection()
+
+      expect(copyTextToClipboard).not.toHaveBeenCalled()
     }
     finally {
       dispose()

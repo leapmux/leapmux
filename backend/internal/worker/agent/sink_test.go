@@ -73,6 +73,9 @@ type testSink struct {
 	// turnKinds records the queue classification that accompanied each turn
 	// state.
 	turnStates []TurnState
+	// interruptIgnoredReports records when a provider proves that an accepted
+	// interrupt did not end its turn.
+	interruptIgnoredReports int
 	// turnLifecycle interleaves the turn-end envelope with the turn-flag
 	// transitions, which the two slices above cannot show apart. See
 	// TurnLifecycle.
@@ -149,6 +152,8 @@ type testSink struct {
 	// byte-identically into the existing thread tail (no frontend clear). Default
 	// false: notifications report a broadcast, like a normal standalone persist.
 	notifSuppressBroadcast bool
+	// reportIDs models the database uniqueness rule for provider-neutral reports.
+	reportIDs map[string]struct{}
 }
 
 func (*testSink) providerServices() {}
@@ -309,6 +314,18 @@ func (s *testSink) SetTurnState(state TurnState, seq uint64) {
 	s.turnStates = append(s.turnStates, state)
 	s.turnSeqs = append(s.turnSeqs, seq)
 	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("turn_active:%t", state.Active))
+}
+
+func (s *testSink) ReportInterruptIgnored() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.interruptIgnoredReports++
+}
+
+func (s *testSink) InterruptIgnoredReports() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.interruptIgnoredReports
 }
 
 // TurnKinds returns the queue classification of each publish, in arrival
@@ -540,6 +557,40 @@ func (s *testSink) PersistLeapMuxNotification(info map[string]interface{}) {
 		cp[k] = v
 	}
 	s.leapMuxNotifications = append(s.leapMuxNotifications, cp)
+}
+
+func (s *testSink) PersistSubagentReport(write SubagentReportWrite) (bool, error) {
+	payload, err := write.NotificationPayload()
+	if err != nil || payload == nil {
+		return false, err
+	}
+	s.mu.Lock()
+	if s.reportIDs == nil {
+		s.reportIDs = make(map[string]struct{})
+	}
+	reportID := strings.TrimSpace(write.ReportID)
+	if _, duplicate := s.reportIDs[reportID]; duplicate {
+		s.mu.Unlock()
+		return false, nil
+	}
+	s.reportIDs[reportID] = struct{}{}
+	s.mu.Unlock()
+	s.PersistLeapMuxNotification(payload)
+	return true, nil
+}
+func (s *testSink) PersistChildSubagentReport(write ChildSubagentReportWrite) (bool, error) {
+	rowKey := strings.TrimSpace(write.RowKey)
+	if rowKey == "" {
+		return false, fmt.Errorf("child subagent report has no row key")
+	}
+	childID, _, found, err := s.LookupBackgroundTask(rowKey)
+	if err != nil {
+		return false, err
+	}
+	if !found || childID == "" {
+		return false, fmt.Errorf("subagent report child for row %q is unavailable", rowKey)
+	}
+	return s.ChildSink(childID).PersistSubagentReport(write.Write)
 }
 func (s *testSink) StorePlanModeToolUse(toolUseID, targetMode string) {
 	s.planModeToolUses.Store(toolUseID, targetMode)
@@ -1288,6 +1339,7 @@ func (noopSink) ReadToolRequest(string) (*StoredMessage, error)                 
 func (noopSink) ReadToolResult(string) (*StoredMessage, error)                     { return nil, nil }
 func (noopSink) PersistTurnEnd(MessageContent, SpanInfo) error                     { return nil }
 func (noopSink) SetTurnState(TurnState, uint64)                                    {}
+func (noopSink) ReportInterruptIgnored()                                           {}
 func (noopSink) PersistNotification(leapmuxv1.MessageSource, []byte) (bool, error) { return true, nil }
 func (noopSink) OpenSpan(string, string)                                           {}
 func (noopSink) CloseSpan(string)                                                  {}
@@ -1305,6 +1357,11 @@ func (noopSink) PersistSettingsRefresh(optionmap.Map)                           
 func (noopSink) BroadcastStatusActive(string)                                      {}
 func (noopSink) BroadcastSessionInfo(map[string]interface{})                       {}
 func (noopSink) PersistLeapMuxNotification(map[string]interface{})                 {}
+func (noopSink) PersistSubagentReport(write SubagentReportWrite) (bool, error) {
+	payload, err := write.NotificationPayload()
+	return payload != nil, err
+}
+func (noopSink) PersistChildSubagentReport(ChildSubagentReportWrite) (bool, error) { return true, nil }
 func (noopSink) StorePlanModeToolUse(string, string)                               {}
 func (noopSink) LoadAndDeletePlanModeToolUse(string) (string, bool)                { return "", false }
 func (noopSink) UpdatePlan([]byte, leapmuxv1.ContentCompression, string)           {}

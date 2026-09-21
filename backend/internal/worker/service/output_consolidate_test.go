@@ -69,13 +69,6 @@ func codexStartupStatus(name, status string, errorText interface{}) map[string]i
 	}
 }
 
-func codexMethod(method string, params map[string]interface{}) map[string]interface{} {
-	return map[string]interface{}{
-		"method": method,
-		"params": params,
-	}
-}
-
 func consolidateForProvider(provider leapmuxv1.AgentProvider, msgs []json.RawMessage) []json.RawMessage {
 	return consolidateNotificationThread(msgs, agent.ProviderFor(provider))
 }
@@ -468,28 +461,6 @@ func TestConsolidateNotificationThread_CodexMcpStartupStatus(t *testing.T) {
 		assert.Equal(t, "failed", secondParams["status"])
 		assert.Equal(t, "boom", secondParams["error"])
 	})
-}
-
-func TestConsolidateNotificationThread_CodexMetadataNotificationsCollapse(t *testing.T) {
-	t.Parallel()
-
-	msgs := []json.RawMessage{
-		raw(t, codexMethod("skills/changed", map[string]interface{}{})),
-		raw(t, codexMethod("remoteControl/status/changed", map[string]interface{}{
-			"status":        "connecting",
-			"environmentId": nil,
-		})),
-		raw(t, codexMethod("remoteControl/status/changed", map[string]interface{}{
-			"status":        "disabled",
-			"environmentId": nil,
-		})),
-	}
-
-	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, msgs)
-	require.Len(t, result, 2)
-	assert.Equal(t, []string{"skills/changed", "remoteControl/status/changed"}, types(t, result))
-	params := parseRaw(t, result[1])["params"].(map[string]interface{})
-	assert.Equal(t, "disabled", params["status"])
 }
 
 func TestConsolidateNotificationThread_DefaultProviderKeepsUnknownProviderNotifications(t *testing.T) {

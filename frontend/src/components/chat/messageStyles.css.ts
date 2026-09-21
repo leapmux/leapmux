@@ -339,6 +339,23 @@ export const controlResponseMessage = style({
   alignSelf: 'stretch',
 })
 
+export const subagentReport = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-2)',
+  alignSelf: 'stretch',
+  minWidth: 0,
+})
+
+export const subagentReportHeader = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 'var(--space-2)',
+  color: 'var(--muted-foreground)',
+  fontSize: 'var(--text-7)',
+  fontWeight: 500,
+})
+
 // Preserve spaces and line breaks in native answers while allowing long text to wrap.
 export const controlResponseLabel = style({
   whiteSpace: 'pre-wrap',

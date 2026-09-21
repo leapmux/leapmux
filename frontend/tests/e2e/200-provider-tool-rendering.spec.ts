@@ -12,7 +12,7 @@ import { createImageBytes } from './helpers/image'
 import { createTestDirectory } from './helpers/runDirectory'
 import { withScriptedPiTool } from './helpers/scriptedPiModel'
 import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, listAgents, openGoalMenu } from './helpers/subagentRegistry'
-import { openWorkspace, sendMessage } from './helpers/ui'
+import { openWorkspace, readAttached, sendMessage } from './helpers/ui'
 import { realAgentOpenOptions, realAgentSettings } from './realAgentSettings'
 
 type FixtureMessage = {
@@ -25,6 +25,8 @@ type FixtureMessage = {
   metadata?: unknown
   completion?: MessageCompletion
   markType?: MarkType
+  spanColor?: number
+  spanLines?: Array<Record<string, unknown> | null>
 } & ({ content: unknown } | { rawContent: Uint8Array })
 
 const sqlString = (value: string) => `'${value.replaceAll('\'', '\'\'')}'`
@@ -35,10 +37,11 @@ const blob = (value: unknown) => byteBlob(Buffer.from(JSON.stringify(value), 'ut
 async function seedMessages(database: string, agentId: string, messages: FixtureMessage[], permission?: Record<string, unknown>, controlSourceId?: string): Promise<bigint[]> {
   const agent = sqlString(agentId)
   const inserts = messages.map(message => `INSERT INTO messages
-    (id, agent_id, seq, source, content, content_compression, agent_provider, span_id, span_type, supplemental_content, supplemental_content_compression, supplemental_revision, completion, agent_session_id, mark_type)
+    (id, agent_id, seq, source, content, content_compression, agent_provider, span_id, span_type, span_color, span_lines, supplemental_content, supplemental_content_compression, supplemental_revision, completion, agent_session_id, mark_type)
     VALUES (${sqlString(`${agentId}-${message.id}`)}, ${agent},
       (SELECT message_seq_hwm + 1 FROM agents WHERE id = ${agent}), ${MessageSource.AGENT},
       ${'rawContent' in message ? byteBlob(message.rawContent) : blob(message.content)}, 1, ${message.provider}, ${sqlString(message.spanId ?? '')}, ${sqlString(message.spanType ?? '')},
+      ${message.spanColor ?? 0}, ${sqlString(JSON.stringify(message.spanLines ?? []))},
       ${message.supplemental || message.metadata ? blob({ provider: message.supplemental, metadata: message.metadata }) : 'X\'\''}, 1, ${message.supplemental || message.metadata ? 1 : 0}, ${message.completion ?? MessageCompletion.UNSPECIFIED}, ${sqlString(message.agentSessionId ?? '')}, ${message.markType ?? MarkType.UNSPECIFIED}) RETURNING seq;`)
   if (permission) {
     const source = controlSourceId ? `(SELECT seq FROM messages WHERE agent_id=${agent} AND id=${sqlString(`${agentId}-${controlSourceId}`)})` : '0'
@@ -439,20 +442,26 @@ test.describe('provider tool rendering', () => {
     await expect.poll(() => chat.locator('img').evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(32)
   })
 
-  test('recovers complete output from a real Pi MCP artifact and retains it after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
+  test('recovers complete output from a real Pi MCP artifact and retains it after reload', async ({ page, context, authenticatedEmptyWorkspace, leapmuxServer }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
     const provider = AgentProvider.PI
     const directory = createTestDirectory('renderer-pi-artifact-')
-    const code = 'emit(Array.from({length:3000},(_,i)=>"artifact-line-"+i).join("\\n")+"\\n"+["PI","ARTIFACT","RECOVERED"].join("_"))'
+    const artifact = `${Array.from({ length: 3000 }, (_, index) => `artifact-line-${index}`).join('\n')}\nPI_ARTIFACT_RECOVERED`
+    const code = `emit(${JSON.stringify(artifact)})`
     await withScriptedPiTool(directory, 'mcpScript', { code }, async (settings) => {
       await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: provider, ...settings })
       await page.reload()
       await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
       await sendMessage(page, 'Run the artifact recovery check.')
       const chat = page.locator('[data-chat-scroll-container="true"]').filter({ visible: true })
-      const output = chat.locator('[data-seq]:not([data-band])').getByTestId('message-bubble').locator('p').filter({ hasText: 'artifact-line-0' })
+      const output = chat.locator('[data-seq]:not([data-band])').getByTestId('message-bubble').filter({ hasText: 'artifact-line-0' })
       await expect(output).toHaveCount(1)
       await expect(output).toContainText('artifact-line-2999')
       await expect(output).toContainText('PI_ARTIFACT_RECOVERED')
+      await expect(output).toContainText('Display limited to keep this page responsive.')
+      await output.locator('..').hover()
+      await output.locator('..').getByRole('button', { name: 'Copy', exact: true }).click()
+      await expect.poll(async () => (await page.evaluate(() => navigator.clipboard.readText())).includes(artifact)).toBe(true)
       await expect(chat.getByText('Protocol test complete.', { exact: true })).toBeVisible()
       await page.reload()
       await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
@@ -968,6 +977,326 @@ test.describe('provider tool rendering', () => {
     await expect(row.locator('pre')).toHaveCount(0)
     await row.hover()
     await expect(row.getByRole('button', { name: 'Copy', exact: true })).toHaveCount(0)
+  })
+
+  test('keeps a metadata-bearing Codex command rail continuous through its result', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
+    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-command-rail-'), {
+      agentProvider: AgentProvider.CODEX,
+      ...realAgentOpenOptions(realAgentSettings(AgentProvider.CODEX)),
+    })
+    const spanId = 'command-rail'
+    const resultId = `${agentId}-command-rail-result`
+    const sharedItem = {
+      id: spanId,
+      type: 'commandExecution',
+      command: 'printf command-rail',
+      cwd: '/workspace',
+      processId: '123',
+    }
+    const [requestSeq, resultSeq] = await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [
+      {
+        id: 'command-rail-request',
+        provider: AgentProvider.CODEX,
+        spanId,
+        spanType: 'commandExecution',
+        spanColor: 1,
+        spanLines: [],
+        content: { item: { ...sharedItem, status: 'inProgress' } },
+      },
+      {
+        id: 'command-rail-result',
+        provider: AgentProvider.CODEX,
+        spanId,
+        spanType: 'commandExecution',
+        spanColor: 1,
+        spanLines: [{ span_id: spanId, color: 1, type: 'connector_end' }],
+        content: { item: { ...sharedItem, status: 'completed', aggregatedOutput: 'command rail output', exitCode: 0 } },
+      },
+    ])
+
+    await page.reload()
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const requestRow = page.locator(`[data-seq="${requestSeq}"]`).filter({ visible: true })
+    const resultRow = page.locator(`[data-seq="${resultSeq}"]`).filter({ visible: true })
+    const requestLine = requestRow.locator('[data-span-body-line]')
+    const bridge = page.locator(`[data-span-gap-bridges-for="${resultId}"] [data-span-gap-bridge-segment="0"]`)
+    const responseLine = resultRow.locator('[data-span-line-column="0"]')
+    await expect(requestLine).toBeVisible()
+    await expect(bridge).toBeVisible()
+    await expect(responseLine).toBeVisible()
+
+    const geometry = await readAttached(
+      page.locator(`[data-seq="${requestSeq}"], [data-seq="${resultSeq}"], [data-span-gap-bridges-for="${resultId}"]`),
+      'the Codex command rail seam',
+      (matches) => {
+        const painting = matches.filter((candidate) => {
+          const style = getComputedStyle(candidate)
+          return candidate.isConnected && style.visibility !== 'hidden' && style.display !== 'none'
+        })
+        const rows = painting.filter(candidate => candidate.hasAttribute('data-seq'))
+        const request = rows[0]
+        const result = rows[1]
+        const anchor = painting.find(candidate => candidate.hasAttribute('data-span-gap-bridges-for'))
+        const body = request?.querySelector<HTMLElement>('[data-span-body-line]')
+        const gap = anchor?.querySelector<HTMLElement>('[data-span-gap-bridge-segment="0"]')
+        const response = result?.querySelector<HTMLElement>('[data-span-line-column="0"]')
+        if (!request || !result || !body || !gap || !response || !gap.isConnected)
+          return null
+        const requestBox = request.getBoundingClientRect()
+        const resultBox = result.getBoundingClientRect()
+        const bodyBox = body.getBoundingClientRect()
+        const gapBox = gap.getBoundingClientRect()
+        const responseBox = response.getBoundingClientRect()
+        const borderWidth = Number.parseFloat(getComputedStyle(body).borderLeftWidth)
+        return {
+          requestBottom: requestBox.bottom,
+          requestLineBottom: bodyBox.bottom,
+          requestLineX: bodyBox.left + borderWidth / 2,
+          bridgeTop: gapBox.top,
+          bridgeBottom: gapBox.bottom,
+          bridgeX: gapBox.left + gapBox.width / 2,
+          resultTop: resultBox.top,
+          responseLineX: responseBox.left + responseBox.width / 2,
+        }
+      },
+    )
+
+    expect(geometry.requestLineBottom).toBeCloseTo(geometry.requestBottom, 5)
+    expect(geometry.bridgeTop).toBeCloseTo(geometry.requestBottom, 5)
+    // One pixel is the maximum seam allowance. This test does not read the
+    // production constant, so a future increase cannot silently weaken it.
+    expect(geometry.bridgeBottom).toBeCloseTo(geometry.resultTop + 1, 5)
+    expect(geometry.requestLineX).toBeCloseTo(geometry.bridgeX, 5)
+    expect(geometry.bridgeX).toBeCloseTo(geometry.responseLineX, 5)
+  })
+
+  test('keeps expanded large command and Markdown bodies responsive', async ({ page, context, authenticatedEmptyWorkspace, leapmuxServer }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-large-text-'), {
+      agentProvider: AgentProvider.CODEX,
+      ...realAgentOpenOptions(realAgentSettings(AgentProvider.CODEX)),
+    })
+    const commandOutput = `COMMAND_HEAD\n${'x'.repeat(100_000)}\nCOMMAND_TAIL`
+    const markdownOutput = `# Large Markdown\n\nMARKDOWN_HEAD\n${'y'.repeat(100_000)}\nMARKDOWN_TAIL`
+    const sequences = await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [
+      {
+        id: 'large-command',
+        provider: AgentProvider.CODEX,
+        spanId: 'large-command',
+        spanType: 'commandExecution',
+        content: { item: { id: 'large-command', type: 'commandExecution', status: 'completed', command: 'print large output', aggregatedOutput: commandOutput, exitCode: 0 } },
+      },
+      {
+        id: 'large-markdown',
+        provider: AgentProvider.CODEX,
+        spanId: 'large-markdown',
+        spanType: 'mcpToolCall',
+        content: { item: { id: 'large-markdown', type: 'mcpToolCall', status: 'completed', server: 'docs', tool: 'report', arguments: {}, result: { content: [{ type: 'text', text: markdownOutput }] } } },
+      },
+    ])
+
+    await page.reload()
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    for (const [index, source] of [[0, commandOutput], [1, markdownOutput]] as const) {
+      const row = page.locator(`[data-seq="${sequences[index]}"]`).filter({ visible: true })
+      await expect(row).toContainText(index === 0 ? 'COMMAND_HEAD' : 'MARKDOWN_HEAD')
+      await row.hover()
+      await row.getByRole('button', { name: 'Expand', exact: true }).click()
+      await expect(row.getByRole('button', { name: 'Collapse', exact: true })).toBeVisible()
+      await expect(row).toContainText(index === 0 ? 'COMMAND_TAIL' : 'MARKDOWN_TAIL')
+      await expect(row).toContainText('Display limited to keep this page responsive.')
+      expect((await row.textContent())!.length).toBeLessThan(source.length / 2)
+      await row.getByRole('button', { name: 'Copy', exact: true }).click()
+      await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(source)
+      await row.getByRole('button', { name: 'Collapse', exact: true }).click()
+    }
+    const markdownRow = page.locator(`[data-seq="${sequences[1]}"]`).filter({ visible: true })
+    await expect(markdownRow.locator('h1')).toHaveCount(0)
+    await expect(markdownRow).toContainText('# Large Markdown')
+  })
+
+  test('renders Codex command actions with raw-command tooltips and compact metadata', async ({ page, context, authenticatedEmptyWorkspace, leapmuxServer }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    const workingDir = createTestDirectory('renderer-codex-actions-')
+    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, {
+      agentProvider: AgentProvider.CODEX,
+      ...realAgentOpenOptions(realAgentSettings(AgentProvider.CODEX)),
+    })
+    const command = '/bin/zsh -lc "sed and rg"'
+    const readCommand = 'sed -n \'380,430p\' frontend/tests/e2e/helpers/ui.ts'
+    const singleActionCommand = 'sed -n \'1,5p\' src/main.ts'
+    const [seq, singleSeq] = await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [
+      {
+        id: 'codex-command-actions',
+        provider: AgentProvider.CODEX,
+        spanId: 'codex-command-actions',
+        spanType: 'commandExecution',
+        content: {
+          item: {
+            id: 'codex-command-actions',
+            type: 'commandExecution',
+            status: 'completed',
+            command,
+            cwd: workingDir,
+            processId: '79860',
+            commandActions: [
+              { type: 'read', command: readCommand, name: 'ui.ts', path: join(workingDir, 'frontend/tests/e2e/helpers/ui.ts') },
+              { type: 'search', command: 'rg -n \'loginViaToken\' frontend/tests/e2e', query: 'loginViaToken', path: 'frontend/tests/e2e' },
+              { type: 'unknown', command: 'printf visible-action' },
+            ],
+            aggregatedOutput: '',
+            exitCode: 0,
+            durationMs: 5,
+          },
+        },
+      },
+      {
+        id: 'codex-single-command-action',
+        provider: AgentProvider.CODEX,
+        spanId: 'codex-single-command-action',
+        spanType: 'commandExecution',
+        content: {
+          item: {
+            id: 'codex-single-command-action',
+            type: 'commandExecution',
+            status: 'completed',
+            command: '/bin/zsh -lc "sed"',
+            commandActions: [
+              { type: 'read', command: singleActionCommand, name: 'main.ts', path: join(workingDir, 'src/main.ts') },
+            ],
+            aggregatedOutput: '',
+            exitCode: 0,
+            durationMs: 5,
+          },
+        },
+      },
+    ])
+
+    await page.reload()
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const row = page.locator(`[data-seq="${seq}"]`).filter({ visible: true })
+    const read = row.getByText('Read frontend/tests/e2e/helpers/ui.ts', { exact: true })
+    await expect(read).toBeVisible()
+    await expect(row.getByText('Search for "loginViaToken" in frontend/tests/e2e', { exact: true })).toBeVisible()
+    await expect(row.getByText('1 action omitted', { exact: true })).toBeVisible()
+    await expect(row.getByText('printf visible-action', { exact: true })).toHaveCount(0)
+    await row.hover()
+    await row.getByRole('button', { name: 'Show all actions' }).click()
+    await expect(row.getByText('printf visible-action', { exact: true })).toBeVisible()
+    await expect(row).toContainText(/Working directory:\s*\./)
+    await expect(row).toContainText(/Process ID:\s*79860/)
+    const rawAction = row.locator('[data-command-action="unknown"]')
+    await expect(rawAction.locator('[data-shiki-token]').first()).toBeVisible()
+    await expect(rawAction.locator('[data-shiki-token]').first().locator('..'))
+      .toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+    const fontSize = (locator: import('@playwright/test').Locator, label: string) => readAttached(locator, label, (matches) => {
+      const element = matches.find(candidate => candidate.isConnected)
+      return element ? getComputedStyle(element).fontSize : null
+    })
+    const readPathSize = await fontSize(read.locator('span').last(), 'the read action path')
+    const rawCommandSize = await fontSize(rawAction.locator('div').first(), 'the raw command action')
+    expect(readPathSize).toBe(rawCommandSize)
+
+    await read.hover()
+    const tooltip = page.getByRole('tooltip')
+    await expect(tooltip).toHaveText(readCommand)
+    await expect(tooltip.locator('[data-shiki-token]').first()).toBeVisible()
+    await expect(tooltip.locator('[data-shiki-token]').first().locator('..'))
+      .toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+
+    const singleRow = page.locator(`[data-seq="${singleSeq}"]`).filter({ visible: true })
+    const singleTitle = singleRow.getByTestId('execute-title')
+    await expect(singleTitle).toHaveText('Read src/main.ts')
+    await expect(singleRow.locator('[data-command-action]')).toHaveCount(0)
+    await singleTitle.hover()
+    await expect(tooltip).toHaveText(singleActionCommand)
+    await expect(tooltip.locator('[data-shiki-token]').first()).toBeVisible()
+
+    await row.hover()
+    await row.getByRole('button', { name: 'Copy Command', exact: true }).click()
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(command)
+  })
+
+  test('renders a mirrored subagent report as Markdown in the parent transcript', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
+    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-subagent-report-'), {
+      agentProvider: AgentProvider.CODEX,
+      ...realAgentOpenOptions(realAgentSettings(AgentProvider.CODEX)),
+    })
+    const [seq] = await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [{
+      id: 'subagent-report',
+      provider: AgentProvider.CODEX,
+      content: {
+        type: 'notification_thread',
+        messages: [{ type: 'subagent_report', label: 'Parser reviewer', text: '**Report heading**\n\n- Finding one' }],
+        old_seqs: [],
+      },
+    }])
+
+    await page.reload()
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const row = page.locator(`[data-seq="${seq}"]`).filter({ visible: true })
+    await expect(row).toContainText('Parser reviewer reported')
+    await expect(row.locator('strong')).toHaveText('Report heading')
+    await expect(row.locator('li')).toHaveText('Finding one')
+  })
+
+  test('reveals messages after an empty Codex wait result', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
+    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-empty-codex-wait-'), {
+      agentProvider: AgentProvider.CODEX,
+      ...realAgentOpenOptions(realAgentSettings(AgentProvider.CODEX)),
+    })
+    const spanId = 'empty-wait'
+    const shared = {
+      id: spanId,
+      type: 'collabAgentToolCall',
+      tool: 'wait',
+      receiverThreadIds: [],
+      agentsStates: {},
+    }
+    const sequences = await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [
+      { id: 'empty-wait-request', provider: AgentProvider.CODEX, spanId, spanType: 'collabAgentToolCall', content: { item: { ...shared, status: 'inProgress' } } },
+      { id: 'empty-wait-result', provider: AgentProvider.CODEX, spanId, spanType: 'collabAgentToolCall', content: { item: { ...shared, status: 'completed' } } },
+      { id: 'after-empty-wait', provider: AgentProvider.CODEX, content: { item: { type: 'agentMessage', id: 'after-empty-wait', text: 'VISIBLE_AFTER_EMPTY_WAIT' } } },
+    ])
+
+    await page.reload()
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const chat = page.locator('[data-chat-scroll-container="true"]').filter({ visible: true })
+    const resultRow = page.locator(`[data-seq="${sequences[1]}"]`).filter({ visible: true })
+    await expect(resultRow).toContainText('Completed')
+    await expect(chat.getByText('VISIBLE_AFTER_EMPTY_WAIT', { exact: true }).filter({ visible: true })).toBeVisible()
+    await expect(chat.getByTestId('row-skeleton')).toHaveCount(0)
+  })
+
+  test('hides retained Codex rate-limit transcript rows', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
+    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-rate-limit-hidden-'), {
+      agentProvider: AgentProvider.CODEX,
+      ...realAgentOpenOptions(realAgentSettings(AgentProvider.CODEX)),
+    })
+    const [rateLimitSeq] = await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [
+      {
+        id: 'rate-limit-update',
+        provider: AgentProvider.CODEX,
+        content: {
+          type: 'notification_thread',
+          messages: [{
+            method: 'account/rateLimits/updated',
+            params: { rateLimits: { primary: { usedPercent: 100, windowDurationMins: 300 } } },
+          }],
+          old_seqs: [],
+        },
+      },
+      {
+        id: 'visible-after-rate-limit',
+        provider: AgentProvider.CODEX,
+        content: { item: { type: 'agentMessage', id: 'visible-message', text: 'VISIBLE_AFTER_RATE_LIMIT' } },
+      },
+    ])
+
+    await page.reload()
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    await expect(page.getByText('VISIBLE_AFTER_RATE_LIMIT').filter({ visible: true })).toBeVisible()
+    await expect(page.locator(`[data-seq="${rateLimitSeq}"]`).filter({ visible: true })).toHaveCount(0)
   })
 
   test('uses a late supplement for the scroll-rail preview', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {

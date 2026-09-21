@@ -42,6 +42,8 @@ func TestHandleZCodeOutput_TurnStarted_WithAnInputSourceIsABackgroundTurn(t *tes
 		ZCodeInputSourceSubagent,
 		ZCodeInputSourceTodoReminder,
 		ZCodeInputSourceGoalContinuation,
+		ZCodeInputSourceWorkflowLaunch,
+		ZCodeInputSourceSharedContext,
 	} {
 		t.Run(source, func(t *testing.T) {
 			t.Parallel()
@@ -674,7 +676,12 @@ func TestHandleZCodeOutput_SubagentSpawnOpensNoSpanAndRemembersThePrompt(t *test
 	require.Equal(t, 1, sink.MessageCount())
 	assert.Equal(t, 0, len(sink.OpenSpans()),
 		"a subagent spawn holds no rail: its output lands in a child transcript")
-	assert.Equal(t, "investigate the flake", a.toolCallPrompts.take("spawn-1"))
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	require.Len(t, child.Messages(), 1)
+	assert.JSONEq(t, `{"content":"investigate the flake"}`, string(child.Messages()[0].Content))
 }
 
 // The background-task path creates the row (and the child transcript). The tool
@@ -852,6 +859,37 @@ func TestHandleZCodeOutput_BackgroundSubagentTaskMintsAChildTranscript(t *testin
 	}
 	require.NoError(t, json.Unmarshal(messages[0].Content, &opening))
 	assert.Equal(t, "review the diff", opening.Content)
+}
+
+func TestHandleZCodeOutput_DynamicWorkflowUsesAWorkflowRow(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"taskId":"dwfrun-1","toolCallId":"call-1","toolName":"CreateWorkflow","taskKind":"workflow",
+		  "description":"Review pipeline","status":"running"}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.KindWorkflow, tasks[0].Kind)
+	assert.Equal(t, "call-1", tasks[0].RowKey, "the workflow reuses its CreateWorkflow card")
+	assert.Equal(t, "Review pipeline", tasks[0].Title)
+	assert.Equal(t, "Review pipeline", tasks[0].Description)
+	assert.False(t, tasks[0].TitleIsCommand)
+	assert.Empty(t, tasks[0].ChildAgentID, "the legacy stream exposes no workflow actor transcript")
+
+	// The final update can omit the descriptive fields. It must close the same
+	// workflow row and preserve the label from the opening update.
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+		`{"taskId":"dwfrun-1","toolCallId":"call-1","taskKind":"workflow","status":"completed"}`))
+	tasks = sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.KindWorkflow, tasks[0].Kind)
+	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+	assert.Equal(t, "Review pipeline", tasks[0].Title)
+	assert.Equal(t, "Review pipeline", tasks[0].Description)
 }
 
 func TestZCodeBackgroundStatus(t *testing.T) {
@@ -1127,6 +1165,10 @@ func TestZCodeBackgroundTitle(t *testing.T) {
 	title, isCommand = zcodeBackgroundTitle(zcodeBackgroundTask{ToolName: " Agent "})
 	assert.Equal(t, "Agent", title)
 	assert.False(t, isCommand, "prose must not render as code")
+
+	title, isCommand = zcodeBackgroundTitle(zcodeBackgroundTask{Description: " Protocol probe ", ToolName: "CreateWorkflow"})
+	assert.Equal(t, "Protocol probe", title)
+	assert.False(t, isCommand)
 
 	title, isCommand = zcodeBackgroundTitle(zcodeBackgroundTask{})
 	assert.Equal(t, "", title)

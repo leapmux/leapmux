@@ -4,9 +4,10 @@ import { COPILOT_EVENT, COPILOT_EVENT_PREFIX } from '~/generated/contracts/copil
 import { isObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isNotificationThreadWrapper } from '../../messageUtils'
+import { notificationClassifierFor } from '../../notificationClassification'
 import { turnEndLabel } from '../../turnEndLabel'
 import { retainedRowIsFinal } from '../registry'
-import { describeCopilotNotification } from './extractors/notification'
+import { copilotNotificationEntry } from './extractors/notification'
 import { copilotEvent } from './protocol'
 
 /**
@@ -245,6 +246,7 @@ function copilotNotifies(entry: unknown): boolean {
 export function classifyCopilotMessage(input: ClassificationInput): MessageCategory {
   const parent = input.parentObject
   const wrapper = input.wrapper
+  const notification = notificationClassifierFor(input.agentProvider, copilotNotificationEntry)
 
   if (wrapper) {
     if (wrapper.messages.length === 0)
@@ -253,11 +255,10 @@ export function classifyCopilotMessage(input: ClassificationInput): MessageCateg
     // wrapper test cannot recognize one. Read the event instead, and drop the
     // entries that state nothing so a thread of only those collapses to hidden.
     if (wrapper.messages.some(entry => copilotNotifies(entry))) {
-      const messages = wrapper.messages.filter(entry => describeCopilotNotification(entry) !== null)
-      return messages.length === 0 ? { kind: 'hidden' } : { kind: 'notification', messages }
+      return notification(wrapper.messages, 'hidden')
     }
     if (isNotificationThreadWrapper(wrapper))
-      return { kind: 'notification', messages: wrapper.messages }
+      return notification(wrapper.messages)
   }
 
   if (!parent)
@@ -276,7 +277,7 @@ export function classifyCopilotMessage(input: ClassificationInput): MessageCateg
       return { kind: 'user_content' }
     }
     if (isPlainNotificationType(pickString(parent, 'type')))
-      return { kind: 'notification', messages: [parent] }
+      return notification([parent])
     return { kind: 'unknown' }
   }
 
@@ -298,9 +299,7 @@ export function classifyCopilotMessage(input: ClassificationInput): MessageCateg
       return { kind: 'result_divider' }
   }
   if (copilotNotifies(parent)) {
-    // A row whose describer reads nothing renders as an empty notification, so hide
-    // it rather than surfacing a blank line or a raw-JSON bubble.
-    return describeCopilotNotification(parent) === null ? { kind: 'hidden' } : { kind: 'notification', messages: [parent] }
+    return notification([parent], 'hidden')
   }
   if (COPILOT_HIDDEN_TYPES.has(event.type) || copilotDescribesRuntime(event.type))
     return { kind: 'hidden' }

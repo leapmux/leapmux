@@ -27,14 +27,14 @@ describe('BackgroundTaskPanel', () => {
     const { container } = renderPanel()
     expect(container.querySelector('[data-testid="bg-task-list"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="bg-task-filter-tab-bar"]')).not.toBeNull()
-    for (const key of ['all', 'subagent', 'shell'])
+    for (const key of ['all', 'subagent', 'shell', 'workflow'])
       expect(tab(container, key)).not.toBeNull()
   })
 
-  it('renders the three background-task tabs in order', () => {
+  it('renders the four background-task tabs in order', () => {
     const { container } = renderPanel()
     const labels = [...container.querySelectorAll('[role="tab"]')].map(value => value.textContent)
-    expect(labels).toEqual(['All', 'Subagents', 'Shell'])
+    expect(labels).toEqual(['All', 'Subagents', 'Shell', 'Workflows'])
   })
 
   it('filters the task list with the selected tab', () => {

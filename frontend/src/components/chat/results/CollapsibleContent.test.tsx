@@ -1,10 +1,38 @@
 import { render } from '@solidjs/testing-library'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMessageRenderCacheStore } from '~/components/chat/messageRenderCache'
+import * as messageRenderers from '~/components/chat/messageRenderers'
 import { CollapsibleContent } from '~/components/chat/results/CollapsibleContent'
 import { toolResultContentAnsi, toolResultContentPre } from '~/components/chat/toolStyles.css'
 
 describe('CollapsibleContent', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it.each(['pre', 'ansi-or-pre', 'json'] as const)('does not render unused Markdown for kind="%s"', (kind) => {
+    const renderMarkdown = vi.spyOn(messageRenderers, 'renderMarkdownForContext').mockReturnValue('<p>unused</p>')
+    const text = `${'minified'.repeat(1_000)}\nsecond line`
+
+    render(() => (
+      <CollapsibleContent kind={kind} text={text} display="minified" isCollapsed />
+    ))
+
+    expect(renderMarkdown).not.toHaveBeenCalled()
+  })
+
+  it.each(['pre', 'ansi-or-pre', 'json'] as const)('limits a large expanded kind="%s" body', (kind) => {
+    const text = `start\n${'x'.repeat(100_000)}\nend`
+    const { container } = render(() => (
+      <CollapsibleContent kind={kind} text={text} display={text} isCollapsed={false} />
+    ))
+
+    expect(container.textContent!.length).toBeLessThan(text.length)
+    expect(container.textContent).toContain('Display limited')
+    expect(container.textContent).toContain('start')
+    expect(container.textContent).toContain('end')
+  })
+
   it('renders pre body for kind="pre"', () => {
     const { container } = render(() => (
       <CollapsibleContent kind="pre" text="hello\nworld" display="hello\nworld" isCollapsed={false} />

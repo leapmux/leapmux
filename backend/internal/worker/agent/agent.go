@@ -217,6 +217,7 @@ type toolLifecycleServices interface {
 type subagentServices interface {
 	ChildServices
 	BackgroundTaskServices
+	SessionServices
 }
 
 func openToolSpan(sink ToolSpanServices, content MessageContent, spanID, spanType string, spawns bool) error {
@@ -380,6 +381,10 @@ type TurnServices interface {
 	// provider that retries a failed attempt itself stays active across the
 	// backoff, where nothing streams and no envelope arrives.
 	SetTurnState(state TurnState, seq uint64)
+	// ReportInterruptIgnored reports that the provider accepted an interrupt but
+	// kept the same turn running. The Worker restores the activity that the
+	// interrupt request hid, including the Interrupt button for a later attempt.
+	ReportInterruptIgnored()
 }
 
 // SpanServices owns transcript span state.
@@ -442,6 +447,10 @@ type SessionServices interface {
 	BroadcastStatusActive(sessionID string)
 	BroadcastSessionInfo(info map[string]interface{})
 	PersistLeapMuxNotification(content map[string]interface{})
+	// PersistSubagentReport stores one report in this transcript exactly once.
+	PersistSubagentReport(write SubagentReportWrite) (stored bool, err error)
+	// PersistChildSubagentReport resolves the required row through the durable registry.
+	PersistChildSubagentReport(write ChildSubagentReportWrite) (stored bool, err error)
 }
 
 // PlanServices stores plan-mode state.

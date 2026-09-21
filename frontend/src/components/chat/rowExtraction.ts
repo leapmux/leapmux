@@ -11,7 +11,6 @@ import { protoJsonTodoToItem } from '~/stores/chatTodoStore'
 import { messageCompletionFromProto, parseAssembledMessage } from './assembledMessage'
 import { leapmuxUserRow } from './leapmuxRows'
 import { dividerMetaFromMessage } from './model/divider'
-import { notificationEntriesFor } from './notificationEntries'
 import { resolveControlResponseSummary } from './persistedControlResponse'
 import { pluginFor } from './providers/registry'
 
@@ -183,18 +182,13 @@ export function extractChatRow(
         ? row({ kind: 'divider', divider: { ...divider, ...(meta === undefined ? {} : { meta }) } })
         : unsupported()
     }
-    // A notification thread is cross-provider for the same reason: the worker threads
-    // consecutive notifications into one row, and `notificationEntriesFor` reads each
-    // message -- worker-written ones through the shared table, the rest through the
-    // plugin. The category already carries the thread's messages, so nothing re-reads
-    // the wrapper here.
-    //
-    // A thread that states NOTHING yields no row. It falls to the unrecognized card,
-    // which is what the legacy path did by falling back to the raw-JSON renderer.
+    // Classification already parsed every notification into the shared model. The row
+    // uses those entries directly, so visibility and rendering cannot parse the frame
+    // differently.
     if (category.kind === 'notification') {
-      const entries = category.messages.flatMap(message =>
-        isObject(message) ? notificationEntriesFor(message, agentProvider) : [])
-      return entries.length > 0 ? row({ kind: 'notification', thread: { entries } }) : unsupported()
+      return category.entries.length > 0
+        ? row({ kind: 'notification', thread: { entries: category.entries } })
+        : unsupported()
     }
     // A user row is LeapMux's OWN row too: LeapMux persists it as a flat
     // `{content, attachments?}` object that carries no provider frame, and every

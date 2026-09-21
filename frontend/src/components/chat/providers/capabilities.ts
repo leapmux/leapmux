@@ -29,7 +29,7 @@ import type { ToolSpanRole } from '~/components/chat/rowExtractionTypes'
 import type { AgentProvider, AssembledMessageKind, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ToolSpanSide } from '~/lib/messageSpan'
-import type { ContextUsageInfo, RateLimitInfo } from '~/models/agentSession'
+import type { ContextUsageInfo, RateLimitUpdate } from '~/models/agentSession'
 import type { ControlRequest } from '~/stores/control.store'
 
 export interface AttachmentCapabilities {
@@ -331,11 +331,10 @@ export interface ProviderControlCapability {
  */
 export interface ProviderSessionCapability {
   /**
-   * Extract rate-limit tiers from a provider's rate-limit frame (Claude `rate_limit_event`,
-   * Codex `account/rateLimits/updated`). Returns keyed entries the caller folds into
-   * `AgentSessionInfo.rateLimits`, or null/[] when the frame carries none.
+   * Extract an explicit rate-limit merge or replacement from a provider frame.
+   * Returns null when the frame carries no rate-limit update.
    */
-  rateLimitsFromMessage?: (parsed: ParsedMessageContent) => { key: string, info: RateLimitInfo }[] | null
+  rateLimitsFromMessage?: (parsed: ParsedMessageContent) => RateLimitUpdate | null
 
   /**
    * Extract this provider's context usage from a message, reading whatever shape carries it: a

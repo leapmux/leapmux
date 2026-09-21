@@ -986,6 +986,29 @@ describe('showInterrupt', () => {
       dispose()
     })
   })
+
+  it('shows the button again when an ignored interrupt restores working activity', () => {
+    createRoot((dispose) => {
+      const [activity, setActivity] = createSignal(AgentActivityState.WORKING)
+      const result = useControlResponseHandling(
+        {
+          agentId: 'test-agent',
+          onSendMessage: vi.fn(),
+          get agentActivity() { return activity() },
+        },
+        createControlAnswerState(),
+        () => undefined,
+        vi.fn(),
+      )
+
+      expect(result.showInterrupt()).toBe(true)
+      setActivity(AgentActivityState.IDLE)
+      expect(result.showInterrupt()).toBe(false)
+      setActivity(AgentActivityState.WORKING)
+      expect(result.showInterrupt()).toBe(true)
+      dispose()
+    })
+  })
 })
 
 // Both halves of the banner take these two, so the composer and the banner

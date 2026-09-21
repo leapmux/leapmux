@@ -443,6 +443,12 @@ func (osLauncher) Launch(detected *detectedExec, path string) error {
 // launchers report a nonzero status for a perfectly good open, and calling
 // those failures would be worse than staying silent.
 func startAndWatch(cmd *exec.Cmd, exitMeaningful bool) error {
+	return startAndWatchWithin(cmd, exitMeaningful, launchFailureWindow)
+}
+
+// startAndWatchWithin injects the observation window. A portable helper
+// process can start slower than the production window on hosted Windows.
+func startAndWatchWithin(cmd *exec.Cmd, exitMeaningful bool, failureWindow time.Duration) error {
 	stderr := &cappedBuffer{limit: stderrCaptureLimit}
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
@@ -467,7 +473,7 @@ func startAndWatch(cmd *exec.Cmd, exitMeaningful bool) error {
 			return fmt.Errorf("%w: %s", err, msg)
 		}
 		return err
-	case <-time.After(launchFailureWindow):
+	case <-time.After(failureWindow):
 		// Still running, which is what a real launch looks like.
 		return nil
 	}

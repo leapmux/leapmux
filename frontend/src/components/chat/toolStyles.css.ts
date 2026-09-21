@@ -141,6 +141,32 @@ export const commandInputCollapsed = style({
 
 export const commandInputCollapsedFade = style(fadeMaskBottom())
 
+// Semantic command actions share one text color whether they draw as one line or a
+// list. A list keeps the command summary's three-row clip and its native bullets.
+const commandActionSummaryStyle = {
+  color: 'var(--muted-foreground)',
+}
+
+export const commandActionSingle = style(commandActionSummaryStyle)
+
+export const commandActionList = style([commandActionSummaryStyle, {
+  margin: 0,
+  paddingLeft: '1.25rem',
+}])
+
+export const commandActionLine = style({
+  overflowWrap: 'anywhere',
+})
+
+// File paths and search terms must match the syntax-highlighted command size. The
+// generic path and input-code styles set the font family only, so they inherit the
+// larger prose size when they sit inside an action description.
+export const commandActionCodeText = style({
+  ...codeTypography,
+  color: 'var(--foreground)',
+  overflowWrap: 'anywhere',
+})
+
 // Override Shiki's default <pre> styling inside tool input summary (for Bash highlighting)
 globalStyle(`${toolInputSummary} pre.shiki`, {
   margin: 0,
@@ -163,9 +189,11 @@ globalStyle(`${toolInputSummary} pre.shiki code`, {
   fontFamily: 'inherit',
 })
 
-codeSurface(toolInputSummary, 'page', [
-  { suffix: ' pre.shiki span', bg: true },
-  { suffix: ' span[data-shiki-token]', bg: true },
+// Command summaries sit inline in a tool row or Tooltip. Keep their syntax
+// colours, but show the host surface through instead of painting a second field.
+codeSurface(toolInputSummary, 'transparent', [
+  { suffix: ' pre.shiki span' },
+  { suffix: ' span[data-shiki-token]' },
 ])
 
 // Tool input detail text (natural language: descriptions, URLs, queries)
@@ -238,6 +266,9 @@ globalStyle(`${toolUseHeader} .${toolHeaderActions}`, {
 // `TOOL_BODY_INDENT + LINE_THICKNESS + space-3` (19) and the header's
 // `iconSize.md + space-1` (20) so summary text aligns with title text.
 export const toolBodyContent = style({
+  // Keep child margins inside this line-bearing box. The gap bridge starts at
+  // the row bottom, so a collapsed bottom margin leaves an unpainted segment.
+  display: 'flow-root',
   marginLeft: `${TOOL_BODY_INDENT}px`,
   paddingLeft: 'calc(var(--space-3) + 1px)',
   paddingRight: 'var(--space-3)',

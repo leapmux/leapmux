@@ -112,9 +112,183 @@ func TestZCodeSubagent_SpawnResultClosesTheRegistryRowAndTheChild(t *testing.T) 
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
 	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	reports := child.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "1 file", reports[0]["text"])
 
 	_, stillOpen := a.children.child("spawn-1")
 	assert.False(t, stillOpen, "the child index is dropped with the spawn it belonged to")
+}
+
+func TestZCodeSubagent_BackgroundLaunchIsNotAChildReport(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
+		`{"kind":"result","toolCallId":"spawn-1","result":{"success":true,"content":"Async agent launched successfully.\nagentId: agent-1"}}`))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusRunning, rows[0].Status,
+		"the Agent result acknowledges launch; the background lifecycle closes the row later")
+	_, stillOpen := a.children.child("spawn-1")
+	assert.True(t, stillOpen)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	assert.Empty(t, child.LeapMuxNotifications())
+}
+
+func TestZCodeSubagent_MessageEventRoutesToTheChild(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"agentId":"agent-1","agentType":"Explore","childSessionId":"child-session","parentToolCallId":"spawn-1","status":"running","description":"Inspect the parser","prompt":"Find the parser."}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+		`{"agentId":"agent-1","agentType":"Explore","childSessionId":"child-session","parentToolCallId":"spawn-1","summaryText":"Parser report","message":"The parser is in parser.go."}`))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	require.NotEmpty(t, rows[0].ChildAgentID)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	require.Len(t, child.Messages(), 1)
+	assert.JSONEq(t, `{"content":"Find the parser."}`, string(child.Messages()[0].Content))
+	reports := child.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "The parser is in parser.go.", reports[0]["text"])
+	assert.Empty(t, sink.LeapMuxNotifications(), "the foreground Agent result owns the parent handback")
+}
+
+func TestZCodeSubagent_ReplayedLifecycleEventKeepsOneReportIdentity(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.handleZCodeSubagentLifecycle(zcodeEventEnvelope{
+		EventID: "report-event-1",
+		Payload: json.RawMessage(`{"agentId":"agent-1","parentToolCallId":"spawn-1","prompt":"Inspect.","message":"Draft report"}`),
+	})
+	a.handleZCodeSubagentLifecycle(zcodeEventEnvelope{
+		EventID: "report-event-1",
+		Payload: json.RawMessage(`{"agentId":"agent-1","parentToolCallId":"spawn-1","message":"Corrected report"}`),
+	})
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	assert.Len(t, child.LeapMuxNotifications(), 1, "a replayed event must not create a second report row")
+}
+
+func TestZCodeSubagent_DistinctLifecycleEventsKeepIdenticalReports(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	for _, eventID := range []string{"report-event-1", "report-event-2"} {
+		a.handleZCodeSubagentLifecycle(zcodeEventEnvelope{
+			EventID: eventID,
+			Payload: json.RawMessage(`{"agentId":"agent-1","parentToolCallId":"spawn-1","prompt":"Inspect.","message":"Same report"}`),
+		})
+	}
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	assert.Len(t, child.LeapMuxNotifications(), 2, "distinct provider events must not collapse because their text matches")
+}
+
+func TestDecodeZCodeSubagentLifecycleTransition(t *testing.T) {
+	t.Parallel()
+
+	event := zcodeEventEnvelope{Payload: json.RawMessage(`{
+      "parentToolCallId":"spawn-1",
+      "description":"  Inspect the parser  ",
+      "agentType":"Explore",
+      "prompt":"Inspect.",
+      "status":"completed",
+      "summaryText":"Summary report",
+      "text":"Text report",
+      "message":"  Final report  ",
+      "error":"  model request failed  "
+    }`)}
+
+	transition, ok := decodeZCodeSubagentLifecycleTransition(event)
+	require.True(t, ok)
+	assert.Equal(t, "spawn-1", transition.rowKey)
+	assert.Equal(t, "Inspect the parser", transition.title)
+	assert.Equal(t, "Inspect.", transition.prompt)
+	assert.Equal(t, bgtask.StatusCompleted, transition.status)
+	assert.True(t, transition.final)
+	assert.Equal(t, "Final report", transition.report.Text)
+	assert.Equal(t, zcodeFinalReportID("spawn-1"), transition.reportID)
+	assert.Equal(t, "model request failed", transition.failure)
+}
+
+func TestZCodeSubagent_LifecycleAndAgentResultPersistOneReport(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+		`{"agentId":"agent-1","agentType":"Explore","parentToolCallId":"spawn-1","status":"completed","message":"1 file"}`))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated, zcodeSpawnResult))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	require.Len(t, child.Messages(), 1, "the child keeps only its prompt as a plain message")
+	require.Len(t, child.LeapMuxNotifications(), 1,
+		"the Agent result must not copy a lifecycle report into the child a second time")
+	assert.Empty(t, sink.LeapMuxNotifications(), "the foreground Agent result owns the parent handback")
+}
+
+func TestZCodeSubagent_FinalLifecycleClosesWithoutAnAgentResult(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
+		`{"kind":"result","toolCallId":"spawn-1","result":{"success":true,"content":"Async agent launched successfully.\nagentId: agent-1"}}`))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated,
+		`{"agentId":"agent-1","agentType":"Explore","parentToolCallId":"spawn-1","status":"completed","message":"Done."}`))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+	require.Len(t, sink.LeapMuxNotifications(), 1, "a background run has no later Agent result for the parent")
+}
+
+func TestZCodeSubagent_FailedLifecycleNotificationStaysInTheChild(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"agentId":"agent-1","agentType":"Explore","childSessionId":"child-session","parentToolCallId":"spawn-1","status":"running","prompt":"Inspect."}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+		`{"agentId":"agent-1","agentType":"Explore","childSessionId":"child-session","parentToolCallId":"spawn-1","status":"failed","error":"model request failed"}`))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	require.Len(t, child.Messages(), 2)
+	var assembled map[string]string
+	require.NoError(t, json.Unmarshal(child.Messages()[1].Content, &assembled))
+	assert.Equal(t, "model request failed", assembled[contracts.AssembledMessageFieldText])
+	assert.Equal(t, string(MessageCompletionError), assembled[contracts.AssembledMessageFieldCompletion])
+	assert.Empty(t, sink.Messages(), "the child failure notification must not leak into the parent transcript")
 }
 
 // A failed spawn closes its row as failed, so the sidebar does not keep a finished
@@ -189,7 +363,7 @@ func TestZCodeChildIndex_ZeroValueIsUsable(t *testing.T) {
 	assert.False(t, ok)
 	_, ok = index.takeChild("nothing")
 	assert.False(t, ok)
-	assert.Empty(t, index.takeTitle("nothing"))
+	assert.Empty(t, index.title("nothing"))
 	index.forgetTool("nothing")
 	index.clear()
 
@@ -321,21 +495,28 @@ func TestZCodeSubagent_AShellTasksRowSurvivesItsLaunchToolCall(t *testing.T) {
 		"the command is still running; only its LAUNCH returned")
 }
 
-// A subagent that answers with text alone makes no tool call of its own, so no child
-// transcript is ever created and takeTitle never runs. Without a sweep at the close the
-// entry is held for the process's life -- the rule pendingPrompts already states.
-func TestZCodeSubagent_ASpawnWithNoToolCallsDropsItsRememberedTitle(t *testing.T) {
+// A subagent that answers with text alone still gets a transcript with its prompt and
+// report. The tab must not depend on the child making a tool call first.
+func TestZCodeSubagent_ASpawnWithNoToolCallsPersistsItsPromptAndReport(t *testing.T) {
 	t.Parallel()
 
 	sink := &recordingControlSink{}
 	a := newZCodeTestAgent(t, sink)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
-	require.NotEmpty(t, a.children.titles, "the spawn's label is held for the transcript to come")
+	require.Len(t, sink.ChildAgentIDs(), 1)
 
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated, zcodeSpawnResult))
-	assert.Empty(t, a.children.takeTitle("spawn-1"), "the label is dropped when the spawn ends")
-	assert.Empty(t, a.children.titles)
+	assert.Empty(t, a.children.title("spawn-1"), "the label is dropped when the spawn ends")
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	require.Len(t, child.Messages(), 1)
+	assert.JSONEq(t, `{"content":"count the files"}`, string(child.Messages()[0].Content))
+	reports := child.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "1 file", reports[0]["text"])
 }
 
 // One subagent, one transcript and one row, whichever event creates it first. Two

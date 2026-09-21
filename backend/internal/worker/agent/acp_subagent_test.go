@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -21,6 +22,8 @@ func TestACP_SubagentFromToolCall_OpenCodeSpawnShape(t *testing.T) {
 		assert.Equal(t, "tc-1", obs.RowKey)
 		assert.Equal(t, "build feature", obs.Title)
 		assert.Equal(t, bgtask.StatusRunning, obs.Status)
+		assert.Equal(t, "tc-1", obs.ChildAgentKey)
+		assert.Equal(t, "do the thing", obs.Prompt)
 		assert.False(t, obs.CloseRow)
 	}
 }
@@ -74,8 +77,54 @@ func TestACP_SubagentFromToolCallUpdate_RekeysToSessionID(t *testing.T) {
 		// The spawn row was opened under the toolCallId; RenameFrom carries it so
 		// the translator renames the single row before closing (one row, not two).
 		assert.Equal(t, "tc-1", obs.RenameFrom, "rename-from the spawn toolCallId")
+		assert.Equal(t, "child-sess-1", obs.ChildAgentKey)
 		assert.True(t, obs.CloseRow)
 	}
+}
+
+func TestACP_OpenCodeBackgroundLaunchIsNotAReport(t *testing.T) {
+	t.Parallel()
+	var content []acpToolCallBlock
+	require.NoError(t, json.Unmarshal([]byte(`[{"type":"content","content":{"type":"text","text":"Background task started"}}]`), &content))
+	obs := openCodeSubagentFromToolCallUpdate(acpToolCallUpdateEnvelope{
+		ToolCallID: "tc-1",
+		Status:     "completed",
+		RawOutput:  json.RawMessage(`{"metadata":{"sessionId":"child-sess-1","background":true}}`),
+		Content:    content,
+	})
+	require.NotNil(t, obs)
+	assert.Empty(t, obs.Report.Text)
+}
+
+func TestACP_OpenCodeFamilyPersistsThePromptAndReportInTheChildTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	b := &acpBase{
+		sink:                       sink,
+		subagentFromToolCall:       openCodeSubagentFromToolCall,
+		subagentFromToolCallUpdate: openCodeSubagentFromToolCallUpdate,
+	}
+	b.handleToolCall(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"task-call","title":"task","kind":"think","status":"pending","rawInput":{"description":"Inspect the code","prompt":"Read the entry points.","subagent_type":"explore"}}`))
+	completed := json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"task-call","status":"completed","rawOutput":{"metadata":{"sessionId":"child-session"}},"content":[{"type":"content","content":{"type":"text","text":"The parser is in parser.go."}}]}`)
+	b.handleToolCallUpdate(completed)
+	// session/load can replay the completed task. The final registry status is
+	// the durable guard against copying the same report into the child again.
+	b.handleToolCallUpdate(completed)
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "child-session", rows[0].RowKey)
+	require.NotEmpty(t, rows[0].ChildAgentID)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	messages := child.Messages()
+	require.Len(t, messages, 1)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, messages[0].Source)
+	assert.JSONEq(t, `{"content":"Read the entry points."}`, string(messages[0].Content))
+	reports := child.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "The parser is in parser.go.", reports[0]["text"])
 }
 
 // TestACP_SubagentFromToolCallUpdate_NoSessionIDKeepsSpawnKey covers the case
@@ -91,6 +140,17 @@ func TestACP_SubagentFromToolCallUpdate_NoSessionIDKeepsSpawnKey(t *testing.T) {
 		assert.Equal(t, "tc-1", obs.RowKey)
 		assert.Empty(t, obs.RenameFrom, "no rename when no session id surfaced")
 	}
+}
+
+func TestOpenCodeSubagentReport(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "The report.", openCodeSubagentReport(`<task id="child" state="completed">
+<task_result>
+The report.
+</task_result>
+</task>`, false))
+	assert.Equal(t, "plain report", openCodeSubagentReport(" plain report ", false))
+	assert.Empty(t, openCodeSubagentReport("Background task started", true))
 }
 
 func TestACP_SubagentFromToolCallUpdate_InProgressReturnsNil(t *testing.T) {
@@ -150,6 +210,20 @@ func TestACP_GooseSubagentFromToolCallUpdate_ToolRequest(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestACP_GooseBackgroundLaunchIsNotAReport(t *testing.T) {
+	t.Parallel()
+	var content []acpToolCallBlock
+	require.NoError(t, json.Unmarshal([]byte(`[{"type":"content","content":{"type":"text","text":"Delegation started"}}]`), &content))
+	obs := gooseSubagentFromToolCallUpdate(acpToolCallUpdateEnvelope{
+		ToolCallID: "delegate-call",
+		Status:     "completed",
+		RawInput:   json.RawMessage(`{"async":true}`),
+		Content:    content,
+	})
+	require.NotNil(t, obs)
+	assert.Empty(t, obs.Report.Text)
 }
 
 // A request that states no tool call is still a request, so the row opens with the
@@ -580,8 +654,6 @@ func TestACP_WireDecode_GooseMetaParses(t *testing.T) {
 	}
 }
 
-// TestACP_ApplySubagentObservation_SpawnRowKeyClosesBothRows verifies that a
-// close observation carrying SpawnRowKey gives it a final status the ORIGINAL spawn row
 // TestACP_ApplySubagentObservation_RenameFromCollapsesToOneFinalRow
 // verifies the rename path: a spawn opens a row under the toolCallId, then a
 // final update re-keys it to the child session id via RenameFrom. One row
@@ -768,9 +840,8 @@ func TestACPSubagentPrompt_FirstWriteWins(t *testing.T) {
 	assert.Equal(t, "first", b.subagentPrompts.peek("tc-1"))
 }
 
-// Goose is the only ACP provider that opens a child transcript, so it is the
-// only one whose detector reads the spawn's task text. It spells that field
-// `instructions` on the delegate tool (summon.rs).
+// Each ACP provider that exposes a spawn prompt carries it into the child
+// transcript. Goose spells that field `instructions` on the delegate tool.
 func TestACPSubagentDetectors_CarryTheSpawnPrompt(t *testing.T) {
 	t.Parallel()
 
@@ -782,26 +853,19 @@ func TestACPSubagentDetectors_CarryTheSpawnPrompt(t *testing.T) {
 	})
 	require.NotNil(t, goose)
 	assert.Equal(t, "Review the diff.", goose.Prompt)
+	assert.Equal(t, "tc-1", goose.ChildAgentKey)
 }
 
-// A registry-only provider must leave Prompt EMPTY even when its spawn payload
-// carries one. It never reports a ChildAgentKey, so subagentPrompts.take never
-// runs and the entry can only be dropped by the closing observation -- which
-// Reasonix does not produce at all (it wires no update hook). Recording a
-// prompt here holds a string for the life of the agent process that nothing
-// will ever read.
-func TestACPSubagentDetectors_RegistryOnlyProvidersRecordNoPrompt(t *testing.T) {
+func TestACPSubagentDetectors_OpenCodeAndReasonixCarryPrompts(t *testing.T) {
 	t.Parallel()
 
-	// OpenCode / Kilo: `prompt` on the task tool (tool/task.ts). Still the spawn
-	// discriminator -- its PRESENCE is what identifies the shape.
 	oc := openCodeSubagentFromToolCall(acpToolCallEnvelope{
 		ToolCallID: "tc-2",
 		RawInput:   json.RawMessage(`{"description":"scan","prompt":"Find the bug.","subagent_type":"general"}`),
 	})
-	require.NotNil(t, oc, "the prompt field still discriminates the spawn shape")
-	assert.Empty(t, oc.Prompt)
-	assert.Empty(t, oc.ChildAgentKey, "no child transcript means nothing can spend a prompt")
+	require.NotNil(t, oc)
+	assert.Equal(t, "Find the bug.", oc.Prompt)
+	assert.Equal(t, "tc-2", oc.ChildAgentKey)
 
 	rx := reasonixSubagentFromToolCall(acpToolCallEnvelope{
 		ToolCallID: "tc-3",
@@ -809,8 +873,8 @@ func TestACPSubagentDetectors_RegistryOnlyProvidersRecordNoPrompt(t *testing.T) 
 		RawInput:   json.RawMessage(`{"description":"scan","prompt":"Trace it."}`),
 	})
 	require.NotNil(t, rx)
-	assert.Empty(t, rx.Prompt)
-	assert.Empty(t, rx.ChildAgentKey)
+	assert.Equal(t, "Trace it.", rx.Prompt)
+	assert.Equal(t, "tc-3", rx.ChildAgentKey)
 }
 
 // A spawn payload with no task text must leave Prompt empty rather than
@@ -849,9 +913,87 @@ func TestACP_OpenCodeSpawnDetectedOnTheInProgressUpdate(t *testing.T) {
 	assert.Equal(t, "call-1", obs.RowKey)
 	assert.Equal(t, "Run echo kilo-done", obs.Title)
 	assert.Equal(t, bgtask.StatusRunning, obs.Status)
-	// Registry-only: the prompt discriminates the shape but is not recorded.
-	assert.Empty(t, obs.Prompt)
+	assert.Equal(t, "Run it.", obs.Prompt)
+	assert.Equal(t, "call-1", obs.ChildAgentKey)
 	assert.False(t, obs.CloseRow)
+}
+
+func TestACP_GoosePersistsTheFinalReportAfterItsToolRequests(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	b := &acpBase{
+		sink:                       sink,
+		subagentFromToolCall:       gooseSubagentFromToolCall,
+		subagentFromToolCallUpdate: gooseSubagentFromToolCallUpdate,
+	}
+	b.handleToolCall(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"delegate-call","title":"Review","status":"pending","rawInput":{"instructions":"Review the diff."},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
+	b.handleToolCallUpdate(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"delegate-call","status":"completed","content":[{"type":"content","content":{"type":"text","text":"No defects found."}}]}`))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	require.NotEmpty(t, rows[0].ChildAgentID)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	require.Len(t, child.Messages(), 1)
+	assert.JSONEq(t, `{"content":"Review the diff."}`, string(child.Messages()[0].Content))
+	reports := child.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "No defects found.", reports[0]["text"])
+}
+
+func TestACP_ReasonixPersistsTheFinalReportInTheChildTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	b := &acpBase{
+		sink:                       sink,
+		subagentFromToolCall:       reasonixSubagentFromToolCall,
+		subagentFromToolCallUpdate: reasonixSubagentFromToolCallUpdate,
+	}
+	b.handleToolCall(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"task-call","title":"task","status":"pending","rawInput":{"description":"Inspect sample","prompt":"Read sample.py"}}`))
+	b.handleToolCallUpdate(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"task-call","title":"task","status":"completed","rawInput":{"description":"Inspect sample","prompt":"Read sample.py"},"content":[{"type":"content","content":{"type":"text","text":"Subagent outcome: status=completed retryable=false\n\nFinal answer:\nThe sample is valid."}}]}`))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	require.NotEmpty(t, rows[0].ChildAgentID)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	require.Len(t, child.Messages(), 1)
+	assert.JSONEq(t, `{"content":"Read sample.py"}`, string(child.Messages()[0].Content))
+	reports := child.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "The sample is valid.", reports[0]["text"])
+}
+
+func TestACP_SubagentReportLookupFailureWritesNoUnverifiedReport(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	b := &acpBase{sink: sink}
+	b.applySubagentObservation(&acpSubagentObservation{
+		RowKey: "task-call", Title: "Inspect", Status: bgtask.StatusRunning,
+		ChildAgentKey: "task-call", Prompt: "Inspect it.",
+	})
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+
+	sink.lookupErr = errors.New("registry read failed")
+	b.applySubagentObservation(&acpSubagentObservation{
+		RowKey: "task-call", Status: bgtask.StatusCompleted, CloseRow: true,
+		Mode: acpModeCloseOnly, ReportID: "call-1", Report: SubagentReport{Text: "Unverified report"},
+	})
+
+	assert.Empty(t, child.LeapMuxNotifications())
+}
+
+func TestReasonixSubagentReportPreservesReadOnlyProse(t *testing.T) {
+	t.Parallel()
+	text := "Subagent outcome: status=failed retryable=false\n\nFinal answer:\nQuoted text"
+	assert.Equal(t, text, reasonixSubagentReport(text, false))
+	assert.Equal(t, "Quoted text", reasonixSubagentReport(text, true))
 }
 
 // A non-final update on a PLAIN tool must not open a subagent row.

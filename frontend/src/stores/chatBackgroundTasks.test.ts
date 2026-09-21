@@ -59,6 +59,22 @@ describe('protoBackgroundTaskToStore', () => {
     expect(got.status).toBe('completed')
   })
 
+  it('maps workflow kind', () => {
+    const got = protoBackgroundTaskToStore(proto({ id: 'r1', kind: BackgroundTaskKind.WORKFLOW, status: BackgroundTaskStatus.RUNNING }))
+    expect(got.kind).toBe('workflow')
+  })
+
+  it('preserves an unknown kind without subagent behavior', () => {
+    const got = protoBackgroundTaskToStore(proto({
+      id: 'r1',
+      kind: 99 as BackgroundTaskKind,
+      status: BackgroundTaskStatus.RUNNING,
+    }))
+    expect(got.kind).toBe('unknown')
+    expect(got.rawKind).toBe(99)
+    expect(opensSubagentTranscript({ ...got, childAgentId: 'child-1' })).toBe(false)
+  })
+
   it('collapses empty optionals to undefined', () => {
     const got = protoBackgroundTaskToStore(proto({ id: 'r1', status: BackgroundTaskStatus.PENDING, title: 't' }))
     expect(got.childAgentId).toBeUndefined()
@@ -79,7 +95,7 @@ describe('countActiveBackgroundTasks', () => {
 })
 
 describe('sortBackgroundTasks', () => {
-  it('active first, running before pending, then terminal', () => {
+  it('sorts active first, running before pending, then finished', () => {
     const items = [
       item({ rowKey: 'completed', status: 'completed' }),
       item({ rowKey: 'pending', status: 'pending' }),
@@ -106,7 +122,7 @@ describe('groupBackgroundTasks', () => {
 })
 
 describe('backgroundTaskEndLabel', () => {
-  it('labels each terminal status', () => {
+  it('labels each finished status', () => {
     expect(backgroundTaskEndLabel('completed')).toBe('Completed')
     expect(backgroundTaskEndLabel('failed')).toBe('Failed')
     expect(backgroundTaskEndLabel('stopped')).toBe('Stopped')

@@ -237,8 +237,7 @@ func CleanTitleRunes(s string, max int) string {
 	return strings.TrimSpace(truncateRunes(validate.CleanName(s), max))
 }
 
-// Kind discriminates subagent rows (an openable transcript tab) from shell
-// rows (a background process with no transcript).
+// Kind discriminates subagent rows, shell processes, and workflow runs.
 //
 // It is a DEFINED type over the proto enum, not an independent numbering, so
 // the ordinal this package holds, the ordinal agent_background_tasks.kind
@@ -252,6 +251,7 @@ const (
 	KindUnspecified = Kind(leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_UNSPECIFIED)
 	KindSubagent    = Kind(leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT)
 	KindShell       = Kind(leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL)
+	KindWorkflow    = Kind(leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_WORKFLOW)
 )
 
 // String gives the kind's name as the proto enum's own generated name
@@ -281,7 +281,7 @@ func KindBuckets() []int64 {
 //
 // A kind missing from this array gets no pool at all, which is a row the seed
 // never loads rather than one it files under the wrong heading.
-var Kinds = [...]Kind{KindSubagent, KindShell}
+var Kinds = [...]Kind{KindSubagent, KindShell, KindWorkflow}
 
 // Status is the canonical background-task status, a defined type over the proto
 // enum for the same reason Kind is one: agent_background_tasks.status stores

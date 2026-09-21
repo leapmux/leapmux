@@ -4,18 +4,12 @@ import { CODEX_ITEM, CODEX_METHOD } from '~/generated/contracts/codex-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
 import { compactionMetaFromBoundary } from '../../../model/notification'
-import { CODEX_RATE_LIMITS_METHOD, codexRateLimitEntries } from '../rateLimits'
+import { codexHookIsFailureOrUnknown } from '../hookNotifications'
+import { codexMcpOauthIsFailureOrUnknown, codexMcpStartupIsFailureOrUnknown } from '../mcpNotifications'
 
 const STARTUP_METHOD = CODEX_METHOD.McpServerStartupStatusUpdated
 
-type StartupKind = 'starting' | 'ready' | 'failed' | 'cancelled' | 'unknown'
-
-const STARTUP_KIND_PREFIX: Record<Exclude<StartupKind, 'unknown'>, string> = {
-  starting: 'Starting MCP server',
-  ready: 'MCP server ready',
-  failed: 'MCP server failed to start',
-  cancelled: 'MCP server startup cancelled',
-}
+type StartupKind = 'failed' | 'unknown'
 
 interface ParsedMcpStartup {
   kind: StartupKind
@@ -45,37 +39,52 @@ function parseMcpStartup(parsed: Record<string, unknown>): ParsedMcpStartup | nu
   const { state, error } = startupStateAndError(params?.status, params?.error)
   const rawState = state.trim()
   const errorSuffix = error.trim() ? ` (${error.trim()})` : ''
-  // `Object.hasOwn`, not `in`: `in` walks the prototype chain and `Object.hasOwn`
-  // does not. `rawState` comes straight off the wire, so `in` admits `toString`
-  // past the cast below, and the prefix read then renders the function's source.
-  const kind: StartupKind = Object.hasOwn(STARTUP_KIND_PREFIX, rawState)
-    ? (rawState as Exclude<StartupKind, 'unknown'>)
-    : 'unknown'
+  const kind: StartupKind = rawState === 'failed' ? 'failed' : 'unknown'
   return { kind, rawState, name, errorSuffix }
 }
 
-// `failed`/`cancelled`/`unknown` carry the error suffix into the rendered
-// string; `starting`/`ready` do not (they aren't error states).
-function appendsSuffix(kind: StartupKind): boolean {
-  return kind !== 'starting' && kind !== 'ready'
-}
-
 function startupGroupEntry(parsed: Record<string, unknown>): NotificationEntry | null {
+  if (!codexMcpStartupIsFailureOrUnknown(parsed))
+    return null
   const p = parseMcpStartup(parsed)
   if (!p)
     return null
-  const suffix = appendsSuffix(p.kind) ? p.errorSuffix : ''
   const stateLabel = p.rawState || 'unknown'
   const prefix = p.kind === 'unknown'
     ? `MCP server status update (${stateLabel})`
-    : STARTUP_KIND_PREFIX[p.kind]
+    : 'MCP server failed to start'
   // A name-less startup has no server to group under the prefix, so render the
-  // prefix alone as a plain line (e.g. "MCP server ready") rather than grouping
-  // a placeholder "unknown" beneath it.
+  // prefix alone as a plain line rather than grouping a placeholder beneath it.
   if (!p.name)
-    return { kind: 'text', text: `${prefix}${suffix}` }
+    return { kind: 'text', text: `${prefix}${p.errorSuffix}` }
   const groupKey = p.kind === 'unknown' ? `status:${stateLabel}` : p.kind
-  return { kind: 'group', groupKey, prefix, entry: `${p.name}${suffix}` }
+  return { kind: 'group', groupKey, prefix, entry: `${p.name}${p.errorSuffix}` }
+}
+
+function mcpOauthFailureEntry(parsed: Record<string, unknown>): NotificationEntry | null {
+  if (!codexMcpOauthIsFailureOrUnknown(parsed))
+    return null
+  const params = pickObject(parsed, 'params')
+  const name = pickString(params, 'name').trim()
+  const error = pickString(params, 'error').trim()
+  const outcome = params?.success === false ? 'failed' : 'status unknown'
+  const subject = name ? ` for ${name}` : ''
+  const detail = error ? `: ${error}` : ''
+  return { kind: 'status', text: `MCP OAuth login ${outcome}${subject}${detail}` }
+}
+
+function hookFailureEntry(parsed: Record<string, unknown>): NotificationEntry | null {
+  if (!codexHookIsFailureOrUnknown(parsed))
+    return null
+  const run = pickObject(pickObject(parsed, 'params'), 'run')
+  const status = pickString(run, 'status') || 'status unknown'
+  const entries = Array.isArray(run?.entries) ? run.entries : []
+  const entryText = entries
+    .map(entry => pickString(isObject(entry) ? entry : undefined, 'text').trim())
+    .filter(Boolean)
+    .join('; ')
+  const detail = entryText || pickString(run, 'statusMessage').trim()
+  return { kind: 'status', text: `Hook ${status}${detail ? `: ${detail}` : ''}` }
 }
 
 /**
@@ -91,6 +100,8 @@ function codexCompactionPhase(m: Record<string, unknown>): CompactionPhase | nul
   // rows are persisted, so Codex still reads its own history.
   if (m.type === 'system' && m.subtype === 'compact_boundary')
     return 'end'
+  if (m.type === 'system' && m.subtype === 'status' && m.status === 'compacting')
+    return 'start'
   const item = pickObject(m, 'item') ?? pickObject(pickObject(m, 'params'), 'item')
   if (item?.type !== CODEX_ITEM.ContextCompaction)
     return null
@@ -123,12 +134,17 @@ export function codexNotificationEntry(msg: Record<string, unknown>): Notificati
   if (msg.method === CODEX_METHOD.SkillsChanged || msg.method === CODEX_METHOD.RemoteControlStatusChanged)
     return []
 
+  const oauthFailure = mcpOauthFailureEntry(msg)
+  if (oauthFailure)
+    return [oauthFailure]
+
   const startup = startupGroupEntry(msg)
   if (startup)
     return [startup]
 
-  if (msg.method === CODEX_RATE_LIMITS_METHOD)
-    return codexRateLimitEntries(msg)
+  const hookFailure = hookFailureEntry(msg)
+  if (hookFailure)
+    return [hookFailure]
 
   const phase = codexCompactionPhase(msg)
   if (phase) {

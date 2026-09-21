@@ -128,13 +128,16 @@ describe('kilo classify', () => {
   })
 
   it('classifies settings_changed as notification', () => {
-    const parent = { type: 'settings_changed' }
-    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+    const parent = { type: 'settings_changed', changes: { model: { old: 'a', new: 'b' } } }
+    expect(plugin?.transcript.classify(input(parent)).kind).toBe('notification')
   })
 
   it('classifies agent_error as notification', () => {
     const parent = { type: 'agent_error', error: 'something went wrong' }
-    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({
+      kind: 'notification',
+      entries: [{ kind: 'text', text: 'something went wrong' }],
+    })
   })
 
   it('classifies user content', () => {
@@ -164,7 +167,7 @@ describe('kilo classify', () => {
     }
     expect(plugin?.transcript.classify(input(undefined, wrapper))).toEqual({
       kind: 'notification',
-      messages: wrapper.messages,
+      entries: [{ kind: 'text', text: 'Interrupted' }],
     })
   })
 
@@ -191,9 +194,9 @@ describe('the system-frame guard (kilo)', () => {
     expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'hidden' })
   })
 
-  it('draws a system frame the hidden rules do not match', () => {
+  it('keeps a system frame with no entry for the last-resort card', () => {
     const parent = { type: 'system', subtype: 'compact_boundary' }
-    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'notification', messages: [parent] })
+    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'notification', entries: [] })
   })
 })
 

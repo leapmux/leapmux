@@ -59,6 +59,16 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [ZCODE_TOOL.CronUpdate]: done(ZCODE_TOOL.CronUpdate, { id: 'c1' }, { success: true, content: 'updated' }),
   [ZCODE_TOOL.CronDelete]: done(ZCODE_TOOL.CronDelete, { id: 'c1' }, { success: true, content: 'deleted' }),
   [ZCODE_TOOL.Skill]: done(ZCODE_TOOL.Skill, { skill: 'deploy' }, { success: true, content: 'ran' }),
+  [ZCODE_TOOL.CreateWorkflow]: done(ZCODE_TOOL.CreateWorkflow, { name: 'review', script: 'return "done"' }, { success: true, content: 'started' }),
+  [ZCODE_TOOL.AmendWorkflow]: done(ZCODE_TOOL.AmendWorkflow, { run_id: 'dwf-1', path: '.zcode/workflow-drafts/review.dwf.ts' }, { success: true, content: 'amended' }),
+  [ZCODE_TOOL.SaveWorkflow]: done(ZCODE_TOOL.SaveWorkflow, { name: 'review', scope: 'project', script_path: '.zcode/workflow-drafts/review.dwf.ts' }, { success: true, content: 'saved' }),
+  [ZCODE_TOOL.ListSavedWorkflows]: done(ZCODE_TOOL.ListSavedWorkflows, {}, { success: true, content: 'review' }),
+  [ZCODE_TOOL.ListModels]: done(ZCODE_TOOL.ListModels, {}, { success: true, content: 'GLM-5.3' }),
+  [ZCODE_TOOL.EvalWorkflowSnippet]: done(ZCODE_TOOL.EvalWorkflowSnippet, { code: 'return 1' }, { success: true, content: '1' }),
+  [ZCODE_TOOL.ListWorkflowRuns]: done(ZCODE_TOOL.ListWorkflowRuns, {}, { success: true, content: 'dwf-1' }),
+  [ZCODE_TOOL.GetWorkflowRun]: done(ZCODE_TOOL.GetWorkflowRun, { run_id: 'dwf-1' }, { success: true, content: 'running' }),
+  [ZCODE_TOOL.ResumeWorkflowRun]: done(ZCODE_TOOL.ResumeWorkflowRun, { run_id: 'dwf-1' }, { success: true, content: 'resumed' }),
+  [ZCODE_TOOL.ResolveWorkflowQuestion]: done(ZCODE_TOOL.ResolveWorkflowQuestion, { question_id: 'q-1', answer: 'yes' }, { success: true, content: 'answered' }),
 }
 
 /**
@@ -121,5 +131,6 @@ export const ZCODE_TOOL_RESULTS: ToolResultCheck = {
     [ZCODE_TOOL.Js]: 'A sandbox result this build reads only as text.',
     [ZCODE_TOOL.JsAddNodeModuleDir]: 'A sandbox result this build reads only as text.',
     [ZCODE_TOOL.JsReset]: 'A sandbox result this build reads only as text.',
+    [ZCODE_TOOL.EvalWorkflowSnippet]: 'A workflow snippet result this build reads only as text.',
   },
 }

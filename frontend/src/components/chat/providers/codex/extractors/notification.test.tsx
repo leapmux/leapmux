@@ -8,21 +8,28 @@ const { renderThreadText } = await import('~/test-support/messageRenderProbes')
 
 const renderText = (messages: unknown[]): string => renderThreadText(messages, AgentProvider.CODEX)
 
+describe('codex compaction status', () => {
+  it('renders an in-progress status as the compaction start', () => {
+    expect(renderText([{ type: 'system', subtype: 'status', status: 'compacting' }]))
+      .toBe('Compacting context...')
+  })
+})
+
 describe('codex single MCP startup status', () => {
   // A standalone Codex notification renders through the same
   // renderNotificationThread path as a consolidated one (a one-element thread).
-  it('renders starting status', () => {
+  it('does not render starting status', () => {
     expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'starting', error: null },
-    }])).toBe('Starting MCP server: codex_apps')
+    }])).toBe('')
   })
 
-  it('renders ready status', () => {
+  it('does not render ready status', () => {
     expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'ready', error: null },
-    }])).toBe('MCP server ready: codex_apps')
+    }])).toBe('')
   })
 
   it('renders failed status with error', () => {
@@ -32,11 +39,11 @@ describe('codex single MCP startup status', () => {
     }])).toBe('MCP server failed to start: codex_apps (boom)')
   })
 
-  it('renders cancelled status', () => {
+  it('does not render cancelled status', () => {
     expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'cancelled', error: null },
-    }])).toBe('MCP server startup cancelled: codex_apps')
+    }])).toBe('')
   })
 
   it('supports nested upstream-style status payloads', () => {
@@ -55,13 +62,11 @@ describe('codex single MCP startup status', () => {
     }])).toBe('MCP server status update (warming): codex_apps (still booting)')
   })
 
-  it('renders a name-less startup as the bare prefix, with no "unknown" placeholder', () => {
-    // A startup notification with no server name has nothing to group under the
-    // prefix, so it renders the prefix alone rather than "<prefix>: unknown".
+  it('does not render a name-less ready status', () => {
     expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { status: 'ready', error: null },
-    }])).toBe('MCP server ready')
+    }])).toBe('')
   })
 
   it('renders a name-less failed startup with its error suffix and no placeholder', () => {
@@ -78,10 +83,8 @@ describe('codex single MCP startup status', () => {
     }])).toBe('MCP server status update (warming) (still booting)')
   })
 
-  // The state comes straight off the wire, and the prefix table is a plain object.
-  // `in` WALKS the prototype chain and `Object.hasOwn` does not, so the guard used to
-  // admit `toString` past its own cast -- and the read then rendered the function's
-  // own source text as the prefix of the line.
+  // These values are JavaScript prototype property names. Treat each as an unknown
+  // wire state, never as a property lookup that supplies function source text.
   it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty'])('falls back for a state called %s', (state) => {
     expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
@@ -97,10 +100,8 @@ describe('codex single MCP startup status', () => {
   })
 })
 
-describe('codex rate-limit reached-type notifications', () => {
-  it('surfaces credit depletion even when no window is over threshold', () => {
-    // Windows are well under threshold, so without the reached-type this would
-    // render nothing -- the authoritative signal keeps the block visible.
+describe('codex rate-limit transcript rows', () => {
+  it('does not render credit depletion', () => {
     expect(renderText([{
       method: 'account/rateLimits/updated',
       params: {
@@ -109,11 +110,11 @@ describe('codex rate-limit reached-type notifications', () => {
           primary: { usedPercent: 20, windowDurationMins: 300 },
         },
       },
-    }])).toBe('Out of credits')
+    }])).toBe('')
   })
 
-  it('does not double-report when a tier line already conveys the throttle', () => {
-    const text = renderText([{
+  it('does not render a depleted window', () => {
+    expect(renderText([{
       method: 'account/rateLimits/updated',
       params: {
         rateLimits: {
@@ -121,9 +122,40 @@ describe('codex rate-limit reached-type notifications', () => {
           primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: 4102444800 },
         },
       },
-    }])
-    expect(text).toContain('5-hour rate limit')
-    expect(text).not.toContain('Rate limit reached')
+    }])).toBe('')
+  })
+})
+
+describe('codex MCP OAuth notifications', () => {
+  it('does not render a successful login', () => {
+    expect(renderText([{
+      method: 'mcpServer/oauthLogin/completed',
+      params: { name: 'docs', success: true },
+    }])).toBe('')
+  })
+
+  it('renders a failed login', () => {
+    expect(renderText([{
+      method: 'mcpServer/oauthLogin/completed',
+      params: { name: 'docs', success: false, error: 'authorization failed' },
+    }])).toBe('MCP OAuth login failed for docs: authorization failed')
+  })
+})
+
+describe('codex hook notifications', () => {
+  it('renders the failure status and diagnostic text', () => {
+    expect(renderText([{
+      method: 'hook/completed',
+      params: {
+        run: {
+          status: 'failed',
+          eventName: 'preToolUse',
+          sourcePath: '/hooks/check.sh',
+          statusMessage: 'hook failed',
+          entries: [{ kind: 'error', text: 'permission denied' }],
+        },
+      },
+    }])).toContain('Hook failed: permission denied')
   })
 })
 
@@ -150,11 +182,11 @@ describe('renderNotificationThread (Codex provider): MCP startup grouping', () =
       { method: 'mcpServer/startupStatus/updated', params: { name: 'codex_apps', status: 'ready', error: null } },
       { method: 'mcpServer/startupStatus/updated', params: { name: 'other', status: 'failed', error: 'boom' } },
     ])
-    expect(text).toContain('MCP server ready: codex_apps')
+    expect(text).not.toContain('codex_apps')
     expect(text).toContain('MCP server failed to start: other (boom)')
   })
 
-  it('groups multiple servers by startup state', () => {
+  it('groups only failed servers', () => {
     const text = renderText([
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_a', status: 'starting', error: null } },
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_b', status: 'starting', error: null } },
@@ -163,12 +195,12 @@ describe('renderNotificationThread (Codex provider): MCP startup grouping', () =
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_e', status: 'failed', error: 'boom' } },
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_f', status: 'failed', error: 'bad gateway' } },
     ])
-    expect(text).toContain('Starting MCP server: server_a, server_b')
-    expect(text).toContain('MCP server ready: server_c, server_d')
+    expect(text).not.toContain('server_a')
+    expect(text).not.toContain('server_c')
     expect(text).toContain('MCP server failed to start: server_e (boom), server_f (bad gateway)')
   })
 
-  it('preserves ordering around non-startup notifications while grouping startup states', () => {
+  it('keeps visible notifications when non-failed startup states disappear', () => {
     const text = renderText([
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_a', status: 'starting', error: null } },
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_b', status: 'starting', error: null } },
@@ -176,11 +208,6 @@ describe('renderNotificationThread (Codex provider): MCP startup grouping', () =
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_c', status: 'ready', error: null } },
       { method: 'mcpServer/startupStatus/updated', params: { name: 'server_d', status: 'ready', error: null } },
     ])
-    const startingIdx = text.indexOf('Starting MCP server: server_a, server_b')
-    const clearedIdx = text.indexOf('Context cleared')
-    const readyIdx = text.indexOf('MCP server ready: server_c, server_d')
-    expect(startingIdx).toBeGreaterThanOrEqual(0)
-    expect(clearedIdx).toBeGreaterThan(startingIdx)
-    expect(readyIdx).toBeGreaterThan(clearedIdx)
+    expect(text).toBe('Context cleared')
   })
 })

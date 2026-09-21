@@ -68,24 +68,27 @@ describe('claudeRateLimitsFromMessage', () => {
   })
 
   it('keys the tier by the type the event stated', () => {
-    expect(claudeRateLimitsFromMessage(event({ ...FULL }))).toStrictEqual([{ key: 'five_hour', info: FULL }])
+    expect(claudeRateLimitsFromMessage(event({ ...FULL }))).toStrictEqual({
+      mode: 'merge',
+      values: { five_hour: FULL },
+    })
   })
 
   it('keys a tier that states no type as unknown', () => {
     expect(claudeRateLimitsFromMessage(event({ status: 'exceeded' })))
-      .toStrictEqual([{ key: 'unknown', info: { status: 'exceeded' } }])
+      .toStrictEqual({ mode: 'merge', values: { unknown: { status: 'exceeded' } } })
   })
 
-  it('answers an empty list for an event whose info is no object', () => {
-    expect(claudeRateLimitsFromMessage(event('exceeded'))).toStrictEqual([])
-    expect(claudeRateLimitsFromMessage(event(null))).toStrictEqual([])
+  it('answers an empty merge for an event whose info is no object', () => {
+    expect(claudeRateLimitsFromMessage(event('exceeded'))).toStrictEqual({ mode: 'merge', values: {} })
+    expect(claudeRateLimitsFromMessage(event(null))).toStrictEqual({ mode: 'merge', values: {} })
   })
 
   // An array passes a `typeof info === 'object'` test and carries none of the fields
   // the reader picks, so it used to yield one tier keyed `unknown` with an empty info
   // -- a row on the usage meter that states nothing. A record is what the reader needs.
-  it('answers an empty list for an event whose info is an array', () => {
-    expect(claudeRateLimitsFromMessage(event([]))).toStrictEqual([])
-    expect(claudeRateLimitsFromMessage(event([{ ...FULL }]))).toStrictEqual([])
+  it('answers an empty merge for an event whose info is an array', () => {
+    expect(claudeRateLimitsFromMessage(event([]))).toStrictEqual({ mode: 'merge', values: {} })
+    expect(claudeRateLimitsFromMessage(event([{ ...FULL }]))).toStrictEqual({ mode: 'merge', values: {} })
   })
 })

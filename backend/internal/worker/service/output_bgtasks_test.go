@@ -1120,8 +1120,8 @@ func TestBgTask_ShellPoolEvictsShellsOnly(t *testing.T) {
 	assert.Contains(t, keys, "shell-new")
 }
 
-// The cold-start seed must load EVERY pool. A LIMIT of just one cap would
-// return one kind's rows and leave the other pool looking empty, so a reboot
+// The cold-start seed must load every pool. A limit of just one cap would
+// return one kind's rows and leave another pool looking empty, so a reboot
 // would silently re-admit rows past the cap.
 func TestBgTask_SeedLoadsEveryKindPool(t *testing.T) {
 	t.Parallel()
@@ -1144,13 +1144,17 @@ func TestBgTask_SeedLoadsEveryKindPool(t *testing.T) {
 			RowKey: fmt.Sprintf("shell-%d", i), Kind: bgtask.KindShell,
 			Title: "s", Status: bgtask.StatusCompleted,
 		}))
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: fmt.Sprintf("workflow-%d", i), Kind: bgtask.KindWorkflow,
+			Title: "w", Status: bgtask.StatusCompleted,
+		}))
 	}
 
 	// Drop the warm cache so the next read seeds from the DB.
 	svc.Output.CleanupAgent("agent-1")
 	loaded, err := svc.Output.LoadBackgroundTasks(ctx, "agent-1")
 	require.NoError(t, err)
-	assert.Len(t, loaded, bgtask.MaxTasks*len(bgtask.Kinds), "the seed covers both pools, each to its own cap")
+	assert.Len(t, loaded, bgtask.MaxTasks*len(bgtask.Kinds), "the seed covers every pool, each to its own cap")
 }
 
 // A pool is seeded to ITS OWN cap, so a burst in one pool cannot starve another.

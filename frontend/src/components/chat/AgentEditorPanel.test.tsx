@@ -185,7 +185,7 @@ async function waitForControlActionsReady() {
 // updates the outermost stale ancestor before the memo itself. The banner slot
 // has no such ancestor, because `createComponent` untracks the element that its
 // prop getter builds.
-describe('AgentEditorPanel control request lifecycle', () => {
+describe('AgentEditorPanel', () => {
   it('reports an unavailable response handler without accepting the request', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, { requestId: 'permission', payload: toolRequestPayload('Bash'), claimToken: 'claim' })
@@ -784,6 +784,114 @@ describe('agent editor panel', () => {
     expect(screen.getByTestId('send-button')).not.toHaveClass('outline')
   })
 
+  it('stops interrupt loading when the request settles and background work keeps the button visible', async () => {
+    let finishInterrupt: () => void = () => {}
+    const onInterrupt = vi.fn(() => new Promise<void>((resolve) => {
+      finishInterrupt = resolve
+    }))
+    renderPanel({ agentActivity: AgentActivityState.WORKING, onInterrupt })
+
+    const interrupt = screen.getByTestId('interrupt-button')
+    fireEvent.click(interrupt)
+    expect(interrupt).toBeDisabled()
+    expect(interrupt).toHaveTextContent('Interrupting...')
+
+    finishInterrupt()
+    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    expect(interrupt).not.toBeDisabled()
+    expect(interrupt).toHaveTextContent('Interrupt')
+    expect(onInterrupt).toHaveBeenCalledOnce()
+  })
+
+  it('stops interrupt loading when the request reports a failure', async () => {
+    const onInterrupt = vi.fn().mockRejectedValue(new Error('interrupt failed'))
+    renderPanel({ agentActivity: AgentActivityState.WORKING, onInterrupt })
+
+    const interrupt = screen.getByTestId('interrupt-button')
+    fireEvent.click(interrupt)
+    expect(interrupt).toBeDisabled()
+
+    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    expect(interrupt).not.toBeDisabled()
+    expect(interrupt).toHaveTextContent('Interrupt')
+  })
+
+  it('keeps interrupt loading on the tab that sent the request', async () => {
+    const [agentId, setAgentId] = createSignal('a1')
+    let finishInterrupt: () => void = () => {}
+    const request = new Promise<void>((resolve) => {
+      finishInterrupt = resolve
+    })
+    const onInterrupt = vi.fn(() => request)
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId={agentId()}
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          onInterrupt={onInterrupt}
+          agentActivity={AgentActivityState.WORKING}
+        />
+      </PreferencesProvider>
+    ))
+
+    fireEvent.click(screen.getByTestId('interrupt-button'))
+    expect(screen.getByTestId('interrupt-button')).toBeDisabled()
+
+    setAgentId('a2')
+    expect(screen.getByTestId('interrupt-button')).not.toBeDisabled()
+    expect(screen.getByTestId('interrupt-button')).toHaveTextContent('Interrupt')
+
+    setAgentId('a1')
+    expect(screen.getByTestId('interrupt-button')).toBeDisabled()
+    expect(screen.getByTestId('interrupt-button')).toHaveTextContent('Interrupting...')
+
+    finishInterrupt()
+    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(screen.getByTestId('interrupt-button')).not.toBeDisabled()
+  })
+
+  it('keeps queue-pause loading on the tab that sent the request', async () => {
+    const [agentId, setAgentId] = createSignal('a1')
+    let finishPause: () => void = () => {}
+    const request = new Promise<void>((resolve) => {
+      finishPause = resolve
+    })
+    const onSetQueuePaused = vi.fn(() => request)
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId={agentId()}
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={create(AgentInputQueueSnapshotSchema, { agentId: agentId() })}
+          onSetQueuePaused={onSetQueuePaused}
+        />
+      </PreferencesProvider>
+    ))
+
+    fireEvent.click(screen.getByTestId('queue-pause-button'))
+    expect(screen.getByTestId('queue-pause-button')).toBeDisabled()
+
+    setAgentId('a2')
+    expect(screen.getByTestId('queue-pause-button')).not.toBeDisabled()
+
+    setAgentId('a1')
+    expect(screen.getByTestId('queue-pause-button')).toBeDisabled()
+
+    finishPause()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(screen.getByTestId('queue-pause-button')).not.toBeDisabled()
+  })
+
   it('shows no pause banner while the queue runs', () => {
     renderPanel()
     expect(screen.queryByTestId('queue-pause-banner')).not.toBeInTheDocument()
@@ -1055,6 +1163,18 @@ describe('agent editor panel', () => {
     await waitFor(() => expect(send).toBeTypeOf('function'))
     send?.()
     expect(onSendMessage).toHaveBeenCalledWith('draft a', [attachmentA])
+
+    setAgentId('a2')
+    await waitFor(() => expect(document.querySelector('[data-testid="composer-editor"] .ProseMirror')).toHaveTextContent('draft b'))
+    expect(screen.getByTestId('file-input')).not.toBeDisabled()
+    expect(screen.getByTestId('send-button')).not.toBeDisabled()
+    expect(screen.queryByTestId('send-spinner')).not.toBeInTheDocument()
+
+    setAgentId('a1')
+    await waitFor(() => expect(document.querySelector('[data-testid="composer-editor"] .ProseMirror')).toHaveTextContent('draft a'))
+    expect(screen.getByTestId('file-input')).toBeDisabled()
+    expect(screen.getByTestId('send-button')).toBeDisabled()
+    expect(screen.getByTestId('send-spinner')).toBeInTheDocument()
 
     setAgentId('a2')
     await waitFor(() => expect(document.querySelector('[data-testid="composer-editor"] .ProseMirror')).toHaveTextContent('draft b'))

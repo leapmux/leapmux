@@ -4,9 +4,8 @@ import type { ToolKind } from '../../model/toolKind'
 import type { ToolResultByKind } from '../../model/tools'
 import type { ToolKindMeta, ToolKindRenderer, ToolRowView } from './renderer'
 import { toolInputSummary } from '../../toolStyles.css'
-import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../collapse'
 import { CollapsibleContent } from '../CollapsibleContent'
-import { useCollapsedLines } from '../useCollapsedLines'
+import { textNeedsCollapse, useCollapsedLines } from '../useCollapsedLines'
 
 /** The body a prose result draws: markdown when the words are markdown, a plain block otherwise. */
 export function ProseResultBody(props: { result: ProseResult, view: ToolRowView }): JSX.Element {
@@ -22,10 +21,10 @@ export function ProseResultBody(props: { result: ProseResult, view: ToolRowView 
   )
 }
 
-/** The meta a prose result offers: copyable words, collapsible when long. Markdown draws whole. */
+/** The meta a prose result offers: copyable words, collapsible when long. */
 export function proseMeta(result: ProseResult): ToolKindMeta {
   return {
-    collapsible: result.format === 'plain' && hasMoreLinesThan(result.text, COLLAPSED_RESULT_ROWS),
+    collapsible: textNeedsCollapse(result.text),
     hasDiff: false,
     copyableContent: () => result.text || null,
   }

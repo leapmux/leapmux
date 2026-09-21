@@ -92,14 +92,16 @@ export function ToolUseLayout(props: {
         </Show>
       </div>
       <Show when={hasContent(summary.toArray()) || showBody()}>
-        <div class={[
-          toolBodyContent,
-          props.bordered !== false && toolBodyBorder,
-          props.bordered !== false
-          && props.context?.spanColor != null
-          && props.context.spanColor > 0
-          && spanLineColors[spanColorKey(props.context.spanColor)],
-        ].filter(Boolean).join(' ')}
+        <div
+          class={[
+            toolBodyContent,
+            props.bordered !== false && toolBodyBorder,
+            props.bordered !== false
+            && props.context?.spanColor != null
+            && props.context.spanColor > 0
+            && spanLineColors[spanColorKey(props.context.spanColor)],
+          ].filter(Boolean).join(' ')}
+          data-span-body-line={props.bordered !== false ? '' : undefined}
         >
           {summary()}
           <Show when={showBody()}>
