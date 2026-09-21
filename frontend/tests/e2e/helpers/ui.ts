@@ -1268,8 +1268,8 @@ export function workspaceRow(page: Page, workspaceId: string): Locator {
 
 /**
  * Locate the workspace chevron through its test ID and visible workspace row.
- * The drag grip precedes it in SVG order, so a first-SVG lookup is incorrect.
- * An independent chevron lookup can select the hidden collapsed sidebar copy and wait for a click that cannot succeed.
+ * The grip and chevron both contain SVGs, so a first-SVG lookup is ambiguous.
+ * An independent lookup can select the hidden collapsed sidebar copy and wait for a click that cannot succeed.
  */
 export function workspaceChevron(page: Page, workspaceId: string): Locator {
   return workspaceRow(page, workspaceId)

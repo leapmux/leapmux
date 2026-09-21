@@ -2,6 +2,7 @@ import type { Locator, Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
 import { COARSE_POINTER_METRICS, settleFrames, touchDown, touchDragGripOnto } from './helpers/touch'
+import { workspaceRow } from './helpers/ui'
 
 /**
  * The mobile tab UI and the touch drag model.
@@ -191,6 +192,47 @@ test.describe('mobile tab sheet (phone)', () => {
 
 test.describe('mobile drawers (phone)', () => {
   test.use(COARSE_POINTER_METRICS)
+
+  test('the workspace grip follows the title and leaves the chevron at the indent edge', async ({ page, authenticatedWorkspace }) => {
+    await page.getByRole('button', { name: 'Toggle workspaces' }).click()
+
+    const row = workspaceRow(page, authenticatedWorkspace.workspaceId)
+    const grip = row.getByTestId('workspace-drag-handle')
+    await expect(row).toBeVisible()
+    await expect(grip).toBeVisible()
+
+    const geometry = await row.evaluate((rowEl, workspaceId) => {
+      const chevron = rowEl.querySelector(`[data-testid="workspace-chevron-${workspaceId}"]`)
+      const grip = rowEl.querySelector('[data-testid="workspace-drag-handle"]')
+      if (!(chevron instanceof SVGElement) || !(grip instanceof HTMLElement))
+        return null
+
+      const follows = (first: Node, second: Node) =>
+        Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING)
+      const title = Array.from(rowEl.querySelectorAll('span')).find(candidate =>
+        candidate.childElementCount === 0
+        && candidate.textContent?.trim()
+        && follows(chevron, candidate)
+        && follows(candidate, grip),
+      )
+      if (!title)
+        return null
+
+      const box = (el: Element) => {
+        const rect = el.getBoundingClientRect()
+        return { left: rect.left, right: rect.right }
+      }
+      return {
+        chevron: box(chevron),
+        title: box(title),
+        grip: box(grip),
+      }
+    }, authenticatedWorkspace.workspaceId)
+
+    expect(geometry, 'the workspace chevron, title, and grip').not.toBeNull()
+    expect(geometry!.chevron.right).toBeLessThanOrEqual(geometry!.title.left)
+    expect(geometry!.title.right).toBeLessThanOrEqual(geometry!.grip.left)
+  })
 
   test('the drawer starts below the tab bar, leaving the Files header actions reachable', async ({ page, authenticatedWorkspace }) => {
     await page.getByRole('button', { name: 'Toggle files' }).click()

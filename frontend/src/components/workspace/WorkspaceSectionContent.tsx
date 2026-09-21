@@ -287,7 +287,6 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                     // cannot tell expanded from collapsed. Expose the bit.
                     data-expanded={isWorkspaceExpanded(id) ? 'true' : 'false'}
                   >
-                    <DragHandle activators={dragRow.gripActivators} testId="workspace-drag-handle" />
                     <ChevronRight
                       size={14}
                       class={`${shared.chevron} ${isWorkspaceExpanded(id) ? shared.chevronExpanded : ''}`}
@@ -334,6 +333,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                       folded={() => !isWorkspaceExpanded(id)}
                       tabs={() => tabsFor(id)}
                     />
+                    <DragHandle activators={dragRow.gripActivators} testId="workspace-drag-handle" />
 
                     <div class={sidebarActions}>
                       <Show
