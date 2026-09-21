@@ -660,14 +660,23 @@ func TestCappedBuffer_StopsGrowingAtTheLimitAndReportsFullWrites(t *testing.T) {
 
 func TestStartAndWatch_KeepsTheReasonWhenStderrExceedsTheCap(t *testing.T) {
 	t.Parallel()
-	cmd := exec.Command(shellForTest(t), "-c",
-		"echo 'the reason' >&2 ; head -c 200000 /dev/zero | tr '\\0' 'x' >&2 ; exit 5")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestStartAndWatch_StderrHelper$")
+	cmd.Env = append(os.Environ(), "LEAPMUX_TEST_START_AND_WATCH_STDERR=1")
 
-	err := startAndWatch(cmd, true)
+	err := startAndWatchWithin(cmd, true, 10*time.Second)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "the reason",
 		"the cap must keep the head of the output, which is the part that says what went wrong")
+}
+
+func TestStartAndWatch_StderrHelper(_ *testing.T) {
+	if os.Getenv("LEAPMUX_TEST_START_AND_WATCH_STDERR") != "1" {
+		return
+	}
+	_, _ = os.Stderr.WriteString("the reason\n")
+	_, _ = os.Stderr.WriteString(strings.Repeat("x", 200_000))
+	os.Exit(5)
 }
 
 func TestFirstLine_TakesTheFirstNonEmptyLine(t *testing.T) {
