@@ -645,6 +645,31 @@ describe('ChatView', () => {
     expect(screen.getByText('Send a message to start')).toBeInTheDocument()
   })
 
+  it('does not resolve the save callback prop while its owner disposes', () => {
+    const onSaveViewportScroll = vi.fn()
+    let disposalStarted = false
+    const chatProps = {
+      messages: [] as AgentChatMessage[],
+      get onSaveViewportScroll() {
+        if (disposalStarted)
+          throw new Error('read the save callback during disposal')
+        return onSaveViewportScroll
+      },
+    }
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView {...chatProps} />
+      </PreferencesProvider>
+    ))
+    const scrollContainer = view.container.querySelector('[data-chat-scroll-container]') as HTMLElement
+    Object.defineProperty(scrollContainer, 'clientHeight', { value: 500, configurable: true })
+    Object.defineProperty(scrollContainer, 'scrollHeight', { value: 3000, configurable: true })
+
+    disposalStarted = true
+    expect(() => view.unmount()).not.toThrow()
+    expect(onSaveViewportScroll).toHaveBeenCalledWith({ atBottom: true, hasMoreNewer: false })
+  })
+
   it('renders the older-loading indicator as an overlay OUTSIDE the scroll container', () => {
     render(() => (
       <PreferencesProvider>

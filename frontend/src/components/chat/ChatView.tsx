@@ -12,7 +12,7 @@ import type { GoalSurface } from '~/stores/chatGoal'
 import type { ChatRailData } from '~/stores/chatMessageMarks'
 
 import ArrowDown from 'lucide-solid/icons/arrow-down'
-import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { Spinner } from '~/components/common/Spinner'
@@ -744,6 +744,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       railActivity.noteScroll()
   }
 
+  // The unmount save runs while Solid disposes this owner. Capture the callback now,
+  // so that cleanup does not resolve merged component props during that disposal.
+  const saveViewportScrollOnCleanup = untrack(() => props.onSaveViewportScroll)
   const scroll = useChatScroll({
     messages: () => props.messages,
     messageVersion: () => props.messageVersion,
@@ -763,7 +766,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     virtualizer: virt,
     savedViewportScroll: () => props.savedViewportScroll,
     onClearSavedViewportScroll: () => props.onClearSavedViewportScroll?.(),
-    onSaveViewportScroll: state => props.onSaveViewportScroll?.(state),
+    ...(saveViewportScrollOnCleanup !== undefined
+      ? { onSaveViewportScroll: saveViewportScrollOnCleanup }
+      : {}),
     // The reader's own coast. Relighting on it holds the rail for the whole
     // fling -- no pointer or touch event fires then, only `scroll`, and the
     // hook is the one place that can tell that scroll apart from our own

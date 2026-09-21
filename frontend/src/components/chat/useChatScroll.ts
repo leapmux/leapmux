@@ -486,6 +486,14 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   let flingSettle!: ReturnType<typeof createFlingSettle>
 
   const virt = opts.virtualizer
+  // Keep the host accessor behind a hook-owned memo. Solid cleans this memo before
+  // owner cleanups. The unmount save reads the plain snapshot. Reading the host
+  // accessor there can update a stale parent and re-enter disposal.
+  let hasNewerMessagesSnapshot = false
+  const hasNewerMessages = createMemo(() => {
+    hasNewerMessagesSnapshot = !!opts.hasNewerMessages?.()
+    return hasNewerMessagesSnapshot
+  })
   // Distinguishes a fast fling (defer corrections to protect momentum) from a slow
   // deliberate wheel/trackpad scroll (correct immediately, no drift-then-settle).
   // handleScroll samples it on each real scroll event; repinToAnchor consults it.
@@ -566,7 +574,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       virtTotalHeight: virt.totalHeight(),
       rowCount: opts.messages().length,
       hasOlder: !!opts.hasOlderMessages?.(),
-      hasNewer: !!opts.hasNewerMessages?.(),
+      hasNewer: hasNewerMessages(),
       fetchingOlder: !!opts.fetchingOlder?.(),
       fetchingNewer: !!opts.fetchingNewer?.(),
     }
@@ -582,7 +590,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     measurementBatch: measurementBatchPayload,
     debugMarkers: () => progGuard.debugMarkers(),
     hasOlderMessages: () => !!opts.hasOlderMessages?.(),
-    hasNewerMessages: () => !!opts.hasNewerMessages?.(),
+    hasNewerMessages,
   })
 
   // True only while a USER scroll event is refreshing newly revealed rows (inside
@@ -716,7 +724,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     },
     flingSettle: () => flingSettle,
     isUserScrolling: () => userScrolling,
-    hasNewerMessages: () => !!opts.hasNewerMessages?.(),
+    hasNewerMessages,
     readScrollTop: readLogicalScrollTop,
     // Detectors A and C: the engine reports THAT a clamp/drift happened; the emission
     // policy (visible-px floor, whether history exists that direction, fast-fling skip,
@@ -799,7 +807,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
    * live tail (atBottom must imply following ONLY here -- a windowed-away loaded
    * bottom is not the tail, and following it would chase every newer append).
    */
-  const isAtLiveTail = () => !opts.hasNewerMessages?.() && isAtBottom()
+  const isAtLiveTail = () => !hasNewerMessages() && isAtBottom()
 
   /**
    * Hard against the very TOP / BOTTOM edge, within EDGE_INTENT_TOLERANCE_PX -- the 1px
@@ -977,7 +985,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   }
 
   const canLoadNewerMessages = () =>
-    !!messageListRef && !!opts.hasNewerMessages?.() && !opts.fetchingNewer?.()
+    !!messageListRef && hasNewerMessages() && !opts.fetchingNewer?.()
 
   const loadNewerMessages = () => {
     if (!canLoadNewerMessages())
@@ -1015,7 +1023,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   })
   const stalledNewer = createMemo(() => {
     geomTick()
-    return !!opts.fetchingNewer?.() && !!opts.hasNewerMessages?.() && isAtBottomEdge()
+    return !!opts.fetchingNewer?.() && hasNewerMessages() && isAtBottomEdge()
   })
 
   /**
@@ -1454,7 +1462,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // onSaveViewportScroll cleanup). Anchored to the viewport-top row (by seq) so
   // restoration survives the spacer's estimated height — a raw distance-from-bottom
   // would resolve to the wrong place.
-  const getScrollState = (): ChatScrollState | undefined => {
+  const captureScrollState = (hasMoreNewer: boolean): ChatScrollState | undefined => {
     if (!messageListRef || messageListRef.clientHeight === 0)
       return undefined
     const atBot = atBottom()
@@ -1471,9 +1479,11 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       ...(a !== null ? { anchor: a } : {}),
       ...(rawScrollTop !== undefined ? { rawScrollTop } : {}),
       atBottom: atBot,
-      hasMoreNewer: !!opts.hasNewerMessages?.(),
+      hasMoreNewer,
     }
   }
+  const getScrollState = (): ChatScrollState | undefined =>
+    captureScrollState(hasNewerMessages())
 
   /**
    * Clear the per-window "buffer filler paused / suppressed" flags -- a deliberate jump
@@ -1495,7 +1505,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // Scrolled away from the live tail: re-fetch the latest page first, then
     // snap. jumpToLatest replaces the window; the totalHeight re-pin effect and
     // the sticky auto-scroll then land us at the true bottom.
-    if (opts.hasNewerMessages?.()) {
+    if (hasNewerMessages()) {
       // The jump REPLACES the window, so drop any per-window filler state the old
       // window accumulated.
       rearmScrollBufferFiller()
@@ -1521,7 +1531,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
           // atBottom=true. Stick only when we are truly at the live tail; otherwise
           // re-sync atBottom to the real position so the scroll-to-bottom affordance
           // reappears instead of being hidden behind a stale atBottom.
-          if (opts.hasNewerMessages?.())
+          if (hasNewerMessages())
             checkAtBottom()
           else
             stickToBottom()
@@ -1572,7 +1582,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     checkAtBottom,
     onJumpToSeq: opts.onJumpToSeq,
     onSaveViewportScroll: opts.onSaveViewportScroll,
-    hasNewerMessages: () => !!opts.hasNewerMessages?.(),
+    hasNewerMessages,
   })
 
   // The keyboard / wheel input layer (createScrollInput). Owns no scroll state -- the
@@ -1666,7 +1676,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       // alias UNSPECIFIED(0) -- a transition between undefined and UNSPECIFIED would
       // otherwise leave the signature unchanged and could swallow a banner scroll.
       opts.agentStatus?.() ?? -1,
-      opts.hasNewerMessages?.() ?? false,
+      hasNewerMessages(),
     ]
     if (pureOlderPrepend) {
       // Pure older prefetches are not live-tail growth. Record the new signature and
@@ -1688,7 +1698,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // the user's scroll position from before the content changed.
     // Windowed away from the live tail: live messages are dropped from the
     // store, and the bottom of the in-memory list is not the real bottom.
-    if (opts.hasNewerMessages?.())
+    if (hasNewerMessages())
       return
     // Cap the in-memory window on every tail append, INDEPENDENT of scroll
     // position. While still at the live tail (hasNewerMessages false) but
@@ -1785,7 +1795,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       return false
     // Pinned at the LIVE tail (the tail is loaded and the viewport sits in its sticky
     // band): the older buffer is pure speculation until the reader scrolls up.
-    if (!opts.hasNewerMessages?.() && isAtBottom())
+    if (!hasNewerMessages() && isAtBottom())
       return true
     return isFollowing() && untrack(() => virt.anchorAt(readLogicalScrollTop(el))) !== null
   }
@@ -1807,7 +1817,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     messages: opts.messages,
     bufferTargetPx,
     hasOlder: () => !!opts.hasOlderMessages?.(),
-    hasNewer: () => !!opts.hasNewerMessages?.(),
+    hasNewer: hasNewerMessages,
     fetchingOlder: () => !!opts.fetchingOlder?.(),
     fetchingNewer: () => !!opts.fetchingNewer?.(),
     // The filler's own loads go through loadOlderMessages/loadNewerMessages so they
@@ -1875,7 +1885,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // restoreOnMount). Owner cleanups run before the DOM detaches, so the geometry
     // is still readable. An unmeasurable pane (hidden tab, clientHeight 0) yields
     // undefined and is skipped -- its tab-switch save must not be clobbered.
-    const finalScrollState = getScrollState()
+    const finalScrollState = captureScrollState(hasNewerMessagesSnapshot)
     if (finalScrollState)
       opts.onSaveViewportScroll?.(finalScrollState)
   })
@@ -1963,7 +1973,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // suffices. Kept here, where the windowing state lives, rather than branched in the
   // view.
   const scrollToBottom = () => {
-    if (opts.hasNewerMessages?.())
+    if (hasNewerMessages())
       forceScrollToBottom()
     else
       scrollToBottomAnimated()

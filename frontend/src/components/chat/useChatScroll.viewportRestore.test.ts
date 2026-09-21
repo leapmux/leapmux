@@ -814,6 +814,39 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
       })
     }))
 
+  it('does not read the host pagination accessor while its owner disposes', () => {
+    const div = makeFakeScrollDiv()
+    div.setClientHeight(500)
+    div.setScrollHeight(3000)
+    const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+    let disposalStarted = false
+    let reentered = false
+    let savedState: ChatScrollState | undefined
+    let disposeRoot!: () => void
+
+    createRoot((dispose) => {
+      disposeRoot = dispose
+      const hook = useChatScroll({
+        virtualizer: makeStubVirtualizer(),
+        messages,
+        hasNewerMessages: () => {
+          if (disposalStarted && !reentered) {
+            reentered = true
+            dispose()
+          }
+          return true
+        },
+        onSaveViewportScroll: (state) => { savedState = state },
+      })
+      hook.attachListRef(div.el)
+    })
+
+    disposalStarted = true
+    expect(() => disposeRoot()).not.toThrow()
+    expect(reentered).toBe(false)
+    expect(savedState).toEqual({ atBottom: true, hasMoreNewer: true })
+  })
+
   it('consumes an at-bottom save on a visible mount (stick + clear)', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
