@@ -381,6 +381,10 @@ type TurnServices interface {
 	// provider that retries a failed attempt itself stays active across the
 	// backoff, where nothing streams and no envelope arrives.
 	SetTurnState(state TurnState, seq uint64)
+	// ReportInterruptIgnored reports that the provider accepted an interrupt but
+	// kept the same turn running. The Worker restores the activity that the
+	// interrupt request hid, including the Interrupt button for a later attempt.
+	ReportInterruptIgnored()
 }
 
 // SpanServices owns transcript span state.

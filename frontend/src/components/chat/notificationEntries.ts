@@ -31,9 +31,9 @@ export type NotificationBlock
 // place and every reader refers to it by name.
 const CONTEXT_CLEARED_LABEL = 'Context cleared'
 const INTERRUPTED_LABEL = 'Interrupted'
-// The instruction matters as much as the fact: the second Stop press is the one the
+// The instruction matters as much as the fact: the second Interrupt press is the one the
 // worker escalates into a forced stop, and the row is where the reader learns that.
-const STOP_IGNORED_LABEL = 'Stop ignored — press Stop again to force it'
+const INTERRUPT_IGNORED_LABEL = 'Interrupt ignored — press Interrupt again to force it'
 const UNKNOWN_ERROR_LABEL = 'Unknown error'
 export const COMPACTING_LABEL = 'Compacting context...'
 // Claude Code emits no metadata for a microcompaction, so this label carries no
@@ -107,7 +107,7 @@ export function leapmuxNotificationEntry(
     case NOTIFICATION_TYPE.Interrupted:
       return [{ kind: 'text', text: INTERRUPTED_LABEL }]
     case NOTIFICATION_TYPE.StopIgnored:
-      return [{ kind: 'text', text: STOP_IGNORED_LABEL }]
+      return [{ kind: 'text', text: INTERRUPT_IGNORED_LABEL }]
     // A live status the provider reported in its own words. The worker
     // normalized it, so one row draws every provider's.
     case NOTIFICATION_TYPE.AgentStatus: {

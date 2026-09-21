@@ -2077,6 +2077,33 @@ func TestActivity_ARefusedStopPutsTheIndicatorBack(t *testing.T) {
 	assert.Equal(t, 1, settles.close(), "an ordinary stop waits out its window")
 }
 
+func TestActivity_AnIgnoredInterruptPutsTheIndicatorAndButtonBack(t *testing.T) {
+	t.Parallel()
+
+	h, rec := newActivityHandler(t, "agent-1")
+	holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.NoteAgentStopRequested("agent-1", "agent-1")
+	h.WaitActivityRefreshes()
+	require.Equal(t, []bool{true, false}, rec.busyStates())
+
+	reporter := agent.NewProviderServices(&agentOutputSink{
+		h: h, agentID: "agent-1", rootAgentID: "agent-1",
+	})
+	reporter.ReportInterruptIgnored()
+	h.WaitActivityRefreshes()
+
+	assert.Equal(t, []bool{true, false, true}, rec.busyStates(),
+		"the running turn restores the indicator and the Interrupt button")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		h.AgentActivitySnapshot("agent-1", "agent-1").State)
+
+	reporter.ReportInterruptIgnored()
+	h.WaitActivityRefreshes()
+	assert.Equal(t, []bool{true, false, true}, rec.busyStates(),
+		"a duplicate report publishes no duplicate activity transition")
+}
+
 // A stop reaches the TURN. Every background task the agent launched runs on, and
 // the tab must keep saying so: closing it still kills them.
 func TestActivity_AStopLeavesABackgroundTaskRunning(t *testing.T) {

@@ -453,7 +453,7 @@ describe('single-message notification labels', () => {
   })
 
   it('renders stop_ignored with the press-again instruction', () => {
-    expect(renderText([{ type: 'stop_ignored' }])).toBe('Stop ignored — press Stop again to force it')
+    expect(renderText([{ type: 'stop_ignored' }])).toBe('Interrupt ignored — press Interrupt again to force it')
   })
 
   it('renders context_cleared', () => {

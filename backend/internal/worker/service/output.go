@@ -910,6 +910,12 @@ func (s *agentOutputSink) SetTurnState(state agent.TurnState, seq uint64) {
 	}
 }
 
+// ReportInterruptIgnored restores the running state that InterruptAgent hid
+// while it waited for the provider to end the turn.
+func (s *agentOutputSink) ReportInterruptIgnored() {
+	s.h.NoteAgentInterruptIgnored(s.agentID, s.rootAgentID)
+}
+
 // turnPublisher identifies the PROCESS behind this sink. A child sink stands for
 // the same process as the root it came from, so it reports the root.
 func (s *agentOutputSink) turnPublisher() any { return s.turnPublisherSink() }

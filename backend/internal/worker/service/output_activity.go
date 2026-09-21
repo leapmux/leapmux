@@ -405,6 +405,19 @@ func (h *OutputHandler) NoteAgentStopRequested(agentID, rootAgentID string) {
 // above would leave a runaway agent reading idle, with the button that stops it
 // hidden -- which is the one failure the button exists to prevent.
 func (h *OutputHandler) NoteAgentStopFailed(agentID, rootAgentID string) {
+	h.clearAgentStopRequested(agentID, rootAgentID)
+}
+
+// NoteAgentInterruptIgnored restores activity after a provider proves that an
+// accepted interrupt did not end its turn. The restored WORKING state returns
+// the indicator and the Interrupt button for another attempt.
+func (h *OutputHandler) NoteAgentInterruptIgnored(agentID, rootAgentID string) {
+	h.clearAgentStopRequested(agentID, rootAgentID)
+}
+
+// clearAgentStopRequested withdraws the optimistic stop mark and republishes
+// the activity that still runs behind it.
+func (h *OutputHandler) clearAgentStopRequested(agentID, rootAgentID string) {
 	st := h.activityFor(agentID, rootAgentID)
 	st.mu.Lock()
 	requested := st.stopRequested

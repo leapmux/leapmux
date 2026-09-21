@@ -800,7 +800,7 @@ const zcodeStoppedSilenceWindow = 30 * time.Second
 // session/stop that lands after those first moments aborts nothing: the tool
 // runs on, the runtime makes its next model call, and the turn completes as if
 // no stop was asked. Session events that keep arriving past this grace are that
-// no-op -- the row they trigger tells the reader to press Stop again, and the
+// no-op -- the row they trigger tells the reader to press Interrupt again, and the
 // second press is the one the worker may escalate into a forced restart.
 const zcodeStopIgnoredGrace = 3 * time.Second
 
@@ -1102,9 +1102,13 @@ func (a *zcodeAgent) persistZCodeStopRow() {
 //
 // The row is what turns the no-op from invisible to actionable: the turn keeps
 // running, so the transcript owes the reader an explanation and an instruction --
-// press Stop again, and the worker escalates that press into a forced stop. One
+// press Interrupt again, and the worker escalates that press into a forced stop. One
 // row per accepted stop, from refreshStoppedZCodeTurn's once-flag.
 func (a *zcodeAgent) persistZCodeStopIgnoredRow() {
+	// Restore the Worker's activity before the transcript write. The provider
+	// still runs the same turn even if persistence fails, so a database error
+	// must not leave the Interrupt button hidden from the user.
+	a.sink.ReportInterruptIgnored()
 	content, err := json.Marshal(map[string]string{contracts.NotificationFieldType: contracts.NotificationTypeStopIgnored})
 	if err != nil {
 		slog.Error("zcode marshal stop-ignored row", "agent_id", a.agentID, "error", err)

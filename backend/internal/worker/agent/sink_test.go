@@ -73,6 +73,9 @@ type testSink struct {
 	// turnKinds records the queue classification that accompanied each turn
 	// state.
 	turnStates []TurnState
+	// interruptIgnoredReports records when a provider proves that an accepted
+	// interrupt did not end its turn.
+	interruptIgnoredReports int
 	// turnLifecycle interleaves the turn-end envelope with the turn-flag
 	// transitions, which the two slices above cannot show apart. See
 	// TurnLifecycle.
@@ -311,6 +314,18 @@ func (s *testSink) SetTurnState(state TurnState, seq uint64) {
 	s.turnStates = append(s.turnStates, state)
 	s.turnSeqs = append(s.turnSeqs, seq)
 	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("turn_active:%t", state.Active))
+}
+
+func (s *testSink) ReportInterruptIgnored() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.interruptIgnoredReports++
+}
+
+func (s *testSink) InterruptIgnoredReports() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.interruptIgnoredReports
 }
 
 // TurnKinds returns the queue classification of each publish, in arrival
@@ -1321,6 +1336,7 @@ func (noopSink) ReadToolRequest(string) (*StoredMessage, error)                 
 func (noopSink) ReadToolResult(string) (*StoredMessage, error)                     { return nil, nil }
 func (noopSink) PersistTurnEnd(MessageContent, SpanInfo) error                     { return nil }
 func (noopSink) SetTurnState(TurnState, uint64)                                    {}
+func (noopSink) ReportInterruptIgnored()                                           {}
 func (noopSink) PersistNotification(leapmuxv1.MessageSource, []byte) (bool, error) { return true, nil }
 func (noopSink) OpenSpan(string, string)                                           {}
 func (noopSink) CloseSpan(string)                                                  {}
