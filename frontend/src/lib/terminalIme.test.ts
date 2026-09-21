@@ -26,11 +26,15 @@ interface Harness {
 
 let harnesses: Harness[] = []
 
-function createHarness(): Harness {
+function createHarness(options?: { kittyKeyboard?: boolean }): Harness {
   const container = document.createElement('div')
   document.body.appendChild(container)
 
-  const terminal = new Terminal({ cols: 80, rows: 24 })
+  const terminal = new Terminal({
+    cols: 80,
+    rows: 24,
+    ...(options?.kittyKeyboard ? { vtExtensions: { kittyKeyboard: true } } : {}),
+  })
   terminal.open(container)
 
   const sent: string[] = []
@@ -562,6 +566,17 @@ describe('attachTerminalIme', () => {
     input(h.textarea, 'insertText', 'a')
 
     expect(h.fromXterm).toEqual(['a'])
+    expect(h.sent).toEqual([])
+  })
+
+  it('does not duplicate inserted text after CSI-u encoded the key', async () => {
+    const h = createHarness({ kittyKeyboard: true })
+    await new Promise<void>(resolve => h.terminal.write('\x1B[=31;1u', resolve))
+
+    keydown(h.textarea, { key: 'a', code: 'KeyA', keyCode: 65 })
+    input(h.textarea, 'insertText', 'a')
+
+    expect(h.fromXterm).toEqual(['\x1B[97;;97u'])
     expect(h.sent).toEqual([])
   })
 

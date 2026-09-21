@@ -20,7 +20,7 @@ import * as styles from './terminalIme.css'
  * `compositionend.data`, which the UI Events specification defines as the final
  * composed string, so it does not depend on the event order of any engine.
  *
- * It needs two things to be true, both verified against xterm 6.0.0:
+ * It needs two things to be true, both verified against xterm 6.1.0-beta.304:
  *
  * - `terminal.element` is an ANCESTOR of `terminal.textarea`
  *   (`.xterm > .xterm-screen > .xterm-helpers > .xterm-helper-textarea`), and
@@ -165,14 +165,11 @@ function createKeystrokeOwnership(
    * and if it did, consume the emission that proves it, so one emission can
    * never answer for two input events.
    *
-   * The decision reads the OBSERVED emissions — what xterm's `onData` sent
-   * for the keystroke in flight, one entry per emission — and matches
-   * EXACTLY: a genuine echo inserts exactly the text one emission carried, so
-   * 'C' is an echo only when an emission was 'C', never because an arrow's
-   * '\x1b[C' merely contains it. Caps-lock case folding needs no arm of its
-   * own, because the emission carries the character xterm actually sent;
-   * deferred A–Z rollover (two capitals' keypresses before either input
-   * event) works because each keypress contributes its own entry.
+   * The decision reads the OBSERVED emissions from xterm's `onData`. It
+   * matches them exactly. Thus, an arrow's `\x1b[C` cannot consume an inserted
+   * `C`. CSI-u is the exception: its wire sequence does not contain the text
+   * that the browser can echo. When xterm prevents that printable key, the
+   * tracker records the key's text as a second exact-match candidate.
    *
    * - xterm handled the key, in keydown or in the `keypress` it defers A-Z
    *   to, and sent the bytes: the matching emission is xterm's echo, and the
@@ -211,14 +208,20 @@ function createKeystrokeOwnership(
    * insertion, and consumed by the echo it answers.
    */
   const emissionsInFlight: string[] = []
+  const encodedTextInFlight: string[] = []
 
   const consumeXtermEcho = (text: string): boolean => {
     if (activeKeydown === null || activeKeydown.imeConsumed)
       return false
     const match = emissionsInFlight.indexOf(text)
-    if (match === -1)
+    if (match !== -1) {
+      emissionsInFlight.splice(match, 1)
+      return true
+    }
+    const encodedMatch = encodedTextInFlight.indexOf(text)
+    if (encodedMatch === -1)
       return false
-    emissionsInFlight.splice(match, 1)
+    encodedTextInFlight.splice(encodedMatch, 1)
     return true
   }
 
@@ -235,6 +238,9 @@ function createKeystrokeOwnership(
     activeKeydown = {
       imeConsumed: keyEvent.isComposing || keyEvent.keyCode === KEY_CODE_IME_PROCESS,
     }
+    const lastEmission = emissionsInFlight[emissionsInFlight.length - 1]
+    if (!activeKeydown.imeConsumed && keyEvent.defaultPrevented && keyEvent.key.length === 1 && lastEmission !== keyEvent.key)
+      encodedTextInFlight.push(keyEvent.key)
     // A keystroke the input method consumed keeps the echo window open,
     // because WKWebView delivers that keydown AFTER the compositionend it
     // belongs to, and the echo that follows must still be recognized.
@@ -247,6 +253,7 @@ function createKeystrokeOwnership(
     // The emissions belong to the keystroke that produced them; once the
     // keystroke ends, no later text insertion may claim to be its echo.
     emissionsInFlight.length = 0
+    encodedTextInFlight.length = 0
   }
 
   return {

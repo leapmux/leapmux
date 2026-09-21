@@ -432,6 +432,10 @@ export function createTerminalInstance(
   let confirmLink = refuseLinkWithoutPrompt
   const terminal = new Terminal({
     cursorBlink: true,
+    // Let terminal applications negotiate the CSI-u keyboard protocol. xterm
+    // keeps legacy input until an application opts in, then reports modifiers,
+    // event types, alternate keys, and associated text as requested.
+    vtExtensions: { kittyKeyboard: true },
     // Read by `FitAddon` as the gutter to keep clear, and by the viewport as
     // the slider's own width; see `scrollbarWidthPx` in `~/styles/tokens`,
     // which is also what sizes every other scrollbar in the app. The ruler's
@@ -445,7 +449,7 @@ export function createTerminalInstance(
     // though: the ruler's constructor THROWS on a null one, so a terminal
     // cannot be built without it -- which is why the canvas stub in
     // `vitest.setup.ts` answers `2d`.
-    overviewRuler: { width: scrollbarWidthPx },
+    scrollbar: { width: scrollbarWidthPx },
     fontSize,
     fontFamily,
     theme,
@@ -524,11 +528,14 @@ export function createTerminalInstance(
   // (e.g. a click that clears highlight) are skipped so we don't
   // clobber whatever the user has on the clipboard.
   terminal.onSelectionChange(() => {
+    const selection = terminal.getSelection()
+    if (selection.length === 0)
+      return
     // Silent on failure, unlike every other copy in the app: this fires on each
     // change of the selection, so one drag across the screen would raise a
     // toast per update. The user pressed no Copy button here, and the buttons
     // that they do press still report what went wrong.
-    void copyTextToClipboard(terminal.getSelection(), { announceFailure: false })
+    void copyTextToClipboard(selection, { announceFailure: false })
   })
 
   const instance: TerminalInstance = {

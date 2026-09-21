@@ -132,7 +132,7 @@ hideNativeScrollbar(`${terminalWrapper} .xterm .xterm-viewport`)
  * xterm's own slider, shaped like every other scrollbar in the app.
  *
  * Its WIDTH is not set here -- xterm writes that inline from
- * `overviewRuler.width`, which `~/lib/terminal` sets from `scrollbarWidthPx` in
+ * `scrollbar.width`, which `~/lib/terminal` sets from `scrollbarWidthPx` in
  * `~/styles/tokens`, the same token the `::-webkit-scrollbar` rules in
  * `~/styles/global.css.ts` size their box with. The rest of the shape is the
  * shared `scrollbarThumb` declaration: a transparent border with

@@ -716,10 +716,10 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [@thisbeyond/solid-dnd 0.7.5 (MIT)](#thisbeyondsolid-dnd-075-mit)
 - [@types/diff 8.0.0 (MIT)](#typesdiff-800-mit)
 - [@vanilla-extract/css 1.21.2 (MIT)](#vanilla-extractcss-1212-mit)
-- [@xterm/addon-fit 0.11.0 (MIT)](#xtermaddon-fit-0110-mit)
-- [@xterm/addon-serialize 0.14.0 (MIT)](#xtermaddon-serialize-0140-mit)
-- [@xterm/addon-webgl 0.19.0 (MIT)](#xtermaddon-webgl-0190-mit)
-- [@xterm/xterm 6.0.0 (MIT)](#xtermxterm-600-mit)
+- [@xterm/addon-fit 0.12.0-beta.301 (MIT)](#xtermaddon-fit-0120-beta301-mit)
+- [@xterm/addon-serialize 0.15.0-beta.301 (MIT)](#xtermaddon-serialize-0150-beta301-mit)
+- [@xterm/addon-webgl 0.20.0-beta.300 (MIT)](#xtermaddon-webgl-0200-beta300-mit)
+- [@xterm/xterm 6.1.0-beta.304 (MIT)](#xtermxterm-610-beta304-mit)
 - [altcha 3.2.2 (MIT)](#altcha-322-mit)
 - [dexie 4.4.5 (Apache-2.0)](#dexie-445-apache-20)
 - [diff 9.0.0 (BSD-3-Clause)](#diff-900-bsd-3-clause)
@@ -106511,7 +106511,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @xterm/addon-fit 0.11.0 (MIT)
+### @xterm/addon-fit 0.12.0-beta.301 (MIT)
 
 ```
 Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
@@ -106535,7 +106535,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @xterm/addon-serialize 0.14.0 (MIT)
+### @xterm/addon-serialize 0.15.0-beta.301 (MIT)
 
 ```
 Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
@@ -106561,7 +106561,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @xterm/addon-webgl 0.19.0 (MIT)
+### @xterm/addon-webgl 0.20.0-beta.300 (MIT)
 
 ```
 Copyright (c) 2018, The xterm.js authors (https://github.com/xtermjs/xterm.js)
@@ -106585,7 +106585,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @xterm/xterm 6.0.0 (MIT)
+### @xterm/xterm 6.1.0-beta.304 (MIT)
 
 ```
 Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)

@@ -134,8 +134,8 @@ export const composerContainer = 'composer'
 // `~/components/terminal/TerminalView.css.ts`. All three asserted in prose that
 // they had to match. They agree by construction now.
 //
-// For the terminal this ONE number does two jobs, because xterm 6 reads
-// `options.overviewRuler?.width` in two places and defaults both to 14.
+// For the terminal this ONE number does two jobs, because xterm reads
+// `options.scrollbar?.width` in two places and defaults both to 14.
 // `FitAddon` subtracts it from the width before dividing by the cell width, so
 // it is the gutter the last column stops at. The viewport passes it to the
 // vendored VS Code scrollable element as `verticalScrollbarSize`, which is the
