@@ -217,51 +217,6 @@ func TestNotificationThreading_CodexStartupStatusConsolidatesInWrapper(t *testin
 	assert.Equal(t, "ready", params["status"])
 }
 
-func TestNotificationThreading_CodexSkillsChangedPersistsAsAgentWrapper(t *testing.T) {
-	t.Parallel()
-
-	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
-	skillsChanged := raw(t, codexMethod("skills/changed", map[string]interface{}{}))
-
-	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, skillsChanged)
-
-	rows := listRows()
-	require.Len(t, rows, 1)
-	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, rows[0].Source)
-
-	wrapper := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
-	require.Len(t, wrapper.Messages, 1)
-	assert.Equal(t, []string{"skills/changed"}, types(t, wrapper.Messages))
-}
-
-func TestNotificationThreading_CodexMetadataNotificationsSurviveMixedThread(t *testing.T) {
-	t.Parallel()
-
-	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
-	starting := raw(t, codexStartupStatus("codex_apps", "starting", nil))
-	skillsChanged := raw(t, codexMethod("skills/changed", map[string]interface{}{}))
-	ready := raw(t, codexStartupStatus("codex_apps", "ready", nil))
-
-	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, starting)
-	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, skillsChanged)
-	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, ready)
-
-	rows := listRows()
-	require.Len(t, rows, 1)
-	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, rows[0].Source)
-
-	wrapper := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
-	require.Len(t, wrapper.Messages, 2)
-	assert.Equal(t, []string{
-		"skills/changed",
-		"mcpServer/startupStatus/updated",
-	}, types(t, wrapper.Messages))
-
-	startup := parseRaw(t, wrapper.Messages[1])
-	params := startup["params"].(map[string]interface{})
-	assert.Equal(t, "ready", params["status"])
-}
-
 // TestNotificationThreading_RepeatedIdenticalProviderScopedSkipsWrite verifies
 // that a repeated ProviderScoped notification does not bump the row sequence
 // when consolidation leaves the message list unchanged.
@@ -269,7 +224,7 @@ func TestNotificationThreading_RepeatedIdenticalProviderScopedSkipsWrite(t *test
 	t.Parallel()
 
 	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
-	payload := raw(t, codexMethod("skills/changed", map[string]interface{}{}))
+	payload := raw(t, codexStartupStatus("codex_apps", "failed", "connection failed"))
 
 	// The first notification opens a standalone thread and is broadcast.
 	broadcast, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, payload)

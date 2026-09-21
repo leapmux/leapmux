@@ -21,17 +21,13 @@ var codexRetryableDisconnectPattern = regexp.MustCompile(`^stream disconnected b
 
 const codexMultiAgentV2Namespace = "collaboration"
 
-// codexSystemMetadataMethods are Codex-emitted JSON-RPC notifications that
-// carry agent/system metadata (auto-compaction, lifecycle, and skills
-// invalidation). They share one handler, which persists each notification
-// verbatim as agent-emitted data. Methods with extra side effects
-// (rate-limit, token-usage broadcasts) keep dedicated cases below. A method
-// that this table omits falls to the default branch and lands in the transcript
-// as a raw JSON-RPC bubble.
+// codexSystemMetadataMethods contains Codex JSON-RPC notifications that the
+// transcript stores as agent metadata. Methods that need extra state changes
+// use dedicated cases below. An unhandled method reaches the default case and
+// lands in the transcript as a raw JSON-RPC row.
 var codexSystemMetadataMethods = map[string]struct{}{
 	contracts.CodexMethodThreadCompacted:   {},
 	contracts.CodexMethodThreadNameUpdated: {},
-	contracts.CodexMethodSkillsChanged:     {},
 }
 
 // handleCodexOutput processes a single parsed JSONL notification from the Codex app-server.
@@ -110,6 +106,10 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 		// turn/started and turn/completed own the Worker's turn state. Codex sends
 		// this second lifecycle view around the same turn, so it adds no state for
 		// the transcript, the thinking indicator, or turn-end detection.
+
+	case contracts.CodexMethodSkillsChanged:
+		// Skill discovery state does not describe a transcript row or LeapMux
+		// session state.
 
 	case contracts.CodexMethodRemoteControlStatusChanged:
 		// Codex remote control reports app-server transport state. It does not

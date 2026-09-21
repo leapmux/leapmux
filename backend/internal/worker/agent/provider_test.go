@@ -48,10 +48,8 @@ func TestProviderFor_CodexClassification(t *testing.T) {
 		Key:  "codex:account/rateLimits/updated",
 	}, plugin.Classify(rateLimit))
 
-	assert.Equal(t, NotificationClassification{
-		Kind: NotificationKindProviderScoped,
-		Key:  "codex:skills/changed",
-	}, plugin.Classify(skillsChanged))
+	assert.False(t, plugin.Classify(skillsChanged).Consolidatable(),
+		"skill discovery state never enters a notification thread")
 
 	assert.False(t, plugin.Classify(remoteControlStatus).Consolidatable(),
 		"remote-control state never enters a notification thread")

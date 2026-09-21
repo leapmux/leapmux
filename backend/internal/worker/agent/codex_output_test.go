@@ -458,23 +458,18 @@ func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsAgent(t *testing.T) {
 		"raw envelope must be preserved so future renderers can read every field")
 }
 
-func TestHandleCodexOutput_SkillsChangedPersistsRawAsAgent(t *testing.T) {
+func TestHandleCodexOutput_SkillsChangedDoesNotReachTranscript(t *testing.T) {
 	t.Parallel()
 
-	sink := &recordingControlSink{}
+	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
-	input := `{"method":"skills/changed","params":{}}`
 
-	handleCodexOutput(agent, parseLine([]byte(input)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"skills/changed","params":{}}`)))
 
-	require.Equal(t, 1, sink.NotificationCount())
-	require.Equal(t, 0, sink.MessageCount(),
-		"Codex metadata notifications must not fall through to the default AGENT branch")
-	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
-		"Codex-emitted metadata must persist as AGENT")
-	assert.JSONEq(t, input, string(last.Content),
-		"raw JSON-RPC envelope must be preserved verbatim")
+	assert.Zero(t, sink.MessageCount())
+	assert.Zero(t, sink.NotificationCount())
+	assert.Zero(t, sink.SessionInfoCount())
+	assert.Empty(t, sink.TurnActives())
 }
 
 func TestHandleCodexOutput_RemoteControlStatusChangedDoesNotReachTranscript(t *testing.T) {
