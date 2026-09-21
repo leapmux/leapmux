@@ -9,7 +9,7 @@ vi.mock('~/lib/shikiWorkerClient', () => ({
   tokenizeAsync: vi.fn().mockResolvedValue([[{ content: 'const x = 1', className: 'sk-read-test' }]]),
 }))
 
-describe('ReadResultView syntax highlighting', () => {
+describe('ReadResultView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
@@ -128,6 +128,18 @@ describe('ReadResultView syntax highlighting', () => {
     expect((container.textContent ?? '').length).toBeLessThan(EXPANDED_TEXT_DISPLAY_CHAR_LIMIT + 5_000)
     expect(container).toHaveTextContent('Display limited')
     expect(container.querySelectorAll('[data-line-num]').length).toBeLessThan(lines.length)
+  })
+
+  it('keeps a final short line that fits the remaining character budget', () => {
+    const lines = [
+      ...Array.from({ length: 15 }, (_, index) => ({ num: index + 1, text: 'x'.repeat(4_096) })),
+      { num: 16, text: 'y'.repeat(4_025) },
+      { num: 17, text: 'z' },
+    ]
+    const { container } = render(() => <ReadResultView lines={lines} />)
+
+    expect(container.querySelectorAll('[data-line-num]')).toHaveLength(lines.length)
+    expect(container).toHaveTextContent('z')
   })
 
   it('keeps existing tokens when syntax highlighting is paused after highlight completes', async () => {

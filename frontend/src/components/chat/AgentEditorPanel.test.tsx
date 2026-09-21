@@ -185,7 +185,7 @@ async function waitForControlActionsReady() {
 // updates the outermost stale ancestor before the memo itself. The banner slot
 // has no such ancestor, because `createComponent` untracks the element that its
 // prop getter builds.
-describe('AgentEditorPanel control request lifecycle', () => {
+describe('AgentEditorPanel', () => {
   it('reports an unavailable response handler without accepting the request', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, { requestId: 'permission', payload: toolRequestPayload('Bash'), claimToken: 'claim' })

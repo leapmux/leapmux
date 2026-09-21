@@ -29,3 +29,8 @@ export interface RateLimitInfo {
   overageResetsAt?: number // Unix timestamp (seconds)
   isUsingOverage?: boolean
 }
+
+export interface RateLimitUpdate {
+  mode: 'merge' | 'replace'
+  values: Record<string, RateLimitInfo>
+}

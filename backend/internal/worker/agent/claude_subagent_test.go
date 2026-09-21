@@ -117,15 +117,27 @@ func TestClaudePeerHandbackSurvivesMissingChildState(t *testing.T) {
 	assert.Zero(t, sink.MessageCount())
 }
 
-func TestClaudePeerHandbackReplayUsesTheSenderTaskIdentity(t *testing.T) {
+func TestClaudePeerHandbackUsesEventIdentityAcrossRestarts(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
 	agent := newTestAgent(sink)
-	agent.HandleOutput([]byte(`{"type":"result","origin":{"kind":"peer","from":"orphan-reviewer","senderTaskId":"unknown-task","body":"[Subagent hand-back] The report follows:\n  Draft report","handback":true}}`))
-	agent.HandleOutput([]byte(`{"type":"result","origin":{"kind":"peer","from":"orphan-reviewer","senderTaskId":"unknown-task","body":"[Subagent hand-back] The report follows:\n  Corrected report","handback":true}}`))
+	agent.HandleOutput([]byte(`{"type":"result","uuid":"report-1","origin":{"kind":"peer","from":"orphan-reviewer","senderTaskId":"unknown-task","body":"[Subagent hand-back] The report follows:\n  Draft report","handback":true}}`))
+	agent.HandleOutput([]byte(`{"type":"result","uuid":"report-2","origin":{"kind":"peer","from":"orphan-reviewer","senderTaskId":"unknown-task","body":"[Subagent hand-back] The report follows:\n  Corrected report","handback":true}}`))
 
-	assert.Len(t, sink.LeapMuxNotifications(), 1, "one peer task must keep one report identity across a replay")
+	assert.Len(t, sink.LeapMuxNotifications(), 2, "a restarted peer task must keep its new report")
+}
+
+func TestClaudePeerHandbackReplayKeepsOneEventIdentity(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newTestAgent(sink)
+	line := []byte(`{"type":"result","uuid":"report-1","origin":{"kind":"peer","from":"reviewer","senderTaskId":"task-1","body":"[Subagent hand-back] The report follows:\n  Report","handback":true}}`)
+	agent.HandleOutput(line)
+	agent.HandleOutput(line)
+
+	assert.Len(t, sink.LeapMuxNotifications(), 1, "one provider event must stay idempotent across replay")
 }
 
 // TestClaude_PendingTaskEndRecordsAndConsumes verifies the pending-end map

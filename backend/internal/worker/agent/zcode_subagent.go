@@ -42,7 +42,6 @@ import (
 type zcodeSpawnRecord struct {
 	childAgentID string
 	title        string
-	reportID     string
 	toolCallIDs  map[string]struct{}
 	background   bool
 }
@@ -152,24 +151,6 @@ func (i *zcodeChildIndex) title(spawnToolCallID string) string {
 	defer i.mu.Unlock()
 	if record := i.spawns[spawnToolCallID]; record != nil {
 		return record.title
-	}
-	return ""
-}
-
-func (i *zcodeChildIndex) rememberReportID(spawnToolCallID, reportID string) {
-	if spawnToolCallID == "" || reportID == "" {
-		return
-	}
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	i.spawnLocked(spawnToolCallID).reportID = reportID
-}
-
-func (i *zcodeChildIndex) reportID(spawnToolCallID string) string {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	if record := i.spawns[spawnToolCallID]; record != nil {
-		return record.reportID
 	}
 	return ""
 }
@@ -284,7 +265,11 @@ func decodeZCodeSubagentLifecycleTransition(event zcodeEventEnvelope) (zcodeSuba
 	}
 	reportID := ""
 	if report != "" {
-		reportID = strings.TrimSpace(event.EventID)
+		if final {
+			reportID = zcodeFinalReportID(payload.ParentToolCallID)
+		} else {
+			reportID = strings.TrimSpace(event.EventID)
+		}
 		if reportID == "" {
 			reportID = subagentReportContentID("zcode", payload.ParentToolCallID, report)
 		}
@@ -320,7 +305,6 @@ func (a *zcodeAgent) handleZCodeSubagentLifecycle(event zcodeEventEnvelope) {
 	}
 	transition.report.Label = childTitle
 	if transition.report.Text != "" {
-		a.children.rememberReportID(transition.rowKey, transition.reportID)
 		persistChildSubagentReport(a.sink, ChildSubagentReportWrite{
 			RowKey: transition.rowKey,
 			Write: SubagentReportWrite{
@@ -635,17 +619,17 @@ func (a *zcodeAgent) persistZCodeSubagentReport(payload zcodeToolUpdated) {
 	if zcodeAgentLaunchedInBackground(payload) {
 		return
 	}
-	reportID := a.children.reportID(payload.ToolCallID)
-	if reportID == "" {
-		reportID = payload.ToolCallID
-	}
 	persistChildSubagentReport(a.sink, ChildSubagentReportWrite{
 		RowKey: payload.ToolCallID,
 		Write: SubagentReportWrite{
-			ReportID: reportID,
+			ReportID: zcodeFinalReportID(payload.ToolCallID),
 			Report:   SubagentReport{Text: result.Content},
 		},
 	})
+}
+
+func zcodeFinalReportID(spawnToolCallID string) string {
+	return "zcode-final:" + strings.TrimSpace(spawnToolCallID)
 }
 
 // zcodeSpawnTitle labels the subagent an `Agent` call starts: the description the

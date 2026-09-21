@@ -119,6 +119,7 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
   const repoGitStore = createRepoGitStore()
   const agentInputQueueStore = { clearAgent: vi.fn() } as any
   const agentActivityStore = createAgentActivityStore()
+  const releaseAgentComposerActionState = vi.fn()
   const ops = useAgentOperations({
     agentSessionStore,
     agentInputQueueStore,
@@ -137,6 +138,7 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
     newAgentDialog: { open: vi.fn(), close: vi.fn(), value: () => null },
     setNewAgentLoadingProvider: vi.fn(),
     repoGitStore,
+    releaseAgentComposerActionState,
   })
 
   return {
@@ -147,6 +149,7 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
     chatStore,
     agentInputQueueStore,
     agentActivityStore,
+    releaseAgentComposerActionState,
     repoGitStore,
     ops,
     /** Place an agent on the seeded root tile — the only tile that exists. */
@@ -426,6 +429,7 @@ describe('useAgentOperations', () => {
         newAgentDialog,
         setNewAgentLoadingProvider: vi.fn(),
         repoGitStore: createRepoGitStore(),
+        releaseAgentComposerActionState: vi.fn(),
       })
       return { ops, newAgentDialog }
     }
@@ -713,7 +717,7 @@ describe('useAgentOperations', () => {
     it('removes agent/tab synchronously BEFORE the close RPC resolves', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { view, chatStore, agentInputQueueStore, ops, add } = setup()
+          const { view, chatStore, agentInputQueueStore, releaseAgentComposerActionState, ops, add } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-1', workerId: 'w-1' })
           add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           add({ id: 'a-1', title: 'Agent Olivia', workerId: 'w-1', workingDir: '/tmp' })
@@ -728,6 +732,7 @@ describe('useAgentOperations', () => {
           // Per-agent state is reclaimed synchronously too.
           expect(chatStore.forgetAgent).toHaveBeenCalledWith('a-1')
           expect(agentInputQueueStore.clearAgent).toHaveBeenCalledWith('a-1')
+          expect(releaseAgentComposerActionState).toHaveBeenCalledWith('a-1')
           // RPC was dispatched with KEEP as the default worktree action.
           expect(mockCloseAgent).toHaveBeenCalledWith('w-1', { agentId: 'a-1', worktreeAction: WorktreeAction.KEEP })
         }
@@ -979,7 +984,7 @@ describe('useAgentOperations', () => {
     it('reclaims per-agent store state for each subagent it retires', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { ops, add, chatStore, agentInputQueueStore, controlStore } = setup()
+          const { ops, add, chatStore, agentInputQueueStore, controlStore, releaseAgentComposerActionState } = setup()
           for (const id of ['a-root4', 'a-kid']) {
             const agent = create(AgentInfoSchema, { id, workerId: 'w-1' })
             add({ id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
@@ -998,6 +1003,7 @@ describe('useAgentOperations', () => {
           expect(chatStore.forgetAgent).toHaveBeenCalledWith('a-kid')
           expect(agentInputQueueStore.clearAgent).toHaveBeenCalledWith('a-kid')
           expect(clearAgent).toHaveBeenCalledWith('a-kid')
+          expect(releaseAgentComposerActionState).toHaveBeenCalledWith('a-kid')
         }
         finally {
           dispose()

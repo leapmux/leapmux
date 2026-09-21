@@ -2,7 +2,7 @@ import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { AgentProvider, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/proto/leapmux/v1/agent_pb'
-import { clearSettingsLabelCache, getCachedSettingsGroupLabel, getCachedSettingsLabel, settingsLabelCacheRevision, updateSettingsLabelCache } from './settingsLabelCache'
+import { clearSettingsLabelCache, collectSettingsLabelDependencies, getCachedSettingsGroupLabel, getCachedSettingsLabel, settingsLabelCacheRevision, settingsLabelDependencyRevision, updateSettingsLabelCache } from './settingsLabelCache'
 
 const CLAUDE = AgentProvider.CLAUDE_CODE
 const CURSOR = AgentProvider.CURSOR
@@ -28,6 +28,18 @@ describe('settingsLabelCache', () => {
 
     updateSettingsLabelCache(CLAUDE, groups)
     expect(settingsLabelCacheRevision()).toBe(changed)
+  })
+
+  it('changes a dependency revision only for the label group that moved', () => {
+    updateSettingsLabelCache(CLAUDE, [group('model', 'Model', [['sonnet', 'Sonnet']])])
+    const collected = collectSettingsLabelDependencies(() => getCachedSettingsLabel(CLAUDE, 'model', 'sonnet'))
+    const before = settingsLabelDependencyRevision(collected.dependencies)
+
+    updateSettingsLabelCache(CLAUDE, [group('permissionMode', 'Mode', [['plan', 'Plan']])])
+    expect(settingsLabelDependencyRevision(collected.dependencies)).toBe(before)
+
+    updateSettingsLabelCache(CLAUDE, [group('model', 'Model', [['sonnet', 'Sonnet 4']])])
+    expect(settingsLabelDependencyRevision(collected.dependencies)).not.toBe(before)
   })
 
   beforeEach(() => clearSettingsLabelCache())

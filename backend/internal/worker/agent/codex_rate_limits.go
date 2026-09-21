@@ -29,7 +29,12 @@ func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMess
 		reachedType = *notif.RateLimits.RateLimitReachedType
 	}
 	summary := summarizeCodexRateLimits([]*codexRateLimitTier{notif.RateLimits.Primary, notif.RateLimits.Secondary}, reachedType)
-	a.sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyRateLimits: summary.rateLimits})
+	a.sink.BroadcastSessionInfo(map[string]interface{}{
+		contracts.SessionInfoKeyRateLimits: map[string]interface{}{
+			contracts.RateLimitUpdateFieldMode:   contracts.RateLimitUpdateModeReplace,
+			contracts.RateLimitUpdateFieldValues: summary.rateLimits,
+		},
+	})
 
 	if resumeReset := codexRateLimitResumeReset(reachedType, summary); resumeReset != nil {
 		a.sink.ScheduleAutoContinue(AutoContinueSchedule{

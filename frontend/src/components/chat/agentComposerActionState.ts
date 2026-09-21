@@ -48,11 +48,22 @@ export function createAgentComposerActionStateStore() {
     return created
   }
 
+  const releaseAgent = (agentId: string): boolean => {
+    const state = states.get(agentId)
+    if (!state)
+      return false
+    states.delete(agentId)
+    state.dispose()
+    return true
+  }
+
   onCleanup(() => {
     for (const state of states.values())
       state.dispose()
     states.clear()
   })
 
-  return { forAgent }
+  return { forAgent, releaseAgent }
 }
+
+export type AgentComposerActionStateStore = ReturnType<typeof createAgentComposerActionStateStore>

@@ -1,5 +1,5 @@
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { RateLimitInfo } from '~/models/agentSession'
+import type { RateLimitInfo, RateLimitUpdate } from '~/models/agentSession'
 import { CODEX_RATE_LIMIT_ACCOUNT_BLOCK_KEY, CODEX_RATE_LIMIT_REACHED_TIME_WINDOW } from '~/generated/contracts/worker-vocab'
 import { pickObject } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
@@ -83,7 +83,7 @@ export function codexTierToRateLimitInfo(tier: Record<string, unknown>): RateLim
 /**
  * Codex rate limits: {method:"account/rateLimits/updated", params:{rateLimits:{primary,secondary}}}.
  */
-export function codexRateLimitsFromMessage(parsed: ParsedMessageContent): { key: string, info: RateLimitInfo }[] | null {
+export function codexRateLimitsFromMessage(parsed: ParsedMessageContent): RateLimitUpdate | null {
   const inner = getInnerMessage(parsed)
   if (!inner || inner.method !== CODEX_RATE_LIMITS_METHOD)
     return null
@@ -112,5 +112,8 @@ export function codexRateLimitsFromMessage(parsed: ParsedMessageContent): { key:
       ? { rateLimitType: reachedType, status: 'exceeded' }
       : {},
   })
-  return results
+  return {
+    mode: 'replace',
+    values: Object.fromEntries(results.map(result => [result.key, result.info])),
+  }
 }

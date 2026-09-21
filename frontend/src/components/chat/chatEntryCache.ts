@@ -5,9 +5,10 @@ import type { PreparedMessage } from './rowPreparation'
 import type { SpanLine } from './widgets/SpanLines'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageRevision, MessageSpanIdentity } from '~/lib/messageSpan'
+import type { SettingsLabelDependency } from '~/lib/settingsLabelCache'
 import { createMemo } from 'solid-js'
 import { messageSpanIdentity } from '~/lib/messageSpan'
-import { settingsLabelCacheRevision } from '~/lib/settingsLabelCache'
+import { collectSettingsLabelDependencies, settingsLabelCacheRevision, settingsLabelDependencyRevision } from '~/lib/settingsLabelCache'
 import { shallowEqual } from '~/lib/shallowEqual'
 import { rowRevisionKey } from './chatRevisionKey'
 import { buildContentKey, buildHeightKey } from './chatRowGeometry'
@@ -44,8 +45,8 @@ export interface EntryFreshness {
   revisionKey: string
   /** Whether these messages were a SUBAGENT's own transcript at classify time. */
   isChildTranscript: boolean
-  /** Display-label catalog version used by settings notification entries. */
-  settingsLabelRevision: number
+  /** Revisions of the exact display-label groups that this row reads. */
+  settingsLabelRevision: string
 }
 
 /**
@@ -70,6 +71,8 @@ export type ClassifiedEntry = PreparedMessage & {
    * rebuild reuse the parse only when the payload is byte-identical.
    */
   spanLinesRef: string
+  /** The exact option groups whose labels this entry read. */
+  settingsLabelDependencies: SettingsLabelDependency[]
 }
 
 /**
@@ -167,7 +170,14 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
    * lists the freshness dimensions. `isEntryFresh` compares this value, and
    * `buildEntry` stores it, so the two paths cannot drift.
    */
-  const freshnessOf = (message: AgentChatMessage, selected: ResolvedMessage | undefined): EntryFreshness => {
+  const freshnessOf = (
+    message: AgentChatMessage,
+    selected: ResolvedMessage | undefined,
+    labelDependencies: readonly SettingsLabelDependency[],
+  ): EntryFreshness => {
+    // Subscribe the window memo to catalog changes. The dependency key below
+    // decides whether this row actually needs a rebuild.
+    settingsLabelCacheRevision()
     const own: MessageRevision = selected?.revision ?? {
       id: message.id,
       seq: message.seq,
@@ -196,7 +206,7 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
         ...(result !== undefined ? { result } : {}),
       }),
       isChildTranscript: deps.isChildTranscript?.() ?? false,
-      settingsLabelRevision: settingsLabelCacheRevision(),
+      settingsLabelRevision: settingsLabelDependencyRevision(labelDependencies),
     }
   }
   /**
@@ -205,16 +215,17 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
    */
   const isEntryFresh = (cached: ClassifiedEntry | undefined, freshness: EntryFreshness): cached is ClassifiedEntry =>
     !!cached && shallowEqual(cached.freshness, freshness)
-  const buildEntry = (message: AgentChatMessage, selected: ResolvedMessage | undefined, freshness: EntryFreshness, cached?: ClassifiedEntry): ClassifiedEntry => {
+  const buildEntry = (message: AgentChatMessage, selected: ResolvedMessage | undefined, cached?: ClassifiedEntry): ClassifiedEntry => {
     // The shared resolver's own parse when it holds one, so the bubble, the toolbar
     // and the image tab read the row from ONE resolved payload. The resolver is
     // absent outside ChatView (a test, an isolated preview), and preparation then
     // resolves the payload itself.
     const selectedMessage = selected?.message ?? message
-    const prepared = prepareMessage(selectedMessage, {
+    const collected = collectSettingsLabelDependencies(() => prepareMessage(selectedMessage, {
       ...(selected === undefined ? {} : { original: selected.original, resolved: selected.resolved }),
       isChildTranscript: deps.isChildTranscript?.() ?? false,
-    })
+    }))
+    const prepared = collected.value
     // Reuse the cached parse when the `spanLines` payload is byte-identical to the
     // one it was parsed from -- compared against the snapshot, not `cached.message`
     // (the shared proxy reads the CURRENT value, so it can't detect an in-place
@@ -226,8 +237,9 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     return {
       ...prepared,
       parsedSpanLines,
-      freshness,
+      freshness: freshnessOf(message, selected, collected.dependencies),
       spanLinesRef: selectedMessage.spanLines,
+      settingsLabelDependencies: collected.dependencies,
     }
   }
   /**
@@ -237,10 +249,10 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
   const resolveEntry = (message: AgentChatMessage): ClassifiedEntry => {
     const cached = entryCache.get(message.id)
     const selected = deps.resolvedMessage?.(message)
-    const freshness = freshnessOf(message, selected)
+    const freshness = freshnessOf(message, selected, cached?.settingsLabelDependencies ?? [])
     if (isEntryFresh(cached, freshness))
       return cached
-    const entry = buildEntry(message, selected, freshness, cached)
+    const entry = buildEntry(message, selected, cached)
     entryCache.set(message.id, entry)
     return entry
   }

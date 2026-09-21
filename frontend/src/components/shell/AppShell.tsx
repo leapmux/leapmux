@@ -21,6 +21,7 @@ import { createEffect, createMemo, createResource, createSignal, on, onCleanup, 
 import { getRuntimeState, isTauriApp, platformBridge } from '~/api/platformBridge'
 import { apiLoadingTimeoutMs, workspaceBootstrapTimeoutMs } from '~/api/transport'
 import { setExpectedUserId } from '~/api/workerRpc'
+import { createAgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
 import { BootSplash } from '~/components/common/BootSplash'
 import { CliPathDialog } from '~/components/desktop/CliPathDialog'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
@@ -800,6 +801,7 @@ export const AppShell: Component = () => {
   const getScrollStateRef = createImperativeRef<() => SavedViewportScroll | undefined>()
   const forceScrollToBottomRef = createImperativeRef<() => void>()
   const [centerPanelHeight, setCenterPanelHeight] = createSignal(0)
+  const agentComposerActionStates = createAgentComposerActionStateStore()
 
   const agentOps = useAgentOperations({
     agentSessionStore,
@@ -821,6 +823,7 @@ export const AppShell: Component = () => {
     focusEditor,
     forceScrollToBottom: () => forceScrollToBottomRef()?.(),
     repoGitStore,
+    releaseAgentComposerActionState: agentComposerActionStates.releaseAgent,
   })
 
   // Terminal operations hook
@@ -1395,6 +1398,7 @@ export const AppShell: Component = () => {
   })
 
   const tileRenderer = createTileRenderer({
+    agentComposerActionStates,
     mruEditorDeps,
     stores: {
       view: tabView,

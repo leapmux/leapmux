@@ -252,6 +252,7 @@ type contentBlock struct {
 // messageEnvelope is the shared top-level structure parsed once for
 // assistant, user, system, and result messages.
 type messageEnvelope struct {
+	UUID            string `json:"uuid"`
 	ParentToolUseID string `json:"parent_tool_use_id"`
 	ToolUseID       string `json:"tool_use_id"`
 	TaskDescription string `json:"task_description"`
@@ -1074,7 +1075,10 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 	}
 
 	a.sink.BroadcastSessionInfo(map[string]interface{}{
-		contracts.SessionInfoKeyRateLimits: map[string]any{rlInfo.RateLimitType: tier},
+		contracts.SessionInfoKeyRateLimits: map[string]any{
+			contracts.RateLimitUpdateFieldMode:   contracts.RateLimitUpdateModeMerge,
+			contracts.RateLimitUpdateFieldValues: map[string]any{rlInfo.RateLimitType: tier},
+		},
 	})
 
 	// Persist the raw `rate_limit_event` envelope verbatim as an

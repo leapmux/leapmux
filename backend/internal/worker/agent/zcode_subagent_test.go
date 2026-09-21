@@ -228,7 +228,7 @@ func TestDecodeZCodeSubagentLifecycleTransition(t *testing.T) {
 	assert.Equal(t, bgtask.StatusCompleted, transition.status)
 	assert.True(t, transition.final)
 	assert.Equal(t, "Final report", transition.report.Text)
-	assert.Equal(t, subagentReportContentID("zcode", "spawn-1", "Final report"), transition.reportID)
+	assert.Equal(t, zcodeFinalReportID("spawn-1"), transition.reportID)
 	assert.Equal(t, "model request failed", transition.failure)
 }
 
@@ -239,7 +239,7 @@ func TestZCodeSubagent_LifecycleAndAgentResultPersistOneReport(t *testing.T) {
 	a := newZCodeTestAgent(t, sink)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
-		`{"agentId":"agent-1","agentType":"Explore","parentToolCallId":"spawn-1","message":"1 file"}`))
+		`{"agentId":"agent-1","agentType":"Explore","parentToolCallId":"spawn-1","status":"completed","message":"1 file"}`))
 	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated, zcodeSpawnResult))
 
 	rows := sink.BackgroundTasks()

@@ -1,5 +1,6 @@
 import type { Definition, FootnoteDefinition, LinkReference, Nodes, Root } from 'mdast'
 import { createMarkdownParser } from './markdownParse'
+import { snapUtf16CutForward } from './utf16Cut'
 
 /** Trailing ellipsis appended to truncated previews (U+2026). */
 export const PREVIEW_ELLIPSIS = '…'
@@ -43,11 +44,7 @@ interface RefEntry {
  * astral character whole, so the result is always well-formed UTF-16.
  */
 export function cutAtCodeUnit(s: string, at: number): string {
-  const i = Math.min(Math.max(at, 0), s.length)
-  if (i === 0 || i >= s.length)
-    return s.slice(0, i)
-  const prev = s.charCodeAt(i - 1)
-  return prev >= 0xD800 && prev <= 0xDBFF ? s.slice(0, i + 1) : s.slice(0, i)
+  return s.slice(0, snapUtf16CutForward(s, at))
 }
 
 /** The node's children, or `[]` for leaf nodes -- the one home for the narrowing cast. */

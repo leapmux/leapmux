@@ -9,7 +9,7 @@
 import type { AgentActivityState, AgentChatMessage, AgentControlCancelRequest, AgentControlRequest, AgentStatusChange, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { RateLimitInfo } from '~/models/agentSession'
+import type { RateLimitInfo, RateLimitUpdate } from '~/models/agentSession'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
 import type { createAgentSessionStore, LiveGenerationProgress } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
@@ -25,7 +25,7 @@ import { classifyAgentMessage } from '~/components/chat/messageClassifier'
 import { compactionContextTokens } from '~/components/chat/notificationEntries'
 import { providerFor, resolvedSpanRole, resolveMessageForRendering } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
-import { GOAL_PROGRESS_FIELD, RATE_LIMIT_FIELD, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY } from '~/generated/contracts/session-info'
+import { GOAL_PROGRESS_FIELD, RATE_LIMIT_FIELD, RATE_LIMIT_UPDATE_FIELD, RATE_LIMIT_UPDATE_MODE, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY } from '~/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentStatus, ControlResponseState, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -114,10 +114,23 @@ export function wireSessionInfoToUpdates(
   const contextUsage = normalizeContextUsage(info[SESSION_INFO_KEY.ContextUsage])
   if (contextUsage)
     updates.contextUsage = contextUsage
-  const rateLimits = info[SESSION_INFO_KEY.RateLimits]
-  if (rateLimits !== undefined)
-    updates.rateLimits = wireRateLimitsToCamel(rateLimits)
   return updates
+}
+
+/** Decode one explicit rate-limit merge or replacement from session info. */
+export function wireRateLimitUpdateFromSessionInfo(
+  info: Record<string, unknown> | undefined,
+): RateLimitUpdate | undefined {
+  if (!info)
+    return undefined
+  const update = info[SESSION_INFO_KEY.RateLimits]
+  if (!isObject(update))
+    return undefined
+  const values = wireRateLimitsToCamel(update[RATE_LIMIT_UPDATE_FIELD.Values])
+  const mode = update[RATE_LIMIT_UPDATE_FIELD.Mode]
+  if (values === undefined || (mode !== RATE_LIMIT_UPDATE_MODE.Merge && mode !== RATE_LIMIT_UPDATE_MODE.Replace))
+    return undefined
+  return { mode, values }
 }
 
 function wireGenerationProgress(info: Record<string, unknown> | undefined): LiveGenerationProgress | null {
@@ -274,6 +287,7 @@ export function handleAgentSessionInfo(
   const { agentSessionStore, chatStore } = stores
   const info = parsed.topLevel.info as Record<string, unknown> | undefined
   const updates = wireSessionInfoToUpdates(info)
+  const rateLimits = wireRateLimitUpdateFromSessionInfo(info)
   const generationProgress = wireGenerationProgress(info)
   if (generationProgress)
     agentSessionStore.applyProgress(agentId, generationProgress)
@@ -292,10 +306,15 @@ export function handleAgentSessionInfo(
   const goalProgress = wireGoalProgressToUpdate(info?.[SESSION_INFO_KEY.GoalProgress])
   if (goalProgress)
     chatStore.goal.setProgress(agentId, goalProgress)
+  if (rateLimits)
+    updates.rateLimits = rateLimits.values
   // Pi (and any future provider) may broadcast session_info payloads whose keys are all
   // dropped here -- skip the store write so reactive consumers aren't woken for nothing.
-  if (Object.keys(updates).length > 0)
-    agentSessionStore.updateInfo(agentId, updates)
+  if (Object.keys(updates).length > 0) {
+    agentSessionStore.updateInfo(agentId, updates, rateLimits
+      ? { rateLimits: { mode: rateLimits.mode } }
+      : {})
+  }
   return true
 }
 
@@ -345,11 +364,10 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
   // frame they don't recognize), so no rate_limit_event / account-rateLimits / tokenUsage wire
   // token is matched here.
   const rls = plugin?.session?.rateLimitsFromMessage?.(parsed)
-  if (rls && rls.length > 0) {
-    const rateLimits: Record<string, RateLimitInfo> = {}
-    for (const rl of rls)
-      rateLimits[rl.key] = rl.info
-    agentSessionStore.updateInfo(agentId, { rateLimits })
+  if (rls) {
+    agentSessionStore.updateInfo(agentId, { rateLimits: rls.values }, {
+      rateLimits: { mode: rls.mode },
+    })
   }
 
   // Usage metadata (context usage + cumulative cost) for every AGENT-source message, in one pass:

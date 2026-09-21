@@ -119,6 +119,45 @@ describe('createChatTailFollower', () => {
     expect(harness.calls.checkAtBottom).toHaveBeenCalledOnce()
   })
 
+  it('ignores a failed jump after a newer jump starts', async () => {
+    let atBottom = true
+    const first = deferred()
+    const second = deferred()
+    const jumps = [first, second]
+    let jumpIndex = 0
+    const setAnchor = vi.fn()
+    const checkAtBottom = vi.fn()
+    const follower = createChatTailFollower({
+      getEl: () => ({ scrollTop: 25 } as HTMLDivElement),
+      hasNewerMessages: () => true,
+      cancelAnimation: vi.fn(),
+      retakeControl: vi.fn(),
+      rearmBuffer: vi.fn(),
+      currentAnchorState: () => ({ anchor: { id: `before-${jumpIndex}`, offsetWithinRow: 0 }, viewportOffsetRatio: 0 }),
+      followTail: vi.fn(),
+      atBottomSnapshot: () => atBottom,
+      setAtBottom: (value) => { atBottom = value },
+      jumpToLatest: () => jumps[jumpIndex++]!.promise,
+      checkAtBottom,
+      stickToBottom: vi.fn(),
+      setAnchor,
+      anchorAtCurrentTop: () => null,
+      animateToBottom: vi.fn(),
+    })
+
+    follower.forceScrollToBottom()
+    follower.forceScrollToBottom()
+    second.resolve()
+    await second.promise
+    await Promise.resolve()
+    first.reject()
+    await first.promise.catch(() => undefined)
+    await Promise.resolve()
+
+    expect(setAnchor).not.toHaveBeenCalled()
+    expect(checkAtBottom).toHaveBeenCalledOnce()
+  })
+
   it('anchors at the current viewport after a failed jump from follow mode', async () => {
     const harness = setup({ hasNewer: true, anchor: null })
 

@@ -9,7 +9,7 @@ import {
   codeViewLine,
   codeViewLineNumber,
 } from '../markdownEditor/codeViewStyles.css'
-import { EXPANDED_TEXT_DISPLAY_CHAR_LIMIT, EXPANDED_TEXT_DISPLAY_LINE_LIMIT, LIMITED_TEXT_DISPLAY_NOTICE, limitTextForDisplay, TEXT_DISPLAY_LINE_CHAR_LIMIT } from '../safeTextDisplay'
+import { LIMITED_TEXT_DISPLAY_NOTICE, limitTextLinesForDisplay } from '../safeTextDisplay'
 import { toolResultPrompt } from '../toolStyles.css'
 import { useAsyncCodeTokens } from '../useAsyncCodeTokens'
 import { canHighlightBySize } from './collapse'
@@ -32,37 +32,8 @@ export function ReadResultView(props: {
   rowOffscreen?: () => boolean
 }): JSX.Element {
   const display = createMemo(() => {
-    const lines: NumberedFileLine[] = []
-    const code: string[] = []
-    let usedChars = 0
-    let limited = false
-    for (const line of props.lines) {
-      if (lines.length >= EXPANDED_TEXT_DISPLAY_LINE_LIMIT) {
-        limited = true
-        break
-      }
-      const separatorChars = lines.length === 0 ? 0 : 1
-      const remainingChars = EXPANDED_TEXT_DISPLAY_CHAR_LIMIT - usedChars - separatorChars
-      // `limitTextForDisplay` keeps a head/tail omission marker. Do not ask it
-      // to fit that marker in the last few bytes of the total budget.
-      if (remainingChars < 64) {
-        limited = true
-        break
-      }
-      const lineLimit = Math.min(TEXT_DISPLAY_LINE_CHAR_LIMIT, remainingChars)
-      const lineDisplay = limitTextForDisplay(line.text, {
-        maxChars: lineLimit,
-        maxLineChars: lineLimit,
-        maxLines: 1,
-      })
-      const displayedLine = lineDisplay.limited ? { ...line, text: lineDisplay.text } : line
-      lines.push(displayedLine)
-      code.push(displayedLine.text)
-      usedChars += separatorChars + displayedLine.text.length
-      limited ||= lineDisplay.limited
-    }
-    limited ||= lines.length < props.lines.length
-    return { lines, code: code.join('\n'), limited }
+    const limited = limitTextLinesForDisplay<NumberedFileLine>(props.lines)
+    return { lines: limited.lines, code: limited.text, limited: limited.limited }
   })
   const lines = () => display().lines
   const displayLimited = () => display().limited

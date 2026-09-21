@@ -581,6 +581,17 @@ describe('attachTerminalIme', () => {
     expect(h.sent).toEqual([])
   })
 
+  it('does not duplicate shifted text after CSI-u encoded an alternate key', async () => {
+    const h = createHarness({ kittyKeyboard: true })
+    await new Promise<void>(resolve => h.terminal.write('\x1B[=31;1u', resolve))
+
+    keydown(h.textarea, { key: 'C', code: 'KeyC', keyCode: 67, shiftKey: true })
+    input(h.textarea, 'insertText', 'C')
+
+    expect(h.fromXterm).toEqual(['\x1B[99:67;2;67u'])
+    expect(h.sent).toEqual([])
+  })
+
   it('does not treat an unrelated prevented key as a CSI-u emission', () => {
     const h = createHarness({
       beforeImeAttach: (textarea) => {

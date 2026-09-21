@@ -3,10 +3,11 @@ import type { PersistedControlResponse } from './persistedControlResponse'
 import type { ClassificationContext, ClassificationInput } from './providers/registry'
 import type { ResolvedMessageContent } from './rowExtractionTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { SettingsLabelDependency } from '~/lib/settingsLabelCache'
 import { AssembledMessageKind, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import { isWorkerWrittenNotification } from '~/lib/notificationTypes'
-import { settingsLabelCacheRevision } from '~/lib/settingsLabelCache'
+import { collectSettingsLabelDependencies, settingsLabelCacheRevision, settingsLabelDependencyRevision } from '~/lib/settingsLabelCache'
 import { parseAssembledMessage } from './assembledMessage'
 import { classifyNotifications } from './notificationClassification'
 import { parsePersistedControlResponse } from './persistedControlResponse'
@@ -86,16 +87,26 @@ export function classifyMessage(input: ClassificationInput, context?: Classifica
   return plugin.transcript.classify(input, context)
 }
 
-const classifyCache = new WeakMap<AgentChatMessage, { revision: number, category: MessageCategory }>()
+const classifyCache = new WeakMap<AgentChatMessage, {
+  revision: string
+  dependencies: SettingsLabelDependency[]
+  category: MessageCategory
+}>()
 
 export function classifyAgentMessage(message: AgentChatMessage): MessageCategory {
-  const revision = settingsLabelCacheRevision()
+  settingsLabelCacheRevision()
   const cached = classifyCache.get(message)
+  const revision = settingsLabelDependencyRevision(cached?.dependencies ?? [])
   if (cached?.revision === revision)
     return cached.category
-  const result = classifyMessage(toClassificationInput(resolveMessageForRendering(parseMessageContent(message), message.agentProvider), message))
-  classifyCache.set(message, { revision, category: result })
-  return result
+  const collected = collectSettingsLabelDependencies(() =>
+    classifyMessage(toClassificationInput(resolveMessageForRendering(parseMessageContent(message), message.agentProvider), message)))
+  classifyCache.set(message, {
+    revision: settingsLabelDependencyRevision(collected.dependencies),
+    dependencies: collected.dependencies,
+    category: collected.value,
+  })
+  return collected.value
 }
 
 export function invalidateMessageClassificationCache(message: AgentChatMessage): void {

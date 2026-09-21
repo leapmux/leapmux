@@ -127,6 +127,26 @@ describe('createAgentSessionStore', () => {
     })
   })
 
+  it('replaces a full rate-limit snapshot and removes omitted tiers', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.updateInfo('agent-1', {
+        rateLimits: {
+          five_hour: { rateLimitType: 'five_hour', status: 'allowed_warning' },
+          seven_day: { rateLimitType: 'seven_day', status: 'allowed' },
+        },
+      })
+      store.updateInfo('agent-1', {
+        rateLimits: { seven_day: { rateLimitType: 'seven_day', status: 'allowed' } },
+      }, { rateLimits: { mode: 'replace' } })
+
+      expect(store.getInfo('agent-1').rateLimits).toEqual({
+        seven_day: { rateLimitType: 'seven_day', status: 'allowed' },
+      })
+      dispose()
+    })
+  })
+
   it('removes one rate-limit entry when a full snapshot sends an empty tombstone', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
@@ -136,7 +156,9 @@ describe('createAgentSessionStore', () => {
           five_hour: { rateLimitType: 'five_hour', utilization: 0.5 },
         },
       })
-      store.updateInfo('agent-1', { rateLimits: { account_block: {} } })
+      store.updateInfo('agent-1', { rateLimits: {} }, {
+        rateLimits: { mode: 'merge', deleteKeys: ['account_block'] },
+      })
 
       expect(store.getInfo('agent-1').rateLimits).toEqual({
         five_hour: { rateLimitType: 'five_hour', utilization: 0.5 },

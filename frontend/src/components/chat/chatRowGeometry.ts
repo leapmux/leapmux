@@ -82,8 +82,8 @@ export interface ContentKeyInputs {
    * tab's parent link hydrates, so the measurement must re-key with it.
    */
   isChildTranscript: boolean
-  /** Display-label catalog version used to classify notification entries. */
-  settingsLabelRevision: number
+  /** Revisions of the exact display-label groups that this row reads. */
+  settingsLabelRevision: string
 }
 
 /**

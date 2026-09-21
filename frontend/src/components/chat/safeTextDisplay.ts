@@ -1,3 +1,5 @@
+import { snapUtf16CutBackward, snapUtf16CutForward } from '~/lib/utf16Cut'
+
 /** Maximum source characters that one expanded body retains. */
 export const EXPANDED_TEXT_DISPLAY_CHAR_LIMIT = 64 * 1024
 
@@ -33,28 +35,6 @@ function positiveInteger(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isSafeInteger(value) && value > 0 ? value : fallback
 }
 
-/** Keep a slice boundary outside a UTF-16 surrogate pair. */
-export function safeTextEndIndex(text: string, index: number): number {
-  if (index <= 0 || index >= text.length)
-    return index
-  const previous = text.charCodeAt(index - 1)
-  const next = text.charCodeAt(index)
-  return previous >= 0xD800 && previous <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF
-    ? index - 1
-    : index
-}
-
-/** Keep a slice boundary outside a UTF-16 surrogate pair. */
-function safeStart(text: string, index: number): number {
-  if (index <= 0 || index >= text.length)
-    return index
-  const previous = text.charCodeAt(index - 1)
-  const next = text.charCodeAt(index)
-  return previous >= 0xD800 && previous <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF
-    ? index + 1
-    : index
-}
-
 function limitTotalChars(text: string, maxChars: number): SafeTextDisplay {
   if (text.length <= maxChars)
     return { text, limited: false }
@@ -62,8 +42,8 @@ function limitTotalChars(text: string, maxChars: number): SafeTextDisplay {
   const available = Math.max(2, maxChars - CONTENT_OMISSION.length)
   const headChars = Math.floor(available * 0.75)
   const tailChars = available - headChars
-  const headEnd = safeTextEndIndex(text, headChars)
-  const tailStart = safeStart(text, text.length - tailChars)
+  const headEnd = snapUtf16CutBackward(text, headChars)
+  const tailStart = snapUtf16CutForward(text, text.length - tailChars)
   return {
     text: `${text.slice(0, headEnd)}${CONTENT_OMISSION}${text.slice(tailStart)}`,
     limited: true,
@@ -126,8 +106,8 @@ function limitLineChars(text: string, maxLineChars: number): SafeTextDisplay {
       const available = Math.max(2, maxLineChars - LINE_OMISSION.length)
       const headChars = Math.floor(available * 0.75)
       const tailChars = available - headChars
-      const headEnd = safeTextEndIndex(text, start + headChars)
-      const tailStart = safeStart(text, end - tailChars)
+      const headEnd = snapUtf16CutBackward(text, start + headChars)
+      const tailStart = snapUtf16CutForward(text, end - tailChars)
       parts.push(text.slice(start, headEnd), LINE_OMISSION, text.slice(tailStart, end))
     }
     if (newline === -1)
@@ -136,6 +116,58 @@ function limitLineChars(text: string, maxLineChars: number): SafeTextDisplay {
     start = newline + 1
   }
   return { text: parts.join(''), limited: true }
+}
+
+function limitSingleLineChars(text: string, maxChars: number): SafeTextDisplay {
+  if (text.length <= maxChars)
+    return { text, limited: false }
+  const retainedChars = Math.max(0, maxChars - LINE_OMISSION.length)
+  const headChars = Math.floor(retainedChars * 0.75)
+  const tailChars = retainedChars - headChars
+  const headEnd = snapUtf16CutBackward(text, headChars)
+  const tailStart = snapUtf16CutForward(text, text.length - tailChars)
+  return {
+    text: `${text.slice(0, headEnd)}${LINE_OMISSION}${text.slice(tailStart)}`,
+    limited: true,
+  }
+}
+
+export interface TextLinesDisplay<T> extends SafeTextDisplay {
+  lines: T[]
+}
+
+/** Limit ordered text lines under one shared row and character budget. */
+export function limitTextLinesForDisplay<T extends { text: string }>(
+  sourceLines: readonly T[],
+  limits: TextDisplayLimits = {},
+): TextLinesDisplay<T> {
+  const maxChars = positiveInteger(limits.maxChars, EXPANDED_TEXT_DISPLAY_CHAR_LIMIT)
+  const maxLineChars = positiveInteger(limits.maxLineChars, TEXT_DISPLAY_LINE_CHAR_LIMIT)
+  const maxLines = positiveInteger(limits.maxLines, EXPANDED_TEXT_DISPLAY_LINE_LIMIT)
+  const lines: T[] = []
+  const text: string[] = []
+  let usedChars = 0
+  let limited = false
+  for (const line of sourceLines) {
+    if (lines.length >= maxLines) {
+      limited = true
+      break
+    }
+    const separatorChars = lines.length === 0 ? 0 : 1
+    const remainingChars = maxChars - usedChars - separatorChars
+    if (remainingChars <= 0) {
+      limited = true
+      break
+    }
+    const display = limitSingleLineChars(line.text, Math.min(maxLineChars, remainingChars))
+    const displayedLine = display.limited ? { ...line, text: display.text } : line
+    lines.push(displayedLine)
+    text.push(displayedLine.text)
+    usedChars += separatorChars + displayedLine.text.length
+    limited ||= display.limited
+  }
+  limited ||= lines.length < sourceLines.length
+  return { lines, text: text.join('\n'), limited }
 }
 
 /** Limit total characters, rows, and the layout cost of one unbroken line. */

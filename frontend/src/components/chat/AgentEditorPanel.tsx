@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { AgentComposerActionStateStore } from './agentComposerActionState'
 import type { FileAttachment, PendingAttachmentFile } from './attachments'
 import type { ControlResponseHandler, EditorContentRef } from './controls/types'
 import type { MessageContextResolver } from './messageContextResolver'
@@ -68,6 +69,8 @@ export interface AgentEditorPanelProps {
   /** See `MarkdownEditorProps.suppressAutoFocus`. Forwarded unchanged. */
   suppressAutoFocus?: () => boolean
   agentId: string
+  /** Shell-owned request state that survives focus changes and retires with the agent tab. */
+  actionStateStore?: AgentComposerActionStateStore
   agent?: AgentInfo
   /**
    * Why the composer accepts no input, when it does not (e.g. a non-steerable
@@ -198,7 +201,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   let fileInputRef: HTMLInputElement | undefined
   // The shell reuses this panel across focused agent tabs. Each action state
   // therefore belongs to an agent ID, so tab B never inherits tab A's request.
-  const actionStates = createAgentComposerActionStateStore()
+  const actionStates = untrack(() => props.actionStateStore) ?? createAgentComposerActionStateStore()
   const actionState = () => actionStates.forAgent(props.agentId)
   // Each sending signal stays true for a debounce window after `stop()`, so a
   // spinner that appears never flashes away.

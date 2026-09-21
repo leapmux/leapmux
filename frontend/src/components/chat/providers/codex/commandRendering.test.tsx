@@ -35,7 +35,7 @@ function renderCodexItem(item: Record<string, unknown>, context?: MessageContent
   return render(() => <>{renderMessageContent(parsed, context, category, AgentProvider.CODEX)}</>)
 }
 
-describe('Codex command actions', () => {
+describe('codex command actions', () => {
   it('bounds collapsed action rendering and builds rich tooltips only on demand', async () => {
     tokenizeAsyncCalls.mockClear()
     const commandActions = Array.from({ length: 20 }, (_, index) => ({

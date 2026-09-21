@@ -66,7 +66,8 @@ type codexEnsureCall struct {
 
 type recordingCodexEnsureSink struct {
 	*testSink
-	ensureCalls []codexEnsureCall
+	ensureCalls    []codexEnsureCall
+	childSinkCalls int
 }
 
 func (s *recordingCodexEnsureSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
@@ -76,6 +77,11 @@ func (s *recordingCodexEnsureSink) EnsureChildAgent(spawnSpanID, providerChildKe
 		title:            title,
 	})
 	return s.testSink.EnsureChildAgent(spawnSpanID, providerChildKey, title)
+}
+
+func (s *recordingCodexEnsureSink) ChildSink(childAgentID string) ProviderServices {
+	s.childSinkCalls++
+	return s.testSink.ChildSink(childAgentID)
 }
 
 func (s *transientCodexCloseFailureSink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
@@ -543,6 +549,9 @@ func TestHandleCodexOutput_RateLimitBroadcastsSnakeCaseWire(t *testing.T) {
 	info := sink.LastSessionInfo()
 	rateLimits, ok := info["rate_limits"].(map[string]interface{})
 	require.True(t, ok, "broadcast must carry rate_limits in snake_case, got %#v", info)
+	assert.Equal(t, "replace", rateLimits["mode"])
+	rateLimits, ok = rateLimits["values"].(map[string]interface{})
+	require.True(t, ok, "rate_limits must carry a values map")
 
 	primary, ok := rateLimits["five_hour"].(map[string]interface{})
 	require.True(t, ok, "primary tier should be keyed by rate_limit_type=five_hour")
@@ -603,6 +612,8 @@ func TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels(t *testing.T) {
 	require.Equal(t, 1, sink.SessionInfoCount())
 	rateLimits, ok := sink.LastSessionInfo()["rate_limits"].(map[string]interface{})
 	require.True(t, ok)
+	rateLimits, ok = rateLimits["values"].(map[string]interface{})
+	require.True(t, ok)
 	accountBlock, ok := rateLimits["account_block"].(map[string]interface{})
 	require.True(t, ok, "the live account block must remain visible outside the hidden transcript")
 	assert.Equal(t, "workspace_owner_credits_depleted", accountBlock["rate_limit_type"])
@@ -643,6 +654,8 @@ func TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules(t *testing.T)
 
 	require.Equal(t, 1, sink.SessionInfoCount())
 	rateLimits, ok := sink.LastSessionInfo()["rate_limits"].(map[string]interface{})
+	require.True(t, ok)
+	rateLimits, ok = rateLimits["values"].(map[string]interface{})
 	require.True(t, ok)
 	primary, ok := rateLimits["five_hour"].(map[string]interface{})
 	require.True(t, ok)
@@ -876,6 +889,28 @@ func TestHandleCodexOutput_MultiAgentV2LifecycleOwnsTheChildTranscript(t *testin
 	rows = sink.BackgroundTasks()
 	require.Len(t, rows, 1)
 	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+}
+
+func TestCodexChildRouteReusesTheResolvedSink(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingCodexEnsureSink{testSink: &testSink{}}
+	agent := newCodexAgentWithSink(sink)
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/probe_child"}}}`)))
+	sink.childSinkCalls = 0
+
+	_, first := agent.lookupCodexChildRoute("child-thread")
+	_, second := agent.lookupCodexChildRoute("child-thread")
+
+	require.True(t, first)
+	require.True(t, second)
+	assert.Zero(t, sink.childSinkCalls, "a resolved active route must not rebuild its sink path per output event")
+
+	agent.finishCollabChildRun("child-thread")
+	sink.childSinkCalls = 0
+	_, rebuilt := agent.lookupCodexChildRoute("child-thread")
+	require.True(t, rebuilt)
+	assert.Equal(t, 1, sink.childSinkCalls, "run completion must invalidate the sink that cleanup retires")
 }
 
 func TestHandleCodexOutput_MultiAgentV2DoesNotRegisterTheRootPath(t *testing.T) {

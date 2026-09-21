@@ -61,6 +61,7 @@ type codexChildState struct {
 	spawnCorrelationID     string
 	parentThreadID         string
 	childAgentID           string
+	resolvedRoute          *codexChildRoute
 	agentPath              string
 	promptTitle            string
 	prompt                 string
@@ -441,6 +442,7 @@ func (a *CodexAgent) registerCodexV2ChildStart(threadID, spawnCorrelationID, par
 		parentThreadID = a.threadID
 	}
 	state.parentThreadID = parentThreadID
+	a.invalidateCodexChildRoutesLocked()
 	if state.phase != codexChildClosing {
 		a.activateCodexChildStateLocked(state)
 	}
@@ -551,8 +553,17 @@ func (a *CodexAgent) finishCollabChildRun(threadID string) {
 		state.reportCandidateItemID = ""
 		state.reportCandidateText = ""
 		state.generationBuffer.Reset()
+		a.invalidateCodexChildRoutesLocked()
 	}
 	a.mu.Unlock()
+}
+
+func (a *CodexAgent) invalidateCodexChildRoutesLocked() {
+	for _, state := range a.collabChildren {
+		if state != nil {
+			state.resolvedRoute = nil
+		}
+	}
 }
 
 // collabChildTitle returns the V2 path segment or the first V1 prompt line.

@@ -1357,7 +1357,10 @@ func (noopSink) PersistSettingsRefresh(optionmap.Map)                           
 func (noopSink) BroadcastStatusActive(string)                                      {}
 func (noopSink) BroadcastSessionInfo(map[string]interface{})                       {}
 func (noopSink) PersistLeapMuxNotification(map[string]interface{})                 {}
-func (noopSink) PersistSubagentReport(SubagentReportWrite) (bool, error)           { return true, nil }
+func (noopSink) PersistSubagentReport(write SubagentReportWrite) (bool, error) {
+	payload, err := write.NotificationPayload()
+	return payload != nil, err
+}
 func (noopSink) PersistChildSubagentReport(ChildSubagentReportWrite) (bool, error) { return true, nil }
 func (noopSink) StorePlanModeToolUse(string, string)                               {}
 func (noopSink) LoadAndDeletePlanModeToolUse(string) (string, bool)                { return "", false }

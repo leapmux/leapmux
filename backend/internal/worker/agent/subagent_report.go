@@ -62,14 +62,6 @@ func persistSubagentReport(sink SessionServices, write SubagentReportWrite) bool
 	if sink == nil {
 		return false
 	}
-	payload, err := write.NotificationPayload()
-	if err != nil {
-		slog.Warn("invalid subagent report", "report_id", write.ReportID, "error", err)
-		return false
-	}
-	if payload == nil {
-		return false
-	}
 	stored, err := sink.PersistSubagentReport(write)
 	if err != nil {
 		slog.Warn("persist subagent report", "report_id", write.ReportID, "error", err)
@@ -81,19 +73,6 @@ func persistSubagentReport(sink SessionServices, write SubagentReportWrite) bool
 // persistChildSubagentReport validates a child route and logs a failed durable write.
 func persistChildSubagentReport(sink SessionServices, write ChildSubagentReportWrite) bool {
 	if sink == nil {
-		return false
-	}
-	write.RowKey = strings.TrimSpace(write.RowKey)
-	if write.RowKey == "" {
-		slog.Warn("invalid child subagent report", "report_id", write.Write.ReportID, "error", "child subagent report has no row key")
-		return false
-	}
-	payload, err := write.Write.NotificationPayload()
-	if err != nil {
-		slog.Warn("invalid child subagent report", "report_id", write.Write.ReportID, "row_key", write.RowKey, "error", err)
-		return false
-	}
-	if payload == nil {
 		return false
 	}
 	stored, err := sink.PersistChildSubagentReport(write)

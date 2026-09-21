@@ -85,22 +85,29 @@ const TEXT_INSERTING_INPUT_TYPES = new Set([
 /** The legacy `keyCode` a browser reports for a keystroke an IME consumed. */
 const KEY_CODE_IME_PROCESS = 229
 
-/** The Unicode code point that one CSI-u sequence encodes. */
-function csiUCodePoint(data: string | undefined): number | undefined {
+/** The printable code points that one CSI-u sequence can encode. */
+function csiUCodePoints(data: string | undefined): number[] | undefined {
   if (!data?.startsWith('\x1B[') || !data.endsWith('u'))
     return undefined
-  const firstParameter = data.slice(2, -1).split(';', 1)[0]
-  if (!firstParameter || !/^\d+$/.test(firstParameter))
+  const parameters = data.slice(2, -1).split(';')
+  const encoded = [
+    ...(parameters[0]?.split(':') ?? []),
+    ...(parameters[2]?.split(':') ?? []),
+  ].filter(Boolean)
+  if (encoded.length === 0 || encoded.some(value => !/^\d+$/.test(value)))
     return undefined
-  const codePoint = Number(firstParameter)
-  return Number.isSafeInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10FFFF
-    ? codePoint
+  const codePoints = encoded.map(Number)
+  return codePoints.every(codePoint => Number.isSafeInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10FFFF)
+    ? codePoints
     : undefined
 }
 
 function csiUEncodesKey(data: string | undefined, key: string): boolean {
   const characters = [...key]
-  return characters.length === 1 && csiUCodePoint(data) === characters[0]!.codePointAt(0)
+  if (characters.length !== 1)
+    return false
+  const keyCodePoint = characters[0]?.codePointAt(0)
+  return keyCodePoint !== undefined && (csiUCodePoints(data)?.includes(keyCodePoint) ?? false)
 }
 
 /**

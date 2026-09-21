@@ -578,6 +578,9 @@ func TestClaudeRateLimitEvent_BroadcastsSnakeCaseWire(t *testing.T) {
 	info := sink.LastSessionInfo()
 	rateLimits, ok := info["rate_limits"].(map[string]any)
 	require.True(t, ok, "broadcast must carry rate_limits in snake_case, got %#v", info)
+	assert.Equal(t, "merge", rateLimits["mode"])
+	rateLimits, ok = rateLimits["values"].(map[string]any)
+	require.True(t, ok, "rate_limits must carry a values map")
 
 	tier, ok := rateLimits["five_hour"].(map[string]any)
 	require.True(t, ok, "tier should be keyed by rate_limit_type")

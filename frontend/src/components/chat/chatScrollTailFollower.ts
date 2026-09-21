@@ -32,7 +32,10 @@ export interface ChatTailFollowerDeps {
  * sticks when no newer page appeared during the request.
  */
 export function createChatTailFollower(deps: ChatTailFollowerDeps) {
+  let jumpRequestRevision = 0
+
   const forceScrollToBottom = (): void => {
+    const requestRevision = ++jumpRequestRevision
     deps.cancelAnimation()
     deps.retakeControl()
     if (!deps.hasNewerMessages()) {
@@ -46,6 +49,8 @@ export function createChatTailFollower(deps: ChatTailFollowerDeps) {
     deps.setAtBottom(true)
     void Promise.resolve(deps.jumpToLatest())
       .then(() => {
+        if (requestRevision !== jumpRequestRevision)
+          return
         if (!deps.atBottomSnapshot())
           return
         if (deps.hasNewerMessages())
@@ -54,6 +59,8 @@ export function createChatTailFollower(deps: ChatTailFollowerDeps) {
           deps.stickToBottom()
       })
       .catch(() => {
+        if (requestRevision !== jumpRequestRevision)
+          return
         if (!deps.atBottomSnapshot()) {
           deps.checkAtBottom()
           return
@@ -73,15 +80,19 @@ export function createChatTailFollower(deps: ChatTailFollowerDeps) {
   }
 
   const jumpToBottom = (): void => {
+    jumpRequestRevision++
     deps.cancelAnimation()
     deps.stickToBottom()
   }
 
   const scrollToBottom = (): void => {
-    if (deps.hasNewerMessages())
+    if (deps.hasNewerMessages()) {
       forceScrollToBottom()
-    else
+    }
+    else {
+      jumpRequestRevision++
       deps.animateToBottom()
+    }
   }
 
   return { forceScrollToBottom, jumpToBottom, scrollToBottom }

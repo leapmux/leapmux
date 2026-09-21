@@ -75,6 +75,9 @@ func (a *CodexAgent) registerCollabReceiver(threadID, spawnCorrelationID, parent
 		state.parentThreadID = parentThreadID
 		changed = true
 	}
+	if changed {
+		a.invalidateCodexChildRoutesLocked()
+	}
 	if state.phase != codexChildClosing {
 		a.activateCodexChildStateLocked(state)
 	}
@@ -114,6 +117,11 @@ func (a *CodexAgent) lookupCodexChildRoute(threadID string) (codexChildRoute, bo
 		a.mu.Unlock()
 		return codexChildRoute{}, false
 	}
+	if state.resolvedRoute != nil {
+		route := *state.resolvedRoute
+		a.mu.Unlock()
+		return route, true
+	}
 	childAgentID := state.childAgentID
 	parentThreadID := state.parentThreadID
 	a.mu.Unlock()
@@ -121,12 +129,24 @@ func (a *CodexAgent) lookupCodexChildRoute(threadID string) (codexChildRoute, bo
 	if !ok {
 		return codexChildRoute{}, false
 	}
-	return codexChildRoute{
+	route := codexChildRoute{
 		agentID:       childAgentID,
 		parentAgentID: parentAgentID,
 		parentSink:    parentSink,
 		childSink:     parentSink.ChildSink(childAgentID),
-	}, true
+	}
+	a.mu.Lock()
+	if a.collabChildren[threadID] != state || state.childAgentID != childAgentID {
+		a.mu.Unlock()
+		return codexChildRoute{}, false
+	}
+	if state.resolvedRoute != nil {
+		route = *state.resolvedRoute
+	} else {
+		state.resolvedRoute = &route
+	}
+	a.mu.Unlock()
+	return route, true
 }
 
 func (a *CodexAgent) ensureCodexChildRoute(threadID string) (codexChildRoute, bool) {
@@ -161,18 +181,36 @@ func (a *CodexAgent) ensureCodexChildRoute(threadID string) (codexChildRoute, bo
 		a.mu.Unlock()
 		return codexChildRoute{}, false
 	}
+	if state.resolvedRoute != nil {
+		route := *state.resolvedRoute
+		a.mu.Unlock()
+		return route, true
+	}
 	if state.childAgentID == "" {
 		state.childAgentID = childID
 	} else {
 		childID = state.childAgentID
 	}
 	a.mu.Unlock()
-	return codexChildRoute{
+	route := codexChildRoute{
 		agentID:       childID,
 		parentAgentID: parentAgentID,
 		parentSink:    parentSink,
 		childSink:     parentSink.ChildSink(childID),
-	}, true
+	}
+	a.mu.Lock()
+	if a.threadID != rootThreadID || a.collabChildren[threadID] != state || state.childAgentID != childID {
+		a.mu.Unlock()
+		return codexChildRoute{}, false
+	}
+	if state.resolvedRoute != nil {
+		route = *state.resolvedRoute
+		a.mu.Unlock()
+		return route, true
+	}
+	state.resolvedRoute = &route
+	a.mu.Unlock()
+	return route, true
 }
 
 // codexServicesForThread resolves a thread's transcript sink. It walks the

@@ -61,6 +61,18 @@ function assistantText(id: string, seq: bigint, text: string): AgentChatMessage 
   })
 }
 
+/** A Codex assistant row that reads no settings labels. */
+function codexAssistantText(): AgentChatMessage {
+  return create(AgentChatMessageSchema, {
+    id: 'codex-text',
+    source: MessageSource.AGENT,
+    content: new TextEncoder().encode(JSON.stringify({ item: { id: 'text-1', type: 'agentMessage', text: 'Hello' } })),
+    contentCompression: ContentCompression.NONE,
+    seq: 1n,
+    agentProvider: AgentProvider.CODEX,
+  })
+}
+
 /** A persisted settings change whose display names require provider metadata. */
 function settingsChangedNotification(): AgentChatMessage {
   return create(AgentChatMessageSchema, {
@@ -205,6 +217,27 @@ describe('createClassifiedEntryCache', () => {
         kind: 'notification',
         entries: [{ kind: 'settings-changed', changes: [{ label: 'Interaction Mode', old: 'Default', new: 'Plan' }] }],
       })
+      clearSettingsLabelCache()
+      dispose()
+    })
+  })
+
+  it('keeps a same-provider row that does not read the changed label group', () => {
+    createRoot((dispose) => {
+      clearSettingsLabelCache()
+      const cache = createTestClassifiedEntryCache({
+        messages: () => [codexAssistantText()],
+        showHiddenMessages: () => false,
+      })
+      const before = cache.visibleEntries()[0]!
+
+      updateSettingsLabelCache(AgentProvider.CODEX, [create(AvailableOptionGroupSchema, {
+        id: 'permissionMode',
+        label: 'Interaction Mode',
+        options: [create(AvailableOptionSchema, { id: 'plan', name: 'Plan' })],
+      })])
+
+      expect(cache.visibleEntries()[0]).toBe(before)
       clearSettingsLabelCache()
       dispose()
     })

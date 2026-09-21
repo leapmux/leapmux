@@ -129,6 +129,7 @@ function stubProps(stores: Stores) {
     newAgentDialog: {},
     setNewAgentLoadingProvider: () => {},
     repoGitStore: createRepoGitStore(),
+    releaseAgentComposerActionState: () => {},
   } as unknown as Parameters<typeof useAgentOperations>[0]
 }
 
