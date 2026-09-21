@@ -9,6 +9,8 @@ import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from
 import { IconButton } from '~/components/common/IconButton'
 import { TerminalView } from '~/components/terminal/TerminalView'
 import { usePreferences } from '~/context/PreferencesContext'
+import { resolveTerminalTheme } from '~/lib/terminal'
+import { themeStore } from '~/lib/themeStore'
 import * as styles from './QuakeTerminalPanel.css'
 
 export interface QuakeTerminalPanelProps {
@@ -56,6 +58,15 @@ export interface QuakeTerminalPanelProps {
  */
 export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) => {
   const preferences = usePreferences()
+
+  // xterm leaves the quake panel background transparent so the opacity setting
+  // can affect the background without fading the text. The panel must use the
+  // resolved TERMINAL palette here. The app palette can differ from it.
+  const terminalBackground = createMemo(() => resolveTerminalTheme(
+    preferences.terminalTheme(),
+    preferences.theme(),
+    themeStore.systemMode() === 'dark',
+  ).background)
 
   const entry = createMemo(() => {
     const keyId = props.activeQuakeKeyId()
@@ -138,6 +149,7 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
           // because `color-mix` takes one directly.
           '--quake-size': `${preferences.quakeSizePercent()}%`,
           '--quake-duration': `${preferences.quakeAnimationMs()}ms`,
+          '--quake-background': terminalBackground(),
           '--quake-opacity': `${preferences.quakeBackgroundOpacity() * 100}%`,
         }}
       >

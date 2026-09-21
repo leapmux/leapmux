@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import type { ServerInfo } from './fixtures'
 import type { WorkspaceFixture } from './helpers/workspace'
 import { test as base, expect } from './fixtures'
@@ -50,6 +50,21 @@ async function toggleQuake(page: Page) {
 }
 
 const panel = (page: Page) => page.locator(PANEL)
+
+/** Resolve an element's CSS background to 8-bit red, green, blue, and alpha channels. */
+async function backgroundPixel(locator: Locator): Promise<number[]> {
+  return locator.evaluate((el) => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 1
+    canvas.height = 1
+    const context = canvas.getContext('2d')
+    if (!context)
+      throw new Error('the browser did not supply a 2D canvas context')
+    context.fillStyle = getComputedStyle(el).backgroundColor
+    context.fillRect(0, 0, 1, 1)
+    return [...context.getImageData(0, 0, 1, 1).data]
+  })
+}
 
 /**
  * Create a directory for this test only.
@@ -377,6 +392,28 @@ test.describe('Quake-mode terminal', () => {
       return srgb ? Number(srgb[1]) : 1
     })
     expect(alpha).toBeCloseTo(0.5, 2)
+  })
+
+  test('uses the terminal theme background when the UI theme differs', async ({ page, quakeServer }) => {
+    const { workspaceId } = await openAgentTab(page, quakeServer)
+    await setInitialBrowserPref(page, quakeServer.adminUserId, 'theme', { name: 'catppuccin', mode: 'light' })
+    await setInitialBrowserPref(page, quakeServer.adminUserId, 'terminalTheme', { name: 'nord', mode: 'dark' })
+    await setInitialBrowserPref(page, quakeServer.adminUserId, 'quakeBackgroundOpacity', 1)
+    await page.reload()
+    await openWorkspace(page, workspaceId)
+    await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]:visible').first()).toBeVisible()
+
+    await openTerminalViaUI(page)
+    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]:visible')).toHaveCount(1)
+    await waitForTerminalReady(page)
+    const ordinaryBackground = await backgroundPixel(
+      page.locator('[data-terminal-id][data-active="true"] .xterm-scrollable-element'),
+    )
+
+    await toggleQuake(page)
+    await expect(panel(page)).toBeInViewport()
+    await expect.poll(() => backgroundPixel(panel(page)))
+      .toEqual(ordinaryBackground)
   })
 
   // Keep the closed panel mounted so its shell survives a toggle.

@@ -80,14 +80,11 @@ export const quakeClip = style({
  * `transparentBackground` in `~/lib/terminal`, which is what makes both the DOM
  * and the WebGL renderer leave this background alone.
  *
- * That colour is `--background` and NOT the `--card` a floating surface would
- * normally take, because this panel is a terminal sliding over a terminal: a
- * tile paints `--background` on `terminalWrapper` in
- * `~/components/terminal/TerminalView.css.ts` and again in xterm's own theme,
- * so `--card` made the same shell read as a lighter slab -- and it stayed
- * lighter at full opacity, since the token difference is independent of the
- * alpha. The slide, the border and the shadow are what mark the panel as
- * floating; the colour does not have to.
+ * `--quake-background` is the resolved TERMINAL theme background. It is not
+ * the app's `--background`, because the user can select different palettes for
+ * the app and the terminal. An ordinary terminal gets the same value from
+ * xterm's opaque theme. The slide, the border, and the shadow identify the
+ * panel as a floating surface.
  */
 export const quakePanel = style({
   'position': 'absolute',
@@ -96,7 +93,7 @@ export const quakePanel = style({
   'overflow': 'hidden',
   'pointerEvents': 'auto',
   'outline': 'none',
-  'backgroundColor': 'color-mix(in srgb, var(--background) var(--quake-opacity), transparent)',
+  'backgroundColor': 'color-mix(in srgb, var(--quake-background) var(--quake-opacity), transparent)',
   'transform': 'none',
   'transition': `transform var(--quake-duration, ${motion.medium}ms) ease`,
   'selectors': {

@@ -226,7 +226,14 @@ export function resolveTerminalThemeMode(
  * be. A theme this build does not carry falls back to Default, the same way
  * `themeById` answers everywhere else.
  */
-const terminalThemeCache = new Map<string, ITheme>()
+type CompleteTerminalTheme = ITheme & {
+  background: string
+  foreground: string
+  cursor: string
+  selectionBackground: string
+}
+
+const terminalThemeCache = new Map<string, CompleteTerminalTheme>()
 
 /**
  * The background an xterm paints when the SURFACE BEHIND IT owns the colour.
@@ -244,7 +251,7 @@ export function terminalThemeFor(
   mode: ResolvedThemeMode,
   variant?: string,
   transparentBackground = false,
-): ITheme {
+): CompleteTerminalTheme {
   const theme = themeById(name)
   const resolved = resolveVariant(theme, variant, mode)
   // Keyed on the RESOLVED VARIANT id, which is already globally unique and
@@ -266,7 +273,7 @@ export function terminalThemeFor(
   // Color 4, which xterm cannot read, so it fell through to a canvas probe and
   // -- wherever no 2D context is available -- `parseColor` swallowed the throw
   // and painted black on white instead of the theme, with nothing logged.
-  const built: ITheme = {
+  const built: CompleteTerminalTheme = {
     ...resolved.terminal,
     background: transparentBackground
       ? TRANSPARENT_TERMINAL_BACKGROUND
@@ -308,7 +315,7 @@ export function resolveTerminalTheme(
   ui: ThemeValue,
   prefersDark: boolean,
   transparentBackground = false,
-): ITheme {
+): CompleteTerminalTheme {
   const mode = resolveTerminalThemeMode(pref.mode, ui.mode, prefersDark)
   // The variant follows whichever preference supplied the palette: a row on the
   // sentinel wears the app's variant, a detached row wears its own. Reading the

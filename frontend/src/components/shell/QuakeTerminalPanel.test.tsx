@@ -1,8 +1,12 @@
 import type { QuakeEntry } from '~/stores/quakeTerminal.store'
 import type { DetachedTerminal } from '~/stores/tabView'
+import type { TerminalThemeValue } from '~/styles/themes'
 import { cleanup, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { usePreferences } from '~/context/PreferencesContext'
+import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
+import { terminalThemeFor } from '~/lib/terminal'
 import { quakeKeyId } from '~/stores/quakeTerminal.store'
 import { withPreferences } from '~/test-support/preferencesProvider'
 import { QuakeTerminalPanel } from './QuakeTerminalPanel'
@@ -44,20 +48,29 @@ function mount(over: { entry?: QuakeEntry, detached?: DetachedTerminal[] } = {})
   }
   const onClose = vi.fn()
   const metadata = { get: () => undefined }
+  let setTerminalTheme!: (value: TerminalThemeValue) => void
+  const CapturePreferences = () => {
+    const preferences = usePreferences()
+    setTerminalTheme = value => preferences.dual.terminalTheme.setBrowser(value)
+    return null
+  }
   const rendered = render(withPreferences(() => (
-    <QuakeTerminalPanel
-      quakeStore={quakeStore as never}
-      view={view as never}
-      metadata={metadata as never}
-      activeQuakeKeyId={() => entry?.keyId ?? null}
-      onClose={onClose}
-      confirmLink={() => Promise.resolve(false)}
-      onInput={vi.fn()}
-      onResize={vi.fn()}
-      onContentReady={vi.fn()}
-    />
+    <>
+      <CapturePreferences />
+      <QuakeTerminalPanel
+        quakeStore={quakeStore as never}
+        view={view as never}
+        metadata={metadata as never}
+        activeQuakeKeyId={() => entry?.keyId ?? null}
+        onClose={onClose}
+        confirmLink={() => Promise.resolve(false)}
+        onInput={vi.fn()}
+        onResize={vi.fn()}
+        onContentReady={vi.fn()}
+      />
+    </>
   )))
-  return { ...rendered, quakeStore, onClose }
+  return { ...rendered, quakeStore, onClose, setTerminalTheme }
 }
 
 const KEY = quakeKeyId({ workerId: 'w1', workingDir: '/repo' })
@@ -214,6 +227,24 @@ describe('QuakeTerminalPanel', () => {
       const { getByTestId } = mount({ entry: OPEN })
       const clip = getByTestId('quake-panel').parentElement!
       expect(clip.style.getPropertyValue('--quake-opacity')).toBe('90%')
+    })
+
+    it('updates its background when the terminal theme changes independently from the UI', () => {
+      localStorageSet(KEY_BROWSER_PREFS, {
+        theme: { name: 'catppuccin', mode: 'light' },
+        terminalTheme: { name: 'catppuccin', mode: 'light' },
+      })
+
+      const { getByTestId, setTerminalTheme } = mount({ entry: OPEN })
+      const clip = getByTestId('quake-panel').parentElement!
+      expect(clip.style.getPropertyValue('--quake-background')).toBe(
+        terminalThemeFor('catppuccin', 'light').background,
+      )
+
+      setTerminalTheme({ name: 'nord', mode: 'dark' })
+      expect(clip.style.getPropertyValue('--quake-background')).toBe(
+        terminalThemeFor('nord', 'dark').background,
+      )
     })
 
     // The open state must settle on the stylesheet's `transform: none`, not on
