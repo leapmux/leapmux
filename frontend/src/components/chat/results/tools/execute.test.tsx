@@ -84,12 +84,24 @@ describe('execute renderer', () => {
       ],
     }
 
+    const expandActions = (container: HTMLElement) => {
+      const button = container.querySelector('.lucide-unfold-vertical')?.closest('button')
+      expect(button).not.toBeNull()
+      fireEvent.click(button!)
+    }
+
     it('draws known actions as descriptions and unknown actions as commands', () => {
       const call = toolCallFixture('execute', { request })
       const { container } = render(() => <ToolMessage row={toolRow(call)} context={{ workingDir: '/repo' }} />)
-      const items = [...container.querySelectorAll('li')].map(item => item.textContent)
+      const items = () => [...container.querySelectorAll('li')].map(item => item.textContent)
 
-      expect(items).toEqual([
+      expect(items()).toEqual([
+        'Read frontend/tests/e2e/helpers/ui.ts',
+        'List files in frontend/tests',
+        '2 actions omitted',
+      ])
+      expandActions(container)
+      expect(items()).toEqual([
         'Read frontend/tests/e2e/helpers/ui.ts',
         'List files in frontend/tests',
         'Search for "loginViaToken" in frontend/tests/e2e',
@@ -104,6 +116,7 @@ describe('execute renderer', () => {
     it('draws file names and search terms in the monospace styles', () => {
       const call = toolCallFixture('execute', { request })
       const { container } = render(() => <ToolMessage row={toolRow(call)} context={{ workingDir: '/repo' }} />)
+      expandActions(container)
       const codeText = [...container.querySelectorAll(classSelector(commandActionCodeText))].map(element => element.textContent)
 
       expect(codeText).toContain('frontend/tests/e2e/helpers/ui.ts')

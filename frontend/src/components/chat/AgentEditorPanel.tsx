@@ -24,7 +24,6 @@ import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { AgentInputQueuePauseReason, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
 import { keepFocusOnPress } from '~/lib/focusRetention'
 import { flavorFromOs } from '~/lib/paths'
@@ -38,6 +37,7 @@ import { optionValuesFromGroups } from '~/stores/tab.helpers'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { hideInNarrowComposer } from '~/styles/shared.css'
 import { iconSize } from '~/styles/tokens'
+import { createAgentComposerActionStateStore } from './agentComposerActionState'
 import { useAgentInfoCard } from './AgentInfoCard'
 import { AgentInputQueue } from './AgentInputQueue'
 import { AgentInputQueuePauseBanner } from './AgentInputQueuePauseBanner'
@@ -95,7 +95,11 @@ export interface AgentEditorPanelProps {
   onControlResponse?: ControlResponseHandler
   /** Single dispatcher for all settings panel changes (model/effort/permissionMode/optionGroup). */
   onSettingChange?: ProviderSettingChangeHandler
-  onInterrupt?: () => void
+  /**
+   * Requests interruption and settles after the owner reports any delivery
+   * failure. The panel keeps its loading state for this complete interval.
+   */
+  onInterrupt?: () => void | Promise<void>
   /**
    * Whether Interrupt can target this agent alone. Omit (or pass true) for a
    * root agent; pass false for a subagent tab whose provider cannot interrupt a
@@ -192,16 +196,39 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const [_editorContentHeight, setEditorContentHeight] = createSignal(0)
   const [hasContent, setHasContent] = createSignal(false)
   let fileInputRef: HTMLInputElement | undefined
-  // The spinner signal. `createLoadingSignal` holds it true for a debounce
-  // window after `stop()`, so a spinner that appears never flashes away.
-  const { loading: sending, start: startSending, stop: stopSending } = createLoadingSignal()
+  // The shell reuses this panel across focused agent tabs. Each action state
+  // therefore belongs to an agent ID, so tab B never inherits tab A's request.
+  const actionStates = createAgentComposerActionStateStore()
+  const actionState = () => actionStates.forAgent(props.agentId)
+  // Each sending signal stays true for a debounce window after `stop()`, so a
+  // spinner that appears never flashes away.
+  const sending = () => actionState().sending.loading()
   // Whether the enqueue RPC is still in flight. Every attachment path reads
   // THIS, never `sending()`: the debounce window that steadies the spinner must
   // never refuse a paste, a drop, or the file picker, because the enqueue
   // usually finishes in milliseconds and the user gets a dead composer for the
   // rest of the second.
-  const [enqueueInFlight, setEnqueueInFlight] = createSignal(false)
-  const interruptLoading = createLoadingSignal()
+  const enqueueInFlight = () => actionState().enqueueInFlight()
+  const interrupting = () => actionState().interrupting.loading()
+  const handleInterruptClick = () => {
+    // eslint-disable-next-line solid/reactivity -- the click must settle the tab that sent this request, even after focus moves.
+    const state = actionState()
+    state.interrupting.start()
+    const stopLoading = () => state.interrupting.stop()
+    // The callback owner reports delivery failures. The panel only tracks when
+    // the request settles, so success and failure both release the button.
+    try {
+      void Promise.resolve(props.onInterrupt?.()).then(stopLoading, stopLoading)
+    }
+    catch {
+      stopLoading()
+    }
+    // The press leaves the composer focused, so the keyboard would sit over the
+    // output the user stopped the agent to read. `keepFocusOnPress` on the button
+    // makes the composer the active element on Chrome and Firefox, which focus a
+    // pressed button. The send path reads the same state through `decideSendFocus`.
+    dismissSoftKeyboard()
+  }
   // A paused queue changes what Send DOES, and it is what the banner and the
   // two pause toggles state. ONE accessor answers the question for all four, so
   // a change to the source or to the default cannot reach three of them and
@@ -219,15 +246,17 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // for a one-second debounce after `stop()`, which steadies a spinner but
   // would leave this toggle dead for a second after a flip that normally
   // settles in milliseconds.
-  const [pauseInFlight, setPauseInFlight] = createSignal(false)
+  const pauseInFlight = () => actionState().pauseInFlight()
   const setQueuePaused = (paused: boolean) => {
-    if (pauseInFlight())
+    // eslint-disable-next-line solid/reactivity -- the request must unlock the tab that sent it, even after focus moves.
+    const state = actionState()
+    if (state.pauseInFlight())
       return
     const call = props.onSetQueuePaused?.(paused)
     if (!call)
       return
-    setPauseInFlight(true)
-    fireQueueRpc(call.finally(() => setPauseInFlight(false)))
+    state.setPauseInFlight(true)
+    fireQueueRpc(call.finally(() => state.setPauseInFlight(false)))
   }
 
   const currentProviderLabel = () => agentProviderLabel(props.agent?.agentProvider)
@@ -407,9 +436,10 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     editorHeight.resetEditorHeight,
     () => attachments(),
     async (content, fileAttachments) => {
+      const state = actionState()
       const sentAttachmentDraftKey = untrack(att.activeDraftKey)
-      startSending()
-      setEnqueueInFlight(true)
+      state.sending.start()
+      state.setEnqueueInFlight(true)
       try {
         const editing = queueEdit.activeEditingInput()
         if (editing && props.onUpdateQueueItem) {
@@ -432,8 +462,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           clearCachedAttachments(sentAttachmentDraftKey)
       }
       finally {
-        stopSending()
-        setEnqueueInFlight(false)
+        state.sending.stop()
+        state.setEnqueueInFlight(false)
       }
     },
   )
@@ -469,7 +499,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // Clear interrupt loading when the button hides.
   createEffect(on(ctrl.showInterrupt, (show) => {
     if (!show) {
-      interruptLoading.stop()
+      actionState().interrupting.stop()
     }
   }))
 
@@ -580,7 +610,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                 })()}
               >
                 <span class={styles.rateLimitCountdown}>
-                  {rl().countdown}
+                  {rl().countdown ?? (rl().info.status === 'allowed_warning' ? 'Warning' : 'Exceeded')}
                 </span>
               </Tooltip>
             )}
@@ -855,29 +885,18 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                           `display: none` label reaches neither a screen reader
                           nor a by-name lookup.
                         */}
-                        <Tooltip text={interruptLoading.loading() ? 'Interrupting...' : 'Interrupt'} ariaLabel>
+                        <Tooltip text={interrupting() ? 'Interrupting...' : 'Interrupt'} ariaLabel>
                           <button
                             class={actionButtonClass(true)}
                             onMouseDown={keepFocusOnPress}
-                            onClick={() => {
-                              interruptLoading.start()
-                              props.onInterrupt?.()
-                              // The press leaves the composer focused, so the
-                              // keyboard would sit over the output the user just
-                              // stopped the agent to read. `keepFocusOnPress`
-                              // above is what makes the composer still the
-                              // active element here on Chrome and on Firefox,
-                              // which focus a pressed button; the send path
-                              // reads the same state through `decideSendFocus`.
-                              dismissSoftKeyboard()
-                            }}
-                            disabled={interruptLoading.loading()}
+                            onClick={handleInterruptClick}
+                            disabled={interrupting()}
                             data-testid="interrupt-button"
                           >
-                            <Show when={interruptLoading.loading()} fallback={<Icon icon={Square} size="sm" />}>
+                            <Show when={interrupting()} fallback={<Icon icon={Square} size="sm" />}>
                               <Spinner />
                             </Show>
-                            <span class={hideInNarrowComposer}>{interruptLoading.loading() ? 'Interrupting...' : 'Interrupt'}</span>
+                            <span class={hideInNarrowComposer}>{interrupting() ? 'Interrupting...' : 'Interrupt'}</span>
                           </button>
                         </Tooltip>
                       </Show>

@@ -82,6 +82,8 @@ export interface ContentKeyInputs {
    * tab's parent link hydrates, so the measurement must re-key with it.
    */
   isChildTranscript: boolean
+  /** Display-label catalog version used to classify notification entries. */
+  settingsLabelRevision: number
 }
 
 /**
@@ -94,7 +96,7 @@ export interface HeightKeyInputs extends ContentKeyInputs {
 }
 
 export function buildContentKey(inputs: ContentKeyInputs): string {
-  return `${inputs.revisionKey}|${inputs.isChildTranscript ? 'k' : ''}`
+  return `${inputs.revisionKey}|${inputs.isChildTranscript ? 'k' : ''}|labels=${inputs.settingsLabelRevision}`
 }
 
 /**

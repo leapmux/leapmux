@@ -5,7 +5,7 @@ import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
-import { classifyNotifications } from '../../notificationClassification'
+import { notificationClassifierFor } from '../../notificationClassification'
 import { isJsonRpcResponseObject } from '../acp/classification'
 import { extractItem } from './extractors/item'
 import { codexNotificationEntry } from './extractors/notification'
@@ -182,8 +182,7 @@ const CODEX_ITEM_CLASSIFIERS: Record<string, CodexItemClassifier> = {
 export function classifyCodexMessage(input: ClassificationInput): MessageCategory {
   const parent = input.parentObject
   const wrapper = input.wrapper
-  const notification = (messages: readonly unknown[], empty: 'notification' | 'hidden' = 'notification'): MessageCategory =>
-    classifyNotifications(messages, input.agentProvider, codexNotificationEntry, empty)
+  const notification = notificationClassifierFor(input.agentProvider, codexNotificationEntry)
 
   // Empty wrapper — hide. This runs BEFORE the thread test, which narrows `wrapper`
   // to `null` on its false path. The thread test refuses an empty wrapper anyway, so

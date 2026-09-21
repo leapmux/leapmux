@@ -28,7 +28,7 @@ func TestZCodeProviderSetupFallsBackToAccountConfig(t *testing.T) {
     }`)
 	a.registryRevision = "leapmux-test"
 	a.builtinProviderConfigPath = filepath.Join(t.TempDir(), "zcode-builtin.json")
-	require.NoError(t, os.WriteFile(a.builtinProviderConfigPath, []byte(`{"revision":30}`), 0o600))
+	require.NoError(t, os.WriteFile(a.builtinProviderConfigPath, []byte(zcodeBuiltinZAIAccountConfig), 0o600))
 
 	refuseZCodeRequest(t, a, stdin, ZCodeMethodUpdateProviderRegistry,
 		ZCodeErrMethodNotFound, "Method not found")
@@ -65,7 +65,7 @@ func TestZCodeProviderSetupRejectsAMismatchedAccountRevision(t *testing.T) {
     }`)
 	a.registryRevision = "leapmux-test"
 	a.builtinProviderConfigPath = filepath.Join(t.TempDir(), "zcode-builtin.json")
-	require.NoError(t, os.WriteFile(a.builtinProviderConfigPath, []byte(`{"revision":30}`), 0o600))
+	require.NoError(t, os.WriteFile(a.builtinProviderConfigPath, []byte(zcodeBuiltinZAIAccountConfig), 0o600))
 
 	refuseZCodeRequest(t, a, stdin, ZCodeMethodUpdateProviderRegistry,
 		ZCodeErrMethodNotFound, "Method not found")

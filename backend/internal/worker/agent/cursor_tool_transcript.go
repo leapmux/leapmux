@@ -132,11 +132,12 @@ func (a *CursorCLIAgent) noteCursorTaskExtension(toolCallID string) {
 }
 
 func (a *CursorCLIAgent) persistReadyCursorTaskReport(toolCallID, report string) {
-	_, err := a.sink.PersistSubagentReport(SubagentReportWrite{
-		ReportID: toolCallID,
-		RowKey:   toolCallID,
-		Target:   SubagentReportChildTranscript,
-		Report:   SubagentReport{Label: "Cursor subagent", Text: report},
+	_, err := a.sink.PersistChildSubagentReport(ChildSubagentReportWrite{
+		RowKey: toolCallID,
+		Write: SubagentReportWrite{
+			ReportID: toolCallID,
+			Report:   SubagentReport{Label: "Cursor subagent", Text: report},
+		},
 	})
 	if err != nil {
 		slog.Warn("cursor task report persist failed", "agent_id", a.agentID, "tool_call_id", toolCallID, "error", err)

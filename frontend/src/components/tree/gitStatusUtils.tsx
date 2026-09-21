@@ -109,7 +109,7 @@ export const RowLabelWithStats: Component<{
   const tooltipText = () => props.tooltipLabel ?? (typeof props.label === 'string' ? props.label : '')
   return (
     <Tooltip
-      content={props.tooltipContent ?? <LabelWithDiffStats label={tooltipText()} stats={props.stats} />}
+      contentFactory={() => props.tooltipContent ?? <LabelWithDiffStats label={tooltipText()} stats={props.stats} />}
       showWhen={props.showWhen ?? 'clipped'}
     >
       <span class={labelWithStats}>

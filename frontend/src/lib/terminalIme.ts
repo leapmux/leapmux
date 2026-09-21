@@ -85,6 +85,24 @@ const TEXT_INSERTING_INPUT_TYPES = new Set([
 /** The legacy `keyCode` a browser reports for a keystroke an IME consumed. */
 const KEY_CODE_IME_PROCESS = 229
 
+/** The Unicode code point that one CSI-u sequence encodes. */
+function csiUCodePoint(data: string | undefined): number | undefined {
+  if (!data?.startsWith('\x1B[') || !data.endsWith('u'))
+    return undefined
+  const firstParameter = data.slice(2, -1).split(';', 1)[0]
+  if (!firstParameter || !/^\d+$/.test(firstParameter))
+    return undefined
+  const codePoint = Number(firstParameter)
+  return Number.isSafeInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10FFFF
+    ? codePoint
+    : undefined
+}
+
+function csiUEncodesKey(data: string | undefined, key: string): boolean {
+  const characters = [...key]
+  return characters.length === 1 && csiUCodePoint(data) === characters[0]!.codePointAt(0)
+}
+
 /**
  * The in-progress composition preview: the text the user is currently
  * composing, painted over the cell the cursor sits on.
@@ -239,7 +257,7 @@ function createKeystrokeOwnership(
       imeConsumed: keyEvent.isComposing || keyEvent.keyCode === KEY_CODE_IME_PROCESS,
     }
     const lastEmission = emissionsInFlight[emissionsInFlight.length - 1]
-    if (!activeKeydown.imeConsumed && keyEvent.defaultPrevented && keyEvent.key.length === 1 && lastEmission !== keyEvent.key)
+    if (!activeKeydown.imeConsumed && csiUEncodesKey(lastEmission, keyEvent.key))
       encodedTextInFlight.push(keyEvent.key)
     // A keystroke the input method consumed keeps the echo window open,
     // because WKWebView delivers that keydown AFTER the compositionend it

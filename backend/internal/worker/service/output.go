@@ -1709,21 +1709,6 @@ func (s *agentOutputSink) PersistSubagentReport(write agent.SubagentReportWrite)
 	if err != nil || payload == nil {
 		return false, err
 	}
-	if write.Target == agent.SubagentReportChildTranscript {
-		childID, _, found, lookupErr := s.LookupBackgroundTask(write.RowKey)
-		if lookupErr != nil {
-			return false, lookupErr
-		}
-		if !found || childID == "" {
-			return false, fmt.Errorf("subagent report child for row %q is unavailable", write.RowKey)
-		}
-		write.Target = agent.SubagentReportCurrentTranscript
-		childSink := s.ChildSink(childID)
-		if childSink == nil {
-			return false, fmt.Errorf("subagent report child %q is unavailable", childID)
-		}
-		return childSink.PersistSubagentReport(write)
-	}
 	contentJSON, err := json.Marshal(payload)
 	if err != nil {
 		return false, fmt.Errorf("marshal subagent report: %w", err)
@@ -1737,6 +1722,25 @@ func (s *agentOutputSink) PersistSubagentReport(write agent.SubagentReportWrite)
 		s.agentID, s.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX,
 		contentJSON, idempotencyKey,
 	)
+}
+
+func (s *agentOutputSink) PersistChildSubagentReport(write agent.ChildSubagentReportWrite) (bool, error) {
+	rowKey := strings.TrimSpace(write.RowKey)
+	if rowKey == "" {
+		return false, fmt.Errorf("child subagent report has no row key")
+	}
+	childID, _, found, err := s.LookupBackgroundTask(rowKey)
+	if err != nil {
+		return false, err
+	}
+	if !found || childID == "" {
+		return false, fmt.Errorf("subagent report child for row %q is unavailable", rowKey)
+	}
+	childSink := s.ChildSink(childID)
+	if childSink == nil {
+		return false, fmt.Errorf("subagent report child %q is unavailable", childID)
+	}
+	return childSink.PersistSubagentReport(write.Write)
 }
 
 func (s *agentOutputSink) StorePlanModeToolUse(toolUseID, targetMode string) {

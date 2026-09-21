@@ -1,6 +1,6 @@
 import type { Accessor } from 'solid-js'
 import { createMemo } from 'solid-js'
-import { hasLineLongerThan } from '../safeTextDisplay'
+import { hasLineLongerThan, safeTextEndIndex } from '../safeTextDisplay'
 import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 
 /**
@@ -30,7 +30,8 @@ function emitClippedLines(text: string, cap: number): string {
   while (start <= text.length) {
     const next = text.indexOf('\n', start)
     const end = next === -1 ? text.length : next
-    parts.push(end - start > cap ? `${text.slice(start, start + cap)}${TRUNCATION_INDICATOR}` : text.slice(start, end))
+    const sliceEnd = safeTextEndIndex(text, start + cap)
+    parts.push(end - start > cap ? `${text.slice(start, sliceEnd)}${TRUNCATION_INDICATOR}` : text.slice(start, end))
     if (next === -1)
       break
     parts.push('\n')

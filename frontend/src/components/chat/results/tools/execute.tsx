@@ -16,6 +16,8 @@ import { ToolHeaderRow } from '../ToolStatusHeader'
 
 /** A description long enough to crowd the header is clipped, with the cut marked. */
 const DESCRIPTION_LIMIT = 100
+/** Rows retained before the collapsed action summary shows its omission row. */
+const COLLAPSED_ACTION_ROW_LIMIT = 3
 
 function actionPath(path: string, context: ToolResultRenderContext | undefined): string {
   return relativizePath(path, context?.workingDir, context?.homeDir)
@@ -64,7 +66,7 @@ function KnownCommandAction(props: {
   return (
     <Tooltip
       text={props.action.command}
-      content={(
+      contentFactory={() => (
         <CommandInputSummary
           command={props.action.command}
           {...(props.language !== undefined ? { language: props.language } : {})}
@@ -112,9 +114,14 @@ function CommandActionSummary(props: {
   view: ToolRowView
 }): JSX.Element {
   const collapsed = () => !props.view.expanded()
+  const omittedCount = () => collapsed() ? Math.max(0, props.actions.length - (COLLAPSED_ACTION_ROW_LIMIT - 1)) : 0
+  const displayedActions = () => omittedCount() > 0
+    ? props.actions.slice(0, COLLAPSED_ACTION_ROW_LIMIT - 1)
+    : props.actions
   const overflow = useCollapsedSummaryOverflow({
     collapsed,
     content: () => props.actions,
+    forcedOverflow: () => omittedCount() > 0,
     onOverflowChange: value => props.view.onSummaryOverflow(value),
   })
   const summaryClass = (base: string): string => [
@@ -128,9 +135,12 @@ function CommandActionSummary(props: {
       when={singleAction()}
       fallback={(
         <ul ref={overflow.elementRef} class={summaryClass(commandActionList)}>
-          <For each={props.actions}>
+          <For each={displayedActions()}>
             {action => <li>{commandActionEntry(action, props.language, props.view)}</li>}
           </For>
+          <Show when={omittedCount() > 0}>
+            <li>{`${omittedCount()} ${omittedCount() === 1 ? 'action' : 'actions'} omitted`}</li>
+          </Show>
         </ul>
       )}
     >
@@ -243,9 +253,12 @@ export const executeRenderer: ToolKindRenderer<'execute'> = {
     )
   },
   requestMeta(call) {
-    const hasActions = (call.request.actions?.length ?? 0) > 0
+    const actionCount = call.request.actions?.length ?? 0
+    const hasActions = actionCount > 0
     return {
-      collapsible: !hasActions && commandInputNeedsExpansion(call.request.command),
+      collapsible: hasActions
+        ? actionCount > COLLAPSED_ACTION_ROW_LIMIT - 1
+        : commandInputNeedsExpansion(call.request.command),
       expandLabel: hasActions ? 'Show all actions' : 'Show full command',
       copyableContent: () => call.request.command || null,
       copyLabel: 'Copy Command',

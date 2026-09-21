@@ -600,6 +600,13 @@ func TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels(t *testing.T) {
 	assert.Equal(t, 0, sink.AutoScheduleCount(), "credit depletion must not schedule an auto-continue")
 	require.Equal(t, 1, sink.AutoCancelCount())
 	assert.Equal(t, AutoContinueReasonRateLimit, sink.LastAutoCancel())
+	require.Equal(t, 1, sink.SessionInfoCount())
+	rateLimits, ok := sink.LastSessionInfo()["rate_limits"].(map[string]interface{})
+	require.True(t, ok)
+	accountBlock, ok := rateLimits["account_block"].(map[string]interface{})
+	require.True(t, ok, "the live account block must remain visible outside the hidden transcript")
+	assert.Equal(t, "workspace_owner_credits_depleted", accountBlock["rate_limit_type"])
+	assert.Equal(t, "exceeded", accountBlock["status"])
 }
 
 // TestHandleCodexOutput_ReachedTypeUsageLimitReachedCancels verifies a usage cap

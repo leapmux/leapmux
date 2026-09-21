@@ -2,6 +2,7 @@ import type { JSX } from 'solid-js'
 import type { DiffLineEntry, SplitLineEntry, StructuredPatchHunk } from './diffTypes'
 import type { CachedToken } from '~/lib/tokenCache'
 import { For } from 'solid-js'
+import { joinClassNames } from '~/lib/classNames'
 import { diffAddedInline, diffRemovedInline } from './diffStyles.css'
 import { pairedWordDiff } from './wordDiffCache'
 
@@ -104,17 +105,10 @@ function renderTokenizedWordDiff(
         // these fragments (see renderTokenizedLine). The class composes the
         // shared Shiki style class with the word-diff highlight; `undefined`
         // omits the attribute entirely when neither applies.
-        <span data-shiki-token class={joinClasses(f.tokenClass, f.diffClass)}>{f.text}</span>
+        <span data-shiki-token class={joinClassNames(f.tokenClass, f.diffClass)}>{f.text}</span>
       )}
     </For>
   ) as JSX.Element
-}
-
-/** Join optional class names, or undefined so Solid omits the attribute. */
-function joinClasses(a: string | undefined, b: string | undefined): string | undefined {
-  if (a && b)
-    return `${a} ${b}`
-  return a || b || undefined
 }
 
 /**

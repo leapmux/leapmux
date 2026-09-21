@@ -2,6 +2,7 @@ import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { readInjectedShikiRules } from '~/lib/shikiStyleClass.testkit'
+import { EXPANDED_TEXT_DISPLAY_CHAR_LIMIT, EXPANDED_TEXT_DISPLAY_LINE_LIMIT } from '../safeTextDisplay'
 import { ReadResultView } from './ReadResultView'
 
 vi.mock('~/lib/shikiWorkerClient', () => ({
@@ -105,6 +106,28 @@ describe('ReadResultView syntax highlighting', () => {
     expect(container.textContent).toContain('READ_TAIL')
     expect(container.textContent).toContain('Display limited')
     expect(tokenizeAsync).toHaveBeenCalledWith('typescript', expect.not.stringContaining('x'.repeat(10_000)), expect.any(Function))
+  })
+
+  it('limits the total rows of an expanded structured read', () => {
+    const lines = Array.from({ length: EXPANDED_TEXT_DISPLAY_LINE_LIMIT + 500 }, (_, index) => ({
+      num: index + 1,
+      text: `line ${index + 1}`,
+    }))
+    const { container } = render(() => <ReadResultView lines={lines} />)
+
+    expect(container.querySelectorAll('[data-line-num]').length).toBeLessThanOrEqual(EXPANDED_TEXT_DISPLAY_LINE_LIMIT)
+    expect(container).toHaveTextContent('Display limited')
+    expect(container).not.toHaveTextContent(`line ${lines.length}`)
+  })
+
+  it('limits total characters across individually short file lines', () => {
+    const lineText = 'x'.repeat(100)
+    const lines = Array.from({ length: 900 }, (_, index) => ({ num: index + 1, text: lineText }))
+    const { container } = render(() => <ReadResultView lines={lines} />)
+
+    expect((container.textContent ?? '').length).toBeLessThan(EXPANDED_TEXT_DISPLAY_CHAR_LIMIT + 5_000)
+    expect(container).toHaveTextContent('Display limited')
+    expect(container.querySelectorAll('[data-line-num]').length).toBeLessThan(lines.length)
   })
 
   it('keeps existing tokens when syntax highlighting is paused after highlight completes', async () => {

@@ -165,6 +165,73 @@ func TestZCodeSubagent_MessageEventRoutesToTheChild(t *testing.T) {
 	assert.Empty(t, sink.LeapMuxNotifications(), "the foreground Agent result owns the parent handback")
 }
 
+func TestZCodeSubagent_ReplayedLifecycleEventKeepsOneReportIdentity(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.handleZCodeSubagentLifecycle(zcodeEventEnvelope{
+		EventID: "report-event-1",
+		Payload: json.RawMessage(`{"agentId":"agent-1","parentToolCallId":"spawn-1","prompt":"Inspect.","message":"Draft report"}`),
+	})
+	a.handleZCodeSubagentLifecycle(zcodeEventEnvelope{
+		EventID: "report-event-1",
+		Payload: json.RawMessage(`{"agentId":"agent-1","parentToolCallId":"spawn-1","message":"Corrected report"}`),
+	})
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	assert.Len(t, child.LeapMuxNotifications(), 1, "a replayed event must not create a second report row")
+}
+
+func TestZCodeSubagent_DistinctLifecycleEventsKeepIdenticalReports(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	for _, eventID := range []string{"report-event-1", "report-event-2"} {
+		a.handleZCodeSubagentLifecycle(zcodeEventEnvelope{
+			EventID: eventID,
+			Payload: json.RawMessage(`{"agentId":"agent-1","parentToolCallId":"spawn-1","prompt":"Inspect.","message":"Same report"}`),
+		})
+	}
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	child, ok := sink.ChildSink(rows[0].ChildAgentID).(*testSink)
+	require.True(t, ok)
+	assert.Len(t, child.LeapMuxNotifications(), 2, "distinct provider events must not collapse because their text matches")
+}
+
+func TestDecodeZCodeSubagentLifecycleTransition(t *testing.T) {
+	t.Parallel()
+
+	event := zcodeEventEnvelope{Payload: json.RawMessage(`{
+      "parentToolCallId":"spawn-1",
+      "description":"  Inspect the parser  ",
+      "agentType":"Explore",
+      "prompt":"Inspect.",
+      "status":"completed",
+      "summaryText":"Summary report",
+      "text":"Text report",
+      "message":"  Final report  ",
+      "error":"  model request failed  "
+    }`)}
+
+	transition, ok := decodeZCodeSubagentLifecycleTransition(event)
+	require.True(t, ok)
+	assert.Equal(t, "spawn-1", transition.rowKey)
+	assert.Equal(t, "Inspect the parser", transition.title)
+	assert.Equal(t, "Inspect.", transition.prompt)
+	assert.Equal(t, bgtask.StatusCompleted, transition.status)
+	assert.True(t, transition.final)
+	assert.Equal(t, "Final report", transition.report.Text)
+	assert.Equal(t, subagentReportContentID("zcode", "spawn-1", "Final report"), transition.reportID)
+	assert.Equal(t, "model request failed", transition.failure)
+}
+
 func TestZCodeSubagent_LifecycleAndAgentResultPersistOneReport(t *testing.T) {
 	t.Parallel()
 

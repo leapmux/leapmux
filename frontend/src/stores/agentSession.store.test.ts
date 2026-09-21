@@ -127,6 +127,24 @@ describe('createAgentSessionStore', () => {
     })
   })
 
+  it('removes one rate-limit entry when a full snapshot sends an empty tombstone', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.updateInfo('agent-1', {
+        rateLimits: {
+          account_block: { rateLimitType: 'workspace_owner_credits_depleted', status: 'exceeded' },
+          five_hour: { rateLimitType: 'five_hour', utilization: 0.5 },
+        },
+      })
+      store.updateInfo('agent-1', { rateLimits: { account_block: {} } })
+
+      expect(store.getInfo('agent-1').rateLimits).toEqual({
+        five_hour: { rateLimitType: 'five_hour', utilization: 0.5 },
+      })
+      dispose()
+    })
+  })
+
   it('should merge rateLimits with existing totalCostUsd and contextUsage', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()

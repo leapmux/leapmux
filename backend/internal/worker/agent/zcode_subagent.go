@@ -42,6 +42,7 @@ import (
 type zcodeSpawnRecord struct {
 	childAgentID string
 	title        string
+	reportID     string
 	toolCallIDs  map[string]struct{}
 	background   bool
 }
@@ -155,6 +156,24 @@ func (i *zcodeChildIndex) title(spawnToolCallID string) string {
 	return ""
 }
 
+func (i *zcodeChildIndex) rememberReportID(spawnToolCallID, reportID string) {
+	if spawnToolCallID == "" || reportID == "" {
+		return
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.spawnLocked(spawnToolCallID).reportID = reportID
+}
+
+func (i *zcodeChildIndex) reportID(spawnToolCallID string) string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if record := i.spawns[spawnToolCallID]; record != nil {
+		return record.reportID
+	}
+	return ""
+}
+
 // forgetTitle drops a spawn's label when the spawn ends.
 func (i *zcodeChildIndex) forgetTitle(spawnToolCallID string) {
 	i.mu.Lock()
@@ -218,14 +237,25 @@ type zcodeSubagentLifecycle struct {
 	Error            string `json:"error"`
 }
 
-func (a *zcodeAgent) handleZCodeSubagentLifecycle(event zcodeEventEnvelope) {
+type zcodeSubagentLifecycleTransition struct {
+	rowKey   string
+	title    string
+	prompt   string
+	status   bgtask.Status
+	final    bool
+	reportID string
+	report   SubagentReport
+	failure  string
+}
+
+func decodeZCodeSubagentLifecycleTransition(event zcodeEventEnvelope) (zcodeSubagentLifecycleTransition, bool) {
 	var payload zcodeSubagentLifecycle
 	if json.Unmarshal(event.Payload, &payload) != nil || payload.ParentToolCallID == "" {
-		return
+		return zcodeSubagentLifecycleTransition{}, false
 	}
 	if payload.Description == "" && payload.Prompt == "" && payload.Status == "" &&
 		payload.SummaryText == "" && payload.Text == "" && payload.Message == "" && payload.Error == "" {
-		return
+		return zcodeSubagentLifecycleTransition{}, false
 	}
 	title := strings.TrimSpace(payload.Description)
 	if title == "" {
@@ -233,18 +263,6 @@ func (a *zcodeAgent) handleZCodeSubagentLifecycle(event zcodeEventEnvelope) {
 	}
 	if title == "" {
 		title = "ZCode subagent"
-	}
-	if payload.Prompt != "" {
-		a.toolCallPrompts.remember(payload.ParentToolCallID, payload.Prompt)
-	}
-	a.children.rememberTitle(payload.ParentToolCallID, title)
-	childID, childTitle, ok := a.ensureZCodeSubagentTranscript(
-		payload.ParentToolCallID,
-		payload.ParentToolCallID,
-		title,
-	)
-	if !ok {
-		return
 	}
 	status := bgtask.StatusRunning
 	final := false
@@ -264,32 +282,70 @@ func (a *zcodeAgent) handleZCodeSubagentLifecycle(event zcodeEventEnvelope) {
 	if report == "" {
 		report = strings.TrimSpace(payload.SummaryText)
 	}
+	reportID := ""
 	if report != "" {
-		reportID := subagentReportContentID("zcode", payload.ParentToolCallID, report)
-		persistSubagentReport(a.sink, SubagentReportWrite{
-			ReportID: reportID,
-			RowKey:   payload.ParentToolCallID,
-			Target:   SubagentReportChildTranscript,
-			Report:   SubagentReport{Label: childTitle, Text: report},
+		reportID = strings.TrimSpace(event.EventID)
+		if reportID == "" {
+			reportID = subagentReportContentID("zcode", payload.ParentToolCallID, report)
+		}
+	}
+	return zcodeSubagentLifecycleTransition{
+		rowKey:   payload.ParentToolCallID,
+		title:    title,
+		prompt:   payload.Prompt,
+		status:   status,
+		final:    final,
+		reportID: reportID,
+		report:   SubagentReport{Text: report},
+		failure:  strings.TrimSpace(payload.Error),
+	}, true
+}
+
+func (a *zcodeAgent) handleZCodeSubagentLifecycle(event zcodeEventEnvelope) {
+	transition, ok := decodeZCodeSubagentLifecycleTransition(event)
+	if !ok {
+		return
+	}
+	if transition.prompt != "" {
+		a.toolCallPrompts.remember(transition.rowKey, transition.prompt)
+	}
+	a.children.rememberTitle(transition.rowKey, transition.title)
+	childID, childTitle, ok := a.ensureZCodeSubagentTranscript(
+		transition.rowKey,
+		transition.rowKey,
+		transition.title,
+	)
+	if !ok {
+		return
+	}
+	transition.report.Label = childTitle
+	if transition.report.Text != "" {
+		a.children.rememberReportID(transition.rowKey, transition.reportID)
+		persistChildSubagentReport(a.sink, ChildSubagentReportWrite{
+			RowKey: transition.rowKey,
+			Write: SubagentReportWrite{
+				ReportID: transition.reportID,
+				Report:   transition.report,
+			},
 		})
-		if final && a.children.isBackground(payload.ParentToolCallID) {
+		if transition.final && a.children.isBackground(transition.rowKey) {
 			persistSubagentReport(a.sink, SubagentReportWrite{
-				ReportID: reportID,
-				Report:   SubagentReport{Label: childTitle, Text: report},
+				ReportID: transition.reportID,
+				Report:   transition.report,
 			})
 		}
 	}
-	if final {
-		if failure := strings.TrimSpace(payload.Error); failure != "" {
-			a.persistZCodeChildText(childID, failure, MessageCompletionError)
+	if transition.final {
+		if transition.failure != "" {
+			a.persistZCodeChildText(childID, transition.failure, MessageCompletionError)
 		}
-		logRegistryRefusal("zcode", "close", a.sink.CloseBackgroundTask(payload.ParentToolCallID, status))
-		a.children.takeChild(payload.ParentToolCallID)
-		a.children.forgetTitle(payload.ParentToolCallID)
+		logRegistryRefusal("zcode", "close", a.sink.CloseBackgroundTask(transition.rowKey, transition.status))
+		a.children.takeChild(transition.rowKey)
+		a.children.forgetTitle(transition.rowKey)
 		a.sink.CleanupChildAgent(childID)
 		return
 	}
-	a.upsertZCodeSubagent(payload.ParentToolCallID, childID, childTitle)
+	a.upsertZCodeSubagent(transition.rowKey, childID, childTitle)
 }
 
 func (a *zcodeAgent) persistZCodeChildText(childID, text string, completion MessageCompletion) {
@@ -579,11 +635,16 @@ func (a *zcodeAgent) persistZCodeSubagentReport(payload zcodeToolUpdated) {
 	if zcodeAgentLaunchedInBackground(payload) {
 		return
 	}
-	persistSubagentReport(a.sink, SubagentReportWrite{
-		ReportID: subagentReportContentID("zcode", payload.ToolCallID, strings.TrimSpace(result.Content)),
-		RowKey:   payload.ToolCallID,
-		Target:   SubagentReportChildTranscript,
-		Report:   SubagentReport{Text: result.Content},
+	reportID := a.children.reportID(payload.ToolCallID)
+	if reportID == "" {
+		reportID = payload.ToolCallID
+	}
+	persistChildSubagentReport(a.sink, ChildSubagentReportWrite{
+		RowKey: payload.ToolCallID,
+		Write: SubagentReportWrite{
+			ReportID: reportID,
+			Report:   SubagentReport{Text: result.Content},
+		},
 	})
 }
 

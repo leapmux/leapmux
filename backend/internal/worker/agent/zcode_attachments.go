@@ -121,11 +121,11 @@ func (a *zcodeAgent) checkZCodeImageSupport(model string, attachment classifiedA
 		return nil
 	}
 	a.mu.Lock()
-	declared, live := a.liveModalities[normalizeZCodeModelID(model)]
+	record, live := a.liveModels[normalizeZCodeModelID(model)]
 	a.mu.Unlock()
 	accepts := false
 	if live {
-		accepts = slices.Contains(declared, zcodeModalityImage)
+		accepts = slices.Contains(record.modalities, zcodeModalityImage)
 	} else {
 		accepts = a.catalog.acceptsInputModality(model, zcodeModalityImage)
 	}

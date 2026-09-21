@@ -53,7 +53,7 @@ export function getResetsAt(info: RateLimitInfo): number | undefined {
  * Pick the most important rate limit to display (exceeded > warning, then least remaining time).
  * Returns null if no rate limits are at warning or above.
  */
-export function pickUrgentRateLimit(rateLimits: Record<string, RateLimitInfo>): { info: RateLimitInfo, countdown: string } | null {
+export function pickUrgentRateLimit(rateLimits: Record<string, RateLimitInfo>): { info: RateLimitInfo, countdown: string | null } | null {
   let best: RateLimitInfo | null = null
   let bestCountdown: string | null = null
   let bestSeverity = 0 // 0=none, 1=warning, 2=exceeded
@@ -67,9 +67,6 @@ export function pickUrgentRateLimit(rateLimits: Record<string, RateLimitInfo>): 
     const resetsAt = getResetsAt(info)
     const remaining = resetsAt ? resetsAt - Math.floor(Date.now() / 1000) : Infinity
     const countdown = resetsAt ? formatCountdown(resetsAt) : null
-    if (!countdown)
-      continue
-
     if (severity > bestSeverity || (severity === bestSeverity && remaining < bestRemaining)) {
       best = info
       bestCountdown = countdown
@@ -77,7 +74,7 @@ export function pickUrgentRateLimit(rateLimits: Record<string, RateLimitInfo>): 
       bestRemaining = remaining
     }
   }
-  return best && bestCountdown ? { info: best, countdown: bestCountdown } : null
+  return best ? { info: best, countdown: bestCountdown } : null
 }
 
 /** Build a human-readable rate limit notification message. Defensive: all fields may be absent. */

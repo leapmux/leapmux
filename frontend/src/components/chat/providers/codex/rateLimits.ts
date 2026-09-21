@@ -1,6 +1,6 @@
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { RateLimitInfo } from '~/models/agentSession'
-import { CODEX_RATE_LIMIT_REACHED_TIME_WINDOW } from '~/generated/contracts/worker-vocab'
+import { CODEX_RATE_LIMIT_ACCOUNT_BLOCK_KEY, CODEX_RATE_LIMIT_REACHED_TIME_WINDOW } from '~/generated/contracts/worker-vocab'
 import { pickObject } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
 
@@ -105,5 +105,12 @@ export function codexRateLimitsFromMessage(parsed: ParsedMessageContent): { key:
     if (top)
       top.info = { ...top.info, status: 'exceeded' }
   }
+  const reachedType = codexRateLimitReachedType(inner)
+  results.push({
+    key: CODEX_RATE_LIMIT_ACCOUNT_BLOCK_KEY,
+    info: reachedType !== undefined && reachedType !== CODEX_RATE_LIMIT_REACHED_TIME_WINDOW
+      ? { rateLimitType: reachedType, status: 'exceeded' }
+      : {},
+  })
   return results
 }

@@ -18,6 +18,7 @@
     "messageSupplementFields",
     "rpcMethods",
     "codexRateLimitReachedTimeWindow",
+    "codexRateLimitAccountBlockKey",
     "modelSentinels",
     "notificationFields"
   ],
@@ -97,6 +98,10 @@
     "_readme": {
       "type": "string",
       "minLength": 1
+    },
+    "codexRateLimitAccountBlockKey": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
     },
     "notificationTypes": {
       "type": "object",

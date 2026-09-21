@@ -589,9 +589,16 @@ func TestZCodeCatalog_AccountProviderPayloadUsesTheInstalledRelease(t *testing.T
           "models": {"GLM-5.3-Flash": {}}
         }
       }
-    }`)
+	    }`)
 	path := filepath.Join(t.TempDir(), "zcode-builtin.json")
-	require.NoError(t, os.WriteFile(path, []byte(`{"revision":30}`), 0o600))
+	require.NoError(t, os.WriteFile(path, []byte(`{
+      "revision":30,
+      "config":{"providerConfigRules":{"providerRules":[
+        {"providerId":"account:zai-individual-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"individual-coding-plan"}}},
+        {"providerId":"account:zai-team-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"team-coding-plan"}}},
+        {"providerId":"account:zai-start-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"start-plan"}}}
+      ]}}
+    }`), 0o600))
 
 	payload, err := catalog.accountProviderPayload(path, "leapmux-agent")
 	require.NoError(t, err)
@@ -616,6 +623,39 @@ func TestZCodeCatalog_AccountProviderPayloadUsesTheInstalledRelease(t *testing.T
 	require.NoError(t, err)
 	assert.NotContains(t, string(encoded), "plan-key", "the account snapshot must not put the credential on the wire")
 	assert.NotContains(t, string(encoded), "start-key", "the account snapshot must not put any credential on the wire")
+}
+
+func TestZCodeCatalog_AccountProvidersComeFromTheInstalledRules(t *testing.T) {
+	t.Parallel()
+
+	catalog := zcodeTestCatalog(t, `{
+      "provider": {
+        "builtin:acme-coding-plan": {
+          "kind": "anthropic", "enabled": true,
+          "options": {"apiKey": "acme-key"},
+          "models": {"ACME-1": {}}
+        }
+      }
+    }`)
+	catalog.accountPlanKinds = map[string]string{"acme": "team-coding-plan"}
+	path := filepath.Join(t.TempDir(), "zcode-builtin.json")
+	release := `{
+      "revision": 31,
+      "config": {"providerConfigRules": {"providerRules": [
+        {"providerId":"account:acme-individual-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"acme","mode":"individual-coding-plan"}}},
+        {"providerId":"account:acme-team-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"acme","mode":"team-coding-plan"}}}
+      ]}}
+    }`
+	require.NoError(t, os.WriteFile(path, []byte(release), 0o600))
+
+	payload, err := catalog.accountProviderPayload(path, "leapmux-agent")
+	require.NoError(t, err)
+	provider, ok := payload.Providers["account:acme-team-coding-plan"]
+	require.True(t, ok, "the installed account rule selects a provider without an adapter switch case")
+	assert.Equal(t, []string{"ACME-1"}, provider.BuiltinModelIDs)
+	key, ok := catalog.inlineAPIKey("account:acme-team-coding-plan")
+	assert.True(t, ok)
+	assert.Equal(t, "acme-key", key)
 }
 
 func TestZCodeBuiltinProviderRevision_RejectsInvalidRelease(t *testing.T) {
@@ -655,7 +695,16 @@ func TestZCodeCatalog_InlineAPIKeyResolvesAccountProviderIDs(t *testing.T) {
           "models": {"GLM-5.3": {}}
         }
       }
-    }`)
+	    }`)
+	path := filepath.Join(t.TempDir(), "zcode-builtin.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+      "revision":30,
+      "config":{"providerConfigRules":{"providerRules":[
+        {"providerId":"account:zai-individual-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"individual-coding-plan"}}}
+      ]}}
+    }`), 0o600))
+	_, err := catalog.accountProviderPayload(path, "leapmux-agent")
+	require.NoError(t, err)
 
 	key, ok := catalog.inlineAPIKey("account:zai-individual-coding-plan")
 	assert.True(t, ok)
@@ -667,7 +716,26 @@ func TestZCodeCatalog_InlineAPIKeyResolvesAccountProviderIDs(t *testing.T) {
 func TestZCodeCatalog_AccountProviderIDUsesTheSelectedPlan(t *testing.T) {
 	t.Parallel()
 
-	catalog := zcodeCatalog{accountPlanKinds: map[string]string{"zai": "team-coding-plan"}}
+	catalog := zcodeTestCatalog(t, `{
+      "provider": {
+        "builtin:zai-coding-plan": {
+          "kind": "anthropic", "enabled": true,
+          "options": {"apiKey": "plan-key"},
+          "models": {"GLM-5.3": {}}
+        }
+      }
+    }`)
+	catalog.accountPlanKinds = map[string]string{"zai": "team-coding-plan"}
+	path := filepath.Join(t.TempDir(), "zcode-builtin.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+      "revision":30,
+      "config":{"providerConfigRules":{"providerRules":[
+        {"providerId":"account:zai-individual-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"individual-coding-plan"}}},
+        {"providerId":"account:zai-team-coding-plan","config":{"access":{"type":"zhipu-account","accountType":"zai","mode":"team-coding-plan"}}}
+      ]}}
+    }`), 0o600))
+	_, err := catalog.accountProviderPayload(path, "leapmux-agent")
+	require.NoError(t, err)
 	providerID, ok := catalog.accountProviderID("builtin:zai-coding-plan")
 	assert.True(t, ok)
 	assert.Equal(t, "account:zai-team-coding-plan", providerID)

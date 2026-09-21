@@ -564,17 +564,6 @@ func (s *testSink) PersistSubagentReport(write SubagentReportWrite) (bool, error
 	if err != nil || payload == nil {
 		return false, err
 	}
-	if write.Target == SubagentReportChildTranscript {
-		childID, _, found, lookupErr := s.LookupBackgroundTask(write.RowKey)
-		if lookupErr != nil {
-			return false, lookupErr
-		}
-		if !found || childID == "" {
-			return false, fmt.Errorf("subagent report child for row %q is unavailable", write.RowKey)
-		}
-		write.Target = SubagentReportCurrentTranscript
-		return s.ChildSink(childID).PersistSubagentReport(write)
-	}
 	s.mu.Lock()
 	if s.reportIDs == nil {
 		s.reportIDs = make(map[string]struct{})
@@ -588,6 +577,20 @@ func (s *testSink) PersistSubagentReport(write SubagentReportWrite) (bool, error
 	s.mu.Unlock()
 	s.PersistLeapMuxNotification(payload)
 	return true, nil
+}
+func (s *testSink) PersistChildSubagentReport(write ChildSubagentReportWrite) (bool, error) {
+	rowKey := strings.TrimSpace(write.RowKey)
+	if rowKey == "" {
+		return false, fmt.Errorf("child subagent report has no row key")
+	}
+	childID, _, found, err := s.LookupBackgroundTask(rowKey)
+	if err != nil {
+		return false, err
+	}
+	if !found || childID == "" {
+		return false, fmt.Errorf("subagent report child for row %q is unavailable", rowKey)
+	}
+	return s.ChildSink(childID).PersistSubagentReport(write.Write)
 }
 func (s *testSink) StorePlanModeToolUse(toolUseID, targetMode string) {
 	s.planModeToolUses.Store(toolUseID, targetMode)
@@ -1355,6 +1358,7 @@ func (noopSink) BroadcastStatusActive(string)                                   
 func (noopSink) BroadcastSessionInfo(map[string]interface{})                       {}
 func (noopSink) PersistLeapMuxNotification(map[string]interface{})                 {}
 func (noopSink) PersistSubagentReport(SubagentReportWrite) (bool, error)           { return true, nil }
+func (noopSink) PersistChildSubagentReport(ChildSubagentReportWrite) (bool, error) { return true, nil }
 func (noopSink) StorePlanModeToolUse(string, string)                               {}
 func (noopSink) LoadAndDeletePlanModeToolUse(string) (string, bool)                { return "", false }
 func (noopSink) UpdatePlan([]byte, leapmuxv1.ContentCompression, string)           {}

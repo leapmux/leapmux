@@ -227,11 +227,12 @@ func piApplySubagentEnd(sink subagentServices, result json.RawMessage, toolCallI
 			if reportID == "" || !renamed {
 				reportID = toolCallID
 			}
-			persistSubagentReport(sink, SubagentReportWrite{
-				ReportID: reportID,
-				RowKey:   rowKey,
-				Target:   SubagentReportChildTranscript,
-				Report:   SubagentReport{Text: report},
+			persistChildSubagentReport(sink, ChildSubagentReportWrite{
+				RowKey: rowKey,
+				Write: SubagentReportWrite{
+					ReportID: reportID,
+					Report:   SubagentReport{Text: report},
+				},
 			})
 		}
 		if ok {
@@ -303,11 +304,12 @@ func piApplySubagentNotification(sink subagentServices, raw []byte) {
 			return
 		}
 		if status, ok := piFinalStatus(d.Status); ok {
-			persistSubagentReport(sink, SubagentReportWrite{
-				ReportID: d.ID,
-				RowKey:   d.ID,
-				Target:   SubagentReportChildTranscript,
-				Report:   SubagentReport{Text: d.Result},
+			persistChildSubagentReport(sink, ChildSubagentReportWrite{
+				RowKey: d.ID,
+				Write: SubagentReportWrite{
+					ReportID: d.ID,
+					Report:   SubagentReport{Text: d.Result},
+				},
 			})
 			logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: d.ID, Kind: bgtask.KindSubagent, Title: d.Description, Status: status}))
 		} else {

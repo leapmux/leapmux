@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"time"
 
@@ -176,6 +175,12 @@ type zcodeAvailableModel struct {
 	} `json:"properties"`
 }
 
+type zcodeLiveModelRecord struct {
+	info       *ModelInfo
+	ref        zcodeModelRef
+	modalities []string
+}
+
 // zcodeSettingsSnapshot is the `settings` object every state-changing session RPC
 // returns, and that the top-level state.updated notification patches.
 //
@@ -289,15 +294,11 @@ func (a *zcodeAgent) mergeZCodeLiveModelsLocked(available []zcodeAvailableModel,
 	if len(available) == 0 {
 		return
 	}
-	modalities := make(map[string][]string, len(a.liveModalities)+len(available))
-	for id, values := range a.liveModalities {
-		modalities[id] = slices.Clone(values)
+	records := make(map[string]zcodeLiveModelRecord, len(a.liveModels)+len(available))
+	for id, record := range a.liveModels {
+		records[id] = record
 	}
-	refs := make(map[string]zcodeModelRef, len(a.liveModelRefs)+len(available))
-	for id, ref := range a.liveModelRefs {
-		refs[id] = ref
-	}
-	models := make([]*ModelInfo, 0, len(available)+len(a.liveModels))
+	order := make([]string, 0, len(available)+len(a.liveModelOrder))
 	seen := make(map[string]struct{}, len(available))
 	currentID := zcodeModelID(current.ProviderID, current.ModelID)
 	for _, wire := range available {
@@ -358,25 +359,28 @@ func (a *zcodeAgent) mergeZCodeLiveModelsLocked(available []zcodeAvailableModel,
 				input = append(input, zcodeModalityPDF)
 			}
 		}
-		models = append(models, info)
-		modalities[id] = input
-		refs[id] = wire.Ref
-		seen[id] = struct{}{}
+		records[id] = zcodeLiveModelRecord{info: info, ref: wire.Ref, modalities: input}
+		if _, duplicate := seen[id]; !duplicate {
+			order = append(order, id)
+			seen[id] = struct{}{}
+		}
 	}
-	for _, model := range a.liveModels {
-		if model == nil {
+	for _, id := range a.liveModelOrder {
+		if _, replaced := seen[id]; replaced {
 			continue
 		}
-		if _, ok := seen[model.Id]; ok {
+		record, ok := records[id]
+		if !ok || record.info == nil {
 			continue
 		}
-		clone := *model
+		clone := *record.info
 		clone.IsDefault = clone.Id == currentID
-		models = append(models, &clone)
+		record.info = &clone
+		records[id] = record
+		order = append(order, id)
 	}
-	a.liveModels = models
-	a.liveModelRefs = refs
-	a.liveModalities = modalities
+	a.liveModels = records
+	a.liveModelOrder = order
 }
 
 // resolveZCodeModelIDLocked resolves a model against the live catalog first and
@@ -393,13 +397,13 @@ func (a *zcodeAgent) resolveZCodeModelIDLocked(model string) (string, bool) {
 			}
 		}
 	}
-	if _, ok := a.liveModelRefs[model]; ok {
+	if _, ok := a.liveModels[model]; ok {
 		return model, true
 	}
 	if _, _, composite := splitZCodeModelID(model); !composite {
-		for _, info := range a.liveModels {
-			if _, modelID, ok := splitZCodeModelID(info.GetId()); ok && modelID == model {
-				return info.GetId(), true
+		for _, id := range a.liveModelOrder {
+			if _, modelID, ok := splitZCodeModelID(id); ok && modelID == model {
+				return id, true
 			}
 		}
 	}
@@ -409,10 +413,8 @@ func (a *zcodeAgent) resolveZCodeModelIDLocked(model string) (string, bool) {
 // zcodeDefaultThoughtLevelLocked returns the live model default when available.
 // Caller holds a.mu.
 func (a *zcodeAgent) zcodeDefaultThoughtLevelLocked(modelID string) string {
-	for _, model := range a.liveModels {
-		if model.GetId() == modelID {
-			return model.DefaultEffort
-		}
+	if record, ok := a.liveModels[modelID]; ok && record.info != nil {
+		return record.info.DefaultEffort
 	}
 	return a.catalog.defaultThoughtLevel(modelID)
 }
@@ -427,8 +429,13 @@ func (a *zcodeAgent) zcodeModelsForUI() ([]*ModelInfo, string, string) {
 	current, level := a.model, a.thoughtLevel
 	observed, observedDefault := a.observedThoughtLevels, a.observedThoughtDefault
 	models := a.catalog.Models
-	if len(a.liveModels) > 0 {
-		models = slices.Clone(a.liveModels)
+	if len(a.liveModelOrder) > 0 {
+		models = make([]*ModelInfo, 0, len(a.liveModelOrder))
+		for _, id := range a.liveModelOrder {
+			if record, ok := a.liveModels[id]; ok && record.info != nil {
+				models = append(models, record.info)
+			}
+		}
 	}
 	a.mu.Unlock()
 
@@ -484,7 +491,7 @@ func (a *zcodeAgent) applyZCodeModel(modelID string, timeout time.Duration) erro
 	resolved, ok := a.resolveZCodeModelIDLocked(modelID)
 	sessionID, level := a.sessionID, a.thoughtLevel
 	accountConfig := a.accountProviderConfig
-	ref := a.liveModelRefs[resolved]
+	ref := a.liveModels[resolved].ref
 	defaultLevel := a.zcodeDefaultThoughtLevelLocked(resolved)
 	a.mu.Unlock()
 	if !ok {

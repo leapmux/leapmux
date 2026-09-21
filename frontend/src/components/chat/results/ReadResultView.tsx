@@ -9,7 +9,7 @@ import {
   codeViewLine,
   codeViewLineNumber,
 } from '../markdownEditor/codeViewStyles.css'
-import { LIMITED_TEXT_DISPLAY_NOTICE, limitTextForDisplay, TEXT_DISPLAY_LINE_CHAR_LIMIT } from '../safeTextDisplay'
+import { EXPANDED_TEXT_DISPLAY_CHAR_LIMIT, EXPANDED_TEXT_DISPLAY_LINE_LIMIT, LIMITED_TEXT_DISPLAY_NOTICE, limitTextForDisplay, TEXT_DISPLAY_LINE_CHAR_LIMIT } from '../safeTextDisplay'
 import { toolResultPrompt } from '../toolStyles.css'
 import { useAsyncCodeTokens } from '../useAsyncCodeTokens'
 import { canHighlightBySize } from './collapse'
@@ -31,22 +31,48 @@ export function ReadResultView(props: {
   /** Row outside the near-viewport band: tokenize at low worker priority. */
   rowOffscreen?: () => boolean
 }): JSX.Element {
-  const lineDisplays = createMemo(() => props.lines.map((line) => {
-    const display = limitTextForDisplay(line.text, {
-      maxChars: TEXT_DISPLAY_LINE_CHAR_LIMIT,
-      maxLineChars: TEXT_DISPLAY_LINE_CHAR_LIMIT,
-    })
-    return { line: display.limited ? { ...line, text: display.text } : line, limited: display.limited }
-  }))
-  const lines = createMemo(() => lineDisplays().map(display => display.line))
-  const displayLimited = createMemo(() => lineDisplays().some(display => display.limited))
+  const display = createMemo(() => {
+    const lines: NumberedFileLine[] = []
+    const code: string[] = []
+    let usedChars = 0
+    let limited = false
+    for (const line of props.lines) {
+      if (lines.length >= EXPANDED_TEXT_DISPLAY_LINE_LIMIT) {
+        limited = true
+        break
+      }
+      const separatorChars = lines.length === 0 ? 0 : 1
+      const remainingChars = EXPANDED_TEXT_DISPLAY_CHAR_LIMIT - usedChars - separatorChars
+      // `limitTextForDisplay` keeps a head/tail omission marker. Do not ask it
+      // to fit that marker in the last few bytes of the total budget.
+      if (remainingChars < 64) {
+        limited = true
+        break
+      }
+      const lineLimit = Math.min(TEXT_DISPLAY_LINE_CHAR_LIMIT, remainingChars)
+      const lineDisplay = limitTextForDisplay(line.text, {
+        maxChars: lineLimit,
+        maxLineChars: lineLimit,
+        maxLines: 1,
+      })
+      const displayedLine = lineDisplay.limited ? { ...line, text: lineDisplay.text } : line
+      lines.push(displayedLine)
+      code.push(displayedLine.text)
+      usedChars += separatorChars + displayedLine.text.length
+      limited ||= lineDisplay.limited
+    }
+    limited ||= lines.length < props.lines.length
+    return { lines, code: code.join('\n'), limited }
+  })
+  const lines = () => display().lines
+  const displayLimited = () => display().limited
   // Memoized (like useDiffTokens' `lang`) so the hook's 2-4 reads per reactive pass --
   // both effects' currentKey(), the seed, and syncTokenize -- don't each re-run extname()
   // + the EXT_TO_LANG lookup.
   const lang = createMemo(() => props.filePath ? guessLanguage(props.filePath) : undefined)
   // Memoized so the O(lines) join isn't rebuilt on every read -- the hook reads `code`
   // from both effects' currentKey() plus syncTokenize (2-3x per reactive pass).
-  const code = createMemo(() => lines().map(line => line.text).join('\n'))
+  const code = () => display().code
 
   const tokenizedLines = useAsyncCodeTokens({
     lang,

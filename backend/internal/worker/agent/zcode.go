@@ -91,12 +91,11 @@ type zcodeAgent struct {
 	// model-dependent, so it overrides the catalog's variants for the running model.
 	observedThoughtLevels  []*EffortInfo
 	observedThoughtDefault string
-	// liveModels and the two indexes come from settings.model.available. ZCode
-	// 0.16.9 owns this catalog and uses account provider ids that the legacy
-	// desktop configuration does not contain.
-	liveModels     []*ModelInfo
-	liveModelRefs  map[string]zcodeModelRef
-	liveModalities map[string][]string
+	// liveModels is the one normalized record per model id. liveModelOrder keeps
+	// the app-server's order without copying each record's metadata into parallel
+	// maps that can drift.
+	liveModels     map[string]zcodeLiveModelRecord
+	liveModelOrder []string
 
 	// toolCalls holds everything a.mu knows about each tool call, keyed by its id.
 	toolCalls     map[string]*zcodeToolCall

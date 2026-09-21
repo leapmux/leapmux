@@ -122,8 +122,8 @@ func TestApplySettingsSnapshot_BuildsTheCurrentProtocolModelCatalog(t *testing.T
 	assert.Equal(t, int64(200000), models[0].ContextWindow)
 
 	a.mu.Lock()
-	resolved, ok := a.resolveZCodeModelIDLocked("builtin:zai-coding-plan/GLM-5.3-Flash")
-	flashModalities := a.liveModalities["account:zai-individual-coding-plan/GLM-5.3-Flash"]
+	resolved, ok := a.resolveZCodeModelIDLocked("account:zai-individual-coding-plan/GLM-5.3-Flash")
+	flashModalities := a.liveModels["account:zai-individual-coding-plan/GLM-5.3-Flash"].modalities
 	a.mu.Unlock()
 	assert.True(t, ok)
 	assert.Equal(t, "account:zai-individual-coding-plan/GLM-5.3-Flash", resolved)
@@ -143,6 +143,37 @@ func TestApplySettingsSnapshot_BuildsTheCurrentProtocolModelCatalog(t *testing.T
     }`)
 	models, _, _ = a.zcodeModelsForUI()
 	assert.Len(t, models, 2)
+}
+
+func TestApplySettingsSnapshot_DeduplicatesOneLiveModelRecord(t *testing.T) {
+	t.Parallel()
+
+	a := newZCodeTestAgent(t, &recordingControlSink{})
+	zcodeApplySettings(t, a, `{
+      "model": {
+        "current": {"providerId":"account:acme","modelId":"ACME-1"},
+        "available": [
+          {
+            "ref":{"providerId":"account:acme","modelId":"ACME-1"},
+            "label":"Stale label",
+            "properties":{"inputFormat":{"supportsText":true,"supportsImage":false}}
+          },
+          {
+            "ref":{"providerId":"account:acme","modelId":"ACME-1"},
+            "label":"Current label",
+            "properties":{"inputFormat":{"supportsText":true,"supportsImage":true}}
+          }
+        ]
+      }
+    }`)
+
+	models, _, _ := a.zcodeModelsForUI()
+	require.Len(t, models, 1)
+	assert.Equal(t, "Current label", models[0].DisplayName)
+	a.mu.Lock()
+	modalities := a.liveModels["account:acme/ACME-1"].modalities
+	a.mu.Unlock()
+	assert.Contains(t, modalities, zcodeModalityImage)
 }
 
 // The two lists of levels are built in two places -- the configured catalog
@@ -667,7 +698,7 @@ func TestApplyZCodeModel_AccountConfigOmitsTheLegacyRuntimeModel(t *testing.T) {
     }`)
 
 	a.cancel()
-	_ = a.applyZCodeModel("builtin:zai-coding-plan/GLM-5.3", 0)
+	_ = a.applyZCodeModel("account:zai-individual-coding-plan/GLM-5.3", 0)
 
 	requests := stdin.Requests(t)
 	require.Len(t, requests, 1)

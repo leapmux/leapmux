@@ -21,21 +21,17 @@ type SubagentReport struct {
 	Status string
 }
 
-// SubagentReportTarget selects the transcript that owns a report.
-type SubagentReportTarget uint8
-
-const (
-	SubagentReportCurrentTranscript SubagentReportTarget = iota
-	SubagentReportChildTranscript
-)
-
 // SubagentReportWrite identifies one report independently from its content.
-// ReportID is stable across protocol replays. RowKey is required for a child target.
+// ReportID is stable across protocol replays.
 type SubagentReportWrite struct {
 	ReportID string
-	RowKey   string
-	Target   SubagentReportTarget
 	Report   SubagentReport
+}
+
+// ChildSubagentReportWrite routes one report through a required task row.
+type ChildSubagentReportWrite struct {
+	RowKey string
+	Write  SubagentReportWrite
 }
 
 // NotificationPayload returns the normalized LeapMux notification envelope.
@@ -47,15 +43,6 @@ func (w SubagentReportWrite) NotificationPayload() (map[string]interface{}, erro
 	}
 	if w.Report.Text == "" {
 		return nil, nil
-	}
-	switch w.Target {
-	case SubagentReportCurrentTranscript:
-	case SubagentReportChildTranscript:
-		if strings.TrimSpace(w.RowKey) == "" {
-			return nil, fmt.Errorf("child subagent report has no row key")
-		}
-	default:
-		return nil, fmt.Errorf("subagent report has unknown target %d", w.Target)
 	}
 	payload := map[string]interface{}{
 		contracts.NotificationFieldType: contracts.NotificationTypeSubagentReport,
@@ -77,7 +64,7 @@ func persistSubagentReport(sink SessionServices, write SubagentReportWrite) bool
 	}
 	payload, err := write.NotificationPayload()
 	if err != nil {
-		slog.Warn("invalid subagent report", "report_id", write.ReportID, "row_key", write.RowKey, "error", err)
+		slog.Warn("invalid subagent report", "report_id", write.ReportID, "error", err)
 		return false
 	}
 	if payload == nil {
@@ -85,7 +72,33 @@ func persistSubagentReport(sink SessionServices, write SubagentReportWrite) bool
 	}
 	stored, err := sink.PersistSubagentReport(write)
 	if err != nil {
-		slog.Warn("persist subagent report", "report_id", write.ReportID, "row_key", write.RowKey, "error", err)
+		slog.Warn("persist subagent report", "report_id", write.ReportID, "error", err)
+		return false
+	}
+	return stored
+}
+
+// persistChildSubagentReport validates a child route and logs a failed durable write.
+func persistChildSubagentReport(sink SessionServices, write ChildSubagentReportWrite) bool {
+	if sink == nil {
+		return false
+	}
+	write.RowKey = strings.TrimSpace(write.RowKey)
+	if write.RowKey == "" {
+		slog.Warn("invalid child subagent report", "report_id", write.Write.ReportID, "error", "child subagent report has no row key")
+		return false
+	}
+	payload, err := write.Write.NotificationPayload()
+	if err != nil {
+		slog.Warn("invalid child subagent report", "report_id", write.Write.ReportID, "row_key", write.RowKey, "error", err)
+		return false
+	}
+	if payload == nil {
+		return false
+	}
+	stored, err := sink.PersistChildSubagentReport(write)
+	if err != nil {
+		slog.Warn("persist child subagent report", "report_id", write.Write.ReportID, "row_key", write.RowKey, "error", err)
 		return false
 	}
 	return stored

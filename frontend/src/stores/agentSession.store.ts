@@ -183,6 +183,16 @@ export function createAgentSessionStore() {
             const next = { ...existing }
             let rlChanged = false
             for (const [rlKey, rlInfo] of Object.entries(incoming)) {
+              // A producer sends an empty entry to clear one member of a full
+              // snapshot. Rate-limit updates otherwise merge by key because some
+              // providers report their independent windows in separate frames.
+              if (Object.keys(rlInfo).length === 0) {
+                if (Object.hasOwn(next, rlKey)) {
+                  delete next[rlKey]
+                  rlChanged = true
+                }
+                continue
+              }
               if (!shallowEqual(existing[rlKey], rlInfo)) {
                 next[rlKey] = rlInfo
                 rlChanged = true

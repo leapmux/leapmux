@@ -36,46 +36,29 @@ func TestPersistSubagentReportDropsBlankText(t *testing.T) {
 	assert.Empty(t, sink.LeapMuxNotifications())
 }
 
-func TestPersistSubagentReportRejectsAnUnknownTarget(t *testing.T) {
+func TestPersistSubagentReportRejectsIncompleteIdentity(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
 	assert.False(t, persistSubagentReport(sink, SubagentReportWrite{
-		ReportID: "report-1",
-		Target:   SubagentReportTarget(99),
+		ReportID: " \n\t ",
 		Report:   SubagentReport{Text: "Report"},
 	}))
 	assert.Empty(t, sink.LeapMuxNotifications())
 }
 
-func TestPersistSubagentReportRejectsIncompleteIdentity(t *testing.T) {
+func TestPersistChildSubagentReportRejectsABlankRowKey(t *testing.T) {
 	t.Parallel()
 
-	for _, test := range []struct {
-		name  string
-		write SubagentReportWrite
-	}{
-		{
-			name:  "blank report identity",
-			write: SubagentReportWrite{ReportID: " \n\t ", Report: SubagentReport{Text: "Report"}},
+	sink := &testSink{}
+	assert.False(t, persistChildSubagentReport(sink, ChildSubagentReportWrite{
+		RowKey: " \n\t ",
+		Write: SubagentReportWrite{
+			ReportID: "report-1",
+			Report:   SubagentReport{Text: "Report"},
 		},
-		{
-			name: "blank child row key",
-			write: SubagentReportWrite{
-				ReportID: "report-1",
-				RowKey:   " \n\t ",
-				Target:   SubagentReportChildTranscript,
-				Report:   SubagentReport{Text: "Report"},
-			},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			sink := &testSink{}
-			assert.False(t, persistSubagentReport(sink, test.write))
-			assert.Empty(t, sink.LeapMuxNotifications())
-		})
-	}
+	}))
+	assert.Empty(t, sink.LeapMuxNotifications())
 }
 
 func TestPersistSubagentReportDeduplicatesOneIdentity(t *testing.T) {
@@ -94,13 +77,14 @@ func TestPersistSubagentReportResolvesAChildRow(t *testing.T) {
 	sink := &testSink{}
 	childID, err := sink.EnsureChildAgent("spawn-1", "row-1", "Reviewer")
 	require.NoError(t, err)
-	write := SubagentReportWrite{
-		ReportID: "report-1",
-		RowKey:   "row-1",
-		Target:   SubagentReportChildTranscript,
-		Report:   SubagentReport{Text: "Report"},
+	write := ChildSubagentReportWrite{
+		RowKey: "row-1",
+		Write: SubagentReportWrite{
+			ReportID: "report-1",
+			Report:   SubagentReport{Text: "Report"},
+		},
 	}
-	assert.True(t, persistSubagentReport(sink, write))
+	assert.True(t, persistChildSubagentReport(sink, write))
 	child := sink.ChildSink(childID).(*testSink)
 	assert.Len(t, child.LeapMuxNotifications(), 1)
 }

@@ -4,7 +4,7 @@ import { PI_EVENT } from '~/generated/contracts/pi-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isNotificationThreadWrapper } from '../../messageUtils'
-import { classifyNotifications } from '../../notificationClassification'
+import { notificationClassifierFor } from '../../notificationClassification'
 import { retainedRowIsFinal } from '../registry'
 import { piSubagentNotifications, piVisibleCustomMessage } from './extractors/customMessage'
 import { piNotificationEntry } from './extractors/notification'
@@ -79,8 +79,7 @@ const PI_NOTIFICATION_SURFACE_TYPES = new Set<string>([
 export function classifyPiMessage(input: ClassificationInput): MessageCategory {
   const parent = input.parentObject
   const wrapper = input.wrapper
-  const notification = (messages: readonly unknown[], empty: 'notification' | 'hidden' = 'notification'): MessageCategory =>
-    classifyNotifications(messages, input.agentProvider, piNotificationEntry, empty)
+  const notification = notificationClassifierFor(input.agentProvider, piNotificationEntry)
 
   // An empty wrapper hides. This runs BEFORE the thread test, whose type predicate
   // narrows `wrapper` to `null` on its false path. The thread test refuses an empty

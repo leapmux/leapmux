@@ -34,7 +34,7 @@ function positiveInteger(value: number | undefined, fallback: number): number {
 }
 
 /** Keep a slice boundary outside a UTF-16 surrogate pair. */
-function safeEnd(text: string, index: number): number {
+export function safeTextEndIndex(text: string, index: number): number {
   if (index <= 0 || index >= text.length)
     return index
   const previous = text.charCodeAt(index - 1)
@@ -62,7 +62,7 @@ function limitTotalChars(text: string, maxChars: number): SafeTextDisplay {
   const available = Math.max(2, maxChars - CONTENT_OMISSION.length)
   const headChars = Math.floor(available * 0.75)
   const tailChars = available - headChars
-  const headEnd = safeEnd(text, headChars)
+  const headEnd = safeTextEndIndex(text, headChars)
   const tailStart = safeStart(text, text.length - tailChars)
   return {
     text: `${text.slice(0, headEnd)}${CONTENT_OMISSION}${text.slice(tailStart)}`,
@@ -126,7 +126,7 @@ function limitLineChars(text: string, maxLineChars: number): SafeTextDisplay {
       const available = Math.max(2, maxLineChars - LINE_OMISSION.length)
       const headChars = Math.floor(available * 0.75)
       const tailChars = available - headChars
-      const headEnd = safeEnd(text, start + headChars)
+      const headEnd = safeTextEndIndex(text, start + headChars)
       const tailStart = safeStart(text, end - tailChars)
       parts.push(text.slice(start, headEnd), LINE_OMISSION, text.slice(tailStart, end))
     }

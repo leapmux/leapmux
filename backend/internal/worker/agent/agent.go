@@ -447,9 +447,10 @@ type SessionServices interface {
 	BroadcastStatusActive(sessionID string)
 	BroadcastSessionInfo(info map[string]interface{})
 	PersistLeapMuxNotification(content map[string]interface{})
-	// PersistSubagentReport stores one provider-neutral report exactly once.
-	// A child target resolves RowKey through the durable background-task registry.
+	// PersistSubagentReport stores one report in this transcript exactly once.
 	PersistSubagentReport(write SubagentReportWrite) (stored bool, err error)
+	// PersistChildSubagentReport resolves the required row through the durable registry.
+	PersistChildSubagentReport(write ChildSubagentReportWrite) (stored bool, err error)
 }
 
 // PlanServices stores plan-mode state.

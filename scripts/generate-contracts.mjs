@@ -671,6 +671,10 @@ const NotificationThreadWrapperType = ${jsonString(v.notificationThreadWrapperTy
 // lifts on the rolling-window timer (the others are billing/usage caps).
 const CodexRateLimitReachedTimeWindow = ${jsonString(v.codexRateLimitReachedTimeWindow)}
 
+// CodexRateLimitAccountBlockKey is the stable session-info member that carries
+// a billing or workspace block independently from the rolling windows.
+const CodexRateLimitAccountBlockKey = ${jsonString(v.codexRateLimitAccountBlockKey)}
+
 // GoalStatusToken* are the tokens the goal_updated notification payload
 // carries. They are NOT the storage format: agents.goal_status stores an
 // AgentGoalStatus ordinal, and agent.GoalStatusWire maps one onto the other.
@@ -769,6 +773,9 @@ export const NOTIFICATION_THREAD_TYPE = ${jsonString(v.notificationThreadWrapper
 
 /** The one Codex rateLimitReachedType that lifts on the rolling-window timer. */
 export const CODEX_RATE_LIMIT_REACHED_TIME_WINDOW = ${jsonString(v.codexRateLimitReachedTimeWindow)} as const
+
+/** Stable session-info member for a Codex billing or workspace block. */
+export const CODEX_RATE_LIMIT_ACCOUNT_BLOCK_KEY = ${jsonString(v.codexRateLimitAccountBlockKey)} as const
 
 /**
  * The tokens the worker ships in the goal_updated payload. The empty token

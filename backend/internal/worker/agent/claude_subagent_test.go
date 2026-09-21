@@ -117,6 +117,17 @@ func TestClaudePeerHandbackSurvivesMissingChildState(t *testing.T) {
 	assert.Zero(t, sink.MessageCount())
 }
 
+func TestClaudePeerHandbackReplayUsesTheSenderTaskIdentity(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newTestAgent(sink)
+	agent.HandleOutput([]byte(`{"type":"result","origin":{"kind":"peer","from":"orphan-reviewer","senderTaskId":"unknown-task","body":"[Subagent hand-back] The report follows:\n  Draft report","handback":true}}`))
+	agent.HandleOutput([]byte(`{"type":"result","origin":{"kind":"peer","from":"orphan-reviewer","senderTaskId":"unknown-task","body":"[Subagent hand-back] The report follows:\n  Corrected report","handback":true}}`))
+
+	assert.Len(t, sink.LeapMuxNotifications(), 1, "one peer task must keep one report identity across a replay")
+}
+
 // TestClaude_PendingTaskEndRecordsAndConsumes verifies the pending-end map
 // that closes a Task subagent row whose FINAL result arrived before its
 // task_started (a forward reorder). recordPendingTaskEnd stores the final

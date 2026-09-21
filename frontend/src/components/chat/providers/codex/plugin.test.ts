@@ -539,20 +539,21 @@ describe('codex rateLimitsFromMessage', () => {
         },
       },
     }))
-    expect(result).toHaveLength(2)
+    expect(result).toHaveLength(3)
     expect(result![0]?.key).toBe('five_hour')
     expect(result![0]?.info.utilization).toBeCloseTo(0.85)
     expect(result![0]?.info.status).toBe('allowed_warning')
     expect(result![1]?.key).toBe('seven_day')
     expect(result![1]?.info.utilization).toBeCloseTo(0.04)
     expect(result![1]?.info.status).toBe('allowed')
+    expect(result![2]).toEqual({ key: 'account_block', info: {} })
   })
 
-  it('returns empty array without tiers', () => {
+  it('returns the account-block clearing entry without tiers', () => {
     expect(plugin?.session?.rateLimitsFromMessage!(parsed({
       method: 'account/rateLimits/updated',
       params: { rateLimits: {} },
-    }))).toEqual([])
+    }))).toEqual([{ key: 'account_block', info: {} }])
   })
 
   it('elevates the most-utilized window to exceeded when reached-type fires under 100%', () => {
@@ -582,6 +583,10 @@ describe('codex rateLimitsFromMessage', () => {
       },
     }))
     expect(result![0]?.info.status).toBe('allowed')
+    expect(result![1]).toEqual({
+      key: 'account_block',
+      info: { rateLimitType: 'workspace_owner_credits_depleted', status: 'exceeded' },
+    })
   })
 
   it('returns null for a non-rate-limit method', () => {

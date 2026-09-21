@@ -94,7 +94,8 @@ type codexChildRoute struct {
 
 // This file holds the Codex subagent integration: the legacy collab registry
 // adapter, the V2 activity lifecycle, direct-parent transcript routing, and the
-// child interruption. It keeps codex_output.go focused on item output.
+// child interruption. It keeps codex_output.go focused on event dispatch and
+// item lifecycle.
 
 // codexCollabTransition maps a collab agentsStates status to one child
 // transition. An interrupted child remains resumable.

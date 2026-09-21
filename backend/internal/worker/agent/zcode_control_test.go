@@ -823,7 +823,8 @@ func TestAnswerProviderRuntimeHeaders_AccountConfigReturnsRequestAuth(t *testing
           "models": {"GLM-5.3": {}}
         }
       }
-    }`)
+	    }`)
+	seedZCodeAccountBridgeForTests(&a.catalog)
 	a.mu.Lock()
 	a.accountProviderConfig = true
 	a.mu.Unlock()

@@ -42,6 +42,20 @@ describe('useCollapsedLines', () => {
     })
   })
 
+  it('keeps a collapsed slice outside a UTF-16 surrogate pair', () => {
+    createRoot((dispose) => {
+      const prefix = 'x'.repeat(COLLAPSED_LINE_CHAR_CAP - 1)
+      const { display } = useCollapsedLines({
+        text: () => `${prefix}😀`,
+        expanded: () => false,
+      })
+
+      expect(display()).toBe(`${prefix}…`)
+      expect(display()).not.toContain('\uFFFD')
+      dispose()
+    })
+  })
+
   it('keeps three individually short lines open when their total exceeds one line cap', () => {
     createRoot((dispose) => {
       const line = 'x'.repeat(100)

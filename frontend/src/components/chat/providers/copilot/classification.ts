@@ -4,7 +4,7 @@ import { COPILOT_EVENT, COPILOT_EVENT_PREFIX } from '~/generated/contracts/copil
 import { isObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isNotificationThreadWrapper } from '../../messageUtils'
-import { classifyNotifications } from '../../notificationClassification'
+import { notificationClassifierFor } from '../../notificationClassification'
 import { turnEndLabel } from '../../turnEndLabel'
 import { retainedRowIsFinal } from '../registry'
 import { copilotNotificationEntry } from './extractors/notification'
@@ -246,8 +246,7 @@ function copilotNotifies(entry: unknown): boolean {
 export function classifyCopilotMessage(input: ClassificationInput): MessageCategory {
   const parent = input.parentObject
   const wrapper = input.wrapper
-  const notification = (messages: readonly unknown[], empty: 'notification' | 'hidden' = 'notification'): MessageCategory =>
-    classifyNotifications(messages, input.agentProvider, copilotNotificationEntry, empty)
+  const notification = notificationClassifierFor(input.agentProvider, copilotNotificationEntry)
 
   if (wrapper) {
     if (wrapper.messages.length === 0)

@@ -1976,11 +1976,12 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 	}
 	if obs.Report.Text != "" {
 		if lookupOK && childAgentID != "" {
-			persistSubagentReport(b.sink, SubagentReportWrite{
-				ReportID: obs.ReportID,
-				RowKey:   rowKey,
-				Target:   SubagentReportChildTranscript,
-				Report:   obs.Report,
+			persistChildSubagentReport(b.sink, ChildSubagentReportWrite{
+				RowKey: rowKey,
+				Write: SubagentReportWrite{
+					ReportID: obs.ReportID,
+					Report:   obs.Report,
+				},
 			})
 		}
 	}

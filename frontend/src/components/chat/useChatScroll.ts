@@ -13,10 +13,12 @@ import { createFlingSettle, FLING_SETTLE_MS } from './chatScrollFlingSettle'
 import { cannotLeaveStickyBand, clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, inferScrollDirection, isNearTopBand, maxScrollTopOf, REPIN_MIN_DELTA_PX, STICKY_BOTTOM_THRESHOLD_PX, warnSlowScrollPhase } from './chatScrollGeometry'
 import { createScrollInput } from './chatScrollInput'
 import { createOverscrollDrag } from './chatScrollOverscrollDrag'
+import { createChatPaginationPolicy } from './chatScrollPaginationPolicy'
 import { registerProgrammaticScrollWriter } from './chatScrollPreserve'
 import { createProgrammaticScrollGuard } from './chatScrollProgrammaticGuard'
 import { createStaleNativeScrollTranslator } from './chatScrollStaleNative'
 import { createStickyBottom } from './chatScrollSticky'
+import { createChatTailFollower } from './chatScrollTailFollower'
 import { createScrollVelocity } from './chatScrollVelocity'
 import { createViewportRestore } from './chatScrollViewportRestore'
 import { createChatSeek } from './chatSeek'
@@ -956,75 +958,33 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // buffer actually accumulates rather than sliding. The fill loops through hidden
   // runs until the buffer is full, history is exhausted, or the raw window ceiling
   // stops growth; createScrollBufferFiller owns that loop.
-  const bufferTargetPx = () =>
-    messageListRef ? SCROLL_BUFFER_SCREENS * messageListRef.clientHeight : 0
-
-  const canLoadOlderMessages = () =>
-    !!messageListRef && !!opts.hasOlderMessages?.() && !opts.fetchingOlder?.()
-
-  // Fire an older-history fetch (prepend). preserveBrowsingPosition keeps the
-  // anchored row stationary across the prepend -- the re-pin absorbs the growth
-  // ABOVE the viewport, so the buffer fills invisibly. Callers gate on position
-  // (explicit top-intent) or buffer deficit (the filler); this just fires.
-  const loadOlderMessages = () => {
-    if (!canLoadOlderMessages())
-      return
-    preserveBrowsingPosition = true
-    opts.onLoadOlderMessages?.()
-  }
-
-  // Wheel/key/overscroll at the very top: an explicit request to page older. Returns
-  // whether it fired (the overscroll-drag tracker consumes this). Clears the
-  // one-shot post-restore suppression so a deliberate reach-the-top always pages.
-  const tryLoadOlderOnExplicitTopIntent = (): boolean => {
-    if (!isAtTopEdge() || !canLoadOlderMessages())
-      return false
-    suppressAutoLoadOlderAfterRestore = false
-    loadOlderMessages()
-    return true
-  }
-
-  const canLoadNewerMessages = () =>
-    !!messageListRef && hasNewerMessages() && !opts.fetchingNewer?.()
-
-  const loadNewerMessages = () => {
-    if (!canLoadNewerMessages())
-      return
-    opts.onLoadNewerMessages?.()
-  }
-
-  const tryLoadNewerOnExplicitBottomIntent = (): boolean => {
-    if (!isAtBottomEdge() || !canLoadNewerMessages())
-      return false
-    loadNewerMessages()
-    return true
-  }
-
-  // ---- Stall indicators ----
-  //
-  // TRUE only when the view is clamped HARD against a loaded edge (within
-  // EDGE_INTENT_TOLERANCE_PX -- the same 1px edge the explicit edge-intent loaders use,
-  // NOT the looser 32px sticky band) AND a fetch for that direction is in flight AND
-  // more history exists that way. This is the NO-SKIP stall: a scroll outran the
-  // pre-fetch buffer, so the loaded-window scroll bound is holding the view at the edge
-  // until the page lands -- the only time a "loading older/newer" indicator should show.
-  // A BACKGROUND buffer pre-fetch fires while the view is still well inside the buffer
-  // (scrollTop / distFromBottom >> the edge tolerance), so it never trips these.
-  //
-  // Read the DOM fresh on each eval, gated by geomTick (a position-only move or a ref
-  // (un)mount bumps it) plus the reactive fetch / has-more accessors -- short-circuited
-  // so the DOM is only measured while a fetch is actually in flight. Fresh reads, rather than a cached
-  // at-edge boolean, mean the next fetch in a buffer-fill chain re-measures against the
-  // GROWN window: a background page that lands and immediately re-fetches can't flash a
-  // stale "stalled" once the view is no longer at the edge.
-  const stalledOlder = createMemo(() => {
-    geomTick()
-    return !!opts.fetchingOlder?.() && !!opts.hasOlderMessages?.() && isAtTopEdge()
+  const paginationPolicy = createChatPaginationPolicy({
+    getEl: () => messageListRef,
+    hasOlder: () => !!opts.hasOlderMessages?.(),
+    fetchingOlder: () => !!opts.fetchingOlder?.(),
+    hasNewer: hasNewerMessages,
+    fetchingNewer: () => !!opts.fetchingNewer?.(),
+    geomVersion: geomTick,
+    isAtTopEdge,
+    isAtBottomEdge,
+    preserveBrowsingPosition: () => { preserveBrowsingPosition = true },
+    clearRestoreSuppression: () => { suppressAutoLoadOlderAfterRestore = false },
+    onLoadOlder: () => opts.onLoadOlderMessages?.(),
+    onLoadNewer: () => opts.onLoadNewerMessages?.(),
+    isAtBottom,
+    isFollowing,
+    anchorAtViewportTop: () => messageListRef ? virt.anchorAt(readLogicalScrollTop(messageListRef)) : null,
+    bufferScreens: SCROLL_BUFFER_SCREENS,
   })
-  const stalledNewer = createMemo(() => {
-    geomTick()
-    return !!opts.fetchingNewer?.() && hasNewerMessages() && isAtBottomEdge()
-  })
+  const {
+    bufferTargetPx,
+    loadOlderMessages,
+    tryLoadOlderOnExplicitTopIntent,
+    loadNewerMessages,
+    tryLoadNewerOnExplicitBottomIntent,
+    stalledOlder,
+    stalledNewer,
+  } = paginationPolicy
 
   /**
    * Classify a scroll event AND consume the one-shot discrete-page target. Returns
@@ -1499,67 +1459,54 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     suppressAutoLoadOlderAfterRestore = false
   }
 
-  const forceScrollToBottom = () => {
-    cancelScrollAnimation()
-    retakeScrollControl()
-    // Scrolled away from the live tail: re-fetch the latest page first, then
-    // snap. jumpToLatest replaces the window; the totalHeight re-pin effect and
-    // the sticky auto-scroll then land us at the true bottom.
-    if (hasNewerMessages()) {
-      // The jump REPLACES the window, so drop any per-window filler state the old
-      // window accumulated.
-      rearmScrollBufferFiller()
-      // Optimistically follow the tail, but remember the pre-jump anchor: no
-      // scroll write happens until the jump resolves, so on failure (worker
-      // disconnect / RPC error) we restore the anchor and re-sync atBottom to
-      // the real scroll position rather than stranding the view anchorless at a
-      // tail it never reached. The rejection is swallowed (no unhandled promise).
-      const prevAnchorState = currentAnchorState()
-      followTail()
-      setAtBottom(true)
-      void Promise.resolve(opts.onJumpToLatest?.())
-        .then(() => {
-          // Honor a mid-flight user scroll: if the user scrolled up while the jump was
-          // in flight, handleScroll captured an anchor and cleared atBottom, so don't
-          // yank them back to the live tail.
-          if (!untrack(atBottom))
-            return
-          // The jump replaced the window with the latest page, but a live append that
-          // landed DURING the in-flight jump can leave the window short of the live
-          // tail again (hasNewerMessages true). Sticking to the loaded bottom would
-          // then pin the view to a NON-live-tail bottom while still claiming
-          // atBottom=true. Stick only when we are truly at the live tail; otherwise
-          // re-sync atBottom to the real position so the scroll-to-bottom affordance
-          // reappears instead of being hidden behind a stale atBottom.
-          if (hasNewerMessages())
-            checkAtBottom()
-          else
-            stickToBottom()
-        })
-        .catch(() => {
-          // A mid-flight user scroll already captured the user's newer anchor and cleared
-          // atBottom. Do not restore the stale pre-jump anchor over it.
-          if (!untrack(atBottom)) {
-            checkAtBottom()
-            return
-          }
-          // The jump failed and no scroll write landed, so we never reached the
-          // tail. Restore the pre-jump anchor; if there wasn't one (we were
-          // following), re-anchor to the CURRENT scroll position rather than
-          // re-entering 'following' at a tail we never reached -- otherwise
-          // checkAtBottom could leave atBottom true while hasMoreNewer stays set,
-          // hiding the scroll-to-bottom affordance and stranding the user above
-          // the live messages.
-          if (prevAnchorState)
-            setAnchor(prevAnchorState.anchor, undefined, prevAnchorState.viewportOffsetRatio)
-          else
-            setAnchor(messageListRef ? virt.anchorAt(readLogicalScrollTop(messageListRef)) : null)
-          checkAtBottom()
-        })
+  const scrollToBottomAnimated = () => {
+    if (!messageListRef)
       return
+    cancelScrollAnimation()
+
+    // A streaming tail can grow on every frame. Limit the chase, then hand the
+    // position to sticky-bottom so the animation cannot run without an end.
+    let framesLeft = SCROLL_TO_BOTTOM_MAX_FRAMES
+    const animate = () => {
+      if (!messageListRef) {
+        scrollAnimationId = null
+        anchorRepin.resetDeferredRepin()
+        return
+      }
+      const remaining = distFromBottom(messageListRef)
+      if (remaining < 1 || framesLeft <= 0) {
+        scrollAnimationId = null
+        anchorRepin.resetDeferredRepin()
+        stickToBottom()
+        return
+      }
+      framesLeft--
+      const step = remaining > 48 ? remaining * 0.5 : remaining * 0.4
+      writeScrollTopProgrammatically(readLogicalScrollTop(messageListRef) + Math.ceil(step), 'scroll-bottom-animation')
+      scrollAnimationId = requestAnimationFrame(animate)
     }
-    stickToBottom()
+
+    scrollAnimationId = requestAnimationFrame(animate)
   }
+
+  const tailFollower = createChatTailFollower({
+    getEl: () => messageListRef,
+    hasNewerMessages,
+    cancelAnimation: cancelScrollAnimation,
+    retakeControl: retakeScrollControl,
+    rearmBuffer: () => rearmScrollBufferFiller(),
+    currentAnchorState,
+    followTail,
+    atBottomSnapshot: () => untrack(atBottom),
+    setAtBottom,
+    jumpToLatest: () => opts.onJumpToLatest?.(),
+    checkAtBottom,
+    stickToBottom,
+    setAnchor,
+    anchorAtCurrentTop: () => messageListRef ? virt.anchorAt(readLogicalScrollTop(messageListRef)) : null,
+    animateToBottom: scrollToBottomAnimated,
+  })
+  const { forceScrollToBottom, jumpToBottom, scrollToBottom } = tailFollower
 
   // ---- Scroll-rail seek (jumpToSeq / previewScrollTo / cancelPendingSeek) -------------
   // The seek machine (dot/track/thumb -> land, or fetch-around-seq then land) lives in its
@@ -1789,17 +1736,6 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // history would be wedged off for good (a scrollbar-thumb drag to the very top fires
   // only `scroll` events, so the explicit wheel/key edge-intent loaders never run
   // either). Only once the pane can actually LEAVE the band does the suppression bite.
-  const suppressOlderPrefetchAtLiveTail = (): boolean => {
-    const el = messageListRef
-    if (!el || cannotLeaveStickyBand(el))
-      return false
-    // Pinned at the LIVE tail (the tail is loaded and the viewport sits in its sticky
-    // band): the older buffer is pure speculation until the reader scrolls up.
-    if (!hasNewerMessages() && isAtBottom())
-      return true
-    return isFollowing() && untrack(() => virt.anchorAt(readLogicalScrollTop(el))) !== null
-  }
-
   // Pre-fetch a VISIBLE-content buffer beyond the viewport so scrolling stays smooth
   // in hidden-heavy stretches (see createScrollBufferFiller). Self-contained reactive
   // unit; wired here so its createEffect runs AFTER the geometry re-pin /
@@ -1829,7 +1765,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // Gate the older PRE-FETCH on either a near-top restore's one-shot arm OR being pinned
     // at / following the live tail (where the older buffer is speculative -- see
     // suppressOlderPrefetchAtLiveTail). Both leave the newer side free.
-    suppressOlder: () => suppressAutoLoadOlderAfterRestore || suppressOlderPrefetchAtLiveTail(),
+    suppressOlder: () => suppressAutoLoadOlderAfterRestore || paginationPolicy.suppressOlderPrefetchAtLiveTail(),
     atCeiling: () => !!opts.atWindowCeiling?.(),
     // Both sides' progress is measured against a stable reference row, not raw
     // scrollTop/distFromBottom, so a mid-fetch scroll in either direction can't mask a
@@ -1920,64 +1856,6 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
         clearTimeout(settleTimer)
     })
   })
-
-  const scrollToBottomAnimated = () => {
-    if (!messageListRef)
-      return
-    cancelScrollAnimation()
-
-    // Bound the chase: a target that grows every frame (active streaming) would
-    // otherwise keep `remaining >= 1` forever and spin the rAF. Once the budget
-    // is spent we hand off to sticky-bottom, which pins the current bottom and
-    // follows further growth via the geometry re-stick / auto-scroll effects.
-    let framesLeft = SCROLL_TO_BOTTOM_MAX_FRAMES
-    const animate = () => {
-      if (!messageListRef) {
-        scrollAnimationId = null
-        anchorRepin.resetDeferredRepin()
-        return
-      }
-      const remaining = distFromBottom(messageListRef)
-      if (remaining < 1 || framesLeft <= 0) {
-        scrollAnimationId = null
-        // The natural end lands at the bottom (stickToBottom), absorbing any shift the
-        // re-pin deferred during the animation -- so drop the deferred flag.
-        anchorRepin.resetDeferredRepin()
-        stickToBottom()
-        return
-      }
-      framesLeft--
-      const step = remaining > 48 ? remaining * 0.5 : remaining * 0.4
-      // Mark each frame's write as programmatic so its echoing scroll event is
-      // recognized as ours -- not processed by handleScroll as a user gesture
-      // (which would capture an anchor, infer a direction, and dispatch edge
-      // pagination on every animation frame).
-      writeScrollTopProgrammatically(readLogicalScrollTop(messageListRef) + Math.ceil(step), 'scroll-bottom-animation')
-      scrollAnimationId = requestAnimationFrame(animate)
-    }
-
-    scrollAnimationId = requestAnimationFrame(animate)
-  }
-
-  const jumpToBottom = () => {
-    // Cancel any in-flight animated scroll first (like forceScrollToBottom /
-    // scrollToBottomAnimated do) so the next animation frame can't keep chasing the
-    // bottom from a stale position after this synchronous pin.
-    cancelScrollAnimation()
-    stickToBottom()
-  }
-
-  // The floating scroll-to-bottom button's jump. While windowed away from the live
-  // tail (hasNewerMessages) the loaded bottom isn't the real tail, so jump to the
-  // latest page; otherwise the tail is in the window and a smooth animated scroll
-  // suffices. Kept here, where the windowing state lives, rather than branched in the
-  // view.
-  const scrollToBottom = () => {
-    if (hasNewerMessages())
-      forceScrollToBottom()
-    else
-      scrollToBottomAnimated()
-  }
 
   // The public API's page-scroll (the shell's focus-hotkey path in TileRenderer). The
   // container's own onKeyDown wrapper releases a toggle row-top hold before paging; give

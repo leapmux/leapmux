@@ -2,7 +2,7 @@ import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { AgentProvider, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/proto/leapmux/v1/agent_pb'
-import { clearSettingsLabelCache, getCachedSettingsGroupLabel, getCachedSettingsLabel, updateSettingsLabelCache } from './settingsLabelCache'
+import { clearSettingsLabelCache, getCachedSettingsGroupLabel, getCachedSettingsLabel, settingsLabelCacheRevision, updateSettingsLabelCache } from './settingsLabelCache'
 
 const CLAUDE = AgentProvider.CLAUDE_CODE
 const CURSOR = AgentProvider.CURSOR
@@ -17,6 +17,19 @@ function group(id: string, label: string, options: Array<[string, string]>): Ava
 }
 
 describe('settingsLabelCache', () => {
+  it('bumps its revision only when display metadata changes', () => {
+    clearSettingsLabelCache()
+    const before = settingsLabelCacheRevision()
+    const groups = [group('model', 'Model', [['sonnet', 'Sonnet']])]
+
+    updateSettingsLabelCache(CLAUDE, groups)
+    const changed = settingsLabelCacheRevision()
+    expect(changed).toBeGreaterThan(before)
+
+    updateSettingsLabelCache(CLAUDE, groups)
+    expect(settingsLabelCacheRevision()).toBe(changed)
+  })
+
   beforeEach(() => clearSettingsLabelCache())
 
   it('caches the group label and each option label by id', () => {

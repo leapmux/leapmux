@@ -102,18 +102,19 @@ func TestPersistSubagentReportResolvesTheChildAndDeduplicatesDurably(t *testing.
 	svc, sink := setupRootSink(t, "root-report")
 	childID, err := sink.EnsureChildAgent("spawn-1", "row-1", "Reviewer")
 	require.NoError(t, err)
-	write := agent.SubagentReportWrite{
-		ReportID: "report-1",
-		RowKey:   "row-1",
-		Target:   agent.SubagentReportChildTranscript,
-		Report:   agent.SubagentReport{Text: "Report"},
+	write := agent.ChildSubagentReportWrite{
+		RowKey: "row-1",
+		Write: agent.SubagentReportWrite{
+			ReportID: "report-1",
+			Report:   agent.SubagentReport{Text: "Report"},
+		},
 	}
-	stored, err := sink.PersistSubagentReport(write)
+	stored, err := sink.PersistChildSubagentReport(write)
 	require.NoError(t, err)
 	assert.True(t, stored)
 
 	secondSink := svc.Output.NewSink("root-report", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-	stored, err = secondSink.PersistSubagentReport(write)
+	stored, err = secondSink.PersistChildSubagentReport(write)
 	require.NoError(t, err)
 	assert.False(t, stored, "a new sink still reads the database uniqueness rule")
 
@@ -180,11 +181,12 @@ func TestPersistSubagentReportDeduplicatesConcurrentWriters(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-concurrent-report")
 	childID, err := sink.EnsureChildAgent("spawn-1", "row-1", "Reviewer")
 	require.NoError(t, err)
-	write := agent.SubagentReportWrite{
-		ReportID: "report-1",
-		RowKey:   "row-1",
-		Target:   agent.SubagentReportChildTranscript,
-		Report:   agent.SubagentReport{Text: "Report"},
+	write := agent.ChildSubagentReportWrite{
+		RowKey: "row-1",
+		Write: agent.SubagentReportWrite{
+			ReportID: "report-1",
+			Report:   agent.SubagentReport{Text: "Report"},
+		},
 	}
 
 	var wg sync.WaitGroup
@@ -194,7 +196,7 @@ func TestPersistSubagentReportDeduplicatesConcurrentWriters(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			wrote, writeErr := sink.PersistSubagentReport(write)
+			wrote, writeErr := sink.PersistChildSubagentReport(write)
 			if writeErr != nil {
 				errs <- writeErr
 				return

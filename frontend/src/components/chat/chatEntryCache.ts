@@ -7,6 +7,7 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageRevision, MessageSpanIdentity } from '~/lib/messageSpan'
 import { createMemo } from 'solid-js'
 import { messageSpanIdentity } from '~/lib/messageSpan'
+import { settingsLabelCacheRevision } from '~/lib/settingsLabelCache'
 import { shallowEqual } from '~/lib/shallowEqual'
 import { rowRevisionKey } from './chatRevisionKey'
 import { buildContentKey, buildHeightKey } from './chatRowGeometry'
@@ -43,6 +44,8 @@ export interface EntryFreshness {
   revisionKey: string
   /** Whether these messages were a SUBAGENT's own transcript at classify time. */
   isChildTranscript: boolean
+  /** Display-label catalog version used by settings notification entries. */
+  settingsLabelRevision: number
 }
 
 /**
@@ -81,6 +84,7 @@ function contentKeyInputsOf(entry: ClassifiedEntry): ContentKeyInputs {
   return {
     revisionKey: entry.freshness.revisionKey,
     isChildTranscript: entry.freshness.isChildTranscript,
+    settingsLabelRevision: entry.freshness.settingsLabelRevision,
   }
 }
 
@@ -192,6 +196,7 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
         ...(result !== undefined ? { result } : {}),
       }),
       isChildTranscript: deps.isChildTranscript?.() ?? false,
+      settingsLabelRevision: settingsLabelCacheRevision(),
     }
   }
   /**

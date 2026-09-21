@@ -2,14 +2,11 @@ import type { JSX } from 'solid-js'
 import type { CommandLanguage } from '../model/tools/execute'
 import type { ToolResultRenderContext } from '../renderContext'
 import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
+import { joinClassNames } from '~/lib/classNames'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT } from '../chatHeightShared'
 import { CommandHighlightHtml } from '../syntaxHighlight'
 import { commandInputCollapsed, commandInputCollapsedFade, toolInputSummary, toolResultContentAnsi } from '../toolStyles.css'
-
-function joinClasses(...classes: Array<string | false | null | undefined>): string {
-  return classes.filter(Boolean).join(' ')
-}
 
 function commandInputOverflowsCollapsedRows(el: HTMLElement): boolean {
   return el.scrollHeight > el.clientHeight + 1
@@ -32,6 +29,7 @@ function scheduleOverflowMeasure(measure: () => void): () => void {
 export function useCollapsedSummaryOverflow(props: {
   collapsed: () => boolean
   content: () => unknown
+  forcedOverflow?: () => boolean
   onOverflowChange?: (overflowing: boolean) => void
 }): {
   overflowing: () => boolean
@@ -61,13 +59,14 @@ export function useCollapsedSummaryOverflow(props: {
   const measureOverflow = (): void => {
     if (!element || !props.collapsed())
       return
-    setOverflowingState(commandInputOverflowsCollapsedRows(element))
+    setOverflowingState((props.forcedOverflow?.() ?? false) || commandInputOverflowsCollapsedRows(element))
   }
 
   createEffect(() => {
     // Track the content and collapsed state. The frame read measures the completed
     // layout after tokenization or list rendering changes the child nodes.
     props.content()
+    props.forcedOverflow?.()
     if (!props.collapsed())
       return
     const cancel = scheduleOverflowMeasure(measureOverflow)
@@ -109,7 +108,7 @@ export function CommandInputSummary(props: {
   return (
     <CommandHighlightHtml
       {...(props.language !== undefined ? { language: props.language } : {})}
-      class={joinClasses(toolInputSummary, props.collapsed && commandInputCollapsed, props.collapsed && overflow.overflowing() && commandInputCollapsedFade)}
+      class={joinClassNames(toolInputSummary, props.collapsed && commandInputCollapsed, props.collapsed && overflow.overflowing() && commandInputCollapsedFade)}
       code={displayCommand()}
       {...(props.context !== undefined ? { context: props.context } : {})}
       {...(props.collapsed !== undefined

@@ -4,7 +4,7 @@ import { ZCODE_EVENT } from '~/generated/contracts/zcode-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isNotificationThreadWrapper } from '../../messageUtils'
-import { classifyNotifications } from '../../notificationClassification'
+import { notificationClassifierFor } from '../../notificationClassification'
 import { zcodeNotificationEntry } from './extractors/notification'
 import { zcodePlanText } from './extractors/plan'
 import { zcodeToolSpanRole } from './extractors/toolCommon'
@@ -63,8 +63,7 @@ const ZCODE_HIDDEN_TYPES = new Set<string>([
 export function classifyZCodeMessage(input: ClassificationInput): MessageCategory {
   const parent = input.parentObject
   const wrapper = input.wrapper
-  const notification = (messages: readonly unknown[], empty: 'notification' | 'hidden' = 'notification'): MessageCategory =>
-    classifyNotifications(messages, input.agentProvider, zcodeNotificationEntry, empty)
+  const notification = notificationClassifierFor(input.agentProvider, zcodeNotificationEntry)
 
   // The empty-wrapper check runs FIRST so the type guard below stays the only
   // narrowing on `wrapper`: it narrows the false branch to null, which would make a

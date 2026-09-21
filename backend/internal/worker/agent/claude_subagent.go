@@ -954,7 +954,11 @@ func (a *ClaudeCodeAgent) persistClaudePeerHandbackResult(env *messageEnvelope) 
 	if env.Origin.Flagged {
 		status = "flagged"
 	}
-	reportID := subagentReportContentID("claude-peer", env.Origin.SenderTaskID, text)
+	senderTaskID := strings.TrimSpace(env.Origin.SenderTaskID)
+	reportID := subagentReportContentID("claude-peer", senderTaskID, text)
+	if senderTaskID != "" {
+		reportID = "claude-peer:" + senderTaskID
+	}
 	if found {
 		reportID = pending.handbackToolUseID
 	}

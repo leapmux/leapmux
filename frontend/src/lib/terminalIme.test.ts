@@ -26,7 +26,7 @@ interface Harness {
 
 let harnesses: Harness[] = []
 
-function createHarness(options?: { kittyKeyboard?: boolean }): Harness {
+function createHarness(options?: { kittyKeyboard?: boolean, beforeImeAttach?: (textarea: HTMLTextAreaElement) => void }): Harness {
   const container = document.createElement('div')
   document.body.appendChild(container)
 
@@ -36,6 +36,7 @@ function createHarness(options?: { kittyKeyboard?: boolean }): Harness {
     ...(options?.kittyKeyboard ? { vtExtensions: { kittyKeyboard: true } } : {}),
   })
   terminal.open(container)
+  options?.beforeImeAttach?.(terminal.textarea!)
 
   const sent: string[] = []
   const fromXterm: string[] = []
@@ -578,6 +579,20 @@ describe('attachTerminalIme', () => {
 
     expect(h.fromXterm).toEqual(['\x1B[97;;97u'])
     expect(h.sent).toEqual([])
+  })
+
+  it('does not treat an unrelated prevented key as a CSI-u emission', () => {
+    const h = createHarness({
+      beforeImeAttach: (textarea) => {
+        textarea.addEventListener('keydown', event => event.preventDefault(), { capture: true })
+      },
+    })
+
+    keydown(h.textarea, { key: 'C', code: 'KeyC', keyCode: 67 })
+    input(h.textarea, 'insertText', 'C')
+
+    expect(h.fromXterm).toEqual([])
+    expect(h.sent).toEqual(['C'])
   })
 
   it('leaves capital letters to xterm, which defers them to keypress', () => {
