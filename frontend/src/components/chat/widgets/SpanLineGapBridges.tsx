@@ -83,6 +83,7 @@ export const SpanLineGapBridges: Component<SpanLineGapBridgesProps> = props => (
                   <div
                     class={`${spanGapBridge} ${spanColorClassFor(entry.parsedSpanLines[col]?.color)}`}
                     style={{ left: `${spanColumnCenterX(col) - LINE_THICKNESS / 2}px` }}
+                    data-span-gap-bridge-segment={col}
                   />
                 </Show>
               )}

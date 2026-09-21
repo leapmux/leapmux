@@ -28,7 +28,9 @@ describe('SpanLineGapBridges', () => {
       />
     ))
     expect(container.querySelector('[data-span-gap-bridges-for="a"]')).toBeNull()
-    expect(container.querySelector('[data-span-gap-bridges-for="b"]')).not.toBeNull()
+    const bridge = container.querySelector('[data-span-gap-bridges-for="b"]')
+    expect(bridge).not.toBeNull()
+    expect(bridge?.firstElementChild).toHaveAttribute('data-span-gap-bridge-segment', '0')
   })
 
   it('hides a row bridge exactly when hiddenOf(id) is true (the skeleton case)', () => {

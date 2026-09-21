@@ -266,6 +266,9 @@ globalStyle(`${toolUseHeader} .${toolHeaderActions}`, {
 // `TOOL_BODY_INDENT + LINE_THICKNESS + space-3` (19) and the header's
 // `iconSize.md + space-1` (20) so summary text aligns with title text.
 export const toolBodyContent = style({
+  // Keep child margins inside this line-bearing box. The gap bridge starts at
+  // the row bottom, so a collapsed bottom margin leaves an unpainted segment.
+  display: 'flow-root',
   marginLeft: `${TOOL_BODY_INDENT}px`,
   paddingLeft: 'calc(var(--space-3) + 1px)',
   paddingRight: 'var(--space-3)',

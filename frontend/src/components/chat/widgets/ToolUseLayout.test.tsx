@@ -111,6 +111,7 @@ describe('ToolUseLayout', () => {
     // Summary should be inside the toolBodyContent wrapper (bordered area)
     const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
     expect(bodyWrapper).toBeInTheDocument()
+    expect(bodyWrapper).toHaveAttribute('data-span-body-line')
     expect(bodyWrapper!).toHaveTextContent('Summary text')
   })
 
@@ -215,6 +216,7 @@ describe('ToolUseLayout', () => {
     const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
     expect(bodyWrapper).toBeInTheDocument()
     expect(bodyWrapper?.className).not.toMatch(new RegExp(toolBodyBorder))
+    expect(bodyWrapper).not.toHaveAttribute('data-span-body-line')
   })
 
   it('bordered={true} layers the visible border on top of the indent', () => {
@@ -236,6 +238,7 @@ describe('ToolUseLayout', () => {
     const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
     expect(bodyWrapper).toBeInTheDocument()
     expect(bodyWrapper?.className).toMatch(new RegExp(toolBodyBorder))
+    expect(bodyWrapper).toHaveAttribute('data-span-body-line')
   })
 
   it('renderIcon overrides the lucide icon', () => {

@@ -25,6 +25,8 @@ type FixtureMessage = {
   metadata?: unknown
   completion?: MessageCompletion
   markType?: MarkType
+  spanColor?: number
+  spanLines?: Array<Record<string, unknown> | null>
 } & ({ content: unknown } | { rawContent: Uint8Array })
 
 const sqlString = (value: string) => `'${value.replaceAll('\'', '\'\'')}'`
@@ -35,10 +37,11 @@ const blob = (value: unknown) => byteBlob(Buffer.from(JSON.stringify(value), 'ut
 async function seedMessages(database: string, agentId: string, messages: FixtureMessage[], permission?: Record<string, unknown>, controlSourceId?: string): Promise<bigint[]> {
   const agent = sqlString(agentId)
   const inserts = messages.map(message => `INSERT INTO messages
-    (id, agent_id, seq, source, content, content_compression, agent_provider, span_id, span_type, supplemental_content, supplemental_content_compression, supplemental_revision, completion, agent_session_id, mark_type)
+    (id, agent_id, seq, source, content, content_compression, agent_provider, span_id, span_type, span_color, span_lines, supplemental_content, supplemental_content_compression, supplemental_revision, completion, agent_session_id, mark_type)
     VALUES (${sqlString(`${agentId}-${message.id}`)}, ${agent},
       (SELECT message_seq_hwm + 1 FROM agents WHERE id = ${agent}), ${MessageSource.AGENT},
       ${'rawContent' in message ? byteBlob(message.rawContent) : blob(message.content)}, 1, ${message.provider}, ${sqlString(message.spanId ?? '')}, ${sqlString(message.spanType ?? '')},
+      ${message.spanColor ?? 0}, ${sqlString(JSON.stringify(message.spanLines ?? []))},
       ${message.supplemental || message.metadata ? blob({ provider: message.supplemental, metadata: message.metadata }) : 'X\'\''}, 1, ${message.supplemental || message.metadata ? 1 : 0}, ${message.completion ?? MessageCompletion.UNSPECIFIED}, ${sqlString(message.agentSessionId ?? '')}, ${message.markType ?? MarkType.UNSPECIFIED}) RETURNING seq;`)
   if (permission) {
     const source = controlSourceId ? `(SELECT seq FROM messages WHERE agent_id=${agent} AND id=${sqlString(`${agentId}-${controlSourceId}`)})` : '0'
@@ -974,6 +977,97 @@ test.describe('provider tool rendering', () => {
     await expect(row.locator('pre')).toHaveCount(0)
     await row.hover()
     await expect(row.getByRole('button', { name: 'Copy', exact: true })).toHaveCount(0)
+  })
+
+  test('keeps a metadata-bearing Codex command rail continuous through its result', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
+    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-command-rail-'), {
+      agentProvider: AgentProvider.CODEX,
+      ...realAgentOpenOptions(realAgentSettings(AgentProvider.CODEX)),
+    })
+    const spanId = 'command-rail'
+    const resultId = `${agentId}-command-rail-result`
+    const sharedItem = {
+      id: spanId,
+      type: 'commandExecution',
+      command: 'printf command-rail',
+      cwd: '/workspace',
+      processId: '123',
+    }
+    const [requestSeq, resultSeq] = await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [
+      {
+        id: 'command-rail-request',
+        provider: AgentProvider.CODEX,
+        spanId,
+        spanType: 'commandExecution',
+        spanColor: 1,
+        spanLines: [],
+        content: { item: { ...sharedItem, status: 'inProgress' } },
+      },
+      {
+        id: 'command-rail-result',
+        provider: AgentProvider.CODEX,
+        spanId,
+        spanType: 'commandExecution',
+        spanColor: 1,
+        spanLines: [{ span_id: spanId, color: 1, type: 'connector_end' }],
+        content: { item: { ...sharedItem, status: 'completed', aggregatedOutput: 'command rail output', exitCode: 0 } },
+      },
+    ])
+
+    await page.reload()
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const requestRow = page.locator(`[data-seq="${requestSeq}"]`).filter({ visible: true })
+    const resultRow = page.locator(`[data-seq="${resultSeq}"]`).filter({ visible: true })
+    const requestLine = requestRow.locator('[data-span-body-line]')
+    const bridge = page.locator(`[data-span-gap-bridges-for="${resultId}"] [data-span-gap-bridge-segment="0"]`)
+    const responseLine = resultRow.locator('[data-span-line-column="0"]')
+    await expect(requestLine).toBeVisible()
+    await expect(bridge).toBeVisible()
+    await expect(responseLine).toBeVisible()
+
+    const geometry = await readAttached(
+      page.locator(`[data-seq="${requestSeq}"], [data-seq="${resultSeq}"], [data-span-gap-bridges-for="${resultId}"]`),
+      'the Codex command rail seam',
+      (matches) => {
+        const painting = matches.filter((candidate) => {
+          const style = getComputedStyle(candidate)
+          return candidate.isConnected && style.visibility !== 'hidden' && style.display !== 'none'
+        })
+        const rows = painting.filter(candidate => candidate.hasAttribute('data-seq'))
+        const request = rows[0]
+        const result = rows[1]
+        const anchor = painting.find(candidate => candidate.hasAttribute('data-span-gap-bridges-for'))
+        const body = request?.querySelector<HTMLElement>('[data-span-body-line]')
+        const gap = anchor?.querySelector<HTMLElement>('[data-span-gap-bridge-segment="0"]')
+        const response = result?.querySelector<HTMLElement>('[data-span-line-column="0"]')
+        if (!request || !result || !body || !gap || !response || !gap.isConnected)
+          return null
+        const requestBox = request.getBoundingClientRect()
+        const resultBox = result.getBoundingClientRect()
+        const bodyBox = body.getBoundingClientRect()
+        const gapBox = gap.getBoundingClientRect()
+        const responseBox = response.getBoundingClientRect()
+        const borderWidth = Number.parseFloat(getComputedStyle(body).borderLeftWidth)
+        return {
+          requestBottom: requestBox.bottom,
+          requestLineBottom: bodyBox.bottom,
+          requestLineX: bodyBox.left + borderWidth / 2,
+          bridgeTop: gapBox.top,
+          bridgeBottom: gapBox.bottom,
+          bridgeX: gapBox.left + gapBox.width / 2,
+          resultTop: resultBox.top,
+          responseLineX: responseBox.left + responseBox.width / 2,
+        }
+      },
+    )
+
+    expect(geometry.requestLineBottom).toBeCloseTo(geometry.requestBottom, 5)
+    expect(geometry.bridgeTop).toBeCloseTo(geometry.requestBottom, 5)
+    // One pixel is the maximum seam allowance. This test does not read the
+    // production constant, so a future increase cannot silently weaken it.
+    expect(geometry.bridgeBottom).toBeCloseTo(geometry.resultTop + 1, 5)
+    expect(geometry.requestLineX).toBeCloseTo(geometry.bridgeX, 5)
+    expect(geometry.bridgeX).toBeCloseTo(geometry.responseLineX, 5)
   })
 
   test('keeps expanded large command and Markdown bodies responsive', async ({ page, context, authenticatedEmptyWorkspace, leapmuxServer }) => {
