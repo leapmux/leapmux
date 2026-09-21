@@ -2,7 +2,7 @@ import { globalStyle } from '@vanilla-extract/css'
 import { blendedTint, CODE_BORDER_TINT_PERCENT } from '~/styles/codePalette'
 
 /**
- * Which of the code palette's two fields a surface paints.
+ * Which field a code surface paints.
  *
  *   - `page` -- the syntax theme's own background, `--code-background`. What a
  *     surface wants when it is already delimited by something other than its
@@ -15,11 +15,13 @@ import { blendedTint, CODE_BORDER_TINT_PERCENT } from '~/styles/codePalette'
  *     and the page it sits on is the same colour whenever the syntax theme and
  *     the UI theme resolve to the same palette -- which is the default, and is
  *     when the block used to disappear entirely.
+ *   - `transparent` -- no field. An inline command summary uses its host's
+ *     background because another rectangle around bare text is visual noise.
  *
  * Stated at every call site rather than defaulted, because a surface that takes
  * the wrong one is wrong in a way that only shows on some themes.
  */
-export type CodeSurfaceKind = 'block' | 'page'
+export type CodeSurfaceKind = 'block' | 'page' | 'transparent'
 
 /**
  * Make `selector` a CODE SURFACE: an element that wears the syntax theme's
@@ -44,27 +46,29 @@ export type CodeSurfaceKind = 'block' | 'page'
  * the code page, so a child that fills "the background" stays flush with the
  * code around it. The hunk separator between two diff hunks is that child.
  *
- * The field is OPAQUE either way. A translucent tint cannot survive a polarity
- * flip: painted at a percentage of the foreground it blends onto whatever it
- * lands on, which on a light page stays a light field no matter what the syntax
- * theme is.
+ * Page and block surfaces paint their configured fields. The transparent
+ * command surface keeps the syntax colours while it shows its host through.
  */
+const surfaceBackground = {
+  block: 'var(--code-block-background)',
+  page: 'var(--code-background)',
+  transparent: 'transparent',
+} as const satisfies Record<CodeSurfaceKind, string>
+
 function codeSurfaceTheme(selector: string, kind: CodeSurfaceKind): void {
   const block = kind === 'block'
+  const transparent = kind === 'transparent'
   globalStyle(selector, {
-    backgroundColor: block ? 'var(--code-block-background)' : 'var(--code-background)',
+    backgroundColor: surfaceBackground[kind],
     color: 'var(--code-foreground)',
     // So `light-dark()` and any UA-painted widget inside the surface answer to
     // the SYNTAX variant's polarity, not the page's.
     colorScheme: 'var(--code-color-scheme)',
     vars: {
-      // `transparent` on a BLOCK, not the field again. A block's field is
-      // normally a translucent tint, so a child that fills "the background"
-      // would composite the tint a second time and paint itself a step darker
-      // than the block it sits in. Showing the block through is what "the
-      // background" means inside one. A page surface can name its own field,
-      // because that one is opaque -- the diff's hunk separator does.
-      '--background': block ? 'transparent' : 'var(--code-background)',
+      // A block's field is a translucent tint, so a child that fills the
+      // background must show it through instead of tinting it twice. A
+      // transparent command surface follows the same rule for its host.
+      '--background': block || transparent ? 'transparent' : 'var(--code-background)',
       '--foreground': 'var(--code-foreground)',
       '--card': 'var(--code-card)',
       // Inside a BLOCK, a border steps from the field behind it rather than

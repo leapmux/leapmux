@@ -189,9 +189,11 @@ globalStyle(`${toolInputSummary} pre.shiki code`, {
   fontFamily: 'inherit',
 })
 
-codeSurface(toolInputSummary, 'page', [
-  { suffix: ' pre.shiki span', bg: true },
-  { suffix: ' span[data-shiki-token]', bg: true },
+// Command summaries sit inline in a tool row or Tooltip. Keep their syntax
+// colours, but show the host surface through instead of painting a second field.
+codeSurface(toolInputSummary, 'transparent', [
+  { suffix: ' pre.shiki span' },
+  { suffix: ' span[data-shiki-token]' },
 ])
 
 // Tool input detail text (natural language: descriptions, URLs, queries)

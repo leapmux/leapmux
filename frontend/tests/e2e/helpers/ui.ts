@@ -29,6 +29,8 @@ export async function expectAnyVisible(...locators: Locator[]) {
 /**
  * Check the composed styles for single-line label clipping in a real browser.
  * The vanilla-extract composition supplies multiple classes and rules. jsdom does not load their stylesheets.
+ * Check the two overflow axes also. Horizontal clipping must not cut off the
+ * font ink above or below a compact line box.
  * Check min-width also. A flex item with min-width:auto retains its text width and prevents ellipsis.
  * Pair this with expectClipsLongText to verify the resulting layout.
  * Pass the label itself. A Tooltip wrapper contains the same text but uses display:contents and reports text-overflow:clip.
@@ -36,7 +38,8 @@ export async function expectAnyVisible(...locators: Locator[]) {
 export async function expectClipsToOneLine(label: Locator) {
   await expect(label).toHaveCSS('white-space', 'nowrap')
   await expect(label).toHaveCSS('text-overflow', 'ellipsis')
-  await expect(label).toHaveCSS('overflow-x', 'hidden')
+  await expect(label).toHaveCSS('overflow-x', 'clip')
+  await expect(label).toHaveCSS('overflow-y', 'visible')
   await expect(label).toHaveCSS('min-width', '0px')
 }
 

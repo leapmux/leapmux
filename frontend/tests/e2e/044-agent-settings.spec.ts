@@ -15,6 +15,43 @@ test.describe('Agent Settings', () => {
     await expectSettingsChip(page, 'Default')
   })
 
+  test('keeps descenders visible inside composer chip labels', async ({ authenticatedWorkspace, page }) => {
+    void authenticatedWorkspace
+    await waitForSettingsHydrated(page)
+
+    await expect(page.getByTestId('composer-branch-trigger')).toBeVisible()
+    await expect(page.getByTestId('composer-model-trigger')).toBeVisible()
+
+    const chips = page.locator(
+      '[data-testid="composer-status-bar"] button[data-testid^="composer-"][data-testid$="-trigger"]:visible',
+    )
+    const clippedLabels = await chips.evaluateAll((buttons) => {
+      return buttons.flatMap((button) => {
+        const label = Array.from(button.children).find(child => child instanceof HTMLSpanElement)
+        const chipId = button.getAttribute('data-testid') ?? 'unknown composer chip'
+        if (!label)
+          return [`${chipId}: no direct label span`]
+
+        // Use every Latin descender. A provider value or branch does not
+        // necessarily contain one, but its label must leave room for all four.
+        label.textContent = 'gypq'
+        const labelRect = label.getBoundingClientRect()
+        const range = document.createRange()
+        range.selectNodeContents(label)
+        const textRect = range.getBoundingClientRect()
+        const overflowY = getComputedStyle(label).overflowY
+        const textExceedsLabel = textRect.top < labelRect.top - 0.25
+          || textRect.bottom > labelRect.bottom + 0.25
+
+        return textExceedsLabel && overflowY !== 'visible'
+          ? [`${chipId}: text ${textRect.top}-${textRect.bottom}, label ${labelRect.top}-${labelRect.bottom}, overflow-y ${overflowY}`]
+          : []
+      })
+    })
+
+    expect(clippedLabels, 'composer chip labels clip their font ink').toEqual([])
+  })
+
   test('permission shortcuts use the Claude modes that the session offers', async ({ authenticatedWorkspace, page }) => {
     void authenticatedWorkspace
     await waitForSettingsHydrated(page)

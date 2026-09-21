@@ -1,7 +1,8 @@
 import type { JSX } from 'solid-js'
 import type { ToolMetadataEntry } from '../../model/toolMetadata'
 import type { CommandAction, CommandLanguage, ExecuteRequest } from '../../model/tools/execute'
-import type { ToolKindRenderer, ToolRowView } from './renderer'
+import type { ToolResultRenderContext } from '../../renderContext'
+import type { ParsedCall, ToolKindRenderer, ToolRowView } from './renderer'
 import Terminal from 'lucide-solid/icons/terminal'
 import { For, Show } from 'solid-js'
 import { Tooltip } from '~/components/common/Tooltip'
@@ -16,14 +17,14 @@ import { ToolHeaderRow } from '../ToolStatusHeader'
 /** A description long enough to crowd the header is clipped, with the cut marked. */
 const DESCRIPTION_LIMIT = 100
 
-function actionPath(path: string, view: ToolRowView): string {
-  return relativizePath(path, view.context?.workingDir, view.context?.homeDir)
+function actionPath(path: string, context: ToolResultRenderContext | undefined): string {
+  return relativizePath(path, context?.workingDir, context?.homeDir)
 }
 
-function commandActionDescription(action: Exclude<CommandAction, { kind: 'unknown' }>, view: ToolRowView): JSX.Element {
+function commandActionDescription(action: Exclude<CommandAction, { kind: 'unknown' }>, context: ToolResultRenderContext | undefined): JSX.Element {
   switch (action.kind) {
     case 'read': {
-      const path = actionPath(action.path, view) || action.name
+      const path = actionPath(action.path, context) || action.name
       return (
         <>
           <span>Read </span>
@@ -32,7 +33,7 @@ function commandActionDescription(action: Exclude<CommandAction, { kind: 'unknow
       )
     }
     case 'list': {
-      const path = action.path ? actionPath(action.path, view) : ''
+      const path = action.path ? actionPath(action.path, context) : ''
       return (
         <>
           <span>{path ? 'List files in ' : 'List files'}</span>
@@ -41,7 +42,7 @@ function commandActionDescription(action: Exclude<CommandAction, { kind: 'unknow
       )
     }
     case 'search': {
-      const path = action.path ? actionPath(action.path, view) : ''
+      const path = action.path ? actionPath(action.path, context) : ''
       return (
         <>
           <span>{action.query ? 'Search for ' : 'Search'}</span>
@@ -52,6 +53,34 @@ function commandActionDescription(action: Exclude<CommandAction, { kind: 'unknow
       )
     }
   }
+}
+
+function KnownCommandAction(props: {
+  action: Exclude<CommandAction, { kind: 'unknown' }>
+  language: CommandLanguage | undefined
+  context: ToolResultRenderContext | undefined
+  title?: boolean
+}): JSX.Element {
+  return (
+    <Tooltip
+      text={props.action.command}
+      content={(
+        <CommandInputSummary
+          command={props.action.command}
+          {...(props.language !== undefined ? { language: props.language } : {})}
+          {...(props.context !== undefined ? { context: props.context } : {})}
+        />
+      )}
+    >
+      <span
+        class={props.title ? `${toolInputText} ${commandActionLine}` : commandActionLine}
+        data-command-action={props.title ? undefined : props.action.kind}
+        data-testid={props.title ? 'execute-title' : undefined}
+      >
+        {commandActionDescription(props.action, props.context)}
+      </span>
+    </Tooltip>
+  )
 }
 
 function commandActionEntry(action: CommandAction, language: CommandLanguage | undefined, view: ToolRowView): JSX.Element {
@@ -66,22 +95,15 @@ function commandActionEntry(action: CommandAction, language: CommandLanguage | u
       </div>
     )
   }
-  return (
-    <Tooltip
-      text={action.command}
-      content={(
-        <CommandInputSummary
-          command={action.command}
-          {...(language !== undefined ? { language } : {})}
-          {...(view.context !== undefined ? { context: view.context } : {})}
-        />
-      )}
-    >
-      <span class={commandActionLine} data-command-action={action.kind}>
-        {commandActionDescription(action, view)}
-      </span>
-    </Tooltip>
-  )
+  return <KnownCommandAction action={action} language={language} context={view.context} />
+}
+
+/** A single semantic action that can replace the generic execute title. */
+function knownActionForTitle(call: ParsedCall<'execute'>): Exclude<CommandAction, { kind: 'unknown' }> | undefined {
+  if (call.request.description || (call.title && call.title !== 'Run command'))
+    return undefined
+  const action = call.request.actions?.length === 1 ? call.request.actions[0] : undefined
+  return action?.kind === 'unknown' ? undefined : action
 }
 
 function CommandActionSummary(props: {
@@ -138,25 +160,40 @@ export const executeRenderer: ToolKindRenderer<'execute'> = {
   /**
    * What the command was FOR, in the words the agent sent.
    *
-   * The COMMAND is never the title: the summary below states it, and a header that
-   * repeated it would sit above the very line it copies. So a call whose provider
-   * states no description falls to the frame's own title, and then to `Run command`
-   * or `Run commands`. Every provider that receives a description must put it on
-   * `request.description`; a default title on a row that had one means its extractor
-   * dropped it, not that this renderer refused it.
+   * A description wins first. A specific frame title wins next. A generic
+   * `Run command` frame with one known action uses that action's semantic
+   * description, with the raw command in its Tooltip. An unknown action keeps
+   * the generic title and raw-command body. The generic singular or plural
+   * title is the last fallback.
    */
-  title(call) {
+  title(call, context) {
     const description = call.request.description
     const clipped = description !== undefined && description.length > DESCRIPTION_LIMIT
       ? `${description.slice(0, DESCRIPTION_LIMIT)}…`
       : description
+    const frameTitle = call.title === 'Run command' ? undefined : call.title
+    const knownAction = knownActionForTitle(call)
     const defaultTitle = (call.request.actions?.length ?? 0) > 1 ? 'Run commands' : 'Run command'
     // ONE classed span over every branch. `ToolUseLayout` wraps a STRING title in
     // `toolInputText` itself and leaves a JSX title alone, so the bare fragment this
     // used to answer reached the header with no class at all: no monospace face, and
     // none of the one-line clip, which let an unbreakable title wrap the header onto
     // extra rows.
-    return <span class={toolInputText}>{clipped || (call.title ?? defaultTitle)}</span>
+    return (
+      <Show
+        when={knownAction}
+        fallback={<span class={toolInputText} data-testid="execute-title">{clipped || frameTitle || defaultTitle}</span>}
+      >
+        {action => (
+          <KnownCommandAction
+            action={action()}
+            language={call.request.language}
+            context={context}
+            title
+          />
+        )}
+      </Show>
+    )
   },
   summary(call, view) {
     // The command belongs to the rows that state the REQUEST. A result row with
@@ -169,17 +206,19 @@ export const executeRenderer: ToolKindRenderer<'execute'> = {
     // full height, never a second component swapped in beside it.
     return (
       <Show when={!(view.role === 'result' && view.hasRequestRow)}>
-        <Show
-          when={call.request.actions?.length ? call.request.actions : undefined}
-          fallback={<CommandInputSummary command={call.request.command} {...(call.request.language !== undefined ? { language: call.request.language } : {})} {...(view.context !== undefined ? { context: view.context } : {})} collapsed={!view.expanded()} onOverflowChange={view.onSummaryOverflow} />}
-        >
-          {actions => (
-            <CommandActionSummary
-              actions={actions()}
-              {...(call.request.language !== undefined ? { language: call.request.language } : {})}
-              view={view}
-            />
-          )}
+        <Show when={knownActionForTitle(call) === undefined}>
+          <Show
+            when={call.request.actions?.length ? call.request.actions : undefined}
+            fallback={<CommandInputSummary command={call.request.command} {...(call.request.language !== undefined ? { language: call.request.language } : {})} {...(view.context !== undefined ? { context: view.context } : {})} collapsed={!view.expanded()} onOverflowChange={view.onSummaryOverflow} />}
+          >
+            {actions => (
+              <CommandActionSummary
+                actions={actions()}
+                {...(call.request.language !== undefined ? { language: call.request.language } : {})}
+                view={view}
+              />
+            )}
+          </Show>
         </Show>
         <ToolMetadata items={commandMetadata(call.request, view.context?.workingDir, view.context?.homeDir)} />
       </Show>

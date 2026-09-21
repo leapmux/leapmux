@@ -394,6 +394,45 @@ test.describe('Quake-mode terminal', () => {
     expect(alpha).toBeCloseTo(0.5, 2)
   })
 
+  test('keeps the configured opacity while the terminal starts', async ({ page, quakeServer }) => {
+    const { workspaceId } = await openAgentTab(page, quakeServer)
+    await withQuakePref(page, quakeServer, 'quakeBackgroundOpacity', 0.5, workspaceId)
+
+    await page.evaluate(() => {
+      const recordStartupAlpha = () => {
+        const overlay = document.querySelector(
+          '[data-testid="quake-panel"] [data-testid="terminal-startup-overlay"]',
+        )
+        if (!(overlay instanceof HTMLElement))
+          return false
+
+        const canvas = document.createElement('canvas')
+        canvas.width = 1
+        canvas.height = 1
+        const context = canvas.getContext('2d')
+        if (!context)
+          throw new Error('The browser did not supply a 2D canvas context')
+        context.fillStyle = getComputedStyle(overlay).backgroundColor
+        context.fillRect(0, 0, 1, 1)
+        ;(window as any).__quakeStartupOverlayAlpha = context.getImageData(0, 0, 1, 1).data[3]
+        return true
+      }
+
+      ;(window as any).__quakeStartupOverlayAlpha = null
+      const observer = new MutationObserver(() => {
+        if (recordStartupAlpha())
+          observer.disconnect()
+      })
+      observer.observe(document.body, { childList: true, subtree: true })
+    })
+
+    await toggleQuake(page)
+    await expect(panel(page)).toBeInViewport()
+    await expect
+      .poll(() => page.evaluate(() => (window as any).__quakeStartupOverlayAlpha), { timeout: 5000 })
+      .toBe(0)
+  })
+
   test('uses the terminal theme background when the UI theme differs', async ({ page, quakeServer }) => {
     const { workspaceId } = await openAgentTab(page, quakeServer)
     await setInitialBrowserPref(page, quakeServer.adminUserId, 'theme', { name: 'catppuccin', mode: 'light' })

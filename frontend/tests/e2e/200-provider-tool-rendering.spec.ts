@@ -1030,30 +1030,53 @@ test.describe('provider tool rendering', () => {
     })
     const command = '/bin/zsh -lc "sed and rg"'
     const readCommand = 'sed -n \'380,430p\' frontend/tests/e2e/helpers/ui.ts'
-    const [seq] = await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [{
-      id: 'codex-command-actions',
-      provider: AgentProvider.CODEX,
-      spanId: 'codex-command-actions',
-      spanType: 'commandExecution',
-      content: {
-        item: {
-          id: 'codex-command-actions',
-          type: 'commandExecution',
-          status: 'completed',
-          command,
-          cwd: workingDir,
-          processId: '79860',
-          commandActions: [
-            { type: 'read', command: readCommand, name: 'ui.ts', path: join(workingDir, 'frontend/tests/e2e/helpers/ui.ts') },
-            { type: 'search', command: 'rg -n \'loginViaToken\' frontend/tests/e2e', query: 'loginViaToken', path: 'frontend/tests/e2e' },
-            { type: 'unknown', command: 'printf visible-action' },
-          ],
-          aggregatedOutput: '',
-          exitCode: 0,
-          durationMs: 5,
+    const singleActionCommand = 'sed -n \'1,5p\' src/main.ts'
+    const [seq, singleSeq] = await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [
+      {
+        id: 'codex-command-actions',
+        provider: AgentProvider.CODEX,
+        spanId: 'codex-command-actions',
+        spanType: 'commandExecution',
+        content: {
+          item: {
+            id: 'codex-command-actions',
+            type: 'commandExecution',
+            status: 'completed',
+            command,
+            cwd: workingDir,
+            processId: '79860',
+            commandActions: [
+              { type: 'read', command: readCommand, name: 'ui.ts', path: join(workingDir, 'frontend/tests/e2e/helpers/ui.ts') },
+              { type: 'search', command: 'rg -n \'loginViaToken\' frontend/tests/e2e', query: 'loginViaToken', path: 'frontend/tests/e2e' },
+              { type: 'unknown', command: 'printf visible-action' },
+            ],
+            aggregatedOutput: '',
+            exitCode: 0,
+            durationMs: 5,
+          },
         },
       },
-    }])
+      {
+        id: 'codex-single-command-action',
+        provider: AgentProvider.CODEX,
+        spanId: 'codex-single-command-action',
+        spanType: 'commandExecution',
+        content: {
+          item: {
+            id: 'codex-single-command-action',
+            type: 'commandExecution',
+            status: 'completed',
+            command: '/bin/zsh -lc "sed"',
+            commandActions: [
+              { type: 'read', command: singleActionCommand, name: 'main.ts', path: join(workingDir, 'src/main.ts') },
+            ],
+            aggregatedOutput: '',
+            exitCode: 0,
+            durationMs: 5,
+          },
+        },
+      },
+    ])
 
     await page.reload()
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
@@ -1066,6 +1089,8 @@ test.describe('provider tool rendering', () => {
     await expect(row).toContainText(/Process ID:\s*79860/)
     const rawAction = row.locator('[data-command-action="unknown"]')
     await expect(rawAction.locator('[data-shiki-token]').first()).toBeVisible()
+    await expect(rawAction.locator('[data-shiki-token]').first().locator('..'))
+      .toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
     const fontSize = (locator: import('@playwright/test').Locator, label: string) => readAttached(locator, label, (matches) => {
       const element = matches.find(candidate => candidate.isConnected)
       return element ? getComputedStyle(element).fontSize : null
@@ -1077,6 +1102,16 @@ test.describe('provider tool rendering', () => {
     await read.hover()
     const tooltip = page.getByRole('tooltip')
     await expect(tooltip).toHaveText(readCommand)
+    await expect(tooltip.locator('[data-shiki-token]').first()).toBeVisible()
+    await expect(tooltip.locator('[data-shiki-token]').first().locator('..'))
+      .toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+
+    const singleRow = page.locator(`[data-seq="${singleSeq}"]`).filter({ visible: true })
+    const singleTitle = singleRow.getByTestId('execute-title')
+    await expect(singleTitle).toHaveText('Read src/main.ts')
+    await expect(singleRow.locator('[data-command-action]')).toHaveCount(0)
+    await singleTitle.hover()
+    await expect(tooltip).toHaveText(singleActionCommand)
     await expect(tooltip.locator('[data-shiki-token]').first()).toBeVisible()
 
     await row.hover()

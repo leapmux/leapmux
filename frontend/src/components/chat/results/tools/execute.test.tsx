@@ -5,7 +5,7 @@ import { hoverForTooltip } from '~/test-support/clipStub'
 import { classSelector } from '~/test-support/composedClass'
 import { checkKindModule } from '~/test-support/kindTestHarness'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
-import { commandActionCodeText } from '../../toolStyles.css'
+import { commandActionCodeText, toolBodyContent } from '../../toolStyles.css'
 import { ToolMessage } from '../ToolMessage'
 
 // jsdom does not provide ResizeObserver, which the shared layouts observe with.
@@ -113,6 +113,7 @@ describe('execute renderer', () => {
 
     it('removes the bullet when the request contains one action', () => {
       const call = toolCallFixture('execute', {
+        title: 'Inspect source',
         request: {
           command: 'cat a.ts',
           actions: [{ kind: 'read', command: 'cat a.ts', name: 'a.ts', path: '/repo/a.ts' }],
@@ -176,8 +177,10 @@ describe('execute renderer', () => {
  * row headed itself with those two words.
  */
 describe('the execute row header (executeRenderer)', () => {
-  const headerOf = (request: ExecuteRequest, title?: string) =>
-    render(() => <ToolMessage row={toolRow(toolCallFixture('execute', { request, title }))} />).container.textContent ?? ''
+  const headerOf = (request: ExecuteRequest, title?: string) => {
+    const { container } = render(() => <ToolMessage row={toolRow(toolCallFixture('execute', { request, title }))} />)
+    return container.querySelector('[data-testid="execute-title"]')?.textContent ?? ''
+  }
 
   it('states the description the agent sent', () => {
     expect(headerOf({ command: 'ls -la', description: 'List files in current directory' }))
@@ -210,6 +213,53 @@ describe('the execute row header (executeRenderer)', () => {
   it('falls back to the frame title, then to Run command, when the call states no description', () => {
     expect(headerOf({ command: 'ls -la' }, 'Check the tree')).toContain('Check the tree')
     expect(headerOf({ command: 'ls -la' })).toContain('Run command')
+  })
+
+  it('moves one known action description into the title and omits its body copy', () => {
+    vi.useFakeTimers()
+    const command = 'sed -n \'1,5p\' src/main.ts'
+    const call = toolCallFixture('execute', {
+      title: 'Run command',
+      request: {
+        command: '/bin/zsh -lc "sed"',
+        actions: [{ kind: 'read', command, name: 'main.ts', path: '/repo/src/main.ts' }],
+      },
+    })
+    const { container } = render(() => <ToolMessage row={toolRow(call)} context={{ workingDir: '/repo' }} />)
+    const title = container.querySelector('[data-testid="execute-title"]')
+
+    expect(title).toHaveTextContent('Read src/main.ts')
+    expect(container.querySelector('[data-command-action]')).toBeNull()
+    expect(container.querySelector(classSelector(toolBodyContent))).toBeNull()
+    expect(hoverForTooltip(title!)?.textContent).toBe(command)
+  })
+
+  it('keeps a specific frame title and leaves the known action in the body', () => {
+    const call = toolCallFixture('execute', {
+      title: 'Inspect source',
+      request: {
+        command: '/bin/zsh -lc "sed"',
+        actions: [{ kind: 'read', command: 'sed -n \'1,5p\' src/main.ts', name: 'main.ts', path: '/repo/src/main.ts' }],
+      },
+    })
+    const { container } = render(() => <ToolMessage row={toolRow(call)} context={{ workingDir: '/repo' }} />)
+
+    expect(container.querySelector('[data-testid="execute-title"]')).toHaveTextContent('Inspect source')
+    expect(container.querySelector('[data-command-action="read"]')).not.toBeNull()
+  })
+
+  it('keeps an unknown single action under the generic title', () => {
+    const call = toolCallFixture('execute', {
+      title: 'Run command',
+      request: {
+        command: 'printf raw-action',
+        actions: [{ kind: 'unknown', command: 'printf raw-action' }],
+      },
+    })
+    const { container } = render(() => <ToolMessage row={toolRow(call)} />)
+
+    expect(container.querySelector('[data-testid="execute-title"]')).toHaveTextContent('Run command')
+    expect(container.querySelector('[data-command-action="unknown"]')).toHaveTextContent('printf raw-action')
   })
 
   it('uses Run commands when the request contains more than one action', () => {

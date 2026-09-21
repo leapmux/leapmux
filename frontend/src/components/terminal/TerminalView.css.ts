@@ -58,11 +58,12 @@ export const xtermHost = style({
 })
 
 /**
- * "Starting terminal…" overlay layered on top of xterm. Kept visible
- * from tab creation through the first non-whitespace character the
- * shell paints — the backend's READY signal isn't enough because it
- * fires when the PTY is spawned, well before the shell has rendered
- * its prompt.
+ * "Starting terminal…" overlay layered on top of xterm. The overlay stays
+ * visible until the shell paints its first non-whitespace character.
+ *
+ * The overlay inherits the wrapper background. A normal wrapper supplies the
+ * opaque app background. A Quake wrapper supplies transparency, which exposes
+ * the panel's configured terminal background and opacity.
  */
 export const startupOverlay = style({
   position: 'absolute',
@@ -70,7 +71,7 @@ export const startupOverlay = style({
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  backgroundColor: 'var(--background)',
+  backgroundColor: 'inherit',
   color: 'var(--faint-foreground)',
   pointerEvents: 'none',
   zIndex: 1,

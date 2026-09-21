@@ -338,18 +338,19 @@ describe('Codex command actions', () => {
     await waitFor(() => expect(tokenizeAsyncCalls).toHaveBeenCalledWith('bash', 'printf visible-action'))
   })
 
-  it('syntax-highlights a known action command inside its tooltip', async () => {
+  it('puts one known action in the title with a highlighted command tooltip', async () => {
     tokenizeAsyncCalls.mockClear()
     const { container } = renderCodexItem({
       type: 'commandExecution',
       command: 'compound command',
       status: 'inProgress',
       commandActions: [{ type: 'read', command: 'sed -n \'1,5p\' src/main.ts', name: 'main.ts', path: '/repo/src/main.ts' }],
-    })
-    const read = container.querySelector('[data-command-action="read"]')
+    }, { workingDir: '/repo' })
+    const title = container.querySelector('[data-testid="execute-title"]')
 
-    expect(read).not.toBeNull()
-    fireEvent.mouseEnter(read!)
+    expect(title).toHaveTextContent('Read src/main.ts')
+    expect(container.querySelector('[data-command-action]')).toBeNull()
+    fireEvent.mouseEnter(title!)
     await new Promise(resolve => setTimeout(resolve, SHOW_DELAY_MS + 10))
     await waitFor(() => expect(tokenizeAsyncCalls).toHaveBeenCalledWith('bash', 'sed -n \'1,5p\' src/main.ts'))
   })
