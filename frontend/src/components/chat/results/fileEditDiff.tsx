@@ -9,6 +9,7 @@ import { diffStatsFromHunks, DiffView, rawDiffToHunks } from '../diff'
 import { cachedRenderValueForStrings } from '../messageRenderCache'
 import { fileEditNewStr, fileEditOldStr, nonEmptyStructuredPatch } from '../model/fileEditDiff'
 import { toolInputPath, toolInputText, toolResultPrompt } from '../toolStyles.css'
+import { fileEditStats, fileEditTitle } from './fileEditDiff.css'
 
 /**
  * The hunks one file edit draws, computed once per distinct content.
@@ -45,19 +46,24 @@ export function FileEditDiffTitle(props: { source: FileEditDiff, context?: ToolR
   const path = (value: string) => relativizePath(value, props.context?.workingDir, props.context?.homeDir)
   const stats = createMemo(() => diffStatsFromHunks(fileEditDiffHunksCached(props.source, props.context)))
   return (
-    <>
+    <span class={fileEditTitle}>
       <Show when={props.source.previousPath && props.source.previousPath !== props.source.filePath}>
-        <span class={toolInputPath}>
-          {path(props.source.previousPath!)}
+        <>
+          <span class={toolInputPath}>
+            {path(props.source.previousPath!)}
+            {' '}
+            →
+          </span>
           {' '}
-          →
-          {' '}
-        </span>
+        </>
       </Show>
       <span class={toolInputPath}>{path(props.source.filePath)}</span>
-      <Show when={props.source.operation === 'delete'}><span class={toolInputText}> (deleted)</span></Show>
-      <DiffStatsBadge stats={{ ...stats(), untracked: 0 }} class={toolInputText} />
-    </>
+      <Show when={props.source.operation === 'delete'}>
+        {' '}
+        <span class={toolInputText}>(deleted)</span>
+      </Show>
+      <DiffStatsBadge stats={{ ...stats(), untracked: 0 }} class={fileEditStats} />
+    </span>
   )
 }
 

@@ -1,6 +1,50 @@
-import { describe, expect, it } from 'vitest'
+import type { FileEditDiff } from '../../model/fileEditDiff'
+import { render } from '@solidjs/testing-library'
+import { beforeAll, describe, expect, it } from 'vitest'
+import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { TOOL_CALL_STATUSES } from '../../model/toolCallStatus'
+import { ToolMessage } from '../ToolMessage'
 import { fileChangeFailed } from './fileChanges'
+
+// jsdom does not provide ResizeObserver, which the shared tool layout uses.
+beforeAll(() => {
+  globalThis.ResizeObserver ??= class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver
+})
+
+function edit(filePath: string): FileEditDiff {
+  return { filePath, oldStr: 'before\n', newStr: 'after\n' }
+}
+
+function renderEdit(changes: FileEditDiff[]) {
+  const call = toolCallFixture('edit', {
+    request: { changes },
+    result: { changes },
+  })
+  return render(() => <ToolMessage row={toolRow(call)} />)
+}
+
+describe('file change title presentation', () => {
+  it('uses one self-contained title layout for single-file and multi-file statistics', () => {
+    const single = renderEdit([edit('/project/a.ts')])
+    const multiple = renderEdit([edit('/project/a.ts'), edit('/project/b.ts')])
+
+    const singleBadge = single.getByTestId('git-diff-stats')
+    const multipleBadges = multiple.getAllByTestId('git-diff-stats')
+    const title = singleBadge.parentElement
+
+    expect(title?.tagName).toBe('SPAN')
+    expect(title?.className).not.toBe('')
+    expect(multipleBadges).toHaveLength(2)
+    for (const badge of multipleBadges) {
+      expect(badge.parentElement?.tagName).toBe('SPAN')
+      expect(badge.parentElement?.className).toBe(title?.className)
+    }
+  })
+})
 
 describe('fileChangeFailed', () => {
   // The three states where the tool applied nothing, so the file took nothing.
