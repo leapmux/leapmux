@@ -31,7 +31,7 @@ import { retainedOutcome } from '../../registry'
 import { CODEX_INTERNAL_TOOL, CODEX_STATUS } from '../itemVocabulary'
 import { isCodexFinishedStatus } from '../status'
 import { codexAgentCounterpart, codexAgentRequest, codexAgentResults, resolveCodexAgentItem } from './agent'
-import { codexCommandFromItem, codexUnwrapCommand } from './execute'
+import { codexCommandActionsFromItem, codexCommandFromItem, codexUnwrapCommand } from './execute'
 import { codexChangeKind } from './fileChange'
 import { codexGeneratedImage, codexItemPath, codexViewedImage } from './image'
 import { extractItem } from './item'
@@ -437,7 +437,14 @@ export const CODEX_TOOL_READERS: ToolCallSpecReaderTable<CodexToolFacts> = {
   execute: (facts): ToolCallSpecVariant<'execute'> => {
     const command = codexUnwrapCommand(pickString(facts.item, 'command'))
     const cwd = pickString(facts.item, 'cwd') || undefined
-    const request: ExecuteRequest = { command, ...(cwd !== undefined ? { cwd } : {}) }
+    const processId = pickString(facts.item, 'processId') || undefined
+    const actions = codexCommandActionsFromItem(facts.item)
+    const request: ExecuteRequest = {
+      command,
+      ...(cwd !== undefined ? { cwd } : {}),
+      ...(processId !== undefined ? { processId } : {}),
+      ...(actions.length > 0 ? { actions } : {}),
+    }
     // Only a call that ENDED has an output stream to state. Codex sends the exit code
     // and the aggregated output on the same item, so the result is the item itself.
     const source = facts.finished ? codexCommandFromItem(facts.item) : null

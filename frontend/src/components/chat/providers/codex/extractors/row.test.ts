@@ -344,7 +344,22 @@ describe('CODEX_TOOL_READERS', () => {
 
   /** One item for each kind a Codex item takes, carrying the shared spellings beside Codex's own. */
   const CODEX_PROBE: Record<CodexReadKind, Record<string, unknown>> = {
-    execute: { type: CODEX_ITEM.CommandExecution, status: 'completed', command: '/bin/zsh -lc \'ls -1\'', cwd: '/repo', aggregatedOutput: 'a.ts\n', exitCode: 0, durationMs: 40, cmd: 'shared cmd', description: 'shared description' },
+    execute: {
+      type: CODEX_ITEM.CommandExecution,
+      status: 'completed',
+      command: '/bin/zsh -lc \'ls -1\'',
+      cwd: '/repo',
+      processId: 'process-79860',
+      commandActions: [
+        { type: 'read', command: 'sed -n \'1,5p\' src/a.ts', name: 'a.ts', path: '/repo/src/a.ts' },
+        { type: 'search', command: 'rg -n \'needle\' src', query: 'needle', path: 'src' },
+      ],
+      aggregatedOutput: 'a.ts\n',
+      exitCode: 0,
+      durationMs: 40,
+      cmd: 'shared cmd',
+      description: 'shared description',
+    },
     edit: { type: CODEX_ITEM.FileChange, status: 'completed', changes: [{ path: 'src/a.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-old\n+new' }, { path: 'src/b.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-x\n+y' }], filePath: '/shared.ts' },
     write: { type: CODEX_ITEM.FileChange, status: 'completed', changes: [{ path: 'src/new.ts', kind: 'add', diff: 'hello\n' }], filePath: '/shared.ts' },
     delete: { type: CODEX_ITEM.FileChange, status: 'failed', changes: [{ path: 'src/gone.ts', kind: 'delete', diff: 'body\n' }], aggregatedOutput: 'apply_patch: refused', filePath: '/shared.ts' },
@@ -417,13 +432,29 @@ describe('CODEX_TOOL_READERS', () => {
 
   it('unwraps the shell wrapper of a command and reads no shared description', () => {
     const payload = payloadOf('execute', CODEX_PROBE.execute)
-    expect(payload.request).toEqual({ command: 'ls -1', cwd: '/repo' })
+    expect(payload.request).toEqual({
+      command: 'ls -1',
+      cwd: '/repo',
+      processId: 'process-79860',
+      actions: [
+        { kind: 'read', command: 'sed -n \'1,5p\' src/a.ts', name: 'a.ts', path: '/repo/src/a.ts' },
+        { kind: 'search', command: 'rg -n \'needle\' src', query: 'needle', path: 'src' },
+      ],
+    })
     expect(payload.result).toEqual({ commands: [{ output: 'a.ts\n', exitCode: 0, durationMs: 40 }], unresolvedTerminals: [] })
   })
 
   it('states the command a call asked for and no output while it runs', () => {
     const payload = payloadOf('execute', CODEX_PROBE.execute, false)
-    expect(payload.request).toEqual({ command: 'ls -1', cwd: '/repo' })
+    expect(payload.request).toEqual({
+      command: 'ls -1',
+      cwd: '/repo',
+      processId: 'process-79860',
+      actions: [
+        { kind: 'read', command: 'sed -n \'1,5p\' src/a.ts', name: 'a.ts', path: '/repo/src/a.ts' },
+        { kind: 'search', command: 'rg -n \'needle\' src', query: 'needle', path: 'src' },
+      ],
+    })
     expect(payload.result).toBeUndefined()
   })
 

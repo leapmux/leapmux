@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { codexCommandFromItem, codexUnwrapCommand } from './execute'
+import { codexCommandActionsFromItem, codexCommandFromItem, codexUnwrapCommand } from './execute'
 
 describe('codexUnwrapCommand', () => {
   it('strips /bin/zsh -lc shell wrapper', () => {
@@ -61,5 +61,43 @@ describe('codexCommandFromItem', () => {
       status: 'declined',
     })
     expect(source?.exitCode).toBeNull()
+  })
+})
+
+describe('codexCommandActionsFromItem', () => {
+  it('translates every current command action', () => {
+    expect(codexCommandActionsFromItem({
+      commandActions: [
+        { type: 'read', command: 'sed -n \'1,5p\' src/main.ts', name: 'main.ts', path: '/repo/src/main.ts' },
+        { type: 'listFiles', command: 'rg --files src', path: 'src' },
+        { type: 'search', command: 'rg -n \'needle\' src', query: 'needle', path: 'src' },
+        { type: 'unknown', command: 'npm run custom-task' },
+      ],
+    })).toEqual([
+      { kind: 'read', command: 'sed -n \'1,5p\' src/main.ts', name: 'main.ts', path: '/repo/src/main.ts' },
+      { kind: 'list', command: 'rg --files src', path: 'src' },
+      { kind: 'search', command: 'rg -n \'needle\' src', query: 'needle', path: 'src' },
+      { kind: 'unknown', command: 'npm run custom-task' },
+    ])
+  })
+
+  it('keeps nullable properties absent and preserves a future type as unknown', () => {
+    expect(codexCommandActionsFromItem({
+      commandActions: [
+        { type: 'listFiles', command: 'pwd', path: null },
+        { type: 'search', command: 'rg --files', query: null, path: null },
+        { type: 'futureAction', command: 'future --flag', detail: 'new' },
+      ],
+    })).toEqual([
+      { kind: 'list', command: 'pwd' },
+      { kind: 'search', command: 'rg --files' },
+      { kind: 'unknown', command: 'future --flag' },
+    ])
+  })
+
+  it('drops entries without a command and returns no actions for an invalid list', () => {
+    expect(codexCommandActionsFromItem({ commandActions: [null, 'read', {}, { type: 'read', path: '/repo/a.ts' }] })).toEqual([])
+    expect(codexCommandActionsFromItem({ commandActions: 'not-an-array' })).toEqual([])
+    expect(codexCommandActionsFromItem({})).toEqual([])
   })
 })

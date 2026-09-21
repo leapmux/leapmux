@@ -141,6 +141,32 @@ export const commandInputCollapsed = style({
 
 export const commandInputCollapsedFade = style(fadeMaskBottom())
 
+// Semantic command actions share one text color whether they draw as one line or a
+// list. A list keeps the command summary's three-row clip and its native bullets.
+const commandActionSummaryStyle = {
+  color: 'var(--muted-foreground)',
+}
+
+export const commandActionSingle = style(commandActionSummaryStyle)
+
+export const commandActionList = style([commandActionSummaryStyle, {
+  margin: 0,
+  paddingLeft: '1.25rem',
+}])
+
+export const commandActionLine = style({
+  overflowWrap: 'anywhere',
+})
+
+// File paths and search terms must match the syntax-highlighted command size. The
+// generic path and input-code styles set the font family only, so they inherit the
+// larger prose size when they sit inside an action description.
+export const commandActionCodeText = style({
+  ...codeTypography,
+  color: 'var(--foreground)',
+  overflowWrap: 'anywhere',
+})
+
 // Override Shiki's default <pre> styling inside tool input summary (for Bash highlighting)
 globalStyle(`${toolInputSummary} pre.shiki`, {
   margin: 0,

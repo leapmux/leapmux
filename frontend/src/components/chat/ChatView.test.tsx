@@ -1641,7 +1641,7 @@ describe('ChatView', () => {
     expect(screen.queryByText('0 files')).not.toBeInTheDocument()
   })
 
-  it('renders process ID and exit code in completed codex command failures without output', () => {
+  it('renders the process ID and exit code in completed Codex command failures without output', () => {
     const messages = [
       makeCodexCommandMessage({
         id: 'cmd-failed',
@@ -1661,6 +1661,7 @@ describe('ChatView', () => {
     ))
 
     expect(view.container).toHaveTextContent('Error (exit 1)')
+    expect(screen.getByText('Process ID:').parentElement).toHaveTextContent('63628')
   })
 
   it('keeps both codex fileChange start and completed messages in history', () => {

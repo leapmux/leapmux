@@ -28,6 +28,69 @@ function scheduleOverflowMeasure(measure: () => void): () => void {
   return () => clearTimeout(timeout)
 }
 
+/** Measure a summary only while it uses the shared collapsed-row limit. */
+export function useCollapsedSummaryOverflow(props: {
+  collapsed: () => boolean
+  content: () => unknown
+  onOverflowChange?: (overflowing: boolean) => void
+}): {
+  overflowing: () => boolean
+  elementRef: (element: HTMLElement) => void
+} {
+  let element: HTMLElement | undefined
+  const [overflowing, setOverflowing] = createSignal(false)
+
+  // The functional setter reads the previous value without tracking it. A
+  // measurement inside a reactive scope does not make that scope depend on the
+  // signal that it writes.
+  const setOverflowingState = (next: boolean): void => {
+    setOverflowing((previous) => {
+      if (previous !== next)
+        props.onOverflowChange?.(next)
+      return next
+    })
+  }
+
+  /**
+   * Measure the collapsed summary only.
+   *
+   * An expanded summary has no clip to measure. Reporting `false` during expansion
+   * removes the fact that made the row expandable, so the control disappears while
+   * the row stays expanded. Keep the last collapsed result until the row collapses.
+   */
+  const measureOverflow = (): void => {
+    if (!element || !props.collapsed())
+      return
+    setOverflowingState(commandInputOverflowsCollapsedRows(element))
+  }
+
+  createEffect(() => {
+    // Track the content and collapsed state. The frame read measures the completed
+    // layout after tokenization or list rendering changes the child nodes.
+    props.content()
+    if (!props.collapsed())
+      return
+    const cancel = scheduleOverflowMeasure(measureOverflow)
+    onCleanup(cancel)
+  })
+
+  createEffect(() => {
+    if (!element || !props.collapsed() || typeof ResizeObserver === 'undefined')
+      return
+    const observer = createRafResizeObserver(() => measureOverflow())
+    observer?.observe(element)
+    onCleanup(() => observer?.disconnect())
+  })
+
+  return {
+    overflowing,
+    elementRef: (next) => {
+      element = next
+      measureOverflow()
+    },
+  }
+}
+
 /** Collapsed command summary: full text, clipped to three visual rows. */
 export function CommandInputSummary(props: {
   command: string
@@ -36,70 +99,23 @@ export function CommandInputSummary(props: {
   collapsed?: boolean
   onOverflowChange?: (overflowing: boolean) => void
 }): JSX.Element {
-  let element: HTMLDivElement | undefined
-  const [overflowing, setOverflowing] = createSignal(false)
   const displayCommand = createMemo(() => props.collapsed ? collapsedCommandSummaryText(props.command) : props.command)
-
-  // The functional setter form reads the previous value WITHOUT tracking it, so a
-  // measurement that runs inside a reactive scope -- `elementRef` does -- cannot make
-  // that scope depend on the signal it writes.
-  const setOverflowingState = (next: boolean): void => {
-    setOverflowing((prev) => {
-      if (prev !== next)
-        props.onOverflowChange?.(next)
-      return next
-    })
-  }
-
-  /**
-   * Measure the COLLAPSED summary, and only the collapsed one.
-   *
-   * An expanded summary has no clip to measure, and reporting `false` for it destroyed
-   * the fact that made the row expandable in the first place. `ToolMessage` keeps this
-   * answer in `summaryOverflows` and reads it back as `expandable`, so the chevron
-   * disappeared the moment a reader used it: the row stayed at full height with no way
-   * to collapse it again. The last collapsed answer is the one the header needs, so an
-   * expanded row leaves it alone.
-   */
-  const measureOverflow = (): void => {
-    if (!element || !props.collapsed)
-      return
-    setOverflowingState(commandInputOverflowsCollapsedRows(element))
-  }
-
-  createEffect(() => {
-    // Track content and collapsed state; tokenization may swap text nodes for spans,
-    // but the row height should stay stable. The frame read catches the post-render
-    // layout and avoids applying the fade to summaries that fit in three rows.
-    const command = displayCommand()
-    if (!props.collapsed)
-      return command
-    const cancel = scheduleOverflowMeasure(measureOverflow)
-    onCleanup(cancel)
-    return command
-  })
-
-  createEffect(() => {
-    if (!element || !props.collapsed || typeof ResizeObserver === 'undefined')
-      return
-    const observer = createRafResizeObserver(() => measureOverflow())
-    observer?.observe(element)
-    onCleanup(() => observer?.disconnect())
+  const overflow = useCollapsedSummaryOverflow({
+    collapsed: () => props.collapsed === true,
+    content: displayCommand,
+    onOverflowChange: value => props.onOverflowChange?.(value),
   })
 
   return (
     <CommandHighlightHtml
       {...(props.language !== undefined ? { language: props.language } : {})}
-      class={joinClasses(toolInputSummary, props.collapsed && commandInputCollapsed, props.collapsed && overflowing() && commandInputCollapsedFade)}
+      class={joinClasses(toolInputSummary, props.collapsed && commandInputCollapsed, props.collapsed && overflow.overflowing() && commandInputCollapsedFade)}
       code={displayCommand()}
       {...(props.context !== undefined ? { context: props.context } : {})}
       {...(props.collapsed !== undefined
-        ? { dataCommandInputCollapsed: props.collapsed, dataCommandInputOverflowing: props.collapsed && overflowing() }
+        ? { dataCommandInputCollapsed: props.collapsed, dataCommandInputOverflowing: props.collapsed && overflow.overflowing() }
         : {})}
-      elementRef={(el) => {
-        element = el
-        measureOverflow()
-      }}
+      elementRef={overflow.elementRef}
       maxHighlightChars={COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT}
     />
   )

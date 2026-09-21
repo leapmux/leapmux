@@ -12,7 +12,7 @@ import { createImageBytes } from './helpers/image'
 import { createTestDirectory } from './helpers/runDirectory'
 import { withScriptedPiTool } from './helpers/scriptedPiModel'
 import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, listAgents, openGoalMenu } from './helpers/subagentRegistry'
-import { openWorkspace, sendMessage } from './helpers/ui'
+import { openWorkspace, readAttached, sendMessage } from './helpers/ui'
 import { realAgentOpenOptions, realAgentSettings } from './realAgentSettings'
 
 type FixtureMessage = {
@@ -1019,6 +1019,69 @@ test.describe('provider tool rendering', () => {
     const markdownRow = page.locator(`[data-seq="${sequences[1]}"]`).filter({ visible: true })
     await expect(markdownRow.locator('h1')).toHaveCount(0)
     await expect(markdownRow).toContainText('# Large Markdown')
+  })
+
+  test('renders Codex command actions with raw-command tooltips and compact metadata', async ({ page, context, authenticatedEmptyWorkspace, leapmuxServer }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    const workingDir = createTestDirectory('renderer-codex-actions-')
+    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, {
+      agentProvider: AgentProvider.CODEX,
+      ...realAgentOpenOptions(realAgentSettings(AgentProvider.CODEX)),
+    })
+    const command = '/bin/zsh -lc "sed and rg"'
+    const readCommand = 'sed -n \'380,430p\' frontend/tests/e2e/helpers/ui.ts'
+    const [seq] = await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [{
+      id: 'codex-command-actions',
+      provider: AgentProvider.CODEX,
+      spanId: 'codex-command-actions',
+      spanType: 'commandExecution',
+      content: {
+        item: {
+          id: 'codex-command-actions',
+          type: 'commandExecution',
+          status: 'completed',
+          command,
+          cwd: workingDir,
+          processId: '79860',
+          commandActions: [
+            { type: 'read', command: readCommand, name: 'ui.ts', path: join(workingDir, 'frontend/tests/e2e/helpers/ui.ts') },
+            { type: 'search', command: 'rg -n \'loginViaToken\' frontend/tests/e2e', query: 'loginViaToken', path: 'frontend/tests/e2e' },
+            { type: 'unknown', command: 'printf visible-action' },
+          ],
+          aggregatedOutput: '',
+          exitCode: 0,
+          durationMs: 5,
+        },
+      },
+    }])
+
+    await page.reload()
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const row = page.locator(`[data-seq="${seq}"]`).filter({ visible: true })
+    const read = row.getByText('Read frontend/tests/e2e/helpers/ui.ts', { exact: true })
+    await expect(read).toBeVisible()
+    await expect(row.getByText('Search for "loginViaToken" in frontend/tests/e2e', { exact: true })).toBeVisible()
+    await expect(row.getByText('printf visible-action', { exact: true })).toBeVisible()
+    await expect(row).toContainText(/Working directory:\s*\./)
+    await expect(row).toContainText(/Process ID:\s*79860/)
+    const rawAction = row.locator('[data-command-action="unknown"]')
+    await expect(rawAction.locator('[data-shiki-token]').first()).toBeVisible()
+    const fontSize = (locator: import('@playwright/test').Locator, label: string) => readAttached(locator, label, (matches) => {
+      const element = matches.find(candidate => candidate.isConnected)
+      return element ? getComputedStyle(element).fontSize : null
+    })
+    const readPathSize = await fontSize(read.locator('span').last(), 'the read action path')
+    const rawCommandSize = await fontSize(rawAction.locator('div').first(), 'the raw command action')
+    expect(readPathSize).toBe(rawCommandSize)
+
+    await read.hover()
+    const tooltip = page.getByRole('tooltip')
+    await expect(tooltip).toHaveText(readCommand)
+    await expect(tooltip.locator('[data-shiki-token]').first()).toBeVisible()
+
+    await row.hover()
+    await row.getByRole('button', { name: 'Copy Command', exact: true }).click()
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(command)
   })
 
   test('renders a mirrored subagent report as Markdown in the parent transcript', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {

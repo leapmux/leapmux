@@ -7,6 +7,7 @@ import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { SHOW_DELAY_MS } from '~/components/common/Tooltip'
 import { AgentChatMessageSchema, AgentProvider, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolComplete } from '~/test-support/copilotFixtures'
 import { testMessageSources } from '~/test-support/messageRenderSources'
@@ -302,6 +303,55 @@ describe('canonical command status label across providers', () => {
     fireEvent.click(expandButton!)
 
     expect(container.textContent ?? '').toContain('output line 8')
+  })
+})
+
+describe('Codex command actions', () => {
+  it('renders the structured actions and process identifier through the shared execute renderer', () => {
+    const { container } = renderCodexItem({
+      type: 'commandExecution',
+      command: '/bin/zsh -lc "sed and rg"',
+      cwd: '/repo',
+      processId: '79860',
+      status: 'inProgress',
+      commandActions: [
+        { type: 'read', command: 'sed -n \'1,5p\' src/main.ts', name: 'main.ts', path: '/repo/src/main.ts' },
+        { type: 'search', command: 'rg -n \'needle\' src', query: 'needle', path: 'src' },
+      ],
+    }, { workingDir: '/repo' })
+
+    expect(container).toHaveTextContent('Read src/main.ts')
+    expect(container).toHaveTextContent('Search for "needle" in src')
+    expect(container).toHaveTextContent('Process ID:')
+    expect(container).toHaveTextContent('79860')
+  })
+
+  it('syntax-highlights a raw command that an unknown action draws', async () => {
+    tokenizeAsyncCalls.mockClear()
+    renderCodexItem({
+      type: 'commandExecution',
+      command: 'compound command',
+      status: 'inProgress',
+      commandActions: [{ type: 'unknown', command: 'printf visible-action' }],
+    })
+
+    await waitFor(() => expect(tokenizeAsyncCalls).toHaveBeenCalledWith('bash', 'printf visible-action'))
+  })
+
+  it('syntax-highlights a known action command inside its tooltip', async () => {
+    tokenizeAsyncCalls.mockClear()
+    const { container } = renderCodexItem({
+      type: 'commandExecution',
+      command: 'compound command',
+      status: 'inProgress',
+      commandActions: [{ type: 'read', command: 'sed -n \'1,5p\' src/main.ts', name: 'main.ts', path: '/repo/src/main.ts' }],
+    })
+    const read = container.querySelector('[data-command-action="read"]')
+
+    expect(read).not.toBeNull()
+    fireEvent.mouseEnter(read!)
+    await new Promise(resolve => setTimeout(resolve, SHOW_DELAY_MS + 10))
+    await waitFor(() => expect(tokenizeAsyncCalls).toHaveBeenCalledWith('bash', 'sed -n \'1,5p\' src/main.ts'))
   })
 })
 
