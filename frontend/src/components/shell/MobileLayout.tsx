@@ -138,7 +138,11 @@ export const MobileLayout: Component<MobileLayoutProps> = (props) => {
         {props.tabBarElement}
       </div>
 
-      <div class={styles.mobileCenter} ref={armSwipe}>
+      {/* The testid marks the band the gesture is armed ON. `armSwipe` runs as
+          this element's ref, so its presence IS the armed state -- and an E2E
+          that swipes before it exists loses the gesture silently, because the
+          desktop shell has no drawers and therefore looks idle. */}
+      <div class={styles.mobileCenter} data-testid="mobile-swipe-band" ref={armSwipe}>
         <div class={styles.mobileTilePaneSlot}>
           {props.tileContent}
         </div>

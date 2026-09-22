@@ -1,11 +1,11 @@
 import { AgentStatus } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, loginViaToken, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT } from './helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, loginViaToken, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT } from './helpers/ui'
 import { listAgentsViaAPI } from './helpers/worktree'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Agent Session Resume', () => {
-  test('should resume agent session after worker restart', async ({ separateHubWorker, page }) => {
+  test('should resume agent session after worker restart', async ({ separateHubWorker, page, modelScript }) => {
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Resume Test')
@@ -20,7 +20,8 @@ test.describe('Agent Session Resume', () => {
 
       // Send a message and wait for response
       await editor.click()
-      await page.keyboard.type(ARITHMETIC_PROMPT)
+      await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+      await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
@@ -41,7 +42,8 @@ test.describe('Agent Session Resume', () => {
 
       // Send a new message to the closed (but resumable) agent
       await editor.click()
-      await page.keyboard.type(SECOND_ARITHMETIC_PROMPT)
+      await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
+      await page.keyboard.type(modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
       await page.keyboard.press('Meta+Enter')
 
       // Wait for a response - the agent should have resumed. The answer "3333"
@@ -54,7 +56,7 @@ test.describe('Agent Session Resume', () => {
     }
   })
 
-  test('should resume the agent process on worker restart without a message', async ({ separateHubWorker, page }) => {
+  test('should resume the agent process on worker restart without a message', async ({ separateHubWorker, page, modelScript }) => {
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Eager Resume')
@@ -70,7 +72,8 @@ test.describe('Agent Session Resume', () => {
       // filter the boot-time sweep applies: a tab whose agent never ran has
       // nothing to restore and is deliberately left cold.
       await editor.click()
-      await page.keyboard.type(ARITHMETIC_PROMPT)
+      await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+      await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
       await expectAssistantAnswer(page)
@@ -95,7 +98,7 @@ test.describe('Agent Session Resume', () => {
     }
   })
 
-  test('should deliver control request after worker restart', async ({ separateHubWorker, page }) => {
+  test('should deliver control request after worker restart', async ({ separateHubWorker, page, modelScript }) => {
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Control Request Restart')
@@ -110,7 +113,8 @@ test.describe('Agent Session Resume', () => {
 
       // Send a message and wait for response (establishes session)
       await editor.click()
-      await page.keyboard.type(ARITHMETIC_PROMPT)
+      await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+      await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
       await expectAssistantAnswer(page)
@@ -135,7 +139,7 @@ test.describe('Agent Session Resume', () => {
     }
   })
 
-  test('should handle interrupt after worker restart', async ({ separateHubWorker, page }) => {
+  test('should handle interrupt after worker restart', async ({ separateHubWorker, page, modelScript }) => {
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Interrupt Restart')
@@ -150,7 +154,8 @@ test.describe('Agent Session Resume', () => {
 
       // Send a message and wait for response (establishes session)
       await editor.click()
-      await page.keyboard.type(ARITHMETIC_PROMPT)
+      await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+      await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
       await expectAssistantAnswer(page)
@@ -165,7 +170,8 @@ test.describe('Agent Session Resume', () => {
 
       // Send another message to confirm agent is alive after restart
       await editor.click()
-      await page.keyboard.type(SECOND_ARITHMETIC_PROMPT)
+      await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
+      await page.keyboard.type(modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
       await page.keyboard.press('Meta+Enter')
 
       // Wait for response — verifies normal operation post-restart

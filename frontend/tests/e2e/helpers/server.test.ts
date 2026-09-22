@@ -4,7 +4,13 @@ import ts from 'typescript'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { collectE2EFiles } from '~/test-support/e2eFiles'
 import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
-import { hubSpawnEnv, waitForServer } from './server'
+import { E2E_BROWSER_HOST, hubSpawnEnv, mockAgentEnv, waitForServer } from './server'
+
+describe('E2E_BROWSER_HOST', () => {
+  it('matches the browser session-cookie domain', () => {
+    expect(E2E_BROWSER_HOST).toBe('localhost')
+  })
+})
 
 describe('hubSpawnEnv', () => {
   it('clears an inherited development frontend URL', () => {
@@ -31,6 +37,16 @@ describe('hubSpawnEnv', () => {
   })
 })
 
+/**
+ * The subcommands that start a process which can spawn an agent.
+ *
+ * `worker` belongs here as much as `hub` does: a worker is what launches the
+ * agent, so a worker started without `hubSpawnEnv` sends its agents to the
+ * developer's real provider. That hole existed, and nothing caught it, because
+ * a real model answers a test prompt correctly.
+ */
+const AGENT_HOST_SUBCOMMANDS = ['hub', 'solo', 'dev', 'worker']
+
 // Parse calls so comments and strings cannot affect the guard.
 function scanHubSpawns(text: string) {
   const source = ts.createSourceFile('fixture.ts', text, ts.ScriptTarget.Latest, true)
@@ -41,7 +57,7 @@ function scanHubSpawns(text: string) {
       && ['spawn', 'spawnTestProcess'].includes(node.expression.text)) {
       const args = node.arguments[1]
       if (args && ts.isArrayLiteralExpression(args)
-        && args.elements.some(arg => ts.isStringLiteral(arg) && ['hub', 'solo', 'dev'].includes(arg.text))) {
+        && args.elements.some(arg => ts.isStringLiteral(arg) && AGENT_HOST_SUBCOMMANDS.includes(arg.text))) {
         count++
         const options = node.arguments[2]
         const env = options && ts.isObjectLiteralExpression(options)
@@ -59,8 +75,8 @@ function scanHubSpawns(text: string) {
   return { count, violations }
 }
 
-describe('hub launch environment', () => {
-  it('guards every hub launch and finds at least one real call', () => {
+describe('agent host launch environment', () => {
+  it('guards every hub and worker launch, and finds at least one real call', () => {
     let count = 0
     const violations: string[] = []
     for (const file of collectE2EFiles()) {
@@ -68,8 +84,10 @@ describe('hub launch environment', () => {
       count += result.count
       violations.push(...result.violations.map(line => `${posixRelative(frontendRoot, file)}:${line}`))
     }
-    // An inherited development URL can make a test pass against another checkout's frontend.
-    expect(violations, 'Use hubSpawnEnv for every hub process').toEqual([])
+    // Two faults, both silent. An inherited development URL makes a test pass
+    // against another checkout's frontend, and an inherited provider credential
+    // sends the agent to the live endpoint instead of the mock.
+    expect(violations, 'Use hubSpawnEnv for every hub and worker process').toEqual([])
     expect(count, 'The guard must inspect actual launch calls').toBeGreaterThan(0)
   })
 
@@ -80,10 +98,32 @@ describe('hub launch environment', () => {
       .toEqual({ count: 1, violations: [] })
   })
 
+  it.each(AGENT_HOST_SUBCOMMANDS)('guards the %s subcommand', (subcommand) => {
+    expect(scanHubSpawns(`spawn(binary, ['${subcommand}'], { env: process.env })`))
+      .toEqual({ count: 1, violations: [1] })
+  })
+
   it('rejects a missing environment and ignores comments and quoted calls', () => {
     expect(scanHubSpawns('spawnTestProcess(binary, ["solo"])')).toEqual({ count: 1, violations: [1] })
     expect(scanHubSpawns('// spawn(binary, ["hub"], { env: process.env })')).toEqual({ count: 0, violations: [] })
     expect(scanHubSpawns('const text = "spawn(binary, [\'hub\'])"')).toEqual({ count: 0, violations: [] })
+  })
+})
+
+describe('mockAgentEnv', () => {
+  it('reports nothing before global setup wrote the state', () => {
+    const before = process.env.E2E_STATE_PATH
+    delete process.env.E2E_STATE_PATH
+    try {
+      expect(mockAgentEnv()).toEqual({})
+      // `startSuiteServer` spawns the shared hub at this moment and passes the
+      // same map explicitly, so the empty result is correct rather than a gap.
+      expect(hubSpawnEnv({ LEAPMUX_WORKER_NAME: 'Local' }).LEAPMUX_WORKER_NAME).toBe('Local')
+    }
+    finally {
+      if (before !== undefined)
+        process.env.E2E_STATE_PATH = before
+    }
   })
 })
 

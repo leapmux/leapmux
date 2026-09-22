@@ -1,48 +1,17 @@
 import type { Locator } from '@playwright/test'
-import { Buffer } from 'node:buffer'
-import { execFileSync } from 'node:child_process'
-import { join } from 'node:path'
-import { AgentProvider, MarkType, MessageCompletion, MessageSource } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { expect, test } from './fixtures'
-import { openAgentViaAPI } from './helpers/api'
-import { createTestDirectory } from './helpers/runDirectory'
-import { openWorkspace } from './helpers/ui'
-import { realAgentOpenOptions, realAgentSettings } from './realAgentSettings'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { codexTest, expect } from './codex-fixtures'
+import { bashToolCall, editToolCall } from './helpers/providerToolCalls'
+import { sendMessage, waitForAgentIdle } from './helpers/ui'
 
-const sqlString = (value: string) => `'${value.replaceAll('\'', '\'\'')}'`
-const blob = (value: unknown) => `X'${Buffer.from(JSON.stringify(value), 'utf8').toString('hex')}'`
-
-function seedFileChanges(database: string, agentId: string): bigint[] {
-  const agent = sqlString(agentId)
-  const messages = [
-    {
-      id: 'single-file-change',
-      spanId: 'single-file-change',
-      changes: [{ path: '/project/a.ts', kind: { type: 'update' }, diff: '@@ -1 +1,3 @@\n-old\n+new\n+second\n+third\n' }],
-    },
-    {
-      id: 'multiple-file-change',
-      spanId: 'multiple-file-change',
-      changes: [
-        { path: '/project/a.ts', kind: { type: 'update' }, diff: '@@ -1 +1,3 @@\n-old\n+new\n+second\n+third\n' },
-        { path: '/project/b.ts', kind: { type: 'update' }, diff: '@@ -1 +1 @@\n-before\n+after\n' },
-      ],
-    },
-  ]
-  const inserts = messages.map(message => `INSERT INTO messages
-    (id, agent_id, seq, source, content, content_compression, agent_provider, span_id, span_type, supplemental_content, supplemental_content_compression, supplemental_revision, completion, agent_session_id, mark_type)
-    VALUES (${sqlString(`${agentId}-${message.id}`)}, ${agent},
-      (SELECT message_seq_hwm + 1 FROM agents WHERE id = ${agent}), ${MessageSource.AGENT},
-      ${blob({ item: { id: message.id, type: 'fileChange', status: 'completed', changes: message.changes } })}, 1, ${AgentProvider.CODEX}, ${sqlString(message.spanId)}, 'fileChange',
-      X'', 1, 0, ${MessageCompletion.UNSPECIFIED}, '', ${MarkType.UNSPECIFIED}) RETURNING seq;`)
-  const output = execFileSync('sqlite3', ['-batch', '-noheader', '-list', '-bail', database], {
-    encoding: 'utf8',
-    input: `.timeout 10000\nBEGIN IMMEDIATE;\n${inserts.join('\n')}\nCOMMIT;\n`,
-  })
-  const sequences = output.trim()
-  return sequences ? sequences.split('\n').map(value => BigInt(value)) : []
-}
-
+/**
+ * The file-change statistics badge, on one file and on several.
+ *
+ * The changes arrive through Codex's own `apply_patch`, scripted at the mock
+ * endpoint, so the rows carry exactly the shape the provider emits. An earlier
+ * version wrote the `fileChange` messages straight into the worker database,
+ * which made the fixture a second, hand-maintained copy of that shape.
+ */
 async function badgePresentation(badge: Locator) {
   await expect(badge).toBeVisible()
   return badge.evaluate((element) => {
@@ -61,31 +30,61 @@ async function badgePresentation(badge: Locator) {
   })
 }
 
-test('file-change statistics keep one presentation for one file and multiple files', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
-  const agentId = await openAgentViaAPI(
-    leapmuxServer.hubUrl,
-    leapmuxServer.adminToken,
-    leapmuxServer.workerId,
-    authenticatedEmptyWorkspace.workspaceId,
-    createTestDirectory('file-change-stat-'),
-    {
-      agentProvider: AgentProvider.CODEX,
-      ...realAgentOpenOptions(realAgentSettings(AgentProvider.CODEX)),
-    },
-  )
-  const sequences = seedFileChanges(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId)
-  expect(sequences).toHaveLength(2)
-  const singleSequence = sequences[0]
-  const multipleSequence = sequences[1]
-  if (singleSequence === undefined || multipleSequence === undefined)
-    throw new Error('The file-change fixtures did not return both message sequences.')
+/**
+ * The file-change row that names `path`.
+ *
+ * Both filters are load-bearing. `has` keeps the badge-carrying row: the user
+ * prompt names the same file and comes first, so a text filter alone returns a
+ * row with no badge in it. `:visible` keeps the on-screen copy, because ChatView
+ * renders every unmeasured row twice.
+ */
+function changeRow(page: Parameters<typeof sendMessage>[0], path: string) {
+  return page.locator('[data-seq]:visible')
+    .filter({ has: page.getByTestId('git-diff-stats') })
+    .filter({ hasText: path })
+    .first()
+}
 
-  await page.reload()
-  await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-  const singleRow = page.locator(`[data-seq="${singleSequence}"]`).filter({ visible: true })
-  const multipleRow = page.locator(`[data-seq="${multipleSequence}"]`).filter({ visible: true })
-  const single = await badgePresentation(singleRow.getByTestId('git-diff-stats'))
-  const multiple = await badgePresentation(multipleRow.getByTestId('git-diff-stats').first())
+codexTest('file-change statistics keep one presentation for one file and multiple files', async ({ page, authenticatedCodexWorkspace, modelScript }) => {
+  void authenticatedCodexWorkspace
+
+  // The files must exist before the patch, so the change is an UPDATE and the
+  // diff has both sides to state.
+  await modelScript.queue(
+    { toolCalls: [bashToolCall(AgentProvider.CODEX, 'seed-files', 'printf "old\n" > single.ts; printf "old\n" > first.ts; printf "old\n" > second.ts; ls')] },
+    { text: 'The files exist now.' },
+  )
+  await sendMessage(page, modelScript.prompt('Create the files.'))
+  await modelScript.waitForSteps()
+  await waitForAgentIdle(page)
+
+  // One turn changes a single file, the next changes two. Codex reports each
+  // changed file as its OWN `fileChange` item, so the second turn draws two
+  // rows rather than one row naming two files — which is the shape this test
+  // compares against the single-file row.
+  await modelScript.queue(
+    { toolCalls: [editToolCall(AgentProvider.CODEX, 'single-edit', { path: 'single.ts', before: 'old', after: 'new' })] },
+    { text: 'I changed single.ts.' },
+  )
+  await sendMessage(page, modelScript.prompt('Change single.ts.'))
+  await modelScript.waitForSteps()
+  await waitForAgentIdle(page)
+
+  await modelScript.queue(
+    {
+      toolCalls: [
+        editToolCall(AgentProvider.CODEX, 'first-edit', { path: 'first.ts', before: 'old', after: 'new' }),
+        editToolCall(AgentProvider.CODEX, 'second-edit', { path: 'second.ts', before: 'old', after: 'new' }),
+      ],
+    },
+    { text: 'I changed first.ts and second.ts.' },
+  )
+  await sendMessage(page, modelScript.prompt('Change first.ts and second.ts.'))
+  await modelScript.waitForSteps()
+  await waitForAgentIdle(page)
+
+  const single = await badgePresentation(changeRow(page, 'single.ts').getByTestId('git-diff-stats').first())
+  const multiple = await badgePresentation(changeRow(page, 'first.ts').getByTestId('git-diff-stats').first())
 
   expect(single).toEqual(multiple)
   expect(single.titleGap).not.toBe('normal')

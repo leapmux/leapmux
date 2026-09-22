@@ -2,10 +2,22 @@ import type { Page } from '@playwright/test'
 import { Buffer } from 'node:buffer'
 import { getUserId } from './helpers/api'
 import { COARSE_POINTER_METRICS, touchDragGripOnto } from './helpers/touch'
-import { ARITHMETIC_PROMPT, loginViaToken, openWorkspace, sendMessage, waitForAgentIdle, waitForEditorDraft } from './helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, loginViaToken, openWorkspace, sendMessage, waitForAgentIdle, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, processTest as test } from './process-control-fixtures'
 
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
+
+/**
+ * Pause the queue and wait for the button to confirm it.
+ *
+ * The label is the app's own acknowledgement. Without waiting for it a send can
+ * land while the queue is still running, and the input then reaches the agent
+ * instead of the queue — which reads as a queue that never rendered.
+ */
+async function pauseQueue(page: Page) {
+  await page.getByTestId('queue-pause-button').click()
+  await expect(page.getByTestId('queue-pause-button')).toHaveText('Resume Queue')
+}
 
 /**
  * Pause the queue, park two inputs in it, and hand back the locators that both
@@ -21,7 +33,7 @@ const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
  */
 async function seedTwoQueuedRows(page: Page) {
   await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
-  await page.getByTestId('queue-pause-button').click()
+  await pauseQueue(page)
   await sendMessage(page, 'first queued')
   await sendMessage(page, 'second queued')
 
@@ -36,11 +48,13 @@ async function seedTwoQueuedRows(page: Page) {
 }
 
 test.describe('agent input queue', () => {
-  test('persists paused input across clients, a reload, and a Worker restart, then supports queue changes', async ({ page, browser, authenticatedWorkspace, separateHubWorker }) => {
+  test('persists paused input across clients, a reload, and a Worker restart, then supports queue changes', async ({ page, browser, authenticatedWorkspace, separateHubWorker, modelScript }) => {
     await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
-    // Establish a real provider session before the Worker restart. A fresh
-    // Claude process reports an id before it stores a resumable conversation.
-    await sendMessage(page, ARITHMETIC_PROMPT)
+    // Establish a provider session before the Worker restart. A fresh Claude
+    // process reports an id before it stores a resumable conversation.
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps()
     await waitForAgentIdle(page)
     await page.getByTestId('queue-pause-button').click()
     await expect(page.getByTestId('queue-pause-button')).toHaveText('Resume Queue')
@@ -192,7 +206,7 @@ test.describe('agent input queue', () => {
   test('shows no drag affordance when the queue contains one input', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
     await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
-    await page.getByTestId('queue-pause-button').click()
+    await pauseQueue(page)
     await sendMessage(page, 'only queued input')
 
     const row = page.getByTestId(/^queued-input-/)
@@ -266,15 +280,20 @@ test.describe('agent input queue', () => {
     await expect(rows.last()).toContainText('typed then sent')
   })
 
-  test('offers Steer for input queued during a Claude turn', async ({ page, authenticatedWorkspace }) => {
+  test('offers Steer for input queued during a Claude turn', async ({ page, authenticatedWorkspace, modelScript }) => {
     void authenticatedWorkspace
 
     // Keep the first turn active long enough to put the next message in the
     // durable queue. The Interrupt button is the Worker's turn-state signal.
-    await sendMessage(page, 'Write a 2,000-word technical report about Go concurrency. Do not use tools or stop early.')
+    // The HOLD is what keeps it active: against the mock endpoint a long prompt
+    // finishes as fast as a short one, so the turn has to be held open.
+    await modelScript.queue({ text: 'A report.', delayMs: 60_000 })
+    modelScript.allowUnconsumed('the steer ends the turn before the held answer arrives')
+    await sendMessage(page, modelScript.prompt('Write a 2,000-word technical report about Go concurrency.'))
+    await modelScript.waitForSteps()
     await expect(page.getByTestId('interrupt-button')).toBeVisible()
 
-    await sendMessage(page, 'Stop the report now and reply with the single word STEERED.')
+    await sendMessage(page, modelScript.prompt('Stop the report now and reply with the single word STEERED.'))
     const queued = page.getByTestId(/^queued-input-/).filter({ hasText: 'Stop the report' })
     await expect(queued).toBeVisible()
     const steer = queued.getByRole('button', { name: 'Steer' })
@@ -287,7 +306,7 @@ test.describe('agent input queue', () => {
   test('spaces the pause banner, the queue, the attachments and the composer alike', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
     await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
-    await page.getByTestId('queue-pause-button').click()
+    await pauseQueue(page)
     await sendMessage(page, 'a queued input')
     await expect(page.getByTestId('agent-input-queue')).toContainText('a queued input')
     await page.getByTestId('file-input').setInputFiles({

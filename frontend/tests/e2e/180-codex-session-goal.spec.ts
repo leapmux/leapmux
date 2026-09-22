@@ -11,7 +11,9 @@
  * every assertion here polls for the worker's answer rather than reading what
  * the click did.
  */
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest, expect } from './codex-fixtures'
+import { updateTodosToolCall } from './helpers/providerToolCalls'
 import {
   countGoalTransitions,
   expandGoalsAndTodosSection,
@@ -21,30 +23,38 @@ import {
   listAgents,
   openGoalMenu,
 } from './helpers/subagentRegistry'
-import { sendMessage, waitForAgentIdle } from './helpers/ui'
+import { sendMessage, stableBox, waitForAgentIdle } from './helpers/ui'
 
 codexTest.describe('Codex session goal', () => {
   codexTest('offers Steer for input queued during a goal turn', async ({
     authenticatedCodexWorkspace,
     page,
+    modelScript,
   }) => {
     void authenticatedCodexWorkspace
 
     // Start the process before the side-band goal command asks Codex to start
     // its own turn. That turn has no queue input to supply its classification.
-    await sendMessage(page, 'Reply with the single word: ready')
+    await modelScript.queue({ text: 'ready' })
+    await sendMessage(page, modelScript.prompt('Reply with the single word: ready'))
+    await modelScript.waitForSteps(1)
     await waitForAgentIdle(page)
     await expandGoalsAndTodosSection(page)
     await goalAction(page, 'set').click()
+    // The objective carries the marker because CODEX starts the next turn
+    // itself, with the objective as its prompt: an unmarked goal reaches the
+    // ambient scenario, which refuses it. The goal turn must still be RUNNING
+    // when the steer arrives, so its answer is held open.
+    await modelScript.fallback({ text: 'Working on the objective.', delayMs: 120_000 })
     await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(
-      'Inspect this repository until I send a steering message. Do not stop before that message.',
+      modelScript.prompt('Inspect this repository until I send a steering message. Do not stop before that message.'),
     )
     await page.locator('[data-testid="set-goal-submit"]:visible').click()
 
     // The Interrupt button proves that the provider-started goal turn runs.
     // Send while that condition still holds, so the message enters the queue.
     await expect(page.getByTestId('interrupt-button')).toBeVisible()
-    await sendMessage(page, 'Stop now, mark the goal complete, and reply with STEERED.')
+    await sendMessage(page, modelScript.prompt('Stop now, mark the goal complete, and reply with STEERED.'))
     const queued = page.getByTestId(/^queued-input-/).filter({ hasText: 'Stop now' })
     await expect(queued).toBeVisible()
 
@@ -58,6 +68,7 @@ codexTest.describe('Codex session goal', () => {
     authenticatedCodexWorkspace,
     page,
     leapmuxServer,
+    modelScript,
   }) => {
     void authenticatedCodexWorkspace
     const { hubUrl, adminToken, workerId } = leapmuxServer
@@ -65,8 +76,23 @@ codexTest.describe('Codex session goal', () => {
     // 1. Drive one turn first. It puts the agent tab on screen and, more to the
     //    point, gets the process registered -- the goal's supported ACTIONS are
     //    read from the running agent, and everything below depends on them.
-    await sendMessage(page, 'Reply with the single word: ready')
+    await modelScript.queue({ text: 'ready' })
+    await sendMessage(page, modelScript.prompt('Reply with the single word: ready'))
+    await modelScript.waitForSteps(1)
     await waitForAgentIdle(page)
+
+    // Codex starts a turn of its OWN on every goal set and resume, with the
+    // objective as the prompt. This test performs five such actions, and how
+    // many turns each one costs belongs to the provider -- so a fallback
+    // answers them all. Each objective below is marked for the same reason the
+    // prompts are: an unmarked one reaches the ambient scenario instead.
+    //
+    // The DELAY is load-bearing. An active goal keeps Codex starting turns, and
+    // a fallback that answers in microseconds turns that into a loop running at
+    // mock speed: the run allocated 4 GB of request bodies and killed the
+    // Playwright worker outright. One second a turn is what a live model costs
+    // anyway, and it keeps the count to what this test actually exercises.
+    await modelScript.fallback({ text: 'DONE', delayMs: 1000 })
 
     // 2. The section is reachable with no to-dos or background tasks. The
     //    provider feature keeps the empty goal card visible.
@@ -82,7 +108,7 @@ codexTest.describe('Codex session goal', () => {
     //    the target is its contenteditable body rather than a textarea.
     await goalAction(page, 'set').click()
     const input = page.locator('[data-testid="goal-editor"]:visible .ProseMirror')
-    await input.fill('Reply with the single word DONE and then stop.')
+    await input.fill(modelScript.prompt('Reply with the single word DONE and then stop.'))
     await page.locator('[data-testid="set-goal-submit"]:visible').click()
 
     // 5. The card shows the objective the worker stored, not the text typed.
@@ -104,7 +130,7 @@ codexTest.describe('Codex session goal', () => {
     const longObjective = `Keep going until every check passes on both runners. ${'Then confirm the result and report it back before stopping. '.repeat(8)}`
     await openGoalMenu(page)
     await goalAction(page, 'set').click()
-    await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(longObjective)
+    await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(modelScript.prompt(longObjective))
     await page.locator('[data-testid="set-goal-submit"]:visible').click()
 
     const objective = page.locator('[data-testid="goal-objective"]:visible')
@@ -173,41 +199,60 @@ codexTest.describe('Codex session goal', () => {
   codexTest('opens the goal actions from the to-dos popover', async ({
     authenticatedCodexWorkspace,
     page,
+    modelScript,
   }) => {
     void authenticatedCodexWorkspace
 
     // Set the goal from the sidebar while the agent is idle.
-    await sendMessage(page, 'Reply with the single word: ready')
+    await modelScript.queue({ text: 'ready' })
+    await sendMessage(page, modelScript.prompt('Reply with the single word: ready'))
+    await modelScript.waitForSteps(1)
     await waitForAgentIdle(page)
     await expandGoalsAndTodosSection(page)
     await goalAction(page, 'set').click()
-    await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill('Keep the build green.')
+    // Marked, and answered by a fallback, because Codex starts its own turn on
+    // every goal set with the objective as the prompt.
+    await modelScript.fallback({ text: 'Working on the objective.' })
+    await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(modelScript.prompt('Keep the build green.'))
     await page.locator('[data-testid="set-goal-submit"]:visible').click()
     await expectGoalStatus(page, 'active')
 
-    // Ask for a multi-step plan so Codex populates the to-do chip while the
-    // indicator remains visible.
-    await sendMessage(page, 'Create and execute a multi-step plan to inspect this repository, list three checks, and report their purpose.')
+    // The to-do list is SCRIPTED, so the chip below is a precondition this test
+    // establishes rather than one it hopes for. A real model answered prose as
+    // often as a plan, which is why the chip lookup still carries a skip.
+    await modelScript.queue({
+      toolCalls: [updateTodosToolCall(AgentProvider.CODEX, 'plan-1', [
+        { step: 'Inspect the repository', status: 'completed' },
+        { step: 'List three checks', status: 'in_progress' },
+        { step: 'Report their purpose', status: 'pending' },
+      ])],
+    })
+    await sendMessage(page, modelScript.prompt('Create and execute a multi-step plan to inspect this repository, list three checks, and report their purpose.'))
 
-    // The chip is the only route to this popover, and it appears only once the
-    // model emits a plan. Nothing in the app can seed a to-do list, so the
-    // precondition is model-dependent and a run that produces prose instead
-    // skips. Only the PRECONDITION sits inside the catch: a chip that appears
-    // and then behaves incorrectly fails, and never skips.
+    // HOLD the next turn open. The goal is active, so Codex starts one turn
+    // after another; each one re-renders the thinking indicator, and the chip
+    // below lives INSIDE it. A popover opened from that chip is detached by the
+    // very next re-render -- it reports `hidden` while the element is still in
+    // the DOM, which reads like a popover that refused to open.
     //
-    // What a skipped run does not check: nothing else covers a `popover=auto`
-    // nested inside a `DropdownMenu as="card"`.
+    // One long turn is also what this test means by "while the indicator remains
+    // visible": with a live model that turn took seconds on its own.
+    await modelScript.fallback({ text: 'Still working on the objective.', delayMs: 60_000 })
+
+    // The chip is the only route to this popover. It used to appear only when a
+    // real model chose to emit a plan, so a run that answered prose skipped the
+    // whole nested-popover case -- and nothing else covers a `popover=auto`
+    // inside a `DropdownMenu as="card"`. The to-do list above is scripted, so
+    // the chip is now a guarantee and its absence is a failure.
     const chip = page.locator('[data-testid="thinking-todos-chip"]:visible')
-    try {
-      await expect(chip).toBeVisible()
-    }
-    catch {
-      codexTest.skip(true, 'the model produced no to-do list, so the nested-popover case did not run')
-      return
-    }
+    await expect(chip).toBeVisible()
     await chip.click()
     const popover = page.locator('[data-testid="todo-list-popover"]')
     await expect(popover).toBeVisible()
+    // Settle before clicking anything inside it: the list renders over several
+    // frames, each growth re-anchors the card, and a trigger that is still
+    // moving is one Playwright refuses to click as "not stable".
+    await stableBox(popover)
     // The goal rides this popover now, so its presence is part of the contract.
     await expect(goalCard(popover)).toBeVisible()
 

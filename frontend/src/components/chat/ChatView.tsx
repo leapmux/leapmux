@@ -939,9 +939,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
 
   return (
     <div class={styles.container} data-testid="chat-container">
-      {/* One shared menu for every row below. The
-          host renders a trigger-less popover, so it adds no box to this column --
-          see `data-headless` in ~/components/common/DropdownMenu.tsx. */}
+      {/* One shared menu for every row below. The host renders a trigger-less
+          popover and is `display: contents`, so it adds no box to this column --
+          see ~/styles/popover.css.ts. */}
       <MessageContextMenuHostProvider>
         <div class={styles.messageListWrapper}>
           <div

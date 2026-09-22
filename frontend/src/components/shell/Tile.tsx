@@ -22,8 +22,19 @@ interface TileProps {
   tabBar: JSX.Element
   children: JSX.Element
   onFocus: () => void
-  /** Pop-out / pop-in affordance; absent when the tile can't pop. */
-  pop?: TilePopAction
+  /**
+   * Pop-out / pop-in affordance; `undefined` when the tile cannot pop.
+   *
+   * Explicitly `| undefined` so the caller can pass the key with an undefined
+   * value. The alternative -- a conditional spread that omits the key -- gives
+   * this component a `mergeProps` PROXY instead of a plain props object, and a
+   * proxy calls EVERY dynamic source to find out which one owns the property
+   * being read. One read of `props.tabBar` or `props.children` would then track
+   * `pop`, and a new `pop` object would rebuild the tab bar and the tile's
+   * whole content. `<Show when={props.pop}>` below treats an absent key and an
+   * undefined value the same, so nothing needs the distinction.
+   */
+  pop?: TilePopAction | undefined
 }
 
 // Wrap an IconButton click handler so the click doesn't bubble up to the

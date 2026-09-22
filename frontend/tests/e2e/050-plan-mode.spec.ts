@@ -1,26 +1,23 @@
 import { expect, test } from './fixtures'
-import { enterAndExitPlanMode, enterPlanPrompt, EXIT_PLAN_PROMPT } from './helpers/plan-mode'
-import { expectSettingsChip, measureBubbleEdges, sendMessage, settingsBar, userBubbles, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
+import { enterAndExitPlanMode, enterPlanMode, exitPlanMode } from './helpers/plan-mode'
+import { expectSettingsChip, measureBubbleEdges, settingsBar, userBubbles, waitForAgentIdle } from './helpers/ui'
 
 test.describe('Plan Mode', () => {
-  test('enter plan mode, reject exit, then approve exit', async ({ page, authenticatedWorkspace }) => {
+  test('enter plan mode, reject exit, then approve exit', async ({ page, authenticatedWorkspace, modelScript }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
     // Verify initial state: Default mode
     await expectSettingsChip(page, 'Default')
 
-    // ── Step 1: Enter plan mode and write a dummy plan ──
-    await sendMessage(page, enterPlanPrompt('plan-mode'))
+    // ── Step 1: Enter plan mode ──
+    await enterPlanMode(page, modelScript, { testId: 'plan-mode' })
 
     // Verify dropdown switches to Plan Mode (EnterPlanMode is auto-approved)
     await expectSettingsChip(page, 'Plan Mode')
-    await waitForAgentIdle(page)
 
     // ── Step 2: Exit plan mode (produces control_request banner) ──
-    await sendMessage(page, EXIT_PLAN_PROMPT)
-
-    const exitBanner1 = await waitForControlBanner(page)
+    const exitBanner1 = await exitPlanMode(page, modelScript, { testId: 'plan-mode' })
     await expect(exitBanner1.getByText('Plan Ready for Review')).toBeVisible()
 
     // ── Step 3: Reject the plan with a comment ──
@@ -37,18 +34,11 @@ test.describe('Plan Mode', () => {
     // Wait for the control banner to disappear (rejection was processed)
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
 
-    // Wait for the agent to finish its turn after the rejection.
+    // The rejection returns to the model, which the fallback answers.
     await waitForAgentIdle(page, 60_000)
 
     // ── Step 4: Exit plan mode again ──
-    // The agent might call ExitPlanMode again on its own after rejection,
-    // or we may need to ask it explicitly.
-    const bannerAlreadyVisible = await page.locator('[data-testid="control-banner"]').isVisible()
-    if (!bannerAlreadyVisible) {
-      await sendMessage(page, EXIT_PLAN_PROMPT)
-    }
-
-    const exitBanner2 = await waitForControlBanner(page)
+    const exitBanner2 = await exitPlanMode(page, modelScript, { testId: 'plan-mode-again' })
     await expect(exitBanner2.getByText('Plan Ready for Review')).toBeVisible()
 
     // ── Step 5: Verify clear context checkbox is visible and unchecked ──
@@ -69,9 +59,9 @@ test.describe('Plan Mode', () => {
     // no plan_execution notification, so no plan file row in the popover.
   })
 
-  test('approve with clear context checkbox checked', async ({ page, authenticatedWorkspace }) => {
-    // Enter plan mode, write a plan, exit — get the approval banner.
-    const banner = await enterAndExitPlanMode(page, 'clear-ctx')
+  test('approve with clear context checkbox checked', async ({ page, authenticatedWorkspace, modelScript }) => {
+    // Enter plan mode, then exit — get the approval banner.
+    const banner = await enterAndExitPlanMode(page, modelScript, 'clear-ctx')
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
     // Verify checkbox is visible and unchecked by default.

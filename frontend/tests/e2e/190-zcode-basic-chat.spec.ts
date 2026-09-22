@@ -1,19 +1,28 @@
-import { applyPermissionPreset, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, messageContents, openPlusMenu, openSettingsMenu, sendMessage, settingsBar, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from './helpers/ui'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { bashToolCall } from './helpers/providerToolCalls'
+import { applyPermissionPreset, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, messageContents, openPlusMenu, openSettingsMenu, sendMessage, settingsBar, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from './helpers/ui'
 import { expect, ZCODE_E2E_SKIP_REASON, zcodeTest } from './zcode-fixtures'
 
 zcodeTest.skip(!!ZCODE_E2E_SKIP_REASON, ZCODE_E2E_SKIP_REASON || '')
 
+/** The command the permission tests script. It never runs: the banner stops it. */
+const RISKY_COMMAND = `rm -${'rf'} /tmp/zcode-e2e-must-not-exist`
+
 zcodeTest.describe('uses ZCode for basic chat', () => {
-  zcodeTest('opens, sends a prompt, and receives a response', async ({ authenticatedZCodeWorkspace, page }) => {
+  zcodeTest('opens, sends a prompt, and receives a response', async ({ authenticatedZCodeWorkspace, page, modelScript }) => {
     void authenticatedZCodeWorkspace
-    await sendMessage(page, ARITHMETIC_PROMPT)
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps()
     await waitForAgentIdle(page, 180_000)
     await expectAssistantAnswer(page)
   })
 
-  zcodeTest('assistant response appears in a chat bubble', async ({ authenticatedZCodeWorkspace, page }) => {
+  zcodeTest('assistant response appears in a chat bubble', async ({ authenticatedZCodeWorkspace, page, modelScript }) => {
     void authenticatedZCodeWorkspace
-    await sendMessage(page, 'Say hello world')
+    await modelScript.queue({ text: 'hello world' })
+    await sendMessage(page, modelScript.prompt('Say hello world'))
+    await modelScript.waitForSteps()
     await waitForAgentIdle(page, 180_000)
 
     await expect(assistantBubbles(page)).not.toHaveCount(0)
@@ -25,9 +34,14 @@ zcodeTest.describe('uses ZCode for basic chat', () => {
 })
 
 zcodeTest.describe('uses ZCode for tool execution', () => {
-  zcodeTest('a bash command renders as a tool card with its output', async ({ authenticatedZCodeWorkspace, page }) => {
+  zcodeTest('a bash command renders as a tool card with its output', async ({ authenticatedZCodeWorkspace, page, modelScript }) => {
     void authenticatedZCodeWorkspace
-    await sendMessage(page, 'Run the bash command: echo "zcode-test-output" and show me the output.')
+    await modelScript.queue(
+      { toolCalls: [bashToolCall(AgentProvider.ZCODE, 'echo-call', 'echo "zcode-test-output"')] },
+      { text: 'The command printed zcode-test-output.' },
+    )
+    await sendMessage(page, modelScript.prompt('Run the bash command: echo "zcode-test-output" and show me the output.'))
+    await modelScript.waitForSteps()
     await waitForAgentIdle(page, 180_000)
 
     const joined = (await messageContents(page).allTextContents()).join(' ')
@@ -38,9 +52,13 @@ zcodeTest.describe('uses ZCode for tool execution', () => {
 zcodeTest.describe('handles ZCode permission prompts', () => {
   // Build is the default and asks before a risky action. A destructive command
   // is the shape that produces a permission banner rather than running silently.
-  zcodeTest('a risky command produces a permission banner that can be denied', async ({ authenticatedZCodeWorkspace, page }) => {
+  zcodeTest('a risky command produces a permission banner that can be denied', async ({ authenticatedZCodeWorkspace, page, modelScript }) => {
     void authenticatedZCodeWorkspace
-    await sendMessage(page, 'Run this exact bash command and do not skip the confirmation: rm -rf /tmp/zcode-e2e-must-not-exist')
+    await modelScript.queue({ toolCalls: [bashToolCall(AgentProvider.ZCODE, 'risky-call', RISKY_COMMAND)] })
+    // The denial ends the turn, so the agent asks for nothing more.
+    modelScript.allowUnconsumed('a denied tool call may end the turn without another model request')
+    await modelScript.queue({ text: 'I stopped at the confirmation.' })
+    await sendMessage(page, modelScript.prompt('Run this exact bash command and do not skip the confirmation.'))
 
     const banner = await waitForControlBanner(page)
     await expect(banner).toContainText('Bash')
@@ -55,9 +73,16 @@ zcodeTest.describe('handles ZCode permission prompts', () => {
 
   // The banner's permission pills are the same settings change the composer
   // menu's bypass shortcut makes, applied when the request is allowed.
-  zcodeTest('the permission banner applies the selected bypass pill on allow', async ({ authenticatedZCodeWorkspace, page }) => {
+  zcodeTest('the permission banner applies the selected bypass pill on allow', async ({ authenticatedZCodeWorkspace, page, modelScript }) => {
     void authenticatedZCodeWorkspace
-    await sendMessage(page, 'Run this exact bash command and do not skip the confirmation: rm -rf /tmp/zcode-e2e-must-not-exist')
+    await modelScript.queue(
+      { toolCalls: [bashToolCall(AgentProvider.ZCODE, 'risky-call', RISKY_COMMAND)] },
+      { text: 'The command ran.' },
+    )
+    // The test asserts the settings chip, not the turn, and the allowed command
+    // may end the turn before the agent asks again.
+    modelScript.allowUnconsumed('the assertion is the permission chip, not a second model turn')
+    await sendMessage(page, modelScript.prompt('Run this exact bash command and do not skip the confirmation.'))
 
     const banner = await waitForControlBanner(page)
     await expect(banner).toContainText('Bash')

@@ -105,7 +105,7 @@ test.describe('consent page hardening', () => {
     await expect(heading).toBeVisible()
     await expect(heading).not.toContainText(impersonating)
     // It says the app is unverified, and attributes the name to the app.
-    await expect(page.getByText(/Nobody has verified this app on this hub/)).toBeVisible()
+    await expect(page.getByText(/Nobody verified this app on this hub/)).toBeVisible()
     await expect(page.getByText(/It says its name is/)).toBeVisible()
   })
 
@@ -132,10 +132,22 @@ test.describe('consent page hardening', () => {
     await loginViaToken(page, cookie)
     await page.goto(authorizeURL(hubUrl, clientId))
 
-    // The CONSEQUENCE, not the token.
+    // The CONSEQUENCE, always beside the token -- never a token on its own.
     await expect(page.getByText(/runs any command on your machine/)).toBeVisible()
     await expect(page.getByText(/inside your private network/)).toBeVisible()
-    await expect(page.getByText('terminal:write')).toHaveCount(0)
+
+    // The page shows both: `.scope-token` names the permission and
+    // `.scope-sentence` says what it does. Forbidding the token outright is the
+    // wrong reading of that -- it asserts a page the product does not render,
+    // and it passed only while the token span did not exist. What must hold is
+    // that no token stands ALONE, so every row carries a non-empty sentence.
+    const rows = page.locator('.scopes li:has(.scope-token)')
+    await expect(rows).not.toHaveCount(0)
+    const sentences = await rows.locator('.scope-sentence').allTextContents()
+    const tokens = await rows.locator('.scope-token').allTextContents()
+    expect(sentences, 'every permission row states a sentence').toHaveLength(tokens.length)
+    for (const [index, sentence] of sentences.entries())
+      expect(sentence.trim(), `the row for ${tokens[index]} states no consequence`).not.toBe('')
   })
 
   // The consent page renders an app ICON from the hub's OWN origin.

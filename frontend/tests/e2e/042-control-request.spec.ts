@@ -1,6 +1,10 @@
 import type { Page } from '@playwright/test'
+import type { ModelScript } from './helpers/modelScriptFixture'
+import type { QuestionRequest } from './helpers/providerToolCalls'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import { askUserQuestionToolCall } from './helpers/providerToolCalls'
 import { loginViaToken, openAgentViaUI, openWorkspace, sendMessage, sidebarLeaves, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
 
 /** Wait for the control request banner to appear and return a scoped locator. */
@@ -24,21 +28,70 @@ async function clickOption(page: Page, label: string) {
   await option.click()
 }
 
-// AskUserQuestion requires `description` for every option. Include it in all
-// test payloads so the tool call passes validation regardless of whether the
-// LLM copies the JSON literally or rewrites it.
+// The questions travel as a SCRIPTED tool call rather than as JSON inside a
+// prompt, so the banner draws exactly these options every run. The earlier
+// form asked the model to copy a JSON literal, and a model that rewrote it
+// produced different labels than the assertions below name.
 
-const COLOR_Q_3 = '{"question":"Pick a color","header":"Color","multiSelect":false,"options":[{"label":"Red","description":"Red color"},{"label":"Blue","description":"Blue color"},{"label":"Green","description":"Green color"}]}'
-const COLOR_Q_2 = '{"question":"Pick a color","header":"Color","multiSelect":false,"options":[{"label":"Red","description":"Red color"},{"label":"Blue","description":"Blue color"}]}'
-const SIZE_Q = '{"question":"Pick a size","header":"Size","multiSelect":false,"options":[{"label":"Small","description":"Small size"},{"label":"Large","description":"Large size"}]}'
+const COLOR_Q_3: QuestionRequest = {
+  question: 'Pick a color',
+  header: 'Color',
+  options: [
+    { label: 'Red', description: 'Red color' },
+    { label: 'Blue', description: 'Blue color' },
+    { label: 'Green', description: 'Green color' },
+  ],
+}
+const COLOR_Q_2: QuestionRequest = {
+  question: 'Pick a color',
+  header: 'Color',
+  options: [
+    { label: 'Red', description: 'Red color' },
+    { label: 'Blue', description: 'Blue color' },
+  ],
+}
+const SIZE_Q: QuestionRequest = {
+  question: 'Pick a size',
+  header: 'Size',
+  options: [
+    { label: 'Small', description: 'Small size' },
+    { label: 'Large', description: 'Large size' },
+  ],
+}
+
+/**
+ * Script one `AskUserQuestion` call and send the turn that makes it.
+ *
+ * The answer returns to the model, which then reports it — a turn whose count
+ * depends on what the test does with the banner, so the fallback answers it.
+ *
+ * `holdMs` delays the ANSWER, which is what a test needs when the request must
+ * arrive after something else it does. The endpoint replies in milliseconds, so
+ * a test that raced a real model's latency now wins that race instead of losing
+ * it, and gets the opposite of the state it meant to set up.
+ */
+async function askQuestions(
+  page: Page,
+  script: ModelScript,
+  questions: QuestionRequest[],
+  options: { holdMs?: number } = {},
+): Promise<void> {
+  await script.fallback({ text: 'You answered the questions.' })
+  await script.queue({
+    toolCalls: [askUserQuestionToolCall(AgentProvider.CLAUDE_CODE, 'ask-user', questions)],
+    ...(options.holdMs === undefined ? {} : { delayMs: options.holdMs }),
+  })
+  await sendMessage(page, script.prompt('Use AskUserQuestion and tell me what I answered.'))
+  // A held answer has not reached the agent yet, so the caller decides when to
+  // wait for the banner it raises.
+  if (options.holdMs === undefined)
+    await script.waitForSteps()
+}
 
 test.describe('Control Request - AskUserQuestion', () => {
-  test('single question - select an option and submit', async ({ page, authenticatedWorkspace }) => {
+  test('single question - select an option and submit', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Send a message that triggers AskUserQuestion
-    await sendMessage(
-      page,
-      `Use AskUserQuestion and tell me what I answered: {"questions":[${COLOR_Q_3}]}`,
-    )
+    await askQuestions(page, modelScript, [COLOR_Q_3])
 
     // Wait for the control banner
     const banner = await waitForControlBanner(page)
@@ -68,12 +121,9 @@ test.describe('Control Request - AskUserQuestion', () => {
     })
   })
 
-  test('multi-question - pagination with option selection', async ({ page, authenticatedWorkspace }) => {
+  test('multi-question - pagination with option selection', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Send a message with 2 questions
-    await sendMessage(
-      page,
-      `Use AskUserQuestion and tell me what I answered: {"questions":[${COLOR_Q_2},${SIZE_Q}]}`,
-    )
+    await askQuestions(page, modelScript, [COLOR_Q_2, SIZE_Q])
 
     const banner = await waitForControlBanner(page)
 
@@ -109,11 +159,8 @@ test.describe('Control Request - AskUserQuestion', () => {
     })
   })
 
-  test('multi-question - option click auto-advances to next page', async ({ page, authenticatedWorkspace }) => {
-    await sendMessage(
-      page,
-      `Use AskUserQuestion and tell me what I answered: {"questions":[${COLOR_Q_2},${SIZE_Q}]}`,
-    )
+  test('multi-question - option click auto-advances to next page', async ({ page, authenticatedWorkspace, modelScript }) => {
+    await askQuestions(page, modelScript, [COLOR_Q_2, SIZE_Q])
 
     const banner = await waitForControlBanner(page)
 
@@ -142,11 +189,8 @@ test.describe('Control Request - AskUserQuestion', () => {
     })
   })
 
-  test('YOLO button fills unanswered questions', async ({ page, authenticatedWorkspace }) => {
-    await sendMessage(
-      page,
-      `Use AskUserQuestion and tell me what I answered: {"questions":[${COLOR_Q_2},${SIZE_Q}]}`,
-    )
+  test('YOLO button fills unanswered questions', async ({ page, authenticatedWorkspace, modelScript }) => {
+    await askQuestions(page, modelScript, [COLOR_Q_2, SIZE_Q])
 
     await waitForControlBanner(page)
 
@@ -167,11 +211,8 @@ test.describe('Control Request - AskUserQuestion', () => {
     })
   })
 
-  test('Stop button rejects the request', async ({ page, authenticatedWorkspace }) => {
-    await sendMessage(
-      page,
-      `Use AskUserQuestion and tell me what I answered: {"questions":[${COLOR_Q_2}]}`,
-    )
+  test('Stop button rejects the request', async ({ page, authenticatedWorkspace, modelScript }) => {
+    await askQuestions(page, modelScript, [COLOR_Q_2])
 
     await waitForControlBanner(page)
 
@@ -182,7 +223,7 @@ test.describe('Control Request - AskUserQuestion', () => {
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
   })
 
-  test('multi-question control request stays on the correct agent tab', async ({ page, authenticatedWorkspace }) => {
+  test('multi-question control request stays on the correct agent tab', async ({ page, authenticatedWorkspace, modelScript }) => {
     const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
     await expect(agentTabs).toHaveCount(1)
 
@@ -195,10 +236,7 @@ test.describe('Control Request - AskUserQuestion', () => {
 
     // Trigger AskUserQuestion only on the second agent.
     await secondAgentTab.click()
-    await sendMessage(
-      page,
-      `Use AskUserQuestion and tell me what I answered: {"questions":[${COLOR_Q_2},${SIZE_Q}]}`,
-    )
+    await askQuestions(page, modelScript, [COLOR_Q_2, SIZE_Q])
 
     const secondBanner = await waitForControlBanner(page)
     await expect(secondBanner.getByText('Pick a color')).toBeVisible()
@@ -228,7 +266,7 @@ test.describe('Control Request - AskUserQuestion', () => {
     })
   })
 
-  test('control request on a background agent tab badges it', async ({ page, authenticatedWorkspace }) => {
+  test('control request on a background agent tab badges it', async ({ page, authenticatedWorkspace, modelScript }) => {
     void authenticatedWorkspace
     const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
     await openAgentViaUI(page)
@@ -236,11 +274,11 @@ test.describe('Control Request - AskUserQuestion', () => {
 
     // Raise the control request on agent 1, then hide it behind agent 2 before
     // the banner can claim focus — the NOTIFY path must still light the badge.
+    // The hold is what puts the request after the switch: without it the mock
+    // endpoint answers first and the banner claims focus while agent 1 is still
+    // selected, which is the state this test exists to avoid.
     await agentTabs.first().click()
-    await sendMessage(
-      page,
-      `Use AskUserQuestion and tell me what I answered: {"questions":[${COLOR_Q_2}]}`,
-    )
+    await askQuestions(page, modelScript, [COLOR_Q_2], { holdMs: 2_000 })
     await agentTabs.nth(1).click()
     await expect(agentTabs.nth(1)).toHaveAttribute('aria-selected', 'true')
 
@@ -252,7 +290,7 @@ test.describe('Control Request - AskUserQuestion', () => {
     await waitForControlBanner(page)
   })
 
-  test('control request on a background workspace badges its tab when returned to', async ({ page, leapmuxServer }) => {
+  test('control request on a background workspace badges its tab when returned to', async ({ page, leapmuxServer, modelScript }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
     const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Control Active')
     const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Control Background')
@@ -268,11 +306,10 @@ test.describe('Control Request - AskUserQuestion', () => {
       const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
       await expect(agentTabs).toHaveCount(2)
       // Leave agent 2 selected so agent 1 can keep its badge after we return.
+      // The hold puts the request after the switch, so the banner never claims
+      // focus while agent 1 is selected.
       await agentTabs.first().click()
-      await sendMessage(
-        page,
-        `Use AskUserQuestion and tell me what I answered: {"questions":[${COLOR_Q_2}]}`,
-      )
+      await askQuestions(page, modelScript, [COLOR_Q_2], { holdMs: 2_000 })
       await agentTabs.nth(1).click()
       await workspaceRow(page, ws1).click()
       await waitForWorkspaceReady(page)

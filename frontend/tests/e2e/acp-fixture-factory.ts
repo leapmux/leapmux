@@ -13,7 +13,7 @@ export { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 
 /**
  * Provider configuration for CLI detection and workspace prefixes.
- * createACPWorkspace reads model and effort settings from REAL_AGENT_E2E_SETTINGS through agentProvider.
+ * createACPWorkspace reads model and effort settings from AGENT_E2E_SETTINGS through agentProvider.
  * Keeping those settings outside this configuration prevents one provider from receiving another provider model.
  */
 export interface ACPFixtureConfig {

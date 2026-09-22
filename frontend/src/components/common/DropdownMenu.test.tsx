@@ -578,33 +578,6 @@ describe('DropdownMenu contextMenuFor', () => {
     ).not.toThrow()
   })
 
-  /**
-   * A trigger-less dropdown holds nothing but its `position: fixed` popover, and
-   * `ot-dropdown` defaults to `display: inline`. Inside a flex row that empty
-   * inline box is still a flex ITEM, adding one `gap` of empty space to every row
-   * that mounts such a menu -- which is every tab row. The attribute is what the
-   * `display: contents` rule in ~/styles/popover.css.ts keys on.
-   */
-  it('marks a trigger-less host headless so it takes no room in the row', () => {
-    const { container } = render(() => (
-      <DropdownMenu id="headless-menu" contextMenuFor={() => undefined}>
-        <button role="menuitem">Item</button>
-      </DropdownMenu>
-    ))
-
-    expect(container.querySelector('ot-dropdown')).toHaveAttribute('data-headless')
-  })
-
-  it('leaves a host with a trigger laid out as usual', () => {
-    const { container } = render(() => (
-      <DropdownMenu id="triggered-menu" trigger={<button>Open</button>}>
-        <button role="menuitem">Item</button>
-      </DropdownMenu>
-    ))
-
-    expect(container.querySelector('ot-dropdown')).not.toHaveAttribute('data-headless')
-  })
-
   it('detaches on unmount', () => {
     vi.useFakeTimers()
     try {
@@ -621,6 +594,97 @@ describe('DropdownMenu contextMenuFor', () => {
     finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('DropdownMenu opening position', () => {
+  /**
+   * The popover carries its own `top`/`left`, and it must carry them by the
+   * time the browser paints the frame that reveals it.
+   *
+   * This used to run in a `requestAnimationFrame` alone, under a comment about
+   * waiting for Oat's own positioning. Oat never positions it -- `ot-dropdown`
+   * returns early without a `[popovertarget]`, and this component renders none
+   * -- so the popover painted one whole frame at the UA default for
+   * `position: fixed; margin: 0`, the viewport's top-left corner, and then
+   * jumped to its anchor. A user sees a flash. A test that re-clicks the
+   * trigger finds the popover over it, and the click lands on a menu item.
+   *
+   * The assertion reads the inline style WITHOUT flushing a frame, which is the
+   * only thing that tells the synchronous call from the deferred one.
+   */
+  it('writes the anchored position before any frame runs', () => {
+    const frames: FrameRequestCallback[] = []
+    const request = vi.spyOn(globalThis, 'requestAnimationFrame')
+      .mockImplementation((callback: FrameRequestCallback) => {
+        frames.push(callback)
+        return frames.length
+      })
+    onTestFinished(() => request.mockRestore())
+
+    render(() => (
+      <DropdownMenu
+        id="positioned-menu"
+        data-testid="positioned-popover"
+        trigger={p => <button {...p} type="button">Open</button>}
+      >
+        <button role="menuitem">Item</button>
+      </DropdownMenu>
+    ))
+
+    const trigger = screen.getByRole('button', { name: 'Open', hidden: true })
+    const popover = screen.getByTestId('positioned-popover')
+    // jsdom measures every box as 0, so the anchor has to state one. Without it
+    // the arithmetic answers the viewport corner for the right reason and the
+    // assertion could not tell that from the defect.
+    stubRect(trigger, { top: 300, left: 200, right: 260, bottom: 330, width: 60, height: 30 })
+    stubRect(popover, { width: 160, height: 120 })
+
+    fireEvent.click(trigger)
+
+    // No frame has run: every `requestAnimationFrame` callback is still queued.
+    expect(frames.length).toBeGreaterThan(0)
+    expect(popover.style.top, 'the popover is positioned before the first frame').not.toBe('')
+    expect(popover.style.left).not.toBe('')
+    // Below the trigger, not at the viewport corner.
+    expect(Number.parseFloat(popover.style.top)).toBeGreaterThanOrEqual(330)
+    expect(Number.parseFloat(popover.style.left)).toBeGreaterThan(0)
+  })
+
+  it('positions again on the next frame, for content that lays out over more than one', () => {
+    // A long list or a filter box changes the popover's measured size after the
+    // first pass, and the second call is what re-anchors it.
+    const frames: FrameRequestCallback[] = []
+    const request = vi.spyOn(globalThis, 'requestAnimationFrame')
+      .mockImplementation((callback: FrameRequestCallback) => {
+        frames.push(callback)
+        return frames.length
+      })
+    onTestFinished(() => request.mockRestore())
+
+    render(() => (
+      <DropdownMenu
+        id="regrown-menu"
+        data-testid="regrown-popover"
+        trigger={p => <button {...p} type="button">Open</button>}
+      >
+        <button role="menuitem">Item</button>
+      </DropdownMenu>
+    ))
+
+    const trigger = screen.getByRole('button', { name: 'Open', hidden: true })
+    const popover = screen.getByTestId('regrown-popover')
+    stubRect(trigger, { top: 300, left: 200, right: 260, bottom: 330, width: 60, height: 30 })
+    stubRect(popover, { width: 160, height: 120 })
+    fireEvent.click(trigger)
+    const firstPass = popover.style.top
+
+    // The content grew past the room under the trigger, so the same anchor now
+    // yields a different answer: the popover flips above it.
+    stubRect(popover, { width: 160, height: 600 })
+    for (const frame of frames.splice(0))
+      frame(0)
+    expect(popover.style.top).not.toBe(firstPass)
   })
 })
 

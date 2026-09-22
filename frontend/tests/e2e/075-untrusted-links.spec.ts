@@ -115,11 +115,13 @@ test.describe('Untrusted link prompt', () => {
     await expect(dialog(page)).toBeHidden()
   })
 
-  test('warns before opening a markdown link whose text names a different address', async ({ page, authenticatedWorkspace }) => {
+  test('warns before opening a markdown link whose text names a different address', async ({ page, authenticatedWorkspace, modelScript }) => {
     await recordOpenedUrls(page)
     // Rendered through the same pipeline an agent's reply takes, so the anchor
     // carries the mark `rehypeExternalLinks` puts on every link it hardens.
-    await sendMessage(page, '[https://good.example](https://evil.example/steal)')
+    await modelScript.queue({ text: 'Noted.' })
+    await sendMessage(page, modelScript.prompt('[https://good.example](https://evil.example/steal)'))
+    await modelScript.waitForSteps()
 
     const link = userBubbles(page).first().getByRole('link', { name: 'https://good.example' })
     await expect(link).toBeVisible()

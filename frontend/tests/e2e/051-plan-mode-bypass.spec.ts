@@ -1,23 +1,21 @@
 import { expect, test } from './fixtures'
-import { ENTER_PLAN_PROMPT, enterAndExitPlanMode, EXIT_PLAN_PROMPT } from './helpers/plan-mode'
-import { expectSettingsChip, sendMessage, settingsBar, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from './helpers/ui'
+import { enterAndExitPlanMode, enterPlanMode, exitPlanMode } from './helpers/plan-mode'
+import { expectSettingsChip, settingsBar, waitForSettingsIdle } from './helpers/ui'
 
 test.describe('plan mode - bypass permissions', () => {
-  test('bypass permissions from ExitPlanMode banner', async ({ page, authenticatedWorkspace }) => {
+  test('bypass permissions from ExitPlanMode banner', async ({ page, authenticatedWorkspace, modelScript }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
     await expectSettingsChip(page, 'Default')
 
-    // Step 1: Enter plan mode and write a dummy plan
-    await sendMessage(page, ENTER_PLAN_PROMPT)
+    // Step 1: Enter plan mode
+    await enterPlanMode(page, modelScript)
 
     // Verify dropdown switches to Plan Mode (EnterPlanMode is auto-approved)
     await expectSettingsChip(page, 'Plan Mode')
-    await waitForAgentIdle(page)
 
     // Step 2: Exit plan mode (produces control_request banner)
-    await sendMessage(page, EXIT_PLAN_PROMPT)
-    const banner = await waitForControlBanner(page)
+    const banner = await exitPlanMode(page, modelScript)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
     // Verify the switch and the permission pills are visible, with Smart selected.
@@ -50,9 +48,9 @@ test.describe('plan mode - bypass permissions', () => {
     await expectSettingsChip(page, 'Bypass Permissions')
   })
 
-  test('approve and switches toggle with feedback on editor content', async ({ page, authenticatedWorkspace }) => {
+  test('approve and switches toggle with feedback on editor content', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Enter plan mode, write a dummy plan, and exit
-    const banner = await enterAndExitPlanMode(page)
+    const banner = await enterAndExitPlanMode(page, modelScript)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
     // The empty editor shows Reject, Approve, the Clear Context switch, and the permission pills.
@@ -81,8 +79,8 @@ test.describe('plan mode - bypass permissions', () => {
     await expect(page.locator('[data-testid="plan-approve-btn"]')).toBeVisible()
   })
 
-  test('lays the pill radios and their moving copies out identically', async ({ page, authenticatedWorkspace }) => {
-    const banner = await enterAndExitPlanMode(page)
+  test('lays the pill radios and their moving copies out identically', async ({ page, authenticatedWorkspace, modelScript }) => {
+    const banner = await enterAndExitPlanMode(page, modelScript)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
     const group = page.getByRole('radiogroup', { name: 'Permissions' })

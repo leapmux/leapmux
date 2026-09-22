@@ -51,10 +51,17 @@ test.describe('Workspace Context Menu', () => {
     // A leaf that cannot close draws no action button, so its height states
     // whether the row reserves one. Every sidebar row must measure the same.
     const workspaceHeight = (await workspaceItem.boundingBox())!.height
+    // Labelled, because the bare count this used to compare named neither the
+    // heights nor the row that broke the rhythm.
     const leafHeights = await sidebarLeaves(page, authenticatedWorkspace.workspaceId)
-      .evaluateAll(rows => rows.map(row => row.getBoundingClientRect().height))
+      .evaluateAll(rows => rows.map(row => ({
+        label: (row.textContent ?? '').trim().slice(0, 40),
+        height: row.getBoundingClientRect().height,
+      })))
     expect(leafHeights.length).toBeGreaterThan(0)
-    expect(new Set([workspaceHeight, ...leafHeights]).size).toBe(1)
+    const rhythm = [{ label: 'the workspace row', height: workspaceHeight }, ...leafHeights]
+    expect(new Set(rhythm.map(row => row.height)), `every sidebar row must measure the same: ${JSON.stringify(rhythm)}`)
+      .toEqual(new Set([workspaceHeight]))
   })
 
   test('rename via context menu and delete via two-step confirm round-trip the backend', async ({ page, authenticatedWorkspace }) => {

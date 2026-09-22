@@ -8,8 +8,10 @@ import { firstAssistantBubble, readAttached, sendMessage } from './helpers/ui'
  */
 
 test.describe('Chat Pagination & Scroll', () => {
-  test('renders sequenced messages and clears the indicator after a response', async ({ page, authenticatedWorkspace }) => {
-    await sendMessage(page, 'Say hello.')
+  test('renders sequenced messages and clears the indicator after a response', async ({ page, authenticatedWorkspace, modelScript }) => {
+    await modelScript.queue({ text: 'Hello.' })
+    await sendMessage(page, modelScript.prompt('Say hello.'))
+    await modelScript.waitForSteps(1)
 
     const thinking = page.locator('[data-testid="thinking-indicator"]')
 

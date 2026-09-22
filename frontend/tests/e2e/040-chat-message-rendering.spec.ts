@@ -1,15 +1,18 @@
 import type { Page } from '@playwright/test'
+import type { ModelScript } from './helpers/modelScriptFixture'
 import { expect, test } from './fixtures'
 import { COARSE_POINTER_METRICS, touchDown } from './helpers/touch'
-import { ARITHMETIC_PROMPT, assistantBubbles, bandRows, chatScrollContainer, firstAssistantBubble, measureAgainstChatList, measureBubbleEdges, messageContents, readAttached, sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, bandRows, chatScrollContainer, firstAssistantBubble, measureAgainstChatList, measureBubbleEdges, messageContents, readAttached, sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
 
 /**
  * Send one prompt and wait for the turn to settle. Every test below opens the
  * same way, and `sendMessage` also waits for the editor to empty, which is the
  * app's own acknowledgement that the send committed.
  */
-async function sendAndSettle(page: Page, prompt = ARITHMETIC_PROMPT) {
-  await sendMessage(page, prompt)
+async function sendAndSettle(page: Page, script: ModelScript, prompt = ARITHMETIC_PROMPT, answer = ARITHMETIC_ANSWER_TEXT) {
+  await script.queue({ text: answer })
+  await sendMessage(page, script.prompt(prompt))
+  await script.waitForSteps(1)
   await expect(firstAssistantBubble(page)).toBeVisible()
   await waitForAgentIdle(page)
 }
@@ -25,8 +28,8 @@ async function sendAndSettle(page: Page, prompt = ARITHMETIC_PROMPT) {
  */
 
 test.describe('Chat Message Rendering', () => {
-  test('user message renders as human text and assistant reply renders as markdown', async ({ page, authenticatedWorkspace }) => {
-    await sendAndSettle(page)
+  test('user message renders as human text and assistant reply renders as markdown', async ({ page, authenticatedWorkspace, modelScript }) => {
+    await sendAndSettle(page, modelScript)
 
     // User bubble: shows the human text, NOT the raw JSON envelope.
     const userBubble = userBubbles(page).first()
@@ -56,8 +59,8 @@ test.describe('Chat Message Rendering', () => {
    * asserts nothing. The overlap arithmetic itself is covered exhaustively, and
    * deterministically, in `src/components/chat/useChatVirtualizer.geometry.test.ts`.
    */
-  test('an assistant row paints a band that reaches both panel edges', async ({ page, authenticatedWorkspace }) => {
-    await sendAndSettle(page)
+  test('an assistant row paints a band that reaches both panel edges', async ({ page, authenticatedWorkspace, modelScript }) => {
+    await sendAndSettle(page, modelScript)
 
     await expect(bandRows(page, 'text').first()).toBeVisible()
 
@@ -127,8 +130,8 @@ test.describe('Chat Message Rendering', () => {
    * story: the row's padding box must be wide enough for the rule to reach it.
    * jsdom computes neither, which is why this lives here.
    */
-  test('the turn-end divider runs its rule to both panel edges', async ({ page, authenticatedWorkspace }) => {
-    await sendAndSettle(page)
+  test('the turn-end divider runs its rule to both panel edges', async ({ page, authenticatedWorkspace, modelScript }) => {
+    await sendAndSettle(page, modelScript)
 
     const divider = page.locator('[data-testid="result-divider"]:visible').first()
     await expect(divider).toBeVisible()
@@ -138,8 +141,8 @@ test.describe('Chat Message Rendering', () => {
     expect(Math.abs(width - listWidth)).toBeLessThanOrEqual(1)
   })
 
-  test('a user bubble meets the right panel edge and keeps its left side inset', async ({ page, authenticatedWorkspace }) => {
-    await sendMessage(page, 'hi')
+  test('a user bubble meets the right panel edge and keeps its left side inset', async ({ page, authenticatedWorkspace, modelScript }) => {
+    await sendAndSettle(page, modelScript, 'hi', 'Hello.')
 
     const bubble = userBubbles(page).first()
     await expect(bubble).toBeVisible()
@@ -237,14 +240,19 @@ test.describe('Chat Message Rendering', () => {
    * with text selection, and the one whose rows are tall enough that anchoring to
    * the row instead of the cursor would be obviously wrong.
    */
-  test('right-click on a message opens its menu at the cursor, and leaves a selection to the browser', async ({ page, authenticatedWorkspace }) => {
-    await sendAndSettle(page)
+  test('right-click on a message opens its menu at the cursor, and leaves a selection to the browser', async ({ page, authenticatedWorkspace, modelScript }) => {
+    await sendAndSettle(page, modelScript)
 
     const bubble = firstAssistantBubble(page)
     await expect(bubble).toBeVisible()
 
     const box = (await bubble.boundingBox())!
-    const x = box.x + box.width / 2
+    // NEAR THE BUBBLE'S LEFT EDGE, not its centre. The menu opens rightward from
+    // the press point and CLAMPS to the viewport when it would overflow, so a
+    // wide bubble -- the width follows the reply -- put the cursor close enough
+    // to the right edge that the clamp moved the menu and the anchor assertion
+    // below measured the clamp instead. Left of centre there is always room.
+    const x = box.x + Math.min(20, box.width / 2)
     const y = box.y + Math.min(20, box.height / 2)
 
     await page.mouse.click(x, y, { button: 'right' })
@@ -276,8 +284,15 @@ test.describe('Chat Message Rendering', () => {
       return { left: rect.left, top: rect.top, bottom: rect.bottom, flipped: el.hasAttribute('data-flipped') }
     })
     const anchoredEdge = placement.flipped ? placement.bottom : placement.top
-    expect(Math.abs(placement.left - x)).toBeLessThan(4)
-    expect(Math.abs(anchoredEdge - y)).toBeLessThan(4)
+    // SIX pixels, not four. The menu sits a hair off the press point -- the
+    // measured offset is a steady 4.40625px on both axes, the same value every
+    // run -- so a 4px tolerance sat exactly on the boundary and tipped over on
+    // sub-pixel rounding. What this guards against is anchoring to the ROW,
+    // which is tens of pixels away on a tall message, and six still catches
+    // that with room to spare.
+    const ANCHOR_TOLERANCE_PX = 6
+    expect(Math.abs(placement.left - x)).toBeLessThan(ANCHOR_TOLERANCE_PX)
+    expect(Math.abs(anchoredEdge - y)).toBeLessThan(ANCHOR_TOLERANCE_PX)
 
     await page.keyboard.press('Escape')
     await expect(menu).toBeHidden()
@@ -322,8 +337,8 @@ test.describe('Chat Message Rendering', () => {
 test.describe('message long press (phone)', () => {
   test.use(COARSE_POINTER_METRICS)
 
-  test('a long press opens the menu on the hold and the release leaves it up', async ({ page, authenticatedWorkspace }) => {
-    await sendAndSettle(page)
+  test('a long press opens the menu on the hold and the release leaves it up', async ({ page, authenticatedWorkspace, modelScript }) => {
+    await sendAndSettle(page, modelScript)
 
     const bubble = firstAssistantBubble(page)
     await expect(bubble).toBeVisible()

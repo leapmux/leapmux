@@ -93,6 +93,14 @@ func (a *CursorCLIAgent) forgetTaskToolCall(toolCallID string) bool {
 // of the agent, and a later call that reuses the id would read it and file a
 // backgrounded shell as a subagent. The note has no reader on that path either:
 // this observation already carries the kind and the title.
+// A Cursor subagent's child transcript arrives in ONE piece, when the task ends:
+// neither observation here carries a ChildTranscriptPayload, so nothing reaches
+// the child tab between the spawn prompt and the final report. Goose streams by
+// setting that field per update, and ZCode and Codex write into the child sink
+// directly. Cursor's own wire format nests the child's updates inside the
+// parent's `tool_call_delta`, so the shape exists; whether `cursor-agent`
+// forwards it over ACP is untested. See
+// https://github.com/leapmux/leapmux/issues/487.
 func (a *CursorCLIAgent) spawnObservation(tc acpToolCallEnvelope) *acpSubagentObservation {
 	obs := cursorSubagentFromToolCall(tc)
 	if obs != nil && !acpStatusIsFinal(tc.Status) {
@@ -258,15 +266,13 @@ func decorateCursorModel(m *ModelInfo) {
 	if params["thinking"] == "true" {
 		parts = append(parts, "Extended thinking")
 	}
-	// Cursor reports a model's reasoning-effort level under "effort" (Claude) or "reasoning"
-	// (GPT) -- the same concept (cursorReasoningLevel), mutually exclusive in practice. Show it
-	// ONCE, preferring "effort", so this tooltip can't disagree with the name suffix, which
-	// also collapses the two keys via cursorReasoningLevel. (A model reporting both -- which
-	// would contradict the same-concept assumption -- then renders consistently in both places.)
-	if e := params["effort"]; e != "" {
-		parts = append(parts, capitalizeFirst(e)+" effort")
-	} else if r := params["reasoning"]; r != "" {
-		parts = append(parts, capitalizeFirst(r)+" reasoning")
+	// Cursor spells a model's reasoning-effort level three ways and means one thing by all
+	// of them (cursorReasoningAttribute), mutually exclusive in practice. Show it ONCE, in
+	// that function's order, so this tooltip cannot disagree with the name suffix, which
+	// reads the same function. (A model reporting more than one -- which would contradict
+	// the same-concept assumption -- then renders consistently in both places.)
+	if level, noun := cursorReasoningAttribute(params); level != "" {
+		parts = append(parts, capitalizeFirst(level)+" "+noun)
 	}
 	if params["fast"] == "true" {
 		parts = append(parts, "Fast")
@@ -282,14 +288,29 @@ func decorateCursorModel(m *ModelInfo) {
 	}
 }
 
-// cursorReasoningLevel returns a model's reasoning-effort level from whichever bracket
-// key Cursor used -- "effort" on Claude models, "reasoning" on GPT models -- which are
-// the same concept. Returns "" when neither is present.
-func cursorReasoningLevel(params map[string]string) string {
+// cursorReasoningAttribute returns a model's reasoning-effort level and the noun that
+// renders it. Cursor's catalogue spells the one concept three ways -- "effort" on Claude
+// models, "reasoning" on GPT models, "reasoning_effort" on Grok -- so this is the single
+// place that states their order of preference, and both the name suffix and the tooltip
+// read it. Returns "" when the id carries none of the three.
+//
+// "reasoning_effort" is an effort level and says so in Cursor's own tooltip ("low
+// effort"), so it takes the effort noun rather than a third wording.
+func cursorReasoningAttribute(params map[string]string) (level string, noun string) {
 	if level := params["effort"]; level != "" {
-		return level
+		return level, "effort"
 	}
-	return params["reasoning"]
+	if level := params["reasoning"]; level != "" {
+		return level, "reasoning"
+	}
+	return params["reasoning_effort"], "effort"
+}
+
+// cursorReasoningLevel returns the level alone, for the callers that render it through
+// the shared effort-label table rather than as a tooltip sentence.
+func cursorReasoningLevel(params map[string]string) string {
+	level, _ := cursorReasoningAttribute(params)
+	return level
 }
 
 // cursorModelNameSuffix returns the short distinguishing suffix for a model variant's

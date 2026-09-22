@@ -1,12 +1,13 @@
 import { expect, GOOSE_E2E_SKIP_REASON, gooseTest } from './goose-fixtures'
-import { applyPermissionPreset, ARITHMETIC_PROMPT, expectAssistantAnswer, openPlusMenu, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from './helpers/ui'
+import { applyPermissionPreset, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, openPlusMenu, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from './helpers/ui'
 
 gooseTest.skip(!!GOOSE_E2E_SKIP_REASON, GOOSE_E2E_SKIP_REASON || '')
 
 gooseTest.describe('Goose Basic Chat', () => {
-  gooseTest('send message and receive response', async ({ authenticatedGooseWorkspace, page }) => {
+  gooseTest('send message and receive response', async ({ authenticatedGooseWorkspace, page, modelScript }) => {
     void authenticatedGooseWorkspace
-    await sendMessage(page, ARITHMETIC_PROMPT)
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await waitForAgentIdle(page, 120_000)
     await expectAssistantAnswer(page)
   })

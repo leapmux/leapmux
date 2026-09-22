@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { expectAssistantAnswer, expectNoSettingsChip, expectSettingsChip, openSettingsMenu, settingsBar, waitForSettingsIdle } from './helpers/ui'
+import { expectAssistantAnswer, expectNoSettingsChip, expectSettingsChip, openSettingsMenu, sendMessage, settingsBar, waitForSettingsIdle } from './helpers/ui'
 
 // The e2e account can't bill Sonnet's 1M-context tier, so this suite uses
 // Opus[1m] instead. The underlying coverage — bracketed model IDs and the
@@ -11,7 +11,7 @@ import { expectAssistantAnswer, expectNoSettingsChip, expectSettingsChip, openSe
 const MODEL_CHANGE_PATTERN = /Model \(Sonnet → Opus \(1M context\)\)/
 
 test.describe('1m-context model', () => {
-  test('switch to opus[1m] and exchange messages', async ({ authenticatedWorkspace, page }) => {
+  test('switch to opus[1m] and exchange messages', async ({ authenticatedWorkspace, page, modelScript }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
@@ -29,12 +29,11 @@ test.describe('1m-context model', () => {
     // Wait for agent restart to complete
     await waitForSettingsIdle(page)
 
-    // Send a message and verify the agent responds
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
-    await page.keyboard.type('What is 5+3? Reply with just the number, nothing else.')
-    await page.keyboard.press('Meta+Enter')
+    // Send a message and verify the agent responds. The RESTART is the subject
+    // here, so the answers are scripted and only their arrival matters.
+    await modelScript.queue({ text: '8' })
+    await sendMessage(page, modelScript.prompt('What is 5+3? Reply with just the number, nothing else.'))
+    await modelScript.waitForSteps(1)
 
     // Scan all bubbles for the answer rather than .last(): the per-turn "Took Ns"
     // meta bubble also carries data-role="agent" and can be last, racing the
@@ -42,9 +41,9 @@ test.describe('1m-context model', () => {
     await expectAssistantAnswer(page, { answer: /\b8\b/ })
 
     // Send a follow-up to confirm the agent session is stable
-    await editor.click()
-    await page.keyboard.type('What is 10-4? Reply with just the number, nothing else.')
-    await page.keyboard.press('Meta+Enter')
+    await modelScript.queue({ text: '6' })
+    await sendMessage(page, modelScript.prompt('What is 10-4? Reply with just the number, nothing else.'))
+    await modelScript.waitForSteps(2)
 
     await expectAssistantAnswer(page, { answer: /\b6\b/ })
 

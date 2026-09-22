@@ -738,10 +738,6 @@ export function DropdownMenu(props: DropdownMenuProps) {
     setIsOpen(opening)
 
     if (opening) {
-      // Reposition after OAT's own positioning
-      requestAnimationFrame(() => {
-        reposition()
-      })
       window.addEventListener('scroll', repositionOnExternalScroll, true)
 
       // Re-anchor whenever the content's measured size settles after the initial
@@ -774,6 +770,26 @@ export function DropdownMenu(props: DropdownMenuProps) {
           resizeObserver?.observe(dialog)
       }
       applyCaps()
+
+      // Position BEFORE the browser paints. `showPopover` already made this
+      // popover `:popover-open`, so it is laid out and measurable here, and the
+      // caps above have settled its width and height.
+      //
+      // This used to happen in a `requestAnimationFrame` ALONE, under a comment
+      // about waiting for Oat's own positioning. Oat never positions it: its
+      // `ot-dropdown` returns early without a `[popovertarget]`, and this
+      // component deliberately renders none (see the note by MENU_ITEM_SELECTOR).
+      // So the popover painted one whole frame at the UA default for
+      // `position: fixed; margin: 0` -- the viewport's top-left corner -- and
+      // then jumped to its anchor. A user sees that as a flash. A test that
+      // re-clicks the trigger finds the popover sitting on top of it, and the
+      // click lands on a menu item instead.
+      reposition()
+      // Again on the next frame, for content that lays out over more than one:
+      // a long list, or a filter box that shrinks it once it renders.
+      requestAnimationFrame(() => {
+        reposition()
+      })
 
       getAnchorElement()?.setAttribute('aria-expanded', 'true')
 
@@ -988,16 +1004,11 @@ export function DropdownMenu(props: DropdownMenuProps) {
     return props.class ? `${shape} ${props.class}` : shape
   }
 
-  // `data-headless` marks a dropdown with no trigger -- one opened only by
-  // right-click or long press. The host then collapses to `display: contents` and
-  // adds no flex item to the row that mounts it; see ~/styles/popover.css.ts.
-  //
-  // `attr:` is required, not stylistic: `ot-dropdown` has a dash in its name, so
-  // Solid treats it as a custom element and assigns unknown props as PROPERTIES.
-  // Without the namespace this sets `el.dataHeadless` and no attribute, and the
-  // CSS rule never matches.
+  // The host adds NO box of its own, with a trigger or without one: every
+  // `ot-dropdown` is `display: contents`. See ~/styles/popover.css.ts, which
+  // states what the UA default costs each way.
   return (
-    <ot-dropdown attr:data-headless={props.trigger === undefined ? 'true' : undefined}>
+    <ot-dropdown>
       {renderTrigger()}
       {/* `menu` (default) and `div` popovers differ ONLY by tag; everything else (the
           popover attr, id, ref, class, testid, and the Escape/outside-click dismiss

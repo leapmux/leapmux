@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { expectAssistantAnswer, workspaceRow } from './helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, workspaceRow } from './helpers/ui'
 
 /**
  * Ensure at least one agent tab exists after workspace creation
@@ -22,7 +22,7 @@ async function ensureAgentTab(page: Page): Promise<number> {
 }
 
 test.describe('Workspace Chat', () => {
-  test('should create workspace, open agent, and receive response from Claude', async ({ page, authenticatedWorkspace }) => {
+  test('should create workspace, open agent, and receive response from Claude', async ({ page, authenticatedWorkspace, modelScript }) => {
     // An agent tab is auto-created when a workspace is created.
     // Wait for the Milkdown editor to be ready.
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
@@ -34,12 +34,14 @@ test.describe('Workspace Chat', () => {
     // tested separately in 122).
     await expect(page.getByText(/^Starting /)).not.toBeVisible()
 
-    // Send a message to Claude via the rich text editor
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+
+    // Send a message to Claude via the rich text editor.
     await editor.click()
-    await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
+    await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
     await page.keyboard.press('Meta+Enter')
 
-    // Editor should be cleared after sending
+    // The editor clears after it accepts the message.
     await expect(editor).toHaveText('')
 
     // Wait for Claude's response to appear in an assistant message bubble.

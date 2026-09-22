@@ -1,6 +1,8 @@
 import type { Page } from '@playwright/test'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import { bashToolCall } from './helpers/providerToolCalls'
 import { typeInTerminal, waitForTerminalText } from './helpers/terminal'
 import { armTurnEndSound, expectDoorbellCount } from './helpers/turnEndSound'
 import {
@@ -31,7 +33,7 @@ async function installWatchOpenCounter(page: Page) {
 const TOOL_USING_PROMPT = 'Run the command `pwd` and tell me the result.'
 
 test.describe('WatchEvents stream continuity', () => {
-  test('tab and workspace switches revise interest without reopening the stream', async ({ page, leapmuxServer }) => {
+  test('tab and workspace switches revise interest without reopening the stream', async ({ page, leapmuxServer, modelScript }) => {
     const { hubUrl, adminToken, adminUserId, workerId } = leapmuxServer
     const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Watch Continuity A')
     const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Watch Continuity B')
@@ -70,8 +72,17 @@ test.describe('WatchEvents stream continuity', () => {
       await termTab.click()
       await agentTabs.first().click()
 
-      // Hidden agent still receives turn-end notify (sound).
-      await sendMessage(page, TOOL_USING_PROMPT)
+      // Hidden agent still receives turn-end notify (sound). The final answer is
+      // HELD so the turn ends after the switch below: `waitForSteps` returns when
+      // the endpoint takes the step, not when it answers, so the switch happens
+      // inside the hold. Without it the turn ends while this tab is still
+      // selected, and the notify path this test exists for never runs.
+      await modelScript.queue(
+        { toolCalls: [bashToolCall(AgentProvider.CLAUDE_CODE, 'pwd-call', 'pwd')] },
+        { text: 'The working directory is above.', delayMs: 2_000 },
+      )
+      await sendMessage(page, modelScript.prompt(TOOL_USING_PROMPT))
+      await modelScript.waitForSteps()
       await agentTabs.nth(1).click()
       await expectDoorbellCount(page, 1)
 

@@ -1,14 +1,15 @@
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { codexTest, expect } from './codex-fixtures'
-import { ARITHMETIC_PROMPT, expectAssistantAnswer, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 // The component tests cover the indicator's visibility transitions.
-// One real turn checks provider delivery and the final browser state.
-codexTest('renders an assistant answer and clears the thinking indicator', async ({ authenticatedCodexWorkspace, page, leapmuxServer }, testInfo) => {
+// One scripted turn checks provider delivery and the final browser state.
+codexTest('renders an assistant answer and clears the thinking indicator', async ({ authenticatedCodexWorkspace, page, leapmuxServer, modelScript }, testInfo) => {
   void authenticatedCodexWorkspace
   try {
-    await sendMessage(page, ARITHMETIC_PROMPT)
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await waitForAgentIdle(page, 120_000)
     await expectAssistantAnswer(page)
     await expect(page.getByTestId('thinking-indicator')).not.toBeVisible()

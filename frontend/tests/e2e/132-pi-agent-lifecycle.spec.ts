@@ -1,4 +1,4 @@
-import { ARITHMETIC_PROMPT, isMaybeVisible, messageContents, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, isMaybeVisible, messageContents, sendMessage, waitForAgentIdle } from './helpers/ui'
 import { expect, PI_E2E_SKIP_REASON, piTest } from './pi-fixtures'
 
 piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
@@ -30,9 +30,11 @@ piTest.describe('Pi Agent Lifecycle', () => {
     await expect(tabs).toHaveCount(Math.max(tabsBefore - 1, 0))
   })
 
-  piTest('turn-end divider reports the duration, and agent_settled stays hidden', async ({ authenticatedPiWorkspace, page }) => {
+  piTest('turn-end divider reports the duration, and agent_settled stays hidden', async ({ authenticatedPiWorkspace, page, modelScript }) => {
     void authenticatedPiWorkspace // fixture trigger
-    await sendMessage(page, ARITHMETIC_PROMPT)
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps()
     await waitForAgentIdle(page, 180_000)
 
     // Pi's agent_end carries no duration; the worker measures the turn and
@@ -54,9 +56,11 @@ piTest.describe('Pi Agent Lifecycle', () => {
     expect(allText).not.toContain('agent_settled')
   })
 
-  piTest('clear context via /clear command resets Pi session', async ({ authenticatedPiWorkspace, page }) => {
+  piTest('clear context via /clear command resets Pi session', async ({ authenticatedPiWorkspace, page, modelScript }) => {
     void authenticatedPiWorkspace // fixture trigger
-    await sendMessage(page, 'Remember the number 42 for me.')
+    await modelScript.queue({ text: 'Noted: 42.' })
+    await sendMessage(page, modelScript.prompt('Remember the number 42 for me.'))
+    await modelScript.waitForSteps()
     await waitForAgentIdle(page, 180_000)
 
     await sendMessage(page, '/clear')

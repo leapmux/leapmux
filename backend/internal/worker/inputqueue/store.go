@@ -14,13 +14,26 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"modernc.org/sqlite"
+	sqlitelib "modernc.org/sqlite/lib"
 )
 
 const inputIdempotencyKeyPrefix = "input:"
 
+// acceptBusySnapshotRetries caps how many times Accept starts over. The retry is
+// bounded rather than unbounded because a run of losses that long is a different
+// problem, and a caller waiting on a turn must hear about it.
+const acceptBusySnapshotRetries = 3
+
 type Store struct {
 	db         *sql.DB
 	classifier CommandClassifier
+	// beforeAcceptWrite runs inside accept, after every read and before the first
+	// write. TESTS ONLY, and nil everywhere else: it is the seam that holds one
+	// accept between its snapshot and its write, so another writer can invalidate
+	// that snapshot on purpose. The race is otherwise reachable only by chance,
+	// and a test that waits for chance is a flake either way it lands.
+	beforeAcceptWrite func()
 }
 
 func NewStore(db *sql.DB) *Store {
@@ -901,7 +914,24 @@ func (s *Store) RequeueAndPause(ctx context.Context, agentID, inputID string, di
 	return commitSnapshot(ctx, tx, agentID)
 }
 
+// Accept records the transcript for a dispatch that reached the agent.
+//
+// It starts over when SQLite refuses the write against a stale read snapshot,
+// which is safe because the whole attempt is one transaction that rolls back and
+// because `prepared` survives it unchanged: PrepareDispatch already COMMITTED the
+// sequence reservation, so the seq belongs to this item and a concurrent writer
+// takes the next one instead of this one. A retry that finds the item in another
+// state still fails with ErrConflict, which is the guard below.
 func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result DispatchResult) (AcceptedTranscript, Snapshot, error) {
+	for attempt := 0; ; attempt++ {
+		transcript, snapshot, err := s.accept(ctx, prepared, result)
+		if err == nil || attempt == acceptBusySnapshotRetries || !isSQLiteBusySnapshot(err) {
+			return transcript, snapshot, err
+		}
+	}
+}
+
+func (s *Store) accept(ctx context.Context, prepared PreparedDispatch, result DispatchResult) (AcceptedTranscript, Snapshot, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
@@ -932,6 +962,9 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 	spanLines := result.SpanLines
 	if spanLines == "" {
 		spanLines = "[]"
+	}
+	if s.beforeAcceptWrite != nil {
+		s.beforeAcceptWrite()
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO messages
@@ -994,6 +1027,17 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 		AgentProvider: provider, MarkType: mark, SpanLines: spanLines,
 		CreatedAt: item.CreatedAt,
 	}, snapshot, nil
+}
+
+// isSQLiteBusySnapshot reports SQLITE_BUSY_SNAPSHOT. A deferred transaction in
+// WAL mode takes its read snapshot at the first read; when another connection
+// commits before this one writes, the write cannot proceed against a snapshot
+// that no longer describes the database, and SQLite refuses it here rather than
+// at COMMIT. The `busy_timeout` handler never sees it, so only a restart clears
+// it -- the hub's own transaction runner carries the same retry.
+func isSQLiteBusySnapshot(err error) bool {
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlitelib.SQLITE_BUSY_SNAPSHOT
 }
 
 func (s *Store) FailDispatch(ctx context.Context, agentID, inputID string, deliveryErr error, uncertain bool) (Snapshot, error) {

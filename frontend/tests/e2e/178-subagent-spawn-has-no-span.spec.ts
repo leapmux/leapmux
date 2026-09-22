@@ -18,10 +18,12 @@
  * span-line column class is a hashed vanilla-extract name, so it is the only
  * stable hook for this.
  *
- * The model may decline to spawn at all, which is its discretion rather than a
- * defect, so requireRegistryRow skips instead of failing.
+ * The spawn is SCRIPTED, so the model no longer has the discretion to decline
+ * it and `requireRegistryRow` no longer has a case to skip on.
  */
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, test } from './fixtures'
+import { spawnSubagentToolCall } from './helpers/providerToolCalls'
 import { requireRegistryRow } from './helpers/subagentRegistry'
 import { ASSISTANT_BUBBLE_SELECTOR, sendMessage, waitForAgentIdle } from './helpers/ui'
 
@@ -57,18 +59,36 @@ const AGENT_RESULT_HEADER = /Agent (?:"[\s\S]*?"|\S+) (?:completed|failed|launch
 const AGENT_TYPE = 'general-purpose'
 
 test.describe('subagent spawn has no span', () => {
-  test('the spawn rows draw no rail of their own', async ({ authenticatedWorkspace, page }) => {
+  test('the spawn rows draw no rail of their own', async ({ authenticatedWorkspace, page, modelScript }) => {
     void authenticatedWorkspace
 
-    // Directive about the TOOL as well as the outcome: spec 170 found that a
-    // task the model can shortcut with Bash produces a shell row and covers
-    // nothing. Writing prose is something Bash cannot do.
+    // The spawn is the one tool this turn runs, which is what makes the rail
+    // count below unambiguous: a column the spawn rows DID draw could otherwise
+    // belong to some other tool the model chose to run beside it.
     const MARKER = 'SPAN-SPAWN-MARKER'
-    await sendMessage(page, `You MUST use the Task tool. Spawn exactly one general-purpose subagent and give it this prompt verbatim: "Write one sentence about the tide, then end your reply with the token ${MARKER}." Do not answer it yourself and do not use Bash. Wait for the subagent to finish, then tell me what it wrote.`)
+    // How many turns a CHILD runs is the provider's business, not this test's:
+    // it summarises, it reports, and each of those is a request the queue never
+    // planned for. The fallback answers them so an unplanned turn does not fail
+    // a test whose subject is the rail geometry of two rows.
+    await modelScript.fallback({ text: `The subagent wrote about the tide and ended with ${MARKER}.` })
+    await modelScript.rule({
+      name: 'the child writes its sentence',
+      when: { user: 'one sentence about the tide' },
+      respond: { text: `The tide turns twice a day. ${MARKER}` },
+    })
+    await modelScript.queue({
+      toolCalls: [spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'spawn-tide', {
+        description: 'Write about the tide',
+        prompt: modelScript.prompt(`Write one sentence about the tide, then end your reply with the token ${MARKER}.`),
+      })],
+    })
+    await modelScript.queue({ text: `The subagent wrote about the tide and ended with ${MARKER}.` })
+    await sendMessage(page, modelScript.prompt('Spawn one general-purpose subagent to write about the tide, then tell me what it wrote.'))
+    await modelScript.waitForSteps(2)
     await waitForAgentIdle(page, 180_000)
 
     // Skips when the model declined to spawn.
-    await requireRegistryRow(test, page)
+    await requireRegistryRow(page)
 
     // Rows are scoped to :visible — ChatView renders every unmeasured row twice
     // and the sidebar is mounted twice, so an unscoped locator picks the wrong

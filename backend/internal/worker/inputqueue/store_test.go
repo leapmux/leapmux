@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -540,6 +541,48 @@ func TestStoreReservesPositiveSequenceAndCommitsAfterAcceptance(t *testing.T) {
 	require.NoError(t, database.QueryRowContext(ctx, `SELECT seq, span_lines FROM messages WHERE id = 'one'`).Scan(&seq, &spanLines))
 	assert.Equal(t, prepared.ReservedSeq, seq)
 	assert.JSONEq(t, `[{"span_id":"tool-1"}]`, spanLines)
+}
+
+func TestStoreAcceptRetriesAfterAConcurrentWriterInvalidatesItsSnapshot(t *testing.T) {
+	t.Parallel()
+
+	database, store := newStoreFixture(t)
+	ctx := t.Context()
+	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+
+	readComplete := make(chan struct{})
+	allowWrite := make(chan struct{})
+	var once sync.Once
+	store.beforeAcceptWrite = func() {
+		once.Do(func() {
+			close(readComplete)
+			<-allowWrite
+		})
+	}
+	type acceptResult struct {
+		transcript AcceptedTranscript
+		err        error
+	}
+	accepted := make(chan acceptResult, 1)
+	go func() {
+		transcript, _, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+		accepted <- acceptResult{transcript: transcript, err: err}
+	}()
+	<-readComplete
+	_, err = database.ExecContext(ctx, `UPDATE agents SET message_seq_hwm = message_seq_hwm + 1 WHERE id = ?`, "agent-1")
+	require.NoError(t, err)
+	close(allowWrite)
+
+	result := <-accepted
+	require.NoError(t, result.err)
+	assert.Equal(t, prepared.ReservedSeq, result.transcript.Seq)
+	var count int
+	require.NoError(t, database.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE id = ?`, "one").Scan(&count))
+	assert.Equal(t, 1, count)
 }
 
 func TestStoreRecoveryDistinguishesUncertainAndInterrupted(t *testing.T) {

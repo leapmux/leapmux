@@ -23,7 +23,7 @@ vi.mock('./helpers/serverOutput', () => ({
   reportStartupFailure: vi.fn((_output: unknown, _what: string, error: unknown): never => { throw error }),
 }))
 vi.mock('./helpers/ui', () => ({}))
-vi.mock('./realAgentSettings', () => ({ realAgentEnv: () => ({}) }))
+vi.mock('./agentSettings', () => ({ agentDefaultsEnv: () => ({}) }))
 
 let server: SeparateServerInfo
 let replacement: ReturnType<typeof createProcessStub>['proc']

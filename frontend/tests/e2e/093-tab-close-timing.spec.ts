@@ -34,6 +34,7 @@ import { existsSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { expect, test } from '@playwright/test'
+import { agentDefaultsEnv } from './agentSettings'
 import { deleteWorkspaceViaAPI } from './helpers/api'
 import { stopDevServer } from './helpers/devServer'
 import { extractWorkerMarks, installRpcListeners, renderTimeline, startTimingServer } from './helpers/timingFixture'
@@ -43,7 +44,6 @@ import {
   createWorkspaceWithWorktreeViaAPI,
   waitForPathDeleted,
 } from './helpers/worktree'
-import { realAgentEnv } from './realAgentSettings'
 
 // ─── Browser instrumentation ──────────────────────────────────────────
 
@@ -222,7 +222,7 @@ test.describe('Tab close timing', () => {
     srv = await startTimingServer({
       dataDirPrefix: 'leapmux-close-timing-e2e',
       env: {
-        ...realAgentEnv(),
+        ...agentDefaultsEnv(),
         LEAPMUX_WORKER_NAME: 'Local',
         LEAPMUX_TRACE_TAB_CLOSE: '1',
       },

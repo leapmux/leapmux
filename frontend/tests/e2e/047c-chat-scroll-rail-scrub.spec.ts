@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test'
+import type { ModelScript } from './helpers/modelScriptFixture'
 import { expect, test } from './fixtures'
 import { COARSE_POINTER_METRICS, touchDown, touchSwipe } from './helpers/touch'
 import { sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
@@ -29,12 +30,14 @@ const PREVIEW = '[data-testid="chat-scroll-rail-preview"]'
 const SCROLLER = '[data-chat-scroll-container="true"]'
 
 /** Send one tall message so the conversation overflows and the rail takes over scrolling. */
-async function seedOverflowingConversation(page: Page) {
+async function seedOverflowingConversation(page: Page, script: ModelScript) {
   const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
   await expect(editor).toBeVisible()
   // Let the agent finish starting so the send takes the fast path (see 010).
   await expect(page.getByText(/^Starting /)).not.toBeVisible()
-  await sendMessage(page, LONG_MESSAGE)
+  await script.queue({ text: 'ok' })
+  await sendMessage(page, script.prompt(LONG_MESSAGE))
+  await script.waitForSteps()
   await waitForAgentIdle(page)
   await expect(userBubbles(page)).toHaveCount(1)
   await expect(page.locator(RAIL)).toBeVisible()
@@ -86,8 +89,8 @@ test.describe('chat scroll rail scrubbing', () => {
   test.describe('by touch', () => {
     test.use(COARSE_POINTER_METRICS)
 
-    test('jumps to the touched point, then scrubs while the finger stays down', async ({ page, authenticatedWorkspace }) => {
-      await seedOverflowingConversation(page)
+    test('jumps to the touched point, then scrubs while the finger stays down', async ({ page, authenticatedWorkspace, modelScript }) => {
+      await seedOverflowingConversation(page, modelScript)
       const railBox = await revealRailByTouch(page)
       const x = railBox.x + railBox.width / 2
       // Both points sit inside the thumb-CENTRE travel range, which is inset by half the 24px
@@ -121,11 +124,11 @@ test.describe('chat scroll rail scrubbing', () => {
       await expect.poll(() => scrollTop(page)).toBeGreaterThanOrEqual(afterPress)
     })
 
-    test('previews the message under the finger when a scrub starts on a dot', async ({ page, authenticatedWorkspace }) => {
+    test('previews the message under the finger when a scrub starts on a dot', async ({ page, authenticatedWorkspace, modelScript }) => {
       // On a coarse pointer each dot carries a 24px hit circle, so on a marked conversation most
       // of the rail is dot rather than track -- and a touch has no hover to open the preview
       // with. The press itself must both open it and start the scrub.
-      await seedOverflowingConversation(page)
+      await seedOverflowingConversation(page, modelScript)
       await revealRailByTouch(page)
 
       const dot = page.locator('[data-testid="chat-scroll-rail-dot"]').first()
@@ -145,12 +148,12 @@ test.describe('chat scroll rail scrubbing', () => {
     })
   })
 
-  test('scrubs the same way under a mouse on a desktop viewport', async ({ page, authenticatedWorkspace }) => {
+  test('scrubs the same way under a mouse on a desktop viewport', async ({ page, authenticatedWorkspace, modelScript }) => {
     // The press-jump-then-scrub rule is uniform across pointer types -- exactly what a native
     // scrollbar track already does under a mouse. Pin that here so nobody re-introduces a
     // coarse-pointer branch, and to cover the fine-pointer path CDP touch cannot reach.
     await page.setViewportSize({ width: 1024, height: 400 })
-    await seedOverflowingConversation(page)
+    await seedOverflowingConversation(page, modelScript)
 
     const scroller = page.locator(SCROLLER)
     await scroller.evaluate((el: HTMLElement) => {

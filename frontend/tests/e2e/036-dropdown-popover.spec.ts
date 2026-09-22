@@ -1,34 +1,9 @@
 import type { Locator } from '@playwright/test'
 import { POPOVER_CARD_PADDING } from '../../src/styles/popoverTokens'
 import { expect, test } from './fixtures'
-import { ARITHMETIC_ANSWER, ARITHMETIC_PROMPT, assistantBubbles, closeComposerMenus, expectAssistantAnswer, openAgentViaUI, openPlusMenu, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { ARITHMETIC_ANSWER, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, closeComposerMenus, expectAssistantAnswer, openAgentViaUI, openPlusMenu, sendMessage, stableBox, waitForAgentIdle } from './helpers/ui'
 
 const HAS_TEXT_RE = /.+/
-
-/**
- * The popover's bounding box, read only once it has stopped moving.
- *
- * Anchored popovers reposition on every layout change beneath them, so a box
- * sampled mid-settle makes the "did the drag move it?" comparison measure the
- * settle instead of the drag. Two consecutive identical reads is the settle
- * signal; `expect.poll` bounds the wait.
- */
-async function stablePopoverBox(popover: Locator): Promise<{ x: number, y: number, width: number, height: number }> {
-  let previous: string | null = null
-  let box: { x: number, y: number, width: number, height: number } | null = null
-  await expect.poll(async () => {
-    box = await popover.boundingBox()
-    if (!box)
-      return false
-    const key = `${box.x},${box.y},${box.width},${box.height}`
-    const settled = key === previous
-    previous = key
-    return settled
-  }).toBe(true)
-  if (!box)
-    throw new Error('popover never reported a bounding box')
-  return box
-}
 
 /**
  * The popover's top-left offset from its anchoring trigger.
@@ -99,7 +74,7 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
    * that was focused before the popover opened (the trigger button),
    * stealing focus from the editor.
    */
-  test('clicking editor while popover is open should keep editor focused', async ({ page, authenticatedWorkspace }) => {
+  test('clicking editor while popover is open should keep editor focused', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Ensure an agent tab is open
     await openAgentViaUI(page)
 
@@ -107,7 +82,9 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     await expect(editor).toBeVisible()
 
     // Send a message so the agent session starts and context info appears
-    await sendMessage(page, ARITHMETIC_PROMPT)
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps(1)
 
     // Wait for the assistant response in the active chat view. The agent
     // may emit multiple message-content nodes (thought blocks, final
@@ -183,7 +160,7 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
    * This happens because the drag/selection causes scroll events that
    * trigger the reposition logic.
    */
-  test('selecting text inside popover by dragging should not reposition it', async ({ page, authenticatedWorkspace }) => {
+  test('selecting text inside popover by dragging should not reposition it', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Ensure an agent tab is open
     await openAgentViaUI(page)
 
@@ -191,7 +168,9 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     await expect(editor).toBeVisible()
 
     // Send a message so the agent session starts and context info appears
-    await sendMessage(page, ARITHMETIC_PROMPT)
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps(1)
 
     // Wait for the assistant response in the active chat view. The agent
     // may emit multiple message-content nodes (thought blocks, final
@@ -233,7 +212,7 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     // Record the popover's offset from its anchor, once it has stopped moving.
     // Two consecutive equal boxes is the app's own statement that positioning
     // settled -- stronger than a fixed sleep, and it cannot pass early.
-    await stablePopoverBox(popover)
+    await stableBox(popover)
     const initialOffset = await offsetFromTrigger(popover, 'agent-info-trigger')
 
     // Find a text element inside the popover to drag-select.
@@ -362,9 +341,11 @@ test.describe('agent info card', () => {
    * inset those rows differently for as long as each call site sets its own
    * padding, which is what this asserts against.
    */
-  test('both surfaces inset the card by the shared popover-card padding', async ({ page, authenticatedWorkspace }) => {
+  test('both surfaces inset the card by the shared popover-card padding', async ({ page, authenticatedWorkspace, modelScript }) => {
     await openAgentViaUI(page)
-    await sendMessage(page, ARITHMETIC_PROMPT)
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps(1)
     await expectAssistantAnswer(page)
     await waitForAgentIdle(page)
 
@@ -415,9 +396,11 @@ test.describe('agent info card', () => {
    * branch. A popover that closes on a click inside it cannot hold that text: the
    * press starts a selection and the release takes the popover away.
    */
-  test('a click inside the card leaves it open, so its text stays selectable', async ({ page, authenticatedWorkspace }) => {
+  test('a click inside the card leaves it open, so its text stays selectable', async ({ page, authenticatedWorkspace, modelScript }) => {
     await openAgentViaUI(page)
-    await sendMessage(page, ARITHMETIC_PROMPT)
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps(1)
     await expectAssistantAnswer(page)
     await waitForAgentIdle(page)
 
@@ -568,9 +551,17 @@ test.describe('menu item appearance', () => {
  * used to leave the nesting untested everywhere.
  */
 test.describe('nested popovers', () => {
-  test('an inner card survives opening inside an outer menu', async ({ page, authenticatedWorkspace }) => {
+  test('an inner card survives opening inside an outer menu', async ({ page, authenticatedWorkspace, modelScript }) => {
     void authenticatedWorkspace
     await openAgentViaUI(page)
+
+    // One turn first. "Agent info" appears only once the agent HAS a session --
+    // `showInfoTrigger` reads `agentSessionId` -- and an agent that was opened
+    // but never prompted has none.
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps(1)
+    await waitForAgentIdle(page)
 
     const plusMenu = await openPlusMenu(page)
     await expect(plusMenu).toBeVisible()
@@ -596,5 +587,80 @@ test.describe('nested popovers', () => {
     await expect(infoCard).toBeHidden()
     await page.keyboard.press('Escape')
     await expect(plusMenu).toBeHidden()
+  })
+})
+
+test.describe('a menu whose click also focuses the tile', () => {
+  /**
+   * A click on a tab-bar trigger opens the menu AND bubbles to the tile, whose
+   * own `onClick` focuses it. While focusing rebuilt the tab bar, the menu that
+   * this same click had just opened was detached before it could paint --
+   * and detaching a popover hides it with NO `toggle` event, so the trigger's
+   * `aria-expanded` stayed false and nothing in the DOM named a cause.
+   *
+   * Both halves are asserted. The menu is open, AND the tab bar is the element
+   * it was before the click. The first half alone would also pass for a bar
+   * that rebuilt and then reopened, which is not what this guards.
+   */
+  /**
+   * `ot-dropdown` is unknown to the UA, so it defaults to `display: inline`,
+   * and that costs a different thing in each formatting context. In an inline
+   * context the host wraps its trigger in a LINE BOX, which reserves room under
+   * the baseline for descenders and is therefore taller than the trigger it
+   * holds. In a flex row -- which is where this trigger sits -- the inline
+   * blockifies and the host becomes a flex ITEM, adding one `gap` of dead space
+   * to the row. Either way a row whose action is a dropdown did not line up
+   * with the same row whose action is a plain button.
+   *
+   * The rule in ~/styles/popover.css.ts gives every host `display: contents`.
+   * Two unit tests used to pin the `data-headless` attribute that selected a
+   * SUBSET of hosts; the attribute is gone, and this is what replaced them --
+   * the rule is global CSS, which jsdom does not load, so only a real browser
+   * can see it.
+   *
+   * `display` is the assertion that discriminates, and it reads `block` without
+   * the rule rather than `inline`, because Chromium reports the blockified
+   * value for a flex item. The height comparison guards the line-box context,
+   * where the host would be taller than its own trigger.
+   */
+  test('a dropdown host adds no box of its own to the row', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+
+    const measured = await page.locator('[data-testid="tab-more-menu"]:visible').first().evaluate((trigger) => {
+      const host = trigger.closest('ot-dropdown')
+      if (!host)
+        return null
+      return {
+        display: getComputedStyle(host).display,
+        hostHeight: host.getBoundingClientRect().height,
+        triggerHeight: trigger.getBoundingClientRect().height,
+      }
+    })
+
+    expect(measured, 'the trigger sits inside an ot-dropdown host').not.toBeNull()
+    expect(measured!.display).toBe('contents')
+    expect(measured!.triggerHeight).toBeGreaterThan(0)
+    // The host contributes nothing of its own. An inline host would report the
+    // line box here, which is taller than the trigger it wraps.
+    expect(measured!.hostHeight).toBeLessThanOrEqual(measured!.triggerHeight)
+  })
+
+  test('the tab bar survives the click that opens its menu', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+
+    const trigger = page.locator('[data-testid="tab-more-menu"]:visible').first()
+    await expect(trigger).toBeVisible()
+    await page.locator('[data-testid="tab-bar"]:visible').first().evaluate((el) => {
+      ;(globalThis as unknown as { __tabBar: Element }).__tabBar = el
+    })
+
+    await trigger.click()
+
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.locator('menu[popover]:popover-open')).toBeVisible()
+    expect(
+      await page.evaluate(() => (globalThis as unknown as { __tabBar: Element }).__tabBar.isConnected),
+      'the tab bar is the SAME element the click started on',
+    ).toBe(true)
   })
 })

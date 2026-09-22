@@ -2,7 +2,7 @@ import { CODE_BLOCK_TINT_PERCENT } from '../../src/styles/codePalette'
 import { colorAlpha } from '../../src/test-support/color'
 import { expect, test } from './fixtures'
 import { enterAndExitPlanMode } from './helpers/plan-mode'
-import { readAttached, resolvedColor, userBubbles } from './helpers/ui'
+import { readAttached, resolvedColor, stableBox, userBubbles } from './helpers/ui'
 
 const MONOSPACE_FONT_RE = /HackNerdFont|Menlo|Monaco|Courier New|monospace/
 
@@ -294,6 +294,13 @@ test.describe('Code Language Label', () => {
     await langLabel.click()
     await expect(langInput).toBeVisible()
 
+    // WAIT for the popover to stop moving first. Its list renders over several
+    // frames, and each growth re-anchors it; a click aimed during that settle
+    // lands on a language row instead of on the label underneath. That is not a
+    // product fault -- the popover settles clear of the label -- but it made this
+    // test fail under full-suite load, where those frames are slow.
+    await stableBox(popover)
+
     // Re-clicking the label toggles it closed -- it must NOT reopen (the
     // pointerdown-captured open state prevents the click from re-opening after the
     // popover's light-dismiss closes it).
@@ -303,9 +310,9 @@ test.describe('Code Language Label', () => {
 })
 
 test.describe('send feedback button labels', () => {
-  test('ExitPlanMode banner shows Reject when editor is empty and Send feedback when typing', async ({ page, authenticatedWorkspace }) => {
+  test('ExitPlanMode banner shows Reject when editor is empty and Send feedback when typing', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Enter plan mode, write a dummy plan, and exit
-    const banner = await enterAndExitPlanMode(page)
+    const banner = await enterAndExitPlanMode(page, modelScript)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
     const rejectBtn = page.locator('[data-testid="plan-reject-btn"]')

@@ -9,6 +9,7 @@ import {
   waitForNewOnlineWorkerViaAPI,
 } from './helpers/api'
 import { spawnTestProcess } from './helpers/processRegistry'
+import { hubSpawnEnv } from './helpers/server'
 import { expectAnyVisible, loginViaUI } from './helpers/ui'
 import { expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
@@ -83,7 +84,7 @@ test.describe('Worker Deregistration', () => {
       workerDataDir,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, LEAPMUX_WORKER_NAME: 'deregister-test-worker' },
+      env: hubSpawnEnv({ LEAPMUX_WORKER_NAME: 'deregister-test-worker' }),
     })
     tempWorkerPid = workerProc.pid
     workerProc.stderr?.on('data', (c: Buffer) => process.stderr.write(`[TEMP-WORKER-ERR] ${c}`))

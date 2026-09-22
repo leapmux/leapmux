@@ -1,11 +1,11 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { focusActiveTerminal } from './helpers/terminal'
-import { ARITHMETIC_PROMPT, assistantBubbles, expectAnyVisible, expectAssistantAnswer, expectUserMessage, loginViaToken, openTerminalViaUI, openWorkspace, renameTabViaUI, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT, waitForLayoutSave } from './helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, expectAnyVisible, expectAssistantAnswer, expectUserMessage, loginViaToken, openTerminalViaUI, openWorkspace, renameTabViaUI, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, waitForLayoutSave } from './helpers/ui'
 import { listTerminalsViaAPI } from './helpers/worktree'
 import { ensureWorkerOnline, expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Full Hub+Worker Restart', () => {
-  test('should preserve chat history after hub and worker restart', async ({ separateHubWorker, page }) => {
+  test('should preserve chat history after hub and worker restart', async ({ separateHubWorker, page, modelScript }) => {
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Full Restart Test')
@@ -23,8 +23,9 @@ test.describe('Full Hub+Worker Restart', () => {
       await expect(page.locator('[data-testid="agent-startup-overlay"]')).not.toBeVisible()
 
       // Step 1: Send a message and wait for a response
+      await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
       await editor.click()
-      await page.keyboard.type(ARITHMETIC_PROMPT)
+      await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
@@ -56,8 +57,9 @@ test.describe('Full Hub+Worker Restart', () => {
       // Step 4: Send another message and wait for response. The second answer
       // ("3333") must not be a substring of the first ("6912"), otherwise this
       // wait would match the leftover first-turn bubble instead of the new one.
+      await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
       await editor.click()
-      await page.keyboard.type(SECOND_ARITHMETIC_PROMPT)
+      await page.keyboard.type(modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
       await page.keyboard.press('Meta+Enter')
 
       // Wait for the assistant's response containing "3333"
@@ -231,7 +233,7 @@ test.describe('Full Hub+Worker Restart', () => {
     }
   })
 
-  test('should not show thinking indicator after full restart during active turn', async ({ separateHubWorker, page }) => {
+  test('should not show thinking indicator after full restart during active turn', async ({ separateHubWorker, page, modelScript }) => {
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Restart Thinking Test')
@@ -243,11 +245,15 @@ test.describe('Full Hub+Worker Restart', () => {
       const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
-      // Send a long message to start an agent turn
+      // Start a turn and hold it open, so the hub and worker stop while the
+      // agent is genuinely mid-turn. An unheld turn against the mock endpoint
+      // finishes in milliseconds and the restart would find nothing active.
+      await modelScript.queue({ text: 'An essay.', delayMs: 60_000 })
       await editor.click()
-      await page.keyboard.type('Write a very long essay about the history of computing. Make it extremely detailed.')
+      await page.keyboard.type(modelScript.prompt('Write a very long essay about the history of computing. Make it extremely detailed.'))
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
+      await modelScript.waitForSteps(1)
 
       // Wait for the thinking indicator or streaming to appear (agent is processing)
       const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]')

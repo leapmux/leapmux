@@ -692,8 +692,12 @@ export async function deleteWorkspaceViaAPI(
   // Tests can delete a fixture workspace before fixture cleanup runs.
   if (res.status === 404)
     return
+  // The BODY, not the status alone. This runs in fixture cleanup, where a bare
+  // "failed: 500" names neither the workspace nor the hub's reason -- and the
+  // one failure seen so far reproduced only under full-suite load, so the next
+  // occurrence has to carry its own diagnosis.
   if (!res.ok)
-    throw new Error(`deleteWorkspaceViaAPI failed: ${res.status}`)
+    throw new Error(`deleteWorkspaceViaAPI(${workspaceId}) failed: ${res.status} ${await res.text()}`)
 
   // The hub returns an atomic snapshot of owned tabs with the deletion.
   // A separate ListTabs request can miss tabs or arrive after the hub removes them.
@@ -757,6 +761,45 @@ export async function deleteAllWorkspacesViaAPI(
   const workspaces = await listWorkspacesViaAPI(hubUrl, cookie)
   for (const ws of workspaces) {
     await deleteWorkspaceViaAPI(hubUrl, cookie, ws.id).catch(() => {})
+  }
+}
+
+/**
+ * Return every account setting the signed-in user customized to its default.
+ *
+ * The suite shares ONE account across every test, so a setting a test writes
+ * outlives it. That leak is invisible until a later test asserts a default:
+ * `196-pill-group` reads the terminal theme MODE control, which the product
+ * disables while the terminal theme follows the app, and an earlier test that
+ * gave the terminal a palette of its own left that control enabled. The test
+ * passed alone and failed in the suite, which is the signature of shared state
+ * rather than of a product defect.
+ *
+ * Only the CUSTOMIZED keys are reset -- `customized` states exactly that -- so a
+ * clean account costs one request rather than one per declared key.
+ */
+export async function resetAllUserSettingsViaAPI(
+  hubUrl: string,
+  cookie: string,
+): Promise<void> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.UserService/ListUserSettings`, {
+    method: 'POST',
+    headers: authedHeaders(cookie),
+    body: '{}',
+  })
+  if (!res.ok)
+    throw new Error(`resetAllUserSettingsViaAPI could not list: ${res.status} ${await res.text()}`)
+  const data = await res.json() as { values?: Array<{ key?: string, customized?: boolean }> }
+  for (const value of data.values ?? []) {
+    if (!value.customized || !value.key)
+      continue
+    const reset = await fetch(`${hubUrl}/leapmux.v1.UserService/ResetUserSetting`, {
+      method: 'POST',
+      headers: authedHeaders(cookie),
+      body: JSON.stringify({ key: value.key }),
+    })
+    if (!reset.ok)
+      throw new Error(`resetAllUserSettingsViaAPI could not reset ${value.key}: ${reset.status} ${await reset.text()}`)
   }
 }
 

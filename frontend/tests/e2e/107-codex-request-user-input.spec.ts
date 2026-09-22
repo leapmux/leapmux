@@ -1,8 +1,13 @@
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest, expect } from './codex-fixtures'
+import { bashToolCall } from './helpers/providerToolCalls'
 import { isMaybeVisible, messageContents, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsIdle } from './helpers/ui'
 
+/** The command the approval test scripts. It never runs: the prompt stops it. */
+const APPROVAL_COMMAND = `rm -${'rf'} /tmp/codex-approval-test-dir-nonexistent`
+
 codexTest.describe('codex approval UI', () => {
-  codexTest('approval flow works with on-request policy', async ({ authenticatedCodexWorkspace, page }) => {
+  codexTest('approval flow works with on-request policy', async ({ authenticatedCodexWorkspace, page, modelScript }) => {
     void authenticatedCodexWorkspace
 
     // Switch to on-request approval policy so approval prompts appear.
@@ -17,7 +22,11 @@ codexTest.describe('codex approval UI', () => {
 
     // Send a command that will trigger an approval request.
     // Use rm which should always require approval in on-request mode.
-    await sendMessage(page, 'Run this exact command: rm -rf /tmp/codex-approval-test-dir-nonexistent')
+    // What the test does with the banner decides how many turns follow.
+    await modelScript.fallback({ text: 'The command finished.' })
+    await modelScript.queue({ toolCalls: [bashToolCall(AgentProvider.CODEX, 'approval-call', APPROVAL_COMMAND)] })
+    await sendMessage(page, modelScript.prompt('Run this exact command.'))
+    await modelScript.waitForSteps()
 
     // Wait for the control banner to appear.
     const banner = page.locator('[data-testid="control-banner"]')

@@ -18,6 +18,7 @@ import { ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, ListAg
 import { expect } from '../fixtures'
 import { getTestChannel } from './api'
 import { countGoalTransitionsInMessages } from './goalTransitions'
+import { stableBox } from './ui'
 
 const FINAL_STATUSES = ['completed', 'failed', 'stopped', 'interrupted'] as const
 
@@ -87,7 +88,15 @@ export function goalAction(page: Page | Locator, action: string): Locator {
  * Takes the same root as `goalAction`, and for the same reason.
  */
 export async function openGoalMenu(page: Page | Locator): Promise<void> {
-  await page.locator('[data-testid="goal-actions-trigger"]:visible').click()
+  const trigger = page.locator('[data-testid="goal-actions-trigger"]:visible')
+  // SETTLE first. The card this trigger sits in relayouts around it -- the
+  // objective expands from its clamp, the status line swaps, a to-do list grows
+  // beneath it -- and a trigger that is still moving is one Playwright scrolls
+  // to, finds stable, and then fails to click as the box shifts underneath.
+  // The failure names only a timeout on a visible, enabled, stable element,
+  // which reads like a covered button rather than a moving one.
+  await stableBox(trigger)
+  await trigger.click()
 }
 
 /** What one provider's queued goal route looks like on the wire. */
@@ -239,12 +248,13 @@ export async function waitForRegistryRow(page: Page, kind: 'subagent' | 'shell' 
 }
 
 /**
- * Best-effort variant of waitForRegistryRow: returns the row locator if a
- * registry row appears, or null if the model did not spawn a subagent. Real-model
- * specs use this where model non-cooperation is an expected outcome. The spec skips its
- * spawn-dependent assertions when null is returned.
+ * The row locator once a registry row appears, or null once the wait expires.
+ *
+ * This exists so `requireRegistryRow` can turn an expired wait into a named
+ * assertion rather than a bare timeout. It is not a licence to continue without
+ * a row: every caller scripts the spawn, so a null is a defect.
  */
-export async function tryWaitForRegistryRow(page: Page, kind: 'subagent' | 'shell' = 'subagent'): Promise<Locator | null> {
+async function tryWaitForRegistryRow(page: Page, kind: 'subagent' | 'shell' = 'subagent'): Promise<Locator | null> {
   const row = page.locator(`[data-testid="bg-task-row"]:visible[data-kind="${kind}"]`).first()
   try {
     await expect.poll(async () => {
@@ -259,22 +269,21 @@ export async function tryWaitForRegistryRow(page: Page, kind: 'subagent' | 'shel
 }
 
 /**
- * Wait for a registry row, or SKIP the spec when the model chose not to spawn.
+ * Wait for a registry row, and FAIL the spec when none appears.
  *
- * The provider specs that drive a real model all need this same sequence. It
- * lives here once. The helper takes the spec's own
- * `test` object (each provider suite extends its own fixtures) and returns a
- * non-null row, so the caller needs no `!`.
+ * This used to skip instead, because a real model could decline to spawn. Every
+ * caller scripts the spawn against the mock now, so a missing row is a defect
+ * in the product or in the script -- and a skip hid exactly that for six specs
+ * at once. The helper returns a non-null row, so the caller needs no `!`.
  */
 export async function requireRegistryRow(
-  test: { skip: (condition: boolean, description: string) => void },
   page: Page,
   kind: 'subagent' | 'shell' = 'subagent',
 ): Promise<Locator> {
   const row = await tryWaitForRegistryRow(page, kind)
-  test.skip(!row, kind === 'shell'
-    ? 'model did not run the command'
-    : 'model did not spawn a subagent')
+  expect(row, kind === 'shell'
+    ? 'the scripted command produced no shell row in the registry'
+    : 'the scripted spawn produced no subagent row in the registry').not.toBeNull()
   return row!
 }
 

@@ -92,6 +92,8 @@ coverage/
 
 # Local scratch files
 /.tmp/
+# Another agent harness writes its run state here. It is not this project's.
+/.codewhale/
 
 # Python bytecode from the standalone protocol reproducers
 __pycache__/

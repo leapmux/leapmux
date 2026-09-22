@@ -1364,12 +1364,27 @@ export function createTileRenderer(opts: TileRendererOpts) {
       const tab = activeTab()
       return tab ? tabPopFor(tileId, tab) : undefined
     })
+    // Built ONCE, and held in a plain variable so the JSX below passes it as a
+    // static prop. `tabBar` is a DOM SUBTREE, not a value. A prop whose getter
+    // CONSTRUCTS that subtree makes `Tile`'s insert effect track every signal
+    // the construction touches, and any one of them then replaces the whole tab
+    // bar -- which discards an open menu popover, the focused element, a
+    // half-typed rename and the tab strip's scroll offset. A click inside the
+    // tile calls `onFocus` below, so the menu a user just opened was detached
+    // in the same click that opened it: the popover closes with NO `toggle`
+    // event, because removal from the document hides it with `fireEvents`
+    // false, so `isOpen` and `aria-expanded` stayed false as well.
+    //
+    // `TabBar`'s OWN props stay reactive: every one of them compiles to a
+    // getter, and the conditional mobile spread compiles to a thunk that
+    // `mergeProps` calls on each read.
+    const tabBar = createTabBarForTile(tileId, actions)
     return (
       <Tile
         tileId={tileId}
         isFocused={layoutStore.focusedTileId() === tileId}
         actions={actions()}
-        tabBar={createTabBarForTile(tileId, actions)}
+        tabBar={tabBar}
         onFocus={() => {
           focusTile(tileId)
           const tab = activeTab()
@@ -1377,7 +1392,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
             selection.setActive(tab)
           }
         }}
-        {...optionalProp('pop', pop())}
+        pop={pop()}
       >
         {renderTileContent(tileId)}
       </Tile>

@@ -306,9 +306,16 @@ test.describe('Terminal', () => {
     const leaf = page.locator(`[data-testid="tab-tree-leaf"][data-tab-id="${terminalId}"]:visible`)
     await leaf.dblclick()
     const renameInput = leaf.locator('input')
+    // Settle the editor BEFORE typing into it, and commit from the keyboard.
+    // `locator.press` re-resolves its target, so a re-render between the fill
+    // and the press left it waiting on an input that no longer existed -- a
+    // timeout in one run out of two. Focus proves the editor is the live one,
+    // and `keyboard.press` goes to whatever holds focus without looking the
+    // element up again.
     await expect(renameInput).toBeVisible()
+    await expect(renameInput).toBeFocused()
     await renameInput.fill('  Build \t $watcher   "1"  ')
-    await renameInput.press('Enter')
+    await page.keyboard.press('Enter')
 
     await expect.poll(
       async () => (await terminalTab.textContent())?.includes('Build $watcher "1"'),

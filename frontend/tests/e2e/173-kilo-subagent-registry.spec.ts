@@ -1,3 +1,5 @@
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { spawnSubagentToolCall } from './helpers/providerToolCalls'
 import {
   expectNoRegistryRows,
   expectRowBecomesFinal,
@@ -21,24 +23,47 @@ kiloTest.describe('Kilo subagent registry', () => {
   kiloTest('subagent spawn creates a prompt and report transcript', async ({
     authenticatedKiloWorkspace,
     page,
+    modelScript,
   }) => {
     void authenticatedKiloWorkspace
 
     await expectNoRegistryRows(page)
 
-    await sendMessage(page, 'Use your task tool to spawn a subagent that runs `echo kilo-done` and reports the result.')
+    // The child's prompt carries the marker, so the turns it runs on its own
+    // reach this script rather than the ambient scenario.
+    await modelScript.rule({
+      name: 'the child reports the shell result',
+      when: { user: 'echo kilo-done' },
+      respond: { text: 'The command printed kilo-done.' },
+    })
+    await modelScript.queue({
+      toolCalls: [spawnSubagentToolCall(AgentProvider.KILO, 'spawn-kilo', {
+        description: 'Run the shell probe',
+        prompt: modelScript.prompt('Run `echo kilo-done` and report the result.'),
+      })],
+    })
+    await modelScript.queue({ text: 'The subagent reported kilo-done.' })
+    await sendMessage(page, modelScript.prompt('Spawn a subagent that runs the shell probe and reports the result.'))
+    await modelScript.waitForSteps(2)
     await waitForAgentIdle(page, 180_000)
 
-    // The model may choose not to spawn; skip the spawn-dependent assertions
-    // rather than fail on a real LLM's discretion.
-    const row = await requireRegistryRow(kiloTest, page)
+    // The spawn is scripted, so a missing row is a failure rather than the
+    // model's discretion.
+    const row = await requireRegistryRow(page)
 
     await expectRowBecomesFinal(page, row)
     await expectSectionPersists(page)
     await expect.poll(async () => await row.getAttribute('data-child-agent-id')).not.toBe('')
     await openChildTabFromRow(page, row)
     await expect(userBubbles(page).filter({ hasText: 'kilo-done' })).toBeVisible()
-    if (await row.getAttribute('data-status') === 'completed')
-      await expect(page.getByText('Subagent reported', { exact: true })).toBeVisible()
+    // The report bubble carries BOTH the label and the child's answer, which is
+    // the form 188 already proves. It used to read
+    // `getByText('Subagent reported', { exact: true })` behind a status guard:
+    // `exact` demands that the element's WHOLE text be those two words, so it
+    // could never match a bubble that also carries the report, and the guard
+    // kept it from ever running.
+    await expect(page.locator('[data-testid="message-bubble"]:visible')
+      .filter({ hasText: 'Subagent reported' })
+      .filter({ hasText: /kilo-done/ })).toBeVisible()
   })
 })

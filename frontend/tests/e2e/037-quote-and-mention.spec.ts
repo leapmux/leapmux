@@ -6,13 +6,15 @@ import { ASSISTANT_BUBBLE_SELECTOR, clickTreeContextItem, firstAssistantMessageR
 const frontendDir = path.resolve(import.meta.dirname, '../..')
 
 test.describe('Quote and Mention', () => {
-  test('reply button on assistant message inserts quoted text into editor', async ({ page, authenticatedWorkspace }) => {
+  test('reply button on assistant message inserts quoted text into editor', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Wait for the editor to be ready
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Send a message and wait for the assistant to reply
-    await sendMessage(page, 'Say exactly: Hello world')
+    await modelScript.queue({ text: 'Hello world' })
+    await sendMessage(page, modelScript.prompt('Say exactly: Hello world'))
+    await modelScript.waitForSteps(1)
     await waitForAgentIdle(page)
 
     // Find the assistant MESSAGE row -- not merely the first agent bubble, which
@@ -34,12 +36,14 @@ test.describe('Quote and Mention', () => {
     await expect(editor.locator('blockquote')).toBeVisible()
   })
 
-  test('cursor lands outside blockquote after quoting', async ({ page, authenticatedWorkspace }) => {
+  test('cursor lands outside blockquote after quoting', async ({ page, authenticatedWorkspace, modelScript }) => {
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Send a message and wait for the assistant to reply
-    await sendMessage(page, 'Say exactly: Hello world')
+    await modelScript.queue({ text: 'Hello world' })
+    await sendMessage(page, modelScript.prompt('Say exactly: Hello world'))
+    await modelScript.waitForSteps(1)
     await waitForAgentIdle(page)
 
     // Find an assistant bubble and click the quote button
@@ -63,14 +67,16 @@ test.describe('Quote and Mention', () => {
     expect(blockquoteText).not.toContain('my follow-up')
   })
 
-  test('text selection copy button copies to clipboard', async ({ page, context, authenticatedWorkspace }) => {
+  test('text selection copy button copies to clipboard', async ({ page, context, authenticatedWorkspace, modelScript }) => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write'])
 
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Send a message and wait for the assistant to reply
-    await sendMessage(page, 'Say exactly: The quick brown fox jumps over the lazy dog')
+    await modelScript.queue({ text: 'The quick brown fox jumps over the lazy dog' })
+    await sendMessage(page, modelScript.prompt('Say exactly: The quick brown fox jumps over the lazy dog'))
+    await modelScript.waitForSteps(1)
     await waitForAgentIdle(page)
 
     // Find the assistant message content
@@ -100,13 +106,15 @@ test.describe('Quote and Mention', () => {
   // localhost, which is always secure, so the property is taken away here
   // instead. `~/lib/clipboard` then falls back to `execCommand`, which is the
   // only path that copies anything there.
-  test('text selection copy button copies with no Clipboard API', async ({ page, context, authenticatedWorkspace }) => {
+  test('text selection copy button copies with no Clipboard API', async ({ page, context, authenticatedWorkspace, modelScript }) => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write'])
 
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
-    await sendMessage(page, 'Say exactly: The quick brown fox jumps over the lazy dog')
+    await modelScript.queue({ text: 'The quick brown fox jumps over the lazy dog' })
+    await sendMessage(page, modelScript.prompt('Say exactly: The quick brown fox jumps over the lazy dog'))
+    await modelScript.waitForSteps(1)
     await waitForAgentIdle(page)
 
     const assistantBubble = firstAssistantMessageRow(page).locator(ASSISTANT_BUBBLE_SELECTOR)
@@ -140,11 +148,13 @@ test.describe('Quote and Mention', () => {
   // Both paths gone. Clearing the highlight and closing the popover is what the
   // app uses to say "copied", so a failed write must do neither -- and must say
   // why, because a Copy button that silently does nothing reads as a dead button.
-  test('text selection copy button keeps the selection and says why when nothing can copy', async ({ page, authenticatedWorkspace }) => {
+  test('text selection copy button keeps the selection and says why when nothing can copy', async ({ page, authenticatedWorkspace, modelScript }) => {
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
-    await sendMessage(page, 'Say exactly: The quick brown fox jumps over the lazy dog')
+    await modelScript.queue({ text: 'The quick brown fox jumps over the lazy dog' })
+    await sendMessage(page, modelScript.prompt('Say exactly: The quick brown fox jumps over the lazy dog'))
+    await modelScript.waitForSteps(1)
     await waitForAgentIdle(page)
 
     const assistantBubble = firstAssistantMessageRow(page).locator(ASSISTANT_BUBBLE_SELECTOR)
@@ -169,12 +179,14 @@ test.describe('Quote and Mention', () => {
     expect(selected).toContain('quick brown fox')
   })
 
-  test('text selection in chat message shows quote popover', async ({ page, authenticatedWorkspace }) => {
+  test('text selection in chat message shows quote popover', async ({ page, authenticatedWorkspace, modelScript }) => {
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Send a message and wait for the assistant to reply
-    await sendMessage(page, 'Say exactly: The quick brown fox jumps over the lazy dog')
+    await modelScript.queue({ text: 'The quick brown fox jumps over the lazy dog' })
+    await sendMessage(page, modelScript.prompt('Say exactly: The quick brown fox jumps over the lazy dog'))
+    await modelScript.waitForSteps(1)
     await waitForAgentIdle(page)
 
     // Find the assistant message content

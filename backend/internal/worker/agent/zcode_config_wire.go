@@ -50,6 +50,17 @@ type zcodeModelRef struct {
 	ModelID    string `json:"modelId"`
 }
 
+// zcodeModelSelection is the model reference accepted by current ZCode builds.
+// A reasoning model requires its level inside the selection.
+type zcodeModelSelection struct {
+	zcodeModelRef
+	Options *zcodeModelSelectionOptions `json:"options,omitempty"`
+}
+
+type zcodeModelSelectionOptions struct {
+	ReasoningLevel string `json:"reasoningLevel"`
+}
+
 // zcodeRuntimeModel prevents a legacy model switch from racing the registry push.
 type zcodeRuntimeModel struct {
 	Revision     string                `json:"revision"`

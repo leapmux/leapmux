@@ -3,7 +3,7 @@ import { AgentStatus } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { sendActiveTerminalInput, typeInTerminal, waitForTerminalText } from './helpers/terminal'
-import { ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, openTerminalViaUI, openTreeContextMenu, openWorkspace, treeRow, workspaceRow } from './helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, openTerminalViaUI, openTreeContextMenu, openWorkspace, sendMessage, treeRow, workspaceRow } from './helpers/ui'
 import { listAgentsViaAPI, listTerminalsViaAPI } from './helpers/worktree'
 import { ensureWorkerOnline, processTest, restartWorker, stopWorker, waitForWorkerOffline } from './process-control-fixtures'
 
@@ -160,7 +160,7 @@ test.describe('workspace archive', () => {
     await expect(page.locator('[data-testid="agent-editor-panel"]')).not.toBeVisible()
   })
 
-  test('stops processes, preserves content, and resumes only the agent', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+  test('stops processes, preserves content, and resumes only the agent', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
     const workspaceId = authenticatedWorkspace.workspaceId
     const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
@@ -170,10 +170,12 @@ test.describe('workspace archive', () => {
       const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
       return agents.find(agent => agent.id === agentId)?.status
     }).toBe(AgentStatus.ACTIVE)
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await editor.click()
-    await page.keyboard.type(ARITHMETIC_PROMPT)
-    await page.keyboard.press('Meta+Enter')
+    // The answer has to SURVIVE the archive and the resume below, so it is a
+    // scripted turn: the transcript is the subject, and a live model would make
+    // its content the variable this test cannot control.
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps(1)
     await expectAssistantAnswer(page)
 
     await openTerminalViaUI(page)
@@ -380,7 +382,7 @@ test.describe('workspace archive', () => {
 })
 
 processTest.describe('workspace archive reconciliation', () => {
-  processTest('prevents agent resume when archival happens while the Worker is offline', async ({ separateHubWorker, page }) => {
+  processTest('prevents agent resume when archival happens while the Worker is offline', async ({ separateHubWorker, page, modelScript }) => {
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Offline Archive')
@@ -392,10 +394,9 @@ processTest.describe('workspace archive reconciliation', () => {
         const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
         return agents.find(agent => agent.id === agentId)?.status
       }).toBe(AgentStatus.ACTIVE)
-      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-      await editor.click()
-      await page.keyboard.type(ARITHMETIC_PROMPT)
-      await page.keyboard.press('Meta+Enter')
+      await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+      await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+      await modelScript.waitForSteps(1)
       await expectAssistantAnswer(page)
 
       await stopWorker(separateHubWorker)
