@@ -54,27 +54,9 @@ runs the semantic cross-checks (derived arithmetic, enum coverage via
 `backend/generated/contracts/` and TS to `frontend/src/generated/contracts/`
 (gitignored; CI generates before building).
 
-| Contract | Holds |
-|---|---|
-| `wire.json` | channelwire limits, timing, close reasons; WS route / query-param / subprotocol vocabulary; Noise nonce limits (soft rekey trigger, hard wrap bound); frame length prefix |
-| `headers.json` | cross-program HTTP headers (both elevation headers, credential-rejected) |
-| `retry.json` | the events-rejection retry policy |
-| `chat-history.json` | message page limit, browser catch-up gap limit |
-| `user-settings.json` | each account setting's proto key, plus the default, enum tokens and numeric limits of each closed-set or range setting |
-| `worker-vocab.json` | notification-type tokens, notification-thread discriminator, Codex rate-limit token, model sentinels |
-| `goose-protocol.json` | Goose permission modes |
-| `copilot-protocol.json` | Copilot's native event, tool, mode and permission vocabulary; session-mode option-group id; approval-scope words its control surface sends |
-| `providers.json` | AgentProvider display names, CLI aliases, parse aliases (read by agentlabels and agentProviderLabel) |
-| `scopes.json` | scope wire tokens, Preferences descriptions, consent-screen sentences, categories, implied-by graph |
-| `theme-default.json` | default palette and the OAuth pages' subset |
-| `validate.json` | byte limits, strip/fold/refused character classes, reserved usernames |
-| `desktop.json` | all seven Tauri event names (Rust emits, webview listens, incl. sidecar-log and menu); env vars Rust passes the Go sidecar; `windowBehavior`, the tokens of the five Desktop account settings, matched by the Rust shell out of the `set_desktop_behavior` payload |
-
-- The hub validates against `user-settings.json` (`usersettings/keys.go`) and
-  the browser parses against it (`PreferencesContext.tsx`); when their limits
-  differed, one side stored what the other discarded. The three Desktop enums
-  state only their default there — a THIRD language spells their tokens in
-  `desktop.json`, and the generator cross-checks the two.
+- Each contract states what it holds and why in its own `_readme`. Read that,
+  not a list here: a list here is a second copy, and the last one described 13
+  of 31 contracts.
 - `desktop.json` also emits a RUST module
   (`desktop/rust/src/generated/contracts.rs`, include!d from main.rs), so
   `prepare-desktop` depends on `generate-contracts`.
@@ -265,7 +247,6 @@ layer 1 is where raw shapes are known.
   `src/test-support/testFileNaming.test.ts` enforces both halves. Widening the
   vitest exclude back to `tests/e2e/**` would leave a co-located test under
   **neither** runner.
-- Unused imports fail lint.
 - Test provider-specific logic in that provider's test file (e.g. Claude's
   `previewText` in `providers/claude/plugin.test.ts`).
 - **Inject what ends a transient state; never size a window with a sleep.**
@@ -282,16 +263,6 @@ layer 1 is where raw shapes are known.
   under `.git/`, racing `t.TempDir` cleanup
   (`TempDir RemoveAll cleanup: ... directory not empty`, blamed on the test).
   `testutil.NewGitRepo` does this; a new helper must too.
-- **Scope a cross-tab storage assertion.** `~/lib/browserStorageDb` publishes on
-  a module-level `BroadcastChannel`; vitest isolates modules per file but not
-  the PROCESS, so files hear each other's writes, and a differing `from`
-  suppresses nothing. Filter on `kvInstanceIdForTests()` for this tab's writes,
-  filter heard keys to the case's own, and make fixture keys file-unique.
-- **Do not propose happy-dom.** It is about 2.7x faster than jsdom
-  (60.6s → 33.6s), but it returns
-  `''` for `getComputedStyle(el).overflowX` where a browser and jsdom return
-  `'visible'`, so `Tooltip.tsx`'s clip detection sees every element as clipped
-  and the "not clipped" branch becomes untestable.
 - **Postgres/MySQL store suites need `-tags integration` and Docker:**
   `cd backend && go test -tags integration -run 'TestPostgresStore|TestMySQLStore' ./internal/hub/store/postgres/... ./internal/hub/store/mysql/...`
   (MySQL takes about 85s). Without the tag they report "no test files", and
@@ -367,10 +338,6 @@ an E2E change works.
   not-STARTING, so it does NOT distinguish a failed agent). The worker judges
   "last tab on the branch?" from its own rows, so closing two tabs in a row
   races the first teardown.
-- **Mock drift goes undetected**, since no test talks to a real provider. That
-  gap belongs with the `testdata/*_conformance.json` corpora, not a
-  tag-selected Playwright project (a `@real-provider` tag and project were
-  deleted for matching no test).
 
 ### Frontend CSS (vanilla-extract)
 
@@ -400,20 +367,14 @@ control has no visible text, so the tooltip is its accessible name too.
 </Tooltip>
 ```
 
-A native `title` shows the unthemed OS tooltip after a browser-controlled delay
-and never on touch. Worse, silently, a `title` long enough to state a reason
-**becomes the accessible name** of a control with no `aria-label`, so a screen
-reader reads the remedy and `getByRole(..., { name })` stops matching.
-
 **`title` on a DOM element is a lint error** (`no-restricted-syntax` in
-`eslint.config.ts`) with no exception, **disabled** controls included:
-`<Tooltip>` listens on its wrapper's real box (a disabled element dispatches no
-pointer event) and keeps an offscreen `aria-describedby` description while
-disabled — the only screen-reader route, since a disabled element takes no
-focus. The rule matches **lowercase** elements only, because `title` on a
+`eslint.config.ts`) with no exception, disabled controls included; the lint
+message states why, and `Tooltip.tsx` documents how it covers a disabled
+control. The rule matches **lowercase** elements only, because `title` on a
 component is its own prop (`<Dialog title>` is a heading, `<IconButton title>` a
-tooltip). A component that spreads props onto a DOM node omits `title` from its
-prop type instead, as `IconButton` and `ConfirmButton` do; a new one must too.
+tooltip). So a component that spreads props onto a DOM node must omit `title`
+from its prop type, as `IconButton` and `ConfirmButton` do — the linter cannot
+see through the spread.
 
 ### Dropdowns and one-of-N choices
 
@@ -437,57 +398,32 @@ option-list swap. A menu derives from props and cannot drift.
 
 Never call `localStorage`, `sessionStorage` or `indexedDB` directly: route every
 read, write and delete through `~/lib/browserStorage`, and open every database
-through `~/lib/idb` (`createIdbConnection`). Tests reset a store with
-`localStorageClearForTests` / `sessionStorageClearForTests` /
-`resetBrowserStorageForTests`, not `clear()`. Callers pass a LOGICAL name
-(`'key-pins'`, `'worker-info:w-1'`); the module composes the stored key.
+through `~/lib/idb` (`createIdbConnection`). Callers pass a LOGICAL name
+(`'key-pins'`, `'worker-info:w-1'`); the module composes the stored key. A test
+resets a store with `localStorageClearForTests` / `sessionStorageClearForTests`
+/ `resetBrowserStorageForTests`, not `clear()`. A module that MIRRORS an
+account-scoped key in memory subscribes to `onStorageAccountChange`, so the
+mirror follows the account.
 
-- **Two backends.** The `leapmux:` family lives in **IndexedDB**
-  (`~/lib/browserStorageDb`): several families have no upper limit, and
-  localStorage is synchronous main-thread I/O under a ~5 MB cap.
-  `sessionStorage` stays on Web Storage, because its per-tab lifetime carries
-  the CRDT client identity and the tab pointers; it uses `sessionStorageGet` /
-  `sessionStorageSet` / `sessionStorageHas` / `sessionStorageRemove`, with no
-  `access`.
-- **Access tiers.** IndexedDB is async, so each localStorage-family key declares
-  `access`. A `sync` key is MIRRORED in memory, keeping `localStorageGet` /
-  `localStorageSet` / `localStorageRemove` synchronous for a reader that cannot
-  await (a `createSignal` initializer, a `createMemo`, the
-  `onStorageAccountChange` callback, a constructor). An `async` key — the answer
-  for everything else, including every family with no upper limit — uses
-  promise-returning `localStorageLoad` / `localStorageStore` /
-  `localStorageDrop`. The wrong accessor is a compile error (`SyncLocalKey` /
-  `AsyncLocalKey`) and a runtime throw.
-- **Scope and lifetime.** Each key belongs to one account; each row expires, and
-  a read within three hours of the full TTL refreshes it. `runCleanup` deletes
-  expired rows, rows no registration matches, and `leapmux:` keys a pre-move
-  build left in localStorage — but KEEPS another account's fresh key, the point
-  of the scope. Writes go through a coalescing write-behind queue and are not
-  durable on return; a caller that must know reads `StorageWrite.durable`, as
-  `persistedSeq` does. `App` flushes on `pagehide`.
-- **Registries.** `LOCAL_KEY_SPECS` (IndexedDB-backed) and `SESSION_KEY_SPECS`
-  (sessionStorage) hold every key by logical name. A local entry states `match`
-  (`exact` or `prefix`), `scope`, `ttlMs` and `access`; a session entry omits
-  `access`. `scope: 'account'` stores at `leapmux:u:<userId>:<name>`, for
-  anything a user owns. `scope: 'device'` stores at `leapmux:<name>`, for state
-  guarding a resource every account on the origin shares — today only the two
-  relay sequence marks, also the only `monotonic` keys (a high-water merge the
-  types allow on a `sync` key alone).
-- **Account switch.** Await `hydrateStorageAccount(userId)`, which loads the
-  sync tier, before `setStorageAccount(userId)`, which refuses an unhydrated
-  account. `AuthContext` is the one caller of both; an account-scoped access
-  before then throws. A module that MIRRORS an account-scoped key subscribes to
-  `onStorageAccountChange` so the mirror follows the namespace.
-- **Cross-tab.** Changes travel on a BroadcastChannel (IndexedDB raises no
-  event); `onStorageChanged` delivers the set of stored keys that moved.
+`browserStorage.ts` and `browserStorageDb.ts` document the rest: the IndexedDB
+and sessionStorage backends, expiry and `runCleanup`, the write-behind queue,
+and account hydration.
 
 To add a key:
 
 1. Add the constant (`KEY_*`) or prefix (`PREFIX_*`) to `browserStorage.ts`.
-2. Register it in `LOCAL_KEY_SPECS` or `SESSION_KEY_SPECS`; `satisfies` makes a
-   missing `scope`, or a local key's missing `access`, a compile error.
-3. Use its tier's helpers. They throw for an unregistered name or the wrong
-   tier, so a mistake fails visibly instead of vanishing at the next sweep.
+2. Register it in `LOCAL_KEY_SPECS` (IndexedDB) or `SESSION_KEY_SPECS`
+   (sessionStorage), and choose for a local key:
+   - `access`: `sync` only for a reader that cannot await (a `createSignal`
+     initializer, a `createMemo`, a constructor); `async` for everything else,
+     and for any family with no upper limit.
+   - `scope`: `'account'` for anything a user owns; `'device'` only for state
+     every account on the origin shares.
+
+   `satisfies` makes a missing `scope` or `access` a compile error.
+3. Use its tier's helpers. The wrong tier is a compile error (`SyncLocalKey` /
+   `AsyncLocalKey`), and an unregistered name throws, so a mistake fails
+   visibly instead of vanishing at the next sweep.
 
 Guards: `no-restricted-globals` / `no-restricted-properties` in
 `eslint.config.ts` reject the storage globals outside the gateway (and any

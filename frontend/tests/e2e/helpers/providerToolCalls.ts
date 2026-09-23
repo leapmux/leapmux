@@ -8,8 +8,10 @@ import { CURSOR_TASK_TOOL } from './cursorSurface'
  *
  * The mock endpoint answers with whatever a test scripts, so a scripted tool
  * call must use the provider's OWN tool name and argument shape. Every entry
- * below comes from a request the provider actually sent: see the probe record
- * in the plan at `.tmp/e2e-infra-plan.md`.
+ * below was read off a request the provider actually sent, and the E2E
+ * specifications that script it are what keep it true: an entry the agent no
+ * longer accepts fails the spec that uses it, because the agent then runs no
+ * tool and the scripted scenario is left unconsumed.
  *
  * This is the one place a provider's tool vocabulary appears in the E2E
  * helpers, and `satisfies` makes a new provider a typecheck failure here rather

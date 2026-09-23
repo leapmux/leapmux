@@ -37,8 +37,10 @@ export default defineConfig({
       //
       // Bringing a real-model test back means adding the project back WITH it,
       // in the same change, so its deadlines are chosen against something that
-      // runs. See `.tmp/e2e-infra-plan.md` for what this costs -- nothing now
-      // detects the mock drifting from a real provider's wire format.
+      // runs. What this costs: nothing now detects the mock drifting from a
+      // real provider's wire format. That gap belongs in the
+      // `testdata/*_conformance.json` corpora, not in a Playwright project --
+      // https://github.com/leapmux/leapmux/issues/491.
       name: 'mock-chromium',
       timeout: 120_000,
       expect: { timeout: 30_000 },
