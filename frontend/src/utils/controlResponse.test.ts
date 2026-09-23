@@ -30,7 +30,7 @@ describe('buildDenyResponse', () => {
   })
 
   it('pins the placeholder byte-identical to the backend ControlRejectedByUserMessage', () => {
-    // This literal MUST match backend/internal/worker/agent/factory.go's ControlRejectedByUserMessage
+    // This literal MUST match backend/internal/worker/agent/control_response.go's ControlRejectedByUserMessage
     // -- if it drifts, the backend can no longer collapse a bare deny and the "Rejected by user."
     // placeholder leaks into the transcript/rail as if it were typed feedback.
     expect(CONTROL_REJECTED_BY_USER_MESSAGE).toBe('Rejected by user.')

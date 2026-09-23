@@ -137,8 +137,8 @@ type agentActivity struct {
 	//
 	// A REPEAT publish of the value the entry already holds does NOT clear it.
 	// It answers nothing, because the provider reports the state it reported
-	// before. Providers do send one: pi_output.go republishes the turn flag on a
-	// retried run, and zcode_output.go publishes it at every turn start. Spending
+	// before. Providers do send one: providers/pi/output.go republishes the turn flag on a
+	// retried run, and providers/zcode/output.go publishes it at every turn start. Spending
 	// the mark there let the withdrawal of the pending prompt re-derive WORKING
 	// before the stop the mark was taken for arrived.
 	//
@@ -832,7 +832,7 @@ func (h *OutputHandler) isProcessRunning(rootAgentID string) bool {
 	if h.processRunning != nil {
 		return h.processRunning(rootAgentID)
 	}
-	return h.agents != nil && h.agents.AgentAlive(rootAgentID)
+	return h.agents.AgentAlive(rootAgentID)
 }
 
 // backgroundTaskRows returns the root's registry display list.

@@ -67,7 +67,7 @@ type providerSpec interface {
 
 // baseProviderSpec carries the interface's empty defaults so a spec
 // implements only what it has: providers without a public site key or an
-// ALTCHA algorithm inherit the "" answers (the noopProvider pattern).
+// ALTCHA algorithm inherit the "" answers (the agent.ProviderDefaults pattern).
 type baseProviderSpec struct{}
 
 func (baseProviderSpec) siteKey(Config) string         { return "" }
@@ -152,8 +152,8 @@ func (turnstileSpec) verify(m *Manager, ctx context.Context, res *resolvedConfig
 }
 
 // providerSpecs holds one spec per selectable provider. The set is closed
-// and package-local, so unlike the agent registry (which accepts
-// cross-package registrations through RegisterProvider) a map written
+// and package-local, so unlike the agent registry (which collects each
+// provider package's Registration at a composition root) a map written
 // once at package init is enough.
 var providerSpecs = map[Provider]providerSpec{
 	ProviderAltcha:      altchaSpec{},

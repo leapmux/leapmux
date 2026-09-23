@@ -57,7 +57,7 @@ func optionValueInGroup(g *leapmuxv1.AvailableOptionGroup, v string) bool {
 // overrides (e.g. a permission-mode change being broadcast before it is re-read
 // from the DB). Package-level so both *Service and *OutputHandler can use it.
 func optionGroupsView(agents *agent.Manager, a *db.Agent, overrides map[string]string) []*leapmuxv1.AvailableOptionGroup {
-	current := loadOptions(a.Options, a.AgentProvider)
+	current := loadOptions(agents.Registry(), a.Options, a.AgentProvider)
 	for k, v := range overrides {
 		if v != "" {
 			current[k] = v

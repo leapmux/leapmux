@@ -284,7 +284,7 @@ func TestNew_CarriesEveryConfigField(t *testing.T) {
 		Channels:            channel.NewManager(nil, 0, nil, nil, 0, 0),
 		Send:                func(*leapmuxv1.ConnectRequest) error { return nil },
 		DB:                  sqlDB,
-		Agents:              agent.NewManager(nil),
+		Agents:              agent.NewManager(testRegistry, nil),
 		Terminals:           terminal.NewManager(),
 		HomeDir:             "/home/x",
 		DataDir:             "/data/x",
@@ -373,6 +373,16 @@ func TestNew_PanicsOnMissingRequiredConfig(t *testing.T) {
 			New(Config{DB: sqlDB, Channels: channel.NewManager(nil, 0, nil, nil, 0, 0)})
 		})
 	})
+
+	t.Run("missing Agents", func(t *testing.T) {
+		assert.PanicsWithValue(t, "service.New: Agents must be set", func() {
+			New(Config{
+				DB:       sqlDB,
+				Channels: channel.NewManager(nil, 0, nil, nil, 0, 0),
+				Send:     func(*leapmuxv1.ConnectRequest) error { return nil },
+			})
+		})
+	})
 }
 
 // newServiceTestDB opens a migrated in-memory worker DB for the tests
@@ -434,7 +444,7 @@ func TestRegisterAll_BindsTheCleanupDrain(t *testing.T) {
 }
 
 // newMinimalService builds the smallest Service New will accept: a real
-// DB plus the two fields it refuses to construct without.
+// DB plus the three fields it refuses to construct without.
 //
 // The stand-ins are deliberate. Channels is an empty manager, so no dispatched
 // handler finds a session -- which is what a test about local-IPC routing or
@@ -446,6 +456,7 @@ func newMinimalService(t *testing.T, sqlDB *sql.DB) *Service {
 		DB:       sqlDB,
 		Channels: channel.NewManager(nil, 0, nil, nil, 0, 0),
 		Send:     func(*leapmuxv1.ConnectRequest) error { return nil },
+		Agents:   agent.NewManager(testRegistry, nil),
 	})
 }
 

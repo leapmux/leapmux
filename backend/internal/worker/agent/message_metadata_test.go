@@ -20,7 +20,7 @@ func TestMessageSupplementSeparatesProviderDataAndMetadata(t *testing.T) {
 	assert.Equal(t, original, decoded.Original)
 	assert.JSONEq(t, string(providerData), string(decoded.Supplemental))
 	assert.JSONEq(t, string(metadata), string(decoded.Metadata))
-	resolved := ResolveMessageContent(noopProvider{}, decoded)
+	resolved := ResolveMessageContent(ProviderDefaults{}, decoded)
 	assert.Contains(t, string(resolved), `"wide":9007199254740993`)
 	assert.Contains(t, string(resolved), `"duration_ms":0`)
 	assert.NotContains(t, string(resolved), `"metadata"`)
@@ -31,14 +31,14 @@ func TestMessageMetadataDoesNotReadProviderSupplementFields(t *testing.T) {
 	t.Parallel()
 	original := []byte(` {"duration_ms":"original"} `)
 	content := MessageContent{Original: original, Supplemental: []byte(`{"duration_ms":999,"total_cost_usd":999}`)}
-	assert.Equal(t, original, ResolveMessageContent(noopProvider{}, content))
+	assert.Equal(t, original, ResolveMessageContent(ProviderDefaults{}, content))
 }
 
 func TestMessageMetadataRejectsInvalidFields(t *testing.T) {
 	t.Parallel()
 	original := []byte(` {"duration_ms":"original"} `)
 	for _, metadata := range []string{`null`, `[]`, `invalid`, `{"duration_ms":-1,"num_tool_uses":false,"total_cost_usd":"wrong","context_usage":[]}`, `{"unrelated":true}`} {
-		assert.Equal(t, original, ResolveMessageContent(noopProvider{}, MessageContent{Original: original, Metadata: []byte(metadata)}))
+		assert.Equal(t, original, ResolveMessageContent(ProviderDefaults{}, MessageContent{Original: original, Metadata: []byte(metadata)}))
 	}
 }
 
@@ -63,7 +63,7 @@ func TestMessageMetadataSkipsTheEnvelopeParseWithNoMetadata(t *testing.T) {
 	original := []byte(`{"type":"assistant","message":{"role":"assistant","content":[` +
 		`{"type":"text","text":"` + strings.Repeat("filler ", 2000) + `"}]}}`)
 	content := MessageContent{Original: original}
-	var provider Provider = noopProvider{}
+	var provider Provider = ProviderDefaults{}
 	allocs := testing.AllocsPerRun(50, func() {
 		if got := ResolveMessageContent(provider, content); len(got) != len(original) {
 			t.Fatalf("resolved length %d, want %d", len(got), len(original))
@@ -80,7 +80,7 @@ func TestMessageMetadataMergesWhenMetadataIsPresent(t *testing.T) {
 		Original: []byte(`{"type":"result","duration_ms":0}`),
 		Metadata: []byte(`{"duration_ms":42,"num_tool_uses":3,"total_cost_usd":0.5,"context_usage":{"used":7}}`),
 	}
-	resolved := string(ResolveMessageContent(noopProvider{}, content))
+	resolved := string(ResolveMessageContent(ProviderDefaults{}, content))
 	assert.Contains(t, resolved, `"duration_ms":42`)
 	assert.Contains(t, resolved, `"num_tool_uses":3`)
 	assert.Contains(t, resolved, `"total_cost_usd":0.5`)
@@ -93,6 +93,6 @@ func TestMessageMetadataKeepsAnUnparsableEnvelope(t *testing.T) {
 	// the original bytes travel on unchanged.
 	for _, original := range []string{`not json`, `[1,2,3]`, `null`, ``} {
 		content := MessageContent{Original: []byte(original), Metadata: []byte(`{"duration_ms":42}`)}
-		assert.Equal(t, []byte(original), ResolveMessageContent(noopProvider{}, content))
+		assert.Equal(t, []byte(original), ResolveMessageContent(ProviderDefaults{}, content))
 	}
 }

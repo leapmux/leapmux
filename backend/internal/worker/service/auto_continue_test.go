@@ -40,7 +40,7 @@ func TestAutoContinueSchedule_SurvivesRestart(t *testing.T) {
 	}))
 
 	var fired atomic.Int32
-	h2 := NewOutputHandler(nil, queries, nil, nil, nil)
+	h2 := NewOutputHandler(nil, queries, nil, agent.NewManager(testRegistry, nil), nil)
 	h2.SetSendMessageFunc(func(agentID, content string) {
 		if agentID == "agent-1" && content == autoContinueContent {
 			fired.Add(1)
@@ -64,7 +64,7 @@ func TestAutoContinueSchedule_RescheduleUpdatesSingleRow(t *testing.T) {
 	_, queries := setupTestDB(t)
 	createAutoContinueTestAgent(t, queries, "agent-1")
 
-	h := NewOutputHandler(nil, queries, nil, nil, nil)
+	h := NewOutputHandler(nil, queries, nil, agent.NewManager(testRegistry, nil), nil)
 	firstDueAt := time.Now().UTC().Add(10 * time.Minute)
 	secondDueAt := firstDueAt.Add(20 * time.Minute)
 
@@ -92,7 +92,7 @@ func TestAutoContinueSchedule_ReasonsCanCoexist(t *testing.T) {
 	_, queries := setupTestDB(t)
 	createAutoContinueTestAgent(t, queries, "agent-1")
 
-	h := NewOutputHandler(nil, queries, nil, nil, nil)
+	h := NewOutputHandler(nil, queries, nil, agent.NewManager(testRegistry, nil), nil)
 	h.scheduleAutoContinue("agent-1", agent.AutoContinueSchedule{
 		Reason: agent.AutoContinueReasonAPIError,
 		DueAt:  time.Now().UTC(),
@@ -114,7 +114,7 @@ func TestAutoContinueSchedule_CancelOneReasonLeavesOtherIntact(t *testing.T) {
 	_, queries := setupTestDB(t)
 	createAutoContinueTestAgent(t, queries, "agent-1")
 
-	h := NewOutputHandler(nil, queries, nil, nil, nil)
+	h := NewOutputHandler(nil, queries, nil, agent.NewManager(testRegistry, nil), nil)
 	h.scheduleAutoContinue("agent-1", agent.AutoContinueSchedule{
 		Reason: agent.AutoContinueReasonAPIError,
 		DueAt:  time.Now().UTC(),
@@ -155,7 +155,7 @@ func TestAutoContinueSchedule_ArmedDueAtSurvivesDBRoundtrip(t *testing.T) {
 
 	_, queries := setupTestDB(t)
 	createAutoContinueTestAgent(t, queries, "agent-1")
-	h := NewOutputHandler(nil, queries, nil, nil, nil)
+	h := NewOutputHandler(nil, queries, nil, agent.NewManager(testRegistry, nil), nil)
 
 	// Sub-millisecond residue plus a non-UTC zone: the shape every live
 	// scheduling call has (time.Now() carries nanosecond resolution).
@@ -203,7 +203,7 @@ func TestAutoContinueSchedule_FiresOnceAndDoesNotRefireAfterRestart(t *testing.T
 	}))
 
 	var fired atomic.Int32
-	h1 := NewOutputHandler(nil, queries, nil, nil, nil)
+	h1 := NewOutputHandler(nil, queries, nil, agent.NewManager(testRegistry, nil), nil)
 	h1.SetSendMessageFunc(func(agentID, content string) {
 		if agentID == "agent-1" && content == autoContinueContent {
 			fired.Add(1)
@@ -212,7 +212,7 @@ func TestAutoContinueSchedule_FiresOnceAndDoesNotRefireAfterRestart(t *testing.T
 	h1.restoreAutoContinueSchedules()
 	require.Eventually(t, func() bool { return fired.Load() == 1 }, 2*time.Second, 25*time.Millisecond)
 
-	h2 := NewOutputHandler(nil, queries, nil, nil, nil)
+	h2 := NewOutputHandler(nil, queries, nil, agent.NewManager(testRegistry, nil), nil)
 	h2.SetSendMessageFunc(func(agentID, content string) {
 		if agentID == "agent-1" && content == autoContinueContent {
 			fired.Add(1)

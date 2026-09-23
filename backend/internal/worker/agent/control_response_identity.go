@@ -28,7 +28,7 @@ func restoreControlResponseID(ctx ControlResponseContext) ControlResponseResolut
 	}
 	nativeID, requestID, validRequest := ExtractJSONRPCID(ctx.RequestPayload)
 	_, responseID, validResponse := ExtractJSONRPCID(ctx.ResponseContent)
-	if !validRequest || !validResponse || storedControlRequestID(ctx, requestID) != responseID {
+	if !validRequest || !validResponse || StoredControlRequestID(ctx, requestID) != responseID {
 		resolution.Withhold = true
 		return resolution
 	}

@@ -81,7 +81,7 @@ function withStoredBody(fields: Record<string, unknown>, record: Record<string, 
 describe('reasonix stored tool records', () => {
   // The plugin reads `raw_content` first and `content` second, so a field name that
   // stopped matching falls through to the shorter body instead of failing the build.
-  // The Go tags are pinned to the same contract in reasonix_tool_store_test.go.
+  // The Go tags are pinned to the same contract in providers/reasonix/tool_store_test.go.
   it('prefers the unabridged body the record carries', () => {
     const whole = withStoredBody({}, { name: 'bash', content: 'short body', raw_content: 'the whole body' })
     expect(whole.kind === 'execute' && typedResult(whole)?.commands[0]?.output).toBe('the whole body')

@@ -348,7 +348,7 @@ export interface ProviderSessionCapability {
    * The five plugins that register DIRECTLY supply it -- Claude, Codex, Pi, Copilot and
    * ZCode. The five of the Agent Client Protocol family need none: the worker reads
    * their `usage_update` frame and broadcasts the normalized `context_usage` for it
-   * (`handleUsageUpdate` in `acp_common.go`), so the wrapper answers before it reaches
+   * (`handleUsageUpdate` in `providers/acp/base.go`), so the wrapper answers before it reaches
    * a plugin and this hook would never run.
    */
   contextUsageFromMessage?: (parsed: ParsedMessageContent) => ContextUsageInfo | null

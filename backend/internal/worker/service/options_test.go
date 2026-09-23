@@ -9,6 +9,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/pi"
 )
 
 // TestOptionMap_Merge pins the empty-deletes wire semantics and clone-on-write: an empty
@@ -55,19 +56,19 @@ func TestResolveProviderDefaults(t *testing.T) {
 
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	src := OptionMap{}
-	got := resolveProviderDefaults(src, claude)
+	got := resolveProviderDefaults(testRegistry, src, claude)
 	assert.NotEmpty(t, got[agent.OptionIDModel], "a missing model is filled with the provider default")
 	assert.Equal(t, agent.EffortAuto, got[agent.OptionIDEffort], "a catalog-effort provider gets EffortAuto")
 	assert.Empty(t, src, "resolveProviderDefaults must not mutate the input")
 
-	kept := resolveProviderDefaults(OptionMap{agent.OptionIDModel: "sonnet"}, claude)
+	kept := resolveProviderDefaults(testRegistry, OptionMap{agent.OptionIDModel: "sonnet"}, claude)
 	assert.Equal(t, "sonnet", kept[agent.OptionIDModel], "an explicit value is left untouched")
 }
 
 func TestResolveProviderDefaults_CodexUsesAccountDefaultSentinel(t *testing.T) {
 	t.Setenv("LEAPMUX_CODEX_DEFAULT_MODEL", "")
 
-	codex := resolveProviderDefaults(OptionMap{}, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	codex := resolveProviderDefaults(testRegistry, OptionMap{}, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 
 	assert.Equal(t, agent.DefaultModelSentinel, codex[agent.OptionIDModel])
 	assert.Equal(t, agent.EffortAuto, codex[agent.OptionIDEffort])
@@ -77,16 +78,16 @@ func TestResolveNewAgentDefaultsAppliesOnlyToFreshSessions(t *testing.T) {
 	t.Parallel()
 
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
-	fresh := resolveLaunchOptions(OptionMap{}, claude, false)
+	fresh := resolveLaunchOptions(testRegistry, OptionMap{}, claude, false)
 	assert.Equal(t, contracts.ClaudeModeAuto, fresh.Options[agent.OptionIDPermissionMode])
 	assert.True(t, fresh.DefaultedIDs[agent.OptionIDPermissionMode])
 
 	// A resumed session keeps the provider's own default, and Claude's is "default".
-	resumed := resolveLaunchOptions(OptionMap{}, claude, true)
+	resumed := resolveLaunchOptions(testRegistry, OptionMap{}, claude, true)
 	assert.Equal(t, contracts.ClaudeModeDefault, resumed.Options[agent.OptionIDPermissionMode])
 	assert.Empty(t, resumed.DefaultedIDs)
 
-	explicit := resolveLaunchOptions(OptionMap{agent.OptionIDPermissionMode: contracts.ClaudeModeDefault}, claude, false)
+	explicit := resolveLaunchOptions(testRegistry, OptionMap{agent.OptionIDPermissionMode: contracts.ClaudeModeDefault}, claude, false)
 	assert.Equal(t, contracts.ClaudeModeDefault, explicit.Options[agent.OptionIDPermissionMode])
 	assert.Empty(t, explicit.DefaultedIDs)
 }
@@ -97,7 +98,7 @@ func TestResolveLaunchOptionsResumedGooseDoesNotFallBackToBypass(t *testing.T) {
 	t.Parallel()
 
 	goose := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
-	resumed := resolveLaunchOptions(OptionMap{}, goose, true)
+	resumed := resolveLaunchOptions(testRegistry, OptionMap{}, goose, true)
 	assert.Equal(t, contracts.GooseModeSmartApprove, resumed.Options[agent.OptionIDPermissionMode])
 	assert.NotEqual(t, contracts.GooseModeAuto, resumed.Options[agent.OptionIDPermissionMode])
 	assert.Empty(t, resumed.DefaultedIDs, "a resumed session receives no safe default")
@@ -107,7 +108,7 @@ func TestResolveNewAgentDefaultsHonorsAnExplicitCopilotPermissionMode(t *testing
 	t.Parallel()
 
 	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT
-	got := resolveLaunchOptions(OptionMap{
+	got := resolveLaunchOptions(testRegistry, OptionMap{
 		agent.OptionIDPermissionMode: contracts.CopilotPermissionModeAllowAll,
 	}, provider, false)
 	assert.Equal(t, contracts.CopilotPermissionModeAllowAll, got.Options[agent.OptionIDPermissionMode],
@@ -121,7 +122,7 @@ func TestResolveNewAgentDefaultsHonorsAnExplicitCopilotPermissionMode(t *testing
 func TestResolveLaunchOptionsStampsTheCopilotSafeDefault(t *testing.T) {
 	t.Parallel()
 
-	got := resolveLaunchOptions(OptionMap{}, leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, false)
+	got := resolveLaunchOptions(testRegistry, OptionMap{}, leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, false)
 	assert.Equal(t, contracts.CopilotPermissionModeAssisted, got.Options[agent.OptionIDPermissionMode])
 	assert.True(t, got.DefaultedIDs[agent.OptionIDPermissionMode])
 }
@@ -135,14 +136,14 @@ func TestDefaultSourcedOptionIDs(t *testing.T) {
 	copilot := leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT
 	stored := OptionMap{agent.OptionIDPermissionMode: contracts.CopilotPermissionModeAssisted}
 	assert.Equal(t, map[string]bool{agent.OptionIDPermissionMode: true},
-		defaultSourcedOptionIDs(stored, copilot))
+		defaultSourcedOptionIDs(testRegistry, stored, copilot))
 
 	edited := stored.Clone()
 	edited[agent.OptionIDPermissionMode] = contracts.CopilotPermissionModeAllowAll
-	assert.False(t, defaultSourcedOptionIDs(edited, copilot)[agent.OptionIDPermissionMode],
+	assert.False(t, defaultSourcedOptionIDs(testRegistry, edited, copilot)[agent.OptionIDPermissionMode],
 		"a value that differs from the safe default is not default-sourced")
 
-	assert.Empty(t, defaultSourcedOptionIDs(OptionMap{}, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX),
+	assert.Empty(t, defaultSourcedOptionIDs(testRegistry, OptionMap{}, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX),
 		"a provider with no safe defaults reports none")
 }
 
@@ -174,15 +175,15 @@ func TestOptionsChangeDelta(t *testing.T) {
 func TestConfirmedOptions_PreservesPersistedOnlyOption(t *testing.T) {
 	t.Parallel()
 
-	pi := leapmuxv1.AgentProvider_AGENT_PROVIDER_PI
+	ag := leapmuxv1.AgentProvider_AGENT_PROVIDER_PI
 	// base = the request the edit carries, including the persisted-only pi_provider.
-	base := OptionMap{agent.OptionIDModel: "gpt-5.5", agent.PiOptionProvider: "openai", agent.OptionIDEffort: "high"}
+	base := OptionMap{agent.OptionIDModel: "gpt-5.5", pi.OptionProvider: "openai", agent.OptionIDEffort: "high"}
 	// confirmed = the running agent's catalog-only CurrentOptions snapshot (NO pi_provider).
 	confirmed := OptionMap{agent.OptionIDModel: "gpt-5.5", agent.OptionIDEffort: "medium"}
 
-	settled := confirmedOptions(pi, base, confirmed)
+	settled := confirmedOptions(testRegistry, ag, base, confirmed)
 
-	assert.Equal(t, "openai", settled[agent.PiOptionProvider],
+	assert.Equal(t, "openai", settled[pi.OptionProvider],
 		"the persisted-only pi_provider survives because confirmedOptions overlays onto the base")
 	assert.Equal(t, "medium", settled[agent.OptionIDEffort], "a confirmed value overrides the requested one")
 	assert.Equal(t, "gpt-5.5", settled[agent.OptionIDModel])
@@ -302,20 +303,20 @@ func TestResetEffortToAutoIfUnsupported_KeepsEffortOnTheAccountDefault(t *testin
 
 			// No agent is registered under this id, so OptionGroups serves the static
 			// fallback -- exactly the catalog a settings edit on a STOPPED agent sees.
-			manager := agent.NewManager(nil)
+			manager := agent.NewManager(testRegistry, nil)
 			catalog := manager.OptionGroups("not-running", test.provider, agent.DefaultModelSentinel)
 			require.NotEmpty(t, catalog)
 
 			// An edit on an unrelated axis: the effort is merely inherited from the
 			// stored row, and explicitEffort is empty because the client sent none.
 			inherited := OptionMap{agent.OptionIDModel: agent.DefaultModelSentinel, agent.OptionIDEffort: "high"}
-			resetEffortToAutoIfUnsupported(test.provider, inherited, catalog, agent.DefaultModelSentinel, agent.DefaultModelSentinel, "")
+			resetEffortToAutoIfUnsupported(testRegistry, test.provider, inherited, catalog, agent.DefaultModelSentinel, agent.DefaultModelSentinel, "")
 			assert.Equal(t, "high", inherited[agent.OptionIDEffort],
 				"an edit on another axis must not discard the stored effort")
 
 			// An explicit effort on a stopped agent still sitting on the sentinel.
 			explicit := OptionMap{agent.OptionIDModel: agent.DefaultModelSentinel, agent.OptionIDEffort: "high"}
-			resetEffortToAutoIfUnsupported(test.provider, explicit, catalog, agent.DefaultModelSentinel, agent.DefaultModelSentinel, "high")
+			resetEffortToAutoIfUnsupported(testRegistry, test.provider, explicit, catalog, agent.DefaultModelSentinel, agent.DefaultModelSentinel, "high")
 			assert.Equal(t, "high", explicit[agent.OptionIDEffort],
 				"an explicitly chosen effort must stick until the model resolves")
 
@@ -323,7 +324,7 @@ func TestResetEffortToAutoIfUnsupported_KeepsEffortOnTheAccountDefault(t *testin
 			// account's own default model picks its own tier. That clause is
 			// untouched by the unresolved-model guard.
 			switched := OptionMap{agent.OptionIDModel: agent.DefaultModelSentinel, agent.OptionIDEffort: "high"}
-			resetEffortToAutoIfUnsupported(test.provider, switched, catalog, "some-other-model", agent.DefaultModelSentinel, "")
+			resetEffortToAutoIfUnsupported(testRegistry, test.provider, switched, catalog, "some-other-model", agent.DefaultModelSentinel, "")
 			assert.Equal(t, agent.EffortAuto, switched[agent.OptionIDEffort],
 				"a model switch with no explicit effort still hands the tier back to the agent")
 		})

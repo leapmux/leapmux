@@ -51,7 +51,7 @@ export function buildAllowResponse(
 /**
  * The placeholder reject message emitted when the user declines a control request WITHOUT
  * typing a reason. Must stay byte-identical to the backend's `ControlRejectedByUserMessage`
- * (backend/internal/worker/agent/factory.go), whose `NormalizeRejectionMessage` collapses it
+ * (backend/internal/worker/agent/control_response.go), whose `NormalizeRejectionMessage` collapses it
  * to "" so a bare deny renders "Rejected" rather than leaking this placeholder as if it were
  * typed feedback. Kept as ONE frontend constant so the producer sites (buildDenyResponse's
  * default and any caller wanting a bare deny) can't drift from each other.

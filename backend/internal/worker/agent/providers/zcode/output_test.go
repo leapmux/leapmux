@@ -1,0 +1,1333 @@
+package zcode
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/leapmux/leapmux/generated/contracts"
+
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// --- turn lifecycle ---
+
+func TestHandleZCodeOutput_TurnStarted_ArmsTheUsersTurn(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.TurnToolUses = 4
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"turnNumber":1,"input":"hi"}`))
+
+	a.Mu.Lock()
+	turnActive, background, toolUses, seq := a.turnActive, a.backgroundTurn, a.TurnToolUses, a.lastSeq
+	a.Mu.Unlock()
+	assert.True(t, turnActive)
+	assert.False(t, background)
+	assert.Equal(t, 0, toolUses, "a fresh user turn resets the tool-use count")
+	assert.Equal(t, int64(1), seq, "the sequence must advance so a re-subscribe resumes from it")
+	assert.Equal(t, 0, sink.MessageCount(), "turn.started persists nothing")
+}
+
+// A turn the RUNTIME started (a background task reporting back, a subagent's reply)
+// must not reset or end the user's turn.
+func TestHandleZCodeOutput_TurnStarted_WithAnInputSourceIsABackgroundTurn(t *testing.T) {
+	t.Parallel()
+
+	for _, source := range []string{
+		InputSourceBackgroundTask,
+		InputSourceSubagent,
+		InputSourceTodoReminder,
+		InputSourceGoalContinuation,
+		InputSourceWorkflowLaunch,
+		InputSourceSharedContext,
+	} {
+		t.Run(source, func(t *testing.T) {
+			t.Parallel()
+			a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+			a.TurnToolUses = 3
+
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"inputSource":"`+source+`"}`))
+
+			a.Mu.Lock()
+			background, toolUses := a.backgroundTurn, a.TurnToolUses
+			a.Mu.Unlock()
+			assert.True(t, background)
+			assert.Equal(t, 3, toolUses, "a background turn must not clear the user turn's count")
+		})
+	}
+}
+
+func TestHandleZCodeOutput_TurnCompleted_PersistsTheDividerAndResetsSpans(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.turnActive = true
+	a.toolCalls["call-1"] = &zcodeToolCall{final: true}
+
+	a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventTurnCompleted,
+		`{"response":"done","toolCallCount":3,"resultType":"success","duration":1200,
+		  "usage":{"inputTokens":100,"outputTokens":20,"totalTokens":120}}`))
+
+	a.Mu.Lock()
+	turnActive, toolUses, final := a.turnActive, a.TurnToolUses, len(a.toolCalls)
+	a.Mu.Unlock()
+	assert.False(t, turnActive)
+	assert.Equal(t, 3, toolUses, "the count comes from the turn's own toolCallCount")
+	assert.Equal(t, 0, final, "the per-call side table is cleared with the turn")
+
+	require.Equal(t, 1, sink.MessageCount())
+	msg := sink.Messages()[0]
+	assert.True(t, msg.TurnEnd, "turn.completed must route through PersistTurnEnd")
+	assert.Equal(t, 1, sink.ResetSpanCount())
+
+	var env map[string]any
+	require.NoError(t, json.Unmarshal(msg.Content, &env))
+	assert.Equal(t, contracts.ZCodeEventTurnCompleted, env["type"])
+	assert.NotContains(t, env, "context_usage", "the original provider event stays unchanged")
+	var supplemental map[string]any
+	require.NoError(t, json.Unmarshal(msg.Metadata, &supplemental))
+	assert.Contains(t, supplemental, "context_usage", "the supplement retains usage for a reconnect")
+}
+
+// A background turn's completion must leave the user's turn and its open spans
+// alone, and record its own outcome as a notification instead.
+func TestHandleZCodeOutput_TurnCompleted_OfABackgroundTurnDoesNotEndTheUsersTurn(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.turnActive = true
+	a.backgroundTurn = true
+
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted, `{"resultType":"success","toolCallCount":1}`))
+
+	a.Mu.Lock()
+	turnActive, background := a.turnActive, a.backgroundTurn
+	a.Mu.Unlock()
+	// The TRANSCRIPT is what a background turn must not touch: no divider, no span
+	// reset, no closing of the user's open tool cards.
+	assert.Equal(t, 0, sink.MessageCount(), "no turn-end divider for a background turn")
+	assert.Equal(t, 0, sink.ResetSpanCount(), "the user's open tool cards must survive")
+	assert.Equal(t, 1, sink.NotificationCount(), "the background outcome is recorded as a notification")
+	assert.False(t, background, "the background flag is consumed")
+	// The FLAG clears either way. A turn ended, and leaving it set made Interrupt and
+	// Stop fire a session/stop RPC at an idle session for the rest of the agent's life.
+	assert.False(t, turnActive, "a turn ended, whichever kind it was")
+}
+
+// The app-server refuses two turns on one session, so a background turn runs alone --
+// and it must leave the agent idle when it ends, not permanently mid-turn.
+func TestHandleZCodeOutput_TurnCompleted_OfABackgroundTurnLeavesTheAgentIdle(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"inputSource":"background_task"}`))
+	a.Mu.Lock()
+	startedActive, startedBackground := a.turnActive, a.backgroundTurn
+	a.Mu.Unlock()
+	assert.True(t, startedActive)
+	assert.True(t, startedBackground)
+
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+	a.Mu.Lock()
+	turnActive := a.turnActive
+	a.Mu.Unlock()
+	assert.False(t, turnActive, "nothing is running, so Interrupt must not send a session/stop")
+}
+
+func TestHandleZCodeOutput_TurnFailed_SchedulesAutoContinueOnlyWhenRetryable(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name          string
+		payload       string
+		wantScheduled bool
+	}{
+		{"retryable true", `{"error":{"type":"api_error","message":"503","retryable":true}}`, true},
+		{"retryable false", `{"error":{"type":"api_error","message":"400","retryable":false}}`, false},
+		{"retryable absent", `{"error":{"type":"api_error","message":"?"}}`, false},
+		{
+			"provider not configured is never retryable",
+			`{"error":{"type":"provider_not_configured","message":"no key","retryable":true}}`,
+			false,
+		},
+		{
+			"provider not configured by code is never retryable",
+			`{"error":{"type":"api_error","code":"provider_not_configured","retryable":true}}`,
+			false,
+		},
+		{"no error object", `{}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			a.turnActive = true
+
+			a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventTurnFailed, tc.payload))
+
+			a.Mu.Lock()
+			turnActive := a.turnActive
+			a.Mu.Unlock()
+			assert.False(t, turnActive, "a failed turn always ends the turn")
+			require.Equal(t, 1, sink.MessageCount())
+			assert.True(t, sink.Messages()[0].TurnEnd)
+
+			if tc.wantScheduled {
+				assert.Positive(t, sink.AutoScheduleCount(), "a retryable failure must schedule an auto-continue")
+			} else {
+				assert.Equal(t, 0, sink.AutoScheduleCount())
+			}
+		})
+	}
+}
+
+// --- streaming ---
+
+func TestHandleZCodeOutput_ModelStreaming_TextAndReasoningDeltas(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","delta":"Hello "}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming, `{"kind":"reasoning_delta","delta":"thinking"}`))
+
+	updates := sink.ProgressUpdates()
+	require.Len(t, updates, 2)
+	assert.Equal(t, agent.ProgressModelText, updates[0].Operation)
+	assert.Equal(t, "Hello ", updates[0].Text)
+	assert.Equal(t, agent.ProgressModelText, updates[1].Operation)
+	assert.Equal(t, "thinking", updates[1].Text)
+	assert.Equal(t, 0, sink.MessageCount(), "a delta persists nothing")
+}
+
+func TestHandleZCodeOutput_TextDeltaPersistsWhenTurnFails(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"message-1","kind":"text_delta","delta":"partial answer"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnFailed,
+		`{"error":{"type":"provider_error","code":"bad_gateway","message":"failed"}}`))
+
+	require.GreaterOrEqual(t, sink.MessageCount(), 2)
+	assert.JSONEq(t, `{
+		"type":"assembled_message","kind":"text","text":"partial answer","completion":"error"
+	}`, string(sink.Messages()[0].Content))
+}
+
+func TestHandleZCodeOutput_KeepsReasoningDeltasVerbatim(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"message-1","kind":"reasoning_delta","delta":"**Verifying terminal release synchronization"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"message-1","kind":"reasoning_delta","delta":"Analyzing lock acquisition order and concurrency**"}`))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventTurnFailed,
+		`{"error":{"type":"provider_error","code":"bad_gateway","message":"failed"}}`))
+
+	require.NotEmpty(t, sink.Messages())
+	assert.Contains(t, string(sink.Messages()[0].Content),
+		`"text":"**Verifying terminal release synchronizationAnalyzing lock acquisition order and concurrency**"`)
+}
+
+func TestHandleZCodeOutput_TurnFailurePersistsIncompleteToolOutput(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"tool-1","toolName":"Bash","input":{"command":"printf partial"}}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
+		`{"kind":"progress","toolCallId":"tool-1","outputBytes":14,"stdoutTail":"partial output"}`))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventTurnFailed,
+		`{"error":{"type":"provider_error","code":"bad_gateway","message":"failed"}}`))
+
+	require.GreaterOrEqual(t, sink.MessageCount(), 3)
+	// The row is the LAST frame the agent sent for this call, byte for byte. An
+	// earlier build wrote a `result` event ZCode never sent, with a result object
+	// LeapMux invented. The partial output was already in the progress frame, and
+	// the failure is in LeapMux's own completion column.
+	assert.JSONEq(t,
+		`{"kind":"progress","toolCallId":"tool-1","outputBytes":14,"stdoutTail":"partial output"}`,
+		zcodeEventPayload(t, sink.Messages()[1].Content))
+	assert.Equal(t, agent.MessageCompletionError, sink.Messages()[1].Completion)
+	assert.True(t, sink.Messages()[1].Closing)
+	assert.Equal(t, "tool-1", sink.Messages()[1].SpanID)
+}
+
+// A tool call LeapMux knows of but the agent never announced has no opening row and
+// no span, so the turn end has nothing to close for it.
+func TestHandleZCodeOutput_TurnFailureClosesOnlyAnAnnouncedTool(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"message-1","kind":"tool_input_start","toolCallId":"tool-1","toolName":"Bash"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnFailed,
+		`{"error":{"type":"provider_error","code":"bad_gateway","message":"failed"}}`))
+
+	for _, message := range sink.Messages() {
+		assert.NotEqual(t, "tool-1", message.SpanID, "no row closes a span that never opened")
+	}
+}
+
+// zcodeEventPayload returns the payload object of one persisted ZCode event row.
+func zcodeEventPayload(t *testing.T, content []byte) string {
+	t.Helper()
+	var event struct {
+		Payload json.RawMessage `json:"payload"`
+	}
+	require.NoError(t, json.Unmarshal(content, &event))
+	return string(event.Payload)
+}
+
+func TestHandleZCodeOutput_ReasoningPersistsAtTextBoundary(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"message-1","kind":"reasoning_delta","delta":"reasoning"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"message-1","kind":"text_delta","delta":"answer"}`))
+
+	require.Equal(t, 1, sink.MessageCount())
+	assert.JSONEq(t, `{
+		"type":"assembled_message","kind":"reasoning","text":"reasoning","completion":"complete"
+	}`, string(sink.Messages()[0].Content))
+}
+
+func TestHandleZCodeOutput_ToolInputKeepsTextForTheCompletedResponse(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"message-1","kind":"text_delta","delta":"answer before tool"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"message-1","kind":"tool_input_start","toolCallId":"tool-1","toolName":"Bash"}`))
+
+	assert.Empty(t, sink.Messages(), "the completed response remains the source of assistant text")
+
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated,
+		`{"content":"answer before tool","stopReason":"tool_calls"}`))
+	require.Len(t, sink.Messages(), 1)
+	assert.Contains(t, string(sink.Messages()[0].Content), `"content":"answer before tool"`)
+}
+
+func TestHandleZCodeOutput_ModelStreaming_EmptyDeltasAndUnknownKindsAreDropped(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	for _, payload := range []string{
+		`{"kind":"text_delta","delta":""}`,
+		`{"kind":"reasoning_delta","delta":""}`,
+		`{"kind":"start"}`,
+		`{"kind":"finish"}`,
+		`{"kind":"error"}`,
+		`{"kind":"text_start"}`,
+		`{"kind":"text_end"}`,
+		`{"kind":"reasoning_start"}`,
+		`{"kind":"reasoning_end"}`,
+		`{"kind":"a_kind_this_build_invented"}`,
+	} {
+		a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming, payload))
+	}
+
+	assert.Equal(t, 0, sink.MessageCount())
+}
+
+// The scheduled tool.updated reports `inputOmitted` and carries no input, so the
+// model stream is the ONLY copy of it that ever exists.
+func TestHandleZCodeOutput_SupplementsStreamedInputWithoutChangingOriginal(t *testing.T) {
+	t.Parallel()
+	for _, inputField := range []string{"", `,"input":null`, `,"input":{}`, ",\"input\":{ \n }"} {
+		t.Run(inputField, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming, `{"kind":"tool_call","toolCallId":"call","toolName":"Bash","input":{"command":"printf recovered"}}`))
+			original := []byte(`{"sessionId":"sess-1","seq":2,"type":"tool.updated","futureMetadata":{"x":1},"payload": {"kind":"scheduled","toolCallId":"call","toolName":"Bash","inputOmitted":true,"inputRef":"model_stream"` + inputField + `}}`)
+			event, ok := parseZCodeEvent(original)
+			require.True(t, ok)
+			a.dispatchZCodeEvent(event)
+			messages := sink.Messages()
+			require.Len(t, messages, 1)
+			assert.Equal(t, original, messages[0].Content)
+			assert.JSONEq(t, `{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"call","input":{"command":"printf recovered"}}}`, string(messages[0].SupplementalContent))
+		})
+	}
+}
+
+func TestHandleZCodeOutput_ToolInputIsCachedFromTheStreamAndConsumedByScheduled(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+		`{"kind":"tool_input_start","toolCallId":"call-1","toolName":"Bash"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
+		`{"kind":"tool_input_delta","toolCallId":"call-1","delta":"{\"command\":\"ls"}`))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventModelStreaming,
+		`{"kind":"tool_input_delta","toolCallId":"call-1","delta":" -1\"}"}`))
+	a.HandleOutput(zcodeEventLine(t, 4, contracts.ZCodeEventModelStreaming,
+		`{"kind":"tool_input_end","toolCallId":"call-1"}`))
+	a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"call-1","toolName":"Bash","inputOmitted":true,"inputRef":"model_stream"}`))
+
+	require.Equal(t, 1, sink.MessageCount())
+	var env struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Input        json.RawMessage `json:"input"`
+			InputOmitted *bool           `json:"inputOmitted"`
+			InputRef     *string         `json:"inputRef"`
+		} `json:"payload"`
+	}
+	require.NoError(t, json.Unmarshal(sink.Messages()[0].Content, &env))
+	assert.Equal(t, contracts.ZCodeEventToolUpdated, env.Type)
+	assert.Empty(t, env.Payload.Input)
+	require.NotNil(t, env.Payload.InputOmitted)
+	assert.True(t, *env.Payload.InputOmitted)
+	require.NotNil(t, env.Payload.InputRef)
+	assert.Equal(t, "model_stream", *env.Payload.InputRef)
+	assert.JSONEq(t, `{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"call-1","input":{"command":"ls -1"}}}`, string(sink.Messages()[0].SupplementalContent))
+
+	assert.Equal(t, 1, len(sink.OpenSpans()))
+	assert.Equal(t, "Bash", sink.GetSpanType("call-1"))
+}
+
+// The parsed `tool_call` supersedes the concatenated fragments, which can be
+// truncated when the model's stream was cut.
+func TestHandleZCodeOutput_ToolCallInputSupersedesTheFragments(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+		`{"kind":"tool_input_delta","toolCallId":"c1","delta":"{\"command\":\"tru"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
+		`{"kind":"tool_call","toolCallId":"c1","toolName":"Bash","input":{"command":"echo ok"}}`))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"c1","inputOmitted":true}`))
+
+	require.Equal(t, 1, sink.MessageCount())
+	var env struct {
+		Payload struct {
+			Input    json.RawMessage `json:"input"`
+			ToolName string          `json:"toolName"`
+		} `json:"payload"`
+	}
+	require.NoError(t, json.Unmarshal(sink.Messages()[0].Content, &env))
+	assert.Empty(t, env.Payload.Input)
+	assert.JSONEq(t, `{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"c1","input":{"command":"echo ok"}}}`, string(sink.Messages()[0].SupplementalContent))
+	assert.Equal(t, "Bash", sink.GetSpanType("c1"), "the tool name is recovered from the stream too")
+}
+
+// A restarted tool call must not inherit the abandoned attempt's fragment.
+func TestHandleZCodeOutput_ToolInputStartDropsAPartialFragment(t *testing.T) {
+	t.Parallel()
+
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+		`{"kind":"tool_input_delta","toolCallId":"c1","delta":"{\"partial\":"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
+		`{"kind":"tool_input_start","toolCallId":"c1","toolName":"Read"}`))
+
+	a.Mu.Lock()
+	cached := a.toolCalls["c1"].input
+	name := a.toolCalls["c1"].name
+	a.Mu.Unlock()
+	assert.Empty(t, cached)
+	assert.Equal(t, "Read", name)
+}
+
+// --- tool progress ---
+
+func TestHandleZCodeOutput_ToolProgress_UsesNativeTotal(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
+		`{"kind":"progress","toolCallId":"c1","outputBytes":5,"stdoutTail":"line1"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
+		`{"kind":"progress","toolCallId":"c1","outputBytes":11,"stdoutTail":"line1\nline2"}`))
+
+	// Each frame reports TWO things: the byte total the meter counts, and the text
+	// the running row draws. The tail is NOT truncated here: the app server's own
+	// byte count equals the tail it sent, so nothing was dropped before it.
+	updates := sink.ProgressUpdates()
+	require.Len(t, updates, 4)
+	assert.Equal(t, agent.OutputTailProgress("c1", "line1", false), updates[0])
+	assert.Equal(t, agent.ProgressOutputTotal, updates[1].Operation)
+	assert.Equal(t, int64(5), updates[1].Value)
+	assert.Equal(t, agent.OutputTailProgress("c1", "line1\nline2", false), updates[2])
+	assert.Equal(t, int64(11), updates[3].Value)
+	assert.False(t, updates[3].Minimum)
+}
+
+func TestHandleZCodeOutput_ToolProgress_MarksTailOnlyCountAsMinimum(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
+		`{"kind":"progress","toolCallId":"c1","stdoutTail":"tail"}`))
+
+	updates := sink.ProgressUpdates()
+	require.Len(t, updates, 2)
+	assert.Equal(t, agent.OutputTailProgress("c1", "tail", true), updates[0])
+	assert.Equal(t, int64(4), updates[1].Value)
+	assert.True(t, updates[1].Minimum)
+}
+
+func TestHandleZCodeOutput_ToolProgress_RoutesToChild(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"sub-1","toolName":"Bash","source":"subagent",
+		  "parentToolCallId":"spawn-1","input":{"command":"ls"}}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
+		`{"kind":"progress","toolCallId":"sub-1","source":"subagent",
+		  "parentToolCallId":"spawn-1","outputBytes":3,"stdoutTail":"one"}`))
+
+	assert.Empty(t, sink.ProgressUpdates())
+	childIDs := sink.ChildAgentIDs()
+	require.Len(t, childIDs, 1)
+	child := sink.Child(childIDs[0])
+	updates := child.ProgressUpdates()
+	require.Len(t, updates, 3)
+	assert.Equal(t, agent.ProgressModelReset, updates[0].Operation)
+	// The tail follows the counter into the CHILD's own sink, so the subagent's
+	// row draws its live output where the subagent's transcript is.
+	assert.Equal(t, agent.OutputTailProgress("sub-1", "one", false), updates[1])
+	assert.Equal(t, int64(3), updates[2].Value)
+}
+
+// --- tool completion ---
+
+func TestHandleZCodeOutput_ToolResult_PersistsClosesAndCountsTheCall(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.toolCalls["c1"] = &zcodeToolCall{name: "Bash", input: json.RawMessage(`{"command":"ls"}`)}
+
+	a.HandleOutput(zcodeEventLine(t, 9, contracts.ZCodeEventToolUpdated,
+		`{"kind":"result","toolCallId":"c1","result":{"content":"a\nb","truncated":false}}`))
+
+	require.Equal(t, 1, sink.MessageCount())
+	msg := sink.Messages()[0]
+	assert.Equal(t, "c1", msg.SpanID)
+	assert.Equal(t, "Bash", msg.SpanType, "the span carries the tool name a result payload omits")
+	assert.True(t, msg.Closing)
+	updates := sink.ProgressUpdates()
+	require.NotEmpty(t, updates)
+	assert.Contains(t, updates, agent.CompleteOutputProgress("c1"))
+	assert.Equal(t, 1, sink.ClosedSpanCount())
+
+	a.Mu.Lock()
+	tc := a.toolCalls["c1"]
+	toolUses, final, names, inputs := a.TurnToolUses, tc.final, len(tc.name), len(tc.input)
+	a.Mu.Unlock()
+	assert.Equal(t, 1, toolUses)
+	assert.True(t, final)
+	assert.Equal(t, 0, names, "the side tables are released with the call")
+	assert.Equal(t, 0, inputs)
+
+	// The close broadcasts no running-tool clear -- no session info at all. The
+	// frontend drops a span's running_tool entry when the result row above lands,
+	// so a provider never sends an end message; see closeZCodeToolCall. Asserted
+	// as a nil payload for the reason the `started` test above gives: NotContains
+	// passes vacuously against a nil map, so it would state nothing here.
+	assert.Nil(t, sink.LastSessionInfo())
+}
+
+func TestHandleZCodeOutput_ToolError_ClosesTheCallToo(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.toolCalls["c1"] = &zcodeToolCall{name: "Edit"}
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
+		`{"kind":"error","toolCallId":"c1","error":{"message":"file not found"}}`))
+
+	require.Equal(t, 1, sink.MessageCount())
+	assert.True(t, sink.Messages()[0].Closing)
+	assert.Equal(t, 1, sink.ClosedSpanCount())
+}
+
+// A background turn's tool call must not be counted against the user's turn.
+func TestHandleZCodeOutput_ToolResult_DuringABackgroundTurnDoesNotCount(t *testing.T) {
+	t.Parallel()
+
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+	a.backgroundTurn = true
+	a.toolCalls["c1"] = &zcodeToolCall{name: "Bash"}
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, `{"kind":"result","toolCallId":"c1","result":{}}`))
+
+	a.Mu.Lock()
+	toolUses := a.TurnToolUses
+	a.Mu.Unlock()
+	assert.Equal(t, 0, toolUses)
+}
+
+// The batch summary arrives AFTER the per-call results and only summarizes them, so
+// it must close only a call that was opened and never reached a final state.
+func TestHandleZCodeOutput_ToolBatch_BackfillsOnlyTheLostCalls(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.toolCalls["finished"] = &zcodeToolCall{name: "Bash", final: true, lastFrame: []byte(`{"type":"tool.updated"}`)}
+	a.toolCalls["lost"] = &zcodeToolCall{name: "Read", lastFrame: []byte(`{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"lost","toolName":"Read"}}`)}
+	// A call the model stream named but the agent never announced opened no span, so
+	// the batch has nothing to close for it.
+	a.toolCalls["stream-only"] = &zcodeToolCall{name: "Grep"}
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
+		`{"kind":"batch","toolCallIds":["finished","lost","stream-only","never-seen",""],"successCount":2}`))
+
+	require.Equal(t, 1, sink.MessageCount(), "only the lost call is backfilled")
+	msg := sink.Messages()[0]
+	assert.Equal(t, "lost", msg.SpanID)
+	assert.Equal(t, "Read", msg.SpanType)
+	assert.True(t, msg.Closing)
+}
+
+func TestHandleZCodeOutput_ToolUpdated_IgnoresAnIdlessOrUnknownKind(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, `{"kind":"scheduled"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated, `{"kind":"result"}`))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated, `{"kind":"a_kind_this_build_invented","toolCallId":"c1"}`))
+	a.HandleOutput(zcodeEventLine(t, 4, contracts.ZCodeEventToolUpdated, `{"toolCallId":"c1"}`))
+
+	assert.Equal(t, 0, sink.MessageCount())
+	assert.Equal(t, 0, len(sink.OpenSpans()))
+}
+
+// --- subagents ---
+
+// The two questions are opposites and the wire fields that answer them are
+// different: the Agent tool STARTS a subagent, while `source`/`agentId`/
+// `childSessionId` mark an update a subagent PRODUCED.
+func TestZCodeToolSpawnsSubagent(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, zcodeToolSpawnsSubagent(zcodeToolUpdated{ToolName: contracts.ZCodeToolNameAgent}),
+		"the Agent tool spawns one even before a child session exists")
+	assert.False(t, zcodeToolSpawnsSubagent(zcodeToolUpdated{ToolName: contracts.ZCodeToolNameBash}))
+	assert.False(t, zcodeToolSpawnsSubagent(zcodeToolUpdated{
+		ToolName: contracts.ZCodeToolNameBash, Source: ToolSourceSubagent, ChildSessionID: "child-1",
+	}), "a subagent's OWN Bash call does not spawn anything")
+}
+
+func TestZCodeToolFromSubagent(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, zcodeToolFromSubagent(zcodeToolUpdated{Source: ToolSourceSubagent}))
+	assert.True(t, zcodeToolFromSubagent(zcodeToolUpdated{ParentToolCallID: "spawn-1"}))
+	assert.False(t, zcodeToolFromSubagent(zcodeToolUpdated{ToolName: contracts.ZCodeToolNameAgent}),
+		"the spawn itself belongs to the main conversation")
+	assert.False(t, zcodeToolFromSubagent(zcodeToolUpdated{ToolName: contracts.ZCodeToolNameBash}))
+}
+
+func TestHandleZCodeOutput_SubagentSpawnOpensNoSpanAndRemembersThePrompt(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"spawn-1","toolName":"Agent",
+		  "input":{"prompt":"investigate the flake","description":"flake hunt"}}`))
+
+	require.Equal(t, 1, sink.MessageCount())
+	assert.Equal(t, 0, len(sink.OpenSpans()),
+		"a subagent spawn holds no rail: its output lands in a child transcript")
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	child := sink.Child(rows[0].ChildAgentID)
+	require.Len(t, child.Messages(), 1)
+	assert.JSONEq(t, `{"content":"investigate the flake"}`, string(child.Messages()[0].Content))
+}
+
+// The background-task path creates the row (and the child transcript). The tool
+// result closes THAT row -- both paths key by the tool-call id, so one subagent has
+// exactly one row.
+func TestHandleZCodeOutput_SubagentEndClosesTheRowTheBackgroundPathCreated(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.toolCalls["spawn-1"] = &zcodeToolCall{name: contracts.ZCodeToolNameAgent}
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"taskId":"task-1","toolCallId":"spawn-1","toolName":"Agent","taskKind":"subagent",
+		  "childSessionId":"child-1","status":"running"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
+		`{"kind":"result","toolCallId":"spawn-1","toolName":"Agent","childSessionId":"child-1",
+		  "description":"flake hunt","result":{"content":"done"}}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1, "one subagent must produce exactly one registry row")
+	assert.Equal(t, "spawn-1", tasks[0].RowKey)
+	assert.Equal(t, bgtask.KindSubagent, tasks[0].Kind)
+	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+	assert.NotEmpty(t, tasks[0].ChildAgentID, "the row the lifecycle closed is the one that carries the child linkage")
+}
+
+func TestHandleZCodeOutput_SubagentEndWithAnErrorFailsTheRow(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"taskId":"task-1","toolCallId":"spawn-1","toolName":"Agent","taskKind":"subagent","status":"running"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
+		`{"kind":"error","toolCallId":"spawn-1","toolName":"Agent","agentType":"reviewer"}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.StatusFailed, tasks[0].Status)
+}
+
+// An Agent tool call the app-server never reported as a background task has no child
+// transcript, so a registry row for it would open nothing. Its result is persisted in
+// this transcript either way.
+func TestHandleZCodeOutput_SubagentEndWithNoRegistryRowCreatesNone(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
+		`{"kind":"result","toolCallId":"spawn-1","toolName":"Agent","result":{"content":"done"}}`))
+
+	assert.Empty(t, sink.BackgroundTasks())
+	assert.Equal(t, 1, sink.MessageCount(), "the result still lands in the parent transcript")
+}
+
+// --- session.updated, the overloaded event ---
+
+func TestHandleZCodeOutput_SessionUpdated_ModelResponsePersistsTheAssistantText(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 4, contracts.ZCodeEventSessionUpdated,
+		`{"content":"Here is the answer.","stopReason":"end_turn","contextWindow":200000,
+		  "usage":{"inputTokens":50,"outputTokens":10,"totalTokens":60,"cacheReadTokens":5}}`))
+
+	require.Equal(t, 1, sink.MessageCount())
+	var env struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Content string `json:"content"`
+		} `json:"payload"`
+	}
+	require.NoError(t, json.Unmarshal(sink.Messages()[0].Content, &env))
+	assert.Equal(t, contracts.ZCodeEventSessionUpdated, env.Type)
+	assert.Equal(t, "Here is the answer.", env.Payload.Content)
+
+	usage, ok := sink.LastSessionInfo()["context_usage"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, int64(50), usage["input_tokens"])
+	assert.Equal(t, int64(200000), usage["context_window"])
+}
+
+// A tool-only step reports an EMPTY content with a stop reason. Persisting it would
+// put a blank assistant bubble between the tool cards.
+func TestHandleZCodeOutput_SessionUpdated_EmptyContentPersistsNothingButKeepsTheUsage(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"content":"","stopReason":"tool_calls","usage":{"inputTokens":7,"totalTokens":7}}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+		`{"content":"   ","stopReason":"tool_calls"}`))
+
+	assert.Equal(t, 0, sink.MessageCount())
+	usage, ok := sink.LastSessionInfo()["context_usage"].(map[string]any)
+	require.True(t, ok, "the usage of a tool-only step still counts")
+	assert.Equal(t, int64(7), usage["input_tokens"])
+}
+
+func TestHandleZCodeOutput_SessionUpdated_TelemetryVariantsAreIgnored(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	for _, payload := range []string{
+		`{"messageCount":12,"modelRef":{"providerId":"p","modelId":"m"},"iteration":3}`,
+		`{"baseURL":"https://api.example","requestId":"r-1","maxAttempts":3}`,
+		`{}`,
+		`{"stopReason":"end_turn"}`,
+	} {
+		a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated, payload))
+	}
+
+	assert.Equal(t, 0, sink.MessageCount())
+	assert.Equal(t, 0, sink.NotificationCount())
+	assert.Equal(t, 0, len(sink.BackgroundTasks()))
+}
+
+// --- background tasks ---
+
+func TestHandleZCodeOutput_BackgroundShellTaskReusesItsLaunchCard(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"taskId":"task-1","toolCallId":"c1","toolName":"Bash","taskKind":"bash",
+		  "command":"npm run dev\n# second line","status":"running"}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "c1", tasks[0].RowKey,
+		"the row is keyed by the tool call, which is the span the launch card already shows")
+	assert.Equal(t, bgtask.KindShell, tasks[0].Kind)
+	assert.Equal(t, "npm run dev", tasks[0].Title, "the command's first line labels the row")
+	assert.True(t, tasks[0].TitleIsCommand, "a verbatim command renders as code, prose does not")
+	assert.Equal(t, bgtask.StatusRunning, tasks[0].Status)
+	assert.Empty(t, sink.ChildAgentIDs(), "a shell task mints no child transcript")
+}
+
+func TestHandleZCodeOutput_BackgroundSubagentTaskMintsAChildTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.toolCallPrompts.Remember("c1", "review the diff")
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"taskId":"task-1","toolCallId":"c1","toolName":"Agent","taskKind":"subagent",
+		  "childSessionId":"child-1","status":"running"}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.KindSubagent, tasks[0].Kind)
+	assert.Equal(t, "Agent", tasks[0].Title)
+	assert.False(t, tasks[0].TitleIsCommand)
+	require.NotEmpty(t, tasks[0].ChildAgentID)
+
+	child := sink.Child(tasks[0].ChildAgentID)
+	messages := child.Messages()
+	require.Len(t, messages, 1, "the spawn instruction opens the child transcript")
+	var opening struct {
+		Content string `json:"content"`
+	}
+	require.NoError(t, json.Unmarshal(messages[0].Content, &opening))
+	assert.Equal(t, "review the diff", opening.Content)
+}
+
+func TestHandleZCodeOutput_DynamicWorkflowUsesAWorkflowRow(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"taskId":"dwfrun-1","toolCallId":"call-1","toolName":"CreateWorkflow","taskKind":"workflow",
+		  "description":"Review pipeline","status":"running"}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.KindWorkflow, tasks[0].Kind)
+	assert.Equal(t, "call-1", tasks[0].RowKey, "the workflow reuses its CreateWorkflow card")
+	assert.Equal(t, "Review pipeline", tasks[0].Title)
+	assert.Equal(t, "Review pipeline", tasks[0].Description)
+	assert.False(t, tasks[0].TitleIsCommand)
+	assert.Empty(t, tasks[0].ChildAgentID, "the legacy stream exposes no workflow actor transcript")
+
+	// The final update can omit the descriptive fields. It must close the same
+	// workflow row and preserve the label from the opening update.
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+		`{"taskId":"dwfrun-1","toolCallId":"call-1","taskKind":"workflow","status":"completed"}`))
+	tasks = sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.KindWorkflow, tasks[0].Kind)
+	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+	assert.Equal(t, "Review pipeline", tasks[0].Title)
+	assert.Equal(t, "Review pipeline", tasks[0].Description)
+}
+
+func TestZCodeBackgroundStatus(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		want  bgtask.Status
+		final bool
+	}{
+		"completed":   {bgtask.StatusCompleted, true},
+		"failed":      {bgtask.StatusFailed, true},
+		"spawn_error": {bgtask.StatusFailed, true},
+		"timed_out":   {bgtask.StatusFailed, true},
+		"cancelled":   {bgtask.StatusStopped, true},
+		"lost":        {bgtask.StatusFailed, true},
+		"running":     {bgtask.StatusRunning, false},
+		"":            {bgtask.StatusRunning, false},
+		"queued":      {bgtask.StatusRunning, false},
+	}
+	for status, want := range cases {
+		got, final := zcodeBackgroundStatus(status)
+		assert.Equalf(t, want.want, got, "status %q", status)
+		assert.Equalf(t, want.final, final, "status %q finality", status)
+	}
+}
+
+// A blocked task reports WHY it is idle, but only while it is still running: an
+// active form on a finished row would leave a stale explanation on screen.
+func TestHandleZCodeOutput_BackgroundTaskBlockedReasonOnlyWhileRunning(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"taskId":"t1","taskKind":"bash","command":"sleep 5","status":"running",
+		  "blocked":true,"blockedReason":"waiting for the port"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+		`{"taskId":"t2","taskKind":"bash","command":"sleep 5","status":"completed",
+		  "blocked":true,"blockedReason":"waiting for the port"}`))
+
+	byKey := map[string]bgtask.Item{}
+	for _, task := range sink.BackgroundTasks() {
+		byKey[task.RowKey] = task
+	}
+	assert.Equal(t, "waiting for the port", byKey["t1"].ActiveForm)
+	assert.Equal(t, "", byKey["t2"].ActiveForm)
+}
+
+func TestHandleZCodeOutput_BackgroundTaskWithoutAnIDIsIgnored(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	// No taskId, so the shape reads as telemetry rather than as a task.
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated, `{"taskKind":"bash","status":"running"}`))
+
+	assert.Equal(t, 0, len(sink.BackgroundTasks()))
+}
+
+// --- permission.resolved ---
+
+func TestHandleZCodeOutput_PermissionResolved_RecordsOnlyDecisionsLeapMuxDidNotMake(t *testing.T) {
+	t.Parallel()
+
+	t.Run("an automatic denial is worth reporting", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+		a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventPermissionResolved,
+			`{"requestId":"r-1","toolName":"Bash","decision":"deny","reason":"plan mode forbids commands"}`))
+
+		assert.Equal(t, 1, sink.NotificationCount())
+	})
+
+	t.Run("an automatic allow is not", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+		a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventPermissionResolved,
+			`{"requestId":"r-1","toolName":"Read","decision":"allow"}`))
+
+		assert.Equal(t, 0, sink.NotificationCount(),
+			"an allow in build mode is the normal case; a row per call would bury the transcript")
+	})
+
+	t.Run("the echo of the user's own answer is not", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+		a.rememberZCodeControlRequest("r-1", json.RawMessage(`{"type":"control_request"}`))
+
+		a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventPermissionResolved,
+			`{"requestId":"r-1","toolName":"Bash","decision":"deny","reason":"the user refused"}`))
+
+		assert.Equal(t, 0, sink.NotificationCount(), "the structured answer row already records it")
+
+		// The id is consumed, so a SECOND resolution for it is an automatic one.
+		a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventPermissionResolved,
+			`{"requestId":"r-1","toolName":"Bash","decision":"deny"}`))
+		assert.Equal(t, 1, sink.NotificationCount())
+	})
+}
+
+func TestForgetZCodePermissionRequest(t *testing.T) {
+	t.Parallel()
+
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+	assert.False(t, a.forgetZCodeControlRequest(""), "an empty id was never remembered")
+	assert.False(t, a.forgetZCodeControlRequest("unknown"))
+
+	a.rememberZCodeControlRequest("r-1", json.RawMessage(`{"type":"control_request"}`))
+	assert.True(t, a.forgetZCodeControlRequest("r-1"))
+	assert.False(t, a.forgetZCodeControlRequest("r-1"), "the id is consumed")
+}
+
+// --- notifications and ignored events ---
+
+func TestHandleZCodeOutput_SteeringAndCloseArePersistedAsNotifications(t *testing.T) {
+	t.Parallel()
+
+	for _, eventType := range []string{contracts.ZCodeEventTurnSteerQueued, contracts.ZCodeEventTurnSteerDrained, contracts.ZCodeEventSessionClosed} {
+		t.Run(eventType, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+			a.HandleOutput(zcodeEventLine(t, 1, eventType, `{}`))
+
+			require.Equal(t, 1, sink.NotificationCount())
+			var env map[string]any
+			require.NoError(t, json.Unmarshal(sink.LastNotification().Content, &env))
+			assert.Equal(t, eventType, env["type"])
+		})
+	}
+}
+
+// Every event the provider deliberately ignores must produce NOTHING, and must not
+// panic on an absent or malformed payload.
+func TestHandleZCodeOutput_IgnoredEventTypesProduceNothing(t *testing.T) {
+	t.Parallel()
+
+	ignored := []string{
+		contracts.ZCodeEventSessionCreated,
+		contracts.ZCodeEventSessionResumed,
+		contracts.ZCodeEventSessionTitleUpdated,
+		contracts.ZCodeEventMessageUpserted,
+		contracts.ZCodeEventMessageRemoved,
+		contracts.ZCodeEventPartStarted,
+		contracts.ZCodeEventPartDelta,
+		contracts.ZCodeEventPartUpserted,
+		contracts.ZCodeEventPartRemoved,
+		contracts.ZCodeEventPermissionRequested,
+		contracts.ZCodeEventUserInputRequested,
+		contracts.ZCodeEventUserInputResolved,
+		contracts.ZCodeEventCheckpointCreated,
+		contracts.ZCodeEventRewindTriggered,
+	}
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	for _, eventType := range ignored {
+		a.HandleOutput(zcodeEventLine(t, 1, eventType, `{"anything":true}`))
+		a.HandleOutput(zcodeEventLine(t, 1, eventType, ""))
+	}
+
+	assert.Equal(t, 0, sink.MessageCount())
+	assert.Equal(t, 0, sink.NotificationCount())
+	assert.Equal(t, 0, len(sink.BackgroundTasks()))
+}
+
+// An event type this build does not know must be dropped rather than crash or reach a
+// branch that looks deliberate.
+func TestHandleZCodeOutput_UnknownEventTypeIsIgnoredWithoutPanic(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 7, "a.type.a.later.build.invented", `{"x":1}`))
+
+	assert.Equal(t, 0, sink.MessageCount())
+	a.Mu.Lock()
+	seq := a.lastSeq
+	a.Mu.Unlock()
+	assert.Equal(t, int64(7), seq, "an unknown event still advances the sequence, so a replay does not repeat it")
+}
+
+func TestHandleZCodeOutput_MalformedAndUnrelatedLinesAreSurvivable(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	for _, line := range []string{
+		`{"method":"session/event"}`,
+		`{"method":"session/event","params":{}}`,
+		`{"method":"session/event","params":{"type":"tool.updated","payload":"not an object"}}`,
+		`{"method":"process/resourceSample","params":{"rss":1}}`,
+		`{"method":"v4/telemetry/event","params":{}}`,
+		`{"id":99,"result":{}}`,
+		`{"nonsense":true}`,
+		`not json at all`,
+	} {
+		a.HandleOutput([]byte(line))
+	}
+
+	assert.Equal(t, 0, sink.MessageCount())
+	assert.Equal(t, 0, sink.NotificationCount())
+}
+
+// The sequence must never move BACKWARDS: a replay that re-delivers an older event
+// would otherwise make the next re-subscribe ask for events already persisted.
+func TestDispatchZCodeEvent_SequenceOnlyAdvances(t *testing.T) {
+	t.Parallel()
+
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+
+	a.HandleOutput(zcodeEventLine(t, 10, contracts.ZCodeEventSessionTitleUpdated, `{}`))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionTitleUpdated, `{}`))
+	a.HandleOutput(zcodeEventLine(t, 0, contracts.ZCodeEventSessionTitleUpdated, `{}`))
+
+	a.Mu.Lock()
+	seq := a.lastSeq
+	a.Mu.Unlock()
+	assert.Equal(t, int64(10), seq)
+}
+
+func TestZCodeEventEnvelope_PersistBytesNormalizesBothArrivalPaths(t *testing.T) {
+	t.Parallel()
+
+	// A replayed event (from the subscribe reply) and a notification event must
+	// persist as the SAME envelope, so the frontend has one shape to classify.
+	native := []byte(`{"seq":4,"type":"turn.completed","payload":{"toolCallCount":1}}`)
+	var replayed zcodeEventEnvelope
+	require.NoError(t, json.Unmarshal(native, &replayed))
+	notified, ok := parseZCodeEvent([]byte(`{"seq":4,"type":"turn.completed","payload":{"toolCallCount":1}}`))
+	require.True(t, ok)
+
+	assert.Equal(t, native, replayed.persistBytes())
+	assert.Equal(t, native, notified.persistBytes())
+
+	var env struct {
+		Type    string          `json:"type"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	require.NoError(t, json.Unmarshal(replayed.persistBytes(), &env))
+	assert.Equal(t, contracts.ZCodeEventTurnCompleted, env.Type)
+	assert.JSONEq(t, `{"toolCallCount":1}`, string(env.Payload))
+}
+
+func TestZCodeEventEnvelope_WithPayloadDoesNotMutateTheOriginal(t *testing.T) {
+	t.Parallel()
+
+	original := zcodeEventEnvelope{Type: contracts.ZCodeEventToolUpdated, Payload: json.RawMessage(`{"a":1}`)}
+	copied := original.withPayload(json.RawMessage(`{"b":2}`))
+
+	assert.JSONEq(t, `{"a":1}`, string(original.Payload))
+	assert.JSONEq(t, `{"b":2}`, string(copied.Payload))
+	assert.Equal(t, original.Type, copied.Type)
+}
+
+func TestZCodeBackgroundTitle(t *testing.T) {
+	t.Parallel()
+
+	title, isCommand := zcodeBackgroundTitle(zcodeBackgroundTask{Command: "  ls -1\nrm -rf /  "})
+	assert.Equal(t, "ls -1", title)
+	assert.True(t, isCommand)
+
+	title, isCommand = zcodeBackgroundTitle(zcodeBackgroundTask{ToolName: " Agent "})
+	assert.Equal(t, "Agent", title)
+	assert.False(t, isCommand, "prose must not render as code")
+
+	title, isCommand = zcodeBackgroundTitle(zcodeBackgroundTask{Description: " Protocol probe ", ToolName: "CreateWorkflow"})
+	assert.Equal(t, "Protocol probe", title)
+	assert.False(t, isCommand)
+
+	title, isCommand = zcodeBackgroundTitle(zcodeBackgroundTask{})
+	assert.Equal(t, "", title)
+	assert.False(t, isCommand)
+}
+
+// userInput.resolved is bookkeeping only: it re-arms the re-announcement guard and
+// renders nothing. A payload it cannot read must not panic and must not persist a
+// row of raw JSON.
+func TestHandleZCodeOutput_UserInputResolvedRendersNothing(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventUserInputResolved, ""))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventUserInputResolved, `"not an object"`))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventUserInputResolved, `{}`))
+	a.HandleOutput(zcodeEventLine(t, 4, contracts.ZCodeEventUserInputResolved, `{"requestId":"never-forwarded"}`))
+
+	assert.Equal(t, 0, sink.MessageCount())
+	assert.Empty(t, sink.PersistedNotifications())
+	assert.Empty(t, sink.PublishedControls())
+}
+
+// --- event dispatch ---
+
+// Two subscriptions can ask from the same sequence, and the app-server replays the gap
+// in full to each. Without a watermark check every row in that gap is persisted twice:
+// each tool card, each assistant bubble and each turn divider appears twice.
+func TestDispatchZCodeEvent_ADuplicateSequenceIsDropped(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	line := zcodeEventLine(t, 7, contracts.ZCodeEventSessionUpdated, `{"content":"the answer","stopReason":"stop"}`)
+	a.HandleOutput(line)
+	a.HandleOutput(line)
+	// An event BELOW the watermark is a replay too.
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated, `{"content":"older","stopReason":"stop"}`))
+
+	assert.Equal(t, 1, sink.MessageCount(), "a replayed event must not persist a second row")
+	a.Mu.Lock()
+	seq := a.lastSeq
+	a.Mu.Unlock()
+	assert.Equal(t, int64(7), seq, "an older replay must not lower the watermark")
+}
+
+// An event with no sequence at all still dispatches: the watermark only suppresses a
+// replay of something already seen.
+func TestDispatchZCodeEvent_AnUnsequencedEventStillDispatches(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventSessionUpdated, `{"content":"one","stopReason":"stop"}`))
+	a.HandleOutput(zcodeEventLine(t, 0, contracts.ZCodeEventSessionUpdated, `{"content":"two","stopReason":"stop"}`))
+
+	assert.Equal(t, 2, sink.MessageCount())
+}
+
+// The BATCH payload is addressed to a LIST, so it carries no `toolCallId` and every
+// frontend extractor refuses it: the recovered row closed the span and rendered an
+// empty bubble. A per-call result is synthesized instead.
+func TestHandleZCodeOutput_ToolBatch_PersistsAPerCallResultNotTheBatchEnvelope(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"lost","toolName":"Bash","input":{"command":"ls"}}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
+		`{"kind":"batch","toolCallIds":["lost"],"successCount":1,"errorCount":0}`))
+
+	messages := sink.Messages()
+	require.Len(t, messages, 2)
+	closing := messages[1]
+	assert.True(t, closing.Closing)
+	assert.Equal(t, "lost", closing.SpanID)
+
+	// The row is the call's OWN last frame. An earlier build wrote a `result` event
+	// ZCode never sent, holding a result object and an English sentence LeapMux
+	// invented. What LeapMux calculated now rides in its own metadata column.
+	assert.JSONEq(t,
+		`{"kind":"scheduled","toolCallId":"lost","toolName":"Bash","input":{"command":"ls"}}`,
+		zcodeEventPayload(t, closing.Content))
+	assert.Equal(t, contracts.ZCodeToolNameBash, closing.SpanType)
+	assert.JSONEq(t, `{"tool_outcome":{"source":"batch_summary","outcome":"succeeded"}}`, string(closing.Metadata))
+}
+
+// The batch states aggregate counts only, so it cannot say WHICH call failed. Reporting
+// the outcome as unknown-but-not-success is honest; claiming success is not.
+func TestHandleZCodeOutput_ToolBatch_AnErrorInTheBatchIsNotReportedAsSuccess(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"lost","toolName":"Bash","input":{"command":"ls"}}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
+		`{"kind":"batch","toolCallIds":["lost"],"successCount":0,"errorCount":1}`))
+
+	messages := sink.Messages()
+	require.Len(t, messages, 2)
+	assert.JSONEq(t, `{"tool_outcome":{"source":"batch_summary","outcome":"unknown"}}`, string(messages[1].Metadata))
+}
+
+// --- stream recovery ---
+
+// A stream recovery reports a retry of the MODEL PROVIDER's SSE stream, not a lapse in
+// LeapMux's event subscription -- so it takes no action at all. It used to fire a
+// re-subscribe, which would spend an RPC on every model retry to replay nothing, and
+// whose three trigger literals the shipped app-server never sends anyway.
+func TestHandleZCodeOutput_StreamRecoveryTakesNoAction(t *testing.T) {
+	t.Parallel()
+
+	for name, payload := range map[string]string{
+		"an anchor":               `{"kind":"tool_result","anchorId":"a-1"}`,
+		"a retry with no kind":    `{"attemptId":"x","retryNumber":1,"maxRetries":3,"streamMode":"sse"}`,
+		"discarded output":        `{"discardedTextBytes":420,"streamMode":"sse"}`,
+		"one of the old triggers": `{"kind":"retry_started"}`,
+		"an empty payload":        `{}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), &zcodeRecordedStdin{})
+
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventStreamRecoveryUpdated, payload))
+
+			assert.Empty(t, a.StdinForTest().(*zcodeRecordedStdin).Frames(),
+				"no RPC: a re-subscribe would replay nothing, because the subscription never lapsed")
+			assert.Equal(t, 0, sink.MessageCount(), "the retry's own outcome arrives on turn.failed or turn.completed")
+			assert.Equal(t, 0, sink.NotificationCount())
+		})
+	}
+}
+
+// A `raw` frame carries an opaque payload rather than the fields a row reads. It
+// must not become the call's last frame: a turn that ends while the call runs
+// stores that frame as the row, and the reader would get an unrecognized card
+// where the call's real state belongs.
+func TestHandleZCodeOutput_RawToolFrameIsNotRetained(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"c1","toolName":"Bash","input":{"command":"ls"}}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
+		`{"kind":"raw","toolCallId":"c1","payload":{"anything":true}}`))
+
+	a.Mu.Lock()
+	frame := string(a.zcodeToolCallLocked("c1").lastFrame)
+	a.Mu.Unlock()
+	assert.NotContains(t, frame, `"raw"`)
+	assert.Contains(t, frame, `"scheduled"`, "the last frame a reader can draw stays")
+}

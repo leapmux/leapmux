@@ -49,7 +49,7 @@ func (svc *Service) executeControlResponse(agentID string, currentAgent db.Agent
 		if err := svc.applyControlResponsePlanModeMutations(latest, plan); err != nil {
 			return err
 		}
-		provider := agent.ProviderFor(latest.AgentProvider)
+		provider := svc.Agents.Registry().Plugin(latest.AgentProvider)
 		mode := resolveTargetMode(plan.settings.GetPermissionMode(), provider.PlanModePermissionMode(agent.PlanModeControlExit))
 		return svc.enqueuePlanExecution(agentID, mode, controlResponseQueueID(agentID, plan))
 	}
@@ -69,14 +69,14 @@ func (svc *Service) executePlanPromptResponse(agentID string, currentAgent db.Ag
 		}
 		return nil
 	}
-	provider := agent.ProviderFor(currentAgent.AgentProvider)
+	provider := svc.Agents.Registry().Plugin(currentAgent.AgentProvider)
 	options := provider.PlanApprovalOptions(plan.settings.GetPermissionMode())
 	updatedAgent, err := svc.applyPlanOptionsLocked(currentAgent, options)
 	if err != nil {
 		return err
 	}
 	if plan.settings.GetClearContext() {
-		mode := loadOptions(updatedAgent.Options, updatedAgent.AgentProvider)[agent.OptionIDPermissionMode]
+		mode := loadOptions(svc.Agents.Registry(), updatedAgent.Options, updatedAgent.AgentProvider)[agent.OptionIDPermissionMode]
 		mode = resolveTargetMode(mode, provider.PlanModePermissionMode(agent.PlanModeControlPrompt))
 		return svc.enqueuePlanExecution(agentID, mode, inputID)
 	}

@@ -11,6 +11,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -384,7 +385,7 @@ func TestEnqueueAgentInput_DuringAnOpenStartupIsDelivered(t *testing.T) {
 	// A start that REGISTERS in the manager, not a stub that returns success and
 	// leaves it empty: the delivery this test is about is the SendInput that
 	// follows, and it needs a process to reach.
-	svc.startAgentFn = svc.Agents.MockStartAgent
+	svc.startAgentFn = startWith(svc.Agents, claudetest.StartEcho)
 	t.Cleanup(func() { svc.Agents.StopAgent("agent-1") })
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",

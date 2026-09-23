@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 type AssembledMessageKind string
@@ -78,4 +79,14 @@ func messageCompletionFromToken(token string) leapmuxv1.MessageCompletion {
 	default:
 		return leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_UNSPECIFIED
 	}
+}
+
+func IncompleteTaskStatus(completion MessageCompletion) bgtask.Status {
+	if completion == MessageCompletionInterrupted {
+		return bgtask.StatusStopped
+	}
+	if completion == MessageCompletionComplete {
+		return bgtask.StatusCompleted
+	}
+	return bgtask.StatusFailed
 }

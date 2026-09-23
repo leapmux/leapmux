@@ -20,7 +20,6 @@ import (
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/sendq"
-	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"google.golang.org/protobuf/proto"
@@ -37,7 +36,6 @@ type Client struct {
 	reconciler leapmuxv1connect.WorkerReconcilerServiceClient
 	endpoint   *hubtransport.Endpoint
 	authToken  string
-	agents     *agent.Manager
 	terminals  *terminal.Manager
 	channelMgr *channel.Manager
 
@@ -167,13 +165,6 @@ func New(endpoint *hubtransport.Endpoint, opts ...ClientOption) *Client {
 	// Service, so those three share one. The registration retry holds its own,
 	// because Register runs before any Client exists.
 	c.terminals = terminal.NewManager(terminal.WithClock(c.clock))
-	c.agents = agent.NewManager(func(agentID string, exitCode int, err error, _ bool) {
-		if err != nil {
-			slog.Info("agent exited with error", "agent_id", agentID, "exit_code", exitCode, "error", err)
-		} else {
-			slog.Info("agent exited", "agent_id", agentID, "exit_code", exitCode)
-		}
-	})
 	return c
 }
 
@@ -201,11 +192,6 @@ func (c *Client) Stop() {
 // SetChannelMgr sets the encrypted channel manager for E2EE channel handling.
 func (c *Client) SetChannelMgr(mgr *channel.Manager) {
 	c.channelMgr = mgr
-}
-
-// AgentManager returns the agent manager.
-func (c *Client) AgentManager() *agent.Manager {
-	return c.agents
 }
 
 // Clock returns the clock this client and its terminal manager share, so

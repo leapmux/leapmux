@@ -571,6 +571,11 @@ func New(cfg Config) *Service {
 	if cfg.Send == nil {
 		panic("service.New: Send must be set")
 	}
+	// Every provider plugin the service consults comes from the manager's
+	// registry, so a Service without one could not start or read any agent.
+	if cfg.Agents == nil {
+		panic("service.New: Agents must be set")
+	}
 
 	// Written back into cfg before the copy below, so Service.Clock reads the
 	// installed clock rather than nil.

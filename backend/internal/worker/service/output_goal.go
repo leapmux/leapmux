@@ -393,9 +393,6 @@ func goalProto(columns GoalColumns) *leapmuxv1.AgentGoal {
 // goal but cannot honestly change one), answers with an empty list, and the
 // browser disables every control.
 func (h *OutputHandler) SupportedGoalActions(agentID string) []leapmuxv1.AgentGoalAction {
-	if h.agents == nil {
-		return nil
-	}
 	actions := h.agents.SupportedGoalActions(agentID)
 	if len(actions) == 0 {
 		return nil
@@ -492,13 +489,8 @@ func (h *OutputHandler) GoalSnapshotFrom(cols GoalColumns) GoalSnapshot {
 }
 
 // agentAlive reports whether a live process serves the agent.
-//
-// An absent Manager answers TRUE, which is the conservative answer: it means
-// "do not claim dormant". A worker with no agent manager cannot observe an exit
-// either, so inventing the state it would have recorded is worse than leaving
-// the provider's last word alone.
 func (h *OutputHandler) agentAlive(agentID string) bool {
-	return h.agents == nil || h.agents.AgentAlive(agentID)
+	return h.agents.AgentAlive(agentID)
 }
 
 // GoalColumns is the goal half of an agents row, named.

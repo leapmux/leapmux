@@ -154,7 +154,7 @@ func IsUnreadable(r rune) bool {
 // A name holds VISIBLE text, so the rule strips nothing else. `"`, `\`, `$`
 // and `%` survive: no sink in this repository reads a stored name as syntax.
 // The shell path quotes each argument (`posixQuote` in
-// internal/worker/agent/shell.go), the stylesheet path escapes at the emitter
+// internal/worker/agent/internal/launch/wrap.go), the stylesheet path escapes at the emitter
 // (`buildFontFamily` in frontend/src/lib/fontStack.ts), the plan file name
 // keeps letters and digits only (`SanitizePlanFilenameTitle`), and the SQL is
 // parameterized. A guard at the emitter holds for whatever the store holds. A

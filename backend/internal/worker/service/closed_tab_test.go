@@ -31,6 +31,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/authscope"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 )
 
 // testChannelGrant is the grant a channel-open fixture announces.
@@ -213,6 +214,14 @@ type setupConfig struct {
 	rewriteQuery   func(string) string
 	clock          quartz.Clock
 	maxMessageSize int
+	registry       *agent.Registry
+}
+
+// withRegistry builds the Service's agent manager over r instead of the full
+// testRegistry, so a test can stand a wrapped plugin in for one provider without
+// changing what any other test sees.
+func withRegistry(r *agent.Registry) setupOption {
+	return func(c *setupConfig) { c.registry = r }
 }
 
 // withClock installs the clock the Service's startup registries arm their
@@ -319,11 +328,15 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 	// passed without exercising anything. Going through the constructor
 	// means these tests run the wiring production runs, and a field added
 	// to New is covered the moment it exists.
+	registry := cfg.registry
+	if registry == nil {
+		registry = testRegistry
+	}
 	svc := New(Config{
 		DB:        sqlDB,
 		Channels:  chmgr,
 		Send:      func(*leapmuxv1.ConnectRequest) error { return nil },
-		Agents:    agent.NewManager(nil),
+		Agents:    agent.NewManager(registry, nil),
 		Terminals: terminal.NewManager(),
 		HomeDir:   t.TempDir(),
 		DataDir:   t.TempDir(),
@@ -800,11 +813,11 @@ func TestShutdown_StopsRunningAgents(t *testing.T) {
 
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
-	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:    "agent-1",
 		Options:    map[string]string{agent.OptionIDModel: "opus"},
 		WorkingDir: t.TempDir(),
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 	require.True(t, svc.Agents.HasAgent("agent-1"))
 

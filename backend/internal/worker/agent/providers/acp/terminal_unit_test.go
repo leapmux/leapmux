@@ -1,0 +1,237 @@
+package acp
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"unicode/utf8"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+)
+
+// Init / buffer helpers run on all platforms (no process spawn).
+func TestAcpStandardInitParams_ClientCapabilitiesTerminal_AllGOOS(t *testing.T) {
+	raw, err := acpStandardInitParams(nil)
+	require.NoError(t, err)
+
+	var params map[string]interface{}
+	require.NoError(t, json.Unmarshal(raw, &params))
+
+	_, hasLegacy := params["capabilities"]
+	assert.False(t, hasLegacy, "legacy capabilities key must not be sent")
+
+	caps, ok := params["clientCapabilities"].(map[string]interface{})
+	require.True(t, ok, "clientCapabilities must be present")
+	assert.Equal(t, true, caps["terminal"])
+	assert.NotContains(t, caps, "_meta")
+	assert.Equal(t, map[string]any{"form": map[string]any{}, "url": map[string]any{}}, caps["elicitation"])
+
+	fs, ok := caps["fs"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, false, fs["readTextFile"])
+	assert.Equal(t, false, fs["writeTextFile"])
+}
+
+func TestExpandACPTerminalResultPersistsReleasedOutput(t *testing.T) {
+	t.Parallel()
+
+	exitCode := 0
+	b := &Base{acpTerminalHost: acpTerminalHost{
+		completedTerminals: map[string]contracts.ACPTerminalResult{
+			"term-1": {Output: "stdout\nstderr\n", ExitCode: &exitCode},
+		},
+	}}
+	original := json.RawMessage(`{
+		"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"completed",
+		"content":[{"type":"terminal","terminalId":"term-1"}]
+	}`)
+	content := b.acpMessageContent(original, original)
+	assert.Equal(t, []byte(original), content.Original)
+	assert.Contains(t, string(content.Supplemental), "stdout\\nstderr")
+	_, present := b.takeCompletedTerminal("term-1")
+	assert.False(t, present)
+}
+
+// A row that identifies a terminal still RUNNING carried NO output, and said so in a word
+// that means something else.
+//
+// Goose runs its commands in a host terminal. A stop cuts the turn, the agent sends its
+// final tool update at once, and the process is still alive when that row is stored --
+// so `takeCompletedTerminal` found nothing and the card read
+// `Interrupted Terminal term_... [output unavailable]`. LeapMux owns that process and
+// holds every byte it printed, so "unavailable" was never true.
+func TestExpandACPTerminalResultSnapshotsATerminalStillRunning(t *testing.T) {
+	t.Parallel()
+
+	session := &acpTerminalSession{id: "term-1", byteLimit: 1 << 10}
+	session.appendOutput([]byte("half a line\n"))
+	b := &Base{acpTerminalHost: acpTerminalHost{
+		terminals: map[string]*acpTerminalSession{"term-1": session},
+	}}
+	original := json.RawMessage(`{
+		"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"failed",
+		"content":[{"type":"terminal","terminalId":"term-1"}]
+	}`)
+
+	content := b.acpMessageContent(original, original)
+
+	assert.Equal(t, []byte(original), content.Original)
+	assert.Contains(t, string(content.Supplemental), "half a line",
+		"the bytes the terminal printed before the stop are LeapMux's own, so the row carries them")
+}
+
+// A terminal that printed NOTHING yet is a different statement from one whose output
+// cannot be read, and the two render differently: `[no output]` against
+// `[output unavailable]`. The row states the first, because it is what happened.
+func TestExpandACPTerminalResultReportsATerminalThatPrintedNothing(t *testing.T) {
+	t.Parallel()
+
+	b := &Base{acpTerminalHost: acpTerminalHost{
+		terminals: map[string]*acpTerminalSession{"term-1": {id: "term-1", byteLimit: 1 << 10}},
+	}}
+	original := json.RawMessage(`{
+		"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"failed",
+		"content":[{"type":"terminal","terminalId":"term-1"}]
+	}`)
+
+	content := b.acpMessageContent(original, original)
+
+	assert.Contains(t, string(content.Supplemental), `"term-1":{"output":""`,
+		"the terminal is known and printed nothing, which is not the same as output nobody can read")
+}
+
+// A terminal LeapMux no longer holds is the one case that stays unavailable: the
+// process is gone, its buffer went with it, and no answer is better than a made-up one.
+func TestExpandACPTerminalResultLeavesAReleasedTerminalUnresolved(t *testing.T) {
+	t.Parallel()
+
+	b := &Base{}
+	original := json.RawMessage(`{
+		"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"failed",
+		"content":[{"type":"terminal","terminalId":"term-gone"}]
+	}`)
+
+	content := b.acpMessageContent(original, original)
+
+	assert.NotContains(t, string(content.Supplemental), "terminals",
+		"LeapMux has nothing for this terminal, so it claims nothing")
+}
+
+func TestCopyTerminalOutputCountsRawBytesBeforeRetention(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	b := &Base{sink: agent.NewProviderServices(sink)}
+	b.bind(b)
+	session := &acpTerminalSession{id: "term-1", byteLimit: 0}
+	b.copyTerminalOutput(session, strings.NewReader("éx"))
+
+	output, truncated, _, _, _ := session.snapshot()
+	assert.Empty(t, output)
+	assert.True(t, truncated)
+	require.Len(t, sink.ProgressUpdates(), 1)
+	assert.Equal(t, int64(3), sink.ProgressUpdates()[0].Value)
+}
+
+// The ring buffer drops the oldest bytes, so its first retained byte can be the
+// continuation byte of a rune whose leading byte is already gone. ACP requires a
+// cut at a character boundary, so snapshot discards that partial rune.
+func TestSnapshotCutsTheRetainedTailAtARuneBoundary_AllGOOS(t *testing.T) {
+	t.Parallel()
+
+	// "xy" + "é" (2-byte UTF-8) + "abc", retained 4 bytes. The oldest retained
+	// byte is the trailing byte of "é", so the snapshot advances to the next rune
+	// start and keeps "abc" rather than a broken leading byte.
+	sess := &acpTerminalSession{byteLimit: 4}
+	sess.appendOutput([]byte("xyéabc"))
+
+	output, truncated, _, _, _ := sess.snapshot()
+	assert.Equal(t, "abc", output)
+	assert.True(t, utf8.ValidString(output))
+	assert.True(t, truncated, "bytes were dropped, so the result states the loss")
+
+	// A tail that fits the limit is returned whole and reports no loss.
+	short := &acpTerminalSession{byteLimit: 10}
+	short.appendOutput([]byte("hello"))
+	output, truncated, _, _, _ = short.snapshot()
+	assert.Equal(t, "hello", output)
+	assert.False(t, truncated)
+}
+
+// The snapshot must not hand out the ring buffer itself: appendOutput overwrites
+// those bytes on the next read, which would rewrite a result the caller already
+// stored.
+func TestSnapshotCopiesOutOfTheRingBuffer_AllGOOS(t *testing.T) {
+	t.Parallel()
+
+	sess := &acpTerminalSession{byteLimit: 8}
+	sess.appendOutput([]byte("abcdefgh"))
+	first, _, _, _, _ := sess.snapshot()
+	require.Equal(t, "abcdefgh", first)
+
+	sess.appendOutput([]byte("12345678"))
+	second, _, _, _, _ := sess.snapshot()
+	assert.Equal(t, "12345678", second)
+	assert.Equal(t, "abcdefgh", first, "the earlier snapshot keeps its own bytes")
+}
+
+func TestMergeACPTerminalEnv_AllGOOS(t *testing.T) {
+	base := []string{"PATH=/bin", "FOO=1", "BAR=2"}
+	out := mergeACPTerminalEnv(base, []acpTerminalEnvVar{
+		{Name: "FOO", Value: "9"},
+		{Name: "BAZ", Value: "z"},
+		{Name: "", Value: "ignored"},
+	})
+	// PinEnv drops overridden keys then appends assignments.
+	assert.Equal(t, []string{"PATH=/bin", "BAR=2", "FOO=9", "BAZ=z"}, out)
+	assert.Equal(t, base, []string{"PATH=/bin", "FOO=1", "BAR=2"}, "base must not be mutated")
+
+	same := mergeACPTerminalEnv(base, nil)
+	assert.Equal(t, base, same)
+	assert.Equal(t, base, mergeACPTerminalEnv(base, []acpTerminalEnvVar{}))
+}
+
+func TestAppendOutput_ZeroByteLimitDiscards(t *testing.T) {
+	sess := &acpTerminalSession{byteLimit: 0}
+	sess.appendOutput([]byte("hello"))
+	out, truncated, _, _, _ := sess.snapshot()
+	assert.Equal(t, "", out)
+	assert.True(t, truncated)
+}
+
+func TestAppendOutputKeepsACircularTail(t *testing.T) {
+	t.Parallel()
+
+	sess := &acpTerminalSession{byteLimit: 8}
+	for _, chunk := range []string{"abcd", "efgh", "ijkl"} {
+		sess.appendOutput([]byte(chunk))
+	}
+	output, truncated, _, _, _ := sess.snapshot()
+	assert.Equal(t, "efghijkl", output)
+	assert.True(t, truncated)
+	assert.Len(t, sess.buf, 8)
+}
+
+func TestExitStatusFromProcessState_Nil(t *testing.T) {
+	code, sig := exitStatusFromProcessState(nil)
+	assert.Nil(t, code)
+	assert.Nil(t, sig)
+}
+
+// A retained tail that holds continuation bytes alone starts no rune at all, so
+// the snapshot keeps none of it and reports the loss.
+func TestSnapshotDropsARetainedTailThatStartsNoRune_AllGOOS(t *testing.T) {
+	t.Parallel()
+
+	sess := &acpTerminalSession{byteLimit: 2}
+	sess.appendOutput([]byte{0x80, 0x80, 0x80})
+
+	output, truncated, _, _, _ := sess.snapshot()
+	assert.Empty(t, output)
+	assert.True(t, truncated)
+}

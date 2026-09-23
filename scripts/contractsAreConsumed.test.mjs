@@ -125,7 +125,7 @@ const contracts = new Map(PROVIDER_PROTOCOLS.map(spec =>
  * reaches them through a `#Name` field.
  *
  * A nested record is a real reader of its keys, and the Go code mentions the OUTER
- * struct alone -- `zcode_tool_store.go` decodes a `ZCodeStoredPart`, and that is what
+ * struct alone -- `providers/zcode/tool_store.go` decodes a `ZCodeStoredPart`, and that is what
  * reads `ZCodePartState`'s fields. Without the transitive step every nested record
  * read as unread.
  */

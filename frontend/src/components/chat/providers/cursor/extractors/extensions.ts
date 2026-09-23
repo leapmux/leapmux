@@ -10,7 +10,7 @@ import { isObject, pickObject, pickString } from '~/lib/jsonPick'
  * Cursor sends the frame as a JSON-RPC REQUEST, one per finished call, right after
  * the update that completed the same `toolCallId`. The worker answers it and writes
  * it into that row's supplemental content, because the frame carries fields the tool
- * call itself never states. See `cursor_extensions.go`.
+ * call itself never states. See `providers/cursor/extensions.go`.
  */
 export interface CursorExtension {
   method: string

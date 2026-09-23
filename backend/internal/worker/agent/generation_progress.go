@@ -164,7 +164,7 @@ func (c *ProgressCounter) Apply(update ProgressUpdate) (ProgressSnapshot, bool) 
 	case ProgressModelText:
 		if update.Text != "" {
 			scope.modelActive = true
-			scope.modelChars = saturatingAdd(scope.modelChars, int64(utf8.RuneCountInString(update.Text)))
+			scope.modelChars = SaturatingAdd(scope.modelChars, int64(utf8.RuneCountInString(update.Text)))
 		}
 	case ProgressNativeTokens:
 		if update.Value >= 0 {
@@ -176,7 +176,7 @@ func (c *ProgressCounter) Apply(update ProgressUpdate) (ProgressSnapshot, bool) 
 	case ProgressOutputDelta:
 		if update.Value > 0 {
 			scope.outputActive = true
-			scope.outputBytes = saturatingAdd(scope.outputBytes, update.Value)
+			scope.outputBytes = SaturatingAdd(scope.outputBytes, update.Value)
 		}
 	case ProgressOutputTotal:
 		if update.Value >= 0 {
@@ -195,14 +195,14 @@ func (c *ProgressCounter) Apply(update ProgressUpdate) (ProgressSnapshot, bool) 
 		}
 	case ProgressModelComplete:
 		if scope.modelActive {
-			scope.modelRetained = saturatingAdd(scope.modelRetained, scope.currentModelTokens())
+			scope.modelRetained = SaturatingAdd(scope.modelRetained, scope.currentModelTokens())
 			scope.modelChars = 0
 			scope.nativeTokens = 0
 		}
 		scope.modelActive = false
 	case ProgressOutputComplete:
 		if scope.outputActive {
-			scope.outputRetained = saturatingAdd(scope.outputRetained, scope.outputBytes)
+			scope.outputRetained = SaturatingAdd(scope.outputRetained, scope.outputBytes)
 			scope.outputRetainedMinimum = scope.outputRetainedMinimum || scope.outputMinimum
 			scope.outputBytes = 0
 			scope.outputMinimum = false
@@ -292,11 +292,11 @@ func (s *progressScope) currentModelTokens() int64 {
 }
 
 func (s *progressScope) currentModelTotal() int64 {
-	return saturatingAdd(s.modelRetained, s.currentModelTokens())
+	return SaturatingAdd(s.modelRetained, s.currentModelTokens())
 }
 
 func (s *progressScope) currentOutputTotal() int64 {
-	return saturatingAdd(s.outputRetained, s.outputBytes)
+	return SaturatingAdd(s.outputRetained, s.outputBytes)
 }
 
 func (s *progressScope) hasOutputMinimum() bool {
@@ -307,15 +307,15 @@ func replaceAggregate(total, oldValue, newValue int64) int64 {
 	if oldValue >= total {
 		return newValue
 	}
-	return saturatingAdd(total-oldValue, newValue)
+	return SaturatingAdd(total-oldValue, newValue)
 }
 
 func (c *ProgressCounter) snapshot() ProgressSnapshot {
 	var snapshot ProgressSnapshot
 	minimumScopes := 0
 	for _, scope := range c.scopes {
-		snapshot.ThinkingTokens = saturatingAdd(snapshot.ThinkingTokens, scope.currentModelTotal())
-		snapshot.OutputBytes = saturatingAdd(snapshot.OutputBytes, scope.currentOutputTotal())
+		snapshot.ThinkingTokens = SaturatingAdd(snapshot.ThinkingTokens, scope.currentModelTotal())
+		snapshot.OutputBytes = SaturatingAdd(snapshot.OutputBytes, scope.currentOutputTotal())
 		if scope.hasOutputMinimum() {
 			minimumScopes++
 		}
@@ -325,7 +325,7 @@ func (c *ProgressCounter) snapshot() ProgressSnapshot {
 	return snapshot
 }
 
-func saturatingAdd(left, right int64) int64 {
+func SaturatingAdd(left, right int64) int64 {
 	if right <= 0 {
 		return left
 	}
@@ -374,7 +374,7 @@ func (s modelProgressResetControl) PublishControlRequest(request ControlRequest)
 type modelProgressResetChildren struct{ ChildServices }
 
 func (s modelProgressResetChildren) ChildSink(childAgentID string) ProviderServices {
-	return newModelProgressResetSink(s.ChildServices.ChildSink(childAgentID))
+	return NewModelProgressResetSink(s.ChildServices.ChildSink(childAgentID))
 }
 
 // Only the AGENT-source child writes are overridden. See the ChildServices doc on
@@ -393,7 +393,7 @@ func (s modelProgressResetChildren) PersistChildTurnEnd(childAgentID string, con
 	return s.ChildSink(childAgentID).PersistTurnEnd(content, span)
 }
 
-func newModelProgressResetSink(inner ProviderServices) ProviderServices {
+func NewModelProgressResetSink(inner ProviderServices) ProviderServices {
 	return providerServices{
 		TranscriptServices: modelProgressResetTranscript{
 			TranscriptServices: inner,

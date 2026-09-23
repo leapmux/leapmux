@@ -780,7 +780,7 @@ func TestOutputTodos_CursorMergeFrameLeavesTheRowsItOmits(t *testing.T) {
 
 // The SECOND enrichment of one row must not replay the frame the FIRST one carried.
 //
-// A supplement survives the next enrichment -- mergeToolSupplements replaces only the
+// A supplement survives the next enrichment -- tooltranscript.MergeSupplements replaces only the
 // keys that collide -- so the cursor/update_todos frame EnrichToolSpan wrote is still
 // on the row when the turn-end store pass enriches it again with the tool record.
 // Guarding on the ORIGINAL content alone found nothing both times, so the second pass
@@ -811,7 +811,7 @@ func TestOutputTodos_EnrichmentNeverReplaysTheFrameTheSupplementAlreadyCarried(t
 	require.Len(t, listRows(), 3, "the merge frame added its row")
 
 	// The store pass enriches call-1 a SECOND time. Its supplement still carries the
-	// snapshot -- mergeToolSupplements keeps a key nothing collides with -- and the
+	// snapshot -- tooltranscript.MergeSupplements keeps a key nothing collides with -- and the
 	// tool record is the extra key beside it.
 	combined := marshalJSON(t, map[string]any{
 		contracts.CursorSupplementExtension: map[string]any{

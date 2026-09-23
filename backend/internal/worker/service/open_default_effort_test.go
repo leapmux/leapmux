@@ -154,7 +154,7 @@ func TestOpenAgent_DefaultsEffortToAuto(t *testing.T) {
 	// concrete effort tiers, but it is recorded so the launch reproduces it.)
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, resp.GetAgent().GetId())
 	require.NoError(t, err)
-	assert.Equal(t, "auto", loadOptions(dbAgent.Options, dbAgent.AgentProvider)[agent.OptionIDEffort],
+	assert.Equal(t, "auto", loadOptions(testRegistry, dbAgent.Options, dbAgent.AgentProvider)[agent.OptionIDEffort],
 		"the agent's effort should default to the \"auto\" sentinel")
 }
 

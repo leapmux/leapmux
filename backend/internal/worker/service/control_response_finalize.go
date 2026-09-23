@@ -26,14 +26,14 @@ func (svc *Service) resumeControlResponseFinalization(answer db.ControlResponseA
 	}
 }
 
-func controlResponsePlanFromAnswer(answer db.ControlResponseAnswer) (controlResponsePlan, error) {
+func controlResponsePlanFromAnswer(registry *agent.Registry, answer db.ControlResponseAnswer) (controlResponsePlan, error) {
 	meta := completeControlRequestMetadata(controlResponseRequestMetadata{
 		RequestID: answer.RequestID, ClaimToken: answer.ClaimToken,
 		AgentSessionID: answer.AgentSessionID, Payload: answer.RequestPayload,
 		SourceSeq: answer.SourceSeq,
 		Exists:    len(answer.RequestPayload) > 0,
 	})
-	plan := resolveControlResponsePlan(agent.ProviderFor(answer.AgentProvider), meta, answer.ResponseContent, nil)
+	plan := resolveControlResponsePlan(registry.Plugin(answer.AgentProvider), meta, answer.ResponseContent, nil)
 	if len(answer.PlanApprovalSettings) != 0 {
 		plan.settings = &leapmuxv1.PlanApprovalSettings{}
 		if err := protojson.Unmarshal(answer.PlanApprovalSettings, plan.settings); err != nil {
@@ -54,7 +54,7 @@ func controlResponsePlanFromAnswer(answer db.ControlResponseAnswer) (controlResp
 // Provider delivery occurs before this function. No database transaction waits for provider output.
 func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) error {
 	agentID := answer.AgentID
-	plan, err := controlResponsePlanFromAnswer(answer)
+	plan, err := controlResponsePlanFromAnswer(svc.Agents.Registry(), answer)
 	if err != nil {
 		return err
 	}

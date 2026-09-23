@@ -1079,7 +1079,7 @@ func (s *agentOutputSink) PersistChildUserMessage(childAgentID, text string) err
 // generation, take run 2's slot, and produce exactly what the plain key
 // produces: a divider in the middle of run 2 and none at its end. The ordered
 // stream is what keeps the two apart. One goroutine reads the CLI's stdout in
-// line order (processBase.readOutput) and both writers run inside that call, so
+// line order (Process.ReadOutput) and both writers run inside that call, so
 // run 1's result is processed before the task_started that revives the subagent.
 //
 // A durable INSERT decides it, rather than each side reading the transcript's

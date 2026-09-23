@@ -101,7 +101,7 @@ func TestSavedPlanSettingsStaySeparateDuringRecording(t *testing.T) {
 	response := []byte(` {"type":"control_response","response":{"subtype":"success","request_id":"plan","response":{"behavior":"allow"}},"large":9007199254740993} `)
 	request := []byte(` {"request":{"tool_name":"ExitPlanMode","input":{"plan":"# Plan"}},"extra":false} `)
 	for _, settings := range []string{`{"permissionMode":"","clearContext":false}`, `{"permissionMode":"default","clearContext":true}`} {
-		plan, err := controlResponsePlanFromAnswer(db.ControlResponseAnswer{
+		plan, err := controlResponsePlanFromAnswer(testRegistry, db.ControlResponseAnswer{
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 			RequestID:     "plan", RequestPayload: request, ResponseContent: response, ResolvedContent: response,
 			PlanApprovalSettings: []byte(settings),
@@ -115,7 +115,7 @@ func TestSavedPlanSettingsStaySeparateDuringRecording(t *testing.T) {
 		require.NoError(t, json.Unmarshal(content.Metadata, &metadata))
 		require.JSONEq(t, settings, string(metadata["plan_approval_settings"]))
 	}
-	_, err := controlResponsePlanFromAnswer(db.ControlResponseAnswer{PlanApprovalSettings: []byte(`{"clearContext":`)})
+	_, err := controlResponsePlanFromAnswer(testRegistry, db.ControlResponseAnswer{PlanApprovalSettings: []byte(`{"clearContext":`)})
 	require.ErrorContains(t, err, "read saved plan approval settings")
 }
 
@@ -157,7 +157,7 @@ func TestClaudePlanApprovalIncludesTheNativePermissionUpdate(t *testing.T) {
 func TestSavedPlanSettingsReachTheTranscriptAsStored(t *testing.T) {
 	response := []byte(`{"response":{"subtype":"success","request_id":"plan","response":{"behavior":"allow"}}}`)
 	stored := []byte(`{"permissionMode":"default"}`)
-	plan, err := controlResponsePlanFromAnswer(db.ControlResponseAnswer{
+	plan, err := controlResponsePlanFromAnswer(testRegistry, db.ControlResponseAnswer{
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		RequestID:     "plan", RequestPayload: []byte(`{"request":{"tool_name":"ExitPlanMode"}}`),
 		ResponseContent: response, ResolvedContent: response,

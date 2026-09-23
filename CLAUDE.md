@@ -155,19 +155,37 @@ through to a default turned the drift into a plausible wrong value.
 
 ### Provider-specific logic belongs in the provider
 
-Five providers read their own native protocol: Claude Code, Codex, Copilot, Pi,
-ZCode. Five speak the Agent Client Protocol via `acpStart`: OpenCode, Cursor,
-Kilo, Goose, Reasonix. Copilot is NOT ACP — `copilot_connection_test.go` and
-`copilot_native_session_test.go` assert its arguments hold no `--acp`.
+Each provider is a Go package under `backend/internal/worker/agent/providers/`,
+as each frontend plugin is a folder under `frontend/src/components/chat/providers/`.
+Five providers read their own native protocol: `claude`, `codex`, `copilot`,
+`pi`, `zcode`. Five speak the Agent Client Protocol on the shared base in
+`providers/acp` (`acp.Start`): `opencode`, `cursor`, `kilo`, `goose`,
+`reasonix`. Copilot is NOT ACP — `providers/copilot/connection_test.go` and
+`native_session_test.go` assert its arguments hold no `--acp`.
 
 Anything depending on **one provider's wire format or message shapes** MUST live
-in that provider, never in shared code (a package-level helper, a shared
-`default*` function, a `switch` on provider). One provider's shape in shared
-code breaks or half-serves the rest and becomes a second source of truth.
+in that provider's package, never in shared code (package `agent`,
+`providers/internal/providerkit`, a shared `default*` function, a `switch` on
+provider). One provider's shape in shared code breaks or half-serves the rest
+and becomes a second source of truth.
 
 - **Backend:** add a method to the `Provider` interface in
   `backend/internal/worker/agent/provider.go` (e.g.
-  `IsSelfDisplayingControlTool`); dispatch through `agent.ProviderFor(provider)`.
+  `IsSelfDisplayingControlTool`), implement it in each provider package, and
+  dispatch through `Manager.Registry().Plugin(provider)`. `providers.Registrations()`
+  lists every provider explicitly, and `bootstrap` builds the one `Registry`
+  from that list.
+- **The compiler enforces the boundary.** A provider imports `agent`, so `agent`
+  cannot import a provider, and only `providers/**` can import
+  `providers/internal/*`. `providers/imports_test.go` states the only edges
+  between providers: the ACP family imports `acp`, Kilo builds on `opencode`,
+  and OpenCode, Kilo and ZCode read `opencode/opencodestore`.
+  `TestShippedBinaryLinksNoTestSupport` (`cmd/leapmux`) keeps the test-support
+  packages (`agenttest`, `acptest`, `claudetest`, …) out of the shipped binary.
+- **Test a provider in its own package.** The shared suites live in
+  `agent/agenttest` (with `acp/acptest` and `opencode/opencodetest`), and
+  `providers/conformance_coverage_test.go` states which suites each provider
+  package must run.
 - **Frontend:** add a method to the `Provider` plugin interface in
   `frontend/src/components/chat/providers/registry.ts` (e.g. `previewText`,
   beside `extractQuotableText`) and implement it per plugin. A genuinely neutral

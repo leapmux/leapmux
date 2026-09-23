@@ -8,8 +8,8 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 )
 
-// withToolUseCount records the worker's count without changing native provider fields.
-func withToolUseCount(content MessageContent, count int) MessageContent {
+// WithToolUseCount records the worker's count without changing native provider fields.
+func WithToolUseCount(content MessageContent, count int) MessageContent {
 	if count < 0 {
 		return content
 	}

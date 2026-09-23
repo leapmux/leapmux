@@ -54,7 +54,7 @@ func controlResponseState(queries *db.Queries, agentID, requestID, claimToken st
 func (svc *Service) respondToControlRequest(currentAgent db.Agent, request *leapmuxv1.SendControlResponseRequest) (*leapmuxv1.SendControlResponseResponse, error) {
 	requestID := request.GetRequestId()
 	if !request.GetRecordOnly() {
-		decodedID := agent.ProviderFor(currentAgent.AgentProvider).ControlResponseRequestID(request.GetContent())
+		decodedID := svc.Agents.Registry().Plugin(currentAgent.AgentProvider).ControlResponseRequestID(request.GetContent())
 		if requestID != "" && requestID != decodedID {
 			return nil, errors.New("the response does not match the request ID")
 		}

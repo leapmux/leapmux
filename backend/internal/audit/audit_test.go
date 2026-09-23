@@ -323,6 +323,96 @@ func TestRepoInvariants(t *testing.T) {
 	t.Run("owner-keyed rows are never read by the non-owner half of their key", func(t *testing.T) {
 		checkOwnerScopedQueries(t, root)
 	})
+
+	t.Run("production code never refers to a test hook", func(t *testing.T) {
+		checkTestHookReferences(t, files)
+	})
+}
+
+// testHookSuffix ends the name of every function and method that exists only for
+// a test in another package: SetStdinForTest, SimulateExitForTest, and the like.
+const testHookSuffix = "ForTest"
+
+// checkTestHookReferences fails for each production reference to a test hook.
+//
+// A hook changes state and skips the checks that the production path runs. It is
+// exported only because Go has no visibility between a package and the tests of
+// another package. So a production caller is a bypass, and the compiler cannot
+// see it. A test-support package is test code in a non-test file, so it may use
+// a hook.
+//
+// The rule matches every identifier, not only a call. A method value
+// (`f := p.SimulateExitForTest`) or a function passed as an argument reaches the
+// hook as surely as a call does.
+func checkTestHookReferences(t *testing.T, files []parsedFile) {
+	t.Helper()
+
+	refs, declared := findTestHookReferences(files)
+	for _, ref := range refs {
+		assert.Fail(t, "production reference to a test hook",
+			"%s -- a hook skips the checks of the production path; call the production API, or move this code into a test or a test-support package", ref)
+	}
+	// A rename of the convention would leave the rule nothing to find.
+	assert.NotZero(t, declared, "the walk found no %s declaration; the net is broken, not the code", testHookSuffix)
+}
+
+// findTestHookReferences returns each production reference to a test hook as
+// "file:line: refers to Name", and the number of hooks that files declare.
+func findTestHookReferences(files []parsedFile) (refs []string, declared int) {
+	for _, f := range files {
+		// A declaration gives the hook its name. It is not a reference to it.
+		names := topLevelDeclNames(f.file)
+		for id := range names {
+			if isTestHookName(id.Name) {
+				declared++
+			}
+		}
+		if isTestSupportDir(packageDir(f.rel)) {
+			continue
+		}
+		ast.Inspect(f.file, func(n ast.Node) bool {
+			id, ok := n.(*ast.Ident)
+			if ok && !names[id] && isTestHookName(id.Name) {
+				refs = append(refs, fmt.Sprintf("%s: refers to %s", position(f.fset, id.Pos(), f.rel), id.Name))
+			}
+			return true
+		})
+	}
+	return refs, declared
+}
+
+// topLevelDeclNames returns the identifier that each top-level declaration of
+// file declares: every function and method, constant, variable, and type.
+func topLevelDeclNames(file *ast.File) map[*ast.Ident]bool {
+	names := map[*ast.Ident]bool{}
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			names[d.Name] = true
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				switch s := spec.(type) {
+				case *ast.ValueSpec:
+					for _, id := range s.Names {
+						names[id] = true
+					}
+				case *ast.TypeSpec:
+					names[s.Name] = true
+				}
+			}
+		}
+	}
+	return names
+}
+
+func isTestHookName(name string) bool {
+	return len(name) > len(testHookSuffix) && strings.HasSuffix(name, testHookSuffix)
+}
+
+// isTestSupportDir reports whether dir holds a test-support package, by the one
+// naming rule of testutil.IsTestSupportPackage.
+func isTestSupportDir(dir string) bool {
+	return testutil.IsTestSupportPackage(filepath.Base(dir))
 }
 
 // ---- shared helpers ----

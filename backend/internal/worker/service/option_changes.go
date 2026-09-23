@@ -64,7 +64,7 @@ func (svc *Service) applyPlanOptionsLocked(current db.Agent, wanted OptionMap) (
 			}
 		}
 	}
-	values := loadOptions(current.Options, current.AgentProvider)
+	values := loadOptions(svc.Agents.Registry(), current.Options, current.AgentProvider)
 	previous := make(OptionMap, len(wanted))
 	for key, value := range wanted {
 		previous[key] = values[key]

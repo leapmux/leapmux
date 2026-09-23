@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "pi_resume_handle_conformance.schema.json",
   "title": "file-session resume-handle rule conformance corpus",
-  "description": "Shared by backend/internal/worker/agent/pi_resume_handle_conformance_test.go and frontend/src/lib/validate.test.ts. `refusal` is a stable token, not a message. The worker's verdict is per host because filepath.IsAbs is.",
+  "description": "Shared by backend/internal/worker/agent/providers/pi/resume_handle_conformance_test.go and frontend/src/lib/validate.test.ts. `refusal` is a stable token, not a message. The worker's verdict is per host because filepath.IsAbs is.",
   "type": "object",
   "additionalProperties": false,
   "required": ["_readme", "homeDir", "cases"],

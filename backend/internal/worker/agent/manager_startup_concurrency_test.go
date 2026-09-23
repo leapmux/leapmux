@@ -1,4 +1,4 @@
-package agent
+package agent_test
 
 import (
 	"context"
@@ -12,51 +12,22 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/config"
 )
 
-// idleAgent is the smallest Agent a permit test needs. It is defined here rather
-// than reused from manager_test.go's stubProvider because that file is
-// `//go:build unix`, and the startup permit pool has no platform behaviour --
-// the Windows vet job must compile and run these cases too.
-type idleAgent struct{}
-
-func (idleAgent) AgentID() string                                 { return "idle" }
-func (idleAgent) SendInput(string, []*leapmuxv1.Attachment) error { return nil }
-func (idleAgent) SendInputForSession(string, string, []*leapmuxv1.Attachment) error {
-	return ErrInputSessionChanged
-}
-func (idleAgent) PublishTurnActive() TurnState {
-	return TurnState{}
-}
-func (idleAgent) SendRawInput([]byte) error                       { return nil }
-func (idleAgent) Stop()                                           {}
-func (idleAgent) IsStopped() bool                                 { return false }
-func (idleAgent) DiscardOutput()                                  {}
-func (idleAgent) ClearContext() (string, error)                   { return "", ErrContextClearUnsupported }
-func (idleAgent) Wait() error                                     { return nil }
-func (idleAgent) Stderr() string                                  { return "" }
-func (idleAgent) HandleOutput([]byte)                             {}
-func (idleAgent) OptionGroups() []*leapmuxv1.AvailableOptionGroup { return nil }
-func (idleAgent) SettingsSnapshot() SettingsApplyResult           { return confirmedSettings(nil) }
-func (idleAgent) UpdateSettings(options optionmap.Map) SettingsApplyResult {
-	return confirmedSettings(options)
-}
-func (idleAgent) Interrupt() error { return nil }
-
-// livingAgent is an idleAgent that stays registered: its Wait parks until Stop.
+// livingAgent is an IdleAgent that stays registered: its Wait parks until Stop.
 //
-// A test that asserts the manager REGISTERED an agent needs one. startAgentWith
+// A test that asserts the manager REGISTERED an agent needs one. The manager
 // registers the provider and then waits on it in a goroutine that deregisters
-// it the moment Wait returns, so idleAgent -- whose Wait returns at once -- is
+// it the moment Wait returns, so IdleAgent -- whose Wait returns at once -- is
 // reaped while the assertion is still being written. That race resolved the
 // friendly way on every developer's machine and the other way on the Windows
 // runner.
 type livingAgent struct {
-	idleAgent
+	agenttest.IdleAgent
 	stop chan struct{}
 	once sync.Once
 }
@@ -68,7 +39,7 @@ func newLivingAgent() *livingAgent {
 func (a *livingAgent) Stop()       { a.once.Do(func() { close(a.stop) }) }
 func (a *livingAgent) Wait() error { <-a.stop; return nil }
 
-// blockingStart is a startFunc that parks inside the "startup handshake" until
+// blockingStart is a StartFunc that parks inside the "startup handshake" until
 // the test releases it, so a test can observe how many spawns are in that
 // window at once. It reports the high-water mark of concurrent entries, which
 // is the property the permit pool exists to cap.
@@ -89,14 +60,14 @@ func newBlockingStart(capacity int) *blockingStart {
 	}
 }
 
-func (b *blockingStart) fn(_ context.Context, opts Options, _ ProviderServices) (Agent, error) {
+func (b *blockingStart) fn(_ context.Context, opts agent.Options, _ agent.ProviderServices) (agent.Agent, error) {
 	defer testutil.TrackPeak(&b.inFlight, &b.peak)()
 	b.entered <- struct{}{}
 	<-b.release
 	if b.fail {
 		return nil, fmt.Errorf("start refused for %s", opts.AgentID)
 	}
-	return idleAgent{}, nil
+	return agenttest.IdleAgent{}, nil
 }
 
 // waitForEntries blocks until n starts have entered, or fails the test.
@@ -111,9 +82,9 @@ func (b *blockingStart) waitForEntries(t *testing.T, n int) {
 	}
 }
 
-// spawn launches count concurrent startAgentWith calls and returns a func that
+// spawn launches count concurrent background spawns and returns a func that
 // waits for all of them, collecting their errors.
-func spawn(t *testing.T, m *Manager, start startFunc, count int, idPrefix string) func() []error {
+func spawn(t *testing.T, m *agent.Manager, start agent.StartFunc, count int, idPrefix string) func() []error {
 	t.Helper()
 	errs := make([]error, count)
 	var wg sync.WaitGroup
@@ -121,10 +92,10 @@ func spawn(t *testing.T, m *Manager, start startFunc, count int, idPrefix string
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, errs[i] = m.startAgentWith(context.Background(), Options{
+			_, errs[i] = m.StartBackgroundAgentWithForTest(context.Background(), agent.Options{
 				AgentID:    fmt.Sprintf("%s-%d", idPrefix, i),
 				WorkingDir: t.TempDir(),
-			}, noopSink{}, start, true)
+			}, agent.NewProviderServices(agenttest.Nop{}), start)
 		}()
 	}
 	return func() []error {
@@ -142,7 +113,7 @@ func TestStartAgent_LimitsConcurrentStartups(t *testing.T) {
 
 	const limit = 2
 	const total = 5
-	m := NewManager(nil)
+	m := agent.NewManager(testRegistry, nil)
 	m.SetStartupConcurrency(limit)
 
 	start := newBlockingStart(total)
@@ -183,7 +154,7 @@ func TestStartAgent_LimitsConcurrentStartups(t *testing.T) {
 func TestStartAgent_InteractiveSpawnsTakeNoPermit(t *testing.T) {
 	t.Parallel()
 
-	m := NewManager(nil)
+	m := agent.NewManager(testRegistry, nil)
 	m.SetStartupConcurrency(1)
 
 	// Fill the pool with a background start and park it there.
@@ -195,10 +166,10 @@ func TestStartAgent_InteractiveSpawnsTakeNoPermit(t *testing.T) {
 	interactive := newBlockingStart(1)
 	done := make(chan error, 1)
 	go func() {
-		_, err := m.startAgentWith(context.Background(), Options{
+		_, err := m.StartAgentWith(context.Background(), agent.Options{
 			AgentID:    "interactive",
 			WorkingDir: t.TempDir(),
-		}, noopSink{}, interactive.fn, false)
+		}, agent.NewProviderServices(agenttest.Nop{}), interactive.fn)
 		done <- err
 	}()
 	interactive.waitForEntries(t, 1)
@@ -223,7 +194,7 @@ func TestStartAgent_InteractiveSpawnsTakeNoPermit(t *testing.T) {
 func TestStartAgent_ConcurrencyOfOneSerializes(t *testing.T) {
 	t.Parallel()
 
-	m := NewManager(nil)
+	m := agent.NewManager(testRegistry, nil)
 	m.SetStartupConcurrency(1)
 
 	start := newBlockingStart(2)
@@ -251,7 +222,7 @@ func TestStartAgent_FailedStartReleasesItsSlot(t *testing.T) {
 	t.Parallel()
 
 	const limit = 2
-	m := NewManager(nil)
+	m := agent.NewManager(testRegistry, nil)
 	m.SetStartupConcurrency(limit)
 
 	failing := newBlockingStart(limit)
@@ -279,7 +250,7 @@ func TestStartAgent_FailedStartReleasesItsSlot(t *testing.T) {
 func TestStartAgent_CancelledContextGivesUpTheQueue(t *testing.T) {
 	t.Parallel()
 
-	m := NewManager(nil)
+	m := agent.NewManager(testRegistry, nil)
 	m.SetStartupConcurrency(1)
 
 	holder := newBlockingStart(1)
@@ -290,11 +261,11 @@ func TestStartAgent_CancelledContextGivesUpTheQueue(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	queuedErr := make(chan error, 1)
 	go func() {
-		_, err := m.startAgentWith(ctx, Options{AgentID: "queued", WorkingDir: t.TempDir()}, noopSink{},
-			func(context.Context, Options, ProviderServices) (Agent, error) {
+		_, err := m.StartBackgroundAgentWithForTest(ctx, agent.Options{AgentID: "queued", WorkingDir: t.TempDir()}, agent.NewProviderServices(agenttest.Nop{}),
+			func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
 				queuedStarted.Store(true)
-				return idleAgent{}, nil
-			}, true)
+				return agenttest.IdleAgent{}, nil
+			})
 		queuedErr <- err
 	}()
 
@@ -334,7 +305,7 @@ func TestResolveStartupConcurrency_FollowsTheCPUBudgetNotTheCoreCount(t *testing
 	prev := runtime.GOMAXPROCS(1)
 	t.Cleanup(func() { runtime.GOMAXPROCS(prev) })
 
-	m := NewManager(nil)
+	m := agent.NewManager(testRegistry, nil)
 	m.SetStartupConcurrency(0)
 	assert.Equal(t, 1, m.StartupConcurrency(),
 		"the default must follow the CPU budget; reading runtime.NumCPU() would report the host's cores here")
@@ -352,16 +323,16 @@ func TestNewManager_HasAUsablePoolBeforeConfiguration(t *testing.T) {
 	// agent whose Wait returns at once is deregistered correctly and at once,
 	// and the assertion would be racing that cleanup rather than reading the
 	// registration.
-	agent := newLivingAgent()
-	t.Cleanup(agent.Stop)
+	a := newLivingAgent()
+	t.Cleanup(a.Stop)
 
-	m := NewManager(nil)
-	_, err := m.startAgentWith(context.Background(), Options{
+	m := agent.NewManager(testRegistry, nil)
+	_, err := m.StartBackgroundAgentWithForTest(context.Background(), agent.Options{
 		AgentID:    "unconfigured",
 		WorkingDir: t.TempDir(),
-	}, noopSink{}, func(context.Context, Options, ProviderServices) (Agent, error) {
-		return agent, nil
-	}, true)
+	}, agent.NewProviderServices(agenttest.Nop{}), func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
+		return a, nil
+	})
 	require.NoError(t, err)
 	assert.True(t, m.HasAgent("unconfigured"))
 }
@@ -372,7 +343,7 @@ func TestNewManager_HasAUsablePoolBeforeConfiguration(t *testing.T) {
 func TestSetStartupConcurrency_ZeroRestoresTheDefault(t *testing.T) {
 	t.Parallel()
 
-	m := NewManager(nil)
+	m := agent.NewManager(testRegistry, nil)
 	m.SetStartupConcurrency(1)
 	m.SetStartupConcurrency(0)
 

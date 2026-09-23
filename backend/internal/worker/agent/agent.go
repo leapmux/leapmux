@@ -1,166 +1,13 @@
 package agent
 
 import (
-	"bufio"
-	"encoding/base64"
 	"errors"
-	"io"
-	"log/slog"
-	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/leapmux/leapmux/channelwire"
-	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
-
-// stdoutScannerStartBuf is the scanner's initial buffer. It grows on
-// demand up to the ceiling below, so this only decides how many
-// reallocations a long line costs.
-const stdoutScannerStartBuf = 1024 * 1024
-
-// stdoutConfiguredMax is the worker's configured application payload budget
-// (the raise-floor for the live scanner ceiling when no channel is open).
-//
-// A Hub↔Worker pair always negotiates one effective budget
-// (min(hub, worker)) for every channel open, so we keep a refcount of open
-// channel ids plus a single negotiated value — not a per-channel budget map.
-// While any channel is open the live ceiling is min(configured, negotiated);
-// when the last channel closes it rises back to configured.
-// stdoutMaxTokenSize is the live scanner token ceiling read by the
-// ScanLines wrapper without holding stdoutMu.
-var (
-	stdoutMu            sync.Mutex
-	stdoutConfiguredMax = contracts.MaxMessageSize
-	stdoutOpenChannels  = map[string]struct{}{}
-	stdoutNegotiatedMax int // meaningful only while len(stdoutOpenChannels) > 0
-	stdoutMaxTokenSize  atomic.Int64
-)
-
-func init() {
-	stdoutMaxTokenSize.Store(int64(contracts.MaxMessageSize))
-}
-
-func recomputeStdoutMaxLocked() {
-	min := stdoutConfiguredMax
-	if len(stdoutOpenChannels) > 0 && stdoutNegotiatedMax < min {
-		min = stdoutNegotiatedMax
-	}
-	stdoutMaxTokenSize.Store(int64(min))
-}
-
-// ConfigureMaxMessageSize sets the worker's configured application payload
-// budget (0 resolves to the protocol default) and recomputes the live
-// scanner ceiling against any open negotiated budget. Bootstrap calls
-// this once before agents start.
-func ConfigureMaxMessageSize(n int) {
-	stdoutMu.Lock()
-	defer stdoutMu.Unlock()
-	stdoutConfiguredMax = channelwire.ResolveMaxMessageSize(n)
-	recomputeStdoutMaxLocked()
-}
-
-// ObserveNegotiatedMaxMessageSize records that channelID is open at the
-// Hub↔Worker negotiated payload budget and sets the live scanner ceiling
-// to min(configured, negotiated). Call on successful HandleOpen. Every
-// open on this worker pair carries the same effective budget; the
-// channel id is tracked only so Release can drop the refcount.
-func ObserveNegotiatedMaxMessageSize(channelID string, n int) {
-	n = channelwire.ResolveMaxMessageSize(n)
-	stdoutMu.Lock()
-	defer stdoutMu.Unlock()
-	stdoutOpenChannels[channelID] = struct{}{}
-	stdoutNegotiatedMax = n
-	recomputeStdoutMaxLocked()
-}
-
-// ReleaseNegotiatedMaxMessageSize drops channelID from the open set (on
-// HandleClose). When the last channel closes, the live ceiling rises back
-// to the worker configured budget — including Hub reject-after-accept
-// paths that tear the worker session down.
-func ReleaseNegotiatedMaxMessageSize(channelID string) {
-	stdoutMu.Lock()
-	defer stdoutMu.Unlock()
-	delete(stdoutOpenChannels, channelID)
-	if len(stdoutOpenChannels) == 0 {
-		stdoutNegotiatedMax = 0
-	}
-	recomputeStdoutMaxLocked()
-}
-
-// ReleaseAllNegotiatedMaxMessageSizes clears every open-channel ref (CloseAll)
-// and restores the live ceiling to the configured budget.
-func ReleaseAllNegotiatedMaxMessageSizes() {
-	stdoutMu.Lock()
-	defer stdoutMu.Unlock()
-	stdoutOpenChannels = map[string]struct{}{}
-	stdoutNegotiatedMax = 0
-	recomputeStdoutMaxLocked()
-}
-
-// liveStdoutMaxTokenSize returns the current scanner token ceiling.
-func liveStdoutMaxTokenSize() int {
-	return int(stdoutMaxTokenSize.Load())
-}
-
-// newStdoutScanner returns the line scanner every agent provider reads
-// its subprocess stdout with.
-//
-// The Buffer capacity ceiling is the worker's configured payload budget
-// (an upper bound that never shrinks below what operators allow). The
-// live negotiated min is enforced by the SplitFunc on every Scan so a
-// later Observe can shrink (or a Release can raise) without recreating
-// already-running scanners — bufio.Scanner freezes Buffer's maxTokenSize
-// at creation time.
-//
-// Shared rather than repeated per provider because it is scanner
-// plumbing bound to a shared limit, with nothing provider-specific in
-// it. What IS provider-specific -- how each one interprets the lines --
-// stays in that provider, which is where the read loop the caller hands
-// this to lives.
-func newStdoutScanner(stdout io.Reader) *bufio.Scanner {
-	scanner := bufio.NewScanner(stdout)
-	stdoutMu.Lock()
-	configured := stdoutConfiguredMax
-	stdoutMu.Unlock()
-	start := stdoutScannerStartBuf
-	if start > configured {
-		start = configured
-	}
-	scanner.Buffer(make([]byte, 0, start), configured)
-	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-		max := liveStdoutMaxTokenSize()
-		if max < 1 {
-			max = 1
-		}
-		// ScanLines first so a buffer of many short lines totaling > max
-		// still yields the first short token. ErrTooLong only when a single
-		// line (complete token, or incomplete line with no newline yet)
-		// exceeds the live ceiling — otherwise a later Observe shrink would
-		// still admit an oversized in-progress line that Buffer's configured
-		// max would allow.
-		advance, token, err = bufio.ScanLines(data, atEOF)
-		if err != nil {
-			return 0, nil, err
-		}
-		if token != nil && len(token) > max {
-			return 0, nil, bufio.ErrTooLong
-		}
-		if advance == 0 && !atEOF && len(data) > max {
-			return 0, nil, bufio.ErrTooLong
-		}
-		return advance, token, nil
-	})
-	return scanner
-}
-
-// encodeDataURI builds a data URI from a MIME type and raw bytes.
-func encodeDataURI(mime string, data []byte) string {
-	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
-}
 
 // SpanInfo groups span-related metadata for a persisted message.
 type SpanInfo struct {
@@ -182,59 +29,6 @@ type SpanInfo struct {
 	NoSpan bool
 }
 
-// openToolSpan persists a tool call's opening row and opens its span.
-//
-// A call that spawns a subagent owns no span: it reserves no color and opens
-// nothing, so it draws no rail and its card takes the neutral border. It still
-// records its span type, which a provider's closing message reads back.
-//
-// Each provider decides `spawns` itself, from its own wire shape -- that
-// decision must not move into shared code. What lives here is the ORDER the
-// decision drives, which every provider needs identically: reserve before the
-// persist so the row carries the color its rail will use, persist before the
-// open so the row sits at the parent's depth, record the type either way.
-//
-// The parent span id is empty at every call site: a provider's tool calls are
-// flat in the transcript that holds them.
-//
-// A failed persist is logged by the caller and does NOT stop the span from
-// opening, which is what each of these call sites did before.
-type ToolSpanServices interface {
-	TranscriptServices
-	SpanServices
-}
-
-type generationServices interface {
-	TranscriptServices
-	ProgressServices
-}
-
-type toolLifecycleServices interface {
-	generationServices
-	SpanServices
-}
-
-type subagentServices interface {
-	ChildServices
-	BackgroundTaskServices
-	SessionServices
-}
-
-func openToolSpan(sink ToolSpanServices, content MessageContent, spanID, spanType string, spawns bool) error {
-	var spanColor int32
-	if !spawns {
-		spanColor = sink.ReserveSpanColor(spanID, "")
-	}
-	err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, SpanInfo{
-		SpanID: spanID, SpanType: spanType, SpanColor: spanColor, NoSpan: spawns,
-	})
-	sink.SetSpanType(spanID, spanType)
-	if !spawns {
-		sink.OpenSpan(spanID, "")
-	}
-	return err
-}
-
 type AutoContinueReason string
 
 const (
@@ -248,50 +42,11 @@ type AutoContinueSchedule struct {
 	SourcePayload []byte
 }
 
-// scheduleOrCancelAPIErrorAutoContinue schedules an immediate API-error
-// auto-continue when retry is true, or cancels any pending API-error
-// schedule otherwise. The payload is defensively copied because the
-// caller's buffer may be reused by the stdout reader before the schedule
-// is consumed.
-func scheduleOrCancelAPIErrorAutoContinue(sink AutoContinueServices, retry bool, payload []byte) {
-	if !retry {
-		sink.CancelAutoContinue(AutoContinueReasonAPIError)
-		return
-	}
-	sink.ScheduleAutoContinue(AutoContinueSchedule{
-		Reason:        AutoContinueReasonAPIError,
-		DueAt:         time.Now().UTC(),
-		SourcePayload: append([]byte(nil), payload...),
-	})
-}
-
-// publishTurnActiveTo reports an unclassified provider turn to its sink.
-//
-// A NIL sink publishes nowhere. This package's tests construct bare agents by
-// long-standing convention -- `&ClaudeCodeAgent{turnActive: true}` and its like
-// appear dozens of times -- and a turn flag is read on paths those tests drive.
-// The jsonrpcBase hook takes the same stance for the same reason: nobody is
-// listening, so there is nothing to say. Every agent the Worker builds has a
-// sink, so this is never nil in production.
+// TurnState is what a provider reports about its turn: whether one runs, and
+// whether that turn accepts steering.
 type TurnState struct {
 	Active    bool
 	Steerable bool
-}
-
-// publishSteerableTurnActiveTo reports a turn that accepts steering. Codex
-// uses this for turn/started because its app-server accepts turn/steer for each
-// active turn, including a turn that a goal continuation starts. Other
-// providers use publishTurnActiveTo until their protocols supply the same
-// guarantee.
-func publishSteerableTurnActiveTo(sink TurnServices, active bool, seq uint64) TurnState {
-	return publishTurnStateTo(sink, TurnState{Active: active, Steerable: active}, seq)
-}
-
-func publishTurnStateTo(sink TurnServices, state TurnState, seq uint64) TurnState {
-	if sink != nil {
-		sink.SetTurnState(state, seq)
-	}
-	return state
 }
 
 // MessageContent keeps provider bytes and supplemental data separate during persistence and extraction.
@@ -347,6 +102,16 @@ type TranscriptServices interface {
 	// closing envelope (Claude type:"result", Codex turn/completed,
 	// ACP prompt response, Pi agent_end) routes here so that turn-end-
 	// specific side effects are explicit at the call site.
+	//
+	// A provider calls it BEFORE the SetTurnState that clears the turn. The two
+	// calls are one event, and their order is a requirement: this call hands the
+	// finished turn's tool-call count to the Worker's activity latch, and the clear
+	// that follows is the settle edge that spends it. Clear first and the agent
+	// settles with no count, so the client rings the completion sound for a turn
+	// that used no tool -- the exact case the "skip a zero-tool turn" rule exists
+	// to keep quiet. Each provider pins the order in its
+	// TestTurnEndPrecedesTheClear_<Provider>, because each one reaches its turn
+	// end through a different handler.
 	PersistTurnEnd(content MessageContent, span SpanInfo) error
 }
 
@@ -374,12 +139,19 @@ type TurnServices interface {
 	// block -- so two goroutines can reach the Worker with the older value
 	// second. Take seq from the SAME critical section that reads the flag, and
 	// the Worker drops what it overtook. Every provider gets it from
-	// nextTurnSeq, so no call site chooses the number.
+	// NextTurnSeq, so no call site chooses the number.
 	//
 	// Report the turn as active for as long as the agent owes the user a reply,
 	// which is not always the same as "between one envelope and the next": a
 	// provider that retries a failed attempt itself stays active across the
 	// backoff, where nothing streams and no envelope arrives.
+	//
+	// A provider that never clears its flag leaves the agent busy for good: the
+	// thinking indicator never stops, and both close guards refuse a tab that the
+	// user can then close by no route. Nothing else derives the state -- the
+	// browser's transcript-scanning heuristic was deleted when this became
+	// authoritative -- so each provider's tests pin the clear on every path that
+	// ends a turn.
 	SetTurnState(state TurnState, seq uint64)
 	// ReportInterruptIgnored reports that the provider accepted an interrupt but
 	// kept the same turn running. The Worker restores the activity that the
@@ -686,7 +458,7 @@ type BackgroundTaskServices interface {
 	ReviveBackgroundTask(rowKey string) error
 }
 
-type providerServiceFacets interface {
+type ServiceFacets interface {
 	TranscriptServices
 	TurnServices
 	SpanServices
@@ -703,7 +475,7 @@ type providerServiceFacets interface {
 // ProviderServices gives a provider one opaque set of focused services.
 // NewProviderServices keeps all facets on one underlying agent identity.
 type ProviderServices interface {
-	providerServiceFacets
+	ServiceFacets
 	providerServices()
 }
 
@@ -724,7 +496,7 @@ type providerServices struct {
 func (providerServices) providerServices() {}
 
 // NewProviderServices composes one implementation into opaque provider facets.
-func NewProviderServices(services providerServiceFacets) ProviderServices {
+func NewProviderServices(services ServiceFacets) ProviderServices {
 	return providerServices{
 		TranscriptServices:     services,
 		TurnServices:           services,
@@ -737,28 +509,6 @@ func NewProviderServices(services providerServiceFacets) ProviderServices {
 		AutoContinueServices:   services,
 		ChildServices:          services,
 		BackgroundTaskServices: services,
-	}
-}
-
-// logRegistryRefusal records a background-task write the registry REFUSED.
-//
-// `bgtask.ValidateRowKey` turned an unusable provider key from a silent rewrite
-// into an error, so every one of these writes gained a failure mode it did not
-// have before -- and every provider takes its key straight from the agent's own
-// JSON with no length limit of its own. A bare `_ =` therefore meant a refused
-// row simply never appeared in the sidebar, or a finished subagent never left
-// the Running state, with nothing anywhere to say why: the failure mode the
-// refusal was chosen to AVOID, moved from the data to the diagnosis.
-//
-// It lives here, beside the sink interface, rather than once per provider. The
-// error belongs to the SINK's rule and not to any provider's wire format, and a
-// helper each provider writes for itself is one the next provider forgets --
-// which is what happened: Pi grew one and the other three did not.
-//
-// The write stays best-effort. A refused row must not fail the event around it.
-func logRegistryRefusal(provider, op string, err error) {
-	if err != nil {
-		slog.Warn("background task write refused", "provider", provider, "op", op, "error", err)
 	}
 }
 
@@ -797,7 +547,7 @@ func (r SettingsApplyResult) ConfirmedOptions() optionmap.Map {
 	return confirmed
 }
 
-func confirmedSettings(options map[string]string) SettingsApplyResult {
+func ConfirmedSettings(options map[string]string) SettingsApplyResult {
 	settlements := make(OptionSettlements, len(options))
 	surfaced := make(optionmap.Map, len(options))
 	for id, value := range options {
@@ -808,7 +558,7 @@ func confirmedSettings(options map[string]string) SettingsApplyResult {
 	return SettingsApplyResult{AppliedLive: true, Settlements: settlements, SurfacedOptions: surfaced}
 }
 
-func restartRequiredSettings(options optionmap.Map) SettingsApplyResult {
+func RestartRequiredSettings(options optionmap.Map) SettingsApplyResult {
 	settlements := make(OptionSettlements, len(options))
 	for id := range options {
 		settlements[id] = OptionSettlement{State: OptionSettlementUnresolved}
@@ -920,6 +670,11 @@ var (
 	// again after the turn ends. The queue must not record a permanent failure,
 	// because the agent works and the text is still deliverable.
 	ErrAgentBusy = errors.New("agent is already running a turn")
+
+	// ErrInputSessionChanged is what SendInputForSession returns when the session
+	// that it states is empty or is no longer the provider's current session. The
+	// provider sends nothing in that case.
+	ErrInputSessionChanged = errors.New("the input belongs to a different provider session")
 )
 
 // AgentBusyError adds the provider's current turn classification to an
@@ -990,22 +745,3 @@ var ErrChildOperationUnsupported = errors.New("agent provider does not support t
 // (SendChildInput) passes it to classifyQueueDeliveryError, which decides how
 // the queue records the failed delivery.
 var ErrChildRouteNotReady = errors.New("subagent route is not ready in the running owner process; retry")
-
-// turnSeqSource issues the ordering token that goes with a provider's turn
-// flag. Read the token in the SAME critical section that reads the flag: the
-// pair is what lets the Worker tell a publish it overtook from a current one,
-// and a token taken outside that section orders nothing.
-//
-// It is a plain counter under the provider's own lock rather than an atomic,
-// because the lock is what makes the pair atomic. An atomic would let the two
-// reads separate again, which is the defect this exists to close.
-type turnSeqSource struct {
-	seq uint64
-}
-
-// nextTurnSeq issues the next token. The caller must hold the lock that guards
-// the provider's turn flag.
-func (t *turnSeqSource) nextTurnSeq() uint64 {
-	t.seq++
-	return t.seq
-}

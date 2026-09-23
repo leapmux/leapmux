@@ -4,7 +4,7 @@
 // a provider nobody imported, so a caller that needs a registered provider imports
 // providers/index.ts, or that provider's own module, first.
 //
-// This mirrors the backend's `agent.Provider` interface and `agent.ProviderFor`
+// This mirrors the backend's `agent.Provider` interface and its `Registry.Plugin`
 // lookup; each side carries the per-provider hooks its layer needs. The plugin's
 // SHAPE is the four capabilities of `capabilities.ts`; this module owns registration
 // and lookup alone.

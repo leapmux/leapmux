@@ -10,6 +10,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
@@ -56,7 +57,7 @@ func newTurnSignalFixture(t *testing.T) (*Service, string) {
 		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	svc.startAgentFn = svc.Agents.MockStartAgent
+	svc.startAgentFn = startWith(svc.Agents, claudetest.StartEcho)
 	t.Cleanup(func() { svc.Agents.StopAgent(agentID) })
 	return svc, agentID
 }
@@ -132,9 +133,9 @@ func TestProviderCapabilityDoesNotOverrideReportedTurnState(t *testing.T) {
 	sink := launchTurnPublisher(svc, agentID)
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	_, err = svc.Agents.MockStartAgent(ctx, agent.Options{
+	_, err = svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: agentID, WorkingDir: dbAgent.WorkingDir,
-	}, sink.sink)
+	}, sink.sink, claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
 

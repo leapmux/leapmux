@@ -1,0 +1,132 @@
+package pi
+
+import (
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"time"
+
+	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+)
+
+// piResponseEnvelope is the success/error/data shape of a {type:"response"}
+// line emitted by Pi. The response interceptor has already filtered by type
+// and routed by id, so this struct only carries the fields AwaitResponse
+// needs to interpret the result.
+type piResponseEnvelope struct {
+	Success bool            `json:"success"`
+	Data    json.RawMessage `json:"data"`
+	Error   string          `json:"error"`
+}
+
+// sendPiCommand writes a {id, type:method, ...payload} JSONL command and
+// blocks until the matching response arrives, the process exits, or the
+// context/timeout fires.
+//
+// Returns the response's raw `data` field on success. On a server-side
+// failure (success:false), returns an error containing the server's `error`
+// string. Wire-level failures (write/timeout) wrap the underlying error.
+func (a *Agent) sendPiCommand(method string, payload map[string]any, timeout time.Duration) (json.RawMessage, error) {
+	wait, err := a.beginPiCommand(method, payload)
+	if err != nil {
+		return nil, err
+	}
+	return wait(timeout)
+}
+
+// beginPiCommand writes the command before returning its response waiter.
+// Call the waiter exactly once to release the response registration.
+func (a *Agent) beginPiCommand(method string, payload map[string]any) (func(time.Duration) (json.RawMessage, error), error) {
+	id := "leapmux-" + strconv.FormatInt(a.nextReqID.Add(1), 10)
+
+	envelope := make(map[string]any, len(payload)+2)
+	for k, v := range payload {
+		envelope[k] = v
+	}
+	envelope["id"] = id
+	envelope["type"] = method
+
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, fmt.Errorf("marshal %s: %w", method, err)
+	}
+	data = append(data, '\n')
+
+	ch, release := a.Register(id)
+
+	a.Mu.Lock()
+	stopped := a.StoppedLocked()
+	a.Mu.Unlock()
+	if stopped {
+		release()
+		return nil, fmt.Errorf("agent is stopped")
+	}
+
+	if err := a.WriteStdin(data); err != nil {
+		release()
+		return nil, fmt.Errorf("write %s: %w", method, err)
+	}
+
+	return func(timeout time.Duration) (json.RawMessage, error) {
+		defer release()
+		respLine, err := a.AwaitResponse(ch, method, timeout)
+		if err != nil {
+			return nil, err
+		}
+		return parsePiResponse(method, respLine)
+	}, nil
+}
+
+func parsePiResponse(method string, respLine json.RawMessage) (json.RawMessage, error) {
+	var env piResponseEnvelope
+	if err := json.Unmarshal(respLine, &env); err != nil {
+		return nil, fmt.Errorf("parse %s response: %w", method, err)
+	}
+	if !env.Success {
+		if env.Error != "" {
+			return nil, fmt.Errorf("%s failed: %s", method, env.Error)
+		}
+		return nil, fmt.Errorf("%s failed", method)
+	}
+	return env.Data, nil
+}
+
+func (a *Agent) sendPiCommandDetached(method string, payload map[string]any, handle func(error)) error {
+	wait, err := a.beginPiCommand(method, payload)
+	if err != nil {
+		return err
+	}
+	go func() {
+		_, err := wait(0)
+		handle(err)
+	}()
+	return nil
+}
+
+// handlePiResponse is the ReadOutput interceptor that routes {type:"response"}
+// lines to the matching pending channel. Returns true when the line was
+// consumed, false to forward it to the regular output handler.
+func (a *Agent) handlePiResponse(line *providerkit.ParsedLine) bool {
+	if line.Type != contracts.PiEventResponse {
+		return false
+	}
+	// Pi response ids are opaque strings — fall back to the providerkit.ParsedLine helper
+	// which handles both string and number forms.
+	id := line.IDString()
+	if id == "" {
+		return false
+	}
+	return a.Deliver(id, line.Raw)
+}
+
+func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
+	handlePiOutput(a, line)
+}
+
+// HandleOutput parses a single JSONL line and dispatches it. Used by tests
+// and out-of-band feed paths; the production read loop calls handleOutput
+// directly via ReadOutput.
+func (a *Agent) HandleOutput(content []byte) {
+	handlePiOutput(a, providerkit.ParseLine(content))
+}

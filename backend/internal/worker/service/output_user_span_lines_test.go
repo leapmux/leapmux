@@ -10,6 +10,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -59,11 +60,11 @@ func setupAgentWithWatcher(t *testing.T, svc *Service, w *testResponseWriter, ag
 	}))
 
 	sink := svc.Output.NewSink(agentID, provider)
-	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:    agentID,
 		Options:    map[string]string{agent.OptionIDModel: "opus"},
 		WorkingDir: t.TempDir(),
-	}, sink)
+	}, sink, claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAgent(agentID) })
 
@@ -83,14 +84,14 @@ func persistNotif(t *testing.T, sink agent.ProviderServices, source leapmuxv1.Me
 func TestSnapshotPassthroughSpanLines_EmptyTracker(t *testing.T) {
 	t.Parallel()
 
-	h := NewOutputHandler(nil, nil, NewWatcherManager(), nil, nil)
+	h := NewOutputHandler(nil, nil, NewWatcherManager(), agent.NewManager(testRegistry, nil), nil)
 	assert.Equal(t, "[]", h.snapshotPassthroughSpanLines("agent-1"))
 }
 
 func TestSnapshotPassthroughSpanLines_SingleOpenSpan(t *testing.T) {
 	t.Parallel()
 
-	h := NewOutputHandler(nil, nil, NewWatcherManager(), nil, nil)
+	h := NewOutputHandler(nil, nil, NewWatcherManager(), agent.NewManager(testRegistry, nil), nil)
 	h.rootTracker("agent-1").OpenSpan("span-A", "")
 
 	parsed := parseSpanLinesJSON(t, h.snapshotPassthroughSpanLines("agent-1"))
@@ -104,7 +105,7 @@ func TestSnapshotPassthroughSpanLines_SingleOpenSpan(t *testing.T) {
 func TestSnapshotPassthroughSpanLines_NestedSpans(t *testing.T) {
 	t.Parallel()
 
-	h := NewOutputHandler(nil, nil, NewWatcherManager(), nil, nil)
+	h := NewOutputHandler(nil, nil, NewWatcherManager(), agent.NewManager(testRegistry, nil), nil)
 	h.rootTracker("agent-1").OpenSpan("span-A", "")
 	h.rootTracker("agent-1").OpenSpan("span-B", "span-A")
 
@@ -121,7 +122,7 @@ func TestSnapshotPassthroughSpanLines_NestedSpans(t *testing.T) {
 func TestSnapshotPassthroughSpanLines_PerAgentIsolation(t *testing.T) {
 	t.Parallel()
 
-	h := NewOutputHandler(nil, nil, NewWatcherManager(), nil, nil)
+	h := NewOutputHandler(nil, nil, NewWatcherManager(), agent.NewManager(testRegistry, nil), nil)
 	h.rootTracker("agent-1").OpenSpan("span-A", "")
 
 	// Other agents must see an empty snapshot — span trackers are per-agent.

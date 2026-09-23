@@ -12,6 +12,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -152,11 +153,11 @@ func TestSubprocessCrash_DropsPendingControlRequests(t *testing.T) {
 
 	requestID := seedPendingControlRequest(t, ctx, svc, w, "agent-crash", "ws-1")
 
-	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:    "agent-crash",
 		Options:    map[string]string{agent.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, svc.Output.NewSink("agent-crash", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
+	}, svc.Output.NewSink("agent-crash", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 
 	svc.Agents.StopAgent("agent-crash")

@@ -1,0 +1,378 @@
+package zcode
+
+import (
+	"encoding/json"
+	"errors"
+
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+)
+
+// ZCode wire-protocol vocabulary.
+//
+// ZCode's app-server speaks line-delimited JSON over stdio. The shape looks like
+// JSON-RPC 2.0 and is NOT: there is no `jsonrpc` field, and both sides send
+// requests over the same pipe. A message is classified by which of `id` and
+// `method` it carries -- see classifyZCodeMessage.
+//
+// Every method name, event type, streaming kind, tool-update kind, mode, and error
+// code the provider depends on is a constant here, so a rename is a compile error
+// and each dispatch switch has one source of truth.
+
+// ZCode client->server methods.
+const (
+	// MethodUpdateProviderRegistry is the legacy model-provider push. Builds
+	// before 0.16.9 require it and receive inline API keys through it.
+	MethodUpdateProviderRegistry = "workspace/updateProviderRegistry"
+	// MethodUpdateAccountConfig replaced the workspace registry push in
+	// 0.16.9. The app server loads built-in and personal providers itself. Its
+	// host supplies the active account plans with this method.
+	MethodUpdateAccountConfig = "provider/updateAccountConfig"
+
+	MethodSessionCreate = "session/create"
+	MethodSessionResume = "session/resume"
+	MethodSessionRead   = "session/read"
+	MethodSessionSend   = "session/send"
+	MethodSessionStop   = "session/stop"
+
+	MethodSessionSubscribe = "session/subscribe"
+
+	MethodSetMode         = "session/setMode"
+	MethodSetModel        = "session/setModel"
+	MethodSetThoughtLevel = "session/setThoughtLevel"
+)
+
+// ZCode server->client methods.
+//
+// The runtime-preferences request BLOCKS session/create until it is answered, and
+// it fires more than once per session (observed scopes `runtime-materialization`
+// and `user-execution`), so the read loop answers it rather than any one call site.
+const (
+	MethodRequestRuntimePreferences = "session/requestRuntimePreferences"
+	// MethodRequestProviderRuntimeHeaders asks the client for freshly-minted
+	// credentials for an account provider. A legacy build already holds the inline
+	// key. ZCode 0.16.9 requires the host to return it as requestAuth.
+	MethodRequestProviderRuntimeHeaders = "interaction/requestProviderRuntimeHeaders"
+	// MethodRequestOfficialMcpAuthHeaders asks for credentials for ZCode's
+	// hosted MCP servers, which LeapMux likewise does not hold.
+	MethodRequestOfficialMcpAuthHeaders = "interaction/requestOfficialMcpAuthHeaders"
+)
+
+// ZCode server->client notifications (no id).
+const (
+	// NotifySessionEvent carries the session event stream: params.event is a
+	// {sessionId, seq, type, payload} envelope whose `type` is one of the
+	// ZCodeEvent* constants below.
+	NotifySessionEvent = "session/event"
+	// NotifyStateUpdated is a SESSION-SETTINGS patch, not a session event. It
+	// arrives at the top level (never wrapped in session/event) whenever the model,
+	// mode, thought level, or run status changes -- including mid-turn.
+	NotifyStateUpdated = "state.updated"
+)
+
+// ZCode session event types (the `type` field inside a session/event envelope).
+//
+// This is the app-server's COMPLETE enumeration, in its own order. Listing every
+// member -- including the ones the provider deliberately ignores -- is what lets
+// the dispatch switch have no `default` that silently absorbs a new event type.
+//
+// The values are generated: see contracts/zcode-protocol.json. The browser plugin
+// dispatches on the same strings, so a hand copy on either side could drift by a
+// character and stop rendering a row with no build error.
+
+// ZCode model.streaming kinds.
+//
+// A tool call's INPUT arrives through these kinds BEFORE the tool.updated that
+// opens it, and that tool.updated then reports `inputOmitted: true` with
+// `inputRef: "model_stream"`. So the input has to be cached from the stream --
+// there is no second copy to read later.
+const (
+	StreamStart          = "start"
+	StreamFinish         = "finish"
+	StreamError          = "error"
+	StreamTextStart      = "text_start"
+	StreamTextDelta      = "text_delta"
+	StreamTextEnd        = "text_end"
+	StreamReasoningStart = "reasoning_start"
+	StreamReasoningDelta = "reasoning_delta"
+	StreamReasoningEnd   = "reasoning_end"
+	StreamToolInputStart = "tool_input_start"
+	StreamToolInputDelta = "tool_input_delta"
+	StreamToolInputEnd   = "tool_input_end"
+	StreamToolCall       = "tool_call"
+)
+
+// ZCode tool.updated kinds are generated: see contracts/zcode-protocol.json.
+
+// ZCode session modes.
+//
+// `auto` exists in the enum and is NOT implemented in the shipped app-server:
+// every tool call under it is denied with
+// `permission.resolved {reason:"Auto mode is reserved but not implemented yet"}`.
+// It is therefore deliberately absent from the option list -- see settings.go.
+// The values are generated: see contracts/zcode-protocol.json.
+
+// contracts.ZCodeDefaultMode is the mode LeapMux asks a fresh session for.
+//
+// session/create HONORS its `mode` parameter, and LeapMux always sends one. A
+// create that sends none does NOT get this mode: the app-server persists the last
+// mode that session/setMode applied and gives the new session that one instead, so
+// a session opened with no mode inherits whatever the desktop application or an
+// earlier agent left behind.
+//
+// The reply is easy to misread. `session.mode` reports the projection's seed and
+// reads `build` whatever the session runs in. `settings.mode.current` is the live
+// mode, and it is the field applySettingsSnapshotLocked reads.
+// The value is generated: see contracts/zcode-protocol.json.
+
+// ZCode subscription delivery kind. `desktop-continuous` is the streaming
+// subscription the desktop application itself uses.
+const DeliveryContinuous = "desktop-continuous"
+
+// ZCode state.updated scopes. The notification covers more than one scope, and
+// only the session scope carries the settings axes: the workspace scope patches
+// `modelCatalog`, and applying it as settings would read an all-absent snapshot.
+const (
+	ScopeSession   = "session"
+	ScopeWorkspace = "workspace"
+)
+
+// ZCode tool names LeapMux reasons about by name are generated: see
+// contracts/zcode-protocol.json. The renderer plugin dispatches on the same names.
+
+// The shared contract supplies native plan answers and response fields.
+// Plan approval requires the exact approval sentinel. Other nonempty answers become rejection feedback.
+// Question replies prefer keyed answers, then positional answers, then a single answer for one question.
+
+// ZCode interaction decisions (interaction/requestPermission replies).
+//
+// `escalate` and `modify` are in the app-server's enumeration and LeapMux emits
+// neither: escalate hands the decision to a second approver ZCode's desktop
+// application owns, and modify rewrites the tool's input, which no LeapMux control
+// surface offers. They are listed so a decision READ off the wire has a label.
+// The values are generated: see contracts/zcode-protocol.json.
+
+// ZCode turn input sources (turn.started.inputSource).
+//
+// An ABSENT inputSource is the user's own turn. Every value below marks a turn the
+// runtime started for itself, and such a turn must not end the user's turn or
+// double-report its output.
+const (
+	InputSourceBackgroundTask   = "background_task"
+	InputSourceFork             = "fork"
+	InputSourceGoalStateChange  = "goal_state_change"
+	InputSourceGoalContinuation = "goal-continuation"
+	InputSourcePluginReference  = "plugin_reference"
+	InputSourceRewind           = "rewind"
+	InputSourceSideChat         = "selection_side_chat"
+	InputSourceSubagent         = "subagent"
+	InputSourceSubagentMessage  = "subagent_message"
+	InputSourceTodoReminder     = "todo_reminder"
+	InputSourceWorkflowLaunch   = "workflow_launch"
+	InputSourceSharedContext    = "shared_context"
+)
+
+// ToolSourceSubagent marks a tool.updated that belongs to a SUBAGENT rather
+// than to the main conversation. Such an update carries agentId / agentType /
+// childSessionId, which is how a child transcript is minted for it.
+const ToolSourceSubagent = "subagent"
+
+// ZCode background-task kinds (taskKind on a background-task snapshot).
+const (
+	TaskKindBash     = "bash"
+	TaskKindSubagent = "subagent"
+	TaskKindWorkflow = "workflow"
+)
+
+// ZCode turn results (turn.completed.resultType).
+// The values are generated: see contracts/zcode-protocol.json.
+
+// ZCode error codes observed on the wire.
+const (
+	// ErrPromptRunning is returned by session/send while a turn is already
+	// running. It is transient by nature -- the turn ends -- so the send is retried
+	// briefly rather than reported as a delivery failure.
+	ErrPromptRunning = -32010
+	// ErrSessionNotActive is returned for a session the app-server dropped.
+	ErrSessionNotActive = -32004
+	// ErrMethodNotFound marks a method this app-server build does not implement.
+	// Treated as "the capability is absent", never as a hard failure.
+	ErrMethodNotFound = -32601
+	// ErrPromptRunningLegacy is the code an older app-server build used for
+	// "a prompt is already running". Kept beside the current one so a user on the
+	// older build still gets the retry rather than a delivery error.
+	ErrPromptRunningLegacy = 1308
+	// ErrInternal is the code LeapMux replies with when it cannot satisfy a
+	// server request at all. It is never used for a DENIAL: a denial is a decision
+	// the user made, and it travels as a result.
+	ErrInternal = -32603
+	// ErrRevisionMismatch is returned for a write whose expectedRevision
+	// differs from the session's. Its `data.actualRevision` carries the
+	// revision the app-server holds -- see zcodeActualRevision.
+	ErrRevisionMismatch = -32009
+	// ErrRuntimeUnavailable says the session runtime cannot do what the
+	// request asked. The app-server raises it at four sites, read from the
+	// installed bundle: a model request whose provider runtime headers were not
+	// applied, a session/send or a compact against a session that carries a
+	// restoreWarning, and a cancelBackgroundTask the runtime does not implement.
+	//
+	// LeapMux needs no branch for it, and that is deliberate. It is PERMANENT --
+	// a restoreWarning stays set on the session, so every later prompt raises the
+	// same code and a retry can never clear it -- and the app-server always states
+	// a human-readable `message`, which classifyZCodeInputDeliveryError already
+	// returns unchanged. It is named here because the table documents the codes
+	// observed on the wire, so the next reader does not investigate it again.
+	ErrRuntimeUnavailable = -32031
+)
+
+// OfficialAuthUnavailable is the reason LeapMux reports for ZCode's hosted
+// MCP servers, whose credentials only the desktop application holds. Legacy builds
+// use the same word in their `status` field.
+const OfficialAuthUnavailable = "official_auth_unavailable"
+
+// CauseProviderNotConfigured is the `turn.failed` cause for a session whose
+// model provider carries no usable credential. It is NOT retryable: retrying
+// re-reads the same empty configuration.
+const CauseProviderNotConfigured = "provider_not_configured"
+
+// zcodeMessageKind is what classifyZCodeMessage answers.
+type zcodeMessageKind int
+
+const (
+	// zcodeMessageUnknown is a line carrying neither an id nor a method.
+	zcodeMessageUnknown zcodeMessageKind = iota
+	// zcodeMessageResponse is a reply to a request WE sent: an id, no method.
+	zcodeMessageResponse
+	// zcodeMessageServerRequest is a request FROM the app-server: an id AND a method.
+	zcodeMessageServerRequest
+	// zcodeMessageNotification is a method with no id.
+	zcodeMessageNotification
+)
+
+// classifyZCodeMessage decides what an inbound line is.
+//
+// The id+method case is genuinely ambiguous on this wire, because the app-server
+// sends requests over the same pipe our responses arrive on. It is resolved by
+// registration, NOT by shape: the read loop first asks the correlator whether the
+// id belongs to a pending request, and only calls this an inbound request when it
+// does not. This function therefore reports the SHAPE, and the
+// caller resolves the race -- see zcodeAgent.interceptResponse.
+func classifyZCodeMessage(line *providerkit.ParsedLine) zcodeMessageKind {
+	hasID := line.HasID()
+	hasMethod := line.Method != ""
+	switch {
+	case hasID && hasMethod:
+		return zcodeMessageServerRequest
+	case hasID:
+		return zcodeMessageResponse
+	case hasMethod:
+		return zcodeMessageNotification
+	default:
+		return zcodeMessageUnknown
+	}
+}
+
+// zcodeResponseEnvelope is the result/error shape of a reply to one of our
+// requests. It deliberately does NOT embed a `jsonrpc` field: the wire carries
+// none, and a marshalled zero value would be rejected.
+type zcodeResponseEnvelope struct {
+	Result json.RawMessage `json:"result"`
+	Error  *zcodeError     `json:"error"`
+}
+
+// zcodeError is the app-server's error object. `data` carries a Zod validation
+// report for a malformed request and is kept raw for the log.
+type zcodeError struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data"`
+}
+
+func (e *zcodeError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Message != "" {
+		return e.Message
+	}
+	return "zcode error"
+}
+
+// zcodeEventEnvelope is one session event.
+//
+// It IS the params of a session/event notification, at the top level -- the
+// app-server sends `{method:"session/event", params:{eventId, sessionId, seq, type,
+// payload, ...}}`, with no wrapper object.
+type zcodeEventEnvelope struct {
+	EventID      string          `json:"eventId"`
+	SessionID    string          `json:"sessionId"`
+	TurnID       string          `json:"turnId"`
+	Seq          int64           `json:"seq"`
+	Timestamp    int64           `json:"timestamp"`
+	DeliveryKind string          `json:"deliveryKind"`
+	Type         string          `json:"type"`
+	Payload      json.RawMessage `json:"payload"`
+	raw          json.RawMessage
+}
+
+// UnmarshalJSON retains fields that the provider adds and the exact original bytes.
+func (e *zcodeEventEnvelope) UnmarshalJSON(data []byte) error {
+	type envelope zcodeEventEnvelope
+	var parsed envelope
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return err
+	}
+	*e = zcodeEventEnvelope(parsed)
+	e.raw = append(json.RawMessage(nil), data...)
+	return nil
+}
+
+// parseZCodeEvent decodes a session/event notification's params into the event
+// envelope. ok is false when the line carries no event type at all, which is the
+// only thing every downstream handler needs to agree on.
+func parseZCodeEvent(params json.RawMessage) (zcodeEventEnvelope, bool) {
+	if len(params) == 0 {
+		return zcodeEventEnvelope{}, false
+	}
+	var event zcodeEventEnvelope
+	if err := json.Unmarshal(params, &event); err != nil {
+		return zcodeEventEnvelope{}, false
+	}
+	if event.Type != "" {
+		// UnmarshalJSON receives the JSON value without surrounding whitespace.
+		// Keep the exact supplied event bytes at this boundary.
+		event.raw = append(json.RawMessage(nil), params...)
+		return event, true
+	}
+	var nested struct {
+		Event json.RawMessage `json:"event"`
+	}
+	if json.Unmarshal(params, &nested) == nil && json.Unmarshal(nested.Event, &event) == nil && event.Type != "" {
+		return event, true
+	}
+	return zcodeEventEnvelope{}, false
+}
+
+// zcodeErrorCode extracts the app-server's error code from an error returned by
+// sendZCodeRequest, or (0, false) when the error is not a wire error (a write
+// failure, a timeout, a process exit).
+func zcodeErrorCode(err error) (int, bool) {
+	var wire *zcodeError
+	if errors.As(err, &wire) {
+		return wire.Code, true
+	}
+	return 0, false
+}
+
+// zcodeIsPromptRunning reports whether err says a turn is already running, across
+// both codes the app-server uses for it.
+func zcodeIsPromptRunning(err error) bool {
+	code, ok := zcodeErrorCode(err)
+	return ok && (code == ErrPromptRunning || code == ErrPromptRunningLegacy)
+}
+
+// zcodeIsMethodNotFound reports whether err says the app-server does not implement
+// the method, so an optional startup step can be skipped rather than failed.
+func zcodeIsMethodNotFound(err error) bool {
+	code, ok := zcodeErrorCode(err)
+	return ok && code == ErrMethodNotFound
+}

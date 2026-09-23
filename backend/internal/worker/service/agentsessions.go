@@ -97,7 +97,7 @@ func (svc *Service) readProviderSessions(ctx context.Context, provider leapmuxv1
 	ctx, cancel := context.WithTimeout(ctx, svc.agentAPITimeout())
 	defer cancel()
 
-	sessions, err := agent.ProviderFor(provider).ListStoredSessions(ctx, agent.StoredSessionQuery{
+	sessions, err := svc.Agents.Registry().Plugin(provider).ListStoredSessions(ctx, agent.StoredSessionQuery{
 		WorkingDir: workingDir,
 		HomeDir:    svc.HomeDir,
 		Limit:      maxListedSessions,

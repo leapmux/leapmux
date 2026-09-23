@@ -17,6 +17,9 @@ import (
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/codex"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/pi"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
@@ -46,7 +49,7 @@ func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 	// path is entered. The subsequent StartAgent call will fail because
 	// the mock agent doesn't implement the Claude Code initialization
 	// protocol (sendControlAndWait will time out or fail).
-	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:    "agent-1",
 		Options:    map[string]string{agent.OptionIDModel: "opus"},
 		WorkingDir: workDir,
@@ -56,7 +59,7 @@ func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 		// timeout, whose 10s default was the entire runtime of this test.
 		// Nothing can answer, so a longer wait buys only a longer wait.
 		APITimeout: 50 * time.Millisecond,
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
@@ -390,7 +393,7 @@ func TestUpdateAgentSettings_CursorModelSwitchOmitsEffortChange(t *testing.T) {
 	// The persisted options must also stay effort-free.
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
-	opts := loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
+	opts := loadOptions(testRegistry, dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
 	_, persistedEffort := opts[agent.OptionIDEffort]
 	assert.False(t, persistedEffort, "no inert effort key should be persisted for Cursor")
 }
@@ -444,7 +447,7 @@ func TestUpdateAgentSettings_ModelSwitchEffortBySupport(t *testing.T) {
 
 			dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 			require.NoError(t, err)
-			opts := loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			opts := loadOptions(testRegistry, dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 			assert.Equal(t, tc.wantEffort, opts[agent.OptionIDEffort],
 				"effort persisted after the model switch")
 		})
@@ -485,7 +488,7 @@ func TestUpdateAgentSettings_UnknownModelKeepsExplicitEffort(t *testing.T) {
 	require.Empty(t, w.errors)
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
-	got := loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	got := loadOptions(testRegistry, dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	assert.Equal(t, "xhigh", got[agent.OptionIDEffort],
 		"an explicit effort for a model absent from the static seed must survive, not reset to auto")
 	assert.Equal(t, "claude-opus-99-unreleased", got[agent.OptionIDModel], "the requested model is persisted")
@@ -531,7 +534,7 @@ func TestUpdateAgentSettings_UnsupportedEffortWithoutModelSwitch(t *testing.T) {
 			dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantEffort,
-				loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[agent.OptionIDEffort],
+				loadOptions(testRegistry, dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[agent.OptionIDEffort],
 				"effort validated against the current model even without a model switch")
 		})
 	}
@@ -574,7 +577,7 @@ func TestUpdateAgentSettings_InheritedUnsupportedEffortResets(t *testing.T) {
 	require.Empty(t, w.errors)
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
-	got := loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	got := loadOptions(testRegistry, dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	assert.Equal(t, agent.EffortAuto, got[agent.OptionIDEffort],
 		"an inherited effort the unchanged model no longer offers resets to auto")
 	assert.Equal(t, contracts.ClaudeModePlan, got[agent.OptionIDPermissionMode],
@@ -599,7 +602,7 @@ func TestUpdateAgentSettings_EmptyOptionValueIsNoOp(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:                "gpt-5.5",
-			contracts.CodexOptionSandboxPolicy: agent.CodexSandboxReadOnly,
+			contracts.CodexOptionSandboxPolicy: codex.SandboxReadOnly,
 		}),
 	}))
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
@@ -612,7 +615,7 @@ func TestUpdateAgentSettings_EmptyOptionValueIsNoOp(t *testing.T) {
 	require.Empty(t, w.errors)
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
-	assert.Equal(t, agent.CodexSandboxReadOnly,
+	assert.Equal(t, codex.SandboxReadOnly,
 		parseOptions(dbAgent.Options)[contracts.CodexOptionSandboxPolicy],
 		"an empty option value on the edit path is a no-op, not a destructive delete")
 }
@@ -741,7 +744,7 @@ func TestUpdateAgentSettings_RespelledModelKeepsEffort(t *testing.T) {
 
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
-	opts := loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	opts := loadOptions(testRegistry, dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	assert.Equal(t, "xhigh", opts[agent.OptionIDEffort],
 		"effort must survive a model re-spell that isn't a real switch")
 }
@@ -781,7 +784,7 @@ func TestUpdateAgentSettings_AliasedModelKeepsExplicitEffort(t *testing.T) {
 
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
-	opts := loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	opts := loadOptions(testRegistry, dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	assert.Equal(t, "max", opts[agent.OptionIDEffort],
 		"an explicit effort the model supports must survive an aliased-model edit, not reset to auto")
 }
@@ -854,7 +857,7 @@ func TestUpdateAgentSettings_DropsForeignSecondaryAxis(t *testing.T) {
 	// No phantom permissionMode key in the persisted options.
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
-	opts := loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE)
+	opts := loadOptions(testRegistry, dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE)
 	_, persisted := opts[agent.OptionIDPermissionMode]
 	assert.False(t, persisted, "a foreign permissionMode must not be persisted on a primary-agent provider")
 
@@ -934,14 +937,14 @@ func TestUpdateAgentSettings_KeepsKnownProviderExtra(t *testing.T) {
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: "agent-1",
 		Settings: &leapmuxv1.AgentSettings{
-			Options: map[string]string{contracts.CodexOptionSandboxPolicy: agent.CodexSandboxReadOnly},
+			Options: map[string]string{contracts.CodexOptionSandboxPolicy: codex.SandboxReadOnly},
 		},
 	}, w)
 
 	require.Empty(t, w.errors)
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
-	assert.Equal(t, agent.CodexSandboxReadOnly,
+	assert.Equal(t, codex.SandboxReadOnly,
 		parseOptions(dbAgent.Options)[contracts.CodexOptionSandboxPolicy],
 		"a known Codex provider extra (sandbox_policy) must be persisted, not stripped")
 }
@@ -1027,12 +1030,12 @@ func TestApplySettingsViaRestartBroadcastsConfirmedCatalog(t *testing.T) {
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"}),
 	}))
 	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:       agentID,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		WorkingDir:    t.TempDir(),
 		Options:       map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"},
-	}, sink)
+	}, sink, claudetest.StartEcho)
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent(agentID)
 
@@ -1080,12 +1083,12 @@ func TestApplySettingsViaRestartDrainsInputAfterTheReplacedTurn(t *testing.T) {
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"}),
 	}))
 	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:       agentID,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		WorkingDir:    t.TempDir(),
 		Options:       map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"},
-	}, sink)
+	}, sink, claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
 
@@ -1117,13 +1120,13 @@ func mockAgentStarter(t *testing.T, svc *Service, onStart func(agent.Options)) f
 		if onStart != nil {
 			onStart(opts)
 		}
-		confirmed, err := svc.Agents.MockStartAgent(ctx, opts, sink)
+		confirmed, err := svc.Agents.StartAgentWith(ctx, opts, sink, claudetest.StartEcho)
 		if err != nil {
 			return nil, err
 		}
-		confirmed[agent.OptionIDModel] = agent.NormalizeModelID(opts.AgentProvider, opts.Model())
+		confirmed[agent.OptionIDModel] = testRegistry.NormalizeModelID(opts.AgentProvider, opts.Model())
 		confirmed[agent.OptionIDEffort] = opts.Effort()
-		confirmed[agent.OptionIDPermissionMode] = agent.PermissionModeOrDefault(opts.AgentProvider, opts.PermissionMode())
+		confirmed[agent.OptionIDPermissionMode] = testRegistry.PermissionModeOrDefault(opts.AgentProvider, opts.PermissionMode())
 		return confirmed, nil
 	}
 }
@@ -1186,10 +1189,10 @@ func TestPersistConfirmedAgentSettings_MergesDiscoveredPrimaryAgent(t *testing.T
 	_, err := svc.persistConfirmedAgentSettings(
 		"agent-opencode",
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		loadOptions(`{"primaryAgent":"build"}`, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE), // stored (current row)
-		confirmedOptions(
+		loadOptions(testRegistry, `{"primaryAgent":"build"}`, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE), // stored (current row)
+		confirmedOptions(testRegistry,
 			leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-			loadOptions(`{"primaryAgent":"build"}`, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE), // requested
+			loadOptions(testRegistry, `{"primaryAgent":"build"}`, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE), // requested
 			map[string]string{
 				agent.OptionIDModel:        "openai/gpt-5",
 				agent.OptionIDPrimaryAgent: "plan",
@@ -1200,7 +1203,7 @@ func TestPersistConfirmedAgentSettings_MergesDiscoveredPrimaryAgent(t *testing.T
 
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-opencode")
 	require.NoError(t, err)
-	persisted := loadOptions(dbAgent.Options, dbAgent.AgentProvider)
+	persisted := loadOptions(testRegistry, dbAgent.Options, dbAgent.AgentProvider)
 	assert.Equal(t, "openai/gpt-5", persisted[agent.OptionIDModel])
 	assert.Equal(t, "plan", persisted[agent.OptionIDPrimaryAgent])
 }
@@ -1234,7 +1237,7 @@ func TestPersistConfirmedAgentSettings_PersistsDiscoveredPrimaryAgentFromEmpty(t
 		"agent-opencode",
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		nil, // stored (empty row for a new tab)
-		confirmedOptions(
+		confirmedOptions(testRegistry,
 			leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 			nil, // requested options (empty for a new tab)
 			map[string]string{
@@ -1248,14 +1251,14 @@ func TestPersistConfirmedAgentSettings_PersistsDiscoveredPrimaryAgentFromEmpty(t
 	// Verify the discovered primary agent was persisted.
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-opencode")
 	require.NoError(t, err)
-	persisted := loadOptions(dbAgent.Options, dbAgent.AgentProvider)
+	persisted := loadOptions(testRegistry, dbAgent.Options, dbAgent.AgentProvider)
 	assert.Equal(t, "openai/gpt-5", persisted[agent.OptionIDModel])
 	assert.Equal(t, "build", persisted[agent.OptionIDPrimaryAgent],
 		"discovered primary agent should be persisted from empty initial state")
 
 	// Now simulate the user changing the primary agent — the old value
 	// should come from the DB and be non-empty.
-	oldOptions := loadOptions(dbAgent.Options, dbAgent.AgentProvider)
+	oldOptions := loadOptions(testRegistry, dbAgent.Options, dbAgent.AgentProvider)
 	newOptions := mergeOptions(oldOptions, map[string]string{agent.OptionIDPrimaryAgent: "plan"})
 	assert.Equal(t, "build", oldOptions[agent.OptionIDPrimaryAgent],
 		"old options should contain the previously persisted primary agent")
@@ -1295,7 +1298,7 @@ func TestPersistConfirmedAgentSettings_PreservesConcurrentlyMergedKey(t *testing
 		"agent-cp",
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		map[string]string{agent.OptionIDModel: "openai/gpt-5"}, // stored (pre-refresh snapshot)
-		confirmedOptions(
+		confirmedOptions(testRegistry,
 			leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 			map[string]string{agent.OptionIDModel: "openai/gpt-5"},       // requested
 			map[string]string{agent.OptionIDModel: "openai/gpt-5-turbo"}, // confirmed (provider clamped the model)
@@ -1305,7 +1308,7 @@ func TestPersistConfirmedAgentSettings_PreservesConcurrentlyMergedKey(t *testing
 
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-cp")
 	require.NoError(t, err)
-	persisted := loadOptions(dbAgent.Options, dbAgent.AgentProvider)
+	persisted := loadOptions(testRegistry, dbAgent.Options, dbAgent.AgentProvider)
 	assert.Equal(t, "openai/gpt-5-turbo", persisted[agent.OptionIDModel], "the confirmed clamp is applied")
 	assert.Equal(t, "high", persisted["reasoning_effort"],
 		"the concurrently-merged key survives the confirmed-settings persist (CAS merge, not blind clobber)")
@@ -1345,7 +1348,7 @@ func TestPersistConfirmedAgentSettings_PersistsAvailableOptionGroups(t *testing.
 		"agent-goose",
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		map[string]string{agent.OptionIDModel: "auto"}, // stored (current row)
-		confirmedOptions(
+		confirmedOptions(testRegistry,
 			leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 			map[string]string{agent.OptionIDModel: "auto"}, // requested
 			map[string]string{agent.OptionIDModel: "auto"}, // confirmed
@@ -1386,12 +1389,12 @@ func TestSettleConfirmedOptions_DropsReconciledAwayProviderDefault(t *testing.T)
 	confirmed := OptionMap{agent.OptionIDModel: "gpt-5"} // the session surfaces only the model
 
 	// confirmedOptions alone re-fills the sandbox provider default for the unsurfaced axis...
-	reStamped := confirmedOptions(codex, requested, confirmed)
+	reStamped := confirmedOptions(testRegistry, codex, requested, confirmed)
 	assert.Equal(t, contracts.CodexOptionDefaultSandboxPolicy, reStamped[contracts.CodexOptionSandboxPolicy],
 		"confirmedOptions re-stamps the provider default for the unsurfaced sandbox axis")
 
 	// ...while settleConfirmedOptions reconciles it away because the session doesn't surface it.
-	settled := settleConfirmedOptions(codex, requested, surfacedOptions(confirmed))
+	settled := settleConfirmedOptions(testRegistry, codex, requested, surfacedOptions(confirmed))
 	_, hasSandbox := settled[contracts.CodexOptionSandboxPolicy]
 	assert.False(t, hasSandbox, "an unsurfaced provider-default axis is dropped, not resurrected")
 	assert.Equal(t, "gpt-5", settled[agent.OptionIDModel], "the always-live model axis is kept")
@@ -1779,10 +1782,10 @@ func TestSendAgentRawMessage_SetPermissionModePersistsToDBWhileRunning(t *testin
 	}))
 
 	// Register a mock agent so HasAgent returns true.
-	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:    "agent-1",
 		WorkingDir: t.TempDir(),
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
@@ -1823,10 +1826,10 @@ func TestSendAgentRawMessage_SetPermissionModeIgnoredForNonClaudeProvider(t *tes
 		ID:      "agent-1",
 	}))
 
-	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:    "agent-1",
 		WorkingDir: t.TempDir(),
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
@@ -1854,13 +1857,13 @@ func TestConfirmedOptions(t *testing.T) {
 	const provider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR
 
 	// nil confirmed -> base unchanged (offline edit / failed restart).
-	got := confirmedOptions(provider, map[string]string{agent.OptionIDModel: "auto"}, nil)
+	got := confirmedOptions(testRegistry, provider, map[string]string{agent.OptionIDModel: "auto"}, nil)
 	assert.Equal(t, "auto", got[agent.OptionIDModel])
 
 	// Confirmed values override the request on every axis, including a clamped extra:
 	// the sentinel resolved to a concrete model, effort clamped from ultracode, and a
 	// server-downgraded reasoning_effort all flow through.
-	got = confirmedOptions(provider,
+	got = confirmedOptions(testRegistry, provider,
 		map[string]string{agent.OptionIDModel: "default", agent.OptionIDEffort: "ultracode", "reasoning_effort": "xhigh"},
 		map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: "xhigh", "reasoning_effort": "high"})
 	assert.Equal(t, "sonnet", got[agent.OptionIDModel], "confirmed model (sentinel resolved) overrides the request")
@@ -1868,7 +1871,7 @@ func TestConfirmedOptions(t *testing.T) {
 	assert.Equal(t, "high", got["reasoning_effort"], "a clamped extra axis is carried through, not just model/effort")
 
 	// Empty/absent confirmed fields don't clobber the requested values.
-	got = confirmedOptions(provider,
+	got = confirmedOptions(testRegistry, provider,
 		map[string]string{agent.OptionIDModel: "opus[1m]"},
 		map[string]string{agent.OptionIDEffort: "max"})
 	assert.Equal(t, "opus[1m]", got[agent.OptionIDModel], "absent confirmed model keeps the requested model")
@@ -1883,13 +1886,13 @@ func TestConfirmedOptions(t *testing.T) {
 func TestConfirmedOptions_PreservesProviderPrivateExtra(t *testing.T) {
 	t.Parallel()
 
-	const pi = leapmuxv1.AgentProvider_AGENT_PROVIDER_PI
-	got := confirmedOptions(pi,
+	const ag = leapmuxv1.AgentProvider_AGENT_PROVIDER_PI
+	got := confirmedOptions(testRegistry, ag,
 		// base (the persisted row) carries pi_provider.
-		map[string]string{agent.OptionIDModel: "deepseek-chat", agent.PiOptionProvider: "deepseek"},
+		map[string]string{agent.OptionIDModel: "deepseek-chat", pi.OptionProvider: "deepseek"},
 		// confirmed (CurrentOptions(OptionGroups)) omits it -- Pi exposes no provider group.
 		map[string]string{agent.OptionIDModel: "deepseek-chat"})
-	assert.Equal(t, "deepseek", got[agent.PiOptionProvider],
+	assert.Equal(t, "deepseek", got[pi.OptionProvider],
 		"a provider-private extra must survive from the base when the confirmed catalog omits it")
 }
 
@@ -2012,33 +2015,33 @@ func TestReportModelChange(t *testing.T) {
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	// S7: the sentinel resolving to a concrete model is reported -- the panel shows
 	// the resolved model too, so chat and panel agree.
-	assert.True(t, reportModelChange(claude, sentinel, "sonnet"),
+	assert.True(t, reportModelChange(testRegistry, claude, sentinel, "sonnet"),
 		"sentinel resolving to a concrete model is a real transition")
 	// Explicit switch away from the sentinel reports.
-	assert.True(t, reportModelChange(claude, sentinel, "opus"),
+	assert.True(t, reportModelChange(testRegistry, claude, sentinel, "opus"),
 		"explicit switch from default is reported")
 	// Normal concrete switch reports.
-	assert.True(t, reportModelChange(claude, "sonnet", "opus"))
+	assert.True(t, reportModelChange(testRegistry, claude, "sonnet", "opus"))
 	// An unresolved sentinel stays "default" on both sides -> no spurious change.
-	assert.False(t, reportModelChange(claude, sentinel, sentinel),
+	assert.False(t, reportModelChange(testRegistry, claude, sentinel, sentinel),
 		"an unresolved sentinel is not a change")
 	// No change -> nothing to report.
-	assert.False(t, reportModelChange(claude, "sonnet", "sonnet"))
+	assert.False(t, reportModelChange(testRegistry, claude, "sonnet", "sonnet"))
 	// A concrete model resolving to the same model (effort-only edit) -> no report.
-	assert.False(t, reportModelChange(claude, "opus", "opus"))
+	assert.False(t, reportModelChange(testRegistry, claude, "opus", "opus"))
 	// A stored fully-qualified model that re-normalizes to the settled alias on an
 	// effort-only edit is NOT a model change (both normalize to "opus").
-	assert.False(t, reportModelChange(claude, "claude-opus-4-8", "opus"),
+	assert.False(t, reportModelChange(testRegistry, claude, "claude-opus-4-8", "opus"),
 		"a model that only re-normalizes is not a change")
-	assert.False(t, reportModelChange(claude, "claude-opus-4-8[1m]", "opus[1m]"),
+	assert.False(t, reportModelChange(testRegistry, claude, "claude-opus-4-8[1m]", "opus[1m]"),
 		"the [1m] variant re-normalizes too")
 	// A genuine switch whose spellings normalize differently still reports.
-	assert.True(t, reportModelChange(claude, "claude-opus-4-8", "sonnet"),
+	assert.True(t, reportModelChange(testRegistry, claude, "claude-opus-4-8", "sonnet"),
 		"a genuine switch (opus -> sonnet) still reports despite normalization")
 	// A provider without an alias space (Codex) compares raw, unchanged behavior.
 	codex := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
-	assert.True(t, reportModelChange(codex, "gpt-5-codex", "gpt-5"))
-	assert.False(t, reportModelChange(codex, "gpt-5", "gpt-5"))
+	assert.True(t, reportModelChange(testRegistry, codex, "gpt-5-codex", "gpt-5"))
+	assert.False(t, reportModelChange(testRegistry, codex, "gpt-5", "gpt-5"))
 }
 
 // modelOptionGroups builds a one-element catalog holding just the model group with
@@ -2167,30 +2170,30 @@ func TestReconcileOrphanedOptions(t *testing.T) {
 	t.Parallel()
 
 	copilot := leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT
-	pi := leapmuxv1.AgentProvider_AGENT_PROVIDER_PI
+	ag := leapmuxv1.AgentProvider_AGENT_PROVIDER_PI
 
 	// An option the relaunched session no longer surfaces (absent from `surfaced`) is dropped.
-	got := reconcileOrphanedOptions(copilot,
+	got := reconcileOrphanedOptions(testRegistry, copilot,
 		map[string]string{agent.OptionIDModel: "gpt-5.4", "reasoning_effort": "ultra"},
 		surfacedOptions{agent.OptionIDModel: "gpt-5.4"})
 	assert.NotContains(t, got, "reasoning_effort", "an orphaned option the new model dropped is reconciled away")
 	assert.Equal(t, "gpt-5.4", got[agent.OptionIDModel])
 
 	// A still-surfaced option is kept (with whatever the agent confirmed for it).
-	got = reconcileOrphanedOptions(copilot,
+	got = reconcileOrphanedOptions(testRegistry, copilot,
 		map[string]string{agent.OptionIDModel: "gpt-5.4", "reasoning_effort": "high"},
 		surfacedOptions{agent.OptionIDModel: "gpt-5.4", "reasoning_effort": "high"})
 	assert.Equal(t, "high", got["reasoning_effort"], "a surfaced option survives")
 
 	// pi_provider is persisted-only (never surfaced), so its absence from `surfaced` is
 	// expected -- it must be kept, not reconciled away.
-	got = reconcileOrphanedOptions(pi,
-		map[string]string{agent.OptionIDModel: "gpt-5.5", agent.PiOptionProvider: "openai-codex"},
+	got = reconcileOrphanedOptions(testRegistry, ag,
+		map[string]string{agent.OptionIDModel: "gpt-5.5", pi.OptionProvider: "openai-codex"},
 		surfacedOptions{agent.OptionIDModel: "gpt-5.5"})
-	assert.Equal(t, "openai-codex", got[agent.PiOptionProvider], "a persisted-only extra is preserved")
+	assert.Equal(t, "openai-codex", got[pi.OptionProvider], "a persisted-only extra is preserved")
 
 	// The model axis is always kept even if `surfaced` is empty.
-	got = reconcileOrphanedOptions(copilot,
+	got = reconcileOrphanedOptions(testRegistry, copilot,
 		map[string]string{agent.OptionIDModel: "gpt-5.4"},
 		surfacedOptions{})
 	assert.Equal(t, "gpt-5.4", got[agent.OptionIDModel])

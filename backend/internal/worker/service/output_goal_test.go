@@ -19,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -667,11 +668,11 @@ func TestGoal_TransitionKindMarksAReplacement(t *testing.T) {
 // which is the correct answer and the wrong fixture for a live-goal test.
 func startGoalAgentProcess(t *testing.T, svc *Service, agentID string) {
 	t.Helper()
-	_, err := svc.Agents.MockStartAgent(t.Context(), agent.Options{
+	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{
 		AgentID:       agentID,
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-	}, svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+	}, svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
 	require.True(t, svc.Agents.AgentAlive(agentID))
@@ -847,22 +848,6 @@ func TestGoal_TheFullRowAdapterProjectsALiveGoal(t *testing.T) {
 		"the adapter carries the id, so the projection can find the process")
 }
 
-// A worker with no agent manager cannot observe an exit either, so it must not
-// invent the state that observing one would have recorded.
-func TestGoal_AnAbsentManagerNeverClaimsDormant(t *testing.T) {
-	t.Parallel()
-	h := NewOutputHandler(nil, nil, nil, nil, nil)
-
-	snapshot := h.GoalSnapshotFrom(GoalColumns{
-		AgentID:   "agent-1",
-		Objective: "Ship it",
-		Status:    agent.GoalStatusActive,
-	})
-
-	require.NotNil(t, snapshot.Goal)
-	assert.Equal(t, leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_ACTIVE, snapshot.Goal.GetStatus())
-}
-
 // A CHILD owns no goal, and that answer comes before the liveness question: a
 // subagent runs inside its parent's process, so asking the map about the child
 // id would report dormant for a goal it does not own in the first place.
@@ -942,4 +927,15 @@ func TestGoalStatusUpdateRacesClearWithoutRestoringTheGoal(t *testing.T) {
 	assert.Empty(t, readRow().GoalObjective)
 	assert.Empty(t, readRow().GoalStatus)
 	assert.LessOrEqual(t, goalNotificationCount(t, svc, agentID), 3)
+}
+
+// TestGoal_AnAbsentManagerNeverClaimsDormant pins the construction-time check.
+// Every provider plugin comes from the manager's registry. A handler without a
+// manager fails during construction and cannot claim a dormant goal.
+func TestGoal_AnAbsentManagerNeverClaimsDormant(t *testing.T) {
+	t.Parallel()
+
+	assert.PanicsWithValue(t, "service: NewOutputHandler requires an agent manager", func() {
+		NewOutputHandler(nil, nil, nil, nil, nil)
+	})
 }

@@ -510,7 +510,7 @@ export function checkSessionInfo(v) {
   // Claude Code writes `total_cost_usd` on its own `result` line, and the worker
   // persists that line unchanged. The browser reads the persisted row through
   // SESSION_INFO_KEY.TotalCostUsd (extractResultMetadata in messageParser.ts), and
-  // claude_output.go decodes the same field through a struct tag, which must be a
+  // providers/claude/output.go decodes the same field through a struct tag, which must be a
   // literal and cannot follow a rename. Anthropic owns this spelling, so LeapMux
   // cannot change it: a rename would generate cleanly, pass every test, and blank
   // the per-turn cost on every Claude result divider. Pi and ZCode inject the same
@@ -2177,7 +2177,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'supplementIdentity', goTable: 'SupplementIdentity', tsTable: 'SUPPLEMENT_IDENTITY', tsType: 'ACPSupplementIdentityField', goSlice: true, owner: 'LeapMux checks these', doc: 'protocol fields before a supplement can reach a row' },
       { key: 'supplementRequest', goTable: 'SupplementRequest', tsTable: 'SUPPLEMENT_REQUEST', tsType: 'ACPSupplementRequestField', goSlice: true, doc: 'request fields a later tool_call_update can revise' },
       // No blanket `owner`: LeapMux chose `protocol` and `terminals`, and `rawOutput` is
-      // the protocol's own tool-call field, which acp_common.go reads off the wire. The
+      // the protocol's own tool-call field, which providers/acp/base.go reads off the wire. The
       // doc therefore carries the split, because one owner word cannot.
       { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'ACPSupplementField', doc: 'payloads a tool row keeps beside a frame -- LeapMux chose `protocol` and `terminals`, and `rawOutput` is the protocol\'s own field' },
       { key: 'terminalResult', goTable: 'TerminalResult', tsTable: 'TERMINAL_RESULT', tsType: 'ACPTerminalResultField', doc: 'fields of one terminal\'s stored output, inside the `terminals` payload' },
@@ -2203,7 +2203,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'toolKinds', goTable: 'ToolKind', tsTable: 'TOOL_KIND', tsType: 'ZCodeToolKind', doc: '`tool.updated` kinds -- the tool-call lifecycle' },
       { key: 'toolNames', goTable: 'ToolName', tsTable: 'TOOL', tsType: 'ZCodeTool', doc: 'tool names both sides dispatch on' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'ZCodeMode', doc: 'session modes, carried on LeapMux\'s permission-mode axis' },
-      { key: 'resultTypes', goTable: 'Result', tsTable: 'RESULT', tsType: 'ZCodeResult', readers: ['ts'], readersWhy: 'the worker carries resultType through as an opaque string (zcode_output.go) and compares none of them; the browser words the turn-end row from it', doc: '`turn.completed.resultType`' },
+      { key: 'resultTypes', goTable: 'Result', tsTable: 'RESULT', tsType: 'ZCodeResult', readers: ['ts'], readersWhy: 'the worker carries resultType through as an opaque string (providers/zcode/output.go) and compares none of them; the browser words the turn-end row from it', doc: '`turn.completed.resultType`' },
       { key: 'decisions', goTable: 'Decision', tsTable: 'DECISION', tsType: 'ZCodeDecision', doc: '`permission.resolved.decision`' },
       { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'ZCodeSupplementField', doc: 'keys of the envelope a retained tool row keeps -- the last two are LeapMux\'s own payload names' },
       { key: 'supplementPayload', goTable: 'SupplementPayload', tsTable: 'SUPPLEMENT_PAYLOAD', tsType: 'ZCodeSupplementPayloadField', doc: 'fields of that envelope\'s payload, which identifies the call it belongs to' },
@@ -2239,7 +2239,7 @@ export const PROVIDER_PROTOCOLS = [
     preamble: 'The OpenCode family states a question on the daemon\'s own event stream, which its Agent Client Protocol adapter does not forward.',
     tables: [
       { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'OpenCodeEvent', doc: 'question lifecycle events on the daemon event stream' },
-      { key: 'answerFields', goTable: 'AnswerField', tsTable: 'ANSWER_FIELD', tsType: 'OpenCodeAnswerField', goTagPin: 'backend/internal/worker/agent/opencode_questions_contract_test.go', doc: 'fields of the answer envelope the browser writes and the worker reads' },
+      { key: 'answerFields', goTable: 'AnswerField', tsTable: 'ANSWER_FIELD', tsType: 'OpenCodeAnswerField', goTagPin: 'backend/internal/worker/agent/providers/opencode/questions_contract_test.go', doc: 'fields of the answer envelope the browser writes and the worker reads' },
     ],
   },
   {
@@ -2259,7 +2259,7 @@ export const PROVIDER_PROTOCOLS = [
     tables: [
       { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'CodexSupplementField', owner: 'LeapMux chose these', doc: 'keys of the envelope that carries a Codex call\'s joined output' },
       { key: 'item', goTable: 'Item', tsTable: 'ITEM_FIELD', tsType: 'CodexItemField', doc: 'fields of the item frame the join lands on' },
-      { key: 'collabItem', goTable: 'CollabItem', tsTable: 'COLLAB_ITEM', tsType: 'CodexCollabItemField', goTagPin: 'backend/internal/worker/agent/supplement_tags_test.go', doc: 'fields of a collab tool call that list the subagents it created' },
+      { key: 'collabItem', goTable: 'CollabItem', tsTable: 'COLLAB_ITEM', tsType: 'CodexCollabItemField', goTagPin: 'backend/internal/worker/agent/providers/codex/supplement_tags_test.go', doc: 'fields of a collab tool call that list the subagents it created' },
       { key: 'itemTypes', goTable: 'ItemType', tsTable: 'ITEM', tsType: 'CodexItemType', doc: '`item.type` discriminators both sides dispatch on' },
       { key: 'methods', goTable: 'Method', tsTable: 'METHOD', tsType: 'CodexMethod', doc: 'JSON-RPC method names both sides dispatch on' },
       { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'CodexOption', owner: 'LeapMux chose these', doc: 'option-group ids for the Codex axes both sides address' },
@@ -2327,7 +2327,7 @@ export const PROVIDER_PROTOCOLS = [
     tables: [
       { key: 'mcpApprovalChoices', goTable: 'MCPApprovalChoice', tsTable: 'MCP_APPROVAL_CHOICE', tsType: 'PiMcpApprovalChoice', doc: 'MCP approval response values' },
       { key: 'mcpApprovalText', goTable: 'MCPApprovalText', tsTable: 'MCP_APPROVAL_TEXT', tsType: 'PiMcpApprovalText', doc: 'MCP approval dialog delimiters' },
-      { key: 'planDialogs', goTable: 'PlanDialog', tsTable: 'PLAN_DIALOG', tsType: 'PiPlanDialog', readers: ['ts'], readersWhy: 'the browser detects the plan-approval dialog by title; the worker answers only the FRESH-implementation dialog, whose two titles stay hand-written in pi_protocol.go because no browser code reads them', doc: 'plan approval dialog titles' },
+      { key: 'planDialogs', goTable: 'PlanDialog', tsTable: 'PLAN_DIALOG', tsType: 'PiPlanDialog', readers: ['ts'], readersWhy: 'the browser detects the plan-approval dialog by title; the worker answers only the FRESH-implementation dialog, whose two titles stay hand-written in providers/pi/protocol.go because no browser code reads them', doc: 'plan approval dialog titles' },
       { key: 'planActions', goTable: 'PlanAction', tsTable: 'PLAN_ACTION', tsType: 'PiPlanAction', doc: 'plan approval response values' },
       { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'PiEvent', doc: 'RPC envelope `type` values' },
       { key: 'assistantEvents', goTable: 'AssistantEvent', tsTable: 'ASSISTANT_EVENT', tsType: 'PiAssistantEvent', readers: ['go'], readersWhy: 'the worker JOINS a run of these deltas into one assembled-message row, so no delta ever reaches the browser and no browser code spells one', doc: 'assistant message-update sub-types' },

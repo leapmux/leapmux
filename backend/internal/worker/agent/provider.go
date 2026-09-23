@@ -3,11 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"strings"
-	"sync"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -63,6 +59,11 @@ type Provider interface {
 	Merge(class NotificationClassification, previous, next json.RawMessage) (json.RawMessage, error)
 	// IsInterrupt reports whether raw input contains a provider interrupt
 	// frame. The normal frontend path uses the InterruptAgent RPC instead.
+	//
+	// It must recognize the frame that the provider's own Interrupt writes. Each
+	// provider pins that round trip in its
+	// TestInterrupt_<Provider>WireFormatMatchesProviderClassifier, so a producer
+	// and a detector that diverge fail a test rather than a first incident.
 	IsInterrupt(content string) bool
 	// ResolveOptionConflicts merges requested values over current values and
 	// settles any pair of this provider's own option values that cannot hold at
@@ -131,7 +132,7 @@ type Provider interface {
 	// ValidateAttachment enforces the provider's attachment policy against a classified
 	// attachment. A nil return accepts it; a non-nil error rejects the whole send. Providers with
 	// no restrictions accept everything.
-	ValidateAttachment(attachment classifiedAttachment) error
+	ValidateAttachment(attachment ClassifiedAttachment) error
 	// TurnEndToolUses reports how many tool calls the finished turn made, when
 	// the provider's turn-end envelope carries the count. Clients suppress the
 	// turn-end sound for a zero-tool turn, so a provider that cannot say must
@@ -168,7 +169,7 @@ type Provider interface {
 	// account default". Only such a provider gives that entry the default badge
 	// (see defaultModelIDForList). Another provider may report an ordinary model
 	// literally id'd "default", and its badge must stay where the catalog put it.
-	// Defaults to false (noopProvider); only Claude Code overrides it to true.
+	// Defaults to false (ProviderDefaults); only Claude Code overrides it to true.
 	ReportsDefaultModelSentinel() bool
 	// ResolveResumeHandle checks the client-supplied handle and returns the
 	// value that must reach argv, or reports why this provider cannot resume
@@ -193,7 +194,7 @@ type Provider interface {
 	// therefore refused a legitimate Pi resume with "session ID contains
 	// invalid characters".
 	//
-	// The default is the token rule (noopProvider), so a provider that issues a
+	// The default is the token rule (ProviderDefaults), so a provider that issues a
 	// token is covered by saying nothing, and only a provider whose handle is
 	// something else has to say so.
 	//
@@ -218,7 +219,7 @@ type Provider interface {
 	// against. An error is for a fault the caller could act on; the caller
 	// still degrades to what it knows without this provider's answer.
 	//
-	// The default (noopProvider) lists nothing, which is right for a provider
+	// The default (ProviderDefaults) lists nothing, which is right for a provider
 	// whose sessions this worker cannot enumerate.
 	ListStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error)
 	// ExtractTodoEvent derives a to-do list mutation from one persisted message,
@@ -228,7 +229,7 @@ type Provider interface {
 	// message shape and nothing else: Claude's `TodoWrite` tool_use envelope and its
 	// incremental `Task*` family, Codex's `turn/plan/updated` notification, an ACP
 	// `sessionUpdate=plan`, and ZCode's `tool.updated` event. The default
-	// (noopProvider) reports nothing, which is right for a provider whose CLI states
+	// (ProviderDefaults) reports nothing, which is right for a provider whose CLI states
 	// no to-do list at all.
 	//
 	// It runs on EVERY persisted message, so each implementation states its own
@@ -245,25 +246,25 @@ type Provider interface {
 	ExtractTodoEvent(spanType string, content []byte, pairedToolUse func() []byte) (todoevents.Event, bool)
 }
 
-type noopProvider struct{}
+type ProviderDefaults struct{}
 
-func (noopProvider) ResolveProviderData(content MessageContent) []byte {
+func (ProviderDefaults) ResolveProviderData(content MessageContent) []byte {
 	return content.Original
 }
 
-func (noopProvider) Classify(json.RawMessage) NotificationClassification {
+func (ProviderDefaults) Classify(json.RawMessage) NotificationClassification {
 	return NotificationClassification{}
 }
 
-func (noopProvider) Merge(class NotificationClassification, previous, next json.RawMessage) (json.RawMessage, error) {
+func (ProviderDefaults) Merge(class NotificationClassification, previous, next json.RawMessage) (json.RawMessage, error) {
 	return next, nil
 }
 
-func (noopProvider) IsInterrupt(string) bool { return false }
+func (ProviderDefaults) IsInterrupt(string) bool { return false }
 
 // ExtractTodoEvent defaults to NO to-do list. A provider whose CLI states one
 // overrides this with the shape that carries it.
-func (noopProvider) ExtractTodoEvent(string, []byte, func() []byte) (todoevents.Event, bool) {
+func (ProviderDefaults) ExtractTodoEvent(string, []byte, func() []byte) (todoevents.Event, bool) {
 	return todoevents.Event{}, false
 }
 
@@ -272,7 +273,7 @@ func (noopProvider) ExtractTodoEvent(string, []byte, func() []byte) (todoevents.
 // half of it exists -- above all the leading hyphen, which one argv element is
 // enough to turn into a flag. The token rule refuses rather than normalizes, so
 // an accepted handle comes back exactly as it arrived.
-func (noopProvider) ResolveResumeHandle(handle, _ string) (string, error) {
+func (ProviderDefaults) ResolveResumeHandle(handle, _ string) (string, error) {
 	if err := validate.ValidateSessionID(handle); err != nil {
 		return "", err
 	}
@@ -282,44 +283,44 @@ func (noopProvider) ResolveResumeHandle(handle, _ string) (string, error) {
 // ListStoredSessions defaults to NO sessions: a provider whose store this
 // worker cannot read is covered by saying nothing, and the caller still offers
 // whatever the worker's own database recorded.
-func (noopProvider) ListStoredSessions(context.Context, StoredSessionQuery) ([]StoredSession, error) {
+func (ProviderDefaults) ListStoredSessions(context.Context, StoredSessionQuery) ([]StoredSession, error) {
 	return nil, nil
 }
 
 // ResolveOptionConflicts defaults to a plain merge: a provider whose option axes are
 // independent has no conflict to settle.
-func (noopProvider) ResolveOptionConflicts(current, requested optionmap.Map) optionmap.Map {
+func (ProviderDefaults) ResolveOptionConflicts(current, requested optionmap.Map) optionmap.Map {
 	return current.Merge(requested)
 }
 
 // IsSelfDisplayingControlTool defaults to false: a provider that doesn't echo control
 // answers into its own transcript relies on the service layer's synthetic display row.
-// The ACP-based providers inherit this via their noopProvider embedding.
-func (noopProvider) IsSelfDisplayingControlTool(string) bool { return false }
+// The ACP-based providers inherit this via their ProviderDefaults embedding.
+func (ProviderDefaults) IsSelfDisplayingControlTool(string) bool { return false }
 
-func (noopProvider) PlanModeControl(string) PlanModeControlKind { return PlanModeControlNone }
+func (ProviderDefaults) PlanModeControl(string) PlanModeControlKind { return PlanModeControlNone }
 
 // PlanModePermissionMode defaults to "", which pairs with the PlanModeControlNone above:
 // a provider that recognizes no plan-mode tool never reaches a transition, so it has no
 // target mode to state. A provider that overrides PlanModeControl must override this too.
-func (noopProvider) PlanModePermissionMode(PlanModeControlKind) string { return "" }
+func (ProviderDefaults) PlanModePermissionMode(PlanModeControlKind) string { return "" }
 
 // PlanApprovalOptions defaults to none: a provider with no plan-mode-prompt flow settles no
-// options on approval. The ACP-based providers inherit this via their noopProvider embedding.
-func (noopProvider) PlanApprovalOptions(string) map[string]string { return nil }
+// options on approval. The ACP-based providers inherit this via their ProviderDefaults embedding.
+func (ProviderDefaults) PlanApprovalOptions(string) map[string]string { return nil }
 
 // SyntheticInterruptNotice defaults to "": a provider whose interrupt surfaces in its own
 // transcript (or that is interrupted via the InterruptAgent RPC rather than a raw frame) needs no
-// synthetic notice. The ACP-based providers inherit this via their noopProvider embedding.
-func (noopProvider) SyntheticInterruptNotice() string { return "" }
+// synthetic notice. The ACP-based providers inherit this via their ProviderDefaults embedding.
+func (ProviderDefaults) SyntheticInterruptNotice() string { return "" }
 
 // PermissionModeFromRawInput defaults to ("", false): a provider whose permission-mode changes
 // don't ride raw control frames carries no eager-parse path. The ACP-based providers inherit this
-// via their noopProvider embedding.
-func (noopProvider) PermissionModeFromRawInput(string) (string, bool) { return "", false }
+// via their ProviderDefaults embedding.
+func (ProviderDefaults) PermissionModeFromRawInput(string) (string, bool) { return "", false }
 
-func (noopProvider) TurnEndToolUses(content []byte) (int32, bool) {
-	return defaultTurnEndToolUses(content)
+func (ProviderDefaults) TurnEndToolUses(content []byte) (int32, bool) {
+	return DefaultTurnEndToolUses(content)
 }
 
 // EndsSubagentTranscript defaults to false: a provider that forwards no
@@ -331,22 +332,22 @@ func (noopProvider) TurnEndToolUses(content []byte) (int32, bool) {
 // its per-turn `turn/completed` ends a turn, not the subagent, and the parent
 // can send the child another turn. Answering true there would suppress
 // the closing divider for every stopped child.
-func (noopProvider) EndsSubagentTranscript([]byte) bool { return false }
+func (ProviderDefaults) EndsSubagentTranscript([]byte) bool { return false }
 
 // SupportsChildSteering defaults to false for a provider whose running agents
 // cannot send direct input to a child conversation.
-func (noopProvider) SupportsChildSteering() bool { return false }
+func (ProviderDefaults) SupportsChildSteering() bool { return false }
 
 // ReportsDefaultModelSentinel defaults to false: a provider whose CLI reports
 // concrete model ids only must keep the default badge on the entry its own
 // catalog designates, even when one of those ids happens to be "default".
-func (noopProvider) ReportsDefaultModelSentinel() bool { return false }
+func (ProviderDefaults) ReportsDefaultModelSentinel() bool { return false }
 
-// defaultTurnEndToolUses reads a top-level "num_tool_uses" number. Every
+// DefaultTurnEndToolUses reads a top-level "num_tool_uses" number. Every
 // provider shipped today puts it there, but the decision stays behind the
 // interface: the moment one does not, its plugin overrides instead of a
 // package-level helper growing a switch (see CLAUDE.md).
-func defaultTurnEndToolUses(content []byte) (int32, bool) {
+func DefaultTurnEndToolUses(content []byte) (int32, bool) {
 	var env struct {
 		NumToolUses *int32 `json:"num_tool_uses"`
 	}
@@ -354,26 +355,6 @@ func defaultTurnEndToolUses(content []byte) (int32, bool) {
 		return 0, false
 	}
 	return *env.NumToolUses, true
-}
-
-var (
-	providerMu       sync.RWMutex
-	providerRegistry = map[leapmuxv1.AgentProvider]Provider{}
-)
-
-func RegisterProvider(provider leapmuxv1.AgentProvider, plugin Provider) {
-	providerMu.Lock()
-	defer providerMu.Unlock()
-	providerRegistry[provider] = plugin
-}
-
-func ProviderFor(provider leapmuxv1.AgentProvider) Provider {
-	providerMu.RLock()
-	defer providerMu.RUnlock()
-	if plugin := providerRegistry[provider]; plugin != nil {
-		return plugin
-	}
-	return noopProvider{}
 }
 
 // ProviderOrDefault resolves the provider a request asked for to the provider
@@ -388,512 +369,4 @@ func ProviderOrDefault(provider leapmuxv1.AgentProvider) leapmuxv1.AgentProvider
 		return leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	}
 	return provider
-}
-
-// IsInterruptRequest reports whether content is an interrupt frame in the
-// wire format used by provider. Unknown providers and unparseable payloads
-// both return false.
-func IsInterruptRequest(provider leapmuxv1.AgentProvider, content string) bool {
-	return ProviderFor(provider).IsInterrupt(content)
-}
-
-// PermissionModeOrDefault normalizes an empty permission mode to the
-// provider-native default. It also treats the historical DB schema default
-// "default" as unset for providers whose native default is different.
-// PermissionModeStoredSentinel is the literal an OLDER agents.options row can carry for a
-// provider that never had a mode named "default". It is a cross-provider DB value, so it
-// is spelled here and NOT as contracts.ClaudeModeDefault: that constant means Claude
-// Code's own Default mode, and reading it while deciding about a Codex or ZCode row would
-// claim Claude's vocabulary governs a provider that never used it. The two strings
-// coincide, and that coincidence is not a shared meaning.
-const PermissionModeStoredSentinel = "default"
-
-func PermissionModeOrDefault(provider leapmuxv1.AgentProvider, mode string) string {
-	defaultMode := FallbackPermissionMode(provider)
-	if mode == "" {
-		return defaultMode
-	}
-	if mode == PermissionModeStoredSentinel && defaultMode != "" && defaultMode != PermissionModeStoredSentinel {
-		return defaultMode
-	}
-	return mode
-}
-
-// codexProvider embeds noopProvider so it inherits the TurnEndToolUses default
-// (Codex puts num_tool_uses at the envelope top level, like every shipped
-// provider). Override the method here only if Codex's shape diverges.
-type codexProvider struct {
-	noopProvider
-}
-
-// ListStoredSessions reads Codex's own rollout index; see codex_sessions.go.
-func (codexProvider) ListStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error) {
-	return codexStoredSessions(ctx, q)
-}
-
-func (codexProvider) Classify(raw json.RawMessage) NotificationClassification {
-	var env struct {
-		Method string `json:"method"`
-		Params *struct {
-			Name string `json:"name,omitempty"`
-			Item *struct {
-				Type string `json:"type,omitempty"`
-			} `json:"item,omitempty"`
-		} `json:"params,omitempty"`
-	}
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return NotificationClassification{}
-	}
-	switch env.Method {
-	case "account/rateLimits/updated":
-		return NotificationClassification{
-			Kind: NotificationKindProviderScoped,
-			Key:  "codex:account/rateLimits/updated",
-		}
-	case contracts.CodexMethodMcpServerStartupStatusUpdated:
-		name := "unknown"
-		if env.Params != nil && env.Params.Name != "" {
-			name = env.Params.Name
-		}
-		return NotificationClassification{
-			Kind: NotificationKindProviderScoped,
-			Key:  "codex:mcpServer/startupStatus/updated:" + name,
-		}
-	case contracts.CodexMethodItemStarted:
-		// Codex emits item/started for many item kinds; only the
-		// contextCompaction subtype is consolidatable as a compacting
-		// indicator. All other item types route through the per-item
-		// handler and never hit PersistNotification.
-		if env.Params != nil && env.Params.Item != nil && env.Params.Item.Type == contracts.CodexItemTypeContextCompaction {
-			return NotificationClassification{
-				Kind: NotificationKindStatus,
-				Key:  "codex:item/started:contextCompaction",
-			}
-		}
-		return NotificationClassification{}
-	case contracts.CodexMethodItemCompleted:
-		// The contextCompaction completion is the Codex compaction boundary:
-		// it ends the "Compacting context..." status that the matching
-		// item/started opened. Every other item type routes through the
-		// per-item handler and never hits PersistNotification.
-		if env.Params != nil && env.Params.Item != nil && env.Params.Item.Type == contracts.CodexItemTypeContextCompaction {
-			return NotificationClassification{
-				Kind: NotificationKindCompactionBoundary,
-				Key:  "codex:item/completed:contextCompaction",
-			}
-		}
-		return NotificationClassification{}
-	default:
-		return NotificationClassification{}
-	}
-}
-
-func (codexProvider) Merge(class NotificationClassification, previous, next json.RawMessage) (json.RawMessage, error) {
-	return next, nil
-}
-
-func (codexProvider) IsInterrupt(content string) bool {
-	var msg struct {
-		Method string `json:"method"`
-	}
-	if err := json.Unmarshal([]byte(content), &msg); err != nil {
-		return false
-	}
-	return msg.Method == "turn/interrupt"
-}
-
-// Codex consumes control responses internally (only a serverRequest/resolved
-// metadata notification returns), so it never self-displays the answer.
-func (codexProvider) IsSelfDisplayingControlTool(string) bool { return false }
-
-func (codexProvider) PlanModeControl(toolName string) PlanModeControlKind {
-	if toolName == ToolNameCodexPlanModePrompt {
-		return PlanModeControlPrompt
-	}
-	return PlanModeControlNone
-}
-
-// PlanModePermissionMode answers for Codex's one plan-mode kind, the prompt. An approval
-// that selects no mode returns to Codex's own default approval policy; `acceptEdits` and
-// `plan` are Claude words that Codex's `--ask-for-approval` rejects.
-func (codexProvider) PlanModePermissionMode(kind PlanModeControlKind) string {
-	if kind == PlanModeControlPrompt {
-		return CodexDefaultApprovalPolicy
-	}
-	return ""
-}
-
-// PlanApprovalOptions exits plan mode and applies the requested permission choice.
-// Only the bypass preset's permission mode enables its network and sandbox settings.
-func (codexProvider) PlanApprovalOptions(permissionMode string) map[string]string {
-	options := map[string]string{contracts.CodexOptionCollaborationMode: CodexCollaborationDefault}
-	if permissionMode == "" {
-		return options
-	}
-	options[OptionIDPermissionMode] = permissionMode
-	bypass := contracts.CodexBypassOptions()
-	if permissionMode == bypass[OptionIDPermissionMode] {
-		for key, value := range bypass {
-			options[key] = value
-		}
-	}
-	return options
-}
-
-// SyntheticInterruptNotice: Codex resolves turn/interrupt internally and emits only a
-// serverRequest/resolved metadata notification -- never a transcript row -- so the service
-// persists this synthetic row to record the interrupt. The literal's single home lives here.
-func (codexProvider) SyntheticInterruptNotice() string { return "[Request interrupted by user]" }
-
-// PermissionModeFromRawInput: Codex has no set_permission_mode raw control frame.
-func (codexProvider) PermissionModeFromRawInput(string) (string, bool) { return "", false }
-
-// Multi-Agent V2 rejects direct app-server input for spawned child threads.
-func (codexProvider) SupportsChildSteering() bool { return false }
-
-// ReportsDefaultModelSentinel is false: Codex stores the sentinel until the
-// thread/start lifecycle response reports a concrete model, and model/list never
-// returns it, so Codex badges the model the CLI itself marks.
-func (codexProvider) ReportsDefaultModelSentinel() bool { return false }
-
-type claudeProvider struct {
-	noopProvider
-}
-
-// ListStoredSessions reads Claude Code's own transcripts; see
-// claude_sessions.go.
-// ReportsDefaultModelSentinel is true: the Claude CLI lists a "default" entry in
-// its own initialize response, and convertClaudeModels owns that reserved id, so
-// the sentinel is a real selectable option that tracks the account's default
-// across plan tiers.
-func (claudeProvider) ReportsDefaultModelSentinel() bool { return true }
-
-func (claudeProvider) ListStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error) {
-	return claudeStoredSessions(ctx, q)
-}
-
-func (claudeProvider) Classify(raw json.RawMessage) NotificationClassification {
-	var env struct {
-		Type    string `json:"type"`
-		Subtype string `json:"subtype"`
-	}
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return NotificationClassification{}
-	}
-	switch env.Type {
-	case contracts.NotificationTypeRateLimitEvent:
-		// Consolidate by keeping only the latest rate-limit snapshot in
-		// the thread; older entries collapse so the UI shows one current
-		// status, not a wall of repeated tier updates.
-		return NotificationClassification{Kind: NotificationKindProviderScoped, Key: "claude:rate_limit_event"}
-	case "system":
-		// fall through to the subtype switch below
-	default:
-		return NotificationClassification{}
-	}
-	switch env.Subtype {
-	case "status":
-		return NotificationClassification{Kind: NotificationKindStatus, Key: "claude:system:status"}
-	case "api_retry":
-		return NotificationClassification{Kind: NotificationKindAPIRetry, Key: "claude:system:api_retry"}
-	case "compact_boundary", "microcompact_boundary":
-		return NotificationClassification{Kind: NotificationKindCompactionBoundary, Key: "claude:system:" + env.Subtype}
-	default:
-		return NotificationClassification{}
-	}
-}
-
-func (claudeProvider) Merge(class NotificationClassification, previous, next json.RawMessage) (json.RawMessage, error) {
-	return next, nil
-}
-
-func (claudeProvider) IsInterrupt(content string) bool {
-	var msg struct {
-		Request struct {
-			Subtype string `json:"subtype"`
-		} `json:"request"`
-	}
-	if err := json.Unmarshal([]byte(content), &msg); err != nil {
-		return false
-	}
-	return msg.Request.Subtype == "interrupt"
-}
-
-// Claude re-emits AskUserQuestion / ExitPlanMode answers as a user-envelope
-// tool_result in its own transcript, so the rail marks that ingested row directly
-// (claudeUserEnvelopeMarkType) and no synthetic display row is persisted for them. The single
-// home for this set, shared by the mark classifier and the synthetic-row skip.
-func (claudeProvider) IsSelfDisplayingControlTool(name string) bool {
-	return name == ToolNameAskUserQuestion || name == ToolNameExitPlanMode
-}
-
-func (claudeProvider) PlanModeControl(toolName string) PlanModeControlKind {
-	switch toolName {
-	case ToolNameEnterPlanMode:
-		return PlanModeControlEnter
-	case ToolNameExitPlanMode:
-		return PlanModeControlExit
-	default:
-		return PlanModeControlNone
-	}
-}
-
-// PlanModePermissionMode gives Claude Code's own two modes. An approved exit lands on
-// `acceptEdits`, which is what the plan banner's unchecked state means for Claude: run
-// the plan, and do not ask again for each edit.
-func (claudeProvider) PlanModePermissionMode(kind PlanModeControlKind) string {
-	switch kind {
-	case PlanModeControlEnter:
-		return contracts.ClaudeModePlan
-	case PlanModeControlExit:
-		return contracts.ClaudeModeAcceptEdits
-	case PlanModeControlNone, PlanModeControlPrompt:
-		return ""
-	}
-	return ""
-}
-
-// Claude's plan flow is EnterPlanMode/ExitPlanMode (never PlanModeControlPrompt), so no
-// plan-approval option settlement runs for it.
-func (claudeProvider) PlanApprovalOptions(string) map[string]string { return nil }
-
-// EndsSubagentTranscript recognizes Claude's final `{"type":"result",...}`.
-// With --forward-subagent-text a subagent's own result is forwarded into the
-// child transcript, and a Claude subagent gets exactly one, so a subagent that
-// runs to completion already closes itself and needs no neutral divider
-// stacked on top. A subagent stopped mid-flight forwards no result, so its
-// transcript does not end here and still gets the neutral divider.
-func (claudeProvider) EndsSubagentTranscript(content []byte) bool {
-	var env struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(content, &env); err != nil {
-		return false
-	}
-	return env.Type == claudeMsgTypeResult
-}
-
-// SyntheticInterruptNotice: Claude's interrupt surfaces in its own transcript, so no synthetic
-// notice is persisted for a forwarded interrupt frame.
-func (claudeProvider) SyntheticInterruptNotice() string { return "" }
-
-// PermissionModeFromRawInput parses Claude's set_permission_mode control_request
-// ({"request":{"subtype":"set_permission_mode","mode":"..."}}) and returns the requested mode.
-// Returns ("", false) when the frame isn't a set_permission_mode request. The service eagerly
-// writes the returned mode to the DB (so /clear, which reads the DB, sees the latest mode -- Claude
-// doesn't echo the mode back in its control_response) and still forwards the raw frame to the
-// subprocess.
-func (claudeProvider) PermissionModeFromRawInput(content string) (string, bool) {
-	if !strings.Contains(content, "set_permission_mode") {
-		return "", false
-	}
-	var msg struct {
-		Request struct {
-			Subtype string `json:"subtype"`
-			Mode    string `json:"mode"`
-		} `json:"request"`
-	}
-	if err := json.Unmarshal([]byte(content), &msg); err != nil {
-		return "", false
-	}
-	if msg.Request.Subtype != "set_permission_mode" || msg.Request.Mode == "" {
-		return "", false
-	}
-	return msg.Request.Mode, true
-}
-
-// piProvider collapses Pi's lifecycle notifications and recognizes
-// Pi's interrupt frame. Pi emits compaction_start/end whenever a turn
-// crosses the compaction threshold; without consolidation, long sessions
-// accumulate one notification per cycle. auto_retry_start/end follow the
-// same pattern as Claude's api_retry. extension_error stays
-// unconsolidated: each error message is meaningful and merging would hide
-// partial failures.
-type piProvider struct {
-	noopProvider
-}
-
-// ListStoredSessions reads Pi's own transcripts; see pi_sessions.go. It returns
-// each session's ID rather than its file path, which is the form Pi reports at
-// runtime and therefore the form that dedupes against the worker's own record.
-func (piProvider) ListStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error) {
-	return piStoredSessions(ctx, q)
-}
-
-// piResumeHandleIsFilePath reports whether a Pi resume handle identifies a session
-// FILE rather than a session ID.
-//
-// The test copies Pi's own resolver (`resolveSessionPath` in pi's main.ts): a
-// separator anywhere, or the `.jsonl` suffix. The two answers must stay
-// identical, because this decides which rule validates a handle and Pi decides
-// which lookup consumes it. A value that one reads as a path and the other as
-// an ID is validated against a rule that does not describe what happens to it.
-func piResumeHandleIsFilePath(handle string) bool {
-	return strings.ContainsAny(handle, `/\`) || strings.HasSuffix(handle, ".jsonl")
-}
-
-// ResolveResumeHandle takes EITHER a session file PATH or a session ID.
-//
-// Pi identifies one session two ways, and `pi --session <path|id>` resolves
-// both: a value that holds a separator or ends in `.jsonl` is a path, and
-// anything else is matched against the session IDs of this working directory.
-// The worker hands the handle to that flag (see `piResumeArgs`), so both shapes
-// are legitimate input here.
-//
-// Two shapes need two rules, and each rule refuses the other shape. A path is
-// not a token: a Windows path holds `\`, which the token class bans, and a real
-// Pi session path -- an escaped copy of the working directory plus a
-// timestamped file name -- runs past the 128-byte token cap, so the token rule
-// refused every legitimate session file with "session ID contains invalid
-// characters". An ID is not a path: it is relative by construction, so the path
-// rule refused the identifier Pi itself reports with "path must be absolute".
-//
-// A path is still a value a user pastes into a field, so it is not unchecked:
-// `SanitizePath` answers the traversal, the reserved device name and the
-// absolute-path questions that a path raises, and the byte cap is the token
-// cap's counterpart for the longer shape. The empty handle means "no resume"
-// and is accepted, exactly as the token rule accepts it.
-//
-// The PATH shape returns SanitizePath's result, not the handle. SanitizePath
-// normalizes before it judges -- it drops control characters, trims edge
-// whitespace, expands `~` and cleans the path -- so the string it approved and
-// the string the user typed differ whenever any of those applied. Pi's
-// SessionManager.open does not require the file to exist, so sending the typed
-// string started an EMPTY session at a filename that had a stray control
-// character in it, and the user's conversation was simply gone. Returning the
-// approved string removes the gap rather than restating the rule at the sink.
-func (piProvider) ResolveResumeHandle(handle, homeDir string) (string, error) {
-	if handle == "" {
-		return "", nil
-	}
-	if !piResumeHandleIsFilePath(handle) {
-		if err := validate.ValidateSessionID(handle); err != nil {
-			return "", err
-		}
-		return handle, nil
-	}
-	// Measured before SanitizePath, which expands `~` and can therefore only
-	// make the value longer than what the user typed.
-	if len(handle) > contracts.SessionFilePathByteLimit {
-		return "", fmt.Errorf("session file path: must be at most %d bytes", contracts.SessionFilePathByteLimit)
-	}
-	// An invisible-format character survives SanitizePath -- U+200B is Cf, not
-	// a control character -- so a path that carries one would reach Pi and open
-	// a different file. The token rule refuses the same class, and refusing it
-	// here keeps one answer for both shapes of one field.
-	if err := validate.RefuseInvisibleSessionChars(handle); err != nil {
-		return "", fmt.Errorf("session file path: %w", err)
-	}
-	sanitized, err := validate.SanitizePath(handle, homeDir)
-	if err != nil {
-		return "", fmt.Errorf("session file path: %w", err)
-	}
-	return sanitized, nil
-}
-
-func (piProvider) Classify(raw json.RawMessage) NotificationClassification {
-	var env struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return NotificationClassification{}
-	}
-	switch env.Type {
-	case contracts.PiEventCompactionEnd:
-		// The boundary signal — repeated boundaries collapse so the chat
-		// shows one marker for "the conversation was compacted at this
-		// point", not a sequence.
-		return NotificationClassification{Kind: NotificationKindCompactionBoundary, Key: "pi:" + contracts.PiEventCompactionEnd}
-	case contracts.PiEventCompactionStart:
-		// In-progress indicator. Latest wins so the UI shows "compacting…"
-		// once, not once per attempt.
-		return NotificationClassification{Kind: NotificationKindStatus, Key: "pi:" + contracts.PiEventCompactionStart}
-	case contracts.PiEventAutoRetryStart, contracts.PiEventAutoRetryEnd:
-		return NotificationClassification{Kind: NotificationKindAPIRetry, Key: "pi:" + env.Type}
-	default:
-		return NotificationClassification{}
-	}
-}
-
-func (piProvider) Merge(class NotificationClassification, previous, next json.RawMessage) (json.RawMessage, error) {
-	return next, nil
-}
-
-func (piProvider) IsInterrupt(content string) bool {
-	var msg struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal([]byte(content), &msg); err != nil {
-		return false
-	}
-	return msg.Type == "abort"
-}
-
-// Pi consumes extension_ui_response on stdin without echoing the answer to stdout,
-// so it never self-displays a control answer.
-func (piProvider) IsSelfDisplayingControlTool(string) bool { return false }
-
-func (piProvider) PlanModeControl(string) PlanModeControlKind { return PlanModeControlNone }
-
-// Pi has no plan-mode-prompt flow, so it settles no options on approval.
-func (piProvider) PlanApprovalOptions(string) map[string]string { return nil }
-
-// SyntheticInterruptNotice: Pi's abort surfaces in its own transcript, so no synthetic notice is
-// persisted for a forwarded interrupt frame.
-func (piProvider) SyntheticInterruptNotice() string { return "" }
-
-// PermissionModeFromRawInput: Pi has no set_permission_mode raw control frame.
-func (piProvider) PermissionModeFromRawInput(string) (string, bool) { return "", false }
-
-// acpProvider recognizes ACP's `session/cancel` notification (and
-// the bare `cancel` form retained for legacy producers). Shared across all
-// ACP-based providers (Cursor, Kilo, OpenCode, Goose, Reasonix).
-// ACP doesn't consolidate notifications today, so Classify/Merge inherit
-// the no-op embedding.
-type acpProvider struct {
-	noopProvider
-	// validateAttachment enforces a restrictive attachment policy for the ACP providers that need
-	// one (Reasonix is text-only). Non-nil ONLY for those providers; nil accepts everything (the
-	// default for Cursor, Kilo, OpenCode, Goose). Set at registration (init) so the
-	// per-provider policy lives at one site rather than a provider-enum switch.
-	validateAttachment func(classifiedAttachment) error
-	// listStoredSessions reads this provider's own session store. Non-nil for
-	// every ACP provider, because each of the five keeps a store this worker can
-	// read -- but each keeps it in a different place and shape, so the function
-	// lives in that provider's own file and is wired here at registration, the
-	// way validateAttachment already is. Nil lists nothing.
-	listStoredSessions func(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error)
-}
-
-// ListStoredSessions dispatches to the reader the registration supplied. The
-// nil check is what keeps `acpProvider` provider-neutral: this method knows
-// that ACP providers have stores, and nothing about where any of them is.
-func (p acpProvider) ListStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error) {
-	if p.listStoredSessions == nil {
-		return nil, nil
-	}
-	return p.listStoredSessions(ctx, q)
-}
-
-func (acpProvider) IsInterrupt(content string) bool {
-	var msg struct {
-		Method string `json:"method"`
-	}
-	if err := json.Unmarshal([]byte(content), &msg); err != nil {
-		return false
-	}
-	return msg.Method == "session/cancel" || msg.Method == "cancel"
-}
-
-func init() {
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, codexProvider{})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, claudeProvider{})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, piProvider{})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, cursorProvider{acpProvider{listStoredSessions: cursorStoredSessions}})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, copilotProvider{})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, openCodeFamilyProvider{acpProvider{listStoredSessions: kiloStoredSessions}})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, openCodeFamilyProvider{acpProvider{listStoredSessions: opencodeStoredSessions}})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, acpProvider{listStoredSessions: gooseStoredSessions})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, acpProvider{validateAttachment: reasonixValidateAttachment, listStoredSessions: reasonixStoredSessions})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, zcodeProvider{})
 }

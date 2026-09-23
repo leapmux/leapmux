@@ -63,7 +63,7 @@ export function isACPNotifThread(wrapper: { messages: unknown[] } | null): boole
  *
  * No transcript of this family holds such a frame today, and the guard stays because
  * the worker admits one by construction. The default branch of `handleACPOutput`
- * (backend/internal/worker/agent/acp_common.go) persists one stdout line byte for byte
+ * (backend/internal/worker/agent/providers/acp/base.go) persists one stdout line byte for byte
  * and never reads a top-level `type`. A line that carries neither `method` nor `id`
  * reaches that branch, so a `{type:"system",...}` line on a daemon's stdout becomes an
  * AGENT row that this classifier must then read. The shape is not hypothetical:

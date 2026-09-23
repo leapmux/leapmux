@@ -41,29 +41,29 @@ func mergeOptions(current, incoming OptionMap) OptionMap { return current.Merge(
 // (e.g. Codex's sandbox / network / collaboration / service-tier). options is left untouched.
 // It lives here, not on optionmap.Map, because filling defaults needs the worker/agent
 // provider registry, which the leaf option-map package deliberately does not depend on.
-func resolveProviderDefaults(options OptionMap, provider leapmuxv1.AgentProvider) OptionMap {
+func resolveProviderDefaults(registry *agent.Registry, options OptionMap, provider leapmuxv1.AgentProvider) OptionMap {
 	out := options.Clone()
 	if out[agent.OptionIDModel] == "" {
-		out[agent.OptionIDModel] = agent.DefaultModel(provider)
+		out[agent.OptionIDModel] = registry.DefaultModel(provider)
 	}
 	// An explicit operator effort override (LEAPMUX_*_DEFAULT_EFFORT) is honored for
 	// any provider that registers one: a catalog-effort provider (Claude/Codex/Pi and
-	// native Copilot -- see ProviderManagesEffort) pins it as the launch effort, while
+	// native Copilot -- see Registry.ManagesEffort) pins it as the launch effort, while
 	// an ACP provider (Kilo/OpenCode) has it re-pushed to the server's "effort" config
 	// option by applyStartupOptions.
 	// Only the blanket EffortAuto fallback is gated to catalog-effort providers -- an
 	// unset override must NOT stamp a default that would shadow a server-driven axis
 	// or leave an inert "effort" key on a provider with no effort axis at all.
 	if out[agent.OptionIDEffort] == "" {
-		if env := agent.EffortEnvOverride(provider); env != "" {
+		if env := registry.EffortEnvOverride(provider); env != "" {
 			out[agent.OptionIDEffort] = env
-		} else if agent.ProviderManagesEffort(provider) {
+		} else if registry.ManagesEffort(provider) {
 			out[agent.OptionIDEffort] = agent.EffortAuto
 		}
 	}
 	// Provider-specific seed defaults, declared in the provider's registry entry so this layer
 	// carries no per-provider branch.
-	for id, def := range agent.ProviderOptionDefaults(provider) {
+	for id, def := range registry.ProviderOptionDefaults(provider) {
 		if out[id] == "" {
 			out[id] = def
 		}
@@ -86,8 +86,8 @@ type launchOptions struct {
 // resolveLaunchOptions fills every launch default and settles the provider's option
 // conflicts. An explicit request value always beats a safe default, and a safe default
 // applies only to a session opened without a resume handle.
-func resolveLaunchOptions(options OptionMap, provider leapmuxv1.AgentProvider, resumed bool) launchOptions {
-	safeDefaults := agent.NewAgentOptionDefaults(provider)
+func resolveLaunchOptions(registry *agent.Registry, options OptionMap, provider leapmuxv1.AgentProvider, resumed bool) launchOptions {
+	safeDefaults := registry.NewAgentOptionDefaults(provider)
 	defaulted := map[string]bool{}
 	resolved := options.Clone()
 	if !resumed {
@@ -98,11 +98,11 @@ func resolveLaunchOptions(options OptionMap, provider leapmuxv1.AgentProvider, r
 			}
 		}
 	}
-	resolved = resolveProviderDefaults(resolved, provider)
+	resolved = resolveProviderDefaults(registry, resolved, provider)
 	if resolved[agent.OptionIDPermissionMode] == "" {
-		resolved[agent.OptionIDPermissionMode] = agent.PermissionModeOrDefault(provider, "")
+		resolved[agent.OptionIDPermissionMode] = registry.PermissionModeOrDefault(provider, "")
 	}
-	resolved = agent.ProviderFor(provider).ResolveOptionConflicts(resolved, options)
+	resolved = registry.Plugin(provider).ResolveOptionConflicts(resolved, options)
 	// The conflict resolver can overwrite a safe default: a request for Copilot's Allow
 	// All turns Assisted Approval off. The id then no longer describes a defaulted
 	// value, so drop it -- a provider's launch fallback must not fire for a value the
@@ -122,9 +122,9 @@ func resolveLaunchOptions(options OptionMap, provider leapmuxv1.AgentProvider, r
 // default is indistinguishable here and counts as defaulted. That is deliberate: a
 // provider whose CLI cannot accept the value then degrades, instead of leaving the tab
 // with no process at all on every relaunch.
-func defaultSourcedOptionIDs(options OptionMap, provider leapmuxv1.AgentProvider) map[string]bool {
+func defaultSourcedOptionIDs(registry *agent.Registry, options OptionMap, provider leapmuxv1.AgentProvider) map[string]bool {
 	ids := map[string]bool{}
-	for id, value := range agent.NewAgentOptionDefaults(provider) {
+	for id, value := range registry.NewAgentOptionDefaults(provider) {
 		if options[id] == value {
 			ids[id] = true
 		}
@@ -152,8 +152,8 @@ func sortedOptionKeys(mapsToMerge ...OptionMap) []string {
 }
 
 // loadOptions parses the persisted options JSON and fills in provider defaults.
-func loadOptions(raw string, provider leapmuxv1.AgentProvider) OptionMap {
-	return resolveProviderDefaults(parseOptions(raw), provider)
+func loadOptions(registry *agent.Registry, raw string, provider leapmuxv1.AgentProvider) OptionMap {
+	return resolveProviderDefaults(registry, parseOptions(raw), provider)
 }
 
 // marshalOptionGroups serializes the option-group catalog for the agents.option_groups column.
