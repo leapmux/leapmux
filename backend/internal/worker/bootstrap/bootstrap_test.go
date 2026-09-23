@@ -3,7 +3,7 @@ package bootstrap
 import (
 	"context"
 	"database/sql"
-	"reflect"
+	"errors"
 	"testing"
 	"time"
 
@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -367,11 +368,6 @@ func TestWire_InstallsTheAgentExitHandler(t *testing.T) {
 	client := newTestHubClient(t, "http://127.0.0.1:0")
 	t.Cleanup(client.Stop)
 
-	// A non-nil check would prove nothing: the manager is constructed carrying a
-	// logging placeholder, so the field is never nil. Only its REPLACEMENT says
-	// the service-aware handler was installed.
-	placeholder := reflect.ValueOf(client.AgentManager().ExitHandlerForTest()).Pointer()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	w := Wire(Params{
@@ -387,8 +383,31 @@ func TestWire_InstallsTheAgentExitHandler(t *testing.T) {
 	})
 	t.Cleanup(w.Shutdown)
 
-	assert.NotEqual(t, placeholder,
-		reflect.ValueOf(client.AgentManager().ExitHandlerForTest()).Pointer(),
+	handler := w.Service.Agents.ExitHandlerForTest()
+	require.NotNil(t, handler, "Wire constructs the manager with no exit handler and must install one")
+
+	// A non-nil handler proves only that Wire installed SOME handler. Run it: only
+	// the service-aware one gives a running background-task row a final status.
+	bg := context.Background()
+	require.NoError(t, w.Service.Queries.CreateAgent(bg, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	sink := w.Service.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "sub", Kind: bgtask.KindSubagent, Title: "review the diff", Status: bgtask.StatusRunning,
+	}))
+
+	handler("agent-1", 1, errors.New("boom"), false)
+
+	rows, err := w.Service.Queries.ListAgentBackgroundTasksNewestFirst(bg, db.ListAgentBackgroundTasksNewestFirstParams{
+		OwnerAgentID: "agent-1", Limit: 10,
+	})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusInterrupted, bgtask.Status(rows[0].Status),
 		"a dead agent must be able to give its background-task rows a final status")
 }
 
@@ -499,10 +518,10 @@ func TestLiveTabForMint_SkipsChildAgents(t *testing.T) {
 // pool. The resume sweep reads it back from there rather than keeping a second
 // copy, so this one assertion covers both consumers.
 func TestWire_AppliesTheConfiguredStartupConcurrency(t *testing.T) {
-	_, client := wireForTestWith(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+	w, _ := wireForTestWith(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
 		func(p *Params) { p.AgentStartupConcurrency = 3 })
 
-	assert.Equal(t, 3, client.AgentManager().StartupConcurrency(),
+	assert.Equal(t, 3, w.Service.Agents.StartupConcurrency(),
 		"the manager holds the configured cap, and the resume sweep sizes its fan-out from it")
 }
 
@@ -510,10 +529,10 @@ func TestWire_AppliesTheConfiguredStartupConcurrency(t *testing.T) {
 // convention at the boundary the entry points actually cross: they pass the
 // loaded value through unchanged, and an unset worker.yaml key arrives as 0.
 func TestWire_UnsetStartupConcurrencyResolvesTheDefault(t *testing.T) {
-	_, client := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
+	w, _ := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
 
 	assert.Equal(t, workerconfig.ResolveStartupConcurrency(0),
-		client.AgentManager().StartupConcurrency())
+		w.Service.Agents.StartupConcurrency())
 }
 
 // TestWiring_ShutdownStopsTheResumeSweep pins that the resume sweep is covered

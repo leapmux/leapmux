@@ -10,6 +10,8 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -587,7 +589,7 @@ func TestPersistCatalogIfChanged(t *testing.T) {
 func TestPersistSettingsRefresh_PersistsGrownCatalog(t *testing.T) {
 	t.Parallel()
 
-	const claude = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+	const ag = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	f := newRefreshTestFixture(t, settingsSeed{Model: "opus", Effort: "auto", PermissionMode: "default"})
 	ctx := context.Background()
 
@@ -603,16 +605,16 @@ func TestPersistSettingsRefresh_PersistsGrownCatalog(t *testing.T) {
 
 	// Register a running Claude agent so the live catalog (Fast Mode + thinking + model groups)
 	// is richer than the narrow seed.
-	_, err := f.svc.Agents.MockStartAgent(ctx, agent.Options{
+	_, err := f.svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:    "agent-1",
 		WorkingDir: t.TempDir(),
 		Options:    map[string]string{agent.OptionIDModel: "opus"},
-	}, f.sink)
+	}, f.sink, claudetest.StartEcho)
 	require.NoError(t, err)
 	defer f.svc.Agents.StopAgent("agent-1")
 
 	// Precondition: the running Claude catalog surfaces Fast Mode, which the narrow seed lacks.
-	require.NotNil(t, optionids.GroupByID(f.svc.Agents.OptionGroups("agent-1", claude, "opus"), agent.ClaudeOptionFastMode),
+	require.NotNil(t, optionids.GroupByID(f.svc.Agents.OptionGroups("agent-1", ag, "opus"), claude.OptionFastMode),
 		"precondition: the running catalog is richer than the persisted seed")
 
 	// A refresh that changes a VALUE (effort auto -> high) -- the case that routes here rather
@@ -625,7 +627,7 @@ func TestPersistSettingsRefresh_PersistsGrownCatalog(t *testing.T) {
 
 	got, err := f.svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
-	assert.NotNil(t, optionids.GroupByID(parseOptionGroups(got.OptionGroups), agent.ClaudeOptionFastMode),
+	assert.NotNil(t, optionids.GroupByID(parseOptionGroups(got.OptionGroups), claude.OptionFastMode),
 		"a value-change refresh on a running agent persists the grown live catalog, not just the value")
 }
 
@@ -636,7 +638,7 @@ func TestPersistSettingsRefresh_PersistsGrownCatalog(t *testing.T) {
 func TestPersistSettingsRefresh_SkipsCatalogPersistDuringStartup(t *testing.T) {
 	t.Parallel()
 
-	const claude = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+	const a = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	f := newRefreshTestFixture(t, settingsSeed{Model: "opus", Effort: "auto", PermissionMode: "default"})
 	ctx := context.Background()
 
@@ -648,14 +650,14 @@ func TestPersistSettingsRefresh_SkipsCatalogPersistDuringStartup(t *testing.T) {
 		ID:           "agent-1",
 	}))
 
-	_, err := f.svc.Agents.MockStartAgent(ctx, agent.Options{
+	_, err := f.svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:    "agent-1",
 		WorkingDir: t.TempDir(),
 		Options:    map[string]string{agent.OptionIDModel: "opus"},
-	}, f.sink)
+	}, f.sink, claudetest.StartEcho)
 	require.NoError(t, err)
 	defer f.svc.Agents.StopAgent("agent-1")
-	require.NotNil(t, optionids.GroupByID(f.svc.Agents.OptionGroups("agent-1", claude, "opus"), agent.ClaudeOptionFastMode),
+	require.NotNil(t, optionids.GroupByID(f.svc.Agents.OptionGroups("agent-1", a, "opus"), claude.OptionFastMode),
 		"precondition: the running catalog is richer than the persisted seed")
 
 	f.svc.Output.SetAgentStartingFunc(func(agentID string) bool { return agentID == "agent-1" })
@@ -668,7 +670,7 @@ func TestPersistSettingsRefresh_SkipsCatalogPersistDuringStartup(t *testing.T) {
 
 	got, err := f.svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
-	assert.Nil(t, optionids.GroupByID(parseOptionGroups(got.OptionGroups), agent.ClaudeOptionFastMode),
+	assert.Nil(t, optionids.GroupByID(parseOptionGroups(got.OptionGroups), claude.OptionFastMode),
 		"during startup the grown catalog must not be persisted; the narrow seed is left for the handoff")
 	assert.NotNil(t, optionids.GroupByID(parseOptionGroups(got.OptionGroups), agent.OptionIDModel),
 		"the narrow seed's model group is left intact")

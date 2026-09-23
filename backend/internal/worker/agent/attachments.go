@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"fmt"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -9,20 +8,20 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-type attachmentKind string
+type AttachmentKind string
 
 const (
-	attachmentKindText   attachmentKind = "text"
-	attachmentKindImage  attachmentKind = "image"
-	attachmentKindPDF    attachmentKind = "pdf"
-	attachmentKindBinary attachmentKind = "binary"
+	AttachmentKindText   AttachmentKind = "text"
+	AttachmentKindImage  AttachmentKind = "image"
+	AttachmentKindPDF    AttachmentKind = "pdf"
+	AttachmentKindBinary AttachmentKind = "binary"
 )
 
-type classifiedAttachment struct {
-	filename string
-	mimeType string
-	data     []byte
-	kind     attachmentKind
+type ClassifiedAttachment struct {
+	Filename string
+	MIMEType string
+	Data     []byte
+	Kind     AttachmentKind
 }
 
 var supportedImageMIMETypes = map[string]struct{}{
@@ -91,8 +90,8 @@ var mimeByExtension = map[string]string{
 	".webp":         "image/webp",
 }
 
-func classifyAttachments(attachments []*leapmuxv1.Attachment) []classifiedAttachment {
-	result := make([]classifiedAttachment, 0, len(attachments))
+func ClassifyAttachments(attachments []*leapmuxv1.Attachment) []ClassifiedAttachment {
+	result := make([]ClassifiedAttachment, 0, len(attachments))
 	for _, attachment := range attachments {
 		if attachment == nil {
 			continue
@@ -102,37 +101,37 @@ func classifyAttachments(attachments []*leapmuxv1.Attachment) []classifiedAttach
 	return result
 }
 
-func NormalizeAttachmentsForProvider(provider leapmuxv1.AgentProvider, attachments []*leapmuxv1.Attachment) ([]*leapmuxv1.Attachment, error) {
-	plugin := ProviderFor(provider)
-	classified := classifyAttachments(attachments)
+func (r *Registry) NormalizeAttachments(provider leapmuxv1.AgentProvider, attachments []*leapmuxv1.Attachment) ([]*leapmuxv1.Attachment, error) {
+	plugin := r.Plugin(provider)
+	classified := ClassifyAttachments(attachments)
 	normalized := make([]*leapmuxv1.Attachment, 0, len(classified))
 	for _, attachment := range classified {
 		if err := plugin.ValidateAttachment(attachment); err != nil {
 			return nil, err
 		}
 		normalized = append(normalized, &leapmuxv1.Attachment{
-			Filename: attachment.filename,
-			MimeType: attachment.mimeType,
-			Data:     attachment.data,
+			Filename: attachment.Filename,
+			MimeType: attachment.MIMEType,
+			Data:     attachment.Data,
 		})
 	}
 	return normalized, nil
 }
 
-func classifyAttachment(attachment *leapmuxv1.Attachment) classifiedAttachment {
+func classifyAttachment(attachment *leapmuxv1.Attachment) ClassifiedAttachment {
 	filename := attachment.GetFilename()
 	data := attachment.GetData()
 	mimeType := inferAttachmentMimeType(filename, attachment.GetMimeType(), data)
 
 	switch {
 	case isSupportedImageMimeType(mimeType):
-		return classifiedAttachment{filename: filename, mimeType: mimeType, data: data, kind: attachmentKindImage}
+		return ClassifiedAttachment{Filename: filename, MIMEType: mimeType, Data: data, Kind: AttachmentKindImage}
 	case mimeType == "application/pdf":
-		return classifiedAttachment{filename: filename, mimeType: mimeType, data: data, kind: attachmentKindPDF}
+		return ClassifiedAttachment{Filename: filename, MIMEType: mimeType, Data: data, Kind: AttachmentKindPDF}
 	case isTextAttachmentMimeType(mimeType) && utf8.Valid(data):
-		return classifiedAttachment{filename: filename, mimeType: mimeType, data: data, kind: attachmentKindText}
+		return ClassifiedAttachment{Filename: filename, MIMEType: mimeType, Data: data, Kind: AttachmentKindText}
 	default:
-		return classifiedAttachment{filename: filename, mimeType: mimeType, data: data, kind: attachmentKindBinary}
+		return ClassifiedAttachment{Filename: filename, MIMEType: mimeType, Data: data, Kind: AttachmentKindBinary}
 	}
 }
 
@@ -184,99 +183,7 @@ func isTextAttachmentMimeType(mimeType string) bool {
 }
 
 // ValidateAttachment defaults to accepting every classified attachment. Providers with no
-// restriction (Cursor, Copilot, Kilo, OpenCode, Goose) and unknown providers (via the ProviderFor
-// noop fallback) inherit this; the ACP providers reach it through their noopProvider embedding
-// unless they register a restrictive validateAttachment hook.
-func (noopProvider) ValidateAttachment(classifiedAttachment) error { return nil }
-
-// Claude Code accepts text, image, and PDF blocks but has no binary content block.
-func (claudeProvider) ValidateAttachment(attachment classifiedAttachment) error {
-	if attachment.kind == attachmentKindBinary {
-		return fmt.Errorf("claude code does not support binary attachments: %s", attachment.filename)
-	}
-	return nil
-}
-
-// rejectPDFAndBinaryAttachment enforces the "text and image only" policy shared by Codex and Pi:
-// neither has an input representation for a PDF or binary content block. label names the provider in
-// the rejection message so the single policy body can't drift between the two providers.
-func rejectPDFAndBinaryAttachment(label string, attachment classifiedAttachment) error {
-	if attachment.kind == attachmentKindPDF {
-		return fmt.Errorf("%s does not support PDF attachments: %s", label, attachment.filename)
-	}
-	if attachment.kind == attachmentKindBinary {
-		return fmt.Errorf("%s does not support binary attachments: %s", label, attachment.filename)
-	}
-	return nil
-}
-
-// Codex accepts text and image blocks; PDF and binary have no representation in its input.
-func (codexProvider) ValidateAttachment(attachment classifiedAttachment) error {
-	return rejectPDFAndBinaryAttachment("codex", attachment)
-}
-
-// Pi accepts text and image blocks; PDF and binary have no representation in its input.
-func (piProvider) ValidateAttachment(attachment classifiedAttachment) error {
-	return rejectPDFAndBinaryAttachment("pi", attachment)
-}
-
-// ValidateAttachment dispatches to the ACP provider's registered policy hook. It must override the
-// embedded noopProvider method explicitly -- the embedded default would ignore validateAttachment.
-// nil hook accepts everything (Cursor, Copilot, Kilo, OpenCode, Goose).
-func (p acpProvider) ValidateAttachment(attachment classifiedAttachment) error {
-	if p.validateAttachment != nil {
-		return p.validateAttachment(attachment)
-	}
-	return nil
-}
-
-// reasonixValidateAttachment enforces Reasonix's text-only policy: it advertises
-// image:false/audio:false and drops any non-text content block, so reject everything but text up
-// front. Registered as the ACP validateAttachment hook for Reasonix.
-func reasonixValidateAttachment(attachment classifiedAttachment) error {
-	if attachment.kind != attachmentKindText {
-		return fmt.Errorf("reasonix only supports text attachments: %s", attachment.filename)
-	}
-	return nil
-}
-
-func buildInlineTextAttachmentBlock(attachment classifiedAttachment) string {
-	var builder strings.Builder
-	builder.WriteString("----- BEGIN ATTACHED FILE: ")
-	builder.WriteString(attachment.filename)
-	builder.WriteString(" (")
-	builder.WriteString(attachment.mimeType)
-	builder.WriteString(") -----\n")
-	builder.Write(attachment.data)
-	if len(attachment.data) == 0 || attachment.data[len(attachment.data)-1] != '\n' {
-		builder.WriteByte('\n')
-	}
-	builder.WriteString("----- END ATTACHED FILE: ")
-	builder.WriteString(attachment.filename)
-	builder.WriteString(" -----")
-	return builder.String()
-}
-
-// ValidateAttachment enforces the part of ZCode's attachment policy that does not
-// depend on the running model.
-//
-// A PDF is refused outright. The app-server's attachment normalizer recognizes
-// image, video, file and audio and NOTHING else, so a PDF arrives as a generic
-// file: a small one is decoded as text and reaches the model as binary garbage, and
-// a large one is dropped with no message at all. Both are worse than a refusal that
-// says so.
-//
-// The image gate is NOT here, because this check is stateless and an image's
-// acceptance depends on the CURRENT model's declared input modalities. It runs in
-// zcodeAgent.SendInput, which is the only place that knows the model -- see
-// zcode_attachments.go.
-func (zcodeProvider) ValidateAttachment(attachment classifiedAttachment) error {
-	switch attachment.kind {
-	case attachmentKindPDF:
-		return fmt.Errorf("zcode does not support PDF attachments: %s", attachment.filename)
-	case attachmentKindBinary:
-		return fmt.Errorf("zcode does not support binary attachments: %s", attachment.filename)
-	default:
-		return nil
-	}
-}
+// restriction (Cursor, Copilot, Kilo, OpenCode, Goose) and unknown providers (via the
+// ProviderDefaults that Registry.Plugin answers for them) inherit this; an ACP provider reaches it
+// through its ProviderDefaults embedding unless its own plugin type states a restrictive policy.
+func (ProviderDefaults) ValidateAttachment(ClassifiedAttachment) error { return nil }

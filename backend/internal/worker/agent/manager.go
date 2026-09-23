@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"reflect"
 	"slices"
 	"sync"
 
@@ -36,6 +37,10 @@ type Manager struct {
 	// caller that is about to WRITE to the provider asks AgentAlive instead.
 	exiting map[Agent]struct{}
 	onExit  ExitHandler
+	// registry states every provider this manager can start. It is fixed at
+	// construction and never nil, so every read of a provider's registration goes
+	// through the one value the worker was wired with.
+	registry *Registry
 
 	// startupSlots caps how many BACKGROUND agent startups run at once: one
 	// token is held from just before the provider's start func spawns the
@@ -53,8 +58,8 @@ type Manager struct {
 	// waiting on, and it is the one this pool exists to hold back.
 	//
 	// Buffered and never nil: NewManager fills it, because a nil channel blocks
-	// for ever and this manager is constructed (in hub.New) before any
-	// configuration is read. SetStartupConcurrency replaces it.
+	// for ever and this manager is constructed before the startup concurrency is
+	// read from the configuration. SetStartupConcurrency replaces it.
 	startupSlots chan struct{}
 }
 
@@ -75,10 +80,18 @@ type lifecycleEntry struct {
 	refcount int
 }
 
-// NewManager creates a new agent Manager.
-// The optional onExit handler is called when any agent process exits.
-func NewManager(onExit ExitHandler) *Manager {
+// NewManager creates a new agent Manager that starts the providers registry
+// states. The optional onExit handler is called when any agent process exits.
+//
+// It panics on a nil registry: a manager without one could start nothing, and
+// every caller that reads a provider's registration would read nothing, so the
+// wiring mistake must surface at construction rather than at the first spawn.
+func NewManager(registry *Registry, onExit ExitHandler) *Manager {
+	if registry == nil {
+		panic("agent: NewManager requires a registry")
+	}
 	return &Manager{
+		registry:           registry,
 		agents:             make(map[string]Agent),
 		cachedOptionGroups: make(map[string]cachedCatalog),
 		lifecycleLocks:     make(map[string]*lifecycleEntry),
@@ -163,16 +176,32 @@ func (m *Manager) SetOnExit(onExit ExitHandler) {
 // ExitHandlerForTest returns the installed exit handler so a wiring test can
 // RUN it.
 //
-// A non-nil check would prove nothing: the manager is constructed with a
-// logging placeholder, so the field is never nil and only the handler's
-// BEHAVIOUR distinguishes the wired one. Nothing else fails when the wiring is
-// dropped -- a dead process would simply leave every in-flight subagent and
-// shell row 'running' for good, so the sidebar keeps showing work that is not
-// happening, with no error anywhere to trace back to the missing call.
+// A non-nil check proves only that some handler is installed. Only the
+// handler's BEHAVIOR identifies the service-aware one. Nothing else fails when
+// the wiring is dropped: a dead process leaves every in-flight subagent and
+// shell row 'running' for good. The sidebar then shows work that does not
+// happen, and no error leads back to the missing call.
 func (m *Manager) ExitHandlerForTest() ExitHandler {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.onExit
+}
+
+// PutAgentForTest registers a as the running agent agentID, without a process,
+// so a test can reach the manager's dispatch for an agent it built itself. It
+// replaces any agent already registered under that id, and starts no Wait
+// goroutine, so nothing removes the entry when a exits.
+//
+// It panics for an agent that is not comparable. The manager compares agents by
+// identity, as it compares every production agent, which is a pointer, so such an
+// agent would panic later at a place that does not state the cause.
+func (m *Manager) PutAgentForTest(agentID string, a Agent) {
+	if !reflect.TypeOf(a).Comparable() {
+		panic(fmt.Sprintf("agent: PutAgentForTest needs a comparable agent, such as a pointer; got %T", a))
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.agents[agentID] = a
 }
 
 // LockAgent acquires a per-agent mutex that serializes multi-step lifecycle
@@ -219,9 +248,6 @@ func (m *Manager) RestartAgent(ctx context.Context, opts Options, sink ProviderS
 	return m.StartAgent(ctx, opts, sink)
 }
 
-// startFunc is the function signature for starting an agent process.
-type startFunc func(ctx context.Context, opts Options, sink ProviderServices) (Agent, error)
-
 // StartAgent spawns an agent for the given agent ID, dispatching based on
 // opts.AgentProvider.
 // The sink receives parsed output events.
@@ -241,14 +267,30 @@ func (m *Manager) StartBackgroundAgent(ctx context.Context, opts Options, sink P
 }
 
 func (m *Manager) startAgent(ctx context.Context, opts Options, sink ProviderServices, background bool) (map[string]string, error) {
-	reg, ok := agentFactoryRegistry[opts.AgentProvider]
+	reg, ok := m.registry.Registration(opts.AgentProvider)
 	if !ok {
 		return nil, fmt.Errorf("unsupported agent provider: %v", opts.AgentProvider)
 	}
-	return m.startAgentWith(ctx, opts, sink, reg.start, background)
+	return m.startAgentWith(ctx, opts, sink, reg.Start, background)
 }
 
-func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink ProviderServices, start startFunc, background bool) (map[string]string, error) {
+// StartAgentWith is StartAgent with the start function supplied by the caller
+// instead of read from the registry. Everything else is StartAgent's own path:
+// the duplicate-agent check, the registration of the running agent, and its exit
+// handling. A caller that must run a program other than the provider's own -- a
+// test that stands a mock process in for a provider -- uses it, and the Manager
+// treats the result exactly as it treats any other agent.
+func (m *Manager) StartAgentWith(ctx context.Context, opts Options, sink ProviderServices, start StartFunc) (map[string]string, error) {
+	return m.startAgentWith(ctx, opts, sink, start, false)
+}
+
+// Registry returns the registry this manager was built with. Every caller that
+// reads a provider's registration reads it here, so the worker has exactly one.
+func (m *Manager) Registry() *Registry {
+	return m.registry
+}
+
+func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink ProviderServices, start StartFunc, background bool) (map[string]string, error) {
 	m.mu.Lock()
 	if _, exists := m.agents[opts.AgentID]; exists {
 		m.mu.Unlock()
@@ -819,8 +861,8 @@ func (m *Manager) ClearContext(agentID string) (string, error) {
 // defaultModels, which self-mark the currently-selected model in buildACPModels). The
 // steps 4 and 5 run only for a non-empty configured default, precisely so they don't
 // clobber that per-agent marking.
-func defaultModelIDForList(ids []string, marked, first string, provider leapmuxv1.AgentProvider) string {
-	if env := DefaultModelEnvOverride(provider); env != "" {
+func (r *Registry) defaultModelIDForList(ids []string, marked, first string, provider leapmuxv1.AgentProvider) string {
+	if env := r.DefaultModelEnvOverride(provider); env != "" {
 		// Honor the operator override only when it actually names a model in this
 		// (possibly account-specific) list, matching by exact id or provider-
 		// normalized alias. A stale or differently-spelled override -- a fully-
@@ -836,16 +878,16 @@ func defaultModelIDForList(ids []string, marked, first string, provider leapmuxv
 		// badges that concrete model rather than the "default" placeholder -- the
 		// sentinel does not retain the badge once a concrete identity the operator
 		// pinned is present.
-		if id := matchModelID(ids, provider, env); id != "" {
+		if id := r.matchModelID(ids, provider, env); id != "" {
 			return id
 		}
 	}
 	// Each provider states for itself whether its catalog reports the sentinel, so
 	// this ladder stays provider-neutral. Only Claude Code answers true today.
-	if ProviderFor(provider).ReportsDefaultModelSentinel() && slices.Contains(ids, DefaultModelSentinel) {
+	if r.Plugin(provider).ReportsDefaultModelSentinel() && slices.Contains(ids, DefaultModelSentinel) {
 		return DefaultModelSentinel
 	}
-	configured := DefaultModel(provider)
+	configured := r.DefaultModel(provider)
 	if configured == "" {
 		// No configured default: preserve whatever IsDefault the per-agent list
 		// already set (e.g. buildACPModels marking the current model) instead of
@@ -873,13 +915,13 @@ func defaultModelIDForList(ids []string, marked, first string, provider leapmuxv
 // then by provider-normalized alias (so a fully-qualified spelling like "claude-opus-4-8[1m]"
 // resolves to the catalog's "opus[1m]"). Returns "" when the list contains no such id. Used
 // to resolve an operator default-model override against an account-specific catalog.
-func matchModelID(ids []string, provider leapmuxv1.AgentProvider, id string) string {
+func (r *Registry) matchModelID(ids []string, provider leapmuxv1.AgentProvider, id string) string {
 	if slices.Contains(ids, id) {
 		return id
 	}
-	want := NormalizeModelID(provider, id)
+	want := r.NormalizeModelID(provider, id)
 	for _, mid := range ids {
-		if NormalizeModelID(provider, mid) == want {
+		if r.NormalizeModelID(provider, mid) == want {
 			return mid
 		}
 	}
@@ -910,7 +952,7 @@ func (m *Manager) OptionGroups(agentID string, provider leapmuxv1.AgentProvider,
 	if running {
 		return groups
 	}
-	return withModelGroupDefaultMarked(optionGroupsFromCached(cached, provider, currentModel), provider)
+	return m.registry.withModelGroupDefaultMarked(m.registry.optionGroupsFromCached(cached, provider, currentModel), provider)
 }
 
 // resolveLiveCatalog returns a RUNNING agent's served option-group catalog -- the provider's live
@@ -934,11 +976,11 @@ func (m *Manager) resolveLiveCatalog(agentID string, provider leapmuxv1.AgentPro
 	// refresh.
 	if live := p.OptionGroups(); len(live) > 0 {
 		m.refreshCachedCatalog(agentID, p, live)
-		return withModelGroupDefaultMarked(live, provider), true, cached
+		return m.registry.withModelGroupDefaultMarked(live, provider), true, cached
 	}
 	// Transiently-empty live read: serve the freshest known cached catalog (refreshCachedCatalog
 	// keeps it), NOT a caller's persisted snapshot.
-	return withModelGroupDefaultMarked(optionGroupsFromCached(cached, provider, currentModel), provider), true, cached
+	return m.registry.withModelGroupDefaultMarked(m.registry.optionGroupsFromCached(cached, provider, currentModel), provider), true, cached
 }
 
 // optionGroupsFromCached projects a not-running (or transiently-empty-live) agent's cached catalog
@@ -947,11 +989,11 @@ func (m *Manager) resolveLiveCatalog(agentID string, provider leapmuxv1.AgentPro
 // Shared by OptionGroups (which sources `cached` from the shared per-agent cache) and
 // OptionGroupsForRow (which sources it from a caller's own row snapshot), so both resolve a
 // not-running catalog identically. Does NOT mark the model default -- the caller does.
-func optionGroupsFromCached(cached cachedCatalog, provider leapmuxv1.AgentProvider, currentModel string) []*leapmuxv1.AvailableOptionGroup {
+func (r *Registry) optionGroupsFromCached(cached cachedCatalog, provider leapmuxv1.AgentProvider, currentModel string) []*leapmuxv1.AvailableOptionGroup {
 	switch {
-	case cachedCatalogUsable(cached, currentModel, provider):
+	case r.cachedCatalogUsable(cached, currentModel, provider):
 		return cached.groups
-	case len(cached.groups) > 0 && providerHasModelDependentGroups(provider) && currentModel != "":
+	case len(cached.groups) > 0 && r.providerHasModelDependentGroups(provider) && currentModel != "":
 		// The cache exists but is stale ONLY by model: its per-model effort/thinking groups were
 		// built for a different model (an offline model edit moved the model column without
 		// re-persisting the catalog -- see optionGroupsView). Rebuild just those for currentModel
@@ -959,9 +1001,9 @@ func optionGroupsFromCached(cached cachedCatalog, provider leapmuxv1.AgentProvid
 		// (Claude's Output Style / Fast Mode, surfaced only at runtime and absent from the static
 		// templates) and any live-filtered group survive the edit instead of vanishing from the
 		// settings popover until relaunch.
-		return withModelDependentGroupsRebuilt(cached.groups, provider, currentModel)
+		return r.withModelDependentGroupsRebuilt(cached.groups, provider, currentModel)
 	default:
-		return staticOptionGroupsForProvider(provider, currentModel)
+		return r.fallbackOptionGroups(provider, currentModel)
 	}
 }
 
@@ -975,7 +1017,7 @@ func ensureModelGroup(groups []*leapmuxv1.AvailableOptionGroup, currentModel str
 	if currentModel == "" || optionids.GroupByID(groups, OptionIDModel) != nil {
 		return groups
 	}
-	model := readOnlyValueGroup(OptionIDModel, ModelGroupLabel, OptionOrderModel, currentModel, "")
+	model := ReadOnlyValueGroup(OptionIDModel, ModelGroupLabel, OptionOrderModel, currentModel, "")
 	return append([]*leapmuxv1.AvailableOptionGroup{model}, groups...)
 }
 
@@ -1004,7 +1046,7 @@ func (m *Manager) OptionGroupsForRow(agentID string, provider leapmuxv1.AgentPro
 	// Surface the row's model even when no selectable model group was built (a dynamic-model ACP
 	// provider with a model-default env override but no discovered catalog), so the remote CLI's
 	// by-id model read doesn't report "" for a model the row holds.
-	return ensureModelGroup(withModelGroupDefaultMarked(optionGroupsFromCached(rowCached, provider, currentModel), provider), currentModel)
+	return ensureModelGroup(m.registry.withModelGroupDefaultMarked(m.registry.optionGroupsFromCached(rowCached, provider, currentModel), provider), currentModel)
 }
 
 // refreshCachedCatalog keeps the cache coherent with the live catalog while the agent
@@ -1039,7 +1081,7 @@ func (m *Manager) refreshCachedCatalog(agentID string, p Agent, live []*leapmuxv
 // model-dependent groups for the requested model (withModelDependentGroupsRebuilt) and keeps
 // the rest, because these providers CAN carry dynamically-discovered model-INDEPENDENT groups
 // that live only in the cache -- Claude surfaces Output Style (from availableOutputStyles) and
-// Fast Mode at runtime, neither of which staticOptionGroupsForProvider reproduces. Dropping the
+// Fast Mode at runtime, neither of which fallbackOptionGroups reproduces. Dropping the
 // whole cache for the bare static fallback would lose those groups from the popover until the
 // agent relaunches. The caller then overlays the persisted currents.
 //
@@ -1049,24 +1091,24 @@ func (m *Manager) refreshCachedCatalog(agentID string, p Agent, live []*leapmuxv
 // overlays the new model as current); falling through to their degenerate static fallback
 // would silently drop those option groups from the popover until relaunch. An unknown
 // requested model (currentModel == "") is also trusted as-is for everyone.
-func cachedCatalogUsable(cached cachedCatalog, currentModel string, provider leapmuxv1.AgentProvider) bool {
+func (r *Registry) cachedCatalogUsable(cached cachedCatalog, currentModel string, provider leapmuxv1.AgentProvider) bool {
 	return len(cached.groups) > 0 &&
-		(currentModel == "" || cached.model == currentModel || !providerHasModelDependentGroups(provider))
+		(currentModel == "" || cached.model == currentModel || !r.providerHasModelDependentGroups(provider))
 }
 
 // providerHasModelDependentGroups reports whether a provider's catalog carries
 // model-dependent sub-groups (per-model effort tiers, and for Claude the per-model
 // extended-thinking group) that must be rebuilt when the model changes. A provider has
-// them exactly when it owns a model-dependent effort catalog -- ProviderManagesEffort
+// them exactly when it owns a model-dependent effort catalog -- Registry.ManagesEffort
 // (Claude/Codex/Pi, and native Copilot, whose account decides both the models and each
 // model's effort tiers). The ACP permission-mode / primary-agent providers do NOT:
-// although every provider shares the default effortSubGroups builder, it produces nothing
+// although every provider shares the default EffortSubGroups builder, it produces nothing
 // for a model with no SupportedEfforts, and their effort/reasoning axes are
 // model-independent server-driven config options -- so a model change doesn't invalidate
 // any cached group, and falling through to the static fallback would needlessly drop
 // those config options.
-func providerHasModelDependentGroups(provider leapmuxv1.AgentProvider) bool {
-	return ProviderManagesEffort(provider)
+func (r *Registry) providerHasModelDependentGroups(provider leapmuxv1.AgentProvider) bool {
+	return r.ManagesEffort(provider)
 }
 
 // modelDependentGroups builds the model group plus the per-model sub-groups for currentModel:
@@ -1075,43 +1117,43 @@ func providerHasModelDependentGroups(provider leapmuxv1.AgentProvider) bool {
 // changes; the provider's static option-group templates (sandbox/network/permission/...) and
 // any dynamically-discovered group are model-INDEPENDENT and handled separately. Current values
 // are empty here; the caller overlays DB selections. Returns nil for an unknown provider.
-func modelDependentGroups(provider leapmuxv1.AgentProvider, currentModel string) []*leapmuxv1.AvailableOptionGroup {
-	reg, ok := agentFactoryRegistry[provider]
+func (r *Registry) modelDependentGroups(provider leapmuxv1.AgentProvider, currentModel string) []*leapmuxv1.AvailableOptionGroup {
+	reg, ok := r.byProvider[provider]
 	if !ok {
 		return nil
 	}
 	if currentModel == "" {
-		currentModel = DefaultModel(provider)
+		currentModel = r.DefaultModel(provider)
 	}
 	var groups []*leapmuxv1.AvailableOptionGroup
-	if mg := modelOptionGroup(reg.defaultModels, "", reg.modelSubGroups); mg != nil {
+	if mg := ModelOptionGroup(reg.DefaultModels, "", reg.ModelSubGroups); mg != nil {
 		groups = append(groups, mg)
 		// Emit the current model's model-dependent groups (its effort tiers, and
 		// for Claude the extended-thinking group whose label is per model) as
 		// top-level groups. This fallback is served while an agent is restarting
 		// (not registered): without these, the settings popover briefly loses the
 		// effort/thinking groups mid-restart, which flickers and can race a click.
-		if reg.modelSubGroups != nil {
-			if m := FindAvailableModel(reg.defaultModels, currentModel); m != nil {
-				groups = append(groups, reg.modelSubGroups(m)...)
+		if reg.ModelSubGroups != nil {
+			if m := FindAvailableModel(reg.DefaultModels, currentModel); m != nil {
+				groups = append(groups, reg.ModelSubGroups(m)...)
 			}
 		}
 	}
 	return groups
 }
 
-// staticOptionGroupsForProvider builds the fallback option groups for a provider
+// fallbackOptionGroups builds the fallback option groups for a provider
 // that is not running and has no cached catalog: the model-dependent groups for
 // currentModel (the agent's selected model, defaulting to the provider default when
 // unknown -- so a Haiku agent shows no effort group while a Sonnet agent shows Sonnet's
 // tiers), followed by the provider's static option-group templates. Current values are
 // empty here; the caller overlays DB selections.
-func staticOptionGroupsForProvider(provider leapmuxv1.AgentProvider, currentModel string) []*leapmuxv1.AvailableOptionGroup {
-	reg, ok := agentFactoryRegistry[provider]
+func (r *Registry) fallbackOptionGroups(provider leapmuxv1.AgentProvider, currentModel string) []*leapmuxv1.AvailableOptionGroup {
+	reg, ok := r.byProvider[provider]
 	if !ok {
 		return nil
 	}
-	return append(modelDependentGroups(provider, currentModel), reg.optionGroups...)
+	return append(r.modelDependentGroups(provider, currentModel), reg.OptionGroups...)
 }
 
 // withModelDependentGroupsRebuilt returns the cached catalog with its model-dependent groups
@@ -1123,8 +1165,8 @@ func staticOptionGroupsForProvider(provider leapmuxv1.AgentProvider, currentMode
 // from the static templates) and any live-filtered group. Falling through to the bare static
 // fallback would drop those until the agent relaunches; this swaps only the stale per-model
 // groups and keeps the rest. The caller overlays the persisted currents afterward.
-func withModelDependentGroupsRebuilt(cached []*leapmuxv1.AvailableOptionGroup, provider leapmuxv1.AgentProvider, currentModel string) []*leapmuxv1.AvailableOptionGroup {
-	fresh := modelDependentGroups(provider, currentModel)
+func (r *Registry) withModelDependentGroupsRebuilt(cached []*leapmuxv1.AvailableOptionGroup, provider leapmuxv1.AgentProvider, currentModel string) []*leapmuxv1.AvailableOptionGroup {
+	fresh := r.modelDependentGroups(provider, currentModel)
 	if len(fresh) == 0 {
 		return cached
 	}
@@ -1158,7 +1200,7 @@ func withModelDependentGroupsRebuilt(cached []*leapmuxv1.AvailableOptionGroup, p
 // Returns the input unchanged when there is no model group or the default is
 // already correct; otherwise returns a copy with only the model group replaced,
 // leaving the shared catalog groups untouched.
-func withModelGroupDefaultMarked(groups []*leapmuxv1.AvailableOptionGroup, provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableOptionGroup {
+func (r *Registry) withModelGroupDefaultMarked(groups []*leapmuxv1.AvailableOptionGroup, provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableOptionGroup {
 	mg := optionids.GroupByID(groups, OptionIDModel)
 	if mg == nil || len(mg.GetOptions()) == 0 {
 		return groups
@@ -1175,7 +1217,7 @@ func withModelGroupDefaultMarked(groups []*leapmuxv1.AvailableOptionGroup, provi
 	if slices.Contains(ids, mg.GetDefaultValue()) {
 		marked = mg.GetDefaultValue()
 	}
-	def := defaultModelIDForList(ids, marked, ids[0], provider)
+	def := r.defaultModelIDForList(ids, marked, ids[0], provider)
 	if def == "" || def == mg.GetDefaultValue() {
 		return groups
 	}
@@ -1190,16 +1232,6 @@ func withModelGroupDefaultMarked(groups []*leapmuxv1.AvailableOptionGroup, provi
 		}
 	}
 	return out
-}
-
-// AvailableOptionGroupsForProvider returns the static option groups for a
-// provider from the provider registry. This is a package-level function
-// that does not require a Manager instance.
-func AvailableOptionGroupsForProvider(provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableOptionGroup {
-	if reg, ok := agentFactoryRegistry[provider]; ok {
-		return reg.optionGroups
-	}
-	return nil
 }
 
 // PreloadCache populates the cached option groups for an agent that is not
@@ -1231,7 +1263,7 @@ func (m *Manager) UpdateSettings(agentID string, options optionmap.Map) Settings
 	p, ok := m.agents[agentID]
 	m.mu.RUnlock()
 	if !ok {
-		return restartRequiredSettings(options)
+		return RestartRequiredSettings(options)
 	}
 	return p.UpdateSettings(options)
 }
@@ -1300,3 +1332,22 @@ func (m *Manager) StopAll() {
 		p.Stop()
 	}
 }
+
+// ExitHandler is called when an agent process exits.
+// agentID identifies the agent, exitCode is the process exit code, err is
+// non-nil if the process exited with an error, and stopped is true when the
+// exit was driven by an explicit Stop (a user interrupt, a relaunch, or a
+// shutdown) rather than a crash. The background-task registry uses stopped to
+// label rows 'stopped' vs 'interrupted'.
+//
+// The Manager keeps the exiting provider registered until this handler returns.
+// This lets the handler pause durable input before the slot permits a restart.
+//
+// A handler must NEVER acquire the agent's lifecycle lock, directly or through
+// a Manager method that takes it (SendInput, SendChildInput, RestartAgent,
+// StopAndWaitAgent). It runs on the exit goroutine, and a lifecycle caller is
+// normally waiting for that goroutine to finish while it holds that very lock,
+// so an acquire here deadlocks the agent for the life of the process. Do the
+// work that needs the lock AFTER the lifecycle call returns, the way the
+// plan-execution path does.
+type ExitHandler func(agentID string, exitCode int, err error, stopped bool)

@@ -2,42 +2,10 @@ package agent
 
 import (
 	"bytes"
-	"encoding/json"
-	"fmt"
 	"testing"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/require"
 )
-
-func TestControlResponseRestoresTheNativeRequestID(t *testing.T) {
-	for _, provider := range []leapmuxv1.AgentProvider{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
-	} {
-		for _, wireID := range []string{`42`, `0`, `-5`, `1e3`, `9007199254740993`, `"42"`, `"001"`, `"abc-123"`} {
-			t.Run(provider.String()+"/"+wireID, func(t *testing.T) {
-				request := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"method":"session/request_permission","params":{}}`, wireID))
-				_, requestID, ok := ExtractJSONRPCID(request)
-				require.True(t, ok)
-				response := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%q,"result":{"count":0,"enabled":false,"text":"","large":9007199254740993}}`, requestID))
-				plugin := ProviderFor(provider)
-				require.Equal(t, requestID, plugin.ControlResponseRequestID(response))
-				resolved := plugin.ResolveControlResponse(ControlResponseContext{RequestPayload: request, ResponseContent: response})
-				require.False(t, resolved.Withhold)
-				var actual map[string]json.RawMessage
-				require.NoError(t, json.Unmarshal(resolved.Content, &actual))
-				require.Equal(t, wireID, string(actual["id"]))
-				require.Equal(t, `{"count":0,"enabled":false,"text":"","large":9007199254740993}`, string(actual["result"]))
-			})
-		}
-	}
-}
 
 func TestControlResponseIDReplacementPreservesEveryOtherByte(t *testing.T) {
 	response := []byte(" { \"id\" : \"jsonrpc:9007199254740993\", \"extra\":1, \"extra\":2, \"result\":{\"large\":9999999999999999999999999,\"enabled\":false} } \n")

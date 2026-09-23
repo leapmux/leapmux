@@ -10,7 +10,7 @@
  *   any cancel              → { type, id, cancelled: true }
  *
  * The response is encoded as UTF-8 bytes and shipped via the shared
- * SendControlResponse RPC; the worker's processBase.SendRawInput appends a
+ * SendControlResponse RPC; the worker's providerkit.Process.SendRawInput appends a
  * trailing newline before forwarding to Pi's stdin.
  */
 

@@ -313,7 +313,7 @@ describe('test-title casing', () => {
       + 'lowercases the first letter alone, so `--fix` returns the name misspelled '
       + '(DEFAULT_MONO_FONT_FAMILY -> dEFAULT_MONO_FONT_FAMILY). Do not keep the mangled spelling and '
       + 'do not suppress the lint rule. Lead with a lowercase phrase and write the name in full after '
-      + 'it, per the vitest rule in CLAUDE.md: '
+      + 'it, per the vitest rule in AGENTS.md: '
       + '`describe(\'default mono font stack (DEFAULT_MONO_FONT_FAMILY)\')`. If the first word is a '
       + `genuinely camelCase identifier, add it to CAMEL_CASE_IDENTIFIERS in ${posixRelative(frontendRoot, fileURLToPath(import.meta.url))} `
       + `with the evidence:\n  ${detail}`,

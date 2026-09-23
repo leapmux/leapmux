@@ -6,6 +6,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/stretchr/testify/require"
 )
@@ -13,9 +14,9 @@ import (
 func TestPlanExecutionRetryKeepsItsPreparedSession(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	row := createPlanSessionTestAgent(t, svc, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "ExitPlanMode")
-	_, err := svc.Agents.MockStartAgent(t.Context(), agent.Options{
+	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{
 		AgentID: "agent-1", WorkingDir: row.WorkingDir, ResumeSessionID: "original",
-	}, svc.Output.NewSink("agent-1", row.AgentProvider))
+	}, svc.Output.NewSink("agent-1", row.AgentProvider), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAgent("agent-1") })
 	_, err = svc.DB.ExecContext(t.Context(), `INSERT INTO control_response_answers
@@ -29,7 +30,7 @@ func TestPlanExecutionRetryKeepsItsPreparedSession(t *testing.T) {
 		starts++
 		options.ResumeSessionID = "prepared-session"
 		sink.UpdateSessionID(options.ResumeSessionID)
-		return svc.Agents.MockStartAgent(ctx, options, sink)
+		return svc.Agents.StartAgentWith(ctx, options, sink, claudetest.StartEcho)
 	}
 	settingsCalls := 0
 	svc.updateAgentSettingsFn = func(_ string, options OptionMap) agent.SettingsApplyResult {

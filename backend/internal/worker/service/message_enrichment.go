@@ -116,7 +116,7 @@ func (s *agentOutputSink) EnrichMessage(change agent.MessageEnrichment) (bool, e
 // It applies an event the row did not ALREADY yield, and never one it did. The test
 // is the row's PREVIOUS state -- the original content joined with the supplement the
 // row already carried -- not the original alone. A supplement survives the next
-// enrichment: `mergeToolSupplements` replaces only the keys that collide, so a
+// enrichment: `tooltranscript.MergeSupplements` replaces only the keys that collide, so a
 // Cursor `cursor/update_todos` frame written by `EnrichToolSpan` is still there when
 // the turn-end store pass enriches the same row again. Testing the original alone
 // found nothing both times, and the second pass re-applied the first frame's
@@ -129,7 +129,7 @@ func (s *agentOutputSink) applyTodoEventForEnrichment(row db.Message, original, 
 	if row.SpanID == "" {
 		return
 	}
-	provider := agent.ProviderFor(row.AgentProvider)
+	provider := s.h.agents.Registry().Plugin(row.AgentProvider)
 	span := agent.SpanInfo{SpanID: row.SpanID, SpanType: row.SpanType}
 	paired := s.h.pairedToolUseLookup(s.agentID, span)
 	// The NEW state answers first, because most enrichments state no to-do list at

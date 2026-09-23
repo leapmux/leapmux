@@ -16,7 +16,7 @@ const REVISE_PLAN_PROMPT
  *
  * Its developer message states it exactly: present the official plan wrapped in
  * a `proposed_plan` block, with the content starting on the next line. Only a
- * plan in those tags becomes the `plan` item that `codex_output.go` turns into
+ * plan in those tags becomes the `plan` item that `providers/codex/output.go` turns into
  * the approval request. Plain markdown arrives as an ordinary agent message and
  * raises no banner at all.
  */

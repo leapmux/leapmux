@@ -437,6 +437,7 @@ leapmux/
 │   └── internal/
 │       ├── hub/         # Hub: auth, channel relay, pluggable store, keystore, OAuth
 │       └── worker/      # Worker: agents, terminals, file browser, git, E2EE channel
+│           └── agent/   # Agent runtime: the neutral API, and one package per provider in providers/
 ├── contracts/           # Cross-language constant contracts (JSON + sibling JSON Schema), generated into Go/TS/Rust
 ├── desktop/             # Tauri v2 desktop app (Rust shell + Go sidecar)
 ├── docker/              # Dockerfile and s6-overlay service definitions

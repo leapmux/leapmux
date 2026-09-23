@@ -41,7 +41,7 @@ func TestOverlayOptionGroupCurrents_SkipsOutOfListValue(t *testing.T) {
 // options still in use elsewhere).
 func TestResolveProviderDefaults_DoesNotMutateInput(t *testing.T) {
 	input := map[string]string{}
-	out := resolveProviderDefaults(input, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	out := resolveProviderDefaults(testRegistry, input, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	assert.Empty(t, input, "the input map must not be mutated")
 	assert.NotEmpty(t, out[agent.OptionIDModel], "the returned copy carries the model default")
@@ -53,12 +53,12 @@ func TestResolveProviderDefaults_DoesNotMutateInput(t *testing.T) {
 // catalog; an ACP provider (whose effort is a server-driven config option) gets the
 // model default but no inert effort key.
 func TestResolveProviderDefaults_StampsEffortOnlyForNativeEffortProviders(t *testing.T) {
-	claude := resolveProviderDefaults(map[string]string{}, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	claude := resolveProviderDefaults(testRegistry, map[string]string{}, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	assert.NotEmpty(t, claude[agent.OptionIDEffort], "Claude owns an effort catalog -> default stamped")
 
 	// Cursor is an ACP provider WITH a static model catalog but no effort tiers: the
 	// model default is still stamped, the effort default is not.
-	cursor := resolveProviderDefaults(map[string]string{}, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
+	cursor := resolveProviderDefaults(testRegistry, map[string]string{}, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
 	assert.Empty(t, cursor[agent.OptionIDEffort], "an ACP provider gets no stamped effort default")
 	assert.NotEmpty(t, cursor[agent.OptionIDModel], "but the model default is still stamped")
 }
@@ -70,12 +70,12 @@ func TestResolveProviderDefaults_StampsEffortOnlyForNativeEffortProviders(t *tes
 // catalog-effort providers -- so without the env var, Kilo gets no inert effort key.
 func TestResolveProviderDefaults_HonorsEffortEnvOverrideForACPProvider(t *testing.T) {
 	// Without the override, an ACP provider gets no effort key at all.
-	kilo := resolveProviderDefaults(map[string]string{}, leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO)
+	kilo := resolveProviderDefaults(testRegistry, map[string]string{}, leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO)
 	assert.Empty(t, kilo[agent.OptionIDEffort], "no override -> no stamped effort (server picks its own)")
 
 	// With an explicit override, the chosen effort is stamped so it can be re-applied.
 	t.Setenv("LEAPMUX_KILO_DEFAULT_EFFORT", "high")
-	kiloOverride := resolveProviderDefaults(map[string]string{}, leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO)
+	kiloOverride := resolveProviderDefaults(testRegistry, map[string]string{}, leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO)
 	assert.Equal(t, "high", kiloOverride[agent.OptionIDEffort],
 		"an explicit operator override is honored even for an ACP provider")
 }
@@ -85,7 +85,7 @@ func TestResolveProviderDefaults_HonorsEffortEnvOverrideForACPProvider(t *testin
 // carries provider groups the static registry reconstruction omits -- here Fast
 // Mode) rather than the narrower static fallback.
 func TestOptionGroupsView_ServesPersistedCatalogWhileNotRunning(t *testing.T) {
-	m := agent.NewManager(nil)
+	m := agent.NewManager(testRegistry, nil)
 
 	persisted := []*leapmuxv1.AvailableOptionGroup{
 		{

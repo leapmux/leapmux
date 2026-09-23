@@ -325,7 +325,15 @@ type OutputHandler struct {
 // NewOutputHandler creates a new OutputHandler. sqlDB is used for the
 // agent_todos snapshot transaction; tests that never trigger a
 // snapshot may pass nil.
+//
+// agents must not be nil: every provider plugin the handler consults comes from
+// its registry, so a handler without one could not classify a single frame.
+// NewOutputHandler panics on nil, at construction, rather than at the first
+// frame.
 func NewOutputHandler(sqlDB *sql.DB, queries *db.Queries, watcher *WatcherManager, agents *agent.Manager, wl *wakelock.ActivityTracker) *OutputHandler {
+	if agents == nil {
+		panic("service: NewOutputHandler requires an agent manager")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &OutputHandler{
 		queries:        queries,
@@ -677,7 +685,7 @@ func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentPro
 		agentID:       agentID,
 		rootAgentID:   agentID,
 		agentProvider: agentProvider,
-		plugin:        agent.ProviderFor(agentProvider),
+		plugin:        h.agents.Registry().Plugin(agentProvider),
 		tracker:       h.rootTracker(agentID),
 	}
 	s.restoreMessageSession()
@@ -853,14 +861,14 @@ func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agen
 	// Returning here would drop both, nondeterministically, on whichever arrival
 	// order won.
 	endsSubagent := s.agentID != s.rootAgentID &&
-		agent.ProviderFor(s.agentProvider).EndsSubagentTranscript(content.Original)
+		s.plugin.EndsSubagentTranscript(content.Original)
 	duplicateDivider := endsSubagent && !s.h.claimSubagentTranscriptClose(s.h.bgTaskCtx(), s.agentID)
 	if !duplicateDivider {
 		if err := s.h.persistAndBroadcast(s.agentID, s.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span, s.tracker); err != nil {
 			return err
 		}
 	}
-	provider := agent.ProviderFor(s.agentProvider)
+	provider := s.plugin
 	count, ok := provider.TurnEndToolUses(agent.ResolveMessageContent(provider, content))
 	// Hand the count to the activity latch first. The latch spends it on the
 	// busy->idle EDGE, not here, because this turn can end and still leave a
@@ -1919,7 +1927,7 @@ func (h *OutputHandler) prepareMessage(agentID string, agentProvider leapmuxv1.A
 // persistAndBroadcast stores the message before it broadcasts the event.
 // A nil tracker uses the agent's current span snapshot.
 func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo, tracker *SpanTracker) error {
-	provider := agent.ProviderFor(agentProvider)
+	provider := h.agents.Registry().Plugin(agentProvider)
 	resolved := agent.ResolveMessageContent(provider, content)
 	event, hasTodoEvent := provider.ExtractTodoEvent(span.SpanType, resolved, h.pairedToolUseLookup(agentID, span))
 	if hasTodoEvent {
@@ -2109,7 +2117,7 @@ func (h *OutputHandler) pairedToolUseLookup(agentID string, span agent.SpanInfo)
 		if message == nil {
 			return nil
 		}
-		return agent.ResolveMessageContent(agent.ProviderFor(message.Provider), message.Content)
+		return agent.ResolveMessageContent(h.agents.Registry().Plugin(message.Provider), message.Content)
 	})
 }
 
@@ -2791,7 +2799,7 @@ func (h *OutputHandler) PersistLeapMuxNotification(agentID string, agentProvider
 		slog.Warn("marshal notification content", "agent_id", agentID, "error", err)
 		return
 	}
-	if _, err := h.persistNotificationThreaded(agentID, agentProvider, agent.ProviderFor(agentProvider), leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, contentJSON); err != nil {
+	if _, err := h.persistNotificationThreaded(agentID, agentProvider, h.agents.Registry().Plugin(agentProvider), leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, contentJSON); err != nil {
 		slog.Warn("failed to persist notification", "agent_id", agentID, "error", err)
 	}
 }
@@ -2951,7 +2959,7 @@ func rawMessageSlicesEqual(a, b []json.RawMessage) bool {
 // Ordering is preserved by the last occurrence index of each retained entry.
 func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Provider) []json.RawMessage {
 	if plugin == nil {
-		plugin = agent.ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED)
+		plugin = agent.ProviderDefaults{}
 	}
 
 	type settingsChange struct {

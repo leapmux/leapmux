@@ -8,6 +8,8 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/codex"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/require"
 )
@@ -17,8 +19,8 @@ func createPlanSessionTestAgent(t *testing.T, svc *Service, provider leapmuxv1.A
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider,
 		Options: marshalOptions(map[string]string{
-			agent.OptionIDPermissionMode: "on-request", contracts.CodexOptionSandboxPolicy: agent.CodexSandboxWorkspaceWrite,
-			contracts.CodexOptionNetworkAccess: agent.CodexNetworkRestricted, contracts.CodexOptionCollaborationMode: agent.CodexCollaborationPlan,
+			agent.OptionIDPermissionMode: "on-request", contracts.CodexOptionSandboxPolicy: codex.SandboxWorkspaceWrite,
+			contracts.CodexOptionNetworkAccess: codex.NetworkRestricted, contracts.CodexOptionCollaborationMode: codex.CollaborationPlan,
 		}),
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "original"}))
@@ -74,18 +76,18 @@ func TestRestrictivePlanModeDoesNotEnableBypassOptions(t *testing.T) {
 	current, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
 	options := parseOptions(current.Options)
-	require.Equal(t, agent.CodexSandboxWorkspaceWrite, options[contracts.CodexOptionSandboxPolicy])
-	require.Equal(t, agent.CodexNetworkRestricted, options[contracts.CodexOptionNetworkAccess])
+	require.Equal(t, codex.SandboxWorkspaceWrite, options[contracts.CodexOptionSandboxPolicy])
+	require.Equal(t, codex.NetworkRestricted, options[contracts.CodexOptionNetworkAccess])
 }
 
 func TestPlanApprovalRequiresConfirmedLiveSettings(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	row := createPlanSessionTestAgent(t, svc, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "CodexPlanModePrompt")
 	// This process accepts input but cannot confirm Codex settings.
-	_, err := svc.Agents.MockStartAgent(t.Context(), agent.Options{
+	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{
 		AgentID: "agent-1", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		WorkingDir: row.WorkingDir, APITimeout: 10 * time.Millisecond,
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAgent("agent-1") })
 	err = svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{

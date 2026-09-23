@@ -140,7 +140,7 @@ test.describe('security headers', () => {
     // `page.on('console')` fills this array over CDP, on a different message
     // stream from the `evaluate` response above, so a bare value `expect` reads
     // it at one instant. `expect.poll` retries under the GLOBAL expect timeout,
-    // with no per-call override -- the E2E rule in CLAUDE.md forbids one.
+    // with no per-call override -- the E2E rule in AGENTS.md forbids one.
     //
     // This spec deliberately does NOT poll the mirror assertion above:
     // `expect.poll` retries until an assertion PASSES, so polling "still empty"

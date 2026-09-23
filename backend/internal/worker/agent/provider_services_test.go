@@ -7,46 +7,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var (
-	_ TranscriptServices     = (*testSink)(nil)
-	_ TurnServices           = (*testSink)(nil)
-	_ SpanServices           = (*testSink)(nil)
-	_ ProgressServices       = (*testSink)(nil)
-	_ ControlServices        = (*testSink)(nil)
-	_ SessionServices        = (*testSink)(nil)
-	_ PlanServices           = (*testSink)(nil)
-	_ GoalServices           = (*testSink)(nil)
-	_ AutoContinueServices   = (*testSink)(nil)
-	_ ChildServices          = (*testSink)(nil)
-	_ BackgroundTaskServices = (*testSink)(nil)
-)
+// facetStub implements every facet through a nil embedded interface. The test
+// below compares identities only, so no method of the stub runs.
+type facetStub struct{ ServiceFacets }
 
+// NewProviderServices must route every facet to the one value that it
+// received. assert.Same compares the pointers: an equality check of two
+// empty stubs holds for two different stubs too, so it proves nothing.
 func TestProviderServicesKeepOneImplementationAcrossFacets(t *testing.T) {
 	t.Parallel()
 
-	sink := &testSink{}
+	sink := &facetStub{}
 	services := NewProviderServices(sink)
 	composed, ok := services.(providerServices)
 	require.True(t, ok)
-	assert.Equal(t, sink, composed.TranscriptServices)
-	assert.Equal(t, sink, composed.ProgressServices)
-	assert.Equal(t, sink, composed.ChildServices)
-}
-
-type goalServicesRecorder struct {
-	update GoalUpdate
-}
-
-func (s *goalServicesRecorder) UpsertGoal(update GoalUpdate)          { s.update = update }
-func (*goalServicesRecorder) UpdateGoalStatus(GoalStatus, GoalStatus) {}
-func (*goalServicesRecorder) ClearGoal(bool)                          {}
-func (*goalServicesRecorder) PublishGoalCapabilities()                {}
-
-func TestGoalTextRouteAcceptsOnlyGoalServices(t *testing.T) {
-	t.Parallel()
-
-	services := &goalServicesRecorder{}
-	route := goalTextRoute{provider: "test", command: "/goal", clearArgs: []string{"clear"}}
-	route.observe(services, GoalDeliverySend, "/goal Keep state coherent")
-	assert.Equal(t, "Keep state coherent", services.update.Objective)
+	assert.Same(t, sink, composed.TranscriptServices)
+	assert.Same(t, sink, composed.TurnServices)
+	assert.Same(t, sink, composed.SpanServices)
+	assert.Same(t, sink, composed.ProgressServices)
+	assert.Same(t, sink, composed.ControlServices)
+	assert.Same(t, sink, composed.SessionServices)
+	assert.Same(t, sink, composed.PlanServices)
+	assert.Same(t, sink, composed.GoalServices)
+	assert.Same(t, sink, composed.AutoContinueServices)
+	assert.Same(t, sink, composed.ChildServices)
+	assert.Same(t, sink, composed.BackgroundTaskServices)
 }

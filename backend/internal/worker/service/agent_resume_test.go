@@ -17,6 +17,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
@@ -943,11 +944,11 @@ func TestAgentResume_SkipsAnAgentAlreadyRunning(t *testing.T) {
 
 	// Register a live process for the agent through the manager's own start
 	// path, so HasAgent answers true exactly as it would in production.
-	_, err := svc.Agents.MockStartAgent(t.Context(), agent.Options{
+	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{
 		AgentID:       "agent-1",
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
 	require.True(t, svc.Agents.HasAgent("agent-1"))

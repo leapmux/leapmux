@@ -8,7 +8,7 @@ package agent
 // The tokens themselves live in contracts/worker-vocab.json and reach Go as
 // contracts.NotificationType*. This file holds only what the contract cannot:
 // what the worker DOES with each one. Import the generated constant directly --
-// one Go spelling per contract constant, per the repo-root CLAUDE.md, so an
+// one Go spelling per contract constant, per the repo-root AGENTS.md, so an
 // alias here would be a second name for the same value.
 //
 //   - AgentError: a worker-emitted agent failure (startup crash, restart

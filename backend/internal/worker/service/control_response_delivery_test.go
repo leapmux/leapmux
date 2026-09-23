@@ -91,13 +91,12 @@ func (encoder *controlResponseEncoderForTest) ResolveControlResponse(ctx agent.C
 }
 
 func TestControlResponseRecoveryKeepsTheBytesThatWereDelivered(t *testing.T) {
-	// The provider registry is shared. This test must run without parallel tests.
 	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
-	original := agent.ProviderFor(provider)
-	encoder := &controlResponseEncoderForTest{Provider: original, content: []byte(` {"id":"request","result":{"decision":"accept","encoder":"first"}} `)}
-	agent.RegisterProvider(provider, encoder)
-	t.Cleanup(func() { agent.RegisterProvider(provider, original) })
-	svc, _, _ := setupTestService(t)
+	encoder := &controlResponseEncoderForTest{
+		Provider: testRegistry.Plugin(provider),
+		content:  []byte(` {"id":"request","result":{"decision":"accept","encoder":"first"}} `),
+	}
+	svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, provider, encoder)))
 	createClaimTestAgent(t, svc, "agent-1")
 	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",

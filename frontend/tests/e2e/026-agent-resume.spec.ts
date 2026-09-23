@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test'
 import { AgentStatus } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, loginViaToken, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT } from './helpers/ui'
@@ -5,6 +6,14 @@ import { listAgentsViaAPI } from './helpers/worktree'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Agent Session Resume', () => {
+  async function waitForWorkerConnection(page: Page, connected: boolean) {
+    const status = page.getByTestId('section-header-workers').locator('[data-status="connected"]')
+    if (connected)
+      await expect(status).not.toHaveCount(0)
+    else
+      await expect(status).toHaveCount(0)
+  }
+
   test('should resume agent session after worker restart', async ({ separateHubWorker, page, modelScript }) => {
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId } = separateHubWorker
@@ -31,14 +40,16 @@ test.describe('Agent Session Resume', () => {
       // Stop the worker
       await stopWorker(separateHubWorker)
 
-      // Wait for the agent to show as closed
-      await page.waitForTimeout(3000)
+      // Wait until the browser observes the closed worker channel. The editor
+      // stays visible while offline, so it cannot prove this state change.
+      await waitForWorkerConnection(page, false)
 
       // The editor should still be enabled (agent has session ID so it's resumable)
       await expect(editor).toBeVisible()
 
       // Restart the worker
       await restartWorker(separateHubWorker)
+      await waitForWorkerConnection(page, true)
 
       // Send a new message to the closed (but resumable) agent
       await editor.click()
@@ -79,7 +90,9 @@ test.describe('Agent Session Resume', () => {
       await expectAssistantAnswer(page)
 
       await stopWorker(separateHubWorker)
+      await waitForWorkerConnection(page, false)
       await restartWorker(separateHubWorker)
+      await waitForWorkerConnection(page, true)
 
       // The whole point: the process comes back on its own. Nothing below sends
       // a message, so a worker that only spawns lazily leaves the agent
@@ -119,10 +132,11 @@ test.describe('Agent Session Resume', () => {
       await expect(editor).toHaveText('')
       await expectAssistantAnswer(page)
 
-      // Stop the worker, wait, restart
+      // Stop the worker and wait for the browser connection to change twice.
       await stopWorker(separateHubWorker)
-      await page.waitForTimeout(3000)
+      await waitForWorkerConnection(page, false)
       await restartWorker(separateHubWorker)
+      await waitForWorkerConnection(page, true)
 
       // Wait for editor to be visible (worker reconnected)
       await expect(editor).toBeVisible()
@@ -160,10 +174,11 @@ test.describe('Agent Session Resume', () => {
       await expect(editor).toHaveText('')
       await expectAssistantAnswer(page)
 
-      // Stop the worker, wait, restart
+      // Stop the worker and wait for the browser connection to change twice.
       await stopWorker(separateHubWorker)
-      await page.waitForTimeout(3000)
+      await waitForWorkerConnection(page, false)
       await restartWorker(separateHubWorker)
+      await waitForWorkerConnection(page, true)
 
       // Wait for editor to be visible (worker reconnected)
       await expect(editor).toBeVisible()

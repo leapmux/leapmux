@@ -12,12 +12,12 @@ import (
 
 // Every file sqlc parses must be pure ASCII.
 //
-// The repo's CLAUDE.md states the rule, and the rule exists because the
-// failure is misleading: the sqlc parser falls over on a non-ASCII byte --
+// The repo's AGENTS.md states the rule, and the rule exists because the
+// failure is misleading: the sqlc parser fails on a non-ASCII byte --
 // typically an em-dash or a smart quote inside a comment -- with a
 // `mismatched input 'SELECr'`-style error that points at the wrong line, in
-// a file the author did not edit. Four em-dashes had already reached the
-// migrations, because CLAUDE.md was the only enforcement.
+// a file the author did not edit. Four em-dashes reached the migrations
+// before this test existed, because AGENTS.md was the only enforcement.
 //
 // BOTH inputs are covered, not just `queries/`: each dialect's sqlc.yaml
 // declares `schema: "db/migrations"`, so the parser reads a migration for

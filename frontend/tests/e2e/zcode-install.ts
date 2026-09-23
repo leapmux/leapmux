@@ -12,7 +12,7 @@ function joinFor(platform: NodeJS.Platform, ...parts: string[]): string {
 
 /**
  * The per-OS locations the worker probes for `zcode.cjs`. Kept in the same
- * order as `zcodeScriptCandidates` in `backend/internal/worker/agent/zcode_resolve.go`,
+ * order as `zcodeScriptCandidates` in `backend/internal/worker/agent/providers/zcode/resolve.go`,
  * so a skip here is the same absence that `ListAvailableProviders` would report.
  */
 export function zcodeScriptCandidatePaths(
@@ -49,15 +49,15 @@ export function zcodeScriptCandidatePaths(
 }
 
 /**
- * The path of the configuration `StartZCode` reads, matching `zcodeConfigRelPath` in
- * `backend/internal/worker/agent/zcode_config.go`.
+ * The path of the configuration `zcode.Start` reads, matching `zcodeConfigRelPath` in
+ * `backend/internal/worker/agent/providers/zcode/config.go`.
  */
 export function zcodeConfigPath(platform: NodeJS.Platform, home: string): string {
   return joinFor(platform, home, '.zcode', 'v2', 'config.json')
 }
 
 /**
- * Whether the configuration carries a provider `StartZCode` could actually run on.
+ * Whether the configuration carries a provider `zcode.Start` could actually run on.
  *
  * The same two filters `buildZCodeCatalog` applies: an API key that is not blank, and
  * at least one model. A provider that fails either is skipped there, and a
@@ -93,7 +93,7 @@ export function zcodeConfigHasUsableProvider(text: string): boolean {
 /**
  * The skip message, or null when a ZCode install is usable.
  *
- * FOUR states, not three. `StartZCode` resolves the launch AND reads
+ * FOUR states, not three. `zcode.Start` resolves the launch AND reads
  * `~/.zcode/v2/config.json`, and it fails on either — so a machine that has the desktop
  * application but was never signed in must SKIP, not run six specs that each time out
  * at `sendMessage` with a message that names nothing.

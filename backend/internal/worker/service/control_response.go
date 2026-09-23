@@ -149,7 +149,7 @@ func (plan controlResponsePlan) isPlanPrompt() bool {
 // Uncertain delivery keeps its reservation and cannot resend automatically.
 func (svc *Service) processControlResponse(dbAgent db.Agent, request *leapmuxv1.SendControlResponseRequest) error {
 	agentID, content, claimToken := dbAgent.ID, request.GetContent(), request.GetClaimToken()
-	plugin := agent.ProviderFor(dbAgent.AgentProvider)
+	plugin := svc.Agents.Registry().Plugin(dbAgent.AgentProvider)
 	requestID := plugin.ControlResponseRequestID(content)
 	readAnswer := func() (db.ControlResponseAnswer, error) {
 		return svc.Queries.GetControlResponseAnswer(bgCtx(), db.GetControlResponseAnswerParams{
@@ -327,7 +327,7 @@ func (svc *Service) applyControlResponsePlanModeMutations(dbAgent db.Agent, plan
 		return nil
 	}
 	persistMode := func(mode string) error {
-		values := loadOptions(dbAgent.Options, dbAgent.AgentProvider)
+		values := loadOptions(svc.Agents.Registry(), dbAgent.Options, dbAgent.AgentProvider)
 		previous := OptionMap{agent.OptionIDPermissionMode: values[agent.OptionIDPermissionMode]}
 		values[agent.OptionIDPermissionMode] = mode
 		_, err := svc.persistOptionChanges(dbAgent, previous, values, false)
@@ -335,7 +335,7 @@ func (svc *Service) applyControlResponsePlanModeMutations(dbAgent db.Agent, plan
 	}
 
 	// Each provider supplies its own permission-mode values.
-	plugin := agent.ProviderFor(dbAgent.AgentProvider)
+	plugin := svc.Agents.Registry().Plugin(dbAgent.AgentProvider)
 	switch plan.resolution.PlanModeControl {
 	case agent.PlanModeControlEnter:
 		if enterMode := plugin.PlanModePermissionMode(agent.PlanModeControlEnter); enterMode != "" {

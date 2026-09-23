@@ -3,23 +3,24 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"math/big"
 	"strconv"
 	"strings"
 )
 
-// controlRequestIdentity is one JSON-RPC request id in the two spellings LeapMux needs.
+// ControlRequestIdentity is one JSON-RPC request id in the two spellings LeapMux needs.
 //
 // native holds the id bytes exactly as the provider wrote them, so a reply addresses
 // the request the way the provider recognizes it. key is the canonical LeapMux lookup
 // id: the control-request store, the outstanding-request registry, and the withdrawal
 // path all use it, and they can only agree while one constructor produces it.
-type controlRequestIdentity struct {
-	native json.RawMessage
-	key    string
+type ControlRequestIdentity struct {
+	Native json.RawMessage
+	Key    string
 }
 
-// newControlRequestIdentity canonicalizes both JSON-RPC id branches into one key.
+// NewControlRequestIdentity canonicalizes both JSON-RPC id branches into one key.
 //
 // A string id round-trips through the JSON decoder, so a literal and its escaped
 // spelling give one key. A number round-trips through json.Number, so 12, 12.0 and
@@ -29,31 +30,31 @@ type controlRequestIdentity struct {
 //
 // ok is false for an absent id, a null id, and a value that is neither a string nor a
 // number.
-func newControlRequestIdentity(nativeID json.RawMessage) (controlRequestIdentity, bool) {
+func NewControlRequestIdentity(nativeID json.RawMessage) (ControlRequestIdentity, bool) {
 	nativeID = bytes.TrimSpace(nativeID)
 	if len(nativeID) == 0 || bytes.Equal(nativeID, []byte("null")) {
-		return controlRequestIdentity{}, false
+		return ControlRequestIdentity{}, false
 	}
 	if nativeID[0] == '"' {
 		var value string
 		if json.Unmarshal(nativeID, &value) != nil {
-			return controlRequestIdentity{}, false
+			return ControlRequestIdentity{}, false
 		}
 		canonical, err := json.Marshal(value)
 		if err != nil {
-			return controlRequestIdentity{}, false
+			return ControlRequestIdentity{}, false
 		}
-		return controlRequestIdentity{native: nativeID, key: "jsonrpc:" + string(canonical)}, true
+		return ControlRequestIdentity{Native: nativeID, Key: "jsonrpc:" + string(canonical)}, true
 	}
 	var number json.Number
 	if json.Unmarshal(nativeID, &number) != nil {
-		return controlRequestIdentity{}, false
+		return ControlRequestIdentity{}, false
 	}
 	canonical, ok := canonicalJSONNumber(number)
 	if !ok {
-		return controlRequestIdentity{}, false
+		return ControlRequestIdentity{}, false
 	}
-	return controlRequestIdentity{native: nativeID, key: "jsonrpc:" + canonical}, true
+	return ControlRequestIdentity{Native: nativeID, Key: "jsonrpc:" + canonical}, true
 }
 
 // canonicalJSONNumber gives one spelling to every JSON number of the same value.
@@ -125,20 +126,37 @@ func jsonNumberWithinIDLimit(text string) bool {
 	return len(mantissa) <= canonicalJSONNumberDigitLimit
 }
 
-// JSONRPCControlRequestID is the canonical LeapMux id of one JSON-RPC control request.
-// It is the cross-package spelling of newControlRequestIdentity's key, so a caller
-// outside this package addresses a stored control request the way the publisher wrote
-// it. Reports false for an id the publisher would refuse.
-func JSONRPCControlRequestID(nativeID json.RawMessage) (string, bool) {
-	identity, ok := newControlRequestIdentity(nativeID)
-	return identity.key, ok
-}
-
-// storedControlRequestID uses the persisted identity when the service supplies it.
+// StoredControlRequestID uses the persisted identity when the service supplies it.
 // Direct provider calls can use the native identity without a stored request.
-func storedControlRequestID(ctx ControlResponseContext, nativeID string) string {
+func StoredControlRequestID(ctx ControlResponseContext, nativeID string) string {
 	if ctx.RequestID != "" {
 		return ctx.RequestID
 	}
 	return nativeID
+}
+
+// ExtractJSONRPCID extracts the JSON-RPC "id" field from a raw JSON payload,
+// returning the raw bytes, its string representation, and whether extraction succeeded.
+func ExtractJSONRPCID(content []byte) (json.RawMessage, string, bool) {
+	var payload struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(content, &payload); err != nil {
+		slog.Warn("json-rpc id unmarshal failed", "error", err)
+		return nil, "", false
+	}
+	if len(payload.ID) == 0 || string(payload.ID) == "null" {
+		return nil, "", false
+	}
+
+	var text string
+	if json.Unmarshal(payload.ID, &text) == nil {
+		return payload.ID, text, true
+	}
+
+	text = strings.TrimSpace(string(payload.ID))
+	if text == "" {
+		return nil, "", false
+	}
+	return payload.ID, text, true
 }

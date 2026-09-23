@@ -7,7 +7,7 @@
  * tool_use row and its tool_result row draw whatever rail the OTHER open spans
  * draw, and nothing more.
  *
- * The exact geometry is pinned by the Go unit tests (claude_subagent_test.go,
+ * The exact geometry is pinned by the Go unit tests (providers/claude/subagent_test.go,
  * span_tracker_test.go, output_spawn_span_lines_test.go), which script the
  * envelope order directly. This spec is the whole-stack smoke test: it drives a
  * REAL Claude CLI, so it asserts only what holds however the model behaves —

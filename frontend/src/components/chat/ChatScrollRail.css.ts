@@ -3,7 +3,7 @@ import { floatingCardSurface } from '~/styles/popover.css'
 import { CHAT_RAIL_WIDTH_VAR, COARSE_HIT_PX } from './chatChromeVars'
 
 // Fixed px here are scrollbar-like dimensions (rail/thumb/dot widths, thumb radius),
-// NOT spacing-scale values -- see CLAUDE.md. The top/bottom insets use the spacing scale.
+// NOT spacing-scale values -- see AGENTS.md. The top/bottom insets use the spacing scale.
 
 /**
  * Max height of the preview card (px): the point at which a long preview stops growing the card

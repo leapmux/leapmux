@@ -13,6 +13,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -235,7 +236,7 @@ func TestListAgentMessagesChildReturnsEmptyTasks(t *testing.T) {
 // the owner) rather than interrupting the child id directly. The strongest
 // feasible service-level assertion uses the rejection disposition unique to
 // that path: a RUNNING owner that does NOT implement ChildInterrupter (the mock
-// owner here is a ClaudeCodeAgent, which never steers) makes InterruptChild
+// owner here is a claude.Agent, which never steers) makes InterruptChild
 // return ErrChildOperationUnsupported, which the handler maps to
 // FailedPrecondition "this subagent cannot be interrupted". That arm is ONLY
 // reachable through InterruptChild -- the direct-interrupt arm (owner not
@@ -255,16 +256,16 @@ func TestInterruptAgentOnChildRoutesViaChildInterrupter(t *testing.T) {
 		t.Parallel()
 		svc, d, childID, rootID := setupChildAgentTest(t)
 
-		// Start a mock owner process. MockStartAgent wraps it as a
-		// ClaudeCodeAgent, which does NOT implement ChildInterrupter -- so
+		// Start a mock owner process. claudetest.StartEcho wraps it as a
+		// claude.Agent, which does NOT implement ChildInterrupter -- so
 		// InterruptChild returns ErrChildOperationUnsupported, the unique
 		// FailedPrecondition disposition that proves the child-steering path
 		// was taken (rather than Agents.Interrupt on the child id).
-		_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+		_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 			AgentID:    rootID,
 			WorkingDir: t.TempDir(),
 			HomeDir:    t.TempDir(),
-		}, svc.Output.NewSink(rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+		}, svc.Output.NewSink(rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
 		require.NoError(t, err)
 		defer svc.Agents.StopAgent(rootID)
 

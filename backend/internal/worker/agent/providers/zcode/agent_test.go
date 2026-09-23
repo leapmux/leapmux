@@ -1,0 +1,610 @@
+package zcode
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/leapmux/leapmux/generated/contracts"
+
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestZCodeProviderSetupFallsBackToAccountConfig(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.catalog = zcodeTestCatalog(t, `{
+      "provider": {
+        "builtin:zai-coding-plan": {
+          "kind": "anthropic", "enabled": true,
+          "options": {"apiKey": "plan-key"},
+          "models": {"GLM-5.3": {}}
+        }
+      }
+    }`)
+	a.registryRevision = "leapmux-test"
+	a.builtinProviderConfigPath = filepath.Join(t.TempDir(), "zcode-builtin.json")
+	require.NoError(t, os.WriteFile(a.builtinProviderConfigPath, []byte(zcodeBuiltinZAIAccountConfig), 0o600))
+
+	refuseZCodeRequest(t, a, stdin, MethodUpdateProviderRegistry,
+		ErrMethodNotFound, "Method not found")
+	answerZCodeRequest(t, a, stdin, MethodUpdateAccountConfig,
+		`{"receivedRevision":"leapmux-test","providerCount":1,"status":"received"}`)
+
+	require.NoError(t, a.pushProviderRegistry(zcodeTestRPCTimeout))
+	a.Mu.Lock()
+	accountConfig := a.accountProviderConfig
+	a.Mu.Unlock()
+	assert.True(t, accountConfig)
+	requests := stdin.Requests(t)
+	require.Len(t, requests, 2)
+	assert.Equal(t, MethodUpdateProviderRegistry, requests[0].Method)
+	assert.Equal(t, MethodUpdateAccountConfig, requests[1].Method)
+	var params zcodeAccountProviderPayload
+	require.NoError(t, json.Unmarshal(requests[1].Params, &params))
+	assert.Contains(t, params.Providers, "account:zai-individual-coding-plan")
+}
+
+func TestZCodeProviderSetupRejectsAMismatchedAccountRevision(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.catalog = zcodeTestCatalog(t, `{
+      "provider": {
+        "builtin:zai-coding-plan": {
+          "kind": "anthropic", "enabled": true,
+          "options": {"apiKey": "plan-key"},
+          "models": {"GLM-5.3": {}}
+        }
+      }
+    }`)
+	a.registryRevision = "leapmux-test"
+	a.builtinProviderConfigPath = filepath.Join(t.TempDir(), "zcode-builtin.json")
+	require.NoError(t, os.WriteFile(a.builtinProviderConfigPath, []byte(zcodeBuiltinZAIAccountConfig), 0o600))
+
+	refuseZCodeRequest(t, a, stdin, MethodUpdateProviderRegistry,
+		ErrMethodNotFound, "Method not found")
+	answerZCodeRequest(t, a, stdin, MethodUpdateAccountConfig,
+		`{"receivedRevision":"another-revision","providerCount":1,"status":"received"}`)
+
+	err := a.pushProviderRegistry(zcodeTestRPCTimeout)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `returned revision "another-revision"`)
+	a.Mu.Lock()
+	accountConfig := a.accountProviderConfig
+	a.Mu.Unlock()
+	assert.False(t, accountConfig)
+}
+
+func TestZCodeLaunchEnvValueTakesTheFinalDuplicate(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "/new", zcodeLaunchEnvValue([]string{
+		"PATH=/bin",
+		zcodeBuiltinProviderConfigEnv + "=/old",
+		zcodeBuiltinProviderConfigEnv + "=/new",
+	}, zcodeBuiltinProviderConfigEnv))
+}
+
+func TestZCodeInterrupt_IdleIsANoop(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+
+	require.NoError(t, a.Interrupt())
+	assert.Empty(t, stdin.Frames(), "Interrupt with no active turn must not write")
+}
+
+func TestZCodeInterrupt_SendsSessionStop(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.Mu.Lock()
+	a.turnActive = true
+	a.Mu.Unlock()
+	// Nothing answers this stdin, so the call returns a context error. The FRAME
+	// is what this test is about.
+	a.CancelForTest()
+
+	_ = a.Interrupt()
+
+	requests := stdin.Requests(t)
+	require.Len(t, requests, 1)
+	assert.Equal(t, MethodSessionStop, requests[0].Method)
+	var params map[string]any
+	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
+	assert.Equal(t, "sess-1", params["sessionId"])
+}
+
+// The app-server accepts session/stop and then announces nothing: no turn.completed,
+// no turn.failed. A live interrupt therefore left the turn active for the rest of the
+// session -- the thinking indicator ran without end, the input queue could never
+// drain, and the unfinished model output was never stored.
+//
+// The silence is what ends it now. An accepted stop alone does not, because the
+// app-server accepts one for a turn that goes on working as well (RL-016).
+func TestZCodeInterrupt_EndsTheTurnTheAppServerNeverAnnounces(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	a.Mu.Lock()
+	a.turnActive = true
+	a.Mu.Unlock()
+
+	// The app-server's own answer to a stop: an empty object, and no event after it.
+	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt())
+	require.NotNil(t, timer.fire, "the stop arms the silence window")
+	timer.fire()
+
+	a.Mu.Lock()
+	turnActive := a.turnActive
+	a.Mu.Unlock()
+	assert.False(t, turnActive, "an app-server that says nothing more ends the turn")
+
+	reset := false
+	for _, update := range sink.ProgressUpdates() {
+		if update.Operation == agent.ProgressReset {
+			reset = true
+		}
+	}
+	assert.True(t, reset, "the thinking indicator stops with the turn")
+}
+
+// The abort reaches the model stream, not a command the runtime already launched: an
+// interrupted `sleep 90` ran its full ninety seconds and then reported success. A row
+// that claimed the call was interrupted would state an outcome the runtime contradicts.
+func TestZCodeInterrupt_LeavesARunningToolCallOpen(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.Mu.Lock()
+	a.turnActive = true
+	a.toolCalls["call-1"] = &zcodeToolCall{name: "bash", lastFrame: []byte(`{"toolCallId":"call-1"}`)}
+	a.Mu.Unlock()
+
+	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt())
+
+	assert.Empty(t, sink.Messages(), "the call keeps its running card until its own update arrives")
+	a.Mu.Lock()
+	_, stillOpen := a.toolCalls["call-1"]
+	a.Mu.Unlock()
+	assert.True(t, stillOpen, "the call is still the runtime's to finish")
+}
+
+// A stop the app-server REFUSES leaves the turn alone: the turn is still running, and
+// reporting it finished would hide a live agent behind an idle chat.
+func TestZCodeInterrupt_ARefusedStopLeavesTheTurnRunning(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.Mu.Lock()
+	a.turnActive = true
+	a.Mu.Unlock()
+
+	refuseZCodeRequest(t, a, stdin, MethodSessionStop, -32000, "the session is busy")
+	require.Error(t, a.Interrupt())
+
+	a.Mu.Lock()
+	turnActive := a.turnActive
+	a.Mu.Unlock()
+	assert.True(t, turnActive, "a refused stop stopped nothing")
+}
+
+func TestZCodeInterrupt_StoppedAgentReturnsError(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.SetStoppedForTest(true)
+	a.Mu.Lock()
+	a.turnActive = true
+	a.Mu.Unlock()
+
+	err := a.Interrupt()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stopped")
+	assert.Empty(t, stdin.Frames())
+}
+
+func TestZCodeInterrupt_NoSessionIsANoop(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.Mu.Lock()
+	a.turnActive = true
+	a.sessionID = ""
+	a.Mu.Unlock()
+
+	require.NoError(t, a.Interrupt())
+	assert.Empty(t, stdin.Frames())
+}
+
+// "unknown" is the app-server's placeholder before a session exists. Adopting it
+// would make later RPCs send a sessionId the app-server rejects.
+func TestApplyStateSnapshot_IgnoresTheUnknownSessionPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+	a.applyStateSnapshot(json.RawMessage(`{"session":{"sessionId":"unknown"},"runtime":{"eventSeq":3}}`))
+
+	a.Mu.Lock()
+	sessionID, seq := a.sessionID, a.lastSeq
+	a.Mu.Unlock()
+	assert.Equal(t, "sess-1", sessionID)
+	assert.Equal(t, int64(3), seq)
+}
+
+func TestApplyStateSnapshot_EmptyIsANoop(t *testing.T) {
+	t.Parallel()
+
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+	a.applyStateSnapshot(nil)
+	a.applyStateSnapshot(json.RawMessage(``))
+	a.Mu.Lock()
+	sessionID := a.sessionID
+	a.Mu.Unlock()
+	assert.Equal(t, "sess-1", sessionID)
+}
+
+// --- opening a session: the resume handle, and what happens when it does not hold ---
+
+func TestZCodeOpenSession_ResumeAdoptsTheSessionAndSkipsCreate(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	// The real startup state: nothing is open yet, so a session id left over from the
+	// helper would hide a resume that adopted nothing.
+	a.Mu.Lock()
+	a.sessionID = ""
+	a.Mu.Unlock()
+
+	answerZCodeRequest(t, a, stdin, MethodSessionResume,
+		`{"session":{"sessionId":"sess-old"},"runtime":{"eventSeq":42},"projection":{"contextWindow":200000}}`)
+
+	require.NoError(t, a.openSession("sess-old", zcodeTestRPCTimeout))
+
+	requests := stdin.Requests(t)
+	require.Len(t, requests, 1, "a resume that holds must not also create a session")
+	assert.Equal(t, MethodSessionResume, requests[0].Method)
+	var params struct {
+		SessionID string         `json:"sessionId"`
+		Workspace zcodeWorkspace `json:"workspace"`
+	}
+	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
+	assert.Equal(t, "sess-old", params.SessionID)
+	assert.Equal(t, a.workspace, params.Workspace, "the app-server indexes a session by workspace")
+
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Equal(t, "sess-old", a.sessionID)
+	assert.Equal(t, int64(42), a.lastSeq)
+	assert.Equal(t, int64(200000), a.contextWindow)
+}
+
+// A resumed session must not replay its history: LeapMux persisted that transcript
+// already, and every replayed row would be written a second time.
+func TestZCodeOpenSession_ResumedSessionSubscribesAfterTheSnapshotSequence(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.Mu.Lock()
+	a.sessionID = ""
+	a.Mu.Unlock()
+
+	answerZCodeRequest(t, a, stdin, MethodSessionResume,
+		`{"session":{"sessionId":"sess-old"},"runtime":{"eventSeq":42}}`)
+	answerZCodeRequest(t, a, stdin, MethodSessionSubscribe, `{"eventSeq":42}`)
+
+	require.NoError(t, a.openSession("sess-old", zcodeTestRPCTimeout))
+	require.NoError(t, a.subscribe(zcodeTestRPCTimeout))
+
+	var params struct {
+		SessionID       string `json:"sessionId"`
+		DeliveryKind    string `json:"deliveryKind"`
+		IncludeSnapshot bool   `json:"includeSnapshot"`
+		AfterSeq        int64  `json:"afterSeq"`
+	}
+	sub := waitZCodeRequest(t, stdin, MethodSessionSubscribe)
+	require.NoError(t, json.Unmarshal(sub.Params, &params))
+	assert.Equal(t, "sess-old", params.SessionID)
+	assert.Equal(t, DeliveryContinuous, params.DeliveryKind)
+	assert.False(t, params.IncludeSnapshot, "a snapshot is O(messages) and is the main cause of a subscribe timeout")
+	assert.Equal(t, int64(42), params.AfterSeq, "the resumed transcript must not be replayed")
+}
+
+// A resume the app-server refuses fails the whole start.
+//
+// Creating a fresh session instead discards the conversation that the user asked
+// to continue: the tab comes up with no history, and the only record is a log
+// line on the worker that nobody reads. The stored handle also survives a
+// visible failure, so a resume that fails on a condition that passes succeeds on
+// the next start.
+func TestZCodeOpenSession_RefusedResumeFailsTheStart(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.Mu.Lock()
+	a.sessionID = ""
+	a.Mu.Unlock()
+
+	refuseZCodeRequest(t, a, stdin, MethodSessionResume, ErrSessionNotActive, "no such session")
+
+	err := a.openSession("sess-gone", zcodeTestRPCTimeout)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sess-gone", "the handle that failed is what the user has to replace")
+	assert.Contains(t, err.Error(), "/clear", "the failure must state the command that recovers the tab")
+
+	requests := stdin.Requests(t)
+	require.Len(t, requests, 1, "a refused resume must not open a session behind the user's back")
+	assert.Equal(t, MethodSessionResume, requests[0].Method)
+
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Empty(t, a.sessionID, "no session was opened, so the agent adopts none")
+}
+
+// A resume that answers with no usable session id fails too, and abandons that
+// document WHOLE.
+//
+// "unknown" is the app-server's placeholder for "no session exists", so this reply
+// describes no session -- but it still carries a sequence, a mode and a context
+// window. None of them may reach the agent: the app-server numbers protocol events
+// per session from one, so a carried sequence becomes a watermark that makes
+// dispatchZCodeEvent drop later events as duplicates, and `yolo` is a mode that
+// approves every tool call by itself.
+func TestZCodeOpenSession_ResumeWithNoUsableSessionIDFailsTheStart(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.Mu.Lock()
+	a.sessionID = ""
+	a.mode = contracts.ZCodeDefaultMode
+	a.Mu.Unlock()
+
+	answerZCodeRequest(t, a, stdin, MethodSessionResume,
+		`{"session":{"sessionId":"unknown"},"runtime":{"eventSeq":9},`+
+			`"settings":{"mode":{"current":"yolo"}},"projection":{"contextWindow":123456}}`)
+
+	err := a.openSession("sess-gone", zcodeTestRPCTimeout)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sess-gone")
+	assert.Contains(t, err.Error(), "/clear")
+
+	requests := stdin.Requests(t)
+	require.Len(t, requests, 1, "a resume that adopts nothing must not open a session instead")
+
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Empty(t, a.sessionID)
+	assert.Zero(t, a.lastSeq, "the abandoned sequence must not become a watermark")
+	assert.Equal(t, contracts.ZCodeDefaultMode, a.mode, "the abandoned session's mode must not survive")
+	assert.Zero(t, a.contextWindow, "the abandoned session's context window must not label this agent's usage")
+}
+
+func TestZCodeOpenSession_WithoutAHandleGoesStraightToCreate(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
+	a.Mu.Lock()
+	a.sessionID = ""
+	a.model = "builtin:zai/GLM-5.3"
+	a.mode = contracts.ZCodeModePlan
+	a.Mu.Unlock()
+
+	answerZCodeRequest(t, a, stdin, MethodSessionCreate,
+		`{"session":{"sessionId":"sess-new"},"runtime":{"eventSeq":0}}`)
+
+	require.NoError(t, a.openSession("", zcodeTestRPCTimeout))
+
+	requests := stdin.Requests(t)
+	require.Len(t, requests, 1, "an empty handle must not reach session/resume")
+	assert.Equal(t, MethodSessionCreate, requests[0].Method)
+	var params struct {
+		Workspace zcodeWorkspace `json:"workspace"`
+		Mode      string         `json:"mode"`
+		Model     zcodeModelRef  `json:"model"`
+	}
+	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
+	assert.Equal(t, a.workspace, params.Workspace)
+	assert.Equal(t, contracts.ZCodeModePlan, params.Mode)
+	assert.Equal(t, zcodeModelRef{ProviderID: "builtin:zai", ModelID: "GLM-5.3"}, params.Model)
+
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Equal(t, "sess-new", a.sessionID)
+}
+
+func TestZCodeOpenSession_AccountConfigEnablesDynamicWorkflows(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.catalog = zcodeTestCatalog(t, `{
+      "provider": {
+        "builtin:zai-coding-plan": {
+          "kind": "anthropic", "enabled": true,
+          "options": {"apiKey": "plan-key"},
+          "models": {"GLM-5.3": {}}
+        }
+      }
+    }`)
+	a.Mu.Lock()
+	a.accountProviderConfig = true
+	a.sessionID = ""
+	a.model = "builtin:zai-coding-plan/GLM-5.3"
+	a.Mu.Unlock()
+
+	answerZCodeRequest(t, a, stdin, MethodSessionCreate,
+		`{"session":{"sessionId":"sess-new"},"runtime":{"eventSeq":0}}`)
+	require.NoError(t, a.openSession("", zcodeTestRPCTimeout))
+
+	requests := stdin.Requests(t)
+	require.Len(t, requests, 1)
+	var params map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
+	var dynamicWorkflowEnabled bool
+	require.NoError(t, json.Unmarshal(params["dynamicWorkflowEnabled"], &dynamicWorkflowEnabled))
+	assert.True(t, dynamicWorkflowEnabled)
+	assert.NotContains(t, params, "model", "the live account snapshot decides whether the provider is an individual or a team plan")
+}
+
+func TestZCodeResumeSession_AccountConfigEnablesDynamicWorkflows(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.Mu.Lock()
+	a.accountProviderConfig = true
+	a.Mu.Unlock()
+
+	answerZCodeRequest(t, a, stdin, MethodSessionResume,
+		`{"session":{"sessionId":"sess-existing"},"runtime":{"eventSeq":4}}`)
+	require.NoError(t, a.openSession("sess-existing", zcodeTestRPCTimeout))
+
+	requests := stdin.Requests(t)
+	require.Len(t, requests, 1)
+	var params map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
+	var enabled bool
+	require.NoError(t, json.Unmarshal(params["dynamicWorkflowEnabled"], &enabled))
+	assert.True(t, enabled)
+}
+
+// A create that produces no session is fatal, unlike a resume that fails: Start
+// tears the process down on it, because every later RPC carries the session id.
+func TestZCodeOpenSession_ReportsACreateThatProducesNoSession(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the app-server refuses", func(t *testing.T) {
+		t.Parallel()
+		stdin := &zcodeRecordedStdin{}
+		a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+		a.Mu.Lock()
+		a.sessionID = ""
+		a.Mu.Unlock()
+
+		refuseZCodeRequest(t, a, stdin, MethodSessionCreate, ErrInternal, "the store is unreadable")
+
+		err := a.openSession("", zcodeTestRPCTimeout)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "the store is unreadable", "the app-server's reason is the only diagnostic there is")
+	})
+
+	t.Run("the reply carries no session id", func(t *testing.T) {
+		t.Parallel()
+		stdin := &zcodeRecordedStdin{}
+		a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+		a.Mu.Lock()
+		a.sessionID = ""
+		a.Mu.Unlock()
+
+		answerZCodeRequest(t, a, stdin, MethodSessionCreate, `{"runtime":{"eventSeq":0}}`)
+
+		err := a.openSession("", zcodeTestRPCTimeout)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), MethodSessionCreate)
+	})
+}
+
+func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.Mu.Lock()
+	a.turnActive = true
+	a.backgroundTurn = true
+	a.lastSeq = 99
+	a.toolCalls["call-1"] = &zcodeToolCall{name: "Bash", input: json.RawMessage(`{"command":"ls"}`), final: true}
+	a.pendingControls["req-1"] = json.RawMessage(`{"type":"control_request"}`)
+	a.latestContextUsage = map[string]any{"context_tokens": int64(12)}
+	a.Mu.Unlock()
+	a.children.rememberChild("spawn-1", "sub-1", "child-1")
+	a.children.rememberTitle("spawn-2", "a title")
+
+	go func() {
+		create := waitZCodeRequest(t, stdin, MethodSessionCreate)
+		// Every state document carries the settings, and session/create honors the mode
+		// it was given -- so the fresh session already runs in the mode the cleared one
+		// did, and no session/setMode follows.
+		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, create), json.RawMessage(
+			`{"session":{"sessionId":"sess-fresh"},"runtime":{"eventSeq":0},`+
+				`"settings":{"mode":{"current":"build"}}}`)))
+		sub := waitZCodeRequest(t, stdin, MethodSessionSubscribe)
+		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, sub), json.RawMessage(`{"eventSeq":0}`)))
+	}()
+
+	sessionID, clearErr := a.ClearContext()
+	require.NoError(t, clearErr)
+	assert.Equal(t, "sess-fresh", sessionID)
+	for _, req := range stdin.Requests(t) {
+		assert.NotEqual(t, MethodSetMode, req.Method, "session/create already opened the session in that mode")
+	}
+
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.False(t, a.turnActive)
+	assert.False(t, a.backgroundTurn)
+	assert.Empty(t, a.toolCalls, "one record per call, so a session replace drops every fact about it")
+	assert.Empty(t, a.pendingControls)
+	assert.Nil(t, a.latestContextUsage)
+	// The subagent index goes with the session too. A tool-call id that the replaced
+	// session was still running never reaches a result, so an entry left here would
+	// route the next session's row into a transcript that belongs to a conversation
+	// the user cleared.
+	_, hasChild := a.children.child("spawn-1")
+	assert.False(t, hasChild)
+	_, hasTool := a.children.toolChild("sub-1")
+	assert.False(t, hasTool)
+	assert.Empty(t, a.children.title("spawn-2"))
+}
+
+func TestZCodeClearContextKeepsTheCurrentSessionWhenCreationFails(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.Mu.Lock()
+	a.lastSeq = 42
+	a.stateRevision = 17
+	a.modeObserved = true
+	a.Mu.Unlock()
+	go func() {
+		request := waitZCodeRequest(t, stdin, MethodSessionCreate)
+		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{}`)))
+	}()
+	_, clearErr := a.ClearContext()
+	assert.Error(t, clearErr)
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Equal(t, "sess-1", a.sessionID)
+	assert.Equal(t, int64(42), a.lastSeq)
+	assert.Equal(t, int64(17), a.stateRevision)
+	assert.True(t, a.modeObserved)
+}

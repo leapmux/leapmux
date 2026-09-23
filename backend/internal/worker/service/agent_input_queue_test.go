@@ -22,6 +22,8 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
@@ -100,9 +102,9 @@ func TestAgentInfoPublishesEffectiveSteeringCapability(t *testing.T) {
 		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: "agent-1", WorkingDir: workingDir,
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
@@ -132,13 +134,13 @@ func TestAgentInfoPublishesEffectivePreemptionCapability(t *testing.T) {
 	for _, agentID := range []string{"steerable", "interrupt-only"} {
 		var err error
 		if agentID == "steerable" {
-			_, err = svc.Agents.MockStartAgent(ctx, agent.Options{
+			_, err = svc.Agents.StartAgentWith(ctx, agent.Options{
 				AgentID: agentID, WorkingDir: workingDir,
-			}, svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR))
+			}, svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR), claudetest.StartEcho)
 		} else {
-			_, err = svc.Agents.MockStartNonSteerableAgent(ctx, agent.Options{
+			_, err = svc.Agents.StartAgentWith(ctx, agent.Options{
 				AgentID: agentID, WorkingDir: workingDir,
-			}, svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR))
+			}, svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR), agenttest.NonSteerable(claudetest.StartSilent))
 		}
 		require.NoError(t, err)
 		t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
@@ -182,9 +184,9 @@ func TestLiveStatusChangePublishesPreemptionCapability(t *testing.T) {
 		}))
 	}
 	preemptSink := svc.Output.NewSink(preemptAgentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
-	_, err := svc.Agents.MockStartNonSteerableAgent(ctx, agent.Options{
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: preemptAgentID, WorkingDir: workingDir,
-	}, preemptSink)
+	}, preemptSink, agenttest.NonSteerable(claudetest.StartSilent))
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(preemptAgentID) })
 	coldSink := svc.Output.NewSink(coldAgentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
@@ -216,9 +218,9 @@ func TestPreemptQueuedAgentInputRPC(t *testing.T) {
 		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	}))
-	_, err := svc.Agents.MockStartNonSteerableAgent(ctx, agent.Options{
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: "agent-1", WorkingDir: workingDir,
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR))
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR), agenttest.NonSteerable(claudetest.StartSilent))
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
 
@@ -257,9 +259,9 @@ func TestPreemptQueuedAgentInputRPCRefusesAPausedQueue(t *testing.T) {
 		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	}))
-	_, err := svc.Agents.MockStartNonSteerableAgent(ctx, agent.Options{
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: "agent-1", WorkingDir: workingDir,
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR))
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR), agenttest.NonSteerable(claudetest.StartSilent))
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
 
@@ -312,9 +314,9 @@ func TestLiveStatusChangePublishesSteeringCapability(t *testing.T) {
 	// A running Claude Code process steers, and an agent with no process cannot
 	// -- the same split the test above uses.
 	steeringSink := svc.Output.NewSink(steeringAgentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: steeringAgentID, WorkingDir: workingDir,
-	}, steeringSink)
+	}, steeringSink, claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(steeringAgentID) })
 	coldSink := svc.Output.NewSink(coldAgentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -347,9 +349,9 @@ func TestCompactOperationFallsBackToProviderInputWhenNativeCompactionIsUnsupport
 		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: "agent-1", WorkingDir: workingDir,
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
 
@@ -516,7 +518,7 @@ func TestQueuedClearStartsColdAgentOnlyOnce(t *testing.T) {
 	var starts atomic.Int32
 	svc.startAgentFn = func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
 		starts.Add(1)
-		return svc.Agents.MockStartAgent(ctx, opts, sink)
+		return svc.Agents.StartAgentWith(ctx, opts, sink, claudetest.StartEcho)
 	}
 	t.Cleanup(func() { svc.Agents.StopAgent("agent-1") })
 
@@ -541,7 +543,7 @@ func TestQueuedClearCreatesBoundaryBeforeLaterInputRuns(t *testing.T) {
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	svc.startAgentFn = svc.Agents.MockStartAgent
+	svc.startAgentFn = startWith(svc.Agents, claudetest.StartEcho)
 	t.Cleanup(func() { svc.Agents.StopAgent("agent-1") })
 	registerAgentWatch(svc, writer.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
@@ -640,10 +642,10 @@ func TestChildQueuePublishesOnlyEffectiveSteeringCapability(t *testing.T) {
 	sink := svc.Output.NewSink(rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
 	childID, err := sink.EnsureChildAgent("zcode-span", "zcode-child", "read-only child")
 	require.NoError(t, err)
-	_, err = svc.Agents.MockStartAgent(ctx, agent.Options{
+	_, err = svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: rootID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
-	}, sink)
+	}, sink, claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(rootID) })
 	require.True(t, svc.Agents.SupportsSteering(rootID), "the mock root must expose regular steering")
@@ -725,10 +727,10 @@ func TestControlFeedbackProducerUsesGeneratedQueueKind(t *testing.T) {
 
 func startGoalTextAgent(t *testing.T, svc *Service, agentID string) {
 	t.Helper()
-	_, err := svc.Agents.MockStartAgent(t.Context(), agent.Options{
+	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{
 		AgentID: agentID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}, svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
+	}, svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
 	require.NoError(t, svc.Agents.SendRawInput(agentID, []byte(
@@ -930,7 +932,7 @@ func TestClassifyQueueDeliveryErrorKeepsTheQueueOpenForABusyAgent(t *testing.T) 
 // what the process received.
 func startEchoAgent(t *testing.T, svc *Service, agentID string) {
 	t.Helper()
-	startMockAgent(t, svc, agentID, svc.Agents.MockStartAgent)
+	startMockAgent(t, svc, agentID, startWith(svc.Agents, claudetest.StartEcho))
 }
 
 // startRecordingEchoAgent is startEchoAgent whose echo is observed through a
@@ -946,7 +948,7 @@ func startEchoAgent(t *testing.T, svc *Service, agentID string) {
 func startRecordingEchoAgent(t *testing.T, svc *Service, agentID string) *controlRequestRecorder {
 	t.Helper()
 	recorder := &controlRequestRecorder{}
-	startMockAgentWrappingSink(t, svc, agentID, svc.Agents.MockStartAgent, func(sink agent.ProviderServices) agent.ProviderServices {
+	startMockAgentWrappingSink(t, svc, agentID, startWith(svc.Agents, claudetest.StartEcho), func(sink agent.ProviderServices) agent.ProviderServices {
 		recorder.ProviderServices = sink
 		return recorder
 	})
@@ -981,11 +983,11 @@ func (r *controlRequestRecorder) requests() []agent.ControlRequest {
 }
 
 // startSilentAgent is startEchoAgent with a mock that writes nothing back. A
-// case that reads the derived activity state needs it; see MockStartSilentAgent
+// case that reads the derived activity state needs it; see claudetest.StartSilent
 // for the artifact the echo leaves behind.
 func startSilentAgent(t *testing.T, svc *Service, agentID string) {
 	t.Helper()
-	startMockAgent(t, svc, agentID, svc.Agents.MockStartSilentAgent)
+	startMockAgent(t, svc, agentID, startWith(svc.Agents, claudetest.StartSilent))
 }
 
 func startMockAgent(
@@ -1115,10 +1117,10 @@ func TestInterruptAgentEscalatesWhenTheProviderProvesItsStopIgnored(t *testing.T
 		ID: agentID, AgentSessionID: "sess-stored",
 	}))
 	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
-	_, err := svc.Agents.MockStartIgnoredStopAgent(ctx, agent.Options{
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: agentID, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
 		WorkingDir: workingDir, APITimeout: 200 * time.Millisecond,
-	}, sink)
+	}, sink, agenttest.IgnoredStop(claudetest.StartSilent))
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
 

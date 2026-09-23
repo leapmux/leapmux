@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 // helper: build a json.RawMessage from an arbitrary value.
@@ -70,7 +69,7 @@ func codexStartupStatus(name, status string, errorText interface{}) map[string]i
 }
 
 func consolidateForProvider(provider leapmuxv1.AgentProvider, msgs []json.RawMessage) []json.RawMessage {
-	return consolidateNotificationThread(msgs, agent.ProviderFor(provider))
+	return consolidateNotificationThread(msgs, testRegistry.Plugin(provider))
 }
 
 func TestConsolidateNotificationThread_OrderPreserved(t *testing.T) {

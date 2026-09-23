@@ -19,6 +19,8 @@ import (
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/codex"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
@@ -168,7 +170,7 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 		AgentId: agentID,
 		Settings: &leapmuxv1.AgentSettings{
 			Options: map[string]string{
-				contracts.CodexOptionCollaborationMode: agent.CodexCollaborationPlan,
+				contracts.CodexOptionCollaborationMode: codex.CollaborationPlan,
 			},
 		},
 	}, wUpdate)
@@ -176,7 +178,7 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	require.Equal(t, agent.CodexCollaborationPlan, loadOptions(row.Options, row.AgentProvider)[contracts.CodexOptionCollaborationMode])
+	require.Equal(t, codex.CollaborationPlan, loadOptions(testRegistry, row.Options, row.AgentProvider)[contracts.CodexOptionCollaborationMode])
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -209,11 +211,11 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 	}, 5*time.Second, 20*time.Millisecond, "expected ACTIVE broadcast after releasing startup")
 
 	require.NotNil(t, activeStatus)
-	assert.Equal(t, agent.CodexCollaborationPlan, optionids.CurrentValue(activeStatus.GetOptionGroups(), contracts.CodexOptionCollaborationMode))
+	assert.Equal(t, codex.CollaborationPlan, optionids.CurrentValue(activeStatus.GetOptionGroups(), contracts.CodexOptionCollaborationMode))
 
 	row, err = svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, agent.CodexCollaborationPlan, loadOptions(row.Options, row.AgentProvider)[contracts.CodexOptionCollaborationMode])
+	assert.Equal(t, codex.CollaborationPlan, loadOptions(testRegistry, row.Options, row.AgentProvider)[contracts.CodexOptionCollaborationMode])
 }
 
 func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
@@ -249,12 +251,12 @@ func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
 	require.NoError(t, err)
 
 	sink := svc.Output.NewSink(agentID, provider)
-	_, err = svc.Agents.MockStartAgent(ctx, agent.Options{
+	_, err = svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID:       agentID,
 		AgentProvider: provider,
 		WorkingDir:    workingDir,
 		Options:       initialOptions,
-	}, sink)
+	}, sink, claudetest.StartEcho)
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent(agentID)
 	_, err = svc.InputQueue.TurnStarted(ctx, agentID, false)
@@ -283,7 +285,7 @@ func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
 	stored, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
 	assert.Equal(t, active.Options, stored.Options)
-	got := loadOptions(stored.Options, provider)
+	got := loadOptions(testRegistry, stored.Options, provider)
 	assert.Equal(t, "sonnet", got[agent.OptionIDModel])
 	assert.Equal(t, agent.EffortAuto, got[agent.OptionIDEffort])
 	assert.Equal(t, contracts.ClaudeModePlan, got[agent.OptionIDPermissionMode])
@@ -350,7 +352,7 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	require.Equal(t, contracts.ClaudeModePlan, loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
+	require.Equal(t, contracts.ClaudeModePlan, loadOptions(testRegistry, row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -387,7 +389,7 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 
 	row, err = svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, contracts.ClaudeModePlan, loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
+	assert.Equal(t, contracts.ClaudeModePlan, loadOptions(testRegistry, row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
 }
 
 func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testing.T) {
@@ -448,11 +450,11 @@ func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testi
 		snapRow.OptionGroups,
 	)
 	require.NoError(t, err)
-	assert.Equal(t, contracts.ClaudeModePlan, loadOptions(activeRow.Options, activeRow.AgentProvider)[agent.OptionIDPermissionMode])
+	assert.Equal(t, contracts.ClaudeModePlan, loadOptions(testRegistry, activeRow.Options, activeRow.AgentProvider)[agent.OptionIDPermissionMode])
 
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, contracts.ClaudeModePlan, loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
+	assert.Equal(t, contracts.ClaudeModePlan, loadOptions(testRegistry, row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
 }
 
 func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *testing.T) {
@@ -511,11 +513,11 @@ func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *t
 		preRow.OptionGroups,
 	)
 	require.NoError(t, err)
-	assert.Equal(t, contracts.ClaudeModePlan, loadOptions(activeRow.Options, activeRow.AgentProvider)[agent.OptionIDPermissionMode])
+	assert.Equal(t, contracts.ClaudeModePlan, loadOptions(testRegistry, activeRow.Options, activeRow.AgentProvider)[agent.OptionIDPermissionMode])
 
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, contracts.ClaudeModePlan, loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
+	assert.Equal(t, contracts.ClaudeModePlan, loadOptions(testRegistry, row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
 }
 
 // TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChange
@@ -535,7 +537,7 @@ func TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChang
 		confirmedEffort string
 	}{
 		{name: "claude", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, permissionMode: contracts.ClaudeModeDefault, resolvedModel: "claude-opus", initialEffort: "high", changedEffort: "low", confirmedEffort: "high"},
-		{name: "codex", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, permissionMode: agent.CodexDefaultApprovalPolicy, resolvedModel: "gpt-5.6-sol", initialEffort: agent.EffortAuto, changedEffort: "high", confirmedEffort: "low"},
+		{name: "codex", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, permissionMode: codex.DefaultApprovalPolicy, resolvedModel: "gpt-5.6-sol", initialEffort: agent.EffortAuto, changedEffort: "high", confirmedEffort: "low"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -568,7 +570,7 @@ func TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChang
 			}))
 			latestRow, err := svc.Queries.GetAgentByID(ctx, agentID)
 			require.NoError(t, err)
-			latestOpts := applyDBSettingsToAgentOptions(initialOpts, &latestRow)
+			latestOpts := applyDBSettingsToAgentOptions(testRegistry, initialOpts, &latestRow)
 
 			confirmed := confirmedSettingsPreservingStartupChanges(
 				map[string]string{
@@ -591,13 +593,13 @@ func TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChang
 				latestRow.OptionGroups,
 			)
 			require.NoError(t, err)
-			persisted := loadOptions(activeRow.Options, activeRow.AgentProvider)
+			persisted := loadOptions(testRegistry, activeRow.Options, activeRow.AgentProvider)
 			assert.Equal(t, test.resolvedModel, persisted[agent.OptionIDModel], "the confirmed model resolution must survive")
 			assert.Equal(t, test.changedEffort, persisted[agent.OptionIDEffort], "the user's mid-startup effort change must be preserved")
 
 			row, err := svc.Queries.GetAgentByID(ctx, agentID)
 			require.NoError(t, err)
-			stored := loadOptions(row.Options, row.AgentProvider)
+			stored := loadOptions(testRegistry, row.Options, row.AgentProvider)
 			assert.Equal(t, test.resolvedModel, stored[agent.OptionIDModel])
 			assert.Equal(t, test.changedEffort, stored[agent.OptionIDEffort])
 		})
@@ -606,7 +608,7 @@ func TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChang
 
 // TestPersistConfirmedAgentSettings_AppliesConfirmedModelWhenColumnLacksDefaultAxis guards the
 // CAS-guard regression: the options CAS expectation must be the row's OWN serialized form, not a
-// recomputed resolveProviderDefaults(latest). When a mid-startup refresh CLEARS a default-valued
+// recomputed resolveProviderDefaults(testRegistry, latest). When a mid-startup refresh CLEARS a default-valued
 // axis (here effort is absent from the column), resolveProviderDefaults re-fills it (effort=auto),
 // so a recomputed expectation would never match the column -- the options CASE would silently take
 // ELSE and the entire confirmed blob (including the sentinel->concrete model resolution) would be
@@ -637,7 +639,7 @@ func TestPersistConfirmedAgentSettings_AppliesConfirmedModelWhenColumnLacksDefau
 		"precondition: the stored column lacks the effort axis")
 	// latest is the column re-loaded with provider defaults (so effort=auto reappears here), exactly
 	// as the startup handoff builds it -- but the column itself still lacks effort.
-	latest := applyDBSettingsToAgentOptions(agent.Options{AgentID: agentID}, &row)
+	latest := applyDBSettingsToAgentOptions(testRegistry, agent.Options{AgentID: agentID}, &row)
 	require.Equal(t, agent.EffortAuto, latest.Options[agent.OptionIDEffort],
 		"precondition: resolveProviderDefaults re-fills effort on load, so it diverges from the column")
 
@@ -650,12 +652,12 @@ func TestPersistConfirmedAgentSettings_AppliesConfirmedModelWhenColumnLacksDefau
 		row.OptionGroups,
 	)
 	require.NoError(t, err)
-	assert.Equal(t, "claude-opus", loadOptions(activeRow.Options, activeRow.AgentProvider)[agent.OptionIDModel],
+	assert.Equal(t, "claude-opus", loadOptions(testRegistry, activeRow.Options, activeRow.AgentProvider)[agent.OptionIDModel],
 		"the confirmed model resolution must persist despite the column lacking a default-valued axis")
 
 	stored, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, "claude-opus", loadOptions(stored.Options, stored.AgentProvider)[agent.OptionIDModel])
+	assert.Equal(t, "claude-opus", loadOptions(testRegistry, stored.Options, stored.AgentProvider)[agent.OptionIDModel])
 }
 
 // TestPersistConfirmedAgentSettings_DoesNotClobberConcurrentCatalog is the regression guard for
@@ -743,11 +745,11 @@ func TestOpenAgent_CodexUsesProviderDefaultPermissionMode(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("startAgentFn not invoked within 5s")
 	}
-	assert.Equal(t, agent.CodexDefaultApprovalPolicy, startedOpts.PermissionMode())
+	assert.Equal(t, codex.DefaultApprovalPolicy, startedOpts.PermissionMode())
 
 	require.Eventually(t, func() bool {
 		row, err := svc.Queries.GetAgentByID(ctx, agentID)
-		return err == nil && loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode] == agent.CodexDefaultApprovalPolicy
+		return err == nil && loadOptions(testRegistry, row.Options, row.AgentProvider)[agent.OptionIDPermissionMode] == codex.DefaultApprovalPolicy
 	}, 5*time.Second, 20*time.Millisecond, "expected Codex permission mode to be stored as provider default")
 }
 

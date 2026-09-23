@@ -44,7 +44,8 @@ func TestControlResponseKeepsConcurrentNumericAndStringRequestsSeparate(t *testi
 	createClaimTestAgent(t, svc, "agent-1")
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	for _, nativeID := range []string{`7`, `"7"`} {
-		requestID, ok := agent.JSONRPCControlRequestID(json.RawMessage(nativeID))
+		identity, ok := agent.NewControlRequestIdentity(json.RawMessage(nativeID))
+		requestID := identity.Key
 		require.True(t, ok)
 		request := []byte(fmt.Sprintf(`{"id":%s,"method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`, nativeID))
 		require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: requestID, Payload: request}))

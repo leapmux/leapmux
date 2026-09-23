@@ -124,7 +124,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 	if dbAgent.StartupError != "" && !svc.Agents.HasAgent(item.AgentID) {
 		return inputqueue.DispatchResult{}, fmt.Errorf("agent failed to start; open a new agent")
 	}
-	attachments, err := agent.NormalizeAttachmentsForProvider(dbAgent.AgentProvider, providerAttachments(item.Attachments))
+	attachments, err := a.svc.Agents.Registry().NormalizeAttachments(dbAgent.AgentProvider, providerAttachments(item.Attachments))
 	if err != nil {
 		return inputqueue.DispatchResult{}, err
 	}
@@ -163,7 +163,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 			return &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
 		}
 		resumeID := svc.resolveResumeSessionID(item.AgentID, dbAgent.AgentSessionID, dbAgent.Resumed)
-		return svc.ensureAgentRunning(item.AgentID, &resumeID, interactiveStart)
+		return svc.ensureAgentRunning(item.AgentID, &resumeID, queuedStart)
 	}
 
 	switch item.Kind {
@@ -297,7 +297,7 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 		return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 	}
 	text := resolvedInput.text
-	attachments, err := agent.NormalizeAttachmentsForProvider(dbAgent.AgentProvider, providerAttachments(item.Attachments))
+	attachments, err := a.svc.Agents.Registry().NormalizeAttachments(dbAgent.AgentProvider, providerAttachments(item.Attachments))
 	if err != nil {
 		return inputqueue.DispatchResult{}, err
 	}
@@ -372,7 +372,7 @@ func (a *agentInputQueueAdapter) SupportsPreemption(agentID string) bool {
 // a `SELECT *` on the agents row once per agent.
 func (svc *Service) agentSupportsSteering(dbAgent *db.Agent) bool {
 	if dbAgent.ParentAgentID.Valid {
-		if !agent.ProviderFor(dbAgent.AgentProvider).SupportsChildSteering() {
+		if !svc.Agents.Registry().Plugin(dbAgent.AgentProvider).SupportsChildSteering() {
 			return false
 		}
 		row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(bgCtx(), dbAgent.ID)
@@ -394,7 +394,7 @@ func (svc *Service) agentSupportsSteering(dbAgent *db.Agent) bool {
 //
 // It tests the STEERING half alone, and the interrupt half needs no test: Interrupt
 // is a required method of the Agent interface, so a provider with no interrupt path
-// does not compile. processBase carried a no-op default until this was written, and
+// does not compile. Process carried a no-op default until this was written, and
 // a provider that inherited it would have answered the RPC with success, cancelled
 // nothing, and left the reader a Preempt button that did nothing.
 func (svc *Service) agentSupportsPreemption(dbAgent *db.Agent) bool {

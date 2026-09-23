@@ -1,0 +1,1240 @@
+package zcode
+
+import (
+	"encoding/json"
+	"log/slog"
+	"sort"
+	"strings"
+
+	"github.com/leapmux/leapmux/generated/contracts"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+)
+
+// handleZCodeOutput dispatches one line the response interceptor did not consume.
+//
+// Only two notification methods carry conversation: session/event and the top-level
+// state.updated. Everything else the app-server emits is its own telemetry.
+func handleZCodeOutput(a *Agent, line *providerkit.ParsedLine) {
+	switch line.Method {
+	case NotifySessionEvent:
+		// A frame is proof the turn is alive, so it restarts the window a stop armed.
+		// Telemetry notifications do not, which is why this sits on the event case.
+		a.refreshStoppedZCodeTurn()
+		event, ok := parseZCodeEvent(line.Params)
+		if !ok {
+			slog.Warn("zcode session/event carried no event type", "agent_id", a.AgentID(), "len", len(line.Raw))
+			return
+		}
+		a.dispatchZCodeEvent(event)
+	case NotifyStateUpdated:
+		a.handleZCodeStateUpdated(line.Params)
+	case "":
+		// An id with no method and no pending request: a reply nobody waited for. It
+		// happens when a request timed out and its answer arrived afterwards.
+		slog.Debug("zcode orphan response", "agent_id", a.AgentID(), "len", len(line.Raw))
+	default:
+		// The app-server also emits process/resourceSample, process/mcpTelemetry,
+		// plugins/operationProgress and the computer-use stream. None of them is
+		// conversation, and persisting them would fill the transcript with telemetry.
+		slog.Debug("zcode unhandled notification", "agent_id", a.AgentID(), "method", line.Method)
+	}
+}
+
+// dispatchZCodeEvent routes one session event.
+//
+// The switch lists EVERY member of the app-server's event enumeration, including the
+// ones LeapMux ignores, each with the reason. A new event type therefore reaches the
+// default branch and is logged, instead of being silently absorbed by a branch that
+// looks deliberate.
+//
+// Two goroutines reach this function. The read loop delivers live notifications, and
+// `subscribe` dispatches the events its own reply replays -- on the CALLER's goroutine,
+// which is the one that ran ClearContext, not the read loop. dispatchMu serializes them
+// for the WHOLE body, because `a.Mu` guards each field read on its own and not the
+// open-then-close SEQUENCE of one tool call: a replayed `scheduled` overtaken by its own
+// live `result` closes a span before it opens, and the card then stays running for good.
+//
+// Take it here and never around `subscribe` itself. The read loop delivers the subscribe
+// reply, so holding it across that RPC would deadlock the two against each other. No
+// handler reachable from here issues a synchronous request; the one that issues any runs
+// on its own goroutine.
+func (a *Agent) dispatchZCodeEvent(event zcodeEventEnvelope) {
+	a.dispatchMu.Lock()
+	defer a.dispatchMu.Unlock()
+
+	if event.SessionID != "" {
+		a.Mu.Lock()
+		currentSessionID := a.sessionID
+		a.Mu.Unlock()
+		if currentSessionID != "" && event.SessionID != currentSessionID {
+			return
+		}
+	}
+	if event.Seq > 0 {
+		a.Mu.Lock()
+		// An event at or below the watermark was already dispatched. A subscribe replays
+		// every event after `afterSeq`, and a live notification for the same event can
+		// arrive alongside it, so without this each row in the overlap is persisted twice.
+		if event.Seq <= a.lastSeq {
+			a.Mu.Unlock()
+			return
+		}
+		a.lastSeq = event.Seq
+		a.Mu.Unlock()
+	}
+
+	switch event.Type {
+	case contracts.ZCodeEventTurnStarted:
+		a.handleZCodeTurnStarted(event)
+	case contracts.ZCodeEventTurnCompleted:
+		a.handleZCodeTurnCompleted(event)
+	case contracts.ZCodeEventTurnFailed:
+		a.handleZCodeTurnFailed(event)
+	case contracts.ZCodeEventModelStreaming:
+		a.handleZCodeModelStreaming(event)
+	case contracts.ZCodeEventToolUpdated:
+		a.handleZCodeToolUpdated(event)
+	case contracts.ZCodeEventSessionUpdated:
+		a.handleZCodeSessionUpdated(event)
+	case contracts.ZCodeEventPermissionResolved:
+		a.handleZCodePermissionResolved(event)
+	case contracts.ZCodeEventTurnSteerQueued, contracts.ZCodeEventTurnSteerDrained:
+		a.persistZCodeNotification(event)
+	case contracts.ZCodeEventSessionClosed:
+		a.persistZCodeNotification(event)
+
+	case contracts.ZCodeEventSessionCreated, contracts.ZCodeEventSessionResumed:
+		// The create/resume RPC already returned the same state, and applyStateSnapshot
+		// consumed it. The event is the second copy.
+
+	case contracts.ZCodeEventSessionTitleUpdated:
+		// LeapMux titles an agent from the user's first message and from its own
+		// renaming flow. A model-written session title would fight that.
+
+	case contracts.ZCodeEventMessageUpserted, contracts.ZCodeEventMessageRemoved,
+		contracts.ZCodeEventPartStarted, contracts.ZCodeEventPartDelta,
+		contracts.ZCodeEventPartUpserted, contracts.ZCodeEventPartRemoved:
+		// The row/part projection repeats model.streaming data and the completed
+		// model response. Consuming both would duplicate every message.
+
+	case contracts.ZCodeEventPermissionRequested:
+		// The actionable copy is the interaction/requestPermission REQUEST, which
+		// carries the reply id and the option list. This event is its announcement, and
+		// persisting it would show the prompt twice.
+
+	case contracts.ZCodeEventUserInputRequested:
+		// Same reason: interaction/requestUserInput is the actionable copy.
+
+	case contracts.ZCodeEventUserInputResolved:
+		// Nothing to persist -- the answer row already records what the user chose.
+		// The request id is dropped, which re-arms the re-announcement guard.
+		a.handleZCodeUserInputResolved(event)
+
+	case contracts.ZCodeEventCheckpointCreated, contracts.ZCodeEventRewindTriggered:
+		// Checkpoint and rewind belong to the desktop application's undo model, which
+		// LeapMux does not expose. Its own history is the transcript.
+
+	case contracts.ZCodeEventStreamRecoveryUpdated:
+		a.handleZCodeStreamRecovery(event)
+
+	default:
+		slog.Debug("zcode unknown event type", "agent_id", a.AgentID(), "type", event.Type)
+	}
+}
+
+// persistBytes preserves a native envelope. Synthetic events use the same JSON shape.
+func (e zcodeEventEnvelope) persistBytes() []byte {
+	if len(e.raw) > 0 {
+		return e.raw
+	}
+	encoded, err := json.Marshal(e)
+	if err != nil {
+		slog.Warn("zcode marshal event for persist failed", "type", e.Type, "error", err)
+		return nil
+	}
+	return encoded
+}
+
+// withPayload creates a synthetic event without changing the original envelope.
+func (e zcodeEventEnvelope) withPayload(payload json.RawMessage) zcodeEventEnvelope {
+	e.Payload = payload
+	if len(e.raw) > 0 {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(e.raw, &fields) == nil && fields != nil {
+			fields["payload"] = payload
+			encoded, err := json.Marshal(fields)
+			if err != nil {
+				// persistBytes reports the invalid replacement through its normal error path.
+				e.raw = nil
+			} else {
+				e.raw = encoded
+			}
+		} else {
+			e.raw = nil
+		}
+	}
+	return e
+}
+
+// persistZCodeNotification records a lifecycle event as a notification row.
+func (a *Agent) persistZCodeNotification(event zcodeEventEnvelope) {
+	content := event.persistBytes()
+	if content == nil {
+		return
+	}
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
+		slog.Error("zcode persist notification", "agent_id", a.AgentID(), "type", event.Type, "error", err)
+	}
+}
+
+// --- turn lifecycle ---
+
+// PublishTurnActive republishes the Worker-visible turn state from turnActive,
+// the single source. Call it after EVERY critical section that writes that
+// field.
+//
+// It re-reads rather than taking a value, so a caller cannot publish something
+// the field does not say, and a missing call is the only way the two can drift.
+// Never called with a.Mu held: the sink broadcasts, and a broadcast can block on
+// a slow transport.
+//
+// A BACKGROUND turn counts as active here, deliberately. It persists no divider
+// and closes none of the user's spans, but the agent IS processing, and
+// turnActive is already what Interrupt and Stop read to decide the session is
+// live.
+func (a *Agent) PublishTurnActive() agent.TurnState {
+	a.Mu.Lock()
+	active := a.turnActive
+	seq := a.NextTurnSeq()
+	a.Mu.Unlock()
+	return providerkit.PublishSteerableTurnActiveTo(a.sink, active, seq)
+}
+
+// zcodeTurnStarted is the turn.started payload.
+type zcodeTurnStarted struct {
+	TurnNumber  int64  `json:"turnNumber"`
+	Input       string `json:"input"`
+	InputID     string `json:"inputId"`
+	InputSource string `json:"inputSource"`
+	MessageID   string `json:"messageId"`
+}
+
+// handleZCodeTurnStarted arms the turn.
+//
+// A turn whose inputSource is set was started by the RUNTIME, not by the user: a
+// background task reporting back, a subagent's reply being folded in, a todo
+// reminder. Such a turn is armed as a background turn, so its completion does not
+// end the user's turn and its transcript rows still land.
+func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
+	var payload zcodeTurnStarted
+	if len(event.Payload) > 0 {
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			slog.Warn("zcode turn.started unmarshal failed", "agent_id", a.AgentID(), "error", err)
+		}
+	}
+	background := payload.InputSource != ""
+
+	a.Mu.Lock()
+	a.turnActive = true
+	a.backgroundTurn = background
+	if !background {
+		a.TurnToolUses = 0
+	}
+	a.Mu.Unlock()
+	a.PublishTurnActive()
+
+	if !background {
+		a.generationBuffer.Reset()
+		a.sink.ReportProgress(agent.ResetModelProgress())
+	}
+	slog.Debug("zcode turn started", "agent_id", a.AgentID(), "turn", payload.TurnNumber, "input_source", payload.InputSource)
+}
+
+// zcodeTurnCompleted is the turn.completed payload.
+type zcodeTurnCompleted struct {
+	Response      string      `json:"response"`
+	TokenCount    int64       `json:"tokenCount"`
+	Usage         *zcodeUsage `json:"usage"`
+	ToolCallCount int32       `json:"toolCallCount"`
+	Duration      float64     `json:"duration"`
+	ResultType    string      `json:"resultType"`
+}
+
+func (a *Agent) handleZCodeTurnCompleted(event zcodeEventEnvelope) {
+	var payload zcodeTurnCompleted
+	if len(event.Payload) > 0 {
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			slog.Warn("zcode turn.completed unmarshal failed", "agent_id", a.AgentID(), "error", err)
+		}
+	}
+	if payload.Usage != nil {
+		a.recordZCodeUsage(*payload.Usage)
+	}
+	a.finishZCodeTurn(event, payload.ToolCallCount)
+	// A completed turn is not an error, so any pending auto-continue for one is stale.
+	providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.sink, false, event.persistBytes())
+}
+
+// zcodeTurnFailed is the turn.failed payload. `error.retryable` is the app-server's
+// own verdict on whether the failure is transient, which is exactly the question the
+// auto-continue scheduler asks -- so no message-text matching is needed.
+type zcodeTurnFailed struct {
+	Error struct {
+		Type      string `json:"type"`
+		Message   string `json:"message"`
+		Code      string `json:"code"`
+		Detail    string `json:"detail"`
+		Retryable *bool  `json:"retryable"`
+	} `json:"error"`
+	TurnPhase string `json:"turnPhase"`
+}
+
+func (a *Agent) handleZCodeTurnFailed(event zcodeEventEnvelope) {
+	var payload zcodeTurnFailed
+	if len(event.Payload) > 0 {
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			slog.Warn("zcode turn.failed unmarshal failed", "agent_id", a.AgentID(), "error", err)
+		}
+	}
+	content := event.persistBytes()
+	completion := agent.MessageCompletionError
+	failureKind := strings.ToLower(payload.Error.Type + " " + payload.Error.Code)
+	if strings.Contains(failureKind, "cancel") || strings.Contains(failureKind, "interrupt") {
+		completion = agent.MessageCompletionInterrupted
+	}
+	a.flushZCodeGeneration(completion)
+	a.persistIncompleteZCodeTools(completion)
+	a.finishZCodeTurn(event, 0)
+	providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.sink, zcodeFailureIsRetryable(payload), content)
+}
+
+// zcodeFailureIsRetryable reports whether a failed turn should be retried.
+//
+// The app-server's own `retryable` flag decides when it states one. A missing flag
+// falls back to "not retryable", with one named exception: a provider that carries no
+// usable credential is NEVER retryable, because a retry re-reads the same empty
+// configuration and produces the same failure forever.
+func zcodeFailureIsRetryable(payload zcodeTurnFailed) bool {
+	if payload.Error.Code == CauseProviderNotConfigured ||
+		payload.Error.Type == CauseProviderNotConfigured {
+		return false
+	}
+	return payload.Error.Retryable != nil && *payload.Error.Retryable
+}
+
+// finishZCodeTurn closes out a turn: persist the divider, reset the spans, and
+// refresh the authoritative usage.
+//
+// A BACKGROUND turn takes none of it. Its completion says nothing about the user's
+// turn, and closing the spans there would tear down the cards of tool calls the
+// user's own turn is still running.
+func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int32) {
+	a.Mu.Lock()
+	background := a.backgroundTurn
+	// The turn reported its own end, so the stop's window has nothing left to watch.
+	// It is dropped in the SAME critical section that clears turnActive: a frame the
+	// read loop delivered between the two re-armed the window, and it then ended a
+	// turn that had already ended and wrote a second stop row for it.
+	a.cancelStoppedZCodeTurnLocked()
+	// A turn ends whichever kind it was, so the flag clears either way. Leaving it set
+	// for a background turn made Interrupt and Stop fire a session/stop RPC at an idle
+	// session for the rest of the agent's life. What a background turn does NOT do is
+	// close the user's spans or persist a divider, which is what the guard below states.
+	a.turnActive = false
+	if !background && toolCallCount > 0 {
+		a.TurnToolUses = int(toolCallCount)
+	}
+	a.backgroundTurn = false
+	a.Mu.Unlock()
+	// Deferred, for two reasons at once. It runs on EVERY path, including the
+	// two early returns below -- a background turn, and a turn whose event
+	// carries no persistable content -- and a turn that published no clear would
+	// latch the agent busy for the life of the process. And it runs AFTER
+	// PersistTurnEnd, which hands this turn's tool-call count to the activity
+	// latch: the clear is what produces the settle edge that spends the count,
+	// so publishing it first would settle the agent with no count and ring the
+	// completion sound for a turn that used no tool.
+	defer a.PublishTurnActive()
+
+	content := event.persistBytes()
+	if content == nil {
+		return
+	}
+	if background {
+		completion := agent.MessageCompletionError
+		if event.Type == contracts.ZCodeEventTurnCompleted {
+			completion = agent.MessageCompletionComplete
+		}
+		a.flushZCodeGeneration(completion)
+		a.persistIncompleteZCodeTools(completion)
+		// The background turn's own outcome is still worth recording, as a notification
+		// rather than as the user's turn end.
+		a.persistZCodeNotification(event)
+		return
+	}
+	if event.Type == contracts.ZCodeEventTurnCompleted {
+		a.flushZCodeGeneration(agent.MessageCompletionComplete)
+		a.persistIncompleteZCodeTools(agent.MessageCompletionError)
+	}
+
+	// Recover any tool call that never reached a final update (an aborted turn), so
+	// the next turn's progress deltas are not measured against a dead stream.
+	a.ResetCumulativeOutput()
+	a.sink.ReportProgress(agent.ResetModelProgress())
+
+	if err := a.sink.PersistTurnEnd(zcodeTurnContent(content, a.usageSnapshot()), agent.SpanInfo{}); err != nil {
+		slog.Error("zcode persist turn end", "agent_id", a.AgentID(), "type", event.Type, "error", err)
+	}
+	a.sink.ResetSpans()
+	a.Mu.Lock()
+	// Any batch summary that could still reference these arrived within the turn, so the
+	// marks are spent. A record that holds nothing else goes with them, which is what
+	// keeps the map's size capped at one turn's calls rather than at the session's.
+	for id, tc := range a.toolCalls {
+		tc.final = false
+		if tc.name == "" && tc.input == nil {
+			delete(a.toolCalls, id)
+		}
+	}
+	a.Mu.Unlock()
+
+	// The app-server's own reading is authoritative, and reading it takes an RPC --
+	// which the read loop must stay free to deliver, so it cannot run inline here.
+	go a.refreshZCodeUsageFromSession()
+}
+
+// --- streaming ---
+
+// zcodeModelStreaming is the model.streaming payload.
+type zcodeModelStreaming struct {
+	AssistantMessageID string          `json:"assistantMessageId"`
+	Delta              string          `json:"delta"`
+	Done               bool            `json:"done"`
+	Input              json.RawMessage `json:"input"`
+	Kind               string          `json:"kind"`
+	ToolCallID         string          `json:"toolCallId"`
+	ToolName           string          `json:"toolName"`
+}
+
+// handleZCodeModelStreaming counts model deltas and caches streamed tool input.
+//
+// The app-server filters this event before it leaves: only text_delta and
+// reasoning_delta (with a non-empty delta) and the four tool_input kinds are ever
+// sent. The start/finish/error and the *_start / *_end phase markers exist in its
+// enumeration and never arrive, which is why there is no phase handling here.
+func (a *Agent) handleZCodeModelStreaming(event zcodeEventEnvelope) {
+	var payload zcodeModelStreaming
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		slog.Warn("zcode model.streaming unmarshal failed", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+
+	switch payload.Kind {
+	case StreamTextDelta:
+		if payload.Delta == "" {
+			return
+		}
+		a.flushZCodeGenerationScope(zcodeReasoningScope(payload.AssistantMessageID), agent.MessageCompletionComplete)
+		textScope := zcodeTextScope(payload.AssistantMessageID)
+		a.generationBuffer.Append(textScope, agent.AssembledMessageKindText, payload.Delta, providerkit.JoinVerbatim)
+		a.sink.ReportProgress(agent.ModelTextProgress(textScope, payload.Delta))
+	case StreamReasoningDelta:
+		if payload.Delta == "" {
+			return
+		}
+		reasoningScope := zcodeReasoningScope(payload.AssistantMessageID)
+		a.generationBuffer.Append(reasoningScope, agent.AssembledMessageKindReasoning, payload.Delta, providerkit.JoinVerbatim)
+		a.sink.ReportProgress(agent.ModelTextProgress(reasoningScope, payload.Delta))
+
+	case StreamToolInputStart:
+		// The completed model response supplies assistant text after this event.
+		// Persist only reasoning, which that response omits.
+		a.flushZCodeGenerationKind(agent.AssembledMessageKindReasoning, agent.MessageCompletionComplete)
+		if payload.ToolCallID == "" {
+			return
+		}
+		a.Mu.Lock()
+		tc := a.zcodeToolCallLocked(payload.ToolCallID)
+		if payload.ToolName != "" {
+			tc.name = payload.ToolName
+		}
+		// A restart of the same id drops a partial input, so a retried tool call does
+		// not inherit the abandoned attempt's fragment.
+		tc.input = nil
+		a.Mu.Unlock()
+
+	case StreamToolInputDelta:
+		// The input arrives as JSON TEXT split across deltas, so the fragments are
+		// concatenated and parsed only once the call is complete.
+		if payload.ToolCallID == "" || payload.Delta == "" {
+			return
+		}
+		a.Mu.Lock()
+		tc := a.zcodeToolCallLocked(payload.ToolCallID)
+		tc.input = append(tc.input, payload.Delta...)
+		a.Mu.Unlock()
+
+	case StreamToolInputEnd:
+		// Nothing to do: the accumulated fragments stay cached until the tool.updated
+		// that opens the call consumes them.
+
+	case StreamToolCall:
+		// The complete, PARSED input. It supersedes the concatenated fragments, which
+		// can be truncated when the model's stream was cut.
+		if payload.ToolCallID == "" {
+			return
+		}
+		a.Mu.Lock()
+		tc := a.zcodeToolCallLocked(payload.ToolCallID)
+		if payload.ToolName != "" {
+			tc.name = payload.ToolName
+		}
+		if len(payload.Input) > 0 {
+			tc.input = append(json.RawMessage(nil), payload.Input...)
+		}
+		a.Mu.Unlock()
+
+	default:
+		slog.Debug("zcode unknown model.streaming kind", "agent_id", a.AgentID(), "kind", payload.Kind)
+	}
+}
+
+// --- tool lifecycle ---
+
+// zcodeToolUpdated is the tool.updated payload, across every kind.
+//
+// The subagent fields (Source / AgentID / AgentType / ChildSessionID) mark an update
+// that belongs to a SUBAGENT's own conversation rather than to this one.
+type zcodeToolUpdated struct {
+	Kind           string `json:"kind"`
+	ToolCallID     string `json:"toolCallId"`
+	ToolName       string `json:"toolName"`
+	Description    string `json:"description"`
+	Source         string `json:"source"`
+	AgentID        string `json:"agentId"`
+	AgentType      string `json:"agentType"`
+	ChildSessionID string `json:"childSessionId"`
+	// ParentToolCallID is the tool-call id of the `Agent` call that started the
+	// subagent this update belongs to. It is the ONLY field that links a subagent's
+	// work back to the spawn card, and it is what the child transcript is keyed on.
+	ParentToolCallID string `json:"parentToolCallId"`
+
+	// scheduled
+	Input        json.RawMessage `json:"input"`
+	InputOmitted bool            `json:"inputOmitted"`
+	InputRef     string          `json:"inputRef"`
+
+	// progress. OutputBytes is the combined native total. The per-stream totals
+	// supply the fallback when a provider omits it.
+	OutputBytes int64  `json:"outputBytes"`
+	StdoutBytes int64  `json:"stdoutBytes"`
+	StderrBytes int64  `json:"stderrBytes"`
+	StdoutTail  string `json:"stdoutTail"`
+	StderrTail  string `json:"stderrTail"`
+
+	// result
+	Result json.RawMessage `json:"result"`
+
+	// error
+	Error json.RawMessage `json:"error"`
+
+	// batch
+	ToolCallIDs  []string `json:"toolCallIds"`
+	SuccessCount int      `json:"successCount"`
+	ErrorCount   int      `json:"errorCount"`
+}
+
+func (a *Agent) handleZCodeToolUpdated(event zcodeEventEnvelope) {
+	var payload zcodeToolUpdated
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		slog.Warn("zcode tool.updated unmarshal failed", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+
+	// A `raw` frame is the app server's own escape hatch: it carries an opaque
+	// payload rather than the fields a row reads. It must not become the call's
+	// last frame -- a turn that ends while the call runs stores that frame as the
+	// row, and the reader would get an unrecognized card where the call's real
+	// state belongs.
+	if payload.Kind == contracts.ZCodeToolKindRaw {
+		slog.Debug("zcode raw tool.updated frame", "agent_id", a.AgentID(), "tool_call_id", payload.ToolCallID)
+		return
+	}
+
+	a.rememberZCodeToolFrame(payload.ToolCallID, event)
+
+	switch payload.Kind {
+	case contracts.ZCodeToolKindScheduled:
+		// A subagent's own tool calls get a transcript of their own -- see
+		// subagent.go. One whose parent tool call the update does not name falls
+		// through to the parent transcript rather than being dropped.
+		if zcodeToolFromSubagent(payload) && a.openZCodeSubagentToolCall(event, payload) {
+			return
+		}
+		a.openZCodeToolCall(event, payload)
+	case contracts.ZCodeToolKindStarted:
+		a.recordZCodeToolStarted(payload)
+	case contracts.ZCodeToolKindProgress:
+		a.streamZCodeToolProgress(payload)
+	case contracts.ZCodeToolKindResult, contracts.ZCodeToolKindError:
+		a.closeZCodeToolCall(event, payload)
+	case contracts.ZCodeToolKindBatch:
+		a.applyZCodeToolBatch(event, payload)
+	default:
+		slog.Debug("zcode unknown tool.updated kind", "agent_id", a.AgentID(), "kind", payload.Kind)
+	}
+}
+
+// rememberZCodeToolFrame records the agent's own bytes for one tool call.
+//
+// Every kind the switch in handleZCodeToolUpdated reads passes through here, so a
+// new case cannot forget it. A `raw` frame is the one exception: that handler drops
+// it BEFORE this call, because a raw frame must not become the row. A batch update
+// identifies a LIST of calls rather than one, and its toolCallId is empty, so it
+// records nothing.
+func (a *Agent) rememberZCodeToolFrame(toolCallID string, event zcodeEventEnvelope) {
+	if toolCallID == "" {
+		return
+	}
+	raw := event.persistBytes()
+	if raw == nil {
+		return
+	}
+	a.Mu.Lock()
+	a.zcodeToolCallLocked(toolCallID).lastFrame = raw
+	a.Mu.Unlock()
+}
+
+// openZCodeToolCall persists the tool call's opening row into this agent's own
+// transcript. A subagent's call goes to its child transcript instead -- see
+// subagent.go.
+func (a *Agent) openZCodeToolCall(event zcodeEventEnvelope, payload zcodeToolUpdated) {
+	a.openZCodeToolCallInto(a.sink, event, payload)
+}
+
+// recordZCodeToolStarted notes that a scheduled call began running.
+func (a *Agent) recordZCodeToolStarted(payload zcodeToolUpdated) {
+	if payload.ToolCallID == "" {
+		return
+	}
+	// The progress counters are measured from here, so a re-started call does not read
+	// its predecessor's byte totals as already-broadcast. Both streams are keyed
+	// separately, so both are dropped.
+	a.ClearCumulativeOutput(payload.ToolCallID)
+	a.zcodeSinkForToolCall(payload.ToolCallID).ReportProgress(agent.ResetOutputProgress(payload.ToolCallID))
+	// This used to broadcast a `zcode_running_tool` session-info key that nothing
+	// read. The shared channel for "which tool is running" is now
+	// contracts.SessionInfoKeyRunningTool, which the tool card renders as a live
+	// badge. ZCode does not feed it yet: the badge shows an elapsed time or a
+	// retry state, and the app-server reports neither for a tool call, so an entry
+	// from here would render nothing. Broadcast one from this site (span_id =
+	// payload.ToolCallID) once ZCode reports either. The clear needs no code --
+	// the frontend drops a span's entry when its result row lands, and
+	// closeZCodeToolCall already persists that row with Closing: true.
+	//
+	// The other route to a ZCode badge needs nothing from the app-server: the
+	// browser can count from the tool_use row's own timestamp, which would give
+	// every provider a badge at once.
+	// https://github.com/leapmux/leapmux/issues/439
+}
+
+// streamZCodeToolProgress reports the native combined byte total when present.
+func (a *Agent) streamZCodeToolProgress(payload zcodeToolUpdated) {
+	if payload.ToolCallID == "" {
+		return
+	}
+	a.Mu.Lock()
+	tc := a.zcodeToolCallLocked(payload.ToolCallID)
+	tc.progress = payload
+	a.Mu.Unlock()
+	sink := a.zcodeSinkForToolCall(payload.ToolCallID)
+	// The two tails are SEPARATE streams, each cut at a byte count rather than at a
+	// line end, so they join with a line break between them. Concatenating them
+	// would glue a mid-line stdout tail to the first stderr line and show one line
+	// that neither stream wrote.
+	if tail := zcodeJoinOutputTails(payload.StdoutTail, payload.StderrTail); tail != "" {
+		// Whether the app server DROPPED bytes, which its own counts answer. A tail
+		// is usually a window, but a short command's tail is its WHOLE output, and
+		// asserting the flag drew "earlier output was dropped" under a complete
+		// three-byte result. Compared per stream, because the join inserts a line
+		// break the byte counts do not carry.
+		//
+		// A frame that states no count at all is the third case: the size of what it
+		// dropped is unknown, so the tail stays a window -- the same reading that
+		// makes the byte total below a minimum.
+		var truncated bool
+		switch {
+		case payload.StdoutBytes > 0 || payload.StderrBytes > 0:
+			truncated = payload.StdoutBytes > int64(len(payload.StdoutTail)) || payload.StderrBytes > int64(len(payload.StderrTail))
+		case payload.OutputBytes > 0:
+			truncated = payload.OutputBytes > int64(len(payload.StdoutTail)+len(payload.StderrTail))
+		default:
+			truncated = true
+		}
+		sink.ReportProgress(agent.OutputTailProgress(payload.ToolCallID, tail, truncated))
+	}
+	total := payload.OutputBytes
+	if total <= 0 {
+		total = agent.SaturatingAdd(payload.StdoutBytes, payload.StderrBytes)
+	}
+	if total <= 0 {
+		combined := payload.StdoutTail + payload.StderrTail
+		if combined == "" {
+			return
+		}
+		observed := a.ObserveCumulativeOutput(payload.ToolCallID, combined, true)
+		sink.ReportProgress(agent.OutputTotalProgress(payload.ToolCallID, observed.Total, observed.Minimum))
+		return
+	}
+	sink.ReportProgress(agent.OutputExactTotalProgress(payload.ToolCallID, total))
+}
+
+// zcodeRecoveredClose ends a tool call whose own result the agent never sent.
+//
+// Its presence is what redirects the row to the call's own last frame, so a nil
+// outcome note cannot quietly store the event that triggered the close instead.
+type zcodeRecoveredClose struct {
+	// outcome is the tool-outcome metadata, which states what LeapMux concluded.
+	outcome []byte
+	// status is what the subagent registry row becomes. The payload cannot supply it,
+	// because there is no result to read it from.
+	status bgtask.Status
+}
+
+// closeZCodeToolCall persists the tool call's final row into the transcript that
+// holds its opening row -- this agent's own, or a subagent's child transcript.
+func (a *Agent) closeZCodeToolCall(event zcodeEventEnvelope, payload zcodeToolUpdated) {
+	a.closeZCodeToolCallInto(a.zcodeSinkForToolCall(payload.ToolCallID), event, payload, nil)
+}
+
+func (a *Agent) persistIncompleteZCodeTools(completion agent.MessageCompletion) {
+	a.Mu.Lock()
+	toolCallIDs := make([]string, 0, len(a.toolCalls))
+	frames := make(map[string][]byte)
+	tools := make(map[string]zcodeToolUpdated)
+	orders := make(map[string]uint64)
+	for toolCallID, tool := range a.toolCalls {
+		// An agent that never announced the call opened no row and reserved no span,
+		// so there is nothing to close and no frame of its own to store.
+		if tool == nil || tool.final || tool.name == "" || len(tool.lastFrame) == 0 {
+			continue
+		}
+		progress := tool.progress
+		progress.ToolCallID = toolCallID
+		progress.ToolName = tool.name
+		tool.final = true
+		frames[toolCallID] = tool.lastFrame
+		tool.name = ""
+		tool.input = nil
+		tool.lastFrame = nil
+		toolCallIDs = append(toolCallIDs, toolCallID)
+		tools[toolCallID] = progress
+		orders[toolCallID] = tool.order
+	}
+	a.Mu.Unlock()
+	if a.IsDiscardingOutput() {
+		return
+	}
+	sort.Slice(toolCallIDs, func(left, right int) bool {
+		if orders[toolCallIDs[left]] != orders[toolCallIDs[right]] {
+			return orders[toolCallIDs[left]] < orders[toolCallIDs[right]]
+		}
+		return toolCallIDs[left] < toolCallIDs[right]
+	})
+	for _, toolCallID := range toolCallIDs {
+		sink := a.zcodeSinkForToolCall(toolCallID)
+		tool := tools[toolCallID]
+		// The row is the agent's own last frame. Its partial output is already in that
+		// frame, and LeapMux's completion column states that the call did not finish.
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: frames[toolCallID], Completion: completion}, agent.SpanInfo{
+			SpanID: toolCallID, SpanType: tool.ToolName, Closing: true,
+		}); err != nil {
+			slog.Error("persist incomplete zcode tool", "agent_id", a.AgentID(), "tool_call_id", toolCallID, "error", err)
+		}
+		sink.CloseSpan(toolCallID)
+		a.ClearCumulativeOutput(toolCallID)
+		sink.ReportProgress(agent.CompleteOutputProgress(toolCallID))
+		// The turn ended before the call did, so the registry row takes the turn's own
+		// outcome. Reading Completed out of a missing result would claim work that
+		// never ended, which is what this path used to do.
+		a.applyZCodeSubagentEnd(tool, &zcodeRecoveredClose{status: agent.IncompleteTaskStatus(completion)})
+		a.closeZCodeSubagentChild(tool)
+		a.children.forgetTool(toolCallID)
+		a.children.forgetTitle(toolCallID)
+		a.toolCallPrompts.Take(toolCallID)
+	}
+}
+
+// applyZCodeToolBatch backfills the calls a batch summary lists.
+//
+// A batch arrives AFTER the per-call results and only summarizes them, so it must
+// close only an id that was opened and never reached a final state -- a call whose
+// own result was lost. Closing one that already finished would double its row.
+func (a *Agent) applyZCodeToolBatch(event zcodeEventEnvelope, payload zcodeToolUpdated) {
+	for _, id := range payload.ToolCallIDs {
+		if id == "" {
+			continue
+		}
+		a.Mu.Lock()
+		tc := a.toolCalls[id]
+		// A retained frame is what marks a call the agent ANNOUNCED, which is the call
+		// that opened a span. A call known only from a model-stream fragment has no
+		// frame, no opening row and no span, so closing it would close a span that
+		// nothing opened -- and it would leave no frame of the agent's own to store.
+		final, toolName, announced := false, "", false
+		if tc != nil {
+			final, toolName, announced = tc.final, tc.name, len(tc.lastFrame) > 0
+		}
+		a.Mu.Unlock()
+		if final || !announced {
+			continue
+		}
+		recovered := zcodeToolUpdated{
+			Kind:       contracts.ZCodeToolKindResult,
+			ToolCallID: id,
+			ToolName:   toolName,
+		}
+		a.closeZCodeToolCallInto(a.zcodeSinkForToolCall(id), event, recovered, &zcodeRecoveredClose{
+			outcome: zcodeBatchOutcome(payload),
+			status:  zcodeBatchTaskStatus(payload),
+		})
+	}
+}
+
+// zcodeBatchOutcome states what the batch summary lets LeapMux conclude about ONE of
+// the calls it lists.
+//
+// The summary reports aggregate counts, so it cannot say WHICH call failed. A batch
+// with no error means every call in it succeeded; a batch with one means this call's
+// outcome is unknown. Neither answer is the agent's own, so it travels as LeapMux
+// metadata and never as a result the agent did not send.
+func zcodeBatchOutcome(batch zcodeToolUpdated) []byte {
+	result := contracts.ToolOutcomeOutcomeSucceeded
+	if batch.ErrorCount > 0 {
+		result = contracts.ToolOutcomeOutcomeUnknown
+	}
+	encoded, err := json.Marshal(map[string]any{
+		contracts.MessageMetadataFieldToolOutcome: map[string]string{
+			contracts.ToolOutcomeFieldSource:  contracts.ToolOutcomeSourceBatchSummary,
+			contracts.ToolOutcomeFieldOutcome: result,
+		},
+	})
+	if err != nil {
+		// Every value is a constant string, so this cannot fail. An empty note still
+		// closes the span, which is what keeps the card from staying open for good.
+		slog.Error("zcode marshal batch outcome", "error", err)
+		return nil
+	}
+	return encoded
+}
+
+// zcodeBatchTaskStatus is what a subagent row becomes when only a batch summary
+// reports its call. A batch that counted an error cannot say which call failed, so
+// the row stops rather than claiming either outcome.
+func zcodeBatchTaskStatus(batch zcodeToolUpdated) bgtask.Status {
+	if batch.ErrorCount > 0 {
+		return bgtask.StatusStopped
+	}
+	return bgtask.StatusCompleted
+}
+
+// --- session.updated ---
+
+// handleZCodeSessionUpdated splits the one overloaded event.
+//
+// `session.updated` is the app-server's catch-all: every internal event it does not
+// map explicitly becomes one, with a free-form payload. So the shapes are told apart
+// by which fields they carry, in order of specificity.
+func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
+	if len(event.Payload) == 0 {
+		return
+	}
+	var payload struct {
+		// A background task's lifecycle.
+		TaskID string `json:"taskId"`
+		Status string `json:"status"`
+
+		// A finished model request: the assistant's text plus what it cost.
+		Content    *string     `json:"content"`
+		StopReason string      `json:"stopReason"`
+		Usage      *zcodeUsage `json:"usage"`
+
+		ContextWindow int64 `json:"contextWindow"`
+
+		// A subagent lifecycle or message event. The public protocol maps all
+		// three internal event types to session.updated, so their payload fields
+		// are the discriminator.
+		AgentID          string `json:"agentId"`
+		ParentToolCallID string `json:"parentToolCallId"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		slog.Warn("zcode session.updated unmarshal failed", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+
+	switch {
+	case payload.TaskID != "":
+		a.handleZCodeBackgroundTask(event)
+	case payload.AgentID != "" && payload.ParentToolCallID != "":
+		a.handleZCodeSubagentLifecycle(event)
+	case payload.Content != nil && payload.StopReason != "":
+		a.flushZCodeGenerationKind(agent.AssembledMessageKindReasoning, agent.MessageCompletionComplete)
+		a.generationBuffer.DiscardKind(agent.AssembledMessageKindText)
+		if payload.ContextWindow > 0 {
+			a.Mu.Lock()
+			a.contextWindow = payload.ContextWindow
+			a.Mu.Unlock()
+		}
+		if payload.Usage != nil {
+			a.recordZCodeUsage(*payload.Usage)
+		}
+		a.persistZCodeAssistantMessage(event, *payload.Content)
+	default:
+		// The remaining shapes are telemetry: the per-request model/iteration counters
+		// and the provider request record (baseURL, requestId, maxAttempts). They carry
+		// no conversation, and persisting them would fill the transcript.
+	}
+}
+
+func (a *Agent) flushZCodeGenerationScope(scopeID string, completion agent.MessageCompletion) {
+	if scopeID == "" {
+		return
+	}
+	if a.IsDiscardingOutput() {
+		a.generationBuffer.Reset()
+		return
+	}
+	ok, err := a.generationBuffer.PersistScope(scopeID, completion, func(raw []byte) error {
+		return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{})
+	})
+	if err != nil {
+		slog.Error("zcode persist reasoning", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	if !ok {
+		return
+	}
+	a.sink.ReportProgress(agent.CompleteModelProgress(scopeID))
+}
+
+func (a *Agent) flushZCodeGenerationKind(kind agent.AssembledMessageKind, completion agent.MessageCompletion) {
+	if a.IsDiscardingOutput() {
+		a.generationBuffer.Reset()
+		return
+	}
+	a.persistZCodeGenerationKind(kind, completion)
+}
+
+func (a *Agent) flushZCodeGeneration(completion agent.MessageCompletion) {
+	if a.IsDiscardingOutput() {
+		a.generationBuffer.Reset()
+		return
+	}
+	if err := a.generationBuffer.PersistAll(completion, a.persistZCodeGenerationRow); err != nil {
+		slog.Error("zcode persist generation", "agent_id", a.AgentID(), "error", err)
+	}
+}
+
+func (a *Agent) persistZCodeGenerationKind(kind agent.AssembledMessageKind, completion agent.MessageCompletion) {
+	if err := a.generationBuffer.PersistKind(kind, completion, a.persistZCodeGenerationRow); err != nil {
+		slog.Error("zcode persist generation", "agent_id", a.AgentID(), "error", err)
+	}
+}
+
+func (a *Agent) persistZCodeGenerationRow(raw []byte) error {
+	return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{})
+}
+
+func zcodeReasoningScope(assistantMessageID string) string {
+	return "zcode:reasoning:" + assistantMessageID
+}
+
+func zcodeTextScope(assistantMessageID string) string {
+	return "zcode:text:" + assistantMessageID
+}
+
+// persistZCodeAssistantMessage records one finished model response.
+//
+// This is the assistant text's ONLY persisted copy on this stream: the app-server's
+// message/part projection is not what desktop-continuous delivers, so the
+// model-response `session.updated` is where the completed text arrives. A turn that
+// only called tools carries an empty string, and nothing is persisted for it.
+func (a *Agent) persistZCodeAssistantMessage(event zcodeEventEnvelope, content string) {
+	if strings.TrimSpace(content) == "" {
+		return
+	}
+	raw := event.persistBytes()
+	if raw == nil {
+		return
+	}
+	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{}); err != nil {
+		slog.Error("zcode persist assistant message", "agent_id", a.AgentID(), "error", err)
+	}
+}
+
+// zcodeBackgroundTask is the background-task shape session.updated carries.
+type zcodeBackgroundTask struct {
+	TaskID         string `json:"taskId"`
+	ToolCallID     string `json:"toolCallId"`
+	ToolName       string `json:"toolName"`
+	TaskKind       string `json:"taskKind"`
+	ChildSessionID string `json:"childSessionId"`
+	Command        string `json:"command"`
+	Description    string `json:"description"`
+	Status         string `json:"status"`
+	Blocked        bool   `json:"blocked"`
+	BlockedReason  string `json:"blockedReason"`
+	StdoutTail     string `json:"stdoutTail"`
+}
+
+// zcodeBackgroundStatus maps a task status onto the registry's. ok is false for a
+// status that is not final, so the row stays open rather than being closed by a
+// value the registry would treat as absorbing.
+func zcodeBackgroundStatus(status string) (bgtask.Status, bool) {
+	switch status {
+	case "completed":
+		return bgtask.StatusCompleted, true
+	case "failed", "spawn_error", "timed_out":
+		return bgtask.StatusFailed, true
+	case "cancelled":
+		return bgtask.StatusStopped, true
+	case "lost":
+		// The app-server lost track of the task. It will never report again, so leaving
+		// the row Running would pin the thinking indicator for good.
+		return bgtask.StatusFailed, true
+	case "running", "":
+		return bgtask.StatusRunning, false
+	default:
+		// A token outside the app-server's enumeration. Running is the only safe answer:
+		// a final status is absorbing, and it tears down the child transcript, so guessing
+		// "finished" for a task that is still working destroys live output. Every sibling
+		// dispatch in this file logs its unhandled input, and so does this one -- an
+		// unknown status pins the row, and a silent default leaves no trace of why.
+		slog.Debug("zcode unknown background task status", "status", status)
+		return bgtask.StatusRunning, false
+	}
+}
+
+// handleZCodeBackgroundTask maintains the background-task registry row for one task.
+//
+// A `bash` task and a `workflow` task reuse the launch card they already have.
+// A `subagent` task gets its own child transcript because its output is a
+// conversation of its own.
+func (a *Agent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
+	var task zcodeBackgroundTask
+	if err := json.Unmarshal(event.Payload, &task); err != nil {
+		slog.Warn("zcode background task unmarshal failed", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	if task.TaskID == "" {
+		return
+	}
+	status, final := zcodeBackgroundStatus(task.Status)
+
+	kind := bgtask.KindShell
+	switch task.TaskKind {
+	case TaskKindSubagent:
+		kind = bgtask.KindSubagent
+	case TaskKindWorkflow:
+		kind = bgtask.KindWorkflow
+	}
+	title, titleIsCommand := zcodeBackgroundTitle(task)
+
+	// A shell task reuses the launch card the transcript already shows, which is the
+	// tool call's own span. A subagent shares its key with the tool.updated path --
+	// see zcodeSubagentRowKey.
+	rowKey := zcodeSubagentRowKey(task.ToolCallID, task.ChildSessionID, task.TaskID)
+	upsert := bgtask.Upsert{
+		RowKey:         rowKey,
+		Kind:           kind,
+		Title:          title,
+		TitleIsCommand: titleIsCommand,
+		Description:    strings.TrimSpace(task.Description),
+		Status:         status,
+	}
+	if task.Blocked && !final {
+		upsert.ActiveForm = task.BlockedReason
+	}
+
+	// A subagent task owns a conversation, so it gets a child transcript -- through the
+	// SAME creator the tool.updated path uses, so one subagent can never end up with two
+	// transcripts and two rows.
+	//
+	// A task with NO tool-call id is the one case that gets none. Its row key fell back
+	// to the child session or the task id, which the tool.updated path never sees, so a
+	// transcript created here would be a second one that `zcodeSinkForToolCall`,
+	// `takeChild` and the spawn's own teardown all miss -- a permanently Running row
+	// beside an empty tab. The tool.updated path owns the transcript instead.
+	if kind == bgtask.KindSubagent && task.ToolCallID != "" {
+		childID, childTitle, ok := a.ensureZCodeSubagentTranscript(rowKey, task.ToolCallID, title)
+		if ok {
+			upsert.ChildAgentID = childID
+			// The creator may have used the spawn's own label instead of this event's, so
+			// the row states what the tab states.
+			upsert.Title = childTitle
+			if final {
+				a.sink.CleanupChildAgent(childID)
+				// Drop the index entry too, or the spawn's own result would clean up a
+				// transcript this path already tore down.
+				a.children.takeChild(rowKey)
+				a.children.forgetTitle(rowKey)
+			}
+		}
+	}
+
+	providerkit.LogRegistryRefusal("zcode", "upsert", a.sink.UpsertBackgroundTask(upsert))
+}
+
+// zcodeBackgroundTitle labels a background-task row with its command, description,
+// or tool name. titleIsCommand is true only for the command, which the app-server
+// supplies verbatim. The row can set that value as code without styling prose as code.
+func zcodeBackgroundTitle(task zcodeBackgroundTask) (title string, titleIsCommand bool) {
+	if cmd := strings.TrimSpace(task.Command); cmd != "" {
+		return bgtask.CleanTitleRunes(bgtask.FirstLine(cmd), 120), true
+	}
+	if description := strings.TrimSpace(task.Description); description != "" {
+		return description, false
+	}
+	return strings.TrimSpace(task.ToolName), false
+}
+
+// --- permissions the app-server decided by itself ---
+
+// zcodePermissionResolved is the permission.resolved payload.
+type zcodePermissionResolved struct {
+	RequestID  string `json:"requestId"`
+	ToolCallID string `json:"toolCallId"`
+	ToolName   string `json:"toolName"`
+	Decision   string `json:"decision"`
+	Reason     string `json:"reason"`
+}
+
+// handleZCodePermissionResolved records a decision LeapMux did not make.
+//
+// The app-server resolves some permissions itself -- a rule the user saved in ZCode,
+// a mode that allows the tool outright, or a mode that denies it. Only the ones with
+// no matching control request are recorded, so an answer the user gave through
+// LeapMux is not reported back to them as an automatic decision.
+func (a *Agent) handleZCodePermissionResolved(event zcodeEventEnvelope) {
+	var payload zcodePermissionResolved
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		slog.Warn("zcode permission.resolved unmarshal failed", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	if a.forgetZCodeControlRequest(payload.RequestID) {
+		// The user answered this one through LeapMux; the structured answer row already
+		// records it.
+		return
+	}
+	// An automatic ALLOW is the normal case in every mode but plan, and reporting each
+	// one would bury the transcript in rows saying "as configured". A DENIAL is the
+	// one that needs saying, because the model's next step reacts to it.
+	if payload.Decision == contracts.ZCodeDecisionAllow {
+		return
+	}
+	a.persistZCodeNotification(event)
+}
+
+// handleZCodeUserInputResolved drops the resolved request from the forwarded set.
+//
+// It renders nothing: a plan approval and a question are both answered through
+// LeapMux's own control surface, which persists the answer row. What the event is
+// needed for is the bookkeeping -- while the id stays in the set, a later request
+// that REUSES it would be mistaken for a re-announcement and never reach the user.
+func (a *Agent) handleZCodeUserInputResolved(event zcodeEventEnvelope) {
+	if len(event.Payload) == 0 {
+		return
+	}
+	var payload struct {
+		RequestID string `json:"requestId"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		slog.Warn("zcode userInput.resolved unmarshal failed", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	a.forgetZCodeControlRequest(payload.RequestID)
+}
+
+// --- stream recovery ---
+
+// handleZCodeStreamRecovery logs the app-server's stream-recovery report.
+//
+// It takes NO action, and that is the whole point of the function. The report describes
+// a retry of the MODEL PROVIDER's own SSE stream, not a lapse in LeapMux's event
+// subscription: its payloads carry `streamMode:"sse"`, a failure kind, a retry number
+// and the count of assistant bytes discarded before the retry. The event subscription is
+// a separate, sticky registration, and the app-server appends every event to its store
+// before it delivers one -- so there is nothing here for a re-subscribe to recover, and
+// firing one on every model-provider retry would spend an RPC to replay nothing.
+//
+// The outcome of the retry still reaches the transcript, on `turn.failed` or
+// `turn.completed`.
+func (a *Agent) handleZCodeStreamRecovery(event zcodeEventEnvelope) {
+	slog.Debug("zcode stream recovery", "agent_id", a.AgentID(), "payload_len", len(event.Payload))
+}
+
+// zcodeJoinOutputTails puts the two progress streams on their own lines.
+func zcodeJoinOutputTails(stdout, stderr string) string {
+	switch {
+	case stdout == "":
+		return stderr
+	case stderr == "":
+		return stdout
+	default:
+		return stdout + "\n" + stderr
+	}
+}
+
+// zcodeToolCallName returns the tool name cached for a call id, or "".
+func (a *Agent) zcodeToolCallName(id string) string {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if tc := a.toolCalls[id]; tc != nil {
+		return tc.name
+	}
+	return ""
+}
+
+// zcodeToolCall is everything a.Mu knows about ONE tool call.
+//
+// The three facts have different lifetimes -- the name and the input are spent when the
+// call OPENS, while `final` outlives its close -- but they share one key, so they share
+// one record. Three parallel maps meant three deletions at every teardown, and
+// forgetting one of them was twice a real defect.
+type zcodeToolCall struct {
+	// name and input cache what model.streaming said before tool.updated opens the call.
+	// The scheduled update reports `inputOmitted: true, inputRef: "model_stream"` and
+	// carries no input of its own, so the stream is the ONLY place the input is sent.
+	name  string
+	input json.RawMessage
+	// progress is the last progress payload, PARSED. The subagent hooks read the
+	// routing fields it carries; the transcript row reads lastFrame instead.
+	progress zcodeToolUpdated
+	// lastFrame is the last tool.updated event the agent sent for this call, byte
+	// for byte. A turn that ends while the call runs stores THAT frame, so the
+	// transcript never holds an event the agent did not send. An empty value means
+	// the agent never announced the call, which also means no row opened its span.
+	lastFrame []byte
+	order     uint64
+	// final marks a call that already reached a final state, so the batch summary that
+	// follows it does not reopen or re-close it. It is cleared at the TURN end rather
+	// than at the call's own close, because the batch arrives after the results it
+	// summarizes.
+	final bool
+}
+
+// zcodeToolCallLocked returns the record for id, creating it on first write. The caller
+// holds a.Mu.
+func (a *Agent) zcodeToolCallLocked(id string) *zcodeToolCall {
+	tc := a.toolCalls[id]
+	if tc == nil {
+		tc = &zcodeToolCall{order: a.nextToolOrder}
+		a.nextToolOrder++
+		a.toolCalls[id] = tc
+	}
+	return tc
+}

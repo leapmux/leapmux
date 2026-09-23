@@ -3,6 +3,9 @@ package testutil
 import (
 	"os"
 	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // NativeAbsPath renders a POSIX-style path literal as a NATIVE absolute path.
@@ -40,3 +43,24 @@ var nativePathVolume = func() string {
 	}
 	return filepath.VolumeName(wd)
 }()
+
+// RepoPath returns elem joined under the repository root: the directory that
+// holds backend/go.mod.
+//
+// It walks up from the test's working directory, which is the test's package
+// directory, so a test states a repository path the same way at every depth. A
+// relative "../../../../testdata" breaks the day its package moves one directory
+// deeper, and the failure then reads as a missing fixture.
+func RepoPath(t testing.TB, elem ...string) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	require.NoError(t, err)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "backend", "go.mod")); err == nil {
+			return filepath.Join(append([]string{dir}, elem...)...)
+		}
+		parent := filepath.Dir(dir)
+		require.NotEqual(t, dir, parent, "no directory above the test holds backend/go.mod")
+		dir = parent
+	}
+}

@@ -46,22 +46,22 @@ func TestConfigureMaxMessageSize_RaisesStdoutScannerCeiling(t *testing.T) {
 	const small = 1024
 	const raised = 4096
 	ConfigureMaxMessageSize(small)
-	assert.Equal(t, small, liveStdoutMaxTokenSize())
+	assert.Equal(t, small, LiveMaxMessageSize())
 	assert.Equal(t, small, stdoutConfiguredMax)
 
 	oversized := strings.Repeat("x", small+512)
-	scanner := newStdoutScanner(strings.NewReader(oversized + "\n"))
+	scanner := NewStdoutScanner(strings.NewReader(oversized + "\n"))
 	require.False(t, scanner.Scan(), "line above the configured ceiling must not scan")
 	require.Error(t, scanner.Err())
 
 	ConfigureMaxMessageSize(raised)
-	assert.Equal(t, raised, liveStdoutMaxTokenSize())
-	scanner = newStdoutScanner(strings.NewReader(oversized + "\n"))
+	assert.Equal(t, raised, LiveMaxMessageSize())
+	scanner = NewStdoutScanner(strings.NewReader(oversized + "\n"))
 	require.True(t, scanner.Scan(), "raising max_message_size must admit the same line: %v", scanner.Err())
 	assert.Len(t, scanner.Bytes(), len(oversized))
 
 	ConfigureMaxMessageSize(0)
-	assert.Equal(t, contracts.MaxMessageSize, liveStdoutMaxTokenSize(),
+	assert.Equal(t, contracts.MaxMessageSize, LiveMaxMessageSize(),
 		"0 must resolve back to the protocol default")
 }
 
@@ -72,23 +72,23 @@ func TestObserveNegotiatedMaxMessageSize_RefcountTracksOpenChannels(t *testing.T
 	const negotiated = 1 << 20
 	ConfigureMaxMessageSize(worker)
 	ObserveNegotiatedMaxMessageSize("ch-a", negotiated)
-	assert.Equal(t, negotiated, liveStdoutMaxTokenSize())
+	assert.Equal(t, negotiated, LiveMaxMessageSize())
 	assert.Equal(t, worker, stdoutConfiguredMax, "configured ceiling must stay at the worker knob")
 
 	oversized := strings.Repeat("x", negotiated+512)
-	scanner := newStdoutScanner(strings.NewReader(oversized + "\n"))
+	scanner := NewStdoutScanner(strings.NewReader(oversized + "\n"))
 	require.False(t, scanner.Scan(), "line above the negotiated ceiling must not scan")
 
 	// A second open on the same Hub↔Worker pair carries the same budget.
 	ObserveNegotiatedMaxMessageSize("ch-b", negotiated)
-	assert.Equal(t, negotiated, liveStdoutMaxTokenSize())
+	assert.Equal(t, negotiated, LiveMaxMessageSize())
 
 	ReleaseNegotiatedMaxMessageSize("ch-a")
-	assert.Equal(t, negotiated, liveStdoutMaxTokenSize(),
+	assert.Equal(t, negotiated, LiveMaxMessageSize(),
 		"releasing one channel must keep the negotiated ceiling while others remain open")
 
 	ReleaseNegotiatedMaxMessageSize("ch-b")
-	assert.Equal(t, worker, liveStdoutMaxTokenSize(),
+	assert.Equal(t, worker, LiveMaxMessageSize(),
 		"releasing the last channel must restore the configured ceiling")
 }
 
@@ -105,7 +105,7 @@ func TestObserveNegotiatedMaxMessageSize_IdempotentForSameChannel(t *testing.T) 
 	stdoutMu.Unlock()
 
 	ReleaseNegotiatedMaxMessageSize("ch-1")
-	assert.Equal(t, worker, liveStdoutMaxTokenSize(),
+	assert.Equal(t, worker, LiveMaxMessageSize(),
 		"a duplicate Observe must not leave a stuck refcount after one Release")
 }
 
@@ -121,7 +121,7 @@ func TestObserveNegotiatedMaxMessageSize_LiveScannerHonorsLaterShrink(t *testing
 		_ = pr.Close()
 		_ = pw.Close()
 	})
-	scanner := newStdoutScanner(pr)
+	scanner := NewStdoutScanner(pr)
 	ObserveNegotiatedMaxMessageSize("ch-live", low)
 
 	go func() {
@@ -148,7 +148,7 @@ func TestNewStdoutScanner_MultiLineBufferBelowCeilingScans(t *testing.T) {
 	}
 	require.Greater(t, b.Len(), max)
 
-	scanner := newStdoutScanner(strings.NewReader(b.String()))
+	scanner := NewStdoutScanner(strings.NewReader(b.String()))
 	require.True(t, scanner.Scan(), "first short line must scan: %v", scanner.Err())
 	assert.Equal(t, strings.Repeat("a", 12), scanner.Text())
 	require.True(t, scanner.Scan())
@@ -163,12 +163,32 @@ func TestReleaseAllNegotiatedMaxMessageSizes_ClearsEveryBudget(t *testing.T) {
 	ConfigureMaxMessageSize(worker)
 	ObserveNegotiatedMaxMessageSize("ch-a", negotiated)
 	ObserveNegotiatedMaxMessageSize("ch-b", negotiated)
-	assert.Equal(t, negotiated, liveStdoutMaxTokenSize())
+	assert.Equal(t, negotiated, LiveMaxMessageSize())
 
 	ReleaseAllNegotiatedMaxMessageSizes()
-	assert.Equal(t, worker, liveStdoutMaxTokenSize())
+	assert.Equal(t, worker, LiveMaxMessageSize())
 	stdoutMu.Lock()
 	assert.Empty(t, stdoutOpenChannels)
 	assert.Zero(t, stdoutNegotiatedMax)
 	stdoutMu.Unlock()
+}
+
+// TestConfiguredMaxMessageSize_IgnoresTheNegotiatedCeiling pins the accessor a
+// scanner sized at creation reads: it reports the configured budget while a
+// smaller negotiated one holds the live ceiling down, because a later release
+// raises the live ceiling back to exactly that value.
+func TestConfiguredMaxMessageSize_IgnoresTheNegotiatedCeiling(t *testing.T) {
+	resetStdoutLimitsForTest(t)
+
+	const worker = 8192
+	const negotiated = 2048
+	ConfigureMaxMessageSize(worker)
+	assert.Equal(t, worker, ConfiguredMaxMessageSize())
+
+	ObserveNegotiatedMaxMessageSize("ch-1", negotiated)
+	assert.Equal(t, negotiated, LiveMaxMessageSize())
+	assert.Equal(t, worker, ConfiguredMaxMessageSize(), "a negotiation lowers only the live ceiling")
+
+	ReleaseNegotiatedMaxMessageSize("ch-1")
+	assert.Equal(t, ConfiguredMaxMessageSize(), LiveMaxMessageSize(), "the last release restores the configured budget")
 }

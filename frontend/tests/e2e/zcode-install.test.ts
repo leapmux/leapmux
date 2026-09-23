@@ -113,7 +113,7 @@ describe('computeZCodeE2ESkipReason', () => {
     })).toBeNull()
   })
 
-  // StartZCode reads the configuration too, and fails on it. A machine that has the
+  // zcode.Start reads the configuration too, and fails on it. A machine that has the
   // desktop application but was never signed in must SKIP, or every spec fails at
   // sendMessage with a timeout that names nothing.
   describe('the configuration half', () => {

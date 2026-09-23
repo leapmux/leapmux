@@ -79,7 +79,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// its own session handle back, and `piResumeArgs` resolves the
 			// column again at the argv sink. This call answers the field's
 			// question -- may this handle be submitted at all.
-			if _, err := agent.ProviderFor(r.GetAgentProvider()).
+			if _, err := svc.Agents.Registry().Plugin(r.GetAgentProvider()).
 				ResolveResumeHandle(r.GetAgentSessionId(), svc.HomeDir); err != nil {
 				sendInvalidArgument(sender, err.Error())
 				return
@@ -140,7 +140,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// (model/effort/permissionMode/provider options), filled with provider
 			// defaults for any missing well-known and provider-specific ids.
 			requested := mergeOptions(nil, r.GetOptions())
-			launch := resolveLaunchOptions(requested, agentProvider, r.GetAgentSessionId() != "")
+			launch := resolveLaunchOptions(svc.Agents.Registry(), requested, agentProvider, r.GetAgentSessionId() != "")
 			options := launch.Options
 			// Reject a spawn whose EXPLICITLY-requested permission mode isn't valid for the provider, so a
 			// typo'd --permission-mode fails fast with a clear error instead of reaching the provider and
@@ -148,7 +148,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// NOT validated here: every provider discovers its model catalog (and effort tiers) from the
 			// running CLI/daemon, seeding only a static fallback, so a value valid in the live catalog but
 			// absent from the seed would be wrongly rejected -- the running session validates those.
-			if err := agent.ValidateLaunchOptions(agentProvider, requested); err != nil {
+			if err := svc.Agents.Registry().ValidateLaunchOptions(agentProvider, requested); err != nil {
 				sendInvalidArgument(sender, err.Error())
 				return
 			}
@@ -317,7 +317,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				return
 			}
 			content := r.GetContent()
-			isInterrupt := agent.IsInterruptRequest(dbAgent.AgentProvider, content)
+			isInterrupt := svc.Agents.Registry().IsInterrupt(dbAgent.AgentProvider, content)
 			if isInterrupt {
 				// The raw interrupt frame is the fallback stop path, so it opens
 				// the stop exactly as the RPC does, in the same order. This
@@ -325,7 +325,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				svc.Output.NoteAgentStopRequested(agentID, agentID)
 				svc.pauseInputQueueForStop(agentID)
 			}
-			if notice := agent.ProviderFor(dbAgent.AgentProvider).SyntheticInterruptNotice(); notice != "" && isInterrupt {
+			if notice := svc.Agents.Registry().Plugin(dbAgent.AgentProvider).SyntheticInterruptNotice(); notice != "" && isInterrupt {
 				// An interrupt notice is not the user's answer to a control request, so it
 				// draws no rail dot.
 				svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, notice)
@@ -752,7 +752,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			}
 
 			provider := dbAgent.AgentProvider
-			oldOptions := loadOptions(dbAgent.Options, provider)
+			oldOptions := loadOptions(svc.Agents.Registry(), dbAgent.Options, provider)
 			newOptions := svc.sanitizeIncomingOptions(agentID, provider, oldOptions, r.GetSettings().GetOptions())
 
 			// Persist the requested options first. A later correction contains only values
@@ -1207,7 +1207,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 		// probe in flight.
 		ctx, cancel := context.WithTimeout(ctx, svc.agentAPITimeout())
 		defer cancel()
-		providers, complete := agent.ListAvailableProviders(ctx, svc.agentShell(), svc.agentLoginShell())
+		providers, complete := svc.Agents.Registry().ListAvailable(ctx, svc.agentShell(), svc.agentLoginShell())
 		if !complete {
 			// An INCOMPLETE scan is not evidence of absence. A probe
 			// proves nothing when its deadline killed it, and equally
@@ -1615,7 +1615,7 @@ func (svc *Service) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.GitR
 		info.SpawnSpanId = a.SpawnSpanID
 		// A child accepts messages only when its feeding provider permits direct
 		// subagent input. Roots always accept. Other children are read-only.
-		info.AcceptsMessages = agent.ProviderFor(a.AgentProvider).SupportsChildSteering()
+		info.AcceptsMessages = svc.Agents.Registry().Plugin(a.AgentProvider).SupportsChildSteering()
 		// Resolve the root owner once here so the frontend reads the registry
 		// owner and its NOTIFY subscription from the wire, instead of walking a
 		// client-side parent chain that can be partially hydrated.
@@ -1750,7 +1750,7 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	// Re-read here so changes made during phase 0/1 affect startup itself.
 	if latest, err := svc.getAgentByID(bgCtx(), agentID); err == nil {
 		dbAgent = latest
-		agentOpts = applyDBSettingsToAgentOptions(agentOpts, &dbAgent)
+		agentOpts = applyDBSettingsToAgentOptions(svc.Agents.Registry(), agentOpts, &dbAgent)
 	} else {
 		slog.Warn("agent startup: failed to refresh settings before start", "agent_id", agentID, "error", err)
 	}
@@ -1832,7 +1832,7 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	} else {
 		slog.Warn("agent startup: failed to refresh settings before active persist", "agent_id", agentID, "error", err)
 	}
-	latestOpts, confirmedForPersist := resolveConfirmedStartupSettings(startedOpts, initialOpts, confirmedSettings, &dbAgent)
+	latestOpts, confirmedForPersist := resolveConfirmedStartupSettings(svc.Agents.Registry(), startedOpts, initialOpts, confirmedSettings, &dbAgent)
 
 	activeDbAgent, err := svc.persistConfirmedAgentSettingsPreservingStartedSettings(agentID, dbAgent.Options, latestOpts, confirmedForPersist, dbAgent.OptionGroups)
 	if err != nil {
@@ -1880,7 +1880,7 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	case interruptionNone:
 	}
 
-	activeOptions := loadOptions(activeDbAgent.Options, activeDbAgent.AgentProvider)
+	activeOptions := loadOptions(svc.Agents.Registry(), activeDbAgent.Options, activeDbAgent.AgentProvider)
 	slog.Info("agent started",
 		"agent_id", agentID,
 		"model", activeOptions[agent.OptionIDModel],
@@ -1899,7 +1899,7 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	}
 
 	svc.broadcastAgentActive(&activeDbAgent, gitStatus)
-	if latest, err := svc.getAgentByID(bgCtx(), agentID); err == nil && !maps.Equal(loadOptions(activeDbAgent.Options, activeDbAgent.AgentProvider), loadOptions(latest.Options, latest.AgentProvider)) {
+	if latest, err := svc.getAgentByID(bgCtx(), agentID); err == nil && !maps.Equal(loadOptions(svc.Agents.Registry(), activeDbAgent.Options, activeDbAgent.AgentProvider), loadOptions(svc.Agents.Registry(), latest.Options, latest.AgentProvider)) {
 		svc.broadcastSettingsStatusChange(latest)
 	} else if err != nil {
 		slog.Warn("agent startup: failed to reconcile settings after active broadcast", "agent_id", agentID, "error", err)
@@ -1984,13 +1984,13 @@ func (svc *Service) relaunchForStartupSettingsChange(agentID string, provider le
 // rebuilt: it is derived from the OpenAgent request, which no relaunch has, and a stale
 // or absent set silently disables a provider's launch fallback (Copilot then fails every
 // restart on a CLI that rejects --assisted-approval).
-func applyDBSettingsToAgentOptions(opts agent.Options, dbAgent *db.Agent) agent.Options {
-	o := loadOptions(dbAgent.Options, dbAgent.AgentProvider)
+func applyDBSettingsToAgentOptions(registry *agent.Registry, opts agent.Options, dbAgent *db.Agent) agent.Options {
+	o := loadOptions(registry, dbAgent.Options, dbAgent.AgentProvider)
 	if o[agent.OptionIDPermissionMode] == "" {
-		o[agent.OptionIDPermissionMode] = agent.PermissionModeOrDefault(dbAgent.AgentProvider, "")
+		o[agent.OptionIDPermissionMode] = registry.PermissionModeOrDefault(dbAgent.AgentProvider, "")
 	}
 	opts.Options = o
-	opts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(o, dbAgent.AgentProvider)
+	opts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(registry, o, dbAgent.AgentProvider)
 	return opts
 }
 
@@ -2018,8 +2018,8 @@ func confirmedSettingsPreservingStartupChanges(confirmed OptionMap, initial, lat
 // provider's confirmed blob with any such mid-startup edit dropped so it can't be overwritten
 // by a startup-time default. Pure: it reads dbAgent but performs no I/O, so the caller owns the
 // re-read that refreshes dbAgent first.
-func resolveConfirmedStartupSettings(startedOpts, initialOpts agent.Options, confirmedSettings map[string]string, dbAgent *db.Agent) (latestOpts agent.Options, confirmedForPersist OptionMap) {
-	latestOpts = applyDBSettingsToAgentOptions(startedOpts, dbAgent)
+func resolveConfirmedStartupSettings(registry *agent.Registry, startedOpts, initialOpts agent.Options, confirmedSettings map[string]string, dbAgent *db.Agent) (latestOpts agent.Options, confirmedForPersist OptionMap) {
+	latestOpts = applyDBSettingsToAgentOptions(registry, startedOpts, dbAgent)
 	confirmedForPersist = confirmedSettingsPreservingStartupChanges(confirmedSettings, initialOpts, latestOpts)
 	return latestOpts, confirmedForPersist
 }
@@ -2160,14 +2160,14 @@ func (svc *Service) persistAgentStartupError(agentID, errMsg string) {
 // (CurrentOptions, captured after a live update or restart) onto the requested
 // base options, then fills provider defaults. A nil/empty confirmed map (offline
 // edit or failed restart) yields the base unchanged.
-func confirmedOptions(provider leapmuxv1.AgentProvider, base, confirmed OptionMap) OptionMap {
+func confirmedOptions(registry *agent.Registry, provider leapmuxv1.AgentProvider, base, confirmed OptionMap) OptionMap {
 	final := base.Clone()
 	for k, v := range confirmed {
 		if v != "" {
 			final[k] = v
 		}
 	}
-	return resolveProviderDefaults(final, provider)
+	return resolveProviderDefaults(registry, final, provider)
 }
 
 // surfacedOptions is a COMPLETE snapshot of every axis a running session currently surfaces (its
@@ -2190,8 +2190,8 @@ type surfacedOptions OptionMap
 // axis the agent currently surfaces, NOT a sparse confirmation blob -- otherwise a legitimately-
 // present-but-unconfirmed axis would be wrongly dropped. Callers without such a snapshot (the
 // sparse-confirm startup-preserve path) cannot reach this without an explicit conversion.
-func reconcileOrphanedOptions(provider leapmuxv1.AgentProvider, opts OptionMap, surfaced surfacedOptions) OptionMap {
-	persistedOnly := agent.PersistedOnlyOptionIDs(provider)
+func reconcileOrphanedOptions(registry *agent.Registry, provider leapmuxv1.AgentProvider, opts OptionMap, surfaced surfacedOptions) OptionMap {
+	persistedOnly := registry.PersistedOnlyOptionIDs(provider)
 	out := opts.Clone()
 	for k := range out {
 		if k == agent.OptionIDModel || persistedOnly[k] {
@@ -2211,8 +2211,8 @@ func reconcileOrphanedOptions(provider leapmuxv1.AgentProvider, opts OptionMap, 
 // whose option default the session can drop), defeating reconcileOrphanedOptions when it ran
 // first. `confirmed` MUST be the running session's COMPLETE CurrentOptions snapshot (see
 // reconcileOrphanedOptions) -- the live-apply and restart paths both capture it that way.
-func settleConfirmedOptions(provider leapmuxv1.AgentProvider, requested OptionMap, confirmed surfacedOptions) OptionMap {
-	return reconcileOrphanedOptions(provider, confirmedOptions(provider, requested, OptionMap(confirmed)), confirmed)
+func settleConfirmedOptions(registry *agent.Registry, provider leapmuxv1.AgentProvider, requested OptionMap, confirmed surfacedOptions) OptionMap {
+	return reconcileOrphanedOptions(registry, provider, confirmedOptions(registry, provider, requested, OptionMap(confirmed)), confirmed)
 }
 
 func unresolvedSettingsResult(options OptionMap) agent.SettingsApplyResult {
@@ -2226,6 +2226,7 @@ func unresolvedSettingsResult(options OptionMap) agent.SettingsApplyResult {
 // settleAppliedSettings applies only values that the provider confirmed. It
 // keeps requested values for unresolved axes and removes confirmed omissions.
 func settleAppliedSettings(
+	registry *agent.Registry,
 	provider leapmuxv1.AgentProvider,
 	requested OptionMap,
 	result agent.SettingsApplyResult,
@@ -2241,8 +2242,8 @@ func settleAppliedSettings(
 		}
 		settled[id] = *settlement.Value
 	}
-	settled = resolveProviderDefaults(settled, provider)
-	persistedOnly := agent.PersistedOnlyOptionIDs(provider)
+	settled = resolveProviderDefaults(registry, settled, provider)
+	persistedOnly := registry.PersistedOnlyOptionIDs(provider)
 	for id := range settled {
 		if id == agent.OptionIDModel || persistedOnly[id] {
 			continue
@@ -2340,8 +2341,8 @@ func protoOptionSettlements(settlements agent.OptionSettlements) map[string]*lea
 // resolution), and announcing the concrete model is informative rather than noise. A
 // sentinel that has NOT resolved stays "default" on both sides and so compares equal
 // -- no spurious change.
-func reportModelChange(provider leapmuxv1.AgentProvider, oldModel, settledModel string) bool {
-	return agent.NormalizeModelID(provider, oldModel) != agent.NormalizeModelID(provider, settledModel)
+func reportModelChange(registry *agent.Registry, provider leapmuxv1.AgentProvider, oldModel, settledModel string) bool {
+	return registry.NormalizeModelID(provider, oldModel) != registry.NormalizeModelID(provider, settledModel)
 }
 
 // optionChangeEntry is the settings_changed payload for one changed option group: the value
@@ -2388,7 +2389,7 @@ func optionGroupChangeEntry(oldID, newID string, valueLabel func(string) string,
 // settles on, so an option the NEW model exposes isn't rejected on the same edit that selects it.
 // Filtering into a fresh map leaves the caller's request (the decoded proto message) untouched.
 func (svc *Service) acceptExposedOptions(agentID string, provider leapmuxv1.AgentProvider, incoming OptionMap, catalog []*leapmuxv1.AvailableOptionGroup) OptionMap {
-	known := agent.KnownOptionIDs(provider)
+	known := svc.Agents.Registry().KnownOptionIDs(provider)
 	accepted := make(OptionMap, len(incoming))
 	for axis, value := range incoming {
 		// An empty value on the edit path is NOT a clear. Every option is a select whose
@@ -2414,7 +2415,7 @@ func (svc *Service) acceptExposedOptions(agentID string, provider leapmuxv1.Agen
 
 // resetEffortToAutoIfUnsupported resets newOptions' effort to EffortAuto, in place, when it
 // wouldn't be valid for the model the edit settles on -- for a provider that owns a model-dependent
-// effort catalog, which ProviderManagesEffort states (Claude/Codex/Pi from their static catalogs,
+// effort catalog, which Registry.ManagesEffort states (Claude/Codex/Pi from their static catalogs,
 // and native Copilot, whose account decides both the models and their tiers):
 //   - on a model switch, also when the client sent NO effort (explicitEffort == "") -- so the new
 //     model picks its own default rather than silently inheriting the previous model's tier;
@@ -2431,11 +2432,11 @@ func (svc *Service) acceptExposedOptions(agentID string, provider leapmuxv1.Agen
 // into the same normalized id (a CLI alias, or the account-default sentinel resolving to its
 // concrete id) is not a real switch and must not reset the user's effort -- mirroring
 // reportModelChange's normalized comparison used for the settings_changed notification.
-func resetEffortToAutoIfUnsupported(provider leapmuxv1.AgentProvider, newOptions OptionMap, catalog []*leapmuxv1.AvailableOptionGroup, oldModel, newModel, explicitEffort string) {
-	if !agent.ProviderManagesEffort(provider) {
+func resetEffortToAutoIfUnsupported(registry *agent.Registry, provider leapmuxv1.AgentProvider, newOptions OptionMap, catalog []*leapmuxv1.AvailableOptionGroup, oldModel, newModel, explicitEffort string) {
+	if !registry.ManagesEffort(provider) {
 		return
 	}
-	switched := agent.NormalizeModelID(provider, newOptions[agent.OptionIDModel]) != agent.NormalizeModelID(provider, oldModel)
+	switched := registry.NormalizeModelID(provider, newOptions[agent.OptionIDModel]) != registry.NormalizeModelID(provider, oldModel)
 	merged := newOptions[agent.OptionIDEffort]
 	// The merged-effort reset (second clause) fires only when the settled model is one the catalog
 	// actually describes (ModelEffortKnown): an effort can only be judged unsupported against a model
@@ -2445,7 +2446,7 @@ func resetEffortToAutoIfUnsupported(provider leapmuxv1.AgentProvider, newOptions
 	// agent doesn't silently clobber a valid effort to auto. Mirrors ValidateLaunchOptions's
 	// deliberate non-validation of model/effort against the seed.
 	if (switched && explicitEffort == "") ||
-		(merged != "" && agent.ModelEffortKnown(catalog, provider, newModel) && !agent.EffortSupportedByModel(catalog, provider, newModel, merged)) {
+		(merged != "" && registry.ModelEffortKnown(catalog, provider, newModel) && !registry.EffortSupportedByModel(catalog, provider, newModel, merged)) {
 		newOptions[agent.OptionIDEffort] = agent.EffortAuto
 	}
 }
@@ -2467,19 +2468,19 @@ func (svc *Service) sanitizeIncomingOptions(agentID string, provider leapmuxv1.A
 	catalog := svc.Agents.OptionGroups(agentID, provider, newModel)
 
 	accepted := svc.acceptExposedOptions(agentID, provider, incoming, catalog)
-	newOptions := agent.ProviderFor(provider).ResolveOptionConflicts(oldOptions, accepted)
-	resetEffortToAutoIfUnsupported(provider, newOptions, catalog, oldModel, newModel, accepted[agent.OptionIDEffort])
+	newOptions := svc.Agents.Registry().Plugin(provider).ResolveOptionConflicts(oldOptions, accepted)
+	resetEffortToAutoIfUnsupported(svc.Agents.Registry(), provider, newOptions, catalog, oldModel, newModel, accepted[agent.OptionIDEffort])
 
 	// Stamp the provider's default permission mode only when it actually has one.
 	// Providers with no permission-mode axis (OpenCode/Kilo primary-agent, Reasonix
 	// model-only) return "" here, and writing an empty key would surface it in the RPC
 	// response as a confirmed value even though marshalOptions drops it from the row.
 	if newOptions[agent.OptionIDPermissionMode] == "" {
-		if def := agent.PermissionModeOrDefault(provider, ""); def != "" {
+		if def := svc.Agents.Registry().PermissionModeOrDefault(provider, ""); def != "" {
 			newOptions[agent.OptionIDPermissionMode] = def
 		}
 	}
-	return resolveProviderDefaults(newOptions, provider)
+	return resolveProviderDefaults(svc.Agents.Registry(), newOptions, provider)
 }
 
 // optionsChangeDelta returns the minimal set of axes the edit changes: every key whose
@@ -2526,7 +2527,7 @@ func (svc *Service) applySettingsLive(dbAgent db.Agent, newOptions OptionMap) (O
 		return newOptions, result
 	}
 	// Apply confirmed values and removals. Keep each unresolved requested value.
-	settledOptions := settleAppliedSettings(provider, newOptions, result)
+	settledOptions := settleAppliedSettings(svc.Agents.Registry(), provider, newOptions, result)
 
 	// Persist EVERY axis the provider confirmed, not just model/effort: the optimistic
 	// write stored the REQUESTED values, so a clamp the provider applied to any axis (a
@@ -2562,7 +2563,7 @@ func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionM
 	if result.SurfacedOptions == nil {
 		return newOptions, unresolvedSettingsResult(newOptions)
 	}
-	settled := settleAppliedSettings(provider, newOptions, result)
+	settled := settleAppliedSettings(svc.Agents.Registry(), provider, newOptions, result)
 	// Pass the pre-settle newOptions as `stored` (what the optimistic write left on the row,
 	// carrying the orphaned axes) so the persisted delta DELETES the axes the relaunched session
 	// no longer surfaces, while `settled` is the option set we want to keep.
@@ -2662,7 +2663,7 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, options Opti
 	agentOpts := svc.baseAgentOptions(agentID, dbAgent.WorkingDir, provider)
 	agentOpts.ResumeSessionID = resumeSessionID
 	agentOpts.Options = options
-	agentOpts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(options, provider)
+	agentOpts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(svc.Agents.Registry(), options, provider)
 
 	sink := svc.Output.NewSink(agentID, provider)
 
@@ -2779,7 +2780,7 @@ func (svc *Service) buildSettingsChanges(
 		// The model axis has a special "report" rule: a value that merely
 		// re-spelled into the same normalized model isn't a user-visible change,
 		// while the account-default sentinel resolving to a concrete model is.
-		if key == agent.OptionIDModel && !reportModelChange(provider, oldVal, newVal) {
+		if key == agent.OptionIDModel && !reportModelChange(svc.Agents.Registry(), provider, oldVal, newVal) {
 			continue
 		}
 		// An axis whose settled value is empty is no longer in effect: a model switch dropped it
@@ -2847,7 +2848,7 @@ func (svc *Service) buildSettingsChanges(
 // mirror of the async variant's expected_option_groups guard. The row is then re-read once for
 // the broadcast (the writes have no single RETURNING row to hand back).
 func (svc *Service) persistConfirmedAgentSettings(agentID string, provider leapmuxv1.AgentProvider, stored, final OptionMap) (db.Agent, error) {
-	base := resolveProviderDefaults(stored, provider)
+	base := resolveProviderDefaults(svc.Agents.Registry(), stored, provider)
 	// Snapshot the catalog on the row BEFORE the write so the option_groups CAS can tell it apart
 	// from a concurrently-discovered one (a richer catalog a running provider persisted in between).
 	prior, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
@@ -2868,7 +2869,7 @@ func (svc *Service) persistConfirmedAgentSettings(agentID string, provider leapm
 // options" policy lives here in ONE place so the several startup-confirmation sites can't re-spell
 // it and drift -- they pass the launch option map and the confirmed snapshot and nothing else.
 func (svc *Service) persistConfirmedStartupSettings(agentID string, provider leapmuxv1.AgentProvider, launch, confirmed OptionMap) (db.Agent, error) {
-	return svc.persistConfirmedAgentSettings(agentID, provider, launch, confirmedOptions(provider, launch, confirmed))
+	return svc.persistConfirmedAgentSettings(agentID, provider, launch, confirmedOptions(svc.Agents.Registry(), provider, launch, confirmed))
 }
 
 // confirmedCatalogFor marshals the provider-reported option-group catalog for the CONFIRMED
@@ -2909,7 +2910,7 @@ func (svc *Service) confirmedCatalogOrSkip(agentID string, provider leapmuxv1.Ag
 // and is left intact. The provider is taken from latest.AgentProvider.
 func (svc *Service) persistConfirmedAgentSettingsPreservingStartedSettings(agentID, expectedOptions string, latest agent.Options, confirmed map[string]string, expectedOptionGroups string) (db.Agent, error) {
 	provider := latest.AgentProvider
-	final := confirmedOptions(provider, latest.Options, confirmed)
+	final := confirmedOptions(svc.Agents.Registry(), provider, latest.Options, confirmed)
 	// The CAS guard must compare against the row's CURRENT serialized options, canonicalized the
 	// same way every write produces the column (marshalOptions sorts keys and drops empties).
 	// `expectedOptions` is the raw options column read at the handoff. Recomputing
@@ -2979,7 +2980,7 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	// A fresh process needs a fresh control socket -- see remintAgentControlIPC.
 	// mintAndLaunch keeps the mint failure and the start failure on one exit, so
 	// the STARTING state this function entered is cleared by one piece of code.
-	launchOptions := applyDBSettingsToAgentOptions(svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
+	launchOptions := applyDBSettingsToAgentOptions(svc.Agents.Registry(), svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	confirmedSettings, err := svc.mintAndLaunch(bgCtx(), "clear", launchOptions, sink, svc.startAgent)
 	if err != nil {
@@ -3064,11 +3065,11 @@ func (svc *Service) resolveResumeSessionID(agentID, currentSessionID string, res
 // Shutdown's WaitForInFlight drains it. Registering at one call site left the
 // three message-driven callers without any of them.
 //
-// An INTERACTIVE caller does not race a startup that is already in flight for
-// the same tab: it waits for that startup and reports its outcome. The wait is
-// what keeps a message sent inside the open path's startup window; see the
-// comment on it below. It is limited by the budget the CLIENT gives the RPC,
-// because every interactive caller holds its response open across it.
+// A request or queue drain does not race a startup that is already in flight
+// for the same tab. It waits for that startup and reports its outcome. The wait
+// keeps a message sent inside the open path's startup window. A request uses
+// the API budget. A queue drain uses the process startup budget because its
+// enqueue response already returned.
 //
 // It takes no context. The startup context is rooted at bgCtx() and created
 // here, because it is the agent PROCESS's lifetime -- the provider builds its
@@ -3091,21 +3092,16 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	// this returns an error. The queue then retains the failed input even though
 	// the open path starts the command-line interface a second later.
 	//
-	// Only an INTERACTIVE caller waits; see startPriority.joinsInFlightStartup.
+	// Request and queue callers wait; see startPriority.joinsInFlightStartup.
 	//
 	// Before the lifecycle lock, because the wait is long compared with
 	// everything under it and a CloseAgent for this same tab needs that lock to
 	// tear the startup down. Re-check HasAgent after: a startup that this caller
 	// waited for and that succeeded is exactly the outcome to report.
 	//
-	// The LIMIT is the caller's budget, not the process's. agentStartupTimeout
-	// is what the spawned CLI gets to come up (five minutes by default); the
-	// client gives this RPC roughly 1.5x agentAPITimeout and gives up there, and
-	// every one of these callers holds the response until this returns. Waiting
-	// past that point converts a message this worker DOES deliver into a send
-	// the sender is told failed, under a Retry button that sends it twice. So
-	// the wait ends inside the client's own budget and the caller reports what
-	// it always reported for a startup it cannot join.
+	// A synchronous request uses its API budget. A durable queue drain already
+	// runs after the enqueue response, so it uses the process startup budget.
+	// See startPriority.inFlightStartupLimit.
 	//
 	// A wait that a CLOSE ended is not an outcome to start a replacement on.
 	// cancelAndClear wakes this waiter as its FIRST teardown step, several
@@ -3117,7 +3113,7 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	// this wait and that claim is refused as before -- a window of microseconds
 	// where there was one of seconds.
 	if priority.joinsInFlightStartup() {
-		limit := svc.agentAPITimeout()
+		limit := priority.inFlightStartupLimit(svc)
 		wait := svc.AgentStartup.awaitInFlight(agentID, limit)
 		switch {
 		case wait.closed:
@@ -3218,7 +3214,7 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	// open path's env vars belonged to a process that is gone (or to a previous
 	// worker process, after a restart). Without this the auto-started agent
 	// comes up with no `leapmux control` at all.
-	launchOptions := applyDBSettingsToAgentOptions(svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
+	launchOptions := applyDBSettingsToAgentOptions(svc.Agents.Registry(), svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
 	launchOptions.ResumeSessionID = resumeSessionID
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	confirmedSettings, err := svc.mintAndLaunch(startupCtx, "resume", launchOptions, sink, priority.launcher(svc))
@@ -3264,7 +3260,7 @@ func (svc *Service) handleControlRequestMessage(agentID string, provider leapmux
 	// eager set_permission_mode to the DB so that /clear (which reads the DB) always sees the latest
 	// mode. Some providers (e.g. Claude Code) don't echo the mode back in their control_response, so
 	// relying on the output handler alone would leave the DB stale.
-	mode, isSetMode := agent.ProviderFor(provider).PermissionModeFromRawInput(content)
+	mode, isSetMode := svc.Agents.Registry().Plugin(provider).PermissionModeFromRawInput(content)
 	if isSetMode {
 		unlock := svc.Agents.LockAgent(agentID)
 		defer unlock()
@@ -3284,7 +3280,7 @@ func (svc *Service) handleControlRequestMessage(agentID string, provider leapmux
 
 	// If agent is not running, handle special cases locally.
 	if !svc.Agents.HasAgent(agentID) {
-		if agent.IsInterruptRequest(provider, content) {
+		if svc.Agents.Registry().IsInterrupt(provider, content) {
 			// Agent is already gone -- nothing to interrupt, and nothing that a
 			// withdrawn stop could put back on screen. The stop stands.
 			return true
@@ -3400,7 +3396,7 @@ type applyOptionsSpec struct {
 // can't drift.
 func (svc *Service) applyOptionChanges(dbAgent db.Agent, wanted OptionMap, spec applyOptionsSpec) db.Agent {
 	agentID := dbAgent.ID
-	opts := loadOptions(dbAgent.Options, dbAgent.AgentProvider)
+	opts := loadOptions(svc.Agents.Registry(), dbAgent.Options, dbAgent.AgentProvider)
 	applied := OptionMap{}
 	oldVals := OptionMap{}
 	for id, newVal := range wanted {
@@ -3541,7 +3537,7 @@ func (svc *Service) restartPlanContextLocked(agentID, targetMode string, dbAgent
 	// Restart agent with plan content. Use svc.startAgent — the
 	// test-injectable wrapper that forwards to svc.Agents.StartAgent in
 	// production — so unit tests can stub the restart out.
-	launchOptions := applyDBSettingsToAgentOptions(svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
+	launchOptions := applyDBSettingsToAgentOptions(svc.Agents.Registry(), svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
 	// Plan execution forces the target permission mode (e.g. acceptEdits).
 	// applyDBSettingsToAgentOptions populated a fresh Options map, so writing the
 	// key here is safe (no shared aliasing).

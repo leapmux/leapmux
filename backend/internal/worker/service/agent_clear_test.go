@@ -11,7 +11,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
-	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -114,18 +113,18 @@ func TestIsInterruptRequestRecognizesProviderFormats(t *testing.T) {
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	cursor := leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR
 
-	assert.True(t, agent.IsInterruptRequest(pi, `{"type":"abort"}`), "Pi abort RPC should be treated as an interrupt")
-	assert.True(t, agent.IsInterruptRequest(codex, `{"jsonrpc":"2.0","method":"turn/interrupt"}`), "Codex turn interrupt should be treated as an interrupt")
-	assert.True(t, agent.IsInterruptRequest(claude, `{"type":"control_request","request":{"subtype":"interrupt"}}`), "Claude control interrupt should be treated as an interrupt")
-	assert.True(t, agent.IsInterruptRequest(cursor, `{"jsonrpc":"2.0","method":"session/cancel"}`), "ACP session/cancel should be treated as an interrupt")
+	assert.True(t, testRegistry.IsInterrupt(pi, `{"type":"abort"}`), "Pi abort RPC should be treated as an interrupt")
+	assert.True(t, testRegistry.IsInterrupt(codex, `{"jsonrpc":"2.0","method":"turn/interrupt"}`), "Codex turn interrupt should be treated as an interrupt")
+	assert.True(t, testRegistry.IsInterrupt(claude, `{"type":"control_request","request":{"subtype":"interrupt"}}`), "Claude control interrupt should be treated as an interrupt")
+	assert.True(t, testRegistry.IsInterrupt(cursor, `{"jsonrpc":"2.0","method":"session/cancel"}`), "ACP session/cancel should be treated as an interrupt")
 
 	// Each classifier only matches its own format — cross-provider payloads
 	// must not be misclassified.
-	assert.False(t, agent.IsInterruptRequest(claude, `{"type":"abort"}`))
-	assert.False(t, agent.IsInterruptRequest(pi, `{"jsonrpc":"2.0","method":"turn/interrupt"}`))
+	assert.False(t, testRegistry.IsInterrupt(claude, `{"type":"abort"}`))
+	assert.False(t, testRegistry.IsInterrupt(pi, `{"jsonrpc":"2.0","method":"turn/interrupt"}`))
 
-	assert.False(t, agent.IsInterruptRequest(pi, `{"type":"prompt","message":"abort"}`))
-	assert.False(t, agent.IsInterruptRequest(codex, `not json`))
+	assert.False(t, testRegistry.IsInterrupt(pi, `{"type":"prompt","message":"abort"}`))
+	assert.False(t, testRegistry.IsInterrupt(codex, `not json`))
 }
 
 func TestSendAgentRawMessage_ClaudeInterruptDoesNotPersistSyntheticUserMarker(t *testing.T) {

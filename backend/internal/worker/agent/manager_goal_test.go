@@ -2,32 +2,15 @@
 
 // Depends on stubProvider (defined in manager_test.go, unix-only).
 
-package agent
+package agent_test
 
 import (
-	"io"
-	"os"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// newClaudeGoalAgent gives a Claude agent whose stdin is a real pipe. The read
-// end drains so a long command cannot fill the pipe buffer.
-func newClaudeGoalAgent(t *testing.T, sink ProviderServices) *ClaudeCodeAgent {
-	t.Helper()
-	readPipe, writePipe, err := os.Pipe()
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_ = writePipe.Close()
-		_ = readPipe.Close()
-	})
-	go func() { _, _ = io.Copy(io.Discard, readPipe) }()
-	agent := newTestAgent(sink)
-	agent.stdin = writePipe
-	return agent
-}
 
 // goalStub implements the Agent provider surface (via stubProvider) plus
 // GoalWriter, so Manager.UpdateGoal can reach it.
@@ -38,7 +21,7 @@ func newClaudeGoalAgent(t *testing.T, sink ProviderServices) *ClaudeCodeAgent {
 // the refusal.
 type goalStub struct {
 	stubProvider
-	supported []GoalAction
+	supported []agent.GoalAction
 	setCalls  []string
 	clears    int
 	pauses    int
@@ -46,44 +29,44 @@ type goalStub struct {
 	err       error
 }
 
-func (g *goalStub) SupportedGoalActions() []GoalAction { return g.supported }
+func (g *goalStub) SupportedGoalActions() []agent.GoalAction { return g.supported }
 
 // A side-band writer: every action completes here, so the outcome is empty and
 // the Manager has nothing to hand back to the caller.
-func (g *goalStub) PerformGoalAction(action GoalAction, objective string) (GoalOutcome, error) {
+func (g *goalStub) PerformGoalAction(action agent.GoalAction, objective string) (agent.GoalOutcome, error) {
 	switch action {
-	case GoalActionSet:
+	case agent.GoalActionSet:
 		g.setCalls = append(g.setCalls, objective)
-	case GoalActionClear:
+	case agent.GoalActionClear:
 		g.clears++
-	case GoalActionPause:
+	case agent.GoalActionPause:
 		g.pauses++
-	case GoalActionResume:
+	case agent.GoalActionResume:
 		g.resumes++
 	default:
-		return GoalOutcome{}, ErrGoalControlUnsupported
+		return agent.GoalOutcome{}, agent.ErrGoalControlUnsupported
 	}
-	return GoalOutcome{}, g.err
+	return agent.GoalOutcome{}, g.err
 }
 
 // Compile-time drift guards, the same pair manager_child_test.go keeps for
 // ChildSteerer.
 var (
-	_ GoalWriter = (*goalStub)(nil)
-	_ Agent      = (*goalStub)(nil)
+	_ agent.GoalWriter = (*goalStub)(nil)
+	_ agent.Agent      = (*goalStub)(nil)
 )
 
-func allGoalActions() []GoalAction {
-	return []GoalAction{GoalActionSet, GoalActionClear, GoalActionPause, GoalActionResume}
+func allGoalActions() []agent.GoalAction {
+	return []agent.GoalAction{agent.GoalActionSet, agent.GoalActionClear, agent.GoalActionPause, agent.GoalActionResume}
 }
 
 func TestManagerGoal_UpdateGoalOnAnAgentThatIsNotRunning(t *testing.T) {
 	t.Parallel()
-	m := NewManager(nil)
+	m := agent.NewManager(testRegistry, nil)
 
-	_, err := m.UpdateGoal("nope", GoalActionPause, "")
+	_, err := m.UpdateGoal("nope", agent.GoalActionPause, "")
 
-	assert.ErrorIs(t, err, ErrAgentNotFound)
+	assert.ErrorIs(t, err, agent.ErrAgentNotFound)
 }
 
 // A provider that reports a goal without being able to change one implements no
@@ -91,14 +74,12 @@ func TestManagerGoal_UpdateGoalOnAnAgentThatIsNotRunning(t *testing.T) {
 // type assertion.
 func TestManagerGoal_UpdateGoalOnAProviderWithNoController(t *testing.T) {
 	t.Parallel()
-	m := NewManager(nil)
-	m.mu.Lock()
-	m.agents["root"] = &stubProvider{}
-	m.mu.Unlock()
+	m := agent.NewManager(testRegistry, nil)
+	m.PutAgentForTest("root", &stubProvider{})
 
-	_, err := m.UpdateGoal("root", GoalActionPause, "")
+	_, err := m.UpdateGoal("root", agent.GoalActionPause, "")
 
-	assert.ErrorIs(t, err, ErrGoalControlUnsupported)
+	assert.ErrorIs(t, err, agent.ErrGoalControlUnsupported)
 }
 
 // The backstop for a stale browser. The capability list and the dispatch must
@@ -106,34 +87,30 @@ func TestManagerGoal_UpdateGoalOnAProviderWithNoController(t *testing.T) {
 // list is refused BEFORE the provider's method runs.
 func TestManagerGoal_RefusesAnActionTheAgentDoesNotList(t *testing.T) {
 	t.Parallel()
-	m := NewManager(nil)
-	st := &goalStub{supported: []GoalAction{GoalActionSet, GoalActionClear}}
-	m.mu.Lock()
-	m.agents["root"] = st
-	m.mu.Unlock()
+	m := agent.NewManager(testRegistry, nil)
+	st := &goalStub{supported: []agent.GoalAction{agent.GoalActionSet, agent.GoalActionClear}}
+	m.PutAgentForTest("root", st)
 
-	_, err := m.UpdateGoal("root", GoalActionPause, "")
+	_, err := m.UpdateGoal("root", agent.GoalActionPause, "")
 
-	assert.ErrorIs(t, err, ErrGoalControlUnsupported)
+	assert.ErrorIs(t, err, agent.ErrGoalControlUnsupported)
 	assert.Zero(t, st.pauses, "the provider's method must not run for an unlisted action")
 }
 
 func TestManagerGoal_DispatchesEachActionToItsOwnMethod(t *testing.T) {
 	t.Parallel()
-	m := NewManager(nil)
+	m := agent.NewManager(testRegistry, nil)
 	st := &goalStub{supported: allGoalActions()}
-	m.mu.Lock()
-	m.agents["root"] = st
-	m.mu.Unlock()
+	m.PutAgentForTest("root", st)
 
 	for _, call := range []struct {
-		action    GoalAction
+		action    agent.GoalAction
 		objective string
 	}{
-		{GoalActionSet, "ship it"},
-		{GoalActionPause, ""},
-		{GoalActionResume, ""},
-		{GoalActionClear, ""},
+		{agent.GoalActionSet, "ship it"},
+		{agent.GoalActionPause, ""},
+		{agent.GoalActionResume, ""},
+		{agent.GoalActionClear, ""},
 	} {
 		command, err := m.UpdateGoal("root", call.action, call.objective)
 		require.NoError(t, err)
@@ -150,16 +127,14 @@ func TestManagerGoal_DispatchesEachActionToItsOwnMethod(t *testing.T) {
 // tell "this agent cannot do that" from "the provider refused it".
 func TestManagerGoal_ReturnsTheProvidersError(t *testing.T) {
 	t.Parallel()
-	m := NewManager(nil)
+	m := agent.NewManager(testRegistry, nil)
 	st := &goalStub{supported: allGoalActions(), err: assert.AnError}
-	m.mu.Lock()
-	m.agents["root"] = st
-	m.mu.Unlock()
+	m.PutAgentForTest("root", st)
 
-	_, err := m.UpdateGoal("root", GoalActionPause, "")
+	_, err := m.UpdateGoal("root", agent.GoalActionPause, "")
 
 	assert.ErrorIs(t, err, assert.AnError)
-	assert.NotErrorIs(t, err, ErrGoalControlUnsupported,
+	assert.NotErrorIs(t, err, agent.ErrGoalControlUnsupported,
 		"a provider failure is not a capability refusal")
 }
 
@@ -168,10 +143,8 @@ func TestManagerGoal_ReturnsTheProvidersError(t *testing.T) {
 // a goal without being able to change one.
 func TestManagerGoal_SupportedGoalActionsAnswersNothingWhenItCannotKnow(t *testing.T) {
 	t.Parallel()
-	m := NewManager(nil)
-	m.mu.Lock()
-	m.agents["plain"] = &stubProvider{}
-	m.mu.Unlock()
+	m := agent.NewManager(testRegistry, nil)
+	m.PutAgentForTest("plain", &stubProvider{})
 
 	assert.Empty(t, m.SupportedGoalActions("not-running"))
 	assert.Empty(t, m.SupportedGoalActions("plain"))
@@ -182,71 +155,14 @@ func TestManagerGoal_SupportedGoalActionsAnswersNothingWhenItCannotKnow(t *testi
 // nothing against an older CLI.
 func TestManagerGoal_SupportedGoalActionsReadsTheRunningAgent(t *testing.T) {
 	t.Parallel()
-	m := NewManager(nil)
-	st := &goalStub{supported: []GoalAction{GoalActionSet, GoalActionClear}}
-	m.mu.Lock()
-	m.agents["root"] = st
-	m.mu.Unlock()
+	m := agent.NewManager(testRegistry, nil)
+	st := &goalStub{supported: []agent.GoalAction{agent.GoalActionSet, agent.GoalActionClear}}
+	m.PutAgentForTest("root", st)
 
-	assert.Equal(t, []GoalAction{GoalActionSet, GoalActionClear}, m.SupportedGoalActions("root"))
+	assert.Equal(t, []agent.GoalAction{agent.GoalActionSet, agent.GoalActionClear}, m.SupportedGoalActions("root"))
 
 	// The same agent, answering differently once its process learns more --
 	// which is exactly what Claude Code does when its init frame arrives.
 	st.supported = allGoalActions()
 	assert.Equal(t, allGoalActions(), m.SupportedGoalActions("root"))
-}
-
-// A goal command that enters through the normal input queue must update the
-// local goal row after the provider accepts it. The provider cannot observe
-// delivery before Manager.SendInput returns successfully.
-func TestManagerGoal_SendInputObservesADeliveredClaudeGoalCommand(t *testing.T) {
-	t.Parallel()
-	sink := &testSink{}
-	provider := newClaudeGoalAgent(t, sink)
-	provider.HandleOutput([]byte(
-		`{"type":"system","subtype":"init","slash_commands":["goal"]}`))
-	m := NewManager(nil)
-	m.mu.Lock()
-	m.agents["root"] = provider
-	m.mu.Unlock()
-
-	require.NoError(t, m.SendInput("root", "/goal ship the release", nil))
-
-	goal, ok := sink.LastGoal()
-	require.True(t, ok, "delivery must update the local goal row")
-	assert.Equal(t, "ship the release", goal.Objective)
-}
-
-func TestManagerGoal_SendInputDoesNotObserveARefusedCommand(t *testing.T) {
-	t.Parallel()
-	sink := &testSink{}
-	provider := newClaudeGoalAgent(t, sink)
-	provider.HandleOutput([]byte(
-		`{"type":"system","subtype":"init","slash_commands":["goal"]}`))
-	provider.mu.Lock()
-	provider.stopped = true
-	provider.mu.Unlock()
-	m := NewManager(nil)
-	m.mu.Lock()
-	m.agents["root"] = provider
-	m.mu.Unlock()
-
-	assert.Error(t, m.SendInput("root", "/goal ship the release", nil))
-	assert.Empty(t, sink.Goals())
-}
-
-func TestManagerGoal_UpdateGoalReturnsTextRouteCommand(t *testing.T) {
-	t.Parallel()
-	provider := newClaudeGoalAgent(t, &testSink{})
-	provider.HandleOutput([]byte(
-		`{"type":"system","subtype":"init","slash_commands":["goal"]}`))
-	m := NewManager(nil)
-	m.mu.Lock()
-	m.agents["root"] = provider
-	m.mu.Unlock()
-
-	command, err := m.UpdateGoal("root", GoalActionSet, "  ship\n the release ")
-
-	require.NoError(t, err)
-	assert.Equal(t, "/goal ship the release", command)
 }

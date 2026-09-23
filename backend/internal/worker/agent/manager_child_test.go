@@ -2,12 +2,13 @@
 
 // Depends on stubProvider (defined in manager_test.go, unix-only).
 
-package agent
+package agent_test
 
 import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -51,41 +52,37 @@ func (s *steerableStub) InterruptChild(childKey string) error {
 	return s.interruptErr
 }
 
-func (s *steerableStub) ActiveChildTurnState(string) TurnState {
-	return TurnState{Active: s.activeTurnSteerable, Steerable: s.activeTurnSteerable}
+func (s *steerableStub) ActiveChildTurnState(string) agent.TurnState {
+	return agent.TurnState{Active: s.activeTurnSteerable, Steerable: s.activeTurnSteerable}
 }
 
 // Ensure stubProvider stays compatible (this catches an interface drift at
 // compile time). steerableStub embeds stubProvider; adding ChildSteerer makes
 // it satisfy the type-assert in Manager.SendChildInput.
-var _ ChildSteerer = (*steerableStub)(nil)
-var _ ChildInterrupter = (*steerableStub)(nil)
-var _ Agent = (*steerableStub)(nil)
+var _ agent.ChildSteerer = (*steerableStub)(nil)
+var _ agent.ChildInterrupter = (*steerableStub)(nil)
+var _ agent.Agent = (*steerableStub)(nil)
 
 func TestManager_SendChildInputNotRunning(t *testing.T) {
 	t.Parallel()
-	m := NewManager(nil)
+	m := agent.NewManager(testRegistry, nil)
 	err := m.SendChildInput("nope", "child-1", "hello", nil)
-	assert.ErrorIs(t, err, ErrAgentNotFound)
+	assert.ErrorIs(t, err, agent.ErrAgentNotFound)
 }
 
 func TestManager_SendChildInputUnsupportedProvider(t *testing.T) {
 	t.Parallel()
-	m := NewManager(nil)
-	m.mu.Lock()
-	m.agents["root"] = &stubProvider{}
-	m.mu.Unlock()
+	m := agent.NewManager(testRegistry, nil)
+	m.PutAgentForTest("root", &stubProvider{})
 	err := m.SendChildInput("root", "child-1", "hello", nil)
-	assert.ErrorIs(t, err, ErrChildOperationUnsupported)
+	assert.ErrorIs(t, err, agent.ErrChildOperationUnsupported)
 }
 
 func TestManager_SendChildInputDispatch(t *testing.T) {
 	t.Parallel()
-	m := NewManager(nil)
+	m := agent.NewManager(testRegistry, nil)
 	st := &steerableStub{}
-	m.mu.Lock()
-	m.agents["root"] = st
-	m.mu.Unlock()
+	m.PutAgentForTest("root", st)
 
 	atts := []*leapmuxv1.Attachment{{Filename: "a.txt"}}
 	err := m.SendChildInput("root", "child-1", "hello", atts)
@@ -98,28 +95,24 @@ func TestManager_SendChildInputDispatch(t *testing.T) {
 
 func TestManager_SendChildInputPreservesABusyTurnKind(t *testing.T) {
 	t.Parallel()
-	m := NewManager(nil)
+	m := agent.NewManager(testRegistry, nil)
 	st := &steerableStub{
-		sendInputErr:        ErrAgentBusy,
+		sendInputErr:        agent.ErrAgentBusy,
 		activeTurnSteerable: true,
 	}
-	m.mu.Lock()
-	m.agents["root"] = st
-	m.mu.Unlock()
+	m.PutAgentForTest("root", st)
 
 	err := m.SendChildInput("root", "child-1", "hello", nil)
-	var busyErr *AgentBusyError
+	var busyErr *agent.AgentBusyError
 	require.ErrorAs(t, err, &busyErr)
 	assert.True(t, busyErr.ActiveTurnSteerable)
 }
 
 func TestManager_SteerChildInputDispatch(t *testing.T) {
 	t.Parallel()
-	m := NewManager(nil)
+	m := agent.NewManager(testRegistry, nil)
 	st := &steerableStub{}
-	m.mu.Lock()
-	m.agents["root"] = st
-	m.mu.Unlock()
+	m.PutAgentForTest("root", st)
 
 	require.NoError(t, m.SteerChildInput("root", "child-1", "guide", nil))
 	require.Len(t, st.steerInputCalls, 1)
@@ -129,11 +122,9 @@ func TestManager_SteerChildInputDispatch(t *testing.T) {
 
 func TestManager_InterruptChildDispatch(t *testing.T) {
 	t.Parallel()
-	m := NewManager(nil)
+	m := agent.NewManager(testRegistry, nil)
 	st := &steerableStub{interruptErr: nil}
-	m.mu.Lock()
-	m.agents["root"] = st
-	m.mu.Unlock()
+	m.PutAgentForTest("root", st)
 
 	require.NoError(t, m.InterruptChild("root", "child-2"))
 	require.Len(t, st.interruptCalls, 1)
@@ -142,10 +133,8 @@ func TestManager_InterruptChildDispatch(t *testing.T) {
 
 func TestManager_InterruptChildUnsupportedProvider(t *testing.T) {
 	t.Parallel()
-	m := NewManager(nil)
-	m.mu.Lock()
-	m.agents["root"] = &stubProvider{}
-	m.mu.Unlock()
+	m := agent.NewManager(testRegistry, nil)
+	m.PutAgentForTest("root", &stubProvider{})
 	err := m.InterruptChild("root", "child-1")
-	assert.ErrorIs(t, err, ErrChildOperationUnsupported)
+	assert.ErrorIs(t, err, agent.ErrChildOperationUnsupported)
 }

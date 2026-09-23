@@ -29,6 +29,7 @@ import (
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
@@ -149,11 +150,16 @@ func Wire(p Params) *Wiring {
 	// raised max_message_size is not receive-side-only.
 	agent.ConfigureMaxMessageSize(p.MaxMessageSize)
 
+	// The agent manager starts every provider the composition root lists.
+	// Its exit handler is installed below, once there is a service for it to
+	// reach, and before anything can start an agent.
+	agents := agent.NewManager(providers.Registry(), nil)
+
 	svc := service.New(service.Config{
 		Channels:            channelMgr,
 		Send:                p.Client.Send,
 		DB:                  p.DB,
-		Agents:              p.Client.AgentManager(),
+		Agents:              agents,
 		Terminals:           p.Client.TerminalManager(),
 		Clock:               p.Client.Clock(),
 		HomeDir:             p.HomeDir,
@@ -190,7 +196,7 @@ func Wire(p Params) *Wiring {
 	// two settings-change notifications bracketing a model/effort switch
 	// stay in one thread and consolidate. Permanent teardown does the full
 	// cleanup via its own ClearAgentRuntimeState call.
-	p.Client.AgentManager().SetOnExit(func(agentID string, exitCode int, err error, stopped bool) {
+	agents.SetOnExit(func(agentID string, exitCode int, err error, stopped bool) {
 		svc.HandleAgentProcessExit(agentID, exitCode, err, stopped)
 	})
 
@@ -202,7 +208,7 @@ func Wire(p Params) *Wiring {
 	// asks it (Manager.StartupConcurrency) rather than re-resolving the config
 	// value, so the sweep's fan-out cannot drift from the pool it queues in
 	// front of when one of these wiring lines is missed.
-	p.Client.AgentManager().SetStartupConcurrency(p.AgentStartupConcurrency)
+	agents.SetStartupConcurrency(p.AgentStartupConcurrency)
 
 	dispatcher := channel.NewDispatcher()
 	svc.ControlIPC = newControlIPCFactory(p, svc, dispatcher)

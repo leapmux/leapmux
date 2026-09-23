@@ -711,3 +711,66 @@ func (m *Manager) PeekConn(workerID string) *Conn {
 	assert.Contains(t, got, "logSomething", "a bare call names a package-level function")
 	assert.NotContains(t, got, "Ignored", "a call on some other value is out of range of a syntax walk")
 }
+
+func TestFindTestHookReferences_FlagsEveryProductionReference(t *testing.T) {
+	parse := func(rel, src string) parsedFile {
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, rel, src, 0)
+		require.NoError(t, err)
+		return parsedFile{fset, rel, file}
+	}
+	files := []parsedFile{
+		// The declarations: a method, a function, and a constant. None of them is
+		// a reference.
+		parse("internal/p/hooks.go", `package p
+type T struct{}
+func (T) SetStateForTest() {}
+func NewPoolForTest() int { return 0 }
+const LimitForTest = 2
+`),
+		// A call, a method value, and a function passed as a value.
+		parse("internal/q/use.go", `package q
+func f(t p.T, run func(func() int)) {
+	t.SetStateForTest()
+	g := t.SetStateForTest
+	_ = g
+	run(p.NewPoolForTest)
+}
+`),
+		// A test-support package is test code in a non-test file.
+		parse("internal/p/ptest/support.go", `package ptest
+func f(t p.T) { t.SetStateForTest() }
+`),
+		// testutil is the one test-support package whose name does not end in "test".
+		parse("internal/util/testutil/support.go", `package testutil
+func f() int { return p.NewPoolForTest() }
+`),
+		// A name that is only the suffix is not a hook.
+		parse("internal/r/plain.go", `package r
+func ForTest() {}
+func g() { ForTest() }
+`),
+	}
+
+	refs, declared := findTestHookReferences(files)
+	assert.Equal(t, 3, declared, "each of the three hook declarations counts once")
+	assert.Equal(t, []string{
+		"internal/q/use.go:3: refers to SetStateForTest",
+		"internal/q/use.go:4: refers to SetStateForTest",
+		"internal/q/use.go:6: refers to NewPoolForTest",
+	}, refs)
+}
+
+func TestIsTestSupportDir(t *testing.T) {
+	for dir, want := range map[string]bool{
+		"internal/hub/store/storetest":            true,
+		"internal/worker/agent/agenttest":         true,
+		"internal/util/testutil":                  true,
+		"internal/hub/store":                      false,
+		"internal/worker/agent":                   false,
+		"internal/worker/agent/providers/claude":  false,
+		"internal/worker/agent/testutilextension": false,
+	} {
+		assert.Equal(t, want, isTestSupportDir(dir), dir)
+	}
+}

@@ -2,18 +2,20 @@ package agent
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"google.golang.org/protobuf/proto"
 )
 
-// nameOrID returns the trimmed display name, falling back to the id when the name is blank.
+// NameOrID returns the trimmed display name, falling back to the id when the name is blank.
 // Used to label an option (a model, an effort tier, or an ACP config-option group) from its
-// own name. Lives here beside the catalog-projection callers (modelOptionGroup / effortGroupForModel)
+// own name. Lives here beside the catalog-projection callers (ModelOptionGroup / EffortGroupForModel)
 // rather than in the ACP option-eviction file, so the general helper has a general home.
-func nameOrID(name, id string) string {
+func NameOrID(name, id string) string {
 	if trimmed := strings.TrimSpace(name); trimmed != "" {
 		return trimmed
 	}
@@ -29,17 +31,6 @@ const (
 	OptionIDPermissionMode = optionids.PermissionMode
 	OptionIDPrimaryAgent   = optionids.PrimaryAgent
 )
-
-// isReservedOptionKey reports whether id names a well-known axis that owns a dedicated
-// mapped option group (model via the model channel; permission mode / primary agent via
-// the secondary mode channel). A server-driven config option must never be
-// surfaced under one of these keys, or it would double-list the group the mapped channel
-// already owns. Effort is deliberately NOT reserved: an ACP provider with an effort axis
-// surfaces it AS a server-driven config option (it has no dedicated channel), so it legitimately
-// uses the effort key.
-func isReservedOptionKey(id string) bool {
-	return id == OptionIDModel || id == OptionIDPermissionMode || id == OptionIDPrimaryAgent
-}
 
 // Display order for the well-known groups in the (uniform) settings popover.
 // Groups are rendered ascending by order; provider-specific axes slot between
@@ -72,27 +63,27 @@ const (
 // wrongly report the model's own efforts as unsupported, resetting a valid effort to auto.
 // This mirrors the normalized comparison sanitizeIncomingOptions uses to detect a real
 // model switch.
-func EffortSupportedByModel(groups []*leapmuxv1.AvailableOptionGroup, provider leapmuxv1.AgentProvider, model, effort string) bool {
+func (r *Registry) EffortSupportedByModel(groups []*leapmuxv1.AvailableOptionGroup, provider leapmuxv1.AgentProvider, model, effort string) bool {
 	mg := optionids.GroupByID(groups, OptionIDModel)
 	if mg == nil {
 		return false
 	}
-	want := NormalizeModelID(provider, model)
+	want := r.NormalizeModelID(provider, model)
 	for _, o := range mg.GetOptions() {
-		if NormalizeModelID(provider, o.GetId()) != want {
+		if r.NormalizeModelID(provider, o.GetId()) != want {
 			continue
 		}
 		return effortListed(optionids.GroupByID(o.GetSubGroups(), OptionIDEffort), effort)
 	}
 	// The model is not among the SELECTABLE options. A model the session runs but the picker
 	// hides -- e.g. Claude's standard-context "opus", surfaced only as the model group's
-	// current value, never as a selectable option (modelOptionGroup drops Hidden models) --
+	// current value, never as a selectable option (ModelOptionGroup drops Hidden models) --
 	// carries no per-model sub_groups. The catalog's top-level effort group is nonetheless
-	// built for that current model (modelAndEffortGroups resolves it via FindAvailableModel,
+	// built for that current model (providerkit.ModelAndEffortGroups resolves it via FindAvailableModel,
 	// which does NOT filter Hidden), so when the requested model IS the current one, validate
 	// against that group rather than wrongly reporting every tier unsupported and resetting a
 	// valid effort to auto.
-	if NormalizeModelID(provider, mg.GetCurrentValue()) == want {
+	if r.NormalizeModelID(provider, mg.GetCurrentValue()) == want {
 		return effortListed(optionids.GroupByID(groups, OptionIDEffort), effort)
 	}
 	return false
@@ -107,13 +98,13 @@ func EffortSupportedByModel(groups []*leapmuxv1.AvailableOptionGroup, provider l
 // The effort reset uses it to skip resetting against an incomplete seed, leaving an unknown model's
 // effort for the running session to validate -- mirroring ValidateLaunchOptions, which deliberately
 // does NOT validate model/effort against the seed.
-func ModelEffortKnown(groups []*leapmuxv1.AvailableOptionGroup, provider leapmuxv1.AgentProvider, model string) bool {
+func (r *Registry) ModelEffortKnown(groups []*leapmuxv1.AvailableOptionGroup, provider leapmuxv1.AgentProvider, model string) bool {
 	// The account default is a placeholder, not a concrete model. Its catalog entry
 	// carries no efforts on purpose, so an empty effort sub-group here means "not yet
 	// resolved" and never "this model offers no tier". Report it as unknown, so the
 	// running session validates the effort and resetEffortToAutoIfUnsupported keeps
-	// the user's choice instead of clamping it against an empty list. claude.go's
-	// definedEfforts already answers the same way for the same input.
+	// the user's choice instead of clamping it against an empty list. The Claude
+	// provider's definedEfforts already answers the same way for the same input.
 	if UsesAccountDefaultModel(model) {
 		return false
 	}
@@ -121,13 +112,13 @@ func ModelEffortKnown(groups []*leapmuxv1.AvailableOptionGroup, provider leapmux
 	if mg == nil {
 		return false
 	}
-	want := NormalizeModelID(provider, model)
+	want := r.NormalizeModelID(provider, model)
 	for _, o := range mg.GetOptions() {
-		if NormalizeModelID(provider, o.GetId()) == want {
+		if r.NormalizeModelID(provider, o.GetId()) == want {
 			return true
 		}
 	}
-	return NormalizeModelID(provider, mg.GetCurrentValue()) == want &&
+	return r.NormalizeModelID(provider, mg.GetCurrentValue()) == want &&
 		optionids.GroupByID(groups, OptionIDEffort) != nil
 }
 
@@ -158,12 +149,12 @@ func effortListed(eg *leapmuxv1.AvailableOptionGroup, effort string) bool {
 //
 // Permission mode, by contrast, is a FIXED capability of the providers whose permission enum
 // LeapMux states itself (Claude, Codex, and native Copilot) -- not discovered -- so an invalid
-// one IS authoritatively rejectable here. ProviderHasFixedPermissionModes selects those
+// one IS authoritatively rejectable here. Registry.HasFixedPermissionModes selects those
 // providers. An ACP provider DISCOVERS its modes from the daemon (its static group is a seed),
 // so validating against that seed would false-reject a valid dynamic mode. Empty requested
 // values (an axis the user did not supply) are skipped. requested holds the user's raw,
 // pre-default option values.
-func ValidateLaunchOptions(provider leapmuxv1.AgentProvider, requested optionmap.Map) error {
+func (r *Registry) ValidateLaunchOptions(provider leapmuxv1.AgentProvider, requested optionmap.Map) error {
 	pm := requested.Get(OptionIDPermissionMode)
 	if pm == "" {
 		return nil
@@ -171,14 +162,14 @@ func ValidateLaunchOptions(provider leapmuxv1.AgentProvider, requested optionmap
 	// Only a provider with a fixed, complete permission-mode enum can be checked here; an ACP
 	// provider's modes are daemon-discovered, so leave them to the session.
 	//
-	// This asks its OWN question. It read ProviderManagesEffort, which answers a different one
+	// This asks its OWN question. It read Registry.ManagesEffort, which answers a different one
 	// -- whether the effort tiers depend on the model -- and the two agreed only by coincidence.
 	// A provider that gains a model-dependent effort catalog must not thereby gain the
 	// authority to reject a permission mode.
-	if !ProviderHasFixedPermissionModes(provider) {
+	if !r.HasFixedPermissionModes(provider) {
 		return nil
 	}
-	if !valueListedInGroup(AvailableOptionGroupsForProvider(provider), OptionIDPermissionMode, pm) {
+	if !valueListedInGroup(r.StaticOptionGroups(provider), OptionIDPermissionMode, pm) {
 		return fmt.Errorf("permission mode %q is not valid for this provider", pm)
 	}
 	return nil
@@ -224,10 +215,10 @@ func CurrentOptions(groups []*leapmuxv1.AvailableOptionGroup) map[string]string 
 	return out
 }
 
-// optDef is a lightweight option spec used by selectGroup. The entry marked
+// OptionDef is a lightweight option spec used by SelectGroup. The entry marked
 // Default supplies the group's DefaultValue, so callers keep marking the default
 // per option exactly as they did when AvailableOption carried IsDefault.
-type optDef struct {
+type OptionDef struct {
 	Id            string
 	Name          string
 	Description   string
@@ -239,9 +230,9 @@ type optDef struct {
 	Clears []*leapmuxv1.OptionSideEffect
 }
 
-// selectGroup builds a mutable (user-writable) option group from option
+// SelectGroup builds a mutable (user-writable) option group from option
 // specs, deriving DefaultValue from the entry flagged Default.
-func selectGroup(id, label string, order int32, current string, defs []optDef) *leapmuxv1.AvailableOptionGroup {
+func SelectGroup(id, label string, order int32, current string, defs []OptionDef) *leapmuxv1.AvailableOptionGroup {
 	opts := make([]*leapmuxv1.AvailableOption, 0, len(defs))
 	def := ""
 	for _, d := range defs {
@@ -268,92 +259,30 @@ func selectGroup(id, label string, order int32, current string, defs []optDef) *
 	}
 }
 
-// liveGroup overlays an agent's confirmed current value onto a provider's static
-// option-group template. Used by providers that define their option lists
-// statically (Codex) and supply the current value at read time. The id, label,
-// default, display order, option list, AND mutability are taken from the template
-// (shared, immutable data); an empty current falls back to the template's DefaultValue,
-// so a group the caller forgot to supply a current for still renders a valid (in-list)
-// selection rather than a blank one -- which holds because every selectable template a
-// provider registers sets a non-empty DefaultValue (a template with options but no default
-// would still render blank here; the fallback can only point at what the template names).
-// Honoring the template's Mutable lets a provider project an agent-controlled, read-only
-// axis through liveGroup without it being shown as user-editable.
-func liveGroup(static *leapmuxv1.AvailableOptionGroup, current string) *leapmuxv1.AvailableOptionGroup {
-	if static == nil {
-		return nil
-	}
-	if current == "" {
-		current = static.GetDefaultValue()
-	}
-	g := cloneOptionGroupTemplate(static)
-	g.CurrentValue = current
-	return g
-}
-
-// cloneOptionGroupTemplate returns a shallow copy of a static option-group template,
-// SHARING its (immutable) Options slice. It copies every scalar field explicitly here, so a
-// field added to AvailableOptionGroup must be added in THIS one place -- but only here, not
-// at each projection site below (liveGroup, which then overrides only CurrentValue, and
-// filterGroupOptions, which overrides only Options). Centralizing the copy keeps the two
-// projections from drifting in which fields they carry.
-func cloneOptionGroupTemplate(static *leapmuxv1.AvailableOptionGroup) *leapmuxv1.AvailableOptionGroup {
-	return &leapmuxv1.AvailableOptionGroup{
-		Id:           static.GetId(),
-		Label:        static.GetLabel(),
-		Options:      static.GetOptions(),
-		CurrentValue: static.GetCurrentValue(),
-		DefaultValue: static.GetDefaultValue(),
-		Mutable:      static.GetMutable(),
-		Order:        static.GetOrder(),
-	}
-}
-
-// filterGroupOptions returns a shallow copy of static with its Options narrowed to those
-// satisfying keep, preserving id/label/default/mutability/order. Returns nil for a nil
-// input. It drops an option a provider can't currently offer (e.g. Claude hiding the "auto"
-// permission mode when the startup probe rejected it) WITHOUT mutating the shared static
-// template, so it composes with liveGroup (which then overlays the live current value)
-// instead of each caller re-implementing the template copy.
-func filterGroupOptions(static *leapmuxv1.AvailableOptionGroup, keep func(*leapmuxv1.AvailableOption) bool) *leapmuxv1.AvailableOptionGroup {
-	if static == nil {
-		return nil
-	}
-	opts := make([]*leapmuxv1.AvailableOption, 0, len(static.GetOptions()))
-	for _, o := range static.GetOptions() {
-		if keep(o) {
-			opts = append(opts, o)
-		}
-	}
-	g := cloneOptionGroupTemplate(static)
-	g.Options = opts
-	return g
-}
-
-// modelSubGroupsFunc returns the model-dependent option groups a given model
+// ModelSubGroupsFunc returns the model-dependent option groups a given model
 // determines (its effort tiers, plus any provider-specific group whose content
 // varies by model, e.g. Claude's extended-thinking label). Providers supply one
-// to modelOptionGroup so each model option carries its own dependent groups,
+// to ModelOptionGroup so each model option carries its own dependent groups,
 // which the frontend swaps in the instant the model selection changes.
-type modelSubGroupsFunc func(m *ModelInfo) []*leapmuxv1.AvailableOptionGroup
+type ModelSubGroupsFunc func(m *ModelInfo) []*leapmuxv1.AvailableOptionGroup
 
-// modelOptionGroup projects a model catalog into the "model" option group.
+// ModelOptionGroup projects a model catalog into the "model" option group.
 // Each model becomes an option carrying its context window and -- when subGroups
 // is non-nil -- its model-dependent sub_groups; the group's DefaultValue is the
 // model flagged IsDefault. Returns nil for an empty catalog (e.g. a Claude
 // session that hides model/effort UI), which omits the group.
-func modelOptionGroup(models []*ModelInfo, current string, subGroups modelSubGroupsFunc) *leapmuxv1.AvailableOptionGroup {
+func ModelOptionGroup(models []*ModelInfo, current string, subGroups ModelSubGroupsFunc) *leapmuxv1.AvailableOptionGroup {
 	if len(models) == 0 {
 		return nil
 	}
-	defs := make([]optDef, 0, len(models))
+	defs := make([]OptionDef, 0, len(models))
 	for _, m := range models {
 		if m == nil || m.Hidden {
 			continue
 		}
-		def := optDef{
+		def := OptionDef{
 			Id:            m.Id,
-			Name:          nameOrID(m.DisplayName, m.Id),
+			Name:          NameOrID(m.DisplayName, m.Id),
 			Description:   m.Description,
 			Default:       m.IsDefault,
 			ContextWindow: m.ContextWindow,
@@ -368,24 +297,24 @@ func modelOptionGroup(models []*ModelInfo, current string, subGroups modelSubGro
 	if len(defs) == 0 {
 		return nil
 	}
-	return selectGroup(OptionIDModel, ModelGroupLabel, OptionOrderModel, current, defs)
+	return SelectGroup(OptionIDModel, ModelGroupLabel, OptionOrderModel, current, defs)
 }
 
 // ModelGroupLabel is the display label for the model option group. Defined once here so the
-// selectable projection (modelOptionGroup) and the read-only projections (readOnlyModelAndEffortGroups,
+// selectable projection (ModelOptionGroup) and the read-only projections (providerkit.ReadOnlyModelAndEffortGroups,
 // ensureModelGroup) can't drift on the label.
 const ModelGroupLabel = "Model"
 
 // EffortGroupLabel is the default display label for the model-dependent effort group.
 // Providers whose effort axis is conceptually distinct override it -- Pi's CLI exposes
-// a "thinking level" (set_thinking_level), so it passes PiThinkingLevelLabel instead.
+// a "thinking level" (set_thinking_level), so it passes pi.ThinkingLevelLabel instead.
 const EffortGroupLabel = "Effort"
 
-// effortSubGroups is the default modelSubGroupsFunc: a model's lone dependent
+// EffortSubGroups is the default ModelSubGroupsFunc: a model's lone dependent
 // group is its effort group (labeled "Effort"). Providers with additional model-dependent
 // groups (Claude adds extended thinking) or a different effort label (Pi) wrap
 // effortSubGroupsLabeled. Returns nil for an effort-less model.
-func effortSubGroups(m *ModelInfo) []*leapmuxv1.AvailableOptionGroup {
+func EffortSubGroups(m *ModelInfo) []*leapmuxv1.AvailableOptionGroup {
 	return effortSubGroupsLabeled(m, EffortGroupLabel)
 }
 
@@ -393,39 +322,39 @@ func effortSubGroups(m *ModelInfo) []*leapmuxv1.AvailableOptionGroup {
 // label, so a provider's model-switch swap and its top-level effort group stay
 // consistently named (e.g. Pi's "Thinking Level").
 func effortSubGroupsLabeled(m *ModelInfo, label string) []*leapmuxv1.AvailableOptionGroup {
-	if eg := effortGroupForModel(m, "", label); eg != nil {
+	if eg := EffortGroupForModel(m, "", label); eg != nil {
 		return []*leapmuxv1.AvailableOptionGroup{eg}
 	}
 	return nil
 }
 
-// effortSubGroupsFunc returns a modelSubGroupsFunc whose lone per-model group is the model's
+// EffortSubGroupsLabeled returns a ModelSubGroupsFunc whose lone per-model group is the model's
 // effort group under the given label. It is the one constructor for the "effort-only sub_groups
-// under a chosen label" shape, shared by modelAndEffortGroups' default sub_groups and Pi's
-// "Thinking Level" sub_groups so the two can't drift; effortSubGroups is the unlabeled
+// under a chosen label" shape, shared by providerkit.ModelAndEffortGroups' default sub_groups and Pi's
+// "Thinking Level" sub_groups so the two can't drift; EffortSubGroups is the unlabeled
 // EffortGroupLabel default callers pass directly as a value.
-func effortSubGroupsFunc(label string) modelSubGroupsFunc {
+func EffortSubGroupsLabeled(label string) ModelSubGroupsFunc {
 	return func(m *ModelInfo) []*leapmuxv1.AvailableOptionGroup {
 		return effortSubGroupsLabeled(m, label)
 	}
 }
 
-// effortGroupForModel projects a single model's supported efforts into the
+// EffortGroupForModel projects a single model's supported efforts into the
 // "effort" option group under the given label, with DefaultValue set to the model's
 // default effort. Returns nil when the model is unknown or offers no efforts (so the
 // group is omitted), matching the prior behavior of hiding effort for effort-less models.
-func effortGroupForModel(m *ModelInfo, currentEffort, label string) *leapmuxv1.AvailableOptionGroup {
+func EffortGroupForModel(m *ModelInfo, currentEffort, label string) *leapmuxv1.AvailableOptionGroup {
 	if m == nil || len(m.SupportedEfforts) == 0 {
 		return nil
 	}
-	defs := make([]optDef, 0, len(m.SupportedEfforts))
+	defs := make([]OptionDef, 0, len(m.SupportedEfforts))
 	for _, e := range m.SupportedEfforts {
 		if e == nil {
 			continue
 		}
-		defs = append(defs, optDef{
+		defs = append(defs, OptionDef{
 			Id:          e.Id,
-			Name:        nameOrID(e.Name, e.Id),
+			Name:        NameOrID(e.Name, e.Id),
 			Description: e.Description,
 			Default:     e.Id == m.DefaultEffort,
 		})
@@ -433,31 +362,16 @@ func effortGroupForModel(m *ModelInfo, currentEffort, label string) *leapmuxv1.A
 	if len(defs) == 0 {
 		return nil
 	}
-	return selectGroup(OptionIDEffort, label, OptionOrderEffort, currentEffort, defs)
+	return SelectGroup(OptionIDEffort, label, OptionOrderEffort, currentEffort, defs)
 }
 
-// modelThenEffort assembles the leading "model group, then effort group" slice, omitting either
-// when it is nil. The model-first/effort-second ordering and the omit-when-absent rule live here so
-// the mutable (modelAndEffortGroups) and read-only (readOnlyModelAndEffortGroups) builders share one
-// definition and can't drift on them.
-func modelThenEffort(modelGroup, effortGroup *leapmuxv1.AvailableOptionGroup) []*leapmuxv1.AvailableOptionGroup {
-	var groups []*leapmuxv1.AvailableOptionGroup
-	if modelGroup != nil {
-		groups = append(groups, modelGroup)
-	}
-	if effortGroup != nil {
-		groups = append(groups, effortGroup)
-	}
-	return groups
-}
-
-// readOnlyValueGroup builds a single-option, non-mutable group that surfaces a value
+// ReadOnlyValueGroup builds a single-option, non-mutable group that surfaces a value
 // the user cannot change -- e.g. a third-party Claude session's fixed model, which has
 // no selectable catalog but should still be visible to `remote agent get`/list and the
 // UI rather than rendering blank. The lone option is the current value, so the picker
 // shows it as a fixed readout. name is the option's display label (e.g. a humanized
 // model name); it falls back to the raw value when empty.
-func readOnlyValueGroup(id, label string, order int32, value, name string) *leapmuxv1.AvailableOptionGroup {
+func ReadOnlyValueGroup(id, label string, order int32, value, name string) *leapmuxv1.AvailableOptionGroup {
 	if name == "" {
 		name = value
 	}
@@ -472,40 +386,54 @@ func readOnlyValueGroup(id, label string, order int32, value, name string) *leap
 	}
 }
 
-// readOnlyModelAndEffortGroups builds the read-only model group (with a humanized
-// display name) and, when effort is a concrete non-auto value, the read-only effort
-// group, for a session whose model/effort UI is hidden (a third-party Claude session or
-// can_change_model_and_effort=false). It mirrors modelAndEffortGroups for the mutable
-// case so the EffortAuto-suppression rule lives here next to its sibling rather than
-// inline at the call site. modelName is the model's humanized display label.
-func readOnlyModelAndEffortGroups(model, modelName, effort string) []*leapmuxv1.AvailableOptionGroup {
-	var modelGroup, effortGroup *leapmuxv1.AvailableOptionGroup
-	if model != "" {
-		modelGroup = readOnlyValueGroup(OptionIDModel, ModelGroupLabel, OptionOrderModel, model, modelName)
+// OptionGroupSetEqualExact reports whether two option-group slices are EXACTLY equal -- every
+// field of every group (current/default value, label, mutability, order) plus the same option
+// SET -- keyed by id and compared with optionGroupEqualExact, independent of slice order (between
+// groups AND within each group's option list). apply dedups by id, so each slice has unique ids
+// and a length+by-id-equal check is an exact set comparison. Contrast optionGroupSetStructureEqual,
+// which compares only ids and ignores values/labels/mutability.
+//
+// Exported so the service layer's catalog-change detection (persistCatalogIfChanged) shares
+// ONE definition of "unchanged catalog" with the ACP layer's own change detection -- otherwise
+// an order-sensitive service comparator would fire a redundant option_groups write whenever a
+// server merely re-sent the same groups/options in a different order (the exact churn this
+// comparator was made order-insensitive to avoid).
+func OptionGroupSetEqualExact(a, b []*leapmuxv1.AvailableOptionGroup) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	if effort != "" && effort != EffortAuto {
-		effortGroup = readOnlyValueGroup(OptionIDEffort, EffortGroupLabel, OptionOrderEffort, effort, "")
+	index := make(map[string]*leapmuxv1.AvailableOptionGroup, len(a))
+	for _, g := range a {
+		index[g.GetId()] = g
 	}
-	return modelThenEffort(modelGroup, effortGroup)
+	for _, g := range b {
+		prev, ok := index[g.GetId()]
+		if !ok || !optionGroupEqualExact(prev, g) {
+			return false
+		}
+	}
+	return true
 }
 
-// modelAndEffortGroups returns the model group followed by the current model's
-// effort group, omitting either when the catalog yields none. Shared by every
-// provider that exposes model and effort as its two leading top-level groups
-// (Codex, Pi, Claude). effortLabel names the effort axis (EffortGroupLabel for Codex
-// and Claude, PiThinkingLevelLabel for Pi) and is applied to both the top-level group
-// and -- via the default modelSubGroups -- the per-model sub_groups, so a model switch
-// keeps the label consistent. modelSubGroups overrides the per-model sub_groups func: pass
-// nil for the default (effort sub_groups only), or claudeModelSubGroups to also carry the
-// model-dependent extended-thinking group Claude swaps in on a model switch.
-func modelAndEffortGroups(models []*ModelInfo, model, effort, effortLabel string, modelSubGroups modelSubGroupsFunc) []*leapmuxv1.AvailableOptionGroup {
-	if modelSubGroups == nil {
-		modelSubGroups = effortSubGroupsFunc(effortLabel)
-	}
-	// effortGroupForModel resolves the current model in the catalog (FindAvailableModel) before
-	// building its effort group, so a model switch carries the new model's effort tiers.
-	return modelThenEffort(
-		modelOptionGroup(models, model, modelSubGroups),
-		effortGroupForModel(FindAvailableModel(models, model), effort, effortLabel),
-	)
+// optionGroupEqualExact compares two groups exactly EXCEPT it treats their option lists as sets: a
+// server re-sending the same options in a different display order is not a meaningful change, so
+// it must not be reported as a list change (which would fire a redundant status broadcast +
+// catalog write). The effort/thought_level axis is already canonicalized strongest-first by
+// buildOptionGroup, so this only changes the result for other selects (e.g. Reasonix tool_approval).
+// The stored slice still keeps the latest order (apply assigns g.groups = groups), so a genuine
+// reorder rides along on the next real change. Clone-then-sort by id, then proto.Equal compares
+// every other field (current/default value, label, mutability, order) exactly.
+func optionGroupEqualExact(a, b *leapmuxv1.AvailableOptionGroup) bool {
+	return proto.Equal(sortGroupOptionsByID(a), sortGroupOptionsByID(b))
+}
+
+// sortGroupOptionsByID returns a clone of g with its top-level options sorted by id, so two
+// groups differing only in option order compare equal under proto.Equal. Clones first so the
+// caller's group (shared via OptionGroups snapshots) is never reordered in place.
+func sortGroupOptionsByID(g *leapmuxv1.AvailableOptionGroup) *leapmuxv1.AvailableOptionGroup {
+	c := proto.Clone(g).(*leapmuxv1.AvailableOptionGroup)
+	slices.SortFunc(c.Options, func(x, y *leapmuxv1.AvailableOption) int {
+		return strings.Compare(x.GetId(), y.GetId())
+	})
+	return c
 }

@@ -9,7 +9,7 @@ import { zcodeControlResponseSummary } from './controlResponse'
  *
  * The stored request is a HYBRID, and the fixture carries both halves because the
  * derivation reads both: ZCode's own `params`, and the Claude-shaped header whose
- * `tool_name` states WHICH of the three prompts arrived (see `zcode_control.go`).
+ * `tool_name` states WHICH of the three prompts arrived (see `providers/zcode/control.go`).
  */
 function response(
   result: Record<string, unknown>,
@@ -112,7 +112,7 @@ describe('zcodeControlResponseSummary', () => {
 
   /*
    * The saved row and the banner must agree about WHICH control arrived, and the tool
-   * name is what decides -- the worker records it for exactly that (`zcode_control.go`),
+   * name is what decides -- the worker records it for exactly that (`providers/zcode/control.go`),
    * and the banner reads nothing else. This display used to read `schema.interaction`
    * instead, so a request that carried one field and not the other read as a plan on one
    * surface and a question on the other.

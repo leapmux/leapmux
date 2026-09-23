@@ -1,0 +1,334 @@
+package zcode
+
+import (
+	"encoding/json"
+	"log/slog"
+	"maps"
+
+	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+)
+
+// ZCode reports usage from two places, and they answer different questions.
+//
+//   - `session.updated` carries a PER-REQUEST usage object while the turn runs, and
+//     `turn.completed` carries the turn's total. Both are token counts for the work
+//     just done.
+//   - `runtime.contextUsage` carries what the CONTEXT holds now, plus the accrued
+//     cost. It is the authoritative readout, and it is the only one that states a
+//     cost at all.
+//
+// So the context readout prefers contextUsage and falls back to the token counts,
+// which is what makes the number correct after a compaction: the tokens of the last
+// request say nothing about how full the context is once history was summarized.
+
+// zcodeUsage is the token-count object session.updated and turn.completed share.
+type zcodeUsage struct {
+	InputTokens      int64 `json:"inputTokens"`
+	OutputTokens     int64 `json:"outputTokens"`
+	TotalTokens      int64 `json:"totalTokens"`
+	CacheReadTokens  int64 `json:"cacheReadTokens"`
+	CacheWriteTokens int64 `json:"cacheWriteTokens"`
+}
+
+func (u zcodeUsage) empty() bool {
+	return u.InputTokens == 0 && u.OutputTokens == 0 && u.TotalTokens == 0 &&
+		u.CacheReadTokens == 0 && u.CacheWriteTokens == 0
+}
+
+// zcodeRuntimeState is the `runtime` object of a state snapshot or patch.
+type zcodeRuntimeState struct {
+	EventSeq      int64              `json:"eventSeq"`
+	ActiveTurnID  string             `json:"activeTurnId"`
+	ContextUsage  *zcodeContextUsage `json:"contextUsage"`
+	APIRetry      *zcodeAPIRetry     `json:"apiRetry"`
+	StateRevision int64              `json:"stateRevision"`
+}
+
+// zcodeContextUsage is the app-server's authoritative context readout.
+type zcodeContextUsage struct {
+	Used  int64      `json:"used"`
+	Size  int64      `json:"size"`
+	Cost  *zcodeCost `json:"cost"`
+	Cache *struct {
+		InputTokens      int64 `json:"inputTokens"`
+		CacheReadTokens  int64 `json:"cacheReadTokens"`
+		CacheWriteTokens int64 `json:"cacheWriteTokens"`
+	} `json:"cache"`
+}
+
+// zcodeCost is the accrued session cost the app-server reports. Named rather than
+// anonymous so the field and costOrNil's return type cannot drift: an anonymous struct
+// must be re-declared verbatim, field order and tags included, at both.
+type zcodeCost struct {
+	Amount   float64 `json:"amount"`
+	Currency string  `json:"currency"`
+}
+
+// zcodeAPIRetry is the in-flight provider retry the app-server reports while it
+// backs off. Surfaced as session info so the user sees WHY a turn is idle.
+type zcodeAPIRetry struct {
+	Attempt      int    `json:"attempt"`
+	MaxRetries   int    `json:"maxRetries"`
+	RetryDelayMs int64  `json:"retryDelayMs"`
+	ErrorStatus  *int   `json:"errorStatus"`
+	Error        string `json:"error"`
+}
+
+// zcodeUsageCurrencyUSD is the only currency LeapMux's `total_cost_usd` field can
+// carry. A cost in any other currency is DROPPED rather than reported as dollars,
+// because a wrong number is worse than no number.
+const zcodeUsageCurrencyUSD = "USD"
+
+// zcodeContextUsageMap projects token counts into the broadcast-shaped context-usage
+// map every provider emits. Returns nil for an empty usage object, so a caller does
+// not overwrite a real reading with zeros.
+func zcodeContextUsageMap(usage zcodeUsage, contextWindow int64) map[string]any {
+	if usage.empty() {
+		return nil
+	}
+	out := providerkit.ContextUsageMap(providerkit.ContextTokenCounts{
+		Input:      usage.InputTokens,
+		CacheWrite: usage.CacheWriteTokens,
+		CacheRead:  usage.CacheReadTokens,
+		Output:     usage.OutputTokens,
+	})
+	if contextWindow > 0 {
+		out[contracts.ContextUsageFieldContextWindow] = contextWindow
+	}
+	return out
+}
+
+// zcodeContextUsageFromRuntime projects the authoritative context readout.
+//
+// `context_tokens` is what the context HOLDS, which the frontend prefers over the
+// summed token counts for the fill gauge. The per-request counts still ride along
+// (from `cache`, when present) so the popover's breakdown is not blank.
+func zcodeContextUsageFromRuntime(usage *zcodeContextUsage) map[string]any {
+	if usage == nil || usage.Used <= 0 {
+		return nil
+	}
+	// The per-request counts default to zero, so the popover's breakdown is present even
+	// when the readout carries no `cache` block. `output_tokens` has no source here.
+	var counts providerkit.ContextTokenCounts
+	if c := usage.Cache; c != nil {
+		counts.Input = c.InputTokens
+		counts.CacheRead = c.CacheReadTokens
+		counts.CacheWrite = c.CacheWriteTokens
+	}
+	out := map[string]any{contracts.ContextUsageFieldContextTokens: usage.Used}
+	counts.Into(out)
+	if usage.Size > 0 {
+		out[contracts.ContextUsageFieldContextWindow] = usage.Size
+	}
+	return out
+}
+
+// applyZCodeRuntimeState records the runtime readout and broadcasts it.
+func (a *Agent) applyZCodeRuntimeState(runtime *zcodeRuntimeState) {
+	if runtime == nil {
+		return
+	}
+	a.noteZCodeStateRevision(runtime.StateRevision)
+	info := map[string]any{}
+
+	if usage := zcodeContextUsageFromRuntime(runtime.ContextUsage); len(usage) > 0 {
+		a.Mu.Lock()
+		a.latestContextUsage = usage
+		if runtime.ContextUsage.Size > 0 {
+			a.contextWindow = runtime.ContextUsage.Size
+		}
+		a.Mu.Unlock()
+		info[contracts.SessionInfoKeyContextUsage] = maps.Clone(usage)
+	}
+	// A cost in another currency is omitted, not converted. `total_cost_usd` states
+	// its unit, and filling it from a non-dollar amount would be a wrong number.
+	if c := runtime.ContextUsage.costOrNil(); c != nil && c.Currency == zcodeUsageCurrencyUSD {
+		a.Mu.Lock()
+		a.sessionCostUsd = c.Amount
+		a.sessionCostKnown = true
+		a.Mu.Unlock()
+		info[contracts.SessionInfoKeyTotalCostUsd] = c.Amount
+	}
+	// No browser code reads this key, so it stays out of
+	// contracts/session-info.json and a backing-off ZCode turn currently reads as
+	// idle. Surfacing it means an agent-level retry indicator (it is
+	// session-scoped, so it does not fit the span-keyed running_tool key):
+	// https://github.com/leapmux/leapmux/issues/434
+	if r := runtime.APIRetry; r != nil {
+		info["zcode_api_retry"] = map[string]any{
+			"attempt":        r.Attempt,
+			"max_retries":    r.MaxRetries,
+			"retry_delay_ms": r.RetryDelayMs,
+			"error":          r.Error,
+		}
+	} else {
+		// An absent apiRetry means the retry finished. Reporting nil clears the
+		// indicator, which a missing key would leave stuck on the last attempt.
+		info["zcode_api_retry"] = nil
+	}
+	if runtime.EventSeq > 0 {
+		a.Mu.Lock()
+		if runtime.EventSeq > a.lastSeq {
+			a.lastSeq = runtime.EventSeq
+		}
+		a.Mu.Unlock()
+	}
+	if len(info) > 0 {
+		a.sink.BroadcastSessionInfo(info)
+	}
+}
+
+// costOrNil reads the cost off a possibly-absent context usage, so the caller needs
+// no nil check of its own.
+func (u *zcodeContextUsage) costOrNil() *zcodeCost {
+	if u == nil {
+		return nil
+	}
+	return u.Cost
+}
+
+// recordZCodeUsage folds a token-count usage object into the agent's readout and
+// broadcasts it.
+//
+// It NEVER replaces a context reading that came from `runtime.contextUsage`: that
+// one states what the context holds, and these counts state what one request cost.
+// Overwriting the first with the second is what makes the fill gauge jump backwards
+// after a compaction.
+func (a *Agent) recordZCodeUsage(usage zcodeUsage) {
+	contextUsage := zcodeContextUsageMap(usage, a.currentZCodeContextWindow())
+	if len(contextUsage) == 0 {
+		return
+	}
+	a.Mu.Lock()
+	if _, authoritative := a.latestContextUsage[contracts.ContextUsageFieldContextTokens]; authoritative {
+		// Keep the authoritative window and total; refresh only the per-request
+		// counts, which are what this event actually knows.
+		providerkit.TokenCountsFrom(contextUsage).Into(a.latestContextUsage)
+	} else {
+		a.latestContextUsage = contextUsage
+	}
+	broadcast := maps.Clone(a.latestContextUsage)
+	a.Mu.Unlock()
+	a.sink.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyContextUsage: broadcast})
+}
+
+// refreshZCodeUsageFromSession re-reads the session's own state after a turn ends,
+// so the persisted readout is the app-server's and not the last event's.
+//
+// Best-effort and asynchronous by contract: the read loop must stay free to deliver
+// the response, so this may not run on the read-loop goroutine.
+func (a *Agent) refreshZCodeUsageFromSession() {
+	a.Mu.Lock()
+	sessionID, stopped := a.sessionID, a.StoppedLocked()
+	a.Mu.Unlock()
+	if sessionID == "" || stopped {
+		return
+	}
+	raw, err := a.sendZCodeRequest(MethodSessionRead, map[string]any{"sessionId": sessionID}, a.APITimeout())
+	if err != nil {
+		// A build without session/read is a missing capability, not a failure: the
+		// event-driven readout stands.
+		if !zcodeIsMethodNotFound(err) {
+			slog.Debug("zcode session/read failed", "agent_id", a.AgentID(), "error", err)
+		}
+		return
+	}
+	var state struct {
+		Runtime  *zcodeRuntimeState     `json:"runtime"`
+		Settings *zcodeSettingsSnapshot `json:"settings"`
+	}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		slog.Warn("zcode session/read unmarshal failed", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	a.applyZCodeRuntimeState(state.Runtime)
+	if state.Settings != nil {
+		a.Mu.Lock()
+		a.applySettingsSnapshotLocked(state.Settings)
+		a.Mu.Unlock()
+	}
+}
+
+// zcodeUsageSnapshot is the usage state one persisted envelope carries.
+type zcodeUsageSnapshot struct {
+	ContextUsage map[string]any
+	CostUSD      float64
+	HasCost      bool
+}
+
+// usageSnapshot copies the agent's current usage readout.
+func (a *Agent) usageSnapshot() zcodeUsageSnapshot {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return zcodeUsageSnapshot{
+		ContextUsage: maps.Clone(a.latestContextUsage),
+		CostUSD:      a.sessionCostUsd,
+		HasCost:      a.sessionCostKnown,
+	}
+}
+
+// zcodeTurnContent keeps worker usage separate from the original provider event.
+func zcodeTurnContent(raw []byte, snap zcodeUsageSnapshot) agent.MessageContent {
+	content := agent.MessageContent{Original: raw}
+	if len(snap.ContextUsage) == 0 && !snap.HasCost {
+		return content
+	}
+	_, ok := parseZCodeEvent(raw)
+	if !ok {
+		return content
+	}
+	fields := map[string]any{}
+	if len(snap.ContextUsage) > 0 {
+		fields[contracts.SessionInfoKeyContextUsage] = snap.ContextUsage
+	}
+	if snap.HasCost {
+		fields[contracts.SessionInfoKeyTotalCostUsd] = snap.CostUSD
+	}
+	supplement, err := json.Marshal(fields)
+	if err != nil {
+		slog.Warn("encode zcode usage supplement", "error", err)
+		return content
+	}
+	content.Metadata = supplement
+	return content
+}
+
+// noteZCodeStateRevision records the app-server's optimistic-concurrency
+// counter, monotonically.
+//
+// MONOTONIC because a stale document that arrives out of order must not move it
+// backwards: the next session/goal would then send an expectedRevision the
+// app-server already passed, and the write would be refused for a conflict that
+// does not exist. A zero means the document carried no revision, which is not
+// an answer.
+//
+// One writer for three sources -- the session snapshot, a runtime state patch,
+// and the reply to a session/goal -- so the rule is stated once.
+func (a *Agent) noteZCodeStateRevision(revision int64) {
+	if revision <= 0 {
+		return
+	}
+	a.Mu.Lock()
+	if revision > a.stateRevision {
+		a.stateRevision = revision
+	}
+	a.Mu.Unlock()
+}
+
+// currentZCodeContextWindow returns the context window to label usage with,
+// preferring what the app-server reported and falling back to the catalog.
+func (a *Agent) currentZCodeContextWindow() int64 {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.contextWindow > 0 {
+		return a.contextWindow
+	}
+	for _, m := range a.catalog.Models {
+		if m.GetId() == a.model && m.GetContextWindow() > 0 {
+			return m.GetContextWindow()
+		}
+	}
+	return 0
+}

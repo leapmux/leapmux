@@ -33,7 +33,7 @@ export function planText(testId?: string): string {
 /**
  * The path a plan file must take for the worker to recognize it.
  *
- * `claude_output.go` tracks a `Write` or `Edit` whose `file_path` sits under
+ * `providers/claude/output.go` tracks a `Write` or `Edit` whose `file_path` sits under
  * `<HOME>/.claude/plans/`, and reads the plan title and body straight out of
  * that tool input. A plan written anywhere else records no plan file, so the
  * agent-info card shows no plan row and the tab keeps its default name.

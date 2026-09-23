@@ -11,6 +11,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -384,7 +385,7 @@ func TestEnqueueAgentInput_DuringAnOpenStartupIsDelivered(t *testing.T) {
 	// A start that REGISTERS in the manager, not a stub that returns success and
 	// leaves it empty: the delivery this test is about is the SendInput that
 	// follows, and it needs a process to reach.
-	svc.startAgentFn = svc.Agents.MockStartAgent
+	svc.startAgentFn = startWith(svc.Agents, claudetest.StartEcho)
 	t.Cleanup(func() { svc.Agents.StopAgent("agent-1") })
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
@@ -409,7 +410,7 @@ func TestEnqueueAgentInput_DuringAnOpenStartupIsDelivered(t *testing.T) {
 	}()
 
 	call := newTimer.MustWait(testCtx)
-	assert.Equal(t, svc.agentAPITimeout(), call.Duration)
+	assert.Equal(t, svc.agentStartupTimeout(), call.Duration)
 	call.MustRelease(testCtx)
 	select {
 	case <-sent:
@@ -426,4 +427,60 @@ func TestEnqueueAgentInput_DuringAnOpenStartupIsDelivered(t *testing.T) {
 		rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Limit: 10})
 		return err == nil && len(rows) == 1
 	}, time.Second, 10*time.Millisecond)
+
+	t.Run("waits past the API timeout", testEnqueueAgentInputWaitsPastTheAPITimeoutForAnOpenStartup)
+}
+
+// testEnqueueAgentInputWaitsPastTheAPITimeoutForAnOpenStartup reproduces a slow
+// provider handshake. Queue dispatch runs after the enqueue RPC returns, so
+// its wait uses the process startup budget. The API budget is not its limit.
+func testEnqueueAgentInputWaitsPastTheAPITimeoutForAnOpenStartup(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	clock := testutil.NewQuartzMock(t)
+	svc, d, w := setupTestService(t, withClock(clock))
+	testCtx := testutil.DeadlineContext(t)
+	newTimer := clock.Trap().NewTimer(startupAwaitTimerTag)
+	defer newTimer.Close()
+	stopTimer := clock.Trap().TimerStop(startupAwaitTimerTag)
+	defer stopTimer.Close()
+
+	svc.startAgentFn = startWith(svc.Agents, claudetest.StartEcho)
+	t.Cleanup(func() { svc.Agents.StopAgent("agent-1") })
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+
+	openHandle := svc.AgentStartup.begin("agent-1", func() {})
+	require.NotNil(t, openHandle)
+
+	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		InputId: newTestAgentInputID(),
+		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		AgentId: "agent-1",
+		Text:    "hello",
+	}, w)
+	require.Empty(t, w.errors)
+
+	call := newTimer.MustWait(testCtx)
+	call.MustRelease(testCtx)
+	advance := clock.Advance(svc.agentAPITimeout())
+	advance.MustWait(testCtx)
+
+	// The open path finishes after the API timeout but before its own startup
+	// budget. The queued message must still join this process and reach it.
+	svc.AgentStartup.succeed("agent-1", openHandle)
+	svc.AgentStartup.finishEntry(openHandle)
+	stopTimer.MustWait(testCtx).MustRelease(testCtx)
+
+	require.Eventually(t, func() bool {
+		rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Limit: 10})
+		return err == nil && len(rows) == 1
+	}, time.Second, 10*time.Millisecond)
+	assert.Equal(t, svc.agentStartupTimeout(), call.Duration,
+		"queue dispatch must use the process startup budget")
 }

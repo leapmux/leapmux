@@ -1,11 +1,13 @@
 package testutil_test
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
@@ -60,4 +62,56 @@ func TestNativeAbsPath_KeepsDistinctLiteralsDistinct(t *testing.T) {
 	t.Parallel()
 
 	assert.NotEqual(t, testutil.NativeAbsPath("/r/a.go"), testutil.NativeAbsPath("/r/b.go"))
+}
+
+// RepoPath finds the repository root from a package directory, whatever its
+// depth, and joins the elements under it.
+func TestRepoPath_FindsTheRepositoryRoot(t *testing.T) {
+	t.Parallel()
+
+	gomod := testutil.RepoPath(t, "backend", "go.mod")
+	info, err := os.Stat(gomod)
+	require.NoError(t, err)
+	assert.False(t, info.IsDir())
+
+	root := testutil.RepoPath(t)
+	assert.Equal(t, filepath.Join(root, "contracts"), testutil.RepoPath(t, "contracts"))
+	wd, err := os.Getwd()
+	require.NoError(t, err)
+	rel, err := filepath.Rel(root, wd)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join("backend", "internal", "util", "testutil"), rel,
+		"the root is the directory above backend, not the module or the package")
+}
+
+// failRecorder is a testing.TB that records a failure and ends the goroutine
+// that failed, as testing.T does, but does not fail the test that owns it.
+type failRecorder struct {
+	testing.TB
+	failed bool
+}
+
+func (*failRecorder) Helper()                 {}
+func (r *failRecorder) Errorf(string, ...any) { r.failed = true }
+func (r *failRecorder) FailNow()              { r.failed = true; runtime.Goexit() }
+
+// Outside the repository, RepoPath fails the test. It does not return a path
+// under a directory that is not the repository root.
+func TestRepoPath_FailsOutsideTheRepository(t *testing.T) {
+	wd, err := os.Getwd()
+	require.NoError(t, err)
+	// The root of the volume holds no backend/go.mod. t.TempDir is not a safe
+	// start, because TMPDIR can point inside the repository.
+	t.Chdir(filepath.VolumeName(wd) + string(filepath.Separator))
+
+	rec := &failRecorder{TB: t}
+	var got string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		got = testutil.RepoPath(rec, "contracts")
+	}()
+	<-done
+	assert.True(t, rec.failed, "the walk must stop at the root and fail")
+	assert.Empty(t, got, "a failed walk returns no path")
 }

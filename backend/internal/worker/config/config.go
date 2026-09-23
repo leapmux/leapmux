@@ -61,8 +61,8 @@ const (
 //
 // It lives in this package, and not beside the permit pool it sizes, so that the
 // two flag-help strings that print the default can read it. agent imports config
-// (agent/factory.go, for the two timeouts above), so the reverse edge is a cycle
-// and a constant in agent is unreachable from here or from solo.
+// (agent/start_options.go, for the two timeouts above), so the reverse edge is a
+// cycle and a constant in agent is unreachable from here or from solo.
 func ResolveStartupConcurrency(n int) int {
 	if n > 0 {
 		return n
