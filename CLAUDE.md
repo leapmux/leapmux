@@ -192,6 +192,36 @@ and becomes a second source of truth.
   shape (`{content}`, `{controlResponse}`) may share a `default*` helper;
   Anthropic/Codex/Pi/ACP parsing stays in its plugin.
 
+### Backend provider package roles
+
+Use these file names for common roles across the ten backend provider packages.
+Add a file only when the provider needs that role.
+
+| File | Role |
+|---|---|
+| `agent.go` | The concrete agent type, state, and core runtime methods. |
+| `start.go` | `Start` and startup setup. Include `var _ agent.StartFunc = Start`. |
+| `registration.go` | `Registration`, the locator, and static provider metadata. |
+| `catalog.go` | Model catalog logic that needs its own file. |
+| `settings.go` | Live option methods and settings snapshots. |
+| `control.go` | Control requests and replies. |
+| `output.go` | Output dispatch and live output state. |
+| `session.go` | Session state and refresh logic when these need a separate file. |
+| `stop.go` | Stop lifecycle and the stop window when these need a separate file. |
+
+Keep the locator in `Registration()`. The startup path reads it through
+`providerkit.ResolveLaunch` or the shared ACP start. Keep static option
+metadata in `registration.go`, and put live option methods in `settings.go`.
+
+Give each other file one clear role. Copilot separates `session_wire.go` from
+`session_lifecycle.go`. OpenCode keeps shared family startup in `family.go`
+and `FamilyBase` in `family_base.go`. Kilo reuses that family code.
+Use `connection.go` for a separate connection and `subagent.go` for child handling.
+Use `model_names.go` for model ID normalization and `launch_env.go` for launch
+environment detection.
+Use role-based names for the matching test files. Do not add a redundant
+`native_` prefix when a package has one transport.
+
 ### The three-layer chat render pipeline
 
 A change that crosses a layer is almost always misplaced. Each layer's
