@@ -134,7 +134,7 @@ func TestManager_ExitCallbackRunsBeforeSlotRelease(t *testing.T) {
 	provider := &blockingStub{waitCh: make(chan struct{})}
 	_, err := m.StartAgentWith(context.Background(), agent.Options{
 		AgentID: "exiting", WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(agenttest.Nop{}), func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
+	}, agenttest.Nop(), func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
 		return provider, nil
 	})
 	require.NoError(t, err)
@@ -172,7 +172,7 @@ func TestManager_ExitGoroutineHonorsIdentityGuard(t *testing.T) {
 		AgentID:    "r",
 		Options:    map[string]string{agent.OptionIDModel: "a"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(agenttest.Nop{}), func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) { return old, nil })
+	}, agenttest.Nop(), func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) { return old, nil })
 	require.NoError(t, err)
 	require.True(t, m.HasAgent("r"))
 
@@ -237,7 +237,7 @@ func TestManager_StopAndWaitWaitsForOnExit(t *testing.T) {
 		AgentID:    "w",
 		Options:    map[string]string{agent.OptionIDModel: "a"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(agenttest.Nop{}), func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) { return old, nil })
+	}, agenttest.Nop(), func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) { return old, nil })
 	require.NoError(t, err)
 
 	stopReturned := make(chan struct{})
@@ -301,7 +301,7 @@ func TestManager_OptionGroupsRefreshesCacheFromLive(t *testing.T) {
 		AgentID:    "c",
 		Options:    map[string]string{agent.OptionIDModel: "x"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(agenttest.Nop{}), func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) { return p, nil })
+	}, agenttest.Nop(), func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) { return p, nil })
 	require.NoError(t, err)
 	_, _, seeded := m.CachedCatalogForTest("c")
 	require.False(t, seeded, "an empty start-time catalog seeds no cache entry")

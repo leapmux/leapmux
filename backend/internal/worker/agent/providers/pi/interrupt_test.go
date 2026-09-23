@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,7 +15,7 @@ import (
 func TestPiAgent_Interrupt_SendsAbortDuringActiveTurn(t *testing.T) {
 	t.Parallel()
 
-	rig := newPiTestRig(t, agent.NewProviderServices(agenttest.Nop{}))
+	rig := newPiTestRig(t, agenttest.Nop())
 	rig.agent.Mu.Lock()
 	rig.agent.currentTurnActive = true
 	rig.agent.Mu.Unlock()
@@ -36,7 +35,7 @@ func TestPiAgent_Interrupt_SendsAbortDuringActiveTurn(t *testing.T) {
 func TestPiAgent_Interrupt_NoActiveTurnIsNoop(t *testing.T) {
 	t.Parallel()
 
-	rig := newPiTestRig(t, agent.NewProviderServices(agenttest.Nop{}))
+	rig := newPiTestRig(t, agenttest.Nop())
 	// currentTurnActive defaults to false.
 
 	require.NoError(t, rig.agent.Interrupt())
@@ -50,7 +49,7 @@ func TestPiAgent_Interrupt_NoActiveTurnIsNoop(t *testing.T) {
 func TestPiAgent_Interrupt_AfterStopErrors(t *testing.T) {
 	t.Parallel()
 
-	rig := newPiTestRig(t, agent.NewProviderServices(agenttest.Nop{}))
+	rig := newPiTestRig(t, agenttest.Nop())
 	rig.agent.SetStoppedForTest(true)
 	rig.agent.Mu.Lock()
 	rig.agent.currentTurnActive = true

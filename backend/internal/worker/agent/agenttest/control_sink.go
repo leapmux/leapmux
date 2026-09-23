@@ -14,8 +14,8 @@ type ControlRequestRecord struct {
 	SourceSeq int64
 }
 
-// planUpdateRecord captures a single UpdatePlan call.
-type planUpdateRecord struct {
+// PlanUpdateRecord captures a single UpdatePlan call.
+type PlanUpdateRecord struct {
 	Content     []byte
 	Compression leapmuxv1.ContentCompression
 	Title       string
@@ -32,9 +32,11 @@ type ControlSink struct {
 	publishedControls []ControlRequestRecord
 	canceledControls  []string
 	PublicationError  error
-	planUpdates       []planUpdateRecord
+	planUpdates       []PlanUpdateRecord
 	notifications     []map[string]interface{}
 }
+
+var _ agent.ServiceFacets = (*ControlSink)(nil)
 
 func (s *ControlSink) PublishControlRequest(request agent.ControlRequest) error {
 	s.crMu.Lock()
@@ -75,7 +77,7 @@ func (s *ControlSink) ResetCanceledControls() {
 func (s *ControlSink) UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string) {
 	s.crMu.Lock()
 	defer s.crMu.Unlock()
-	s.planUpdates = append(s.planUpdates, planUpdateRecord{
+	s.planUpdates = append(s.planUpdates, PlanUpdateRecord{
 		Content:     append([]byte(nil), content...),
 		Compression: compression,
 		Title:       title,
@@ -117,7 +119,7 @@ func (s *ControlSink) PlanUpdateCount() int {
 	return len(s.planUpdates)
 }
 
-func (s *ControlSink) LastPlanUpdate() planUpdateRecord {
+func (s *ControlSink) LastPlanUpdate() PlanUpdateRecord {
 	s.crMu.Lock()
 	defer s.crMu.Unlock()
 	return s.planUpdates[len(s.planUpdates)-1]

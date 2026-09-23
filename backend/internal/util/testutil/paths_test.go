@@ -12,14 +12,14 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
-// TestAbsPath_IsAbsoluteOnTheRunningOS pins the one property every caller
+// TestNativeAbsPath_IsAbsoluteOnEveryHost pins the one property every caller
 // depends on, against the SAME filepath.IsAbs the guards under test apply.
 //
 // Without it the platform assumption is only implied by the fixtures. A host
 // where it does not hold then reports many unrelated failures about ownership,
 // reaping and scope -- which is exactly how the POSIX-literal version surfaced
 // on Windows.
-func TestAbsPath_IsAbsoluteOnTheRunningOS(t *testing.T) {
+func TestNativeAbsPath_IsAbsoluteOnEveryHost(t *testing.T) {
 	t.Parallel()
 
 	for _, p := range []string{"/r", "/mine-a", "/r/a.go", "/repo/pkg/README.md"} {

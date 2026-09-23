@@ -38,7 +38,7 @@ func TestManager_SetOnExit_FiresOnStop(t *testing.T) {
 		AgentID:    "s-exit",
 		Options:    map[string]string{agent.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(agenttest.Nop{}), startMockAgent)
+	}, agenttest.Nop(), startMockAgent)
 	require.NoError(t, err)
 
 	m.StopAgent("s-exit")
@@ -59,7 +59,7 @@ func TestManager_StartAndStop(t *testing.T) {
 		AgentID:    "s1",
 		Options:    map[string]string{agent.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(agenttest.Nop{}), startMockAgent)
+	}, agenttest.Nop(), startMockAgent)
 	require.NoError(t, err, "StartAgent")
 
 	assert.True(t, m.HasAgent("s1"), "expected HasAgent(s1) = true")
@@ -69,7 +69,7 @@ func TestManager_StartAndStop(t *testing.T) {
 		AgentID:    "s1",
 		Options:    map[string]string{agent.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(agenttest.Nop{}), startMockAgent)
+	}, agenttest.Nop(), startMockAgent)
 	assert.Error(t, err, "expected error for duplicate agent")
 
 	// Stop and verify cleanup.
@@ -120,7 +120,7 @@ func TestManager_SendInputWaitsForRestartToFinish(t *testing.T) {
 		WorkingDir: t.TempDir(),
 	}
 
-	_, err := m.StartAgentWith(ctx, opts, agent.NewProviderServices(agenttest.Nop{}), startMockAgent)
+	_, err := m.StartAgentWith(ctx, opts, agenttest.Nop(), startMockAgent)
 	require.NoError(t, err, "StartAgent")
 
 	// Open the restart window by hand -- lock held, old process gone, new one not
@@ -142,7 +142,7 @@ func TestManager_SendInputWaitsForRestartToFinish(t *testing.T) {
 	}
 
 	// Finish the restart, then release the lock the way the service does.
-	_, err = m.StartAgentWith(ctx, opts, agent.NewProviderServices(agenttest.Nop{}), startMockAgent)
+	_, err = m.StartAgentWith(ctx, opts, agenttest.Nop(), startMockAgent)
 	require.NoError(t, err, "restart")
 	unlock()
 	defer m.StopAgent(agentID)
@@ -169,7 +169,7 @@ func TestManager_SendChildInputWaitsForRestartToFinish(t *testing.T) {
 		WorkingDir: t.TempDir(),
 	}
 
-	_, err := m.StartAgentWith(ctx, opts, agent.NewProviderServices(agenttest.Nop{}), startMockAgent)
+	_, err := m.StartAgentWith(ctx, opts, agenttest.Nop(), startMockAgent)
 	require.NoError(t, err, "StartAgent")
 
 	// The restart window, held open by hand the way RestartAgent holds it.
@@ -189,7 +189,7 @@ func TestManager_SendChildInputWaitsForRestartToFinish(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 
-	_, err = m.StartAgentWith(ctx, opts, agent.NewProviderServices(agenttest.Nop{}), startMockAgent)
+	_, err = m.StartAgentWith(ctx, opts, agenttest.Nop(), startMockAgent)
 	require.NoError(t, err, "restart")
 	unlock()
 	defer m.StopAgent(agentID)
@@ -230,7 +230,7 @@ func TestManager_SendInputDoesNotHoldTheLifecycleLockAcrossTheWrite(t *testing.T
 		AgentID:    agentID,
 		Options:    map[string]string{agent.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(agenttest.Nop{}), start)
+	}, agenttest.Nop(), start)
 	require.NoError(t, err, "StartAgent")
 
 	sendDone := make(chan error, 1)
@@ -270,7 +270,7 @@ func TestManager_StopAll(t *testing.T) {
 			AgentID:    id,
 			Options:    map[string]string{agent.OptionIDModel: "test"},
 			WorkingDir: t.TempDir(),
-		}, agent.NewProviderServices(agenttest.Nop{}), startMockAgent)
+		}, agenttest.Nop(), startMockAgent)
 		require.NoError(t, err, "StartAgent(%s)", id)
 	}
 
@@ -293,7 +293,7 @@ func TestManager_StopAndWaitAgent(t *testing.T) {
 		AgentID:    "s1",
 		Options:    map[string]string{agent.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(agenttest.Nop{}), startMockAgent)
+	}, agenttest.Nop(), startMockAgent)
 	require.NoError(t, err, "StartAgent")
 
 	// StopAndWaitAgent should block until the agent is fully removed.
@@ -305,7 +305,7 @@ func TestManager_StopAndWaitAgent(t *testing.T) {
 		AgentID:    "s1",
 		Options:    map[string]string{agent.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(agenttest.Nop{}), startMockAgent)
+	}, agenttest.Nop(), startMockAgent)
 	require.NoError(t, err, "StartAgent after StopAndWaitAgent should succeed")
 	m.StopAgent("s1")
 }
@@ -314,12 +314,12 @@ func TestManager_LockAgent_ComposesStopAndStart(t *testing.T) {
 	m := agent.NewManager(claudeTestRegistry, nil)
 	ctx := context.Background()
 
-	_, err := m.StartAgentWith(ctx, agent.Options{AgentID: "r1", Options: map[string]string{agent.OptionIDModel: "test"}, WorkingDir: t.TempDir()}, agent.NewProviderServices(agenttest.Nop{}), startMockAgent)
+	_, err := m.StartAgentWith(ctx, agent.Options{AgentID: "r1", Options: map[string]string{agent.OptionIDModel: "test"}, WorkingDir: t.TempDir()}, agenttest.Nop(), startMockAgent)
 	require.NoError(t, err)
 
 	unlock := m.LockAgent("r1")
 	m.StopAndWaitAgent("r1")
-	_, err = m.StartAgentWith(ctx, agent.Options{AgentID: "r1", Options: map[string]string{agent.OptionIDModel: "test"}, WorkingDir: t.TempDir()}, agent.NewProviderServices(agenttest.Nop{}), startMockAgent)
+	_, err = m.StartAgentWith(ctx, agent.Options{AgentID: "r1", Options: map[string]string{agent.OptionIDModel: "test"}, WorkingDir: t.TempDir()}, agenttest.Nop(), startMockAgent)
 	unlock()
 	require.NoError(t, err, "restart composed under LockAgent should succeed")
 	assert.True(t, m.HasAgent("r1"))
@@ -330,14 +330,14 @@ func TestManager_LockAgent_SerializesConcurrentRestarts(t *testing.T) {
 	m := agent.NewManager(claudeTestRegistry, nil)
 	ctx := context.Background()
 
-	_, err := m.StartAgentWith(ctx, agent.Options{AgentID: "race", Options: map[string]string{agent.OptionIDModel: "test"}, WorkingDir: t.TempDir()}, agent.NewProviderServices(agenttest.Nop{}), startMockAgent)
+	_, err := m.StartAgentWith(ctx, agent.Options{AgentID: "race", Options: map[string]string{agent.OptionIDModel: "test"}, WorkingDir: t.TempDir()}, agenttest.Nop(), startMockAgent)
 	require.NoError(t, err)
 
 	restart := func() error {
 		unlock := m.LockAgent("race")
 		defer unlock()
 		m.StopAndWaitAgent("race")
-		_, err := m.StartAgentWith(ctx, agent.Options{AgentID: "race", Options: map[string]string{agent.OptionIDModel: "test"}, WorkingDir: t.TempDir()}, agent.NewProviderServices(agenttest.Nop{}), startMockAgent)
+		_, err := m.StartAgentWith(ctx, agent.Options{AgentID: "race", Options: map[string]string{agent.OptionIDModel: "test"}, WorkingDir: t.TempDir()}, agenttest.Nop(), startMockAgent)
 		return err
 	}
 
@@ -361,7 +361,7 @@ func TestManager_AgentExitCleanup(t *testing.T) {
 		AgentID:    "auto-exit",
 		Options:    map[string]string{agent.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(agenttest.Nop{}), func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+	}, agenttest.Nop(), func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 		// Create a process that exits immediately.
 		ctx2, cancel := context.WithCancel(ctx)
 		cmd := exec.CommandContext(ctx2, "true")

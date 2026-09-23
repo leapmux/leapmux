@@ -18,8 +18,8 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/spantrack"
 )
 
-// testSinkSettingsRefreshed records the args of a PersistSettingsRefresh call.
-type testSinkSettingsRefreshed struct {
+// SettingsRefresh records the arguments of a PersistSettingsRefresh call.
+type SettingsRefresh struct {
 	Model          string
 	Effort         string
 	PermissionMode string
@@ -54,7 +54,7 @@ type Sink struct {
 	sessionIDs        []string
 	permissionModes   []string
 	modeChanges       []ModeChange
-	settingsRefreshes []testSinkSettingsRefreshed
+	settingsRefreshes []SettingsRefresh
 	sessionInfos      []map[string]interface{}
 	// leapMuxNotifications holds every PersistLeapMuxNotification payload in
 	// arrival order. These are the worker's OWN notification envelopes, which no
@@ -144,11 +144,10 @@ type Sink struct {
 	// span is unknowable. Read without the lock: set at construction.
 	SpawnSpanErr error
 	bgTasksMu    sync.Mutex
-	// notifSuppressBroadcast makes PersistNotification report broadcast=false,
-	// simulating the service layer collapsing a flapping notification
-	// byte-identically into the existing thread tail (no frontend clear). Default
-	// false: notifications report a broadcast, like a normal standalone persist.
-	notifSuppressBroadcast bool
+	// SuppressNotificationBroadcast makes PersistNotification report false. It
+	// simulates the service layer that folds a changing notification into an
+	// existing thread tail. The zero value reports a broadcast.
+	SuppressNotificationBroadcast bool
 	// reportIDs models the database uniqueness rule for provider-neutral reports.
 	reportIDs map[string]struct{}
 }
@@ -391,7 +390,7 @@ func (s *Sink) PersistNotification(source leapmuxv1.MessageSource, content []byt
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.notifications = append(s.notifications, Message{Source: source, Content: append([]byte(nil), content...)})
-	return !s.notifSuppressBroadcast, nil
+	return !s.SuppressNotificationBroadcast, nil
 }
 
 // The span methods DELEGATE to a real SpanTracker rather than re-implementing
@@ -523,7 +522,7 @@ func (s *Sink) PersistSettingsRefresh(refresh optionmap.Map) {
 			options[k] = v
 		}
 	}
-	s.settingsRefreshes = append(s.settingsRefreshes, testSinkSettingsRefreshed{
+	s.settingsRefreshes = append(s.settingsRefreshes, SettingsRefresh{
 		Model:          refresh[agent.OptionIDModel],
 		Effort:         refresh[agent.OptionIDEffort],
 		PermissionMode: refresh[agent.OptionIDPermissionMode],
@@ -1234,7 +1233,7 @@ func (s *Sink) ModeChanges() []ModeChange {
 	return append([]ModeChange(nil), s.modeChanges...)
 }
 
-func (s *Sink) LastSettingsRefresh() testSinkSettingsRefreshed {
+func (s *Sink) LastSettingsRefresh() SettingsRefresh {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.settingsRefreshes[len(s.settingsRefreshes)-1]
@@ -1317,73 +1316,75 @@ func (s *Sink) LastAutoCancel() agent.AutoContinueReason {
 	return s.autoCancels[len(s.autoCancels)-1]
 }
 
-// Nop is a no-op implementation of ProviderServices for tests that don't
-// need to verify output.
-type Nop struct{}
+// nop is a no-op implementation of ServiceFacets.
+type nop struct{}
 
-var _ agent.ServiceFacets = Nop{}
+var _ agent.ServiceFacets = nop{}
 
-func (Nop) PersistMessage(leapmuxv1.MessageSource, agent.MessageContent, agent.SpanInfo) error {
+// Nop returns provider services that discard all output.
+func Nop() agent.ProviderServices { return agent.NewProviderServices(nop{}) }
+
+func (nop) PersistMessage(leapmuxv1.MessageSource, agent.MessageContent, agent.SpanInfo) error {
 	return nil
 }
-func (Nop) EnrichMessage(agent.MessageEnrichment) (bool, error)               { return false, nil }
-func (Nop) ReadToolRequest(string) (*agent.StoredMessage, error)              { return nil, nil }
-func (Nop) ReadToolResult(string) (*agent.StoredMessage, error)               { return nil, nil }
-func (Nop) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error         { return nil }
-func (Nop) SetTurnState(agent.TurnState, uint64)                              {}
-func (Nop) ReportInterruptIgnored()                                           {}
-func (Nop) PersistNotification(leapmuxv1.MessageSource, []byte) (bool, error) { return true, nil }
-func (Nop) OpenSpan(string, string)                                           {}
-func (Nop) CloseSpan(string)                                                  {}
-func (Nop) ResetSpans()                                                       {}
-func (Nop) SetSpanType(string, string)                                        {}
-func (Nop) GetSpanType(string) string                                         { return "" }
-func (Nop) ReserveSpanColor(string, string) int32                             { return 0 }
-func (Nop) ReportProgress(agent.ProgressUpdate)                               {}
-func (Nop) PublishControlRequest(agent.ControlRequest) error                  { return nil }
-func (Nop) CancelControlRequest(string)                                       {}
-func (Nop) UpdateSessionID(string)                                            {}
-func (Nop) UpdatePermissionMode(string)                                       {}
-func (Nop) NotifyPermissionModeChanged(string, string)                        {}
-func (Nop) PersistSettingsRefresh(optionmap.Map)                              {}
-func (Nop) BroadcastStatusActive(string)                                      {}
-func (Nop) BroadcastSessionInfo(map[string]interface{})                       {}
-func (Nop) PersistLeapMuxNotification(map[string]interface{})                 {}
-func (Nop) PersistSubagentReport(write agent.SubagentReportWrite) (bool, error) {
+func (nop) EnrichMessage(agent.MessageEnrichment) (bool, error)               { return false, nil }
+func (nop) ReadToolRequest(string) (*agent.StoredMessage, error)              { return nil, nil }
+func (nop) ReadToolResult(string) (*agent.StoredMessage, error)               { return nil, nil }
+func (nop) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error         { return nil }
+func (nop) SetTurnState(agent.TurnState, uint64)                              {}
+func (nop) ReportInterruptIgnored()                                           {}
+func (nop) PersistNotification(leapmuxv1.MessageSource, []byte) (bool, error) { return true, nil }
+func (nop) OpenSpan(string, string)                                           {}
+func (nop) CloseSpan(string)                                                  {}
+func (nop) ResetSpans()                                                       {}
+func (nop) SetSpanType(string, string)                                        {}
+func (nop) GetSpanType(string) string                                         { return "" }
+func (nop) ReserveSpanColor(string, string) int32                             { return 0 }
+func (nop) ReportProgress(agent.ProgressUpdate)                               {}
+func (nop) PublishControlRequest(agent.ControlRequest) error                  { return nil }
+func (nop) CancelControlRequest(string)                                       {}
+func (nop) UpdateSessionID(string)                                            {}
+func (nop) UpdatePermissionMode(string)                                       {}
+func (nop) NotifyPermissionModeChanged(string, string)                        {}
+func (nop) PersistSettingsRefresh(optionmap.Map)                              {}
+func (nop) BroadcastStatusActive(string)                                      {}
+func (nop) BroadcastSessionInfo(map[string]interface{})                       {}
+func (nop) PersistLeapMuxNotification(map[string]interface{})                 {}
+func (nop) PersistSubagentReport(write agent.SubagentReportWrite) (bool, error) {
 	payload, err := write.NotificationPayload()
 	return payload != nil, err
 }
-func (Nop) PersistChildSubagentReport(agent.ChildSubagentReportWrite) (bool, error) { return true, nil }
-func (Nop) StorePlanModeToolUse(string, string)                                     {}
-func (Nop) LoadAndDeletePlanModeToolUse(string) (string, bool)                      { return "", false }
-func (Nop) UpdatePlan([]byte, leapmuxv1.ContentCompression, string)                 {}
-func (Nop) UpsertGoal(agent.GoalUpdate)                                             {}
-func (Nop) UpdateGoalStatus(agent.GoalStatus, agent.GoalStatus)                     {}
-func (Nop) ClearGoal(bool)                                                          {}
-func (Nop) PublishGoalCapabilities()                                                {}
-func (Nop) ScheduleAutoContinue(agent.AutoContinueSchedule)                         {}
-func (Nop) CancelAutoContinue(agent.AutoContinueReason)                             {}
-func (Nop) EnsureChildAgent(string, string, string) (string, error)                 { return "", nil }
-func (Nop) ChildSpawnSpan(string) (string, error)                                   { return "", nil }
-func (Nop) ChildSink(string) agent.ProviderServices                                 { return agent.NewProviderServices(Nop{}) }
-func (Nop) PersistChildMessage(string, leapmuxv1.MessageSource, []byte, agent.SpanInfo) error {
+func (nop) PersistChildSubagentReport(agent.ChildSubagentReportWrite) (bool, error) { return true, nil }
+func (nop) StorePlanModeToolUse(string, string)                                     {}
+func (nop) LoadAndDeletePlanModeToolUse(string) (string, bool)                      { return "", false }
+func (nop) UpdatePlan([]byte, leapmuxv1.ContentCompression, string)                 {}
+func (nop) UpsertGoal(agent.GoalUpdate)                                             {}
+func (nop) UpdateGoalStatus(agent.GoalStatus, agent.GoalStatus)                     {}
+func (nop) ClearGoal(bool)                                                          {}
+func (nop) PublishGoalCapabilities()                                                {}
+func (nop) ScheduleAutoContinue(agent.AutoContinueSchedule)                         {}
+func (nop) CancelAutoContinue(agent.AutoContinueReason)                             {}
+func (nop) EnsureChildAgent(string, string, string) (string, error)                 { return "", nil }
+func (nop) ChildSpawnSpan(string) (string, error)                                   { return "", nil }
+func (nop) ChildSink(string) agent.ProviderServices                                 { return Nop() }
+func (nop) PersistChildMessage(string, leapmuxv1.MessageSource, []byte, agent.SpanInfo) error {
 	return nil
 }
-func (Nop) PersistChildTurnEnd(string, agent.MessageContent, agent.SpanInfo) error { return nil }
-func (Nop) PersistChildPrompt(string, string) error                                { return nil }
-func (Nop) UpsertBackgroundTask(bgtask.Upsert) error                               { return nil }
-func (Nop) UpdateBackgroundTaskStatus(string, bgtask.Status, string) error {
+func (nop) PersistChildTurnEnd(string, agent.MessageContent, agent.SpanInfo) error { return nil }
+func (nop) PersistChildPrompt(string, string) error                                { return nil }
+func (nop) UpsertBackgroundTask(bgtask.Upsert) error                               { return nil }
+func (nop) UpdateBackgroundTaskStatus(string, bgtask.Status, string) error {
 	return nil
 }
-func (Nop) CloseBackgroundTask(string, bgtask.Status) error { return nil }
-func (Nop) RenameBackgroundTask(string, string) error       { return nil }
-func (Nop) LookupBackgroundTask(string) (string, bgtask.Status, bool, error) {
+func (nop) CloseBackgroundTask(string, bgtask.Status) error { return nil }
+func (nop) RenameBackgroundTask(string, string) error       { return nil }
+func (nop) LookupBackgroundTask(string) (string, bgtask.Status, bool, error) {
 	var noStatus bgtask.Status
 	return "", noStatus, false, nil
 }
-func (Nop) ReviveBackgroundTask(string) error            { return nil }
-func (Nop) PersistChildUserMessage(string, string) error { return nil }
-func (Nop) CleanupChildAgent(string)                     {}
+func (nop) ReviveBackgroundTask(string) error            { return nil }
+func (nop) PersistChildUserMessage(string, string) error { return nil }
+func (nop) CleanupChildAgent(string)                     {}
 
 // LastSessionInfoValue returns the most recent value recorded for a session-info
 // key, and whether any payload carried it.

@@ -95,7 +95,7 @@ func spawn(t *testing.T, m *agent.Manager, start agent.StartFunc, count int, idP
 			_, errs[i] = m.StartBackgroundAgentWithForTest(context.Background(), agent.Options{
 				AgentID:    fmt.Sprintf("%s-%d", idPrefix, i),
 				WorkingDir: t.TempDir(),
-			}, agent.NewProviderServices(agenttest.Nop{}), start)
+			}, agenttest.Nop(), start)
 		}()
 	}
 	return func() []error {
@@ -169,7 +169,7 @@ func TestStartAgent_InteractiveSpawnsTakeNoPermit(t *testing.T) {
 		_, err := m.StartAgentWith(context.Background(), agent.Options{
 			AgentID:    "interactive",
 			WorkingDir: t.TempDir(),
-		}, agent.NewProviderServices(agenttest.Nop{}), interactive.fn)
+		}, agenttest.Nop(), interactive.fn)
 		done <- err
 	}()
 	interactive.waitForEntries(t, 1)
@@ -261,7 +261,7 @@ func TestStartAgent_CancelledContextGivesUpTheQueue(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	queuedErr := make(chan error, 1)
 	go func() {
-		_, err := m.StartBackgroundAgentWithForTest(ctx, agent.Options{AgentID: "queued", WorkingDir: t.TempDir()}, agent.NewProviderServices(agenttest.Nop{}),
+		_, err := m.StartBackgroundAgentWithForTest(ctx, agent.Options{AgentID: "queued", WorkingDir: t.TempDir()}, agenttest.Nop(),
 			func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
 				queuedStarted.Store(true)
 				return agenttest.IdleAgent{}, nil
@@ -330,7 +330,7 @@ func TestNewManager_HasAUsablePoolBeforeConfiguration(t *testing.T) {
 	_, err := m.StartBackgroundAgentWithForTest(context.Background(), agent.Options{
 		AgentID:    "unconfigured",
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(agenttest.Nop{}), func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
+	}, agenttest.Nop(), func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
 		return a, nil
 	})
 	require.NoError(t, err)

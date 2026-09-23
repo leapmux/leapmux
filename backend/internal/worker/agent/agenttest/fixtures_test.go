@@ -2,11 +2,24 @@ package agenttest
 
 import (
 	"encoding/json"
+	"path/filepath"
+	"runtime"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestAbsPath_IsAbsoluteOnTheRunningOS keeps the test name from the agent
+// package. The shared NativeAbsPath helper now supplies the implementation.
+func TestAbsPath_IsAbsoluteOnTheRunningOS(t *testing.T) {
+	t.Parallel()
+
+	got := testutil.NativeAbsPath("/workspace/project")
+	assert.True(t, filepath.IsAbs(got),
+		"NativeAbsPath must return an absolute path on %s: %q", runtime.GOOS, got)
+}
 
 func TestFixtureJSONString(t *testing.T) {
 	t.Parallel()

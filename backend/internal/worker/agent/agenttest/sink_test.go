@@ -25,6 +25,32 @@ func TestTestSink_ChildAgentIDsReturnsChildIDsNotSpawnSpans(t *testing.T) {
 	assert.NotContains(t, s.ChildAgentIDs(), "tu-spawn", "the spawn span is the key, not the id")
 }
 
+func TestSink_PersistNotificationReportsBroadcastChoice(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		suppress  bool
+		broadcast bool
+	}{
+		{name: "default broadcasts", broadcast: true},
+		{name: "suppression prevents broadcast", suppress: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &Sink{SuppressNotificationBroadcast: tc.suppress}
+			content := []byte(`{"type":"status"}`)
+
+			broadcast, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content)
+			require.NoError(t, err)
+			assert.Equal(t, tc.broadcast, broadcast)
+			content[0] = 'x'
+			require.Len(t, sink.PersistedNotifications(), 1)
+			assert.JSONEq(t, `{"type":"status"}`, string(sink.PersistedNotifications()[0].Content))
+		})
+	}
+}
+
 // Sink delegates its span bookkeeping to the REAL engine, so the geometry a
 // provider test asserts is the geometry production computes. It kept its own
 // copy before, and drifted from the engine twice.

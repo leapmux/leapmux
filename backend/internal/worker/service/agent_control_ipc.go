@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -153,25 +154,21 @@ func (svc *Service) remintAgentControlIPC(opts agent.Options, phase string) ([]s
 // must be stopped first, and startBackgroundAgent for a start nobody waits on.
 type agentLauncher func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error)
 
-// startPriority states whether a user is waiting on a cold start. It decides
-// two things: whether the spawn draws on the manager's startup permit pool
-// (see launcher), and whether the caller joins a startup that already holds the
-// agent instead of refusing (see joinsInFlightStartup).
+// startPriority states who owns a cold start. It decides whether the spawn uses
+// the startup permit pool and whether the caller joins an existing startup.
 //
-// It is a type rather than a bare bool so the four ensureAgentRunning call
-// sites read as what they are. Three of them answer a request the user is
-// blocked on; the fourth is the boot-time resume sweep, which nobody is waiting
-// on and which would otherwise start every restorable tab at once.
+// It is a type rather than a bare bool so each ensureAgentRunning call states
+// whether a request, a queue drain, or the resume sweep owns the start.
 type startPriority int
 
 const (
-	// interactiveStart is a spawn a user is waiting on. It takes no permit and
-	// never queues: the send path calls the cold start INLINE, and the client
-	// gives that RPC about fifteen seconds, so a wait would fail a send whose
-	// message row is already durable. The one wait it does take -- joining a
-	// startup that is already producing the process this caller needs -- is
-	// limited by that same client budget, not by the process startup budget.
+	// interactiveStart serves a synchronous control request. It takes no permit.
+	// Its join wait stays inside the API budget of the waiting client.
 	interactiveStart startPriority = iota
+	// queuedStart serves a durable input from the queue's drain goroutine. It
+	// takes no permit. Its caller already returned, so it can use the process
+	// startup budget without extending an API request.
+	queuedStart
 	// backgroundStart is a spawn nobody is waiting on. It draws on the permit
 	// pool, so the boot sweep cannot run more handshakes at once than the
 	// machine was configured for.
@@ -189,13 +186,21 @@ func (p startPriority) launcher(svc *Service) agentLauncher {
 // joinsInFlightStartup answers whether this priority WAITS for a startup that
 // already holds the agent, instead of refusing at once.
 //
-// Only an interactive caller waits. It holds a user's message and has nowhere
-// to put it, so the wait is what keeps that message. The resume sweep has
-// nothing to lose: the startup it would wait for produces the very process the
-// sweep wants, so skipping is the same outcome sooner -- and a sweep worker
-// parked on that wait would hold up the Shutdown that joins the sweep.
+// A request and a queue drain wait. The resume sweep has nothing to lose: the
+// startup it finds produces the process that the sweep wants. A sweep worker
+// that waited would also delay shutdown.
 func (p startPriority) joinsInFlightStartup() bool {
-	return p == interactiveStart
+	return p != backgroundStart
+}
+
+// inFlightStartupLimit returns how long this caller can join an existing
+// startup. A queue drain has no waiting API request, so it uses the process
+// budget. A synchronous control request uses the API budget.
+func (p startPriority) inFlightStartupLimit(svc *Service) time.Duration {
+	if p == queuedStart {
+		return svc.agentStartupTimeout()
+	}
+	return svc.agentAPITimeout()
 }
 
 // mintAndLaunch mints the relaunch's control socket, hands the env vars to the

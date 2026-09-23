@@ -17,7 +17,7 @@ func TestCodex_TurnStartedIsTheAckThatReleasesASend(t *testing.T) {
 	ack := make(chan struct{})
 	a := &Agent{turnStartAck: ack}
 	a.threadID = "t-1"
-	a.sink = agent.NewProviderServices(agenttest.Nop{})
+	a.sink = agenttest.Nop()
 
 	a.handleTurnStarted(json.RawMessage(`{"threadId":"t-1","turn":{"id":"turn-1"}}`))
 
@@ -37,7 +37,7 @@ func TestCodex_AChildTurnStartedDoesNotReleaseTheSend(t *testing.T) {
 	ack := make(chan struct{})
 	a := &Agent{turnStartAck: ack}
 	a.threadID = "t-main"
-	a.sink = agent.NewProviderServices(agenttest.Nop{})
+	a.sink = agenttest.Nop()
 
 	a.handleTurnStarted(json.RawMessage(`{"threadId":"t-child","turn":{"id":"turn-child"}}`))
 

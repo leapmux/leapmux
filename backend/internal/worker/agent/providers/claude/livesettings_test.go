@@ -569,7 +569,7 @@ func newTestAgentWithDeferredPermissionMode(t *testing.T) *Agent {
 			WorkingDir: t.TempDir(),
 			APITimeout: 200 * time.Millisecond,
 		},
-		agent.NewProviderServices(agenttest.Nop{}))
+		agenttest.Nop())
 	require.NoError(t, err)
 	a.confirmedPermissionMode = contracts.ClaudeModeDefault
 	return a
@@ -681,7 +681,7 @@ func TestUpdateSettings_PermissionModeGenuineError(t *testing.T) {
 			WorkingDir: t.TempDir(),
 			APITimeout: 2 * time.Second,
 		},
-		agent.NewProviderServices(agenttest.Nop{}))
+		agenttest.Nop())
 	require.NoError(t, err)
 	defer stopTestAgent(a)
 	a.confirmedPermissionMode = contracts.ClaudeModeDefault
@@ -1244,7 +1244,7 @@ func newTestAgentWithControlProtocolEnv(t *testing.T, extraEnv ...string) *Agent
 			WorkingDir: t.TempDir(),
 			APITimeout: 5 * time.Second,
 		},
-		agent.NewProviderServices(agenttest.Nop{}))
+		agenttest.Nop())
 	require.NoError(t, err)
 	a.effort = "high"
 	a.outputStyle = "default"

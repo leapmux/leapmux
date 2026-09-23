@@ -196,7 +196,7 @@ func TestAgent_SendInputAfterStop(t *testing.T) {
 		AgentID:    "test-workspace-2",
 		Options:    map[string]string{agent.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(agenttest.Nop{}))
+	}, agenttest.Nop())
 	require.NoError(t, err, "mockStart")
 
 	agent.Stop()
@@ -212,7 +212,7 @@ func TestAgent_AgentID(t *testing.T) {
 		AgentID:    "my-agent",
 		Options:    map[string]string{agent.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(agenttest.Nop{}))
+	}, agenttest.Nop())
 	require.NoError(t, err, "mockStart")
 	defer agent.Stop()
 
@@ -230,7 +230,7 @@ func TestAgent_WorkingDir(t *testing.T) {
 		AgentID:    "wd-test",
 		Options:    map[string]string{agent.OptionIDModel: "test"},
 		WorkingDir: dir,
-	}, agent.NewProviderServices(agenttest.Nop{}))
+	}, agenttest.Nop())
 	require.NoError(t, err, "mockStart")
 	defer func() {
 		agent.Stop()
@@ -657,7 +657,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 		Options:        map[string]string{agent.OptionIDModel: "test"},
 		WorkingDir:     t.TempDir(),
 		StartupTimeout: 200 * time.Millisecond,
-	}, agent.NewProviderServices(agenttest.Nop{}))
+	}, agenttest.Nop())
 
 	assert.Nil(t, agent, "agent should be nil on timeout")
 	require.Error(t, err, "expected timeout error")
@@ -740,7 +740,7 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 		Options:        map[string]string{agent.OptionIDModel: "test"},
 		WorkingDir:     t.TempDir(),
 		StartupTimeout: startupTimeout,
-	}, agent.NewProviderServices(agenttest.Nop{}))
+	}, agenttest.Nop())
 	elapsed := time.Since(start)
 
 	assert.Nil(t, agent, "agent should be nil on early exit")
@@ -1060,7 +1060,7 @@ func TestApplyStartupPermissionMode(t *testing.T) {
 			logPath := filepath.Join(t.TempDir(), "control.log")
 			agent, err := mockStartWithResponder(ctx,
 				agent.Options{AgentID: tc.agentID, WorkingDir: t.TempDir()},
-				agent.NewProviderServices(agenttest.Nop{}), tc.script, logPath)
+				agenttest.Nop(), tc.script, logPath)
 			require.NoError(t, err, "mockStartWithResponder")
 			defer func() { agent.Stop(); _ = agent.Wait() }()
 
@@ -1150,7 +1150,7 @@ func TestApplyStartupPermissionMode_TimedOutProbeLeavesNoDeferredAck(t *testing.
 	// that follows it is acknowledged.
 	a, err := mockStartWithResponder(ctx,
 		agent.Options{AgentID: "handshake-probe-timeout", WorkingDir: t.TempDir()},
-		agent.NewProviderServices(agenttest.Nop{}), "skip|success", logPath)
+		agenttest.Nop(), "skip|success", logPath)
 	require.NoError(t, err, "mockStartWithResponder")
 	defer func() { a.Stop(); _ = a.Wait() }()
 

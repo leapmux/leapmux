@@ -179,7 +179,7 @@ func (r *piTestRig) setResponder(fn func(req piRecordedRequest) (json.RawMessage
 func TestPi_SendPiCommand_RoundTripsResponse(t *testing.T) {
 	t.Parallel()
 
-	rig := newPiTestRig(t, agent.NewProviderServices(agenttest.Nop{}))
+	rig := newPiTestRig(t, agenttest.Nop())
 	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
 		assert.Equal(t, "ping", req.Type)
 		return json.RawMessage(`{"hello":"world"}`), true, ""
@@ -199,7 +199,7 @@ func TestPi_SendPiCommand_RoundTripsResponse(t *testing.T) {
 func TestPi_SendPiCommand_FailureReturnsError(t *testing.T) {
 	t.Parallel()
 
-	rig := newPiTestRig(t, agent.NewProviderServices(agenttest.Nop{}))
+	rig := newPiTestRig(t, agenttest.Nop())
 	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
 		return nil, false, "model not found"
 	})
@@ -215,7 +215,7 @@ func TestPi_SendPiCommand_FailureReturnsError(t *testing.T) {
 func TestPi_SendPiCommand_TimeoutReturnsError(t *testing.T) {
 	t.Parallel()
 
-	rig := newPiTestRig(t, agent.NewProviderServices(agenttest.Nop{}))
+	rig := newPiTestRig(t, agenttest.Nop())
 	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
 		// Hold the response forever to force a timeout.
 		select {}
@@ -229,7 +229,7 @@ func TestPi_SendPiCommand_TimeoutReturnsError(t *testing.T) {
 func TestPi_SendPiCommand_AssignsUniqueStringIDs(t *testing.T) {
 	t.Parallel()
 
-	rig := newPiTestRig(t, agent.NewProviderServices(agenttest.Nop{}))
+	rig := newPiTestRig(t, agenttest.Nop())
 	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
 		return json.RawMessage(`{}`), true, ""
 	})
@@ -290,7 +290,7 @@ func TestPi_HandlePiResponse_IgnoresNonResponseLines(t *testing.T) {
 func TestPi_SendInput_FreshTurnOmitsSteer(t *testing.T) {
 	t.Parallel()
 
-	rig := newPiTestRig(t, agent.NewProviderServices(agenttest.Nop{}))
+	rig := newPiTestRig(t, agenttest.Nop())
 	gotPayload := make(chan map[string]interface{}, 1)
 	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
 		if req.Type == "prompt" {
@@ -314,7 +314,7 @@ func TestPi_SendInput_FreshTurnOmitsSteer(t *testing.T) {
 func TestPi_SteerInput_DuringTurnSetsSteer(t *testing.T) {
 	t.Parallel()
 
-	rig := newPiTestRig(t, agent.NewProviderServices(agenttest.Nop{}))
+	rig := newPiTestRig(t, agenttest.Nop())
 	rig.agent.Mu.Lock()
 	rig.agent.currentTurnActive = true
 	rig.agent.Mu.Unlock()
@@ -340,7 +340,7 @@ func TestPi_SteerInput_DuringTurnSetsSteer(t *testing.T) {
 func TestPi_SendInput_StoppedAgentReturnsError(t *testing.T) {
 	t.Parallel()
 
-	rig := newPiTestRig(t, agent.NewProviderServices(agenttest.Nop{}))
+	rig := newPiTestRig(t, agenttest.Nop())
 	rig.agent.SetStoppedForTest(true)
 
 	err := rig.agent.SendInput("hello", nil)
@@ -350,7 +350,7 @@ func TestPi_SendInput_StoppedAgentReturnsError(t *testing.T) {
 func TestPi_SendInput_WithImageAttachment_BuildsImagesArray(t *testing.T) {
 	t.Parallel()
 
-	rig := newPiTestRig(t, agent.NewProviderServices(agenttest.Nop{}))
+	rig := newPiTestRig(t, agenttest.Nop())
 	gotPayload := make(chan map[string]interface{}, 1)
 	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
 		if req.Type == "prompt" {
