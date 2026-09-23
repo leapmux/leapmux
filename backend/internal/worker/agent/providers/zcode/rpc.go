@@ -12,7 +12,7 @@ import (
 
 // ZCode's request/response plumbing.
 //
-// zcodeAgent does NOT embed JSONRPCProcess, for the same reason pi.Agent does not: the
+// Agent does NOT embed JSONRPCProcess, for the same reason pi.Agent does not: the
 // wire carries no `jsonrpc` field, so the shared marshaller would add one the
 // app-server rejects. It shares only the pending-map mechanics, through
 // Correlator[int64].
@@ -40,7 +40,7 @@ type zcodeReplyFrame struct {
 // request limits rather than the wall clock. On an app-server error the returned
 // error WRAPS the *zcodeError, so a caller can read the code with zcodeErrorCode
 // (and the zcodeIs* helpers) instead of matching on message text.
-func (a *zcodeAgent) sendZCodeRequest(method string, params any, timeout time.Duration) (json.RawMessage, error) {
+func (a *Agent) sendZCodeRequest(method string, params any, timeout time.Duration) (json.RawMessage, error) {
 	id := a.nextReqID.Add(1)
 
 	data, err := json.Marshal(zcodeRequestFrame{ID: id, Method: method, Params: params})
@@ -78,18 +78,18 @@ func (a *zcodeAgent) sendZCodeRequest(method string, params any, timeout time.Du
 // sendZCodeReply answers a server request with a result. The id is echoed as the
 // RAW bytes that arrived, so a numeric id round-trips exactly and a future string
 // id needs no change here.
-func (a *zcodeAgent) sendZCodeReply(id json.RawMessage, result any) error {
+func (a *Agent) sendZCodeReply(id json.RawMessage, result any) error {
 	return a.writeZCodeReply(zcodeReplyFrame{ID: id, Result: result})
 }
 
 // sendZCodeErrorReply answers a server request with an error. Used where LeapMux
 // cannot satisfy the request at all -- never as a substitute for a legitimate
 // "deny" decision, which is a RESULT.
-func (a *zcodeAgent) sendZCodeErrorReply(id json.RawMessage, code int, message string) error {
+func (a *Agent) sendZCodeErrorReply(id json.RawMessage, code int, message string) error {
 	return a.writeZCodeReply(zcodeReplyFrame{ID: id, Error: &zcodeError{Code: code, Message: message}})
 }
 
-func (a *zcodeAgent) writeZCodeReply(frame zcodeReplyFrame) error {
+func (a *Agent) writeZCodeReply(frame zcodeReplyFrame) error {
 	data, err := json.Marshal(frame)
 	if err != nil {
 		return fmt.Errorf("marshal reply: %w", err)
@@ -113,7 +113,7 @@ func (a *zcodeAgent) writeZCodeReply(frame zcodeReplyFrame) error {
 // a pending id is resolved FIRST: an app-server request whose id happens to equal
 // one of ours must not steal our reply, and our reply must not be mistaken for a
 // request. Registration decides, not shape.
-func (a *zcodeAgent) routeZCodeRPC(line *providerkit.ParsedLine) (handler func(), consumed bool) {
+func (a *Agent) routeZCodeRPC(line *providerkit.ParsedLine) (handler func(), consumed bool) {
 	id, ok := line.IDInt64()
 	if ok && a.Deliver(id, line.Raw) {
 		return nil, true
@@ -130,7 +130,7 @@ func (a *zcodeAgent) routeZCodeRPC(line *providerkit.ParsedLine) (handler func()
 
 // interceptResponse is the ReadOutput interceptor. It returns true when it
 // consumed the line.
-func (a *zcodeAgent) interceptResponse(line *providerkit.ParsedLine) bool {
+func (a *Agent) interceptResponse(line *providerkit.ParsedLine) bool {
 	handler, consumed := a.routeZCodeRPC(line)
 	if handler != nil {
 		// Every reply to a server request is a stdin WRITE, which blocks while the
@@ -147,7 +147,7 @@ func (a *zcodeAgent) interceptResponse(line *providerkit.ParsedLine) bool {
 // Every branch MUST answer, including the ones LeapMux cannot satisfy. The
 // app-server blocks the flow behind an unanswered request -- the runtime-preferences
 // handshake blocks session/create outright -- so silence is a hang, not a decline.
-func (a *zcodeAgent) handleServerRequest(line *providerkit.ParsedLine) {
+func (a *Agent) handleServerRequest(line *providerkit.ParsedLine) {
 	method, id, params := line.Method, line.ID, line.Params
 	switch method {
 	case MethodRequestRuntimePreferences:
@@ -182,14 +182,14 @@ type zcodeRuntimePreferences struct {
 	AskUserQuestionAutoResolution   bool `json:"askUserQuestionAutoResolutionEnabled"`
 }
 
-func (a *zcodeAgent) answerRuntimePreferences(id json.RawMessage) {
+func (a *Agent) answerRuntimePreferences(id json.RawMessage) {
 	if err := a.sendZCodeReply(id, zcodeRuntimePreferences{}); err != nil {
 		slog.Warn("zcode runtime preferences reply failed", "agent_id", a.AgentID(), "error", err)
 	}
 }
 
 // handleOutput is the ReadOutput handler for lines the interceptor did not consume.
-func (a *zcodeAgent) handleOutput(line *providerkit.ParsedLine) {
+func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 	handleZCodeOutput(a, line)
 }
 
@@ -200,7 +200,7 @@ func (a *zcodeAgent) handleOutput(line *providerkit.ParsedLine) {
 // dispatch. Skipping the first stage would drop every request the app-server makes
 // -- a permission prompt, a plan approval, the runtime-preferences handshake that
 // blocks session/create -- and each one is a hang rather than a lost message.
-func (a *zcodeAgent) HandleOutput(content []byte) {
+func (a *Agent) HandleOutput(content []byte) {
 	line := providerkit.ParseLine(content)
 	handler, consumed := a.routeZCodeRPC(line)
 	if handler != nil {

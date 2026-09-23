@@ -176,7 +176,7 @@ func (zcodeProvider) ReportsDefaultModelSentinel() bool { return false }
 //
 // The image gate is NOT here, because this check is stateless and an image's
 // acceptance depends on the CURRENT model's declared input modalities. It runs in
-// zcodeAgent.SendInput, which is the only place that knows the model -- see
+// Agent.SendInput, which is the only place that knows the model -- see
 // attachments.go.
 func (zcodeProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
 	switch attachment.Kind {

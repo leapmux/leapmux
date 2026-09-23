@@ -14,7 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-func (a *copilotAgent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
+func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	groups := providerkit.ModelAndEffortGroups(a.models, a.options[agent.OptionIDModel], a.options[agent.OptionIDEffort], agent.EffortGroupLabel, nil)
@@ -24,7 +24,7 @@ func (a *copilotAgent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	)
 }
 
-func (a *copilotAgent) SettingsSnapshot() agent.SettingsApplyResult {
+func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 	return agent.ConfirmedSettings(agent.CurrentOptions(a.OptionGroups()))
 }
 
@@ -37,7 +37,7 @@ func (a *copilotAgent) SettingsSnapshot() agent.SettingsApplyResult {
 // This function runs at startup, at each settings update, at each restore, and for
 // each external change event. The error it returns is the first one in the order
 // below, so a failure reads the same way on every run.
-func (a *copilotAgent) refreshNativeSettings() error {
+func (a *Agent) refreshNativeSettings() error {
 	var modelRaw, modeRaw, permissionRaw json.RawMessage
 	reads := [...]struct {
 		method string
@@ -107,7 +107,7 @@ func (a *copilotAgent) refreshNativeSettings() error {
 // event, and it also keeps a burst of the three events to one read at a time: three
 // goroutines that each published a snapshot would leave the last writer's mixed view
 // standing.
-func (a *copilotAgent) refreshNativeSettingsInBackground() {
+func (a *Agent) refreshNativeSettingsInBackground() {
 	a.offReader(copilotReadSettings, func() {
 		if err := a.refreshNativeSettings(); err != nil {
 			slog.Debug("Read Copilot settings after a native change", "agent_id", a.AgentID(), "error", err)
@@ -117,13 +117,13 @@ func (a *copilotAgent) refreshNativeSettingsInBackground() {
 	})
 }
 
-func (a *copilotAgent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResult {
+func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResult {
 	a.sessionMu.Lock()
 	defer a.sessionMu.Unlock()
 	return a.applyNativeSettings(requested)
 }
 
-func (a *copilotAgent) applyNativeSettings(requested optionmap.Map) agent.SettingsApplyResult {
+func (a *Agent) applyNativeSettings(requested optionmap.Map) agent.SettingsApplyResult {
 	result := agent.SettingsApplyResult{AppliedLive: true, Settlements: make(agent.OptionSettlements)}
 	// Mode changes can select a plan model. Apply an explicit model and effort after that change.
 	order := []string{copilotOptionSessionMode, agent.OptionIDModel, agent.OptionIDEffort, agent.OptionIDPermissionMode}

@@ -17,6 +17,7 @@ import (
 // and that each one resolves.
 func TestEveryRegisteredProviderResolvesALaunch(t *testing.T) {
 	registry := Registry()
+	assert.Len(t, registry.Providers(), 10)
 	// Every provider must resolve to SOMETHING, or its Start returns an error before it
 	// spawns anything. NewRegistry already refuses a locator that states no way to find
 	// the program; this is where a locator that states one but resolves nothing surfaces.
@@ -27,7 +28,7 @@ func TestEveryRegisteredProviderResolvesALaunch(t *testing.T) {
 		}
 		for _, provider := range registry.Providers() {
 			reg, _ := registry.Registration(provider)
-			spec, err := providerkit.ResolveLaunch(context.Background(), agent.Options{Shell: shell}, provider, reg.Locator)
+			spec, err := providerkit.ResolveLaunch(context.Background(), agent.Options{Shell: shell}, reg)
 			// ZCode resolves against the real machine, so it may legitimately report that
 			// it is not installed. Every other provider must name a program.
 			if err != nil {

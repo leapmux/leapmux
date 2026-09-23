@@ -161,7 +161,7 @@ Five providers read their own native protocol: `claude`, `codex`, `copilot`,
 `pi`, `zcode`. Five speak the Agent Client Protocol on the shared base in
 `providers/acp` (`acp.Start`): `opencode`, `cursor`, `kilo`, `goose`,
 `reasonix`. Copilot is NOT ACP — `providers/copilot/connection_test.go` and
-`native_session_test.go` assert its arguments hold no `--acp`.
+`session_lifecycle_test.go` assert its arguments hold no `--acp`.
 
 Anything depending on **one provider's wire format or message shapes** MUST live
 in that provider's package, never in shared code (package `agent`,

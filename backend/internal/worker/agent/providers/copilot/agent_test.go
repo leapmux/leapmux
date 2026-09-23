@@ -17,8 +17,8 @@ import (
 
 // newCopilotOffReaderAgent builds an agent whose connection is present but stopped
 // nowhere. offReader reads sessionMu and the stopped flag, and both resolve here.
-func newCopilotOffReaderAgent() *copilotAgent {
-	return &copilotAgent{
+func newCopilotOffReaderAgent() *Agent {
+	return &Agent{
 		copilotConnection: &copilotConnection{JSONRPCProcess: providerkit.JSONRPCProcess{
 			Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{Ctx: context.Background(), Stdin: agenttest.FailingStdin{}}),
 		}},
@@ -106,7 +106,7 @@ func TestCopilotOffReaderRefusesAStoppedProcess(t *testing.T) {
 func TestCopilotAnswersAnUnsupportedRequest(t *testing.T) {
 	sink := &agenttest.Sink{}
 	written := &agenttest.Stdin{}
-	a := &copilotAgent{
+	a := &Agent{
 		copilotConnection: &copilotConnection{JSONRPCProcess: providerkit.JSONRPCProcess{
 			Process:      providerkit.NewProcessFrom(providerkit.ProcessConfig{Ctx: context.Background(), Stdin: agenttest.NopStdin(written)}),
 			FrameMessage: frameCopilotJSON,
@@ -138,7 +138,7 @@ func TestCopilotAnswersAnUnsupportedRequest(t *testing.T) {
 // with a null identifier on the wire, which the runtime cannot route.
 func TestCopilotAnswersNoNotification(t *testing.T) {
 	written := &agenttest.Stdin{}
-	a := &copilotAgent{
+	a := &Agent{
 		copilotConnection: &copilotConnection{JSONRPCProcess: providerkit.JSONRPCProcess{
 			Process:      providerkit.NewProcessFrom(providerkit.ProcessConfig{Ctx: context.Background(), Stdin: agenttest.NopStdin(written)}),
 			FrameMessage: frameCopilotJSON,
@@ -176,7 +176,7 @@ func TestCopilotAnswersNoNotification(t *testing.T) {
 // no method, so it is nobody's request.
 func TestCopilotAnswersNoOrphanResponse(t *testing.T) {
 	written := &agenttest.Stdin{}
-	a := &copilotAgent{
+	a := &Agent{
 		copilotConnection: &copilotConnection{JSONRPCProcess: providerkit.JSONRPCProcess{
 			Process:      providerkit.NewProcessFrom(providerkit.ProcessConfig{Ctx: context.Background(), Stdin: agenttest.NopStdin(written)}),
 			FrameMessage: frameCopilotJSON,

@@ -19,10 +19,10 @@ import (
 // newNativeCopilotForEvents builds an agent that reads the event stream without a
 // process. The connection is present but unstarted, so every field the dispatch reads
 // resolves and no request can leave.
-func newNativeCopilotForEvents(t *testing.T) (*copilotAgent, *agenttest.Sink) {
+func newNativeCopilotForEvents(t *testing.T) (*Agent, *agenttest.Sink) {
 	t.Helper()
 	sink := &agenttest.Sink{}
-	a := &copilotAgent{
+	a := &Agent{
 		copilotConnection: &copilotConnection{JSONRPCProcess: providerkit.JSONRPCProcess{
 			Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "copilot-events", Ctx: t.Context(), Stdin: agenttest.FailingStdin{}}),
 		}},

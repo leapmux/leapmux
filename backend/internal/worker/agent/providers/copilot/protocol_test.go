@@ -44,7 +44,7 @@ func TestCopilotSessionEventPreservesUnknownEventKinds(t *testing.T) {
 
 func TestNativeCopilotIdleDoesNotInventOrRepeatATurnEnd(t *testing.T) {
 	sink := &agenttest.Sink{}
-	agent := &copilotAgent{sink: agent.NewProviderServices(sink), sessionID: "session"}
+	agent := &Agent{sink: agent.NewProviderServices(sink), sessionID: "session"}
 	idle := []byte(`{"method":"session.event","params":{"sessionId":"session","event":{"type":"session.idle","data":{}}}}`)
 	agent.HandleOutput(idle)
 	agent.HandleOutput([]byte(`{"method":"session.event","params":{"sessionId":"session","event":{"type":"assistant.turn_start","data":{}}}}`))

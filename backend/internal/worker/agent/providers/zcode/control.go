@@ -67,7 +67,7 @@ type zcodePermissionOption struct {
 // It does NOT reply. The reply is built from the user's answer in
 // ResolveControlResponse, and the app-server waits for it -- which is the whole
 // point of a permission prompt.
-func (a *zcodeAgent) handlePermissionRequest(id, params json.RawMessage) {
+func (a *Agent) handlePermissionRequest(id, params json.RawMessage) {
 	a.controlMu.Lock()
 	defer a.controlMu.Unlock()
 	var req zcodePermissionRequest
@@ -205,7 +205,7 @@ func (r zcodeUserInputRequest) toolInput() (json.RawMessage, error) {
 }
 
 // handleUserInputRequest persists a plan approval or a question.
-func (a *zcodeAgent) handleUserInputRequest(id, params, original json.RawMessage) {
+func (a *Agent) handleUserInputRequest(id, params, original json.RawMessage) {
 	a.controlMu.Lock()
 	defer a.controlMu.Unlock()
 	var req zcodeUserInputRequest
@@ -379,7 +379,7 @@ type zcodeControlRequestHeader struct {
 // An ERROR is the right answer here, unlike a denial: a denial is a decision, and
 // LeapMux made none. The app-server reports the failure to the model, which can
 // then say what went wrong instead of claiming the user refused.
-func (a *zcodeAgent) replyZCodeControlFailure(id json.RawMessage, message string) {
+func (a *Agent) replyZCodeControlFailure(id json.RawMessage, message string) {
 	if err := a.sendZCodeErrorReply(id, ErrInternal, message); err != nil {
 		slog.Warn("zcode control failure reply failed", "agent_id", a.AgentID(), "error", err)
 	}
@@ -387,7 +387,7 @@ func (a *zcodeAgent) replyZCodeControlFailure(id json.RawMessage, message string
 
 // replyZCodePermission answers a permission request directly, for the paths where
 // no user decision is possible.
-func (a *zcodeAgent) replyZCodePermission(id json.RawMessage, options []zcodePermissionOption, behavior, reason string) {
+func (a *Agent) replyZCodePermission(id json.RawMessage, options []zcodePermissionOption, behavior, reason string) {
 	result, err := zcodePermissionResult(options, behavior, reason)
 	if err != nil {
 		a.replyZCodeControlFailure(id, err.Error())
@@ -403,7 +403,7 @@ func (a *zcodeAgent) replyZCodePermission(id json.RawMessage, options []zcodePer
 // The reply carries a behavior and nothing else. ZCode's user-input result has no
 // field for a reason, unlike the permission result, so the caller logs its reason
 // rather than passing one here.
-func (a *zcodeAgent) replyZCodeUserInput(id json.RawMessage, behavior string, reply zcodeUserInputReply) {
+func (a *Agent) replyZCodeUserInput(id json.RawMessage, behavior string, reply zcodeUserInputReply) {
 	if err := a.sendZCodeReply(id, zcodeUserInputResult(behavior, reply)); err != nil {
 		slog.Warn("zcode user input reply failed", "agent_id", a.AgentID(), "error", err)
 	}
@@ -415,7 +415,7 @@ func (a *zcodeAgent) replyZCodeUserInput(id json.RawMessage, behavior string, re
 // Legacy builds already hold the inline key from workspace/updateProviderRegistry,
 // so their reply reports authorization only. ZCode 0.16.9 keeps account credentials
 // in the host and requires the key in `requestAuth` for each model request.
-func (a *zcodeAgent) answerProviderRuntimeHeaders(id, params json.RawMessage) {
+func (a *Agent) answerProviderRuntimeHeaders(id, params json.RawMessage) {
 	a.Mu.Lock()
 	accountConfig := a.accountProviderConfig
 	a.Mu.Unlock()
@@ -475,7 +475,7 @@ func (a *zcodeAgent) answerProviderRuntimeHeaders(id, params json.RawMessage) {
 //
 // It is answered rather than ignored: the app-server blocks the tool behind it, and
 // a declared unavailability lets it fall through to the servers it can reach.
-func (a *zcodeAgent) answerOfficialMcpAuthHeaders(id json.RawMessage) {
+func (a *Agent) answerOfficialMcpAuthHeaders(id json.RawMessage) {
 	a.Mu.Lock()
 	accountConfig := a.accountProviderConfig
 	a.Mu.Unlock()
@@ -701,14 +701,14 @@ func zcodeAnswerContent(reply zcodeUserInputReply) map[string]any {
 //
 // The record also makes the app-server's own permission.resolved for this request
 // recognizable as the echo of the user's answer rather than as an automatic decision.
-func (a *zcodeAgent) pendingZCodeControlPayload(requestID string) json.RawMessage {
+func (a *Agent) pendingZCodeControlPayload(requestID string) json.RawMessage {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	return a.pendingControls[requestID]
 }
 
 // rememberZCodeControlRequest stores the first announcement's payload for requestID.
-func (a *zcodeAgent) rememberZCodeControlRequest(requestID string, payload json.RawMessage) {
+func (a *Agent) rememberZCodeControlRequest(requestID string, payload json.RawMessage) {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	if a.pendingControls == nil {
@@ -720,7 +720,7 @@ func (a *zcodeAgent) rememberZCodeControlRequest(requestID string, payload json.
 // publishZCodeControlRequest persists a control prompt and broadcasts it to every window.
 // Shared by the first announcement and by each republished repeat, so the two can never
 // store one payload and show another.
-func (a *zcodeAgent) publishZCodeControlRequest(requestID string, payload json.RawMessage) {
+func (a *Agent) publishZCodeControlRequest(requestID string, payload json.RawMessage) {
 	if err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: requestID, Payload: payload}); err != nil {
 		slog.Error("publish zcode control request", "agent_id", a.AgentID(), "request_id", requestID, "error", err)
 		a.forgetZCodeControlRequest(requestID)
@@ -733,7 +733,7 @@ func (a *zcodeAgent) publishZCodeControlRequest(requestID string, payload json.R
 // forgetZCodeControlRequest reports whether requestID was a prompt LeapMux
 // forwarded, and drops it. Consumed by permission.resolved and userInput.resolved,
 // which is what re-arms the de-duplication for a reused request id.
-func (a *zcodeAgent) forgetZCodeControlRequest(requestID string) bool {
+func (a *Agent) forgetZCodeControlRequest(requestID string) bool {
 	if requestID == "" {
 		return false
 	}

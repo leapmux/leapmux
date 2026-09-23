@@ -19,8 +19,8 @@ import (
 // a test that drives the reader needs one too. The failing writer keeps the agent
 // offline: a request the dispatch starts fails at the write rather than waiting for an
 // answer that never arrives.
-func newCopilotControlAgent(sink agent.ProviderServices) *copilotAgent {
-	return &copilotAgent{
+func newCopilotControlAgent(sink agent.ProviderServices) *Agent {
+	return &Agent{
 		copilotConnection: &copilotConnection{JSONRPCProcess: providerkit.JSONRPCProcess{
 			Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{Ctx: context.Background(), Stdin: agenttest.FailingStdin{}}),
 		}},
@@ -35,7 +35,7 @@ func TestNativeCopilotControlChangeWhileResponseWaits(t *testing.T) {
 				pending := &copilotPendingControl{
 					spec: copilotControlSpecs[1], sessionID: "session", nativeRequestID: "question", ready: make(chan struct{}),
 				}
-				agent := &copilotAgent{
+				agent := &Agent{
 					copilotConnection: &copilotConnection{JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{Ctx: context.Background(), Stdin: agenttest.FailingStdin{}})}},
 					sessionID:         "session", controls: map[string]*copilotPendingControl{"control": pending},
 				}

@@ -17,7 +17,7 @@ import (
 
 // startNativeCopilotForGoal opens an agent against the fake runtime, which models the
 // autopilot command verified in CP-002, CP-003 and CP-008.
-func startNativeCopilotForGoal(t *testing.T, env ...string) (*copilotAgent, *agenttest.Sink) {
+func startNativeCopilotForGoal(t *testing.T, env ...string) (*Agent, *agenttest.Sink) {
 	t.Helper()
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
 		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
@@ -30,7 +30,7 @@ func startNativeCopilotForGoal(t *testing.T, env ...string) (*copilotAgent, *age
 	}, agent.NewProviderServices(sink))
 	require.NoError(t, err)
 	t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
-	return provider.(*copilotAgent), sink
+	return provider.(*Agent), sink
 }
 
 func TestNativeCopilotGoalExposesEveryVerifiedAction(t *testing.T) {

@@ -106,7 +106,7 @@ func zcodeGoalStatusDetail(wire string, status agent.GoalStatus) string {
 // session/create, session/resume or session/read reply RESTATES a goal that may
 // be hours old, exactly like Codex's resume push; only a `state.updated` patch
 // reports a change as it happens.
-func (a *zcodeAgent) reportZCodeGoal(raw json.RawMessage, snapshot bool) {
+func (a *Agent) reportZCodeGoal(raw json.RawMessage, snapshot bool) {
 	if len(raw) == 0 {
 		return
 	}
@@ -141,11 +141,11 @@ func (a *zcodeAgent) reportZCodeGoal(raw json.RawMessage, snapshot bool) {
 
 // SupportedGoalActions: ZCode is the second provider with a complete
 // acknowledged API. session/goal takes pause, resume, clear and replace.
-func (a *zcodeAgent) SupportedGoalActions() []agent.GoalAction {
+func (a *Agent) SupportedGoalActions() []agent.GoalAction {
 	return []agent.GoalAction{agent.GoalActionSet, agent.GoalActionClear, agent.GoalActionPause, agent.GoalActionResume}
 }
 
-var _ agent.GoalWriter = (*zcodeAgent)(nil)
+var _ agent.GoalWriter = (*Agent)(nil)
 
 // PerformGoalAction runs one action through session/goal. Every action is a
 // side-band request that completes here, so the caller has nothing left to do.
@@ -156,7 +156,7 @@ var _ agent.GoalWriter = (*zcodeAgent)(nil)
 // them was meant, which matters because the bare form is positional and an
 // objective that begins with the word `pause` would otherwise parse as a
 // different action.
-func (a *zcodeAgent) PerformGoalAction(action agent.GoalAction, objective string) (agent.GoalOutcome, error) {
+func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (agent.GoalOutcome, error) {
 	switch action {
 	case agent.GoalActionSet:
 		return agent.GoalOutcome{}, a.sendZCodeGoal(zcodeGoalActionReplace, objective)
@@ -191,7 +191,7 @@ func (a *zcodeAgent) PerformGoalAction(action agent.GoalAction, objective string
 // wire says only WHAT the revision is, never WHO moved it, so no narrower rule
 // is available from the reply. One retry caps the exposure; a second conflict
 // is reported.
-func (a *zcodeAgent) sendZCodeGoal(action, objective string) error {
+func (a *Agent) sendZCodeGoal(action, objective string) error {
 	a.Mu.Lock()
 	sessionID := a.sessionID
 	revision := a.stateRevision

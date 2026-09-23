@@ -90,7 +90,7 @@ func TestNativeCopilotSessionLifecycle(t *testing.T) {
 	}, agent.NewProviderServices(sink))
 	require.NoError(t, err)
 	t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
-	a := provider.(*copilotAgent)
+	a := provider.(*Agent)
 	require.NotEmpty(t, sink.LastSessionID())
 	require.Equal(t, "plan", a.SettingsSnapshot().SurfacedOptions[copilotOptionSessionMode])
 	require.Equal(t, "assisted", a.SettingsSnapshot().SurfacedOptions[agent.OptionIDPermissionMode])
@@ -155,7 +155,7 @@ func TestNativeCopilotSteerSendsImmediateMode(t *testing.T) {
 	}, agent.NewProviderServices(sink))
 	require.NoError(t, err)
 	t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
-	a := provider.(*copilotAgent)
+	a := provider.(*Agent)
 	require.NotEmpty(t, sink.LastSessionID())
 
 	// A steer owns no turn: with nothing running it must refuse rather than
@@ -228,7 +228,7 @@ func TestNativeCopilotClearContextFailureRestoresThePreviousSession(t *testing.T
 			}, agent.NewProviderServices(sink))
 			require.NoError(t, err)
 			t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
-			a := provider.(*copilotAgent)
+			a := provider.(*Agent)
 			oldID := sink.LastSessionID()
 			newID, err := a.ClearContext()
 			require.Error(t, err)

@@ -65,7 +65,7 @@ type zcodeWireAttachment struct {
 // and reasons about them exactly as if the user had pasted them, and no capability
 // question arises. Images travel as wire attachments, and only when the current
 // model declares that it accepts them.
-func (a *zcodeAgent) buildZCodeInput(content string, attachments []*leapmuxv1.Attachment, model string) (string, []zcodeWireAttachment, error) {
+func (a *Agent) buildZCodeInput(content string, attachments []*leapmuxv1.Attachment, model string) (string, []zcodeWireAttachment, error) {
 	classified := agent.ClassifyAttachments(attachments)
 	if len(classified) == 0 {
 		return content, nil, nil
@@ -114,7 +114,7 @@ func (a *zcodeAgent) buildZCodeInput(content string, attachments []*leapmuxv1.At
 // The app-server ACCEPTS such a send and the image never reaches the model, so
 // without this the user sees a confident answer about an image the model never saw.
 // A refusal identifies the model, because the remedy is to switch it.
-func (a *zcodeAgent) checkZCodeImageSupport(model string, attachment agent.ClassifiedAttachment) error {
+func (a *Agent) checkZCodeImageSupport(model string, attachment agent.ClassifiedAttachment) error {
 	if model == "" {
 		// No model is pinned, so the app-server picked one from the registry and its
 		// capabilities are unknown here. Sending is the better failure: an image the

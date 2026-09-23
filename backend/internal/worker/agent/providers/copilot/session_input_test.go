@@ -7,5 +7,5 @@ import (
 )
 
 func TestCopilotSessionInputRejectsMissingAndReplacedTargets(t *testing.T) {
-	agenttest.AssertRejectsMissingAndReplacedSessions(t, &copilotAgent{sessionID: "current", copilotConnection: &copilotConnection{}})
+	agenttest.AssertRejectsMissingAndReplacedSessions(t, &Agent{sessionID: "current", copilotConnection: &copilotConnection{}})
 }

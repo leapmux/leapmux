@@ -71,14 +71,14 @@ type copilotSlashCommandResult struct {
 	Prompt string `json:"prompt"`
 }
 
-var _ agent.GoalWriter = (*copilotAgent)(nil)
+var _ agent.GoalWriter = (*Agent)(nil)
 
 // SupportedGoalActions reports every operation with verified native evidence.
-func (a *copilotAgent) SupportedGoalActions() []agent.GoalAction {
+func (a *Agent) SupportedGoalActions() []agent.GoalAction {
 	return []agent.GoalAction{agent.GoalActionSet, agent.GoalActionPause, agent.GoalActionResume, agent.GoalActionClear}
 }
 
-func (a *copilotAgent) PerformGoalAction(action agent.GoalAction, objective string) (agent.GoalOutcome, error) {
+func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (agent.GoalOutcome, error) {
 	// Clear disposes the session and opens it again, so it excludes every other
 	// user of that session. The three command operations leave the session in
 	// place and share it, exactly as input delivery does.
@@ -124,7 +124,7 @@ func (a *copilotAgent) PerformGoalAction(action agent.GoalAction, objective stri
 // than writing one of its own, because a prompt LeapMux invented would not be the
 // operation the runtime asked for. A command that changes nothing else returns no
 // prompt, and the queue then has nothing to deliver.
-func (a *copilotAgent) invokeNativeGoalCommand(input string) (agent.GoalOutcome, error) {
+func (a *Agent) invokeNativeGoalCommand(input string) (agent.GoalOutcome, error) {
 	raw, err := a.requestNativeSession("commands.invoke", map[string]any{"name": copilotGoalCommand, "input": input})
 	if err != nil {
 		return agent.GoalOutcome{}, err
@@ -159,7 +159,7 @@ func (a *copilotAgent) invokeNativeGoalCommand(input string) (agent.GoalOutcome,
 // The caller holds sessionMu for writing, so no input and no setting change can
 // reach the session between the shutdown and the reopen. A failure after the close
 // stops the process: the session it had is gone, and no other one took its place.
-func (a *copilotAgent) clearNativeGoal() error {
+func (a *Agent) clearNativeGoal() error {
 	if a.currentNativeGoal().objective == "" {
 		return nil
 	}
@@ -218,7 +218,7 @@ func (a *copilotAgent) clearNativeGoal() error {
 // Only the runtime's own REFUSAL takes that path. A transport failure or a timeout
 // leaves the outcome unknown, and a create there could replace a session whose
 // events the store still holds.
-func (a *copilotAgent) reopenNativeSessionAfterClear(opts agent.Options, sessionID string) error {
+func (a *Agent) reopenNativeSessionAfterClear(opts agent.Options, sessionID string) error {
 	err := a.resumeNativeSessionWithoutPendingWork(opts, sessionID)
 	if err == nil {
 		return nil
@@ -233,14 +233,14 @@ func (a *copilotAgent) reopenNativeSessionAfterClear(opts agent.Options, session
 	return nil
 }
 
-func (a *copilotAgent) currentNativeGoal() copilotGoalSnapshot {
+func (a *Agent) currentNativeGoal() copilotGoalSnapshot {
 	a.goalMu.Lock()
 	defer a.goalMu.Unlock()
 	return a.goal
 }
 
 // readNativeGoal asks the runtime for the current objective.
-func (a *copilotAgent) readNativeGoal() (copilotObjectiveState, error) {
+func (a *Agent) readNativeGoal() (copilotObjectiveState, error) {
 	raw, err := a.requestNativeSession("autopilotObjective.getState", nil)
 	if err != nil {
 		return copilotObjectiveState{}, err
@@ -258,7 +258,7 @@ func (a *copilotAgent) readNativeGoal() (copilotObjectiveState, error) {
 // change. Startup passes it for a resumed session, whose stored objective is older
 // than this process: without it the transcript would say "Goal set" now for an
 // objective the user set before the restart.
-func (a *copilotAgent) applyNativeGoal(state copilotObjectiveState, snapshot bool) {
+func (a *Agent) applyNativeGoal(state copilotObjectiveState, snapshot bool) {
 	a.goalMu.Lock()
 	defer a.goalMu.Unlock()
 	if state.State == nil || strings.TrimSpace(state.State.Objective) == "" {
@@ -307,7 +307,7 @@ func copilotGoalStatus(wire string) agent.GoalStatus {
 }
 
 // refreshNativeGoal reads and publishes the objective.
-func (a *copilotAgent) refreshNativeGoal(snapshot bool) {
+func (a *Agent) refreshNativeGoal(snapshot bool) {
 	state, err := a.readNativeGoal()
 	if err != nil {
 		slog.Debug("Read the Copilot objective", "agent_id", a.AgentID(), "error", err)
@@ -321,7 +321,7 @@ func (a *copilotAgent) refreshNativeGoal(snapshot bool) {
 // `session.autopilot_objective_changed` states that the objective moved and not what
 // it became, so the answer needs a request. offReader states why that request cannot
 // run on the goroutine that handles the event.
-func (a *copilotAgent) refreshNativeGoalInBackground() {
+func (a *Agent) refreshNativeGoalInBackground() {
 	a.offReader(copilotReadGoal, func() { a.refreshNativeGoal(false) })
 }
 
@@ -332,7 +332,7 @@ func (a *copilotAgent) refreshNativeGoalInBackground() {
 // paths need the same four lines, and they must agree exactly: the reopened session
 // is configured from this snapshot, so a divergence would open it with settings
 // nobody chose.
-func (a *copilotAgent) sessionLaunchOptions() agent.Options {
+func (a *Agent) sessionLaunchOptions() agent.Options {
 	opts := a.opts
 	a.stateMu.Lock()
 	opts.Options = a.options.Clone()
@@ -349,7 +349,7 @@ func (a *copilotAgent) sessionLaunchOptions() agent.Options {
 // It returns the transport error UNWRAPPED, because reopenNativeSessionAfterClear
 // tests it with errors.As for a providerkit.JSONRPCResponseError: only the runtime's own refusal
 // permits the create that follows, and a wrapped error would hide that distinction.
-func (a *copilotAgent) resumeNativeSessionWithoutPendingWork(opts agent.Options, sessionID string) error {
+func (a *Agent) resumeNativeSessionWithoutPendingWork(opts agent.Options, sessionID string) error {
 	config := newCopilotSessionConfig(opts, sessionID, true)
 	continueWork := false
 	config.ContinuePendingWork = &continueWork

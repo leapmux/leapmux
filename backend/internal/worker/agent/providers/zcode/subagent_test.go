@@ -30,7 +30,7 @@ const (
 
 // spawnAZCodeSubagent runs the spawn plus one of the subagent's own tool calls, and
 // returns the agent and its parent sink.
-func spawnAZCodeSubagent(t *testing.T) (*zcodeAgent, *agenttest.ControlSink) {
+func spawnAZCodeSubagent(t *testing.T) (*Agent, *agenttest.ControlSink) {
 	t.Helper()
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))

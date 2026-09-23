@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"testing"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
@@ -21,8 +20,7 @@ func TestClaudeLaunchFallsBackToItsRegisteredBinaryName(t *testing.T) {
 		t.Skip("no POSIX shell on this machine")
 	}
 	reg := Registration()
-	spec, err := providerkit.ResolveLaunch(context.Background(), agent.Options{Shell: shell},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, reg.Locator)
+	spec, err := providerkit.ResolveLaunch(context.Background(), agent.Options{Shell: shell}, reg)
 
 	require.NoError(t, err)
 	assert.Equal(t, "claude", spec.Program, "Claude registers exactly one candidate")

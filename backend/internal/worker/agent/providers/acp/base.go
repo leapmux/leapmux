@@ -2142,7 +2142,7 @@ type StartSpec[T any] struct {
 func Start[T any](ctx context.Context, opts agent.Options, sink agent.ProviderServices, spec StartSpec[T]) (_ agent.Agent, retErr error) {
 	ctx, cancel := context.WithCancel(ctx)
 
-	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, spec.Registration.Provider, spec.Registration.Locator)
+	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, spec.Registration)
 	if err != nil {
 		cancel()
 		return nil, err

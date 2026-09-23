@@ -177,7 +177,7 @@ func copilotNativeAnswer(eventType string, data json.RawMessage, decision copilo
 }
 
 // copilotControlResponseContent rewrites one neutral control response into the
-// envelope that copilotAgent.SendRawInput forwards.
+// envelope that Agent.SendRawInput forwards.
 //
 // The outer shape stays the shared one, so the request identity and the storage path
 // are unchanged. Only the inner value becomes native.

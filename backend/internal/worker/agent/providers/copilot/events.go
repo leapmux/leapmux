@@ -144,7 +144,7 @@ type copilotTaskInput struct {
 // branch that needs a round trip to the runtime starts a goroutine, because the
 // response for such a request arrives on THIS goroutine and a direct call would
 // wait for itself.
-func (a *copilotAgent) handleNativeEvent(raw []byte, event copilotEvent) {
+func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 	if a.handleNativeControlEvent(raw, event) {
 		return
 	}
@@ -221,7 +221,7 @@ func (a *copilotAgent) handleNativeEvent(raw []byte, event copilotEvent) {
 // has to show, so it shows until output arrives and never after.
 //
 // The caller holds outputMu, which guards openTools.
-func (a *copilotAgent) reportNativeToolOutput(sink agent.ProviderServices, data json.RawMessage) {
+func (a *Agent) reportNativeToolOutput(sink agent.ProviderServices, data json.RawMessage) {
 	var frame struct {
 		ToolCallID      string `json:"toolCallId"`
 		ProgressMessage string `json:"progressMessage"`
@@ -258,7 +258,7 @@ func copilotTurnWasAborted(data json.RawMessage) bool {
 }
 
 // sinkFor resolves the transcript that owns an event. A nil child is the root.
-func (a *copilotAgent) sinkFor(child *copilotNativeChild) agent.ProviderServices {
+func (a *Agent) sinkFor(child *copilotNativeChild) agent.ProviderServices {
 	if child == nil {
 		return a.sink
 	}
@@ -271,7 +271,7 @@ func (a *copilotAgent) sinkFor(child *copilotNativeChild) agent.ProviderServices
 // rather than disappearing. That happens when a resumed session replays a
 // subagent whose `subagent.started` this process never saw, and a visible row in
 // the wrong transcript is recoverable where a dropped one is not.
-func (a *copilotAgent) childForEvent(event copilotEvent) *copilotNativeChild {
+func (a *Agent) childForEvent(event copilotEvent) *copilotNativeChild {
 	if event.AgentID == "" {
 		return nil
 	}
@@ -282,7 +282,7 @@ func (a *copilotAgent) childForEvent(event copilotEvent) *copilotNativeChild {
 	return child
 }
 
-func (a *copilotAgent) endNativeTurn(raw []byte, aborted bool) {
+func (a *Agent) endNativeTurn(raw []byte, aborted bool) {
 	if !a.setNativeTurnActive(false) {
 		a.persistNativeFrame(raw, agent.SpanInfo{})
 		return
@@ -310,7 +310,7 @@ func (a *copilotAgent) endNativeTurn(raw []byte, aborted bool) {
 // that the call did not finish -- nothing here invents a result.
 //
 // The order is the order the calls opened, so the rows read as the agent ran them.
-func (a *copilotAgent) closeOpenNativeTools() {
+func (a *Agent) closeOpenNativeTools() {
 	open := a.openTools
 	a.openTools = nil
 	ids := make([]string, 0, len(open))
@@ -340,7 +340,7 @@ func (a *copilotAgent) closeOpenNativeTools() {
 }
 
 // startNativeTool opens the tool call's span in the transcript that owns it.
-func (a *copilotAgent) startNativeTool(raw []byte, event copilotEvent) {
+func (a *Agent) startNativeTool(raw []byte, event copilotEvent) {
 	var start copilotToolStart
 	if err := json.Unmarshal(event.Data, &start); err != nil || start.ToolCallID == "" || start.ToolName == "" {
 		slog.Warn("Read Copilot tool start", "agent_id", a.AgentID(), "error", err)
@@ -371,7 +371,7 @@ func (a *copilotAgent) startNativeTool(raw []byte, event copilotEvent) {
 // A completion whose start this process never saw still reaches its transcript:
 // the span type is absent, so the row carries the tool-call ID alone and the
 // renderer shows the result without a request.
-func (a *copilotAgent) completeNativeTool(raw []byte, event copilotEvent) {
+func (a *Agent) completeNativeTool(raw []byte, event copilotEvent) {
 	var complete struct {
 		ToolCallID string `json:"toolCallId"`
 		Success    *bool  `json:"success"`
@@ -408,7 +408,7 @@ func (a *copilotAgent) completeNativeTool(raw []byte, event copilotEvent) {
 //
 // The spawning tool call states the owner, so a nested subagent reaches the
 // transcript of the subagent that spawned it rather than the root.
-func (a *copilotAgent) startNativeSubagent(raw []byte, event copilotEvent) {
+func (a *Agent) startNativeSubagent(raw []byte, event copilotEvent) {
 	var started copilotSubagentEvent
 	if err := json.Unmarshal(event.Data, &started); err != nil || started.ToolCallID == "" || event.AgentID == "" {
 		slog.Warn("Read Copilot subagent start", "agent_id", a.AgentID(), "error", err)
@@ -459,7 +459,7 @@ func (a *copilotAgent) startNativeSubagent(raw []byte, event copilotEvent) {
 }
 
 // finishNativeSubagent closes one subagent's registry row and its transcript state.
-func (a *copilotAgent) finishNativeSubagent(raw []byte, event copilotEvent) {
+func (a *Agent) finishNativeSubagent(raw []byte, event copilotEvent) {
 	var finished copilotSubagentEvent
 	if err := json.Unmarshal(event.Data, &finished); err != nil {
 		slog.Warn("Read Copilot subagent completion", "agent_id", a.AgentID(), "error", err)
@@ -492,7 +492,7 @@ func (a *copilotAgent) finishNativeSubagent(raw []byte, event copilotEvent) {
 	}
 }
 
-func (a *copilotAgent) childForSpawnToolCall(toolCallID string) *copilotNativeChild {
+func (a *Agent) childForSpawnToolCall(toolCallID string) *copilotNativeChild {
 	if toolCallID == "" {
 		return nil
 	}
@@ -566,7 +566,7 @@ func copilotAssistantTextKind(eventType string) (agent.AssembledMessageKind, boo
 //
 // A stream that reports a SIZE and no text moves the output counter instead, on one
 // scope of its own -- it identifies no message, and its total is for the whole response.
-func (a *copilotAgent) reportNativeTextProgress(sink agent.ProviderServices, event copilotEvent) {
+func (a *Agent) reportNativeTextProgress(sink agent.ProviderServices, event copilotEvent) {
 	kind, isDelta, ok := copilotAssistantTextKind(event.Type)
 	if !ok {
 		return
@@ -604,7 +604,7 @@ func (a *copilotAgent) reportNativeTextProgress(sink agent.ProviderServices, eve
 //
 // The caller holds outputMu, which guards nativeTextSegments as it guards every
 // other field the dispatch touches.
-func (a *copilotAgent) appendStreamedNativeText(sink agent.ProviderServices, scope string, kind agent.AssembledMessageKind, delta string) {
+func (a *Agent) appendStreamedNativeText(sink agent.ProviderServices, scope string, kind agent.AssembledMessageKind, delta string) {
 	if delta == "" {
 		return
 	}
@@ -618,7 +618,7 @@ func (a *copilotAgent) appendStreamedNativeText(sink agent.ProviderServices, sco
 }
 
 // dropStreamedNativeText forgets the deltas a finished message replaces.
-func (a *copilotAgent) dropStreamedNativeText(scope string) {
+func (a *Agent) dropStreamedNativeText(scope string) {
 	a.nativeText.Discard(scope)
 	a.nativeTextSegments = slices.DeleteFunc(a.nativeTextSegments, func(segment copilotStreamedText) bool {
 		return segment.scope == scope
@@ -633,7 +633,7 @@ func (a *copilotAgent) dropStreamedNativeText(scope string) {
 // calculation over what the agent actually produced, which is what the assembled
 // envelope is for. Nothing is invented: the text is the agent's own, and the
 // completion column states that the segment did not finish.
-func (a *copilotAgent) closeStreamedNativeText(completion agent.MessageCompletion) {
+func (a *Agent) closeStreamedNativeText(completion agent.MessageCompletion) {
 	segments := a.nativeTextSegments
 	a.nativeTextSegments = nil
 	for _, segment := range segments {
@@ -659,7 +659,7 @@ func (a *copilotAgent) closeStreamedNativeText(completion agent.MessageCompletio
 // reportNativeContextUsage publishes the live context counter in the transcript that
 // owns the event. A subagent reports its own context, so the root sink is not the
 // answer for every caller.
-func (a *copilotAgent) reportNativeContextUsage(sink agent.ProviderServices, data json.RawMessage) {
+func (a *Agent) reportNativeContextUsage(sink agent.ProviderServices, data json.RawMessage) {
 	var usage struct {
 		CurrentTokens *int64 `json:"currentTokens"`
 		TokenLimit    *int64 `json:"tokenLimit"`
@@ -675,7 +675,7 @@ func (a *copilotAgent) reportNativeContextUsage(sink agent.ProviderServices, dat
 }
 
 // persistNativeFrameTo stores one native frame in the transcript that owns it.
-func (a *copilotAgent) persistNativeFrameTo(sink agent.ProviderServices, raw []byte, span agent.SpanInfo) {
+func (a *Agent) persistNativeFrameTo(sink agent.ProviderServices, raw []byte, span agent.SpanInfo) {
 	if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 		agent.MessageContent{Original: raw, AgentSessionID: a.currentNativeSessionID()}, span); err != nil {
 		slog.Error("Persist Copilot event", "agent_id", a.AgentID(), "error", err)
@@ -686,7 +686,7 @@ func (a *copilotAgent) persistNativeFrameTo(sink agent.ProviderServices, raw []b
 //
 // A session replacement and a process stop both reach it, so each child leaves
 // its registry row stopped rather than running forever.
-func (a *copilotAgent) clearNativeChildren() {
+func (a *Agent) clearNativeChildren() {
 	// A session that goes away takes every unfinished segment with it, so the text
 	// each transcript had already streamed is stored before its sink is dropped.
 	a.closeStreamedNativeText(agent.MessageCompletionInterrupted)

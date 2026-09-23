@@ -126,7 +126,7 @@ func zcodeContextUsageFromRuntime(usage *zcodeContextUsage) map[string]any {
 }
 
 // applyZCodeRuntimeState records the runtime readout and broadcasts it.
-func (a *zcodeAgent) applyZCodeRuntimeState(runtime *zcodeRuntimeState) {
+func (a *Agent) applyZCodeRuntimeState(runtime *zcodeRuntimeState) {
 	if runtime == nil {
 		return
 	}
@@ -196,7 +196,7 @@ func (u *zcodeContextUsage) costOrNil() *zcodeCost {
 // one states what the context holds, and these counts state what one request cost.
 // Overwriting the first with the second is what makes the fill gauge jump backwards
 // after a compaction.
-func (a *zcodeAgent) recordZCodeUsage(usage zcodeUsage) {
+func (a *Agent) recordZCodeUsage(usage zcodeUsage) {
 	contextUsage := zcodeContextUsageMap(usage, a.currentZCodeContextWindow())
 	if len(contextUsage) == 0 {
 		return
@@ -219,7 +219,7 @@ func (a *zcodeAgent) recordZCodeUsage(usage zcodeUsage) {
 //
 // Best-effort and asynchronous by contract: the read loop must stay free to deliver
 // the response, so this may not run on the read-loop goroutine.
-func (a *zcodeAgent) refreshZCodeUsageFromSession() {
+func (a *Agent) refreshZCodeUsageFromSession() {
 	a.Mu.Lock()
 	sessionID, stopped := a.sessionID, a.StoppedLocked()
 	a.Mu.Unlock()
@@ -259,7 +259,7 @@ type zcodeUsageSnapshot struct {
 }
 
 // usageSnapshot copies the agent's current usage readout.
-func (a *zcodeAgent) usageSnapshot() zcodeUsageSnapshot {
+func (a *Agent) usageSnapshot() zcodeUsageSnapshot {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	return zcodeUsageSnapshot{
@@ -306,7 +306,7 @@ func zcodeTurnContent(raw []byte, snap zcodeUsageSnapshot) agent.MessageContent 
 //
 // One writer for three sources -- the session snapshot, a runtime state patch,
 // and the reply to a session/goal -- so the rule is stated once.
-func (a *zcodeAgent) noteZCodeStateRevision(revision int64) {
+func (a *Agent) noteZCodeStateRevision(revision int64) {
 	if revision <= 0 {
 		return
 	}

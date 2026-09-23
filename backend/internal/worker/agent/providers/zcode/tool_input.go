@@ -22,7 +22,7 @@ import (
 // The caller decides what an unconfirmed read is worth. handleUserInputRequest
 // treats a FAILED read as "the transcript has it", because a second plan row over
 // one that is already there draws the plan twice.
-func (a *zcodeAgent) supplementZCodeControlInput(toolCallID, toolName string, input json.RawMessage) (carriesInput bool, err error) {
+func (a *Agent) supplementZCodeControlInput(toolCallID, toolName string, input json.RawMessage) (carriesInput bool, err error) {
 	if toolCallID == "" || zcodeInputIsAbsent(input) {
 		return false, nil
 	}

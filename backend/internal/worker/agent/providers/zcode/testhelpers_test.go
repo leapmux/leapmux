@@ -83,25 +83,25 @@ type zcodeSentRequest struct {
 	Error  *zcodeError     `json:"error"`
 }
 
-// newZCodeTestAgent builds a zcodeAgent with no process behind it.
+// newZCodeTestAgent builds a Agent with no process behind it.
 //
 // Every handler under test is fed through HandleOutput or called directly, so no
 // child process is needed -- and none is started, which keeps the suite free of the
 // ZCode installation the launch resolver looks for. The context is live so a code
 // path that consults a.ctx does not read a nil channel.
-func newZCodeTestAgent(t *testing.T, sink agent.ProviderServices) *zcodeAgent {
+func newZCodeTestAgent(t *testing.T, sink agent.ProviderServices) *Agent {
 	t.Helper()
 	return newZCodeTestAgentWithStdin(t, sink, &zcodeRecordedStdin{})
 }
 
-func newZCodeTestAgentWithStdin(t *testing.T, sink agent.ProviderServices, stdin *zcodeRecordedStdin) *zcodeAgent {
+func newZCodeTestAgentWithStdin(t *testing.T, sink agent.ProviderServices, stdin *zcodeRecordedStdin) *Agent {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	// A handler may start an RPC whose reply never comes (nothing answers this
 	// stdin). Cancelling at cleanup unblocks that goroutine instead of leaving it
 	// parked on the API timeout for the rest of the run.
 	t.Cleanup(cancel)
-	a := &zcodeAgent{
+	a := &Agent{
 		Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{
 			AgentID:     "test-agent",
 			Ctx:         ctx,
@@ -194,7 +194,7 @@ const zcodeTestRPCTimeout = 5 * time.Second
 // The reply goes out from a separate goroutine, because the RPC blocks the test
 // goroutine until the reply lands. Each call waits for its OWN method, so a test
 // prepares every answer of a multi-step exchange before it starts the exchange.
-func answerZCodeRequest(t *testing.T, a *zcodeAgent, stdin *zcodeRecordedStdin, method, result string) {
+func answerZCodeRequest(t *testing.T, a *Agent, stdin *zcodeRecordedStdin, method, result string) {
 	t.Helper()
 	go func() {
 		req := waitZCodeRequest(t, stdin, method)
@@ -203,7 +203,7 @@ func answerZCodeRequest(t *testing.T, a *zcodeAgent, stdin *zcodeRecordedStdin, 
 }
 
 // refuseZCodeRequest answers the next request for method with an app-server error.
-func refuseZCodeRequest(t *testing.T, a *zcodeAgent, stdin *zcodeRecordedStdin, method string, code int, message string) {
+func refuseZCodeRequest(t *testing.T, a *Agent, stdin *zcodeRecordedStdin, method string, code int, message string) {
 	t.Helper()
 	go func() {
 		req := waitZCodeRequest(t, stdin, method)

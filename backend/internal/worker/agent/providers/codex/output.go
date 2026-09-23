@@ -1037,3 +1037,12 @@ func extractCodexItem(params json.RawMessage) (item json.RawMessage, itemType, i
 
 	return wrapper.Item, header.Type, header.ID, wrapper.ThreadID
 }
+
+func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
+	handleCodexOutput(a, line)
+}
+
+// HandleOutput processes a single JSONL notification from Codex.
+func (a *Agent) HandleOutput(content []byte) {
+	handleCodexOutput(a, providerkit.ParseLine(content))
+}

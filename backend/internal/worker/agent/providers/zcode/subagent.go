@@ -291,7 +291,7 @@ func decodeZCodeSubagentLifecycleTransition(event zcodeEventEnvelope) (zcodeSuba
 	}, true
 }
 
-func (a *zcodeAgent) handleZCodeSubagentLifecycle(event zcodeEventEnvelope) {
+func (a *Agent) handleZCodeSubagentLifecycle(event zcodeEventEnvelope) {
 	transition, ok := decodeZCodeSubagentLifecycleTransition(event)
 	if !ok {
 		return
@@ -337,7 +337,7 @@ func (a *zcodeAgent) handleZCodeSubagentLifecycle(event zcodeEventEnvelope) {
 	a.upsertZCodeSubagent(transition.rowKey, childID, childTitle)
 }
 
-func (a *zcodeAgent) persistZCodeChildText(childID, text string, completion agent.MessageCompletion) {
+func (a *Agent) persistZCodeChildText(childID, text string, completion agent.MessageCompletion) {
 	raw, err := agent.MarshalAssembledMessage(agent.AssembledMessageKindText, text, completion)
 	if err != nil {
 		slog.Warn("zcode subagent text marshal failed", "agent_id", a.AgentID(), "child_agent_id", childID, "error", err)
@@ -348,7 +348,7 @@ func (a *zcodeAgent) persistZCodeChildText(childID, text string, completion agen
 	}
 }
 
-func (a *zcodeAgent) upsertZCodeSubagent(rowKey, childID, title string) {
+func (a *Agent) upsertZCodeSubagent(rowKey, childID, title string) {
 	providerkit.LogRegistryRefusal("zcode", "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: rowKey, Kind: bgtask.KindSubagent, Title: title,
 		Status: bgtask.StatusRunning, ChildAgentID: childID,
@@ -361,7 +361,7 @@ func (a *zcodeAgent) upsertZCodeSubagent(rowKey, childID, title string) {
 // Every row of one tool call goes to ONE transcript. The closing row and the batch
 // summary state no subagent linkage of their own, so without this they would close a
 // span in a transcript that never opened it.
-func (a *zcodeAgent) zcodeSinkForToolCall(toolCallID string) agent.ProviderServices {
+func (a *Agent) zcodeSinkForToolCall(toolCallID string) agent.ProviderServices {
 	if childID, ok := a.children.toolChild(toolCallID); ok {
 		return a.sink.ChildSink(childID)
 	}
@@ -374,7 +374,7 @@ func (a *zcodeAgent) zcodeSinkForToolCall(toolCallID string) agent.ProviderServi
 // Returns ("", false) when the update gives no parent tool call: without it there is
 // nothing to attach the transcript to, and the caller keeps the row in the parent
 // rather than dropping it.
-func (a *zcodeAgent) zcodeSubagentChild(payload zcodeToolUpdated) (string, bool) {
+func (a *Agent) zcodeSubagentChild(payload zcodeToolUpdated) (string, bool) {
 	rowKey := payload.ParentToolCallID
 	if rowKey == "" {
 		return "", false
@@ -412,7 +412,7 @@ func (a *zcodeAgent) zcodeSubagentChild(payload zcodeToolUpdated) (string, bool)
 // states the same label the tab does. The SPAWN's label wins over `fallbackTitle`: the
 // spawn gave the task its title ("file census"), while the subagent's own updates each
 // describe a COMMAND it runs and the background-task event says only "Agent".
-func (a *zcodeAgent) ensureZCodeSubagentTranscript(rowKey, spawnSpanID, fallbackTitle string) (childAgentID, title string, ok bool) {
+func (a *Agent) ensureZCodeSubagentTranscript(rowKey, spawnSpanID, fallbackTitle string) (childAgentID, title string, ok bool) {
 	title = a.children.title(rowKey)
 	if title == "" {
 		title = fallbackTitle
@@ -443,7 +443,7 @@ func (a *zcodeAgent) ensureZCodeSubagentTranscript(rowKey, spawnSpanID, fallback
 // Only the OPENING half routes here. Every later row of the same call finds its
 // transcript through zcodeSinkForToolCall, which is what a batch summary -- carrying
 // nothing but a list of ids -- has to rely on.
-func (a *zcodeAgent) openZCodeSubagentToolCall(event zcodeEventEnvelope, payload zcodeToolUpdated) bool {
+func (a *Agent) openZCodeSubagentToolCall(event zcodeEventEnvelope, payload zcodeToolUpdated) bool {
 	childID, ok := a.zcodeSubagentChild(payload)
 	if !ok {
 		return false
@@ -459,7 +459,7 @@ func (a *zcodeAgent) openZCodeSubagentToolCall(event zcodeEventEnvelope, payload
 // written to `children`, so a hit is proof that this call owns a subagent -- and a name
 // check would additionally fail after a worker restart, where the resumed session
 // replays no history and a `result` carries no `toolName` of its own.
-func (a *zcodeAgent) closeZCodeSubagentChild(payload zcodeToolUpdated) {
+func (a *Agent) closeZCodeSubagentChild(payload zcodeToolUpdated) {
 	childID, ok := a.children.takeChild(payload.ToolCallID)
 	if !ok {
 		return
@@ -473,7 +473,7 @@ func (a *zcodeAgent) closeZCodeSubagentChild(payload zcodeToolUpdated) {
 // The input is recovered from the model stream when the update omits it, which is the
 // COMMON case: the app-server sets `inputOmitted: true, inputRef: "model_stream"` and
 // sends no input of its own, so the stream is the only copy that ever existed.
-func (a *zcodeAgent) openZCodeToolCallInto(sink providerkit.ToolSpanServices, event zcodeEventEnvelope, payload zcodeToolUpdated) {
+func (a *Agent) openZCodeToolCallInto(sink providerkit.ToolSpanServices, event zcodeEventEnvelope, payload zcodeToolUpdated) {
 	if payload.ToolCallID == "" {
 		return
 	}
@@ -532,7 +532,7 @@ func (a *zcodeAgent) openZCodeToolCallInto(sink providerkit.ToolSpanServices, ev
 // the AGENT's rather than the transcript's, so they are updated here whichever sink
 // the row went to. A subagent's calls count toward the turn deliberately: they are
 // part of the work that turn did.
-func (a *zcodeAgent) closeZCodeToolCallInto(sink providerkit.ToolLifecycleServices, event zcodeEventEnvelope, payload zcodeToolUpdated, recovered *zcodeRecoveredClose) {
+func (a *Agent) closeZCodeToolCallInto(sink providerkit.ToolLifecycleServices, event zcodeEventEnvelope, payload zcodeToolUpdated, recovered *zcodeRecoveredClose) {
 	if payload.ToolCallID == "" {
 		return
 	}
@@ -579,7 +579,7 @@ func (a *zcodeAgent) closeZCodeToolCallInto(sink providerkit.ToolLifecycleServic
 	}
 	sink.CloseSpan(payload.ToolCallID)
 
-	backgroundLaunch := zcodeAgentLaunchedInBackground(payload)
+	backgroundLaunch := zcodeSubagentLaunchedInBackground(payload)
 	if backgroundLaunch {
 		a.children.markBackground(payload.ToolCallID)
 	}
@@ -600,7 +600,7 @@ func (a *zcodeAgent) closeZCodeToolCallInto(sink providerkit.ToolLifecycleServic
 	// recordZCodeToolStarted for what ZCode must report before it broadcasts one.
 }
 
-func zcodeAgentLaunchedInBackground(payload zcodeToolUpdated) bool {
+func zcodeSubagentLaunchedInBackground(payload zcodeToolUpdated) bool {
 	if !zcodeToolSpawnsSubagent(payload) || len(payload.Result) == 0 {
 		return false
 	}
@@ -611,7 +611,7 @@ func zcodeAgentLaunchedInBackground(payload zcodeToolUpdated) bool {
 		strings.HasPrefix(result.Content, "Async agent launched successfully.\n")
 }
 
-func (a *zcodeAgent) persistZCodeSubagentReport(payload zcodeToolUpdated) {
+func (a *Agent) persistZCodeSubagentReport(payload zcodeToolUpdated) {
 	if !zcodeToolSpawnsSubagent(payload) || len(payload.Result) == 0 {
 		return
 	}
@@ -621,7 +621,7 @@ func (a *zcodeAgent) persistZCodeSubagentReport(payload zcodeToolUpdated) {
 	if json.Unmarshal(payload.Result, &result) != nil || strings.TrimSpace(result.Content) == "" {
 		return
 	}
-	if zcodeAgentLaunchedInBackground(payload) {
+	if zcodeSubagentLaunchedInBackground(payload) {
 		return
 	}
 	providerkit.PersistChildSubagentReport(a.sink, agent.ChildSubagentReportWrite{
@@ -704,7 +704,7 @@ func zcodeSubagentRowKey(toolCallID, childSessionID, taskID string) string {
 // opens nothing -- the subagent's result is persisted in this transcript by
 // closeZCodeToolCall either way. So an Agent tool call that the app-server never
 // reported as a background task correctly leaves the registry alone.
-func (a *zcodeAgent) applyZCodeSubagentEnd(payload zcodeToolUpdated, recovered *zcodeRecoveredClose) {
+func (a *Agent) applyZCodeSubagentEnd(payload zcodeToolUpdated, recovered *zcodeRecoveredClose) {
 	// The only caller, closeZCodeToolCallInto, already returned for an empty tool-call
 	// id, so this is the key both subagent creators use.
 	rowKey := payload.ToolCallID

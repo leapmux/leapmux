@@ -12,23 +12,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// A launch reads the provider's own registered locator, the SAME one the availability scan
-// reads, so the two can never disagree about which program runs. The locator's own states
-// are pinned in package launch; this pins the provider's half.
+// A launch reads the provider and locator from the same registration.
 func TestResolveProviderLaunch(t *testing.T) {
-	// Both non-found states are startup failures: neither can start a process. The error
-	// identifies the provider by its display name.
-	for _, tc := range []struct {
-		name string
-		res  launch.Resolution
-	}{{"missing", launch.Missing}, {"unknown", launch.Unknown}} {
-		t.Run(tc.name+" is an error naming the provider", func(t *testing.T) {
-			_, err := ResolveLaunch(context.Background(), agent.Options{Shell: "/bin/sh"},
-				leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, agenttest.AnsweringLocator(launch.Spec{}, tc.res))
+	registration := agent.Registration{Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE}
+	resolved := launch.Spec{Program: "zcode", PrefixArgs: []string{"--stdio"}}
+	called := false
+	registration.Locator = launch.Custom(func(_ context.Context, shell string, loginShell bool) (launch.Spec, launch.Resolution) {
+		called = true
+		assert.Equal(t, "/bin/sh", shell)
+		assert.True(t, loginShell)
+		return resolved, launch.Found
+	})
+	_, err := ResolveLaunch(context.Background(), agent.Options{Shell: "/bin/sh", LoginShell: true}, registration)
+	require.NoError(t, err)
+	assert.True(t, called)
 
+	for _, tc := range []struct {
+		name    string
+		res     launch.Resolution
+		message string
+	}{
+		{"missing", launch.Missing, "ZCode is not installed"},
+		{"inconclusive", launch.Unknown, "could not determine how to launch ZCode"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registration.Locator = agenttest.AnsweringLocator(launch.Spec{}, tc.res)
+			_, err := ResolveLaunch(context.Background(), agent.Options{Shell: "/bin/sh"}, registration)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "ZCode")
+			assert.Contains(t, err.Error(), tc.message)
 		})
 	}
-
 }

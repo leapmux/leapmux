@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"log/slog"
@@ -1616,4 +1617,14 @@ func claudeIsRootFrame(content []byte) bool {
 		return false
 	}
 	return envelope.ParentToolUseID == ""
+}
+
+func (a *Agent) readOutputLoop(scanner *bufio.Scanner) {
+	a.ReadOutput(scanner, a.handlePendingControlResponse, a.handleOutput)
+}
+
+// handleOutput adapts the providerkit.ParsedLine to the existing HandleOutput method,
+// passing the pre-parsed Type to avoid re-parsing the envelope.
+func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
+	a.handleClaudeOutput(line.Raw, line.Type)
 }

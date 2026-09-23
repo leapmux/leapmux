@@ -1,95 +1,478 @@
 package copilot
 
 import (
-	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// copilotBinaryName is the CLI this provider launches.
-const copilotBinaryName = "copilot"
+// Agent owns one native connection and its current session.
+type Agent struct {
+	*copilotConnection
+	sink agent.ProviderServices
+	opts agent.Options
 
-// Start starts the Copilot CLI on its NATIVE protocol and opens a session.
+	sessionMu        sync.RWMutex
+	stateMu          sync.Mutex
+	sessionID        string
+	options          optionmap.Map
+	models           []*agent.ModelInfo
+	active           bool
+	turnOrder        providerkit.TurnSeq
+	activityRevision uint64
+
+	// outputMu serializes the reader goroutine against every caller that replaces
+	// or ends the session. It also guards the three maps below, which only those
+	// two paths touch.
+	outputMu  sync.Mutex
+	closing   bool
+	children  map[string]*copilotNativeChild
+	openTools map[string]*copilotOpenTool
+	// nextNativeToolOrder numbers the open calls, so a turn that ends with several
+	// of them closes each one in the order the runtime opened it.
+	nextNativeToolOrder uint64
+	// nativeText accumulates the assistant text the runtime STREAMS.
+	//
+	// The runtime marks every delta ephemeral and sends the assistant message only
+	// once that message is complete, so a turn cut short stored nothing and the answer
+	// the reader watched vanished. See closeStreamedNativeText and CP-015.
+	nativeText providerkit.GenerationBuffer
+	// nativeTextSegments identifies the transcript each accumulating segment belongs to, in
+	// the order the runtime opened them, so a turn end writes its rows the way the
+	// agent produced them.
+	nativeTextSegments []copilotStreamedText
+
+	controlMu sync.Mutex
+	controls  map[string]*copilotPendingControl
+
+	// interestMu guards the event-log subscription handles of the CURRENT session.
+	// The runtime returns a distinct handle for each registration and keeps the
+	// subscription alive until its handle is released, so a replacement that
+	// forgot them would leave the old session's interests registered for the life
+	// of the process. See CP-009.
+	interestMu sync.Mutex
+	interests  []string
+
+	goalMu sync.Mutex
+	goal   copilotGoalSnapshot
+
+	// backgroundReads coalesces the reads offReader starts. It carries its OWN
+	// mutex: its bookkeeping has nothing to do with the session snapshot, the
+	// option map or the model catalog that stateMu guards, and riding that lock
+	// only widened what a reader must hold in mind to order six of them.
+	backgroundReads coalescingRunner
+}
+
+var _ agent.Agent = (*Agent)(nil)
+var _ agent.InputSteerer = (*Agent)(nil)
+
+// The keys of the background reads that offReader keeps apart.
+const (
+	copilotReadGoal     = "goal"
+	copilotReadSettings = "settings"
+)
+
+// offReader runs work on its own goroutine, and keeps ONE run of each key in flight.
 //
-// The CLI also speaks the Agent Client Protocol, and LeapMux used that adapter
-// before. The native protocol carries what the adapter drops, and each of those is a
-// feature the user reaches:
+// A dispatch branch that needs a round trip cannot make it inline: the response
+// arrives on the reader goroutine that runs the branch, so a direct call would wait
+// for itself. The runtime also states that an axis MOVED without stating what it
+// became, so a burst of changes would otherwise start a request for each one -- all
+// reading the same answer, and finishing in an order the last write cannot be trusted
+// to respect.
 //
-//   - A question and a plan decision keep their native request ID and tool-call ID,
-//     so an answer reaches the exact request (CP-004).
-//   - A permission decision carries its scope, so "approve for this project" means
-//     what the runtime means by it (CP-007).
-//   - A Model Context Protocol elicitation reaches the browser at all (CP-001).
-//   - The autopilot objective supports Set, Pause, Resume and Clear (CP-002, CP-003,
-//     CP-008).
-//   - Every subagent states its own identity and its parent in the event stream, so
-//     a child transcript needs no read of the CLI's session-store files.
-func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
-	return startNativeCopilot(ctx, opts, sink)
-}
-
-// copilotNativeModes are the session modes the runtime accepts. Copilot 1.0.83
-// refuses every other word, and its own message lists exactly these three.
-var copilotNativeModes = []agent.OptionDef{
-	{Id: contracts.CopilotModeInteractive, Name: "Agent", Default: true},
-	{Id: contracts.CopilotModePlan, Name: "Plan", Description: "Plan the work and ask before it runs."},
-	{Id: contracts.CopilotModeAutopilot, Name: "Autopilot", Description: "Work toward the session objective without asking to continue."},
-}
-
-// copilotNativePermissionModes are the permission modes the runtime accepts.
+// A request that arrives while a run is in flight therefore does not start a second
+// run. It marks the key instead, and one more run follows the current one. That last
+// run reads a state no earlier request can precede, so a change the in-flight run
+// already passed is never lost.
 //
-// The slash command spells the first one `default`, and the remote procedure call
-// spells it `manual`. Copilot 1.0.83 refuses `default` at
-// `session.permissions.setMode`, so the RPC spelling is the one LeapMux stores.
-var copilotNativePermissionModes = []agent.OptionDef{
-	{Id: contracts.CopilotPermissionModeManual, Name: "Manual", Default: true, Description: "Ask before each tool call."},
-	{Id: contracts.CopilotPermissionModeAssisted, Name: "Assisted", Description: "Approve the calls a safety check finds safe, and ask about the rest."},
-	{Id: contracts.CopilotPermissionModeAllowAll, Name: "Allow All", Description: "Approve every tool call without asking."},
+// Each run holds sessionMu for reading, so a session replacement cannot start under
+// it, and it does nothing once the process is stopped.
+func (a *Agent) offReader(key string, work func()) {
+	a.backgroundReads.run(key, func() { a.runUnderNativeSession(work) })
 }
 
-func copilotSessionModeGroup(current string) *leapmuxv1.AvailableOptionGroup {
-	return agent.SelectGroup(copilotOptionSessionMode, "Mode", agent.OptionOrderProviderFirst, current, copilotNativeModes)
+// coalescingRunner runs one goroutine for each key, and collapses every request
+// that arrives while that key's run is in flight into ONE follow-up run.
+//
+// It is a general mechanism, so it owns its own mutex rather than riding a lock
+// that guards unrelated state. The follow-up is what makes the last run read a
+// state no pending request can precede.
+type coalescingRunner struct {
+	mu sync.Mutex
+	// pending maps a key with a run in flight to whether another request arrived
+	// during it. Absence means no run is in flight for that key.
+	pending map[string]bool
 }
 
-func copilotPermissionModeGroup(current string) *leapmuxv1.AvailableOptionGroup {
-	return agent.SelectGroup(agent.OptionIDPermissionMode, "Permissions", agent.OptionOrderPermissionMode, current, copilotNativePermissionModes)
+// idle reports that no run is in flight for any key.
+func (r *coalescingRunner) idle() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.pending) == 0
 }
 
-// copilotLocator finds the Copilot CLI on the user's PATH.
-var copilotLocator = launch.Binaries(copilotBinaryName)
-
-// Registration states everything the worker knows about GitHub Copilot
-// before any of its agents runs.
-func Registration() agent.Registration {
-	return agent.Registration{
-		Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
-		Plugin:   copilotProvider{},
-		Start:    Start,
-		Locator:  copilotLocator,
-		// The account decides which models exist, so the catalog is read from the
-		// open session rather than declared here.
-		DefaultModels:       nil,
-		OptionGroups:        []*leapmuxv1.AvailableOptionGroup{copilotSessionModeGroup(""), copilotPermissionModeGroup("")},
-		AdditionalOptionIDs: []string{agent.OptionIDEffort},
-		PermissionDefaults: agent.PermissionDefaults{
-			// A new session asks for Assisted: it approves what a safety check finds
-			// safe and asks about everything else, which is the narrowest mode that
-			// does not stop at every read. A RESUMED session keeps the mode it had.
-			NewSession: map[string]string{agent.OptionIDPermissionMode: contracts.CopilotPermissionModeAssisted},
-			// A session with no stored mode runs Manual, which is the mode the runtime
-			// itself starts in.
-			Fallback: contracts.CopilotPermissionModeManual,
-		},
-		// Each model states its own reasoning-effort tiers, and the account decides which
-		// models exist -- so the catalog above is nil and only the open session can report
-		// them. Without this declaration a model switch would keep the PREVIOUS model's
-		// tiers, and an effort the new model refuses would survive the switch.
-		ManagesEffort:        true,
-		FixedPermissionModes: true,
-		EnvModelKey:          "LEAPMUX_COPILOT_DEFAULT_MODEL",
-		EnvEffortKey:         "LEAPMUX_COPILOT_DEFAULT_EFFORT",
+// inFlight reports the run of each key, and whether one more request arrived
+// during it. It copies the map, so a caller never reads the runner's own state
+// without the lock.
+func (r *coalescingRunner) inFlight() map[string]bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]bool, len(r.pending))
+	for key, queued := range r.pending {
+		out[key] = queued
 	}
+	return out
+}
+
+// run starts work for key, or marks the in-flight run to repeat once more.
+func (r *coalescingRunner) run(key string, work func()) {
+	r.mu.Lock()
+	if _, running := r.pending[key]; running {
+		r.pending[key] = true
+		r.mu.Unlock()
+		return
+	}
+	if r.pending == nil {
+		r.pending = make(map[string]bool)
+	}
+	r.pending[key] = false
+	r.mu.Unlock()
+	go func() {
+		for {
+			work()
+			r.mu.Lock()
+			if !r.pending[key] {
+				delete(r.pending, key)
+				r.mu.Unlock()
+				return
+			}
+			r.pending[key] = false
+			r.mu.Unlock()
+		}
+	}()
+}
+
+// runUnderNativeSession runs work while the session stays in place. A stopped process
+// answers nothing, so the work does not start.
+func (a *Agent) runUnderNativeSession(work func()) {
+	a.sessionMu.RLock()
+	defer a.sessionMu.RUnlock()
+	if a.IsStopped() {
+		return
+	}
+	work()
+}
+
+// forgetNativeSessionState drops everything the outgoing session owns, and gives the
+// agent nextSessionID. An empty nextSessionID keeps the current identity, which is
+// what the goal clear needs: it opens the SAME session again.
+//
+// A turn the replacement inherits would latch the agent busy for good, because no idle
+// event can reach a session that no longer exists. A child transcript, an open tool
+// call and a pending control request belong to that session too, and its event
+// subscriptions die with it.
+//
+// The caller holds sessionMu for writing, so no input and no setting change can reach
+// the session while this runs.
+func (a *Agent) forgetNativeSessionState(nextSessionID string) {
+	a.setNativeTurnActive(false)
+	a.outputMu.Lock()
+	// Store and drop what the OUTGOING session produced before the identity moves, so
+	// every row this sweep writes carries the session that produced it.
+	a.clearNativeChildren()
+	a.clearNativeControls()
+	if nextSessionID != "" {
+		a.stateMu.Lock()
+		a.sessionID = nextSessionID
+		a.stateMu.Unlock()
+	}
+	a.outputMu.Unlock()
+	a.forgetNativeControlEvents()
+}
+
+// prepareNativeSession subscribes an open session to the control events and restores
+// the settings the previous session carried.
+//
+// Every path that opens a session again needs both, in this order: the context clear,
+// its own rollback, and the goal clear. The subscription comes first because a setting
+// change can raise a control request, and a request that arrives before the
+// subscription exists reaches no reader.
+func (a *Agent) prepareNativeSession(options optionmap.Map) error {
+	if err := a.registerNativeControlEvents(); err != nil {
+		return err
+	}
+	return a.restoreNativeSettings(options)
+}
+
+// stopNativeConnection ends the process and drops the state of the session it served.
+//
+// A path that disposed of its session and could not open another one has nothing to
+// roll back to. An agent that kept its process alive there would accept input that can
+// never arrive anywhere.
+func (a *Agent) stopNativeConnection() {
+	a.outputMu.Lock()
+	a.closing = true
+	a.clearNativeChildren()
+	a.clearNativeControls()
+	a.outputMu.Unlock()
+	a.forgetNativeControlEvents()
+	a.copilotConnection.Stop()
+}
+
+func (a *Agent) currentNativeSessionID() string {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.sessionID
+}
+
+// requestNativeSession runs while the caller holds sessionMu.
+func (a *Agent) requestNativeSession(method string, values map[string]any) (json.RawMessage, error) {
+	return a.requestSession(a.currentNativeSessionID(), method, values, a.APITimeout())
+}
+
+// PublishTurnActive republishes the Worker-visible turn state from a.active.
+//
+// Every active turn is STEERABLE: Copilot's session.send accepts
+// mode:"immediate" while a turn runs (see SteerInput), so the input queue may
+// offer Steer for any active turn.
+func (a *Agent) PublishTurnActive() agent.TurnState {
+	a.stateMu.Lock()
+	active := a.active
+	sequence := a.turnOrder.NextTurnSeq()
+	a.stateMu.Unlock()
+	return providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: active, Steerable: active}, sequence)
+}
+
+func (a *Agent) setNativeTurnActive(active bool) bool {
+	a.stateMu.Lock()
+	previous := a.active
+	a.active = active
+	a.activityRevision++
+	sequence := a.turnOrder.NextTurnSeq()
+	a.stateMu.Unlock()
+	providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: active, Steerable: active}, sequence)
+	return previous
+}
+
+func (a *Agent) rejectNativeInput(revision uint64) {
+	a.stateMu.Lock()
+	if revision != a.activityRevision {
+		a.stateMu.Unlock()
+		return
+	}
+	a.active = false
+	sequence := a.turnOrder.NextTurnSeq()
+	a.stateMu.Unlock()
+	providerkit.PublishTurnStateTo(a.sink, agent.TurnState{}, sequence)
+}
+
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+	return a.sendInputForSession(nil, content, attachments)
+}
+
+func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+	a.sessionMu.RLock()
+	defer a.sessionMu.RUnlock()
+	if a.IsStopped() {
+		return fmt.Errorf("the Copilot process is stopped")
+	}
+	a.stateMu.Lock()
+	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
+		a.stateMu.Unlock()
+		return err
+	}
+	if a.active {
+		a.stateMu.Unlock()
+		return agent.ErrAgentBusy
+	}
+	if a.sessionID == "" {
+		a.stateMu.Unlock()
+		return fmt.Errorf("the Copilot session is unavailable")
+	}
+	a.active = true
+	a.activityRevision++
+	revision := a.activityRevision
+	a.stateMu.Unlock()
+	a.PublishTurnActive()
+	values := map[string]any{"prompt": content}
+	if len(attachments) > 0 {
+		blobs := make([]map[string]string, 0, len(attachments))
+		for _, attachment := range agent.ClassifyAttachments(attachments) {
+			blobs = append(blobs, map[string]string{
+				"type": "blob", "displayName": attachment.Filename, "mimeType": attachment.MIMEType,
+				"data": base64.StdEncoding.EncodeToString(attachment.Data),
+			})
+		}
+		values["attachments"] = blobs
+	}
+	raw, err := a.requestNativeSession("send", values)
+	if err != nil {
+		var rejection *providerkit.JSONRPCResponseError
+		if errors.As(err, &rejection) {
+			a.rejectNativeInput(revision)
+		}
+		return providerkit.ClassifyJSONRPCDeliveryError("session.send", err)
+	}
+	var response struct {
+		MessageID string `json:"messageId"`
+	}
+	if json.Unmarshal(raw, &response) != nil || response.MessageID == "" {
+		return fmt.Errorf("%w: Copilot omitted the delivered message ID", agent.ErrDeliveryUncertain)
+	}
+	return nil
+}
+
+// SupportsSteering always reports true. Copilot's session.send takes a SendMode,
+// and mode:"immediate" interjects the message during an in-progress turn, so the
+// capability needs no handshake discovery.
+func (a *Agent) SupportsSteering() bool { return true }
+
+// SteerInput injects a user message into the RUNNING turn with Copilot's
+// SendMode "immediate".
+//
+// The turn's activity bookkeeping is NOT touched: the turn this steers is the
+// one already recorded active, and a rejected steer must not read as the turn
+// ending. Contrast sendInputForSession, which owns the idle->active transition
+// and therefore owns the revision it can roll back.
+func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+	a.sessionMu.RLock()
+	defer a.sessionMu.RUnlock()
+	if a.IsStopped() {
+		return fmt.Errorf("agent is stopped")
+	}
+	a.stateMu.Lock()
+	if a.sessionID == "" {
+		a.stateMu.Unlock()
+		return fmt.Errorf("the Copilot session is unavailable")
+	}
+	active := a.active
+	a.stateMu.Unlock()
+	if !active {
+		return agent.ErrNoActiveTurn
+	}
+	values := map[string]any{"prompt": content, "mode": "immediate"}
+	if len(attachments) > 0 {
+		blobs := make([]map[string]string, 0, len(attachments))
+		for _, attachment := range agent.ClassifyAttachments(attachments) {
+			blobs = append(blobs, map[string]string{
+				"type": "blob", "displayName": attachment.Filename, "mimeType": attachment.MIMEType,
+				"data": base64.StdEncoding.EncodeToString(attachment.Data),
+			})
+		}
+		values["attachments"] = blobs
+	}
+	raw, err := a.requestNativeSession("send", values)
+	if err != nil {
+		return providerkit.ClassifyJSONRPCDeliveryError("session.send", err)
+	}
+	var response struct {
+		MessageID string `json:"messageId"`
+	}
+	if json.Unmarshal(raw, &response) != nil || response.MessageID == "" {
+		return fmt.Errorf("%w: Copilot omitted the delivered message ID", agent.ErrDeliveryUncertain)
+	}
+	return nil
+}
+
+// Interrupt aborts the running turn with Copilot's own `session.abort`.
+//
+// A stopped agent REFUSES, the way every other provider in the roster refuses.
+// The worker's InterruptAgent handler reads that refusal as "not running" and
+// says so; a nil here reported a stop that never happened, and the handler then
+// withdrew the prompts of a process that had already gone.
+func (a *Agent) Interrupt() error {
+	a.sessionMu.RLock()
+	defer a.sessionMu.RUnlock()
+	if a.IsStopped() {
+		return fmt.Errorf("agent is stopped")
+	}
+	_, err := a.requestNativeSession("abort", nil)
+	return err
+}
+
+func (a *Agent) Stop() {
+	a.NoteIntentionalStop()
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+	a.outputMu.Lock()
+	a.closing = true
+	a.outputMu.Unlock()
+	if !a.IsStopped() && a.currentNativeSessionID() != "" {
+		// Release the subscriptions before the suspend, while the session still
+		// accepts session work. A suspended session accepts a release as well
+		// (CP-009), but the order that needs no exception is the simpler rule.
+		a.releaseNativeControlEvents()
+		params, err := json.Marshal(map[string]string{"sessionId": a.currentNativeSessionID()})
+		if err == nil {
+			_, err = a.SendRequest("session.suspend", params, 2*time.Second)
+		}
+		if err != nil {
+			slog.Debug("Suspend Copilot before process exit", "agent_id", a.AgentID(), "error", err)
+		}
+	}
+	a.copilotConnection.Stop()
+	a.outputMu.Lock()
+	a.clearNativeChildren()
+	a.clearNativeControls()
+	a.outputMu.Unlock()
+	a.setNativeTurnActive(false)
+}
+
+func (a *Agent) Wait() error {
+	err := a.copilotConnection.Wait()
+	a.outputMu.Lock()
+	a.closing = true
+	a.clearNativeChildren()
+	a.clearNativeControls()
+	a.outputMu.Unlock()
+	a.forgetNativeControlEvents()
+	a.setNativeTurnActive(false)
+	return err
+}
+
+func (a *Agent) HandleOutput(content []byte) {
+	line := &providerkit.ParsedLine{Raw: content}
+	if err := json.Unmarshal(content, line); err != nil {
+		a.persistNativeFrame(content, agent.SpanInfo{})
+		return
+	}
+	a.handleNativeOutput(line)
+}
+
+func (a *Agent) handleNativeOutput(line *providerkit.ParsedLine) {
+	a.outputMu.Lock()
+	defer a.outputMu.Unlock()
+	if line.Method != copilotMethodSessionEvent {
+		a.RefuseUnsupportedRequest(line)
+		// An unrecognized method still reaches the transcript: a frame that carries
+		// conversation is worse lost than shown as raw JSON.
+		if !copilotMethodIsTelemetry(line.Method) {
+			a.persistNativeFrame(line.Raw, agent.SpanInfo{})
+		}
+		return
+	}
+	event, err := decodeCopilotSessionEvent(line.Params, a.currentNativeSessionID())
+	if err != nil {
+		slog.Debug("Skip Copilot event with an invalid session", "error", err)
+		return
+	}
+	a.handleNativeEvent(line.Raw, event)
+}
+
+func (a *Agent) persistNativeFrame(raw []byte, span agent.SpanInfo) {
+	a.persistNativeFrameTo(a.sink, raw, span)
+}
+
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+	return a.sendInputForSession(&sessionID, content, attachments)
 }

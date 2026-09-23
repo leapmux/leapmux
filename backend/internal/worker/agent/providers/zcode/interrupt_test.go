@@ -19,5 +19,5 @@ func TestInterrupt_ZCodeWireFormatMatchesProviderClassifier(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, zcodeProvider{}.IsInterrupt(string(b)),
-		"zcodeProvider.IsInterrupt must recognise the frame zcodeAgent.Interrupt emits")
+		"zcodeProvider.IsInterrupt must recognise the frame Agent.Interrupt emits")
 }

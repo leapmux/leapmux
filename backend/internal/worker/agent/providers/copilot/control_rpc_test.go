@@ -32,7 +32,7 @@ func TestNativeCopilotControlResponseRequiresAReceipt(t *testing.T) {
 			}, agent.NewProviderServices(sink))
 			require.NoError(t, err)
 			t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
-			a := provider.(*copilotAgent)
+			a := provider.(*Agent)
 			a.HandleOutput([]byte(fmt.Sprintf(`{"method":"session.event","params":{"sessionId":%q,"event":{"type":"permission.requested","data":{"requestId":"request"}}}}`, a.currentNativeSessionID())))
 			identifier := sink.LastPublishedControl().RequestID
 			response := []byte(fmt.Sprintf(`{"response":{"request_id":%q,"response":{"kind":"approve-once"}}}`, identifier))
@@ -55,7 +55,7 @@ func TestNativeCopilotRefusedControlResponseRemainsPending(t *testing.T) {
 	}, agent.NewProviderServices(sink))
 	require.NoError(t, err)
 	t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
-	a := provider.(*copilotAgent)
+	a := provider.(*Agent)
 	a.HandleOutput([]byte(fmt.Sprintf(`{"method":"session.event","params":{"sessionId":%q,"event":{"type":"permission.requested","data":{"requestId":"request"}}}}`, a.currentNativeSessionID())))
 	require.Equal(t, 1, sink.PublishedControlCount())
 	identifier := sink.LastPublishedControl().RequestID
@@ -87,7 +87,7 @@ func TestNativeCopilotControlResponseDelivery(t *testing.T) {
 	}, agent.NewProviderServices(sink))
 	require.NoError(t, err)
 	t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
-	a := provider.(*copilotAgent)
+	a := provider.(*Agent)
 	cases := []struct {
 		kind, method, field, answer string
 	}{
@@ -128,7 +128,7 @@ func TestNativeCopilotControlResponseDelivery(t *testing.T) {
 
 // deliverCopilotControl answers one pending permission request and reports the value
 // the runtime received.
-func deliverCopilotControl(t *testing.T, a *copilotAgent, sink *agenttest.ControlSink, answer string) string {
+func deliverCopilotControl(t *testing.T, a *Agent, sink *agenttest.ControlSink, answer string) string {
 	t.Helper()
 	identifier := sink.LastPublishedControl().RequestID
 	require.NoError(t, a.SendRawInput(fmt.Appendf(nil, `{"response":{"request_id":%q,"response":%s}}`, identifier, answer)))
@@ -141,7 +141,7 @@ func deliverCopilotControl(t *testing.T, a *copilotAgent, sink *agenttest.Contro
 	return probe.Value
 }
 
-func startCopilotForControls(t *testing.T, env ...string) (*copilotAgent, *agenttest.ControlSink) {
+func startCopilotForControls(t *testing.T, env ...string) (*Agent, *agenttest.ControlSink) {
 	t.Helper()
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
 		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
@@ -154,13 +154,13 @@ func startCopilotForControls(t *testing.T, env ...string) (*copilotAgent, *agent
 	}, agent.NewProviderServices(sink))
 	require.NoError(t, err)
 	t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
-	a := provider.(*copilotAgent)
+	a := provider.(*Agent)
 	announceCopilotPermission(t, a, "request")
 	return a, sink
 }
 
 // announceCopilotPermission delivers one native permission request to the agent.
-func announceCopilotPermission(t *testing.T, a *copilotAgent, requestID string) {
+func announceCopilotPermission(t *testing.T, a *Agent, requestID string) {
 	t.Helper()
 	a.HandleOutput(fmt.Appendf(nil,
 		`{"method":"session.event","params":{"sessionId":%q,"event":{"type":"permission.requested","data":{"requestId":%q,"permissionRequest":{"kind":"read","path":"/project/main.go"}}}}}`,

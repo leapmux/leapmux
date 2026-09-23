@@ -8,7 +8,6 @@ import (
 	"maps"
 	"time"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -35,7 +34,7 @@ type copilotConnection struct {
 // verifyNativeProtocol completes the startup. Keep the three calls in that order.
 func startCopilotConnection(parent context.Context, opts agent.Options) (*copilotConnection, error) {
 	ctx, cancel := context.WithCancel(parent)
-	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, copilotLocator)
+	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, Registration())
 	if err != nil {
 		cancel()
 		return nil, err

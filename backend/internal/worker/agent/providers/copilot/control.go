@@ -70,7 +70,7 @@ var copilotEventInterests = []string{
 // It records every returned handle, because the runtime keeps a subscription until
 // its own handle is released. A failure releases what it already took, so a refused
 // registration leaves no subscription behind. See CP-009.
-func (a *copilotAgent) registerNativeControlEvents() error {
+func (a *Agent) registerNativeControlEvents() error {
 	handles := make([]string, 0, len(copilotEventInterests))
 	for _, eventType := range copilotEventInterests {
 		raw, err := a.requestNativeSession("eventLog.registerInterest", map[string]any{"eventType": eventType})
@@ -96,13 +96,13 @@ func (a *copilotAgent) registerNativeControlEvents() error {
 
 // releaseNativeControlEvents releases every subscription of the current session.
 // The runtime accepts a repeated release, so a second call is harmless.
-func (a *copilotAgent) releaseNativeControlEvents() {
+func (a *Agent) releaseNativeControlEvents() {
 	a.releaseNativeInterests(a.forgetNativeControlEvents())
 }
 
 // forgetNativeControlEvents drops the recorded handles and returns them. A caller
 // that cannot reach the runtime any more uses it to avoid a release that must fail.
-func (a *copilotAgent) forgetNativeControlEvents() []string {
+func (a *Agent) forgetNativeControlEvents() []string {
 	a.interestMu.Lock()
 	defer a.interestMu.Unlock()
 	handles := a.interests
@@ -110,7 +110,7 @@ func (a *copilotAgent) forgetNativeControlEvents() []string {
 	return handles
 }
 
-func (a *copilotAgent) releaseNativeInterests(handles []string) {
+func (a *Agent) releaseNativeInterests(handles []string) {
 	for _, handle := range handles {
 		if _, err := a.requestNativeSession("eventLog.releaseInterest", map[string]any{"handle": handle}); err != nil {
 			slog.Debug("Release Copilot event subscription", "agent_id", a.AgentID(), "handle", handle, "error", err)
@@ -125,7 +125,7 @@ func copilotControlID(sessionID, kind, requestID string) string {
 	return "copilot-" + base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
-func (a *copilotAgent) handleNativeControlEvent(raw []byte, event copilotEvent) bool {
+func (a *Agent) handleNativeControlEvent(raw []byte, event copilotEvent) bool {
 	var spec *copilotControlSpec
 	completed := false
 	for index := range copilotControlSpecs {
@@ -191,7 +191,7 @@ func (a *copilotAgent) handleNativeControlEvent(raw []byte, event copilotEvent) 
 	return true
 }
 
-func (a *copilotAgent) removeNativeControl(identifier string) {
+func (a *Agent) removeNativeControl(identifier string) {
 	a.controlMu.Lock()
 	_, exists := a.controls[identifier]
 	delete(a.controls, identifier)
@@ -201,7 +201,7 @@ func (a *copilotAgent) removeNativeControl(identifier string) {
 	}
 }
 
-func (a *copilotAgent) clearNativeControls() {
+func (a *Agent) clearNativeControls() {
 	a.controlMu.Lock()
 	identifiers := make([]string, 0, len(a.controls))
 	for identifier := range a.controls {
@@ -214,7 +214,7 @@ func (a *copilotAgent) clearNativeControls() {
 	}
 }
 
-func (a *copilotAgent) abortNativeControlSession(sessionID string) {
+func (a *Agent) abortNativeControlSession(sessionID string) {
 	params, err := json.Marshal(map[string]string{"sessionId": sessionID})
 	if err == nil {
 		_, err = a.SendRequest("session.abort", params, a.APITimeout())
@@ -225,7 +225,7 @@ func (a *copilotAgent) abortNativeControlSession(sessionID string) {
 }
 
 // SendRawInput accepts the shared control envelope and forwards the exact native response value.
-func (a *copilotAgent) SendRawInput(raw []byte) error {
+func (a *Agent) SendRawInput(raw []byte) error {
 	var envelope struct {
 		Response struct {
 			RequestID string          `json:"request_id"`
@@ -307,7 +307,7 @@ func (a *copilotAgent) SendRawInput(raw []byte) error {
 // The key is the runtime's own identifier for the working directory, so it is
 // resolved at delivery and travels no further. Every other answer passes through
 // byte for byte, which is what keeps a valid zero, false or empty value intact.
-func (a *copilotAgent) completeNativeControlAnswer(answer json.RawMessage) (json.RawMessage, error) {
+func (a *Agent) completeNativeControlAnswer(answer json.RawMessage) (json.RawMessage, error) {
 	var decision struct {
 		Kind        string `json:"kind"`
 		LocationKey string `json:"locationKey"`

@@ -5,10 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
-
-	"github.com/leapmux/leapmux/generated/contracts"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
@@ -41,89 +38,6 @@ const ThoughtLevelLabel = "Thought Level"
 // ModeLabel labels the mode axis, which LeapMux carries on its permission-mode
 // channel so the plan-mode toggle and the mode chip drive it.
 const ModeLabel = "Mode"
-
-// zcodeAutoEffort is LeapMux's sentinel for "send no thought level at all", which
-// leaves the app-server on whatever default it resolved for the model.
-var zcodeAutoEffort = &agent.EffortInfo{
-	Id:          agent.EffortAuto,
-	Name:        providerkit.EffortLabel(agent.EffortAuto),
-	Description: "Use ZCode's default thought level for the model",
-}
-
-// zcodeEffortsWithAuto orders a model's thought levels for the menu: Auto first,
-// then the rest strongest first. It sorts `levels` in place and returns the new
-// slice.
-//
-// One function for the two places that build such a list -- the configured
-// catalog (zcodeModelInfo) and the live snapshot that REPLACES it for the
-// running model (applySettingsSnapshotLocked). Built separately, the two ordered
-// the same levels differently and the menu reordered itself under the reader the
-// moment the first snapshot landed.
-//
-// It also discharges providerkit.SortEffortsDescending's one caller obligation. Auto is not
-// a strength -- it means "send no level at all" -- so it must not reach the
-// sort, and putting it back afterwards is the step a caller can forget.
-func zcodeEffortsWithAuto(levels []*agent.EffortInfo) []*agent.EffortInfo {
-	providerkit.SortEffortsDescending(levels)
-	// A fresh slice with room for both, rather than a prepend onto the caller's:
-	// `append` to a one-element literal reallocates anyway, and a caller sized
-	// for the levels alone.
-	out := make([]*agent.EffortInfo, 0, len(levels)+1)
-	out = append(out, zcodeAutoEffort)
-	return append(out, levels...)
-}
-
-// zcodeEffortTier builds the display entry for one ZCode thought level.
-//
-// ZCode spells a level as a bare id ("low", "max", "enabled") and repeats that id as
-// its label, so the shared effortLabels table -- not the wire label -- decides how a
-// level READS. Without this the SAME level renders two ways in one popover: the
-// configured catalog capitalizes it and the live snapshot does not.
-//
-// A label that DIFFERS from the id carries something the shared table cannot know,
-// so it wins.
-func zcodeEffortTier(value, label, description string) *agent.EffortInfo {
-	name := providerkit.EffortLabel(value)
-	if label != "" && !strings.EqualFold(label, value) {
-		name = label
-	}
-	return &agent.EffortInfo{Id: value, Name: name, Description: description}
-}
-
-// zcodeFallbackModels is the static seed that the settings popover shows before
-// an agent runs.
-//
-// It is deliberately empty. ZCode owns the provider ids, model ids, and thought
-// levels. A hardcoded entry can identify a model that the installation does not
-// have. An empty catalog renders no model group until the agent reports one.
-var zcodeFallbackModels []*agent.ModelInfo
-
-// zcodeStaticOptionGroups holds the option groups that do NOT depend on a
-// running agent: the mode axis, whose four values are fixed by the app-server.
-//
-// It is the one home of that template. The registration in agent.go and
-// zcodeAgent.OptionGroups both read this value, so the list the static fallback
-// offers and the list a running agent offers cannot drift apart.
-//
-// `auto` is absent on purpose. It is in the app-server's own enumeration and is
-// not implemented in the shipped build: every tool call under it is denied with
-// `permission.resolved {reason:"Auto mode is reserved but not implemented yet"}`,
-// so offering it would give the user a mode in which nothing works.
-var zcodeStaticOptionGroups = []*leapmuxv1.AvailableOptionGroup{
-	{
-		Id:           agent.OptionIDPermissionMode,
-		Label:        ModeLabel,
-		DefaultValue: contracts.ZCodeDefaultMode,
-		Mutable:      true,
-		Order:        agent.OptionOrderPermissionMode,
-		Options: []*leapmuxv1.AvailableOption{
-			{Id: contracts.ZCodeModePlan, Name: "Plan", Description: "Research and plan; no edits and no commands"},
-			{Id: contracts.ZCodeModeBuild, Name: "Build", Description: "Edit files and run commands, asking before a risky action"},
-			{Id: contracts.ZCodeModeEdit, Name: "Edit", Description: "Edit files freely; ask before running a command"},
-			{Id: contracts.ZCodeModeYolo, Name: "Yolo", Description: "Run everything without asking"},
-		},
-	},
-}
 
 // zcodeSettingsRequest is the trio a caller ASKS a session to run on: the launch
 // options at startup, and the current axes at a context clear.
@@ -215,7 +129,7 @@ type zcodeSettingsSnapshot struct {
 // Every value read here is the app-server's own: `mode.current`, `model.current`
 // and `thoughtLevel.current`. Where a field is absent the previous value stands,
 // which is what makes this safe to call with a partial state.updated patch.
-func (a *zcodeAgent) applySettingsSnapshotLocked(snap *zcodeSettingsSnapshot) {
+func (a *Agent) applySettingsSnapshotLocked(snap *zcodeSettingsSnapshot) {
 	if snap == nil {
 		return
 	}
@@ -289,7 +203,7 @@ func (a *zcodeAgent) applySettingsSnapshotLocked(snap *zcodeSettingsSnapshot) {
 // ZCode's create snapshot lists all models. A later setModel response can list
 // only the selected model, so an absent entry in a later response does not remove
 // an entry that the running app server already offered.
-func (a *zcodeAgent) mergeZCodeLiveModelsLocked(available []zcodeAvailableModel, current zcodeModelRef) {
+func (a *Agent) mergeZCodeLiveModelsLocked(available []zcodeAvailableModel, current zcodeModelRef) {
 	if len(available) == 0 {
 		return
 	}
@@ -384,7 +298,7 @@ func (a *zcodeAgent) mergeZCodeLiveModelsLocked(available []zcodeAvailableModel,
 
 // resolveZCodeModelIDLocked resolves a model against the live catalog first and
 // then the legacy configuration. Caller holds a.Mu.
-func (a *zcodeAgent) resolveZCodeModelIDLocked(model string) (string, bool) {
+func (a *Agent) resolveZCodeModelIDLocked(model string) (string, bool) {
 	model = normalizeZCodeModelID(model)
 	if model == "" {
 		return "", false
@@ -411,7 +325,7 @@ func (a *zcodeAgent) resolveZCodeModelIDLocked(model string) (string, bool) {
 
 // zcodeDefaultThoughtLevelLocked returns the live model default when available.
 // Caller holds a.Mu.
-func (a *zcodeAgent) zcodeDefaultThoughtLevelLocked(modelID string) string {
+func (a *Agent) zcodeDefaultThoughtLevelLocked(modelID string) string {
 	if record, ok := a.liveModels[modelID]; ok && record.info != nil {
 		return record.info.DefaultEffort
 	}
@@ -423,7 +337,7 @@ func (a *zcodeAgent) zcodeDefaultThoughtLevelLocked(modelID string) string {
 //
 // The live thought-level axis covers only the running model. It replaces that
 // model's levels because it is what the next setThoughtLevel request accepts.
-func (a *zcodeAgent) zcodeModelsForUI() ([]*agent.ModelInfo, string, string) {
+func (a *Agent) zcodeModelsForUI() ([]*agent.ModelInfo, string, string) {
 	a.Mu.Lock()
 	current, level := a.model, a.thoughtLevel
 	observed, observedDefault := a.observedThoughtLevels, a.observedThoughtDefault
@@ -463,7 +377,7 @@ func (a *zcodeAgent) zcodeModelsForUI() ([]*agent.ModelInfo, string, string) {
 }
 
 // OptionGroups reports the model, thought-level and mode axes.
-func (a *zcodeAgent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
+func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	models, model, effort := a.zcodeModelsForUI()
 	groups := providerkit.ModelAndEffortGroups(models, model, effort, ThoughtLevelLabel, nil)
 
@@ -500,7 +414,7 @@ func resolveZCodeThoughtLevel(level, defaultLevel string) string {
 // Legacy builds receive a runtimeModel overlay with the inline key. ZCode 0.16.9
 // owns the provider registry and strictly refuses that field, so its request carries
 // only the model reference.
-func (a *zcodeAgent) applyZCodeModel(modelID string, timeout time.Duration) error {
+func (a *Agent) applyZCodeModel(modelID string, timeout time.Duration) error {
 	a.Mu.Lock()
 	resolved, ok := a.resolveZCodeModelIDLocked(modelID)
 	sessionID, level := a.sessionID, a.thoughtLevel
@@ -568,7 +482,7 @@ func (a *zcodeAgent) applyZCodeModel(modelID string, timeout time.Duration) erro
 // The parameter is REQUIRED even though the app-server's schema marks it optional:
 // the handler throws for a missing value. EffortAuto never reaches here -- it is
 // LeapMux's "send nothing" sentinel, which the callers filter.
-func (a *zcodeAgent) applyZCodeThoughtLevel(level string, timeout time.Duration) error {
+func (a *Agent) applyZCodeThoughtLevel(level string, timeout time.Duration) error {
 	a.Mu.Lock()
 	sessionID := a.sessionID
 	a.Mu.Unlock()
@@ -598,7 +512,7 @@ func (a *zcodeAgent) applyZCodeThoughtLevel(level string, timeout time.Duration)
 }
 
 // applyZCodeMode switches the session's mode and reports the observed value.
-func (a *zcodeAgent) applyZCodeMode(mode string, timeout time.Duration) error {
+func (a *Agent) applyZCodeMode(mode string, timeout time.Duration) error {
 	a.Mu.Lock()
 	sessionID := a.sessionID
 	a.Mu.Unlock()
@@ -626,7 +540,7 @@ func (a *zcodeAgent) applyZCodeMode(mode string, timeout time.Duration) error {
 // Returning false asks the caller to RESTART the agent with the requested values as
 // launch options. That is the honest answer for any failed apply: reporting success
 // would strand the picker on a value the running session does not have.
-func (a *zcodeAgent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
+func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
 	a.Mu.Lock()
 	curModel, curEffort, curMode := a.model, a.thoughtLevel, a.mode
 	a.Mu.Unlock()
@@ -688,7 +602,7 @@ func (a *zcodeAgent) UpdateSettings(options optionmap.Map) agent.SettingsApplyRe
 	return a.SettingsSnapshot()
 }
 
-func (a *zcodeAgent) SettingsSnapshot() agent.SettingsApplyResult {
+func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 	result := agent.ConfirmedSettings(agent.CurrentOptions(a.OptionGroups()))
 	a.Mu.Lock()
 	unresolved := make([]string, 0, len(a.unresolvedSettings))
@@ -743,7 +657,7 @@ type zcodeStatePatchBody struct {
 // isCurrentZCodeSession reports whether sessionID is the session this agent
 // serves right now. An empty id passes: a notification that states no session
 // cannot contradict the current one.
-func (a *zcodeAgent) isCurrentZCodeSession(sessionID string) bool {
+func (a *Agent) isCurrentZCodeSession(sessionID string) bool {
 	if sessionID == "" {
 		return true
 	}
@@ -764,7 +678,7 @@ func (b *zcodeStatePatchBody) hasSettings() bool {
 // agent's settings and usage, so a mode or model the AGENT changed mid-turn
 // (ZCode's own EnterPlanMode / ExitPlanMode tools do exactly that) reaches the
 // picker, and the context-usage readout tracks the turn.
-func (a *zcodeAgent) handleZCodeStateUpdated(params json.RawMessage) {
+func (a *Agent) handleZCodeStateUpdated(params json.RawMessage) {
 	if len(params) == 0 {
 		return
 	}

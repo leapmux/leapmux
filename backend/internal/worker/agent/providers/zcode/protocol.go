@@ -255,7 +255,7 @@ const (
 // registration, NOT by shape: the read loop first asks the correlator whether the
 // id belongs to a pending request, and only calls this an inbound request when it
 // does not. This function therefore reports the SHAPE, and the
-// caller resolves the race -- see zcodeAgent.interceptResponse.
+// caller resolves the race -- see Agent.interceptResponse.
 func classifyZCodeMessage(line *providerkit.ParsedLine) zcodeMessageKind {
 	hasID := line.HasID()
 	hasMethod := line.Method != ""

@@ -16,7 +16,7 @@ import (
 
 // zcodeApplySettings folds a settings JSON document into an agent, the way every
 // state-changing RPC reply and every session-scope patch does.
-func zcodeApplySettings(t *testing.T, a *zcodeAgent, settingsJSON string) {
+func zcodeApplySettings(t *testing.T, a *Agent, settingsJSON string) {
 	t.Helper()
 	var snap zcodeSettingsSnapshot
 	require.NoError(t, json.Unmarshal([]byte(settingsJSON), &snap))

@@ -7,5 +7,5 @@ import (
 )
 
 func TestZCodeSessionInputRejectsMissingAndReplacedTargets(t *testing.T) {
-	agenttest.AssertRejectsMissingAndReplacedSessions(t, &zcodeAgent{sessionID: "current"})
+	agenttest.AssertRejectsMissingAndReplacedSessions(t, &Agent{sessionID: "current"})
 }

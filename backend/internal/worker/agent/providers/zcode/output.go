@@ -18,7 +18,7 @@ import (
 //
 // Only two notification methods carry conversation: session/event and the top-level
 // state.updated. Everything else the app-server emits is its own telemetry.
-func handleZCodeOutput(a *zcodeAgent, line *providerkit.ParsedLine) {
+func handleZCodeOutput(a *Agent, line *providerkit.ParsedLine) {
 	switch line.Method {
 	case NotifySessionEvent:
 		// A frame is proof the turn is alive, so it restarts the window a stop armed.
@@ -62,7 +62,7 @@ func handleZCodeOutput(a *zcodeAgent, line *providerkit.ParsedLine) {
 // reply, so holding it across that RPC would deadlock the two against each other. No
 // handler reachable from here issues a synchronous request; the one that issues any runs
 // on its own goroutine.
-func (a *zcodeAgent) dispatchZCodeEvent(event zcodeEventEnvelope) {
+func (a *Agent) dispatchZCodeEvent(event zcodeEventEnvelope) {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
 
@@ -181,7 +181,7 @@ func (e zcodeEventEnvelope) withPayload(payload json.RawMessage) zcodeEventEnvel
 }
 
 // persistZCodeNotification records a lifecycle event as a notification row.
-func (a *zcodeAgent) persistZCodeNotification(event zcodeEventEnvelope) {
+func (a *Agent) persistZCodeNotification(event zcodeEventEnvelope) {
 	content := event.persistBytes()
 	if content == nil {
 		return
@@ -206,7 +206,7 @@ func (a *zcodeAgent) persistZCodeNotification(event zcodeEventEnvelope) {
 // and closes none of the user's spans, but the agent IS processing, and
 // turnActive is already what Interrupt and Stop read to decide the session is
 // live.
-func (a *zcodeAgent) PublishTurnActive() agent.TurnState {
+func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
 	active := a.turnActive
 	seq := a.NextTurnSeq()
@@ -229,7 +229,7 @@ type zcodeTurnStarted struct {
 // background task reporting back, a subagent's reply being folded in, a todo
 // reminder. Such a turn is armed as a background turn, so its completion does not
 // end the user's turn and its transcript rows still land.
-func (a *zcodeAgent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
+func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 	var payload zcodeTurnStarted
 	if len(event.Payload) > 0 {
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
@@ -264,7 +264,7 @@ type zcodeTurnCompleted struct {
 	ResultType    string      `json:"resultType"`
 }
 
-func (a *zcodeAgent) handleZCodeTurnCompleted(event zcodeEventEnvelope) {
+func (a *Agent) handleZCodeTurnCompleted(event zcodeEventEnvelope) {
 	var payload zcodeTurnCompleted
 	if len(event.Payload) > 0 {
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
@@ -293,7 +293,7 @@ type zcodeTurnFailed struct {
 	TurnPhase string `json:"turnPhase"`
 }
 
-func (a *zcodeAgent) handleZCodeTurnFailed(event zcodeEventEnvelope) {
+func (a *Agent) handleZCodeTurnFailed(event zcodeEventEnvelope) {
 	var payload zcodeTurnFailed
 	if len(event.Payload) > 0 {
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
@@ -332,7 +332,7 @@ func zcodeFailureIsRetryable(payload zcodeTurnFailed) bool {
 // A BACKGROUND turn takes none of it. Its completion says nothing about the user's
 // turn, and closing the spans there would tear down the cards of tool calls the
 // user's own turn is still running.
-func (a *zcodeAgent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int32) {
+func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int32) {
 	a.Mu.Lock()
 	background := a.backgroundTurn
 	// The turn reported its own end, so the stop's window has nothing left to watch.
@@ -426,7 +426,7 @@ type zcodeModelStreaming struct {
 // reasoning_delta (with a non-empty delta) and the four tool_input kinds are ever
 // sent. The start/finish/error and the *_start / *_end phase markers exist in its
 // enumeration and never arrive, which is why there is no phase handling here.
-func (a *zcodeAgent) handleZCodeModelStreaming(event zcodeEventEnvelope) {
+func (a *Agent) handleZCodeModelStreaming(event zcodeEventEnvelope) {
 	var payload zcodeModelStreaming
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		slog.Warn("zcode model.streaming unmarshal failed", "agent_id", a.AgentID(), "error", err)
@@ -548,7 +548,7 @@ type zcodeToolUpdated struct {
 	ErrorCount   int      `json:"errorCount"`
 }
 
-func (a *zcodeAgent) handleZCodeToolUpdated(event zcodeEventEnvelope) {
+func (a *Agent) handleZCodeToolUpdated(event zcodeEventEnvelope) {
 	var payload zcodeToolUpdated
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		slog.Warn("zcode tool.updated unmarshal failed", "agent_id", a.AgentID(), "error", err)
@@ -596,7 +596,7 @@ func (a *zcodeAgent) handleZCodeToolUpdated(event zcodeEventEnvelope) {
 // it BEFORE this call, because a raw frame must not become the row. A batch update
 // identifies a LIST of calls rather than one, and its toolCallId is empty, so it
 // records nothing.
-func (a *zcodeAgent) rememberZCodeToolFrame(toolCallID string, event zcodeEventEnvelope) {
+func (a *Agent) rememberZCodeToolFrame(toolCallID string, event zcodeEventEnvelope) {
 	if toolCallID == "" {
 		return
 	}
@@ -612,12 +612,12 @@ func (a *zcodeAgent) rememberZCodeToolFrame(toolCallID string, event zcodeEventE
 // openZCodeToolCall persists the tool call's opening row into this agent's own
 // transcript. A subagent's call goes to its child transcript instead -- see
 // subagent.go.
-func (a *zcodeAgent) openZCodeToolCall(event zcodeEventEnvelope, payload zcodeToolUpdated) {
+func (a *Agent) openZCodeToolCall(event zcodeEventEnvelope, payload zcodeToolUpdated) {
 	a.openZCodeToolCallInto(a.sink, event, payload)
 }
 
 // recordZCodeToolStarted notes that a scheduled call began running.
-func (a *zcodeAgent) recordZCodeToolStarted(payload zcodeToolUpdated) {
+func (a *Agent) recordZCodeToolStarted(payload zcodeToolUpdated) {
 	if payload.ToolCallID == "" {
 		return
 	}
@@ -643,7 +643,7 @@ func (a *zcodeAgent) recordZCodeToolStarted(payload zcodeToolUpdated) {
 }
 
 // streamZCodeToolProgress reports the native combined byte total when present.
-func (a *zcodeAgent) streamZCodeToolProgress(payload zcodeToolUpdated) {
+func (a *Agent) streamZCodeToolProgress(payload zcodeToolUpdated) {
 	if payload.ToolCallID == "" {
 		return
 	}
@@ -707,11 +707,11 @@ type zcodeRecoveredClose struct {
 
 // closeZCodeToolCall persists the tool call's final row into the transcript that
 // holds its opening row -- this agent's own, or a subagent's child transcript.
-func (a *zcodeAgent) closeZCodeToolCall(event zcodeEventEnvelope, payload zcodeToolUpdated) {
+func (a *Agent) closeZCodeToolCall(event zcodeEventEnvelope, payload zcodeToolUpdated) {
 	a.closeZCodeToolCallInto(a.zcodeSinkForToolCall(payload.ToolCallID), event, payload, nil)
 }
 
-func (a *zcodeAgent) persistIncompleteZCodeTools(completion agent.MessageCompletion) {
+func (a *Agent) persistIncompleteZCodeTools(completion agent.MessageCompletion) {
 	a.Mu.Lock()
 	toolCallIDs := make([]string, 0, len(a.toolCalls))
 	frames := make(map[string][]byte)
@@ -774,7 +774,7 @@ func (a *zcodeAgent) persistIncompleteZCodeTools(completion agent.MessageComplet
 // A batch arrives AFTER the per-call results and only summarizes them, so it must
 // close only an id that was opened and never reached a final state -- a call whose
 // own result was lost. Closing one that already finished would double its row.
-func (a *zcodeAgent) applyZCodeToolBatch(event zcodeEventEnvelope, payload zcodeToolUpdated) {
+func (a *Agent) applyZCodeToolBatch(event zcodeEventEnvelope, payload zcodeToolUpdated) {
 	for _, id := range payload.ToolCallIDs {
 		if id == "" {
 			continue
@@ -849,7 +849,7 @@ func zcodeBatchTaskStatus(batch zcodeToolUpdated) bgtask.Status {
 // `session.updated` is the app-server's catch-all: every internal event it does not
 // map explicitly becomes one, with a free-form payload. So the shapes are told apart
 // by which fields they carry, in order of specificity.
-func (a *zcodeAgent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
+func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 	if len(event.Payload) == 0 {
 		return
 	}
@@ -900,7 +900,7 @@ func (a *zcodeAgent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 	}
 }
 
-func (a *zcodeAgent) flushZCodeGenerationScope(scopeID string, completion agent.MessageCompletion) {
+func (a *Agent) flushZCodeGenerationScope(scopeID string, completion agent.MessageCompletion) {
 	if scopeID == "" {
 		return
 	}
@@ -921,7 +921,7 @@ func (a *zcodeAgent) flushZCodeGenerationScope(scopeID string, completion agent.
 	a.sink.ReportProgress(agent.CompleteModelProgress(scopeID))
 }
 
-func (a *zcodeAgent) flushZCodeGenerationKind(kind agent.AssembledMessageKind, completion agent.MessageCompletion) {
+func (a *Agent) flushZCodeGenerationKind(kind agent.AssembledMessageKind, completion agent.MessageCompletion) {
 	if a.IsDiscardingOutput() {
 		a.generationBuffer.Reset()
 		return
@@ -929,7 +929,7 @@ func (a *zcodeAgent) flushZCodeGenerationKind(kind agent.AssembledMessageKind, c
 	a.persistZCodeGenerationKind(kind, completion)
 }
 
-func (a *zcodeAgent) flushZCodeGeneration(completion agent.MessageCompletion) {
+func (a *Agent) flushZCodeGeneration(completion agent.MessageCompletion) {
 	if a.IsDiscardingOutput() {
 		a.generationBuffer.Reset()
 		return
@@ -939,13 +939,13 @@ func (a *zcodeAgent) flushZCodeGeneration(completion agent.MessageCompletion) {
 	}
 }
 
-func (a *zcodeAgent) persistZCodeGenerationKind(kind agent.AssembledMessageKind, completion agent.MessageCompletion) {
+func (a *Agent) persistZCodeGenerationKind(kind agent.AssembledMessageKind, completion agent.MessageCompletion) {
 	if err := a.generationBuffer.PersistKind(kind, completion, a.persistZCodeGenerationRow); err != nil {
 		slog.Error("zcode persist generation", "agent_id", a.AgentID(), "error", err)
 	}
 }
 
-func (a *zcodeAgent) persistZCodeGenerationRow(raw []byte) error {
+func (a *Agent) persistZCodeGenerationRow(raw []byte) error {
 	return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{})
 }
 
@@ -963,7 +963,7 @@ func zcodeTextScope(assistantMessageID string) string {
 // message/part projection is not what desktop-continuous delivers, so the
 // model-response `session.updated` is where the completed text arrives. A turn that
 // only called tools carries an empty string, and nothing is persisted for it.
-func (a *zcodeAgent) persistZCodeAssistantMessage(event zcodeEventEnvelope, content string) {
+func (a *Agent) persistZCodeAssistantMessage(event zcodeEventEnvelope, content string) {
 	if strings.TrimSpace(content) == "" {
 		return
 	}
@@ -1024,7 +1024,7 @@ func zcodeBackgroundStatus(status string) (bgtask.Status, bool) {
 // A `bash` task and a `workflow` task reuse the launch card they already have.
 // A `subagent` task gets its own child transcript because its output is a
 // conversation of its own.
-func (a *zcodeAgent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
+func (a *Agent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 	var task zcodeBackgroundTask
 	if err := json.Unmarshal(event.Payload, &task); err != nil {
 		slog.Warn("zcode background task unmarshal failed", "agent_id", a.AgentID(), "error", err)
@@ -1119,7 +1119,7 @@ type zcodePermissionResolved struct {
 // a mode that allows the tool outright, or a mode that denies it. Only the ones with
 // no matching control request are recorded, so an answer the user gave through
 // LeapMux is not reported back to them as an automatic decision.
-func (a *zcodeAgent) handleZCodePermissionResolved(event zcodeEventEnvelope) {
+func (a *Agent) handleZCodePermissionResolved(event zcodeEventEnvelope) {
 	var payload zcodePermissionResolved
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		slog.Warn("zcode permission.resolved unmarshal failed", "agent_id", a.AgentID(), "error", err)
@@ -1145,7 +1145,7 @@ func (a *zcodeAgent) handleZCodePermissionResolved(event zcodeEventEnvelope) {
 // LeapMux's own control surface, which persists the answer row. What the event is
 // needed for is the bookkeeping -- while the id stays in the set, a later request
 // that REUSES it would be mistaken for a re-announcement and never reach the user.
-func (a *zcodeAgent) handleZCodeUserInputResolved(event zcodeEventEnvelope) {
+func (a *Agent) handleZCodeUserInputResolved(event zcodeEventEnvelope) {
 	if len(event.Payload) == 0 {
 		return
 	}
@@ -1173,7 +1173,7 @@ func (a *zcodeAgent) handleZCodeUserInputResolved(event zcodeEventEnvelope) {
 //
 // The outcome of the retry still reaches the transcript, on `turn.failed` or
 // `turn.completed`.
-func (a *zcodeAgent) handleZCodeStreamRecovery(event zcodeEventEnvelope) {
+func (a *Agent) handleZCodeStreamRecovery(event zcodeEventEnvelope) {
 	slog.Debug("zcode stream recovery", "agent_id", a.AgentID(), "payload_len", len(event.Payload))
 }
 

@@ -13,7 +13,7 @@ import (
 // ClearContext suspends the current session and creates a replacement.
 // If initialization fails, it attempts to resume the previous session with pending work interrupted.
 // Suspension preserves stored session data, but it can interrupt pending controls.
-func (a *copilotAgent) ClearContext() (string, error) {
+func (a *Agent) ClearContext() (string, error) {
 	a.sessionMu.Lock()
 	defer a.sessionMu.Unlock()
 	if a.IsStopped() {
@@ -81,7 +81,7 @@ func (a *copilotAgent) ClearContext() (string, error) {
 // re-applied it yet reads back as "". Failing the whole operation for that
 // aborted the thing the USER asked for -- clearing a goal -- over a tier nobody
 // chose in that moment. It is reported and carried on from instead.
-func (a *copilotAgent) restoreNativeSettings(options optionmap.Map) error {
+func (a *Agent) restoreNativeSettings(options optionmap.Map) error {
 	applied := a.applyNativeSettings(options)
 	for key, value := range options {
 		if value == "" || applied.Settlements[key].State == agent.OptionSettlementConfirmed {
