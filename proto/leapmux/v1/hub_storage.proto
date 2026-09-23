@@ -11,7 +11,7 @@ package leapmux.v1;
 // renumber moves together, instead of a token spelled once in Go and again in
 // three dialects of SQL.
 //
-// The rule that puts them here is in CLAUDE.md, under "Enum columns store proto
+// The rule that puts them here is in AGENTS.md, under "Enum columns store proto
 // enum ordinals". The short form: a closed set of values in a database column
 // is an enum, and an enum takes its numbering from proto -- whether or not it
 // also crosses a language boundary. Crossing one is what adds a CONTRACT entry

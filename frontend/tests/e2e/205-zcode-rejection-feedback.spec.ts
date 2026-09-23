@@ -71,7 +71,7 @@ test('rejects a native ZCode plan and delivers approval-shaped feedback as feedb
   if (row === undefined)
     throw new Error('expected exactly one stored approval feedback row')
   // The column stores the proto enum ORDINAL, not its name -- see "Enum columns
-  // store proto enum ordinals" in CLAUDE.md. Binding the generated constant
+  // store proto enum ordinals" in AGENTS.md. Binding the generated constant
   // means a renumber propagates here instead of leaving a stale literal.
   expect(row.state).toBe(ControlResponseState.COMPLETED)
   expect(JSON.parse(Buffer.from(row.content, 'hex').toString()).result.action).toBe('decline')

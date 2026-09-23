@@ -1439,8 +1439,8 @@ export async function boxOf(locator: Locator): Promise<{ x: number, y: number, w
  * Pick an option from a `DropdownMenu`.
  *
  * The app renders no native `<select>` any more (see the dropdown rule in
- * CLAUDE.md), so `selectOption` has nothing to drive. A menu keeps its items
- * mounted, so the click has to be scoped to the row that owns them.
+ * AGENTS.md), so `selectOption` has nothing to drive. A menu keeps its items
+ * mounted, so this helper scopes the click to the row that owns them.
  */
 // The testids used here are WRITTEN by `~/components/common/LoadingMenu`, and
 // the Vitest counterpart in `src/test-support/menu.ts` encodes the same two

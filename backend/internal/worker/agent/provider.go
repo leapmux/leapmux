@@ -345,8 +345,9 @@ func (ProviderDefaults) ReportsDefaultModelSentinel() bool { return false }
 
 // DefaultTurnEndToolUses reads a top-level "num_tool_uses" number. Every
 // provider shipped today puts it there, but the decision stays behind the
-// interface: the moment one does not, its plugin overrides instead of a
-// package-level helper growing a switch (see CLAUDE.md).
+// interface. When a provider puts it elsewhere, that provider overrides the
+// method, and no package-level helper adds a switch on the provider (see
+// AGENTS.md).
 func DefaultTurnEndToolUses(content []byte) (int32, bool) {
 	var env struct {
 		NumToolUses *int32 `json:"num_tool_uses"`

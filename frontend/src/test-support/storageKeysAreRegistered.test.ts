@@ -20,8 +20,8 @@ import { collectFiles, frontendRoot, posixRelative } from '~/test-support/source
 //    those live in the gateway: a raw `setItem` writes an unscoped, unwrapped
 //    entry that the next page-load sweep deletes, so it survives exactly one
 //    session. It also writes where a second account on the browser can read it,
-//    which is the leak the scoping exists to close. This was documented in the
-//    module header and in CLAUDE.md and enforced by nothing.
+//    which is the leak the scoping exists to close. The module header and
+//    AGENTS.md stated this rule, and nothing enforced it.
 //
 // 2. Every exported key constant is registered. `satisfies` checks the shape of
 //    the tables; it cannot notice a `KEY_*` that was declared, exported, used by

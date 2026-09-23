@@ -172,11 +172,11 @@ function detailRenderer(
  * A one-of-N menu that survives the loading -> loaded transition.
  *
  * Replaces the native `<select>` this used to wrap; see the dropdown rule in
- * CLAUDE.md. The swap deleted a whole class of bug with it: a `<select>` keeps
- * its selection in `selectedIndex`, which is BROWSER state, so the old component
- * needed an effect that re-applied `value` every time the option children were
- * swapped -- otherwise a list that arrived after the caller had already seeded
- * `value` left the field showing the first option and disagreeing with form
+ * AGENTS.md. The swap removed a whole class of bug. A `<select>` keeps its
+ * selection in `selectedIndex`, which is BROWSER state. The old component thus
+ * needed an effect that applied `value` again each time the option children
+ * changed. Without that effect, a list that arrived after the caller seeded
+ * `value` left the field on the first option, in disagreement with the form
  * state. A menu derives its checked item from `value` on every render, so there
  * is nothing to resynchronise and no effect to get wrong.
  *

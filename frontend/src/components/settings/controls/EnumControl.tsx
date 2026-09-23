@@ -27,9 +27,9 @@ function fixedPillOptions(options: readonly EnumOption[]): PillOptions<string> |
 
 /**
  * One-of-N choice. A short list renders as PillGroup with radio semantics.
- * A longer list renders as `LoadingMenu`; see the dropdown rule in CLAUDE.md. The
- * branch lives inside a `<Show>` so a change in the option count re-renders
- * rather than being captured once at setup.
+ * A longer list renders as `LoadingMenu`; see the dropdown rule in AGENTS.md.
+ * The branch lives inside a `<Show>`, so a change in the option count renders
+ * the branch again. Setup does not choose the branch once and keep it.
  *
  * NEITHER BRANCH REPAIRS THE DOM AFTER A REFUSED WRITE. The `<select>` this
  * replaced had to: its selection lived in `selectedIndex`, so a rejected value
