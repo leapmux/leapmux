@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 
 	"github.com/stretchr/testify/assert"
@@ -16,41 +17,69 @@ func TestAvailableOptionGroups_DefaultOptionMetadata(t *testing.T) {
 
 	registry := Registry()
 
-	for _, provider := range []leapmuxv1.AgentProvider{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
-	} {
-		groups := registry.StaticOptionGroups(provider)
-		require.NotEmpty(t, groups)
-		for _, group := range groups {
-			// The default now lives on the group (DefaultValue) instead of a
-			// per-option IsDefault flag. A group may omit it (the ACP
-			// primary-agent/permission-mode groups rely on the "first option"
-			// convention), but when set it must name exactly one of the options.
-			if group.GetDefaultValue() == "" {
-				continue
+	for _, provider := range agentlabels.AllProviders() {
+		t.Run(provider.String(), func(t *testing.T) {
+			groups := registry.StaticOptionGroups(provider)
+			if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_PI || provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX {
+				assert.Empty(t, groups, "this provider discovers its groups at runtime")
+				return
 			}
-			defaults := 0
-			for _, option := range group.Options {
-				if option.GetId() == group.GetDefaultValue() {
-					defaults++
+			require.NotEmpty(t, groups, "the provider must declare its static groups")
+			for _, group := range groups {
+				require.NotNil(t, group)
+				// The group owns DefaultValue. An ACP group may use its first
+				// option instead. A stated default must select exactly one option.
+				if group.GetDefaultValue() == "" {
+					continue
 				}
+				defaults := 0
+				for _, option := range group.Options {
+					if option.GetId() == group.GetDefaultValue() {
+						defaults++
+					}
+				}
+				assert.Equalf(t, 1, defaults, "provider=%s group=%s default value %q must select exactly one option", provider, group.GetId(), group.GetDefaultValue())
 			}
-			assert.Equalf(t, 1, defaults, "provider=%s group=%s default value %q must name exactly one option", provider.String(), group.GetId(), group.GetDefaultValue())
-		}
+		})
 	}
 }
 
-// A provider's SAFE new-session mode must never be the mode its own bypass preset
-// selects, and neither must its fallback for a session that stored none. Goose shipped
-// exactly that: its fallback was `auto`, which is also its declared bypass, so every
-// resumed Goose session opened with permission prompts disabled.
+// TestNormalizeModelIDRoutesEveryProvider checks the registry path for each
+// provider. The three providers with aliases use inputs that must change.
+func TestNormalizeModelIDRoutesEveryProvider(t *testing.T) {
+	t.Parallel()
+
+	registry := Registry()
+	cases := map[leapmuxv1.AgentProvider]struct{ input, want string }{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:    {"opus", "opus[1m]"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:          {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:         {"default[]", "auto"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT: {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO:           {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:       {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE:          {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:             {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX:       {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE:          {`p\m`, "p/m"},
+	}
+	providers := agentlabels.AllProviders()
+	require.Len(t, cases, len(providers), "each provider needs a normalization case")
+	for _, provider := range providers {
+		t.Run(provider.String(), func(t *testing.T) {
+			tc, ok := cases[provider]
+			require.True(t, ok, "the provider needs a normalization case")
+			assert.Equal(t, tc.want, registry.NormalizeModelID(provider, tc.input))
+		})
+	}
+	assert.Equal(t, "model/alpha", registry.NormalizeModelID(leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED, "model/alpha"))
+}
+
+// A provider's safe new-session mode and fallback must not equal its bypass
+// mode. Goose once used `auto` for both fallback and bypass, so resumed sessions
+// skipped permission prompts.
 //
-// The bypass values are the frontend plugins' (providers/*/plugin.tsx and stubs/*.tsx),
-// which Go cannot import, so they are restated here. That is the point: this test is the
-// thing that fails when the two drift.
+// Go cannot import the frontend bypass presets. This table records their
+// current values. A change to a frontend preset must update this table.
 func TestSafePermissionDefaultsAreNeverAProviderBypassMode(t *testing.T) {
 	t.Parallel()
 

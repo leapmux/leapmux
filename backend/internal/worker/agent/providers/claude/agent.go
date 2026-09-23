@@ -113,7 +113,7 @@ type Agent struct {
 	// `system`/`session_state_changed`. Once it does, the output heuristic
 	// stands down for the life of the process: the CLI states its own turn
 	// state, so nothing else needs to be read as evidence of one, and no frame
-	// the vendor adds later can arm a turn that nothing ends.
+	// the vendor adds later can start a turn that nothing ends.
 	sessionStateReported bool
 
 	// awaitingResult covers the input write and its reply. An unsuccessful write clears it unless native output proves a turn started.
@@ -819,8 +819,8 @@ func (a *Agent) armTurn() {
 //
 // That record is what retires the output heuristic. The frame states the turn
 // state that armTurnFromOutput can only infer, so a build that sends it needs no
-// inference -- and the arming surface shrinks to the named signals this file
-// lists, which is what keeps a message the vendor adds later inert.
+// inference. Only the signals this file specifies can then start a turn.
+// A message that the vendor adds later stays inert.
 func (a *Agent) noteSessionState(state string) {
 	a.Mu.Lock()
 	a.sessionStateReported = true
@@ -1148,29 +1148,21 @@ func claudeModelSubGroups(m *agent.ModelInfo) []*leapmuxv1.AvailableOptionGroup 
 }
 
 // livePermissionModeGroup builds a writable permission-mode group from the
-// provider's static template, setting the confirmed current value and hiding
-// "auto" when the startup probe rejected it (so the UI can't offer a mode this
-// Claude Code instance can't enter). The group's DefaultValue always comes from the
-// template -- see the comment on the branch below.
+// static template. It sets the confirmed value and hides "auto" if the startup
+// probe rejects it. The group keeps the template's DefaultValue.
 func livePermissionModeGroup(static *leapmuxv1.AvailableOptionGroup, current string, autoAvail bool) *leapmuxv1.AvailableOptionGroup {
-	// DefaultValue stays the TEMPLATE's default and is never rewritten to the
-	// new-session mode. The catalog is served to resumed sessions too, which never
-	// receive that mode, and setNewAgentOptionDefaults already declares it in one
-	// place; a second, probe-conditional source would make default_value mean
-	// "the provider default" here and "what a fresh session requests" there.
+	// The catalog also serves resumed sessions, which do not request the
+	// new-session mode. Registration.PermissionDefaults.NewSession defines that
+	// request. A probe result must not give default_value a second meaning.
 	if static != nil && !autoAvail {
-		// Hide "auto" when the startup probe rejected it: filter the template (never mutate
-		// the shared static group) so the UI can't offer a mode this Claude Code instance
-		// can't enter. providerkit.LiveGroup then overlays the live current value and supplies the
-		// id/label/default/order from the template.
+		// Filter a copy of the template so the UI cannot offer an unavailable
+		// mode. LiveGroup keeps the template's ID, label, default, and order.
+		// It then sets the current value from the session.
 		//
-		// NEVER filter out the value the session is CURRENTLY in, though: if a live switch to
-		// "auto" succeeded after a transient startup probe failure left autoAvail=false, the
-		// confirmed current is "auto" while the probe result is stale. Dropping it would leave
-		// CurrentValue="auto" with no matching option -- an off-spec current the frontend can't
-		// render as selected (it clamps to the default, silently showing the wrong mode). Keeping
-		// the current value selectable guarantees the "current is always an option" invariant
-		// regardless of how autoAvail drifts, mirroring buildOptionGroup's injection for ACP.
+		// Keep the current mode even if the probe rejected it. A later live switch
+		// can succeed after a transient probe failure. Removing that mode leaves
+		// CurrentValue without an option, so the frontend shows the wrong mode.
+		// This keeps the current value selectable, as ACP's buildOptionGroup does.
 		static = providerkit.FilterGroupOptions(static, func(o *leapmuxv1.AvailableOption) bool {
 			return o.GetId() != contracts.ClaudeModeAuto || o.GetId() == current
 		})
@@ -1812,11 +1804,11 @@ func modelSupportsAdaptiveThinking(model string) bool {
 // below. Sharing one definition per tier keeps the descriptions single-sourced
 // so a copy edit (like the one this list just received) can't drift between the
 // Opus and Sonnet menus. The entries are immutable catalog data; the slices
-// reference the same pointers (as opus and opus[1m] already share a whole slice).
+// contain the same pointers (as opus and opus[1m] already share a whole slice).
 //
 // Because the pointers are shared, they MUST be treated as read-only after init:
 // mutating one tier (e.g. its Description) would change it for every model slice
-// that references it. OptionGroups()'s model projection hands these out without
+// that points to it. OptionGroups()'s model projection returns these without
 // copying, so the read-only contract extends to its callers.
 var (
 	effortTierAuto      = &agent.EffortInfo{Id: agent.EffortAuto, Name: providerkit.EffortLabel(agent.EffortAuto), Description: "Let Claude decide the appropriate effort"}
@@ -2058,7 +2050,7 @@ func convertClaudeModel(m claudeCodeModelInfo, id string) *agent.ModelInfo {
 // It detects the variant through is1MContextVariant (the single home for the "[1m]"
 // marker) rather than a literal "[1m]" suffix, so a decorated spelling like
 // "opus[1m-beta]" -- which claudeContextWindowForValue already sizes at 1M -- is
-// named consistently instead of falling through to a garbled "Opus[1m Beta]".
+// gets a consistent name instead of a garbled "Opus[1m Beta]".
 func claudeFallbackDisplayName(id string) string {
 	if is1MContextVariant(id) {
 		// is1MContextVariant guarantees a '[' (and a trailing ']'), so the bracket
@@ -2271,14 +2263,11 @@ func (a *Agent) applyStartupPermissionMode(ctx context.Context, requested string
 			a.setAutoModeAvailable(true)
 			return a.settleStartupPermissionMode(resp, nil)
 		}
-		// EVERY new session requests auto (setNewAgentOptionDefaults), so this branch
-		// decides whether a failure here costs the picker one entry or costs the user the
-		// whole tab. Fall back on ANY error, not only the CLI's own "cannot set permission
-		// mode to auto": a timeout, a transport error or a reworded refusal says just as
-		// little about whether the session can run in default. The probe branch below
-		// already treats a transient failure as unavailable for the same reason. A
-		// fallback that also fails still returns its error, so a genuinely broken session
-		// is still reported.
+		// Registration.PermissionDefaults.NewSession requests auto for each new
+		// session. Fall back after any error, including a timeout or a transport
+		// error. Such an error does not show whether default mode works. The probe
+		// path below also treats a transient failure as unavailable. If default
+		// mode fails too, settleStartupPermissionMode returns its error.
 		if isAutoModeUnavailableError(err) {
 			slog.Warn("requested auto permission mode is unavailable; falling back to default",
 				"agent_id", a.AgentID())
@@ -2361,7 +2350,7 @@ func (a *Agent) setAutoModeAvailable(v bool) {
 
 // isAutoModeUnavailableError reports whether err is the Claude Code
 // control_response rejection for set_permission_mode:auto (admin-disabled,
-// plan-gated, or unsupported-model).
+// blocked in plan mode, or not supported by the model).
 func isAutoModeUnavailableError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), autoModeUnavailableErrorPrefix)
 }

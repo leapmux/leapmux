@@ -56,11 +56,9 @@ type Subscription struct {
 	onAgent    func(*leapmuxv1.AgentEvent)
 	onTerminal func(*leapmuxv1.TerminalEvent)
 
-	// onCursorReset is fired when a TerminalEvent's TerminalData
-	// frame carries `is_snapshot=true`. Consumers use it to surface a
-	// notice to the user (see streamevents.cursor_reset.go) and, if
-	// they want a fresh state, to call cursor.Reset before continuing.
-	// Nil = ignore.
+	// onCursorReset runs when a TerminalData frame carries
+	// `is_snapshot=true`. A consumer can call TerminalCursor.Reset before
+	// it reads more data. Nil ignores the frame.
 	onCursorReset func(terminalID string)
 
 	lifecycleMu sync.Mutex

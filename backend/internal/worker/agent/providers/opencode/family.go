@@ -3,9 +3,7 @@ package opencode
 import (
 	"context"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
 
@@ -13,15 +11,8 @@ import (
 // start that the family shares. OpenCode and Kilo run the same daemon code, so
 // everything else about the start is the same for both.
 type FamilySpec struct {
-	// Provider identifies the member in a launch error.
-	Provider leapmuxv1.AgentProvider
-	// Locator finds the CLI of the member. The member registers the same one.
-	Locator launch.Locator
 	// ProviderName is the name of the process in the log.
 	ProviderName string
-	// OptionGroups are the static groups that the member also registers. The
-	// start takes the fallback list of primary agents from them.
-	OptionGroups []*leapmuxv1.AvailableOptionGroup
 	// RCMarkerEnvKey is the variable that tells the daemon that a client
 	// launched it. The start removes an inherited value, and sets it again for a
 	// login shell only.
@@ -42,15 +33,14 @@ func StartFamily[T any](
 	ctx context.Context,
 	opts agent.Options,
 	sink agent.ProviderServices,
+	registration agent.Registration,
 	spec FamilySpec,
 	newAgent func() *T,
 	family func(*T) *FamilyBase,
 ) (agent.Agent, error) {
 	return acp.Start(ctx, opts, sink, acp.StartSpec[T]{
-		Provider:       spec.Provider,
-		Locator:        spec.Locator,
+		Registration:   registration,
 		ProviderName:   spec.ProviderName,
-		OptionGroups:   spec.OptionGroups,
 		BaseArgs:       ACPArgs(),
 		RCMarkerEnvKey: spec.RCMarkerEnvKey,
 		PinnedEnv:      []string{spec.QuestionToolEnv + "=1"},

@@ -105,10 +105,8 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 // Start starts a Goose CLI ACP agent process and performs the handshake.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 	return acp.Start(ctx, opts, sink, acp.StartSpec[Agent]{
-		Provider:     leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
-		Locator:      gooseLocator,
+		Registration: Registration(),
 		ProviderName: "goose",
-		OptionGroups: gooseStaticOptionGroups,
 		BaseArgs:     []string{"acp"},
 		NewAgent:     func() *Agent { return &Agent{} },
 		Base:         func(a *Agent) *acp.Base { return &a.Base },

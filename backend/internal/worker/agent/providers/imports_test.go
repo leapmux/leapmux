@@ -164,6 +164,39 @@ func TestNeutralAgentPackagesImportNoProvider(t *testing.T) {
 		"allowedAgentTreeImports and the packages of %s outside %s must list the same packages", agentTree, providerTree)
 }
 
+// TestAgentTestImportsOnlyTheNeutralAPI checks both source and test files.
+// Registration fixtures may import launch for Locator, but no provider package.
+func TestAgentTestImportsOnlyTheNeutralAPI(t *testing.T) {
+	t.Parallel()
+
+	allowed := map[string]bool{
+		agentTree:                      true,
+		agentTree + "/internal/launch": true,
+	}
+	check := func(_ *token.FileSet, file *ast.File) {
+		for _, spec := range file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			require.NoError(t, err)
+			dep, isModuleImport := strings.CutPrefix(importPath, modulePath)
+			if !isModuleImport || (dep != agentTree && !strings.HasPrefix(dep, agentTree+"/")) {
+				continue
+			}
+			assert.Truef(t, allowed[dep], "agenttest must not import %s", dep)
+		}
+	}
+	productionFiles, testFiles := 0, 0
+	testutil.ForEachPackageSourceFile(t, "../agenttest", func(fset *token.FileSet, file *ast.File) {
+		productionFiles++
+		check(fset, file)
+	})
+	testutil.ForEachPackageTestFile(t, "../agenttest", func(fset *token.FileSet, file *ast.File) {
+		testFiles++
+		check(fset, file)
+	})
+	require.NotZero(t, productionFiles, "the guard must scan the agenttest source")
+	require.NotZero(t, testFiles, "the guard must scan the agenttest tests")
+}
+
 // productionImports maps each package directory of the backend module, repo
 // relative, to the module packages that its production files import, sorted.
 func productionImports(t *testing.T) map[string][]string {

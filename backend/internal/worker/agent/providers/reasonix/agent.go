@@ -47,13 +47,13 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 // The launch flag selects the initial model. The session response supplies
 // the live model catalog and mutable settings.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+	registration := Registration()
 	model := opts.Model()
 	if model == "" {
-		model = Registration().DefaultModel()
+		model = registration.DefaultModel()
 	}
 	return acp.Start(ctx, opts, sink, acp.StartSpec[Agent]{
-		Provider:     leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
-		Locator:      reasonixLocator,
+		Registration: registration,
 		ProviderName: "reasonix",
 		BaseArgs:     []string{"acp", "--model", model},
 		NewAgent:     func() *Agent { return &Agent{} },

@@ -26,11 +26,8 @@ const kiloQuestionToolEnv = "KILO_ENABLE_QUESTION_TOOL"
 
 // Start starts a Kilo ACP agent process and performs the handshake.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
-	return opencode.StartFamily(ctx, opts, sink, opencode.FamilySpec{
-		Provider:       leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
-		Locator:        kiloLocator,
+	return opencode.StartFamily(ctx, opts, sink, Registration(), opencode.FamilySpec{
 		ProviderName:   "kilo",
-		OptionGroups:   kiloStaticOptionGroups,
 		RCMarkerEnvKey: "KILO_CLIENT",
 		// Kilo forks OpenCode and requires its own spelling of the flag for the same
 		// tool; see kiloQuestionToolEnv. Its allowed client list adds `vscode`, and
@@ -48,8 +45,8 @@ func fallbackKiloPrimaryAgents() []*leapmuxv1.AvailableOption {
 	}
 }
 
-// kiloStaticOptionGroups holds Kilo's static primary-agent group. The factory
-// registration and Start both read this one value.
+// kiloStaticOptionGroups holds Kilo's static primary-agent group. Registration
+// gives this group to both the registry and the ACP start.
 var kiloStaticOptionGroups = acp.StaticSecondaryGroup(acp.ModeChannelPrimaryAgent, fallbackKiloPrimaryAgents())
 
 // Compile-time proof that Agent implements Agent. acp.Start is generic over

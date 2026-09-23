@@ -129,10 +129,8 @@ func (a *Agent) finishedObservation(tcu acp.ToolCallUpdateEnvelope) *acp.Subagen
 // Start starts a Cursor CLI ACP agent process and performs the handshake.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 	return acp.Start(ctx, opts, sink, acp.StartSpec[Agent]{
-		Provider:     leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
-		Locator:      cursorLocator,
+		Registration: Registration(),
 		ProviderName: "cursor",
-		OptionGroups: cursorStaticOptionGroups,
 		BaseArgs:     []string{"acp"},
 		NewAgent:     func() *Agent { return &Agent{} },
 		Base:         func(a *Agent) *acp.Base { return &a.Base },

@@ -2122,10 +2122,8 @@ func ParseAdvertisedMethod(initializeResponse []byte, namespace, expectedMethod 
 // fixed launch + handshake pipeline shared by every ACP agent; the spec
 // supplies only what differs between providers.
 type StartSpec[T any] struct {
-	Provider       leapmuxv1.AgentProvider                       // identifies the provider in a launch error
-	Locator        launch.Locator                                // the same locator the provider registers
+	Registration   agent.Registration                            // launch and option metadata of the provider
 	ProviderName   string                                        // process/log name, e.g. "cursor"
-	OptionGroups   []*leapmuxv1.AvailableOptionGroup             // the static groups the provider also registers; seeds b.secondaryFallback
 	BaseArgs       []string                                      // args after the binary, e.g. {"acp"}; a provider whose args depend on the launch options builds them at the call site (see reasonix.Start)
 	RCMarkerEnvKey string                                        // provider rc marker stripped + re-added on a login shell (e.g. "KILO_CLIENT"); "" if none
 	PinnedEnv      []string                                      // "KEY=value" assignments that REPLACE any inherited value (see PinEnv); nil for none
@@ -2144,7 +2142,7 @@ type StartSpec[T any] struct {
 func Start[T any](ctx context.Context, opts agent.Options, sink agent.ProviderServices, spec StartSpec[T]) (_ agent.Agent, retErr error) {
 	ctx, cancel := context.WithCancel(ctx)
 
-	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, spec.Provider, spec.Locator)
+	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, spec.Registration.Provider, spec.Registration.Locator)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -2209,7 +2207,7 @@ func Start[T any](ctx context.Context, opts agent.Options, sink agent.ProviderSe
 	// applyHooks set the mode channel. The provider registers the same groups, so it
 	// states its fallback list once. A provider with no static groups (Reasonix) has
 	// no fallback, and this leaves it nil.
-	b.secondaryFallback = SecondaryFallbackFrom(spec.OptionGroups, b.hooks.ModeChannel)
+	b.secondaryFallback = SecondaryFallbackFrom(spec.Registration.OptionGroups, b.hooks.ModeChannel)
 
 	if err := b.StartCmd(cmd, cancel); err != nil {
 		return nil, err
@@ -2646,11 +2644,10 @@ func (b *Base) trySetStartupModel(requested string) {
 // that this session's own mode list does not offer. Goose declares smart_approve as
 // its safe default, and a build that reports no such mode would otherwise fail every
 // new session with "unknown mode" -- a mode the user never asked for killing the tab.
-// The session keeps the mode the handshake reported instead, and the warning names
+// The session keeps the mode the handshake reported instead, and the warning states
 // what happened. An EXPLICIT request still aborts, so a typed --permission-mode that
 // this build cannot enter is reported rather than silently downgraded. Claude
-// (isAutoModeUnavailableError) degrades
-// their own safe defaults the same way.
+// also falls back from its safe default in applyStartupPermissionMode.
 //
 // The current mode is read under b.Mu: startACPHandshake starts the reader
 // goroutine before Start* reaches this point, and that goroutine can write
@@ -3185,7 +3182,7 @@ func (b *Base) setConfigOption(configID, value string) error {
 }
 
 // setConfigOptionGuarded is setConfigOption with an optional last-moment precondition. stillWanted
-// (when non-nil) is evaluated under the SAME b.Mu acquisition as the known/offered gates -- the
+// (when non-nil) is evaluated under the SAME b.Mu acquisition as the known/offered checks -- the
 // tightest point before the wire send -- so a caller whose write is only valid while the live state
 // still holds (raiseEffortOffNone: "the effort axis is still at the daemon's none/off default") can
 // abort if a concurrent fold already moved it. handleACPConfigOptionUpdate folds under b.Mu, so such
@@ -3194,7 +3191,7 @@ func (b *Base) setConfigOption(configID, value string) error {
 // an irreducible window we deliberately do not close by holding b.Mu across an RPC. A false
 // precondition is a no-op success.
 func (b *Base) setConfigOptionGuarded(configID, value string, stillWanted func() bool) error {
-	// Gate on the advertised-option set (every option the server has advertised) rather than
+	// Check the advertised-option set (every option the server has advertised) rather than
 	// the surfaced-option values (only those with a concrete current value surfaced): an option
 	// the server advertised with an empty current is pushable so its persisted preference
 	// can be re-applied, even though it isn't yet surfaced as a group.
@@ -3202,7 +3199,7 @@ func (b *Base) setConfigOptionGuarded(configID, value string, stillWanted func()
 	known := b.options.known.has(configID)
 	offered := b.options.offersValue(configID, value)
 	// Evaluate the precondition under this same lock so it can't be invalidated between the check
-	// and the gates below by a concurrent b.Mu holder.
+	// and the checks below by a concurrent b.Mu holder.
 	wanted := stillWanted == nil || stillWanted()
 	b.Mu.Unlock()
 	if !known {

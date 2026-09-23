@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"slices"
 	"sort"
 	"sync"
@@ -93,10 +94,10 @@ type Registration struct {
 	// authority as well. NewRegistry refuses the flag on a provider with no static
 	// permission-mode group, because there would be nothing to validate against.
 	FixedPermissionModes bool
-	// EnvModelKey names the operator's default-model variable, e.g.
+	// EnvModelKey specifies the operator's default-model variable, e.g.
 	// "LEAPMUX_CLAUDE_DEFAULT_MODEL". "" for a provider that honors none.
 	EnvModelKey string
-	// EnvEffortKey names the operator's default-effort variable, e.g.
+	// EnvEffortKey specifies the operator's default-effort variable, e.g.
 	// "LEAPMUX_CLAUDE_DEFAULT_EFFORT". "" for a provider that honors none.
 	EnvEffortKey string
 }
@@ -203,7 +204,7 @@ func validateRegistration(reg Registration) error {
 		return fmt.Errorf("provider %v: not a registrable provider", reg.Provider)
 	}
 	var errs []error
-	if reg.Plugin == nil {
+	if isNilProvider(reg.Plugin) {
 		errs = append(errs, errors.New("nil Plugin"))
 	}
 	if reg.Start == nil {
@@ -219,6 +220,21 @@ func validateRegistration(reg Registration) error {
 		return fmt.Errorf("provider %v: %w", reg.Provider, errors.Join(errs...))
 	}
 	return nil
+}
+
+// isNilProvider also detects a typed nil inside the Provider interface.
+// Such a value passes an interface nil check but must not serve as a plugin.
+func isNilProvider(plugin Provider) bool {
+	if plugin == nil {
+		return true
+	}
+	value := reflect.ValueOf(plugin)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 // Providers returns the registered providers in enum order. The caller owns the

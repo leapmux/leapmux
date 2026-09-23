@@ -20,6 +20,8 @@ import (
 // registered start function from any other.
 var errTestStart = errors.New("test start")
 
+type nilProviderPlugin struct{ agent.ProviderDefaults }
+
 // testRegistration is a Registration that NewRegistry accepts: a plugin, a start
 // function, and a locator that finds a program without probing anything.
 func testRegistration(provider leapmuxv1.AgentProvider) agent.Registration {
@@ -57,6 +59,7 @@ func TestNewRegistryRefusesAnUnusableRegistration(t *testing.T) {
 			"not a registrable provider",
 		},
 		"a nil plugin":       {func(r *agent.Registration) { r.Plugin = nil }, "nil Plugin"},
+		"a typed nil plugin": {func(r *agent.Registration) { r.Plugin = (*nilProviderPlugin)(nil) }, "nil Plugin"},
 		"a nil start":        {func(r *agent.Registration) { r.Start = nil }, "nil Start"},
 		"a zero locator":     {func(r *agent.Registration) { r.Locator = launch.Locator{} }, "no single way"},
 		"an empty name list": {func(r *agent.Registration) { r.Locator = launch.Binaries() }, "no single way"},
@@ -157,7 +160,7 @@ type interruptPlugin struct{ agent.ProviderDefaults }
 
 func (interruptPlugin) IsInterrupt(content string) bool { return content == "stop" }
 
-// Each lookup answers from the Registration of the provider that it names,
+// Each lookup answers from the Registration of the provider that it identifies,
 // and never from the Registration of another provider.
 func TestRegistryAnswersFromTheRegistrationOfTheProvider(t *testing.T) {
 	t.Parallel()

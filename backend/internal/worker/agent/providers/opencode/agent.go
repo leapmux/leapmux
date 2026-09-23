@@ -97,11 +97,8 @@ type Agent struct {
 
 // Start starts an OpenCode ACP agent process and performs the handshake.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
-	return StartFamily(ctx, opts, sink, FamilySpec{
-		Provider:            leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		Locator:             opencodeLocator,
+	return StartFamily(ctx, opts, sink, Registration(), FamilySpec{
 		ProviderName:        "opencode",
-		OptionGroups:        opencodeStaticOptionGroups,
 		RCMarkerEnvKey:      "OPENCODE_CLIENT",
 		QuestionToolEnv:     openCodeQuestionToolEnv,
 		DefaultPrimaryAgent: PrimaryAgentBuild,
