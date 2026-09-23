@@ -302,8 +302,6 @@ message GetSystemInfoResponse {
   // restricted TCP setup, and ordinary TCP sign-in without two booleans that
   // can describe an invalid combination.
   SoloAccess solo_access = 17;
-  reserved 18;
-  reserved "auto_authenticated", "password_setup_required";
   // True when the single account holds a password that can sign in. Solo
   // mode only; false on a multi-user hub, where each account answers for
   // itself.
@@ -313,7 +311,7 @@ message GetSystemInfoResponse {
   // Account → Password once it is true. It answers for the HUB -- whether a
   // network address can be signed in to at all, which is the question that
   // panel asks. An account's own password is User.password_set.
-  bool solo_password_set = 19;
+  bool solo_password_set = 18;
 }
 
 message GetOAuthProvidersRequest {}

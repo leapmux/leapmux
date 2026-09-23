@@ -27,17 +27,17 @@ message OpenTerminalRequest {
   uint32 rows = 6;
   bool create_worktree = 7;     // If true, create a git worktree before starting
   string worktree_branch = 8;  // Branch name for the worktree
-  string checkout_branch = 10;      // "Switch to branch" mode
-  string use_worktree_path = 11;    // "Use existing worktree" mode
-  string worktree_base_branch = 12; // Base branch for "Create new worktree" (default: current branch)
-  string create_branch = 13;        // "Create new branch" mode — branch name to create
-  string create_branch_base = 14;   // Base branch for "Create new branch" (default: current branch)
+  string checkout_branch = 9;      // "Switch to branch" mode
+  string use_worktree_path = 10;    // "Use existing worktree" mode
+  string worktree_base_branch = 11; // Base branch for "Create new worktree" (default: current branch)
+  string create_branch = 12;        // "Create new branch" mode — branch name to create
+  string create_branch_base = 13;   // Base branch for "Create new branch" (default: current branch)
 
   // Tab title. Optional: an empty title (or one that cleaning empties) means
   // "you pick one", and the worker takes a random "Terminal <Name>" from the
   // shared pool. Never refused — the worker CLEANS whatever arrives, the same
   // rule UpdateTerminalTitle applies. Mirrors OpenAgentRequest.title.
-  string title = 15;
+  string title = 14;
 
   // When true, this terminal is the QUAKE terminal of `working_dir` rather than
   // a tab of its own. `working_dir` is the whole address: a quake terminal
@@ -55,7 +55,7 @@ message OpenTerminalRequest {
   //
   // A unique partial index over the open rows enforces the last point, so the
   // guarantee survives two devices racing.
-  bool quake = 16;
+  bool quake = 15;
 }
 
 message OpenTerminalResponse {

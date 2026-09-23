@@ -14,9 +14,22 @@ review finding about one is noise.
 
 - Edit the `00001_initial.sql` migration in all three dialects in place. Never
   add a migration file.
-- Renumber, regroup, replace or remove a protobuf field freely. The codebase
-  still `reserved`s a freed number by its own choice; that is a preference, not
-  a requirement.
+- Renumber, regroup, replace or remove a protobuf field freely. Leave **no
+  `reserved`, and no hole**: delete the field, then move every field past it
+  down one so the numbering stays contiguous. A reservation exists to stop a
+  later field from reusing a number whose old meaning is still on somebody's
+  wire or in somebody's database, and neither holds here — so a reservation and
+  the gap it protects only preserve a hole nobody can explain, and invite the
+  next reader to think compatibility matters.
+  - Renumbering an enum is a **data change**, not a rename, wherever its
+    ordinals are stored (see **Enum columns store proto enum ordinals**). Move
+    the column `CHECK`s with it — a contiguous enum takes a plain
+    `BETWEEN 1 AND <last>`, with no carve-out for a hole — and bind constants
+    rather than literals everywhere else, which the project already does.
+    `enum_column_numbering_test.go` states the range and asserts contiguity.
+  - One layout is NOT a hole: a message that reserves `1` (and sometimes `2`)
+    for a header and starts its payload `oneof` at `10`. `frame.proto`,
+    `user_ops.proto` and `worker.proto` all do this on purpose. Leave it.
 - Change a public interface when a better design wants it. No installation is
   deployed, so a compatibility shim is dead weight.
 
