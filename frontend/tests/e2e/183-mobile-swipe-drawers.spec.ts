@@ -44,8 +44,58 @@ function drawers(page: Page): Drawers {
  */
 async function expectMobileShellIdle(page: Page) {
   const { left, right } = drawers(page)
+  // ATTACHED first, then out of viewport. The two assertions below hold on the
+  // DESKTOP layout too -- it has no drawers at all, so both are trivially out
+  // of view -- which let this helper report an idle mobile shell while the
+  // desktop one was still painted and nothing had armed the gesture. The swipe
+  // was then lost, and the drawer never opened. The drawers exist only in the
+  // mobile shell, so waiting for one to attach is what actually ends that state.
+  await page.getByTestId('mobile-swipe-band').waitFor({ state: 'attached' })
+  await left.waitFor({ state: 'attached' })
+  await right.waitFor({ state: 'attached' })
   await expect(left).not.toBeInViewport()
   await expect(right).not.toBeInViewport()
+  // The SHEET counts as idle too. `nextOverlayForSwipe` returns the sheet
+  // unchanged for either direction -- a finger under it is not reaching for a
+  // drawer -- so a swipe taken while it is up does nothing at all. The two
+  // assertions above cannot see that: the sheet covers the region without
+  // bringing either drawer into view, so an open sheet read as an idle shell
+  // and the swipe vanished.
+  // The scrim is mounted unconditionally and flips opacity + pointer-events, so
+  // neither its presence nor `toBeVisible` can tell the two states apart.
+  // `pointer-events` is what actually differs.
+  await expect(page.getByTestId('tab-sheet-overlay')).toHaveCSS('pointer-events', 'none')
+  await expectMainThreadIdle(page)
+}
+
+/**
+ * Wait until the main thread can answer a touch move.
+ *
+ * This is a precondition of the GESTURE, not a settle for the assertions. The
+ * recognizer suppresses the browser's scroll from a non-passive `touchmove`
+ * listener, and Blink waits only a short deadline for the main thread to answer
+ * that move; past the deadline it assumes nothing was prevented, starts the
+ * scroll and CANCELS the pointer. The finger then travels and no drawer
+ * arrives, with every other assertion in the test still passing. The recognizer
+ * states all of this at the top of ~/src/lib/horizontalSwipe.ts, and it names
+ * this file as where the race shows.
+ *
+ * Every test here boots the app into a fresh context -- coarse-pointer metrics
+ * cannot share one -- so each one swipes into the window where the shell is
+ * still doing its first layout and measure work. Waiting for the elements to
+ * attach does not leave that window; `requestIdleCallback` is the browser's own
+ * statement that it has.
+ *
+ * TWO grants, because the first can be handed out between two long tasks. The
+ * timeout is the browser's: a grant that never comes resolves at the deadline
+ * rather than hanging, and the swipe then fails on its own assertion.
+ */
+async function expectMainThreadIdle(page: Page) {
+  await page.evaluate(async () => {
+    const grant = () => new Promise<void>(resolve => requestIdleCallback(() => resolve(), { timeout: 2000 }))
+    await grant()
+    await grant()
+  })
 }
 
 /**

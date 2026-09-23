@@ -1,11 +1,12 @@
 import type { ChildProcess } from 'node:child_process'
 /* eslint-disable no-console */
+import type { ModelScript } from './helpers/modelScriptFixture'
 import type { ServerOutput } from './helpers/serverOutput'
 import type { WorkspaceFixture } from './helpers/workspace'
 import { rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import process from 'node:process'
 import { test as base, expect } from '@playwright/test'
+import { agentDefaultsEnv } from './agentSettings'
 import {
   API_POLL_INTERVAL_MS,
   authedHeaders,
@@ -24,6 +25,7 @@ import {
 } from './helpers/api'
 import { cleanupOnFailure, finishCleanup } from './helpers/cleanup'
 import { closeAllUserEventsSubscriptions } from './helpers/crdt'
+import { runModelScriptFixture } from './helpers/modelScriptFixture'
 import { stopProcess, stopProcesses } from './helpers/process'
 import { spawnTestProcess } from './helpers/processRegistry'
 import { createTestDirectory } from './helpers/runDirectory'
@@ -32,7 +34,6 @@ import { createServerOutput, reportStartupFailure } from './helpers/serverOutput
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
 import { withTestWorkspace } from './helpers/workspace'
-import { realAgentEnv } from './realAgentSettings'
 
 export interface SeparateServerInfo {
   hubUrl: string
@@ -109,7 +110,7 @@ export async function restartWorker(serverInfo: SeparateServerInfo): Promise<voi
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
-    env: { ...process.env, ...realAgentEnv(), LEAPMUX_WORKER_NAME: 'test-worker' },
+    env: hubSpawnEnv({ ...agentDefaultsEnv(), LEAPMUX_WORKER_NAME: 'test-worker' }),
   })
   workerProc.unref()
   serverInfo.workerProc = workerProc
@@ -137,7 +138,7 @@ export async function restartHub(serverInfo: SeparateServerInfo): Promise<void> 
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
-    env: hubSpawnEnv(realAgentEnv()),
+    env: hubSpawnEnv(agentDefaultsEnv()),
   })
   hubProc.unref()
   serverInfo.hubProc = hubProc
@@ -151,6 +152,7 @@ export async function restartHub(serverInfo: SeparateServerInfo): Promise<void> 
 
 export const processTest = base.extend<
   {
+    modelScript: ModelScript
     toastRecorder: void
     workspace: WorkspaceFixture
     authenticatedWorkspace: WorkspaceFixture
@@ -159,6 +161,12 @@ export const processTest = base.extend<
     separateHubWorker: SeparateServerInfo
   }
 >({
+  // The agents of a hub this file starts reach the SAME mock endpoint, because
+  // `hubSpawnEnv` gives that hub the run's agent configuration. One script for
+  // each test, verified at teardown, exactly as the shared base does it.
+  // eslint-disable-next-line no-empty-pattern
+  modelScript: async ({}, use, testInfo) => runModelScriptFixture(use, testInfo),
+
   // Worker-scoped fixture: spawns separate hub + worker per test file
   // eslint-disable-next-line no-empty-pattern
   separateHubWorker: [async ({}, use) => {
@@ -187,7 +195,7 @@ export const processTest = base.extend<
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
-      env: hubSpawnEnv(realAgentEnv()),
+      env: hubSpawnEnv(agentDefaultsEnv()),
     })
     hubProc.unref()
     output.capture(hubProc, 'hub')
@@ -230,7 +238,7 @@ export const processTest = base.extend<
       ], {
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
-        env: { ...process.env, ...realAgentEnv(), LEAPMUX_WORKER_NAME: 'test-worker' },
+        env: hubSpawnEnv({ ...agentDefaultsEnv(), LEAPMUX_WORKER_NAME: 'test-worker' }),
       })
       workerProc.unref()
       started.push(workerProc)

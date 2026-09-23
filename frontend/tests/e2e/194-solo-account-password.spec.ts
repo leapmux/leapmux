@@ -32,6 +32,25 @@ test.describe('Account password in solo mode', () => {
   test('sets the first password, then signs in with it', async ({ page }) => {
     await page.goto(`${solo!.hubUrl}/`)
 
+    // The GATE, not Preferences. A solo hub reached over TCP holds the whole
+    // app behind this setup page until the account has a password, so there is
+    // no app menu to open yet -- the test used to look for one and time out.
+    // This page IS the first-password flow for a TCP caller.
+    await expect(page.getByRole('heading', { name: 'Set a password to continue' })).toBeVisible()
+    // It states what the first password arms, because it reaches every address
+    // rather than this account alone.
+    await expect(page.getByText(/Every TCP address asks for the password after setup/)).toBeVisible()
+
+    const gateSubmit = page.getByRole('button', { name: 'Set Password' })
+    await expect(gateSubmit).toBeDisabled()
+    await page.getByLabel('New Password').fill(SOLO_PASSWORD)
+    await page.getByLabel('Confirm Password').fill(SOLO_PASSWORD)
+    await expect(gateSubmit).toBeEnabled()
+    await gateSubmit.click()
+
+    // The app loads once the password exists, and Account then offers the OTHER
+    // operation. Its four neighbours stay hidden: solo offers no sign-up, no
+    // passkey, no recovery and no provider link.
     const dialog = await openSettingsAt(page, 'account')
     const row = dialog.locator('[data-setting-id="account.password"]')
     await expect(row).toBeVisible()
@@ -39,24 +58,8 @@ test.describe('Account password in solo mode', () => {
     await expect(dialog.locator('[data-setting-id="account.passkeys"]')).toHaveCount(0)
     await expect(dialog.locator('[data-setting-id="account.linkedProviders"]')).toHaveCount(0)
 
-    // "Set", not "Change": this account holds no password, whatever its
-    // users.password_set column claims. The hub reports the stored hash.
-    const submit = row.getByRole('button', { name: 'Set Password' })
-    await expect(submit).toBeDisabled()
-
-    // And the row states what this first password arms, because it reaches
-    // every address rather than this account alone.
-    await expect(row.getByText(/asks every network address for a sign-in as “solo”/)).toBeVisible()
-
-    await row.getByLabel('New Password').fill(SOLO_PASSWORD)
-    await row.getByLabel('Confirm Password').fill(SOLO_PASSWORD)
-    await expect(submit).toBeEnabled()
-    await submit.click()
-
-    await expect(row.getByText('Password set.')).toBeVisible()
-    // The account is re-read, so the row now offers the other operation, and
-    // the warning goes: replacing a password arms nothing further.
     await expect(row.getByRole('button', { name: 'Change Password' })).toBeVisible()
+    // The warning goes with the gate: replacing a password arms nothing further.
     await expect(row.getByText(/asks every network address for a sign-in as “solo”/)).toBeHidden()
 
     // The snapshot is re-read too: Network access asks for a first password

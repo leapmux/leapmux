@@ -10,6 +10,7 @@ import { homedir } from 'node:os'
 import process from 'node:process'
 import { AgentProvider } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
+import { hubSpawnEnv } from './helpers/server'
 
 import { loginViaToken, openWorkspace } from './helpers/ui'
 import { withAgentWorkspace } from './helpers/workspace'
@@ -33,7 +34,7 @@ export const ZCODE_E2E_SKIP_REASON: string | null = computeZCodeE2ESkipReason({
   launcherOnPath: zcodeOnPath(),
   platform: process.platform,
   home: homedir(),
-  env: process.env,
+  env: hubSpawnEnv(),
   readConfig: path => (existsSync(path) ? readFileSync(path, 'utf-8') : null),
 })
 

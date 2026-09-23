@@ -1,81 +1,39 @@
-import type { AddressInfo } from 'node:net'
-import { Buffer } from 'node:buffer'
 import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { createServer } from 'node:http'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { withCleanup } from './cleanup'
 
-/** Drive one real Pi tool call without a remote model or generated arguments. */
-export async function withScriptedPiTool<T>(
+/** Run a test with Pi project extensions enabled, then restore the prior trust decision. */
+export async function withTrustedPiDirectory<T>(directory: string, run: () => Promise<T>): Promise<T> {
+  mkdirSync(join(directory, '.pi', 'extensions'), { recursive: true })
+  await setFixtureTrust(directory, true)
+  return withCleanup(run, async () => {
+    if (existsSync(join(directory, 'prior-project-trust.json')))
+      await setFixtureTrust(directory, false)
+  })
+}
+
+/** Register the shared OpenAI-compatible mock as a trusted Pi project model. */
+export async function withMockPiModel<T>(
   directory: string,
-  tool: string,
-  args: Record<string, unknown>,
+  serverURL: string,
   run: (settings: { model: string, optionValues: Record<string, string> }) => Promise<T>,
 ): Promise<T> {
-  let modelRequests = 0
-  const server = createServer(async (request, response) => {
-    try {
-      modelRequests++
-      const chunks: Buffer[] = []
-      for await (const chunk of request)
-        chunks.push(Buffer.from(chunk))
-      const body = JSON.parse(Buffer.concat(chunks).toString()) as { messages?: { role?: string }[], tools?: { function?: { name?: string } }[] }
-      const finished = body.messages?.some(message => message.role === 'tool')
-      if (!finished && !body.tools?.some(item => item.function?.name === tool)) {
-        response.writeHead(400).end('The protocol test tool is unavailable.')
-        return
-      }
-      const delta = finished
-        ? { role: 'assistant', content: 'Protocol test complete.' }
-        : { role: 'assistant', tool_calls: [{ index: 0, id: 'protocol-tool-call', type: 'function', function: { name: tool, arguments: JSON.stringify(args) } }] }
-      response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Connection': 'close' })
-      for (const value of [
-        { id: 'protocol', object: 'chat.completion.chunk', created: 1, model: 'probe', choices: [{ index: 0, delta, finish_reason: null }] },
-        { id: 'protocol', object: 'chat.completion.chunk', created: 1, model: 'probe', choices: [{ index: 0, delta: {}, finish_reason: finished ? 'stop' : 'tool_calls' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
-      ]) {
-        response.write(`data: ${JSON.stringify(value)}\n\n`)
-      }
-      response.end('data: [DONE]\n\n')
-    }
-    catch {
-      response.writeHead(400).end('Invalid protocol test model request.')
-    }
-  })
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      server.removeListener('error', reject)
-      resolve()
-    })
-  })
-  return withCleanup(async () => {
-    const port = (server.address() as AddressInfo).port
-    const provider = 'leapmux-control-test'
-    const configuration = {
-      baseUrl: `http://127.0.0.1:${port}/v1`,
-      apiKey: 'disposable-protocol-test',
-      api: 'openai-completions',
-      models: [{ id: 'probe', name: 'Protocol test', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 1000 }],
-    }
-    const extensions = join(directory, '.pi', 'extensions')
-    mkdirSync(extensions, { recursive: true })
-    writeFileSync(join(extensions, 'protocol-model.ts'), `export default function (pi) { pi.registerProvider(${JSON.stringify(provider)}, ${JSON.stringify(configuration)}); }`)
-    return withCleanup(async () => {
-      await setFixtureTrust(directory, true)
-      const result = await run({ model: 'probe', optionValues: { pi_provider: provider, effort: 'off' } })
-      if (modelRequests < 2)
-        throw new Error('The scripted model did not complete the tool exchange.')
-      return result
-    }, async () => {
-      if (existsSync(join(directory, 'prior-project-trust.json')))
-        await setFixtureTrust(directory, false)
-    })
-  }, () => new Promise<void>((resolve, reject) => {
-    server.close(error => error ? reject(error) : resolve())
-    server.closeAllConnections()
-  }))
+  const origin = new URL(serverURL)
+  if (origin.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(origin.hostname) || origin.pathname !== '/')
+    throw new Error('The Pi mock server URL must be a loopback HTTP origin')
+  const provider = 'leapmux-control-test'
+  const configuration = {
+    baseUrl: `${origin.origin}/v1`,
+    apiKey: 'disposable-protocol-test',
+    api: 'openai-completions',
+    models: [{ id: 'probe', name: 'Protocol test', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 1000 }],
+  }
+  const extensions = join(directory, '.pi', 'extensions')
+  mkdirSync(extensions, { recursive: true })
+  writeFileSync(join(extensions, 'protocol-model.ts'), `export default function (pi) { pi.registerProvider(${JSON.stringify(provider)}, ${JSON.stringify(configuration)}); }`)
+  return withTrustedPiDirectory(directory, () => run({ model: 'probe', optionValues: { pi_provider: provider, effort: 'off' } }))
 }
 
 /** Pi loads project extensions only after trust. Restore this temporary directory's exact entry. */

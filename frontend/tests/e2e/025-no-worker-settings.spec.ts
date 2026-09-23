@@ -1,9 +1,9 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openPinnedModeAgentViaAPI } from './helpers/api'
-import { ARITHMETIC_PROMPT, expectAssistantAnswer, expectSettingsChip, expectUserMessage, loginViaToken, messageBubbles, openSettingsMenu, openWorkspace, visibleOnly } from './helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, expectSettingsChip, expectUserMessage, loginViaToken, messageBubbles, openSettingsMenu, openWorkspace, visibleOnly } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Settings and /clear after Worker restart', () => {
-  test('should handle settings changes and /clear after worker restart', async ({ separateHubWorker, page }) => {
+  test('should handle settings changes and /clear after worker restart', async ({ separateHubWorker, page, modelScript }) => {
     await ensureWorkerOnline(separateHubWorker)
 
     const { hubUrl, adminToken, workerId } = separateHubWorker
@@ -18,8 +18,9 @@ test.describe('Settings and /clear after Worker restart', () => {
       await expect(editor).toBeVisible()
 
       // Step 1: Send a message and wait for a response (agent starts)
+      await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
       await editor.click()
-      await page.keyboard.type(ARITHMETIC_PROMPT)
+      await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 

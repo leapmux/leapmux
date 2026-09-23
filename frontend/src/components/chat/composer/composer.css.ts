@@ -39,15 +39,6 @@ export const statusBarRight = style({
   flexShrink: 0,
 })
 
-// Make ot-dropdown (the DropdownMenu/BranchContextMenu wrapper) participate in
-// flex alignment so the chip buttons inside align consistently. Without this,
-// ot-dropdown defaults to display:inline, causing baseline misalignment between
-// chips with leading icons (branch, effort) and text-only chips (model, mode).
-globalStyle(`${statusBar} ot-dropdown`, {
-  display: 'inline-flex',
-  alignItems: 'center',
-})
-
 // Hide lower-priority chips on narrow screens. Two tiers, not a ladder: Branch
 // and Model always stay, and Mode and Effort both drop at the `sm` breakpoint.
 // The chips that drop carry `data-chip-optional`.

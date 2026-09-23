@@ -132,7 +132,7 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 			// control_response_answers each store the provider that produced
 			// the row.
 			column:       "agent_provider (agents, messages, control_response_answers)",
-			check:        "CHECK (agent_provider BETWEEN 1 AND 11 AND agent_provider <> 3)",
+			check:        "CHECK (agent_provider BETWEEN 1 AND 10)",
 			columns:      3,
 			lastAccepted: int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentProvider_name),
@@ -153,16 +153,20 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 	}
 }
 
-// The three agent_provider CHECKs exclude ordinal 3, which agent.proto RESERVES
-// for a removed provider. The range assertion above reads the ceiling alone, so
-// a new enumerator that claimed 3 would be a provider no column admits and
-// nothing else would report it.
-func TestAgentProviderReservesTheRemovedOrdinal(t *testing.T) {
+// AgentProvider is CONTIGUOUS, and the three CHECKs above state a plain range
+// because of it. The project leaves no `reserved` and no hole, so a removed
+// provider is deleted and every provider past it moves down one. That is a data
+// change, not a rename -- these columns store the ordinal -- and this test is
+// what makes a hole visible if one ever reappears, because the range assertion
+// above reads the ceiling alone and would not notice a missing middle.
+func TestAgentProviderOrdinalsAreContiguous(t *testing.T) {
 	t.Parallel()
 
-	name, taken := leapmuxv1.AgentProvider_name[3]
-	assert.Falsef(t, taken,
-		"AgentProvider 3 is reserved, and %q claimed it; widen the three agent_provider CHECKs or renumber", name)
+	for ordinal := int32(1); ordinal <= int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE); ordinal++ {
+		_, declared := leapmuxv1.AgentProvider_name[ordinal]
+		assert.Truef(t, declared,
+			"AgentProvider %d is a hole; the three agent_provider CHECKs state a plain range, so either close it by renumbering or narrow them", ordinal)
+	}
 }
 
 // goal_status is the one column whose zero is a REAL state, so ClearAgentGoal
@@ -307,6 +311,10 @@ func TestAgentProviderColumnRefusesUnspecified(t *testing.T) {
 		"CHECK constraint failed", "a root agent must state its provider")
 	assert.ErrorContains(t, createChild("child-no-provider", "root", unspecified),
 		"CHECK constraint failed", "a child agent must carry the parent's provider")
-	assert.ErrorContains(t, createAgent("removed-ordinal", leapmuxv1.AgentProvider(3)),
-		"CHECK constraint failed", "ordinal 3 is reserved for a removed provider")
+	// One past the last declared provider. The CHECK states a plain range now,
+	// so its ceiling is the only thing standing between an unset enum and a row
+	// nobody can read back.
+	beyondLast := leapmuxv1.AgentProvider(int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE) + 1)
+	assert.ErrorContains(t, createAgent("beyond-last-ordinal", beyondLast),
+		"CHECK constraint failed", "an ordinal past the last declared provider is refused")
 }

@@ -377,8 +377,6 @@ message WatchUpdateAck {
 
 message AgentEvent {
   string agent_id = 1;
-  reserved 8, 9;
-  reserved "message_error", "message_deleted";
 
   // True when the catch-up REPLAY produced this frame, false when it is live.
   //
@@ -389,24 +387,22 @@ message AgentEvent {
   // exactly like a replayed one. Guessing from that order dropped a permission prompt's
   // badge, a plan-title update and an INACTIVE sweep whenever they raced a
   // replay. broadcastReplayAgentEvent is the one writer that sets this.
-  bool replay = 18;
-  reserved 3, 4;
-  reserved "stream_chunk", "stream_end";
+  bool replay = 14;
   oneof event {
     AgentChatMessage agent_message = 2;
-    AgentStatusChange status_change = 5;
-    AgentControlRequest control_request = 6;
-    AgentControlCancelRequest control_cancel = 7;
-    CatchUpComplete catch_up_complete = 10;
-    AgentTodosChanged todos_changed = 11;
-    CatchUpStart catch_up_start = 12;
-    AgentTurnEnd turn_end = 13;
-    AgentBackgroundTasksChanged background_tasks_changed = 14;
-    AgentInputQueueChanged input_queue_changed = 15;
-    AgentGoalChanged goal_changed = 16;
-    AgentActivityChanged activity_changed = 17;
+    AgentStatusChange status_change = 3;
+    AgentControlRequest control_request = 4;
+    AgentControlCancelRequest control_cancel = 5;
+    CatchUpComplete catch_up_complete = 6;
+    AgentTodosChanged todos_changed = 7;
+    CatchUpStart catch_up_start = 8;
+    AgentTurnEnd turn_end = 9;
+    AgentBackgroundTasksChanged background_tasks_changed = 10;
+    AgentInputQueueChanged input_queue_changed = 11;
+    AgentGoalChanged goal_changed = 12;
+    AgentActivityChanged activity_changed = 13;
     // Worker response state updates do not establish that the provider process is active.
-    AgentControlRequest control_response_changed = 19;
+    AgentControlRequest control_response_changed = 15;
   }
 }
 

@@ -57,8 +57,13 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'dom',
-          // jsdom supplies browser computed-style defaults that happy-dom omits.
-          // Tooltip clipping tests depend on those defaults.
+          // jsdom, not happy-dom, on purpose. happy-dom builds a DOM about 2.7x
+          // faster (60.6s -> 33.6s over the full suite), which makes the switch
+          // tempting. But it returns '' from `getComputedStyle(el).overflowX`,
+          // where a browser and jsdom both return 'visible', and `Tooltip.tsx`'s
+          // clip detection reads exactly that: every element then looks clipped,
+          // and the "not clipped" branch becomes unreachable from a test. Solve
+          // that before proposing the switch.
           environment: 'jsdom',
           exclude: NODE_TEST_FILES,
           // Dexie reads IDBKeyRange during import. Install it before the storage setup.

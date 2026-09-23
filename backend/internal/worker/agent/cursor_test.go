@@ -343,6 +343,36 @@ func TestDecorateCursorModel_EffortAndReasoningCollapseToOne(t *testing.T) {
 	assert.NotContains(t, m.DisplayName, "Medium", "the name suffix likewise collapses to the single level")
 }
 
+// TestDecorateCursorModel_ReasoningEffortKey covers the THIRD spelling Cursor uses for
+// the same concept. Its catalogue reports a level under "effort" (Claude), "reasoning"
+// (GPT) and "reasoning_effort" (Grok). The last one used to parse as no level at all, so
+// every Grok variant humanized to the same bare name -- "Grok 4.7" four times over, which
+// is the collision cursorModelNameSuffix exists to prevent.
+func TestDecorateCursorModel_ReasoningEffortKey(t *testing.T) {
+	t.Parallel()
+
+	low := &ModelInfo{Id: "grok-4.7[context=256k,reasoning_effort=low,fast=false]"}
+	decorateCursorModel(low)
+	assert.Equal(t, int64(256000), low.ContextWindow)
+	assert.Equal(t, "Grok 4.7 Low", low.DisplayName)
+	assert.Contains(t, low.Description, "Low effort", "reasoning_effort reads as an effort level")
+
+	high := &ModelInfo{Id: "grok-4.7[context=500k,reasoning_effort=xhigh,fast=true]"}
+	decorateCursorModel(high)
+	assert.Equal(t, "Grok 4.7 "+effortLabel(EffortXHigh), high.DisplayName)
+	assert.NotEqual(t, low.DisplayName, high.DisplayName, "variants must not collide")
+	assert.Contains(t, high.Description, "Fast")
+
+	// The three keys stay one concept: a model that reports more than one renders the
+	// level ONCE, and the name suffix agrees with the tooltip.
+	both := &ModelInfo{Id: "weird-model[effort=high,reasoning_effort=low]"}
+	decorateCursorModel(both)
+	assert.Contains(t, both.Description, "High effort")
+	assert.NotContains(t, both.Description, "Low effort", "effort wins over reasoning_effort")
+	assert.Contains(t, both.DisplayName, "High")
+	assert.NotContains(t, both.DisplayName, "Low")
+}
+
 func TestDecorateCursorModel_NoBracketOrEmptyAddsNoMetadata(t *testing.T) {
 	t.Parallel()
 

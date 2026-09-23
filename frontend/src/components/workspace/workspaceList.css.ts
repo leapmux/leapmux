@@ -1,4 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { node } from '~/components/tree/sharedTree.css'
 import { menuTrigger, sidebarActions } from '~/components/tree/sidebarActions.css'
 import { clippedText } from '~/styles/shared.css'
 import { iconSize } from '~/styles/tokens'
@@ -109,17 +110,15 @@ export const sectionItems = style({
   width: 'max-content',
 })
 
-export const item = style({
-  'display': 'flex',
-  'alignItems': 'center',
-  'padding': 'var(--space-1) var(--space-2)',
-  'paddingLeft': 'var(--space-1)',
-  'cursor': 'pointer',
-  'gap': 'var(--space-1)',
-  ':hover': {
-    backgroundColor: 'var(--card)',
-  },
-})
+// Composed on `node`, the ONE definition of a sidebar row's rhythm: the same
+// vertical padding and the same reserved action height every tree row uses. A
+// second, ad-hoc copy of those values is what made this row 33px next to its own
+// 28px leaves -- it had `var(--space-1)` top and bottom and no reserve at all,
+// so its content decided its height and the list went ragged at every workspace.
+// Only the LEFT padding differs, because this row carries the chevron.
+export const item = style([node, {
+  paddingLeft: 'var(--space-1)',
+}])
 
 export const itemActive = style({
   'backgroundColor': 'var(--secondary)',

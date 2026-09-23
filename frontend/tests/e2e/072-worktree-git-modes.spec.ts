@@ -5,7 +5,7 @@ import { WorktreeAction } from '../../src/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '../../src/generated/proto/leapmux/v1/workspace_pb'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, menuOptionTexts, openWorkspace, pickMenuOption } from './helpers/ui'
+import { loginViaToken, menuOptionTexts, openWorkspace, pickMenuOption, waitForActiveTabContext } from './helpers/ui'
 import {
   branchExists,
   closeAgentViaAPI,
@@ -92,6 +92,14 @@ test.describe('Worktree Git Modes', () => {
 
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
+    // Both dialogs below read the tab context SYNCHRONOUSLY when they open, and
+    // `createWorkerDialogContext` seeds its working-dir signal once from that
+    // read. A tab whose directory has not hydrated yet gives an empty string,
+    // and the input then stays empty for the life of the dialog -- the probe
+    // that remaps a worktree root to its repo has no path to probe. The failure
+    // reads as "the default resolved to the worktree" when nothing resolved at
+    // all.
+    await waitForActiveTabContext(page)
 
     // Open "New agent..." dialog via the tab menu
     const addMenu = page.locator('[data-testid="tab-more-menu"]').first()
@@ -129,6 +137,9 @@ test.describe('Worktree Git Modes', () => {
 
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
+    // See the note in the agent-dialog test above: the dialog snapshots the tab
+    // context when it opens.
+    await waitForActiveTabContext(page)
 
     // Open "New terminal..." dialog via the tab menu
     const addMenu = page.locator('[data-testid="tab-more-menu"]').first()

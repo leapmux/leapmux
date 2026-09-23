@@ -11,6 +11,19 @@ const INITIAL_PLAN_PROMPT
 const REVISE_PLAN_PROMPT
   = 'Please revise the plan. Keep the title "# Dummy plan revised" and include the exact sentence "Add tests before implementation." Do not implement anything yet.'
 
+/**
+ * Wrap a plan the way Codex's own plan-mode instructions require.
+ *
+ * Its developer message states it exactly: present the official plan wrapped in
+ * a `proposed_plan` block, with the content starting on the next line. Only a
+ * plan in those tags becomes the `plan` item that `codex_output.go` turns into
+ * the approval request. Plain markdown arrives as an ordinary agent message and
+ * raises no banner at all.
+ */
+function proposedPlan(body: string): string {
+  return `<proposed_plan>\n${body}\n</proposed_plan>`
+}
+
 async function configureCodexPlanMode(page: Page) {
   await openSettingsMenu(page, 'collaboration_mode')
   await page.locator('[data-testid="collaboration_mode-plan"]').click()
@@ -19,14 +32,20 @@ async function configureCodexPlanMode(page: Page) {
 }
 
 codexTest.describe('Codex Plan Mode Prompt', () => {
-  codexTest('feedback revises the plan and approval can clear context', async ({ authenticatedCodexWorkspace, page }) => {
+  codexTest('feedback revises the plan and approval can clear context', async ({ authenticatedCodexWorkspace, page, modelScript }) => {
     void authenticatedCodexWorkspace
     const pageErrors: string[] = []
     page.on('pageerror', error => pageErrors.push(error.message))
 
     await configureCodexPlanMode(page)
 
-    await sendMessage(page, INITIAL_PLAN_PROMPT)
+    // Codex raises its plan from the model's TEXT, not from a tool call, so the
+    // plan is simply what the script answers. The marker rides in the plan
+    // because an approved plan restarts the agent on a session seeded from it.
+    await modelScript.fallback({ text: 'Working through the approved plan.' })
+    await modelScript.queue({ text: proposedPlan(modelScript.prompt(`# Dummy plan\n\n${PLAN_BODY}`)) })
+    await sendMessage(page, modelScript.prompt(INITIAL_PLAN_PROMPT))
+    await modelScript.waitForSteps()
     await waitForAgentIdle(page)
 
     // Plan content is rendered with plan styling (ToolUseLayout with "Proposed Plan" title).
@@ -49,7 +68,9 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     await expect(page.locator('[data-testid="control-allow-btn"]')).not.toBeVisible()
     await expect(page.locator('[data-testid="plan-clear-context-checkbox"]')).not.toBeVisible()
     await expect(page.locator('[data-testid="control-permissions-pill-group"]')).not.toBeVisible()
+    await modelScript.queue({ text: proposedPlan(modelScript.prompt('# Dummy plan revised\n\nAdd tests before implementation.')) })
     await page.locator('[data-testid="control-deny-btn"]').click()
+    await modelScript.waitForSteps()
 
     await waitForAgentIdle(page)
 

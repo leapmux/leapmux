@@ -685,6 +685,7 @@ func TestApplyZCodeModel_AccountConfigOmitsTheLegacyRuntimeModel(t *testing.T) {
 	a := newZCodeTestAgentWithStdin(t, &recordingControlSink{}, stdin)
 	a.mu.Lock()
 	a.accountProviderConfig = true
+	a.thoughtLevel = "high"
 	a.mu.Unlock()
 	zcodeApplySettings(t, a, `{
       "model": {
@@ -705,9 +706,15 @@ func TestApplyZCodeModel_AccountConfigOmitsTheLegacyRuntimeModel(t *testing.T) {
 	var params map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
 	assert.NotContains(t, params, "runtimeModel", "ZCode 0.16.9 rejects this legacy field")
-	var model zcodeModelRef
+	var model struct {
+		zcodeModelRef
+		Options struct {
+			ReasoningLevel string `json:"reasoningLevel"`
+		} `json:"options"`
+	}
 	require.NoError(t, json.Unmarshal(params["model"], &model))
-	assert.Equal(t, zcodeModelRef{ProviderID: "account:zai-individual-coding-plan", ModelID: "GLM-5.3"}, model)
+	assert.Equal(t, zcodeModelRef{ProviderID: "account:zai-individual-coding-plan", ModelID: "GLM-5.3"}, model.zcodeModelRef)
+	assert.Equal(t, "high", model.Options.ReasoningLevel)
 }
 
 // A model that declares NO default level gets no level: the overlay must not invent

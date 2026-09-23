@@ -4,12 +4,15 @@ import { expect, OPENCODE_E2E_SKIP_REASON, opencodeTest } from './opencode-fixtu
 opencodeTest.skip(!!OPENCODE_E2E_SKIP_REASON, OPENCODE_E2E_SKIP_REASON || '')
 
 opencodeTest.describe('OpenCode Interrupt', () => {
-  opencodeTest('interrupt button appears during processing', async ({ authenticatedOpencodeWorkspace, page }) => {
+  opencodeTest('interrupt button appears during processing', async ({ authenticatedOpencodeWorkspace, page, modelScript }) => {
     void authenticatedOpencodeWorkspace // fixture trigger
 
-    // Send a prompt long enough that the agent must be visibly streaming
-    // for several seconds — Interrupt must appear during that window.
-    await sendMessage(page, 'Write a very long essay about the history of computing, covering all major milestones from the abacus to modern AI. Aim for at least 3000 words across multiple chapters.')
+    // A held answer is what keeps the agent busy. A long PROMPT no longer does:
+    // the mock endpoint answers in milliseconds whatever its length.
+    await modelScript.queue({ text: 'An essay.', delayMs: 60_000 })
+    modelScript.allowUnconsumed('the interrupt ends the turn before the held answer arrives')
+    await sendMessage(page, modelScript.prompt('Write a very long essay about the history of computing.'))
+    await modelScript.waitForSteps()
 
     // The Interrupt button must appear while the agent is processing.
     // If it never does (regression: button never wired up, or button stays

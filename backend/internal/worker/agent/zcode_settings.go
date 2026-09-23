@@ -480,6 +480,22 @@ func (a *zcodeAgent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 
 // --- the setters ---
 
+// resolveZCodeThoughtLevel reports the reasoning level a model switch must carry.
+//
+// The session's own level wins. An unset level and the automatic one both mean
+// "the model decides", so both fall back to the model's declared default, which
+// is itself empty for a model that declares none.
+//
+// Both request shapes need this answer -- the account-config selection carries it
+// in `options.reasoningLevel`, and the legacy overlay in `ThoughtLevel` -- and the
+// two spelled it out separately until one of them dropped the level on a switch.
+func resolveZCodeThoughtLevel(level, defaultLevel string) string {
+	if level == "" || level == EffortAuto {
+		return defaultLevel
+	}
+	return level
+}
+
 // applyZCodeModel pins the session's model and reports what the app-server settled
 // on.
 //
@@ -510,18 +526,20 @@ func (a *zcodeAgent) applyZCodeModel(modelID string, timeout time.Duration) erro
 			}
 			ref = zcodeModelRef{ProviderID: providerID, ModelID: providerModelID}
 		}
-		params = map[string]any{"sessionId": sessionID, "model": ref}
+		selection := zcodeModelSelection{zcodeModelRef: ref}
+		// A model that declares no default gets no level, so the app-server keeps
+		// whatever the session already had.
+		if thoughtLevel := resolveZCodeThoughtLevel(level, defaultLevel); thoughtLevel != "" {
+			selection.Options = &zcodeModelSelectionOptions{ReasoningLevel: thoughtLevel}
+		}
+		params = map[string]any{"sessionId": sessionID, "model": selection}
 	} else {
 		overlay, found := a.catalog.runtimeModelFor(resolved, a.registryRevision, time.Now().UnixMilli())
 		if !found {
 			return newInvalidZCodeModelError(modelID)
 		}
 		// A concrete level rides along so a legacy model switch does not drop it.
-		if level != "" && level != EffortAuto {
-			overlay.ThoughtLevel = level
-		} else {
-			overlay.ThoughtLevel = defaultLevel
-		}
+		overlay.ThoughtLevel = resolveZCodeThoughtLevel(level, defaultLevel)
 		params = map[string]any{
 			"sessionId":    sessionID,
 			"model":        overlay.Model,

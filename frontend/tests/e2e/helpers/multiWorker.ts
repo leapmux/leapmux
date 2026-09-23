@@ -1,6 +1,5 @@
 import type { ChildProcess } from 'node:child_process'
 import { rmSync } from 'node:fs'
-import process from 'node:process'
 import {
   closeTestChannels,
   getUserId,
@@ -104,7 +103,7 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
           'post-quantum',
         ], {
           stdio: ['ignore', 'pipe', 'pipe'],
-          env: process.env,
+          env: hubSpawnEnv(),
         })
         processes.add(proc)
         proc.stdout?.resume()

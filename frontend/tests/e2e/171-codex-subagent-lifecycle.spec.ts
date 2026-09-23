@@ -4,7 +4,9 @@
  * Covers: the V2 activity-based registry row, its readable title, a child tab
  * with an isolated read-only transcript and exact completion.
  */
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest, expect } from './codex-fixtures'
+import { spawnSubagentToolCall } from './helpers/providerToolCalls'
 import {
   expectNoRegistryRows,
   listAgents,
@@ -18,6 +20,7 @@ codexTest.describe('codex subagent lifecycle', () => {
     authenticatedCodexWorkspace,
     page,
     leapmuxServer,
+    modelScript,
   }) => {
     void authenticatedCodexWorkspace
     const { hubUrl, adminToken, workerId } = leapmuxServer
@@ -27,8 +30,35 @@ codexTest.describe('codex subagent lifecycle', () => {
 
     // 2. Spawn one V2 subagent with a fixed canonical task name. Spell the
     // output marker as parts so it is absent from the root's user bubble.
+    // `spawn_agent` takes the description with its spaces turned into
+    // underscores, which is where the canonical task name comes from.
     const taskName = 'codex_probe_child'
-    await sendMessage(page, `You MUST use spawn_agent exactly once with task_name "${taskName}". Tell the child to reply with the string formed by joining CHILD, an underscore, and DONE. Use wait_agent until it finishes. Do not quote the child's answer. Then reply with exactly ROOT_DONE.`)
+    // A RULE rather than a queued step: the child runs its own turns, and how
+    // many is the provider's business, not this test's.
+    //
+    // Matched on the BODY, not on the user text. `spawn_agent` FORKS the
+    // parent's conversation -- `fork_turns` defaults to `all` -- so the child's
+    // last user turn is the ROOT's prompt, and its own task arrives as an
+    // `agent_message` addressed to it with the payload in `encrypted_content`.
+    // A `user` matcher therefore sees the root's words in both agents and can
+    // tell them apart in neither.
+    //
+    // Both patterns must hold: `NEW_TASK` appears only in an agent that RECEIVED
+    // a task, and the task name pins it to this child rather than another.
+    await modelScript.rule({
+      name: 'the child answers with its marker',
+      when: { body: ['NEW_TASK', taskName] },
+      respond: { text: 'CHILD_DONE' },
+    })
+    await modelScript.queue({
+      toolCalls: [spawnSubagentToolCall(AgentProvider.CODEX, 'spawn-child', {
+        description: taskName.replaceAll('_', ' '),
+        prompt: modelScript.prompt('reply with the child marker'),
+      })],
+    })
+    await modelScript.queue({ text: 'ROOT_DONE' })
+    await sendMessage(page, modelScript.prompt('Spawn one child and report when it finishes.'))
+    await modelScript.waitForSteps(2)
 
     // 3. This request is explicit, so a missing row is a failure. The canonical
     // task path supplies the row and tab title before child output starts.

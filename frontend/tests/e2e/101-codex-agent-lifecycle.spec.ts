@@ -45,10 +45,12 @@ codexTest.describe('codex agent lifecycle', () => {
     await expect(tabs).toHaveCount(Math.max(tabsBefore - 1, 0))
   })
 
-  codexTest('clear context via /clear command', async ({ authenticatedCodexWorkspace, page }) => {
+  codexTest('clear context via /clear command', async ({ authenticatedCodexWorkspace, page, modelScript }) => {
     void authenticatedCodexWorkspace // fixture trigger
     // Send an initial message so there's context to clear.
-    await sendMessage(page, 'Hello')
+    await modelScript.queue({ text: 'Hello back.' })
+    await sendMessage(page, modelScript.prompt('Hello'))
+    await modelScript.waitForSteps()
     await waitForAgentIdle(page, 120_000)
 
     // Send /clear command.

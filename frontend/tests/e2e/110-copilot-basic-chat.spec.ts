@@ -1,14 +1,15 @@
 import { COPILOT_MODE, COPILOT_OPTION, COPILOT_PERMISSION_MODE } from '../../src/generated/contracts/copilot-protocol'
 import { COPILOT_E2E_SKIP_REASON, copilotTest, expect } from './copilot-fixtures'
 import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from './helpers/subagentRegistry'
-import { applyPermissionPreset, ARITHMETIC_PROMPT, expectAssistantAnswer, openSettingsMenu, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { applyPermissionPreset, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, openSettingsMenu, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 copilotTest.skip(!!COPILOT_E2E_SKIP_REASON, COPILOT_E2E_SKIP_REASON || '')
 
 copilotTest.describe('Copilot Basic Chat', () => {
-  copilotTest('send message and receive response', async ({ authenticatedCopilotWorkspace, page }) => {
+  copilotTest('send message and receive response', async ({ authenticatedCopilotWorkspace, page, modelScript }) => {
     void authenticatedCopilotWorkspace
-    await sendMessage(page, ARITHMETIC_PROMPT)
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await waitForAgentIdle(page, 120_000)
     await expectAssistantAnswer(page)
   })
@@ -21,7 +22,12 @@ copilotTest.describe('Copilot Basic Chat', () => {
       const group = await openSettingsMenu(page, 'permissionMode')
       return group.locator(`[data-testid="permissionMode-${value}"] input[type="radio"]`)
     }
-    await expect(await checked(COPILOT_PERMISSION_MODE.Assisted)).toBeChecked()
+    // MANUAL, not Assisted. The fixture opens every Copilot agent with an
+    // explicit `permissionMode: manual`, and an explicit request beats the
+    // provider's new-session default (`resolveLaunchOptions`), so the session
+    // starts there. Asserting Assisted made this test contradict its own
+    // fixture -- the presets below are what this test is actually for.
+    await expect(await checked(COPILOT_PERMISSION_MODE.Manual)).toBeChecked()
 
     await applyPermissionPreset(page, 'bypass')
     await expect(await checked(COPILOT_PERMISSION_MODE.AllowAll)).toBeChecked()

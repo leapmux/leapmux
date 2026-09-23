@@ -32,7 +32,7 @@ function userRow(page: Page, nth: number) {
 }
 
 test.describe('chat scroll rail', () => {
-  test('hides the native scrollbar, dots each user message, and jumps on a dot click', async ({ page, authenticatedWorkspace }) => {
+  test('hides the native scrollbar, dots each user message, and jumps on a dot click', async ({ page, authenticatedWorkspace, modelScript }) => {
     // A short viewport so a couple of tall user bubbles overflow and the rail appears.
     await page.setViewportSize({ width: 720, height: 380 })
 
@@ -51,10 +51,12 @@ test.describe('chat scroll rail', () => {
     await expect.poll(() => scroller.evaluate(el => getComputedStyle(el).scrollbarWidth)).toBe('none')
 
     // Send two messages, waiting for each turn to finish.
-    await sendMessage(page, LONG_MESSAGE)
-    await waitForAgentIdle(page)
-    await sendMessage(page, LONG_MESSAGE)
-    await waitForAgentIdle(page)
+    for (let turn = 0; turn < 2; turn++) {
+      await modelScript.queue({ text: 'ok' })
+      await sendMessage(page, modelScript.prompt(LONG_MESSAGE))
+      await modelScript.waitForSteps()
+      await waitForAgentIdle(page)
+    }
 
     // Two user messages landed (their server echoes carry real seqs).
     await expect(userBubbles(page)).toHaveCount(2)

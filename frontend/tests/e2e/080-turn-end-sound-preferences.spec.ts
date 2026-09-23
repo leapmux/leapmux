@@ -1,4 +1,7 @@
+import type { ModelScript } from './helpers/modelScriptFixture'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, test } from './fixtures'
+import { bashToolCall } from './helpers/providerToolCalls'
 import { armTurnEndSound, expectDoorbellCount, expectDoorbellQuiet } from './helpers/turnEndSound'
 import { getBrowserPref, loginViaToken, openAgentViaUI, openSettingsAt, sendMessage, waitForAgentIdle, waitForWorkspaceReady } from './helpers/ui'
 
@@ -9,6 +12,22 @@ import { getBrowserPref, loginViaToken, openAgentViaUI, openSettingsAt, sendMess
  * make every assertion below pass for the wrong reason.
  */
 const TOOL_USING_PROMPT = 'Run the command `pwd` and tell me the result.'
+
+/**
+ * Script the tool turn this spec listens for.
+ *
+ * The doorbell fires on a turn that USED a tool, so the turn has to make a real
+ * tool call — a text-only answer is the negative case, and the spec has its own
+ * test for that.
+ */
+async function sendToolTurn(page: Parameters<typeof sendMessage>[0], script: ModelScript): Promise<void> {
+  await script.queue(
+    { toolCalls: [bashToolCall(AgentProvider.CLAUDE_CODE, 'pwd-call', 'pwd')] },
+    { text: 'The working directory is above.' },
+  )
+  await sendMessage(page, script.prompt(TOOL_USING_PROMPT))
+  await script.waitForSteps()
+}
 
 /** The scope chip on the turn-end sound row (dual: browser override vs account). */
 function turnEndSoundScope(page: import('@playwright/test').Page) {
@@ -86,17 +105,17 @@ test.describe('Turn End Sound Preferences', () => {
     await expect(none).toBeChecked()
   })
 
-  test('should play ding-dong sound when turn ends', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+  test('should play ding-dong sound when turn ends', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
     await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
     await waitForWorkspaceReady(page)
 
-    await sendMessage(page, TOOL_USING_PROMPT)
+    await sendToolTurn(page, modelScript)
 
     await expectDoorbellCount(page, 1)
   })
 
-  test('should NOT play sound when turn end sound is none', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+  test('should NOT play sound when turn end sound is none', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
     await armTurnEndSound(page, leapmuxServer.adminUserId, 'none')
     await waitForWorkspaceReady(page)
@@ -106,18 +125,18 @@ test.describe('Turn End Sound Preferences', () => {
     // preference said, so this would pass with the preference plumbing removed
     // entirely -- which is exactly what it did while `setInitialBrowserPref`
     // was silently writing an entry the app discarded.
-    await sendMessage(page, TOOL_USING_PROMPT)
+    await sendToolTurn(page, modelScript)
     await waitForAgentIdle(page)
 
     await expectDoorbellQuiet(page, 0)
   })
 
-  test('should NOT play sound when opening and closing Preferences dialog', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+  test('should NOT play sound when opening and closing Preferences dialog', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
     await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
     await waitForWorkspaceReady(page)
 
-    await sendMessage(page, TOOL_USING_PROMPT)
+    await sendToolTurn(page, modelScript)
     await expectDoorbellCount(page, 1)
 
     // Open and close the Preferences dialog (no full navigation)
@@ -128,12 +147,12 @@ test.describe('Turn End Sound Preferences', () => {
     await expectDoorbellQuiet(page, 1)
   })
 
-  test('should NOT play sound when closing an agent tab', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+  test('should NOT play sound when closing an agent tab', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
     await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
     await waitForWorkspaceReady(page)
 
-    await sendMessage(page, TOOL_USING_PROMPT)
+    await sendToolTurn(page, modelScript)
     await expectDoorbellCount(page, 1)
     await waitForAgentIdle(page)
 
@@ -152,12 +171,12 @@ test.describe('Turn End Sound Preferences', () => {
     await expectDoorbellQuiet(page, 1)
   })
 
-  test('should NOT play sound when opening a new tab', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+  test('should NOT play sound when opening a new tab', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
     await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
     await waitForWorkspaceReady(page)
 
-    await sendMessage(page, TOOL_USING_PROMPT)
+    await sendToolTurn(page, modelScript)
     await expectDoorbellCount(page, 1)
 
     // Opening a new agent tab revises the WatchEvents interest set (no stream
@@ -167,12 +186,12 @@ test.describe('Turn End Sound Preferences', () => {
     await expectDoorbellQuiet(page, 1)
   })
 
-  test('should NOT play sound when switching between agent tabs', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+  test('should NOT play sound when switching between agent tabs', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
     await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
     await waitForWorkspaceReady(page)
 
-    await sendMessage(page, TOOL_USING_PROMPT)
+    await sendToolTurn(page, modelScript)
     await expectDoorbellCount(page, 1)
 
     // Open a second agent tab, then switch back and forth
@@ -186,7 +205,7 @@ test.describe('Turn End Sound Preferences', () => {
     await expectDoorbellQuiet(page, 1)
   })
 
-  test('should play sound when a turn ends on a tab that is not visible', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+  test('should play sound when a turn ends on a tab that is not visible', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     void authenticatedWorkspace
     await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
     await waitForWorkspaceReady(page)
@@ -196,7 +215,7 @@ test.describe('Turn End Sound Preferences', () => {
     await expect(agentTabs).toHaveCount(2)
 
     await agentTabs.first().click()
-    await sendMessage(page, TOOL_USING_PROMPT)
+    await sendToolTurn(page, modelScript)
     // Hide the working agent before the turn ends — NOTIFY must still ring.
     await agentTabs.nth(1).click()
     await expect(agentTabs.nth(1)).toHaveAttribute('aria-selected', 'true')

@@ -1,6 +1,6 @@
 import type { ChildProcess } from 'node:child_process'
 import type { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { realAgentOpenOptions, realAgentSettings } from '../realAgentSettings'
+import { agentOpenOptions, agentSettings } from '../agentSettings'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './api'
 import { withCleanup } from './cleanup'
 import { createTestDirectory } from './runDirectory'
@@ -15,6 +15,11 @@ interface WorkspaceServer {
   workerId: string
   hubProc?: ChildProcess
   serverProc?: ChildProcess
+}
+
+interface AgentOpenOverrides {
+  model?: string
+  optionValues?: Record<string, string>
 }
 
 /** Keep workspace creation and disposal identical across agent providers. */
@@ -35,14 +40,24 @@ export async function withTestWorkspace(
 /** Open a real agent in a private working directory and close it after use. */
 export async function withAgentWorkspace(
   server: WorkspaceServer,
-  options: { provider: AgentProvider, prefix: string },
+  options: {
+    provider: AgentProvider
+    prefix: string
+    openOptions?: AgentOpenOverrides
+  },
   use: (workspace: WorkspaceFixture) => Promise<void>,
 ): Promise<void> {
   await withTestWorkspace(server, options.prefix, async (workspace) => {
     const workingDir = createTestDirectory(`${options.prefix}-wd-`)
+    const defaults = agentOpenOptions(agentSettings(options.provider))
     await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspace.workspaceId, workingDir, {
       agentProvider: options.provider,
-      ...realAgentOpenOptions(realAgentSettings(options.provider)),
+      ...defaults,
+      ...options.openOptions,
+      optionValues: {
+        ...defaults.optionValues,
+        ...options.openOptions?.optionValues,
+      },
     })
     await use(workspace)
   })

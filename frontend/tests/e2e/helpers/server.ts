@@ -5,6 +5,9 @@ import { createServer } from 'node:net'
 import { join } from 'node:path'
 import process from 'node:process'
 
+/** The browser origin host and the session-cookie domain for shared E2E servers. */
+export const E2E_BROWSER_HOST = 'localhost'
+
 // Dev mode stores the hub database below the fixture's hub subdirectory.
 // Share this path rule between fixtures and tests.
 export function hubDataDir(dataDir: string): string {
@@ -12,7 +15,15 @@ export function hubDataDir(dataDir: string): string {
 }
 
 /**
- * Supply the environment for every test hub.
+ * Supply the environment for every test hub and worker.
+ *
+ * Merges the isolated agent configuration that global setup wrote, so a hub a
+ * test starts routes its agents to the mock endpoint exactly as the shared one
+ * does. WITHOUT it those agents inherit the developer's real provider
+ * credentials from `process.env` and contact the live endpoint. No assertion
+ * catches that, because a real model answers a test prompt correctly — the only
+ * symptom is a slow, non-deterministic run and a bill.
+ *
  * Clear LEAPMUX_HUB_DEV_FRONTEND so the hub serves the binary's embedded frontend.
  * An inherited development URL could select a different checkout or an unavailable server.
  * A test could then pass against code outside this build, or fail for an unrelated cause.
@@ -21,7 +32,19 @@ export function hubDataDir(dataDir: string): string {
 export function hubSpawnEnv(
   extra: Omit<Record<string, string | undefined>, 'LEAPMUX_HUB_DEV_FRONTEND'> = {},
 ): NodeJS.ProcessEnv {
-  return { ...process.env, ...extra, LEAPMUX_HUB_DEV_FRONTEND: undefined }
+  return { ...process.env, ...mockAgentEnv(), ...extra, LEAPMUX_HUB_DEV_FRONTEND: undefined }
+}
+
+/**
+ * The isolated agent configuration, or nothing before global setup wrote it.
+ *
+ * `startSuiteServer` itself spawns the shared hub before the state file exists,
+ * and it passes the same map explicitly. Every later spawn reads it from here.
+ */
+export function mockAgentEnv(): Record<string, string> {
+  if (!process.env.E2E_STATE_PATH)
+    return {}
+  return getGlobalState().agentEnv
 }
 // ──────────────────────────────────────────────
 // Global state (read from file written by global-setup)

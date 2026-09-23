@@ -2,6 +2,7 @@ import { typeAHandleLabel } from '../../src/components/shell/resumeSession'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import {
+  ARITHMETIC_ANSWER_TEXT,
   ARITHMETIC_PROMPT,
   expectAssistantAnswer,
   loginViaToken,
@@ -44,6 +45,7 @@ test.describe('Session picker in the New Agent dialog', () => {
   test('offers a closed session, hides the open one, and resumes what was picked', async ({
     page,
     leapmuxServer,
+    modelScript,
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const keeperDir = createGitRepo(dataDir, 'session-picker-keeper')
@@ -67,7 +69,9 @@ test.describe('Session picker in the New Agent dialog', () => {
 
     // A turn, so the worker records a resume handle: an agent that never spoke
     // has no session to offer.
-    await sendMessage(page, ARITHMETIC_PROMPT)
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps()
     await expectAssistantAnswer(page)
 
     const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
@@ -175,7 +179,9 @@ test.describe('Session picker in the New Agent dialog', () => {
 
     // The resumed tab reaches the worker and takes a turn, which proves the
     // handle the picker sent is one the provider accepts.
-    await sendMessage(page, ARITHMETIC_PROMPT)
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps()
     await expectAssistantAnswer(page)
   })
 

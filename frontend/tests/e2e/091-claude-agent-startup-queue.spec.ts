@@ -1,11 +1,11 @@
 import { expect, test } from './fixtures'
-import { ARITHMETIC_PROMPT, expectAssistantAnswer } from './helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer } from './helpers/ui'
 
 /**
  * Verifies that the Worker queue persists input while an agent starts.
  */
 test.describe('Claude Code agent startup queue', () => {
-  test('queues a typed-during-startup message and delivers it on ACTIVE', async ({ page, authenticatedWorkspace }) => {
+  test('queues a typed-during-startup message and delivers it on ACTIVE', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Editor is reachable while the agent is still STARTING — the new
     // OpenAgent flow returns immediately and renders the loader overlay.
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
@@ -18,8 +18,9 @@ test.describe('Claude Code agent startup queue', () => {
     const overlayWasVisible = await overlay.isVisible().catch(() => false)
 
     // Type and submit while the agent starts.
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await editor.click()
-    await page.keyboard.type(ARITHMETIC_PROMPT)
+    await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
     await page.keyboard.press('Meta+Enter')
 
     // The editor clears after the Worker accepts the queue item.

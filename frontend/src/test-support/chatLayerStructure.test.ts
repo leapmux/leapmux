@@ -25,8 +25,12 @@ const MODEL_DIR = join(CHAT_DIR, 'model')
  *
  * Each is a control surface: a permission prompt, a question form, a plan
  * approval. Those read a provider's own request payload and answer it, which is
- * not a transcript row -- the row model does not describe them. `eslint.config.ts`
- * lifts the JSX ban for exactly these four paths.
+ * not a transcript row -- the row model does not describe them.
+ *
+ * `eslint.config.ts` bans `JSXElement` under `providers/` and lists exactly
+ * these four paths in its `ignores`, beside the two `testUtils.tsx` helpers
+ * that render for a provider's own tests. This list is what keeps the two in
+ * step: a path that leaves one and not the other fails below.
  */
 const DRAWING_ALLOWED = [
   'codex/CodexControlActions.tsx',
@@ -39,8 +43,13 @@ const DRAWING_ALLOWED = [
  * The display surfaces that MAY identify one provider in shared code.
  *
  * `AgentProviderIcon` is the whole list: an icon is a per-provider asset, and no
- * shared shape can supply one. `eslint.config.ts` lifts the decision selectors
- * for this one file.
+ * shared shape can supply one.
+ *
+ * It needs no lint exception, and this list is not one. `no-provider-decision`
+ * runs on `components/chat/` alone, and this file sits in `components/common/`,
+ * so the rule never reaches it. The list stays because it is the ANSWER to
+ * "which shared module may name a provider", and the check below keeps it from
+ * naming a file that no longer exists.
  */
 const PROVIDER_COMPARISON_ALLOWED = [
   'components/common/AgentProviderIcon.tsx',

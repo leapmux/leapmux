@@ -192,6 +192,49 @@ export default antfu({
     'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX],
   },
 }, {
+  // LAYER 1 DRAWS NOTHING. A provider plugin reads one agent's wire format and
+  // returns the provider-neutral model; `../results/` is what turns that model
+  // into markup. A plugin that renders puts one provider's shapes behind a
+  // module the other nine also reach, which is the drift this pipeline exists
+  // to prevent.
+  //
+  // `layer-imports` already stops a plugin from importing `../results/`, and
+  // the structure guard already refuses a `renderers/` directory under a
+  // provider. Neither stops a plugin from writing JSX inline, which is the
+  // remaining way in -- and `chatLayerStructure.test.ts` described this ban as
+  // if it existed here long before it did.
+  //
+  // `ignores` carries the whole allowlist, and every path in it is pinned by
+  // `src/test-support/chatLayerStructure.test.ts`:
+  //   - the four CONTROL SURFACES, which answer a provider's own permission or
+  //     plan prompt. Their markup is provider-specific by nature, so it lives
+  //     beside the provider that raises it rather than in a shared renderer
+  //     that would have to branch on the provider to draw it.
+  //   - the two `testUtils.tsx` helpers, which render a provider's component
+  //     for that provider's own tests and ship in no bundle.
+  //   - every `*.test.tsx`, for the same reason: a provider's own test renders
+  //     that provider's markup to assert on it, and ships in no bundle either.
+  //     Both other `src/**` blocks in this file exclude tests the same way.
+  files: ['src/components/chat/providers/**/*.tsx'],
+  ignores: [
+    'src/components/chat/providers/**/*.test.tsx',
+    'src/components/chat/providers/codex/CodexControlActions.tsx',
+    'src/components/chat/providers/cursor/CursorControlActions.tsx',
+    'src/components/chat/providers/pi/PiControlActions.tsx',
+    'src/components/chat/providers/pi/PiPlanApprovalActions.tsx',
+    'src/components/chat/providers/acp/testUtils.tsx',
+    'src/components/chat/providers/zcode/testUtils.tsx',
+  ],
+  rules: {
+    // Spread the base selectors: ESLint REPLACES a rule's options rather than
+    // merging them, so omitting them would delete the `const enum`, `export =`
+    // and DOM-`title` bans for exactly this tree.
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, {
+      selector: 'JSXElement',
+      message: 'Layer 1 draws nothing. A provider plugin returns the provider-neutral model from `../model/`, and `../results/` renders it. A control surface that must draw goes in its own `*Actions.tsx` and is listed in the allowlist in eslint.config.ts.',
+    }],
+  },
+}, {
   // A `describe` identifies the SYMBOL under test, so it must be free to spell that
   // symbol: `describe('DirectoryTree')`, `describe('MESSAGE_UI_DEFAULTS')`. The
   // rule rejects any title opening with a capital, and its `--fix` lowercases

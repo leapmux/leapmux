@@ -1,222 +1,365 @@
 # LeapMux
 
-Multi-agent coding assistant platform supporting Claude Code and Codex.
+Multi-agent coding assistant platform for ten agent providers.
 
 - Backend: Go
 - Frontend: SolidJS with vanilla-extract CSS (`.css.ts` files)
 - E2E: Playwright
 - Desktop: Tauri (Rust + Go sidecar)
 
+## Project constraints
+
+LeapMux is **pre-release**. Never raise backward compatibility, an upgrade
+path, wire compatibility or migration hygiene, and never propose a shim.
+
+- Edit `00001_initial.sql` in all three dialects in place; never add a
+  migration file.
+- Change a public interface whenever a better design wants it.
+- Renumber, regroup, replace or remove protobuf fields freely, leaving **no
+  `reserved` and no hole**: delete the field and move every later field down
+  one. A reservation protects a number still meaningful on some wire or in some
+  database, and nothing here is.
+  - Renumbering an enum is a **data change** where its ordinals are stored (see
+    **Enum columns store proto enum ordinals**): move the column `CHECK`s to a
+    plain `BETWEEN 1 AND <last>`, no carve-out. `enum_column_numbering_test.go`
+    states the range and asserts contiguity.
+  - Not a hole: a header at `1` (sometimes `2`) and a payload `oneof` from
+    `10`, as `frame.proto`, `user_ops.proto` and `worker.proto` do on purpose.
+
 ## Build system
 
-Use `task` (`Taskfile.yaml`) targets, not the underlying tools directly.
+Use `task` (`Taskfile.yaml`) targets, not the underlying tools. Package manager:
+`bun` (`bun.lock`). Generators: `buf generate` (`task generate-proto`),
+`scripts/generate-contracts.mjs` (`task generate-contracts`), `sqlc generate`
+(`task generate-sqlc`).
 
-- Frontend package manager: `bun` (lock: `bun.lock`)
-- Proto generation: `buf generate` (via `task generate-proto`)
-- Contracts generation: `scripts/generate-contracts.mjs` (via `task generate-contracts`)
-- SQL generation: `sqlc generate` (via `task generate-sqlc`)
+**Run one `task` pipeline at a time.** Each runs `prepare-backend`, which
+deletes `backend/internal/hub/generated/frontend/public` and copies
+`frontend/.output/public` into it non-atomically, so a concurrent pipeline tests
+a half-copied tree. It surfaces as about seventeen failures in `TestPolicy`,
+`TestResolveFrontend` and siblings reading `does not contain "'sha256-"`,
+because `hub` and `internal/hub/frontend` derive the Content Security Policy
+from the inline `<script>` tags of the EMBEDDED `index.html`. Chain suites in
+one command (`task test-backend; task test-frontend; task lint`). A starved run
+also looks exactly like a hang, so a stacked run sends you after a deadlock that
+is not there.
 
-### Contracts: single source of truth for cross-language values
+### Contracts: one source of truth across languages
 
-Any constant, string, limit, or table consumed on BOTH sides of a language
-boundary (Go hub/CLI/worker and the TS browser client) lives in
-`contracts/<name>.json` — never hand-written twice. `task generate-contracts`
-validates each contract against its sibling `<name>.schema.json`, runs the
-semantic cross-checks (derived arithmetic, enum coverage via `buf build`
-descriptors, graph acyclicity), and emits Go into `backend/generated/contracts/`
-and TS into `frontend/src/generated/contracts/` (both gitignored; CI generates
-before building).
+A value used on BOTH sides of a language boundary (Go hub/CLI/worker and the TS
+browser client) lives once, in `contracts/<name>.json`.
+`task generate-contracts` validates it against its sibling `<name>.schema.json`,
+runs the semantic cross-checks (derived arithmetic, enum coverage via
+`buf build` descriptors, graph acyclicity), and emits Go to
+`backend/generated/contracts/` and TS to `frontend/src/generated/contracts/`
+(gitignored; CI generates before building).
 
-- `wire.json` — channelwire limits, timing, close reasons, the WS route /
-  query-param / subprotocol vocabulary, the Noise nonce limits (soft rekey
-  trigger and hard wrap bound), and the frame length prefix. `headers.json` —
-  cross-program HTTP headers (both elevation headers,
-  credential-rejected). `retry.json` — the events-rejection retry policy.
-  `chat-history.json` — the message page limit and browser catch-up gap limit.
-  `user-settings.json` — the account-setting vocabulary: the proto key of every
-  setting, plus the default, the enum tokens and the numeric limits of the ones
-  whose value is a closed set or a range. The hub validates against these
-  (`usersettings/keys.go`) and the browser parses against them
-  (`PreferencesContext.tsx`), so a bound that differed stored a value the other
-  side then discarded for its fallback. The three Desktop enums state only
-  their default here: a THIRD language spells their tokens, so those stay in
-  `desktop.json`, and the generator cross-checks the two.
-  `worker-vocab.json` — notification-type tokens, the notification-thread
-  discriminator, the Codex rate-limit token, and the model sentinels.
-  `goose-protocol.json` — Goose permission modes. `copilot-protocol.json` —
-  Copilot's native event, tool, mode and permission vocabulary, plus the
-  session-mode option-group id and the approval-scope words its control
-  surface sends.
-  `providers.json` — AgentProvider display names / CLI aliases / parse
-  aliases (agentlabels and agentProviderLabel consume the generated tables).
-  `scopes.json` — the scope vocabulary: wire tokens, Preferences
-  descriptions, consent-screen sentences, categories, implied-by graph.
-  `theme-default.json` — the default palette + the OAuth pages' subset.
-  `validate.json` — validation policy parameters (byte limits, strip/fold/
-  refused character classes, reserved usernames). `desktop.json` — the Tauri
-  event names (Rust shell emits, webview listens — all seven of them,
-  including the sidecar-log and menu events), the env vars Rust passes
-  the Go sidecar, and `windowBehavior`, the enum tokens of the five Desktop
-  account settings (the one setting family a THIRD language spells: the Rust
-  shell matches them out of the `set_desktop_behavior` payload). It also emits
-  a RUST module (`desktop/rust/src/generated/contracts.rs`, include!d from
-  main.rs), so `prepare-desktop` depends on `generate-contracts`.
-- Go consumers import `generated/contracts` directly: one Go spelling per
-  contract constant (`contracts.MaxMessageSize`, `contracts.WSRouteChannel`).
-  `channelwire` keeps only the Go-owned limits no contract holds
-  (`WSReadLimit`, `UserEventsReadLimit`) and the wire helpers; it does not
-  alias generated constants. The frontend likewise imports
-  `~/generated/contracts/*` directly (no re-export shims).
-- To change a value: edit `contracts/<name>.json`, run `task generate`, use.
-  Adding a proto enum value fails `generate-contracts` until its contract
-  entry exists — metadata cannot be forgotten.
-- What does NOT go in contracts: values consumed by one side only (Go-only
-  limits stay in `wire.go`; FE-only retry policies stay in the frontend), and
-  dual-implemented ALGORITHMS — those stay differential: the
-  `testdata/*_conformance.json` corpora (and `noise_rekey_vectors.json`)
-  remain the executable spec both suites replay.
-- This is a rule about CONTRACTS, not about proto. A single-side enum still
-  takes its numbering from a proto enum — see "Enum columns store proto enum
-  ordinals" below. Crossing a language boundary is what adds a contract entry
-  on top; it is not what earns an enum its numbering.
+- Each contract states what it holds and why in its own `_readme`. Read that,
+  not a list here: a list here is a second copy, and the last one described 13
+  of 31 contracts.
+- `desktop.json` also emits a RUST module
+  (`desktop/rust/src/generated/contracts.rs`, include!d from main.rs), so
+  `prepare-desktop` depends on `generate-contracts`.
+- Import generated code directly: Go `generated/contracts`, one spelling per
+  constant (`contracts.MaxMessageSize`, `contracts.WSRouteChannel`); frontend
+  `~/generated/contracts/*`. No re-export shims. `channelwire` keeps only
+  Go-owned limits no contract holds (`WSReadLimit`, `UserEventsReadLimit`) plus
+  wire helpers, and aliases no generated constant.
+- Change a value by editing `contracts/<name>.json` and running
+  `task generate`. A new proto enum value fails `generate-contracts` until its
+  contract entry exists.
+- Out of scope: values one side consumes (Go-only limits in `wire.go`, FE-only
+  retry policies in the frontend) and dual-implemented ALGORITHMS, which stay
+  differential — `testdata/*_conformance.json` (and `noise_rekey_vectors.json`)
+  are the executable spec both suites replay.
+- Contracts do not decide numbering: a single-side enum still takes a proto
+  enum's numbering (see **Enum columns store proto enum ordinals**).
 
-### JSON Schema validation (no schemaless JSON)
+### JSON Schema validation
 
-Every project-written JSON file must validate against a JSON Schema: run
-`task validate-json` (also part of `task lint`, `task test`, and
-`task test-no-docker`, so every CI OS job enforces it). Scope and rules live
-in `scripts/validate-json.mjs`: `contracts/`, `testdata/` (root and package
-fixtures) resolve a SIBLING `<name>.schema.json`; the vendored syntax themes
-and license-override metadata use shared schemas stated on their rule. An
-in-scope file with no schema is a hard failure — a new fixture cannot appear
-without a schema stating its shape. Tool-owned JSON (package.json, tsconfig,
-tauri configs, lockfiles) is out of scope on purpose.
+Every project-written JSON file validates against a JSON Schema via
+`task validate-json`, which `task lint`, `task test` and `task test-no-docker`
+run, so every CI OS job enforces it. `scripts/validate-json.mjs` sets scope:
+`contracts/` and `testdata/` (root and package fixtures) resolve a SIBLING
+`<name>.schema.json`; vendored syntax themes and license-override metadata use
+the shared schemas stated on their rule. An in-scope file with no schema fails
+hard. Tool-owned JSON (package.json, tsconfig, tauri configs, lockfiles) is out
+of scope on purpose.
 
 ### vanilla-extract `.css.ts` files
 
-Never write a bare `*.css.ts` basename inside a `.css.ts` file — not in code, and not in a comment. Write `~/styles/global.css.ts` or `./widgets/SpanLines.css.ts`, never `global.css.ts`. A bare basename makes the vanilla-extract compiler fail the whole module with `Styles were unable to be assigned to a file`, pointing at an unrelated line in that file. Every test that imports the module then fails to load, which reads as a broken component rather than a broken comment.
+Never write a bare `*.css.ts` basename inside a `.css.ts` file, even in a
+comment: write `~/styles/global.css.ts` or `./widgets/SpanLines.css.ts`, never
+`global.css.ts`. A bare basename fails the whole module with
+`Styles were unable to be assigned to a file` at an unrelated line, and every
+importing test then fails to load — which reads as a broken component, not a
+broken comment.
 
 ### sqlc files
 
-`backend/internal/hub/store/{sqlite,postgres,mysql}/db/queries/*.sql` and any other sqlc query files MUST contain only ASCII characters. The sqlc parser fails on non-ASCII bytes (typically inside comments) with a misleading `mismatched input 'SELECr'`-style error that points at the wrong line. Use `--` (double hyphen) and plain ASCII punctuation instead of `—` (em-dash) or smart quotes.
+`backend/internal/hub/store/{sqlite,postgres,mysql}/db/queries/*.sql` and every
+sqlc query file MUST be ASCII-only. A non-ASCII byte, usually in a comment,
+fails the parser with a misleading `mismatched input 'SELECr'`-style error at
+the wrong line. Use `--` and ASCII punctuation, never `—` or smart quotes.
 
 ## Common commands
 
 - `task generate` — proto + sqlc generation
 - `task build` — full build (backend + frontend)
-- `task lint` — all linters
-- `task test` — all tests
-- `task test-e2e -- <files>` — run only the affected E2E specs, not the full suite
-- `task lint-backend` / `task lint-frontend` / `task lint-desktop`
-- `task test-backend` / `task test-frontend`
+- `task lint` — all linters (`task lint-backend` / `task lint-frontend` /
+  `task lint-desktop`)
+- `task test` — all tests (`task test-backend` / `task test-frontend`)
+- `task test-e2e -- <files>` — only the affected E2E specs (a full run takes
+  about half an hour)
 
-Lint Rust/desktop code with `task lint-desktop`, not `cargo clippy` directly. The task builds the Go sidecar binary first, which Tauri's bundle resources point at `../go/bin/*`. Running `cargo clippy` directly fails with a misleading build error.
+Lint Rust/desktop with `task lint-desktop`, never `cargo clippy` directly: the
+task first builds the Go sidecar that Tauri's bundle resources point at
+(`../go/bin/*`), and without it clippy fails with a misleading build error.
 
 ## Coding conventions
 
 ### Enum columns store proto enum ordinals
 
-A database column whose values are a closed set is an enum, and every enum in
-this project takes its numbering from a proto enum. The column stores the
-ordinal as an integer — never the value's name.
+A column whose values are a closed set is an enum: it takes its numbering from a
+proto enum and stores the ordinal as an integer, never the name — even for a
+hub-internal vocabulary, which goes in `proto/leapmux/v1/hub_storage.proto` (no
+message or RPC) if it has no enum yet.
 
-This holds whether or not the value crosses a language boundary. A hub-internal
-vocabulary the browser never sees still gets a proto enum; the ones that had
-none live in `proto/leapmux/v1/hub_storage.proto`, which exists for exactly
-that and carries no message or RPC.
-
-- **Give the column a CHECK that states the range**, and start it at 1. Proto3
-  fixes UNSPECIFIED at 0, an unset Go field holds 0, and no column here has a
-  state 0 could mean — so a write that forgot the value fails instead of
-  recording one nobody chose. `agents.goal_status` is the one exception, where
-  0 is the real state "no goal", and it says so at the column.
-- **Admit less than the enum declares when a value is derived or belongs to
-  another table.** `AGENT_GOAL_STATUS_DORMANT` and the two
-  `ControlResponseState` values that describe a request with no answer row are
-  both outside their column's CHECK, each with the reason at the column.
-- **Bind the ordinal as a query parameter**, from the Go constant, so a
-  renumber propagates. Spell a literal only where a parameter cannot reach: a
-  migration, or a partial-index predicate (SQLite matches those syntactically,
-  so a bound `?` makes the index ineligible). Every such literal needs a test
-  that pins it — `enum_column_numbering_test.go` in `hub/store` and `worker/db`
-  are those tests, and a schema comment identifies the one that guards it.
+- **CHECK the range, starting at 1.** Proto3 fixes UNSPECIFIED at 0 and an unset
+  Go field holds 0, so a forgotten write fails instead of storing a value nobody
+  chose. Sole exception: `agents.goal_status`, where 0 means "no goal", as its
+  column states.
+- **Admit less than the enum declares** for a derived value or one another table
+  owns — `AGENT_GOAL_STATUS_DORMANT` and the two `ControlResponseState` values
+  for a request with no answer row, each with its reason at the column.
+- **Bind the ordinal as a query parameter** from the Go constant, so a renumber
+  propagates. Spell a literal only where a parameter cannot reach: a migration,
+  or a partial-index predicate (SQLite matches those syntactically, so a bound
+  `?` makes the index ineligible). `enum_column_numbering_test.go` in
+  `hub/store` and `worker/db` pins each such literal, and a schema comment
+  identifies its guard.
 - **The Go domain type is a DEFINED type over the proto enum**
-  (`type Status leapmuxv1.BackgroundTaskStatus`), not an independent iota and
-  not an alias. The ordinals are then one numbering, the conversion each way is
-  a cast, and the type still carries its own methods.
-- **A payload vocabulary is a separate decision from storage.** Some of these
-  values also travel as WORDS inside a notification payload or an RPC field
+  (`type Status leapmuxv1.BackgroundTaskStatus`) — not an iota, not an alias —
+  so the ordinals are one numbering, each conversion is a cast, and the type
+  keeps its own methods.
+- **A payload vocabulary is separate from storage.** Words sent in a
+  notification payload or an RPC field keep their functions
   (`bgtask.StatusWire`, `agent.GoalStatusWire`, `oauth.ProviderTypeWire`,
-  `store.AppRegistrationSourceWire`). Those functions stay, and each says at its
-  definition that it is not the storage format. Do not add the inverse unless a
-  caller reads that vocabulary inward.
+  `store.AppRegistrationSourceWire`), each stating it is not the storage format.
+  Add the inverse only for a caller that reads those words inward.
 
-Why: the alternative spells one vocabulary in Go and again in three dialects of
-SQL, with nothing to keep them in step. Renaming a Go constant used to leave a
-`status IN ('completed','failed',…)` list stale, and a `FromWire` that fell
-through to a default turned the drift into a plausible wrong value rather than
-an error.
+Why: otherwise one vocabulary is spelled in Go and in three SQL dialects with
+nothing keeping them in step — a renamed constant left a
+`status IN ('completed','failed',…)` list stale, and a `FromWire` falling
+through to a default turned the drift into a plausible wrong value.
 
-### Provider-specific logic belongs in the provider, not shared code
+### Provider-specific logic belongs in the provider
 
-LeapMux supports ten agent providers. Five read their own native protocol — Claude
-Code, Codex, Copilot, Pi and ZCode. Five speak the Agent Client Protocol — OpenCode,
-Cursor, Kilo, Goose and Reasonix — and reach the worker through `acpStart`. Copilot
-is NOT one of them: `copilot_connection_test.go` and `copilot_native_session_test.go`
-both assert its arguments hold no `--acp`. Anything that depends
-on a **single provider's wire format or message shapes** MUST live in that provider's
-plugin/implementation — never hardcoded into shared code (a package-level helper, a
-shared `default*` function, or a `switch` on provider). Shared code stays
-provider-neutral and delegates the provider-specific decision.
+Five providers read their own native protocol: Claude Code, Codex, Copilot, Pi,
+ZCode. Five speak the Agent Client Protocol via `acpStart`: OpenCode, Cursor,
+Kilo, Goose, Reasonix. Copilot is NOT ACP — `copilot_connection_test.go` and
+`copilot_native_session_test.go` assert its arguments hold no `--acp`.
 
-- **Backend (Go):** the `Provider` interface in
-  `backend/internal/worker/agent/provider.go` is the home for per-provider decisions.
-  Add a method there (e.g. `IsSelfDisplayingControlTool`) and dispatch via
-  `agent.ProviderFor(provider)`. Do NOT put a provider's tool names / method names /
-  envelope shapes in a package-level function that shared service code calls.
-- **Frontend (TS):** the `Provider` plugin interface in
-  `frontend/src/components/chat/providers/registry.ts` is the home. Add a method
-  (e.g. `previewText`, sibling of `extractQuotableText`) and implement it per plugin;
-  a genuinely provider-neutral shape (`{content}`, `{controlResponse}`) can share a
-  `default*` helper that plugins delegate to, but the Anthropic/Codex/Pi/ACP-specific
-  parsing stays in that plugin. The renderer layer is where each provider's raw
-  message shapes are known — see the `frontend-owns-message-extraction` principle.
+Anything depending on **one provider's wire format or message shapes** MUST live
+in that provider, never in shared code (a package-level helper, a shared
+`default*` function, a `switch` on provider). One provider's shape in shared
+code breaks or half-serves the rest and becomes a second source of truth.
 
-Why: hardcoding one provider's shape into shared code silently breaks or half-serves
-every other provider and is a second source of truth that drifts. If you write a
-provider's tool/method name outside its plugin, move it into the plugin behind
-an interface method.
+- **Backend:** add a method to the `Provider` interface in
+  `backend/internal/worker/agent/provider.go` (e.g.
+  `IsSelfDisplayingControlTool`); dispatch through `agent.ProviderFor(provider)`.
+- **Frontend:** add a method to the `Provider` plugin interface in
+  `frontend/src/components/chat/providers/registry.ts` (e.g. `previewText`,
+  beside `extractQuotableText`) and implement it per plugin. A genuinely neutral
+  shape (`{content}`, `{controlResponse}`) may share a `default*` helper;
+  Anthropic/Codex/Pi/ACP parsing stays in its plugin.
+
+### The three-layer chat render pipeline
+
+A change that crosses a layer is almost always misplaced. Each layer's
+`README.md` holds the long form.
+
+1. **`components/chat/providers/` — extraction.** A plugin reads ONE agent's
+   wire format, owns its tool names, method names and envelope tokens, and
+   returns provider-neutral model. It draws nothing (no JSX, DOM or Solid
+   signal). The one entry is `extractChatRow` (`rowExtraction.ts`), via
+   `prepareChatRow`.
+2. **`components/chat/model/` — the neutral model:** the `ChatRow` union,
+   `ToolCall`, one file per `ToolKind` in `model/tools/`. It knows no provider
+   and draws nothing: no `.tsx`, no presentation type — a model-owned union
+   (`ReminderSeverity`, `ToolIconHint`) states intent and layer 3 maps it. It
+   imports only `~/lib/*`, `~/generated/*`, `~/models/*`, its own tree and the
+   three pure diff modules, **type imports included**.
+3. **`components/chat/results/` — rendering** from the model and design tokens.
+   `renderRowContent` (`rowRenderers.tsx`) is the one place a row kind becomes
+   markup; its `switch` is exhaustive through `assertNever`, so a new kind is a
+   compile error. Layer 3 never imports `../providers/`, parses provider bytes,
+   or branches on `AgentProvider`, a tool name or a wire token.
+
+Only four control surfaces in `providers/` draw: `codex/CodexControlActions.tsx`,
+`cursor/CursorControlActions.tsx`, `pi/PiControlActions.tsx`,
+`pi/PiPlanApprovalActions.tsx`.
+
+Enforcement, from `eslint/chatPipelinePlugin.ts`:
+
+- `layer-imports` — every import form, both directions.
+- `no-provider-decision` — a provider comparison, switch or keyed lookup, a
+  helper that decides for you, or a bare wire token as a string literal.
+- `no-forbidden-assertion`.
+- `plugin-registration-only` — a `plugin.ts` holds the registration and imports
+  each hook.
+
+A `no-restricted-syntax` block in `eslint.config.ts` bans JSX under `providers/`
+outside those four surfaces and test files.
+`src/test-support/chatLayerStructure.test.ts` guards the structure the rules
+assume; `src/test-support/restrictedSyntaxKeepsBaseRules.test.ts` runs the real
+linter over probe files so a scoped config block cannot silently un-guard a
+tree.
+
+Extracting a preview, summary or plaintext is layer 1's job in the browser,
+never the Go backend's (the `frontend-owns-message-extraction` principle):
+layer 1 is where raw shapes are known.
 
 ### Tests
 
-- Backend: `testify/assert`, `testify/require`.
-- Frontend: `vitest`. A `describe` identifies the symbol under test and **spells that symbol exactly**, whatever its case: `describe('DirectoryTree')`, `describe('MESSAGE_UI_DEFAULTS')`, `describe('createStableContext')`, `describe('ChannelManager openChannel')`. `test/prefer-lowercase-title` is configured with `ignore: ['describe']` for exactly this, so a capital is legal there and needs no workaround. A describe that identifies no single symbol still opens lowercase (`describe('parses empty input')`) — never Title Case prose.
-- An `it` or `test` title is a **sentence** that continues the word "it", so it starts lowercase: `it('returns null for an empty payload')`. The lint rule still enforces that half, and its `--fix` lowercases the first letter alone — so a case title must never open with a name that keeps its capital, or `--fix` misspells it (`dEFAULT_MONO_FONT_FAMILY`). Put the name later in the sentence instead.
-- **Never flatten a name's capitals** in any title: `describe('mcptoolcalldisplayname')` for `mcpToolCallDisplayName` spells an identifier nobody can search for. `src/test-support/noMangledTestTitles.test.ts` fails the suite on both faults — the autofix mangle, and a title that drops the capitals of a name its own file knows.
-- **Unit tests are co-located** with the code they test: `foo.ts` → `foo.test.ts` in the same directory. This holds under `tests/e2e/` too — an E2E helper carries its own `.test.ts` beside it (`helpers/mail.ts` → `helpers/mail.test.ts`). Do **not** add a second test file for a module under `tests/unit/` — that mirror no longer exists (see `src/test-support/noMirroredUnitTests.test.ts`, which fails the suite if it comes back). Shared unit-test helpers live in `src/test-support/` (imported via `~/test-support/…`).
-- **The file extension picks the runner**, everywhere: `.spec.ts` is Playwright, `.test.ts` is vitest. So a `.test.ts` under `tests/e2e/helpers/` runs in `task test-frontend` — no browser, no hub, milliseconds — and never in the E2E suite. Both configs are pinned to this (`vitest.config.ts` excludes `tests/e2e/**/*.spec.ts` by name, not `tests/e2e/**`; `playwright.config.ts` sets `testMatch: '**/*.spec.ts'`), and `src/test-support/testFileNaming.test.ts` fails the suite when a file is on the wrong side or a config stops enforcing its half. Do not widen the vitest exclude back to `tests/e2e/**`: with Playwright pinned to `.spec.ts`, a co-located test would then run under **neither** runner. Playwright's own default `testMatch` takes `*.test.ts` as well, which is why the pin is there — without it those tests run in a browser worker, where vitest's API does not exist.
-- E2E: do NOT pass per-call `{ timeout: … }` overrides to `expect`, `locator.waitFor`, etc. Playwright's global timeout (configured in `playwright.config.ts`) already applies; per-call overrides are redundant noise. If a specific assertion legitimately needs a longer-than-global timeout (e.g. waiting on a slow worker spawn), discuss it before silently adding one.
-- Unused imports cause lint failures (strict).
-- Test provider-specific logic in that provider's test file (e.g. Claude's `previewText` in `providers/claude/plugin.test.ts`), not in a shared module's test.
+- Backend: `testify/assert`, `testify/require`. Frontend: `vitest`.
+- **Titles.** A `describe` spells its symbol exactly, whatever the case —
+  `describe('DirectoryTree')`, `describe('MESSAGE_UI_DEFAULTS')`,
+  `describe('createStableContext')`, `describe('ChannelManager openChannel')` —
+  which `test/prefer-lowercase-title` allows via `ignore: ['describe']`. A
+  `describe` with no single symbol opens lowercase
+  (`describe('parses empty input')`). An `it`/`test` title is a lowercase
+  sentence continuing "it" (`it('returns null for an empty payload')`); since
+  `--fix` lowercases only the first letter, never open one with a capitalized
+  name (`dEFAULT_MONO_FONT_FAMILY`). Never flatten a name's capitals
+  (`describe('mcptoolcalldisplayname')` for `mcpToolCallDisplayName`).
+  `src/test-support/noMangledTestTitles.test.ts` fails both.
+- **Co-locate:** `foo.ts` → `foo.test.ts` beside it, `tests/e2e/` included
+  (`helpers/mail.ts` → `helpers/mail.test.ts`). No `tests/unit/` mirror
+  (`src/test-support/noMirroredUnitTests.test.ts`). Shared helpers live in
+  `src/test-support/` (`~/test-support/…`).
+- **The extension picks the runner**, everywhere: `.spec.ts` is Playwright,
+  `.test.ts` is vitest, so a `.test.ts` in `tests/e2e/helpers/` runs in
+  `task test-frontend` and never in E2E. `vitest.config.ts` excludes
+  `tests/e2e/**/*.spec.ts` by name; `playwright.config.ts` pins
+  `testMatch: '**/*.spec.ts'`, because Playwright's default `testMatch` also
+  takes `*.test.ts` and would run it in a browser worker without vitest's API.
+  `src/test-support/testFileNaming.test.ts` enforces both halves. Widening the
+  vitest exclude back to `tests/e2e/**` would leave a co-located test under
+  **neither** runner.
+- Test provider-specific logic in that provider's test file (e.g. Claude's
+  `previewText` in `providers/claude/plugin.test.ts`).
+- **Inject what ends a transient state; never size a window with a sleep.**
+  Four CI flakes had that shape: a 5ms sleep in a 10ms backoff overran on loaded
+  macOS; an `interval/2` sleep passed the tick as Windows rounds up to ~15.6ms;
+  a multi-megabyte write meant to block returned through Windows loopback. Take
+  a `quartz.Clock` (`quartz.NewReal()` in production) driven via
+  `internal/util/testutil` (`NewQuartzMock`, `DeadlineContext`,
+  `WaitForTimer`), or a gate the test releases. Keep an unasserted deadline
+  generous (30s).
+- **A Go test that runs `git init` pins `core.fsmonitor false`, `gc.auto 0` and
+  `maintenance.auto false` in the repo's config**, not via `-c`: a global
+  `core.fsmonitor=true` spawns a daemon that outlives the command and writes
+  under `.git/`, racing `t.TempDir` cleanup
+  (`TempDir RemoveAll cleanup: ... directory not empty`, blamed on the test).
+  `testutil.NewGitRepo` does this; a new helper must too.
+- **Postgres/MySQL store suites need `-tags integration` and Docker:**
+  `cd backend && go test -tags integration -run 'TestPostgresStore|TestMySQLStore' ./internal/hub/store/postgres/... ./internal/hub/store/mysql/...`
+  (MySQL takes about 85s). Without the tag they report "no test files", and
+  `go test ./internal/hub/store/...` covers **sqlite alone**, missing the MySQL
+  lock / REPEATABLE-READ and Postgres null-time divergences that the shared
+  `store/storetest/` suite exists to catch.
+
+### E2E tests
+
+One `leapmux dev` process and one mock model server serve the whole run; one
+browser context and tab serve every spec; no test talks to a real model. Hence
+`workers: 1` and `fullyParallel: false`, and about half an hour per full run —
+prefer `task test-e2e -- <files>`. **CI does not run E2E**: neither `task test`
+nor `task test-no-docker` reaches `test-e2e`, so run it locally before claiming
+an E2E change works.
+
+- **Never start your own hub.** `startSuiteServer` (`helpers/suiteServer.ts`)
+  owns it; the `leapmuxServer` fixture gives its URL, tokens and worker id. Take
+  a fresh WORKSPACE. A spec that needs its own process (a restart, a
+  deregistration, a second worker) spawns it with `hubSpawnEnv()` merged with
+  `leapmuxServer.agentEnv`, so agents still reach the mock.
+  `helpers/server.test.ts` fails a `hub`, `solo`, `dev` or `worker` spawn that
+  skips that helper, since a raw `process.env` carries real provider
+  credentials.
+- **Undo page state in the reset, not the spec.** `resetSharedPage`
+  (`fixtures.ts`) restores listeners, routes, cookies, permissions, storage,
+  viewport, device metrics and every media-emulation key. A spec's own cleanup
+  runs only on success, so one failure would poison every later spec.
+  `203-shared-tab-isolation.spec.ts` guards this; `mediaEmulationReset` is typed
+  `Required<…>`, so a new Playwright media feature fails to compile until
+  handled.
+- **Isolate explicitly** in `ISOLATED_CONTEXT_SPECS`. `isMobile`, `hasTouch` and
+  a non-default `deviceScaleFactor` isolate automatically — they belong to a
+  CONTEXT, not a page.
+- **Script the model; never ask it.** The mock answers three model protocols
+  plus Cursor's Connect stream. The `modelScript` fixture states each turn:
+  - `queue` — an ordered turn.
+  - `rule` — a turn that cannot be placed in order, such as a subagent's.
+  - `fallback` — however many turns a provider starts by itself.
+  - `prompt` — marks a prompt as this test's.
+  - `waitForSteps` — synchronizes.
+  - `allowUnconsumed` — a turn interrupted on purpose.
+
+  An unscripted content turn FAILS with its request recorded.
+- **Tool calls come from `helpers/providerToolCalls.ts`**, the one home of each
+  provider's tool vocabulary; `satisfies` makes a new provider a type error.
+  Never hand-roll a wire shape.
+- **Never seed through the database** — no message or control-request row. A
+  direct write produces a shape no live provider reaches; script it instead.
+- **Never `test.skip()` around model behaviour**; script the turn.
+  `requireRegistryRow` fails rather than skips and takes no `test` parameter.
+- **No per-call `{ timeout: … }` overrides** on `expect`, `locator.waitFor` or
+  the rest. The one exception sets the bar: `193-tool-running-badge.spec.ts`
+  waits on the Claude CLI's fixed 30-second `setInterval` through a named
+  constant documenting that period. Discuss before adding another.
+- **Scope a chat locator to `:visible`, and a sidebar locator to `:visible` plus
+  `.first()`.** `ChatView` keeps a hidden premeasure copy of each unmeasured row
+  (same test ids and text), so a page-rooted chat locator can match TWO elements
+  and fail strict mode; use `helpers/ui.ts` (`assistantBubbles`, `userBubbles`,
+  `messageBubbles`, `messageContents`, `visibleOnly`) on the OUTERMOST locator.
+  The SIDEBAR is mounted twice for real (desktop and mobile): the second copy
+  may be visible, never hydrates worker-side metadata, and can intercept a
+  hover. Use `workspaceRow` / `treeRow` / `branchGroupRow` and
+  `sidebarLeafLabels` / `sidebarLeafIds`, never a raw `querySelector`. The agent
+  info card renders on two surfaces; scope each row to its popover.
+  `src/test-support/visibleChatLocators.test.ts` rejects an unscoped test-id or
+  `text=` locator.
+- **Wait on the WORKER, not the tab count or the hub's list** — both are
+  optimistic CRDT state. `emitRemoveTab` tombstones at once while `CloseAgent`
+  is still stopping the process, and `listAgentsViaAPI` reads the hub's
+  `ListTabs`, already cleared by that tombstone. Poll `inspectLastTabCloseViaAPI`
+  for a close verdict, or `waitForAgentStartupViaAPI` for startup (it waits for
+  not-STARTING, so it does NOT distinguish a failed agent). The worker judges
+  "last tab on the branch?" from its own rows, so closing two tabs in a row
+  races the first teardown.
 
 ### Frontend CSS (vanilla-extract)
 
-Prefer `var(--space-N)` design tokens over equivalent pixel literals for `gap`, `margin*`, and `padding*`. The token scale (from `@knadh/oat`):
-
-- `--space-1` = `0.25rem` (4px)
-- `--space-2` = `0.5rem` (8px)
-- `--space-3` = `0.75rem` (12px)
-- …
-
-Does NOT apply to non-spacing px values: `borderRadius`, fixed `width`/`height` (resizers, scrollbars), absolute positioning offsets. Those are magic numbers, unrelated to the spacing scale.
+Prefer `var(--space-N)` tokens to pixel literals for `gap`, `margin*` and
+`padding*` (`@knadh/oat`: `--space-1` = `0.25rem` (4px), `--space-2` = `0.5rem`
+(8px), `--space-3` = `0.75rem` (12px), …) — but not for `borderRadius`, fixed
+`width`/`height` (resizers, scrollbars) or absolute positioning offsets, which
+are magic numbers unrelated to the scale.
 
 ### Imports
 
-Prefer direct imports over re-export aliases. Do NOT add `export { foo as bar } from '...'` in a sibling barrel/style file just to give a symbol a context-specific name — import the canonical name directly at every call site. If the canonical name is too generic, rename the canonical export instead. Existing re-export aliases: leave them unless touching that file for another reason.
+Prefer direct imports to re-export aliases. Never add
+`export { foo as bar } from '...'` in a barrel/style file only for a
+context-specific name; import the canonical name, and rename the canonical
+export if it is too generic. Leave an existing alias unless you touch its file
+anyway.
 
 ### Tooltips
 
-Use the `<Tooltip>` component (`~/components/common/Tooltip`) for hover text on an interactive element. Do NOT use a bare `title` attribute — it renders the OS tooltip, which ignores the app's theme and typography, appears after a browser-controlled delay, and is invisible on touch.
+Hover text on an interactive element uses `<Tooltip>`
+(`~/components/common/Tooltip`), never a bare `title`. Pass `ariaLabel` when the
+control has no visible text, so the tooltip is its accessible name too.
 
 ```tsx
 <Tooltip text="Remove link, keeping the text" ariaLabel>
@@ -224,78 +367,71 @@ Use the `<Tooltip>` component (`~/components/common/Tooltip`) for hover text on 
 </Tooltip>
 ```
 
-Pass `ariaLabel` when the control has no visible text, so the tooltip also serves as its accessible name.
-
-**`title` on a DOM element is a lint error** (`no-restricted-syntax` in `eslint.config.ts`). There is no exception, including a **disabled** control: `<Tooltip>` covers that case. It gives its wrapper a real box and listens there — a disabled element dispatches no pointer event of its own — and it leaves an offscreen description in `aria-describedby` for as long as the control is disabled, which is the only route to a screen-reader user there (a disabled element takes no focus, so the tooltip can never open from the keyboard).
-
-Two things go wrong with a native `title`, and the second is silent. It renders the OS tooltip, which ignores the app's theme and typography, waits a browser-controlled delay, and never appears on touch. And on a control with no `aria-label`, a `title` long enough to state a reason **becomes the accessible name** — a screen reader then announces three sentences of remedy where "Add passkey" belongs, and every `getByRole(..., { name })` lookup stops matching.
-
-The lint rule matches a **lowercase** element name only, because `title` on a component is that component's own prop: `<Dialog title>` is a heading, `<IconButton title>` is a tooltip. A component that spreads its props onto a DOM node closes that hole in the type system instead, by omitting `title` from its prop type — `IconButton` and `ConfirmButton` both do, and a new one that spreads DOM props must.
+**`title` on a DOM element is a lint error** (`no-restricted-syntax` in
+`eslint.config.ts`) with no exception, disabled controls included; the lint
+message states why, and `Tooltip.tsx` documents how it covers a disabled
+control. The rule matches **lowercase** elements only, because `title` on a
+component is its own prop (`<Dialog title>` is a heading, `<IconButton title>` a
+tooltip). So a component that spreads props onto a DOM node must omit `title`
+from its prop type, as `IconButton` and `ConfirmButton` do — the linter cannot
+see through the spread.
 
 ### Dropdowns and one-of-N choices
 
-Never render a native `<select>`. Use:
+Never render a native `<select>`:
 
-- `<PillGroup>` (`~/components/common/PillGroup`) for a short fixed set — up to
-  four options that fit on one row. It supplies `role="radiogroup"`, roving
-  tabindex and the arrow-key contract.
+- `<PillGroup>` (`~/components/common/PillGroup`) for up to four options on one
+  row; it supplies `role="radiogroup"`, roving tabindex and the arrow-key
+  contract.
 - `<DropdownMenu>` + `<DropdownMenuCheckableItem kind="radio">`
-  (`~/components/common/DropdownMenu`) for anything longer, dynamic or with
-  no upper limit. Follow `AgentProviderSelector` and `PreferencesNav`, which
-  already do this.
+  (`~/components/common/DropdownMenu`) for anything longer, dynamic or with no
+  upper limit, as `AgentProviderSelector` and `PreferencesNav` do. A list with
+  no upper limit gets a filter box: render the menu `as="div"` so a click inside
+  does not dismiss it, and close from the item's own handler.
 
-Why: a native `<select>` opens the OS picker, which ignores the app's theme and
-typography — the same reason a bare `title` is banned for tooltips. It renders
-text and nothing else, so a colour swatch, an icon or a second line is
-impossible; `ThemeChooser` needs exactly that. And its selected index is browser
-state, so every caller inevitably repairs the DOM by hand after a refused write
-or an option-list swap — two such repairs were deleted when this project
-removed the last selects. A menu derives from props and cannot drift.
-
-For a list with no upper limit, give the menu a filter box: render it
-`as="div"` so a click inside does not dismiss it, and close from the item's own
-handler.
+A `<select>` opens the unthemed OS picker, renders text only (no colour swatch,
+icon or second line, which `ThemeChooser` needs), and keeps its selected index as
+browser state that callers must repair by hand after a refused write or an
+option-list swap. A menu derives from props and cannot drift.
 
 ### Browser storage
 
-Never call `localStorage`, `sessionStorage` or `indexedDB` directly. Route every read, write, and delete through `~/lib/browserStorage`, and open every database through `~/lib/idb` (`createIdbConnection`). A test resets a store with `localStorageClearForTests` / `sessionStorageClearForTests` / `resetBrowserStorageForTests`, not with `clear()`.
+Never call `localStorage`, `sessionStorage` or `indexedDB` directly: route every
+read, write and delete through `~/lib/browserStorage`, and open every database
+through `~/lib/idb` (`createIdbConnection`). Callers pass a LOGICAL name
+(`'key-pins'`, `'worker-info:w-1'`); the module composes the stored key. A test
+resets a store with `localStorageClearForTests` / `sessionStorageClearForTests`
+/ `resetBrowserStorageForTests`, not `clear()`. A module that MIRRORS an
+account-scoped key in memory subscribes to `onStorageAccountChange`, so the
+mirror follows the account.
 
-Callers pass a LOGICAL name (`'key-pins'`, `'worker-info:w-1'`). The module owns the physical layout and composes the whole stored key, so no call site builds one by hand.
+`browserStorage.ts` and `browserStorageDb.ts` document the rest: the IndexedDB
+and sessionStorage backends, expiry and `runCleanup`, the write-behind queue,
+and account hydration.
 
-TWO BACKENDS. The `leapmux:` family lives in **IndexedDB** (`~/lib/browserStorageDb`), because several of its families are unbounded and localStorage is synchronous main-thread I/O under a ~5 MB cap. `sessionStorage` stays on the Web Storage API, because its per-tab lifetime is load-bearing for the CRDT client identity and the tab pointers.
+To add a key:
 
-IndexedDB is asynchronous, so every localStorage-family key declares an `access` tier, and that picks the accessor:
+1. Add the constant (`KEY_*`) or prefix (`PREFIX_*`) to `browserStorage.ts`.
+2. Register it in `LOCAL_KEY_SPECS` (IndexedDB) or `SESSION_KEY_SPECS`
+   (sessionStorage), and choose for a local key:
+   - `access`: `sync` only for a reader that cannot await (a `createSignal`
+     initializer, a `createMemo`, a constructor); `async` for everything else,
+     and for any family with no upper limit.
+   - `scope`: `'account'` for anything a user owns; `'device'` only for state
+     every account on the origin shares.
 
-- `sync` — MIRRORED in memory, so `localStorageGet` / `localStorageSet` / `localStorageRemove` stay synchronous. For a reader that cannot await: a `createSignal` initializer, a `createMemo`, the `onStorageAccountChange` callback, a constructor.
-- `async` — not mirrored: `localStorageLoad` / `localStorageStore` / `localStorageDrop`, which return promises. The answer for everything else, and for every unbounded family.
+   `satisfies` makes a missing `scope` or `access` a compile error.
+3. Use its tier's helpers. The wrong tier is a compile error (`SyncLocalKey` /
+   `AsyncLocalKey`), and an unregistered name throws, so a mistake fails
+   visibly instead of vanishing at the next sweep.
 
-Using the wrong accessor is a compile error (`SyncLocalKey` / `AsyncLocalKey`) and also throws at runtime.
-
-`sessionStorage` keeps `sessionStorageGet` / `sessionStorageSet` / `sessionStorageHas` / `sessionStorageRemove`, and carries no `access`.
-
-Why: every key is scoped to one account, and every row carries an expiration. Reads refresh it once it is within three hours of the full TTL, so a key stays alive as long as the app is touched within that TTL. `runCleanup` deletes any expired row, any row no registration matches, and any `leapmux:`-family key left in localStorage by a build that predates the move. It KEEPS another account's fresh key, which is the point of the scope.
-
-Writes go through a coalescing write-behind queue, so a write is not durable the instant it returns. A caller that must know reads `StorageWrite.durable`; `persistedSeq` is the one that does. `App` flushes on `pagehide`.
-
-Two registries hold every key, by logical name:
-
-- `LOCAL_KEY_SPECS` — the IndexedDB-backed durable half.
-- `SESSION_KEY_SPECS` — sessionStorage.
-
-A local entry states `match` (`exact` or `prefix`), `scope`, `ttlMs` and `access`; a session entry omits `access`. A `scope: 'account'` key is stored at `leapmux:u:<userId>:<name>`, and that is the answer for anything a user owns. A `scope: 'device'` key is stored at `leapmux:<name>`, for state that guards a resource shared by every account on the origin; the two relay sequence marks are the only entries today, and they are also the only `monotonic` ones (a high-water merge, which the types allow on a `sync` key alone).
-
-`hydrateStorageAccount(userId)` loads the synchronous tier and MUST be awaited before `setStorageAccount(userId)`, which refuses an account it was not hydrated for. `AuthContext` is the one caller of both. An account-scoped access before that throws. A module that MIRRORS an account-scoped key in memory subscribes to `onStorageAccountChange` so the mirror moves with the namespace.
-
-Cross-tab changes travel on a BroadcastChannel (IndexedDB raises no event), delivered by `onStorageChanged` as the set of stored keys that moved.
-
-Adding a new key:
-
-1. Add the constant (`KEY_*`) or the prefix (`PREFIX_*`) to `browserStorage.ts`.
-2. Register it in `LOCAL_KEY_SPECS` or `SESSION_KEY_SPECS`. `satisfies` turns a missing `scope` — or, for a local key, a missing `access` — into a compile error.
-3. Read and write through the helpers for its tier. They throw for an unregistered name and for the wrong tier, so a mistake fails visibly instead of disappearing on the next sweep.
-
-Two guards enforce what the types cannot: `no-restricted-globals` / `no-restricted-properties` in `eslint.config.ts` reject any reference to the storage globals outside the gateway (and any `dexie` import outside `~/lib/idb`), and `src/test-support/storageKeysAreRegistered.test.ts` fails the suite for an exported key constant that neither table registers, and for a name registered in both.
+Guards: `no-restricted-globals` / `no-restricted-properties` in
+`eslint.config.ts` reject the storage globals outside the gateway (and any
+`dexie` import outside `~/lib/idb`); `src/test-support/storageKeysAreRegistered.test.ts`
+fails for an exported key constant that neither table registers, or a name both
+register.
 
 ## Git
 
-Never commit generated files. Output under `generated/` directories (sqlc, proto stubs, etc.) is gitignored — exclude anything generated when staging.
+Never commit generated files. `generated/` output (sqlc, proto stubs, etc.) is
+gitignored; exclude it when staging.

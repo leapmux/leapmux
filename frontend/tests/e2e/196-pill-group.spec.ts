@@ -32,15 +32,27 @@ function selectionIndicator(group: Locator): Locator {
   return group.locator(':scope > [data-pill-selection-fill]')
 }
 
+/**
+ * The group's option buttons, found by ROLE rather than by adjacency.
+ *
+ * An option that carries tooltip text is wrapped in `<Tooltip>`, whose wrapper
+ * is `display: contents`. The button is therefore still a direct FLEX ITEM of
+ * the group -- every box this file measures is unchanged -- but it is no longer
+ * a direct DOM child, and `:scope > button` matched nothing at all. A boxless
+ * wrapper is legal wherever a tooltip is, so the query must not assume
+ * adjacency. `PillGroup` nests no second group, so the role alone is exact.
+ */
+const OPTION_BUTTONS = 'button[role="radio"]'
+
 test.describe('pill group segmented control', () => {
   test('renders one content-sized control with dividers and an active fill', async ({ page, leapmuxServer }) => {
     const group = await openThemeModes(page, leapmuxServer.adminToken)
     const indicator = selectionIndicator(group)
     await expect(indicator).toHaveCount(1)
 
-    const layout = await group.evaluate((element) => {
+    const layout = await group.evaluate((element, optionButtons) => {
       const groupStyle = getComputedStyle(element)
-      const buttons = [...element.querySelectorAll<HTMLButtonElement>(':scope > button')]
+      const buttons = [...element.querySelectorAll<HTMLButtonElement>(optionButtons)]
       const boxes = buttons.map((button) => {
         const rect = button.getBoundingClientRect()
         const style = getComputedStyle(button)
@@ -65,7 +77,7 @@ test.describe('pill group segmented control', () => {
         groupRight: groupRect.right,
         boxes,
       }
-    })
+    }, OPTION_BUTTONS)
 
     expect(layout.gap).toBe('0px')
     expect(layout.borderStyle).toBe('solid')
@@ -165,16 +177,22 @@ test.describe('pill group segmented control', () => {
       await Promise.allSettled(element.getAnimations().map(animation => animation.finished))
     })
 
-    const transitionedProperty = await group.evaluate(element => new Promise<string>((resolve, reject) => {
+    const transitionedProperty = await group.evaluate((element, optionButtons) => new Promise<string>((resolve, reject) => {
       const fill = element.querySelector<HTMLElement>(':scope > [data-pill-selection-fill]')
-      const target = [...element.querySelectorAll<HTMLButtonElement>(':scope > button')]
+      const target = [...element.querySelectorAll<HTMLButtonElement>(optionButtons)]
         .find(button => button.textContent === 'Dark')
       if (!fill || !target) {
         reject(new Error('The segmented control is incomplete.'))
         return
       }
 
-      const timeout = window.setTimeout(() => reject(new Error('The selection did not slide.')), 2000)
+      // TEN seconds, not two. This budget is not the behaviour under test -- the
+      // assertion is that a `clip-path` transition RUNS at all -- and two
+      // seconds was thin enough that a full suite, with every worker busy,
+      // missed the start and reported a control that never slid. The listener
+      // is attached before the click, so a prompt transition still resolves at
+      // once and the budget costs nothing when the machine is idle.
+      const timeout = window.setTimeout(() => reject(new Error('The selection did not slide.')), 10_000)
       fill.addEventListener('transitionrun', (event) => {
         if (event.propertyName !== 'clip-path')
           return
@@ -182,7 +200,7 @@ test.describe('pill group segmented control', () => {
         resolve(event.propertyName)
       })
       target.click()
-    }))
+    }), OPTION_BUTTONS)
 
     expect(transitionedProperty).toBe('clip-path')
     const dark = group.getByRole('radio', { name: 'Dark' })
@@ -201,13 +219,13 @@ test.describe('pill group segmented control', () => {
     const indicator = selectionIndicator(group)
     await selectMode(group, 'System')
 
-    const state = await group.evaluate(element => new Promise<{
+    const state = await group.evaluate((element, optionButtons) => new Promise<{
       animations: number
       checked: string | null
       shadow: string
     }>((resolve, reject) => {
       const fill = element.querySelector<HTMLElement>(':scope > [data-pill-selection-fill]')
-      const target = [...element.querySelectorAll<HTMLButtonElement>(':scope > button')]
+      const target = [...element.querySelectorAll<HTMLButtonElement>(optionButtons)]
         .find(button => button.textContent === 'Dark')
       if (!fill || !target) {
         reject(new Error('The segmented control is incomplete.'))
@@ -219,7 +237,7 @@ test.describe('pill group segmented control', () => {
         checked: target.getAttribute('aria-checked'),
         shadow: getComputedStyle(target).boxShadow,
       }))
-    }))
+    }), OPTION_BUTTONS)
 
     expect(state.checked).toBe('true')
     expect(state.animations).toBe(0)

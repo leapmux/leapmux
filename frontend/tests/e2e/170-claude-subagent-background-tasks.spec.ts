@@ -11,7 +11,9 @@
  * clicking. The shell test tolerates the model not choosing run_in_background
  * (it asserts only when a shell row actually appears).
  */
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, test } from './fixtures'
+import { backgroundBashToolCall, spawnSubagentToolCall } from './helpers/providerToolCalls'
 import {
   backgroundTasksSection,
   exerciseTextGoalQueue,
@@ -28,10 +30,15 @@ test.describe('Claude subagent background tasks', () => {
   test('routes session-goal commands through the input queue', async ({
     authenticatedWorkspace,
     page,
+    modelScript,
   }) => {
     void authenticatedWorkspace
+    // The goal commands drive turns this test does not count.
+    await modelScript.fallback({ text: 'Understood.' })
     // Claude starts lazily. Its startup frame advertises /goal after this turn.
-    await sendMessage(page, 'Reply with the single word: ready')
+    await modelScript.queue({ text: 'ready' })
+    await sendMessage(page, modelScript.prompt('Reply with the single word: ready'))
+    await modelScript.waitForSteps()
     await waitForAgentIdle(page)
     await exerciseTextGoalQueue(page, {
       objective: 'Wait for the Claude goal route unlock.',
@@ -43,6 +50,7 @@ test.describe('Claude subagent background tasks', () => {
     authenticatedWorkspace,
     page,
     leapmuxServer,
+    modelScript,
   }) => {
     void authenticatedWorkspace
     const { hubUrl, adminToken, workerId } = leapmuxServer
@@ -60,13 +68,23 @@ test.describe('Claude subagent background tasks', () => {
     // prompt is directive about the TOOL as well, since the outcome alone did
     // not imply it.
     const MARKER = 'SUBAGENT-MARKER-1'
-    await sendMessage(page, `You MUST use the Task tool. Spawn exactly one general-purpose subagent and give it this prompt verbatim: "Write two sentences about the ocean, then end your reply with the token ${MARKER}." Do not answer it yourself and do not use Bash. Wait for the subagent to finish, then tell me what it wrote.`)
+    // The CHILD's prompt carries the marker too, so the turns it runs on its own
+    // reach this script rather than the ambient scenario.
+    await modelScript.fallback({ text: `The subagent wrote about the ocean and ended with ${MARKER}.` })
+    await modelScript.queue({
+      toolCalls: [spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'spawn-ocean', {
+        description: 'Write about the ocean',
+        prompt: modelScript.prompt(`Write two sentences about the ocean, then end your reply with the token ${MARKER}.`),
+      })],
+    })
+    await sendMessage(page, modelScript.prompt('Spawn one general-purpose subagent to write about the ocean, then tell me what it wrote.'))
+    await modelScript.waitForSteps()
     await waitForAgentIdle(page, 180_000)
 
     // 3. Sidebar: section + a subagent row. The model may choose not to spawn
     //    one at all, which is its discretion rather than a defect here, so the
     //    spawn-dependent assertions skip rather than fail.
-    const row = await requireRegistryRow(test, page)
+    const row = await requireRegistryRow(page)
     await expect(backgroundTasksSection(page)).toBeVisible()
 
     // A clickable row is a <button>, which Oat's base button rule renders at
@@ -140,19 +158,27 @@ test.describe('Claude subagent background tasks', () => {
     await expect(agentTabs).toHaveCount(0)
   })
 
-  test('background shell appears as a non-clickable shell row', async ({ authenticatedWorkspace, page }) => {
+  test('background shell appears as a non-clickable shell row', async ({ authenticatedWorkspace, page, modelScript }) => {
     void authenticatedWorkspace
-    await sendMessage(page, 'Run `sleep 3 && echo BG-MARKER` with Bash run_in_background=true, then read the output with TaskOutput.')
+    // The command is long on purpose: a shell row's TITLE is the command, and
+    // the clipping assertions below need one that reaches the edge.
+    await modelScript.queue({
+      toolCalls: [backgroundBashToolCall(
+        AgentProvider.CLAUDE_CODE,
+        'bg-shell',
+        'sleep 3 && echo BG-MARKER-A-DELIBERATELY-LONG-COMMAND-THAT-REACHES-THE-EDGE-OF-THE-SECTION',
+      )],
+    })
+    await modelScript.queue({ text: 'The command runs in the background.' })
+    await sendMessage(page, modelScript.prompt('Start the background shell probe.'))
+    await modelScript.waitForSteps(2)
 
     // Wait for the ROW, not for the agent to go idle. A running background task
     // keeps the thinking indicator up on purpose -- an active registry row IS
     // the agent still working -- so waiting for idle here races the very thing
     // the test is about, and times out whenever the shell outlives the turn.
     // The row is the observable this test wants anyway.
-    //
-    // Tolerate the model not honoring run_in_background: without a background
-    // shell there is no row to assert on, which is its discretion, not a defect.
-    const shellRow = await requireRegistryRow(test, page, 'shell')
+    const shellRow = await requireRegistryRow(page, 'shell')
 
     await expect(backgroundTasksSection(page)).toBeVisible()
     await expect(shellRow!).toHaveAttribute('data-child-agent-id', '')

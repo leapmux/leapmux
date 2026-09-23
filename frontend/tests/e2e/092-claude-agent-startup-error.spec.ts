@@ -8,6 +8,7 @@ import type { DevServerHandle } from './helpers/devServer'
  *   - LEAPMUX_WORKER_AGENT_STARTUP_TIMEOUT_SECONDS=5 to bound the test.
  */
 import { expect, test } from '@playwright/test'
+import { agentDefaultsEnv } from './agentSettings'
 import {
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
@@ -15,14 +16,13 @@ import {
 } from './helpers/api'
 import { startDevServer, stopDevServer } from './helpers/devServer'
 import { loginViaToken, openWorkspace } from './helpers/ui'
-import { realAgentEnv } from './realAgentSettings'
 
 function startServerWithFailingClaude(): Promise<DevServerHandle> {
   return startDevServer({
     dataDirPrefix: 'leapmux-startup-err',
     env: {
       LEAPMUX_WORKER_NAME: 'Local',
-      ...realAgentEnv(),
+      ...agentDefaultsEnv(),
       LEAPMUX_WORKER_AGENT_STARTUP_TIMEOUT_SECONDS: '5',
       // /usr/bin/false ignores all args and exits 1 — the shell
       // "exec claude ..." never runs.

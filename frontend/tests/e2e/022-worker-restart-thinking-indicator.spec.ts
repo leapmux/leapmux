@@ -1,9 +1,9 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT } from './helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Worker Restart Thinking Indicator', () => {
-  test('should hide thinking indicator when worker goes offline during agent turn', async ({ separateHubWorker, page }) => {
+  test('should hide thinking indicator when worker goes offline during agent turn', async ({ separateHubWorker, page, modelScript }) => {
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Thinking Indicator Test')
@@ -16,11 +16,16 @@ test.describe('Worker Restart Thinking Indicator', () => {
       const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
-      // Send a message to start an agent turn
+      // Start a turn and hold it open. The test stops the worker while the
+      // agent waits, so the answer must not arrive first: against the mock
+      // endpoint an unheld turn finishes in milliseconds, and the indicator
+      // would be gone before the assertion below ran.
+      await modelScript.queue({ text: 'An essay.', delayMs: 60_000 })
       await editor.click()
-      await page.keyboard.type('Write a very long essay about the history of computing. Make it extremely detailed.')
+      await page.keyboard.type(modelScript.prompt('Write a very long essay about the history of computing. Make it extremely detailed.'))
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
+      await modelScript.waitForSteps(1)
 
       // Wait for the thinking indicator while the agent works.
       const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]')
@@ -43,7 +48,7 @@ test.describe('Worker Restart Thinking Indicator', () => {
     }
   })
 
-  test('should resume agent after worker restart and new message', async ({ separateHubWorker, page }) => {
+  test('should resume agent after worker restart and new message', async ({ separateHubWorker, page, modelScript }) => {
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Agent Resume Test')
@@ -56,8 +61,9 @@ test.describe('Worker Restart Thinking Indicator', () => {
       await expect(editor).toBeVisible()
 
       // Send a message and wait for a response
+      await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
       await editor.click()
-      await page.keyboard.type(ARITHMETIC_PROMPT)
+      await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
       await page.keyboard.press('Meta+Enter')
 
       // Wait for the assistant's response
@@ -98,8 +104,9 @@ test.describe('Worker Restart Thinking Indicator', () => {
       // Send a new message — agent should restart and respond. The answer
       // ("3333") must not be a substring of the first answer ("6912"), which is
       // still on screen, or this wait would match the stale bubble.
+      await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
       await editor.click()
-      await page.keyboard.type(SECOND_ARITHMETIC_PROMPT)
+      await page.keyboard.type(modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
       await page.keyboard.press('Meta+Enter')
 
       // Wait for the assistant's response containing "3333"

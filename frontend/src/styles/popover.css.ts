@@ -2,17 +2,35 @@ import { globalStyle, style } from '@vanilla-extract/css'
 import { POPOVER_CARD_PADDING } from '~/styles/popoverTokens'
 
 /**
- * A dropdown host with no trigger produces no box.
+ * A dropdown host produces NO BOX OF ITS OWN, whether or not it has a trigger.
  *
  * `ot-dropdown` is an unknown element to the UA, so it defaults to
- * `display: inline`. A trigger-less `DropdownMenu` -- one opened only by
- * right-click or long press -- holds nothing but its `position: fixed` popover, so
- * that inline box is empty. Inside a flex row it is still a flex ITEM, and it adds
- * one `gap` of dead space to every row that mounts such a menu.
+ * `display: inline`, and that default costs two different things.
  *
- * `DropdownMenu` sets the attribute; see `data-headless` there.
+ * A trigger-less `DropdownMenu` -- one opened only by right-click or long press
+ * -- holds nothing but its `position: fixed` popover, so the inline box is
+ * empty. Inside a flex row it is still a flex ITEM, and it adds one `gap` of
+ * dead space to every row that mounts such a menu.
+ *
+ * A host WITH a trigger wraps that trigger in a LINE BOX, which is taller than
+ * the trigger: a 24px button inside one measures 25px, because a line box
+ * reserves room under the baseline for descenders. Every row whose action is a
+ * dropdown was therefore one pixel taller than the same row whose action is a
+ * plain button, and the sidebar lost its rhythm wherever the two kinds of row
+ * sit next to each other. The composer status bar had already patched its own
+ * copy of this; that patch is gone, because this rule replaces it.
+ *
+ * Both costs come from the same `inline` default, so do not expect to SEE that
+ * word when this rule is absent. A host inside a flex row is blockified, and
+ * `getComputedStyle` reports the used value -- `block`. The two contexts differ
+ * in what the default costs, not in what causes it.
+ *
+ * `display: contents` is safe for both. The element stays in the DOM, so Oat's
+ * own `ot-dropdown [popover]` and `ot-dropdown [role="menuitem"]` descendant
+ * rules still match, and nothing positions against the host -- this project
+ * writes an explicit `top`/`left` onto a `position: fixed` popover instead.
  */
-globalStyle('ot-dropdown[data-headless]', {
+globalStyle('ot-dropdown', {
   display: 'contents',
 })
 

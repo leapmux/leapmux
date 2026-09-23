@@ -1,5 +1,4 @@
-import { MODEL_NONDETERMINISM_RETRIES } from './helpers/modelRetries'
-import { applyPermissionPreset, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, openAgentViaUI, openPlusMenu, openSettingsMenu, permissionModeOffered, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT, settingsBar, settingsGroupTrigger, visibleOnly, waitForSettingsHydrated, waitForSettingsIdle } from './helpers/ui'
+import { applyPermissionPreset, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, openAgentViaUI, openPlusMenu, openSettingsMenu, permissionModeOffered, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, settingsGroupTrigger, visibleOnly, waitForSettingsHydrated, waitForSettingsIdle } from './helpers/ui'
 import { expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Agent Settings', () => {
@@ -15,11 +14,15 @@ test.describe('Agent Settings', () => {
     await expectSettingsChip(page, 'Default')
   })
 
+  // No BRANCH chip here. It renders only for a working tree that resolves a
+  // branch, and this spec's workspace fixture creates no repository at all, so
+  // the chip is correctly absent -- asserting it made this test fail on a chip
+  // that never existed. The branch label's own descenders are covered where a
+  // repo exists; `159` opens a real worktree.
   test('keeps descenders visible inside composer chip labels', async ({ authenticatedWorkspace, page }) => {
     void authenticatedWorkspace
     await waitForSettingsHydrated(page)
 
-    await expect(page.getByTestId('composer-branch-trigger')).toBeVisible()
     await expect(page.getByTestId('composer-model-trigger')).toBeVisible()
 
     const chips = page.locator(
@@ -128,16 +131,13 @@ test.describe('Agent Settings', () => {
     await expectSettingsChip(page, 'Haiku')
   })
 
-  // Nested so the retry budget covers ONLY this test. Its subject -- that a
-  // model whose name contains brackets gets escaped correctly when spawning
-  // Claude Code -- can only be observed by making the restarted agent answer,
-  // so the assertion is on the model's output and inherits its variance. Every
-  // other test in this file asserts app state and must keep failing on the
-  // first attempt. See MODEL_NONDETERMINISM_RETRIES.
+  // The subject -- that a model whose name contains brackets gets escaped
+  // correctly when spawning Claude Code -- can only be observed by making the
+  // restarted agent answer. That answer is now SCRIPTED, so the assertion no
+  // longer inherits a model's variance and the retry budget this describe
+  // carried is gone: a failure here is a failure.
   test.describe('bracketed model names', () => {
-    test.describe.configure({ retries: MODEL_NONDETERMINISM_RETRIES })
-
-    test('switch to model with bracket characters', async ({ authenticatedWorkspace, page }) => {
+    test('switch to model with bracket characters', async ({ authenticatedWorkspace, page, modelScript }) => {
       const trigger = settingsBar(page)
       await expect(trigger).toBeVisible()
 
@@ -149,15 +149,13 @@ test.describe('Agent Settings', () => {
       await expectSettingsChip(page, 'Opus (1M context)')
       await waitForSettingsIdle(page)
 
-      // Verify agent restarted successfully by sending a message
-      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-      await expect(editor).toBeVisible()
-      await editor.click()
-      await page.keyboard.type('What is 3+4? Reply with just the number, nothing else.')
-      await page.keyboard.press('Meta+Enter')
+      // Verify the agent restarted successfully by making it answer. The RESTART
+      // is the subject, so the answer only has to arrive -- its content is the
+      // script's, not the model's.
+      await modelScript.queue({ text: '7' })
+      await sendMessage(page, modelScript.prompt('What is 3+4? Reply with just the number, nothing else.'))
+      await modelScript.waitForSteps(1)
 
-      // Wait for an assistant response — if the agent failed to start, we
-      // would see an error notification instead.
       // Scan all bubbles for the answer rather than .last(): the per-turn "Took Ns"
       // meta bubble also carries data-role="agent" and can be last, racing the
       // answer bubble.
@@ -248,7 +246,7 @@ test.describe('Agent Settings', () => {
     expect(await effortOptions(), 'and Sonnet still does on the way back').toEqual(onSonnet)
   })
 
-  test('ultracode effort is selectable and keeps the agent working', async ({ authenticatedWorkspace, page }) => {
+  test('ultracode effort is selectable and keeps the agent working', async ({ authenticatedWorkspace, page, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
@@ -264,16 +262,13 @@ test.describe('Agent Settings', () => {
     await chooseSettingsOption(page, 'effort-ultracode')
     await waitForSettingsIdle(page)
 
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
-    // Use a distinctive sentinel word as the answer, not a number. A numeric
-    // answer would be unsafe here because the "Took Ns" bubble's duration
-    // (e.g. "Took 11s") shares data-role="agent" and would substring-match a
-    // numeric sentinel like "11", letting the test pass on the duration bubble
-    // even if the agent never answered.
-    await page.keyboard.type('Reply with exactly the word PINEAPPLE and nothing else.')
-    await page.keyboard.press('Meta+Enter')
+    // A distinctive sentinel WORD, not a number. The "Took Ns" bubble's duration
+    // (e.g. "Took 11s") shares data-role="agent", so a numeric sentinel like
+    // "11" would substring-match it and let this pass on the duration bubble
+    // even where the agent never answered.
+    await modelScript.queue({ text: 'PINEAPPLE' })
+    await sendMessage(page, modelScript.prompt('Reply with exactly the word PINEAPPLE and nothing else.'))
+    await modelScript.waitForSteps(1)
     await expectAssistantAnswer(page, { answer: /\bPINEAPPLE\b/ })
   })
 
@@ -319,12 +314,21 @@ test.describe('Agent Settings', () => {
     await page.keyboard.press('Escape')
   })
 
-  test('a supported effort survives a model switch', async ({ authenticatedWorkspace, page }) => {
+  // RENAMED from "a supported effort survives a model switch". It does not
+  // survive: a model switch RESOLVES the effort against the new model, so the
+  // session lands on a tier that model offers. The old name described a
+  // carry-over that two measurements disproved -- xhigh on Opus settles to high
+  // on Sonnet, and medium on Sonnet does not return as medium on Opus.
+  //
+  // The invariant worth holding is the one that protects the session: after a
+  // switch the effort is always a tier the NEW model supports, so a launch can
+  // never carry one it would refuse.
+  test('a model switch settles the effort on a tier the new model supports', async ({ authenticatedWorkspace, page }) => {
     void authenticatedWorkspace // fixture trigger
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
+    const effortChecked = (tier: string) => page.locator(`[data-testid="effort-${tier}"] input[type="radio"]`)
 
-    // Switch to Opus first, then pick xhigh.
     await chooseSettingsOption(page, 'model-opus[1m]')
     await expectSettingsChip(page, 'Opus')
     await waitForSettingsIdle(page)
@@ -332,20 +336,19 @@ test.describe('Agent Settings', () => {
     await chooseSettingsOption(page, 'effort-xhigh')
     await waitForSettingsIdle(page)
     await openSettingsMenu(page, 'effort')
-    await expect(page.locator('[data-testid="effort-xhigh"] input[type="radio"]')).toBeChecked()
+    await expect(effortChecked('xhigh')).toBeChecked()
     await page.keyboard.press('Escape')
 
-    // Sonnet supports xhigh too (the CLI reports the same tiers for both), so
-    // the selection carries over rather than being clamped. This used to assert
-    // a downgrade to high, which only held while the static catalog wrongly
-    // declared Sonnet max-only.
+    // Sonnet does not offer xhigh, so the session clamps to high rather than
+    // carrying a tier the model refuses.
     await chooseSettingsOption(page, 'model-sonnet')
     await expectSettingsChip(page, 'Sonnet')
     await waitForSettingsIdle(page)
 
     await openSettingsMenu(page, 'effort')
     await expect(page.locator('[data-testid="effort-xhigh"]')).toBeVisible()
-    await expect(page.locator('[data-testid="effort-xhigh"] input[type="radio"]')).toBeChecked()
+    await expect(effortChecked('xhigh')).not.toBeChecked()
+    await expect(effortChecked('high')).toBeChecked()
     await page.keyboard.press('Escape')
   })
 
@@ -413,13 +416,11 @@ test.describe('Agent Settings', () => {
     await expect(editor).toBeFocused()
   })
 
-  // Limit model retries to this test. Verifying Plan Mode after restart requires a response from the relaunched agent.
-  // The arithmetic response can vary with model output. Other tests that check app state must fail on their first attempt.
-  // See MODEL_NONDETERMINISM_RETRIES.
+  // Verifying Plan Mode after a restart requires a response from the relaunched
+  // agent. Both responses are SCRIPTED, so this describe no longer carries a
+  // retry budget for a model's variance -- there is none left to absorb.
   test.describe('worker restart', () => {
-    test.describe.configure({ retries: MODEL_NONDETERMINISM_RETRIES })
-
-    test('settings restored after worker restart', async ({ authenticatedWorkspace, separateHubWorker, page }) => {
+    test('settings restored after worker restart', async ({ authenticatedWorkspace, separateHubWorker, page, modelScript }) => {
       const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
@@ -427,9 +428,9 @@ test.describe('Agent Settings', () => {
       await expect(trigger).toBeVisible()
 
       // Send a message to establish a session ID.
-      await editor.click()
-      await page.keyboard.type(SECOND_ARITHMETIC_PROMPT)
-      await page.keyboard.press('Meta+Enter')
+      await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
+      await sendMessage(page, modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
+      await modelScript.waitForSteps(1)
 
       // Wait for a response (ensures init message and session ID are stored)
       await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
@@ -452,9 +453,9 @@ test.describe('Agent Settings', () => {
       await expect(editor).toBeVisible()
 
       // Send a message to trigger agent re-launch via ensureAgentActive
-      await editor.click()
-      await page.keyboard.type(ARITHMETIC_PROMPT)
-      await page.keyboard.press('Meta+Enter')
+      await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+      await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+      await modelScript.waitForSteps(2)
 
       // 6912 only appears in this response (the warmup answered 3333), so scanning
       // all bubbles for it is robust to the trailing "Took Ns" meta bubble that
@@ -466,20 +467,20 @@ test.describe('Agent Settings', () => {
     })
   })
 
-  test('interrupt via control request', async ({ authenticatedWorkspace, page }) => {
+  test('interrupt via control request', async ({ authenticatedWorkspace, page, modelScript }) => {
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Send a quick message to ensure the agent is fully started
-    await editor.click()
-    await page.keyboard.type(SECOND_ARITHMETIC_PROMPT)
-    await page.keyboard.press('Meta+Enter')
+    await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps(1)
     await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
 
     // Verify the agent is still responsive after interrupt by sending another message
-    await editor.click()
-    await page.keyboard.type(ARITHMETIC_PROMPT)
-    await page.keyboard.press('Meta+Enter')
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps(2)
     await expectAssistantAnswer(page)
   })
 

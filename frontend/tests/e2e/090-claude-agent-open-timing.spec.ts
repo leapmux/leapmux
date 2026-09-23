@@ -11,6 +11,7 @@
 import type { LogLine, PhaseMark, TimingServer } from './helpers/timingFixture'
 
 import { expect, test } from '@playwright/test'
+import { agentDefaultsEnv } from './agentSettings'
 import {
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
@@ -19,7 +20,6 @@ import {
 import { stopDevServer } from './helpers/devServer'
 import { extractWorkerMarks, installRpcListeners, renderTimeline, startTimingServer } from './helpers/timingFixture'
 import { loginViaToken, openWorkspace } from './helpers/ui'
-import { realAgentEnv } from './realAgentSettings'
 
 /**
  * Return the agent_id of the first handler_begin marker logged after
@@ -49,7 +49,7 @@ test.describe('Claude Code agent open timing', () => {
     srv = await startTimingServer({
       dataDirPrefix: 'leapmux-timing-e2e',
       env: {
-        ...realAgentEnv(),
+        ...agentDefaultsEnv(),
         LEAPMUX_WORKER_NAME: 'Local',
         LEAPMUX_TRACE_AGENT_STARTUP: '1',
       },

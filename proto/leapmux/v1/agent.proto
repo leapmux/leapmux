@@ -8,15 +8,14 @@ enum AgentProvider {
   AGENT_PROVIDER_UNSPECIFIED = 0;
   AGENT_PROVIDER_CLAUDE_CODE = 1;
   AGENT_PROVIDER_CODEX = 2;
-  reserved 3; // removed provider
-  AGENT_PROVIDER_CURSOR = 4;
-  AGENT_PROVIDER_GITHUB_COPILOT = 5;
-  AGENT_PROVIDER_KILO = 6;
-  AGENT_PROVIDER_OPENCODE = 7;
-  AGENT_PROVIDER_GOOSE = 8;
-  AGENT_PROVIDER_PI = 9;
-  AGENT_PROVIDER_REASONIX = 10;
-  AGENT_PROVIDER_ZCODE = 11;
+  AGENT_PROVIDER_CURSOR = 3;
+  AGENT_PROVIDER_GITHUB_COPILOT = 4;
+  AGENT_PROVIDER_KILO = 5;
+  AGENT_PROVIDER_OPENCODE = 6;
+  AGENT_PROVIDER_GOOSE = 7;
+  AGENT_PROVIDER_PI = 8;
+  AGENT_PROVIDER_REASONIX = 9;
+  AGENT_PROVIDER_ZCODE = 10;
 }
 
 // AgentStatus tracks the lifecycle state of an agent.
@@ -560,16 +559,14 @@ message AgentChatMessage {
   bytes content = 3; // Original provider payload, encoded with content_compression.
   int64 seq = 4;
   string created_at = 5;
-  reserved 6;
-  reserved "delivery_error";
-  ContentCompression content_compression = 7; // Compression algorithm used for content
-  AgentProvider agent_provider = 8; // Provider that produced this message
-  int32 depth = 9; // Nesting level: 0=main agent, 1=subagent, 2=nested subagent
-  string parent_span_id = 10; // span_id of the parent Agent/SpawnAgent that spawned this scope (empty for main)
-  string span_id = 11; // Links a tool invocation with its result (tool_use ↔ tool_result, item/started ↔ item/completed)
-  string span_type = 12; // Tool name (e.g. "Grep", "Edit") or item type (e.g. "commandExecution") for span messages
-  int32 span_color = 13; // Color index assigned to this span (−1 = no color)
-  string span_lines = 14; // JSON array of active span lines at this message's position
+  ContentCompression content_compression = 6; // Compression algorithm used for content
+  AgentProvider agent_provider = 7; // Provider that produced this message
+  int32 depth = 8; // Nesting level: 0=main agent, 1=subagent, 2=nested subagent
+  string parent_span_id = 9; // span_id of the parent Agent/SpawnAgent that spawned this scope (empty for main)
+  string span_id = 10; // Links a tool invocation with its result (tool_use ↔ tool_result, item/started ↔ item/completed)
+  string span_type = 11; // Tool name (e.g. "Grep", "Edit") or item type (e.g. "commandExecution") for span messages
+  int32 span_color = 12; // Color index assigned to this span (−1 = no color)
+  string span_lines = 13; // JSON array of active span lines at this message's position
   // TRANSIENT broadcast metadata: when > 0, this live broadcast is a MOVE of an
   // existing message id to a new (higher) seq -- a notification-thread consolidation
   // reseq -- and previous_seq is the seq it moved FROM. 0 means a brand-new message.
@@ -578,20 +575,20 @@ message AgentChatMessage {
   // so a consumer can treat a replayed/listed row as a normal message at its current seq.
   // Lets every consumer recognize a move EXPLICITLY instead of inferring it (the CLI
   // follower has no id memory; the frontend no longer has to guess from a seq change).
-  int64 previous_seq = 15;
+  int64 previous_seq = 14;
   // Scroll-rail jump-mark classifier, set at write time. MARK_TYPE_UNSPECIFIED for
   // ordinary rows. Carried on persisted rows, ListAgentMessages pages, and replays.
-  MarkType mark_type = 16;
-  AssembledMessageKind assembled_kind = 17;
-  MessageCompletion completion = 18;
+  MarkType mark_type = 15;
+  AssembledMessageKind assembled_kind = 16;
+  MessageCompletion completion = 17;
   // JSON sections "provider" and "metadata" hold recovered provider data and
   // worker-calculated display fields. The original provider payload stays unchanged.
-  bytes supplemental_content = 19;
-  ContentCompression supplemental_content_compression = 20;
-  int64 supplemental_revision = 21;
+  bytes supplemental_content = 18;
+  ContentCompression supplemental_content_compression = 19;
+  int64 supplemental_revision = 20;
   // Provider session identity, separate from the original message bytes.
   // Related tool messages must belong to this session as well as this agent.
-  string agent_session_id = 22;
+  string agent_session_id = 21;
 }
 
 // AgentStatusChange notifies of agent status transitions.

@@ -127,9 +127,11 @@ test.describe('tap to select text (phone)', () => {
    * second tap of a double tap lands somewhere else. That is what made the
    * first spec in this file fail while the same double tap passed in the rest.
    */
-  test.beforeEach(async ({ page, authenticatedWorkspace }) => {
+  test.beforeEach(async ({ page, authenticatedWorkspace, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
-    await sendMessage(page, MESSAGE)
+    await modelScript.queue({ text: MESSAGE })
+    await sendMessage(page, modelScript.prompt(MESSAGE))
+    await modelScript.waitForSteps()
     await expect(userBubbles(page)).toHaveCount(1)
     await waitForAgentIdle(page)
   })
@@ -234,7 +236,13 @@ test.describe('tap to select text (phone)', () => {
     const drawer = page.getByTestId('mobile-drawer-left')
     const width = page.viewportSize()!.width
     const point = await aimAt(page, row, 'brown')
-    const band = { from: { x: width * 0.2, y: point.y }, to: { x: width * 0.7, y: point.y } }
+    // The band BEGINS on the selected word. A touch that starts outside a live
+    // selection collapses it before the recognizer sees pointerdown, so the
+    // guard has nothing left to read and the swipe runs -- which is what made
+    // this test fail from a band starting at 20% of the viewport. The case the
+    // guard documents is a drag ALONG the selection, where widening it and
+    // swiping share the same shape.
+    const band = { from: { x: point.x, y: point.y }, to: { x: width * 0.9, y: point.y } }
     // The precondition, so a drawer that was already out fails as that rather
     // than as "the guard did not hold".
     await expect(drawer).not.toBeInViewport()

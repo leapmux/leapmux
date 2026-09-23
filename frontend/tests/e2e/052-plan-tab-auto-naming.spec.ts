@@ -5,7 +5,7 @@ import { listAgentsViaAPI } from './helpers/worktree'
 
 test.describe('Plan Mode Tab Auto-Naming', () => {
   test.setTimeout(300_000)
-  test('auto-names tab from plan title, respects manual rename', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+  test('auto-names tab from plan title, respects manual rename', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
 
     // ── Step 1: Verify initial tab name contains "Agent" ──
@@ -16,7 +16,7 @@ test.describe('Plan Mode Tab Auto-Naming', () => {
     // The plan body includes "Never execute this plan." so that after
     // approval the plan execution restart finishes quickly instead of
     // the agent spending minutes exploring the codebase.
-    const exitBanner = await enterAndExitPlanMode(page, 'first')
+    const exitBanner = await enterAndExitPlanMode(page, modelScript, 'first')
 
     // Tab should be renamed by now (plan_updated with update_agent_title:true fires on Write).
     await expect(agentTab).toContainText('Dummy plan first')

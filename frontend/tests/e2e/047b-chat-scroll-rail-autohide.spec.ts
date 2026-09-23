@@ -1,3 +1,4 @@
+import type { ModelScript } from './helpers/modelScriptFixture'
 import { expect, test } from './fixtures'
 import { COARSE_POINTER_METRICS } from './helpers/touch'
 import { readAttached, sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
@@ -42,23 +43,25 @@ const SCROLLER = '[data-chat-scroll-container="true"]'
  * itself, and every test here would then fail on a confusing missing-element error rather
  * than on "the viewport was too tall for one message".
  */
-async function seedOverflowingConversation(page: import('@playwright/test').Page) {
+async function seedOverflowingConversation(page: import('@playwright/test').Page, script: ModelScript) {
   const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
   await expect(editor).toBeVisible()
   // Let the agent finish starting so the send takes the fast path (see 010).
   await expect(page.getByText(/^Starting /)).not.toBeVisible()
-  await sendMessage(page, LONG_MESSAGE)
+  await script.queue({ text: 'ok' })
+  await sendMessage(page, script.prompt(LONG_MESSAGE))
+  await script.waitForSteps()
   await waitForAgentIdle(page)
   await expect(userBubbles(page)).toHaveCount(1)
   await expect(page.locator(RAIL)).toBeVisible()
 }
 
 test.describe('chat scroll rail auto-hide', () => {
-  test('fades the rail when scrolling stops and brings it back on the next scroll', async ({ page, authenticatedWorkspace }) => {
+  test('fades the rail when scrolling stops and brings it back on the next scroll', async ({ page, authenticatedWorkspace, modelScript }) => {
     // A DESKTOP viewport (fine pointer, well above the phone breakpoint): auto-hide used to be
     // touch/narrow-only, but now applies on every screen. This test pins that it reaches desktop.
     await page.setViewportSize({ width: 1024, height: 600 })
-    await seedOverflowingConversation(page)
+    await seedOverflowingConversation(page, modelScript)
 
     const rail = page.locator(RAIL)
 
@@ -75,12 +78,12 @@ test.describe('chat scroll rail auto-hide', () => {
     await expect(rail).toHaveCSS('opacity', '0')
   })
 
-  test('keeps the rail lit while the cursor rests on it, and fades once it leaves', async ({ page, authenticatedWorkspace }) => {
+  test('keeps the rail lit while the cursor rests on it, and fades once it leaves', async ({ page, authenticatedWorkspace, modelScript }) => {
     // A parked cursor sends no pointermove, so nothing re-arms the host's activity window and
     // the rail used to fade out from under the reader sitting on it. Only a real browser
     // covers this: it needs the live idle timer, a real hover, and the CSS opacity it drives.
     await page.setViewportSize({ width: 1024, height: 600 })
-    await seedOverflowingConversation(page)
+    await seedOverflowingConversation(page, modelScript)
 
     const rail = page.locator(RAIL)
     await expect(rail).toHaveCSS('opacity', '0')
@@ -99,19 +102,20 @@ test.describe('chat scroll rail auto-hide', () => {
     await expect(rail).toHaveCSS('opacity', '0')
   })
 
-  test('keeps the rail hidden while the agent auto-scrolls a streaming reply', async ({ page, authenticatedWorkspace }) => {
+  test('keeps the rail hidden while the agent auto-scrolls a streaming reply', async ({ page, authenticatedWorkspace, modelScript }) => {
     // The load-bearing case. The stick-to-bottom writes scrollTop on every streaming
     // commit; if those counted as scroll activity the rail would stay lit for the whole
     // response, which is most of the time a reader looks at the screen.
     await page.setViewportSize({ width: 1024, height: 600 })
-    await seedOverflowingConversation(page)
+    await seedOverflowingConversation(page, modelScript)
 
     const rail = page.locator(RAIL)
     await expect(rail).toHaveCSS('opacity', '0')
 
     // Start a turn WITHOUT touching the scroller. sendMessage types into the editor, a
     // sibling of the scroll container, so its keystrokes never reach the list's handlers.
-    await sendMessage(page, LONG_MESSAGE)
+    await modelScript.queue({ text: 'ok' })
+    await sendMessage(page, modelScript.prompt(LONG_MESSAGE))
 
     // Sample every frame from inside the page: a round trip per sample could straddle the
     // window and miss a flash. `toHaveCSS('opacity', '0')` cannot express this at all --
@@ -160,7 +164,7 @@ test.describe('chat scroll rail auto-hide', () => {
     await expect(scroller).toHaveCSS('padding-right', '4px')
   })
 
-  test('fills the gutter exactly, centring its visuals and clearing the message column', async ({ page, authenticatedWorkspace }) => {
+  test('fills the gutter exactly, centring its visuals and clearing the message column', async ({ page, authenticatedWorkspace, modelScript }) => {
     // The rail owns the gutter and nothing else. That places its visuals down the
     // gutter's middle AND keeps the column off the message content -- the rail
     // overlays a row from outside its stacking context and is hit-testable while
@@ -168,7 +172,7 @@ test.describe('chat scroll rail auto-hide', () => {
     // buttons underneath. Only a real browser resolves the width against the
     // tokens; the rail needs content to overflow before it renders at all.
     await page.setViewportSize({ width: 1024, height: 600 })
-    await seedOverflowingConversation(page)
+    await seedOverflowingConversation(page, modelScript)
 
     const thumb = page.locator('[data-testid="chat-scroll-rail-thumb"]')
     await expect(thumb).toBeVisible()
@@ -246,12 +250,12 @@ test.describe('chat scroll rail auto-hide', () => {
     await expect.poll(toolbarRight).toBe('12px')
   })
 
-  test('stays hit-testable on a fine pointer but rejects a click on the faded rail', async ({ page, authenticatedWorkspace }) => {
+  test('stays hit-testable on a fine pointer but rejects a click on the faded rail', async ({ page, authenticatedWorkspace, modelScript }) => {
     // The faded rail stays hit-testable on a fine pointer (pointer-events: auto) so a
     // pointermove onto it can relight it -- but a CLICK on the faded rail is rejected at the
     // pointer handler: you can't click what you can't see. The next click, rail now lit, jumps.
     await page.setViewportSize({ width: 1024, height: 600 })
-    await seedOverflowingConversation(page)
+    await seedOverflowingConversation(page, modelScript)
 
     const rail = page.locator(RAIL)
     await expect(rail).toHaveCSS('opacity', '0')
@@ -290,14 +294,14 @@ test.describe('chat scroll rail auto-hide', () => {
   test.describe('on a coarse pointer', () => {
     test.use(COARSE_POINTER_METRICS)
 
-    test('makes the idle rail inert, so its strip cannot swallow a tap', async ({ page, authenticatedWorkspace }) => {
+    test('makes the idle rail inert, so its strip cannot swallow a tap', async ({ page, authenticatedWorkspace, modelScript }) => {
       // A finger needs a whole target, so on a coarse pointer the rail's column floors at
       // 24px -- against a 4px phone gutter, that overlaps 20px of message content. An
       // INVISIBLE strip that still took pointer events would turn a tap on the text into a
       // track-click jump, so going inert while idle is what makes that overlap acceptable.
       // The row's own floating actions are inset by the same overhang, so they stay clear
       // of it whether the rail is inert or not.
-      await seedOverflowingConversation(page)
+      await seedOverflowingConversation(page, modelScript)
 
       const rail = page.locator(RAIL)
       await expect(rail).toHaveCSS('opacity', '0')

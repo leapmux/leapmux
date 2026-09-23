@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { ARITHMETIC_PROMPT, expectAssistantAnswer, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT, sendMessage, visibleOnly } from './helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, visibleOnly } from './helpers/ui'
 
 test.describe('Clear Command', () => {
   /**
@@ -10,11 +10,13 @@ test.describe('Clear Command', () => {
    * count. `expectAssistantAnswer` scans every agent bubble instead, which is
    * exactly the shape this needs.
    */
-  test('slash reset clears context (alias for /clear)', async ({ page, authenticatedWorkspace }) => {
+  test('slash reset clears context (alias for /clear)', async ({ page, authenticatedWorkspace, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
 
     // Send a message to establish a session
-    await sendMessage(page, ARITHMETIC_PROMPT)
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps()
     await expectAssistantAnswer(page)
 
     // Send /reset (alias for /clear)
@@ -24,15 +26,19 @@ test.describe('Clear Command', () => {
     await expect(visibleOnly(page.getByText('Context cleared'))).toBeVisible()
 
     // Verify agent is still responsive (new session)
-    await sendMessage(page, SECOND_ARITHMETIC_PROMPT)
+    await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps()
     await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
   })
 
-  test('slash clear clears context and shows notification', async ({ page, authenticatedWorkspace }) => {
+  test('slash clear clears context and shows notification', async ({ page, authenticatedWorkspace, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
 
     // Send a message to establish a session
-    await sendMessage(page, ARITHMETIC_PROMPT)
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps()
     await expectAssistantAnswer(page)
 
     // Send /clear
@@ -42,7 +48,9 @@ test.describe('Clear Command', () => {
     await expect(visibleOnly(page.getByText('Context cleared'))).toBeVisible()
 
     // Verify agent is still responsive (new session)
-    await sendMessage(page, SECOND_ARITHMETIC_PROMPT)
+    await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps()
     await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
 
     // After /clear and a new response, context usage is repopulated by the

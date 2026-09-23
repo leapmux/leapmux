@@ -9,6 +9,7 @@ import { showWarnToastWithLoggedCause } from '~/components/common/Toast'
 import { EVENTS_REJECTION_RETRY } from '~/generated/contracts/retry'
 import { WatchMode } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channel'
+import { emitDevEvent } from '~/lib/devInstrument'
 import { createLogger } from '~/lib/logger'
 import { createExponentialBackoff } from '~/lib/retry'
 import { shouldRetryRejection, watchPlanKey } from './watchPlan'
@@ -298,6 +299,11 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
       }
       s.handle?.close()
       s.handle = handle
+      // One event for each stream that actually OPENS, which is what
+      // `161-watch-stream-continuity.spec.ts` counts: the claim it makes is
+      // that a tab or workspace switch revises the plan on the live stream
+      // rather than opening a second one, and only the open itself shows that.
+      emitDevEvent('leapmux:watch-events-open', () => ({ workerId, updateId: nextId }))
       // A delayed callback from a replaced stream cannot change its successor.
       const isCurrentHandle = () => !s.closed && s.handle === handle
 

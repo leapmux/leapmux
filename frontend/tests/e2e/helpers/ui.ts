@@ -7,6 +7,7 @@ import process from 'node:process'
 import { expect } from '@playwright/test'
 import { accountStorageKey, getTtlForKey, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT, PREFIX_FILES_SORT_ORDER } from '../../../src/lib/browserStorage'
 import { solveCaptchaViaUI } from './captcha'
+import { E2E_BROWSER_HOST } from './server'
 import { readEntry, storageKeys, writeEntry } from './storage'
 
 /** Check if a locator is visible, returning false on timeout or error. */
@@ -371,6 +372,14 @@ export const ARITHMETIC_PROMPT = 'What is 1234 + 5678? Reply with just the numbe
 export const ARITHMETIC_ANSWER = /\b6,?912\b/
 
 /**
+ * The literal a model scenario returns for {@link ARITHMETIC_PROMPT}.
+ *
+ * The mock endpoint never reads the prompt, so the prompt and its answer are
+ * only related here. `helpers/ui.test.ts` pins that relation.
+ */
+export const ARITHMETIC_ANSWER_TEXT = '6912'
+
+/**
  * Arithmetic prompt for a second turn with a distinct answer.
  * Neither 3333 nor 6912 contains the other, so one answer cannot satisfy an assertion for the other turn.
  */
@@ -378,6 +387,9 @@ export const SECOND_ARITHMETIC_PROMPT = 'What is 1111 + 2222? Reply with just th
 
 /** Matches the {@link SECOND_ARITHMETIC_PROMPT} answer. See {@link ARITHMETIC_ANSWER}. */
 export const SECOND_ARITHMETIC_ANSWER = /\b3,?333\b/
+
+/** The literal a model scenario returns for {@link SECOND_ARITHMETIC_PROMPT}. */
+export const SECOND_ARITHMETIC_ANSWER_TEXT = '3333'
 
 /**
  * Assert the agent answered {@link ARITHMETIC_PROMPT}: the answer appears in
@@ -466,9 +478,18 @@ export async function openAboutDialog(page: Page): Promise<Locator> {
  */
 export async function openPreferencesDialog(page: Page, category?: string) {
   const dialog = page.getByRole('dialog', { name: 'Preferences' })
-  // The prefs query parameter restores the open dialog and category after reload.
-  // Reuse that dialog when it is already open. Its modal overlay makes the app-menu trigger inert.
-  if (!(await dialog.isVisible())) {
+  // The `prefs` query parameter restores the open dialog and its category after
+  // a reload. Reuse that dialog rather than open a second one: its modal overlay
+  // makes the app-menu trigger inert, so a click there never lands.
+  //
+  // Read the PARAMETER, not the dialog's current visibility. Straight after a
+  // reload the restored dialog has not mounted yet, so a visibility check says
+  // "closed", this helper clicks the trigger, and the dialog then arrives and
+  // swallows the click — which reads as an app-menu trigger that stopped working.
+  if (new URL(page.url()).searchParams.has('prefs')) {
+    await expect(dialog).toBeVisible()
+  }
+  else if (!(await dialog.isVisible())) {
     await openAppMenu(page)
     await page.getByRole('menuitem', { name: 'Preferences' }).click()
   }
@@ -804,7 +825,7 @@ export async function loginViaToken(page: Page, token: string) {
   await page.context().addCookies([{
     name,
     value,
-    domain: 'localhost',
+    domain: E2E_BROWSER_HOST,
     path: '/',
     httpOnly: true,
   }])
@@ -1500,4 +1521,42 @@ export async function menuOptionTexts(scope: Locator, base: string): Promise<str
  */
 export function menuOptionLabel(row: Locator): Locator {
   return row.locator('[data-testid$="-label"]')
+}
+
+/** One element's box, and the four numbers a caller compares. */
+export interface ElementBox {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/**
+ * An element's box, read only once it has STOPPED MOVING.
+ *
+ * An anchored popover repositions on every layout change beneath it, and its own
+ * content is one of those: a long list renders over several frames, and each
+ * growth re-anchors it. A box sampled mid-settle therefore measures the settle
+ * rather than whatever the caller meant to measure -- and a CLICK aimed during
+ * it can land on the popover instead of on the trigger underneath, which is how
+ * a re-click test fails only under load.
+ *
+ * Two consecutive identical reads are the settle signal; `expect.poll` caps the
+ * wait at the project's own timeout.
+ */
+export async function stableBox(element: Locator): Promise<ElementBox> {
+  let previous: string | null = null
+  let box: ElementBox | null = null
+  await expect.poll(async () => {
+    box = await element.boundingBox()
+    if (!box)
+      return false
+    const key = `${box.x},${box.y},${box.width},${box.height}`
+    const settled = key === previous
+    previous = key
+    return settled
+  }).toBe(true)
+  if (!box)
+    throw new Error('the element never reported a bounding box')
+  return box
 }

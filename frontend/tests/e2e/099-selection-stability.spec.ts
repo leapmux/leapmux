@@ -32,9 +32,11 @@ test.describe('chat text selection stability', () => {
   const selectionLength = (page: import('@playwright/test').Page) =>
     page.evaluate(() => (window.getSelection()?.toString() ?? '').trim().length)
 
-  test('a drag-selection survives the mouse release', async ({ page, authenticatedWorkspace }) => {
+  test('a drag-selection survives the mouse release', async ({ page, authenticatedWorkspace, modelScript }) => {
     await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
-    await sendMessage(page, 'Say exactly: The quick brown fox jumps over the lazy dog')
+    await modelScript.queue({ text: 'The quick brown fox jumps over the lazy dog' })
+    await sendMessage(page, modelScript.prompt('Say exactly: The quick brown fox jumps over the lazy dog'))
+    await modelScript.waitForSteps()
     await waitForAgentIdle(page)
 
     // Retry the whole measure-and-drag as one unit. The box is read, then the
@@ -57,11 +59,13 @@ test.describe('chat text selection stability', () => {
     await expect(page.locator('[data-testid="quote-selection-button"]')).toBeVisible()
   })
 
-  test('selecting text while scrolled up does not move the viewport', async ({ page, authenticatedWorkspace }) => {
+  test('selecting text while scrolled up does not move the viewport', async ({ page, authenticatedWorkspace, modelScript }) => {
     await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
     // Enough turns to make the transcript scrollable, so "scrolled up" is a real state.
     for (const n of [1, 2, 3, 4]) {
-      await sendMessage(page, `Say exactly: line ${n} -- the quick brown fox jumps over the lazy dog`)
+      await modelScript.queue({ text: `line ${n} -- the quick brown fox jumps over the lazy dog` })
+      await sendMessage(page, modelScript.prompt(`Say exactly: line ${n} -- the quick brown fox jumps over the lazy dog`))
+      await modelScript.waitForSteps()
       await waitForAgentIdle(page)
     }
 
