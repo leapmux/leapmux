@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { enterAndExitPlanMode, enterPlanMode, exitPlanMode } from './helpers/plan-mode'
-import { expectSettingsChip, measureBubbleEdges, settingsBar, userBubbles, waitForAgentIdle } from './helpers/ui'
+import { expectSettingsChip, measureBubbleEdges, settingsBar, userBubbles, visibleOnly, waitForAgentIdle } from './helpers/ui'
 
 test.describe('Plan Mode', () => {
   test('enter plan mode, reject exit, then approve exit', async ({ page, authenticatedWorkspace, modelScript }) => {
@@ -82,7 +82,20 @@ test.describe('Plan Mode', () => {
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
 
     // Verify context_cleared notification appears in the chat.
-    await expect(page.locator('text=Context cleared')).toBeVisible()
+    //
+    // `visibleOnly`, because this is a transcript row. ChatView keeps a hidden
+    // premeasure copy of a row until its height is known, and the real row is
+    // hidden in place while it measures, so an unscoped locator matches TWO
+    // elements in that window. Playwright does not retry a strict-mode
+    // violation, so this failed at once instead of waiting for the row to settle.
+    //
+    // A SUBSTRING match, never `exact`. `notificationRenderers.tsx` joins
+    // adjacent text notifications into one element, so this row reads
+    // "Context cleared" until the plan hand-off lands and then
+    // "Context cleared, Executing plan" -- an exact match stops matching the
+    // moment the row grows, and waits out its whole timeout on a row that is
+    // plainly on screen.
+    await expect(visibleOnly(page.getByText('Context cleared'))).toBeVisible()
 
     // The worker persists the plan hand-off with a USER source, so it wears the
     // same end-of-line card a typed message wears and takes the same rule to the

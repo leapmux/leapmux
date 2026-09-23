@@ -219,7 +219,8 @@ codexTest.describe('Codex session goal', () => {
 
     // The to-do list is SCRIPTED, so the chip below is a precondition this test
     // establishes rather than one it hopes for. A real model answered prose as
-    // often as a plan, which is why the chip lookup still carries a skip.
+    // often as a plan; the chip lookup below asserts rather than skips because
+    // of this step.
     await modelScript.queue({
       toolCalls: [updateTodosToolCall(AgentProvider.CODEX, 'plan-1', [
         { step: 'Inspect the repository', status: 'completed' },
@@ -227,17 +228,30 @@ codexTest.describe('Codex session goal', () => {
         { step: 'Report their purpose', status: 'pending' },
       ])],
     })
-    await sendMessage(page, modelScript.prompt('Create and execute a multi-step plan to inspect this repository, list three checks, and report their purpose.'))
 
     // HOLD the next turn open. The goal is active, so Codex starts one turn
     // after another; each one re-renders the thinking indicator, and the chip
     // below lives INSIDE it. A popover opened from that chip is detached by the
     // very next re-render -- it reports `hidden` while the element is still in
-    // the DOM, which reads like a popover that refused to open.
+    // the DOM, which reads like a popover that refused to open. A detached
+    // popover never reopens, so the assertion then waits out its whole timeout.
+    //
+    // Registered BEFORE the send, and that order is the fix. A later fallback
+    // replaces the goal-set one above, which answers at once. Registered after
+    // `sendMessage`, the hold arrived too late: a recorded run shows the plan
+    // step consumed and then SEVEN more turns answered by the fast fallback
+    // inside thirty seconds, each one re-rendering the indicator under the
+    // chip. Here the turn after the plan -- the goal loop's or the send's,
+    // whichever comes first -- parks, so the indicator holds still.
+    //
+    // The queue must come first. Registered before it, the hold would park the
+    // goal loop's next turn with nothing to consume, and the plan step would
+    // wait sixty seconds for a turn to take it.
     //
     // One long turn is also what this test means by "while the indicator remains
     // visible": with a live model that turn took seconds on its own.
     await modelScript.fallback({ text: 'Still working on the objective.', delayMs: 60_000 })
+    await sendMessage(page, modelScript.prompt('Create and execute a multi-step plan to inspect this repository, list three checks, and report their purpose.'))
 
     // The chip is the only route to this popover. It used to appear only when a
     // real model chose to emit a plan, so a run that answered prose skipped the
