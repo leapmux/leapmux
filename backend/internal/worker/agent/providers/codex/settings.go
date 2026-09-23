@@ -10,6 +10,28 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
+// Codex sandbox policy values.
+const (
+	SandboxDangerFullAccess = "danger-full-access"
+	SandboxWorkspaceWrite   = "workspace-write"
+	SandboxReadOnly         = "read-only"
+)
+
+// Codex network access values.
+const (
+	NetworkRestricted = "restricted"
+	NetworkEnabled    = "enabled"
+)
+
+// Codex collaboration mode values.
+const (
+	CollaborationDefault = "default"
+	CollaborationPlan    = "plan"
+)
+
+// Codex service tier values.
+const ServiceTierFast = "fast"
+
 // codexAxis describes one Codex configuration axis. Lifecycle responses,
 // OptionGroups, live updates, and provider defaults use this table.
 type codexAxis struct {

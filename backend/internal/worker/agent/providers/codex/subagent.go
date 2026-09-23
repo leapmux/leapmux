@@ -684,3 +684,13 @@ func (a *Agent) clearChildTurnID(threadID string) {
 	a.Mu.Unlock()
 	a.clearInterruptCallsForThread(threadID)
 }
+
+// childTurnSeq issues the ordering token for a collab CHILD's turn flag. Both
+// edges arrive on the one reader goroutine, so the token only has to be
+// monotonic -- the counter the main thread shares supplies that, and the Worker
+// tracks the last token for each agent id separately.
+func (a *Agent) childTurnSeq() uint64 {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return a.NextTurnSeq()
+}

@@ -339,3 +339,63 @@ func (a *Agent) markSettingUnresolved(id string) {
 func zcodeUsableSessionID(id string) bool {
 	return id != "" && id != "unknown"
 }
+
+// ClearContext starts a fresh session on the same workspace.
+//
+// Every piece of per-session state is dropped with it. The per-tool-call side
+// tables matter most: tool.updated is their only other removal, and it never
+// arrives for a call the replaced session was still running, so without this a
+// spawn prompt is retained for the life of the process and a reused tool-call id
+// would open the next child transcript on the previous session's instruction.
+func (a *Agent) ClearContext() (string, error) {
+	timeout := a.APITimeout()
+	a.Mu.Lock()
+	// The three axes the user currently runs on are the request for the fresh session.
+	// Reading them AFTER openSession would read the new session's defaults instead, and
+	// a context clear would silently drop the level and the model back to them.
+	current := zcodeSettingsRequest{Model: a.model, ThoughtLevel: a.thoughtLevel, Mode: a.mode}
+	a.Mu.Unlock()
+
+	if err := a.openSession("", timeout); err != nil {
+		return "", err
+	}
+	a.applyStartupSettings(current, timeout)
+	subscribeErr := a.subscribe(timeout)
+	// The turn belonged to the session this call replaced, so it ends with it. The
+	// flag and the window go in ONE critical section: a frame that arrived between
+	// them re-armed the window, which then fired into the NEW session.
+	a.Mu.Lock()
+	a.turnActive = false
+	a.backgroundTurn = false
+	a.cancelStoppedZCodeTurnLocked()
+	a.Mu.Unlock()
+	a.flushZCodeGeneration(agent.MessageCompletionInterrupted)
+	a.persistIncompleteZCodeTools(agent.MessageCompletionInterrupted)
+
+	a.Mu.Lock()
+	a.TurnToolUses = 0
+	a.latestContextUsage = nil
+	clear(a.toolCalls)
+	a.nextToolOrder = 0
+	clear(a.pendingControls)
+	sessionID := a.sessionID
+	a.Mu.Unlock()
+	a.PublishTurnActive()
+	a.toolCallPrompts.Clear()
+	a.children.clear()
+	a.ResetCumulativeOutput()
+	a.generationBuffer.Reset()
+	a.sink.ReportProgress(agent.ResetProgress())
+	a.sink.ResetSpans()
+	// A goal belongs to a SESSION, and this call replaced the session. The
+	// create snapshot omits the `goal` key rather than spelling it null, and
+	// reportZCodeGoal returns early on an absent key, so nothing else removes
+	// the previous session's goal.
+	a.sink.ClearGoal(false)
+
+	if sessionID == "" {
+		return "", fmt.Errorf("the new ZCode session has no ID")
+	}
+	a.sink.UpdateSessionID(sessionID)
+	return sessionID, subscribeErr
+}

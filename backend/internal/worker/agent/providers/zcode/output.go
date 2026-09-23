@@ -1188,3 +1188,53 @@ func zcodeJoinOutputTails(stdout, stderr string) string {
 		return stdout + "\n" + stderr
 	}
 }
+
+// zcodeToolCallName returns the tool name cached for a call id, or "".
+func (a *Agent) zcodeToolCallName(id string) string {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if tc := a.toolCalls[id]; tc != nil {
+		return tc.name
+	}
+	return ""
+}
+
+// zcodeToolCall is everything a.Mu knows about ONE tool call.
+//
+// The three facts have different lifetimes -- the name and the input are spent when the
+// call OPENS, while `final` outlives its close -- but they share one key, so they share
+// one record. Three parallel maps meant three deletions at every teardown, and
+// forgetting one of them was twice a real defect.
+type zcodeToolCall struct {
+	// name and input cache what model.streaming said before tool.updated opens the call.
+	// The scheduled update reports `inputOmitted: true, inputRef: "model_stream"` and
+	// carries no input of its own, so the stream is the ONLY place the input is sent.
+	name  string
+	input json.RawMessage
+	// progress is the last progress payload, PARSED. The subagent hooks read the
+	// routing fields it carries; the transcript row reads lastFrame instead.
+	progress zcodeToolUpdated
+	// lastFrame is the last tool.updated event the agent sent for this call, byte
+	// for byte. A turn that ends while the call runs stores THAT frame, so the
+	// transcript never holds an event the agent did not send. An empty value means
+	// the agent never announced the call, which also means no row opened its span.
+	lastFrame []byte
+	order     uint64
+	// final marks a call that already reached a final state, so the batch summary that
+	// follows it does not reopen or re-close it. It is cleared at the TURN end rather
+	// than at the call's own close, because the batch arrives after the results it
+	// summarizes.
+	final bool
+}
+
+// zcodeToolCallLocked returns the record for id, creating it on first write. The caller
+// holds a.Mu.
+func (a *Agent) zcodeToolCallLocked(id string) *zcodeToolCall {
+	tc := a.toolCalls[id]
+	if tc == nil {
+		tc = &zcodeToolCall{order: a.nextToolOrder}
+		a.nextToolOrder++
+		a.toolCalls[id] = tc
+	}
+	return tc
+}

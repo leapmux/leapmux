@@ -194,33 +194,45 @@ and becomes a second source of truth.
 
 ### Backend provider package roles
 
-Use these file names for common roles across the ten backend provider packages.
-Add a file only when the provider needs that role.
+Each concrete provider package uses these file names for the same roles.
+Add a file only when the provider owns that role.
 
 | File | Role |
 |---|---|
 | `agent.go` | The concrete agent type, state, and core runtime methods. |
 | `start.go` | `Start` and startup setup. Include `var _ agent.StartFunc = Start`. |
 | `registration.go` | `Registration`, the locator, and static provider metadata. |
-| `catalog.go` | Model catalog logic that needs its own file. |
-| `settings.go` | Live option methods and settings snapshots. |
+| `catalog.go` | Model catalog data and conversion when they need a separate file. |
+| `settings.go` | Live option methods, settings snapshots, and any shared axis table. |
 | `control.go` | Control requests and replies. |
-| `output.go` | Output dispatch and live output state. |
-| `session.go` | Session state and refresh logic when these need a separate file. |
-| `stop.go` | Stop lifecycle and the stop window when these need a separate file. |
+| `output.go` | Conversation output handlers and live output state. |
+| `events.go` | Protocol event decoding and dispatch when these form one unit. |
+| `rpc.go` | Request and reply transport, including response routing. |
+| `session.go` | Session state and refresh logic when separate from core lifecycle. |
+| `session_wire.go` | Session wire data when it differs from lifecycle code. |
+| `session_lifecycle.go` | Session open, reset, and restore operations. |
+| `stop.go` | Stop lifecycle and stop-window logic when separate from core lifecycle. |
+| `subagent.go` | Child-agent state and transcript handling. |
+| `connection.go` | Process connection ownership and setup. |
+| `family.go` | Startup shared by providers in one protocol family. |
+| `family_base.go` | Base behavior shared by that family. |
+| `model_names.go` | Model ID normalization. |
+| `launch_env.go` | Launch environment detection. |
 
-Keep the locator in `Registration()`. The startup path reads it through
-`providerkit.ResolveLaunch` or the shared ACP start. Keep static option
-metadata in `registration.go`, and put live option methods in `settings.go`.
+Keep the locator and static fallback groups in `Registration()`.
+The startup path reads that registration through `providerkit.ResolveLaunch`
+or a shared protocol start. Do not copy the locator into startup code.
+When one axis table supplies live settings and static defaults, derive both
+from that table.
 
-Give each other file one clear role. Copilot separates `session_wire.go` from
-`session_lifecycle.go`. OpenCode keeps shared family startup in `family.go`
-and `FamilyBase` in `family_base.go`. Kilo reuses that family code.
-Use `connection.go` for a separate connection and `subagent.go` for child handling.
-Use `model_names.go` for model ID normalization and `launch_env.go` for launch
-environment detection.
-Use role-based names for the matching test files. Do not add a redundant
-`native_` prefix when a package has one transport.
+A transport may keep `HandleOutput` in `rpc.go` when replies must precede
+conversation events. Keep event interpretation in `output.go` or `events.go`
+according to the unit that owns dispatch. A protocol family may share startup
+and base behavior, but each concrete provider keeps its own agent, start, and
+registration files.
+
+Give tests file names that match the roles they exercise. Do not add a
+redundant `native_` prefix to a file name when the package has one transport.
 
 ### The three-layer chat render pipeline
 

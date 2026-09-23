@@ -33,12 +33,6 @@ var cursorCLIAvailableModels = []*agent.ModelInfo{
 // static fallback and a running agent's fallback modes cannot drift.
 var cursorStaticOptionGroups = acp.StaticSecondaryGroup(acp.ModeChannelPermissionMode, fallbackCursorCLIModes())
 
-// Compile-time proof that Agent implements Agent. acp.Start is generic over
-// T and can only assert this at runtime (any(a).(Agent)); this guard turns a
-// dropped or renamed method into a build error rather than a launch-time
-// "does not implement Agent".
-var _ agent.Agent = (*Agent)(nil)
-
 // cursorLocator finds the Cursor CLI on the user's PATH.
 var cursorLocator = launch.Binaries("cursor-agent")
 

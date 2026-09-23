@@ -10,23 +10,9 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// Goose's server-driven ACP config-option ids (surfaced as mutable option groups,
-// not static templates). Declared in KnownOptionIDs so a not-running agent validates
-// them, matching the ids the live `session/set_config_option` channel reports. Goose
-// has no well-known "effort" axis -- its reasoning axis is the config option "thinking_effort".
 const (
-	ConfigThinkingEffort = "thinking_effort"
-	ConfigProvider       = "provider"
-	gooseSteerNamespace  = "goose"
-	gooseSteerMethod     = "_goose/unstable/session/steer"
-	// The custom notification Goose sends only to a client that advertises
-	// `customNotifications`, and the three updates it carries.
-	gooseSessionUpdateMethod = "_goose/unstable/session/update"
-	gooseUpdateUsage         = "usage_update"
-	gooseUpdateStatusMessage = "status_message"
-	// A NOTICE is a sentence the reader must see. The other variant, `progress`,
-	// is live chrome that Goose says must not become history.
-	gooseStatusNotice = "notice"
+	gooseSteerNamespace = "goose"
+	gooseSteerMethod    = "_goose/unstable/session/steer"
 )
 
 // Agent manages a single Goose CLI ACP process.
@@ -34,6 +20,9 @@ type Agent struct {
 	acp.Base
 	gooseOutput map[string]gooseOutputState
 }
+
+// This assertion makes a missing Agent method a compile error.
+var _ agent.Agent = (*Agent)(nil)
 
 // Agent steers. Manager.SupportsSteering answers false, with no build error, for a
 // provider that stops satisfying InputSteerer, so this assertion makes that

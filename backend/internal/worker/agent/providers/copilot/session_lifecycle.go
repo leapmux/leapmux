@@ -1,6 +1,7 @@
 package copilot
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -109,4 +110,67 @@ func (a *Agent) restoreNativeSettings(options optionmap.Map) error {
 // a goal clear the user had asked for.
 func copilotRestoreIsFatal(option string) bool {
 	return option != agent.OptionIDEffort
+}
+
+// runUnderNativeSession runs work while the session stays in place. A stopped process
+// answers nothing, so the work does not start.
+func (a *Agent) runUnderNativeSession(work func()) {
+	a.sessionMu.RLock()
+	defer a.sessionMu.RUnlock()
+	if a.IsStopped() {
+		return
+	}
+	work()
+}
+
+// forgetNativeSessionState drops everything the outgoing session owns, and gives the
+// agent nextSessionID. An empty nextSessionID keeps the current identity, which is
+// what the goal clear needs: it opens the SAME session again.
+//
+// A turn the replacement inherits would latch the agent busy for good, because no idle
+// event can reach a session that no longer exists. A child transcript, an open tool
+// call and a pending control request belong to that session too, and its event
+// subscriptions die with it.
+//
+// The caller holds sessionMu for writing, so no input and no setting change can reach
+// the session while this runs.
+func (a *Agent) forgetNativeSessionState(nextSessionID string) {
+	a.setNativeTurnActive(false)
+	a.outputMu.Lock()
+	// Store and drop what the OUTGOING session produced before the identity moves, so
+	// every row this sweep writes carries the session that produced it.
+	a.clearNativeChildren()
+	a.clearNativeControls()
+	if nextSessionID != "" {
+		a.stateMu.Lock()
+		a.sessionID = nextSessionID
+		a.stateMu.Unlock()
+	}
+	a.outputMu.Unlock()
+	a.forgetNativeControlEvents()
+}
+
+// prepareNativeSession subscribes an open session to the control events and restores
+// the settings the previous session carried.
+//
+// Every path that opens a session again needs both, in this order: the context clear,
+// its own rollback, and the goal clear. The subscription comes first because a setting
+// change can raise a control request, and a request that arrives before the
+// subscription exists reaches no reader.
+func (a *Agent) prepareNativeSession(options optionmap.Map) error {
+	if err := a.registerNativeControlEvents(); err != nil {
+		return err
+	}
+	return a.restoreNativeSettings(options)
+}
+
+func (a *Agent) currentNativeSessionID() string {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.sessionID
+}
+
+// requestNativeSession runs while the caller holds sessionMu.
+func (a *Agent) requestNativeSession(method string, values map[string]any) (json.RawMessage, error) {
+	return a.requestSession(a.currentNativeSessionID(), method, values, a.APITimeout())
 }

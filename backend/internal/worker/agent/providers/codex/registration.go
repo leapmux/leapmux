@@ -7,6 +7,10 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
+// DefaultApprovalPolicy applies to a new Codex agent. LeapMux owns this default.
+// The browser reads the other option defaults from contracts/codex-protocol.json.
+const DefaultApprovalPolicy = "on-request"
+
 // codexBinaryCandidates lists the executable names to probe for Codex, in
 // preference order. The second entry is the full Rust host triple produced
 // by `cargo install` on Windows when a shorter `codex` shim is absent.

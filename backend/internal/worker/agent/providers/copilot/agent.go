@@ -162,58 +162,6 @@ func (r *coalescingRunner) run(key string, work func()) {
 	}()
 }
 
-// runUnderNativeSession runs work while the session stays in place. A stopped process
-// answers nothing, so the work does not start.
-func (a *Agent) runUnderNativeSession(work func()) {
-	a.sessionMu.RLock()
-	defer a.sessionMu.RUnlock()
-	if a.IsStopped() {
-		return
-	}
-	work()
-}
-
-// forgetNativeSessionState drops everything the outgoing session owns, and gives the
-// agent nextSessionID. An empty nextSessionID keeps the current identity, which is
-// what the goal clear needs: it opens the SAME session again.
-//
-// A turn the replacement inherits would latch the agent busy for good, because no idle
-// event can reach a session that no longer exists. A child transcript, an open tool
-// call and a pending control request belong to that session too, and its event
-// subscriptions die with it.
-//
-// The caller holds sessionMu for writing, so no input and no setting change can reach
-// the session while this runs.
-func (a *Agent) forgetNativeSessionState(nextSessionID string) {
-	a.setNativeTurnActive(false)
-	a.outputMu.Lock()
-	// Store and drop what the OUTGOING session produced before the identity moves, so
-	// every row this sweep writes carries the session that produced it.
-	a.clearNativeChildren()
-	a.clearNativeControls()
-	if nextSessionID != "" {
-		a.stateMu.Lock()
-		a.sessionID = nextSessionID
-		a.stateMu.Unlock()
-	}
-	a.outputMu.Unlock()
-	a.forgetNativeControlEvents()
-}
-
-// prepareNativeSession subscribes an open session to the control events and restores
-// the settings the previous session carried.
-//
-// Every path that opens a session again needs both, in this order: the context clear,
-// its own rollback, and the goal clear. The subscription comes first because a setting
-// change can raise a control request, and a request that arrives before the
-// subscription exists reaches no reader.
-func (a *Agent) prepareNativeSession(options optionmap.Map) error {
-	if err := a.registerNativeControlEvents(); err != nil {
-		return err
-	}
-	return a.restoreNativeSettings(options)
-}
-
 // stopNativeConnection ends the process and drops the state of the session it served.
 //
 // A path that disposed of its session and could not open another one has nothing to
@@ -227,17 +175,6 @@ func (a *Agent) stopNativeConnection() {
 	a.outputMu.Unlock()
 	a.forgetNativeControlEvents()
 	a.copilotConnection.Stop()
-}
-
-func (a *Agent) currentNativeSessionID() string {
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-	return a.sessionID
-}
-
-// requestNativeSession runs while the caller holds sessionMu.
-func (a *Agent) requestNativeSession(method string, values map[string]any) (json.RawMessage, error) {
-	return a.requestSession(a.currentNativeSessionID(), method, values, a.APITimeout())
 }
 
 // PublishTurnActive republishes the Worker-visible turn state from a.active.
@@ -438,39 +375,6 @@ func (a *Agent) Wait() error {
 	a.forgetNativeControlEvents()
 	a.setNativeTurnActive(false)
 	return err
-}
-
-func (a *Agent) HandleOutput(content []byte) {
-	line := &providerkit.ParsedLine{Raw: content}
-	if err := json.Unmarshal(content, line); err != nil {
-		a.persistNativeFrame(content, agent.SpanInfo{})
-		return
-	}
-	a.handleNativeOutput(line)
-}
-
-func (a *Agent) handleNativeOutput(line *providerkit.ParsedLine) {
-	a.outputMu.Lock()
-	defer a.outputMu.Unlock()
-	if line.Method != copilotMethodSessionEvent {
-		a.RefuseUnsupportedRequest(line)
-		// An unrecognized method still reaches the transcript: a frame that carries
-		// conversation is worse lost than shown as raw JSON.
-		if !copilotMethodIsTelemetry(line.Method) {
-			a.persistNativeFrame(line.Raw, agent.SpanInfo{})
-		}
-		return
-	}
-	event, err := decodeCopilotSessionEvent(line.Params, a.currentNativeSessionID())
-	if err != nil {
-		slog.Debug("Skip Copilot event with an invalid session", "error", err)
-		return
-	}
-	a.handleNativeEvent(line.Raw, event)
-}
-
-func (a *Agent) persistNativeFrame(raw []byte, span agent.SpanInfo) {
-	a.persistNativeFrameTo(a.sink, raw, span)
 }
 
 func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {

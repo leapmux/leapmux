@@ -23,8 +23,8 @@ import (
 // Each harness's rc-detection marker (CLAUDECODE, CODEX_CI, OPENCODE_CLIENT, KILO_CLIENT)
 // and Claude's CLAUDE_CODE_ENTRYPOINT are intentionally
 // NOT listed: each provider strips them from the inherited env and re-adds its own value
-// before this runs. CODEX_THREAD_ID is also stripped in codex/agent.go; listing it here too is a
-// harmless redundant strip that also protects non-codex launches.
+// before this runs. Codex also strips CODEX_THREAD_ID in codex/start.go.
+// This entry protects launches by other providers.
 var agentIdentityEnvScrubKeys = []string{
 	// Cross-harness: W3C distributed-trace context + generic "running as an agent" marker.
 	"TRACEPARENT", "TRACESTATE", "AI_AGENT",

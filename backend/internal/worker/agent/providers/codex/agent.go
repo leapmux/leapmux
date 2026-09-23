@@ -14,42 +14,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// The approval policy a fresh Codex agent runs on. The ids and the defaults of the
-// four other axes live in contracts/codex-protocol.json, because the browser seeds a
-// new agent from the same values. This one stays here: LeapMux owns the approval
-// axis for every provider, and no browser code reads Codex's default for it.
-const DefaultApprovalPolicy = "on-request"
-
-// The Codex CLI features the worker turns on at launch.
-const (
-	codexMemoriesFeature     = "memories"
-	codexMultiAgentV2Feature = "multi_agent_v2"
-)
-
-// Codex sandbox policy values.
-const (
-	SandboxDangerFullAccess = "danger-full-access"
-	SandboxWorkspaceWrite   = "workspace-write"
-	SandboxReadOnly         = "read-only"
-)
-
-// Codex network access values.
-const (
-	NetworkRestricted = "restricted"
-	NetworkEnabled    = "enabled"
-)
-
-// Codex collaboration mode values.
-const (
-	CollaborationDefault = "default"
-	CollaborationPlan    = "plan"
-)
-
-// Codex service tier values.
-const (
-	ServiceTierFast = "fast"
-)
-
 // How long a `turn/start` waits for its `turn/started` ack before it reports
 // the delivery unconfirmed.
 //
@@ -967,16 +931,6 @@ func codexServiceTierValue(tier string) *string {
 		return &tier
 	}
 	return nil
-}
-
-// childTurnSeq issues the ordering token for a collab CHILD's turn flag. Both
-// edges arrive on the one reader goroutine, so the token only has to be
-// monotonic -- the counter the main thread shares supplies that, and the Worker
-// tracks the last token for each agent id separately.
-func (a *Agent) childTurnSeq() uint64 {
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	return a.NextTurnSeq()
 }
 
 func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {

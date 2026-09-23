@@ -14,6 +14,12 @@ import (
 	"github.com/leapmux/leapmux/util/version"
 )
 
+// The worker enables these Codex CLI features at launch.
+const (
+	codexMemoriesFeature     = "memories"
+	codexMultiAgentV2Feature = "multi_agent_v2"
+)
+
 var _ agent.StartFunc = Start
 
 // Start starts a Codex agent process and performs the JSON-RPC handshake.

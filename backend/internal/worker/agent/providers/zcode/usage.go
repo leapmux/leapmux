@@ -316,3 +316,19 @@ func (a *Agent) noteZCodeStateRevision(revision int64) {
 	}
 	a.Mu.Unlock()
 }
+
+// currentZCodeContextWindow returns the context window to label usage with,
+// preferring what the app-server reported and falling back to the catalog.
+func (a *Agent) currentZCodeContextWindow() int64 {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.contextWindow > 0 {
+		return a.contextWindow
+	}
+	for _, m := range a.catalog.Models {
+		if m.GetId() == a.model && m.GetContextWindow() > 0 {
+			return m.GetContextWindow()
+		}
+	}
+	return 0
+}

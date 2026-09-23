@@ -8,6 +8,12 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
 
+// Goose exposes these server-driven option IDs before the daemon starts.
+const (
+	ConfigThinkingEffort = "thinking_effort"
+	ConfigProvider       = "provider"
+)
+
 // fallbackGooseCLIModes lists Goose's modes in Goose's own order, then applies the same
 // preferred-first rule the live catalog applies. Ordering here rather than hand-writing
 // the result keeps the static fallback and every rebuilt list in agreement.
@@ -25,12 +31,6 @@ func fallbackGooseCLIModes() []*leapmuxv1.AvailableOption {
 // gooseStaticOptionGroups holds Goose's static permission-mode group. The
 // factory registration and Start both read this one value.
 var gooseStaticOptionGroups = acp.StaticSecondaryGroup(acp.ModeChannelPermissionMode, fallbackGooseCLIModes())
-
-// Compile-time proof that Agent implements Agent. acp.Start is generic over
-// T and can only assert this at runtime (any(a).(Agent)); this guard turns a
-// dropped or renamed method into a build error rather than a launch-time
-// "does not implement Agent".
-var _ agent.Agent = (*Agent)(nil)
 
 // gooseLocator finds the Goose CLI on the user's PATH.
 var gooseLocator = launch.Binaries("goose")

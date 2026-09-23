@@ -1,7 +1,6 @@
 package pi
 
 import (
-	"encoding/json"
 	"log/slog"
 	"time"
 
@@ -9,20 +8,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
-)
-
-// Pi default option values.
-//
-// The provider and the model name a pair that Pi's own catalog carries, and
-// they are sent together by applyModel as {provider, modelId}. A pair Pi does
-// not know fails set_model at startup ("Model not found: <provider>/<model>"),
-// and the agent then answers nothing at all -- so this is a launch default,
-// not a cosmetic label. The previous openai-codex/gpt-5.5 pair named neither a
-// provider nor a model that `pi --list-models` reports.
-const (
-	DefaultThinkingLevel = "medium"
-	DefaultProvider      = "zai"
-	DefaultModel         = "glm-5.3"
 )
 
 // ThinkingLevelLabel is Pi's display label for its effort axis: Pi's CLI exposes a
@@ -48,83 +33,6 @@ const (
 	ThinkingHigh    = "high"
 	ThinkingXHigh   = "xhigh"
 )
-
-// applyAvailableModels parses a get_available_models response into the
-// AvailableModel proto shape and stores it for the manager.
-func (a *Agent) applyAvailableModels(raw json.RawMessage) {
-	if len(raw) == 0 {
-		return
-	}
-	var resp struct {
-		Models []struct {
-			ID            string `json:"id"`
-			Name          string `json:"name"`
-			Provider      string `json:"provider"`
-			Reasoning     bool   `json:"reasoning"`
-			ContextWindow int64  `json:"contextWindow"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		slog.Warn("pi get_available_models unmarshal failed", "agent_id", a.AgentID(), "error", err)
-		return
-	}
-
-	models := make([]*agent.ModelInfo, 0, len(resp.Models))
-	providers := make(map[string]string, len(resp.Models))
-	for _, m := range resp.Models {
-		if m.ID == "" {
-			continue
-		}
-		display := m.Name
-		if display == "" {
-			display = m.ID
-		}
-		efforts := piDefaultEfforts
-		if !m.Reasoning {
-			// Models without reasoning support only `off`; still expose Auto.
-			efforts = piNonReasoningEfforts
-		}
-		if m.Provider != "" {
-			providers[m.ID] = m.Provider
-		}
-		models = append(models, &agent.ModelInfo{
-			Id:               m.ID,
-			DisplayName:      display,
-			DefaultEffort:    DefaultThinkingLevel,
-			SupportedEfforts: efforts,
-			ContextWindow:    m.ContextWindow,
-		})
-	}
-
-	// A response that parsed but yielded no usable model (empty list, or every entry missing an
-	// id) carries no information -- like the len(raw) == 0 case above -- so leave the catalog
-	// untouched rather than overwriting it with an empty list, which would blank the model picker
-	// until the next non-empty response. (Today the manager's static-fallback chain backstops an
-	// empty a.availableModels, but keeping the guard local makes the intent self-evident.)
-	if len(models) == 0 {
-		return
-	}
-
-	a.Mu.Lock()
-	a.availableModels = models
-	a.modelProviders = providers
-	a.Mu.Unlock()
-}
-
-// providerForModel returns the underlying provider for a model id, looking it
-// up in the available-models catalog. Falls back to the agent's current
-// provider, then to the Pi default. Caller does not need to hold a.Mu.
-func (a *Agent) providerForModel(modelID string) string {
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	if p := a.modelProviders[modelID]; p != "" {
-		return p
-	}
-	if a.provider != "" {
-		return a.provider
-	}
-	return DefaultProvider
-}
 
 // applyModel sends set_model, then reads Pi's own state back so the local
 // model, provider and thinking level hold what Pi settled on.
