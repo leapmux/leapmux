@@ -7,9 +7,39 @@ Multi-agent coding assistant platform supporting Claude Code and Codex.
 - E2E: Playwright
 - Desktop: Tauri (Rust + Go sidecar)
 
+## Project constraints
+
+LeapMux is **pre-release**. Backward compatibility is not a concern, and a
+review finding about one is noise.
+
+- Edit the `00001_initial.sql` migration in all three dialects in place. Never
+  add a migration file.
+- Renumber, regroup, replace or remove a protobuf field freely. The codebase
+  still `reserved`s a freed number by its own choice; that is a preference, not
+  a requirement.
+- Change a public interface when a better design wants it. No installation is
+  deployed, so a compatibility shim is dead weight.
+
+Do not raise an upgrade path, wire compatibility or migration hygiene as a
+concern, and do not propose a shim for one.
+
 ## Build system
 
 Use `task` (`Taskfile.yaml`) targets, not the underlying tools directly.
+
+**Run one `task` pipeline at a time.** Every pipeline runs `prepare-backend`,
+which deletes the embedded frontend tree under
+`backend/internal/hub/generated/frontend/public` and copies
+`frontend/.output/public` into it. That pair is not atomic, so a second
+pipeline's test binary reads a half-copied tree. Nothing in the failure points
+at the copy: `hub` and `internal/hub/frontend` derive the Content Security
+Policy from the inline `<script>` tags of the EMBEDDED `index.html`, so a
+partial copy surfaces as about seventeen failures in `TestPolicy`,
+`TestResolveFrontend` and their siblings, each reading `does not contain
+"'sha256-"`. Chain the suites in one command
+(`task test-backend; task test-frontend; task lint`) instead of starting them as
+concurrent jobs. A starved run also looks exactly like a hang, so a stacked run
+sends you chasing a deadlock that is not there.
 
 - Frontend package manager: `bun` (lock: `bun.lock`)
 - Proto generation: `buf generate` (via `task generate-proto`)
@@ -187,6 +217,51 @@ every other provider and is a second source of truth that drifts. If you write a
 provider's tool/method name outside its plugin, move it into the plugin behind
 an interface method.
 
+### The three-layer chat render pipeline
+
+The frontend transcript is three layers, and a change that crosses one is
+almost always in the wrong place. Each layer carries its own `README.md`, which
+is the long form of what follows.
+
+1. **`components/chat/providers/` — extraction.** A plugin reads ONE agent's
+   wire format and returns provider-neutral model. It owns every tool name,
+   method name and envelope token that agent uses. It draws nothing: no JSX, no
+   DOM, no Solid signal. `extractChatRow` (`rowExtraction.ts`), reached through
+   `prepareChatRow`, is the one entry.
+2. **`components/chat/model/` — the provider-neutral model.** The `ChatRow`
+   union, `ToolCall`, and one file per `ToolKind` under `model/tools/`. Nothing
+   here knows a provider and nothing here draws. It imports `~/lib/*`,
+   `~/generated/*`, `~/models/*`, its own tree, and the three pure diff modules
+   — nothing else, **including type imports**. It holds no `.tsx` file and no
+   presentation type: express the intent as a model-owned union
+   (`ReminderSeverity`, `ToolIconHint`) and let layer 3 map it to a component.
+3. **`components/chat/results/` — the renderers.** They read the model and the
+   design tokens. `renderRowContent` (`rowRenderers.tsx`) is the one place a row
+   kind becomes markup, and its `switch` is exhaustive through `assertNever`, so
+   a new kind is a compile error rather than a row that draws nothing. Layer 3
+   never imports `../providers/`, never parses a provider's bytes, and never
+   branches on `AgentProvider`, a tool name or a wire token.
+
+Four control surfaces in `providers/` draw on purpose and are the only
+exceptions: `codex/CodexControlActions.tsx`, `cursor/CursorControlActions.tsx`,
+`pi/PiControlActions.tsx`, `pi/PiPlanApprovalActions.tsx`.
+
+The boundary is enforced, not merely documented. `eslint/chatPipelinePlugin.ts`
+supplies four rules — `layer-imports` (every import form, both directions),
+`no-provider-decision` (a provider comparison, a switch, a keyed lookup, a
+helper that decides for you, or a bare wire token as a string literal),
+`no-forbidden-assertion`, and `plugin-registration-only` (a `plugin.ts` holds
+the registration and imports each hook). `src/test-support/chatLayerStructure.test.ts`
+guards the structure the rules assume, and
+`src/test-support/restrictedSyntaxKeepsBaseRules.test.ts` runs the real linter
+over probe files so a scoped config block cannot quietly un-guard a tree.
+
+Why: the alternative puts one agent's shapes behind a module that exists to
+draw, where it half-serves the other nine. See also the
+`frontend-owns-message-extraction` principle — extracting a preview, a summary
+or plaintext from a message is layer 1's job in the browser, never the Go
+backend's, because the renderer layer is the one that knows the raw shapes.
+
 ### Tests
 
 - Backend: `testify/assert`, `testify/require`.
@@ -197,10 +272,17 @@ an interface method.
 - **The file extension picks the runner**, everywhere: `.spec.ts` is Playwright, `.test.ts` is vitest. So a `.test.ts` under `tests/e2e/helpers/` runs in `task test-frontend` — no browser, no hub, milliseconds — and never in the E2E suite. Both configs are pinned to this (`vitest.config.ts` excludes `tests/e2e/**/*.spec.ts` by name, not `tests/e2e/**`; `playwright.config.ts` sets `testMatch: '**/*.spec.ts'`), and `src/test-support/testFileNaming.test.ts` fails the suite when a file is on the wrong side or a config stops enforcing its half. Do not widen the vitest exclude back to `tests/e2e/**`: with Playwright pinned to `.spec.ts`, a co-located test would then run under **neither** runner. Playwright's own default `testMatch` takes `*.test.ts` as well, which is why the pin is there — without it those tests run in a browser worker, where vitest's API does not exist.
 - Unused imports cause lint failures (strict).
 - Test provider-specific logic in that provider's test file (e.g. Claude's `previewText` in `providers/claude/plugin.test.ts`), not in a shared module's test.
+- **Inject the thing that ends a transient state; never size a window with a sleep.** Four CI flakes here had one shape: the test asserted something true only inside a window the environment sized. A 5ms sleep inside a 10ms backoff overran on a loaded macOS runner; a sleep of `interval/2` passed the tick because Windows rounds up to ~15.6ms; a multi-megabyte write meant to stay blocked returned at once because Windows loopback absorbed it. Take a `quartz.Clock` in production code (`quartz.NewReal()` by default) and drive a mock through `internal/util/testutil` (`NewQuartzMock`, `DeadlineContext`, `WaitForTimer`), or inject a gate the test releases. A deadline no test asserts should be generous (30s), never tuned down to keep a test fast.
+- **A Go test that shells out to `git init` must pin `core.fsmonitor false`, `gc.auto 0` and `maintenance.auto false` in the repo's own config** — not as `-c` flags on the creating command. A host with `core.fsmonitor=true` set globally spawns a daemon that outlives the command and keeps writing under `.git/`, which races `t.TempDir` cleanup and fails with `TempDir RemoveAll cleanup: ... directory not empty`. It names the test that owned the directory, not the daemon, so it reads as a flaky test. `testutil.NewGitRepo` does this; a new helper must too.
+- **A cross-tab storage assertion must scope itself.** `~/lib/browserStorageDb` publishes on a module-level `BroadcastChannel`. Vitest isolates the module registry per file but not the PROCESS, so two files share one bus and each receives the other's writes with a differing `from`, which suppresses nothing. Filter on `kvInstanceIdForTests()` for what this tab published, filter a heard set to the keys the case names, and give a file's fixture keys a segment unique to that file.
+- **Do not propose happy-dom.** It builds a DOM about 2.7x faster than jsdom (measured: 60.6s → 33.6s on the full suite), and it returns `''` from `getComputedStyle(el).overflowX` where both a browser and jsdom return `'visible'`. `Tooltip.tsx`'s clip detection reads exactly that, so under happy-dom every element looks clipped and the "not clipped" branch stops being reachable from a test. Solve that first or leave it alone.
+- **The Postgres and MySQL store suites need a build tag and Docker**: `cd backend && go test -tags integration -run 'TestPostgresStore|TestMySQLStore' ./internal/hub/store/postgres/... ./internal/hub/store/mysql/...`. Without the tag they report "no test files", and a plain `go test ./internal/hub/store/...` exercises **sqlite alone**. The three dialects share one behavioural suite under `store/storetest/`, so a change to cross-dialect logic that runs only on sqlite misses a MySQL lock or REPEATABLE-READ divergence and a Postgres null-time one. The MySQL run takes about 85s.
 
 ### E2E tests
 
 The suite builds its world ONCE. One `leapmux dev` process and one mock model server serve the whole run, one browser context and one tab serve every spec, and no test talks to a real model. `workers: 1` and `fullyParallel: false` follow from the shared tab, so a full run is sequential and takes about half an hour — prefer `task test-e2e -- <files>`.
+
+**CI does not run this suite.** Neither `task test` nor `task test-no-docker` reaches `test-e2e`, and those are what the workflow calls. A green CI run says nothing about the E2E suite, so run it locally before you claim an E2E change works.
 
 - **Never start your own hub.** `startSuiteServer` (`helpers/suiteServer.ts`) owns the one process, and the `leapmuxServer` fixture hands you its URL, tokens and worker id. A test takes a fresh WORKSPACE, not a fresh process. The few specs that genuinely need their own — a restart, a deregistration, a second worker — spawn it with `hubSpawnEnv()` merged with `leapmuxServer.agentEnv`, so their agents still reach the mock endpoint. `helpers/server.test.ts` fails the suite for a `hub`, `solo`, `dev` or `worker` spawn that skips that helper, because a raw `process.env` carries the developer's real provider credentials into the test.
 - **Undo page state in the reset, not in the spec.** `resetSharedPage` (`fixtures.ts`) returns the one tab to a known state between tests: listeners, routes, cookies, permissions, storage, viewport, device metrics and every media-emulation key. Anything a spec changes on the page or the context belongs THERE. A cleanup written in the spec runs only when that spec passes, so a spec that fails poisons every later one. `203-shared-tab-isolation.spec.ts` guards this, and `mediaEmulationReset` is typed `Required<…>` so a media feature Playwright adds later is a compile error until the reset names it.
@@ -210,6 +292,8 @@ The suite builds its world ONCE. One `leapmux dev` process and one mock model se
 - **Never seed through the database.** No spec writes a message row or a control-request row. Script the transcript through the mock endpoint instead: a direct write produces a persisted shape no live provider reaches, so the test passes against something the product cannot produce.
 - **Never `test.skip()` around model behaviour.** A model that "might not" call a tool is a scripted turn now, so the branch that skipped is unreachable and the assertion runs every time. `requireRegistryRow` fails rather than skips, and it takes no `test` parameter to skip with.
 - **Do NOT pass per-call `{ timeout: … }` overrides** to `expect`, `locator.waitFor`, and the rest. The project timeout already applies and an override is noise. There is ONE in the suite, and its shape is the bar: `193-tool-running-badge.spec.ts` waits on a 30-second `setInterval` inside the Claude CLI that no environment variable moves, so its deadline is a named constant whose doc block states the period it answers to. Discuss before adding a second.
+- **Scope a chat locator to `:visible`, and a sidebar locator to `:visible` plus `.first()`.** `ChatView` mounts a faithful copy of every row whose height is unknown inside its hidden premeasure root — same test ids, same text — so a page-rooted chat locator transiently resolves to TWO identical elements and dies on strict mode. Use the helpers in `helpers/ui.ts` (`assistantBubbles`, `userBubbles`, `messageBubbles`, `messageContents`, `visibleOnly`); only the OUTERMOST locator needs it. The SIDEBAR is worse, because it is mounted twice for real (a desktop element and a mobile one): the second copy is often visible too, never hydrates its worker-side metadata, and can intercept a hover — so go through `workspaceRow` / `treeRow` / `branchGroupRow` and read the DOM with `sidebarLeafLabels` / `sidebarLeafIds`, never a raw `querySelector`. The agent info card is mounted twice again, on two surfaces, so scope each row to the popover under test. `src/test-support/visibleChatLocators.test.ts` fails the suite for a hand-written unscoped one.
+- **Wait on the WORKER, not on the tab count or the hub's list.** Both are optimistic CRDT state that settles first: `emitRemoveTab` applies the tombstone at once, so the tab leaves the bar while `CloseAgent` is still stopping the process, and `listAgentsViaAPI` reads the hub's `ListTabs`, which the same tombstone already cleared. Poll a worker-backed RPC instead — `inspectLastTabCloseViaAPI` for a close verdict, `waitForAgentStartupViaAPI` for startup, which waits for not-STARTING and so does NOT distinguish a failed agent. The worker decides "is this the last tab on the branch?" from its own rows, so a test that closes two tabs in a row races the first teardown.
 - **Nothing detects the mock drifting from a real provider's wire format.** No test talks to a real model, so every provider's tests stay green while its CLI changes underneath them. That gap belongs with the `testdata/*_conformance.json` corpora, which both suites already replay — not with a Playwright project selected by a tag. A `@real-provider` tag and its project were deleted for matching no test at all.
 
 ### Frontend CSS (vanilla-extract)
