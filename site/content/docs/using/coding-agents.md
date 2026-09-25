@@ -367,7 +367,7 @@ Every provider runs the core workflow: chat, streamed tool calls, permission pro
 | Send to a subagent | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Interrupt a subagent | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | <a href="#note-16" aria-label="Note 16">❌¹⁶</a> | ❌ | <a href="#note-16" aria-label="Note 16">❌¹⁶</a> | ❌ | ❌ | ❌ |
 | Steer mid-turn | ✅ | ✅ | <a href="#note-17" aria-label="Note 17">❌¹⁷</a> | ✅ | ✅ | ✅ | <a href="#note-17" aria-label="Note 17">✅¹⁷</a> | ✅ | <a href="#note-17" aria-label="Note 17">✅¹⁷</a> | ✅ | ✅ | ✅ | ✅ | <a href="#note-17" aria-label="Note 17">✅¹⁷</a> | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Workflow grouping in Background tasks | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | <a href="#note-4" aria-label="Note 4">❌⁴</a> | ✅ |
+| Workflow grouping | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | <a href="#note-4" aria-label="Note 4">❌⁴</a> | ✅ |
 {{< /matrix >}}
 
 **Notes**
