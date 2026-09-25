@@ -203,8 +203,7 @@
 
 /*
   Feature-matrix header logos: one fixed size, so every provider column gets
-  the same header width. The matrix is the last section of its page, so the
-  sibling selector picks its table and no other.
+  the same header width.
 */
 .content th img {
   width: 32px;
@@ -214,25 +213,32 @@
 }
 
 /*
-  Feature matrix: the feature names get their own wider column, and every
-  provider column shares the rest equally. Tight cells keep the symbol and its
-  footnote markers on one line.
+  Feature matrix: the wrapper scrolls horizontally, the feature names get
+  their own wider column, and every provider column shares the rest equally.
+  No cell ever breaks a line -- a symbol keeps its footnote markers -- so the
+  table sets a minimum width and scrolls instead of wrapping.
 */
-#feature-matrix ~ table {
+.feature-matrix {
+  overflow-x: auto;
+}
+
+.feature-matrix table {
   table-layout: fixed;
+  min-width: 1080px;
 }
 
-#feature-matrix ~ table th:first-child {
-  width: 20%;
+.feature-matrix table th:first-child {
+  width: 280px;
 }
 
-#feature-matrix ~ table th,
-#feature-matrix ~ table td {
+.feature-matrix table th,
+.feature-matrix table td {
   padding: 4px 2px;
   text-align: center;
+  white-space: nowrap;
 }
 
-#feature-matrix ~ table th:first-child,
-#feature-matrix ~ table td:first-child {
+.feature-matrix table th:first-child,
+.feature-matrix table td:first-child {
   text-align: left;
 }

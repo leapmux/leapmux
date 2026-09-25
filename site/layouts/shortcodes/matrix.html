@@ -1,0 +1,6 @@
+{{- /* Wraps one markdown table in a horizontal scroll container, for tables
+       too wide for the prose column (the feature matrix). The angle-form
+       delimiters pass the inner markdown through raw; RenderString renders it
+       as BLOCK markdown (its default guess is inline, which drops the table),
+       and Goldmark would otherwise leave it literal inside an HTML block. */ -}}
+<div class="feature-matrix">{{ .Page.RenderString (dict "display" "block") .Inner }}</div>

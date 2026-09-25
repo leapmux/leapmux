@@ -14,24 +14,24 @@ For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/t
 LeapMux integrates nineteen coding-agent providers. It detects the coding agents installed on the Worker automatically and lists them in the New agent dialog.
 
 <div class="provider-logos">
-  <a href="https://claude.com/product/claude-code"><img src="/icons/agents/claude-code.svg" width="64" height="64" title="Claude Code" alt="Claude Code"></a>&nbsp;
-  <a href="https://openai.com/codex/"><img src="/icons/agents/codex.svg" width="64" height="64" title="Codex" alt="Codex"></a>&nbsp;
-  <a href="https://cursor.com/cli"><img src="/icons/agents/cursor.svg" width="64" height="64" title="Cursor" alt="Cursor"></a>&nbsp;
-  <a href="https://github.com/features/copilot/cli"><img src="/icons/agents/github-copilot.svg" width="64" height="64" title="GitHub Copilot" alt="GitHub Copilot"></a>&nbsp;
-  <a href="https://kilo.ai/cli"><img src="/icons/agents/kilo.svg" width="64" height="64" title="Kilo" alt="Kilo"></a>&nbsp;
-  <a href="https://opencode.ai/"><img src="/icons/agents/opencode.svg" width="64" height="64" title="OpenCode" alt="OpenCode"></a>&nbsp;
-  <a href="https://block.github.io/goose/"><img src="/icons/agents/goose.svg" width="64" height="64" title="Goose" alt="Goose"></a>&nbsp;
-  <a href="https://pi.dev/"><img src="/icons/agents/pi.svg" width="64" height="64" title="Pi" alt="Pi"></a>&nbsp;
-  <a href="https://github.com/esengine/DeepSeek-Reasonix"><img src="/icons/agents/reasonix.svg" width="64" height="64" title="Reasonix" alt="Reasonix"></a>&nbsp;
-  <a href="https://zcode.z.ai/"><img src="/icons/agents/zcode.svg" width="64" height="64" title="ZCode" alt="ZCode"></a>&nbsp;
-  <a href="https://codewhale.net/en/product"><img src="/icons/agents/codewhale.svg" width="64" height="64" title="Codewhale" alt="Codewhale"></a>&nbsp;
-  <a href="https://moonshotai.github.io/kimi-code/en/"><img src="/icons/agents/kimi-code.svg" width="64" height="64" title="Kimi Code" alt="Kimi Code"></a>&nbsp;
-  <a href="https://mimo.xiaomi.com/coder"><img src="/icons/agents/mimo-code.svg" width="64" height="64" title="MiMo Code" alt="MiMo Code"></a>&nbsp;
-  <a href="https://qwenlm.github.io/qwen-code-docs/en/users/overview"><img src="/icons/agents/qwen-code.svg" width="64" height="64" title="Qwen Code" alt="Qwen Code"></a>&nbsp;
-  <a href="https://omp.sh"><img src="/icons/agents/oh-my-pi.svg" width="64" height="64" title="Oh My Pi" alt="Oh My Pi"></a>&nbsp;
-  <a href="https://x.ai/cli"><img src="/icons/agents/grok-build.svg" width="64" height="64" title="Grok Build" alt="Grok Build"></a>&nbsp;
-  <a href="https://kiro.dev/cli/"><img src="/icons/agents/kiro.svg" width="64" height="64" title="Kiro" alt="Kiro"></a>&nbsp;
-  <a href="https://ampcode.com/"><img src="/icons/agents/amp.svg" width="64" height="64" title="Amp" alt="Amp"></a>&nbsp;
+  <a href="https://claude.com/product/claude-code"><img src="/icons/agents/claude-code.svg" width="64" height="64" title="Claude Code" alt="Claude Code"></a>
+  <a href="https://openai.com/codex/"><img src="/icons/agents/codex.svg" width="64" height="64" title="Codex" alt="Codex"></a>
+  <a href="https://cursor.com/cli"><img src="/icons/agents/cursor.svg" width="64" height="64" title="Cursor" alt="Cursor"></a>
+  <a href="https://github.com/features/copilot/cli"><img src="/icons/agents/github-copilot.svg" width="64" height="64" title="GitHub Copilot" alt="GitHub Copilot"></a>
+  <a href="https://kilo.ai/cli"><img src="/icons/agents/kilo.svg" width="64" height="64" title="Kilo" alt="Kilo"></a>
+  <a href="https://opencode.ai/"><img src="/icons/agents/opencode.svg" width="64" height="64" title="OpenCode" alt="OpenCode"></a>
+  <a href="https://block.github.io/goose/"><img src="/icons/agents/goose.svg" width="64" height="64" title="Goose" alt="Goose"></a>
+  <a href="https://pi.dev/"><img src="/icons/agents/pi.svg" width="64" height="64" title="Pi" alt="Pi"></a>
+  <a href="https://github.com/esengine/DeepSeek-Reasonix"><img src="/icons/agents/reasonix.svg" width="64" height="64" title="Reasonix" alt="Reasonix"></a>
+  <a href="https://zcode.z.ai/"><img src="/icons/agents/zcode.svg" width="64" height="64" title="ZCode" alt="ZCode"></a>
+  <a href="https://codewhale.net/en/product"><img src="/icons/agents/codewhale.svg" width="64" height="64" title="Codewhale" alt="Codewhale"></a>
+  <a href="https://moonshotai.github.io/kimi-code/en/"><img src="/icons/agents/kimi-code.svg" width="64" height="64" title="Kimi Code" alt="Kimi Code"></a>
+  <a href="https://mimo.xiaomi.com/coder"><img src="/icons/agents/mimo-code.svg" width="64" height="64" title="MiMo Code" alt="MiMo Code"></a>
+  <a href="https://qwenlm.github.io/qwen-code-docs/en/users/overview"><img src="/icons/agents/qwen-code.svg" width="64" height="64" title="Qwen Code" alt="Qwen Code"></a>
+  <a href="https://omp.sh"><img src="/icons/agents/oh-my-pi.svg" width="64" height="64" title="Oh My Pi" alt="Oh My Pi"></a>
+  <a href="https://x.ai/cli"><img src="/icons/agents/grok-build.svg" width="64" height="64" title="Grok Build" alt="Grok Build"></a>
+  <a href="https://kiro.dev/cli/"><img src="/icons/agents/kiro.svg" width="64" height="64" title="Kiro" alt="Kiro"></a>
+  <a href="https://ampcode.com/"><img src="/icons/agents/amp.svg" width="64" height="64" title="Amp" alt="Amp"></a>
   <a href="https://cline.bot/cli"><img src="/icons/agents/cline.svg" width="64" height="64" title="Cline" alt="Cline"></a>
 </div>
 
@@ -335,7 +335,8 @@ See [Control CLI](/docs/using/control-cli/) for the full command tree, entity-ID
 
 Every provider runs the core workflow: chat, streamed tool calls, permission prompts, and session resume. Beyond that, support differs. Each cell is ✅ when LeapMux supports the feature for that provider, and ❌ when it does not. A small number after a symbol marks a note below the table.
 
-| Feature | <img src="/icons/agents/claude-code.svg" width="32" height="32" title="Claude Code" alt="Claude Code"> | <img src="/icons/agents/codex.svg" width="32" height="32" title="Codex" alt="Codex"> | <img src="/icons/agents/cursor.svg" width="32" height="32" title="Cursor" alt="Cursor"> | <img src="/icons/agents/github-copilot.svg" width="32" height="32" title="GitHub Copilot" alt="GitHub Copilot"> | <img src="/icons/agents/kilo.svg" width="32" height="32" title="Kilo" alt="Kilo"> | <img src="/icons/agents/opencode.svg" width="32" height="32" title="OpenCode" alt="OpenCode"> | <img src="/icons/agents/goose.svg" width="32" height="32" title="Goose" alt="Goose"> | <img src="/icons/agents/pi.svg" width="32" height="32" title="Pi" alt="Pi">¹ | <img src="/icons/agents/reasonix.svg" width="32" height="32" title="Reasonix" alt="Reasonix"> | <img src="/icons/agents/zcode.svg" width="32" height="32" title="ZCode" alt="ZCode"> | <img src="/icons/agents/codewhale.svg" width="32" height="32" title="Codewhale" alt="Codewhale"> | <img src="/icons/agents/kimi-code.svg" width="32" height="32" title="Kimi Code" alt="Kimi Code"> | <img src="/icons/agents/mimo-code.svg" width="32" height="32" title="MiMo Code" alt="MiMo Code"> | <img src="/icons/agents/qwen-code.svg" width="32" height="32" title="Qwen Code" alt="Qwen Code"> | <img src="/icons/agents/oh-my-pi.svg" width="32" height="32" title="Oh My Pi" alt="Oh My Pi"> | <img src="/icons/agents/grok-build.svg" width="32" height="32" title="Grok Build" alt="Grok Build"> | <img src="/icons/agents/kiro.svg" width="32" height="32" title="Kiro" alt="Kiro"> | <img src="/icons/agents/amp.svg" width="32" height="32" title="Amp" alt="Amp"> | <img src="/icons/agents/cline.svg" width="32" height="32" title="Cline" alt="Cline"> |
+{{< matrix >}}
+| Feature | <a href="https://claude.com/product/claude-code"><img src="/icons/agents/claude-code.svg" width="32" height="32" title="Claude Code" alt="Claude Code"></a> | <a href="https://openai.com/codex/"><img src="/icons/agents/codex.svg" width="32" height="32" title="Codex" alt="Codex"></a> | <a href="https://cursor.com/cli"><img src="/icons/agents/cursor.svg" width="32" height="32" title="Cursor" alt="Cursor"></a> | <a href="https://github.com/features/copilot/cli"><img src="/icons/agents/github-copilot.svg" width="32" height="32" title="GitHub Copilot" alt="GitHub Copilot"></a> | <a href="https://kilo.ai/cli"><img src="/icons/agents/kilo.svg" width="32" height="32" title="Kilo" alt="Kilo"></a> | <a href="https://opencode.ai/"><img src="/icons/agents/opencode.svg" width="32" height="32" title="OpenCode" alt="OpenCode"></a> | <a href="https://block.github.io/goose/"><img src="/icons/agents/goose.svg" width="32" height="32" title="Goose" alt="Goose"></a> | <a href="https://pi.dev/"><img src="/icons/agents/pi.svg" width="32" height="32" title="Pi" alt="Pi"></a>¹ | <a href="https://github.com/esengine/DeepSeek-Reasonix"><img src="/icons/agents/reasonix.svg" width="32" height="32" title="Reasonix" alt="Reasonix"></a> | <a href="https://zcode.z.ai/"><img src="/icons/agents/zcode.svg" width="32" height="32" title="ZCode" alt="ZCode"></a> | <a href="https://codewhale.net/en/product"><img src="/icons/agents/codewhale.svg" width="32" height="32" title="Codewhale" alt="Codewhale"></a> | <a href="https://moonshotai.github.io/kimi-code/en/"><img src="/icons/agents/kimi-code.svg" width="32" height="32" title="Kimi Code" alt="Kimi Code"></a> | <a href="https://mimo.xiaomi.com/coder"><img src="/icons/agents/mimo-code.svg" width="32" height="32" title="MiMo Code" alt="MiMo Code"></a> | <a href="https://qwenlm.github.io/qwen-code-docs/en/users/overview"><img src="/icons/agents/qwen-code.svg" width="32" height="32" title="Qwen Code" alt="Qwen Code"></a> | <a href="https://omp.sh"><img src="/icons/agents/oh-my-pi.svg" width="32" height="32" title="Oh My Pi" alt="Oh My Pi"></a> | <a href="https://x.ai/cli"><img src="/icons/agents/grok-build.svg" width="32" height="32" title="Grok Build" alt="Grok Build"></a> | <a href="https://kiro.dev/cli/"><img src="/icons/agents/kiro.svg" width="32" height="32" title="Kiro" alt="Kiro"></a> | <a href="https://ampcode.com/"><img src="/icons/agents/amp.svg" width="32" height="32" title="Amp" alt="Amp"></a> | <a href="https://cline.bot/cli"><img src="/icons/agents/cline.svg" width="32" height="32" title="Cline" alt="Cline"></a> |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Text attachments | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Image attachments | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅² | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -366,6 +367,7 @@ Every provider runs the core workflow: chat, streamed tool calls, permission pro
 | Interrupt a subagent | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌¹⁶ | ❌ | ❌¹⁶ | ❌ | ❌ | ❌ |
 | Steer mid-turn | ✅ | ✅ | ❌¹⁷ | ✅ | ✅ | ✅ | ✅¹⁷ | ✅ | ✅¹⁷ | ✅ | ✅ | ✅ | ✅ | ✅¹⁷ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Workflow grouping in Background tasks | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌⁴ | ✅ |
+{{< /matrix >}}
 
 **Notes**
 
