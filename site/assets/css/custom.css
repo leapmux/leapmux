@@ -227,7 +227,7 @@
 
 .feature-matrix table {
   table-layout: fixed;
-  min-width: 1078px;
+  min-width: 1030px;
   /* The theme scrolls each table on its own (display: block with overflow).
      That scrollport would capture the sticky column while the wrapper scrolls
      the box away, so the matrix table is a real table again and the wrapper is
@@ -247,7 +247,7 @@
 }
 
 .feature-matrix table th:first-child {
-  width: 280px;
+  width: 232px;
 }
 
 .feature-matrix table th:not(:first-child) {
