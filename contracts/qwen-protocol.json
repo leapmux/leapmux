@@ -1,0 +1,35 @@
+{
+  "_readme": "Qwen Code speaks the Agent Client Protocol and extends it: it tags each update of a foreground subagent with the id of the tool call that spawned it, states the real tool name and the kind of each interaction in a tool call's `_meta`, raises its questions and its plan approval as permission requests, and ends a turn that it started by itself with its own notification. Qwen owns every word below. The worker routes the subagent updates, resolves the plan approval, reads the modes and ends the turns; the browser plugin reads the same tool names into rows, draws the questions and the plan approval, and reads the same turn-end notification into a divider. A vocabulary that only one side reads stays in that side's code: the value that marks a question and the reply field its answers ride in are the browser's alone, because the worker forwards a question and its reply unchanged. `configIds` holds the config-option id of Qwen's reasoning axis: the worker drives the axis through it, and the browser shows its chip in the status bar under the same id.",
+  "methods": {
+    "EndTurn": "_qwencode/end_turn"
+  },
+  "meta": {
+    "ToolName": "toolName",
+    "ParentToolCallId": "parentToolCallId",
+    "InteractionKind": "qwenInteractionKind",
+    "Questions": "qwenQuestions"
+  },
+  "toolNames": {
+    "Agent": "agent",
+    "ExitPlanMode": "exit_plan_mode",
+    "AskUserQuestion": "ask_user_question",
+    "RunShellCommand": "run_shell_command",
+    "Workflow": "workflow",
+    "TodoWrite": "todo_write"
+  },
+  "modes": {
+    "Plan": "plan",
+    "Default": "default",
+    "AutoEdit": "auto-edit",
+    "Auto": "auto",
+    "Yolo": "yolo"
+  },
+  "permissionOptions": {
+    "ProceedAlways": "proceed_always",
+    "ProceedOnce": "proceed_once",
+    "Cancel": "cancel"
+  },
+  "configIds": {
+    "ReasoningEffort": "reasoning_effort"
+  }
+}

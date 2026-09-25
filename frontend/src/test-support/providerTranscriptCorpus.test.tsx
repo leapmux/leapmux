@@ -2,8 +2,12 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TranscriptFrame } from '~/test-support/messageFactory'
 import { waitFor } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { MIMO_TASK_ACTION, MIMO_TASK_STATUS, MIMO_TOOL, MIMO_TOOL_STATUS } from '~/generated/contracts/mimo-protocol'
+import { ALL_PROVIDERS } from '~/generated/contracts/providers'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
 import { makeTranscriptMessage } from '~/test-support/messageFactory'
+import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
 import { createTranscriptScenario } from '~/test-support/transcriptScenario'
 import '~/components/chat/providers/testMocks'
 
@@ -63,7 +67,7 @@ async function bubbleDom<T>(scenario: ReturnType<typeof createTranscriptScenario
 // bytes still say the call never finished.
 // ---------------------------------------------------------------------------
 
-const RETAINED_COMPLETION_PROVIDERS = [AgentProvider.CODEX, AgentProvider.OPENCODE, AgentProvider.PI, AgentProvider.ZCODE] as const
+const RETAINED_COMPLETION_PROVIDERS = [AgentProvider.CODEX, AgentProvider.OPENCODE, AgentProvider.PI, AgentProvider.ZCODE, AgentProvider.KIMI_CODE, AgentProvider.OH_MY_PI, AgentProvider.MIMO_CODE, AgentProvider.CLINE] as const
 
 function retainedCompletionFrames(provider: AgentProvider): TranscriptFrame[] {
   const id = `completion-${provider}`
@@ -74,7 +78,7 @@ function retainedCompletionFrames(provider: AgentProvider): TranscriptFrame[] {
         { item: { type: 'commandExecution', id, command, status: 'inProgress' } },
         { item: { type: 'commandExecution', id, command, status: 'inProgress', aggregatedOutput: output } },
       ]
-    : provider === AgentProvider.PI
+    : provider === AgentProvider.PI || provider === AgentProvider.OH_MY_PI
       ? [
           { type: 'tool_execution_start', toolCallId: id, toolName: 'bash', args: { command } },
           { type: 'tool_execution_end', toolCallId: id, toolName: 'bash', isError: true, result: { content: [{ type: 'text', text: output }] } },
@@ -84,10 +88,31 @@ function retainedCompletionFrames(provider: AgentProvider): TranscriptFrame[] {
             { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: id, toolName: 'Bash', input: { command } } },
             { type: 'tool.updated', payload: { kind: 'result', toolCallId: id, toolName: 'Bash', result: { success: false, content: output } } },
           ]
-        : [
-            { sessionUpdate: 'tool_call', toolCallId: id, kind: 'execute', title: 'Run command', status: 'pending', rawInput: { command } },
-            { sessionUpdate: 'tool_call_update', toolCallId: id, status: 'in_progress', kind: 'execute', content: [{ type: 'content', content: { type: 'text', text: output } }] },
-          ]
+        : provider === AgentProvider.KIMI_CODE
+          // The turn ended while the call ran, so the worker stored the call's own start
+          // again as its closing row, with the output it printed before it stopped.
+          ? [
+              kimiToolStart(id, 'Bash', { command }),
+              { ...kimiToolStart(id, 'Bash', { command }), output },
+            ]
+          : provider === AgentProvider.MIMO_CODE
+            // The worker ends a cut call with its last running update, which states the
+            // output so far.
+            ? [
+                openingFrame(MIMO_TOOL.Bash, { command }, id),
+                toolFrame(MIMO_TOOL.Bash, { status: MIMO_TOOL_STATUS.Running, input: { command }, metadata: { output } }, id),
+              ]
+            : provider === AgentProvider.CLINE
+              // The turn ended while the call ran, so the worker closed the call with a
+              // result that states the output it printed before it stopped.
+              ? [
+                  { version: 'v1', event: 'tool.started', sessionId: 's1', payload: { toolCallId: id, toolName: 'run_commands', input: { commands: [command] } } },
+                  { version: 'v1', event: 'tool.finished', sessionId: 's1', payload: { toolCallId: id, toolName: 'run_commands', output: [{ query: command, result: output, success: true }] } },
+                ]
+              : [
+                  { sessionUpdate: 'tool_call', toolCallId: id, kind: 'execute', title: 'Run command', status: 'pending', rawInput: { command } },
+                  { sessionUpdate: 'tool_call_update', toolCallId: id, status: 'in_progress', kind: 'execute', content: [{ type: 'content', content: { type: 'text', text: output } }] },
+                ]
   return [
     frame(`${id}-request`, provider, id, undefined, pair[0]),
     frame(`${id}-result`, provider, id, undefined, { ...pair[1], _leapmux: { completion: 'complete' } }, { completion: MessageCompletion.INTERRUPTED }),
@@ -111,7 +136,7 @@ describe('retained tool completion renders from the separate message field', () 
 // The to-do checklist, one per provider that sends it.
 // ---------------------------------------------------------------------------
 
-const TODO_PROVIDERS = [AgentProvider.CLAUDE_CODE, AgentProvider.ZCODE, AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.REASONIX] as const
+const TODO_PROVIDERS = [AgentProvider.CLAUDE_CODE, AgentProvider.ZCODE, AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.REASONIX, AgentProvider.CODEWHALE, AgentProvider.KIMI_CODE, AgentProvider.GROK_BUILD, AgentProvider.QWEN_CODE, AgentProvider.OH_MY_PI, AgentProvider.MIMO_CODE, AgentProvider.KIRO] as const
 
 function todoFrames(provider: AgentProvider): TranscriptFrame[] {
   const todos = [{ content: 'Inspect the shared checklist', status: 'pending' }]
@@ -126,6 +151,50 @@ function todoFrames(provider: AgentProvider): TranscriptFrame[] {
   else if (provider === AgentProvider.ZCODE) {
     request = { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: spanId, toolName: 'TodoWrite', input: { todos } } }
     result = { type: 'tool.updated', payload: { kind: 'result', toolCallId: spanId, result: { success: true, content: 'Todos updated' } } }
+  }
+  else if (provider === AgentProvider.CODEWHALE) {
+    // The runtime numbers the kept checklist and states it in the result's metadata.
+    spanType = 'todo_write'
+    const identity = { tool_use_id: spanId, tool_name: 'todo_write', tool_input: JSON.stringify({ todos }) }
+    request = { event: 'item.started', payload: { item: { kind: 'file_change', metadata: identity }, tool: { id: spanId, name: 'todo_write', input: { todos } } } }
+    result = { event: 'item.completed', payload: { item: { kind: 'file_change', detail: 'Todos updated', metadata: { ...identity, task_updates: { checklist: { items: [{ id: 1, ...todos[0] }] } } } } } }
+  }
+  else if (provider === AgentProvider.KIMI_CODE) {
+    spanType = 'TodoList'
+    request = kimiToolStart(spanId, 'TodoList', { todos: todos.map(todo => ({ title: todo.content, status: todo.status })) })
+    result = kimiToolResult(spanId, 'Todos updated')
+  }
+  else if (provider === AgentProvider.GROK_BUILD) {
+    // Grok states the tool in `_meta["x.ai/tool"]`, and the finished call states
+    // the whole list it now holds.
+    spanType = 'think'
+    request = { sessionUpdate: 'tool_call', toolCallId: spanId, title: 'todo_write', rawInput: { todos }, _meta: { 'x.ai/tool': { version: 1, name: 'todo_write' } } }
+    result = { sessionUpdate: 'tool_call_update', toolCallId: spanId, status: 'completed', kind: 'think', rawOutput: { type: 'Todo', TodosUpdated: { todos } } }
+  }
+  else if (provider === AgentProvider.QWEN_CODE) {
+    spanType = 'think'
+    request = { sessionUpdate: 'tool_call', toolCallId: spanId, title: 'TodoWrite', kind: 'think', status: 'in_progress', rawInput: { todos }, _meta: { toolName: 'todo_write' } }
+    result = { sessionUpdate: 'tool_call_update', toolCallId: spanId, status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'Todos updated' } }], _meta: { toolName: 'todo_write' } }
+  }
+  else if (provider === AgentProvider.OH_MY_PI) {
+    // omp states the whole list in the RESULT, grouped in phases.
+    spanType = 'todo'
+    request = { type: 'tool_execution_start', toolCallId: spanId, toolName: 'todo', args: { op: 'init', list: [{ phase: 'Check', items: ['Inspect the shared checklist'] }] } }
+    result = { type: 'tool_execution_end', toolCallId: spanId, toolName: 'todo', isError: false, result: { content: [{ type: 'text', text: 'Todos updated' }], details: { op: 'init', phases: [{ name: 'Check', tasks: todos }] } } }
+  }
+  else if (provider === AgentProvider.KIRO) {
+    // Kiro identifies its to-do tool by the title alone, and the finished call
+    // states the whole list it now holds.
+    spanType = 'other'
+    request = { sessionUpdate: 'tool_call', toolCallId: spanId, title: 'Task List', kind: 'other', status: 'in_progress', rawInput: { command: 'create', tasks: { 0: { task_description: 'Inspect the shared checklist' } } } }
+    result = { sessionUpdate: 'tool_call_update', toolCallId: spanId, status: 'completed', title: 'Task List', rawOutput: { tasks: [{ id: '1', task_description: 'Inspect the shared checklist', completed: false }] }, content: [{ type: 'content', content: { type: 'text', text: '{"tasks":[]}' } }] }
+  }
+  else if (provider === AgentProvider.MIMO_CODE) {
+    // MiMo's to-do tool is `task`, and one call creates one work item.
+    spanType = MIMO_TOOL.Task
+    const operation = { operation: { action: MIMO_TASK_ACTION.Create, summary: 'Inspect the shared checklist' } }
+    request = openingFrame(MIMO_TOOL.Task, operation, spanId)
+    result = toolFrame(MIMO_TOOL.Task, { input: operation, output: 'Created T1 (open): Inspect the shared checklist', metadata: { id: 'T1', status: MIMO_TASK_STATUS.Open } }, spanId)
   }
   else {
     spanType = 'other'
@@ -296,7 +365,7 @@ describe('shared task lists and fetched Markdown', () => {
 })
 
 // ---------------------------------------------------------------------------
-// The ten-provider applied file-edit matrix.
+// The applied file-edit matrix, one case for each provider that edits files.
 // ---------------------------------------------------------------------------
 
 function editFrames(provider: AgentProvider): TranscriptFrame[] {
@@ -319,10 +388,60 @@ function editFrames(provider: AgentProvider): TranscriptFrame[] {
       frame('result', provider, 'parity-edit', 'edit', { type: 'tool_execution_end', toolCallId: 'parity-edit', toolName: 'edit', result: { content: [{ type: 'text', text: 'Saved' }] }, isError: false }),
     ]
   }
+  if (provider === AgentProvider.OH_MY_PI) {
+    // omp's default hashline edit states no before side; its result keeps both
+    // snapshots of the file.
+    return [
+      frame('request', provider, 'parity-edit', 'edit', { type: 'tool_execution_start', toolCallId: 'parity-edit', toolName: 'edit', args: { input: `[${path}#1A2B]\nPUT 1.=1:\n+${after}` } }),
+      frame('result', provider, 'parity-edit', 'edit', { type: 'tool_execution_end', toolCallId: 'parity-edit', toolName: 'edit', result: { content: [{ type: 'text', text: 'Saved' }], details: { path, op: 'update', oldText: `${before}\n`, newText: `${after}\n` } }, isError: false }),
+    ]
+  }
   if (provider === AgentProvider.ZCODE) {
     return [
       frame('request', provider, 'parity-edit', 'Edit', { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'parity-edit', toolName: 'Edit', inputOmitted: true, inputRef: 'model_stream' } }, { supplemental: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'parity-edit', input: { file_path: path, old_string: before, new_string: after } } } }),
       frame('result', provider, 'parity-edit', 'Edit', { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'parity-edit', result: { success: true, content: 'Saved', display: { kind: 'file_diff', filePath: path, structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: [`-${before}`, `+${after}`] }] } } } }),
+    ]
+  }
+  if (provider === AgentProvider.CODEWHALE) {
+    // The runtime states the landed change as a unified diff in the result's metadata.
+    const identity = { tool_use_id: 'parity-edit', tool_name: 'edit', tool_input: JSON.stringify({ path, edits: [{ oldText: before, newText: after }] }) }
+    const diff = `--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-${before}\n+${after}\n`
+    return [
+      frame('request', provider, 'parity-edit', 'edit', { event: 'item.started', payload: { item: { kind: 'file_change', metadata: identity }, tool: { id: 'parity-edit', name: 'edit', input: { path, edits: [{ oldText: before, newText: after }] } } } }),
+      frame('result', provider, 'parity-edit', 'edit', { event: 'item.completed', payload: { item: { kind: 'file_change', detail: 'Saved', metadata: { ...identity, mutation: { diff, files: [{ path, outcome: 'updated' }], renames: [] } } } } }),
+    ]
+  }
+  if (provider === AgentProvider.KIMI_CODE) {
+    return [
+      frame('request', provider, 'parity-edit', 'Edit', kimiToolStart('parity-edit', 'Edit', { path, old_string: before, new_string: after }, { kind: 'diff', path })),
+      frame('result', provider, 'parity-edit', 'Edit', kimiToolResult('parity-edit', 'Saved')),
+    ]
+  }
+  if (provider === AgentProvider.AMP) {
+    // Amp's `apply_patch` states the patch it asked for, and its result states the
+    // unified diff of each file that landed.
+    const patchText = `*** Begin Patch\n*** Update File: ${path}\n@@\n-${before}\n+${after}\n*** End Patch`
+    const diff = `Index: ${path}\n===================================================================\n--- ${path}\n+++ ${path}\n@@ -1,1 +1,1 @@\n-${before}\n+${after}\n`
+    const landed = JSON.stringify({ summary: `update: ${path} (+1/-1)`, files: [{ uri: `file://${path}`, type: 'update', additions: 1, deletions: 1, diff }] })
+    return [
+      frame('request', provider, 'parity-edit', 'apply_patch', { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'parity-edit', name: 'apply_patch', input: { patchText } }] } }),
+      frame('result', provider, 'parity-edit', 'apply_patch', { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'parity-edit', content: landed, is_error: false }] } }),
+    ]
+  }
+  if (provider === AgentProvider.CLINE) {
+    // Cline's `editor` states the change it asked for, and its result confirms it.
+    return [
+      frame('request', provider, 'parity-edit', 'editor', { version: 'v1', event: 'tool.started', sessionId: 's1', payload: { toolCallId: 'parity-edit', toolName: 'editor', input: { path, old_text: before, new_text: after } } }),
+      frame('result', provider, 'parity-edit', 'editor', { version: 'v1', event: 'tool.finished', sessionId: 's1', payload: { toolCallId: 'parity-edit', toolName: 'editor', output: { query: `edit:${path}`, result: `Edited ${path}`, success: true } } }),
+    ]
+  }
+  if (provider === AgentProvider.MIMO_CODE) {
+    // MiMo states the landed change as a unified diff in the final frame's metadata.
+    const input = { file_path: path, old_string: before, new_string: after }
+    const diff = `Index: ${path}\n===================================================================\n--- ${path}\n+++ ${path}\n@@ -1,1 +1,1 @@\n-${before}\n+${after}\n`
+    return [
+      frame('request', provider, 'parity-edit', MIMO_TOOL.Edit, openingFrame(MIMO_TOOL.Edit, input, 'parity-edit')),
+      frame('result', provider, 'parity-edit', MIMO_TOOL.Edit, toolFrame(MIMO_TOOL.Edit, { input, output: 'Edit applied successfully.', metadata: { diff, filediff: { file: path, patch: diff, additions: 1, deletions: 1 } } }, 'parity-edit')),
     ]
   }
   if (provider === AgentProvider.GITHUB_COPILOT) {
@@ -336,6 +455,27 @@ function editFrames(provider: AgentProvider): TranscriptFrame[] {
     return [
       frame('request', provider, 'parity-edit', 'str_replace_editor', event('tool.execution_start', { toolCallId: 'parity-edit', toolName: 'str_replace_editor', arguments: { command: 'str_replace', path, old_str: before, new_str: after } })),
       frame('result', provider, 'parity-edit', 'str_replace_editor', event('tool.execution_complete', { toolCallId: 'parity-edit', success: true, result: { content: 'Saved' } })),
+    ]
+  }
+  if (provider === AgentProvider.GROK_BUILD) {
+    // Grok's first frame states the model's own arguments, its identity in
+    // `_meta`, and no kind; the finished frame carries the diff.
+    return [
+      frame('request', provider, 'parity-edit', 'edit', { sessionUpdate: 'tool_call', toolCallId: 'parity-edit', title: 'search_replace', rawInput: { file_path: path, old_string: before, new_string: after }, _meta: { 'x.ai/tool': { version: 1, name: 'search_replace' } } }),
+      frame('result', provider, 'parity-edit', 'edit', { sessionUpdate: 'tool_call_update', toolCallId: 'parity-edit', status: 'completed', kind: 'edit', content: [{ type: 'diff', path, oldText: before, newText: after }] }),
+    ]
+  }
+  if (provider === AgentProvider.KIRO) {
+    // Kiro states its own argument keys, and the finished frame carries the diff.
+    return [
+      frame('request', provider, 'parity-edit', 'edit', { sessionUpdate: 'tool_call', toolCallId: 'parity-edit', title: 'Replace in File', kind: 'edit', status: 'in_progress', rawInput: { path, oldStr: before, newStr: after }, locations: [{ path }] }),
+      frame('result', provider, 'parity-edit', 'edit', { sessionUpdate: 'tool_call_update', toolCallId: 'parity-edit', status: 'completed', title: 'Replace in File', rawInput: { path, oldStr: before, newStr: after }, content: [{ type: 'diff', path, oldText: before, newText: after }] }),
+    ]
+  }
+  if (provider === AgentProvider.QWEN_CODE) {
+    return [
+      frame('request', provider, 'parity-edit', 'edit', { sessionUpdate: 'tool_call', toolCallId: 'parity-edit', title: 'Edit: parity.ts', kind: 'edit', status: 'in_progress', rawInput: { file_path: path, old_string: before, new_string: after }, _meta: { toolName: 'edit' } }),
+      frame('result', provider, 'parity-edit', 'edit', { sessionUpdate: 'tool_call_update', toolCallId: 'parity-edit', status: 'completed', content: [{ type: 'diff', path, oldText: before, newText: after }], _meta: { toolName: 'edit' } }),
     ]
   }
   const input = provider === AgentProvider.GOOSE
@@ -369,9 +509,26 @@ const EDIT_PROVIDERS = [
   ['Reasonix', AgentProvider.REASONIX],
   ['Pi', AgentProvider.PI],
   ['ZCode', AgentProvider.ZCODE],
+  ['Codewhale', AgentProvider.CODEWHALE],
+  ['Kimi Code', AgentProvider.KIMI_CODE],
+  ['Grok Build', AgentProvider.GROK_BUILD],
+  ['Kiro', AgentProvider.KIRO],
+  ['Qwen Code', AgentProvider.QWEN_CODE],
+  ['Oh My Pi', AgentProvider.OH_MY_PI],
+  ['MiMo Code', AgentProvider.MIMO_CODE],
+  ['Amp', AgentProvider.AMP],
+  ['Cline', AgentProvider.CLINE],
 ] as const
 
 describe('an applied file edit renders its diff', () => {
+  // Every provider edits files, so the matrix lists every provider. A new provider
+  // that the list omits would otherwise ship with no case, and nothing would say so.
+  it('lists every provider once', () => {
+    const listed = EDIT_PROVIDERS.map(([, provider]) => provider)
+    expect(new Set(listed).size).toBe(listed.length)
+    expect([...listed].sort((a, b) => a - b)).toEqual([...ALL_PROVIDERS].sort((a, b) => a - b))
+  })
+
   for (const [label, provider] of EDIT_PROVIDERS) {
     it(`draws the applied edit for ${label}`, async () => {
       const scenario = createTranscriptScenario({ archive: messages(...editFrames(provider)) })

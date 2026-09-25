@@ -49,6 +49,20 @@ func TestDecodeControlBehavior(t *testing.T) {
 	assert.Empty(t, message)
 }
 
+func TestDecodeControlChoice(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "Reject and Exit", DecodeControlChoice([]byte(
+		`{"response":{"request_id":"req-1","response":{"behavior":"deny","choice":" Reject and Exit "}}}`)),
+		"the choice is trimmed")
+	assert.Empty(t, DecodeControlChoice([]byte(`{"response":{"request_id":"req-2","response":{"behavior":"allow"}}}`)),
+		"a plain decision carries no choice")
+	assert.Empty(t, DecodeControlChoice([]byte(`{"response":{"request_id":"req-3","response":{"behavior":"allow","choice":"   "}}}`)))
+	assert.Empty(t, DecodeControlChoice([]byte(`not json`)))
+	assert.Empty(t, DecodeControlChoice(nil))
+	assert.Empty(t, DecodeControlChoice([]byte(`{"response":{"response":{"choice":7}}}`)), "a choice that is not a string is no choice")
+}
+
 func TestNormalizeRejectionMessage(t *testing.T) {
 	t.Parallel()
 

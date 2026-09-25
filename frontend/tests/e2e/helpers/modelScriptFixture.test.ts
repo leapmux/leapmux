@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
 import { MOCK_SESSION_TITLE, readScenarioStatus } from './mockModelScenario'
 import { createMockModelServer } from './mockModelServer'
-import { startModelScript } from './modelScriptFixture'
+import { startModelScript, STEP_WAIT_REPORT_MARGIN_MS } from './modelScriptFixture'
 
 const servers: MockModelServer[] = []
 
@@ -211,5 +211,42 @@ describe('startModelScript', () => {
     expect(await answer(server, first.script.prompt('Run.'))).toBe('First script')
     await first.finish(true)
     await second.finish(true)
+  })
+
+  // A stalled script must end the wait with its own error, which states how far the
+  // script got, before the test's own timeout ends the test with a bare message.
+  //
+  // The deadline starts after the setup, so a slow server start cannot use up the
+  // window. The wait aims 300ms ahead, and the assertion allows the whole margin
+  // beyond that: the claim is that the wait ends before the test deadline, not how
+  // soon it polls.
+  it('ends a stalled wait before the test deadline, with the progress of the script', async () => {
+    const server = await startServer()
+    let deadline: number | undefined
+    const { script, finish } = await startModelScript(server.url, { testDeadline: () => deadline })
+    await script.queue({ text: 'Never asked for' })
+
+    deadline = Date.now() + STEP_WAIT_REPORT_MARGIN_MS + 300
+    await expect(script.waitForSteps()).rejects.toThrow(/reached 0 of 1 answers in \d+ms, before the test's own timeout/)
+    expect(Date.now()).toBeLessThan(deadline)
+    await finish(false)
+  })
+
+  it('ends at once when the test deadline leaves no time for the wait', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url, { testDeadline: () => Date.now() })
+    await script.queue({ text: 'Never asked for' })
+    await expect(script.waitForSteps()).rejects.toThrow(/reached 0 of 1 answers/)
+    await finish(false)
+  })
+
+  // With no test deadline (a test with no timeout), the wait keeps the limit that
+  // its caller states.
+  it('keeps the limit that the caller states when the test has no deadline', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url, { testDeadline: () => undefined })
+    await script.queue({ text: 'Never asked for' })
+    await expect(script.waitForSteps(1, 200)).rejects.toThrow(/reached 0 of 1 answers/)
+    await finish(false)
   })
 })

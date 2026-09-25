@@ -4,6 +4,7 @@ import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, test } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
 import { withMockModelScenario } from './helpers/mockModelScenario'
+import { mcpToolCall } from './helpers/providerToolCalls'
 import { createTestDirectory } from './helpers/runDirectory'
 import { withMockPiModel } from './helpers/scriptedPiModel'
 import { readEntry, storageKeys } from './helpers/storage'
@@ -71,7 +72,7 @@ test('recovers Pi MCP permission arguments and sends the selected approval scope
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'Protocol test')
     await withMockModelScenario(leapmuxServer.mockModelUrl, [
-      { toolCalls: [{ id: 'mcp-call', name: 'mcp', arguments: { tool: 'form_probe_echo', args } }] },
+      { toolCalls: [mcpToolCall(AgentProvider.PI, 'mcp-call', { server: 'form_probe', tool: 'echo', input: args })] },
       { text: 'Protocol test complete.' },
     ], async (scenario) => {
       await sendMessage(page, scenario.prompt('Run the configured MCP permission probe.'))

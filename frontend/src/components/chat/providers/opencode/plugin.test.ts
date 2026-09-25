@@ -6,10 +6,10 @@ import { providerQuotableText } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
 import { acpResultDivider } from '../acp/extractors/resultDivider'
 import { describeACPProviderBasics, renderACPRow } from '../acp/testUtils'
+import { sendOpenCodeQuestionResponse } from '../openCodeQuestions'
 import { providerFor } from '../registry'
-import { input } from '../testUtils'
 
-import { sendOpenCodeQuestionResponse } from './askUserQuestion'
+import { input } from '../testUtils'
 // Side-effect import to register the OpenCode plugin.
 import './plugin'
 
@@ -43,6 +43,11 @@ describe('opencode classify', () => {
   // Attachment caps, assembled-text handling and config_option_update hiding are the
   // standard Agent Client Protocol behaviours; the cases below are OpenCode's own.
   describeACPProviderBasics(AgentProvider.OPENCODE, { text: true, image: true, pdf: true, binary: true })
+
+  it('reports its reasoning axis under the well-known effort id', () => {
+    // OpenCode's daemon gives the axis the id `effort`, so the plugin states no id of its own.
+    expect(plugin.configuration?.effortGroupKey).toBeUndefined()
+  })
 
   // The neutral {isSynthetic, controlResponse} row -> control_response classification is provider-
   // agnostic and lives in classifyMessage (see messageClassifier.test.ts); this plugin test

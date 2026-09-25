@@ -1,5 +1,5 @@
 {
-  "_readme": "Claude Code permission modes that both the Go provider and the TypeScript plugin use. Anthropic owns these wire values: the worker sends them in set_permission_mode, and the browser plugin builds its permission presets and its plan-mode toggle from the same strings. defaultMode is the mode a Claude session with no stored one falls back to; the mode a NEW session requests is Auto, and the PermissionDefaults of the Claude registration (Registration in backend/internal/worker/agent/providers/claude/registration.go) is that fact's one home.",
+  "_readme": "Claude Code wire values that both the Go provider and the TypeScript plugin use. Anthropic owns them. modes are the permission modes: the worker sends them in set_permission_mode, and the browser plugin builds its permission presets and its plan-mode toggle from the same strings. defaultMode is the mode a Claude session with no stored one falls back to; the mode a NEW session requests is Auto, and the PermissionDefaults of the Claude registration (Registration in backend/internal/worker/agent/providers/claude/registration.go) is that fact's one home. systemSubtypes are the subtypes of a system line that state an API retry or a compaction boundary: the worker classifies each one as a notification, and the browser plugin draws it. The status subtype is not in this table, because the shared isFinalCompactingStatus in frontend/src/components/chat/messageUtils.ts reads that shape for the Claude, Codex and ACP plugins.",
   "modes": {
     "Default": "default",
     "Plan": "plan",
@@ -7,6 +7,11 @@
     "BypassPermissions": "bypassPermissions",
     "DontAsk": "dontAsk",
     "Auto": "auto"
+  },
+  "systemSubtypes": {
+    "ApiRetry": "api_retry",
+    "CompactBoundary": "compact_boundary",
+    "MicrocompactBoundary": "microcompact_boundary"
   },
   "defaultMode": "Default"
 }

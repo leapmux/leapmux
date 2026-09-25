@@ -101,6 +101,8 @@ func (svc *Service) readProviderSessions(ctx context.Context, provider leapmuxv1
 		WorkingDir: workingDir,
 		HomeDir:    svc.HomeDir,
 		Limit:      maxListedSessions,
+		Shell:      svc.agentShell(),
+		LoginShell: svc.agentLoginShell(),
 	})
 	if err != nil {
 		slog.Warn("failed to read provider session store",

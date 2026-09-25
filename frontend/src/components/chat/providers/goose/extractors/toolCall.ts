@@ -7,6 +7,7 @@ import { ACP_SUPPLEMENT, ACP_SUPPLEMENT_REQUEST } from '~/generated/contracts/ac
 import { GOOSE_SUBAGENT } from '~/generated/contracts/goose-protocol'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { withCommandExit } from '../../../model/commandResult'
 import { splitExitCodeMarker } from '../../../model/exitCodeMarker'
 import { mcpToolCallRequest, parseMcpContentItem } from '../../../model/mcpToolCall'
 import { readFileResultFromContent } from '../../../model/readFileResult'
@@ -201,21 +202,21 @@ function gooseCall(facts: ACPToolFacts, base: () => ToolCallSpec): ToolCallSpec 
         const consume = marked.exitCode !== undefined && (rawExit === undefined || rawExit === marked.exitCode)
         const exitCode = rawExit ?? marked.exitCode
         const shown = consume ? marked.output : output
-        // The exit half is REPLACED, not merged. The prior command came from a
-        // terminal, which states a `signal` for a process the OS killed, and writing
-        // Goose's code beside it built the one pair `CommandExit` forbids -- so the row
-        // drew the green check for a process that was killed. A code Goose reported
-        // wins; with none, the terminal's signal stands.
-        const { exitCode: _priorExit, signal: priorSignal, ...priorFacts } = prior?.commands[0] ?? { output: shown }
+        // The exit half is REPLACED, not merged (`withCommandExit`). The prior command
+        // came from a terminal, which states a `signal` for a process the OS killed,
+        // and writing Goose's code beside it built the one pair `CommandExit` forbids
+        // -- so the row drew the green check for a process that was killed. A code
+        // Goose reported wins; with none, the terminal's signal stands.
+        const priorCommand = prior?.commands[0] ?? { output: shown }
         const exit: CommandExit = exitCode !== undefined
           ? { exitCode }
-          : priorSignal !== undefined ? { signal: priorSignal } : {}
+          : priorCommand.signal !== undefined ? { signal: priorCommand.signal } : {}
         return {
           ...shell,
           title,
           ...named,
           result: {
-            commands: [{ ...priorFacts, output: shown, ...exit }],
+            commands: [withCommandExit({ ...priorCommand, output: shown }, exit)],
             unresolvedTerminals: prior?.unresolvedTerminals ?? [],
           },
         }

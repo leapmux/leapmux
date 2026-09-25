@@ -13,6 +13,7 @@
 // control channel supplies no `controls` at all rather than an empty one.
 
 import type { Component } from 'solid-js'
+import type { DialogResponder } from '../controls/DialogRequestControl'
 import type { SendPermissionOption } from '../controls/PermissionDecisionActions'
 import type { ActionsProps, ControlAnswerState, ControlResponseSender } from '../controls/types'
 import type { MessageCategory } from '../messageClassifier'
@@ -176,13 +177,14 @@ export interface ProviderTranscriptCapability {
    * suppresses. A frame it cannot read at all also yields nothing visible, which is
    * the safe answer for a notification: the row already reached the transcript.
    *
-   * The five plugins that register DIRECTLY supply it -- Claude, Codex, Pi, Copilot and
-   * ZCode. The five of the Agent Client Protocol family need none. Those daemons send
-   * JSON-RPC alone. A frame the worker persists verbatim is a session update or a
-   * request envelope, and neither one is a notification. Every notification in those
-   * transcripts is LeapMux's own envelope, which `leapmuxNotificationEntry` answers
-   * first, so this hook would never run. `classifyACPMessage` accepts a `system` frame,
-   * and no daemon of this family sends one.
+   * Every plugin that registers DIRECTLY supplies it, Amp excepted. The plugins of the
+   * Agent Client Protocol family need none. Those daemons send JSON-RPC alone. A frame
+   * that the worker persists verbatim is a session update or a request envelope, and
+   * neither one is a notification. Every notification in those transcripts is LeapMux's
+   * own envelope, which `leapmuxNotificationEntry` answers first, so this hook would
+   * never run. `classifyACPMessage` accepts a `system` frame, and no daemon of this
+   * family sends one. Amp needs none either: its stream carries no notification of its
+   * own, so every notification in its transcripts is LeapMux's.
    */
   notificationEntry?: (msg: Record<string, unknown>) => NotificationEntry[]
 
@@ -280,8 +282,8 @@ export interface ProviderControlCapability {
    * selects the native response shape and its decision or feedback fields.
    * LeapMux settings travel separately through ControlResponseOptions.
    *
-   * ACP-based providers can delegate to `acpBuildControlResponse` from
-   * `providers/acp/classification`.
+   * ACP-based providers get `acpBuildControlResponse` from
+   * `providers/acp/controlResponse` through `registerACPProvider`.
    */
   buildControlResponse?: (
     payload: Record<string, unknown>,
@@ -301,10 +303,10 @@ export interface ProviderControlCapability {
    *
    * Three providers answer some request of their own. Codex states its decisions
    * as WORDS that vary per request, and one of them carries a policy amendment as
-   * an object rather than an id. Pi answers a dialog with three different
-   * envelopes, none of them a permission. Cursor's create-plan sends a plan
-   * verdict that its own worker transforms. Everything else answers through the
-   * shared plan and permission rows, so it states nothing here.
+   * an object rather than an id. Pi's plan menu answers with its own action words
+   * and a fresh-context choice. Cursor's create-plan sends a plan verdict that its
+   * own worker transforms. Everything else answers through the shared plan,
+   * permission and dialog rows, so it states nothing here.
    *
    * It takes the PAYLOAD because the answer is per-request, not per-provider:
    * Cursor answers its create-plan itself and lets the shared row answer every
@@ -320,6 +322,15 @@ export interface ProviderControlCapability {
    * travels back in that runtime's own envelope.
    */
   sendPermissionOption?: SendPermissionOption
+
+  /**
+   * How this provider answers an extension dialog, in its own envelopes.
+   *
+   * A provider whose `extractControl` returns a `dialog` must state this beside it:
+   * the shared dialog actions send the reader's confirm, text or dismissal through
+   * it.
+   */
+  dialogResponder?: DialogResponder
 
   /** Provider-native presets for standard permission actions. */
   permissionPresets?: ProviderPermissionPresets
@@ -345,11 +356,20 @@ export interface ProviderSessionCapability {
    * skip, cost, backend-normalized `context_usage` preference) and only falls through to this hook
    * when no normalized usage is present, so the guards never live in a provider.
    *
-   * The five plugins that register DIRECTLY supply it -- Claude, Codex, Pi, Copilot and
-   * ZCode. The five of the Agent Client Protocol family need none: the worker reads
-   * their `usage_update` frame and broadcasts the normalized `context_usage` for it
-   * (`handleUsageUpdate` in `providers/acp/base.go`), so the wrapper answers before it reaches
-   * a plugin and this hook would never run.
+   * Claude, Codex, Pi, Copilot, ZCode and Oh My Pi supply it. The other providers need
+   * none, because the worker broadcasts the normalized `context_usage` for them, so the
+   * wrapper answers before it reaches a plugin and this hook would never run:
+   *
+   *   - The Agent Client Protocol family: the worker reads the `usage_update` frame
+   *     (`handleUsageUpdate` in `providers/acp/base.go`).
+   *   - MiMo Code: the worker reads the token counts of each assistant message
+   *     (`recordMessageUsage` in `providers/mimo/output.go`).
+   *   - Kimi Code and Codewhale: the worker reads the context readout that the runtime
+   *     reports, and states it on the turn.
+   *   - Amp: the worker reads the usage of each assistant message
+   *     (`recordUsage` in `providers/amp/output.go`).
+   *   - Cline: the worker reads the usage that the hub reports for each model call
+   *     (`handleUsageUpdated` in `providers/cline/output.go`).
    */
   contextUsageFromMessage?: (parsed: ParsedMessageContent) => ContextUsageInfo | null
 
@@ -363,11 +383,13 @@ export interface ProviderSessionCapability {
    * notification extractor, so `messageParser` holds no provider shape and the two
    * readers cannot disagree about what a boundary is.
    *
-   * Four plugins supply it -- Claude, Codex, Pi and Copilot -- and the six that omit it
-   * have no boundary to read. The five of the Agent Client Protocol family carry none
-   * on that stream: OpenCode compacts behind an internal agent and reports a
-   * `compacting` status alone, which states no size. ZCode emits no boundary either.
-   * The grid therefore holds its pre-compaction reading for those six until the next
+   * Claude, Codex, Pi, Copilot, Kimi Code, Oh My Pi and Cline supply it, and a plugin that omits
+   * it has no boundary with a size to read. The Agent Client Protocol family carries none
+   * on that stream: OpenCode, for example, compacts behind an internal agent and reports a
+   * `compacting` status alone, which states no size. ZCode emits no boundary either,
+   * MiMo Code's compaction part states a summary and no size, Codewhale runs a
+   * compaction as a turn of its own, and Amp's stream states no compaction at all.
+   * The grid therefore holds its pre-compaction reading for those providers until the next
    * message that carries usage replaces it, which is a limit of the protocol rather
    * than a hook anybody forgot.
    */
@@ -449,10 +471,13 @@ export interface ProviderConfigurationCapability {
    * mode-like axis, so the trigger renders ONE group's value rather than fusing
    * several:
    *
-   *   - `permissionMode` -- Claude, ZCode, Cursor, Goose, Reasonix.
+   *   - `permissionMode` -- Claude, ZCode, MiMo Code, Kimi Code, Oh My Pi, Cline, and each
+   *     plugin of the Agent Client Protocol family but OpenCode and Kilo.
    *   - `session_mode` -- Copilot.
    *   - `collaboration_mode` -- Codex.
+   *   - `codewhale_mode` -- Codewhale.
    *   - `primaryAgent` -- OpenCode, Kilo.
+   *   - `agent_mode` -- Amp, whose mode chooses the model and the effort.
    *
    * Pi alone omits it, and renders no third segment.
    *
@@ -464,15 +489,30 @@ export interface ProviderConfigurationCapability {
   triggerModeGroupKey?: string
 
   /**
+   * The option-group id of the provider's reasoning-effort axis, which the status
+   * bar draws as its effort chip. Omit it for the well-known `effort` id, which
+   * every provider whose effort LeapMux manages uses, and which OpenCode and Kilo
+   * report under that id.
+   *
+   * An Agent Client Protocol agent reports its effort axis under an id of its own,
+   * and LeapMux keeps that id, because the agent takes a change under it:
+   *
+   *   - `thinking_effort` -- Goose.
+   *   - `reasoning_effort` -- Grok Build, Qwen Code.
+   *   - `effortLevel` -- Kiro.
+   *
+   * The plugin reads the id from its protocol contract, the same constant the
+   * worker drives the axis through.
+   */
+  effortGroupKey?: string
+
+  /**
    * True when a running agent of this provider permits direct child input.
    * Drives the composer gate for child tabs together with
    * `AgentInfo.accepts_messages`: the proto field WINS when present on the
    * tab; this is the fallback for optimistic state. Omit it for false.
    */
   supportsSubagentSend?: boolean
-
-  /** True when the provider permits direct interruption of a child turn. */
-  supportsSubagentInterrupt?: boolean
 }
 
 /**

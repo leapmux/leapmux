@@ -31,26 +31,36 @@ const (
 // providerTree, and "." is the composition root.
 //
 // Only the ACP family shares code between providers. The ACP providers import
-// the base in acp, Kilo builds on the OpenCode family base, and OpenCode, Kilo
-// and ZCode read the OpenCode-family session store. Every other edge between
-// providers is a provider-specific shape that leaked into another provider.
+// the base in acp, Kilo builds on the OpenCode family base, and OpenCode, Kilo,
+// ZCode and MiMo Code read the OpenCode-family session store. Every other edge
+// between providers is a provider-specific shape that leaked into another
+// provider.
 var allowedProviderImports = map[string][]string{
-	".": {"claude", "codex", "copilot", "cursor", "goose", "kilo", "opencode", "pi", "reasonix", "zcode"},
+	".": {"amp", "claude", "cline", "codewhale", "codex", "copilot", "cursor", "goose", "grok", "kilo", "kimi", "kiro", "mimo", "ohmypi", "opencode", "pi", "qwen", "reasonix", "zcode"},
 
 	"acp":                    nil,
+	"amp":                    nil,
 	"acp/acptest":            nil,
 	"claude":                 nil,
+	"cline":                  nil,
 	"claude/claudetest":      {"claude"},
+	"codewhale":              nil,
 	"codex":                  nil,
 	"copilot":                nil,
 	"cursor":                 {"acp"},
 	"goose":                  {"acp"},
+	"grok":                   {"acp"},
 	"kilo":                   {"acp", "opencode", "opencode/opencodestore"},
+	"kimi":                   nil,
+	"kiro":                   {"acp"},
+	"mimo":                   {"opencode/opencodestore"},
+	"ohmypi":                 nil,
 	"opencode":               {"acp", "opencode/opencodestore"},
 	"opencode/opencodestore": nil,
 	"opencode/opencodestore/opencodestoretest": nil,
 	"opencode/opencodetest":                    nil,
 	"pi":                                       nil,
+	"qwen":                                     {"acp"},
 	"reasonix":                                 {"acp"},
 	"zcode":                                    {"opencode/opencodestore"},
 
@@ -66,8 +76,13 @@ var allowedProviderImports = map[string][]string{
 // and its test support know no provider: a provider imports them, so an import
 // the other way is a cycle or a shape that belongs in the provider.
 var allowedAgentTreeImports = map[string][]string{
-	agentTree:                      {agentTree + "/internal/launch"},
-	agentTree + "/internal/launch": nil,
+	// Registration.AgentDir is an agentdir.Spec, and Options.AgentDirs the
+	// directories of the worker.
+	agentTree:                        {agentTree + "/internal/agentdir", agentTree + "/internal/launch"},
+	agentTree + "/internal/agentdir": nil,
+	// agentdirtest builds directories for the tests of the providers.
+	agentTree + "/internal/agentdir/agentdirtest": {agentTree + "/internal/agentdir"},
+	agentTree + "/internal/launch":                nil,
 	// Registration.Locator is a launch.Locator, so a test registration needs it.
 	agentTree + "/agenttest": {agentTree, agentTree + "/internal/launch"},
 }

@@ -16,9 +16,9 @@ func TestGooseSessionUpdateTracksActiveRunForSteering(t *testing.T) {
 	t.Parallel()
 
 	agent := &Agent{}
-	agent.captureSteerRunID("session_info_update", map[string]json.RawMessage{"goose": json.RawMessage(`{"activeRunId":"run-7"}`)})
+	agent.captureSteerRunID("session_info_update", map[string]json.RawMessage{"goose": json.RawMessage(`{"activeRunId":"run-7"}`)}, nil)
 	assert.Equal(t, "run-7", agent.SteerRunIDForTest())
-	agent.captureSteerRunID("session_info_update", map[string]json.RawMessage{"goose": json.RawMessage(`{"activeRunId":null}`)})
+	agent.captureSteerRunID("session_info_update", map[string]json.RawMessage{"goose": json.RawMessage(`{"activeRunId":null}`)}, nil)
 	assert.Empty(t, agent.SteerRunIDForTest())
 }
 
@@ -31,11 +31,11 @@ func TestGooseQueuedSteerIsClaimedAndKeepsTheActiveRun(t *testing.T) {
 	t.Parallel()
 
 	agent := &Agent{}
-	agent.captureSteerRunID("session_info_update", map[string]json.RawMessage{"goose": json.RawMessage(`{"activeRunId":"run-7"}`)})
+	agent.captureSteerRunID("session_info_update", map[string]json.RawMessage{"goose": json.RawMessage(`{"activeRunId":"run-7"}`)}, nil)
 
 	claimed := agent.captureSteerRunID("session_info_update", map[string]json.RawMessage{
 		"goose": json.RawMessage(`{"queuedSteer":{"messageId":"steer_1","runId":"run-7"}}`),
-	})
+	}, nil)
 	assert.True(t, claimed, "the acknowledgement is read here, not persisted as a row")
 	assert.Equal(t, "run-7", agent.SteerRunIDForTest(), "a queued steer does not end the run it belongs to")
 }
@@ -48,7 +48,7 @@ func TestGooseSessionUpdateLeavesAnUnrelatedMetaAlone(t *testing.T) {
 	agent := &Agent{}
 	claimed := agent.captureSteerRunID("session_info_update", map[string]json.RawMessage{
 		"goose": json.RawMessage(`{"messageCount":3,"userSetName":"a session"}`),
-	})
+	}, nil)
 	assert.False(t, claimed)
 }
 

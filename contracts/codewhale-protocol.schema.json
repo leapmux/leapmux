@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codewhale-protocol.schema.json",
+  "title": "Codewhale runtime API vocabulary",
+  "description": "Every table is a map from the identifier both languages spell (PascalCase, so the Go constant and the TS key derive from one name) to the literal on the wire. A table may never be empty: an empty one would emit an enum no dispatch can match, and the generator's own coverage check would have nothing to compare.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "events",
+    "itemKinds",
+    "turnStatuses",
+    "modes",
+    "postures",
+    "options",
+    "toolNames",
+    "agentActions",
+    "agentInputFields",
+    "envelopeFields",
+    "itemFields",
+    "toolFields",
+    "itemMetadata",
+    "resultFields",
+    "workflowStatuses",
+    "turnFields",
+    "approvalFields",
+    "userInputFields",
+    "questionFields",
+    "controlPayload",
+    "replyFrames",
+    "replyFields",
+    "decisions",
+    "answerFields",
+    "answerLabels",
+    "answerTexts",
+    "transcriptKinds",
+    "transcriptFields",
+    "transcriptRoles",
+    "blockTypes",
+    "blockFields",
+    "defaultMode"
+  ],
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "unread": {
+      "description": "The per-key exemptions this domain states. `contractsAreConsumed.test.mjs` holds every KEY of a table to a reader on each side the table declares. A key one side genuinely never reads states that here: `_unread.<table>.<Key>.sides` lists the sides that skip it, and `.why` says what reads it instead. The key stays in the contract, because the other side still reads it and a rename must still reach that side. An exemption the code no longer needs fails the same test, so a stale one cannot survive.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "pattern": "^[A-Z][A-Za-z0-9]*$"
+        },
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sides",
+            "why"
+          ],
+          "properties": {
+            "sides": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "go",
+                  "ts"
+                ]
+              }
+            },
+            "why": {
+              "type": "string",
+              "minLength": 31
+            }
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "_unread": {
+      "$ref": "#/$defs/unread"
+    },
+    "defaultMode": {
+      "description": "The key in `modes` a fresh Codewhale thread runs on. A key, not a literal, so it cannot specify a mode the table does not carry -- the generator checks the membership.",
+      "type": "string",
+      "pattern": "^[A-Z][A-Za-z0-9]*$"
+    },
+    "events": {
+      "$ref": "#/$defs/table"
+    },
+    "itemKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "turnStatuses": {
+      "$ref": "#/$defs/table"
+    },
+    "modes": {
+      "$ref": "#/$defs/table"
+    },
+    "postures": {
+      "$ref": "#/$defs/table"
+    },
+    "options": {
+      "$ref": "#/$defs/table"
+    },
+    "toolNames": {
+      "$ref": "#/$defs/table"
+    },
+    "agentActions": {
+      "$ref": "#/$defs/table"
+    },
+    "agentInputFields": {
+      "$ref": "#/$defs/table"
+    },
+    "envelopeFields": {
+      "$ref": "#/$defs/table"
+    },
+    "itemFields": {
+      "$ref": "#/$defs/table"
+    },
+    "toolFields": {
+      "$ref": "#/$defs/table"
+    },
+    "itemMetadata": {
+      "$ref": "#/$defs/table"
+    },
+    "resultFields": {
+      "$ref": "#/$defs/table"
+    },
+    "workflowStatuses": {
+      "$ref": "#/$defs/table"
+    },
+    "turnFields": {
+      "$ref": "#/$defs/table"
+    },
+    "approvalFields": {
+      "$ref": "#/$defs/table"
+    },
+    "userInputFields": {
+      "$ref": "#/$defs/table"
+    },
+    "questionFields": {
+      "$ref": "#/$defs/table"
+    },
+    "controlPayload": {
+      "$ref": "#/$defs/table"
+    },
+    "replyFrames": {
+      "$ref": "#/$defs/table"
+    },
+    "replyFields": {
+      "$ref": "#/$defs/table"
+    },
+    "decisions": {
+      "$ref": "#/$defs/table"
+    },
+    "answerFields": {
+      "$ref": "#/$defs/table"
+    },
+    "answerLabels": {
+      "$ref": "#/$defs/table"
+    },
+    "answerTexts": {
+      "$ref": "#/$defs/table"
+    },
+    "transcriptKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "transcriptFields": {
+      "$ref": "#/$defs/table"
+    },
+    "transcriptRoles": {
+      "$ref": "#/$defs/table"
+    },
+    "blockTypes": {
+      "$ref": "#/$defs/table"
+    },
+    "blockFields": {
+      "$ref": "#/$defs/table"
+    }
+  }
+}

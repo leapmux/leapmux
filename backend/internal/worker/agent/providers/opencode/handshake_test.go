@@ -163,6 +163,32 @@ func TestStartOpenCode_NewSessionHandshakeReadsConfigOptionModels(t *testing.T) 
 	require.NotNil(t, optionids.GroupByID(groups, agent.OptionIDPrimaryAgent))
 }
 
+// The family start installs FamilyHooks, whose own route steers a running
+// turn with a second session/prompt. A started agent therefore steers, and a
+// turn that it runs is published as steerable.
+func TestStartOpenCode_TheFamilyStartSteers(t *testing.T) {
+	installFakeOpenCodeACP(t, "")
+
+	provider, err := Start(context.Background(), agent.Options{
+		AgentID:       "opencode-steer",
+		WorkingDir:    t.TempDir(),
+		Shell:         testutil.TestShell(),
+		LoginShell:    false,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+	}, agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, err)
+
+	a := provider.(*Agent)
+	t.Cleanup(func() {
+		a.Stop()
+		_ = a.Wait()
+	})
+
+	assert.True(t, a.SupportsSteering())
+	a.SetPromptActiveForTest(true)
+	assert.True(t, a.PublishTurnActive().Steerable)
+}
+
 // End-to-end: a handshake reporting an unmapped config option surfaces it as a
 // mutable option group after the mapped primary-agent group, and its value rides
 // in CurrentSettings extras next to the primaryAgent key. This exercises the

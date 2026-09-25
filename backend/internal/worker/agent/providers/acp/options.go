@@ -79,6 +79,42 @@ type optionState struct {
 	// unresolved records axes whose successful write returned no authoritative
 	// config-options snapshot. A later complete snapshot clears the set.
 	unresolved *boundedIDSet
+	// folds counts the complete configOptions payloads that apply folded. Each
+	// one is newer than every payload before it.
+	folds uint64
+	// sessionStart is what the last session swap recorded. See markSessionStart.
+	sessionStart optionSessionStart
+}
+
+// optionSessionStart is the option state at a session swap: the fold count and
+// the groups that the reader saw last.
+type optionSessionStart struct {
+	folds  uint64
+	groups []*leapmuxv1.AvailableOptionGroup
+}
+
+// markSessionStart records the option state at a session swap. The ClearContext
+// refresh reads the session/new response, and every payload that folds after
+// the swap is newer than that response: a reapply write returns the options of
+// the new session. The record lets the refresh tell the two apart. Caller holds
+// the owning Base.Mu.
+func (g *optionState) markSessionStart() {
+	// A shallow copy: recordOptimistic replaces a group proto in its slot, and a
+	// shared backing array would carry that replacement into the record.
+	g.sessionStart = optionSessionStart{folds: g.folds, groups: slices.Clone(g.groups)}
+}
+
+// foldedSinceSessionStart reports whether a complete payload folded after the
+// last session swap. Caller holds the owning Base.Mu.
+func (g *optionState) foldedSinceSessionStart() bool {
+	return g.folds != g.sessionStart.folds
+}
+
+// groupsChangedSinceSessionStart reports whether the groups differ from the
+// groups at the last session swap, which are the groups that the reader saw
+// last. Caller holds the owning Base.Mu.
+func (g *optionState) groupsChangedSinceSessionStart() bool {
+	return !agent.OptionGroupSetEqualExact(g.sessionStart.groups, g.groups)
 }
 
 func (g *optionState) markUnresolved(id string) {
@@ -412,10 +448,10 @@ func buildOptionGroup(option ConfigOption, current, effortConfigID string) *leap
 // double-rendered as a option group.
 //
 // Complete-snapshot semantics: every configOptions payload is the COMPLETE set of the
-// options that currently apply -- verified across all five ACP providers (Goose, Kilo,
-// OpenCode, Cursor, Reasonix); none emits a partial/delta payload, and an option
-// is omitted ONLY when it no longer applies (e.g. OpenCode and Kilo drop effort for a
-// model with no variants).
+// options that currently apply -- verified across all eight ACP providers (Goose, Kilo,
+// OpenCode, Cursor, Reasonix, Qwen Code, Grok Build, Kiro). None emits a partial or
+// delta payload, and an option is omitted ONLY when it no longer applies (e.g.
+// OpenCode and Kilo drop effort for a model with no variants).
 // So an option absent from a NON-EMPTY payload no longer applies and is dropped --
 // optionState.mergeOptionValues then deletes its stale persisted value via its `surfaced` set.
 // The only preserve case is an EMPTY payload (len(options) == 0): no configOptions were
@@ -451,6 +487,7 @@ func (g *optionState) apply(options []ConfigOption, authority payloadAuthority, 
 	if len(options) == 0 {
 		return false, false
 	}
+	g.folds++
 	// Capture the claimed model/mode options by identity so we exclude exactly those
 	// entries -- an unclaimed selector with a coincidental id is still surfaced.
 	claimedModelID, claimedModel := "", false

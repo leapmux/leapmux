@@ -19,7 +19,7 @@ function longInput(): Record<string, string> {
   return input
 }
 
-function renderBody(source: { title?: string, command?: string, input?: unknown }) {
+function renderBody(source: { title?: string, command?: string, input?: unknown, text?: string }) {
   return render(() => <PermissionRequestContent request={REQUEST} source={source} />)
 }
 
@@ -35,6 +35,15 @@ function argumentsText(container: HTMLElement): string | undefined {
 }
 
 describe('PermissionRequestContent', () => {
+  // A runtime can state a request in prose, such as a subagent's plan. The body
+  // draws it as markdown, not as a JSON string among the arguments.
+  it('draws the text of the request as markdown', () => {
+    const { container } = renderBody({ title: 'ExitPlanMode', text: '# The plan\n\n- First step' })
+    expect(container.querySelector('h1')?.textContent).toBe('The plan')
+    expect(container.querySelector('li')?.textContent).toBe('First step')
+    expect(container.querySelector('pre')).toBeNull()
+  })
+
   it('uses Fractured JSON for the remaining tool arguments', () => {
     const { container } = renderBody({ title: 'Bash', input: { timeout: 0, quiet: false } })
     expect(container.querySelector('pre')?.textContent).toBe(prettifyJson({ timeout: 0, quiet: false }))

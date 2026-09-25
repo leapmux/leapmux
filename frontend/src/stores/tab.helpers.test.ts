@@ -223,6 +223,18 @@ describe('protoToAgentTabFields git status', () => {
   })
 })
 
+// The worker states what a child tab may do. The tab keeps both answers, so the
+// composer and the Interrupt control read the worker's decision.
+describe('protoToAgentTabFields child capabilities', () => {
+  it('carries accepts_messages and accepts_interrupt onto the tab', () => {
+    const child = create(AgentInfoSchema, { id: 'c1', parentAgentId: 'root-1', agentProvider: AgentProvider.QWEN_CODE, acceptsMessages: false, acceptsInterrupt: true })
+    const fields = protoToAgentTabFields(createRepoGitStore(), 'wkr-1', child)
+    expect(fields.acceptsMessages).toBe(false)
+    expect(fields.acceptsInterrupt).toBe(true)
+    expect(agentTabSupportsInterrupt({ type: TabType.AGENT, parentAgentId: 'root-1', ...fields })).toBe(true)
+  })
+})
+
 describe('agentTabToInfo model-dependent option groups', () => {
   function opt(id: string, name: string, subGroups: AvailableOptionGroup[] = []) {
     return create(AvailableOptionSchema, { id, name, subGroups })
@@ -342,20 +354,22 @@ describe('agentTabToInfo model-dependent option groups', () => {
 })
 
 describe('agentTabToInfo subagent linkage', () => {
-  it('passes parentAgentId and acceptsMessages through to AgentInfo', () => {
-    const tab = agent({ parentAgentId: 'root-1', acceptsMessages: true }) as Tab
+  it('passes parentAgentId, acceptsMessages and acceptsInterrupt through to AgentInfo', () => {
+    const tab = agent({ parentAgentId: 'root-1', acceptsMessages: true, acceptsInterrupt: true }) as Tab
     const info = agentTabToInfo(tab)
     expect(info).toBeDefined()
     expect(info!.parentAgentId).toBe('root-1')
     expect(info!.acceptsMessages).toBe(true)
+    expect(info!.acceptsInterrupt).toBe(true)
   })
 
-  it('defaults parentAgentId to empty and acceptsMessages to false for a root agent', () => {
+  it('defaults parentAgentId to empty, and acceptsMessages and acceptsInterrupt to false', () => {
     const tab = agent() as Tab
     const info = agentTabToInfo(tab)
     expect(info).toBeDefined()
     expect(info!.parentAgentId).toBe('')
     expect(info!.acceptsMessages).toBe(false)
+    expect(info!.acceptsInterrupt).toBe(false)
   })
 })
 
@@ -1044,22 +1058,21 @@ describe('agentTabSupportsInterrupt', () => {
     expect(agentTabSupportsInterrupt(undefined)).toBe(false)
   })
 
-  it('uses the child provider interrupt capability independently of input', () => {
-    __resetProviderRegistryForTest()
-    registerProvider(AgentProvider.CODEX, {
-      transcript: { classify: () => ({} as never), spanRole: () => 'other', extractRow: () => null, extractDivider: () => null },
-      configuration: { supportsSubagentSend: false, supportsSubagentInterrupt: true },
-    })
-    expect(agentTabSupportsInterrupt({
-      type: TabType.AGENT,
-      parentAgentId: 'root',
-      agentProvider: AgentProvider.CODEX,
-    })).toBe(true)
-    expect(agentTabSupportsInterrupt({
-      type: TabType.AGENT,
-      parentAgentId: 'root',
-      agentProvider: AgentProvider.CLAUDE_CODE,
-    })).toBe(false)
+  // The worker decides from the provider's own capability, independently of
+  // direct input: a Codex child takes no message, and it can still be stopped.
+  it('follows the worker\'s answer for a child tab', () => {
+    expect(agentTabSupportsInterrupt({ type: TabType.AGENT, parentAgentId: 'root', acceptsInterrupt: true })).toBe(true)
+    expect(agentTabSupportsInterrupt({ type: TabType.AGENT, parentAgentId: 'root', acceptsInterrupt: false })).toBe(false)
+  })
+
+  // A child tab hydrates after it opens. Until the worker answers, it offers no
+  // Interrupt control rather than a control that the worker may refuse.
+  it('offers no interrupt for a child tab that the worker has not described', () => {
+    expect(agentTabSupportsInterrupt({ type: TabType.AGENT, parentAgentId: 'root' })).toBe(false)
+  })
+
+  it('keeps a root interruptible whatever the field states', () => {
+    expect(agentTabSupportsInterrupt({ type: TabType.AGENT, acceptsInterrupt: false })).toBe(true)
   })
 })
 

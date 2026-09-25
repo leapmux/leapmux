@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -56,4 +57,18 @@ func TestACPCurrentModeRejectsInvalidValuesAndAvoidsDuplicateRefreshes(t *testin
 	}
 	assert.Zero(t, sink.SettingsRefreshCount())
 	assert.Len(t, sink.Messages(), 5)
+}
+
+func TestObserveCurrentMode_UpdatesTheAxisOnce(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	b := &Base{sink: agent.NewProviderServices(sink)}
+	b.hooks.ModeChannel = ModeChannelPermissionMode
+
+	b.ObserveCurrentMode("plan")
+	b.ObserveCurrentMode("plan")
+	b.ObserveCurrentMode("")
+
+	assert.Equal(t, "plan", b.PermissionModeForTest())
+	assert.Equal(t, 1, sink.SettingsRefreshCount(), "a repeated report changes nothing, and an empty one states nothing")
 }

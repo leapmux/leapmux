@@ -1,6 +1,6 @@
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { bashToolCall } from './helpers/providerToolCalls'
-import { applyPermissionPreset, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, messageContents, openPlusMenu, openSettingsMenu, sendMessage, settingsBar, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from './helpers/ui'
+import { applyPermissionPreset, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, openPlusMenu, openSettingsMenu, sendMessage, settingsBar, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from './helpers/ui'
 import { expect, ZCODE_E2E_SKIP_REASON, zcodeTest } from './zcode-fixtures'
 
 zcodeTest.skip(!!ZCODE_E2E_SKIP_REASON, ZCODE_E2E_SKIP_REASON || '')
@@ -36,16 +36,25 @@ zcodeTest.describe('uses ZCode for basic chat', () => {
 zcodeTest.describe('uses ZCode for tool execution', () => {
   zcodeTest('a bash command renders as a tool card with its output', async ({ authenticatedZCodeWorkspace, page, modelScript }) => {
     void authenticatedZCodeWorkspace
+    // The command text, the prompt and the reply state no `zcode-42`, so only the
+    // command's own output can put it in a tool row.
+    //
+    // ZCode's Build mode must run the command without approval. The arithmetic
+    // form of the other providers' specs, `echo "zcode-$((40 + 2))"`, does not
+    // qualify. ZCode's read-only check (`isRuntimeReadOnlyBashCommand` in
+    // `zcode.cjs`) rejects every word that expands: `$((...))`, `$VAR` and `$(...)`.
+    // Build mode then gives the command the default Bash risk, `high`, and waits
+    // for an approval that this test never gives. A `printf` with a literal
+    // format and a numeric argument passes the check.
     await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.ZCODE, 'echo-call', 'echo "zcode-test-output"')] },
-      { text: 'The command printed zcode-test-output.' },
+      { toolCalls: [bashToolCall(AgentProvider.ZCODE, 'printf-call', `printf 'zcode-%d' 42`)] },
+      { text: 'The command printed its number.' },
     )
-    await sendMessage(page, modelScript.prompt('Run the bash command: echo "zcode-test-output" and show me the output.'))
+    await sendMessage(page, modelScript.prompt('Run the printf command and show me the output.'))
     await modelScript.waitForSteps()
     await waitForAgentIdle(page, 180_000)
 
-    const joined = (await messageContents(page).allTextContents()).join(' ')
-    expect(joined).toContain('zcode-test-output')
+    await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'zcode-42' }).first()).toBeVisible()
   })
 })
 

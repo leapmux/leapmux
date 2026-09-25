@@ -381,12 +381,57 @@ func TestAgentToProto_RootAgentIdResolved(t *testing.T) {
 		"a child's root_agent_id resolves up the parent chain to the root owner")
 }
 
+// TestAgentToProto_ChildCapabilitiesFollowTheProvider pins what a child tab may
+// do, per provider: send a message (accepts_messages) and interrupt its turn
+// (accepts_interrupt). A root accepts both. Each expected value is a product
+// decision, stated here rather than read from the plugin, so the test fails
+// when a provider loses a capability that its tab offers.
+func TestAgentToProto_ChildCapabilitiesFollowTheProvider(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		provider              leapmuxv1.AgentProvider
+		acceptsMessages       bool
+		acceptsChildInterrupt bool
+	}{
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, false, true},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE, true, true},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD, false, true},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE, false, true},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, true, false},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, false, false},
+	} {
+		t.Run(tc.provider.String(), func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			svc, _, _ := setupTestService(t)
+			rootID := "root-" + tc.provider.String()
+			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+				ID: rootID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: tc.provider,
+			}))
+			childID, err := svc.Output.NewSink(rootID, tc.provider).EnsureChildAgent("spawn-span-1", "row-key-1", "child task")
+			require.NoError(t, err)
+
+			rootRow, err := svc.Queries.GetAgentByID(ctx, rootID)
+			require.NoError(t, err)
+			rootInfo := svc.agentToProto(&rootRow, false, nil)
+			assert.True(t, rootInfo.GetAcceptsMessages(), "a root accepts a message")
+			assert.True(t, rootInfo.GetAcceptsInterrupt(), "a root accepts an interrupt")
+
+			childRow, err := svc.Queries.GetAgentByID(ctx, childID)
+			require.NoError(t, err)
+			childInfo := svc.agentToProto(&childRow, false, nil)
+			assert.Equal(t, tc.acceptsMessages, childInfo.GetAcceptsMessages(), "accepts_messages of a child")
+			assert.Equal(t, tc.acceptsChildInterrupt, childInfo.GetAcceptsInterrupt(), "accepts_interrupt of a child")
+		})
+	}
+}
+
 // TestCloseAgentOnRootClosesDescendantsAndMarksTasksStopped verifies closing a
 // ROOT agent tears down the whole tree: every descendant child row is stamped
 // closed_at (via ListAgentTreeIDs + CloseAgent), each descendant's span tracker
-// is cleaned up (CleanupAgent), and every still-active background-task row owned
-// by the root is give a final status tod as 'stopped' (MarkAgentBackgroundTasksExited with
-// stopped=true). This mirrors the existing child-close test but exercises the
+// is cleaned up (CleanupAgent), and each background-task row of the root that
+// is still active gets the final status 'stopped' (MarkAgentBackgroundTasksExited
+// with stopped=true). This mirrors the existing child-close test but exercises the
 // ROOT close path in closeAgentTabCommon.rootTeardown/rootClose.
 func TestCloseAgentOnRootClosesDescendantsAndMarksTasksStopped(t *testing.T) {
 	t.Parallel()

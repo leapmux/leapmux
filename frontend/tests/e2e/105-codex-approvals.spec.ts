@@ -1,7 +1,7 @@
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest, expect } from './codex-fixtures'
 import { bashToolCall, writeToolCall } from './helpers/providerToolCalls'
-import { messageContents, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { sendMessage, waitForAgentIdle } from './helpers/ui'
 
 codexTest.describe('Codex Approvals', () => {
   // Note: The default test fixtures use approvalPolicy: "never" (bypassPermissions),
@@ -10,19 +10,19 @@ codexTest.describe('Codex Approvals', () => {
 
   codexTest('agent runs commands without approval prompts in bypass mode', async ({ authenticatedCodexWorkspace, page, modelScript }) => {
     void authenticatedCodexWorkspace // fixture trigger
+    // The command text, the prompt and the reply state no `codex-bypass-42`, so
+    // only the command's own output can put it in a tool row: the command ran
+    // with no approval prompt that could stop it.
     await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.CODEX, 'bypass-call', 'echo "approval-test-bypass"')] },
-      { text: 'The command printed approval-test-bypass.' },
+      { toolCalls: [bashToolCall(AgentProvider.CODEX, 'bypass-call', 'echo "codex-bypass-$((40 + 2))"')] },
+      { text: 'The command printed its number.' },
     )
-    await sendMessage(page, modelScript.prompt('Run: echo "approval-test-bypass"'))
+    await sendMessage(page, modelScript.prompt('Run the arithmetic command.'))
     await modelScript.waitForSteps()
     await waitForAgentIdle(page, 120_000)
 
-    // The command should have executed without any approval prompt.
-    const chatArea = messageContents(page)
-    const allText = await chatArea.allTextContents()
-    const joined = allText.join(' ')
-    expect(joined).toContain('approval-test-bypass')
+    await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'codex-bypass-42' }).first()).toBeVisible()
+    await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
   })
 
   codexTest('no control banner appears in bypass mode', async ({ authenticatedCodexWorkspace, page, modelScript }) => {

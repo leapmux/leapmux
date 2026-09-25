@@ -2,9 +2,11 @@ import type { MessageCategory } from '~/components/chat/messageClassifier'
 import type { ChatRow } from '~/components/chat/model/row'
 import type { ChatRowExtraction } from '~/components/chat/rowExtraction'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { MIMO_STATUS_TYPE, MIMO_TOOL } from '~/generated/contracts/mimo-protocol'
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { AgentProvider as Provider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolStart } from '~/test-support/copilotFixtures'
+import { compactionFrame, errorFrame, openingFrame, statusFrame, toolFrame } from '~/test-support/mimoFixtures'
 
 /**
  * One provider frame, with the row kind BOTH layers must answer for it.
@@ -118,9 +120,9 @@ export function drawnRowKind(category: MessageCategory['kind'], extraction: Chat
  * The frames the invariant runs over.
  *
  * Every entry is a shape captured from a runtime or transcribed from the plugin's
- * own classification tests -- the Cursor and Goose entries come from the `.tmp/probe`
- * sessions this refactor ran against the installed binaries. A shape invented for
- * the test would prove only that two readers agree about a frame no provider sends.
+ * own classification tests or tool fixtures -- the Cursor and Goose entries come from
+ * sessions against the installed binaries. A shape invented for the test would prove
+ * only that two readers agree about a frame no provider sends.
  */
 export const ROW_KIND_CASES: RowKindCase[] = [
   // --- Claude Code -------------------------------------------------------
@@ -256,6 +258,103 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     category: 'hidden',
   },
 
+  // --- Reasonix (transcribed from `reasonix/toolResults.fixtures.ts`) -----
+  {
+    provider: Provider.REASONIX,
+    name: 'first tool call',
+    payload: { sessionUpdate: 'tool_call', toolCallId: 'rx-1', status: 'pending', title: 'read_file', kind: 'read', rawInput: { path: '/p/a.ts' } },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.REASONIX,
+    name: 'completed tool call',
+    payload: { sessionUpdate: 'tool_call_update', toolCallId: 'rx-1', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'one\ntwo\n' } }] },
+    category: 'tool_use',
+  },
+
+  // --- Grok Build (captured from a live `grok agent stdio` session) -----
+  {
+    provider: Provider.GROK_BUILD,
+    name: 'first tool call, named in _meta',
+    payload: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call_5_0',
+      title: 'read_file',
+      rawInput: { target_file: '/repo/probe.txt' },
+      _meta: { 'x.ai/tool': { version: 1, name: 'read_file', kind: 'read', namespace: 'grok_build', label: 'Read', read_only: true } },
+    },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.GROK_BUILD,
+    name: 'end of a turn Grok started',
+    payload: {
+      jsonrpc: '2.0',
+      method: '_x.ai/session_notification',
+      params: { sessionId: 's', update: { sessionUpdate: 'turn_completed', prompt_id: 'p', stop_reason: 'end_turn', elapsed_ms: 264 } },
+    },
+    category: 'result_divider',
+  },
+
+  // --- Kiro (captured from a v3 `kiro-cli-chat acp` session) --------------
+  {
+    provider: Provider.KIRO,
+    name: 'first tool call, identified by its title',
+    payload: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 't_read',
+      title: 'Read File',
+      kind: 'read',
+      status: 'pending',
+      rawInput: { path: '/w/hello.txt', offset: null, limit: null },
+      locations: [{ path: '/w/hello.txt' }],
+      _meta: { kiro: { toolOrigin: 'default' } },
+    },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.KIRO,
+    name: 'end of a turn Kiro started',
+    payload: {
+      sessionUpdate: 'session_info_update',
+      _meta: { kiro: { turnEnd: { stopReason: 'end_turn' }, kind: 'turn_end', stopReason: 'end_turn', messageId: 'm-turn-end' } },
+    },
+    category: 'result_divider',
+  },
+  {
+    provider: Provider.KIRO,
+    name: 'context usage update',
+    payload: {
+      sessionUpdate: 'session_info_update',
+      _meta: { kiro: { contextUsage: { usagePercentage: 0.8 }, kind: 'context_usage', usagePercentage: 0.8 } },
+    },
+    category: 'hidden',
+  },
+
+  // --- Qwen Code (captured from a live `qwen --acp` session) -------------
+  {
+    provider: Provider.QWEN_CODE,
+    name: 'tool call, named in _meta',
+    payload: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call_e4a50b50ee',
+      status: 'pending',
+      title: 'Shell',
+      content: [],
+      locations: [],
+      kind: 'execute',
+      rawInput: {},
+      _meta: { toolName: 'run_shell_command', provenance: 'builtin', phase: 'preparing' },
+    },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.QWEN_CODE,
+    name: 'end of a turn Qwen started',
+    payload: { jsonrpc: '2.0', method: '_qwencode/end_turn', params: { sessionId: 's', reason: 'end_turn', source: 'goal' } },
+    category: 'result_divider',
+  },
+
   // --- OpenCode and Kilo -------------------------------------------------
   {
     provider: Provider.OPENCODE,
@@ -303,6 +402,125 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     category: 'result_divider',
   },
 
+  // --- Oh My Pi -----------------------------------------------------------
+  //
+  // omp 18.2.11's own frames, from probes of the installed binary.
+  {
+    provider: Provider.OH_MY_PI,
+    name: 'assistant text',
+    payload: { type: 'message_end', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'The user wants a greeting.' }, { type: 'text', text: 'Hello from the mock model.' }], stopReason: 'stop' } },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.OH_MY_PI,
+    name: 'tool execution start',
+    payload: { type: 'tool_execution_start', toolCallId: 'call_1', toolName: 'bash', args: { command: 'echo probe-output' } },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.OH_MY_PI,
+    name: 'tool execution end',
+    payload: { type: 'tool_execution_end', toolCallId: 'call_1', toolName: 'bash', result: { content: [{ type: 'text', text: 'probe-output\n\n\nWall time: 0.05 seconds' }], details: { timeoutSeconds: 300, wallTimeMs: 49.99 } }, isError: false },
+    category: 'tool_result',
+    spanType: 'bash',
+  },
+  {
+    provider: Provider.OH_MY_PI,
+    name: 'automatic retry',
+    payload: { type: 'auto_retry_start', attempt: 1, maxAttempts: 10, delayMs: 92.36, errorMessage: '400 bad request' },
+    category: 'notification',
+  },
+  {
+    provider: Provider.OH_MY_PI,
+    name: 'background job delivered',
+    payload: { type: 'message_end', message: { role: 'custom', customType: 'async-result', content: '<system-notice>Background job ScoutOne has completed.</system-notice>', display: true, details: { jobs: [{ jobId: 'ScoutOne', type: 'task', label: 'ScoutOne' }] } } },
+    category: 'notification',
+  },
+  {
+    provider: Provider.OH_MY_PI,
+    name: 'turn end',
+    payload: { type: 'agent_end', isTerminal: true, messages: [] },
+    category: 'result_divider',
+  },
+
+  // --- Amp ---------------------------------------------------------------
+  //
+  // Amp's own lines, from probes of the real CLI, as the worker cuts one assistant
+  // message into one row for each block.
+  {
+    provider: Provider.AMP,
+    name: 'assistant text',
+    payload: { type: 'assistant', message: { type: 'message', role: 'assistant', content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn', usage: { input_tokens: 0, output_tokens: 7 } }, parent_tool_use_id: null, session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35' },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.AMP,
+    name: 'thinking',
+    payload: { type: 'assistant', message: { type: 'message', role: 'assistant', content: [{ type: 'thinking', thinking: '**Planning shell ls execution**' }], stop_reason: null }, parent_tool_use_id: null, session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35' },
+    category: 'assistant_thinking',
+  },
+  {
+    provider: Provider.AMP,
+    name: 'tool call',
+    payload: { type: 'assistant', message: { type: 'message', role: 'assistant', content: [{ type: 'tool_use', id: 'TU-034UC14fL0WVIuQhmDl0qN', name: 'shell_command', input: { command: 'ls', workdir: '/work' } }], stop_reason: 'tool_use' }, parent_tool_use_id: null, session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35' },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.AMP,
+    name: 'tool result',
+    payload: { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'TU-034UC14fL0WVIuQhmDl0qN', content: '{"output":"README.md\\n","exitCode":0}', is_error: false }] }, parent_tool_use_id: null, session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35' },
+    category: 'tool_result',
+    spanType: 'shell_command',
+  },
+  {
+    provider: Provider.AMP,
+    name: 'turn end',
+    payload: { type: 'result', subtype: 'success', is_error: false, num_turns: 4, result: 'pong', session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35' },
+    category: 'result_divider',
+  },
+
+  // --- Cline -------------------------------------------------------------
+  //
+  // Cline's own hub event envelopes, from probes of the real daemon, as the worker
+  // persists them.
+  {
+    provider: Provider.CLINE,
+    name: 'assistant text',
+    payload: { version: 'v1', event: 'assistant.finished', sessionId: '1790258346189_zqp76', payload: { text: 'Hello from the mock model.' } },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.CLINE,
+    name: 'reasoning',
+    payload: { version: 'v1', event: 'reasoning.finished', sessionId: '1790258346189_zqp76', payload: { reasoning: 'The user says hello. I answer briefly.' } },
+    category: 'assistant_thinking',
+  },
+  {
+    provider: Provider.CLINE,
+    name: 'tool call',
+    payload: { version: 'v1', event: 'tool.started', sessionId: '1790258346189_zqp76', payload: { toolCallId: 'call_bash_1', toolName: 'run_commands', input: { commands: ['echo probe-bash'] } } },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.CLINE,
+    name: 'tool result',
+    payload: { version: 'v1', event: 'tool.finished', sessionId: '1790258346189_zqp76', payload: { toolCallId: 'call_bash_1', toolName: 'run_commands', output: [{ query: 'echo probe-bash', result: 'probe-bash\n', success: true }] } },
+    category: 'tool_result',
+    spanType: 'run_commands',
+  },
+  {
+    provider: Provider.CLINE,
+    name: 'turn end',
+    payload: { version: 'v1', event: 'run.completed', sessionId: '1790258346189_zqp76', payload: { reason: 'completed', result: { text: 'Hello from the mock model.', iterations: 1 } } },
+    category: 'result_divider',
+  },
+  {
+    provider: Provider.CLINE,
+    name: 'compaction notice',
+    payload: { version: 'v1', event: 'session.notice', sessionId: '1790258346189_zqp76', payload: { message: 'auto-compacted', noticeType: 'status', metadata: { kind: 'auto_compaction', phase: 'completed', tokensBefore: 90000, tokensAfter: 12000 } } },
+    category: 'notification',
+  },
+
   // --- Copilot -----------------------------------------------------------
   {
     provider: Provider.GITHUB_COPILOT,
@@ -319,6 +537,137 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     name: 'scheduled tool',
     payload: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'z1', toolName: 'Read', input: { file_path: '/repo/a.ts' } } },
     category: 'tool_use',
+  },
+
+  // --- Codewhale ---------------------------------------------------------
+  {
+    provider: Provider.CODEWHALE,
+    name: 'reply',
+    payload: { event: 'item.completed', payload: { item: { kind: 'agent_message', status: 'completed', detail: 'Hello there.' } } },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.CODEWHALE,
+    name: 'reasoning',
+    payload: { event: 'item.completed', payload: { item: { kind: 'agent_reasoning', status: 'completed', detail: 'Thinking.' } } },
+    category: 'assistant_thinking',
+  },
+  {
+    provider: Provider.CODEWHALE,
+    name: 'tool started',
+    payload: { event: 'item.started', payload: { item: { kind: 'tool_call', metadata: { tool_use_id: 'w1', tool_name: 'bash' } }, tool: { id: 'w1', name: 'bash', input: { command: 'ls' } } } },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.CODEWHALE,
+    name: 'tool finished',
+    payload: { event: 'item.completed', payload: { item: { kind: 'tool_call', detail: 'a.ts', metadata: { tool_use_id: 'w1', tool_name: 'bash', exit_code: 0 } } } },
+    category: 'tool_result',
+  },
+  {
+    provider: Provider.CODEWHALE,
+    name: 'status',
+    payload: { event: 'item.completed', payload: { item: { kind: 'status', status: 'completed', detail: 'Checkpoint saved' } } },
+    category: 'notification',
+  },
+  {
+    provider: Provider.CODEWHALE,
+    name: 'turn end',
+    payload: { event: 'turn.completed', payload: { turn: { status: 'completed' } } },
+    category: 'result_divider',
+  },
+
+  // --- Kimi Code ---------------------------------------------------------
+  //
+  // Verbatim payloads of the 2.0.2 server, captured from a live session, which the
+  // worker persists as they arrive.
+  {
+    provider: Provider.KIMI_CODE,
+    name: 'tool call started',
+    payload: {
+      type: 'tool.call.started',
+      time: 1790186809163,
+      agentId: 'main',
+      turnId: 0,
+      toolCallId: 'call_bash_1',
+      name: 'Bash',
+      args: { command: 'echo hi-from-bash', description: 'Echo a greeting' },
+      description: 'Running: echo hi-from-bash',
+      display: { kind: 'command', command: 'echo hi-from-bash', cwd: '/work', description: 'Echo a greeting', language: 'bash' },
+      sessionId: 'session_f7cf22a1-3d27-4d41-b8e2-978b1e5fa5a7',
+    },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.KIMI_CODE,
+    name: 'tool result',
+    payload: { type: 'tool.result', time: 1790186809167, agentId: 'main', turnId: 0, toolCallId: 'call_bash_1', output: 'hi-from-bash\n', sessionId: 'session_f7cf22a1-3d27-4d41-b8e2-978b1e5fa5a7' },
+    spanType: 'Bash',
+    category: 'tool_result',
+  },
+  {
+    provider: Provider.KIMI_CODE,
+    name: 'turn end',
+    payload: { type: 'turn.ended', time: 1790186809300, agentId: 'main', turnId: 0, reason: 'completed', durationMs: 32, sessionId: 'session_f7cf22a1-3d27-4d41-b8e2-978b1e5fa5a7' },
+    category: 'result_divider',
+  },
+
+  // --- MiMo Code ---------------------------------------------------------
+  //
+  // Built by the same helpers every MiMo test uses. The shapes come from the probe of
+  // the installed 0.1.14 server.
+  {
+    provider: Provider.MIMO_CODE,
+    name: 'running tool',
+    payload: openingFrame(MIMO_TOOL.Bash, { command: 'ls' }),
+    category: 'tool_use',
+    spanType: MIMO_TOOL.Bash,
+  },
+  {
+    provider: Provider.MIMO_CODE,
+    name: 'finished tool',
+    payload: toolFrame(MIMO_TOOL.Bash, { input: { command: 'ls' }, output: 'a.ts\n', metadata: { output: 'a.ts\n', exit: 0 } }),
+    category: 'tool_result',
+    spanType: MIMO_TOOL.Bash,
+  },
+  {
+    provider: Provider.MIMO_CODE,
+    name: 'busy status',
+    payload: statusFrame(MIMO_STATUS_TYPE.Busy),
+    category: 'hidden',
+  },
+  {
+    provider: Provider.MIMO_CODE,
+    name: 'retry',
+    payload: statusFrame(MIMO_STATUS_TYPE.Retry, { attempt: 1, message: 'Provider is overloaded', next: 0 }),
+    category: 'notification',
+  },
+  {
+    provider: Provider.MIMO_CODE,
+    name: 'compaction',
+    payload: compactionFrame(true),
+    category: 'notification',
+  },
+  {
+    provider: Provider.MIMO_CODE,
+    name: 'turn end',
+    payload: statusFrame(MIMO_STATUS_TYPE.Idle),
+    category: 'result_divider',
+  },
+  {
+    // The worker states the turn's tool count beside a turn end and nowhere else, so
+    // the same event is a divider here and a notification in the next case.
+    provider: Provider.MIMO_CODE,
+    name: 'failed turn',
+    payload: errorFrame('APIError', 'Provider returned 500'),
+    messageMetadata: { [MESSAGE_METADATA_FIELD.ToolUses]: 0 },
+    category: 'result_divider',
+  },
+  {
+    provider: Provider.MIMO_CODE,
+    name: 'error outside a turn',
+    payload: errorFrame('APIError', 'Provider returned 500'),
+    category: 'notification',
   },
 
   // --- The rows LeapMux writes itself ------------------------------------

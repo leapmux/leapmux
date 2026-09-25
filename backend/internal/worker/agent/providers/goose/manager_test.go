@@ -5,6 +5,7 @@ package goose
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -34,13 +35,13 @@ func TestManager_CachedGenericGroupsSurviveModelChangeForACPProvider(t *testing.
 	// reproduces (its static groups are only the permission-mode group).
 	groups := []*leapmuxv1.AvailableOptionGroup{
 		{Id: agent.OptionIDModel, Label: "Model", CurrentValue: "gpt-5", Options: []*leapmuxv1.AvailableOption{{Id: "gpt-5"}, {Id: "gpt-4"}}},
-		{Id: ConfigThinkingEffort, Label: "Thinking Effort", Mutable: true, Options: []*leapmuxv1.AvailableOption{{Id: "high"}, {Id: "low"}}},
+		{Id: contracts.GooseConfigThinkingEffort, Label: "Thinking Effort", Mutable: true, Options: []*leapmuxv1.AvailableOption{{Id: "high"}, {Id: "low"}}},
 	}
 	m.PreloadCache("a1", groups)
 
 	// An offline model edit changes the requested model away from the stamp. The cache
 	// (with thinking_effort) must still be served -- the model-independent option
 	// can't be rebuilt from the static fallback.
-	assert.NotNil(t, optionids.GroupByID(m.OptionGroups("a1", goose, "gpt-4"), ConfigThinkingEffort),
+	assert.NotNil(t, optionids.GroupByID(m.OptionGroups("a1", goose, "gpt-4"), contracts.GooseConfigThinkingEffort),
 		"a since-changed model still serves the cached option group for a provider with no model-dependent groups")
 }

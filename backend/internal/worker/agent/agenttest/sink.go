@@ -73,6 +73,15 @@ type Sink struct {
 	// interruptIgnoredReports records when a provider proves that an accepted
 	// interrupt did not end its turn.
 	interruptIgnoredReports int
+	// requeuedInputs records every RequeueDroppedInput call in order, repeats
+	// included. The Worker queues nothing for a repeat of one drop, but a
+	// provider that repeats a call has a defect that a test must be able to see.
+	requeuedInputs []RequeuedInput
+	// RequeueErr, when set, is what RequeueDroppedInput returns instead of
+	// recording the call: the queue refused the input, and the provider must
+	// state the drop to the reader itself. Read without the lock: a test sets it
+	// at construction.
+	RequeueErr error
 	// turnLifecycle interleaves the turn-end envelope with the turn-flag
 	// transitions, which the two slices above cannot show apart. See
 	// TurnLifecycle.
@@ -138,6 +147,10 @@ type Sink struct {
 	// answer -- the "registry unreadable" third case, which a miss cannot stand
 	// in for. Read without the lock: set at construction.
 	LookupErr error
+	// lookups counts the LookupBackgroundTask calls for each row key, so a test
+	// can prove that a caller keeps an answer rather than reading it again.
+	// Guarded by bgTasksMu.
+	lookups map[string]int
 	// SpawnSpanErr, when set, is what ChildSpawnSpan returns instead of a span --
 	// the same "could not be read" third case LookupErr covers, and the only way
 	// to reach the branch that decides what a restart does when the child's spawn
@@ -326,6 +339,40 @@ func (s *Sink) InterruptIgnoredReports() int {
 	return s.interruptIgnoredReports
 }
 
+// RequeuedInput is one input that a provider handed back through
+// RequeueDroppedInput.
+type RequeuedInput struct {
+	DropID      string
+	Content     string
+	Attachments []*leapmuxv1.Attachment
+	// TurnActive is the last turn state that the provider published before the
+	// call, and false when it published none.
+	TurnActive bool
+}
+
+// RequeueDroppedInput records the input that the provider handed back. It also
+// records the call in TurnLifecycle as `requeue:<dropID>`, so a test can assert
+// that the input reached the queue before the turn ended.
+func (s *Sink) RequeueDroppedInput(dropID, content string, attachments []*leapmuxv1.Attachment) error {
+	if s.RequeueErr != nil {
+		return s.RequeueErr
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	active := len(s.TurnActiveCalls) > 0 && s.TurnActiveCalls[len(s.TurnActiveCalls)-1]
+	s.requeuedInputs = append(s.requeuedInputs, RequeuedInput{DropID: dropID, Content: content, Attachments: attachments, TurnActive: active})
+	s.turnLifecycle = append(s.turnLifecycle, "requeue:"+dropID)
+	return nil
+}
+
+// RequeuedInputs returns every RequeueDroppedInput call that the sink took, in
+// order.
+func (s *Sink) RequeuedInputs() []RequeuedInput {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]RequeuedInput(nil), s.requeuedInputs...)
+}
+
 // TurnKinds returns the queue classification of each publish, in arrival
 // order. A provider that can classify its turn must not lose that fact before
 // the queue computes CanSteer.
@@ -351,8 +398,8 @@ func (s *Sink) TurnSeqs() []uint64 {
 	return append([]uint64(nil), s.turnSeqs...)
 }
 
-// TurnLifecycle returns the turn-end envelopes and the turn-flag transitions in
-// the one order the provider produced them.
+// TurnLifecycle returns the turn-end envelopes, the turn-flag transitions, and
+// the hand-backs of dropped input in the one order the provider produced them.
 //
 // The order is a REQUIREMENT on every provider, not an implementation detail:
 // PersistTurnEnd hands the finished turn's tool-call count to the Worker's
@@ -1013,16 +1060,28 @@ func (s *Sink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
 
 func (s *Sink) LookupBackgroundTask(rowKey string) (string, bgtask.Status, bool, error) {
 	var noStatus bgtask.Status
+	s.bgTasksMu.Lock()
+	defer s.bgTasksMu.Unlock()
+	if s.lookups == nil {
+		s.lookups = make(map[string]int)
+	}
+	s.lookups[rowKey]++
 	if s.LookupErr != nil {
 		return "", noStatus, false, s.LookupErr
 	}
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
 	item, ok := s.bgTasks[rowKey]
 	if !ok {
 		return "", noStatus, false, nil
 	}
 	return item.ChildAgentID, item.Status, true, nil
+}
+
+// LookupBackgroundTaskCalls returns how many times LookupBackgroundTask read
+// rowKey.
+func (s *Sink) LookupBackgroundTaskCalls(rowKey string) int {
+	s.bgTasksMu.Lock()
+	defer s.bgTasksMu.Unlock()
+	return s.lookups[rowKey]
 }
 
 // ReviveBackgroundTask mirrors the registry's revive: a finished row returns to
@@ -1333,6 +1392,7 @@ func (nop) ReadToolResult(string) (*agent.StoredMessage, error)               { 
 func (nop) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error         { return nil }
 func (nop) SetTurnState(agent.TurnState, uint64)                              {}
 func (nop) ReportInterruptIgnored()                                           {}
+func (nop) RequeueDroppedInput(string, string, []*leapmuxv1.Attachment) error { return nil }
 func (nop) PersistNotification(leapmuxv1.MessageSource, []byte) (bool, error) { return true, nil }
 func (nop) OpenSpan(string, string)                                           {}
 func (nop) CloseSpan(string)                                                  {}

@@ -22,7 +22,7 @@ func TestGenerationProgressProbeSequences(t *testing.T) {
 	raw, err := os.ReadFile("testdata/generation_progress.json")
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal(raw, &fixture))
-	require.Len(t, fixture.Providers, 10)
+	require.Len(t, fixture.Providers, 19)
 	for _, provider := range fixture.Providers {
 		provider := provider
 		t.Run(provider.Name, func(t *testing.T) {

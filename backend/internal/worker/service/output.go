@@ -310,6 +310,11 @@ type OutputHandler struct {
 	// reads, and a wiring that sets one edge and not the other is the exact
 	// fault this callback exists to prevent.
 	turnState func(agentID string, state agent.TurnState)
+	// requeueDroppedInput queues input that a provider dropped as the reader's
+	// next message, and reports whether this call added it. Set via
+	// SetRequeueDroppedInputFunc in service.New. nil in a test that builds an
+	// OutputHandler directly, where RequeueDroppedInput then refuses.
+	requeueDroppedInput func(agentID, dropID, content string, attachments []*leapmuxv1.Attachment) (bool, error)
 
 	// turnPublisher holds, for each root agent id, the sink whose turn flag
 	// counts. A launch adopts one; a publish from any other sink comes from a
@@ -417,6 +422,12 @@ func (h *OutputHandler) SetAgentStartingFunc(fn func(agentID string) bool) {
 // provider publishes. Call it before any agent output is processed.
 func (h *OutputHandler) SetTurnStateFunc(fn func(agentID string, state agent.TurnState)) {
 	h.turnState = fn
+}
+
+// SetRequeueDroppedInputFunc wires the input queue that takes back the input a
+// provider dropped. Call it before any agent output is processed.
+func (h *OutputHandler) SetRequeueDroppedInputFunc(fn func(agentID, dropID, content string, attachments []*leapmuxv1.Attachment) (bool, error)) {
+	h.requeueDroppedInput = fn
 }
 
 // CleanupAgent removes all per-agent state from the handler's maps.
@@ -922,6 +933,34 @@ func (s *agentOutputSink) SetTurnState(state agent.TurnState, seq uint64) {
 // while it waited for the provider to end the turn.
 func (s *agentOutputSink) ReportInterruptIgnored() {
 	s.h.NoteAgentInterruptIgnored(s.agentID, s.rootAgentID)
+}
+
+// RequeueDroppedInput queues the input as the reader's next message. It writes
+// the row that states why the message appears again only when this call added
+// the item, so a repeat of one drop writes nothing twice.
+//
+// The row and the queued message are written independently. The queue can
+// deliver the message before this writes the row, so the row's words read
+// correctly on either side of the message.
+//
+// A subagent has no input queue of its own, so a child sink refuses.
+func (s *agentOutputSink) RequeueDroppedInput(dropID, content string, attachments []*leapmuxv1.Attachment) error {
+	if s.root != nil {
+		return fmt.Errorf("requeue dropped input: subagent %s has no input queue", s.agentID)
+	}
+	if s.h.requeueDroppedInput == nil {
+		return errors.New("requeue dropped input: no input queue is wired")
+	}
+	added, err := s.h.requeueDroppedInput(s.agentID, dropID, content, attachments)
+	if err != nil {
+		return err
+	}
+	if added {
+		s.PersistLeapMuxNotification(map[string]interface{}{
+			contracts.NotificationFieldType: contracts.NotificationTypeInputRequeued,
+		})
+	}
+	return nil
 }
 
 // turnPublisher identifies the PROCESS behind this sink. A child sink stands for

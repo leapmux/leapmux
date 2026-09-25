@@ -306,3 +306,32 @@ func TestIsReservedOptionKey(t *testing.T) {
 		assert.False(t, isReservedOptionKey(id), "%q is an option (or effort) key and must not be reserved", id)
 	}
 }
+
+// The record of a session swap is a copy of the groups that the reader saw.
+// recordOptimistic replaces a group in its slot, and a record that shared the
+// slot would take the replacement, so the ClearContext refresh would see no
+// change to report. Only a complete payload counts as a fold, and an empty one
+// is none.
+func TestOptionSessionStart_TheRecordKeepsTheGroupsOfTheSwap(t *testing.T) {
+	t.Parallel()
+	effort := func(current string) []ConfigOption {
+		return []ConfigOption{{
+			ID: "reasoning_effort", Category: "thought_level", Name: "Reasoning Effort", CurrentValue: current,
+			Options: []ConfigOptionValue{{Value: "low"}, {Value: "high"}},
+		}}
+	}
+	g := &optionState{}
+	g.apply(effort("low"), authoritativePayload, ModeChannelUnmapped, "")
+	g.markSessionStart()
+	assert.False(t, g.foldedSinceSessionStart())
+	assert.False(t, g.groupsChangedSinceSessionStart())
+
+	g.recordOptimistic("reasoning_effort", "high", "")
+	g.apply(nil, authoritativePayload, ModeChannelUnmapped, "")
+	assert.False(t, g.foldedSinceSessionStart(), "neither an optimistic record nor an empty payload folds")
+	assert.True(t, g.groupsChangedSinceSessionStart(), "the record keeps the group that the reader saw")
+
+	g.apply(effort("low"), authoritativePayload, ModeChannelUnmapped, "")
+	assert.True(t, g.foldedSinceSessionStart())
+	assert.False(t, g.groupsChangedSinceSessionStart(), "a payload that restores the groups of the swap changes nothing")
+}

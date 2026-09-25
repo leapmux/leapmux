@@ -10,15 +10,12 @@ import (
 	"math"
 	"net"
 	"os"
-	"os/user"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Microsoft/go-winio"
-	"golang.org/x/sys/windows"
 )
 
 var pipeTestCounter atomic.Uint64
@@ -105,41 +102,6 @@ func TestListen_NpipeAcceptsFullNTPath(t *testing.T) {
 		t.Fatalf("Listen: %v", err)
 	}
 	_ = ln.Close()
-}
-
-// TestUserOnlySDDL_HasCurrentUserSID unit-tests the SDDL we construct before
-// handing it to winio. We deliberately avoid probing the live pipe's security
-// descriptor (GetNamedSecurityInfo on a pipe path requires an active instance
-// and races with the winio accept loop); validating the generated SDDL
-// string against the current user's SID catches the bug class that matters —
-// a malformed or empty descriptor making the pipe world-accessible.
-func TestUserOnlySDDL_HasCurrentUserSID(t *testing.T) {
-	sddl, err := userOnlySDDL()
-	if err != nil {
-		t.Fatalf("userOnlySDDL: %v", err)
-	}
-	u, err := user.Current()
-	if err != nil {
-		t.Fatalf("user.Current: %v", err)
-	}
-	if !strings.Contains(sddl, u.Uid) {
-		t.Errorf("SDDL %q missing current user SID %s", sddl, u.Uid)
-	}
-
-	// Round-trip through Windows' SDDL parser and confirm the resulting
-	// owner SID matches the current user. This guarantees the string is
-	// syntactically valid and semantically what we intend.
-	sd, err := windows.SecurityDescriptorFromString(sddl)
-	if err != nil {
-		t.Fatalf("SecurityDescriptorFromString: %v", err)
-	}
-	owner, _, err := sd.Owner()
-	if err != nil {
-		t.Fatalf("Owner: %v", err)
-	}
-	if owner.String() != u.Uid {
-		t.Errorf("SDDL owner = %s, want %s", owner.String(), u.Uid)
-	}
 }
 
 func TestListen_UnixRejectedOnWindows(t *testing.T) {

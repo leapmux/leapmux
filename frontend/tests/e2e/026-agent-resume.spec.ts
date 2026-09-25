@@ -1,11 +1,25 @@
 import type { Page } from '@playwright/test'
 import { AgentStatus } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, loginViaToken, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT } from './helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, loginViaToken, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, waitForAgentIdle } from './helpers/ui'
 import { listAgentsViaAPI } from './helpers/worktree'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Agent Session Resume', () => {
+  /**
+   * Wait for the first answer, and then for the end of its turn, before a test
+   * stops the worker.
+   *
+   * The answer's text reaches the page before the turn ends. A worker that stops
+   * inside that window leaves the input queue's turn open, and the worker's
+   * restart then pauses the queue as interrupted. The next message then waits in
+   * the paused queue and never reaches the agent.
+   */
+  async function expectAnswerAndTurnEnd(page: Page) {
+    await expectAssistantAnswer(page)
+    await waitForAgentIdle(page)
+  }
+
   async function waitForWorkerConnection(page: Page, connected: boolean) {
     const status = page.getByTestId('section-header-workers').locator('[data-status="connected"]')
     if (connected)
@@ -35,7 +49,7 @@ test.describe('Agent Session Resume', () => {
       await expect(editor).toHaveText('')
 
       // Wait for the assistant's response
-      await expectAssistantAnswer(page)
+      await expectAnswerAndTurnEnd(page)
 
       // Stop the worker
       await stopWorker(separateHubWorker)
@@ -87,7 +101,7 @@ test.describe('Agent Session Resume', () => {
       await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
-      await expectAssistantAnswer(page)
+      await expectAnswerAndTurnEnd(page)
 
       await stopWorker(separateHubWorker)
       await waitForWorkerConnection(page, false)
@@ -130,7 +144,7 @@ test.describe('Agent Session Resume', () => {
       await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
-      await expectAssistantAnswer(page)
+      await expectAnswerAndTurnEnd(page)
 
       // Stop the worker and wait for the browser connection to change twice.
       await stopWorker(separateHubWorker)
@@ -172,7 +186,7 @@ test.describe('Agent Session Resume', () => {
       await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
-      await expectAssistantAnswer(page)
+      await expectAnswerAndTurnEnd(page)
 
       // Stop the worker and wait for the browser connection to change twice.
       await stopWorker(separateHubWorker)

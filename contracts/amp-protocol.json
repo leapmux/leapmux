@@ -1,0 +1,81 @@
+{
+  "_readme": "Amp's stream-JSON vocabulary (`amp --execute --stream-json --stream-json-input`), for the tables that BOTH the Go provider and the TS renderer plugin read. Amp's stream resembles Claude Code's stream-json, but it is a protocol of its own, so this contract shares no table with claude-protocol.json. Every stdout line carries a top-level `type` (`lineTypes`), an assistant or user line carries a list of typed content blocks (`blockTypes`), and a `result` line states its `subtype` (`resultSubtypes`). Those words are Amp's own, so a change to them follows Amp. `subagentTools` holds the tool names that Amp runs as a subagent on its server: the worker opens a background-task row for each call, and the browser draws the call as a subagent. `shellTools` holds the shell tools that start and follow a command, and `shellResultFields` the keys of their result record that both sides read: a command that outlives its call goes on in the background, the worker opens a shell row in the registry for it, and the browser draws the command's state. LeapMux owns `permissionModes` (the value set of the permission-mode axis: `ask` raises a banner for every tool that Amp's local executor runs, and `allow_all` answers each at once), `options` (the option-group id of Amp's agent mode, which Amp fixes when the thread gets its first message), and the permission-request envelope (`permissionRequestTypes`, `permissionRequestFields`): Amp has no in-band permission prompt, so the worker publishes this envelope when Amp's `delegate` permission rule runs the LeapMux helper, and the browser reads it back into a permission banner. The Go-only vocabulary (the stop reasons, the agent-mode words, the image block, the disabled question tool, and the init subtype) stays in providers/amp/protocol.go, per the contracts rule's one-side-only exemption.",
+  "_unread": {
+    "permissionRequestFields": {
+      "ToolUseID": {
+        "sides": ["ts"],
+        "why": "the worker resolves the id to the call's transcript row and publishes that row as the request's source (SourceSeq), so the browser links the banner through the row and never reads the id; the id stays in the envelope so that the stored request states which call it asked about"
+      }
+    }
+  },
+  "lineTypes": {
+    "System": "system",
+    "User": "user",
+    "Assistant": "assistant",
+    "Result": "result"
+  },
+  "blockTypes": {
+    "Text": "text",
+    "Thinking": "thinking",
+    "RedactedThinking": "redacted_thinking",
+    "ToolUse": "tool_use",
+    "ToolResult": "tool_result"
+  },
+  "resultSubtypes": {
+    "Success": "success",
+    "ErrorDuringExecution": "error_during_execution"
+  },
+  "subagentTools": {
+    "Task": "Task",
+    "Oracle": "oracle",
+    "Librarian": "librarian",
+    "Finder": "finder"
+  },
+  "shellTools": {
+    "ShellCommand": "shell_command",
+    "ShellCommandStatus": "shell_command_status",
+    "ShellCommandKill": "shell_command_kill"
+  },
+  "shellResultFields": {
+    "ExitCode": "exitCode",
+    "Running": "running",
+    "PID": "pid"
+  },
+  "permissionModes": {
+    "Ask": "ask",
+    "AllowAll": "allow_all"
+  },
+  "options": {
+    "AgentMode": "agent_mode"
+  },
+  "permissionRequestTypes": {
+    "Request": "leapmux_amp_permission"
+  },
+  "permissionRequestFields": {
+    "Type": "type",
+    "ToolName": "tool_name",
+    "ToolUseID": "tool_use_id",
+    "Input": "input"
+  },
+  "structs": {
+    "AmpPermissionRequest": {
+      "doc": "The payload of the control request that the worker publishes when Amp's delegate rule asks whether one tool call may run. ToolUseID is empty when no transcript row matched the call: a subagent's tool call reaches the executor, but its tool_use line never reaches stdout.",
+      "table": "permissionRequestFields",
+      "fields": [
+        { "key": "Type", "type": "string" },
+        { "key": "ToolName", "type": "string" },
+        { "key": "ToolUseID", "type": "string", "omitempty": true },
+        { "key": "Input", "type": "json.RawMessage" }
+      ]
+    },
+    "AmpShellResult": {
+      "doc": "The record that Amp's shell tools return as the text of their result. A shell_command that outlives its call returns Running with the PID of the command, which goes on in the background; shell_command_status and shell_command_kill then state the command's state under the same PID. ExitCode is absent while the command runs. The browser also reads the output and the truncation of the record, which the worker does not read.",
+      "table": "shellResultFields",
+      "fields": [
+        { "key": "ExitCode", "type": "*int", "omitempty": true },
+        { "key": "Running", "type": "bool" },
+        { "key": "PID", "type": "int" }
+      ]
+    }
+  }
+}

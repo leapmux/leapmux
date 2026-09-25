@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kimi-protocol.schema.json",
+  "title": "Kimi Code kap-server wire vocabulary",
+  "description": "Every table is a map from the identifier both languages spell (PascalCase, so the Go constant and the TS key derive from one name) to the literal the kap-server sends or takes. A table may never be empty: an empty one would emit an enum no dispatch can match.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "events",
+    "origins",
+    "tools",
+    "displayKinds",
+    "decisions",
+    "approvalScopes",
+    "planLabels",
+    "answerKinds",
+    "goalModes",
+    "modes",
+    "reply",
+    "todoStatuses",
+    "turnEndReasons",
+    "defaultMode"
+  ],
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "structs": {
+      "description": "Go structs generated from this domain. Each states its field list once and takes every json tag from a named table, so a rename in the table reaches the struct.",
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "table",
+          "fields"
+        ],
+        "properties": {
+          "doc": {
+            "type": "string",
+            "minLength": 1
+          },
+          "table": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fields": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "key",
+                "type"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Za-z0-9]*$"
+                },
+                "type": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "omitempty": {
+                  "type": "boolean"
+                },
+                "table": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "unread": {
+      "description": "The per-key exemptions this domain states. `contractsAreConsumed.test.mjs` holds every KEY of a table to a reader on each side the table declares. A key one side genuinely never reads states that here: `_unread.<table>.<Key>.sides` lists the sides that skip it, and `.why` says what reads it instead. The key stays in the contract, because the other side still reads it and a rename must still reach that side. An exemption the code no longer needs fails the same test, so a stale one cannot survive.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "pattern": "^[A-Z][A-Za-z0-9]*$"
+        },
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sides",
+            "why"
+          ],
+          "properties": {
+            "sides": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "go",
+                  "ts"
+                ]
+              }
+            },
+            "why": {
+              "type": "string",
+              "minLength": 31
+            }
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "_unread": {
+      "$ref": "#/$defs/unread"
+    },
+    "events": {
+      "$ref": "#/$defs/table"
+    },
+    "origins": {
+      "$ref": "#/$defs/table"
+    },
+    "tools": {
+      "$ref": "#/$defs/table"
+    },
+    "displayKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "decisions": {
+      "$ref": "#/$defs/table"
+    },
+    "approvalScopes": {
+      "$ref": "#/$defs/table"
+    },
+    "planLabels": {
+      "$ref": "#/$defs/table"
+    },
+    "answerKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "goalModes": {
+      "$ref": "#/$defs/table"
+    },
+    "modes": {
+      "$ref": "#/$defs/table"
+    },
+    "reply": {
+      "$ref": "#/$defs/table"
+    },
+    "todoStatuses": {
+      "$ref": "#/$defs/table"
+    },
+    "turnEndReasons": {
+      "$ref": "#/$defs/table"
+    },
+    "defaultMode": {
+      "description": "The key in `modes` a fresh Kimi Code session runs on. A key, not a literal, so it cannot specify a mode the table does not carry -- the generator checks the membership.",
+      "type": "string",
+      "pattern": "^[A-Z][A-Za-z0-9]*$"
+    },
+    "structs": {
+      "$ref": "#/$defs/structs"
+    }
+  }
+}

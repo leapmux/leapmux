@@ -10,7 +10,8 @@
     "modes",
     "defaultMode",
     "subagent",
-    "subagentRequest"
+    "subagentRequest",
+    "configIds"
   ],
   "$defs": {
     "table": {
@@ -82,6 +83,9 @@
       "$ref": "#/$defs/table"
     },
     "subagentRequest": {
+      "$ref": "#/$defs/table"
+    },
+    "configIds": {
       "$ref": "#/$defs/table"
     }
   }

@@ -1,6 +1,7 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ProviderPermissionPresets } from '../../providerSettings'
 import type { AttachmentCapabilities, ProviderAskUserQuestion, ProviderConfigurationCapability, ProviderControlCapability, ProviderPlugin } from '../capabilities'
+import type { ACPPermissionRejectReason } from './controlResponse'
 import type { ACPToolCallAdapter } from './extractors/toolCall'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
@@ -8,11 +9,11 @@ import { withElicitationResponse } from '../../controls/elicitationResponse'
 import { sendSelectedOptionResponse } from '../../controls/types'
 import { buildPlanMode, OPTION_ID_PERMISSION_MODE } from '../../settingsGroups'
 import { registerProvider } from '../registry'
-import { acpBuildControlResponse, classifyACPMessage } from './classification'
-import { acpControlResponseSummary } from './controlResponse'
+import { classifyACPMessage } from './classification'
+import { acpControlFeedbackRule, acpControlResponseBuilder, acpControlResponseSummary } from './controlResponse'
 import { acpElicitation } from './elicitation'
 import { acpExtractControl, acpPermissionSpanId } from './extractControl'
-import { acpResultDivider } from './extractors/resultDivider'
+import { acpDividerReader } from './extractors/resultDivider'
 import { createACPRowExtractor } from './extractors/row'
 import { resolveACPMessage } from './extractors/toolCall'
 import { acpSpanRole, createACPRelatedMessagesReader } from './spanRole'
@@ -84,6 +85,12 @@ export interface ACPProviderOptions {
   /** Question-handling hooks for providers that override the default ACP path. */
   questionHandling?: ACPQuestionHandling
   /**
+   * The provider's question reply carries the chosen options AND the reader's own
+   * words for one question (Grok Build's `annotations[q].notes`), so the dialog keeps
+   * both. Omit it for a provider whose reply takes one or the other.
+   */
+  preservesSelectionNotes?: boolean
+  /**
    * Persisted control-response -> display derivation. Defaults to {@link acpControlResponseSummary}
    * (the permission-selection path); OpenCode/Kilo and Cursor pass their own, which dispatch on the
    * request shape and delegate back to the ACP default for the permission case.
@@ -101,6 +108,31 @@ export interface ACPProviderOptions {
    * providers that can't take every attachment kind (e.g. Reasonix is text-only).
    */
   attachments?: AttachmentCapabilities
+  /**
+   * The MCP elicitation reader. Defaults to {@link acpElicitation}, the protocol's own
+   * `elicitation/create`; a provider that raises an elicitation under a method of its
+   * own (Grok Build) passes its reader.
+   */
+  elicitation?: ProviderControlCapability['elicitation']
+  /**
+   * The provider's own field for the reason of a rejected permission (Grok Build's
+   * `_meta.followup_message`). Omit it, and the reason follows the reply as a message
+   * of its own.
+   */
+  permissionRejectReason?: ACPPermissionRejectReason
+  /**
+   * The stop reason that the provider's own frame states for the end of a turn the
+   * agent started by itself (Grok Build's `turn_completed`, Qwen Code's
+   * `_qwencode/end_turn`), or undefined for any other frame. The worker stores that
+   * frame as the turn-end row, and this reads it into the same divider as a prompt
+   * response.
+   */
+  agentTurnEnd?: (parent: Record<string, unknown>) => string | undefined
+  /**
+   * The id of the agent's own reasoning-effort config option, when it is not the
+   * well-known `effort`. See {@link ProviderConfigurationCapability.effortGroupKey}.
+   */
+  effortGroupKey?: string
 }
 
 /**
@@ -140,10 +172,15 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
       throw new Error('registerACPProvider requires settingsConfig or defaultPermissionMode')
     sc = { kind: 'permissionMode', defaultMode: opts.defaultPermissionMode }
   }
+  // Each hook below is composed from the options and imported readers only: the
+  // registration rule refuses a hook that a local value supplies.
   const controls: ProviderControlCapability = {
-    controlResponseDisplay: withElicitationResponse(acpElicitation, opts.controlResponseDisplay ?? acpControlResponseSummary),
-    elicitation: acpElicitation,
-    buildControlResponse: acpBuildControlResponse,
+    controlResponseDisplay: withElicitationResponse(opts.elicitation ?? acpElicitation, opts.controlResponseDisplay ?? acpControlResponseSummary),
+    elicitation: opts.elicitation ?? acpElicitation,
+    // The reply builder asks the provider's OWN control reader which requests are plan
+    // approvals, so the composer answers each request the way the banner draws it.
+    buildControlResponse: acpControlResponseBuilder(opts.extractControl ?? acpExtractControl, opts.permissionRejectReason),
+    controlFeedbackAsFollowUpMessage: acpControlFeedbackRule(opts.extractControl ?? acpExtractControl, opts.permissionRejectReason),
     // The shared Agent Client Protocol reader; a provider whose payload is shaped
     // differently (Cursor) passes its own, which delegates back for the rest.
     extractControl: opts.extractControl ?? acpExtractControl,
@@ -157,22 +194,25 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
     ...(opts.controlActionsFor !== undefined ? { controlActionsFor: opts.controlActionsFor } : {}),
     ...(opts.permissionPresets !== undefined ? { permissionPresets: opts.permissionPresets } : {}),
     ...(opts.questionHandling ? { askUserQuestion: opts.questionHandling } : {}),
+    ...(opts.preservesSelectionNotes ? { preservesSelectionNotes: true } : {}),
   }
   const configuration: ProviderConfigurationCapability = {
     attachments: opts.attachments ?? { text: true, image: true, pdf: true, binary: true },
     ...(opts.planValue !== undefined ? { planMode: planModeFromConfig(sc, opts.planValue) } : {}),
     triggerModeGroupKey: triggerModeGroupKeyForConfig(sc),
+    ...(opts.effortGroupKey !== undefined ? { effortGroupKey: opts.effortGroupKey } : {}),
   }
   const plugin: ProviderPlugin = {
     transcript: {
       resolveMessage: resolveACPMessage,
-      classify: classifyACPMessage(
-        opts.classifyToolCallUpdate ? { classifyToolCallUpdate: opts.classifyToolCallUpdate } : {},
-      ),
+      classify: classifyACPMessage({
+        ...(opts.classifyToolCallUpdate ? { classifyToolCallUpdate: opts.classifyToolCallUpdate } : {}),
+        ...(opts.agentTurnEnd ? { agentTurnEnd: opts.agentTurnEnd } : {}),
+      }),
       spanRole: acpSpanRole,
       relatedMessages: createACPRelatedMessagesReader(opts.toolCallAdapter),
       extractRow: createACPRowExtractor(opts.toolCallAdapter),
-      extractDivider: acpResultDivider,
+      extractDivider: acpDividerReader(opts.agentTurnEnd),
     },
     controls,
     configuration,

@@ -33,5 +33,5 @@
   // resolve.tsconfigPaths enables aliases only for importers in this include list.
   // Include configuration and setup files so their aliases resolve before any test loads.
   // Co-located helper tests belong to Vitest. tsconfig.e2e.json owns the adjacent Playwright specs.
-  "include": ["src", "app.config.ts", "vitest*.ts", "scripts/**/*.ts", "tests/e2e/**/*.test.ts"]
+  "include": ["src", "app.config.ts", "vitest*.ts", "eslint/**/*.ts", "scripts/**/*.ts", "tests/e2e/**/*.test.ts"]
 }

@@ -2,6 +2,7 @@ package cursor
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -36,8 +37,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				// Cursor writes models through setCursorModel (id -> wire form); the base
 				// UpdateSettings / reapply / refresh use this via effectiveSetModel, so Cursor
 				// needs no overrides of its own.
-				ModelSetter:    a.setCursorModel,
-				ModelDecorator: decorateCursorModel,
+				ModelSetter: a.setCursorModel,
+				// Cursor states its metadata in the model id, not in `_meta`.
+				ModelDecorator: func(m *agent.ModelInfo, _ json.RawMessage) { decorateCursorModel(m) },
 				ModeChannel:    acp.ModeChannelPermissionMode,
 				ExtraMethod:    a.handleExtraMethod,
 				// Cursor's Task tool supplies the prompt. Its local store supplies the

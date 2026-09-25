@@ -164,6 +164,27 @@ export function chatScrollContainer(page: Page) {
 }
 
 /**
+ * The file-change row that shows `path`: the row that carries a diff badge AND
+ * shows the path.
+ *
+ * A write that creates one file carries no badge. Its title states the line
+ * count in place of the badge (`renderWriteTitle`), so this helper never finds
+ * that row. For a new file, find the tool row by its path and line count, and
+ * the diff by `[data-file-diff]`, as `103-codex-tool-execution.spec.ts` does.
+ *
+ * Both filters are necessary. `has` keeps the row that carries the badge: the
+ * user prompt shows the same path and comes first, so a text filter alone
+ * returns a row with no badge in it. `:visible` keeps the on-screen copy,
+ * because ChatView renders every unmeasured row twice.
+ */
+export function fileChangeRow(page: Page, path: string): Locator {
+  return page.locator('[data-seq]:visible')
+    .filter({ has: page.getByTestId('git-diff-stats') })
+    .filter({ hasText: path })
+    .first()
+}
+
+/**
  * Maximum wait for an attached match in readAttached.
  * A row replacement takes a few frames. Keep this below expect.timeout so an absent chat row produces a specific error before the test deadline.
  */
@@ -420,7 +441,10 @@ const APPEARANCE_PROBE_MS = 2000
 
 /** Wait for the agent to finish its current turn (thinking indicator gone). */
 export async function waitForAgentIdle(page: Page, timeoutMs = 120_000) {
-  const thinking = page.locator('[data-testid="thinking-indicator"]')
+  // `:visible`, because each tab of a tile mounts its own ChatView, and a hidden
+  // pane keeps its indicator: a page-wide locator then resolves to two elements
+  // and fails strict mode once a second tab opens.
+  const thinking = page.locator('[data-testid="thinking-indicator"]:visible')
   // Observe the indicator before checking that it is hidden. An immediate absence check could precede the start of a turn.
   // An expired observation is permitted because a fast turn can finish before the first check.
   // Use the short explicit interval instead of the 30-second action timeout.
@@ -1015,6 +1039,21 @@ export async function chooseSettingsOption(page: Page, testId: string) {
 }
 
 /**
+ * Assert that the settings menu holds `testId` as its chosen option.
+ *
+ * The status bar shows a chip for the model, for the effort group that the
+ * plugin declares (`configuration.effortGroupKey`, `effort` by default), and for
+ * the mode group alone. Any other axis states its choice in the menu only.
+ */
+export async function expectSettingsOptionChosen(page: Page, testId: string) {
+  await expect(async () => {
+    const menu = await openSettingsMenu(page, settingsGroupIdOf(testId))
+    await expect(menu.locator(`[data-testid="${testId}"]`)).toHaveAttribute('aria-checked', 'true')
+  }).toPass()
+  await closeComposerMenus(page)
+}
+
+/**
  * Locate a directory-tree row by its displayed name and row test ID.
  * A Tooltip duplicates truncated text, so a text-only locator can match twice.
  * Apply :visible before first() because the sidebar has another mounted copy. The other copy can intercept or reject pointer actions.
@@ -1138,13 +1177,24 @@ function treeMenuTrigger(row: Locator): Locator {
  * `requiredItem` defaults to the one entry every variant of the menu carries,
  * for callers that only need it open.
  */
-export async function openTreeContextMenu(page: Page, row: Locator, requiredItem = 'tree-copy-path-button') {
-  await openRowMenu(row, treeMenuTrigger(row), page.locator(`[data-testid="${requiredItem}"]:visible`))
+export async function openTreeContextMenu(row: Locator, requiredItem = 'tree-copy-path-button') {
+  await openRowMenu(row, treeMenuTrigger(row), treeMenuItem(row, requiredItem))
 }
 
 /** Open a tree row's context menu and click one of its items. */
-export async function clickTreeContextItem(page: Page, row: Locator, itemTestId: string) {
-  await clickRowMenuItem(row, treeMenuTrigger(row), page.locator(`[data-testid="${itemTestId}"]:visible`))
+export async function clickTreeContextItem(row: Locator, itemTestId: string) {
+  await clickRowMenuItem(row, treeMenuTrigger(row), treeMenuItem(row, itemTestId))
+}
+
+/**
+ * One item of a tree row's context menu.
+ *
+ * The menu lies inside its row, so a lookup below the row never matches the
+ * menu of another row. A page-wide lookup can: a closed popover stays laid out
+ * while it fades out, and Playwright counts it as visible at any opacity.
+ */
+export function treeMenuItem(row: Locator, testId: string): Locator {
+  return row.locator(`[data-testid="${testId}"]:visible`)
 }
 
 /**
@@ -1235,6 +1285,8 @@ export async function waitForSettingsIdle(page: Page) {
  * Status-bar chips can be hidden by a preference. The plus menu remains available.
  * A submenu exists only when the agent supplies a group with at least one option.
  * Close and reopen the menu on each attempt so a previous empty menu cannot hide newly supplied options.
+ * So each attempt reads the group once, without waiting. A waiting assertion there would hold an early,
+ * empty menu for the whole expect timeout before the next attempt could reopen it.
  */
 export async function waitForSettingsHydrated(page: Page) {
   const plus = page.locator('[data-testid="composer-plus-trigger"]')
@@ -1242,7 +1294,8 @@ export async function waitForSettingsHydrated(page: Page) {
   await expect(async () => {
     await closeComposerMenus(page)
     await ensureExpanded(plus)
-    await expect(settingsGroupTrigger(page, 'model')).toBeVisible()
+    await expect(page.locator('[data-testid="composer-plus-popover"]')).toBeVisible()
+    expect(await settingsGroupTrigger(page, 'model').isVisible(), 'the menu offers the model group').toBe(true)
   }).toPass()
   await closeComposerMenus(page)
 }

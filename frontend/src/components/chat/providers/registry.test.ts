@@ -106,7 +106,7 @@ describe('provider registration', () => {
   // count is what separates the two: every supported provider holds exactly one
   // entry, which the duplicate-refusal below keeps from ever becoming two.
   it('registers every supported provider exactly once', () => {
-    expect(ALL_PROVIDERS).toHaveLength(10)
+    expect(ALL_PROVIDERS).toHaveLength(19)
     for (const provider of ALL_PROVIDERS)
       expect(pluginFor(provider), AgentProvider[provider]).toBeDefined()
   })

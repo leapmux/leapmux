@@ -19,14 +19,31 @@ export interface SavedDecisionCapture {
   response: Record<string, unknown>
 }
 
+/** The hub's own stamps on one captured event: its id, its time, and its sequence number. */
+interface ClineHubStamp {
+  eventId: string
+  timestamp: number
+  sequence: number
+}
+
+/** The captured approval of a command, which the Allow and the Deny case both answer. */
+const CLINE_BASH_APPROVAL: ClineHubStamp = { eventId: 'hevt_1790258525021_pu703', timestamp: 1790258525021, sequence: 324 }
+
+/** One event envelope of Cline's hub, as the capture recorded it. */
+function clineHubEvent(event: string, stamp: ClineHubStamp, payload: Record<string, unknown>): Record<string, unknown> {
+  return { version: 'v1', event, eventId: stamp.eventId, sessionId: '1790258346189_zqp76', timestamp: stamp.timestamp, payload, sequence: stamp.sequence }
+}
+
 /**
- * Saved decisions CAPTURED from the installed runtimes on September 14, 2026, rather
- * than written by hand (RL-001).
+ * Saved decisions CAPTURED from the installed runtimes, rather than written by hand
+ * (RL-001): five on September 14, 2026, Kimi Code, Grok Build, Qwen Code and Oh My
+ * Pi on September 23, and Codewhale, Kiro and Cline on September 24.
  *
- * Five providers are here because five are the ones whose runtimes asked for permission.
- * Claude Code, Cursor, OpenCode, Kilo and Pi approved the same operations on their own:
- * the first two have a mode that asks and did not use it for a write inside their own
- * working directory, and the last three expose no permission control at all.
+ * The five of the first capture are here because theirs were the runtimes that asked
+ * for permission on that day. Claude Code, Cursor, OpenCode, Kilo and Pi approved the
+ * same operations on their own: the first two have a mode that asks and did not use it
+ * for a write inside their own working directory, and the last three expose no
+ * permission control at all.
  *
  * Each entry pins one native wire shape to the words the reader sees. A runtime that
  * changes that shape fails the corpus test instead of quietly degrading a reloaded row to
@@ -444,5 +461,303 @@ export const SAVED_DECISION_CORPUS: readonly SavedDecisionCapture[] = [
         reason: 'Approved once',
       },
     },
+  },
+  // Codewhale answers an approval with a decision word alone. The response is the reply
+  // frame the worker posted, and the request is the stored payload beside the runtime's
+  // own `approval.required` event, from Codewhale 0.9.13.
+  {
+    provider: Provider.CODEWHALE,
+    name: 'codewhale Allow',
+    label: 'Allow',
+    request: {
+      event: {
+        schema_version: 1,
+        seq: 17,
+        event: 'approval.required',
+        kind: 'approval.required',
+        thread_id: 'thr_700b0f43',
+        turn_id: 'turn_94101b47',
+        item_id: null,
+        timestamp: '2026-09-23T20:05:41.351736+00:00',
+        created_at: '2026-09-23T20:05:41.351736+00:00',
+        payload: {
+          id: 'approval_14c379cb62564e9db7baae791c12a0fe',
+          approval_id: 'approval_14c379cb62564e9db7baae791c12a0fe',
+          tool_call_id: 'call_f984d324',
+          tool_name: 'bash',
+          description: 'Execute a shell command in the workspace and return stdout and stderr. Output keeps the last 2000 lines or 50KB. An optional timeout is expressed in seconds; when omitted the command is killed after 120 seconds, so pass an explicit timeout for work expected to take longer. In Ask, after a sandbox denial, retry the exact command once with sandbox_permissions (the narrowest wider mode that suffices) and a one-sentence justification; the approval prompt asks the user.',
+          intent_summary: null,
+        },
+        previous_seq: 16,
+      },
+      request: {
+        tool_name: 'bash',
+        tool_use_id: 'call_f984d324',
+        input: {
+          command: 'touch x.txt',
+        },
+      },
+      request_id: 'approval:approval_14c379cb62564e9db7baae791c12a0fe',
+      type: 'control_request',
+    },
+    response: {
+      frame: 'approval',
+      approval_id: 'approval_14c379cb62564e9db7baae791c12a0fe',
+      decision: 'allow',
+    },
+  },
+  // Kimi Code states its request as an `event.approval.requested`, which the worker
+  // stores verbatim (captured from a live Kimi Code 2.0.2 session, September 23, 2026).
+  // The stored answer is the server's own approval body in the envelope the worker
+  // writes: the body that the capture posted, with the session scope that an approval
+  // for the session adds.
+  {
+    provider: Provider.KIMI_CODE,
+    name: 'kimi Allow for this session',
+    label: 'Allow for this session',
+    request: {
+      type: 'event.approval.requested',
+      agentId: 'main',
+      sessionId: 'session_f7cf22a1-3d27-4d41-b8e2-978b1e5fa5a7',
+      approval_id: 'approval_bd6a909a-e27b-4e67-9ccf-8812f349173e',
+      session_id: 'session_f7cf22a1-3d27-4d41-b8e2-978b1e5fa5a7',
+      agent_id: 'main',
+      turn_id: 0,
+      tool_call_id: 'call_bash_1',
+      tool_name: 'Bash',
+      action: 'Running: echo hi-from-bash',
+      tool_input_display: {
+        kind: 'command',
+        command: 'echo hi-from-bash',
+        cwd: '/work',
+        description: 'Echo a greeting',
+        language: 'bash',
+      },
+      created_at: '2026-09-23T18:06:49.141Z',
+      expires_at: '2026-09-24T18:06:49.141Z',
+    },
+    response: {
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: 'approval_bd6a909a-e27b-4e67-9ccf-8812f349173e',
+        response: {
+          decision: 'approved',
+          scope: 'session',
+        },
+      },
+    },
+  },
+  // Grok Build and Qwen Code, captured from their live ACP sessions on September 23,
+  // 2026 (the permission request from the wire, and the reply LeapMux sends for the
+  // option the reader chose). Both write their own option names.
+  {
+    provider: Provider.GROK_BUILD,
+    name: 'grok Yes, proceed',
+    label: 'Yes, proceed',
+    request: {
+      jsonrpc: '2.0',
+      id: 0,
+      method: 'session/request_permission',
+      params: {
+        sessionId: '01a0cf76-dd5f-7dd0-b6a3-934dd82157cf',
+        toolCall: {
+          toolCallId: 'call_2_0',
+          kind: 'execute',
+          title: 'Execute `echo probe > probe.txt && ls`',
+          rawInput: { variant: 'Bash', command: 'echo probe > probe.txt && ls', description: 'Write probe file', is_background: false },
+          _meta: { 'x.ai/tool': { version: 1, name: 'run_terminal_command', kind: 'execute', namespace: 'grok_build', label: 'Run Command', read_only: false, input: { command: 'echo probe > probe.txt && ls', description: 'Write probe file' } } },
+        },
+        options: [
+          { optionId: 'always-allow', name: 'Yes, and don\'t ask again for bash commands', kind: 'allow_always' },
+          { optionId: 'allow-once', name: 'Yes, proceed', kind: 'allow_once' },
+          { optionId: 'reject-once', name: 'No, and tell Grok what to do differently', kind: 'reject_once' },
+          { optionId: 'reject-always', name: 'No, and don\'t ask again for this command', kind: 'reject_always' },
+        ],
+      },
+    },
+    response: {
+      jsonrpc: '2.0',
+      id: 0,
+      result: { outcome: { outcome: 'selected', optionId: 'allow-once' } },
+    },
+  },
+  // Kiro, captured from a v3 `kiro-cli-chat acp` session on September 24, 2026.
+  {
+    provider: Provider.KIRO,
+    name: 'kiro Allow',
+    label: 'Allow',
+    request: {
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'sess_ca621409-cf06-4c03-8911-d4c820271708',
+        toolCall: { toolCallId: 'run_command_t_sh', status: 'pending', title: 'echo v3-shell' },
+        options: [
+          { optionId: 'accept', name: 'Allow', kind: 'allow_once' },
+          { optionId: 'always-accept', name: 'Always allow', kind: 'allow_always' },
+          { optionId: 'reject', name: 'Deny', kind: 'reject_once' },
+          { optionId: 'always-reject', name: 'Always deny', kind: 'reject_always' },
+        ],
+        _meta: { kiro: { toolId: 'run_command', command: 'echo v3-shell', consent: { capability: 'shell', resource: 'echo v3-shell', askType: 'implicit', workspaceRoot: '/w' }, consentRound: 1 } },
+      },
+    },
+    response: {
+      jsonrpc: '2.0',
+      id: 3,
+      result: { outcome: { outcome: 'selected', optionId: 'accept' } },
+    },
+  },
+  {
+    provider: Provider.QWEN_CODE,
+    name: 'qwen Allow',
+    label: 'Allow',
+    request: {
+      jsonrpc: '2.0',
+      id: 0,
+      method: 'session/request_permission',
+      params: {
+        sessionId: '70dab2cd-62c7-4f76-b53e-50a950df1520',
+        options: [
+          { optionId: 'proceed_always_project', name: 'Always Allow in project: touch *', kind: 'allow_always' },
+          { optionId: 'proceed_always_user', name: 'Always Allow for user: touch *', kind: 'allow_always' },
+          { optionId: 'proceed_once', name: 'Allow', kind: 'allow_once' },
+          { optionId: 'cancel', name: 'Reject', kind: 'reject_once' },
+        ],
+        toolCall: {
+          toolCallId: 'call_a0915b2ff3',
+          status: 'pending',
+          title: 'touch /work/touched.txt (Create a marker file)',
+          content: [],
+          locations: [],
+          kind: 'execute',
+          rawInput: { command: 'touch /work/touched.txt', description: 'Create a marker file' },
+          _meta: { toolName: 'run_shell_command' },
+        },
+      },
+    },
+    response: {
+      jsonrpc: '2.0',
+      id: 0,
+      result: { outcome: { outcome: 'selected', optionId: 'proceed_once' } },
+    },
+  },
+  // Oh My Pi asks with a `select` dialog and takes its own option word as the answer.
+  // Captured from omp 18.2.11 on September 23, 2026, with `tools.approvalMode:
+  // always-ask`; the answers are the extension_ui_response lines the browser sends.
+  {
+    provider: Provider.OH_MY_PI,
+    name: 'oh my pi Approve',
+    label: 'Allow',
+    request: {
+      type: 'extension_ui_request',
+      id: '158b2ba5001bfb93',
+      method: 'select',
+      title: 'Allow tool: bash\nCommand: echo approved-run',
+      options: ['Approve', 'Deny'],
+    },
+    response: {
+      type: 'extension_ui_response',
+      id: '158b2ba5001bfb93',
+      value: 'Approve',
+    },
+  },
+  {
+    provider: Provider.OH_MY_PI,
+    name: 'oh my pi Deny',
+    label: 'Deny',
+    request: {
+      type: 'extension_ui_request',
+      id: '158b2ba55c9bfb95',
+      method: 'select',
+      title: 'Allow tool: bash\nCommand: echo denied-run',
+      options: ['Approve', 'Deny'],
+    },
+    response: {
+      type: 'extension_ui_response',
+      id: '158b2ba55c9bfb95',
+      value: 'Deny',
+    },
+  },
+  // Cline states each approval and each question as its hub's own event, which the worker
+  // stores verbatim: the requests below were captured from the Cline 3.0.64 hub on
+  // September 24, 2026. The stored answer is the reply the worker sends Cline, as
+  // Cline's `approval.respond` and `capability.respond` take it. The worker keeps the
+  // mode an approved plan switches to in the stored copy alone.
+  {
+    provider: Provider.CLINE,
+    name: 'cline Allow',
+    label: 'Allow',
+    request: clineHubEvent('approval.requested', CLINE_BASH_APPROVAL, {
+      approvalId: 'approval_1790258525021_0l541',
+      sessionId: '1790258346189_zqp76',
+      agentId: 'agent_1790258346331_0r5l6z',
+      conversationId: 'conv_1790258346406_9ncl4sl',
+      iteration: 1,
+      toolCallId: 'call_bash_1',
+      toolName: 'run_commands',
+      inputJson: '{"commands":["echo probe-bash"]}',
+      policy: { autoApprove: false },
+    }),
+    response: { approvalId: 'approval_1790258525021_0l541', approved: true },
+  },
+  {
+    provider: Provider.CLINE,
+    name: 'cline Deny',
+    label: 'Deny',
+    request: clineHubEvent('approval.requested', CLINE_BASH_APPROVAL, {
+      approvalId: 'approval_1790258525021_0l541',
+      sessionId: '1790258346189_zqp76',
+      agentId: 'agent_1790258346331_0r5l6z',
+      conversationId: 'conv_1790258346406_9ncl4sl',
+      iteration: 1,
+      toolCallId: 'call_bash_1',
+      toolName: 'run_commands',
+      inputJson: '{"commands":["echo probe-bash"]}',
+      policy: { autoApprove: false },
+    }),
+    response: { approvalId: 'approval_1790258525021_0l541', approved: false, reason: 'The user declined this tool call.' },
+  },
+  {
+    provider: Provider.CLINE,
+    name: 'cline plan Approve',
+    label: 'Approve (Act)',
+    request: clineHubEvent('approval.requested', { eventId: 'hevt_1790258352751_h0q45', timestamp: 1790258352751, sequence: 286 }, {
+      approvalId: 'approval_1790258352751_4cqa2',
+      sessionId: '1790258346189_zqp76',
+      agentId: 'agent_1790258346331_0r5l6z',
+      conversationId: 'conv_1790258346406_9ncl4sl',
+      iteration: 1,
+      toolCallId: 'call_switch_1',
+      toolName: 'switch_to_act_mode',
+      inputJson: '{}',
+      policy: { autoApprove: false },
+    }),
+    response: { approvalId: 'approval_1790258352751_4cqa2', approved: true, permissionMode: 'act' },
+  },
+  {
+    provider: Provider.CLINE,
+    name: 'cline question answer',
+    label: 'Blue',
+    request: clineHubEvent('capability.requested', { eventId: 'hevt_1790258346728_xavjj', timestamp: 1790258346728, sequence: 133 }, {
+      requestId: 'capreq_1790258346728_1gzza',
+      targetClientId: 'client_leapmux_probe_73642',
+      capabilityName: 'tool_executor.askQuestion',
+      payload: {
+        executor: 'askQuestion',
+        args: ['Which color do you prefer?', ['Red', 'Blue']],
+        context: {
+          sessionId: '1790258346189_zqp76',
+          agentId: 'agent_1790258346331_0r5l6z',
+          conversationId: 'conv_1790258346406_9ncl4sl',
+          runId: 'run_N9WC0hrX',
+          iteration: 1,
+          toolCallId: 'call_ask_1',
+          metadata: { modelSupportsImages: true },
+        },
+      },
+    }),
+    response: { requestId: 'capreq_1790258346728_1gzza', ok: true, payload: { result: 'Blue' } },
   },
 ]

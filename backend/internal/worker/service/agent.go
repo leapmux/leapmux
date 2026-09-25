@@ -1614,14 +1614,18 @@ func (svc *Service) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.GitR
 		info.ParentAgentId = a.ParentAgentID.String
 		info.SpawnSpanId = a.SpawnSpanID
 		// A child accepts messages only when its feeding provider permits direct
-		// subagent input. Roots always accept. Other children are read-only.
-		info.AcceptsMessages = svc.Agents.Registry().Plugin(a.AgentProvider).SupportsChildSteering()
+		// subagent input. Roots always accept. Other children are read-only. The
+		// same holds for an interrupt from the child's own tab.
+		plugin := svc.Agents.Registry().Plugin(a.AgentProvider)
+		info.AcceptsMessages = plugin.SupportsChildSteering()
+		info.AcceptsInterrupt = plugin.SupportsChildInterrupt()
 		// Resolve the root owner once here so the frontend reads the registry
 		// owner and its NOTIFY subscription from the wire, instead of walking a
 		// client-side parent chain that can be partially hydrated.
 		info.RootAgentId = svc.rootAgentIDFor(bgCtx(), a.ID)
 	} else {
 		info.AcceptsMessages = true
+		info.AcceptsInterrupt = true
 		info.RootAgentId = a.ID
 	}
 

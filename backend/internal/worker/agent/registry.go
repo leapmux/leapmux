@@ -8,10 +8,12 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
@@ -100,6 +102,17 @@ type Registration struct {
 	// EnvEffortKey specifies the operator's default-effort variable, e.g.
 	// "LEAPMUX_CLAUDE_DEFAULT_EFFORT". "" for a provider that honors none.
 	EnvEffortKey string
+	// Helpers holds the helper programs the provider's CLI starts by itself,
+	// keyed by the name a HelperSpec states. nil for a provider whose CLI starts
+	// none. See helper.go for the mechanism.
+	Helpers map[string]HelperFunc
+	// AgentDir states the private directory of each agent of the provider: the
+	// prefix of its name, the socket that the provider binds in it, and the hook
+	// that ends what a stale one records. nil for a provider whose agents keep
+	// no private files. At its start the worker sweeps the directories that
+	// ended workers left, for every provider that states one, and an agent
+	// creates its own through Options.AgentDirs with the same spec.
+	AgentDir *agentdir.Spec
 }
 
 // PermissionDefaults is a provider's complete permission-policy declaration: what a NEW
@@ -171,7 +184,10 @@ type Registry struct {
 //   - a second Registration for the same Provider;
 //   - a nil Plugin or a nil Start;
 //   - a Locator that states no way, or two ways, to find the program;
-//   - FixedPermissionModes without a static permission-mode group.
+//   - FixedPermissionModes without a static permission-mode group;
+//   - a helper with a blank name or a nil HelperFunc;
+//   - an AgentDir that agentdir.Spec.Validate refuses, and two AgentDir specs
+//     with one prefix.
 //
 // A nil ModelSubGroups selects EffortSubGroups.
 func NewRegistry(regs ...Registration) (*Registry, error) {
@@ -192,10 +208,14 @@ func NewRegistry(regs ...Registration) (*Registry, error) {
 		r.byProvider[reg.Provider] = reg
 		r.providers = append(r.providers, reg.Provider)
 	}
+	slices.Sort(r.providers)
+	// Each spec is valid by now, so this reports two specs with one prefix.
+	if err := agentdir.ValidateSpecs(r.AgentDirSpecs()); err != nil {
+		errs = append(errs, err)
+	}
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
-	slices.Sort(r.providers)
 	return r, nil
 }
 
@@ -215,6 +235,19 @@ func validateRegistration(reg Registration) error {
 	}
 	if reg.FixedPermissionModes && optionids.GroupByID(reg.OptionGroups, OptionIDPermissionMode) == nil {
 		errs = append(errs, errors.New("FixedPermissionModes with no static permission-mode group"))
+	}
+	for name, helper := range reg.Helpers {
+		if strings.TrimSpace(name) == "" {
+			errs = append(errs, errors.New("a helper with no name"))
+		}
+		if helper == nil {
+			errs = append(errs, fmt.Errorf("a nil helper %q", name))
+		}
+	}
+	if reg.AgentDir != nil {
+		if err := reg.AgentDir.Validate(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("provider %v: %w", reg.Provider, errors.Join(errs...))
@@ -241,6 +274,18 @@ func isNilProvider(plugin Provider) bool {
 // returned slice.
 func (r *Registry) Providers() []leapmuxv1.AgentProvider {
 	return slices.Clone(r.providers)
+}
+
+// AgentDirSpecs returns the agent directory spec of each provider that states
+// one, in enum order.
+func (r *Registry) AgentDirSpecs() []agentdir.Spec {
+	var specs []agentdir.Spec
+	for _, provider := range r.providers {
+		if spec := r.byProvider[provider].AgentDir; spec != nil {
+			specs = append(specs, *spec)
+		}
+	}
+	return specs
 }
 
 // Registration returns the provider's Registration and whether it has one.
@@ -402,8 +447,10 @@ func (r *Registry) EffortEnvOverride(provider leapmuxv1.AgentProvider) string {
 // ManagesEffort reports whether leapmux owns a model-dependent effort
 // default for this provider -- i.e. its effort tiers belong to the model. A provider
 // with a STATIC catalog states them in DefaultModels (Claude, Codex, Pi). Native
-// Copilot reads its catalog from the open session, so it has no static entry to state
-// them in and sets Registration.ManagesEffort instead. For all of them,
+// Copilot reads its catalog from the open session, Codewhale reads it from the model
+// provider that the user configured, and Kimi Code and MiMo Code read each model's
+// thinking levels or reasoning variants from their servers. None of the four has a
+// static entry to state them in, so each sets Registration.ManagesEffort instead. For all of them,
 // resolveProviderDefaults stamps an effort default into the launch options, and
 // providerHasModelDependentGroups rebuilds the effort tiers on a model change.
 //

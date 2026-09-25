@@ -9,9 +9,13 @@ import (
 
 // ControlRequestRecord captures one provider request for publication.
 type ControlRequestRecord struct {
-	RequestID string
-	Payload   []byte
-	SourceSeq int64
+	// AgentSessionID is the provider session that the sink stores with the
+	// request: the one that the request states, else the session that the sink
+	// holds when it stores the request (see ControlSink.PublishControlRequest).
+	AgentSessionID string
+	RequestID      string
+	Payload        []byte
+	SourceSeq      int64
 }
 
 // PlanUpdateRecord captures a single UpdatePlan call.
@@ -21,10 +25,9 @@ type PlanUpdateRecord struct {
 	Title       string
 }
 
-// ControlSink extends Sink to also capture control requests,
-// plan updates, and LeapMux notification broadcasts. The base Sink
-// drops all three. Used by Codex and Pi tests; ACP-family tests fall
-// back to plain Sink.
+// ControlSink extends Sink to also capture control requests, plan updates, and
+// LeapMux notification broadcasts. The base Sink drops all three. A provider
+// test uses it when it asserts on any of the three.
 type ControlSink struct {
 	Sink
 
@@ -38,16 +41,26 @@ type ControlSink struct {
 
 var _ agent.ServiceFacets = (*ControlSink)(nil)
 
+// PublishControlRequest records the request. A request that states no session
+// takes the session that the sink holds now, as the worker's own sink stores it
+// (agentOutputSink.PublishControlRequest). Before the first UpdateSessionID
+// that session is empty, which is the state that a request of a handshake
+// meets.
 func (s *ControlSink) PublishControlRequest(request agent.ControlRequest) error {
+	sessionID := request.AgentSessionID
+	if sessionID == "" {
+		sessionID = s.LastSessionID()
+	}
 	s.crMu.Lock()
 	defer s.crMu.Unlock()
 	if s.PublicationError != nil {
 		return s.PublicationError
 	}
 	s.publishedControls = append(s.publishedControls, ControlRequestRecord{
-		RequestID: request.RequestID,
-		Payload:   append([]byte(nil), request.Payload...),
-		SourceSeq: request.SourceSeq,
+		AgentSessionID: sessionID,
+		RequestID:      request.RequestID,
+		Payload:        append([]byte(nil), request.Payload...),
+		SourceSeq:      request.SourceSeq,
 	})
 	return nil
 }

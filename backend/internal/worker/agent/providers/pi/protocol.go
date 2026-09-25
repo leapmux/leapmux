@@ -70,10 +70,15 @@ const piGoalDisplayKey = "goal"
 // fresh turn.
 const StreamingBehaviorSteer = "steer"
 
-// Pi tool-result content-block types — `tool_execution_*` partialResult
-// and result envelopes carry an array of typed content blocks; the
-// streaming delta walker concatenates only "text" blocks.
-const ContentBlockText = "text"
+// Pi content-block types. The `tool_execution_*` partialResult and result
+// envelopes carry an array of typed content blocks, and the streaming delta
+// walker concatenates only "text" blocks. An assistant message's content holds
+// "thinking" blocks beside them, which the worker persists as a reasoning row of
+// their own (persistPiThinking).
+const (
+	ContentBlockText     = "text"
+	ContentBlockThinking = "thinking"
+)
 
 // Pi message roles — the `role` field on entries inside `agent_end.messages`
 // and on `message_end.message`. Only assistant entries carry the final

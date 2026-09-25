@@ -7,6 +7,7 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { withCleanup } from '../tests/e2e/helpers/cleanup'
 import { stopTrackedProcesses } from '../tests/e2e/helpers/processRegistry'
+import { copyRunBinary, LEAPMUX_BINARY_NAME } from '../tests/e2e/helpers/runBinary'
 import { resolveTaskBin } from './resolve-task-bin'
 
 const require = createRequire(import.meta.url)
@@ -24,17 +25,26 @@ export function runCommand(cmd: string, args: string[], options: SpawnOptions = 
   })
 }
 
-export async function runE2E(args: string[]): Promise<number> {
+/**
+ * Build the backend, then run Playwright with `args` in a private run directory.
+ *
+ * `projectRoot` is the repository root. A test gives its own directory, so the
+ * test neither reads nor writes the real build output.
+ */
+export async function runE2E(args: string[], projectRoot: string = root): Promise<number> {
   // The build cache includes this flag, which enables the browser timing instrumentation.
   const env: NodeJS.ProcessEnv = { ...process.env, LEAPMUX_DEV: '1', E2E_STATE_PATH: undefined }
-  const buildCode = await runCommand(resolveTaskBin(), ['build-backend'], { cwd: root, env })
+  const buildCode = await runCommand(resolveTaskBin(), ['build-backend'], { cwd: projectRoot, env })
   if (buildCode !== 0)
     return buildCode
 
-  const scratch = join(root, '.tmp')
+  const scratch = join(projectRoot, '.tmp')
   mkdirSync(scratch, { recursive: true })
   const runDir = mkdtempSync(join(scratch, 'e2e-'))
   return withCleanup(async () => {
+    // Copy the binary at once, before another task pipeline can rebuild it.
+    // Global setup gives this copy to every process of the run. See runBinaryPath.
+    copyRunBinary(join(projectRoot, LEAPMUX_BINARY_NAME), runDir)
     // Global setup verifies the nonce before it starts fixtures.
     const noncePath = join(runDir, 'nonce')
     const nonce = crypto.randomUUID()
@@ -49,7 +59,7 @@ export async function runE2E(args: string[]): Promise<number> {
     for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES'])
       delete testEnv[key]
     return await runCommand('node', [require.resolve('@playwright/test/cli'), 'test', ...args], {
-      cwd: join(root, 'frontend'),
+      cwd: join(projectRoot, 'frontend'),
       env: testEnv,
     })
   }, async () => {

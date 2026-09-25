@@ -456,6 +456,10 @@ describe('single-message notification labels', () => {
     expect(renderText([{ type: 'stop_ignored' }])).toBe('Interrupt ignored — press Interrupt again to force it')
   })
 
+  it('renders input_requeued with the reason the message appears again', () => {
+    expect(renderText([{ type: 'input_requeued' }])).toBe('Message queued again — the agent dropped it before the model read it')
+  })
+
   it('renders context_cleared', () => {
     expect(renderText([{ type: 'context_cleared' }])).toBe('Context cleared')
   })

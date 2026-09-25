@@ -10,7 +10,7 @@ import (
 func TestTurnSignalWhitelist_ACP(t *testing.T) {
 	t.Parallel()
 
-	// The six ACP providers share one rule, and it needs no vocabulary at all:
+	// The ACP providers share one rule, and it needs no vocabulary at all:
 	// the turn is the lifetime of the session/prompt request this Worker sent,
 	// so NO notification moves the flag. These are the updates that arrive with
 	// no prompt in flight, which is what makes the rule load-bearing rather than

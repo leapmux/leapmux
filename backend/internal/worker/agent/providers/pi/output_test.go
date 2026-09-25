@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -572,6 +573,100 @@ func TestHandlePiOutput_MessageEnd_PersistsAssistantMessage(t *testing.T) {
 	msg := sink.Messages()[0]
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msg.Source)
 	assert.JSONEq(t, string(raw), string(msg.Content))
+}
+
+// piReasoningRow is the assembled-message envelope of one completed thinking row.
+func piReasoningRow(text string) map[string]string {
+	return map[string]string{
+		contracts.AssembledMessageFieldType:       contracts.AssembledMessageType,
+		contracts.AssembledMessageFieldKind:       contracts.AssembledMessageKindReasoning,
+		contracts.AssembledMessageFieldText:       text,
+		contracts.AssembledMessageFieldCompletion: contracts.AssembledMessageCompletionComplete,
+	}
+}
+
+// piAssembledRow decodes a persisted assembled-message envelope.
+func piAssembledRow(t *testing.T, message agenttest.Message) map[string]string {
+	t.Helper()
+	var row map[string]string
+	require.NoError(t, json.Unmarshal(message.Content, &row))
+	return row
+}
+
+// Pi states a reasoning model's reply as ONE message whose content holds thinking
+// blocks beside the text blocks and the tool calls. One transcript row draws one
+// kind of text, so the worker persists the thinking as a row of its own, before
+// the reply's own row.
+func TestHandlePiOutput_MessageEnd_PersistsThinkingAsARowOfItsOwn(t *testing.T) {
+	t.Parallel()
+
+	run := func(t *testing.T, frame string) []agenttest.Message {
+		t.Helper()
+		sink := &agenttest.ControlSink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		a.model = "gpt-5.5"
+		a.availableModels = []*agent.ModelInfo{{Id: "gpt-5.5", ContextWindow: 200000}}
+		handlePiOutput(a, providerkit.ParseLine([]byte(frame)))
+		return sink.Messages()
+	}
+
+	t.Run("the thinking row comes before the reply, which keeps the usage", func(t *testing.T) {
+		t.Parallel()
+		frame := `{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"The user wants a greeting.","thinkingSignature":"sig"},{"type":"text","text":"Hello"}],"usage":{"input":100,"output":10,"cacheRead":0,"cacheWrite":0,"totalTokens":110,"cost":{"total":0.0001}}}}`
+		messages := run(t, frame)
+		require.Len(t, messages, 2)
+		assert.Equal(t, piReasoningRow("The user wants a greeting."), piAssembledRow(t, messages[0]))
+		assert.Empty(t, messages[0].Metadata, "the usage rides on the reply's own row")
+		assert.JSONEq(t, frame, string(messages[1].Content), "Pi's own frame is still the reply's row")
+		assert.NotEmpty(t, messages[1].Metadata)
+	})
+
+	t.Run("several thinking blocks join into one row", func(t *testing.T) {
+		t.Parallel()
+		messages := run(t, `{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"First."},{"type":"text","text":"Hi."},{"type":"thinking","thinking":"Second."}]}}`)
+		require.Len(t, messages, 2)
+		assert.Equal(t, piReasoningRow("First.\n\nSecond."), piAssembledRow(t, messages[0]))
+	})
+
+	t.Run("thinking beside a tool call is a row of its own too", func(t *testing.T) {
+		t.Parallel()
+		messages := run(t, `{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Run it."},{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"ls"}}],"stopReason":"toolUse"}}`)
+		require.Len(t, messages, 2)
+		assert.Equal(t, piReasoningRow("Run it."), piAssembledRow(t, messages[0]))
+	})
+
+	// Pi writes a placeholder for thinking that a safety filter redacted, and the
+	// reader sees that placeholder as the thinking.
+	t.Run("a redacted block shows Pi's placeholder", func(t *testing.T) {
+		t.Parallel()
+		messages := run(t, `{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"[Reasoning redacted]","thinkingSignature":"opaque","redacted":true},{"type":"text","text":"Hi."}]}}`)
+		require.Len(t, messages, 2)
+		assert.Equal(t, piReasoningRow("[Reasoning redacted]"), piAssembledRow(t, messages[0]))
+	})
+
+	t.Run("a thinking block with no visible text adds no row", func(t *testing.T) {
+		t.Parallel()
+		frame := `{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"  ","thinkingSignature":"sig"},{"type":"text","text":"Hi."}]}}`
+		messages := run(t, frame)
+		require.Len(t, messages, 1)
+		assert.JSONEq(t, frame, string(messages[0].Content))
+	})
+
+	t.Run("a message of another role adds no row", func(t *testing.T) {
+		t.Parallel()
+		frame := `{"type":"message_end","message":{"role":"user","content":[{"type":"thinking","thinking":"Not the model's."},{"type":"text","text":"Hi."}]}}`
+		messages := run(t, frame)
+		require.Len(t, messages, 1)
+		assert.JSONEq(t, frame, string(messages[0].Content))
+	})
+
+	t.Run("a message whose content is a string adds no row", func(t *testing.T) {
+		t.Parallel()
+		frame := `{"type":"message_end","message":{"role":"assistant","content":"Hi."}}`
+		messages := run(t, frame)
+		require.Len(t, messages, 1)
+		assert.JSONEq(t, frame, string(messages[0].Content))
+	})
 }
 
 func TestHandlePiOutput_MessageEnd_PreservesContentAndStoresUsageMetadata(t *testing.T) {

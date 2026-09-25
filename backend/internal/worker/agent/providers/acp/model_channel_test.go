@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -47,6 +48,80 @@ func TestTrySetStartupModel_NoopWhenMatchesCurrent(t *testing.T) {
 	}
 	base.trySetStartupModel("anthropic/claude-sonnet-4")
 	assert.False(t, called, "no setModel when the request already matches the server's current")
+}
+
+// An agent that reports some options only after a model write (Kiro's effort
+// axis) gets the write for the model that the session already runs.
+func TestTrySetStartupModel_ModelWriteRevealsOptionsWritesTheSessionModel(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		requested string
+	}{
+		{name: "the session model requested", requested: "kiro/current"},
+		{name: "no model requested", requested: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			base := Base{}
+			base.model = "kiro/current"
+			base.hooks.ModelWriteRevealsOptions = true
+			var written []string
+			base.hooks.ModelSetter = func(m string) error {
+				written = append(written, m)
+				return nil
+			}
+			base.trySetStartupModel(tc.requested)
+			assert.Equal(t, []string{"kiro/current"}, written)
+		})
+	}
+}
+
+func TestTrySetStartupModel_ModelWriteRevealsOptionsWritesADifferentModelOnce(t *testing.T) {
+	t.Parallel()
+
+	base := Base{}
+	base.model = "kiro/current"
+	base.hooks.ModelWriteRevealsOptions = true
+	var written []string
+	base.hooks.ModelSetter = func(m string) error {
+		written = append(written, m)
+		base.model = m
+		return nil
+	}
+	base.trySetStartupModel("kiro/other")
+	assert.Equal(t, []string{"kiro/other"}, written)
+	assert.Equal(t, "kiro/other", base.model)
+}
+
+func TestTrySetStartupModel_ModelWriteRevealsOptionsNeedsAModel(t *testing.T) {
+	t.Parallel()
+
+	base := Base{}
+	base.hooks.ModelWriteRevealsOptions = true
+	called := false
+	base.hooks.ModelSetter = func(string) error {
+		called = true
+		return nil
+	}
+	base.trySetStartupModel("")
+	assert.False(t, called, "a session that reports no model and a launch that requests none give nothing to write")
+}
+
+func TestTrySetStartupModel_NoopWhenNothingIsRequested(t *testing.T) {
+	t.Parallel()
+
+	base := Base{}
+	base.model = "server/current"
+	called := false
+	base.hooks.ModelSetter = func(string) error {
+		called = true
+		return nil
+	}
+	base.trySetStartupModel("")
+	assert.False(t, called, "without the hook, an empty request keeps the session model without a write")
 }
 
 func TestTrySetStartupModel_NonFatalOnRejection(t *testing.T) {
@@ -1077,4 +1152,80 @@ func TestEffectiveSetModel_FallsBackToBaseSetter(t *testing.T) {
 	b.hooks.ModelSetter = func(string) error { called = true; return nil }
 	_ = b.effectiveSetModel()("x")
 	assert.True(t, called, "a set modelSetter override is used")
+}
+
+func TestModelDecorator_ReadsTheMetadataOfEachModel(t *testing.T) {
+	t.Parallel()
+	b := &Base{}
+	seen := map[string]string{}
+	b.hooks.ModelDecorator = func(m *agent.ModelInfo, meta json.RawMessage) {
+		seen[m.Id] = string(meta)
+		var window struct {
+			Tokens int64 `json:"windowTokens"`
+		}
+		if json.Unmarshal(meta, &window) == nil {
+			m.ContextWindow = window.Tokens
+		}
+	}
+	models, current := b.buildModels([]ModelInfo{
+		{ModelID: "alpha", Name: "Alpha", Meta: json.RawMessage(`{"windowTokens":128000}`)},
+		{ModelID: "alpha", Name: "Alpha again", Meta: json.RawMessage(`{"windowTokens":1}`)},
+		{ModelID: "beta", Name: "Beta"},
+	}, "beta")
+
+	require.Len(t, models, 2)
+	assert.Equal(t, "beta", current)
+	assert.Equal(t, int64(128000), models[0].ContextWindow, "the metadata of the kept duplicate")
+	assert.Equal(t, int64(0), models[1].ContextWindow, "a model with no metadata")
+	assert.Equal(t, map[string]string{"alpha": `{"windowTokens":128000}`, "beta": ""}, seen)
+}
+
+// A normalizer can map two raw ids to one model. The build keeps the first raw
+// info of that model, and the decorator reads the metadata of that same info,
+// not of the duplicate that the build dropped.
+func TestModelDecorator_ReadsTheMetadataOfTheInfoThatTheBuildKept(t *testing.T) {
+	t.Parallel()
+	b := &Base{}
+	b.hooks.ModelIDNormalizer = func(id string) string {
+		if id == "default[]" {
+			return "auto"
+		}
+		return id
+	}
+	seen := map[string]string{}
+	b.hooks.ModelDecorator = func(m *agent.ModelInfo, meta json.RawMessage) {
+		seen[m.Id] = string(meta)
+	}
+
+	models, current := b.buildModels([]ModelInfo{
+		{ModelID: "default[]", Name: "Auto", Meta: json.RawMessage(`{"rank":1}`)},
+		{ModelID: "auto", Name: "Auto again", Meta: json.RawMessage(`{"rank":2}`)},
+	}, "default[]")
+
+	require.Len(t, models, 1)
+	assert.Equal(t, "auto", models[0].Id)
+	assert.Equal(t, "Auto", models[0].DisplayName)
+	assert.Equal(t, "auto", current)
+	assert.Equal(t, map[string]string{"auto": `{"rank":1}`}, seen)
+}
+
+func TestModelInfo_AConfigOptionModelCarriesItsMetadata(t *testing.T) {
+	t.Parallel()
+	session, err := parseACPSessionResult(json.RawMessage(`{"sessionId":"s","configOptions":[{"type":"select","id":"model","name":"Model","category":"model","currentValue":"m","options":[` +
+		`{"value":"m","name":"M","_meta":{"vendor":{"rate":1.3}}},{"value":"n","name":"N"}]}]}`))
+	require.NoError(t, err)
+	infos, current := acpHandshakeModelInfos(session)
+
+	assert.Equal(t, "m", current)
+	require.Len(t, infos, 2)
+	assert.JSONEq(t, `{"vendor":{"rate":1.3}}`, string(infos[0].Meta), "the decorator reads a config option's model as it reads a models-field model")
+	assert.Empty(t, infos[1].Meta)
+}
+
+func TestModelInfo_DecodesItsMetadata(t *testing.T) {
+	t.Parallel()
+	session, err := parseACPSessionResult(json.RawMessage(`{"sessionId":"s","models":{"currentModelId":"m","availableModels":[{"modelId":"m","name":"M","_meta":{"contextLimit":200000}}]}}`))
+	require.NoError(t, err)
+	require.Len(t, session.Models, 1)
+	assert.JSONEq(t, `{"contextLimit":200000}`, string(session.Models[0].Meta))
 }

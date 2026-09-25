@@ -1,0 +1,283 @@
+{
+  "_readme": "The Codewhale runtime API values that the Go provider and the TypeScript renderer both spell. The provider reads `codewhale app-server --http`: REST calls plus one server-sent event stream per thread. The worker persists the event envelopes it keeps, and the browser plugin classifies the same envelopes, so the event names, the item kinds, the turn statuses and the tool names are dispatch keys on both sides, and the field names of the records that carry them are read on both sides. Codewhale owns every value in `events`, `itemKinds`, `turnStatuses`, `modes`, `postures`, `toolNames`, `agentActions`, `agentInputFields`, `envelopeFields`, `itemFields`, `toolFields`, `itemMetadata`, `resultFields`, `workflowStatuses`, `turnFields`, `approvalFields`, `userInputFields`, `questionFields`, `decisions`, `answerFields`, `answerLabels`, `transcriptKinds`, `transcriptRoles`, `blockTypes` and `blockFields`. LeapMux owns `options`, `controlPayload`, `replyFrames`, `answerTexts` and the LeapMux keys of `replyFields`: the worker writes a control request with the `event` key beside the shared `request` header, and it resolves an answer into one reply frame that the worker posts and the browser reads back for the saved answer. `answerTexts` holds the free-text answer a declined question sends when the reader gave no reason: the runtime has no decline route, so the worker answers every question with it, and the browser reads the saved answer back as a bare decline. `replyFields` mixes both owners on purpose, because one frame carries them together: `frame` and `declined` are LeapMux's, and `decision`, `remember` and `answers` are the runtime's own body fields. `modes` holds `agent` and `plan` alone. `operate` is the runtime's always-on fleet mode, and LeapMux offers no control for it. The field tables state the records that both sides read: `envelopeFields` for one event, `itemFields` for the turn item under `payload.item`, `toolFields` for the parsed call under `payload.tool`, `agentInputFields` for the input of an `agent` call, `turnFields` for the turn record of `turn.completed`, `approvalFields` and `userInputFields` for the payloads of `approval.required` and `user_input.required`, `questionFields` for the questions of a `user_input` request, and `resultFields` for the tool results that the worker acts on: the `todo_write` checklist, the `agent` receipt and wait, and the `workflow` run summary, whose `status` words are `workflowStatuses`. A field table holds the fields that the browser reads of a record that the worker reads too, so the browser reads the whole record through one table. A field that the worker alone reads stays in the tag of its Go struct, because no value crosses the boundary there. `itemMetadata` holds the tool identity fields of an item's `metadata` object: the runtime classifies a tool item by a name heuristic that puts `todo_write` under `file_change` and `bash` under `tool_call`, so both sides dispatch on `tool_name` rather than on the item kind. `transcriptKinds`, `transcriptFields`, `transcriptRoles`, `blockTypes` and `blockFields` describe the JSONL transcript that the runtime writes for each subagent under `<workspace>/.codewhale/state/subagent-transcripts/`: the runtime drops its `agent.*` events before they reach a runtime thread, so the worker reads that file and persists each content block of it as one row of the child transcript, with the record's own fields, and the browser plugin classifies those rows by the same fields.",
+  "events": {
+    "ItemStarted": "item.started",
+    "ItemCompleted": "item.completed",
+    "ItemFailed": "item.failed",
+    "ItemInterrupted": "item.interrupted",
+    "ItemCanceled": "item.canceled",
+    "TurnCompleted": "turn.completed",
+    "TurnSteerDropped": "turn.steer_dropped",
+    "ApprovalRequired": "approval.required",
+    "ApprovalTimeout": "approval.timeout",
+    "UserInputRequired": "user_input.required",
+    "UserInputCanceled": "user_input.canceled",
+    "SandboxDenied": "sandbox.denied",
+    "StoreFailure": "runtime.store_failure"
+  },
+  "itemKinds": {
+    "UserMessage": "user_message",
+    "AgentMessage": "agent_message",
+    "AgentReasoning": "agent_reasoning",
+    "ToolCall": "tool_call",
+    "FileChange": "file_change",
+    "CommandExecution": "command_execution",
+    "ContextCompaction": "context_compaction",
+    "Status": "status",
+    "Error": "error"
+  },
+  "turnStatuses": {
+    "Completed": "completed",
+    "Failed": "failed",
+    "Interrupted": "interrupted",
+    "Canceled": "canceled"
+  },
+  "modes": {
+    "Agent": "agent",
+    "Plan": "plan"
+  },
+  "defaultMode": "Agent",
+  "postures": {
+    "Ask": "ask",
+    "AutoReview": "auto_review",
+    "FullAccess": "full_access"
+  },
+  "options": {
+    "Mode": "codewhale_mode"
+  },
+  "toolNames": {
+    "Read": "read",
+    "Write": "write",
+    "Edit": "edit",
+    "Bash": "bash",
+    "Agent": "agent",
+    "Workflow": "workflow",
+    "TodoWrite": "todo_write",
+    "CreateGoal": "create_goal",
+    "GetGoal": "get_goal",
+    "UpdateGoal": "update_goal",
+    "LoadSkill": "load_skill",
+    "ToolSearch": "tool_search",
+    "ApplyPatch": "apply_patch",
+    "ListDir": "list_dir",
+    "FileSearch": "file_search",
+    "GrepFiles": "grep_files",
+    "Git": "Git",
+    "Diagnostics": "diagnostics",
+    "Lsp": "lsp",
+    "ProjectMap": "project_map",
+    "Run": "Run",
+    "ValidateData": "validate_data",
+    "RetrieveToolResult": "retrieve_tool_result",
+    "HandleRead": "handle_read",
+    "Tasks": "tasks",
+    "Github": "github",
+    "Automation": "automation",
+    "SendLater": "send_later",
+    "TaskShellStart": "task_shell_start",
+    "TaskShellWait": "task_shell_wait",
+    "TerminalRun": "terminal/run",
+    "TerminalSend": "terminal/send",
+    "TerminalWait": "terminal/wait",
+    "TerminalCancel": "terminal/cancel",
+    "TerminalReset": "terminal/reset",
+    "RevertTurn": "revert_turn",
+    "ReadMedia": "read_media",
+    "ImageOcr": "image_ocr",
+    "PandocConvert": "pandoc_convert",
+    "ImageAnalyze": "image_analyze",
+    "Finance": "finance",
+    "RequestUserInput": "request_user_input",
+    "Review": "review",
+    "Verify": "verify",
+    "FimEdit": "fim_edit",
+    "Harness": "harness",
+    "Note": "note",
+    "Speech": "speech",
+    "Web": "Web",
+    "WebRun": "web.run",
+    "Remember": "remember",
+    "MemorySearch": "memory_search",
+    "MemoryGet": "memory_get",
+    "SessionSearch": "session_search",
+    "SessionGet": "session_get",
+    "Notify": "notify",
+    "RequestPluginInstall": "request_plugin_install",
+    "StartMcpServer": "start_mcp_server",
+    "RegistrySync": "registry_sync",
+    "StartRegistryMcpServer": "start_registry_mcp_server",
+    "CodeExecution": "code_execution",
+    "JsExecution": "js_execution",
+    "ExecuteTools": "execute_tools",
+    "MultiToolUseParallel": "multi_tool_use.parallel",
+    "File": "File",
+    "LegacyBash": "Bash",
+    "ReadFile": "read_file",
+    "WriteFile": "write_file",
+    "EditFile": "edit_file",
+    "UpdatePlan": "update_plan",
+    "WorkUpdate": "work_update",
+    "LegacyTodoWrite": "TodoWrite",
+    "Todo": "todo",
+    "ChecklistWrite": "checklist_write",
+    "ChecklistUpdate": "checklist_update",
+    "FetchURL": "fetch_url",
+    "WebSearch": "web_search",
+    "GitStatus": "git_status",
+    "GitDiff": "git_diff",
+    "GitLog": "git_log",
+    "GitShow": "git_show",
+    "GitBlame": "git_blame",
+    "GitCommitPlan": "git_commit_plan",
+    "RunTests": "run_tests",
+    "RunVerifiers": "run_verifiers",
+    "WaitForDevServer": "wait_for_dev_server",
+    "AgentsCoordinate": "agents/coordinate",
+    "AgentsFollowup": "agents/followup",
+    "AgentsInterrupt": "agents/interrupt",
+    "AgentsList": "agents/list",
+    "AgentsMessage": "agents/message",
+    "AgentsWait": "agents/wait"
+  },
+  "agentActions": {
+    "Start": "start",
+    "Wait": "wait"
+  },
+  "agentInputFields": {
+    "Action": "action",
+    "Prompt": "prompt",
+    "Name": "name",
+    "Type": "type",
+    "AgentID": "agent_id",
+    "AgentIDs": "agent_ids"
+  },
+  "envelopeFields": {
+    "Event": "event",
+    "TurnID": "turn_id",
+    "Payload": "payload"
+  },
+  "itemFields": {
+    "Item": "item",
+    "Tool": "tool",
+    "Kind": "kind",
+    "Summary": "summary",
+    "Detail": "detail",
+    "Metadata": "metadata"
+  },
+  "toolFields": {
+    "ID": "id",
+    "Name": "name",
+    "Input": "input"
+  },
+  "itemMetadata": {
+    "ToolName": "tool_name",
+    "ToolUseID": "tool_use_id",
+    "ToolCallID": "tool_call_id",
+    "ToolInput": "tool_input",
+    "DeferredToolLoaded": "deferred_tool_loaded"
+  },
+  "resultFields": {
+    "TaskUpdates": "task_updates",
+    "Checklist": "checklist",
+    "Items": "items",
+    "AgentID": "agent_id",
+    "Settled": "settled",
+    "Name": "name",
+    "Role": "role",
+    "Note": "note",
+    "Status": "status"
+  },
+  "workflowStatuses": {
+    "Running": "running",
+    "Completed": "completed",
+    "Degraded": "degraded",
+    "Failed": "failed",
+    "Cancelled": "cancelled"
+  },
+  "turnFields": {
+    "Turn": "turn",
+    "Status": "status",
+    "DurationMs": "duration_ms",
+    "Error": "error"
+  },
+  "approvalFields": {
+    "ToolName": "tool_name",
+    "IntentSummary": "intent_summary",
+    "Summary": "summary"
+  },
+  "userInputFields": {
+    "Request": "request"
+  },
+  "questionFields": {
+    "Questions": "questions",
+    "ID": "id",
+    "Header": "header",
+    "Question": "question",
+    "Options": "options",
+    "Label": "label",
+    "Description": "description",
+    "MultiSelect": "multi_select"
+  },
+  "controlPayload": {
+    "Event": "event"
+  },
+  "replyFrames": {
+    "Approval": "approval",
+    "UserInput": "user_input",
+    "Interrupt": "interrupt"
+  },
+  "replyFields": {
+    "Frame": "frame",
+    "Decision": "decision",
+    "Remember": "remember",
+    "Answers": "answers",
+    "Declined": "declined"
+  },
+  "decisions": {
+    "Allow": "allow",
+    "Deny": "deny"
+  },
+  "answerFields": {
+    "ID": "id",
+    "Label": "label",
+    "Value": "value"
+  },
+  "answerLabels": {
+    "Other": "Other"
+  },
+  "answerTexts": {
+    "Declined": "The user declined to answer."
+  },
+  "transcriptKinds": {
+    "Header": "subagent_transcript_header",
+    "Message": "message"
+  },
+  "transcriptFields": {
+    "Kind": "kind",
+    "Index": "index",
+    "Message": "message",
+    "Role": "role",
+    "Content": "content"
+  },
+  "transcriptRoles": {
+    "User": "user",
+    "Assistant": "assistant"
+  },
+  "blockTypes": {
+    "Text": "text",
+    "Thinking": "thinking",
+    "ToolUse": "tool_use",
+    "ToolResult": "tool_result"
+  },
+  "blockFields": {
+    "Type": "type",
+    "ID": "id",
+    "Name": "name",
+    "Input": "input",
+    "ToolUseID": "tool_use_id",
+    "Content": "content",
+    "IsError": "is_error",
+    "Text": "text",
+    "Thinking": "thinking"
+  }
+}

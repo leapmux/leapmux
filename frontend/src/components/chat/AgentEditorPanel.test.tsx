@@ -931,6 +931,36 @@ describe('agent editor panel', () => {
     unmount()
   })
 
+  // A read-only subagent tab takes no message, so its queue can hold none. An
+  // interrupt still pauses that queue, and a banner or toggle there would offer
+  // an action that the tab cannot take.
+  it('draws no queue controls on a read-only subagent tab whose queue paused', () => {
+    const snapshot = create(AgentInputQueueSnapshotSchema, {
+      agentId: 'c1',
+      paused: true,
+      pauseReason: AgentInputQueuePauseReason.INTERRUPTED,
+    })
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="c1"
+          agent={agent({ workerId: 'w1' })}
+          repoGitStore={createRepoGitStore()}
+          gitTab={{ workerId: 'w1', gitToplevel: WORKTREE_DIR }}
+          onSendMessage={() => {}}
+          branchActions={stubBranchMenuActions()}
+          branchWorkerId="w1"
+          inputQueue={snapshot}
+          disabledReason="This subagent takes no messages."
+        />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.queryByTestId('queue-pause-banner')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('queue-pause-banner-resume')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('queue-pause-button')).not.toBeInTheDocument()
+  })
+
   it('says Send will queue while the queue is paused', () => {
     const snapshot = create(AgentInputQueueSnapshotSchema, {
       agentId: 'a1',

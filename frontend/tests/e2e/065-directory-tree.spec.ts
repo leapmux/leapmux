@@ -46,7 +46,7 @@ test.describe('DirectoryTree', () => {
       await expect(rootNode).toBeVisible()
 
       // Hover the root node and open context menu
-      await openTreeContextMenu(page, rootNode)
+      await openTreeContextMenu(rootNode)
 
       // Every directory item should be visible (use :visible to scope to the open popover).
       // The info block leads: a directory reports a modification time but no size.
@@ -79,7 +79,7 @@ test.describe('DirectoryTree', () => {
       // tree-row testid because the label is now nested inside a Tooltip
       // span pair, so `.locator('..')` from the text no longer lands on the
       // row hosting the context button.
-      await openTreeContextMenu(page, treeRow(page, 'package.json'))
+      await openTreeContextMenu(treeRow(page, 'package.json'))
 
       // Info block (size + modified), mention, copy path, copy relative path — but NOT terminal
       const fileInfo = page.locator('[data-testid="tree-info-button"]:visible')
@@ -109,7 +109,7 @@ test.describe('DirectoryTree', () => {
 
       // Open the root directory's context menu and click "Open a terminal tab
       // here" as one retried unit -- same detach hazard as the copy-path test.
-      await clickTreeContextItem(page, rootNode, 'tree-open-terminal-button')
+      await clickTreeContextItem(rootNode, 'tree-open-terminal-button')
 
       // A terminal tab should appear
       const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
@@ -137,7 +137,7 @@ test.describe('DirectoryTree', () => {
       // Tooltip span wrap). Opening and clicking as two separate steps lets a
       // sidebar re-render between them detach the item mid-click -- which is
       // what "element was detached from the DOM" was reporting here.
-      await clickTreeContextItem(page, treeRow(page, 'package.json'), 'tree-copy-path-button')
+      await clickTreeContextItem(treeRow(page, 'package.json'), 'tree-copy-path-button')
 
       // Clipboard should contain the absolute path (ends with /package.json)
       const clipboardText = await page.evaluate(() => navigator.clipboard.readText())
@@ -430,14 +430,25 @@ test.describe('DirectoryTree', () => {
       const row = treeRow(page, 'package.json')
       await expect(row).toBeVisible()
 
+      // Each row renders its own menu inside the row, so look up an item inside
+      // the row whose menu the test means. A page-wide `:visible` lookup also
+      // finds a menu that just closed: Oat fades a closed popover out for up to
+      // 150ms and keeps it laid out for that time, and Playwright counts a
+      // laid-out element as visible at any opacity.
+      const rowCopyPath = row.getByTestId('tree-copy-path-button')
       await row.click({ button: 'right' })
-      await expect(page.locator('[data-testid="tree-copy-path-button"]:visible')).toBeVisible()
+      await expect(rowCopyPath).toBeVisible()
+      await expect(row).toHaveAttribute('aria-selected', 'false')
+
+      await page.keyboard.press('Escape')
+      await expect(rowCopyPath).toBeHidden()
 
       // The root row owns its own menu, so a right-click there is not the same
       // element's menu re-anchored.
-      await page.keyboard.press('Escape')
-      await page.locator('[data-testid="tree-root-node"]:visible').click({ button: 'right' })
-      await expect(page.locator('[data-testid="tree-copy-path-button"]:visible')).toBeVisible()
+      const rootRow = page.locator('[data-testid="tree-root-node"]:visible')
+      await rootRow.click({ button: 'right' })
+      await expect(rootRow.getByTestId('tree-copy-path-button')).toBeVisible()
+      await expect(rowCopyPath).toBeHidden()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

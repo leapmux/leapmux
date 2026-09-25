@@ -1,0 +1,64 @@
+{
+  "_readme": "Kiro CLI runs its v3 engine through `kiro-cli-chat acp --agent-engine v3` and speaks the Agent Client Protocol with its own extensions: `_kiro/*` methods, and metadata under the `kiro` key of the `_meta` of each update, tool call and request. Amazon Web Services owns every method, meta key, kind, tool title, mode, option id, scope and action word below. LeapMux owns two tables: the option id of the policy preset, which Kiro fixes when a session opens and never reports back, and the ids of the consent-scoped permission options that the browser states and the worker rewrites into Kiro's own reply. The worker publishes the extension requests, rewrites the answers, routes the subagent updates, reads the to-do list and the plan, and ends the turns that Kiro starts by itself. The browser plugin draws the same requests, builds the same replies, reads the same tool titles and reads the same turn-end update into a divider. A word that only one side reads stays in the code of that side. `configIds` holds the config-option id of the effort axis of Kiro: the worker drives the axis through it, and the browser shows its chip in the status bar under the same id.",
+  "_unread": {
+    "userInputActions": {
+      "Answered": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker forwards the answer of a question unchanged, and writes only the dismissal, when it withdraws a question that nobody answered"
+      }
+    }
+  },
+  "methods": {
+    "UserInput": "_kiro/userInput",
+    "McpElicitation": "_kiro/mcp/elicitation"
+  },
+  "meta": {
+    "Namespace": "kiro",
+    "Kind": "kind",
+    "AgentSubtaskId": "agentSubtaskId",
+    "StopReason": "stopReason",
+    "Consent": "consent",
+    "Scope": "scope"
+  },
+  "metaKinds": {
+    "AgentSubtask": "agent-subtask",
+    "TurnEnd": "turn_end"
+  },
+  "toolTitles": {
+    "TaskList": "Task List",
+    "SwitchToExecution": "Switch to Execution"
+  },
+  "modes": {
+    "Default": "vibe",
+    "Plan": "plan"
+  },
+  "options": {
+    "PolicyPreset": "policyPreset"
+  },
+  "policyPresets": {
+    "AllowAll": "allow-all"
+  },
+  "permissionOptions": {
+    "AlwaysAccept": "always-accept",
+    "AlwaysReject": "always-reject"
+  },
+  "scopedPermissionOptions": {
+    "AlwaysAcceptWorkspace": "always-accept-workspace",
+    "AlwaysAcceptUser": "always-accept-user",
+    "AlwaysRejectWorkspace": "always-reject-workspace",
+    "AlwaysRejectUser": "always-reject-user"
+  },
+  "consentScopes": {
+    "Workspace": "workspace",
+    "User": "user"
+  },
+  "userInputActions": {
+    "Answered": "answered",
+    "Dismissed": "dismissed"
+  },
+  "configIds": {
+    "EffortLevel": "effortLevel"
+  }
+}

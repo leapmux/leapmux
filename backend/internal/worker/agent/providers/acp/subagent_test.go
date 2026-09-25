@@ -62,7 +62,7 @@ func TestACP_ApplySubagentObservation_RenameFromCollapsesToOneFinalRow(t *testin
 	b := &Base{sink: agent.NewProviderServices(sink)}
 
 	// Spawn opens a row under the toolCallId.
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "call-123",
 		Title:  "spawn",
 		Status: bgtask.StatusRunning,
@@ -71,7 +71,7 @@ func TestACP_ApplySubagentObservation_RenameFromCollapsesToOneFinalRow(t *testin
 	assert.Equal(t, bgtask.StatusRunning, sink.BackgroundTasks()[0].Status)
 
 	// Final update renames call-123 -> sess-abc, then closes sess-abc.
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey:     "sess-abc",
 		RenameFrom: "call-123",
 		Status:     bgtask.StatusCompleted,
@@ -94,14 +94,14 @@ func TestACP_ApplySubagentObservation_CloseOnlyModeSkipsUpsert(t *testing.T) {
 	b := &Base{sink: agent.NewProviderServices(sink)}
 
 	// Open a row.
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "call-1",
 		Title:  "spawn",
 		Status: bgtask.StatusRunning,
 	})
 
 	// Close-only: closes the existing row, does NOT upsert.
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey:   "call-1",
 		Status:   bgtask.StatusCompleted,
 		CloseRow: true,
@@ -120,7 +120,7 @@ func TestACP_ApplySubagentObservation_UpsertModeWithCloseDoesBoth(t *testing.T) 
 	sink := &agenttest.Sink{}
 	b := &Base{sink: agent.NewProviderServices(sink)}
 
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey:   "call-bg",
 		Title:    "bg task",
 		Activity: "background task",
@@ -145,7 +145,7 @@ func TestACPSubagentPrompt_HeldFromSpawnUntilTheChildExists(t *testing.T) {
 	b := &Base{sink: agent.NewProviderServices(sink)}
 
 	// 1. Spawn: prompt recorded, no child yet.
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "tc-1",
 		Title:  "Goose subagent",
 		Status: bgtask.StatusRunning,
@@ -154,7 +154,7 @@ func TestACPSubagentPrompt_HeldFromSpawnUntilTheChildExists(t *testing.T) {
 	assert.Equal(t, "Review the diff.", b.subagentPrompts.PeekForTest("tc-1"))
 
 	// 2. The observation that links the child spends it.
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey:        "tc-1",
 		ChildAgentKey: "tc-1",
 		Status:        bgtask.StatusRunning,
@@ -174,12 +174,12 @@ func TestACPSubagentPrompt_DroppedWhenTheRowClosesWithNoChild(t *testing.T) {
 
 	sink := &agenttest.Sink{}
 	b := &Base{sink: agent.NewProviderServices(sink)}
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "tc-1", Title: "task", Status: bgtask.StatusRunning, Prompt: "Do it.",
 	})
 	require.Equal(t, 1, b.subagentPrompts.CountForTest())
 
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "tc-1", Status: bgtask.StatusCompleted, CloseRow: true, Mode: ModeCloseOnly,
 	})
 	assert.Zero(t, b.subagentPrompts.CountForTest())
@@ -195,12 +195,12 @@ func TestACPSubagentPrompt_DroppedUnderTheSpawnKeyAfterARename(t *testing.T) {
 	t.Parallel()
 
 	b := &Base{sink: agent.NewProviderServices(&agenttest.Sink{})}
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "call-1", Title: "task", Status: bgtask.StatusRunning, Prompt: "Do it.",
 	})
 	require.Equal(t, 1, b.subagentPrompts.CountForTest())
 
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey:     "ses-child",
 		RenameFrom: "call-1",
 		Status:     bgtask.StatusCompleted,
@@ -217,7 +217,7 @@ func TestACPSubagentPrompt_ClearedWhenTheSessionIsReplaced(t *testing.T) {
 	t.Parallel()
 
 	b := &Base{sink: agent.NewProviderServices(&agenttest.Sink{})}
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "tc-1", Title: "task", Status: bgtask.StatusRunning, Prompt: "Do it.",
 	})
 	require.Equal(t, 1, b.subagentPrompts.CountForTest())
@@ -232,8 +232,8 @@ func TestACPSubagentPrompt_FirstWriteWins(t *testing.T) {
 	t.Parallel()
 
 	b := &Base{sink: agent.NewProviderServices(&agenttest.Sink{})}
-	b.applySubagentObservation(&SubagentObservation{RowKey: "tc-1", Prompt: "first", Status: bgtask.StatusRunning})
-	b.applySubagentObservation(&SubagentObservation{RowKey: "tc-1", Prompt: "second", Status: bgtask.StatusRunning})
+	b.ApplySubagentObservation(&SubagentObservation{RowKey: "tc-1", Prompt: "first", Status: bgtask.StatusRunning})
+	b.ApplySubagentObservation(&SubagentObservation{RowKey: "tc-1", Prompt: "second", Status: bgtask.StatusRunning})
 	assert.Equal(t, "first", b.subagentPrompts.PeekForTest("tc-1"))
 }
 
@@ -242,7 +242,7 @@ func TestACP_SubagentReportLookupFailureWritesNoUnverifiedReport(t *testing.T) {
 
 	sink := &agenttest.Sink{}
 	b := &Base{sink: agent.NewProviderServices(sink)}
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "task-call", Title: "Inspect", Status: bgtask.StatusRunning,
 		ChildAgentKey: "task-call", Prompt: "Inspect it.",
 	})
@@ -251,7 +251,7 @@ func TestACP_SubagentReportLookupFailureWritesNoUnverifiedReport(t *testing.T) {
 	child := sink.Child(rows[0].ChildAgentID)
 
 	sink.LookupErr = errors.New("registry read failed")
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "task-call", Status: bgtask.StatusCompleted, CloseRow: true,
 		Mode: ModeCloseOnly, ReportID: "call-1", Report: agent.SubagentReport{Text: "Unverified report"},
 	})
@@ -298,13 +298,13 @@ func TestACP_SpawnToolCallOpensNoSpan(t *testing.T) {
 	}
 	b := &Base{sink: agent.NewProviderServices(sink), hooks: Hooks{SubagentFromToolCall: detector}}
 
-	b.handleToolCall(json.RawMessage(`{"toolCallId":"call-spawn","kind":"other","title":"explore","rawInput":{"prompt":"go"}}`))
+	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-spawn","kind":"other","title":"explore","rawInput":{"prompt":"go"}}`))
 	assert.Empty(t, sink.OpenSpans(), "a spawn opens no span")
 	assert.Empty(t, sink.ReservedColorSpans(), "and reserves no color")
 	assert.Equal(t, "other", sink.GetSpanType("call-spawn"),
 		"the span type is still recorded for the closing update")
 
-	b.handleToolCall(json.RawMessage(`{"toolCallId":"call-plain","kind":"read","title":"Read","rawInput":{"path":"/tmp/a"}}`))
+	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-plain","kind":"read","title":"Read","rawInput":{"path":"/tmp/a"}}`))
 	open := sink.OpenSpans()
 	require.Len(t, open, 1, "an ordinary tool call still opens a span")
 	assert.Equal(t, "call-plain", open[0].SpanID)

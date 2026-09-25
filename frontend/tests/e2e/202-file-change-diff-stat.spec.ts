@@ -2,7 +2,7 @@ import type { Locator } from '@playwright/test'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest, expect } from './codex-fixtures'
 import { bashToolCall, editToolCall } from './helpers/providerToolCalls'
-import { sendMessage, waitForAgentIdle } from './helpers/ui'
+import { fileChangeRow, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 /**
  * The file-change statistics badge, on one file and on several.
@@ -28,21 +28,6 @@ async function badgePresentation(badge: Locator) {
       gap: previousBox ? Math.round((box.left - previousBox.right) * 100) / 100 : null,
     }
   })
-}
-
-/**
- * The file-change row that names `path`.
- *
- * Both filters are load-bearing. `has` keeps the badge-carrying row: the user
- * prompt names the same file and comes first, so a text filter alone returns a
- * row with no badge in it. `:visible` keeps the on-screen copy, because ChatView
- * renders every unmeasured row twice.
- */
-function changeRow(page: Parameters<typeof sendMessage>[0], path: string) {
-  return page.locator('[data-seq]:visible')
-    .filter({ has: page.getByTestId('git-diff-stats') })
-    .filter({ hasText: path })
-    .first()
 }
 
 codexTest('file-change statistics keep one presentation for one file and multiple files', async ({ page, authenticatedCodexWorkspace, modelScript }) => {
@@ -83,8 +68,8 @@ codexTest('file-change statistics keep one presentation for one file and multipl
   await modelScript.waitForSteps()
   await waitForAgentIdle(page)
 
-  const single = await badgePresentation(changeRow(page, 'single.ts').getByTestId('git-diff-stats').first())
-  const multiple = await badgePresentation(changeRow(page, 'first.ts').getByTestId('git-diff-stats').first())
+  const single = await badgePresentation(fileChangeRow(page, 'single.ts').getByTestId('git-diff-stats').first())
+  const multiple = await badgePresentation(fileChangeRow(page, 'first.ts').getByTestId('git-diff-stats').first())
 
   expect(single).toEqual(multiple)
   expect(single.titleGap).not.toBe('normal')

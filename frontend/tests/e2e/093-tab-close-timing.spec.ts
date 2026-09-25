@@ -2,13 +2,15 @@
 /**
  * Measures the end-to-end latency of closing an agent tab and produces a
  * phase-by-phase timeline breakdown. Complements
- * `121-claude-agent-open-timing.spec.ts`.
+ * `090-claude-agent-open-timing.spec.ts`.
  *
  * Instrumentation:
  *   - Browser: `leapmux:rpc-send` / `leapmux:rpc-recv` CustomEvents
  *     from `src/api/workerRpc.ts` (gated on `LEAPMUX_DEV`, enabled by
  *     the e2e runner) plus a MutationObserver for tab / dialog
- *     timestamps.
+ *     timestamps. The hub of this spec starts after the shared one, so
+ *     it must run the binary of this run, not a later rebuild at the
+ *     repository root. See `helpers/runBinary.ts`.
  *   - Worker: `LEAPMUX_TRACE_TAB_CLOSE=1` makes
  *     `backend/internal/worker/service/tabclosetrace.go` emit
  *     `marker=tab_close_timing` slog lines for the inspect RPC's inner
@@ -46,6 +48,9 @@ import {
 } from './helpers/worktree'
 
 // ─── Browser instrumentation ──────────────────────────────────────────
+
+/** The RPC that closes a tab: CloseAgent for an agent tab, CloseTerminal for a terminal tab. */
+const CLOSE_RPC_METHOD = /^Close(?:Agent|Terminal)$/
 
 interface TimingWindow {
   __rpcMarks?: RpcMark[]
@@ -177,10 +182,11 @@ async function captureCloseTimeline(
   attachName: string,
   extra: PhaseMark[] = [],
 ): Promise<RawMarks> {
-  await expect.poll(async () => {
-    const r = await snapshotMarks(page)
-    return r.rpcMarks.some(m => m.type === 'rpc-recv' && (m.method === 'CloseAgent' || m.method === 'CloseTerminal'))
-  }).toBeTruthy()
+  // Poll the marks themselves, so a timeout prints what the browser reported.
+  // An empty list means that the served frontend emits no RPC marks at all: it
+  // was built without LEAPMUX_DEV=1.
+  await expect.poll(async () => (await snapshotMarks(page)).rpcMarks)
+    .toContainEqual(expect.objectContaining({ type: 'rpc-recv', method: expect.stringMatching(CLOSE_RPC_METHOD) }))
   await expect.poll(() => findClosedTabID(srv.logLines, logsBefore) !== null).toBeTruthy()
   const closedTabID = findClosedTabID(srv.logLines, logsBefore)!
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildAllowResponse, buildControlResponseEnvelope, buildDenyResponse, CONTROL_REJECTED_BY_USER_MESSAGE, decodeControlBehaviorEnvelope, decodeControlResponseBehavior, normalizeRejectionMessage } from './controlResponse'
+import { buildAllowResponse, buildControlResponseEnvelope, buildDenyResponse, CONTROL_REJECTED_BY_USER_MESSAGE, decodeControlBehaviorEnvelope, decodeControlResponseBehavior, normalizeRejectionMessage, withControlChoice } from './controlResponse'
 
 // Reach the deny reason nested in the control_response envelope:
 // { response: { response: { behavior, message } } }.
@@ -56,6 +56,53 @@ describe('buildControlResponseEnvelope', () => {
       .toEqual(buildControlResponseEnvelope('req-8', { behavior: 'allow', updatedInput: { path: '/tmp/a' } }))
     expect(buildDenyResponse('req-8', 'no'))
       .toEqual(buildControlResponseEnvelope('req-8', { behavior: 'deny', message: 'no' }))
+  })
+})
+
+describe('withControlChoice', () => {
+  it('adds the choice beside the behavior and keeps every other field', () => {
+    const envelope = buildControlResponseEnvelope('req-1', { behavior: 'allow', updatedInput: { a: 1 } })
+    expect(withControlChoice(envelope, 'Option A')).toStrictEqual({
+      type: 'control_response',
+      response: { subtype: 'success', request_id: 'req-1', response: { behavior: 'allow', updatedInput: { a: 1 }, choice: 'Option A' } },
+    })
+  })
+
+  it('does not change its input', () => {
+    const envelope = buildDenyResponse('req-1')
+    const before = JSON.stringify(envelope)
+    withControlChoice(envelope, 'Revise')
+    expect(JSON.stringify(envelope)).toBe(before)
+  })
+
+  it('replaces a choice the envelope already carries', () => {
+    const envelope = withControlChoice(buildDenyResponse('req-1'), 'Revise')
+    expect(withControlChoice(envelope, 'Reject and Exit')).toMatchObject({ response: { response: { choice: 'Reject and Exit' } } })
+  })
+
+  it('builds the nested objects an envelope lacks', () => {
+    expect(withControlChoice({}, 'x')).toStrictEqual({ response: { response: { choice: 'x' } } })
+  })
+
+  // Only an object can carry the choice. A null, an array or a string in either
+  // level is replaced rather than spread, which would put its indexes beside the
+  // choice or drop the choice.
+  it.each([
+    ['null', null],
+    ['an array', ['a', 'b']],
+    ['a string', 'ok'],
+  ])('replaces an outer response that holds %s', (_shape, response) => {
+    expect(withControlChoice({ type: 'control_response', response }, 'x'))
+      .toStrictEqual({ type: 'control_response', response: { response: { choice: 'x' } } })
+  })
+
+  it.each([
+    ['null', null],
+    ['an array', ['allow']],
+    ['a string', 'allow'],
+  ])('replaces an inner response that holds %s and keeps the outer fields', (_shape, response) => {
+    expect(withControlChoice({ response: { subtype: 'success', request_id: 'req-1', response } }, 'x'))
+      .toStrictEqual({ response: { subtype: 'success', request_id: 'req-1', response: { choice: 'x' } } })
   })
 })
 

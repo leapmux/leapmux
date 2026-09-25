@@ -3,13 +3,10 @@ package pi
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
-	"github.com/leapmux/leapmux/util/validate"
 )
 
 // piProvider collapses Pi's lifecycle notifications and recognizes
@@ -42,75 +39,21 @@ func (piProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessionQ
 	return piStoredSessions(ctx, q)
 }
 
-// piResumeHandleIsFilePath reports whether a Pi resume handle identifies a session
-// FILE rather than a session ID.
-//
-// The test copies Pi's own resolver (`resolveSessionPath` in pi's main.ts): a
-// separator anywhere, or the `.jsonl` suffix. The two answers must stay
-// identical, because this decides which rule validates a handle and Pi decides
-// which lookup consumes it. A value that one reads as a path and the other as
-// an ID is validated against a rule that does not describe what happens to it.
-func piResumeHandleIsFilePath(handle string) bool {
-	return strings.ContainsAny(handle, `/\`) || strings.HasSuffix(handle, ".jsonl")
-}
-
 // ResolveResumeHandle takes EITHER a session file PATH or a session ID.
 //
 // Pi identifies one session two ways, and `pi --session <path|id>` resolves
 // both: a value that holds a separator or ends in `.jsonl` is a path, and
 // anything else is matched against the session IDs of this working directory.
 // The worker hands the handle to that flag (see `piResumeArgs`), so both shapes
-// are legitimate input here.
+// are legitimate input here. providerkit.ResolveSessionFileOrIDHandle states the
+// two rules and why each shape needs its own; Oh My Pi's `--resume` resolves the
+// same two shapes with the same test.
 //
-// Two shapes need two rules, and each rule refuses the other shape. A path is
-// not a token: a Windows path holds `\`, which the token class bans, and a real
-// Pi session path -- an escaped copy of the working directory plus a
-// timestamped file name -- runs past the 128-byte token cap, so the token rule
-// refused every legitimate session file with "session ID contains invalid
-// characters". An ID is not a path: it is relative by construction, so the path
-// rule refused the identifier Pi itself reports with "path must be absolute".
-//
-// A path is still a value a user pastes into a field, so it is not unchecked:
-// `SanitizePath` answers the traversal, the reserved device name and the
-// absolute-path questions that a path raises, and the byte cap is the token
-// cap's counterpart for the longer shape. The empty handle means "no resume"
-// and is accepted, exactly as the token rule accepts it.
-//
-// The PATH shape returns SanitizePath's result, not the handle. SanitizePath
-// normalizes before it judges -- it drops control characters, trims edge
-// whitespace, expands `~` and cleans the path -- so the string it approved and
-// the string the user typed differ whenever any of those applied. Pi's
-// SessionManager.open does not require the file to exist, so sending the typed
-// string started an EMPTY session at a filename that had a stray control
-// character in it, and the user's conversation was simply gone. Returning the
-// approved string removes the gap rather than restating the rule at the sink.
+// One rule for both refused a legitimate Pi resume: the token rule refused every
+// session file with "session ID contains invalid characters", and the path rule
+// refused the identifier Pi itself reports with "path must be absolute".
 func (piProvider) ResolveResumeHandle(handle, homeDir string) (string, error) {
-	if handle == "" {
-		return "", nil
-	}
-	if !piResumeHandleIsFilePath(handle) {
-		if err := validate.ValidateSessionID(handle); err != nil {
-			return "", err
-		}
-		return handle, nil
-	}
-	// Measured before SanitizePath, which expands `~` and can therefore only
-	// make the value longer than what the user typed.
-	if len(handle) > contracts.SessionFilePathByteLimit {
-		return "", fmt.Errorf("session file path: must be at most %d bytes", contracts.SessionFilePathByteLimit)
-	}
-	// An invisible-format character survives SanitizePath -- U+200B is Cf, not
-	// a control character -- so a path that carries one would reach Pi and open
-	// a different file. The token rule refuses the same class, and refusing it
-	// here keeps one answer for both shapes of one field.
-	if err := validate.RefuseInvisibleSessionChars(handle); err != nil {
-		return "", fmt.Errorf("session file path: %w", err)
-	}
-	sanitized, err := validate.SanitizePath(handle, homeDir)
-	if err != nil {
-		return "", fmt.Errorf("session file path: %w", err)
-	}
-	return sanitized, nil
+	return providerkit.ResolveSessionFileOrIDHandle(handle, homeDir)
 }
 
 func (piProvider) Classify(raw json.RawMessage) agent.NotificationClassification {

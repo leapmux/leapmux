@@ -13,13 +13,34 @@ import (
 // a check at the end of every turn re-tests until the condition holds.
 //
 // Several command-line interfaces (CLIs) have this feature and use different
-// wire shapes. LeapMux reads structured reports from Codex, ZCode, Claude Code,
-// and Reasonix. It observes delivered goal commands for Claude Code, Goose,
-// and Copilot. Cursor exposes no client-write route.
+// wire shapes. LeapMux reads structured reports from these CLIs:
+//
+//   - Codex.
+//   - ZCode.
+//   - Claude Code.
+//   - GitHub Copilot.
+//   - Pi.
+//   - Reasonix.
+//   - Codewhale.
+//   - Kimi Code.
+//   - MiMo Code.
+//   - Qwen Code.
+//   - Grok Build.
+//   - Kiro, which runs its goal as a workflow and reports the workflow.
+//   - Oh My Pi, which reports its goal and takes no change.
+//
+// It observes delivered goal commands for Claude Code, Goose and Kilo, whose
+// goal changes travel as a message. Cursor and OpenCode have no goal.
 //
 // There is at most ONE goal per agent, because every one of those CLIs enforces
-// that itself: Codex keys thread_goals by thread_id, ZCode keys its target by
-// sessionID, Claude Code holds a single activeGoal. Nothing here is a list.
+// that itself:
+//
+//   - Codex keys thread_goals by thread_id.
+//   - ZCode keys its target by sessionID.
+//   - Claude Code holds a single activeGoal.
+//   - MiMo Code keys its goals by session ID.
+//
+// Nothing here is a list.
 
 // GoalStatus is the neutral status: a DEFINED type over
 // leapmuxv1.AgentGoalStatus, so this package, the agents.goal_status column and
@@ -36,9 +57,13 @@ const (
 	GoalStatusNone   = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_UNSPECIFIED)
 	GoalStatusActive = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_ACTIVE)
 	GoalStatusPaused = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_PAUSED)
-	// GoalStatusBlocked is "not progressing, needs the user": Codex's blocked,
-	// usageLimited and budgetLimited; ZCode's notSatisfied and failed;
-	// Reasonix's blocked and stopped.
+	// GoalStatusBlocked is "not progressing, needs the user":
+	//
+	//   - Codex's blocked, usageLimited and budgetLimited.
+	//   - ZCode's notSatisfied and failed.
+	//   - Reasonix's blocked and stopped.
+	//   - MiMo Code's impossible verdict, its re-entry limit, and a judge that
+	//     failed.
 	GoalStatusBlocked = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_BLOCKED)
 	GoalStatusDone    = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_DONE)
 	// GoalStatusDormant means the objective is stored but no live process pursues it.
@@ -246,9 +271,11 @@ type GoalCapable interface {
 
 // GoalOutcome is what one goal action left for the caller to do.
 //
-// A side-band provider performed the action, and returns the zero value. A
-// text-route provider built a user message that changes nothing until the
-// durable input queue delivers it, and returns it in QueuedInput.
+// A side-band provider performed the action, and returns the zero value. The
+// exception is an action whose side-band command starts no turn: Kimi Code's
+// set returns the objective, which starts the work. A text-route provider
+// built a user message that changes nothing until the durable input queue
+// delivers it, and returns it in QueuedInput.
 type GoalOutcome struct {
 	// QueuedInput is an explicit provider command that the caller must enqueue.
 	// Empty means the action already took effect. Never use an ordinary prompt
@@ -265,11 +292,29 @@ type GoalOutcome struct {
 //   - Codex and ZCode have a real side-band command (thread/goal/set,
 //     session/goal). A set starts a turn for both providers. ZCode pause also
 //     stops the current turn. They perform all four actions at once.
-//   - Claude Code, Goose, and Copilot have only a user-message command. They
+//   - GitHub Copilot invokes its native autopilot command as a side-band RPC.
+//     Its Clear has no command: it disposes the session and opens it again.
+//   - Codewhale writes the goal through its REST route. A set starts a kickoff
+//     turn itself. The runtime has no Pause and no Resume.
+//   - Kimi Code writes the goal through its session profile. Creating a goal
+//     starts no turn, so a set also returns the objective as QueuedInput.
+//   - Claude Code, Goose, and Kilo have only a user-message command. They
 //     return it as QueuedInput, and observe it after the queue delivers it.
 //     GoalTextCommander is how they build and observe that text.
+//   - Qwen Code and Grok Build also have only a user-message command, returned
+//     as QueuedInput. They do not observe it: their own goal report states
+//     what the command did.
+//   - Pi writes the command of its goal extension to the process directly.
 //   - Reasonix sets its mode and submits the objective under one session lock.
 //     Normal mode clears its goal. ACP provides no Pause or Resume operation.
+//   - MiMo Code has a goal command on its HTTP command route. A set starts a
+//     turn whose prompt is the objective. MiMo has no Pause and no Resume.
+//   - Kiro sets its goal with a user-message command, returned as QueuedInput,
+//     and runs the goal as a workflow. The workflow's own requests clear,
+//     pause and resume it, so those three need the id of a run that Kiro
+//     reported.
+//   - Oh My Pi reports its goal and implements no GoalWriter: no RPC command
+//     reaches its goal runtime.
 //
 // SupportedGoalActions is what the browser reads to disable a control, so it
 // lives on the same interface as the implementations and cannot drift from

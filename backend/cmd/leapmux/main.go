@@ -12,6 +12,7 @@ import (
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/util/version"
+	"github.com/leapmux/leapmux/worker"
 )
 
 // topLevelCommand is one row of `leapmux --help` and one candidate for the
@@ -84,6 +85,12 @@ type cliRunners struct {
 }
 
 func main() {
+	// A provider's CLI can start this executable as a helper, with no argument
+	// (see worker.RunAgentHelper). The check comes before logging.Setup: the
+	// helper's stderr reaches that CLI as a message, and a log line must not.
+	if code, handled := worker.RunAgentHelper(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); handled {
+		os.Exit(code)
+	}
 	logging.Setup()
 	os.Exit(runCLI(os.Args[1:], os.Stdout, os.Stderr, cliRunners{
 		runHub:     runHub,

@@ -115,6 +115,9 @@ describe('createSpanIndex', () => {
     AgentProvider.KILO,
     AgentProvider.CURSOR,
     AgentProvider.GOOSE,
+    AgentProvider.GROK_BUILD,
+    AgentProvider.KIRO,
+    AgentProvider.QWEN_CODE,
     AgentProvider.REASONIX,
   ])('pairs ACP provider %s by role when its result arrives first', (agentProvider) => {
     const idx = createSpanIndex()

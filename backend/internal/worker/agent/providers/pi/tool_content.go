@@ -1,10 +1,10 @@
 package pi
 
 import (
-	"bytes"
 	"encoding/json"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/jsonfield"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
@@ -177,7 +177,7 @@ func resolvePiIncompleteTool(content agent.MessageContent) []byte {
 	}
 	// Resolving an already-resolved frame must return the SAME bytes, so a caller
 	// that resolves twice does not allocate a second copy of the row.
-	if jsonEqual(original[contracts.PiResultFieldResult], extra.PartialResult) {
+	if jsonfield.Equal(original[contracts.PiResultFieldResult], extra.PartialResult) {
 		return content.Original
 	}
 	original[contracts.PiResultFieldResult] = extra.PartialResult
@@ -231,22 +231,4 @@ func (piProvider) ResolveProviderData(content agent.MessageContent) []byte {
 		return content.Original
 	}
 	return resolved
-}
-
-// jsonEqual compares two encoded values by their compact form, so a difference in
-// spacing alone does not read as a different value.
-//
-// Two providers ask the same question of their own frames: Pi asks whether a second
-// resolve pass would produce the value it already has, and Codex asks whether an
-// account snapshot moved since the row it wrote. Neither reads a provider's shape, so
-// the helper belongs to no provider.
-func jsonEqual(left, right json.RawMessage) bool {
-	if len(left) == 0 || len(right) == 0 {
-		return len(left) == len(right)
-	}
-	var leftCompact, rightCompact bytes.Buffer
-	if json.Compact(&leftCompact, left) != nil || json.Compact(&rightCompact, right) != nil {
-		return false
-	}
-	return bytes.Equal(leftCompact.Bytes(), rightCompact.Bytes())
 }

@@ -59,6 +59,14 @@ type StoredSessionQuery struct {
 	Getenv func(string) string
 	// Limit caps the returned records. Zero means DefaultStoredSessionLimit.
 	Limit int
+	// Shell and LoginShell are the shell the worker launches agents through, for
+	// a provider whose sessions only its own CLI can list (Amp keeps its threads
+	// on its server, and `amp threads list` is the one reader). The CLI then runs
+	// with the PATH and the login environment the agent itself would get, so the
+	// list comes from the same account. Empty for a caller that states no shell;
+	// such a provider falls back to the platform's default shell.
+	Shell      string
+	LoginShell bool
 }
 
 // Env reads one environment variable through the query's seam.
@@ -90,7 +98,7 @@ func (q StoredSessionQuery) EffectiveLimit() int {
 }
 
 // XDGDataHome resolves the XDG data directory the way the `xdg-basedir` npm
-// package does, which is what OpenCode, Kilo and Goose are built on: it reads
+// package does, which is what OpenCode, Kilo, MiMo Code and Goose are built on: it reads
 // XDG_DATA_HOME and falls back to `~/.local/share` on EVERY platform, macOS
 // included. Resolving to `~/Library/Application Support` there would look more
 // native and find nothing.

@@ -1,0 +1,307 @@
+{
+  "_readme": "Oh My Pi's RPC wire vocabulary (`omp --mode rpc-ui`), for the tables that BOTH the Go provider and the TS renderer plugin read. omp's stream is JSONL: every frame carries a top-level `type`, and a dialog frame carries a `method`, so those strings ARE the dispatch keys on both sides. omp started as a fork of Pi, but its protocol differs from Pi's in its event set, its frame shapes and its tools, so this contract shares no table with pi-protocol.json. `events`, `assistantEvents`, `messageRoles`, `stopReasons`, `dialogMethods`, `extensionMethods`, `toolNames`, `todoStatuses`, `approvalModes`, `approvalDialog`, `dialogResponse`, `frameFields`, `askQuestion` and `askOption` hold omp's own words, so a change to them follows omp. `approvalModes` is the value set of `--approval-mode`, which the worker passes at launch and the browser offers as the permission mode. `approvalDialog` is the title prefix and the two options of omp's tool approval dialog, which the worker matches to find the call it asks about and the browser draws as Approve and Deny. LeapMux owns `askTypes`, `askEnvelope`, `askAnswer` and `supplement`: the worker publishes one question request for a whole `ask` call, because omp asks each question through its own chain of dialogs, and the browser answers that request with one answer envelope, which the worker turns back into the chain. `supplement` holds the keys of the envelope that a tool call keeps beside its own start frame when its turn ends before the call does. `customTypes`, `commands` and `asyncJobStates` hold omp's words that both sides read beside those tables: the `customType` of the message that omp injects when a background job finishes, the `compact` command, whose response the worker persists and the browser draws, and the `state` of a background job that still runs. The rest of the Go-only vocabulary (the other `Command*` names that the worker writes to stdin, and the dialog labels that the question bridge answers with) stays in providers/ohmypi/protocol.go, per the contracts rule's one-side-only exemption.",
+  "events": {
+    "Ready": "ready",
+    "RpcChunk": "rpc_chunk",
+    "RpcFrameError": "rpc_frame_error",
+    "Response": "response",
+    "PromptResult": "prompt_result",
+    "AgentStart": "agent_start",
+    "AgentEnd": "agent_end",
+    "TurnStart": "turn_start",
+    "TurnEnd": "turn_end",
+    "MessageStart": "message_start",
+    "MessageUpdate": "message_update",
+    "MessageEnd": "message_end",
+    "ToolExecutionStart": "tool_execution_start",
+    "ToolExecutionUpdate": "tool_execution_update",
+    "ToolExecutionEnd": "tool_execution_end",
+    "ToolStreamUpdate": "tool_stream_update",
+    "ExtensionUIRequest": "extension_ui_request",
+    "ExtensionUIResponse": "extension_ui_response",
+    "ExtensionError": "extension_error",
+    "AutoCompactionStart": "auto_compaction_start",
+    "AutoCompactionEnd": "auto_compaction_end",
+    "AutoRetryStart": "auto_retry_start",
+    "AutoRetryEnd": "auto_retry_end",
+    "RetryFallbackApplied": "retry_fallback_applied",
+    "RetryFallbackSucceeded": "retry_fallback_succeeded",
+    "Notice": "notice",
+    "CommandOutput": "command_output",
+    "TodoReminder": "todo_reminder",
+    "TodoAutoClear": "todo_auto_clear",
+    "IrcMessage": "irc_message",
+    "GoalUpdated": "goal_updated",
+    "ModelChanged": "model_changed",
+    "ThinkingLevelChanged": "thinking_level_changed",
+    "ConfigUpdate": "config_update",
+    "SubagentLifecycle": "subagent_lifecycle",
+    "SubagentProgress": "subagent_progress",
+    "SubagentEvent": "subagent_event",
+    "AvailableCommandsUpdate": "available_commands_update",
+    "SessionInfoUpdate": "session_info_update",
+    "TtsrTriggered": "ttsr_triggered",
+    "AdvisorCostChanged": "advisor_cost_changed",
+    "AdvisorYielded": "advisor_yielded",
+    "ConfigWarningsChanged": "config_warnings_changed",
+    "HostToolCall": "host_tool_call",
+    "HostToolCancel": "host_tool_cancel",
+    "HostUriRequest": "host_uri_request",
+    "HostUriCancel": "host_uri_cancel"
+  },
+  "assistantEvents": {
+    "TextDelta": "text_delta",
+    "ThinkingDelta": "thinking_delta"
+  },
+  "messageRoles": {
+    "User": "user",
+    "Assistant": "assistant",
+    "ToolResult": "toolResult",
+    "Custom": "custom",
+    "BashExecution": "bashExecution"
+  },
+  "stopReasons": {
+    "Length": "length",
+    "Aborted": "aborted",
+    "Error": "error"
+  },
+  "dialogMethods": {
+    "Select": "select",
+    "Confirm": "confirm",
+    "Input": "input",
+    "Editor": "editor"
+  },
+  "extensionMethods": {
+    "Notify": "notify",
+    "Cancel": "cancel",
+    "SetStatus": "setStatus",
+    "SetWidget": "setWidget",
+    "SetTitle": "setTitle",
+    "SetEditorText": "set_editor_text",
+    "OpenURL": "open_url"
+  },
+  "toolNames": {
+    "Read": "read",
+    "Bash": "bash",
+    "Edit": "edit",
+    "ApplyPatch": "apply_patch",
+    "Write": "write",
+    "Glob": "glob",
+    "Grep": "grep",
+    "Find": "find",
+    "AstGrep": "ast_grep",
+    "Eval": "eval",
+    "Task": "task",
+    "Hub": "hub",
+    "Todo": "todo",
+    "WebSearch": "web_search",
+    "Ask": "ask",
+    "Yield": "yield",
+    "Goal": "goal",
+    "Think": "think"
+  },
+  "todoStatuses": {
+    "Pending": "pending",
+    "InProgress": "in_progress",
+    "Completed": "completed",
+    "Abandoned": "abandoned",
+    "Blocked": "blocked"
+  },
+  "approvalModes": {
+    "AlwaysAsk": "always-ask",
+    "Write": "write",
+    "Yolo": "yolo"
+  },
+  "dialogResponse": {
+    "Type": "type",
+    "ID": "id",
+    "Value": "value",
+    "Confirmed": "confirmed",
+    "Cancelled": "cancelled"
+  },
+  "approvalDialog": {
+    "TitlePrefix": "Allow tool: ",
+    "Approve": "Approve",
+    "Deny": "Deny"
+  },
+  "frameFields": {
+    "ToolCallID": "toolCallId",
+    "ToolName": "toolName",
+    "Args": "args",
+    "Result": "result",
+    "PartialResult": "partialResult",
+    "Details": "details"
+  },
+  "askQuestion": {
+    "ID": "id",
+    "Question": "question",
+    "Header": "header",
+    "Options": "options",
+    "Multi": "multi",
+    "Recommended": "recommended"
+  },
+  "askOption": {
+    "Label": "label",
+    "Description": "description",
+    "Preview": "preview"
+  },
+  "askTypes": {
+    "Request": "leapmux_ask",
+    "Answer": "leapmux_ask_answer"
+  },
+  "askEnvelope": {
+    "Type": "type",
+    "ID": "id",
+    "Questions": "questions",
+    "Answers": "answers"
+  },
+  "askAnswer": {
+    "ID": "id",
+    "Selected": "selected",
+    "Custom": "custom"
+  },
+  "supplement": {
+    "ToolCallID": "toolCallId",
+    "ToolName": "toolName",
+    "PartialResult": "partialResult"
+  },
+  "customTypes": {
+    "AsyncResult": "async-result"
+  },
+  "commands": {
+    "Compact": "compact"
+  },
+  "asyncJobStates": {
+    "Running": "running"
+  },
+  "structs": {
+    "OhMyPiAskOption": {
+      "doc": "OhMyPiAskOption is one option of one question of an `ask` call, in omp's own\nargument shape.",
+      "table": "askOption",
+      "fields": [
+        {
+          "key": "Label",
+          "type": "string"
+        },
+        {
+          "key": "Description",
+          "type": "string",
+          "omitempty": true
+        },
+        {
+          "key": "Preview",
+          "type": "string",
+          "omitempty": true
+        }
+      ]
+    },
+    "OhMyPiAskQuestion": {
+      "doc": "OhMyPiAskQuestion is one question of an `ask` call, in omp's own argument shape.\n\n`Recommended` is a POINTER, because the first option and no recommendation are\ndifferent answers.",
+      "table": "askQuestion",
+      "fields": [
+        {
+          "key": "ID",
+          "type": "string"
+        },
+        {
+          "key": "Question",
+          "type": "string"
+        },
+        {
+          "key": "Header",
+          "type": "string",
+          "omitempty": true
+        },
+        {
+          "key": "Options",
+          "type": "[]#OhMyPiAskOption"
+        },
+        {
+          "key": "Multi",
+          "type": "bool",
+          "omitempty": true
+        },
+        {
+          "key": "Recommended",
+          "type": "*int",
+          "omitempty": true
+        }
+      ]
+    },
+    "OhMyPiAskRequest": {
+      "doc": "OhMyPiAskRequest is the ONE control request that the worker publishes for a whole\n`ask` call.\n\nomp asks each question through its own chain of select and editor dialogs, and the\nfirst dialog arrives before the call's tool_execution_start. The request carries the\nquestions of the call, which the assistant message stated, under the id of that\nfirst dialog.",
+      "table": "askEnvelope",
+      "fields": [
+        {
+          "key": "Type",
+          "type": "string"
+        },
+        {
+          "key": "ID",
+          "type": "string"
+        },
+        {
+          "key": "Questions",
+          "type": "[]#OhMyPiAskQuestion"
+        }
+      ]
+    },
+    "OhMyPiAskQuestionAnswer": {
+      "doc": "OhMyPiAskQuestionAnswer is the reader's answer to one question: the option labels\nthey chose, and the text they typed.",
+      "table": "askAnswer",
+      "fields": [
+        {
+          "key": "ID",
+          "type": "string"
+        },
+        {
+          "key": "Selected",
+          "type": "[]string",
+          "omitempty": true
+        },
+        {
+          "key": "Custom",
+          "type": "string",
+          "omitempty": true
+        }
+      ]
+    },
+    "OhMyPiAskAnswer": {
+      "doc": "OhMyPiAskAnswer is the browser's answer to an OhMyPiAskRequest: one answer for\neach question, under the id of the request.",
+      "table": "askEnvelope",
+      "fields": [
+        {
+          "key": "Type",
+          "type": "string"
+        },
+        {
+          "key": "ID",
+          "type": "string"
+        },
+        {
+          "key": "Answers",
+          "type": "[]#OhMyPiAskQuestionAnswer"
+        }
+      ]
+    },
+    "OhMyPiIncompleteToolSupplement": {
+      "doc": "OhMyPiIncompleteToolSupplement is the partial result a tool call reported before\nits turn ended.\n\nomp puts a call's result on its tool_execution_end frame and sends none when the\nturn ends first, so the last tool_execution_update is the only copy.",
+      "table": "supplement",
+      "fields": [
+        {
+          "key": "ToolCallID",
+          "type": "string"
+        },
+        {
+          "key": "ToolName",
+          "type": "string"
+        },
+        {
+          "key": "PartialResult",
+          "type": "json.RawMessage",
+          "omitempty": true
+        }
+      ]
+    }
+  }
+}

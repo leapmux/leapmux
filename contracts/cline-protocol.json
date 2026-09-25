@@ -1,0 +1,156 @@
+{
+  "_readme": "Cline's hub WebSocket vocabulary (protocol v1, the daemon that `CLINE_RUN_AS_HUB_DAEMON=1 cline` runs), for the tables that BOTH the Go provider and the TS renderer plugin read. The worker persists each transcript row as Cline's own hub event envelope, so the browser plugin dispatches on the same `event` name and reads the same `payload` object (`eventFields`). `events` holds the event names that reach the transcript or the control channel; the worker reads the rest of Cline's events (the deltas, the usage and the session snapshots) alone, and they stay in providers/cline/protocol.go. `tools` holds the tool names both sides dispatch on: the worker opens a subagent row for `spawn_agent`, answers the question executor of `ask_question`, rebuilds the session in Act mode after `switch_to_act_mode`, and streams the output of `run_commands`; the browser draws each one. `toolPrefixes` holds the prefix of the tool that runs a configured agent of `.cline/agents/` (`subagent_<name>_<hash>`): the worker opens a subagent for it as for `spawn_agent`, and the browser draws it as a subagent and warns on its approval. `capabilities` holds the capability name of a question that the hub asks the worker to answer, which both sides recognize in the control request. `runReasons` holds the `reason` of the final event of a run, from which the worker takes the turn's completion and the browser words the turn-end divider. `noticeKinds` and `noticePhases` hold the `metadata.kind` and `metadata.phase` words of a `session.notice` that both sides read: the worker groups the notices of one compaction and of one retry, and the browser words them. `teamRunEvents` holds the `lastEvent.eventType` words of a `team.progress` event for a teammate run, from which the worker keeps the registry rows and the browser words the progress. `approvalReply` and `capabilityReply` are the fields of Cline's own `approval.respond` and `capability.respond` payloads: the worker turns the browser's decision into one of them, stores it as the answer and sends it, and the browser reads the stored answer back to word it. Cline owns every value above except `approvalReply.PermissionMode`. LeapMux owns `permissionModes` (the value set of the permission-mode axis: `plan` and `act` are Cline's own session modes with Cline's own approval policy, and `auto_approve` is Act with every tool approval answered at once), `questionAnswer` (the field of the browser's decision that carries the answer to a question), `declineReasons` (the reason the worker sends Cline for a refusal the user gave no words for, which the browser words as a plain refusal), and `approvalReply.PermissionMode`, which carries the mode that an approved plan switches the session to; the worker strips it before the reply reaches Cline.",
+  "_unread": {
+    "approvalReply": {
+      "ApprovalId": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the browser reads a saved answer next to the request that it answers, which the worker keys by the approval id, so the words of the answer never need the id; the worker writes the id, because Cline's approval.respond takes it"
+      }
+    },
+    "capabilityReply": {
+      "RequestId": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the browser reads a saved answer next to the question that it answers, which the worker keys by the request id, so the words of the answer never need the id; the worker writes the id, because Cline's capability.respond takes it"
+      }
+    }
+  },
+  "eventFields": {
+    "Event": "event",
+    "Payload": "payload"
+  },
+  "events": {
+    "AssistantFinished": "assistant.finished",
+    "AssistantMedia": "assistant.media",
+    "ReasoningFinished": "reasoning.finished",
+    "ToolStarted": "tool.started",
+    "ToolFinished": "tool.finished",
+    "RunCompleted": "run.completed",
+    "RunFailed": "run.failed",
+    "RunAborted": "run.aborted",
+    "SessionNotice": "session.notice",
+    "TeamProgress": "team.progress",
+    "ApprovalRequested": "approval.requested",
+    "CapabilityRequested": "capability.requested"
+  },
+  "tools": {
+    "RunCommands": "run_commands",
+    "SpawnAgent": "spawn_agent",
+    "AskQuestion": "ask_question",
+    "SwitchToActMode": "switch_to_act_mode"
+  },
+  "toolPrefixes": {
+    "ConfiguredAgent": "subagent_"
+  },
+  "capabilities": {
+    "AskQuestion": "tool_executor.askQuestion"
+  },
+  "runReasons": {
+    "Completed": "completed",
+    "MaxIterations": "max_iterations",
+    "Aborted": "aborted",
+    "MistakeLimit": "mistake_limit",
+    "Error": "error"
+  },
+  "noticeKinds": {
+    "AutoCompaction": "auto_compaction",
+    "ManualCompaction": "manual_compaction",
+    "OverflowRecoveryCompaction": "overflow_recovery_compaction",
+    "CompactionBudgetEmergency": "compaction_budget_emergency",
+    "ContextOverflowRecovery": "context_overflow_recovery",
+    "ProviderErrorRetry": "provider_error_retry",
+    "MaxTokensRecovery": "max_tokens_recovery"
+  },
+  "noticePhases": {
+    "Started": "started",
+    "Completed": "completed",
+    "Skipped": "skipped",
+    "Failed": "failed"
+  },
+  "teamRunEvents": {
+    "RunQueued": "run_queued",
+    "RunStarted": "run_started",
+    "RunCompleted": "run_completed",
+    "RunFailed": "run_failed",
+    "RunCancelled": "run_cancelled",
+    "RunInterrupted": "run_interrupted"
+  },
+  "permissionModes": {
+    "Plan": "plan",
+    "Act": "act",
+    "AutoApprove": "auto_approve"
+  },
+  "questionAnswer": {
+    "Answer": "answer"
+  },
+  "declineReasons": {
+    "Tool": "The user declined this tool call.",
+    "Question": "The user declined to answer the question."
+  },
+  "approvalReply": {
+    "ApprovalId": "approvalId",
+    "Approved": "approved",
+    "Reason": "reason",
+    "PermissionMode": "permissionMode"
+  },
+  "capabilityReply": {
+    "RequestId": "requestId",
+    "Ok": "ok",
+    "Payload": "payload",
+    "Result": "result",
+    "Error": "error"
+  },
+  "structs": {
+    "ClineApprovalReply": {
+      "doc": "The answer to one tool approval, as the worker stores it and as Cline's approval.respond takes it. Reason is the user's refusal text, which reaches the model as the tool's error. PermissionMode is LeapMux's own: it states the mode that an approved plan switches to, and the worker strips it before it sends the reply.",
+      "table": "approvalReply",
+      "fields": [
+        {
+          "key": "ApprovalId",
+          "type": "string"
+        },
+        {
+          "key": "Approved",
+          "type": "bool"
+        },
+        {
+          "key": "Reason",
+          "type": "string",
+          "omitempty": true
+        },
+        {
+          "key": "PermissionMode",
+          "type": "string",
+          "omitempty": true
+        }
+      ]
+    },
+    "ClineCapabilityReply": {
+      "doc": "The answer to one capability request, as the worker stores it and as Cline's capability.respond takes it. A question's answer is the `result` field of Payload; a refusal is Ok false with Error and no Payload.",
+      "table": "capabilityReply",
+      "fields": [
+        {
+          "key": "RequestId",
+          "type": "string"
+        },
+        {
+          "key": "Ok",
+          "type": "bool"
+        },
+        {
+          "key": "Payload",
+          "type": "json.RawMessage",
+          "omitempty": true
+        },
+        {
+          "key": "Error",
+          "type": "string",
+          "omitempty": true
+        }
+      ]
+    }
+  }
+}

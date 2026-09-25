@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -48,6 +50,17 @@ func queueAttachments(attachments []*leapmuxv1.Attachment) []inputqueue.Attachme
 		}
 	}
 	return result
+}
+
+// droppedInputID is the queue item id of the input that a provider dropped. It
+// derives from the drop, so a repeat of one drop gives the same item and the
+// queue adds nothing. The id also becomes the transcript message id, which is
+// unique across the Worker, so the agent id is part of the hash. The length
+// prefix keeps each pair of ids apart: no separator is safe, because a drop id
+// is the provider's own text.
+func droppedInputID(agentID, dropID string) string {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%d:%s%s", len(agentID), agentID, dropID))
+	return "dropped-" + hex.EncodeToString(sum[:16])
 }
 
 func providerAttachments(attachments []inputqueue.Attachment) []*leapmuxv1.Attachment {

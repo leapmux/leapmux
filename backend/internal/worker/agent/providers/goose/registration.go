@@ -8,11 +8,10 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
 
-// Goose exposes these server-driven option IDs before the daemon starts.
-const (
-	ConfigThinkingEffort = "thinking_effort"
-	ConfigProvider       = "provider"
-)
+// ConfigProvider is the server-driven option id of the LLM provider behind a
+// Goose model. Goose exposes it before the daemon starts, as it exposes its
+// reasoning axis, contracts.GooseConfigThinkingEffort.
+const ConfigProvider = "provider"
 
 // fallbackGooseCLIModes lists Goose's modes in Goose's own order, then applies the same
 // preferred-first rule the live catalog applies. Ordering here rather than hand-writing
@@ -48,7 +47,7 @@ func Registration() agent.Registration {
 		DefaultModels: nil,
 		// model + permissionMode (static group) + Goose's server-driven config options.
 		OptionGroups:        gooseStaticOptionGroups,
-		AdditionalOptionIDs: []string{ConfigThinkingEffort, ConfigProvider},
+		AdditionalOptionIDs: []string{contracts.GooseConfigThinkingEffort, ConfigProvider},
 		PermissionDefaults: agent.PermissionDefaults{
 			// Both halves are Smart Approve. The fallback must NOT be Goose's own `auto`,
 			// which is the mode its bypass shortcut selects: a resumed session with no stored

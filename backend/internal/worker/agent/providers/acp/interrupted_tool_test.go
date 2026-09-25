@@ -41,8 +41,8 @@ func TestACPToolResultAfterAStopReportsTheStop(t *testing.T) {
 			b.Mu.Unlock()
 			b.noteACPInterruptRequested()
 
-			b.handleToolCall(json.RawMessage(`{"toolCallId":"call-1","kind":"execute","title":"Sleep"}`))
-			b.handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-1","status":"` + status + `"}`))
+			b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-1","kind":"execute","title":"Sleep"}`))
+			b.main().handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-1","status":"` + status + `"}`))
 
 			msgs := sink.Messages()
 			require.NotEmpty(t, msgs)
@@ -64,8 +64,8 @@ func TestACPToolResultWithoutAStopKeepsItsOwnOutcome(t *testing.T) {
 	b.promptActive = true
 	b.Mu.Unlock()
 
-	b.handleToolCall(json.RawMessage(`{"toolCallId":"call-1","kind":"execute","title":"Sleep"}`))
-	b.handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-1","status":"failed"}`))
+	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-1","kind":"execute","title":"Sleep"}`))
+	b.main().handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-1","status":"failed"}`))
 
 	msgs := sink.Messages()
 	require.NotEmpty(t, msgs)
@@ -88,8 +88,8 @@ func TestACPInterruptNoteDoesNotOutliveItsTurn(t *testing.T) {
 	// The turn ends, which is where the note is dropped.
 	b.clearActivePrompt()
 
-	b.handleToolCall(json.RawMessage(`{"toolCallId":"call-2","kind":"execute","title":"Later"}`))
-	b.handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-2","status":"failed"}`))
+	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-2","kind":"execute","title":"Later"}`))
+	b.main().handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-2","status":"failed"}`))
 
 	msgs := sink.Messages()
 	require.NotEmpty(t, msgs)
@@ -106,8 +106,8 @@ func TestACPInterruptNoteNeedsARunningTurn(t *testing.T) {
 	b := &Base{sink: agent.NewProviderServices(sink)}
 	b.noteACPInterruptRequested()
 
-	b.handleToolCall(json.RawMessage(`{"toolCallId":"call-3","kind":"execute","title":"Idle"}`))
-	b.handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-3","status":"failed"}`))
+	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-3","kind":"execute","title":"Idle"}`))
+	b.main().handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-3","status":"failed"}`))
 
 	msgs := sink.Messages()
 	require.NotEmpty(t, msgs)
@@ -134,7 +134,7 @@ func TestACPStoppedPromptThatErrorsIsAStop(t *testing.T) {
 	b.Mu.Unlock()
 	b.noteACPInterruptRequested()
 
-	b.handleToolCall(json.RawMessage(`{"toolCallId":"call-1","kind":"execute","title":"Sleep"}`))
+	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-1","kind":"execute","title":"Sleep"}`))
 	b.finishPromptRequest("s1", nil, errors.New("context canceled"))
 
 	msgs := sink.Messages()
@@ -156,7 +156,7 @@ func TestACPPromptThatFailsOnItsOwnIsAnError(t *testing.T) {
 	b.promptActive = true
 	b.Mu.Unlock()
 
-	b.handleToolCall(json.RawMessage(`{"toolCallId":"call-1","kind":"execute","title":"Sleep"}`))
+	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-1","kind":"execute","title":"Sleep"}`))
 	b.finishPromptRequest("s1", nil, errors.New("boom"))
 
 	msgs := sink.Messages()
@@ -183,7 +183,7 @@ func TestACPStoppedPromptResponseReportsTheStop(t *testing.T) {
 	b.Mu.Unlock()
 	b.noteACPInterruptRequested()
 
-	b.handleToolCall(json.RawMessage(`{"toolCallId":"call-1","kind":"execute","title":"Sleep"}`))
+	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-1","kind":"execute","title":"Sleep"}`))
 	b.handleACPPromptResponse(json.RawMessage(`{"stopReason":"cancelled"}`))
 
 	var tool agenttest.Message
@@ -206,7 +206,7 @@ func TestACPPromptResponseWithoutAStopKeepsTheError(t *testing.T) {
 	b.promptActive = true
 	b.Mu.Unlock()
 
-	b.handleToolCall(json.RawMessage(`{"toolCallId":"call-1","kind":"execute","title":"Sleep"}`))
+	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-1","kind":"execute","title":"Sleep"}`))
 	b.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`))
 
 	var tool agenttest.Message

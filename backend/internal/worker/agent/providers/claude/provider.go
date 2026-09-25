@@ -97,9 +97,9 @@ func (claudeProvider) Classify(raw json.RawMessage) agent.NotificationClassifica
 	switch env.Subtype {
 	case "status":
 		return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "claude:system:status"}
-	case "api_retry":
-		return agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "claude:system:api_retry"}
-	case "compact_boundary", "microcompact_boundary":
+	case contracts.ClaudeSystemSubtypeApiRetry:
+		return agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "claude:system:" + contracts.ClaudeSystemSubtypeApiRetry}
+	case contracts.ClaudeSystemSubtypeCompactBoundary, contracts.ClaudeSystemSubtypeMicrocompactBoundary:
 		return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "claude:system:" + env.Subtype}
 	default:
 		return agent.NotificationClassification{}

@@ -165,6 +165,10 @@ func (codexProvider) PermissionModeFromRawInput(string) (string, bool) { return 
 // Multi-Agent V2 rejects direct app-server input for spawned child threads.
 func (codexProvider) SupportsChildSteering() bool { return false }
 
+// SupportsChildInterrupt is true: Multi-Agent V2 interrupts a spawned child
+// thread directly. See InterruptChild in subagent.go.
+func (codexProvider) SupportsChildInterrupt() bool { return true }
+
 // ReportsDefaultModelSentinel is false: Codex stores the sentinel until the
 // thread/start lifecycle response reports a concrete model, and model/list never
 // returns it, so Codex badges the model the CLI itself marks.

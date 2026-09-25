@@ -76,11 +76,16 @@ func (b *Base) dispatchACPSessionUpdate(params json.RawMessage) {
 		slog.Warn("Read ACP session update", "provider", b.ProviderName(), "agent_id", b.AgentID(), "error", err)
 		return
 	}
-	if current := b.CurrentSessionID(); current != "" && wrapper.SessionID != current {
-		slog.Debug("Ignore ACP update from another session", "provider", b.ProviderName(), "agent_id", b.AgentID(), "session_id", wrapper.SessionID)
+	if len(wrapper.Update) == 0 {
 		return
 	}
-	if len(wrapper.Update) == 0 {
+	if current := b.CurrentSessionID(); current != "" && wrapper.SessionID != current {
+		// A subagent that runs in a session of its own reaches its transcript.
+		// Every other session is one this agent no longer serves.
+		if rowKey := b.childSessionRow(wrapper.SessionID); rowKey != "" && b.FeedChildUpdate(rowKey, wrapper.Update) {
+			return
+		}
+		slog.Debug("Ignore ACP update from another session", "provider", b.ProviderName(), "agent_id", b.AgentID(), "session_id", wrapper.SessionID)
 		return
 	}
 	b.handleACPUpdate(wrapper.Update)

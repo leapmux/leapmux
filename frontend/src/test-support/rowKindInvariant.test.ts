@@ -1,9 +1,9 @@
 import type { MessageCategory } from '~/components/chat/messageClassifier'
 import { describe, expect, it } from 'vitest'
 import { classifyMessage } from '~/components/chat/messageClassifier'
-import { providerFor } from '~/components/chat/providers/registry'
-import { input } from '~/components/chat/providers/testUtils'
+import { providerFor, resolveMessageForRendering } from '~/components/chat/providers/registry'
 import { extractChatRow } from '~/components/chat/rowExtraction'
+import { ALL_PROVIDERS } from '~/generated/contracts/providers'
 import { drawnRowKind, ROW_KIND_CASES, ROW_KIND_FOR_CATEGORY } from '~/test-support/rowKindCorpus'
 // Side-effect imports: the sweep below reads every provider out of the registry.
 import '~/components/chat/providers'
@@ -45,10 +45,19 @@ describe('classification and extraction agree on every row kind', () => {
       Boolean(providerFor(provider)),
       'every case but `unsupported_provider` states a registered provider',
     ).toBe(category !== 'unsupported_provider')
+    // The metadata column joins the frame BEFORE the resolution, as it does when the
+    // chat view reads a stored message: the resolution merges the worker's validated
+    // fields into the parent object, and a plugin can read them there.
     const parsed = {
-      ...input(payload, undefined, provider),
+      ...resolveMessageForRendering({
+        rawText: '',
+        topLevel: payload,
+        parentObject: payload,
+        wrapper: null,
+        ...(messageMetadata !== undefined ? { messageMetadata } : {}),
+      }, provider),
+      agentProvider: provider,
       ...(spanType !== undefined ? { spanType } : {}),
-      ...(messageMetadata !== undefined ? { messageMetadata } : {}),
     }
 
     // Half one: the frame really is the shape the corpus claims. Without this the
@@ -70,8 +79,14 @@ describe('classification and extraction agree on every row kind', () => {
   // A corpus of one provider would satisfy every assertion above and still let the
   // next provider's two layers disagree. The pluginless case is excluded, because it
   // states no runtime at all.
-  it('covers more than half the registered providers', () => {
-    const covered = new Set(ROW_KIND_CASES.map(entry => entry.provider).filter(provider => providerFor(provider)))
-    expect(covered.size).toBeGreaterThanOrEqual(6)
+  //
+  // Every provider, not a count: a floor on the count lets a new provider ship with
+  // no case at all.
+  it('covers every registered provider', () => {
+    const covered = new Set(ROW_KIND_CASES.map(entry => entry.provider))
+    expect(ALL_PROVIDERS.filter(provider => providerFor(provider) !== undefined && !covered.has(provider))).toEqual([])
+    // A sweep of an empty registry would find no gap, so the sweep states that it saw
+    // every provider.
+    expect(ALL_PROVIDERS.filter(provider => providerFor(provider) === undefined)).toEqual([])
   })
 })

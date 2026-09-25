@@ -389,9 +389,9 @@ func goalProto(columns GoalColumns) *leapmuxv1.AgentGoal {
 }
 
 // SupportedGoalActions asks the RUNNING agent what it can do. An agent that is
-// not running, or whose provider implements no goal control (Reasonix reports a
-// goal but cannot honestly change one), answers with an empty list, and the
-// browser disables every control.
+// not running, or whose provider implements no goal control (Oh My Pi reports a
+// goal but cannot change one), answers with an empty list, and the browser
+// disables every control.
 func (h *OutputHandler) SupportedGoalActions(agentID string) []leapmuxv1.AgentGoalAction {
 	actions := h.agents.SupportedGoalActions(agentID)
 	if len(actions) == 0 {

@@ -52,9 +52,20 @@ func TestProviderFor_TurnEndToolUses(t *testing.T) {
 		{"pi present", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, `{"num_tool_uses":0}`, true, 0},
 		{"pi absent", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, `{}`, false, 0},
 		{"pi malformed", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, `{`, false, 0},
+		{"codewhale present", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE, `{"event":"turn.completed","num_tool_uses":4}`, true, 4},
+		{"codewhale absent", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE, `{"event":"turn.completed"}`, false, 0},
+		{"codewhale malformed", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE, `{`, false, 0},
+		{"oh my pi present", leapmuxv1.AgentProvider_AGENT_PROVIDER_OH_MY_PI, `{"type":"agent_end","num_tool_uses":4}`, true, 4},
+		{"oh my pi absent", leapmuxv1.AgentProvider_AGENT_PROVIDER_OH_MY_PI, `{"type":"agent_end"}`, false, 0},
+		{"oh my pi malformed", leapmuxv1.AgentProvider_AGENT_PROVIDER_OH_MY_PI, `{`, false, 0},
 		{"acp present", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, `{"num_tool_uses":1}`, true, 1},
 		{"acp absent", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, `{"type":"result"}`, false, 0},
 		{"acp malformed", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, `{`, false, 0},
+		// MiMo's turn end is its idle status, and the worker's own count rides in the
+		// row's metadata, which the merged content states at the top level.
+		{"mimo present", leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, `{"type":"session.status","num_tool_uses":4}`, true, 4},
+		{"mimo absent", leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, `{"type":"session.status"}`, false, 0},
+		{"mimo malformed", leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, `{`, false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			count, ok := registry.Plugin(tc.provider).TurnEndToolUses([]byte(tc.content))
@@ -98,8 +109,32 @@ func TestProviderFor_EndsSubagentTranscript(t *testing.T) {
 		{"codex result-shaped", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, `{"type":"result"}`, false},
 		{"codex turn completed", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, `{"threadId":"child-1","turn":{"id":"t1","status":"completed"}}`, false},
 		{"pi result-shaped", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, `{"type":"result"}`, false},
+		// An omp subagent's agent_end ends one RUN: a message from its parent wakes
+		// it again, and its lifecycle frame is what ends it.
+		{"oh my pi agent_end", leapmuxv1.AgentProvider_AGENT_PROVIDER_OH_MY_PI, `{"type":"agent_end","messages":[]}`, false},
 		{"opencode result-shaped", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, `{"type":"result"}`, false},
 		{"goose result-shaped", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, `{"type":"result"}`, false},
+		// A Codewhale child transcript is read from the runtime's own file and simply
+		// stops; its last record is a message, never a turn end.
+		{"codewhale child message", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE, `{"kind":"message","index":3,"block":0,"message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`, false},
+		// Grok Build and Qwen Code end a child's turn with a frame of their own,
+		// and the child can take another turn, so neither frame ends the subagent.
+		{"grok turn completed", leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD, `{"jsonrpc":"2.0","method":"_x.ai/session_notification","params":{"update":{"sessionUpdate":"turn_completed"}}}`, false},
+		{"qwen end turn", leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE, `{"jsonrpc":"2.0","method":"_qwencode/end_turn","params":{"reason":"end_turn"}}`, false},
+		// Kiro ends a turn that it started by itself with a session_info_update,
+		// and a subagent of it takes no turn marker of its own.
+		{"kiro turn end", leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO, `{"sessionUpdate":"session_info_update","_meta":{"kiro":{"kind":"turn_end","stopReason":"end_turn"}}}`, false},
+		// A MiMo subagent runs turn after turn, and its idle status ends a turn, not
+		// the subagent.
+		{"mimo result-shaped", leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, `{"type":"result"}`, false},
+		{"mimo idle", leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, `{"type":"session.status","properties":{"status":{"type":"idle"}}}`, false},
+		// Amp prints no child transcript, and its result line ends a process, not a
+		// subagent.
+		{"amp result", leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP, `{"type":"result","subtype":"success","is_error":false}`, false},
+		// A Cline child transcript simply stops: its last row is the child's last
+		// message or tool call, and a run's end belongs to the lead.
+		{"cline assistant finished", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE, `{"version":"v1","event":"assistant.finished","payload":{"text":"done"}}`, false},
+		{"cline run completed", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE, `{"version":"v1","event":"run.completed","payload":{"reason":"completed"}}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, registry.Plugin(tc.provider).EndsSubagentTranscript([]byte(tc.content)))
@@ -119,6 +154,9 @@ func TestProviderFor_ACPSharesNoopClassification(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO,
 	} {
 		plugin := registry.Plugin(provider)
 		assert.False(t, plugin.Classify(json.RawMessage(`{"method":"session/cancel"}`)).Consolidatable(),
@@ -147,13 +185,19 @@ func TestProviderFor_IsInterruptIsolatedPerProvider(t *testing.T) {
 		{"codex", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, `{"jsonrpc":"2.0","method":"turn/interrupt"}`},
 		{"pi", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, `{"type":"abort"}`},
 		{"zcode", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, `{"method":"session/stop"}`},
+		{"codewhale", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE, `{"frame":"interrupt"}`},
+		{"kimi", leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE, `{"action":"abort"}`},
+		// omp kept Pi's abort command when it forked, so the two own the SAME frame.
+		{"oh my pi", leapmuxv1.AgentProvider_AGENT_PROVIDER_OH_MY_PI, `{"type":"abort"}`},
 	}
 	for _, c := range cases {
 		plugin := registry.Plugin(c.provider)
 		assert.True(t, plugin.IsInterrupt(c.ownFrame), "%s must accept its own interrupt frame", c.name)
 		// Cross-provider frames must not match.
 		for _, other := range cases {
-			if other.name == c.name {
+			// Two protocols that own byte-identical frames (Pi and Oh My Pi) cannot
+			// be told apart by any classifier, so only DISTINCT frames are compared.
+			if other.name == c.name || other.ownFrame == c.ownFrame {
 				continue
 			}
 			assert.False(t, plugin.IsInterrupt(other.ownFrame),
@@ -161,5 +205,18 @@ func TestProviderFor_IsInterruptIsolatedPerProvider(t *testing.T) {
 		}
 		assert.False(t, plugin.IsInterrupt(`not-json`),
 			"%s plugin must reject malformed input", c.name)
+	}
+
+	// MiMo interrupts over HTTP, Amp with a signal and Cline with a hub command.
+	// None writes a frame, so none recognizes one.
+	for _, provider := range []leapmuxv1.AgentProvider{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE,
+	} {
+		plugin := registry.Plugin(provider)
+		for _, c := range cases {
+			assert.False(t, plugin.IsInterrupt(c.ownFrame), "%v plugin must reject %s's interrupt frame", provider, c.name)
+		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -55,15 +56,17 @@ type piPartialResult struct {
 	Details json.RawMessage `json:"details"`
 }
 
-// piContentBlock is one block of a partial result. Only a block whose Type is
-// ContentBlockText carries output text; the others carry no text at all.
+// piContentBlock is one block of a partial result or of a message's content. A
+// block whose Type is ContentBlockText carries Text, and a block whose Type is
+// ContentBlockThinking carries Thinking. The other types carry neither.
 //
 // It is a NAMED type so piJoinOutputTail can take the slice. The anonymous struct
 // it replaced could not cross a function boundary without a second spelling of the
-// same two fields.
+// same fields.
 type piContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	Thinking string `json:"thinking"`
 }
 
 type piToolState struct {
@@ -94,6 +97,23 @@ type piExtensionUIRequestHeader struct {
 	Text       string          `json:"text"`
 	Lines      json.RawMessage `json:"widgetLines"`
 	Placement  string          `json:"widgetPlacement"`
+	// Timeout is the wait in milliseconds after which Pi answers a dialog itself,
+	// with its default. Zero states no limit.
+	Timeout float64 `json:"timeout"`
+}
+
+// maxPiDialogTimeoutMillis is the largest timeout that a time.Duration holds. A
+// larger one states no limit in practice, and a float conversion past it has no
+// defined result.
+const maxPiDialogTimeoutMillis = float64(math.MaxInt64 / int64(time.Millisecond))
+
+// deadline returns the wait after which Pi answers the dialog itself, or zero
+// when Pi waits with no limit.
+func (h piExtensionUIRequestHeader) deadline() time.Duration {
+	if h.Timeout <= 0 || h.Timeout >= maxPiDialogTimeoutMillis {
+		return 0
+	}
+	return time.Duration(h.Timeout * float64(time.Millisecond))
 }
 
 // piQueueUpdateEnvelope captures the queue depths we surface as session info.
@@ -380,15 +400,73 @@ func (env piAgentEndEnvelope) retainedCompletion() agent.MessageCompletion {
 	return agent.MessageCompletionInterrupted
 }
 
+// handlePiMessageEnd persists one finished message. The thinking of an assistant
+// message becomes a row of its own before it (see persistPiThinking).
 func (a *Agent) handlePiMessageEnd(raw []byte) {
 	content := a.piMessageEndContent(raw)
 	// Update child status from the nested custom message before persisting it.
 	piApplySubagentNotification(a.sink, raw)
+	a.persistPiThinking(raw)
 	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); err != nil {
 		slog.Error("pi persist message_end", "agent_id", a.AgentID(), "error", err)
 		return
 	}
 	a.generationBuffer.Reset()
+}
+
+// persistPiThinking persists the visible thinking of one assistant message as a
+// reasoning row of its own, before the message's own row.
+//
+// Pi states a reasoning model's reply as ONE message whose content holds thinking
+// blocks beside the text blocks and the tool calls. A transcript row draws one kind
+// of text, so a row that drew the message would lose one of the two. The thinking
+// takes LeapMux's assembled-message envelope, which the transcript draws as
+// thinking for every provider, and which the worker already writes for thinking
+// that no message_end completed (flushPiGeneration). The message's own row keeps
+// Pi's frame and the usage, and the browser draws its text alone.
+func (a *Agent) persistPiThinking(raw []byte) {
+	thinking := piMessageThinking(raw)
+	if thinking == "" {
+		return
+	}
+	row, err := agent.MarshalAssembledMessage(agent.AssembledMessageKindReasoning, thinking, agent.MessageCompletionComplete)
+	if err != nil {
+		slog.Error("pi encode thinking", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: row}, agent.SpanInfo{}); err != nil {
+		slog.Error("pi persist thinking", "agent_id", a.AgentID(), "error", err)
+	}
+}
+
+// piMessageThinking joins the visible thinking blocks of an assistant
+// message_end into paragraphs, or returns "" when the frame holds none.
+//
+// A thinking block whose text is blank carries only a signature for the model
+// provider, so it shows nothing. A block that a safety filter redacted carries
+// Pi's placeholder text, which Pi itself shows, so it stays.
+func piMessageThinking(raw []byte) string {
+	var envelope struct {
+		Message struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Message.Role != RoleAssistant {
+		return ""
+	}
+	// A string content holds no blocks, so it holds no thinking.
+	var blocks []piContentBlock
+	if json.Unmarshal(envelope.Message.Content, &blocks) != nil {
+		return ""
+	}
+	parts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type == ContentBlockThinking && strings.TrimSpace(block.Thinking) != "" {
+			parts = append(parts, block.Thinking)
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func (a *Agent) handlePiMessageUpdate(raw []byte) {
@@ -956,6 +1034,19 @@ func (a *Agent) handlePiQueueUpdate(raw []byte) {
 	})
 }
 
+// withdrawTimedOutPiDialog withdraws the card of a dialog that Pi answered itself
+// when its deadline passed. It forgets the dialog's question state, as a
+// cancellation does, so a late answer with its id starts no exchange.
+func (a *Agent) withdrawTimedOutPiDialog(id string) {
+	a.Mu.Lock()
+	if dialog := a.questionDialogs[id]; dialog != nil {
+		delete(a.questionDialogs, id)
+		delete(a.customQuestionAnswers, dialog.Key)
+	}
+	a.Mu.Unlock()
+	a.sink.CancelControlRequest(id)
+}
+
 // handlePiExtensionUIRequest routes a Pi extension_ui_request event to either
 // a control request (dialog methods) or a session-info / notification
 // broadcast (fire-and-forget methods).
@@ -982,7 +1073,13 @@ func (a *Agent) handlePiExtensionUIRequest(raw []byte) {
 		if answered {
 			return
 		}
+		// Pi answers a dialog whose deadline passes itself, with its default, and
+		// tells the host nothing, so the worker withdraws the card when that
+		// deadline passes. The deadline is armed BEFORE the publish, so an answer
+		// that the reader sends at once finds it to disarm.
+		a.dialogDeadlines.Arm(a.deadlineClock(), head.ID, head.deadline(), func() { a.withdrawTimedOutPiDialog(head.ID) })
 		if err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: head.ID, Payload: raw, SourceSeq: a.piControlSourceSeq(question)}); err != nil {
+			a.dialogDeadlines.Disarm(head.ID)
 			slog.Error("publish pi control request", "agent_id", a.AgentID(), "request_id", head.ID, "error", err)
 			// Pi offers cancellation but no error response for extension dialogs.
 			response, marshalErr := json.Marshal(map[string]any{"type": contracts.PiEventExtensionUIResponse, "id": head.ID, "cancelled": true})

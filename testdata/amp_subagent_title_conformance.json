@@ -1,0 +1,32 @@
+{
+  "_readme": [
+    "Cross-language conformance fixture for the title of an Amp subagent call.",
+    "",
+    "WHY THIS FILE EXISTS: the worker titles the call's row in the background-task registry",
+    "(backend/internal/worker/agent/providers/amp/subagent.go, subagentRow), and the browser",
+    "titles the call's card in the transcript (the Amp plugin's ampAgentRequest). The two",
+    "surfaces show one call, so they must show one title. Both suites read this file, so an",
+    "edit of one side alone turns that side's tests red.",
+    "",
+    "THE RULE. A Task call takes its trimmed description, else the first non-blank line of its",
+    "prompt, else the word Subagent. The three specialists take their name, then a colon and",
+    "the first non-blank line of their request: the task of an oracle, and the query of a",
+    "librarian or a finder. A specialist with no request takes its name alone. A line is",
+    "blank when it holds only white space. The cases use spaces, tabs and carriage returns,",
+    "which the trim of each language treats alike."
+  ],
+  "cases": [
+    { "tool": "Task", "input": { "description": "Count Go files", "prompt": "Count the Go files." }, "title": "Count Go files", "why": "a Task takes its description" },
+    { "tool": "Task", "input": { "description": "  Count Go files \t", "prompt": "Count the Go files." }, "title": "Count Go files", "why": "the description is trimmed" },
+    { "tool": "Task", "input": { "description": " ", "prompt": "\n  First line  \nSecond line" }, "title": "First line", "why": "a blank description gives way to the first non-blank line of the prompt" },
+    { "tool": "Task", "input": { "prompt": "\r\nFirst line\r\nSecond line" }, "title": "First line", "why": "a CRLF prompt reads the same" },
+    { "tool": "Task", "input": {}, "title": "Subagent", "why": "a Task with nothing to show is a subagent" },
+    { "tool": "Task", "input": { "description": "", "prompt": " \t \n " }, "title": "Subagent", "why": "blank text states nothing" },
+    { "tool": "oracle", "input": { "task": "Review the lock order", "context": "The deadlock shows in CI." }, "title": "Oracle: Review the lock order", "why": "an oracle states its task" },
+    { "tool": "oracle", "input": { "task": "\nReview the lock order\nthen the tests" }, "title": "Oracle: Review the lock order", "why": "the first non-blank line of the task" },
+    { "tool": "oracle", "input": {}, "title": "Oracle", "why": "a specialist with no request keeps its name" },
+    { "tool": "librarian", "input": { "query": "How does quartz trap timers?" }, "title": "Librarian: How does quartz trap timers?", "why": "a librarian states its query" },
+    { "tool": "finder", "input": { "query": "where the bridge closes" }, "title": "Finder: where the bridge closes", "why": "a finder states its query" },
+    { "tool": "finder", "input": { "query": "   " }, "title": "Finder", "why": "a blank query states nothing" }
+  ]
+}

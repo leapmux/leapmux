@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "grok-protocol.schema.json",
+  "title": "Grok Build extension vocabulary",
+  "description": "Every table is a map from the identifier both languages spell (PascalCase, so the Go constant and the TS key derive from one name) to the literal Grok Build sends or accepts. A table may never be empty: an empty one would emit an enum no dispatch can match.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "methods",
+    "notifications",
+    "meta",
+    "toolNames",
+    "modes",
+    "options",
+    "approvalModes",
+    "planOutcomes",
+    "trustOutcomes",
+    "questionOutcomes",
+    "replyFields",
+    "configIds"
+  ],
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "unread": {
+      "description": "The per-key exemptions this domain states. `contractsAreConsumed.test.mjs` holds every KEY of a table to a reader on each side the table declares. A key one side genuinely never reads states that here: `_unread.<table>.<Key>.sides` lists the sides that skip it, and `.why` says what reads it instead. The key stays in the contract, because the other side still reads it and a rename must still reach that side. An exemption the code no longer needs fails the same test, so a stale one cannot survive.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "pattern": "^[A-Z][A-Za-z0-9]*$"
+        },
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sides",
+            "why"
+          ],
+          "properties": {
+            "sides": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "go",
+                  "ts"
+                ]
+              }
+            },
+            "why": {
+              "type": "string",
+              "minLength": 31
+            }
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "_unread": {
+      "$ref": "#/$defs/unread"
+    },
+    "methods": {
+      "$ref": "#/$defs/table"
+    },
+    "notifications": {
+      "$ref": "#/$defs/table"
+    },
+    "meta": {
+      "$ref": "#/$defs/table"
+    },
+    "toolNames": {
+      "$ref": "#/$defs/table"
+    },
+    "modes": {
+      "$ref": "#/$defs/table"
+    },
+    "options": {
+      "$ref": "#/$defs/table"
+    },
+    "approvalModes": {
+      "$ref": "#/$defs/table"
+    },
+    "planOutcomes": {
+      "$ref": "#/$defs/table"
+    },
+    "trustOutcomes": {
+      "$ref": "#/$defs/table"
+    },
+    "questionOutcomes": {
+      "$ref": "#/$defs/table"
+    },
+    "replyFields": {
+      "$ref": "#/$defs/table"
+    },
+    "configIds": {
+      "$ref": "#/$defs/table"
+    }
+  }
+}

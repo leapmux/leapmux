@@ -2,6 +2,8 @@ import { execFileSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { PROVIDER_FRAME_KINDS } from '~/generated/contracts/provider-frame-kinds'
+import { PROVIDER_WIRE_TOKENS, wireTokenSources } from '../../eslint/providerWireTokens'
 
 // ESLint REPLACES the options of a rule. It never merges them.
 //
@@ -89,6 +91,15 @@ const ALLOWED_ARCHITECTURE_SAMPLES: LintSample[] = [
   { label: 'plugin imported hook factory', file: 'src/components/chat/providers/probe/plugin.ts', source: 'import { related } from \'./spanRole\'\nconst plugin = { transcript: { relatedMessages: related() } }' },
   { label: 'registration factory parameter hook', file: 'src/components/chat/providers/probe/registerProbeProvider.ts', source: 'export function registerProbeProvider(opts: { spanRole: () => string }) {\n  const plugin = { transcript: { spanRole: opts.spanRole } }\n  return plugin\n}' },
   { label: 'imported capability helper', file: 'src/components/chat/auditProbe.ts', source: 'import { agentTabSupportsInterrupt } from \'~/stores/tab.helpers\'\nvoid agentTabSupportsInterrupt(undefined)' },
+  // A wire token matches the whole literal. A word that only CONTAINS a token is not
+  // a token, and a match that lost an anchor would reject it.
+  { label: 'word that starts with a wire token', file: 'src/components/chat/auditProbe.ts', source: 'const key: string = \'item.startedAt\'\nvoid key' },
+  { label: 'word that ends with a wire token', file: 'src/components/chat/auditProbe.ts', source: 'const key: string = \'last.tool.result\'\nvoid key' },
+  // Shared code spells ordinary words for its own meaning, although a provider can send
+  // the same word as a frame kind.
+  { label: 'frame kind that is an ordinary word', file: 'src/components/chat/auditProbe.ts', source: 'const status: string = \'error\'\nvoid status' },
+  { label: 'key under a prefix with an ordinary stem', file: 'src/components/chat/auditProbe.ts', source: 'const key: string = \'model.row\'\nvoid key' },
+  { label: 'path under a namespace with an ordinary stem', file: 'src/components/chat/auditProbe.ts', source: 'const key: string = \'cursor/pointer\'\nvoid key' },
 ]
 
 const PROVIDER_DECISION_SAMPLES: LintSample[] = [
@@ -100,8 +111,87 @@ const PROVIDER_DECISION_SAMPLES: LintSample[] = [
   { label: 'provider switch alias', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nconst selected: AgentProvider = AgentProvider.CODEX\nswitch (selected) { case AgentProvider.CODEX: break }' },
   { label: 'destructured provider comparison', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nconst { CODEX: codex, CLAUDE_CODE: claude } = AgentProvider\nvoid (codex === claude)' },
   { label: 'imported provider helper', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nimport { isCodexProvider } from \'~/test-support/lintFixtures/providerDecision\'\nconst selected: AgentProvider = AgentProvider.CODEX\nvoid isCodexProvider(selected)' },
+  { label: 'grok wire token', file: 'src/components/chat/auditProbe.ts', source: 'void (\'_x.ai/ask_user_question\')' },
+  { label: 'qwen wire token', file: 'src/components/chat/auditProbe.ts', source: 'void (\'_qwencode/end_turn\')' },
+  { label: 'kiro wire token', file: 'src/components/chat/auditProbe.ts', source: 'void (\'_kiro/userInput\')' },
   { label: 'aliased imported provider helper', file: 'src/components/chat/auditProbe.ts', source: 'import { AgentProvider } from \'~/generated/proto/leapmux/v1/agent_pb\'\nimport { isCodexProvider } from \'~/test-support/lintFixtures/providerDecision\'\nconst selected: AgentProvider = AgentProvider.CODEX\nconst matchesProvider = isCodexProvider\nvoid matchesProvider(selected)' },
+  { label: 'bare Kimi Code event type', file: 'src/components/chat/auditProbe.ts', source: 'const type: string = \'tool.call.started\'\nvoid type' },
+  { label: 'bare Kimi Code approval event type', file: 'src/components/chat/auditProbe.ts', source: 'const type: string = `event.approval.requested`\nvoid type' },
+  { label: 'bare MiMo Code event type', file: 'src/components/chat/auditProbe.ts', source: 'const type: string = \'message.part.updated\'\nvoid type' },
+  { label: 'bare Oh My Pi frame type', file: 'src/components/chat/auditProbe.ts', source: 'const type: string = \'subagent_lifecycle\'\nvoid type' },
+  { label: 'bare Codewhale event name', file: 'src/components/chat/auditProbe.ts', source: 'const event: string = \'approval.required\'\nvoid event' },
 ]
+
+/** A bare wire token in shared chat code, which `no-provider-decision` must reject. */
+function wireTokenSample(label: string, token: string): LintSample {
+  const quoted = `'${token.replaceAll('\\', '\\\\').replaceAll('\'', '\\\'')}'`
+  return { label, file: 'src/components/chat/auditProbe.ts', source: `const type: string = ${quoted}\nvoid type` }
+}
+
+/**
+ * Wire tokens spelled by hand: each kind of match, and known frames of each provider.
+ * The lint reads the same generated list as the samples below, so these hold the list
+ * to known tokens. A table that loses its `frameKind` mark fails here with the name of
+ * a frame, not only as a shorter list.
+ */
+const WIRE_TOKEN_SAMPLES: LintSample[] = [
+  wireTokenSample('Copilot event', 'session.idle'),
+  wireTokenSample('Copilot event family', 'assistant.fusion_step'),
+  wireTokenSample('bare Copilot event family', 'session.canvas.'),
+  wireTokenSample('OpenCode event', 'question.asked'),
+  wireTokenSample('ZCode event', 'session.created'),
+  wireTokenSample('ZCode method', 'interaction/requestUserInput'),
+  wireTokenSample('Claude compaction boundary', 'compact_boundary'),
+  wireTokenSample('ACP update', 'agent_message_chunk'),
+  wireTokenSample('Codex method', 'turn/plan/updated'),
+  wireTokenSample('Grok method that no contract holds', '_x.ai/future_method'),
+  wireTokenSample('bare Kiro namespace', '_kiro/'),
+  wireTokenSample('Oh My Pi compaction frame', 'auto_compaction_start'),
+  wireTokenSample('Oh My Pi subagent frame', 'subagent_event'),
+  wireTokenSample('Oh My Pi question frame', 'leapmux_ask'),
+  wireTokenSample('Oh My Pi answer frame', 'leapmux_ask_answer'),
+  wireTokenSample('Kimi Code tool delta', 'tool.call.delta'),
+  wireTokenSample('Kimi Code tool result', 'tool.result'),
+  wireTokenSample('Kimi Code turn start', 'turn.started'),
+  wireTokenSample('Kimi Code turn step', 'turn.step.completed'),
+  wireTokenSample('Kimi Code text delta', 'assistant.delta'),
+  wireTokenSample('Kimi Code question event', 'event.question.requested'),
+  wireTokenSample('MiMo Code status event', 'session.status'),
+  wireTokenSample('MiMo Code permission event', 'permission.asked'),
+  wireTokenSample('Codewhale item event', 'item.completed'),
+  wireTokenSample('Codewhale steering event', 'turn.steer_dropped'),
+  wireTokenSample('Codewhale approval timeout', 'approval.timeout'),
+  wireTokenSample('Codewhale input event', 'user_input.required'),
+  wireTokenSample('Codewhale sandbox event', 'sandbox.denied'),
+  wireTokenSample('Codewhale store event', 'runtime.store_failure'),
+  wireTokenSample('Cline tool event', 'tool.finished'),
+  wireTokenSample('Cline run event', 'run.completed'),
+  wireTokenSample('Cline text event', 'assistant.finished'),
+  wireTokenSample('Cline media event', 'assistant.media'),
+  wireTokenSample('Cline notice event', 'session.notice'),
+  wireTokenSample('Cline team event', 'team.progress'),
+  wireTokenSample('Cline approval event', 'approval.requested'),
+  wireTokenSample('Cline capability event', 'capability.requested'),
+  wireTokenSample('Cline question executor', 'tool_executor.askQuestion'),
+]
+
+/**
+ * One wire token for each contract table that the lint guards: the first literal of
+ * the table that the token index guards. A table whose literals are all ordinary words
+ * gives no sample, because the lint leaves those words to shared code. The unit tests
+ * of `providerWireTokens.ts` cover the index. These samples prove that the real config
+ * applies it to every table.
+ */
+function contractTableSamples(): LintSample[] {
+  const first = new Map<string, string>()
+  for (const kind of PROVIDER_FRAME_KINDS) {
+    if (!first.has(kind.source) && wireTokenSources(PROVIDER_WIRE_TOKENS, kind.literal).includes(kind.source))
+      first.set(kind.source, kind.literal)
+  }
+  return [...first].map(([source, literal]) => wireTokenSample(`${source}: ${literal}`, literal))
+}
+
+const CONTRACT_TABLE_SAMPLES = contractTableSamples()
 
 const REGISTRATION_SAMPLES: LintSample[] = [
   { label: 'plugin inline related hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const plugin = { transcript: { relatedMessages: () => [] } }' },
@@ -212,7 +302,7 @@ describe('no-restricted-syntax keeps the base selectors', () => {
   // resolveRestrictedSyntax), and the budget is sized so only a genuine hang
   // trips it.
   beforeAll(() => {
-    const samples = [...RESTRICTED_IMPORT_SAMPLES, ...RESTRICTED_ASSERTION_SAMPLES, ...PROVIDER_DECISION_SAMPLES, ...REGISTRATION_SAMPLES, ...ALLOWED_ARCHITECTURE_SAMPLES]
+    const samples = [...RESTRICTED_IMPORT_SAMPLES, ...RESTRICTED_ASSERTION_SAMPLES, ...PROVIDER_DECISION_SAMPLES, ...WIRE_TOKEN_SAMPLES, ...CONTRACT_TABLE_SAMPLES, ...REGISTRATION_SAMPLES, ...ALLOWED_ARCHITECTURE_SAMPLES]
     const inspection = inspectEslint([BASELINE_FILE, ...SCOPED_FILES], samples)
     resolved = inspection.restrictedSyntax
     ruleIds = inspection.ruleIds
@@ -260,6 +350,20 @@ describe('no-restricted-syntax keeps the base selectors', () => {
   })
 
   it.each(PROVIDER_DECISION_SAMPLES)('rejects a provider decision: $label', ({ label }) => {
+    expect(ruleIds[label] ?? []).toContain('chat-pipeline/no-provider-decision')
+  })
+
+  it.each(WIRE_TOKEN_SAMPLES)('rejects a bare wire token: $label', ({ label }) => {
+    expect(ruleIds[label] ?? []).toContain('chat-pipeline/no-provider-decision')
+  })
+
+  it('draws a sample from each contract table that the lint guards', () => {
+    // Zero samples would pass the check below for every table, including a list that
+    // lost every mark.
+    expect(CONTRACT_TABLE_SAMPLES.length).toBeGreaterThan(30)
+  })
+
+  it.each(CONTRACT_TABLE_SAMPLES)('rejects a wire token of each contract table: $label', ({ label }) => {
     expect(ruleIds[label] ?? []).toContain('chat-pipeline/no-provider-decision')
   })
 

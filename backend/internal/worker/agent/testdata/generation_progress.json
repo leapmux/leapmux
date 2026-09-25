@@ -77,6 +77,77 @@
         { "operation": "output_total", "scope": "command", "value": 2895 }
       ],
       "expected": { "thinkingTokens": 4, "outputBytes": 2895, "outputBytesMinimum": false }
+    },
+    {
+      "name": "codewhale",
+      "events": [
+        { "operation": "model_text", "scope": "item_263cda58", "text": "abcdefghijklmnop" }
+      ],
+      "expected": { "thinkingTokens": 4, "outputBytes": 0, "outputBytesMinimum": false }
+    },
+    {
+      "name": "kimi",
+      "events": [
+        { "operation": "model_text", "scope": "thinking", "text": "abcdefgh" },
+        { "operation": "model_text", "scope": "message", "text": "abcd" },
+        { "operation": "output_total", "scope": "command", "value": 13 }
+      ],
+      "expected": { "thinkingTokens": 3, "outputBytes": 13, "outputBytesMinimum": false }
+    },
+    {
+      "name": "qwen",
+      "events": [
+        { "operation": "model_text", "scope": "message", "text": "abcdefghijklmnop" },
+        { "operation": "model_text", "scope": "message", "text": "qrst" }
+      ],
+      "expected": { "thinkingTokens": 5, "outputBytes": 0, "outputBytesMinimum": false }
+    },
+    {
+      "name": "grok",
+      "events": [
+        { "operation": "model_text", "scope": "message", "text": "abcdefgh" }
+      ],
+      "expected": { "thinkingTokens": 2, "outputBytes": 0, "outputBytesMinimum": false }
+    },
+    {
+      "name": "kiro",
+      "events": [
+        { "operation": "model_text", "scope": "message", "text": "Reading first." },
+        { "operation": "output_total", "scope": "command", "value": 9 }
+      ],
+      "expected": { "thinkingTokens": 3, "outputBytes": 9, "outputBytesMinimum": false }
+    },
+    {
+      "name": "ohmypi",
+      "events": [
+        { "operation": "model_text", "scope": "message", "text": "Running a command." },
+        { "operation": "output_total", "scope": "command", "value": 38 }
+      ],
+      "expected": { "thinkingTokens": 4, "outputBytes": 38, "outputBytesMinimum": false }
+    },
+    {
+      "name": "mimo",
+      "events": [
+        { "operation": "model_text", "scope": "mimo:prt_reasoning", "text": "Sub reasoning here, then" },
+        { "operation": "output_total", "scope": "call-sub-01", "value": 5 },
+        { "operation": "output_total", "scope": "call-sub-01", "value": 16 }
+      ],
+      "expected": { "thinkingTokens": 6, "outputBytes": 16, "outputBytesMinimum": false }
+    },
+    {
+      "name": "amp",
+      "events": [],
+      "expected": { "thinkingTokens": 0, "outputBytes": 0, "outputBytesMinimum": false }
+    },
+    {
+      "name": "cline",
+      "events": [
+        { "operation": "model_text", "scope": "cline:lead:reasoning", "text": "The user says hello. I answer briefly." },
+        { "operation": "model_complete", "scope": "cline:lead:reasoning" },
+        { "operation": "model_text", "scope": "cline:lead:text", "text": "Running a command." },
+        { "operation": "output_total", "scope": "call_bash_1", "value": 11 }
+      ],
+      "expected": { "thinkingTokens": 4, "outputBytes": 11, "outputBytesMinimum": false }
     }
   ]
 }

@@ -25,15 +25,16 @@ type JSONRPCProcess struct {
 	// outstandingMu guards outstandingControls and withdrawGeneration.
 	outstandingMu sync.Mutex
 	// outstandingControls holds every control request the provider still waits on,
-	// keyed by the LeapMux request id. PublishControlRequest is the one writer that
-	// adds an entry, and WithdrawControlRequest the one that removes it, so the
+	// keyed by the LeapMux request id. PublishControlRequest adds each entry. The
+	// answer in SendRawInput and each withdrawal remove it, and SendRawInput puts
+	// it back only for a write that certainly delivered nothing. So the
 	// provider-side record and the browser-side card cannot move apart.
 	outstandingControls map[string]outstandingControlRequest
 	// withdrawGeneration counts the WITHDRAWALS, so an absent record tells
 	// PublishControlRequest which of the two removers took it.
 	//
 	// The ANSWER path removes a record too: every control response reaches the
-	// provider through SendRawInput, which calls forgetOutstandingControl. A bare
+	// provider through SendRawInput, which calls takeOutstandingControl. A bare
 	// presence test therefore reads "the reader answered while I published" and "a
 	// stop stole this record" as the same state, and the publisher then cancelled a
 	// card the reader had just decided. Only a withdrawal raises this.
@@ -59,17 +60,19 @@ func (b *JSONRPCProcess) writeJSONRPCMessage(data []byte) error {
 	return b.WriteStdin(b.frameJSONRPCMessage(data))
 }
 
-// SendRawInput keeps provider JSON unchanged inside the selected transport frame, then
+// SendRawInput keeps provider JSON unchanged inside the selected transport frame, and
 // drops the control request that the frame answers.
 //
-// The drop follows the write. A write that fails leaves the request waiting, so the
-// reader can answer it again. ErrDeliveryUncertain drops it: the bytes may have reached
-// the provider, and a second answer to a request the provider already retired is the
-// worse outcome.
+// The drop comes before the write, because a withdrawal can run during the write
+// (see takeOutstandingControl). A write that certainly fails puts the request back,
+// so the reader can answer it again and a later withdrawal still reaches it.
+// ErrDeliveryUncertain keeps it dropped: the bytes may have reached the provider, and
+// a second answer to a request the provider already retired is the worse outcome.
 func (b *JSONRPCProcess) SendRawInput(data []byte) error {
+	restore := b.takeOutstandingControl(data)
 	err := b.writeRawFrame(data)
-	if err == nil || errors.Is(err, agent.ErrDeliveryUncertain) {
-		b.forgetOutstandingControl(data)
+	if err != nil && !errors.Is(err, agent.ErrDeliveryUncertain) {
+		restore()
 	}
 	return err
 }

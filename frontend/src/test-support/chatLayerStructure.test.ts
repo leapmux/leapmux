@@ -28,14 +28,13 @@ const MODEL_DIR = join(CHAT_DIR, 'model')
  * not a transcript row -- the row model does not describe them.
  *
  * `eslint.config.ts` bans `JSXElement` under `providers/` and lists exactly
- * these four paths in its `ignores`, beside the two `testUtils.tsx` helpers
+ * these three paths in its `ignores`, beside the two `testUtils.tsx` helpers
  * that render for a provider's own tests. This list is what keeps the two in
  * step: a path that leaves one and not the other fails below.
  */
 const DRAWING_ALLOWED = [
   'codex/CodexControlActions.tsx',
   'cursor/CursorControlActions.tsx',
-  'pi/PiControlActions.tsx',
   'pi/PiPlanApprovalActions.tsx',
 ]
 
@@ -72,9 +71,15 @@ const RESOLVED_CONTENT_BUILDER = 'providers/registry.ts'
  */
 const PROVIDER_CLASSIFIERS: Readonly<Record<string, string | null>> = {
   'acp/registerACPProvider.ts': './classification',
+  'amp/plugin.ts': './classification',
   'claude/plugin.ts': './classification',
+  'cline/plugin.ts': './classification',
+  'codewhale/plugin.ts': './classification',
   'codex/plugin.ts': './classification',
   'copilot/plugin.ts': './classification',
+  'kimi/plugin.ts': './classification',
+  'mimo/plugin.ts': './classification',
+  'ohmypi/plugin.ts': './classification',
   'pi/plugin.ts': './classification',
   'zcode/plugin.ts': './classification',
 }

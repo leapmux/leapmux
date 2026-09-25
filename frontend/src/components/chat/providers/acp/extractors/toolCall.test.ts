@@ -12,11 +12,12 @@ import { buildRawJsonEnvelope } from '../../../chatRawJson'
 import { failedResult, isToolFailureResult, isUnparsedToolResult, typedResult, unparsedResult } from '../../../model/toolCall'
 import { TOOL_KINDS } from '../../../model/toolKind'
 import { imagesForRow } from '../../../results/rowImages'
+import { toolCallDisplayName } from '../../../results/tools/header'
 import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
 import { resolveMessageForRendering } from '../../registry'
 import { input } from '../../testUtils'
 import { classifyACPMessage } from '../classification'
-import { ACP_SPEC_READERS, ACP_TOOL_REQUEST_OVERRIDES, acpResultStatesNothing, acpSpecFor, acpToolCall, acpToolCallNeedsResult, acpToolFacts, resolveACPMessage } from './toolCall'
+import { ACP_SPEC_READERS, ACP_TOOL_REQUEST_OVERRIDES, acpResultAvailable, acpResultStatesNothing, acpSpecFor, acpToolCall, acpToolCallNeedsResult, acpToolFacts, resolveACPMessage } from './toolCall'
 
 /**
  * `typedResult` takes `{ kind, result }` with the result key omitted when the call
@@ -185,6 +186,74 @@ describe('a wire kind the shared tables do not know', () => {
     const uncategorized = call()
     expect(uncategorized.kind).toBe('mcp')
     expect(uncategorized.kind === 'mcp' ? (uncategorized.request as { args: Record<string, unknown> }).args : undefined).toEqual({ targetModeId: 'agent' })
+  })
+})
+
+// A provider adapter that builds a result of its own asks this before it does. A row
+// that the turn end closed is finished, and it holds an answer only when some frame
+// carried one. A reader that asked `finished` alone drew an empty answer for a call
+// the agent never answered.
+describe('acpResultAvailable', () => {
+  const frame = (status: string, extra: Record<string, unknown> = {}) => ({ sessionUpdate: 'tool_call_update', toolCallId: 'c', kind: 'read', status, rawInput: { path: '/p/a.ts' }, ...extra })
+
+  it('answers true for a frame that states an end of its own, with or without content', () => {
+    expect(acpResultAvailable(acpToolFacts(frame('completed')))).toBe(true)
+    expect(acpResultAvailable(acpToolFacts(frame('failed')))).toBe(true)
+  })
+
+  it('answers false for a call that runs', () => {
+    expect(acpResultAvailable(acpToolFacts(frame('in_progress', { content: [{ type: 'content', content: { type: 'text', text: 'partial' } }] })))).toBe(false)
+  })
+
+  it('answers false for a row the turn end closed that holds nothing', () => {
+    const facts = acpToolFacts(frame('in_progress'), undefined, MessageCompletion.COMPLETE)
+    expect(facts.finished, 'the turn end closed the row').toBe(true)
+    expect(acpResultAvailable(facts)).toBe(false)
+  })
+
+  it.each([
+    ['content', { content: [{ type: 'content', content: { type: 'text', text: 'one' } }] }],
+    ['a raw output', { rawOutput: { lines: 1 } }],
+    ['an image', { content: [{ type: 'content', content: { type: 'image', data: 'aGk=', mimeType: 'image/png' } }] }],
+  ])('answers true for a row the turn end closed that holds %s', (_shape, extra) => {
+    expect(acpResultAvailable(acpToolFacts(frame('in_progress', extra), undefined, MessageCompletion.COMPLETE))).toBe(true)
+  })
+})
+
+// A frame that states no kind states no kind WORD either. The empty word read as a
+// kind that LeapMux does not know, so the header read "Tool", which the frame never
+// stated, and the card's tool name was empty. Grok Build opens every call with no
+// kind, so each of its unknown tools drew that card.
+describe('a call whose frame states no kind', () => {
+  const call = (extra: Record<string, unknown> = {}) => acpToolCall({
+    sessionUpdate: 'tool_call',
+    toolCallId: 'no-kind',
+    status: 'pending',
+    title: 'a_later_tool',
+    rawInput: { q: 'x' },
+    ...extra,
+  }, undefined, undefined)
+
+  it('names the uncategorized card after the frame title, with no label', () => {
+    const untyped = call()
+    expect(untyped.kind).toBe('mcp')
+    expect(untyped.label).toBeUndefined()
+    expect(untyped.kind === 'mcp' ? untyped.request : undefined).toMatchObject({ server: '', tool: 'a_later_tool', args: { q: 'x' } })
+    expect(toolCallDisplayName(untyped)).toBe('a_later_tool')
+  })
+
+  it('reads an empty kind the same as an absent one', () => {
+    const empty = call({ kind: '' })
+    expect(empty.label).toBeUndefined()
+    expect(toolCallDisplayName(empty)).toBe('a_later_tool')
+  })
+
+  // The branch the fix must keep: a kind word LeapMux does not know still names
+  // the card and the header.
+  it('still states a kind word that LeapMux does not know', () => {
+    const unknown = call({ kind: 'switch_mode_x' })
+    expect(unknown.label).toBe('Switch mode x')
+    expect(unknown.kind === 'mcp' ? unknown.request.tool : undefined).toBe('switch_mode_x')
   })
 })
 

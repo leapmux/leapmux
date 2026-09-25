@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -98,6 +99,13 @@ type Agent struct {
 	// nowFn supplies the clock that times a turn. Production leaves it nil; a
 	// test installs a fixed clock so the reported duration is exact.
 	nowFn func() time.Time
+
+	// clock drives the dialog deadlines. Production leaves it nil and reads the
+	// real clock (see deadlineClock); a test installs a mock.
+	clock quartz.Clock
+	// dialogDeadlines withdraws a dialog whose deadline passed. See
+	// publishPiDialog.
+	dialogDeadlines providerkit.ControlDeadlines
 }
 
 // now reads the agent's clock. The zero value must work, because the tests
@@ -107,6 +115,15 @@ func (a *Agent) now() time.Time {
 		return a.nowFn()
 	}
 	return time.Now()
+}
+
+// deadlineClock returns the clock of the dialog deadlines. The zero value must
+// work, for the reason that now states.
+func (a *Agent) deadlineClock() quartz.Clock {
+	if a.clock != nil {
+		return a.clock
+	}
+	return quartz.NewReal()
 }
 
 // sessionHandleLocked returns the durable session identifier — preferring
@@ -318,6 +335,7 @@ func (a *Agent) handlePiPromptFailure(err error, steer bool) {
 func (a *Agent) Stop() {
 	a.NoteIntentionalStop()
 	a.stopPiGoalRefresh()
+	a.dialogDeadlines.StopAll()
 	a.Mu.Lock()
 	stopped := a.StoppedLocked()
 	turnActive := a.currentTurnActive
@@ -338,6 +356,7 @@ func (a *Agent) Stop() {
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
 	a.stopPiGoalRefresh()
+	a.dialogDeadlines.StopAll()
 	completion := a.ProcessExitCompletion()
 	a.flushPiGeneration(completion)
 	a.persistIncompletePiTools(completion)

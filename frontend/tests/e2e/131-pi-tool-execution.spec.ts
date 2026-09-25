@@ -1,6 +1,6 @@
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { bashToolCall, writeToolCall } from './helpers/providerToolCalls'
-import { messageContents, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { sendMessage, waitForAgentIdle } from './helpers/ui'
 import { expect, PI_E2E_SKIP_REASON, piTest } from './pi-fixtures'
 
 piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
@@ -8,18 +8,17 @@ piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
 piTest.describe('Pi Tool Execution', () => {
   piTest('bash command execution renders output in chat', async ({ authenticatedPiWorkspace, page, modelScript }) => {
     void authenticatedPiWorkspace // fixture trigger
+    // The command text, the prompt and the reply state no `pi-42`, so only the
+    // command's own output can put it in a tool row.
     await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.PI, 'echo-call', 'echo "pi-test-output"')] },
-      { text: 'The command printed pi-test-output.' },
+      { toolCalls: [bashToolCall(AgentProvider.PI, 'echo-call', 'echo "pi-$((40 + 2))"')] },
+      { text: 'The command printed its number.' },
     )
-    await sendMessage(page, modelScript.prompt('Run the bash command: echo "pi-test-output" and show me the output.'))
+    await sendMessage(page, modelScript.prompt('Run the arithmetic command and show me the output.'))
     await modelScript.waitForSteps()
     await waitForAgentIdle(page, 180_000)
 
-    const chatArea = messageContents(page)
-    const allText = await chatArea.allTextContents()
-    const joined = allText.join(' ')
-    expect(joined).toContain('pi-test-output')
+    await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'pi-42' }).first()).toBeVisible()
   })
 
   piTest('write tool creates a file and the chat surfaces the path', async ({ authenticatedPiWorkspace, page, modelScript }) => {
@@ -32,10 +31,9 @@ piTest.describe('Pi Tool Execution', () => {
     await modelScript.waitForSteps()
     await waitForAgentIdle(page, 180_000)
 
-    const chatArea = messageContents(page)
-    const allText = await chatArea.allTextContents()
-    const joined = allText.join(' ')
-    // Either the path or the content should appear in the rendered chat.
-    expect(joined.includes('pi-test-file') || joined.includes('pi was here')).toBeTruthy()
+    // The prompt states the path and the content, so a check of the whole chat
+    // passes with no write at all. Only the write call's own row states the path
+    // inside a tool row.
+    await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'pi-test-file.txt' }).first()).toBeVisible()
   })
 })

@@ -9,7 +9,7 @@ import { retainedRowIsFinal } from '../registry'
 import { piSubagentNotifications, piVisibleCustomMessage } from './extractors/customMessage'
 import { piNotificationEntry } from './extractors/notification'
 import { piPlanStatement } from './extractors/plan'
-import { piContentText, piIsThinkingOnly } from './messageContent'
+import { piContentText } from './messageContent'
 
 /**
  * Pi event types that carry no UI surface of their own.
@@ -143,23 +143,23 @@ export function classifyPiMessage(input: ClassificationInput): MessageCategory {
     if (piVisibleCustomMessage(parent)) {
       if (piSubagentNotifications(parent))
         return { kind: 'tool_result' }
-      return piContentText(parent, 'text').trim() ? { kind: 'assistant_text' } : { kind: 'hidden' }
+      return piContentText(parent).trim() ? { kind: 'assistant_text' } : { kind: 'hidden' }
     }
     // Pi emits message_end for *every* message added to the conversation —
     // the user's prompt, tool results, and bash-execution echoes — not just
     // the assistant's reply. LeapMux already persists the user message via
     // the synthetic user_content row, and tool results render through the
     // tool_execution_* span. Hide these to avoid duplicates; only the
-    // assistant's text/thinking message_end should reach the chat view.
+    // assistant's message_end should reach the chat view.
     // Pi's wire envelope carries the message author under `role` (Anthropic
     // Messages API style), distinct from the proto-side MessageSource that
     // describes who persisted the row. Read the wire field by name.
     const messageRole = pickString(pickObject(parent, 'message'), 'role')
     if (messageRole !== 'assistant')
       return { kind: 'hidden' }
-    if (piIsThinkingOnly(parent))
-      return { kind: 'assistant_thinking' }
-    if (piContentText(parent, 'text').trim() !== '')
+    // The worker persists the message's thinking as a reasoning row of its own,
+    // before this row, so this row draws the text alone.
+    if (piContentText(parent).trim() !== '')
       return { kind: 'assistant_text' }
     return { kind: 'hidden' }
   }

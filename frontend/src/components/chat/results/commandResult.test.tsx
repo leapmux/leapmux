@@ -47,6 +47,16 @@ describe('CommandResultBody', () => {
     expect(container.textContent).toContain('Error (killed)')
   })
 
+  // A command that did not start, or that ran out of time, ends with neither a code
+  // nor a signal. Its provider still states that it failed, and one call can run
+  // several commands, so the call's own status cannot say it.
+  it('states a failure that the command reported without a code or a signal', () => {
+    const { container } = render(() => <CommandResultBody source={source({ output: 'Command failed: spawn nope ENOENT', failed: true })} status="completed" />)
+    expect(glyph(container)).toContain('lucide-circle-alert')
+    expect(container.textContent).toContain('Error')
+    expect(container.textContent).toContain('Command failed: spawn nope ENOENT')
+  })
+
   it('words the reader own stop Interrupted, and a refusal Declined', () => {
     const stopped = render(() => <CommandResultBody source={source({ exitCode: 1 })} status="cancelled" />)
     expect(stopped.container.textContent).toContain('Interrupted')

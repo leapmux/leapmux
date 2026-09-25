@@ -235,13 +235,17 @@ export function normalizeContextUsage(value: unknown): ContextUsageInfo | undefi
   // not own (see the _readme in contracts/session-info.json).
   const contextTokens = pickFirstNumber(value, [CONTEXT_USAGE_FIELD.ContextTokens, 'tokens'])
   const contextWindow = pickNumber(value, CONTEXT_USAGE_FIELD.ContextWindow, undefined)
+  // A percentage is a reading of its own: a provider that states no token count
+  // (Kiro) reports the fill alone, and an empty context is a real reading of zero.
+  const usagePercent = pickNumber(value, CONTEXT_USAGE_FIELD.UsagePercent, undefined)
+  const hasPercent = usagePercent !== undefined && Number.isFinite(usagePercent) && usagePercent >= 0
 
   const hasTokenData = inputTokens > 0
     || cacheCreationInputTokens > 0
     || cacheReadInputTokens > 0
     || (outputTokens ?? 0) > 0
     || (contextTokens ?? 0) > 0
-  if (!hasTokenData)
+  if (!hasTokenData && !hasPercent)
     return undefined
 
   const usage: ContextUsageInfo = {
@@ -255,6 +259,8 @@ export function normalizeContextUsage(value: unknown): ContextUsageInfo | undefi
     usage.contextTokens = contextTokens
   if (contextWindow !== undefined && contextWindow > 0)
     usage.contextWindow = contextWindow
+  if (hasPercent)
+    usage.usagePercent = usagePercent
   return usage
 }
 

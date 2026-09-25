@@ -1,0 +1,52 @@
+{
+  "_readme": "Grok Build speaks the Agent Client Protocol and adds its own extension methods under the `_x.ai/` prefix. xAI owns every method, notification, tool, mode and reply word below; LeapMux owns the option id of the approval mode, which Grok never reports back. The worker publishes the extension requests, rewrites the reader's answers into Grok's own replies, and dispatches the notifications; the browser plugin draws the same requests, builds the same replies, and reads the same turn-end notification into a divider. A word that only one side reads stays in that side's code. `configIds` holds the config-option id of Grok's reasoning axis: the worker drives the axis through it, and the browser shows its chip in the status bar under the same id.",
+  "methods": {
+    "AskUserQuestion": "_x.ai/ask_user_question",
+    "ExitPlanMode": "_x.ai/exit_plan_mode",
+    "McpElicit": "_x.ai/mcp/elicit",
+    "FolderTrust": "_x.ai/folder_trust/request",
+    "SessionNotification": "_x.ai/session_notification"
+  },
+  "notifications": {
+    "TurnCompleted": "turn_completed"
+  },
+  "meta": {
+    "Tool": "x.ai/tool"
+  },
+  "toolNames": {
+    "SpawnSubagent": "spawn_subagent"
+  },
+  "modes": {
+    "Default": "default",
+    "Plan": "plan",
+    "Ask": "ask"
+  },
+  "options": {
+    "ApprovalMode": "approvalMode"
+  },
+  "approvalModes": {
+    "Ask": "ask",
+    "Auto": "auto",
+    "AlwaysApprove": "always-approve"
+  },
+  "planOutcomes": {
+    "Approved": "approved",
+    "Cancelled": "cancelled"
+  },
+  "trustOutcomes": {
+    "Trust": "trust",
+    "Reject": "reject"
+  },
+  "questionOutcomes": {
+    "Accepted": "accepted",
+    "Cancelled": "cancelled"
+  },
+  "replyFields": {
+    "Outcome": "outcome",
+    "Feedback": "feedback",
+    "FollowupMessage": "followup_message"
+  },
+  "configIds": {
+    "ReasoningEffort": "reasoning_effort"
+  }
+}

@@ -45,6 +45,16 @@ type WrapSpec struct {
 	Launch Spec
 	// StripEnvKeys are removed by the shell wrapper before the binary is started.
 	StripEnvKeys []string
+	// SetEnv are set by the shell wrapper after the user's profile runs and
+	// after StripEnvKeys are removed, just before the binary starts. Each entry
+	// is `NAME=VALUE`. A value set here wins over one that the profile exports,
+	// so a provider states here a value that must reach the program unchanged:
+	// the private address of a daemon, for example. A value on cmd.Env instead
+	// reaches the shell first, and the profile can replace it. Wrap panics on a
+	// name that is not a plain identifier, because the wrapper writes the name
+	// into shell code unquoted. The value is quoted for the shell's dialect, with
+	// the same limit the arguments have: csh has no escape for a single quote.
+	SetEnv []string
 	// BaseArgs are always passed to the program, after Launch.PrefixArgs.
 	BaseArgs []string
 	// EnvGated, when set, makes part of the launch depend on the environment the
@@ -114,6 +124,7 @@ func Wrap(ctx context.Context, spec WrapSpec) (*exec.Cmd, string, string) {
 			spec.EnvGated = nil
 		}
 	}
+	checkSetEnv(spec.SetEnv)
 	token := id.Short()
 	delimiter := "__LEAPMUX_READY_" + token + "__"
 	metaPrefix := ""
@@ -167,7 +178,7 @@ func buildPosixCommand(spec WrapSpec, delimiter, metaPrefix string) string {
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
-	clearEnvPrefix := posixClearEnv(spec.StripEnvKeys)
+	clearEnvPrefix := posixClearEnv(spec.StripEnvKeys) + posixSetEnv(spec.SetEnv)
 	program := posixQuote(spec.Launch.Program)
 
 	// Simple path: no env gate. When the gate is set but its Args are empty (Claude's
@@ -209,7 +220,7 @@ func buildNuCommand(spec WrapSpec, delimiter, metaPrefix string) string {
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
-	clearEnvPrefix := nuClearEnv(spec.StripEnvKeys)
+	clearEnvPrefix := nuClearEnv(spec.StripEnvKeys) + nuSetEnv(spec.SetEnv)
 	// `^"<program>"` is Nushell's documented form for running an external
 	// command whose path holds a space.
 	program := nuQuote(spec.Launch.Program)
@@ -251,7 +262,7 @@ func buildPwshCommand(spec WrapSpec, delimiter, metaPrefix string) string {
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
-	clearEnvPrefix := pwshClearEnv(spec.StripEnvKeys)
+	clearEnvPrefix := pwshClearEnv(spec.StripEnvKeys) + pwshSetEnv(spec.SetEnv)
 	// The call operator takes a quoted string, which is PowerShell's documented
 	// form for running a path that holds a space.
 	program := pwshQuote(spec.Launch.Program)
@@ -309,7 +320,7 @@ func buildCshCommand(spec WrapSpec, delimiter, metaPrefix string) string {
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
-	clearEnvPrefix := cshClearEnv(spec.StripEnvKeys)
+	clearEnvPrefix := cshClearEnv(spec.StripEnvKeys) + cshSetEnv(spec.SetEnv)
 	program := posixQuote(spec.Launch.Program)
 
 	// Simple path: no env gate. See buildPosixCommand.
@@ -339,6 +350,58 @@ func buildCshCommand(spec WrapSpec, delimiter, metaPrefix string) string {
 		metaPrefix, gate.MetaKey, delimiter, program, baseArgsStr,
 		metaPrefix, gate.MetaKey, delimiter, program, baseArgsStr, gatedArgsStr,
 	)
+}
+
+// checkSetEnv panics when an entry of SetEnv is not `NAME=VALUE` with a plain
+// identifier as its name. Each provider states the names as constants, so a
+// bad one is a programming error that no input can reach.
+func checkSetEnv(entries []string) {
+	for _, entry := range entries {
+		name, _, found := strings.Cut(entry, "=")
+		if !found || !shellIdentifier.MatchString(name) {
+			panic(fmt.Sprintf("shell wrapper: SetEnv entry %q is not NAME=VALUE with a plain identifier", entry))
+		}
+	}
+}
+
+// posixSetEnv exports each entry. One export for each entry, because fish
+// takes `export` as a function of one assignment at a time.
+func posixSetEnv(entries []string) string {
+	var b strings.Builder
+	for _, entry := range entries {
+		name, value, _ := strings.Cut(entry, "=")
+		b.WriteString("export " + name + "=" + posixQuote(value) + " && ")
+	}
+	return b.String()
+}
+
+// cshSetEnv sets each entry the csh way. `set` touches shell variables only, so
+// `setenv` is the one that reaches the launched program.
+func cshSetEnv(entries []string) string {
+	var b strings.Builder
+	for _, entry := range entries {
+		name, value, _ := strings.Cut(entry, "=")
+		b.WriteString("setenv " + name + " " + posixQuote(value) + "; ")
+	}
+	return b.String()
+}
+
+func nuSetEnv(entries []string) string {
+	var b strings.Builder
+	for _, entry := range entries {
+		name, value, _ := strings.Cut(entry, "=")
+		b.WriteString("$env." + name + " = " + nuQuote(value) + "; ")
+	}
+	return b.String()
+}
+
+func pwshSetEnv(entries []string) string {
+	var b strings.Builder
+	for _, entry := range entries {
+		name, value, _ := strings.Cut(entry, "=")
+		b.WriteString("$env:" + name + " = " + pwshQuote(value) + "; ")
+	}
+	return b.String()
 }
 
 func posixClearEnv(keys []string) string {

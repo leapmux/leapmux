@@ -282,7 +282,7 @@ test.describe('workspace archive', () => {
 
       // Verify mention button IS visible before archive (via context menu)
       const mentionButton = page.locator('[data-testid="tree-mention-button"]:visible')
-      await openTreeContextMenu(page, row, 'tree-mention-button')
+      await openTreeContextMenu(row, 'tree-mention-button')
       // Close menu by pressing Escape
       await page.keyboard.press('Escape')
       await expect(mentionButton).toHaveCount(0)
@@ -303,7 +303,7 @@ test.describe('workspace archive', () => {
       // menu itself must still open, so assert on an item that SURVIVES
       // archiving. Without that anchor a menu that failed to open at all would
       // satisfy "mention button not visible" for the wrong reason.
-      await openTreeContextMenu(page, row)
+      await openTreeContextMenu(row)
       await expect(mentionButton).toHaveCount(0)
     }
     finally {

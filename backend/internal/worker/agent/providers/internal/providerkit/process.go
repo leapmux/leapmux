@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/coder/quartz"
+
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/util/procutil"
 )
@@ -35,6 +37,8 @@ type Process struct {
 	cancel      func()
 	processDone chan struct{}
 	waitErr     error
+	// clock times the waits of the process (AwaitResponse). See Clock.
+	clock quartz.Clock
 
 	stderrBuf  bytes.Buffer
 	stderrMu   sync.Mutex
@@ -51,8 +55,8 @@ type Process struct {
 	intentionalStop atomic.Bool
 
 	// TurnSeq issues the ordering token that rides every publish of this
-	// provider's turn flag. It lives here so all five providers get it from one
-	// embed and a sixth cannot forget it, and because Mu -- the lock that makes
+	// provider's turn flag. It lives here so every provider gets it from one
+	// embed and a new one cannot forget it, and because Mu -- the lock that makes
 	// the token atomic with the flag read -- lives here too.
 	TurnSeq
 
@@ -650,6 +654,9 @@ type ProcessConfig struct {
 	// PreambleMeta seeds the preamble metadata the shell wrapper would report.
 	// nil starts it empty.
 	PreambleMeta map[string]string
+	// Clock times the waits of the process (AwaitResponse), and a provider reads
+	// its own timers from it (Process.Clock). nil selects the real clock.
+	Clock quartz.Clock
 }
 
 // NewProcessFrom builds a Process from c. It returns a fresh value,
@@ -680,7 +687,21 @@ func NewProcessFrom(c ProcessConfig) Process {
 		preambleMetaPrefix: c.PreambleMetaPrefix,
 		preambleMeta:       meta,
 		apiTimeout:         c.APITimeout,
+		clock:              c.Clock,
 	}
+}
+
+// realClock is the clock of a process that states none.
+var realClock = quartz.NewReal()
+
+// Clock returns the clock of the process: the one that its config stated, or
+// the real clock. A provider takes its own timers from it, so one clock drives
+// every wait of the agent, and a test that states a mock controls all of them.
+func (p *Process) Clock() quartz.Clock {
+	if p.clock == nil {
+		return realClock
+	}
+	return p.clock
 }
 
 // StartCmd runs cmd.Start and, on success, attaches the process to a Windows
@@ -801,6 +822,32 @@ type LineHandler func(line *ParsedLine)
 // ParsedLine, optionally intercepts responses, then forwards remaining lines
 // to the output handler.
 func (p *Process) ReadOutput(scanner *bufio.Scanner, intercept outputInterceptor, handle LineHandler) {
+	p.ReadLines(scanner, func(line []byte) {
+		parsed := &ParsedLine{Raw: line}
+		if err := json.Unmarshal(line, parsed); err != nil {
+			slog.Warn("invalid agent output JSON", "agent_id", p.agentID, "error", err)
+			return
+		}
+		if intercept(parsed) {
+			return
+		}
+		handle(parsed)
+	})
+}
+
+// ReadLines reads the process's stdout as plain text lines and hands each
+// non-empty line to handle, until stdout closes. It then records the process
+// exit. ReadOutput reads its JSON lines through it, so both keep one loop: the
+// preamble skip, the first-line trace, the discard check and the exit record.
+//
+// It is for a provider whose CLI runs a local server and prints plain text on
+// stdout -- the address it listens on, and log lines -- while the protocol
+// itself runs over HTTP. ReadOutput would drop every such line as invalid JSON,
+// and with it the address the provider waits for.
+//
+// handle runs on the reader goroutine and must not block: the child writes to
+// a pipe that this loop drains, and a child with a full pipe stops.
+func (p *Process) ReadLines(scanner *bufio.Scanner, handle func(line []byte)) {
 	p.skipPreamble(scanner)
 
 	firstLineTraced := false
@@ -813,27 +860,21 @@ func (p *Process) ReadOutput(scanner *bufio.Scanner, intercept outputInterceptor
 			agent.TraceStartupPhase(p.agentID, "first_agent_line")
 			firstLineTraced = true
 		}
-
 		if p.IsDiscardingOutput() {
 			continue
 		}
-
 		lineCopy := make([]byte, len(line))
 		copy(lineCopy, line)
-
-		parsed := &ParsedLine{Raw: lineCopy}
-		if err := json.Unmarshal(lineCopy, parsed); err != nil {
-			slog.Warn("invalid agent output JSON", "agent_id", p.agentID, "error", err)
-			continue
-		}
-
-		if intercept(parsed) {
-			continue
-		}
-
-		handle(parsed)
+		handle(lineCopy)
 	}
 
+	p.finishOutput(scanner)
+}
+
+// finishOutput runs after stdout closes. It records a framing failure, waits for
+// the process, and closes processDone, which is what Wait and every stop path
+// block on.
+func (p *Process) finishOutput(scanner *bufio.Scanner) {
 	if err := scanner.Err(); err != nil {
 		slog.Warn("agent stdout read error",
 			"agent_id", p.agentID,
@@ -848,6 +889,14 @@ func (p *Process) ReadOutput(scanner *bufio.Scanner, intercept outputInterceptor
 		slog.Debug("job object close failed", "agent_id", p.agentID, "error", err)
 	}
 	close(p.processDone)
+	// Work that a provider binds to the process context -- an event stream, a
+	// reconnect loop, a poller -- ends with the process, whether it exited by
+	// itself or crashed. Stop cancels earlier only when the process outlives its
+	// grace. The cancel comes after processDone closes, so a wait that sees both
+	// can report the exit (see AwaitResponse).
+	if p.cancel != nil {
+		p.cancel()
+	}
 }
 
 // MessageWithToolUses captures the completed tool count as separate worker metadata.

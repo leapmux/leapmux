@@ -3,7 +3,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createControlAnswerState } from '../../controls/types'
 import { acpResultDivider } from '../acp/extractors/resultDivider'
 import { describeACPProviderBasics, renderACPRow } from '../acp/testUtils'
-import { sendOpenCodeQuestionResponse } from '../opencode/askUserQuestion'
+import { sendOpenCodeQuestionResponse } from '../openCodeQuestions'
 import { providerFor } from '../registry'
 
 import { input } from '../testUtils'

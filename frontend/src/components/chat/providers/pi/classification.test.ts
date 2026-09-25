@@ -79,12 +79,14 @@ describe('classifyPiMessage', () => {
     expect(classifyPiMessage(input(parent))).toEqual({ kind: 'assistant_text' })
   })
 
-  it('classifies message_end with only thinking content as assistant_thinking', () => {
+  // The worker persists the thinking of each assistant message as a reasoning row of
+  // its own, before the message. The message's own row then draws its text alone.
+  it('hides message_end with only thinking content', () => {
     const parent = {
       type: 'message_end',
       message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'reasoning' }] },
     }
-    expect(classifyPiMessage(input(parent))).toEqual({ kind: 'assistant_thinking' })
+    expect(classifyPiMessage(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   // The neutral {isSynthetic, controlResponse} row -> control_response classification is provider-

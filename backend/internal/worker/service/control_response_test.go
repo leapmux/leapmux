@@ -1898,14 +1898,24 @@ func TestProcessControlResponse(t *testing.T) {
 			provider leapmuxv1.AgentProvider
 			toolName string
 			want     string
+			// payload is the stored request. Empty uses the control_request shape
+			// that Claude and ZCode share.
+			payload string
 		}{
 			{
-				"claude", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-				claude.ToolNameExitPlanMode, contracts.ClaudeModeAcceptEdits,
+				name: "claude", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+				toolName: claude.ToolNameExitPlanMode, want: contracts.ClaudeModeAcceptEdits,
 			},
 			{
-				"zcode", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
-				contracts.ZCodeToolNameExitPlanMode, contracts.ZCodeModeBuild,
+				name: "zcode", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+				toolName: contracts.ZCodeToolNameExitPlanMode, want: contracts.ZCodeModeBuild,
+			},
+			{
+				name: "mimo", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE,
+				toolName: contracts.MiMoToolPlanExit, want: contracts.MiMoModeBuild,
+				payload: `{"type":"question.asked","properties":{"id":"que_1","sessionID":"ses_1",` +
+					`"questions":[{"key":"plan_exit","params":{"plan":"plan.md"}}]},` +
+					`"request":{"tool_name":"plan_exit","tool_use_id":"call-1"}}`,
 			},
 		}
 		for _, tc := range cases {
@@ -1915,9 +1925,12 @@ func TestProcessControlResponse(t *testing.T) {
 					ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 					AgentProvider: tc.provider,
 				}))
-				payload := `{"type":"control_request","request_id":"plan-1","id":7,` +
-					`"method":"interaction/requestUserInput",` +
-					`"request":{"tool_name":"` + tc.toolName + `","tool_use_id":"call-1"}}`
+				payload := tc.payload
+				if payload == "" {
+					payload = `{"type":"control_request","request_id":"plan-1","id":7,` +
+						`"method":"interaction/requestUserInput",` +
+						`"request":{"tool_name":"` + tc.toolName + `","tool_use_id":"call-1"}}`
+				}
 				createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 					AgentID: "agent-1", RequestID: "plan-1", Payload: []byte(payload), ClaimToken: "plan-tok",
 				})
@@ -1970,6 +1983,20 @@ func TestProcessControlResponseKeepsInvalidAnswersRetryable(t *testing.T) {
 			request:  `{"type":"control_request","request_id":"req-1","id":7,"method":"interaction/requestUserInput","request":{"tool_name":"Bash","tool_use_id":"call-1"}}`,
 			invalid:  `{"response":{"request_id":"req-1","response":{"behavior":"invalid"}}}`,
 			valid:    `{"response":{"request_id":"req-1","response":{"behavior":"deny"}}}`,
+		},
+		{
+			name:     "mimo question",
+			provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE,
+			request:  `{"type":"question.asked","properties":{"id":"que_1","sessionID":"ses_1","questions":[{"question":"Pick","options":[{"label":"A"}]}]},"request":{"tool_name":"question","tool_use_id":"call-1"}}`,
+			invalid:  `{"response":{"request_id":"req-1","response":{"behavior":"allow"}}}`,
+			valid:    `{"jsonrpc":"2.0","id":"req-1","result":{"answers":[["A"]]}}`,
+		},
+		{
+			name:     "mimo permission",
+			provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE,
+			request:  `{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_1","permission":"bash"},"request":{"tool_name":"bash","tool_use_id":"call-1"}}`,
+			invalid:  `{"jsonrpc":"2.0","id":"req-1","result":{"outcome":{"outcome":"selected","optionId":"forever"}}}`,
+			valid:    `{"jsonrpc":"2.0","id":"req-1","result":{"outcome":{"outcome":"selected","optionId":"always"}}}`,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

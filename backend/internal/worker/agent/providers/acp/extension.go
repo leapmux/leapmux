@@ -5,6 +5,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // This file holds what an ACP provider changes about the shared base, and the
@@ -69,8 +70,44 @@ type Hooks struct {
 	// primary-agent list applies it.
 	PrimaryAgentHiddenFilter func(string) bool
 	// ClientCapabilityMeta advertises the provider extensions that LeapMux
-	// supports, in the `_meta` of the initialize request.
+	// supports, in the `_meta` of the initialize request's clientCapabilities.
 	ClientCapabilityMeta map[string]any
+	// InitializeMeta is the `_meta` of the initialize request itself, beside its
+	// clientCapabilities. Grok Build reads the client identity there, which
+	// selects its option lists and scopes its approval-mode notification.
+	InitializeMeta map[string]any
+	// InitializeResponse reads the initialize response, once, before the base
+	// opens the session. A provider whose agent states something there that no
+	// later update restates -- Grok Build lists its commands -- records it.
+	InitializeResponse func(response []byte)
+	// ControlRequestObserver reads each control request that
+	// PublishSessionControlRequest publishes: a permission request and an MCP
+	// elicitation of the base, and each dialog of the provider's own. It runs
+	// before the publication, and never for a request that the base refuses
+	// because its session is one that the agent does not serve. A provider whose
+	// agent withdraws such a request by an event of its own, rather than by the
+	// protocol's cancel notification, records what identifies it here.
+	ControlRequestObserver func(line *providerkit.ParsedLine)
+	// AnswerlessControlsOutliveTurns states that each control request which the
+	// provider publishes with no cancel answer asks about the session or the
+	// process, not about the running turn. A stop and a context clear then
+	// answer and retire only the requests that carry a cancel answer, and keep
+	// the rest open for the reader.
+	//
+	// Grok Build sets it: its one such request asks whether a repository may
+	// load its own configuration. No turn owns that question, and Grok keeps
+	// waiting for the answer, so a stop that retired the card left the
+	// repository untrusted until the agent restarted. The default retires every
+	// open request, which is right for Cursor's question: its turn owns the
+	// question, and Cursor defines no outcome for a withdrawn one.
+	AnswerlessControlsOutliveTurns bool
+	// RetireSession stops the work that an outgoing session left running, for an
+	// agent that offers a route to that work beside session/close. A context
+	// clear calls it once with the id of the session that it replaced, after the
+	// swap, and after it sent that session session/cancel and, when the agent
+	// advertises it, session/close. It runs on the goroutine of the clear, so it
+	// must not wait on the agent: send each request detached.
+	RetireSession func(sessionID string)
 	// AdvertisedSteerMethod reads the steer method that the initialize response
 	// advertises. It returns "" when the response advertises none.
 	AdvertisedSteerMethod func(initializeResponse []byte) string
@@ -78,10 +115,12 @@ type Hooks struct {
 	// know. It returns true for a line that it handled. The base refuses an
 	// unhandled request and persists an unhandled notification.
 	ExtraMethod MethodHandler
-	// SessionMetadataHandler reads the provider `_meta` of a session update. It
-	// returns true for an update that it consumed, and the base then does not
-	// dispatch the update.
-	SessionMetadataHandler func(updateType string, metadata map[string]json.RawMessage) bool
+	// SessionMetadataHandler reads the provider `_meta` of a session update of
+	// the main session. It returns true for an update that it consumed, and the
+	// base then does not dispatch the update. update is the whole update, for a
+	// provider that keeps an update it consumed as a record: Kiro ends a turn
+	// that it started by itself with an update, which becomes the turn-end row.
+	SessionMetadataHandler func(updateType string, metadata map[string]json.RawMessage, update json.RawMessage) bool
 	// SubagentFromToolCall and SubagentFromToolCallUpdate translate a tool_call
 	// and a tool_call_update into a neutral SubagentObservation. The
 	// observation drives the background-task registry and the child transcripts.
@@ -122,14 +161,106 @@ type Hooks struct {
 	// resolves it, and UpdateSettings and the reapply path use that, so one body
 	// serves Cursor and the plain providers alike.
 	ModelSetter func(string) error
-	// ModelDecorator, when set, changes each built model in place. Cursor parses
-	// the metadata in its bracketed model ids (effort, thinking, context) into the
-	// Description and the ContextWindow of the ModelInfo, which the bare name that
-	// the server reports omits.
-	ModelDecorator func(*agent.ModelInfo)
+	// ModelWriteRevealsOptions states that the agent reports some config
+	// options of a model only after the client writes that model. Kiro reports
+	// the effort axis of a model this way: its session/new and session/load
+	// responses omit the axis, although the model has one. The startup then
+	// writes the model even when the session already runs it, so the options
+	// exist before the startup applies the requested values to them. False
+	// skips a model write that changes nothing.
+	ModelWriteRevealsOptions bool
+	// ModelDecorator, when set, changes each built model in place. meta is the
+	// `_meta` that the session reported beside the model:
+	//
+	//   - For an entry of the `models` field, the `_meta` of that entry.
+	//   - For a value of the configOptions `model` select, the `_meta` of that
+	//     value (ConfigOptionValue.Meta). Kiro states the credit rate of each
+	//     model there.
+	//   - nil when the session reported no `_meta` for the model.
+	//
+	// A model that both channels list takes the entry of the `models` field and
+	// its `_meta` (see mergeModelInfos), so the decorator reads one source for
+	// each model. Cursor parses the metadata in its bracketed model ids (effort,
+	// thinking, context) into the Description and the ContextWindow of the
+	// ModelInfo, which the bare name that the server reports omits. Grok Build
+	// and Qwen Code state the context window in meta.
+	ModelDecorator func(model *agent.ModelInfo, meta json.RawMessage)
 	// ClearProviderState drops the provider state that the tool-call ids of the
 	// outgoing session key. ClearContext calls it.
 	ClearProviderState func()
+	// ChildUpdateRoute reads the registry row key of the subagent that one
+	// update of the main session belongs to, from the update type and its
+	// `_meta`. It returns "" for an update of the main session. Qwen Code tags
+	// each update of a foreground subagent with the id of the tool call that
+	// spawned it. See children.go for the other route, a session of its own.
+	ChildUpdateRoute func(updateType string, metadata map[string]json.RawMessage) string
+	// ChunkMessageID reads the identity of the message that one
+	// agent_message_chunk or agent_thought_chunk belongs to, from the `_meta` of
+	// the update. It returns "" for a chunk that states none, and such a chunk
+	// continues the buffered text. The protocol states no message boundary, so a
+	// provider whose agent sends two answers with no update between them states
+	// the boundary here: Kiro gives each answer its own `_meta.kiro.replayId`,
+	// and its plan mode hands a plan to the default mode that way. A chunk of
+	// another message stores the buffered text first, as a message of its own.
+	// Nil keeps a run of chunks one message until another update ends it.
+	ChunkMessageID func(metadata map[string]json.RawMessage) string
+	// ChildUserMessages states that a user_message_chunk that reaches the
+	// transcript of a subagent is a message that the agent gave that subagent:
+	// the instruction that opens a workflow step of Kiro, in the step's own
+	// session. The reader never types into such a transcript. The base writes
+	// the message into the child transcript: the first one as the prompt that
+	// opens it, and each later one as a user message. The agent must send each
+	// message whole, in one update. Without the hook the base drops the chunk,
+	// as it drops a user_message_chunk of the main session.
+	ChildUserMessages bool
+	// SteersByOwnRoute states that the provider steers a running turn by a
+	// route of its own rather than by a method that the initialize response
+	// advertises: a second prompt on the same session (OpenCode, Kilo), a method
+	// that no handshake states (Grok Build), or a queue that the agent drains
+	// between two tool batches (Qwen Code). The base then reports steering, and
+	// publishes each running turn as steerable.
+	SteersByOwnRoute bool
+	// FollowUpPrompt returns input that the provider accepted for the running
+	// turn and that the turn ended before it could read. The base sends it as the
+	// next prompt at once, before it reports the turn as over, so a message that
+	// the worker queued later cannot overtake it. ok is false when nothing is
+	// left. stopped states that the reader stopped the turn that ended: the base
+	// then starts no new turn whatever the answer, and the provider decides what
+	// becomes of the input -- Qwen Code drops it and says so in the transcript,
+	// because the reader stopped the turn that the input was for.
+	FollowUpPrompt func(stopped bool) (content string, attachments []*leapmuxv1.Attachment, ok bool)
+	// PromptEnded reads how a prompt of LeapMux's ended, before the base writes
+	// the turn-end row or the failure note of that prompt. err is the error of a
+	// prompt that failed, and nil for a prompt that returned a result. stopped
+	// states that the reader stopped the prompt or that the agent stopped: the
+	// base then writes no failure note for an error. The base calls it only for
+	// a prompt of the current session. A provider that holds state for the
+	// running prompt settles it here: Kiro holds the display error of a prompt,
+	// and writes it unless the prompt's failure note states the same text.
+	PromptEnded func(err error, stopped bool)
+	// DisableHostTerminal withholds the host terminal capability from the
+	// initialize request. A provider that runs its shell commands itself and
+	// would otherwise route them through the host terminal of LeapMux sets it:
+	// Grok Build then loses its own background commands and their completion
+	// events.
+	DisableHostTerminal bool
+	// PromptParams adjusts the params of each session/prompt before the base
+	// sends it, the follow-up prompt included. Grok Build states the prompt id
+	// there, so it can tell its own prompts from the turns the agent starts.
+	PromptParams func(params map[string]any)
+	// SessionParams adjusts the params of a session/new, a session/load or a
+	// session/resume request before the base sends it. A provider adds its own
+	// `_meta` keys there, or states the cwd that its store recorded for a
+	// resumed session.
+	SessionParams func(method string, params map[string]any)
+	// LocalOptionGroups returns the option groups that the provider keeps
+	// itself, because the agent neither reports nor stores them. The base serves
+	// them after the groups of the session, and routes a change of one of them to
+	// ApplyLocalOption. Each group carries its current value.
+	LocalOptionGroups func() []*leapmuxv1.AvailableOptionGroup
+	// ApplyLocalOption applies a new value of one local option group. It returns
+	// handled=false for an id that no local group owns.
+	ApplyLocalOption func(id, value string) (handled bool, err error)
 }
 
 // applyHooks keeps the hooks that the Configure function of one provider

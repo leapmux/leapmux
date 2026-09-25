@@ -28,6 +28,12 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
+// inputQueueWait limits each wait for work that the input queue does on a
+// goroutine of its own: a dispatch, a cold start, a broadcast. A wait that
+// succeeds returns at once, so the limit is generous for a loaded machine: a
+// short limit fails a correct test when the machine is busy.
+const inputQueueWait = 30 * time.Second
+
 func TestQueueSnapshotFitsDefaultWireBudgetWithLargeTextItems(t *testing.T) {
 	t.Parallel()
 
@@ -502,7 +508,7 @@ func TestAgentInputQueueBroadcastsSnapshotToTwoClients(t *testing.T) {
 				}
 			}
 			return false
-		}, time.Second, 10*time.Millisecond)
+		}, inputQueueWait, 10*time.Millisecond)
 	}
 }
 
@@ -530,7 +536,7 @@ func TestQueuedClearStartsColdAgentOnlyOnce(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, "agent-1")
 		return snapshotErr == nil && len(snapshot.Items) == 0
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 	assert.Equal(t, int32(1), starts.Load())
 }
 
@@ -560,7 +566,7 @@ func TestQueuedClearCreatesBoundaryBeforeLaterInputRuns(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, "agent-1")
 		return snapshotErr == nil && len(snapshot.Items) == 0 && snapshot.ActiveTurn
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 
 	messages, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 	require.NoError(t, err)
@@ -612,7 +618,7 @@ func TestQueuedClearFailureKeepsInputOutOfTranscript(t *testing.T) {
 		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, "agent-1")
 		return snapshotErr == nil && snapshot.Paused && len(snapshot.Items) == 1 &&
 			snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 	messages, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 	require.NoError(t, err)
 	require.Len(t, messages, 1)
@@ -737,7 +743,7 @@ func startGoalTextAgent(t *testing.T, svc *Service, agentID string) {
 		"{\"type\":\"system\",\"subtype\":\"init\",\"slash_commands\":[\"goal\"]}\n")))
 	require.Eventually(t, func() bool {
 		return len(svc.Agents.SupportedGoalActions(agentID)) > 0
-	}, time.Second, 5*time.Millisecond)
+	}, inputQueueWait, 5*time.Millisecond)
 }
 
 // A text-route goal command enters the durable input queue. The local goal row
@@ -775,7 +781,7 @@ func TestUpdateAgentGoalQueuesTextUntilDelivery(t *testing.T) {
 	require.Eventually(t, func() bool {
 		loaded, loadErr := svc.Output.LoadGoal(ctx, "agent-1")
 		return loadErr == nil && loaded.Goal.GetObjective() == "ship the release"
-	}, time.Second, 5*time.Millisecond)
+	}, inputQueueWait, 5*time.Millisecond)
 }
 
 func TestUpdateAgentGoalReturnsTheQueueFullMessage(t *testing.T) {
@@ -1041,7 +1047,7 @@ func requireInterruptReachedAgent(t *testing.T, svc *Service, agentID string) {
 			}
 		}
 		return false
-	}, 5*time.Second, 10*time.Millisecond, "the interrupt never reached the agent process")
+	}, inputQueueWait, 10*time.Millisecond, "the interrupt never reached the agent process")
 }
 
 // stopInputQueue stops the queue manager, so every later queue write returns
@@ -1263,7 +1269,7 @@ func TestRawInterruptFrameRunsWhenTheQueuePauseFails(t *testing.T) {
 	require.Eventually(t, func() bool {
 		echoed = recorder.requests()
 		return len(echoed) > 0
-	}, 5*time.Second, 10*time.Millisecond, "the interrupt never reached the agent process")
+	}, inputQueueWait, 10*time.Millisecond, "the interrupt never reached the agent process")
 	require.Len(t, echoed, 1)
 	assert.Equal(t, "raw-interrupt-1", echoed[0].RequestID,
 		"the agent received a frame with a different request id")
@@ -1543,4 +1549,154 @@ func TestResolveControlInputStatesAStoreFaultAsItsPauseReason(t *testing.T) {
 	assert.Equal(t, inputqueue.DispatchNotReady, delivery.Outcome)
 	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT,
 		delivery.PauseReason)
+}
+
+// newRequeueFixture creates a Codewhale agent whose paused queue holds what a
+// provider hands back, so the test reads the queue before anything dispatches.
+func newRequeueFixture(t *testing.T) (*Service, agent.ProviderServices) {
+	t.Helper()
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE,
+	}))
+	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
+	require.NoError(t, err)
+	return svc, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE)
+}
+
+// requeuedNotices counts the rows that state why a message appears again.
+func requeuedNotices(t *testing.T, svc *Service) int {
+	t.Helper()
+	return len(findNotificationsByType(readAllNotifications(t, svc.Queries, "agent-1"), contracts.NotificationTypeInputRequeued))
+}
+
+// TestRequeueDroppedInputQueuesTheInputAndStatesWhyOnce pins the hand-back of a
+// dropped input: the queue holds it as the reader's own message, one row states
+// why it appears again, and a repeat of the same drop adds neither.
+func TestRequeueDroppedInputQueuesTheInputAndStatesWhyOnce(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, sink := newRequeueFixture(t)
+	attachments := []*leapmuxv1.Attachment{{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("body")}}
+
+	require.NoError(t, sink.RequeueDroppedInput("turn-1/1", "Also check the tests.", attachments))
+	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	item := snapshot.Items[0]
+	assert.Equal(t, droppedInputID("agent-1", "turn-1/1"), item.ID)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, item.Kind)
+	assert.Equal(t, "Also check the tests.", item.Text)
+	assert.True(t, item.ReclassifyOnEdit, "an edit of the hand-back reads its text again, as an edit of a typed message does")
+	require.Len(t, item.Metadata, 1)
+	assert.Equal(t, "notes.txt", item.Metadata[0].Filename)
+	assert.Equal(t, int64(4), item.Metadata[0].Size)
+	assert.Equal(t, 1, requeuedNotices(t, svc))
+
+	require.NoError(t, sink.RequeueDroppedInput("turn-1/1", "Also check the tests.", attachments), "a repeat is not a failure")
+	snapshot, err = svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Len(t, snapshot.Items, 1, "a repeat of one drop queues nothing")
+	assert.Equal(t, 1, requeuedNotices(t, svc), "a repeat of one drop writes no second row")
+
+	require.NoError(t, sink.RequeueDroppedInput("turn-1/2", "And the docs.", nil))
+	snapshot, err = svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 2)
+	assert.Equal(t, "And the docs.", snapshot.Items[1].Text, "the queue appends a hand-back behind what it holds")
+	assert.Equal(t, 2, requeuedNotices(t, svc))
+}
+
+// TestRequeueDroppedInputReportsARefusalAndStatesNothing pins the failure paths.
+// The provider states the drop to the reader itself when the queue refuses, so a
+// refusal must write no row that claims the message comes again.
+func TestRequeueDroppedInputReportsARefusalAndStatesNothing(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a stopped queue", func(t *testing.T) {
+		t.Parallel()
+		svc, sink := newRequeueFixture(t)
+		stopInputQueue(t, svc, "agent-1")
+		err := sink.RequeueDroppedInput("turn-1/1", "Also check the tests.", nil)
+		require.ErrorIs(t, err, inputqueue.ErrManagerStopped)
+		assert.Zero(t, requeuedNotices(t, svc))
+	})
+
+	t.Run("the same drop with different text", func(t *testing.T) {
+		t.Parallel()
+		svc, sink := newRequeueFixture(t)
+		require.NoError(t, sink.RequeueDroppedInput("turn-1/1", "Also check the tests.", nil))
+		err := sink.RequeueDroppedInput("turn-1/1", "Something else.", nil)
+		require.ErrorIs(t, err, inputqueue.ErrConflict)
+		assert.Equal(t, 1, requeuedNotices(t, svc))
+	})
+
+	t.Run("an empty input", func(t *testing.T) {
+		t.Parallel()
+		svc, sink := newRequeueFixture(t)
+		err := sink.RequeueDroppedInput("turn-1/1", "", nil)
+		require.Error(t, err)
+		assert.Zero(t, requeuedNotices(t, svc))
+	})
+
+	t.Run("a subagent", func(t *testing.T) {
+		t.Parallel()
+		svc, sink := newRequeueFixture(t)
+		childID, err := sink.EnsureChildAgent("spawn-span", "row-key", "child task")
+		require.NoError(t, err)
+		err = sink.ChildSink(childID).RequeueDroppedInput("turn-1/1", "Also check the tests.", nil)
+		require.ErrorContains(t, err, "has no input queue")
+		snapshot, err := svc.InputQueue.Snapshot(context.Background(), childID)
+		require.NoError(t, err)
+		assert.Empty(t, snapshot.Items)
+	})
+
+	t.Run("no queue wired", func(t *testing.T) {
+		t.Parallel()
+		svc, sink := newRequeueFixture(t)
+		svc.Output.SetRequeueDroppedInputFunc(nil)
+		err := sink.RequeueDroppedInput("turn-1/1", "Also check the tests.", nil)
+		require.ErrorContains(t, err, "no input queue is wired")
+		assert.Zero(t, requeuedNotices(t, svc))
+	})
+}
+
+// A provider can hand back one drop from two goroutines at once, for example a
+// turn end and a stop that race. The queue adds the item once, and one row
+// states why the message appears again.
+func TestRequeueDroppedInputAddsOneDropOnceAcrossConcurrentCalls(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, sink := newRequeueFixture(t)
+	const callers = 8
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Go(func() {
+			assert.NoError(t, sink.RequeueDroppedInput("turn-1/1", "Also check the tests.", nil))
+		})
+	}
+	wg.Wait()
+
+	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Len(t, snapshot.Items, 1)
+	assert.Equal(t, 1, requeuedNotices(t, svc))
+}
+
+func TestDroppedInputIDKeepsEachAgentAndDropApart(t *testing.T) {
+	t.Parallel()
+
+	id := droppedInputID("agent-1", "turn-1/1")
+	assert.Regexp(t, `^dropped-[0-9a-f]{32}$`, id)
+	assert.Equal(t, id, droppedInputID("agent-1", "turn-1/1"), "one drop gives one id")
+	assert.NotEqual(t, id, droppedInputID("agent-2", "turn-1/1"), "the id is unique across the Worker")
+	assert.NotEqual(t, id, droppedInputID("agent-1", "turn-1/2"))
+	// A drop id is the provider's own text, so no separator keeps the pair apart.
+	assert.NotEqual(t, droppedInputID("a\x00b", "c"), droppedInputID("a", "b\x00c"))
+	assert.NotEqual(t, droppedInputID("ab", "c"), droppedInputID("a", "bc"))
+	assert.NotEqual(t, droppedInputID("", "x"), droppedInputID("x", ""))
 }

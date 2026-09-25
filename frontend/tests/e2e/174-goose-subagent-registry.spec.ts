@@ -53,8 +53,9 @@ gooseTest.describe('Goose subagent registry', () => {
       name: 'the child reports the shell result',
       // ANCHORED. A parent turn that carries the tool request embeds this whole
       // prompt, so an unanchored pattern answers the PARENT's turn and the
-      // queued step is never consumed.
-      when: { user: '^Run `echo goose-done`' },
+      // queued step is never consumed. Goose 1.52 opens a subagent's message
+      // with a `Subagent ID: <id>` line of its own, which the anchor admits.
+      when: { user: '^(?:Subagent ID: [^\\n]*\\n+)?Run `echo goose-done`' },
       respond: { text: 'The command printed goose-done.' },
     })
     // Goose runs a PERMISSION-SAFETY CLASSIFIER turn of its own before it lets a
@@ -86,75 +87,70 @@ gooseTest.describe('Goose subagent registry', () => {
 
     // The spawn is scripted, so a missing row is a failure rather than the
     // model's discretion.
-    const row = await requireRegistryRow(page)
-    const r = row!
+    const r = await requireRegistryRow(page)
 
     // The spawn itself creates the transcript. A child that uses no tool still
-    // keeps its prompt and report.
+    // keeps its prompt and report. The row renders the attribute on every row, as
+    // the empty string until the child exists, so the poll is what proves the id.
     await expect.poll(async () => await r.getAttribute('data-child-agent-id')).not.toBe('')
-    const childId = await r.getAttribute('data-child-agent-id')
-    expect(childId).not.toBeNull()
+    const childId = await r.getAttribute('data-child-agent-id') ?? ''
 
-    if (childId) {
-      // Click -> child tab opens adjacent to the parent.
-      const tabsBefore = await page.locator('[data-testid="tab"][data-tab-type="agent"]').count()
-      await r.click()
-      await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(tabsBefore + 1)
-      // Composer on the child tab is disabled (Goose is not steerable), and
-      // the box itself says WHY. The placeholder used to blame a lost
-      // connection the read-only transcript never had; asserting it here is
-      // what proves the reason reaches the editor, since the plugin's unit
-      // test cannot see the prop chain that feeds it.
-      const noMessages = 'This subagent doesn\'t accept messages.'
-      await expect(page.locator(`[data-placeholder="${noMessages}"]:visible`)).toBeVisible()
-      // ONCE, not twice. The reason used to render again as a note above the
-      // box, so a read-only subagent tab said the same sentence twice, a few
-      // pixels apart.
-      //
-      // VISIBLE only. `Tooltip` also leaves an offscreen `srOnly` description
-      // in `aria-describedby` for as long as the control is disabled, which is
-      // the only route a screen-reader user has to the reason. An unscoped
-      // count reads those too -- nine of them here -- and fails on the
-      // behaviour the tooltip is required to have.
-      await expect(page.getByText(noMessages, { exact: true }).filter({ visible: true })).toHaveCount(0)
+    // Click -> child tab opens adjacent to the parent.
+    const tabsBefore = await page.locator('[data-testid="tab"][data-tab-type="agent"]').count()
+    await r.click()
+    await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(tabsBefore + 1)
+    // Composer on the child tab is disabled (Goose is not steerable), and
+    // the box itself says WHY. The placeholder used to blame a lost
+    // connection the read-only transcript never had; asserting it here is
+    // what proves the reason reaches the editor, since the plugin's unit
+    // test cannot see the prop chain that feeds it.
+    const noMessages = 'This subagent doesn\'t accept messages.'
+    await expect(page.locator(`[data-placeholder="${noMessages}"]:visible`)).toBeVisible()
+    // ONCE, not twice. The reason used to render again as a note above the
+    // box, so a read-only subagent tab said the same sentence twice, a few
+    // pixels apart.
+    //
+    // VISIBLE only. `Tooltip` also leaves an offscreen `srOnly` description
+    // in `aria-describedby` for as long as the control is disabled, which is
+    // the only route a screen-reader user has to the reason. An unscoped
+    // count reads those too -- nine of them here -- and fails on the
+    // behaviour the tooltip is required to have.
+    await expect(page.getByText(noMessages, { exact: true }).filter({ visible: true })).toHaveCount(0)
 
-      // The report bubble carries BOTH the label and the child's answer, which is
-      // the form 188 already proves. It used to read
-      // `getByText('Subagent reported', { exact: true })` behind a status guard:
-      // `exact` demands that the element's WHOLE text be those two words, so it
-      // could never match a bubble that also carries the report, and the guard
-      // kept it from ever running.
-      await expect(page.locator('[data-testid="message-bubble"]:visible')
-        .filter({ hasText: 'Subagent reported' })
-        .filter({ hasText: /goose-done/ })).toBeVisible()
-    }
+    // The report bubble carries BOTH the label and the child's answer, which is
+    // the form 188 already proves. It used to read
+    // `getByText('Subagent reported', { exact: true })` behind a status guard:
+    // `exact` demands that the element's WHOLE text be those two words, so it
+    // could never match a bubble that also carries the report, and the guard
+    // kept it from ever running.
+    await expect(page.locator('[data-testid="message-bubble"]:visible')
+      .filter({ hasText: 'Subagent reported' })
+      .filter({ hasText: /goose-done/ })).toBeVisible()
 
     await expectRowBecomesFinal(page, r)
     await expectSectionPersists(page)
 
-    // Worker-backed: a child agent exists with a parent when Goose linked one.
-    if (childId) {
-      // Ask the worker about THIS child id (read off the registry row), the way
-      // 170/171 do. Seeding from the hub's tab list instead made this
-      // unreachable: tabs live in the user CRDT and the hub's tab projection is
-      // empty here, so the id list was always [].
-      await expect.poll(async () => {
-        const agents = await listAgents(hubUrl, adminToken, workerId, [childId!])
-        const child = agents?.find(a => a.id === childId)
-        if (!child)
-          return null
-        return {
-          hasParent: child.parentAgentId !== '',
-          hasSpawnSpan: child.spawnSpanId !== '',
-          acceptsMessages: child.acceptsMessages,
-        }
-      }).toEqual({
-        hasParent: true,
-        hasSpawnSpan: true,
-        // Goose cannot steer a subagent, so the child tab is a read-only
-        // transcript -- the same fact the disabled composer above shows.
-        acceptsMessages: false,
-      })
-    }
+    // Worker-backed: the child agent exists, with its parent linkage.
+    // Ask the worker about THIS child id (read off the registry row), the way
+    // 170/171 do. Seeding from the hub's tab list instead made this
+    // unreachable: tabs live in the user CRDT and the hub's tab projection is
+    // empty here, so the id list was always [].
+    await expect.poll(async () => {
+      const agents = await listAgents(hubUrl, adminToken, workerId, [childId])
+      const child = agents?.find(a => a.id === childId)
+      if (!child)
+        return null
+      return {
+        hasParent: child.parentAgentId !== '',
+        hasSpawnSpan: child.spawnSpanId !== '',
+        acceptsMessages: child.acceptsMessages,
+      }
+    }).toEqual({
+      hasParent: true,
+      hasSpawnSpan: true,
+      // Goose cannot steer a subagent, so the child tab is a read-only
+      // transcript -- the same fact the disabled composer above shows.
+      acceptsMessages: false,
+    })
   })
 })

@@ -30,7 +30,26 @@ func TestOpenCodeSteerUsesConcurrentACPPrompt(t *testing.T) {
 // advertises no steer method.
 func TestOpenCodeSupportsSteeringWithoutAnAdvertisedMethod(t *testing.T) {
 	t.Parallel()
-	assert.True(t, (&Agent{}).SupportsSteering())
+	ag := &Agent{}
+	*ag.HooksForTest() = FamilyHooks()
+	assert.True(t, ag.SupportsSteering())
+}
+
+// The steerable flag of a published turn reads the same answer as
+// SupportsSteering. A turn is steerable without an advertised steer method, so
+// the queue steers a message into it rather than holding it back.
+func TestOpenCodePublishesItsTurnAsSteerable(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	ag := &Agent{}
+	*ag.HooksForTest() = FamilyHooks()
+	ag.SetSinkForTest(agent.NewProviderServices(sink))
+	ag.WireTurnActiveForTest()
+	ag.SetPromptActiveForTest(true)
+
+	state := ag.PublishTurnActive()
+	assert.True(t, state.Active)
+	assert.True(t, state.Steerable, "a family turn accepts a steer")
 }
 
 func TestOpenCodeSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {

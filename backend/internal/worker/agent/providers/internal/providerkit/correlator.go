@@ -40,8 +40,13 @@ func (c *Correlator[ID]) Deliver(id ID, raw json.RawMessage) bool {
 	return true
 }
 
+// AwaitResponseTimerTag tags the timer of each AwaitResponse on the process
+// clock, beside the label. A test traps it to end the wait.
+const AwaitResponseTimerTag = "await-response"
+
 // AwaitResponse blocks until raw bytes arrive on `ch` or a teardown
-// signal fires (process exit, ctx cancel, timeout). The label is
+// signal fires (process exit, ctx cancel, timeout). The timeout runs on the
+// process clock (Process.Clock). The label is
 // interpolated into the timeout error so log messages name the stuck
 // RPC. Lives on Process so any agent — JSON-RPC, Pi, or future —
 // shares the same cancellation semantics.
@@ -61,20 +66,33 @@ func (p *Process) AwaitResponse(
 		case <-p.processDone:
 			return nil, p.ProcessExitError()
 		case <-p.ctx.Done():
-			return nil, p.ctx.Err()
+			return nil, p.contextEndError()
 		}
 	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	timer := p.Clock().NewTimer(timeout, AwaitResponseTimerTag, label)
+	defer timer.Stop(AwaitResponseTimerTag, label)
 	select {
 	case raw := <-ch:
 		return raw, nil
 	case <-p.processDone:
 		return nil, p.ProcessExitError()
 	case <-p.ctx.Done():
-		return nil, p.ctx.Err()
+		return nil, p.contextEndError()
 	case <-timer.C:
 		return nil, fmt.Errorf("timeout waiting for %s response", label)
+	}
+}
+
+// contextEndError states why the process context ended. The context also ends
+// when the process exits (finishOutput), and a select that sees both channels
+// ready picks one at random, so the exit wins here: it states why no answer
+// comes, where the context alone states only "canceled".
+func (p *Process) contextEndError() error {
+	select {
+	case <-p.processDone:
+		return p.ProcessExitError()
+	default:
+		return p.ctx.Err()
 	}
 }
 

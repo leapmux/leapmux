@@ -117,6 +117,31 @@ func TestStartKilo_NewSessionHandshakeReadsConfigOptionModels(t *testing.T) {
 	require.NotNil(t, optionids.GroupByID(groups, agent.OptionIDPrimaryAgent))
 }
 
+// Kilo starts through the OpenCode family, so it takes FamilyHooks and steers
+// with a second session/prompt, as OpenCode does.
+func TestStartKilo_TheFamilyStartSteers(t *testing.T) {
+	installFakeKiloACP(t, "")
+
+	provider, err := Start(context.Background(), agent.Options{
+		AgentID:       "kilo-steer",
+		WorkingDir:    t.TempDir(),
+		Shell:         testutil.TestShell(),
+		LoginShell:    false,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
+	}, agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, err)
+
+	a := provider.(*Agent)
+	t.Cleanup(func() {
+		a.Stop()
+		_ = a.Wait()
+	})
+
+	assert.True(t, a.SupportsSteering())
+	a.SetPromptActiveForTest(true)
+	assert.True(t, a.PublishTurnActive().Steerable)
+}
+
 // End-to-end: a Kilo handshake reporting an unmapped config option surfaces it as a
 // mutable option group after the mapped primary-agent group. Kilo shares the
 // primary-agent seam with OpenCode; this is the parity guard.

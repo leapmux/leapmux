@@ -1,6 +1,6 @@
-// Provider registry. Ten plugin modules call registerProvider() at import time as a
-// side effect -- five of them directly, and five through registerACPProvider. The
-// side-effect imports live in providers/index.ts. providerFor() returns undefined for
+// Provider registry. Each plugin module calls registerProvider() at import time as a
+// side effect: directly, or through registerACPProvider or
+// registerOpenCodeProtocolProvider. The side-effect imports live in providers/index.ts. providerFor() returns undefined for
 // a provider nobody imported, so a caller that needs a registered provider imports
 // providers/index.ts, or that provider's own module, first.
 //

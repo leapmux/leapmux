@@ -4,6 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
@@ -584,4 +589,34 @@ func TestWire_WorkerIdentityTriggersAReconcilerPass(t *testing.T) {
 	assert.Eventually(t, func() bool { return w.Service.RegisteredBy().Matches("user-1") },
 		5*time.Second, 10*time.Millisecond,
 		"the identity nudge dropped the delivery it wraps")
+}
+
+// C-M5: the worker sweeps the agent directories that ended workers left when it
+// starts, before any agent of their provider starts. A crash then leaves no
+// secret, and no daemon, behind until that provider starts again.
+func TestWire_SweepsTheAgentDirectoriesOfEndedWorkers(t *testing.T) {
+	// The default bases take $XDG_RUNTIME_DIR and the system's temporary
+	// directory. Both point into the test, so the sweep finds nothing of the
+	// user's own. t.Setenv keeps the test serial.
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	parent := "leapmux-agents"
+	if runtime.GOOS == "windows" {
+		temp := t.TempDir()
+		t.Setenv("TMP", temp)
+		t.Setenv("TEMP", temp)
+	} else {
+		t.Setenv("TMPDIR", t.TempDir())
+		parent += "-" + strconv.Itoa(os.Getuid())
+	}
+	dataDir := t.TempDir()
+	stale := filepath.Join(dataDir, "run", parent, "amp-1-1")
+	require.NoError(t, os.MkdirAll(stale, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(stale, ".owner.lock"), nil, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(stale, "helper.json"), []byte(`{"secret":"s"}`), 0o600))
+
+	wireForTestWith(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, func(p *Params) { p.DataDir = dataDir })
+	assert.Eventually(t, func() bool {
+		_, err := os.Stat(stale)
+		return errors.Is(err, fs.ErrNotExist)
+	}, 30*time.Second, 10*time.Millisecond, "the sweep removed the directory, although no agent started")
 }

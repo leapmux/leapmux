@@ -106,6 +106,43 @@ describe('OptionGroupPopover', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
+  it('shows the provider\'s own reason for a group it states one for', () => {
+    renderPopover({
+      groups: [group({ mutable: false, options: [{ id: 'opus', name: 'Opus' }], currentValue: 'opus', readOnlyReason: 'Start a new session for another model.' })],
+    })
+    expect(reasonOf(screen.getByTestId('model-opus'))).toBe('Start a new session for another model.')
+  })
+
+  it('shows the generic reason for a group whose stated reason is empty', () => {
+    // An empty string is what the wire holds for a provider that states no reason,
+    // because proto3 sends no absent string. It must not blank the tooltip.
+    renderPopover({
+      groups: [group({ mutable: false, options: [{ id: 'opus', name: 'Opus' }], currentValue: 'opus', readOnlyReason: '' })],
+    })
+    expect(reasonOf(screen.getByTestId('model-opus'))).toBe('This setting is controlled by the agent')
+  })
+
+  it('shows the caller\'s reason over the provider\'s own reason', () => {
+    // The composer accepts no input at all, which is the reason that applies to
+    // every group, so it wins over the reason one group states.
+    renderPopover({
+      groups: [group({ mutable: false, options: [{ id: 'opus', name: 'Opus' }], currentValue: 'opus', readOnlyReason: 'Start a new session for another model.' })],
+      disabled: true,
+    })
+    expect(reasonOf(screen.getByTestId('model-opus'))).toBe('This subagent doesn\'t accept messages.')
+  })
+
+  it('ignores a stated reason for a group the reader can change', async () => {
+    const { onChange } = renderPopover({
+      groups: [group({ mutable: true, options: [{ id: 'opus', name: 'Opus' }, { id: 'sonnet', name: 'Sonnet' }], currentValue: 'opus', readOnlyReason: 'Start a new session for another model.' })],
+    })
+    const item = screen.getByTestId('model-sonnet')
+    expect(item).not.toBeDisabled()
+    expect(item).not.toHaveAttribute('aria-describedby')
+    await fireEvent.click(item)
+    expect(onChange).toHaveBeenCalledWith({ sets: { model: 'sonnet' } })
+  })
+
   it('does not dispatch when the composer itself is disabled, and shows the CALLER\'s reason', async () => {
     // A non-steerable subagent: the group is mutable, but the composer accepts
     // no input, so a settings RPC must not leave the client. The sentence is the

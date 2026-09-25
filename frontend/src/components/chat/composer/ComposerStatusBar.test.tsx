@@ -1,6 +1,7 @@
+import type { ProviderSettingChangeHandler } from '~/components/chat/providerSettings'
 import type { AgentInfo, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { DiffStats } from '~/stores/repoGit'
-import { render, screen } from '@solidjs/testing-library'
+import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { stubBranchMenuActions } from '~/test-support/branchMenu'
@@ -38,6 +39,7 @@ function renderBar(
     directory?: string
     homeDir?: string
     branchStats?: DiffStats | null
+    onSettingChange?: ProviderSettingChangeHandler
   } = {},
 ) {
   // The bar takes ONE value now, so the helper assembles it from the flat
@@ -54,7 +56,7 @@ function renderBar(
       {...(a === undefined ? {} : { agent: a })}
       workingTree={workingTree}
       optionValues={{}}
-      onSettingChange={() => {}}
+      onSettingChange={extra.onSettingChange ?? (() => {})}
       branchActions={stubBranchMenuActions()}
       branchWorkerId="w-1"
       infoTrigger={() => <span data-testid="info" />}
@@ -110,6 +112,48 @@ describe('ComposerStatusBar', () => {
     } as Partial<AgentInfo>))
 
     expect(screen.getByTestId('composer-mode-trigger')).toHaveTextContent('chat')
+  })
+
+  it('draws the effort chip from the provider-declared effort axis', () => {
+    // Goose reports its reasoning axis under its own id, and the chip follows it.
+    renderBar(agent({
+      agentProvider: AgentProvider.GOOSE,
+      optionGroups: [group('thinking_effort', 'Thinking Effort', ['high', 'low'])],
+    } as Partial<AgentInfo>))
+
+    expect(screen.getByTestId('composer-effort-trigger')).toHaveTextContent('high')
+  })
+
+  it('draws no effort chip for a group that is not the provider\'s effort axis', () => {
+    // Claude's effort axis is the well-known id, so another provider's id draws no
+    // chip, and Goose's own axis is not the well-known id.
+    renderBar(agent({
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      optionGroups: [group('reasoning_effort', 'Reasoning Effort', ['high'])],
+    } as Partial<AgentInfo>))
+    expect(screen.queryByTestId('composer-effort-trigger')).toBeNull()
+  })
+
+  it('sends an effort change under the provider-declared axis id', async () => {
+    // The chip and the setting it sends must name one axis. A chip that drew
+    // Goose's axis and sent the well-known id would change nothing on the agent.
+    const onSettingChange = vi.fn()
+    renderBar(agent({
+      agentProvider: AgentProvider.GOOSE,
+      optionGroups: [group('thinking_effort', 'Thinking Effort', ['high', 'low'])],
+    } as Partial<AgentInfo>), { onSettingChange })
+
+    fireEvent.click(screen.getByTestId('composer-effort-trigger'))
+    await fireEvent.click(screen.getByTestId('composer-effort-low'))
+    expect(onSettingChange).toHaveBeenCalledWith({ sets: { thinking_effort: 'low' } })
+  })
+
+  it('ignores a well-known effort group for a provider that declares its own axis', () => {
+    renderBar(agent({
+      agentProvider: AgentProvider.GOOSE,
+      optionGroups: [group('effort', 'Effort', ['high'])],
+    } as Partial<AgentInfo>))
+    expect(screen.queryByTestId('composer-effort-trigger')).toBeNull()
   })
 
   it('disables every chip when the composer accepts no input', async () => {

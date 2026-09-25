@@ -152,6 +152,7 @@ export async function restartHub(serverInfo: SeparateServerInfo): Promise<void> 
 
 export const processTest = base.extend<
   {
+    testStartedAt: number
     modelScript: ModelScript
     toastRecorder: void
     workspace: WorkspaceFixture
@@ -161,11 +162,19 @@ export const processTest = base.extend<
     separateHubWorker: SeparateServerInfo
   }
 >({
+  // When the test's timer started. Playwright's test timeout covers the setup of
+  // every test fixture, and this one is the first automatic fixture and depends on
+  // nothing, so it reads the clock as that timer starts. The model script ends a
+  // stalled wait before the test's own deadline, which it computes from this.
+  // eslint-disable-next-line no-empty-pattern
+  testStartedAt: [async ({}, use) => {
+    await use(Date.now())
+  }, { auto: true }],
+
   // The agents of a hub this file starts reach the SAME mock endpoint, because
   // `hubSpawnEnv` gives that hub the run's agent configuration. One script for
   // each test, verified at teardown, exactly as the shared base does it.
-  // eslint-disable-next-line no-empty-pattern
-  modelScript: async ({}, use, testInfo) => runModelScriptFixture(use, testInfo),
+  modelScript: async ({ testStartedAt }, use, testInfo) => runModelScriptFixture(use, testInfo, testStartedAt),
 
   // Worker-scoped fixture: spawns separate hub + worker per test file
   // eslint-disable-next-line no-empty-pattern

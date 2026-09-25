@@ -27,7 +27,16 @@ LeapMux is a workspace for running several coding agents and shell terminals at 
   <a href="https://kilo.ai/cli"><img src="icons/agents/kilo.svg" width="64" height="64" title="Kilo"></a>&nbsp;
   <a href="https://block.github.io/goose/"><img src="icons/agents/goose.svg" width="64" height="64" title="Goose"></a>&nbsp;
   <a href="https://github.com/esengine/DeepSeek-Reasonix"><img src="icons/agents/reasonix.svg" width="64" height="64" title="Reasonix"></a>&nbsp;
-  <a href="https://zcode.z.ai/"><img src="icons/agents/zcode.svg" width="64" height="64" title="ZCode"></a>
+  <a href="https://zcode.z.ai/"><img src="icons/agents/zcode.svg" width="64" height="64" title="ZCode"></a>&nbsp;
+  <a href="https://codewhale.net/en/product"><img src="icons/agents/codewhale.svg" width="64" height="64" title="Codewhale"></a>&nbsp;
+  <a href="https://moonshotai.github.io/kimi-code/en/"><img src="icons/agents/kimi-code.svg" width="64" height="64" title="Kimi Code"></a>&nbsp;
+  <a href="https://mimo.xiaomi.com/coder"><img src="icons/agents/mimo-code.svg" width="64" height="64" title="MiMo Code"></a>&nbsp;
+  <a href="https://qwenlm.github.io/qwen-code-docs/en/users/overview"><img src="icons/agents/qwen-code.svg" width="64" height="64" title="Qwen Code"></a>&nbsp;
+  <a href="https://omp.sh"><img src="icons/agents/oh-my-pi.svg" width="64" height="64" title="Oh My Pi"></a>&nbsp;
+  <a href="https://x.ai/cli"><img src="icons/agents/grok-build.svg" width="64" height="64" title="Grok Build"></a>&nbsp;
+  <a href="https://kiro.dev/cli/"><img src="icons/agents/kiro.svg" width="64" height="64" title="Kiro"></a>&nbsp;
+  <a href="https://ampcode.com/"><img src="icons/agents/amp.svg" width="64" height="64" title="Amp"></a>&nbsp;
+  <a href="https://cline.bot/cli"><img src="icons/agents/cline.svg" width="64" height="64" title="Cline"></a>
 </p>
 
 > **📖 Want to use LeapMux?**
@@ -473,4 +482,4 @@ See the [LICENSE](LICENSE.md) file for full details.
 
 ## Disclaimer
 
-All product names, logos, and trademarks are the property of their respective owners. LeapMux is not affiliated with, endorsed by, or sponsored by Anomaly, Anthropic, Anysphere, Apple, Block, Cognition, Don Ho, Earendil, GitHub, Google, JetBrains, Kilo Code, Microsoft, OpenAI, Sublime HQ, Z.ai, Zed Industries, or any other third party. Coding agent, editor, and IDE icons are used solely to indicate compatibility and are reproduced here for identification purposes only.
+All product names, logos, and trademarks are the property of their respective owners. LeapMux is not affiliated with, endorsed by, or sponsored by Alibaba Cloud, Amazon Web Services, Amp Frontier Corporation, Anomaly, Anthropic, Anysphere, Apple, Block, Cline Bot Inc., Cognition, Don Ho, Earendil, GitHub, Google, JetBrains, Kilo Code, Microsoft, Moonshot AI, OpenAI, Stencil Labs, Sublime HQ, xAI, Xiaomi, Z.ai, Zed Industries, or any other third party. Coding agent, editor, and IDE icons are used solely to indicate compatibility and are reproduced here for identification purposes only.

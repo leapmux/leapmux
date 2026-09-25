@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -49,6 +50,8 @@ func TestKiloSteersThroughTheFamily(t *testing.T) {
 	t.Parallel()
 	_, steers := any(&Agent{}).(agent.InputSteerer)
 	assert.True(t, steers, "Kilo steers through the family's second session/prompt")
-	assert.True(t, (&Agent{}).SupportsSteering(),
+	ag := &Agent{}
+	*ag.HooksForTest() = opencode.FamilyHooks()
+	assert.True(t, ag.SupportsSteering(),
 		"every OpenCode-family provider steers with a second session/prompt")
 }

@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import type { Duplex } from 'node:stream'
 import type {
   MockModelError,
   MockModelProtocol,
@@ -13,18 +14,22 @@ import type {
 import { Buffer } from 'node:buffer'
 import { createServer } from 'node:http'
 import { createServer as createHttp2Server } from 'node:http2'
+import { AMP_ACTOR_PATH_PREFIX, createAmpSurface, isAmpPath } from './ampSurface'
 import { answerCursorStartup, CURSOR_RUN_PATH, cursorTaskCallsFrom, isCursorPath, serveCursorRun } from './cursorSurface'
 import { createDualVersionListener } from './dualVersionListener'
+import { isKiroRequest, kiroOperation, kiroSystemText, kiroUserText, serveKiro } from './kiroSurface'
 import {
   isRecord,
   lastUserText,
   matchesRequest,
   parseScenarioSpec,
+  resolveStepCaptures,
   selectScenarioID,
   systemText,
   textChunks,
   validateScenarioID,
 } from './mockModelScript'
+import { pauseBetweenChunks } from './responsePause'
 
 const MAX_REQUEST_BYTES = 16 * 1024 * 1024
 const MAX_HTTP_REQUEST_RECORDS = 10_000
@@ -62,6 +67,11 @@ const MAX_FALLBACK_ANSWERS = 200
 export interface MockModelHTTPRequestRecord {
   method: string
   path: string
+  /**
+   * The operation of a call of Kiro's service. Every such call is `POST /`, and the
+   * operation is in a header, so the path alone cannot tell two calls apart.
+   */
+  operation?: string
   status: number
 }
 
@@ -87,6 +97,26 @@ export interface MockModelServerOptions {
 export interface MockModelServer {
   url: string
   close: () => Promise<void>
+  /**
+   * How many requests the proxy refused, for each host: each tunnel (`CONNECT`,
+   * keyed by its `host:port`) and each absolute-form request to a host that is not
+   * the mock. The suite reports them at its end, so a host that an agent tries to
+   * reach is visible and not only refused.
+   */
+  refusedHosts: () => ReadonlyMap<string, number>
+}
+
+/** Whether a request target is in absolute form (`http://host/path`), as a proxy receives it. */
+function isAbsoluteForm(target: string): boolean {
+  return /^[a-z][\w+.-]*:\/\//i.test(target)
+}
+
+/** The host names that reach the mock itself. */
+const LOOPBACK_HOSTNAMES: ReadonlySet<string> = new Set(['127.0.0.1', 'localhost', '[::1]'])
+
+/** Whether an absolute-form target addresses the mock itself. */
+function isOwnOrigin(target: URL, ownPort: number): boolean {
+  return LOOPBACK_HOSTNAMES.has(target.hostname) && Number(target.port) === ownPort
 }
 
 interface ScenarioState {
@@ -107,8 +137,14 @@ interface ModelRequestContext {
   userText: string
 }
 
+/** The step that answers one model request, or the reason that no step answers it. */
+type ScenarioAnswer
+  = | { kind: 'step', step: MockModelStep }
+    | { kind: 'missing', message: string }
+
 /**
- * Start a strict model server for the three protocols the coding agents use.
+ * Start a strict model server for every model surface that the coding agents use:
+ * three model APIs, and the own services of Cursor, Kiro and Amp.
  *
  * The server holds no prompt knowledge. Every answer comes from a script that a
  * test registered, so a provider that changes its prompts cannot change what a
@@ -122,11 +158,68 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
   const scenarios = new Map<string, ScenarioState>()
   const http: MockModelHTTPRequestRecord[] = []
   const unmatched: MockModelUnmatchedRequest[] = []
+  const refusedHosts = new Map<string, number>()
   let responseSequence = 0
+  // The port the server listens on. It is set before the server accepts a request.
+  let ownPort = 0
+
+  // Record one request that the proxy refused, and count its host.
+  const refuse = (host: string, record: MockModelHTTPRequestRecord): void => {
+    http.push(record)
+    if (http.length > MAX_HTTP_REQUEST_RECORDS)
+      http.shift()
+    refusedHosts.set(host, (refusedHosts.get(host) ?? 0) + 1)
+  }
+
+  // Every surface asks here, so each one records a request of a scenario that no
+  // test registered in the same way, and states the same reason.
+  const answerFor = (context: ModelRequestContext): ScenarioAnswer => {
+    const scenarioID = selectScenarioID(context.body)
+    const scenario = scenarios.get(scenarioID)
+    if (!scenario) {
+      recordUnmatched(unmatched, { ...context, scenarioID, reason: 'the scenario is not registered' })
+      return { kind: 'missing', message: `The model scenario ${scenarioID} is not registered` }
+    }
+    const step = selectStep(scenario, context)
+    if (!step)
+      return { kind: 'missing', message: `The model scenario ${scenarioID} has no answer for this request. Its status lists the reason.` }
+    return { kind: 'step', step }
+  }
+
+  // Amp's own service, which runs the agent loop and asks the scenarios for each
+  // inference; see `./ampSurface`.
+  const amp = createAmpSurface({
+    answer: async (inference) => {
+      const context: ModelRequestContext = {
+        // The loop states its conversation in the Anthropic Messages shape, so a
+        // matcher reads it the way it reads a Claude request.
+        protocol: 'anthropic-messages',
+        path: AMP_ACTOR_PATH_PREFIX,
+        body: inference.body,
+        systemText: '',
+        userText: inference.userText,
+      }
+      const answer = answerFor(context)
+      return answer.kind === 'step' ? answer.step : undefined
+    },
+  })
 
   const handle = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     try {
-      const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+      // A request that a client sends through the proxy arrives in absolute form.
+      // One to another host is refused, as a tunnel is: answering it by its path
+      // would serve a real host's request as a model route. One to the mock itself
+      // is served as if it came directly.
+      const target = request.url ?? '/'
+      if (isAbsoluteForm(target)) {
+        const absolute = new URL(target)
+        if (!isOwnOrigin(absolute, ownPort)) {
+          refuse(absolute.host, { method: request.method ?? 'UNKNOWN', path: target, status: 403 })
+          response.writeHead(403, { 'content-length': '0', 'connection': 'close' }).end()
+          return
+        }
+      }
+      const url = new URL(target, 'http://127.0.0.1')
       if (url.pathname === '/__e2e/requests') {
         handleRequestLog(request, response, { http, unmatched })
         return
@@ -148,6 +241,12 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
       if (handleIdentityRoute(request, response, url))
         return
 
+      // Amp's own service, which is not a model API either.
+      if (isAmpPath(url.pathname)) {
+        await amp.handleHttp(request, response, url)
+        return
+      }
+
       // Cursor's own backend, which is not a model API at all. Its startup
       // calls take an all-defaults answer apart from the model catalogue, and
       // its turn arrives on one bidirectional stream; see `./cursorSurface`.
@@ -165,15 +264,10 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
                 systemText: '',
                 userText: prompt,
               }
-              const scenarioID = selectScenarioID(prompt)
-              const scenario = scenarios.get(scenarioID)
-              if (!scenario) {
-                recordUnmatched(unmatched, { ...context, scenarioID, reason: 'the scenario is not registered' })
+              const answer = answerFor(context)
+              if (answer.kind !== 'step')
                 return undefined
-              }
-              const step = selectStep(scenario, context)
-              if (!step)
-                return undefined
+              const { step } = answer
               if (step.delayMs)
                 await new Promise<void>(resolve => setTimeout(resolve, step.delayMs))
               const taskCalls = cursorTaskCallsFrom(step.toolCalls)
@@ -185,6 +279,28 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
           return
         }
         answerCursorStartup(request, response, url.pathname)
+        return
+      }
+
+      // Kiro's own service, which states its operation in a header on `POST /`
+      // and answers a turn with an AWS event stream. See `./kiroSurface`.
+      if (isKiroRequest(request)) {
+        const body = await readJSONBody(request)
+        await serveKiro(request, response, body, {
+          answer: async (kiroBody) => {
+            const context: ModelRequestContext = {
+              protocol: 'aws-event-stream',
+              path: url.pathname,
+              body: kiroBody,
+              systemText: kiroSystemText(kiroBody),
+              userText: kiroUserText(kiroBody),
+            }
+            const answer = answerFor(context)
+            if (answer.kind === 'step' && answer.step.delayMs && !await holdOpen(request, response, answer.step.delayMs))
+              return { kind: 'abandoned' }
+            return answer
+          },
+        })
         return
       }
 
@@ -201,18 +317,12 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
         systemText: systemText(body),
         userText: lastUserText(body),
       }
-      const scenarioID = selectScenarioID(body)
-      const scenario = scenarios.get(scenarioID)
-      if (!scenario) {
-        recordUnmatched(unmatched, { ...context, scenarioID, reason: 'the scenario is not registered' })
-        writeJSON(response, 409, { error: { message: `The model scenario ${scenarioID} is not registered` } })
+      const answer = answerFor(context)
+      if (answer.kind === 'missing') {
+        writeJSON(response, 409, { error: { message: answer.message } })
         return
       }
-      const step = selectStep(scenario, context)
-      if (!step) {
-        writeJSON(response, 409, { error: { message: `The model scenario ${scenarioID} has no remaining step` } })
-        return
-      }
+      const { step } = answer
       if (step.delayMs && !await holdOpen(request, response, step.delayMs))
         return
       if (step.error) {
@@ -236,8 +346,31 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
   // HTTP/1.1 to the same endpoint. See `./dualVersionListener` for why Node
   // cannot serve both from one server.
   const http1 = createServer(handle)
+  // The mock is also the HTTPS proxy of the `leapmux dev` process, and so of the
+  // hub, the worker, the terminal shells and every agent. It refuses every tunnel,
+  // and `handle` refuses every absolute-form request to another host. A request
+  // that no setting points at the mock -- a telemetry upload, an update check, a
+  // remote feature -- then fails at once instead of leaving the machine.
+  http1.on('connect', (request: IncomingMessage, socket: Duplex) => {
+    const host = request.url ?? ''
+    refuse(host, { method: 'CONNECT', path: host, status: 403 })
+    socket.on('error', () => socket.destroy())
+    socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
+  })
   const http2 = createHttp2Server(handle as never)
   const { server } = createDualVersionListener(http1, http2)
+  // Amp's CLI reaches its thread actor over a WebSocket. An upgraded socket leaves the
+  // HTTP server's own tracking, so the close below ends each one itself.
+  const upgraded = new Set<Duplex>()
+  http1.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+    upgraded.add(socket)
+    socket.once('close', () => upgraded.delete(socket))
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+    if (url.pathname.startsWith(AMP_ACTOR_PATH_PREFIX))
+      amp.handleUpgrade(request, socket, head, url)
+    else
+      socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+  })
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
@@ -247,13 +380,40 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
     })
   })
   const { port } = server.address() as AddressInfo
+  ownPort = port
   return {
     url: `http://127.0.0.1:${port}`,
+    refusedHosts: () => new Map(refusedHosts),
     close: () => new Promise<void>((resolve, reject) => {
+      amp.close()
       server.close(error => error ? reject(error) : resolve())
       http1.closeAllConnections()
+      for (const socket of upgraded)
+        socket.destroy()
     }),
   }
+}
+
+/**
+ * Choose the answer for one request, with its captures resolved.
+ *
+ * A step whose capture matches nothing in the request records the request as
+ * unexpected and returns nothing, exactly as an exhausted queue does.
+ */
+function selectStep(scenario: ScenarioState, context: ModelRequestContext): MockModelStep | undefined {
+  const step = chooseStep(scenario, context)
+  if (!step)
+    return undefined
+  const resolved = resolveStepCaptures(step, context.body)
+  if ('step' in resolved)
+    return resolved.step
+  scenario.unexpectedRequests.push({
+    protocol: context.protocol,
+    path: context.path,
+    reason: `capture ${resolved.unmatchedCapture} matched nothing in the request`,
+    body: context.body,
+  })
+  return undefined
 }
 
 /**
@@ -263,7 +423,7 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
  * the step the test scripted for the next real turn. An exhausted queue records
  * the request and returns nothing, which makes the scenario incomplete.
  */
-function selectStep(scenario: ScenarioState, context: ModelRequestContext): MockModelStep | undefined {
+function chooseStep(scenario: ScenarioState, context: ModelRequestContext): MockModelStep | undefined {
   const rule = findRule(scenario, context)
   if (rule) {
     scenario.ruleMatches.set(rule.name, (scenario.ruleMatches.get(rule.name) ?? 0) + 1)
@@ -368,7 +528,12 @@ function recordHTTPRequest(
   response: ServerResponse,
   url: URL,
 ): void {
-  const record = { method: request.method ?? 'UNKNOWN', path: url.pathname, status: 0 }
+  const record: MockModelHTTPRequestRecord = {
+    method: request.method ?? 'UNKNOWN',
+    path: url.pathname,
+    ...(isKiroRequest(request) ? { operation: kiroOperation(request) } : {}),
+    status: 0,
+  }
   http.push(record)
   if (http.length > MAX_HTTP_REQUEST_RECORDS)
     http.shift()
@@ -566,28 +731,12 @@ async function writeModelResponse(response: ServerResponse, protocol: MockModelP
       return
     case 'anthropic-messages':
       await writeAnthropicMessage(response, body, step, id)
+      return
+    case 'aws-event-stream':
+      // `protocolFor` never answers this protocol: Kiro's requests take their own
+      // route above, before the path chooses a protocol.
+      throw new Error('The Kiro surface writes an AWS event stream answer, and no model route writes one')
   }
-}
-
-/**
- * Pause between two text pieces, stopping early when the client goes away.
- *
- * An interrupt aborts the request mid-answer, which is the case this exists to
- * serve, so the remaining pieces must not keep a dead socket open for the rest
- * of the script's delay.
- */
-function pauseBetweenChunks(response: ServerResponse, delayMs: number): Promise<void> {
-  if (delayMs <= 0)
-    return Promise.resolve()
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(done, delayMs)
-    function done(): void {
-      clearTimeout(timer)
-      response.off('close', done)
-      resolve()
-    }
-    response.once('close', done)
-  })
 }
 
 async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: unknown, step: MockModelStep, id: string): Promise<void> {
@@ -859,8 +1008,21 @@ function modelFrom(body: unknown): string {
   return isRecord(body) && typeof body.model === 'string' ? body.model : 'mock-model'
 }
 
+/**
+ * Whether a request asks for a stream of events rather than one JSON body.
+ *
+ * All three model APIs stream only when the body states `stream: true`, and
+ * answer with one JSON body when the field is absent. A client that omits the
+ * field reads the answer as one JSON document, and an event stream in its place
+ * fails to parse. Two clients omit it:
+ *
+ * - MiMo Code's goal judge asks for a structured verdict through the AI SDK's
+ *   non-streaming call.
+ * - Codewhale sends its subagents' requests that way. A failed parse makes the
+ *   child retry the same turn until the runtime gives up on it.
+ */
 function streamRequested(body: unknown): boolean {
-  return !isRecord(body) || body.stream !== false
+  return isRecord(body) && body.stream === true
 }
 
 function usage(inputKey: string, outputKey: string): Record<string, number> {

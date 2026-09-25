@@ -142,3 +142,179 @@ func statFixture(t *testing.T, path string) string {
 	require.NoError(t, db.QueryRow("PRAGMA journal_mode").Scan(&journal))
 	return fmt.Sprintf("mode=%v journal=%s", info.Mode(), journal)
 }
+
+// importDDL adds the two tables a fork uses to mark the sessions it imported.
+// One column is nullable on purpose: a row that recorded no session must not
+// empty the listing.
+const importDDL = `
+CREATE TABLE external_import (source text, source_key text, session_id text);
+CREATE TABLE claude_import (source_uuid text, session_id text);`
+
+var forkImportExclusions = []Exclusion{
+	{Table: "external_import", Column: "session_id"},
+	{Table: "claude_import", Column: "session_id"},
+}
+
+func TestListSessionsExcept_DropsTheSessionsAnExclusionLists(t *testing.T) {
+	t.Parallel()
+	dir := testutil.NativeAbsPath("/Users/dev/project")
+	path := filepath.Join(t.TempDir(), "fork.db")
+	opencodestoretest.SeedFamilyDB(t, path, dir)
+	db := agenttest.NewFixtureDB(t, path, importDDL)
+	for _, stmt := range []string{
+		`INSERT INTO external_import VALUES ('cc', 'k1', 'ses_new')`,
+		`INSERT INTO external_import VALUES ('cc', 'k2', NULL)`,
+		`INSERT INTO claude_import VALUES ('u1', 'ses_no_updated')`,
+		`INSERT INTO claude_import VALUES ('u2', NULL)`,
+	} {
+		_, err := db.Exec(stmt)
+		require.NoError(t, err)
+	}
+
+	got, err := ListSessionsExcept(context.Background(), path, agent.StoredSessionQuery{WorkingDir: dir}, forkImportExclusions...)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"ses_old"}, agenttest.Handles(got),
+		"both tables exclude their sessions, and a NULL id in either excludes nothing else")
+}
+
+func TestListSessionsExcept_AnAbsentTableExcludesNothing(t *testing.T) {
+	t.Parallel()
+	dir := testutil.NativeAbsPath("/Users/dev/project")
+	path := filepath.Join(t.TempDir(), "fork.db")
+	opencodestoretest.SeedFamilyDB(t, path, dir)
+
+	got, err := ListSessionsExcept(context.Background(), path, agent.StoredSessionQuery{WorkingDir: dir}, forkImportExclusions...)
+	require.NoError(t, err, "a release that predates the import tables still lists its sessions")
+	assert.Equal(t, []string{"ses_new", "ses_old", "ses_no_updated"}, agenttest.Handles(got))
+}
+
+func TestListSessionsExcept_AnAbsentColumnExcludesNothing(t *testing.T) {
+	t.Parallel()
+	dir := testutil.NativeAbsPath("/Users/dev/project")
+	path := filepath.Join(t.TempDir(), "fork.db")
+	opencodestoretest.SeedFamilyDB(t, path, dir)
+	db := agenttest.NewFixtureDB(t, path, `CREATE TABLE external_import (source text, imported_as text)`)
+	_, err := db.Exec(`INSERT INTO external_import VALUES ('cc', 'ses_new')`)
+	require.NoError(t, err)
+
+	got, err := ListSessionsExcept(context.Background(), path, agent.StoredSessionQuery{WorkingDir: dir}, forkImportExclusions...)
+	require.NoError(t, err, "a table whose shape changed must not fail the listing")
+	assert.Equal(t, []string{"ses_new", "ses_old", "ses_no_updated"}, agenttest.Handles(got))
+}
+
+func TestListSessionsExcept_AbsentStoreIsEmpty(t *testing.T) {
+	t.Parallel()
+	got, err := ListSessionsExcept(context.Background(),
+		filepath.Join(t.TempDir(), "never-created.db"),
+		agent.StoredSessionQuery{WorkingDir: testutil.NativeAbsPath("/Users/dev/project")},
+		forkImportExclusions...)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestListSessionsExcept_EmptyWorkingDirListsNothing(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "fork.db")
+	opencodestoretest.SeedFamilyDB(t, path, testutil.NativeAbsPath("/Users/dev/project"))
+
+	for _, workingDir := range []string{"", "  "} {
+		got, err := ListSessionsExcept(context.Background(), path, agent.StoredSessionQuery{WorkingDir: workingDir}, forkImportExclusions...)
+		require.NoError(t, err, "workingDir=%q", workingDir)
+		assert.Empty(t, got, "workingDir=%q", workingDir)
+	}
+}
+
+// Each exclusion stands alone. A store that holds one of the two tables drops
+// the sessions of that one, and the absent one excludes nothing.
+func TestListSessionsExcept_AppliesThePresentExclusionBesideAnAbsentOne(t *testing.T) {
+	t.Parallel()
+	dir := testutil.NativeAbsPath("/Users/dev/project")
+	path := filepath.Join(t.TempDir(), "fork.db")
+	opencodestoretest.SeedFamilyDB(t, path, dir)
+	db := agenttest.NewFixtureDB(t, path, `CREATE TABLE claude_import (source_uuid text, session_id text)`)
+	_, err := db.Exec(`INSERT INTO claude_import VALUES ('u1', 'ses_new')`)
+	require.NoError(t, err)
+
+	got, err := ListSessionsExcept(context.Background(), path, agent.StoredSessionQuery{WorkingDir: dir}, forkImportExclusions...)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"ses_old", "ses_no_updated"}, agenttest.Handles(got))
+}
+
+// The limit applies to the sessions that remain. An excluded session takes no
+// place in the answer, so the newest session that remains still fills it.
+func TestListSessionsExcept_LimitsTheSessionsThatRemain(t *testing.T) {
+	t.Parallel()
+	dir := testutil.NativeAbsPath("/Users/dev/project")
+	path := filepath.Join(t.TempDir(), "fork.db")
+	opencodestoretest.SeedFamilyDB(t, path, dir)
+	db := agenttest.NewFixtureDB(t, path, importDDL)
+	_, err := db.Exec(`INSERT INTO external_import VALUES ('cc', 'k1', 'ses_new')`)
+	require.NoError(t, err)
+
+	got, err := ListSessionsExcept(context.Background(), path, agent.StoredSessionQuery{WorkingDir: dir, Limit: 1}, forkImportExclusions...)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"ses_old"}, agenttest.Handles(got))
+}
+
+// A file that is not a SQLite database is a store that LeapMux cannot read.
+// The caller decides what a failure of a provider store degrades to, so the
+// failure is reported, not swallowed.
+func TestListSessionsExcept_UnreadableStoreIsAnError(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "fork.db")
+	agenttest.WriteFixtureFile(t, path, "this is not a SQLite database, and it is long enough to hold a header")
+
+	_, err := ListSessionsExcept(context.Background(), path,
+		agent.StoredSessionQuery{WorkingDir: testutil.NativeAbsPath("/Users/dev/project")}, forkImportExclusions...)
+	assert.Error(t, err)
+}
+
+// The check for each exclusion opens the store a second time. That read must
+// leave another program's store alone, as the listing itself does.
+func TestListSessionsExcept_LeavesTheStoreAlone(t *testing.T) {
+	t.Parallel()
+	dir := testutil.NativeAbsPath("/Users/dev/project")
+	path := filepath.Join(t.TempDir(), "fork.db")
+	opencodestoretest.SeedFamilyDB(t, path, dir)
+	agenttest.NewFixtureDB(t, path, importDDL)
+	// See TestOpenCodeFamilySessions_LeavesTheStoreAlone: the fixture writer
+	// changes the mode, so the file goes back to the state that a foreign CLI
+	// leaves it in.
+	require.NoError(t, os.Chmod(path, 0o644))
+
+	before := statFixture(t, path)
+	_, err := ListSessionsExcept(context.Background(), path, agent.StoredSessionQuery{WorkingDir: dir}, forkImportExclusions...)
+	require.NoError(t, err)
+	assert.Equal(t, before, statFixture(t, path), "reading another program's store must not change it")
+}
+
+func TestListSessionsExcept_WithNoExclusionMatchesListSessions(t *testing.T) {
+	t.Parallel()
+	dir := testutil.NativeAbsPath("/Users/dev/project")
+	path := filepath.Join(t.TempDir(), "opencode.db")
+	opencodestoretest.SeedFamilyDB(t, path, dir)
+	q := agent.StoredSessionQuery{WorkingDir: dir}
+
+	want, err := ListSessions(context.Background(), path, q)
+	require.NoError(t, err)
+	got, err := ListSessionsExcept(context.Background(), path, q)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+}
+
+func TestListSessionsExcept_RefusesAnIdentifierThatIsNotPlain(t *testing.T) {
+	t.Parallel()
+	dir := testutil.NativeAbsPath("/Users/dev/project")
+	path := filepath.Join(t.TempDir(), "opencode.db")
+	opencodestoretest.SeedFamilyDB(t, path, dir)
+
+	for _, exclusion := range []Exclusion{
+		{Table: "x; DROP TABLE session", Column: "session_id"},
+		{Table: "external_import", Column: "session_id) OR (1"},
+		{Table: "", Column: "session_id"},
+	} {
+		assert.Panics(t, func() {
+			_, _ = ListSessionsExcept(context.Background(), path, agent.StoredSessionQuery{WorkingDir: dir}, exclusion)
+		}, "%+v", exclusion)
+	}
+}

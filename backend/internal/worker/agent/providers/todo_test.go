@@ -20,6 +20,9 @@ func TestACPExtractTodoEvent_ServesEveryACPProvider(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO,
 	} {
 		ev, ok := registry.Plugin(provider).ExtractTodoEvent("", []byte(plan), nil)
 		require.True(t, ok, "provider %s", provider)

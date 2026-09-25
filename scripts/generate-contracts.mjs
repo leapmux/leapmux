@@ -1739,12 +1739,14 @@ export const DESKTOP_GO_ENV_NAMES = {
   devEndpoint: 'EnvDevEndpoint',
   binaryHash: 'EnvBinaryHash',
   devFrontend: 'EnvDevFrontend',
+  agentHelper: 'EnvAgentHelper',
 }
 
 export const DESKTOP_RS_ENV_NAMES = {
   devEndpoint: 'ENV_DEV_ENDPOINT',
   binaryHash: 'ENV_BINARY_HASH',
   devFrontend: 'ENV_DEV_FRONTEND',
+  agentHelper: 'ENV_AGENT_HELPER',
 }
 
 export const DESKTOP_RS_EVENT_NAMES = {
@@ -1923,10 +1925,10 @@ export function emitGoDesktop(d) {
   return `${GO_HEADER('desktop.json')}package contracts
 
 // The desktop shell's cross-language vocabulary: the env vars the Rust
-// shell passes when spawning the Go sidecar (the sidecar reads them in
-// main.go), and the frame cap both programs enforce on the sidecar IPC
-// wire. The Tauri event names are Rust<->webview only and ride in the
-// Rust/TS outputs.
+// shell sets or removes when spawning the Go sidecar (the sidecar reads them
+// in main.go and worker.RunAgentHelper), and the frame cap both programs
+// enforce on the sidecar IPC wire. The Tauri event names are Rust<->webview
+// only and ride in the Rust/TS outputs.
 const (
 ${goConstBlock(Object.keys(DESKTOP_GO_ENV_NAMES).map(k => ({ name: DESKTOP_GO_ENV_NAMES[k], value: jsonString(d.envVars[k]) })))}
 )
@@ -2135,7 +2137,7 @@ ${rows}
 }
 
 // ---------------------------------------------------------------------------
-// provider protocols: a coding agent's own wire vocabulary (zcode, claude, goose, copilot, pi)
+// provider protocols: the wire vocabulary of each coding agent, one domain per protocol
 // ---------------------------------------------------------------------------
 
 /**
@@ -2154,6 +2156,16 @@ ${rows}
  * `goPrefix` and `tsPrefix` build the emitted identifiers, so a table needs no
  * per-constant name entry: the Go constant is `<goPrefix><Table><Key>` and the TS key
  * is the bare `Key` inside a `<TS_PREFIX>_<TABLE>` object.
+ *
+ * `frameKind` marks a table whose literals identify the kind of a frame: an event, a
+ * method, a notification, an update, or the type of a line, an item or a request.
+ * `'name'` states that each literal is a whole kind, and `'prefix'` states that each
+ * literal starts a family of kinds. A frame kind is the key that a reader dispatches
+ * on, so shared browser code that spells one decides by the provider.
+ * `emitTsProviderFrameKinds` collects every marked literal, and the `no-provider-decision`
+ * rule in `frontend/eslint/chatPipelinePlugin.ts` rejects each one in shared chat code,
+ * which is every file under `components/chat/` outside `providers/`. A field name or a
+ * status word is not a frame kind, so its table stays unmarked.
  */
 export const PROVIDER_PROTOCOLS = [
   {
@@ -2168,10 +2180,10 @@ export const PROVIDER_PROTOCOLS = [
       'agent\'s original bytes. `protocol` and `terminals` are the two names LeapMux chose, and',
       '`rawOutput` is the protocol\'s own tool-call field, which the worker reuses as a key. The',
       'worker writes that envelope and the browser plugin reads it back, so every key in it is a',
-      'dispatch key on both sides. Six providers share the tables, because all six speak ACP.',
+      'dispatch key on both sides. Every provider that speaks ACP shares the tables.',
     ].join('\n// '),
     tables: [
-      { key: 'updates', goTable: 'Update', tsTable: 'UPDATE', tsType: 'ACPUpdate', doc: 'session update identifiers' },
+      { key: 'updates', frameKind: 'name', goTable: 'Update', tsTable: 'UPDATE', tsType: 'ACPUpdate', doc: 'session update identifiers' },
       { key: 'roles', goTable: 'Role', tsTable: 'ROLE', tsType: 'ACPRole', doc: 'message `role` values' },
       { key: 'toolKinds', goTable: 'ToolKind', tsTable: 'TOOL_KIND', tsType: 'ACPToolKindWord', readers: ['ts'], readersWhy: 'the worker stores a tool frame whole and never branches on its kind; the browser picks the renderer from it', doc: 'tool-call `kind` words, the behavioural set the protocol groups every tool into' },
       { key: 'supplementIdentity', goTable: 'SupplementIdentity', tsTable: 'SUPPLEMENT_IDENTITY', tsType: 'ACPSupplementIdentityField', goSlice: true, owner: 'LeapMux checks these', doc: 'protocol fields before a supplement can reach a row' },
@@ -2183,6 +2195,35 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'terminalResult', goTable: 'TerminalResult', tsTable: 'TERMINAL_RESULT', tsType: 'ACPTerminalResultField', doc: 'fields of one terminal\'s stored output, inside the `terminals` payload' },
       { key: 'contentBlock', goTable: 'ContentBlock', tsTable: 'CONTENT_BLOCK', tsType: 'ACPContentBlockField', doc: 'fields of a tool call\'s own content array, which lists the terminals it refers to' },
       { key: 'blockTypes', goTable: 'BlockType', tsTable: 'BLOCK_TYPE', tsType: 'ACPBlockType', doc: 'content block `type` values both sides dispatch on' },
+      { key: 'permissionOutcomes', goTable: 'PermissionOutcome', tsTable: 'PERMISSION_OUTCOME', tsType: 'ACPPermissionOutcome', doc: 'the `outcome` of a reply to session/request_permission' },
+    ],
+  },
+  {
+    name: 'kimi-protocol',
+    goPrefix: 'Kimi',
+    tsPrefix: 'KIMI',
+    title: 'Kimi Code',
+    preamble: [
+      'Moonshot AI owns the kap-server event, origin, tool, display, decision and mode names.',
+      'LeapMux owns the `plan` value of the permission-mode axis and the two marks in `reply`',
+      '(`dismiss` and `permission_mode`). Both sides read them -- the Go worker dispatches',
+      'the events and answers the approvals and questions, the browser plugin classifies the',
+      'same persisted payloads and writes the answers.',
+    ].join('\n// '),
+    tables: [
+      { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'KimiEvent', doc: 'WebSocket event types -- the payload `type`' },
+      { key: 'origins', goTable: 'Origin', tsTable: 'ORIGIN', tsType: 'KimiOrigin', doc: '`turn.started.origin.kind` values, which say who started a turn' },
+      { key: 'tools', goTable: 'Tool', tsTable: 'TOOL', tsType: 'KimiTool', doc: 'tool names both sides dispatch on' },
+      { key: 'displayKinds', goTable: 'Display', tsTable: 'DISPLAY', tsType: 'KimiDisplayKind', doc: '`display.kind` values of a tool call or an approval' },
+      { key: 'decisions', goTable: 'Decision', tsTable: 'DECISION', tsType: 'KimiDecision', doc: 'approval decisions' },
+      { key: 'approvalScopes', goTable: 'ApprovalScope', tsTable: 'APPROVAL_SCOPE', tsType: 'KimiApprovalScope', doc: 'how long one approval lasts' },
+      { key: 'planLabels', goTable: 'PlanLabel', tsTable: 'PLAN_LABEL', tsType: 'KimiPlanLabel', doc: 'the `selected_label` values that refuse a plan' },
+      { key: 'answerKinds', goTable: 'AnswerKind', tsTable: 'ANSWER_KIND', tsType: 'KimiAnswerKind', doc: 'the kinds of one question answer' },
+      { key: 'goalModes', goTable: 'GoalMode', tsTable: 'GOAL_MODE', tsType: 'KimiGoalMode', doc: 'the `selected_label` values that approve a goal start in a permission mode' },
+      { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'KimiMode', doc: 'permission modes on LeapMux\'s permission-mode axis, `plan` included' },
+      { key: 'reply', goTable: 'Reply', tsTable: 'REPLY', tsType: 'KimiReplyField', doc: 'fields of a stored approval or question answer' },
+      { key: 'todoStatuses', goTable: 'TodoStatus', tsTable: 'TODO_STATUS', tsType: 'KimiTodoStatus', doc: '`TodoList` item statuses' },
+      { key: 'turnEndReasons', goTable: 'TurnEnd', tsTable: 'TURN_END', tsType: 'KimiTurnEndReason', doc: '`turn.ended.reason` words' },
     ],
   },
   {
@@ -2192,13 +2233,13 @@ export const PROVIDER_PROTOCOLS = [
     title: 'ZCode',
     // goTable/tsTable name the emitted symbol per table; the key set is the contract's.
     tables: [
-      { key: 'methods', goTable: 'Method', tsTable: 'METHOD', tsType: 'ZCodeMethod', doc: 'interaction request methods' },
+      { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'ZCodeMethod', doc: 'interaction request methods' },
       { key: 'actions', goTable: 'Action', tsTable: 'ACTION', tsType: 'ZCodeAction', doc: 'native input response actions' },
       { key: 'replyFields', goTable: 'ReplyField', tsTable: 'REPLY_FIELD', tsType: 'ZCodeReplyField', doc: 'native input response fields' },
       { key: 'answerFields', goTable: 'AnswerField', tsTable: 'ANSWER_FIELD', tsType: 'ZCodeAnswerField', doc: 'native answer fields' },
       { key: 'planControls', goTable: 'PlanControl', tsTable: 'PLAN_CONTROL', tsType: 'ZCodePlanControl', doc: 'native plan approval values' },
-      { key: 'interactions', goTable: 'Interaction', tsTable: 'INTERACTION', tsType: 'ZCodeInteraction', doc: 'control interaction types' },
-      { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'ZCodeEvent', doc: 'session event types -- the envelope `type`' },
+      { key: 'interactions', frameKind: 'name', goTable: 'Interaction', tsTable: 'INTERACTION', tsType: 'ZCodeInteraction', doc: 'control interaction types' },
+      { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'ZCodeEvent', doc: 'session event types -- the envelope `type`' },
       { key: 'toolPrefixes', goTable: 'ToolPrefix', tsTable: 'TOOL_PREFIX', tsType: 'ZCodeToolPrefix', doc: 'prefixes for projected tool-call IDs' },
       { key: 'toolKinds', goTable: 'ToolKind', tsTable: 'TOOL_KIND', tsType: 'ZCodeToolKind', doc: '`tool.updated` kinds -- the tool-call lifecycle' },
       { key: 'toolNames', goTable: 'ToolName', tsTable: 'TOOL', tsType: 'ZCodeTool', doc: 'tool names both sides dispatch on' },
@@ -2229,16 +2270,44 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'GooseMode', doc: 'permission modes' },
       { key: 'subagent', goTable: 'Subagent', tsTable: 'SUBAGENT', tsType: 'GooseSubagent', doc: 'the extension and tool a subagent spawn rides' },
       { key: 'subagentRequest', goTable: 'SubagentRequest', tsTable: 'SUBAGENT_REQUEST', tsType: 'GooseSubagentRequestField', doc: 'fields of the subagent tool request, which rides inside logging metadata' },
+      { key: 'configIds', goTable: 'Config', tsTable: 'CONFIG', tsType: 'GooseConfigId', doc: 'config-option ids of the axes both sides address by id' },
+    ],
+  },
+  {
+    name: 'mimo-protocol',
+    goPrefix: 'MiMo',
+    tsPrefix: 'MIMO',
+    title: 'MiMo Code',
+    preamble: [
+      'MiMo owns the event, part, tool, operation, status and agent words. LeapMux owns the',
+      'permission policies, their option id and the control-payload field, because MiMo has no such enumeration.',
+    ].join('\n// '),
+    tables: [
+      { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'MiMoEvent', doc: 'event types the worker persists verbatim and the browser reads' },
+      { key: 'statusTypes', goTable: 'StatusType', tsTable: 'STATUS_TYPE', tsType: 'MiMoStatusType', doc: '`status.type` words of `session.status`' },
+      { key: 'partTypes', goTable: 'PartType', tsTable: 'PART_TYPE', tsType: 'MiMoPartType', doc: 'message part types the browser draws' },
+      { key: 'toolStatuses', goTable: 'ToolStatus', tsTable: 'TOOL_STATUS', tsType: 'MiMoToolStatus', doc: '`state.status` words of a tool part' },
+      { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'MiMoTool', doc: 'tool ids' },
+      { key: 'actorActions', goTable: 'ActorAction', tsTable: 'ACTOR_ACTION', tsType: 'MiMoActorAction', doc: 'operations of the `actor` tool' },
+      { key: 'actorStatuses', goTable: 'ActorStatus', tsTable: 'ACTOR_STATUS', tsType: 'MiMoActorStatus', doc: 'the status of a subagent (an actor)' },
+      { key: 'actorOutcomes', goTable: 'ActorOutcome', tsTable: 'ACTOR_OUTCOME', tsType: 'MiMoActorOutcome', doc: 'the outcome of a subagent\'s last turn, `lastOutcome`' },
+      { key: 'taskActions', goTable: 'TaskAction', tsTable: 'TASK_ACTION', tsType: 'MiMoTaskAction', doc: 'operations of the `task` tool' },
+      { key: 'taskStatuses', goTable: 'TaskStatus', tsTable: 'TASK_STATUS', tsType: 'MiMoTaskStatus', doc: 'statuses of one work item' },
+      { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'MiMoMode', doc: 'primary agents, carried on LeapMux\'s permission-mode axis' },
+      { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'MiMoOption', owner: 'LeapMux chose these', doc: 'option-group ids for the MiMo axes both sides address' },
+      { key: 'permissionPolicies', goTable: 'PermissionPolicy', tsTable: 'PERMISSION_POLICY', tsType: 'MiMoPermissionPolicy', owner: 'LeapMux chose these', doc: 'permission policies, each a pair of MiMo runtime switches' },
+      { key: 'permissionReplies', goTable: 'PermissionReply', tsTable: 'PERMISSION_REPLY', tsType: 'MiMoPermissionReply', doc: 'answers of a permission reply' },
+      { key: 'controlFields', goTable: 'ControlField', tsTable: 'CONTROL_FIELD', tsType: 'MiMoControlField', owner: 'LeapMux chose these', doc: 'fields for a stored control payload' },
     ],
   },
   {
     name: 'opencode-protocol',
     goPrefix: 'OpenCode',
     tsPrefix: 'OPENCODE',
-    title: 'OpenCode and Kilo',
-    preamble: 'The OpenCode family states a question on the daemon\'s own event stream, which its Agent Client Protocol adapter does not forward.',
+    title: 'OpenCode, Kilo and MiMo Code',
+    preamble: 'The OpenCode family states a question on the daemon\'s own event stream, which its Agent Client Protocol adapter does not forward. MiMo Code sends the same question shapes on its native event stream.',
     tables: [
-      { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'OpenCodeEvent', doc: 'question lifecycle events on the daemon event stream' },
+      { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'OpenCodeEvent', doc: 'question lifecycle events on the daemon event stream' },
       { key: 'answerFields', goTable: 'AnswerField', tsTable: 'ANSWER_FIELD', tsType: 'OpenCodeAnswerField', goTagPin: 'backend/internal/worker/agent/providers/opencode/questions_contract_test.go', doc: 'fields of the answer envelope the browser writes and the worker reads' },
     ],
   },
@@ -2260,8 +2329,8 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'CodexSupplementField', owner: 'LeapMux chose these', doc: 'keys of the envelope that carries a Codex call\'s joined output' },
       { key: 'item', goTable: 'Item', tsTable: 'ITEM_FIELD', tsType: 'CodexItemField', doc: 'fields of the item frame the join lands on' },
       { key: 'collabItem', goTable: 'CollabItem', tsTable: 'COLLAB_ITEM', tsType: 'CodexCollabItemField', goTagPin: 'backend/internal/worker/agent/providers/codex/supplement_tags_test.go', doc: 'fields of a collab tool call that list the subagents it created' },
-      { key: 'itemTypes', goTable: 'ItemType', tsTable: 'ITEM', tsType: 'CodexItemType', doc: '`item.type` discriminators both sides dispatch on' },
-      { key: 'methods', goTable: 'Method', tsTable: 'METHOD', tsType: 'CodexMethod', doc: 'JSON-RPC method names both sides dispatch on' },
+      { key: 'itemTypes', frameKind: 'name', goTable: 'ItemType', tsTable: 'ITEM', tsType: 'CodexItemType', doc: '`item.type` discriminators both sides dispatch on' },
+      { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'CodexMethod', doc: 'JSON-RPC method names both sides dispatch on' },
       { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'CodexOption', owner: 'LeapMux chose these', doc: 'option-group ids for the Codex axes both sides address' },
       { key: 'optionDefaults', goTable: 'OptionDefault', tsTable: 'OPTION_DEFAULT', tsType: 'CodexOptionDefault', defaultsFor: 'options', doc: 'the value each of those axes takes when the agent row stores none' },
     ],
@@ -2273,6 +2342,10 @@ export const PROVIDER_PROTOCOLS = [
     title: 'Claude Code',
     tables: [
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'ClaudeMode', doc: 'permission modes' },
+      // `status` is also a `system` subtype that both sides read, but it stays out: the
+      // shared `isFinalCompactingStatus` in frontend/src/components/chat/messageUtils.ts
+      // reads that shape for the Claude, Codex and ACP plugins.
+      { key: 'systemSubtypes', frameKind: 'name', goTable: 'SystemSubtype', tsTable: 'SYSTEM_SUBTYPE', tsType: 'ClaudeSystemSubtype', doc: '`subtype` values of a `system` line that states an API retry or a compaction boundary' },
     ],
   },
   {
@@ -2287,13 +2360,13 @@ export const PROVIDER_PROTOCOLS = [
       'plugin classifies the same rows and builds the presets.',
     ].join('\n// '),
     tables: [
-      { key: 'methods', goTable: 'Method', tsTable: 'METHOD', tsType: 'CopilotMethod', doc: 'JSON-RPC methods both sides dispatch on' },
-      { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'CopilotEvent', doc: 'native event types' },
+      { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'CopilotMethod', doc: 'JSON-RPC methods both sides dispatch on' },
+      { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'CopilotEvent', doc: 'native event types' },
       // `goSlice`, because the MEMBERSHIP crosses the boundary. The browser hides all
       // six families; the worker filtered on two hand-listed ones and PERSISTED the
       // other four, so a session that used canvas, Fusion or a factory run wrote one
       // message row per experiment event that the browser then always hid.
-      { key: 'eventPrefixes', goTable: 'EventPrefix', tsTable: 'EVENT_PREFIX', tsType: 'CopilotEventPrefix', goSlice: true, doc: 'prefixes that identify a whole event family' },
+      { key: 'eventPrefixes', frameKind: 'prefix', goTable: 'EventPrefix', tsTable: 'EVENT_PREFIX', tsType: 'CopilotEventPrefix', goSlice: true, doc: 'prefixes that identify a whole event family' },
       { key: 'tools', goTable: 'Tool', tsTable: 'TOOL', tsType: 'CopilotTool', doc: 'native tool names' },
       { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'CopilotOption', doc: 'LeapMux option-group ids for Copilot axes' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'CopilotMode', doc: 'native session modes' },
@@ -2311,7 +2384,7 @@ export const PROVIDER_PROTOCOLS = [
     title: 'Cursor',
     tables: [
       { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'CursorTool', doc: 'ACP tool identifiers' },
-      { key: 'methods', goTable: 'Method', tsTable: 'METHOD', tsType: 'CursorMethod', doc: 'JSON-RPC methods both sides dispatch on' },
+      { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'CursorMethod', doc: 'JSON-RPC methods both sides dispatch on' },
       { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'CursorSupplementField', owner: 'LeapMux chose these', doc: 'supplemental content fields on a Cursor tool row' },
       { key: 'storedTool', goTable: 'StoredTool', tsTable: 'STORED_TOOL', tsType: 'CursorStoredToolField', owner: 'LeapMux chose these', doc: 'fields of the record the worker builds from a Cursor transcript under the shared ACP `rawOutput` key' },
       { key: 'storedBlock', goTable: 'StoredBlock', tsTable: 'STORED_BLOCK', tsType: 'CursorStoredBlockField', doc: 'fields of one block in Cursor\'s own transcript' },
@@ -2329,11 +2402,11 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'mcpApprovalText', goTable: 'MCPApprovalText', tsTable: 'MCP_APPROVAL_TEXT', tsType: 'PiMcpApprovalText', doc: 'MCP approval dialog delimiters' },
       { key: 'planDialogs', goTable: 'PlanDialog', tsTable: 'PLAN_DIALOG', tsType: 'PiPlanDialog', readers: ['ts'], readersWhy: 'the browser detects the plan-approval dialog by title; the worker answers only the FRESH-implementation dialog, whose two titles stay hand-written in providers/pi/protocol.go because no browser code reads them', doc: 'plan approval dialog titles' },
       { key: 'planActions', goTable: 'PlanAction', tsTable: 'PLAN_ACTION', tsType: 'PiPlanAction', doc: 'plan approval response values' },
-      { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'PiEvent', doc: 'RPC envelope `type` values' },
-      { key: 'assistantEvents', goTable: 'AssistantEvent', tsTable: 'ASSISTANT_EVENT', tsType: 'PiAssistantEvent', readers: ['go'], readersWhy: 'the worker JOINS a run of these deltas into one assembled-message row, so no delta ever reaches the browser and no browser code spells one', doc: 'assistant message-update sub-types' },
-      { key: 'customTypes', goTable: 'CustomType', tsTable: 'CUSTOM_TYPE', tsType: 'PiCustomType', doc: 'custom message types from Pi extensions' },
-      { key: 'dialogMethods', goTable: 'DialogMethod', tsTable: 'DIALOG_METHOD', tsType: 'PiDialogMethod', doc: 'extension_ui_request methods that BLOCK on a response' },
-      { key: 'extensionMethods', goTable: 'ExtensionMethod', tsTable: 'EXTENSION_METHOD', tsType: 'PiExtensionMethod', doc: 'fire-and-forget extension_ui_request methods' },
+      { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'PiEvent', doc: 'RPC envelope `type` values' },
+      { key: 'assistantEvents', frameKind: 'name', goTable: 'AssistantEvent', tsTable: 'ASSISTANT_EVENT', tsType: 'PiAssistantEvent', readers: ['go'], readersWhy: 'the worker JOINS a run of these deltas into one assembled-message row, so no delta ever reaches the browser and no browser code spells one', doc: 'assistant message-update sub-types' },
+      { key: 'customTypes', frameKind: 'name', goTable: 'CustomType', tsTable: 'CUSTOM_TYPE', tsType: 'PiCustomType', doc: 'custom message types from Pi extensions' },
+      { key: 'dialogMethods', frameKind: 'name', goTable: 'DialogMethod', tsTable: 'DIALOG_METHOD', tsType: 'PiDialogMethod', doc: 'extension_ui_request methods that BLOCK on a response' },
+      { key: 'extensionMethods', frameKind: 'name', goTable: 'ExtensionMethod', tsTable: 'EXTENSION_METHOD', tsType: 'PiExtensionMethod', doc: 'fire-and-forget extension_ui_request methods' },
       { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'PiTool', doc: 'tool names the renderers dispatch on' },
       { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'PiSupplementField', owner: 'LeapMux chose these', doc: 'keys of the envelope a retained or truncated Pi call keeps beside its frame' },
       { key: 'artifact', goTable: 'Artifact', tsTable: 'ARTIFACT', tsType: 'PiArtifactField', owner: 'LeapMux chose these', doc: 'fields of one stored artifact inside that envelope' },
@@ -2356,6 +2429,81 @@ export const PROVIDER_PROTOCOLS = [
     ],
   },
   {
+    name: 'grok-protocol',
+    goPrefix: 'Grok',
+    tsPrefix: 'GROK',
+    title: 'Grok Build',
+    preamble: [
+      'xAI owns the extension methods, notifications, tool, mode and reply words of Grok Build.',
+      'LeapMux owns the option id of the approval mode, which Grok never reports back. Both sides',
+      'read them -- the worker publishes the extension requests, rewrites the answers into Grok\'s',
+      'replies and dispatches the notifications; the browser plugin draws the same requests and',
+      'reads the same turn-end notification into a divider.',
+    ].join('\n// '),
+    tables: [
+      { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'GrokMethod', doc: 'extension methods both sides dispatch on, each with its leading underscore' },
+      { key: 'notifications', frameKind: 'name', goTable: 'Notification', tsTable: 'NOTIFICATION', tsType: 'GrokNotification', doc: '`sessionUpdate` words of a session notification both sides read' },
+      { key: 'meta', goTable: 'Meta', tsTable: 'META', tsType: 'GrokMetaKey', doc: '`_meta` keys of a tool call both sides read' },
+      { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'GrokTool', doc: 'tool names both sides dispatch on' },
+      { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'GrokMode', doc: 'session modes, carried on LeapMux\'s permission-mode axis' },
+      { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'GrokOption', owner: 'LeapMux chose these', doc: 'option-group ids of the axes Grok does not report' },
+      { key: 'approvalModes', goTable: 'ApprovalMode', tsTable: 'APPROVAL_MODE', tsType: 'GrokApprovalMode', doc: 'approval modes of the approval-mode option' },
+      { key: 'planOutcomes', goTable: 'PlanOutcome', tsTable: 'PLAN_OUTCOME', tsType: 'GrokPlanOutcome', doc: 'the outcomes a plan-approval reply states' },
+      { key: 'trustOutcomes', goTable: 'TrustOutcome', tsTable: 'TRUST_OUTCOME', tsType: 'GrokTrustOutcome', doc: 'the outcomes a folder-trust reply states' },
+      { key: 'questionOutcomes', goTable: 'QuestionOutcome', tsTable: 'QUESTION_OUTCOME', tsType: 'GrokQuestionOutcome', doc: 'the outcomes a question reply states' },
+      { key: 'replyFields', goTable: 'ReplyField', tsTable: 'REPLY_FIELD', tsType: 'GrokReplyField', doc: 'fields of the replies both sides build or read' },
+      { key: 'configIds', goTable: 'Config', tsTable: 'CONFIG', tsType: 'GrokConfigId', doc: 'config-option ids of the axes both sides address by id' },
+    ],
+  },
+  {
+    name: 'kiro-protocol',
+    goPrefix: 'Kiro',
+    tsPrefix: 'KIRO',
+    title: 'Kiro CLI',
+    preamble: [
+      'Amazon Web Services owns the extension methods, `_meta` keys, kinds, tool titles, modes,',
+      'permission options, consent scopes and question actions of Kiro CLI. LeapMux owns the',
+      'option id of the policy preset, which Kiro never reports back, and the ids of the two',
+      'consent-scoped permission options. Both sides read them. The worker publishes the',
+      'extension requests and rewrites the answers into Kiro\'s replies. The browser plugin',
+      'draws the same requests and reads the same turn end into a divider.',
+    ].join('\n// '),
+    tables: [
+      { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'KiroMethod', doc: 'agent-to-client extension requests both sides dispatch on' },
+      { key: 'meta', goTable: 'Meta', tsTable: 'META', tsType: 'KiroMetaKey', doc: '`_meta` namespace and the keys under it both sides read' },
+      { key: 'metaKinds', frameKind: 'name', goTable: 'Kind', tsTable: 'KIND', tsType: 'KiroKind', doc: '`_meta.kiro.kind` values both sides dispatch on: a subagent spawn, and the end of a turn' },
+      { key: 'toolTitles', goTable: 'ToolTitle', tsTable: 'TOOL_TITLE', tsType: 'KiroToolTitle', doc: 'tool-call titles both sides dispatch on, because Kiro states no tool name' },
+      { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'KiroMode', doc: 'session modes, carried on LeapMux\'s permission-mode axis' },
+      { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'KiroOption', owner: 'LeapMux chose these', doc: 'option-group ids of the axes Kiro does not report' },
+      { key: 'policyPresets', goTable: 'PolicyPreset', tsTable: 'POLICY_PRESET', tsType: 'KiroPolicyPreset', doc: 'policy preset ids both sides spell' },
+      { key: 'permissionOptions', goTable: 'PermissionOption', tsTable: 'PERMISSION_OPTION', tsType: 'KiroPermissionOption', doc: 'option ids of a permission request both sides read' },
+      { key: 'scopedPermissionOptions', goTable: 'ScopedPermissionOption', tsTable: 'SCOPED_PERMISSION_OPTION', tsType: 'KiroScopedPermissionOption', owner: 'LeapMux chose these', doc: 'permission option ids that the browser states for an always-allow or an always-deny at a wider consent scope' },
+      { key: 'consentScopes', goTable: 'ConsentScope', tsTable: 'CONSENT_SCOPE', tsType: 'KiroConsentScope', doc: 'consent scopes of an always-allow or an always-deny reply beyond the default session scope' },
+      { key: 'userInputActions', goTable: 'UserInputAction', tsTable: 'USER_INPUT_ACTION', tsType: 'KiroUserInputAction', doc: 'question reply actions both sides spell' },
+      { key: 'configIds', goTable: 'Config', tsTable: 'CONFIG', tsType: 'KiroConfigId', doc: 'config-option ids of the axes both sides address by id' },
+    ],
+  },
+  {
+    name: 'qwen-protocol',
+    goPrefix: 'Qwen',
+    tsPrefix: 'QWEN',
+    title: 'Qwen Code',
+    preamble: [
+      'Qwen owns the extension method, the `_meta` keys, and the tool, mode and permission-option',
+      'names below. Both sides read them -- the worker routes the subagent updates, resolves the',
+      'plan approval and ends the turns Qwen starts; the browser plugin draws the same tool calls',
+      'and dialogs and reads the same turn end.',
+    ].join('\n// '),
+    tables: [
+      { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'QwenMethod', doc: 'extension methods both sides dispatch on' },
+      { key: 'meta', goTable: 'Meta', tsTable: 'META', tsType: 'QwenMetaKey', doc: '`_meta` keys of an update or a tool call both sides read' },
+      { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'QwenTool', doc: 'tool names both sides dispatch on' },
+      { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'QwenMode', doc: 'approval modes, carried on LeapMux\'s permission-mode axis' },
+      { key: 'permissionOptions', goTable: 'PermissionOption', tsTable: 'PERMISSION_OPTION', tsType: 'QwenPermissionOption', doc: 'option ids of the permission requests both sides answer' },
+      { key: 'configIds', goTable: 'Config', tsTable: 'CONFIG', tsType: 'QwenConfigId', doc: 'config-option ids of the axes both sides address by id' },
+    ],
+  },
+  {
     name: 'reasonix-protocol',
     goPrefix: 'Reasonix',
     tsPrefix: 'REASONIX',
@@ -2374,6 +2522,140 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'capabilityActions', goTable: 'CapabilityAction', tsTable: 'CAPABILITY_ACTION', tsType: 'ReasonixCapabilityAction', doc: 'capability actions' },
       { key: 'capabilityPrefixes', goTable: 'CapabilityPrefix', tsTable: 'CAPABILITY_PREFIX', tsType: 'ReasonixCapabilityPrefix', doc: 'capability identifier prefixes' },
       { key: 'toolRecord', goTable: 'ToolRecord', tsTable: 'TOOL_RECORD', tsType: 'ReasonixToolRecordKey', doc: 'the supplement envelope key and the stored tool record\'s own fields' },
+    ],
+  },
+  {
+    name: 'codewhale-protocol',
+    goPrefix: 'Codewhale',
+    tsPrefix: 'CODEWHALE',
+    title: 'Codewhale',
+    preamble: [
+      'Codewhale owns the event names, the item kinds, the turn statuses, the modes, the',
+      'postures, the tool names and the runtime field names. LeapMux owns the option-group id,',
+      'the control payload key, the reply frame names, the decline answer and the two LeapMux',
+      'keys of a reply frame. Both sides read them. The worker dispatches the runtime\'s events',
+      'and writes the control and reply frames. The browser plugin classifies the same rows and',
+      'reads the saved answers back.',
+    ].join('\n// '),
+    tables: [
+      { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'CodewhaleEvent', doc: 'server-sent event names that the worker persists or publishes' },
+      { key: 'itemKinds', frameKind: 'name', goTable: 'ItemKind', tsTable: 'ITEM_KIND', tsType: 'CodewhaleItemKind', doc: 'turn item `kind` values' },
+      { key: 'turnStatuses', goTable: 'TurnStatus', tsTable: 'TURN_STATUS', tsType: 'CodewhaleTurnStatus', doc: 'final `status` words of a turn record' },
+      { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'CodewhaleMode', doc: 'thread modes, carried on the LeapMux mode axis' },
+      { key: 'postures', goTable: 'Posture', tsTable: 'POSTURE', tsType: 'CodewhalePosture', doc: 'thread permission postures, carried on the LeapMux permission-mode axis' },
+      { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'CodewhaleOption', owner: 'LeapMux chose these', doc: 'option-group ids for the Codewhale axes both sides address' },
+      { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'CodewhaleTool', doc: 'tool names both sides dispatch on' },
+      { key: 'agentActions', goTable: 'AgentAction', tsTable: 'AGENT_ACTION', tsType: 'CodewhaleAgentAction', doc: '`action` values of the `agent` tool that both sides read' },
+      { key: 'agentInputFields', goTable: 'AgentInputField', tsTable: 'AGENT_INPUT_FIELD', tsType: 'CodewhaleAgentInputField', goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go', doc: 'fields of the input of an `agent` call' },
+      { key: 'envelopeFields', goTable: 'EnvelopeField', tsTable: 'ENVELOPE_FIELD', tsType: 'CodewhaleEnvelopeField', goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go', doc: 'fields of one event envelope that both sides read' },
+      { key: 'itemFields', goTable: 'ItemField', tsTable: 'ITEM_FIELD', tsType: 'CodewhaleItemField', goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go', doc: 'fields of an item event payload and of the turn item under `payload.item`' },
+      { key: 'toolFields', goTable: 'ToolField', tsTable: 'TOOL_FIELD', tsType: 'CodewhaleToolField', goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go', doc: 'fields of the parsed call under `payload.tool` of an `item.started`' },
+      { key: 'itemMetadata', goTable: 'ItemMetadata', tsTable: 'ITEM_METADATA', tsType: 'CodewhaleItemMetadataField', goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go', doc: 'fields of an item `metadata` object that identify its tool call' },
+      { key: 'resultFields', goTable: 'ResultField', tsTable: 'RESULT_FIELD', tsType: 'CodewhaleResultField', goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go', doc: 'fields of the tool results the worker acts on: the `todo_write` checklist, the `agent` receipt and wait, and the `workflow` run summary' },
+      { key: 'workflowStatuses', goTable: 'WorkflowStatus', tsTable: 'WORKFLOW_STATUS', tsType: 'CodewhaleWorkflowStatus', doc: '`status` words of a `workflow` run summary' },
+      { key: 'turnFields', goTable: 'TurnField', tsTable: 'TURN_FIELD', tsType: 'CodewhaleTurnField', goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go', doc: 'fields of the turn record that `turn.completed` carries' },
+      { key: 'approvalFields', goTable: 'ApprovalField', tsTable: 'APPROVAL_FIELD', tsType: 'CodewhaleApprovalField', goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go', doc: 'fields of an `approval.*` event payload' },
+      { key: 'userInputFields', goTable: 'UserInputField', tsTable: 'USER_INPUT_FIELD', tsType: 'CodewhaleUserInputField', goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go', doc: 'fields of a `user_input.*` event payload' },
+      { key: 'questionFields', goTable: 'QuestionField', tsTable: 'QUESTION_FIELD', tsType: 'CodewhaleQuestionField', goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go', doc: 'fields of the questions of a `user_input` request and of their options' },
+      { key: 'controlPayload', goTable: 'ControlPayload', tsTable: 'CONTROL_PAYLOAD', tsType: 'CodewhaleControlPayloadField', owner: 'LeapMux chose these', doc: 'keys a stored control request carries beside the shared `request` header' },
+      { key: 'replyFrames', frameKind: 'name', goTable: 'ReplyFrame', tsTable: 'REPLY_FRAME', tsType: 'CodewhaleReplyFrame', owner: 'LeapMux chose these', doc: '`frame` values of a reply the worker posts to the runtime' },
+      { key: 'replyFields', goTable: 'ReplyField', tsTable: 'REPLY_FIELD', tsType: 'CodewhaleReplyField', goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go', doc: 'fields of a reply frame -- `frame` and `declined` are LeapMux\'s, and the rest are the runtime\'s own body fields' },
+      { key: 'decisions', goTable: 'Decision', tsTable: 'DECISION', tsType: 'CodewhaleDecision', doc: 'approval decisions' },
+      { key: 'answerFields', goTable: 'AnswerField', tsTable: 'ANSWER_FIELD', tsType: 'CodewhaleAnswerField', goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go', doc: 'fields of one question answer' },
+      { key: 'answerLabels', goTable: 'AnswerLabel', tsTable: 'ANSWER_LABEL', tsType: 'CodewhaleAnswerLabel', doc: '`label` of a free-text answer' },
+      { key: 'answerTexts', goTable: 'AnswerText', tsTable: 'ANSWER_TEXT', tsType: 'CodewhaleAnswerText', owner: 'LeapMux chose these', doc: 'free-text answers the worker sends for the reader' },
+      { key: 'transcriptKinds', frameKind: 'name', goTable: 'TranscriptKind', tsTable: 'TRANSCRIPT_KIND', tsType: 'CodewhaleTranscriptKind', doc: '`kind` values of one record of a subagent transcript file' },
+      { key: 'transcriptFields', goTable: 'TranscriptField', tsTable: 'TRANSCRIPT_FIELD', tsType: 'CodewhaleTranscriptField', goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go', doc: 'fields of one subagent transcript record and of its message' },
+      { key: 'transcriptRoles', goTable: 'TranscriptRole', tsTable: 'TRANSCRIPT_ROLE', tsType: 'CodewhaleTranscriptRole', doc: '`role` values of a subagent transcript message' },
+      { key: 'blockTypes', goTable: 'BlockType', tsTable: 'BLOCK_TYPE', tsType: 'CodewhaleBlockType', doc: 'content block `type` values of a subagent transcript message' },
+      { key: 'blockFields', goTable: 'BlockField', tsTable: 'BLOCK_FIELD', tsType: 'CodewhaleBlockField', goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go', doc: 'fields of one content block of a subagent transcript message' },
+    ],
+  },
+  {
+    name: 'ohmypi-protocol',
+    goPrefix: 'OhMyPi',
+    tsPrefix: 'OH_MY_PI',
+    title: 'Oh My Pi',
+    preamble: [
+      'omp owns the event, role, stop-reason, dialog, tool, to-do status and question words.',
+      'LeapMux owns the question-bridge envelope and the incomplete-tool supplement: the worker',
+      'publishes one question request for a whole `ask` call and answers omp\'s dialog chain from',
+      'the browser\'s one answer, and it keeps the partial result of a call that its turn outlived.',
+    ].join('\n// '),
+    tables: [
+      { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'OhMyPiEvent', doc: 'RPC frame `type` values' },
+      { key: 'assistantEvents', frameKind: 'name', goTable: 'AssistantEvent', tsTable: 'ASSISTANT_EVENT', tsType: 'OhMyPiAssistantEvent', readers: ['go'], readersWhy: 'the worker JOINS a run of these deltas into one assembled-message row, so no delta ever reaches the browser and no browser code spells one', doc: 'assistant message-update sub-types' },
+      { key: 'messageRoles', goTable: 'Role', tsTable: 'ROLE', tsType: 'OhMyPiRole', doc: 'message `role` values' },
+      { key: 'stopReasons', goTable: 'StopReason', tsTable: 'STOP_REASON', tsType: 'OhMyPiStopReason', doc: 'assistant message `stopReason` values' },
+      { key: 'dialogMethods', frameKind: 'name', goTable: 'DialogMethod', tsTable: 'DIALOG_METHOD', tsType: 'OhMyPiDialogMethod', doc: 'extension_ui_request methods that BLOCK on a response' },
+      { key: 'extensionMethods', frameKind: 'name', goTable: 'ExtensionMethod', tsTable: 'EXTENSION_METHOD', tsType: 'OhMyPiExtensionMethod', doc: 'fire-and-forget extension_ui_request methods, and the withdrawal of a dialog' },
+      { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'OhMyPiTool', doc: 'tool names the providers dispatch on' },
+      { key: 'todoStatuses', goTable: 'TodoStatus', tsTable: 'TODO_STATUS', tsType: 'OhMyPiTodoStatus', doc: 'the status of one task of the `todo` tool' },
+      { key: 'approvalModes', goTable: 'ApprovalMode', tsTable: 'APPROVAL_MODE', tsType: 'OhMyPiApprovalMode', doc: 'tool approval modes, carried on LeapMux\'s permission-mode axis' },
+      { key: 'dialogResponse', goTable: 'DialogResponse', tsTable: 'DIALOG_RESPONSE', tsType: 'OhMyPiDialogResponseField', doc: 'fields of an extension_ui_response' },
+      { key: 'approvalDialog', goTable: 'ApprovalDialog', tsTable: 'APPROVAL_DIALOG', tsType: 'OhMyPiApprovalDialogText', doc: 'the title prefix and the two options of a tool approval dialog' },
+      { key: 'frameFields', goTable: 'FrameField', tsTable: 'FRAME_FIELD', tsType: 'OhMyPiFrameField', doc: 'fields of a tool-execution frame that the incomplete-tool resolve reads on both sides' },
+      { key: 'askQuestion', goTable: 'AskQuestion', tsTable: 'ASK_QUESTION', tsType: 'OhMyPiAskQuestionField', doc: 'fields of one question of an `ask` call' },
+      { key: 'askOption', goTable: 'AskOption', tsTable: 'ASK_OPTION', tsType: 'OhMyPiAskOptionField', doc: 'fields of one option of one question' },
+      { key: 'askTypes', frameKind: 'name', goTable: 'AskType', tsTable: 'ASK_TYPE', tsType: 'OhMyPiAskType', owner: 'LeapMux chose these', doc: 'values of the `type` field of the question-bridge request and of its answer' },
+      { key: 'askEnvelope', goTable: 'AskEnvelope', tsTable: 'ASK_ENVELOPE', tsType: 'OhMyPiAskEnvelopeField', owner: 'LeapMux chose these', doc: 'fields of the question-bridge request and of its answer' },
+      { key: 'askAnswer', goTable: 'AskAnswer', tsTable: 'ASK_ANSWER', tsType: 'OhMyPiAskAnswerField', owner: 'LeapMux chose these', doc: 'fields of the answer to one question' },
+      { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'OhMyPiSupplementField', owner: 'LeapMux chose these', doc: 'keys of the envelope a retained tool call keeps beside its start frame' },
+      { key: 'customTypes', frameKind: 'name', goTable: 'CustomType', tsTable: 'CUSTOM_TYPE', tsType: 'OhMyPiCustomType', doc: 'the `customType` of a message that omp injects' },
+      { key: 'commands', frameKind: 'name', goTable: 'Command', tsTable: 'COMMAND', tsType: 'OhMyPiCommand', doc: 'the commands that the worker writes to stdin and whose response the browser reads' },
+      { key: 'asyncJobStates', goTable: 'AsyncJobState', tsTable: 'ASYNC_JOB_STATE', tsType: 'OhMyPiAsyncJobState', doc: 'the `state` of a background job in `details.async`' },
+    ],
+  },
+  {
+    name: 'amp-protocol',
+    goPrefix: 'Amp',
+    tsPrefix: 'AMP',
+    title: 'Amp',
+    preamble: [
+      'Amp owns the line, block and result words and the subagent tool names. LeapMux owns the',
+      'permission modes, the agent-mode option id and the permission-request envelope: Amp asks',
+      'for no permission in stream-JSON mode, so the worker publishes one request for each call',
+      'that Amp\'s delegate rule hands to the LeapMux helper, and the browser draws it.',
+    ].join('\n// '),
+    tables: [
+      { key: 'lineTypes', frameKind: 'name', goTable: 'LineType', tsTable: 'LINE_TYPE', tsType: 'AmpLineType', doc: 'stdout line `type` values' },
+      { key: 'blockTypes', goTable: 'BlockType', tsTable: 'BLOCK_TYPE', tsType: 'AmpBlockType', doc: 'content block `type` values of an assistant or user line' },
+      { key: 'resultSubtypes', frameKind: 'name', goTable: 'ResultSubtype', tsTable: 'RESULT_SUBTYPE', tsType: 'AmpResultSubtype', doc: '`subtype` values of a `result` line' },
+      { key: 'subagentTools', goTable: 'SubagentTool', tsTable: 'SUBAGENT_TOOL', tsType: 'AmpSubagentTool', doc: 'tool names that Amp runs as a subagent on its server' },
+      { key: 'shellTools', goTable: 'ShellTool', tsTable: 'SHELL_TOOL', tsType: 'AmpShellTool', doc: 'names of the shell tools that start and follow a command, which can go on in the background' },
+      { key: 'shellResultFields', goTable: 'ShellResultField', tsTable: 'SHELL_RESULT_FIELD', tsType: 'AmpShellResultField', doc: 'fields of the result record of the shell tools that both sides read' },
+      { key: 'permissionModes', goTable: 'PermissionMode', tsTable: 'PERMISSION_MODE', tsType: 'AmpPermissionMode', owner: 'LeapMux chose these', doc: 'permission-mode values for Amp' },
+      { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'AmpOption', owner: 'LeapMux chose these', doc: 'option-group ids of the axes Amp does not report' },
+      { key: 'permissionRequestTypes', frameKind: 'name', goTable: 'PermissionRequestType', tsTable: 'PERMISSION_REQUEST_TYPE', tsType: 'AmpPermissionRequestType', owner: 'LeapMux chose these', doc: 'values of the `type` field of the permission-request envelope' },
+      { key: 'permissionRequestFields', goTable: 'PermissionRequestField', tsTable: 'PERMISSION_REQUEST_FIELD', tsType: 'AmpPermissionRequestField', owner: 'LeapMux chose these', doc: 'fields of the permission-request envelope' },
+    ],
+  },
+  {
+    name: 'cline-protocol',
+    goPrefix: 'Cline',
+    tsPrefix: 'CLINE',
+    title: 'Cline',
+    preamble: [
+      'Cline owns the hub event names and fields, the tool names and prefixes, the capability names, the run',
+      'reasons, the notice kinds and phases and the team lifecycle words. LeapMux owns the permission modes and the',
+      'answer field of a question: the worker persists each transcript row as Cline\'s own hub',
+      'event envelope and answers the hub\'s approvals and questions, and the browser draws both.',
+    ].join('\n// '),
+    tables: [
+      { key: 'eventFields', goTable: 'EventField', tsTable: 'EVENT_FIELD', tsType: 'ClineEventField', doc: 'fields of a hub event envelope that both sides read' },
+      { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'ClineEvent', doc: 'hub event names that reach the transcript or the control channel' },
+      { key: 'tools', goTable: 'Tool', tsTable: 'TOOL', tsType: 'ClineTool', doc: 'tool names that both sides dispatch on' },
+      { key: 'toolPrefixes', goTable: 'ToolPrefix', tsTable: 'TOOL_PREFIX', tsType: 'ClineToolPrefix', doc: 'prefixes of the tool names that both sides dispatch on' },
+      { key: 'capabilities', frameKind: 'name', goTable: 'Capability', tsTable: 'CAPABILITY', tsType: 'ClineCapability', doc: 'capability names that the hub asks the client to answer' },
+      { key: 'runReasons', goTable: 'RunReason', tsTable: 'RUN_REASON', tsType: 'ClineRunReason', doc: '`reason` values of the final event of a run' },
+      { key: 'noticeKinds', goTable: 'NoticeKind', tsTable: 'NOTICE_KIND', tsType: 'ClineNoticeKind', doc: '`metadata.kind` values of a `session.notice` that both sides read' },
+      { key: 'noticePhases', goTable: 'NoticePhase', tsTable: 'NOTICE_PHASE', tsType: 'ClineNoticePhase', doc: '`metadata.phase` values of a `session.notice`' },
+      { key: 'teamRunEvents', frameKind: 'name', goTable: 'TeamRunEvent', tsTable: 'TEAM_RUN_EVENT', tsType: 'ClineTeamRunEvent', doc: '`lastEvent.eventType` values of a `team.progress` event for a teammate run' },
+      { key: 'permissionModes', goTable: 'PermissionMode', tsTable: 'PERMISSION_MODE', tsType: 'ClinePermissionMode', owner: 'LeapMux chose these', doc: 'permission-mode values for Cline' },
+      { key: 'questionAnswer', goTable: 'QuestionAnswer', tsTable: 'QUESTION_ANSWER', tsType: 'ClineQuestionAnswerField', owner: 'LeapMux chose these', doc: 'fields of the control response that answer a question' },
+      { key: 'declineReasons', goTable: 'DeclineReason', tsTable: 'DECLINE_REASON', tsType: 'ClineDeclineReason', owner: 'LeapMux chose these', doc: 'reasons that the worker sends for a refusal that the user gave no words for' },
+      { key: 'approvalReply', goTable: 'ApprovalReply', tsTable: 'APPROVAL_REPLY', tsType: 'ClineApprovalReplyField', doc: 'fields of the answer to a tool approval, as Cline\'s approval.respond takes it -- LeapMux adds `permissionMode`, which the worker strips' },
+      { key: 'capabilityReply', goTable: 'CapabilityReply', tsTable: 'CAPABILITY_REPLY', tsType: 'ClineCapabilityReplyField', doc: 'fields of the answer to a capability request, as Cline\'s capability.respond takes it' },
     ],
   },
 ]
@@ -2532,14 +2814,11 @@ function emitGoStructs(spec, p) {
   return { blocks, needsJSON }
 }
 
-/**
- * A provider protocol is valid when every declared table is present and non-empty,
- * every table the FILE carries is declared (so a table added to the JSON cannot sit
- * unemitted), and no two keys inside one table share a literal -- a duplicate would
- * make two dispatch branches indistinguishable on the wire.
- */
 /** The language sides a generated table can be read from. */
 const READER_SIDES = new Set(['go', 'ts'])
+
+/** The values of `frameKind`: a whole kind, or the start of a family of kinds. */
+const FRAME_KIND_MATCHES = new Set(['name', 'prefix'])
 
 /**
  * The sides that must import one table, and the reason a one-sided table is one-sided.
@@ -2552,6 +2831,13 @@ export function tableReaders(t) {
   return t.readers ?? ['go', 'ts']
 }
 
+/**
+ * A provider protocol is valid when every declared table is present and non-empty,
+ * every table the FILE carries is declared (so a table added to the JSON cannot sit
+ * unemitted), and no two keys inside one table share a literal -- a duplicate would
+ * make two dispatch branches indistinguishable on the wire. Each table also states
+ * its readers and its `frameKind` from the known values.
+ */
 export function checkProviderProtocol(spec, p) {
   const file = `${spec.name}.json`
   const declared = spec.tables.map(t => t.key)
@@ -2570,6 +2856,10 @@ export function checkProviderProtocol(spec, p) {
       mustBe(sides.has('go'), file, `table ${t.key} states goTagPin but does not list go as a reader -- the pin exists to explain a Go reader that is a test`)
       mustBe(typeof t.goTagPin === 'string' && t.goTagPin.endsWith('_test.go'), file, `table ${t.key} must give goTagPin as the path of the Go test that pins the hand-written struct tags to this table`)
     }
+    // A misspelled mark would drop the table from the lint with no message, because
+    // the collector reads only the two values it knows.
+    if (t.frameKind != null)
+      mustBe(FRAME_KIND_MATCHES.has(t.frameKind), file, `table ${t.key} states frameKind ${JSON.stringify(t.frameKind)}, which is not one of ${[...FRAME_KIND_MATCHES].join(', ')}`)
   }
   const present = Object.keys(p).filter(k => !k.startsWith('_') && k !== 'structs' && typeof p[k] === 'object')
   for (const key of declared)
@@ -2712,6 +3002,41 @@ export function emitTsProviderProtocol(spec, p) {
 
 ${blocks.join('\n\n')}
 ${extra}`
+}
+
+/**
+ * Every literal of every table that states `frameKind`, across all the provider
+ * protocols, for the lint that keeps frame kinds out of shared browser code.
+ *
+ * `protocols` holds one `{ spec, p }` for each domain, and `checkProviderProtocol`
+ * must accept each one first. The entries keep the order of the domains, the tables
+ * and the keys, so the output is stable. A literal that two tables share keeps one
+ * entry for each, so the lint can state every owner.
+ */
+export function emitTsProviderFrameKinds(protocols) {
+  const rows = protocols.flatMap(({ spec, p }) => spec.tables
+    .filter(t => t.frameKind != null)
+    .flatMap(t => Object.values(p[t.key]).map(literal =>
+      `  { literal: ${jsonString(literal)}, match: ${jsonString(t.frameKind)}, source: ${jsonString(`${spec.name} ${t.key}`)} },`)))
+  return `${TS_HEADER('*-protocol.json')}
+// Every literal that identifies the kind of a frame in one provider protocol: each value
+// of a table that states \`frameKind\` in PROVIDER_PROTOCOLS. A reader dispatches on a
+// frame kind, so shared browser code that spells one decides by the provider. The
+// \`no-provider-decision\` rule in frontend/eslint/chatPipelinePlugin.ts rejects it.
+
+/** One frame kind, and the table that holds it. */
+export interface ProviderFrameKind {
+  /** The literal that the provider sends or receives. */
+  readonly literal: string
+  /** \`name\` for a whole kind, \`prefix\` for the start of a family of kinds. */
+  readonly match: 'name' | 'prefix'
+  /** The contract and the table, such as \`copilot-protocol events\`. */
+  readonly source: string
+}
+
+export const PROVIDER_FRAME_KINDS: readonly ProviderFrameKind[] = [
+${rows.map(row => `${row}\n`).join('')}]
+`
 }
 
 // ---------------------------------------------------------------------------
@@ -3511,6 +3836,10 @@ export function generate(contractsDir, descriptorSet = null) {
     }
     domain.emit(out, read, descriptorSet)
   }
+  // The loop above checked each protocol, so each `frameKind` it states is valid.
+  out['frontend/src/generated/contracts/provider-frame-kinds.ts'] = emitTsProviderFrameKinds(
+    PROVIDER_PROTOCOLS.map(spec => ({ spec, p: read(spec.name) })),
+  )
   return out
 }
 

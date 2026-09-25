@@ -81,7 +81,7 @@ func TestKiloClearContextRefreshesPrimaryAgent(t *testing.T) {
 func TestKiloBuildSessionRequest_NewSession(t *testing.T) {
 	t.Parallel()
 
-	method, params := acp.BuildSessionRequestForTest("", "/workspace", acp.MethodSessionNew, opencode.MethodSessionResume)
+	method, params := acp.BuildSessionRequestForTest("", "/workspace", acp.MethodSessionNew, acp.MethodSessionResume)
 	assert.Equal(t, acp.MethodSessionNew, method)
 
 	var parsed map[string]interface{}
@@ -93,8 +93,8 @@ func TestKiloBuildSessionRequest_NewSession(t *testing.T) {
 func TestKiloBuildSessionRequest_ResumeSession(t *testing.T) {
 	t.Parallel()
 
-	method, params := acp.BuildSessionRequestForTest("session-123", "/workspace", acp.MethodSessionNew, opencode.MethodSessionResume)
-	assert.Equal(t, opencode.MethodSessionResume, method)
+	method, params := acp.BuildSessionRequestForTest("session-123", "/workspace", acp.MethodSessionNew, acp.MethodSessionResume)
+	assert.Equal(t, acp.MethodSessionResume, method)
 
 	var parsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(params, &parsed))

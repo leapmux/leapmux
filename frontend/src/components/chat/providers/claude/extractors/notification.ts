@@ -1,5 +1,6 @@
 import type { CompactionDetails, NotificationEntry } from '../../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import { CLAUDE_SYSTEM_SUBTYPE } from '~/generated/contracts/claude-protocol'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { isObject, pickNumber, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
@@ -86,7 +87,7 @@ function isCompactingStatus(m: Record<string, unknown>): boolean {
 
 /** Claude's full compaction boundary. */
 function isCompactBoundary(m: Record<string, unknown>): boolean {
-  return m.type === 'system' && m.subtype === 'compact_boundary'
+  return m.type === 'system' && m.subtype === CLAUDE_SYSTEM_SUBTYPE.CompactBoundary
 }
 
 /**
@@ -96,7 +97,7 @@ function isCompactBoundary(m: Record<string, unknown>): boolean {
  * transition. Claude Code emits no metadata object for one.
  */
 function isMicrocompactBoundary(m: Record<string, unknown>): boolean {
-  return m.type === 'system' && m.subtype === 'microcompact_boundary'
+  return m.type === 'system' && m.subtype === CLAUDE_SYSTEM_SUBTYPE.MicrocompactBoundary
 }
 
 /**
@@ -134,7 +135,7 @@ export function claudeNotificationEntry(m: Record<string, unknown>): Notificatio
     }
     return info.status === 'allowed' ? [] : [{ kind: 'rate-limit', tiers: [claudeRateLimitInfo(info)] }]
   }
-  if (m.type === 'system' && m.subtype === 'api_retry') {
+  if (m.type === 'system' && m.subtype === CLAUDE_SYSTEM_SUBTYPE.ApiRetry) {
     const errorStatus = m.error_status != null ? String(m.error_status) : ''
     const attempt = pickNumber(m, 'attempt', undefined)
     const maxAttempts = pickNumber(m, 'max_retries', undefined)

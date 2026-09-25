@@ -9,10 +9,14 @@ import (
 
 // ToolSupplement is the envelope a tool row keeps beside the agent's own frame.
 //
-// Six providers speak the Agent Client Protocol, and every one of them stores the
-// same envelope: the identity of the row it belongs to, the request fields a later
-// `tool_call_update` revised, and the payloads LeapMux joined on. The browser plugin
-// reads the envelope back, so every key is a contract constant
+// Every provider that speaks the Agent Client Protocol renders its tool calls
+// through this base, so each one stores the same envelope. The envelope holds:
+//
+//   - The identity of the row that it belongs to.
+//   - The request fields that a later `tool_call_update` revised.
+//   - The payloads that LeapMux joined on.
+//
+// The browser plugin reads the envelope back, so every key is a contract constant
 // (contracts/acp-protocol.json) rather than a literal spelled once in each language.
 //
 // It stays a MAP rather than a struct because it is open by design: a provider adds

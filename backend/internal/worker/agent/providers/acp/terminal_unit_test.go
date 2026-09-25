@@ -16,7 +16,7 @@ import (
 
 // Init / buffer helpers run on all platforms (no process spawn).
 func TestAcpStandardInitParams_ClientCapabilitiesTerminal_AllGOOS(t *testing.T) {
-	raw, err := acpStandardInitParams(nil)
+	raw, err := acpStandardInitParams(nil, true, nil)
 	require.NoError(t, err)
 
 	var params map[string]interface{}
@@ -29,12 +29,31 @@ func TestAcpStandardInitParams_ClientCapabilitiesTerminal_AllGOOS(t *testing.T) 
 	require.True(t, ok, "clientCapabilities must be present")
 	assert.Equal(t, true, caps["terminal"])
 	assert.NotContains(t, caps, "_meta")
+	assert.NotContains(t, params, "_meta", "no request metadata unless a provider states some")
 	assert.Equal(t, map[string]any{"form": map[string]any{}, "url": map[string]any{}}, caps["elicitation"])
 
 	fs, ok := caps["fs"].(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, false, fs["readTextFile"])
 	assert.Equal(t, false, fs["writeTextFile"])
+}
+
+// A provider that runs its shell commands itself withholds the host terminal,
+// and the rest of the capabilities stay as the protocol default states them. The
+// metadata of the request itself is separate from that of the capabilities.
+func TestAcpStandardInitParams_WithholdsTheHostTerminal(t *testing.T) {
+	raw, err := acpStandardInitParams(map[string]any{"vendor": map[string]any{"flag": true}}, false, map[string]any{"clientType": "leapmux"})
+	require.NoError(t, err)
+
+	var params struct {
+		ClientCapabilities map[string]json.RawMessage `json:"clientCapabilities"`
+		Meta               json.RawMessage            `json:"_meta"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &params))
+	assert.JSONEq(t, `{"clientType":"leapmux"}`, string(params.Meta), "the request metadata sits beside the capabilities")
+	assert.JSONEq(t, `false`, string(params.ClientCapabilities["terminal"]))
+	assert.JSONEq(t, `{"vendor":{"flag":true}}`, string(params.ClientCapabilities["_meta"]))
+	assert.JSONEq(t, `{"readTextFile":false,"writeTextFile":false}`, string(params.ClientCapabilities["fs"]))
 }
 
 func TestExpandACPTerminalResultPersistsReleasedOutput(t *testing.T) {

@@ -1,0 +1,6 @@
+{
+  "name": "Oh My Pi brand mark",
+  "license": "MIT",
+  "url": "https://github.com/can1357/oh-my-pi",
+  "description": "The Oh My Pi provider icon (`icons/agents/oh-my-pi.svg` and the\n`OhMyPiIcon` SVG component in `frontend/src/components/common/AgentProviderIcon.tsx`)\nis the gradient pi glyph from the Oh My Pi repository\n(`packages/collab-web/public/favicon.svg`), without its background tile."
+}

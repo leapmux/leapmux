@@ -24,11 +24,13 @@ func (a *Agent) handleExtraMethod(line *providerkit.ParsedLine) bool {
 	switch line.Method {
 	case contracts.CursorMethodAskQuestion:
 		// Cursor defines no outcome for a question the client withdraws, so LeapMux
-		// sends none. The session cancel that follows a stop ends the turn.
-		a.PublishControlRequest(a.Sink(), line.Raw, nil)
+		// sends none. The session cancel that follows a stop ends the turn. A
+		// question of a session that the agent no longer serves takes a JSON-RPC
+		// error instead of a card (see acp.Base.PublishSessionControlRequest).
+		a.PublishSessionControlRequest(line, nil)
 		return true
 	case contracts.CursorMethodCreatePlan:
-		a.PublishControlRequest(a.Sink(), line.Raw, cursorPlanCancelAnswer())
+		a.PublishSessionControlRequest(line, cursorPlanCancelAnswer())
 		return true
 	}
 	// Each extension frame describes a tool call that already has a row, so it is

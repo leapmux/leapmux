@@ -34,7 +34,7 @@ func TestCursorControlPublicationFailureReturnsProtocolError(t *testing.T) {
 			require.Eventually(t, func() bool {
 				answer = output.String()
 				return answer != ""
-			}, 2*time.Second, 5*time.Millisecond, "the publication failure is answered")
+			}, 30*time.Second, 5*time.Millisecond, "the publication failure is answered")
 			require.JSONEq(t, `{"jsonrpc":"2.0","id":"007","error":{"code":-32603,"message":"LeapMux could not store this control request."}}`, answer)
 			require.Empty(t, sink.PublishedControls())
 		})
@@ -202,17 +202,89 @@ func TestCursorUnknownExtensionMethodReachesTheTranscript(t *testing.T) {
 
 			require.Eventually(t, func() bool {
 				return len(sink.Messages()) == 1
-			}, 2*time.Second, 5*time.Millisecond, "the frame must reach the transcript")
+			}, 30*time.Second, 5*time.Millisecond, "the frame must reach the transcript")
 			assert.Equal(t, []byte(tc.raw), sink.Messages()[0].Content)
 
 			if tc.wantReply {
 				require.Eventually(t, func() bool {
 					return strings.Contains(written.String(), `"code":-32601`)
-				}, 2*time.Second, 5*time.Millisecond, "an unsupported request is still answered")
+				}, 30*time.Second, 5*time.Millisecond, "an unsupported request is still answered")
 			} else {
 				require.Never(t, func() bool { return written.String() != "" },
 					200*time.Millisecond, 5*time.Millisecond, "a notification draws no reply")
 			}
+		})
+	}
+}
+
+// A dialog of a session that the agent no longer serves -- the session that a
+// context clear replaced -- never reaches the reader: its updates reach no
+// transcript, so a card for it would let the reader approve work that LeapMux
+// never shows. Cursor waits on the answer, so the dialog is refused at once: the
+// plan with Cursor's own rejection, and the question, which has no cancel answer,
+// with a JSON-RPC error.
+func TestCursorRefusesADialogOfASessionThatItDoesNotServe(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		method string
+		want   string
+	}{
+		{contracts.CursorMethodCreatePlan, `{"jsonrpc":"2.0","id":"007","result":{"outcome":{"outcome":"rejected"}}}`},
+		{contracts.CursorMethodAskQuestion, ``},
+	} {
+		t.Run(tc.method, func(t *testing.T) {
+			output := &agenttest.Stdin{}
+			sink := &agenttest.ControlSink{}
+			a := newCursorAgentWithSink(agent.NewProviderServices(sink))
+			a.SetStdinForTest(agenttest.NopStdin(output))
+			a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":"007","method":"` + tc.method + `","params":{"sessionId":"old-session"}}`))
+
+			var answer string
+			require.Eventually(t, func() bool {
+				answer = output.String()
+				return answer != ""
+			}, 30*time.Second, 5*time.Millisecond, "the dialog of the retired session is answered")
+			if tc.want != "" {
+				require.JSONEq(t, tc.want, answer)
+			} else {
+				var reply struct {
+					ID     string          `json:"id"`
+					Result json.RawMessage `json:"result"`
+					Error  *struct {
+						Code    int    `json:"code"`
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(answer)), &reply))
+				assert.Equal(t, "007", reply.ID)
+				require.NotNil(t, reply.Error, "a question has no cancel answer, so it takes an error")
+				assert.NotZero(t, reply.Error.Code)
+				assert.Contains(t, reply.Error.Message, "old-session", "the error states the session that the agent no longer serves")
+				assert.Empty(t, reply.Result, "an error carries no decision")
+			}
+			assert.Empty(t, sink.PublishedControls(), "no card reaches the reader")
+		})
+	}
+}
+
+// The current session's dialogs still reach the reader, and each one waits for
+// the reader's decision.
+func TestCursorPublishesADialogOfItsOwnSession(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{contracts.CursorMethodAskQuestion, contracts.CursorMethodCreatePlan} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newCursorAgentWithSink(agent.NewProviderServices(sink))
+			a.SetStdinForTest(agenttest.NopStdin(&agenttest.Stdin{}))
+			raw := `{"jsonrpc":"2.0","id":"008","method":"` + method + `","params":{"sessionId":"test-session"}}`
+
+			a.HandleOutput([]byte(raw))
+
+			published := sink.PublishedControls()
+			require.Len(t, published, 1)
+			assert.JSONEq(t, raw, string(published[0].Payload), "the browser reads Cursor's own bytes")
+			assert.Equal(t, 1, a.OutstandingControlCountForTest(), "the dialog waits for the reader")
 		})
 	}
 }

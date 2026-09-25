@@ -84,8 +84,26 @@ type ControlBehaviorEnvelope struct {
 		Response  struct {
 			Behavior string `json:"behavior"`
 			Message  string `json:"message"`
+			// Choice is the id of one of the choices a control request offered
+			// beside its plain approve and reject: a plan's own approach, a
+			// refusal that also ends plan mode. Empty for a plain decision. The
+			// browser's plan control writes it (withControlChoice in
+			// frontend/src/utils/controlResponse.ts), and each provider maps the
+			// id onto its own wire answer.
+			Choice string `json:"choice"`
 		} `json:"response"`
 	} `json:"response"`
+}
+
+// DecodeControlChoice returns the trimmed choice a control response carries
+// beside its behavior, or "" for a plain decision and for bytes that are not
+// JSON. See ControlBehaviorEnvelope.
+func DecodeControlChoice(content []byte) string {
+	var cr ControlBehaviorEnvelope
+	if err := json.Unmarshal(content, &cr); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cr.Response.Response.Choice)
 }
 
 // DecodeControlBehavior decodes the frontend's neutral approve/reject control-response envelope

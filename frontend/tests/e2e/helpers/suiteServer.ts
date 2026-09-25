@@ -54,6 +54,19 @@ interface SuiteServerOptions {
 
 const execFileAsync = promisify(execFile)
 
+/**
+ * The lines that state each host that the refusing proxy turned away in a run.
+ *
+ * A refusal keeps a request on the machine, and it fails that request at once. These
+ * lines are how a reader learns which real host a process tried to reach, so an
+ * unexpected host is visible and not only refused.
+ */
+export function refusedHostsReport(refused: ReadonlyMap<string, number>): string[] {
+  return [...refused]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([host, count]) => `The mock proxy refused ${count} ${count === 1 ? 'request' : 'requests'} to ${host}.`)
+}
+
 /** Start the LeapMux process and the model server that one test run shares. */
 export async function startSuiteServer(options: SuiteServerOptions): Promise<StartedSuiteServer> {
   const mockModel = await createMockModelServer({ models: MOCK_MODEL_IDS })
@@ -70,6 +83,8 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
     if (stopped)
       return
     stopped = true
+    for (const line of refusedHostsReport(mockModel.refusedHosts()))
+      process.stderr.write(`${line}\n`)
     await finishCleanup([
       proc ? stopProcess(proc) : Promise.resolve(),
       mockModel.close(),

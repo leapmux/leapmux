@@ -1,6 +1,7 @@
 import type { MockModelScript } from './mockModelScenario'
 import type { MockModelScenarioStatus } from './mockModelScript'
 import type { MockModelServer } from './mockModelServer'
+import { request as httpRequest } from 'node:http'
 import { afterEach, describe, expect, it } from 'vitest'
 import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
 import { mockScenarioPrompt } from './mockModelScenario'
@@ -192,6 +193,34 @@ describe('createMockModelServer', () => {
     expect(anthropic).toContain('"type":"signature_delta"')
   })
 
+  // Every model API defaults `stream` to false. A client that omits the flag
+  // reads one JSON body, and an event stream in reply fails to parse.
+  it('answers a request that states no stream flag with one JSON body in each protocol', async () => {
+    const server = await startServer()
+    const answer = { text: 'One body.' }
+    await registerScenario(server, 'unstreamed', { steps: [answer, answer, answer] })
+    const prompt = mockScenarioPrompt('unstreamed', 'Answer once.')
+    const post = (path: string, body: Record<string, unknown>) => fetch(`${server.url}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+
+    const chatResponse = await post('/v1/chat/completions', { messages: [{ role: 'user', content: prompt }] })
+    expect(chatResponse.headers.get('content-type')).toContain('application/json')
+    expect((await chatResponse.json()).choices[0].message.content).toBe('One body.')
+
+    const responsesResponse = await post('/v1/responses', { input: [{ role: 'user', content: prompt }] })
+    expect(responsesResponse.headers.get('content-type')).toContain('application/json')
+    expect(await responsesResponse.json()).toMatchObject({ object: 'response', status: 'completed' })
+
+    const messagesResponse = await post('/v1/messages', { messages: [{ role: 'user', content: prompt }] })
+    expect(messagesResponse.headers.get('content-type')).toContain('application/json')
+    expect((await messagesResponse.json()).content).toEqual([{ type: 'text', text: 'One body.' }])
+
+    expect(await readStatus(server, 'unstreamed')).toMatchObject({ complete: true })
+  })
+
   it('returns a scripted error with the protocol\'s own error shape', async () => {
     const server = await startServer()
     await registerScenario(server, 'rate-limited', {
@@ -323,6 +352,40 @@ describe('createMockModelServer', () => {
     })
   })
 
+  it('fills a captured request value into the tool call it answers with', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'captured', {
+      steps: [
+        {
+          toolCalls: [{ id: 'write-plan', name: 'Write', arguments: { path: '{{planFile}}', content: '# Plan' } }],
+          captures: { planFile: 'Plan file: (\\S+\\.md)' },
+        },
+        { text: 'Unused', captures: { planFile: 'Plan file: (\\S+\\.md)' }, reasoning: '{{planFile}}' },
+      ],
+    })
+    const response = await fetch(`${server.url}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        stream: false,
+        messages: [
+          { role: 'user', content: mockScenarioPrompt('captured', 'Make a plan.') },
+          { role: 'user', content: '<system-reminder>Plan file: /tmp/plans/red-fox.md</system-reminder>' },
+        ],
+      }),
+    })
+    expect(response.status).toBe(200)
+    const answer = await response.json()
+    expect(JSON.parse(answer.choices[0].message.tool_calls[0].function.arguments))
+      .toEqual({ path: '/tmp/plans/red-fox.md', content: '# Plan' })
+
+    // The second step's capture finds no plan path, so the request is unexpected.
+    expect((await chat(server, mockScenarioPrompt('captured', 'No reminder.'))).status).toBe(409)
+    const status = await readStatus(server, 'captured')
+    expect(status.complete).toBe(false)
+    expect(status.unexpectedRequests).toMatchObject([{ reason: 'capture planFile matched nothing in the request' }])
+  })
+
   it('records a request that reaches no scenario, with the body that arrived', async () => {
     const server = await startServer()
     expect((await chat(server, 'No marker at all')).status).toBe(409)
@@ -387,6 +450,126 @@ describe('createMockModelServer', () => {
     })
   })
 
+  it('refuses every proxy tunnel, and records the host that it refused', async () => {
+    // The mock is also the agents' proxy. A request that no setting of an agent
+    // points at the mock then fails at once rather than leaving the machine.
+    const server = await startServer()
+    const { port } = new URL(server.url)
+    const status = await new Promise<number | undefined>((resolve, reject) => {
+      const tunnel = httpRequest({ host: '127.0.0.1', port: Number(port), method: 'CONNECT', path: 'app.kiro.dev:443' })
+      tunnel.on('connect', (response, socket) => {
+        socket.destroy()
+        resolve(response.statusCode)
+      })
+      tunnel.on('error', reject)
+      tunnel.end()
+    })
+    expect(status).toBe(403)
+    const log = await fetch(`${server.url}/__e2e/requests`).then(result => result.json())
+    expect(log.http).toContainEqual({ method: 'CONNECT', path: 'app.kiro.dev:443', status: 403 })
+  })
+
+  // A client that sends a plain-HTTP request through the proxy sends it in absolute
+  // form. Answering it by its path would serve a real host's request as a model
+  // route, and the log would hide the host.
+  it('refuses an absolute-form request to another host, and records that host', async () => {
+    const server = await startServer()
+    const { port } = new URL(server.url)
+    const status = await new Promise<number | undefined>((resolve, reject) => {
+      const proxied = httpRequest({ host: '127.0.0.1', port: Number(port), method: 'GET', path: 'http://example.test/v1/models' })
+      proxied.on('response', (response) => {
+        response.resume()
+        resolve(response.statusCode)
+      })
+      proxied.on('error', reject)
+      proxied.end()
+    })
+    expect(status).toBe(403)
+    const log = await fetch(`${server.url}/__e2e/requests`).then(result => result.json())
+    expect(log.http).toContainEqual({ method: 'GET', path: 'http://example.test/v1/models', status: 403 })
+    expect(server.refusedHosts()).toEqual(new Map([['example.test', 1]]))
+  })
+
+  // A client that ignores NO_PROXY for plain HTTP sends even its calls to the mock
+  // in absolute form. The mock serves those as if they came directly.
+  it('serves an absolute-form request to its own origin', async () => {
+    const server = await startServer()
+    const { port } = new URL(server.url)
+    for (const host of ['127.0.0.1', 'localhost']) {
+      const status = await new Promise<number | undefined>((resolve, reject) => {
+        const proxied = httpRequest({ host: '127.0.0.1', port: Number(port), method: 'GET', path: `http://${host}:${port}/healthz` })
+        proxied.on('response', (response) => {
+          response.resume()
+          resolve(response.statusCode)
+        })
+        proxied.on('error', reject)
+        proxied.end()
+      })
+      expect(status, host).toBe(200)
+    }
+    expect(server.refusedHosts().size).toBe(0)
+  })
+
+  // The origin is the host AND the port. A loopback address with another port is
+  // another process on the machine, which the proxy must not reach for a client.
+  it('refuses an absolute-form request to a loopback host on another port', async () => {
+    const server = await startServer()
+    const { port } = new URL(server.url)
+    const otherPort = Number(port) === 1 ? 2 : 1
+    const status = await new Promise<number | undefined>((resolve, reject) => {
+      const proxied = httpRequest({ host: '127.0.0.1', port: Number(port), method: 'GET', path: `http://127.0.0.1:${otherPort}/healthz` })
+      proxied.on('response', (response) => {
+        response.resume()
+        resolve(response.statusCode)
+      })
+      proxied.on('error', reject)
+      proxied.end()
+    })
+    expect(status).toBe(403)
+    expect(server.refusedHosts()).toEqual(new Map([[`127.0.0.1:${otherPort}`, 1]]))
+  })
+
+  it('serves an absolute-form request to its own origin by its IPv6 loopback name', async () => {
+    const server = await startServer()
+    const { port } = new URL(server.url)
+    const status = await new Promise<number | undefined>((resolve, reject) => {
+      const proxied = httpRequest({ host: '127.0.0.1', port: Number(port), method: 'GET', path: `http://[::1]:${port}/healthz` })
+      proxied.on('response', (response) => {
+        response.resume()
+        resolve(response.statusCode)
+      })
+      proxied.on('error', reject)
+      proxied.end()
+    })
+    expect(status).toBe(200)
+    expect(server.refusedHosts().size).toBe(0)
+  })
+
+  it('hands out a copy of the refused hosts, which a caller cannot change', async () => {
+    const server = await startServer()
+    const copy = server.refusedHosts() as Map<string, number>
+    copy.set('example.test', 9)
+    expect(server.refusedHosts().size).toBe(0)
+  })
+
+  it('counts each refused host, for the report at the end of the run', async () => {
+    const server = await startServer()
+    const { port } = new URL(server.url)
+    const connect = (target: string) => new Promise<void>((resolve, reject) => {
+      const tunnel = httpRequest({ host: '127.0.0.1', port: Number(port), method: 'CONNECT', path: target })
+      tunnel.on('connect', (_response, socket) => {
+        socket.destroy()
+        resolve()
+      })
+      tunnel.on('error', reject)
+      tunnel.end()
+    })
+    await connect('app.kiro.dev:443')
+    await connect('app.kiro.dev:443')
+    await connect('github.com:443')
+    expect(server.refusedHosts()).toEqual(new Map([['app.kiro.dev:443', 2], ['github.com:443', 1]]))
+  })
+
   it('refuses a second registration under one identifier', async () => {
     const server = await startServer()
     await registerScenario(server, 'taken', { steps: [{ text: 'First' }] })
@@ -409,5 +592,47 @@ describe('createMockModelServer', () => {
     const forced = await fetch(`${server.url}/__e2e/scenarios/unfinished?force=true`, { method: 'DELETE' })
     expect(forced.status).toBe(204)
     expect((await fetch(`${server.url}/__e2e/scenarios/unfinished`)).status).toBe(404)
+  })
+})
+
+describe('createMockModelServer Amp service', () => {
+  /** Open one socket of the thread actor, and collect what it receives. */
+  async function actorSocket(server: MockModelServer, threadID: string) {
+    const frames: unknown[] = []
+    const socket = new WebSocket(`${server.url.replace('http:', 'ws:')}/actors/gateway/threadActor/websocket/?rvt-key=${threadID}`, ['rivet'])
+    socket.addEventListener('message', event => frames.push(String(event.data) === 'pong' ? 'pong' : JSON.parse(String(event.data))))
+    await new Promise<void>(resolve => socket.addEventListener('open', () => resolve(), { once: true }))
+    await expect.poll(() => frames[0]).toBe('pong')
+    return { socket, frames }
+  }
+
+  it('answers each inference of Amp\'s agent loop from the scenario its prompt marks', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'amp-text', { steps: [{ text: 'Amp answer' }] })
+    const created = await (await fetch(`${server.url}/api/thread-actors`, { method: 'POST', body: '{}' })).json() as { threadId: string }
+    const { socket, frames } = await actorSocket(server, created.threadId)
+    socket.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'client_append_user_msg', params: { content: [{ type: 'text', text: mockScenarioPrompt('amp-text', 'Say it.') }] } }))
+    await expect.poll(() => frames.some(frame => JSON.stringify(frame).includes('Amp answer'))).toBe(true)
+    const status = await readStatus(server, 'amp-text')
+    expect(status).toMatchObject({ complete: true, nextStep: 1 })
+    expect(status.requests[0]).toMatchObject({ protocol: 'anthropic-messages', stepIndex: 0 })
+    socket.close()
+  })
+
+  it('records an inference whose scenario is not registered', async () => {
+    const server = await startServer()
+    const created = await (await fetch(`${server.url}/api/thread-actors`, { method: 'POST', body: '{}' })).json() as { threadId: string }
+    const { socket, frames } = await actorSocket(server, created.threadId)
+    socket.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'client_append_user_msg', params: { content: [{ type: 'text', text: mockScenarioPrompt('amp-missing', 'Say it.') }] } }))
+    await expect.poll(() => frames.some(frame => JSON.stringify(frame).includes('error_set'))).toBe(true)
+    const log = await (await fetch(`${server.url}/__e2e/requests`)).json() as { unmatched: { scenarioID: string }[] }
+    expect(log.unmatched.map(entry => entry.scenarioID)).toContain('amp-missing')
+    socket.close()
+  })
+
+  it('refuses an upgrade outside the actor gateway', async () => {
+    const server = await startServer()
+    const socket = new WebSocket(`${server.url.replace('http:', 'ws:')}/v1/responses`)
+    await new Promise<void>(resolve => socket.addEventListener('error', () => resolve(), { once: true }))
   })
 })

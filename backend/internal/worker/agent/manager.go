@@ -13,6 +13,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"google.golang.org/protobuf/proto"
 )
@@ -41,6 +42,11 @@ type Manager struct {
 	// construction and never nil, so every read of a provider's registration goes
 	// through the one value the worker was wired with.
 	registry *Registry
+
+	// agentDirs is where the agents of this worker create their private
+	// directories. PrepareAgentDirs sets it once, before anything can start an
+	// agent, and startAgentWith hands it to each start through Options.
+	agentDirs *agentdir.Dirs
 
 	// startupSlots caps how many BACKGROUND agent startups run at once: one
 	// token is held from just before the provider's start func spawns the
@@ -123,6 +129,32 @@ func (m *Manager) SetStartupConcurrency(n int) {
 	m.mu.Lock()
 	m.startupSlots = slots
 	m.mu.Unlock()
+}
+
+// errAgentDirsPrepared refuses a second PrepareAgentDirs.
+var errAgentDirsPrepared = errors.New("agent: the agent directories are prepared already")
+
+// PrepareAgentDirs prepares the private directories of this worker's agents,
+// with the spec of each provider that the registry states one for, and with a
+// base under dataDir. It starts the sweep of the directories that ended
+// workers left, and returns without waiting for it: an agent that creates its
+// directory waits for the sweep of that directory's parent. The sweep stops
+// early when ctx ends.
+//
+// Call it once, before anything can start an agent. Wire does. It fails only
+// for a wiring mistake: specs that NewRegistry would refuse, or a second call.
+func (m *Manager) PrepareAgentDirs(ctx context.Context, dataDir string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.agentDirs != nil {
+		return errAgentDirsPrepared
+	}
+	dirs, err := agentdir.Start(ctx, agentdir.Config{DataDir: dataDir, Specs: m.registry.AgentDirSpecs()})
+	if err != nil {
+		return fmt.Errorf("prepare the agent directories: %w", err)
+	}
+	m.agentDirs = dirs
+	return nil
 }
 
 // StartupConcurrency reports the background permit pool's current capacity.
@@ -295,6 +327,11 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 	if _, exists := m.agents[opts.AgentID]; exists {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("agent already running for agent %s", opts.AgentID)
+	}
+	// The worker's one set of agent directories, unless the caller states its
+	// own: a test that starts a provider through the manager does.
+	if opts.AgentDirs == nil {
+		opts.AgentDirs = m.agentDirs
 	}
 	m.mu.Unlock()
 
@@ -670,7 +707,7 @@ func (m *Manager) InterruptChild(rootAgentID, childKey string) error {
 // perform, by type-asserting it to GoalCapable.
 //
 // An agent that is not running answers with nothing, and so does a provider
-// that reports its goal without being able to change it (Reasonix). The browser
+// that reports its goal without being able to change it (Oh My Pi). The browser
 // disables every control it does not find here, so "nothing" is the safe answer
 // in both cases -- and it is why this is read from the live process rather than
 // a per-provider table: goal support is version-dependent (Claude Code shipped

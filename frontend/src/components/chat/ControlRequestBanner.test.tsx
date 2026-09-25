@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { compactControl } from '~/components/common/CompactControl.css'
+import { ALL_PROVIDERS } from '~/generated/contracts/providers'
 import { AgentProvider, ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
 import * as clipboard from '~/lib/clipboard'
 import { ControlRequestActions, ControlRequestContent } from '~/test-support/controlRequestBanner'
@@ -164,6 +165,47 @@ describe('ControlRequestBanner takes the surface from its caller', () => {
     expect(screen.getByTestId('control-deny-btn')).toBeInTheDocument()
     expect(screen.getByTestId('control-allow-btn')).toBeInTheDocument()
   })
+
+  // A provider that states a dialog responder answers the dialog in its own words,
+  // not with the shared pair. The surface gives the dialog, and the plugin the words.
+  it('draws the dialog actions for a dialog of a provider that states a responder', async () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    render(() => (
+      <banner.ControlRequestActions
+        request={{ requestId: 'dialog-1', agentId: 'a1', payload: { type: 'extension_ui_request', id: 'dialog-1', method: 'input', title: 'Pick a branch' } }}
+        controlSurface={{ kind: 'dialog', dialog: { title: 'Pick a branch', prefill: 'main', variant: 'input' } }}
+        answerState={createControlAnswerState()}
+        agentProvider={AgentProvider.PI}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={() => {}}
+      />
+    ))
+    expect(screen.getByTestId('dialog-input')).toHaveValue('main')
+    expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Cancel')
+    fireEvent.click(screen.getByTestId('control-allow-btn'))
+    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0])))
+      .toEqual({ type: 'extension_ui_response', id: 'dialog-1', value: 'main' })
+  })
+
+  // The plan surface states the extra answers, and the banner hands them to the plan
+  // actions whatever the provider.
+  it('offers the choices of a plan surface in the overflow menu', () => {
+    render(() => (
+      <banner.ControlRequestActions
+        request={planRequest()}
+        controlSurface={{ kind: 'plan', choices: [{ id: 'Revise', label: 'Request revisions', approves: false }] }}
+        answerState={createControlAnswerState()}
+        agentProvider={AgentProvider.CLAUDE_CODE}
+        onRespond={vi.fn().mockResolvedValue(undefined)}
+        hasEditorContent={false}
+        onTriggerSend={() => {}}
+      />
+    ))
+    fireEvent.click(screen.getByTestId('control-more-actions'))
+    expect(screen.getByTestId('plan-choice-0')).toHaveTextContent('Request revisions')
+  })
 })
 
 /**
@@ -322,7 +364,9 @@ describe('a request whose payload LeapMux cannot read', () => {
   // here, because composing one needs the option list or decision vocabulary the payload
   // was carrying -- so LeapMux can build no valid answer at all. The stop releases the
   // agent without an answer, and the worker cancels from its own copy of the bytes.
-  it.each([AgentProvider.CLAUDE_CODE, AgentProvider.CODEX, AgentProvider.OPENCODE, AgentProvider.GITHUB_COPILOT, AgentProvider.PI, AgentProvider.ZCODE])(
+  // Every provider, because the rule is the banner's own and a new provider must not
+  // reach a decision for bytes that nobody can read.
+  it.each(ALL_PROVIDERS)(
     'offers no decision for provider %s',
     (provider) => {
       render(() => (

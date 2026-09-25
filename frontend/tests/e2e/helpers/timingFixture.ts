@@ -1,6 +1,6 @@
 /**
  * Shared infrastructure for perf-timing e2e specs (e.g.
- * 121-claude-agent-open-timing, 122-tab-close-timing). Each spec uses
+ * 090-claude-agent-open-timing, 093-tab-close-timing). Each spec uses
  * its own dev-server fixture so it can pass `LEAPMUX_TRACE_*` env vars
  * and capture backend stderr for slog phase markers. This module
  * consolidates the log-line buffer, JSON-line parsing, browser-side

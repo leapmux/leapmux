@@ -157,6 +157,16 @@ type TurnServices interface {
 	// kept the same turn running. The Worker restores the activity that the
 	// interrupt request hid, including the Interrupt button for a later attempt.
 	ReportInterruptIgnored()
+	// RequeueDroppedInput hands back input that the provider accepted into the
+	// running turn and that the agent dropped before the model read it. The
+	// Worker queues it as the reader's next message, under the queue's own rules,
+	// and states in the transcript why the message appears again. dropID
+	// identifies the drop within the agent, so a second call for the same drop
+	// queues nothing and writes nothing.
+	//
+	// An error means that the queue did not take the input, and the provider
+	// must then tell the reader that the model never read it.
+	RequeueDroppedInput(dropID, content string, attachments []*leapmuxv1.Attachment) error
 }
 
 // SpanServices owns transcript span state.
@@ -184,6 +194,10 @@ type ProgressServices interface {
 
 // ControlRequest keeps the native payload separate from its optional transcript source.
 type ControlRequest struct {
+	// AgentSessionID is the provider session that the request belongs to. The
+	// worker accepts an answer only while the agent is in that session. An empty
+	// value makes the sink store the session that it holds when it stores the
+	// request, and that session is empty until the first UpdateSessionID.
 	AgentSessionID string
 	RequestID      string
 	Payload        []byte

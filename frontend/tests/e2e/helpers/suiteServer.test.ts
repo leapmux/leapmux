@@ -3,7 +3,7 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { startSuiteServer } from './suiteServer'
+import { refusedHostsReport, startSuiteServer } from './suiteServer'
 
 /**
  * The happy path of `startSuiteServer` is the suite itself: every E2E run
@@ -101,5 +101,18 @@ describe('openServerCount', () => {
     expect(openServerCount()).toBe(before + 1)
     await new Promise<void>(resolve => server.close(() => resolve()))
     expect(await settledServerCount(before)).toBe(before)
+  })
+})
+
+describe('refusedHostsReport', () => {
+  it('states each refused host once, in a stable order, with its count', () => {
+    expect(refusedHostsReport(new Map([['github.com:443', 2], ['app.kiro.dev:443', 1]]))).toEqual([
+      'The mock proxy refused 1 request to app.kiro.dev:443.',
+      'The mock proxy refused 2 requests to github.com:443.',
+    ])
+  })
+
+  it('states nothing for a run that refused nothing', () => {
+    expect(refusedHostsReport(new Map())).toEqual([])
   })
 })

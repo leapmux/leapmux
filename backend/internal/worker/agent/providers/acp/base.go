@@ -31,10 +31,7 @@ const (
 	MethodInitialize                  = "initialize"
 	acpMethodSessionUpdate            = "session/update"
 	acpMethodSessionRequestPermission = "session/request_permission"
-	// acpPermissionOutcomeCancelled is the protocol's outcome for a request the client
-	// ends without a decision.
-	acpPermissionOutcomeCancelled = "cancelled"
-	MethodSessionCancel           = "session/cancel"
+	MethodSessionCancel               = "session/cancel"
 	// The JSON-RPC cancel notification an agent sends for a request it withdraws,
 	// under the two names the roster uses. Goose spells it `$/cancel_request`, and
 	// `$/cancelRequest` is the Language Server Protocol spelling the same
@@ -43,9 +40,14 @@ const (
 	acpMethodCancelRequestCamel = "$/cancelRequest"
 	MethodSessionNew            = "session/new"
 	MethodSessionLoad           = "session/load"
-	MethodSessionPrompt         = "session/prompt"
-	MethodSessionSetModel       = "session/set_model"
-	MethodSessionSetMode        = "session/set_mode"
+	// MethodSessionResume reopens a stored session without replaying it. OpenCode,
+	// Kilo, Grok Build and Qwen Code resume through it, because the replay of
+	// session/load would draw the whole conversation in the transcript a second
+	// time.
+	MethodSessionResume   = "session/resume"
+	MethodSessionPrompt   = "session/prompt"
+	MethodSessionSetModel = "session/set_model"
+	MethodSessionSetMode  = "session/set_mode"
 	// MethodSessionSetConfigOption is the config-option setter (ACP's
 	// session/set_config_option): params {sessionId, configId, value}, returning the
 	// refreshed configOptions list. Used to write the mutable option groups
@@ -64,16 +66,7 @@ const (
 
 // ACP session update type constants.
 const (
-	acpUpdateAgentMessageChunk       = contracts.ACPUpdateAgentMessageChunk
-	acpUpdateAgentThoughtChunk       = contracts.ACPUpdateAgentThoughtChunk
-	UpdateToolCall                   = contracts.ACPUpdateToolCall
-	UpdateToolCallUpdate             = contracts.ACPUpdateToolCallUpdate
-	acpUpdatePlan                    = "plan"
-	acpUpdateUsageUpdate             = contracts.ACPUpdateUsageUpdate
-	acpUpdateUserMessageChunk        = contracts.ACPUpdateUserMessageChunk
-	acpUpdateAvailableCommandsUpdate = contracts.ACPUpdateAvailableCommandsUpdate
-	acpUpdateConfigOptionUpdate      = contracts.ACPUpdateConfigOptionUpdate
-	acpUpdateSessionInfoUpdate       = contracts.ACPUpdateSessionInfoUpdate
+	acpUpdatePlan = "plan"
 )
 
 // ModeChannel identifies how an ACP provider maps the configOptions `mode` select
@@ -92,15 +85,15 @@ const (
 	// This is the zero-value default; no provider currently selects it.
 	ModeChannelUnmapped ModeChannel = iota
 	// ModeChannelPermissionMode: the configOptions `mode` select drives the permission
-	// mode (Cursor, Goose, Reasonix).
+	// mode (Cursor, Goose, Grok Build, Kiro, Qwen Code, Reasonix).
 	ModeChannelPermissionMode
 	// ModeChannelPrimaryAgent: the configOptions `mode` select drives the primary agent
 	// (OpenCode, Kilo). This is also the sole value identifying the primary-agent family.
 	ModeChannelPrimaryAgent
 )
 
-// Base extends JSONRPCProcess with fields and methods shared by every ACP agent
-// (OpenCode, Kilo, Cursor, Goose, Reasonix) but not codex.Agent.
+// Base extends JSONRPCProcess with the fields and methods that every ACP agent
+// shares. The package documentation lists the ACP providers.
 type Base struct {
 	// These fields describe ACP turns and do not belong to the JSON-RPC transport.
 	promptActive bool
@@ -111,9 +104,27 @@ type Base struct {
 	// without this the row reports a failure the reader caused by stopping, or
 	// reports nothing. Guarded by b.Mu. See noteACPInterruptRequested.
 	interruptRequested bool
+	// agentTurnActive records that the running turn is one the agent started by
+	// itself (BeginAgentTurn), rather than a session/prompt that LeapMux sent.
+	// promptActive is set too, so every check that asks "does a turn run?" reads
+	// one flag. Guarded by b.Mu.
+	agentTurnActive bool
+	// agentTurnQueued records an agent turn that began before the base
+	// processed the end of the prompt that ran. The prompt's end hands the busy
+	// state to it (see BeginAgentTurn). queuedAgentTurnEnd holds its end frame
+	// when that too arrived first. Guarded by b.Mu.
+	agentTurnQueued    bool
+	queuedAgentTurnEnd json.RawMessage
 	publishTurnActive  func(active bool, seq uint64)
 	steerMethod        string
 	steerRunID         string
+	// closesSessions records that the initialize response advertised
+	// session/close, which a context clear sends for the session that it
+	// replaced. Guarded by b.Mu.
+	closesSessions bool
+	// openRows holds the registry rows that this agent opened and did not close
+	// yet, which a context clear closes. See session_retirement.go.
+	openRows acpOpenRows
 
 	providerkit.JSONRPCProcess
 	sink agent.ProviderServices
@@ -123,6 +134,9 @@ type Base struct {
 	hooks Hooks
 	acpTurnOutput
 	acpTerminalHost
+	// children routes the updates of each subagent into its own transcript. See
+	// children.go.
+	children acpChildren
 	// availableCommands is the last command set that the ACP process
 	// advertised. Goal-capable providers read their command token from it.
 	//
@@ -206,10 +220,24 @@ func (b *Base) handleACPPromptResponse(resp json.RawMessage) {
 		b.finishIncompleteACPPrompt(agent.MessageCompletionInterrupted)
 		return
 	}
+	b.persistFinishedTurn(resp)
+}
 
-	turn := b.drainTurn()
-	b.persistCompletedACPText(agent.AssembledMessageKindReasoning, turn.thoughtText)
-	b.persistCompletedACPText(agent.AssembledMessageKindText, turn.assistantText)
+// persistFinishedTurn drains the turn that ended with frame and persists frame
+// as its turn-end row. frame is the agent's own record of the end: the
+// session/prompt response for a turn that LeapMux started, and the provider's
+// end frame for a turn that the agent started by itself.
+//
+// A prompt with an agent turn waiting behind it drains only its own part (see
+// BeginAgentTurn). Its text was persisted at the boundary, and the live counter
+// of the text now counts the agent turn, so it stays open.
+func (b *Base) persistFinishedTurn(frame json.RawMessage) {
+	main := b.main()
+	turn, bounded := b.drainPromptTurn()
+	if !bounded {
+		main.persistCompletedText(agent.AssembledMessageKindReasoning, turn.thoughtText)
+		main.persistCompletedText(agent.AssembledMessageKindText, turn.assistantText)
+	}
 	// A tool the turn left unfinished failed -- unless the reader STOPPED the turn,
 	// in which case it was cut rather than broken. A clean cancel returns a prompt
 	// response rather than an error, so Cursor arrives here and not on the error
@@ -219,21 +247,11 @@ func (b *Base) handleACPPromptResponse(resp json.RawMessage) {
 	if b.acpInterruptRequested() {
 		incomplete = agent.MessageCompletionInterrupted
 	}
-	b.persistIncompleteACPTools(turn.incompleteTools, incomplete)
+	main.persistIncompleteTools(turn.incompleteTools, incomplete)
 	b.clearCompletedTerminals()
 	numToolUses := turn.completedToolUses + len(turn.incompleteTools)
 
-	b.persistPromptResponse(resp, numToolUses)
-}
-
-// persistCompletedACPText ends one text kind's live counter and stores the segment.
-//
-// The counter closes even when the text is empty, because the caller reaches this
-// point only when the segment ended. A scope that stays open keeps counting its
-// characters into the next segment.
-func (b *Base) persistCompletedACPText(kind agent.AssembledMessageKind, text string) {
-	b.sink.ReportProgress(agent.CompleteModelProgress("acp:" + acpTextProgressScope(kind)))
-	b.persistAssembledACPText(kind, text, agent.MessageCompletionComplete)
+	b.persistPromptResponse(frame, numToolUses)
 }
 
 // acpTextProgressScope is the live-counter scope for one text kind. The scope is
@@ -241,12 +259,31 @@ func (b *Base) persistCompletedACPText(kind agent.AssembledMessageKind, text str
 // with the stored shape.
 func acpTextProgressScope(kind agent.AssembledMessageKind) string {
 	if kind == agent.AssembledMessageKindReasoning {
-		return acpUpdateAgentThoughtChunk
+		return contracts.ACPUpdateAgentThoughtChunk
 	}
-	return acpUpdateAgentMessageChunk
+	return contracts.ACPUpdateAgentMessageChunk
 }
 
+// finishIncompleteACPPrompt ends a prompt that reached no prompt response: the
+// response was empty, or the request failed. A prompt with an agent turn
+// waiting behind it closes only the tool calls that it left open, and the
+// progress of the agent turn stays (see BeginAgentTurn).
 func (b *Base) finishIncompleteACPPrompt(completion agent.MessageCompletion) {
+	turn, bounded := b.drainPromptTurn()
+	if !bounded {
+		b.finishACPTurn(turn, completion)
+		return
+	}
+	if b.IsDiscardingOutput() {
+		return
+	}
+	b.main().persistIncompleteTools(turn.incompleteTools, completion)
+	b.clearCompletedTerminals()
+}
+
+// finishAllTurnOutput ends every turn that has output: the prompt, and an agent
+// turn that waits behind it. Stop and the exit of the process end both.
+func (b *Base) finishAllTurnOutput(completion agent.MessageCompletion) {
 	b.finishACPTurn(b.drainTurn(), completion)
 }
 
@@ -256,109 +293,43 @@ func (b *Base) finishACPTurn(turn acpTurnSnapshot, completion agent.MessageCompl
 		b.sink.ReportProgress(agent.ResetProgress())
 		return
 	}
-	b.persistIncompleteACPText(agent.AssembledMessageKindReasoning, turn.thoughtText, completion)
-	b.persistIncompleteACPText(agent.AssembledMessageKindText, turn.assistantText, completion)
-	b.persistIncompleteACPTools(turn.incompleteTools, completion)
+	b.main().finishTurn(turn, completion)
 	b.clearCompletedTerminals()
 	b.sink.ReportProgress(agent.ResetProgress())
-}
-
-func (b *Base) persistIncompleteACPText(kind agent.AssembledMessageKind, text string, completion agent.MessageCompletion) {
-	b.persistAssembledACPText(kind, text, completion)
-}
-
-// persistAssembledACPText stores one assembled text segment.
-//
-// The Agent Client Protocol streams text as a run of chunks, and one transcript row
-// holds the whole segment. That row is therefore LeapMux's ASSEMBLY, not a frame the
-// agent sent, so it carries LeapMux's own assembled-message envelope. Writing a
-// chunk-shaped object instead would put a message the agent never sent into the
-// column that holds the agent's own bytes -- and the interrupted path already used
-// this envelope, so the completed path had a second shape for the same content.
-func (b *Base) persistAssembledACPText(kind agent.AssembledMessageKind, text string, completion agent.MessageCompletion) {
-	if text == "" {
-		return
-	}
-	raw, err := agent.MarshalAssembledMessage(kind, text, completion)
-	if err != nil {
-		slog.Warn("marshal assembled acp text", "agent_id", b.AgentID(), "error", err)
-		return
-	}
-	if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{}); err != nil {
-		slog.Error("persist assembled acp text", "agent_id", b.AgentID(), "error", err)
-	}
-}
-
-func (b *Base) persistIncompleteACPTools(tools []acpIncompleteTool, completion agent.MessageCompletion) {
-	for _, tool := range tools {
-		if tool.encodeErr != nil {
-			slog.Warn("marshal incomplete acp tool", "agent_id", b.AgentID(), "tool_call_id", tool.toolCallID, "error", tool.encodeErr)
-		} else {
-			content := b.acpMessageContent(tool.original, tool.content)
-			content.Completion = completion
-			if err := b.persistClosingACPTool(tool.toolCallID, content); err != nil {
-				slog.Error("persist incomplete acp tool", "agent_id", b.AgentID(), "tool_call_id", tool.toolCallID, "error", err)
-			}
-		}
-		b.sink.CloseSpan(tool.toolCallID)
-		b.completeACPToolOutput(tool.toolCallID)
-		if tool.rowKey != "" {
-			if err := b.sink.CloseBackgroundTask(tool.rowKey, agent.IncompleteTaskStatus(completion)); err != nil {
-				slog.Warn("close incomplete acp subagent", "agent_id", b.AgentID(), "row_key", tool.rowKey, "error", err)
-			}
-		}
-	}
-}
-
-// persistClosingACPTool writes the row that closes one ACP tool call.
-//
-// The span type falls back to UpdateToolCall when no span reports one: a call that
-// ended without a span still needs a type on its row. Both closing sites share that
-// default and the Closing span shape, so a change to either now lands in one place.
-// Each caller keeps its own error message, and its own order for completeTool, the span
-// close and the background-task close, because the two sites do not agree on that order.
-func (b *Base) persistClosingACPTool(toolCallID string, content agent.MessageContent) error {
-	spanType := b.sink.GetSpanType(toolCallID)
-	if spanType == "" {
-		spanType = UpdateToolCall
-	}
-	return b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{
-		SpanID: toolCallID, SpanType: spanType, Closing: true,
-	})
-}
-
-func (b *Base) completeACPToolOutput(toolCallID string) {
-	b.ClearCumulativeOutput(toolCallID)
-	b.sink.ReportProgress(agent.CompleteOutputProgress(toolCallID))
-	if b.hooks.ToolOutputComplete != nil {
-		b.hooks.ToolOutputComplete(toolCallID)
-	}
-}
-
-func (b *Base) rememberACPToolSubagentRow(toolCallID string, obs *SubagentObservation) {
-	if toolCallID == "" || obs == nil || obs.RowKey == "" || obs.CloseRow {
-		return
-	}
-	b.rememberSubagentRow(toolCallID, obs.RowKey)
 }
 
 // MethodHandler is called for JSON-RPC methods not handled by the shared
 // ACP dispatcher. Return true if the method was consumed.
 type MethodHandler func(line *providerkit.ParsedLine) bool
 
+// acpUpdateHeader is the part of one session update that the dispatcher reads
+// before it decides where the update belongs.
+type acpUpdateHeader struct {
+	SessionUpdate string                     `json:"sessionUpdate"`
+	Role          string                     `json:"role"`
+	Status        string                     `json:"status"`
+	Content       json.RawMessage            `json:"content"`
+	Meta          map[string]json.RawMessage `json:"_meta"`
+}
+
 func (b *Base) handleACPUpdate(update json.RawMessage) {
-	var header struct {
-		SessionUpdate string                     `json:"sessionUpdate"`
-		Role          string                     `json:"role"`
-		Status        string                     `json:"status"`
-		Content       json.RawMessage            `json:"content"`
-		Meta          map[string]json.RawMessage `json:"_meta"`
-	}
+	var header acpUpdateHeader
 	if err := json.Unmarshal(update, &header); err != nil {
 		slog.Warn("acp session update unmarshal header failed", "provider", b.ProviderName(), "agent_id", b.AgentID(), "error", err)
 		return
 	}
-	if b.hooks.SessionMetadataHandler != nil && b.hooks.SessionMetadataHandler(header.SessionUpdate, header.Meta) {
+	// A subagent's update rides the main session under a tag of the provider's.
+	// It belongs to the transcript of that subagent, so the main session reads
+	// nothing from it -- not even its metadata, which states the usage and the
+	// progress of the SUBAGENT. An update whose tag identifies no child transcript
+	// stays in the main one, where the reader can still see it.
+	if b.hooks.ChildUpdateRoute != nil {
+		if rowKey := b.hooks.ChildUpdateRoute(header.SessionUpdate, header.Meta); rowKey != "" &&
+			b.routeToChild(rowKey, header, update) {
+			return
+		}
+	}
+	if b.hooks.SessionMetadataHandler != nil && b.hooks.SessionMetadataHandler(header.SessionUpdate, header.Meta, update) {
 		return
 	}
 
@@ -367,58 +338,23 @@ func (b *Base) handleACPUpdate(update json.RawMessage) {
 	if header.Role == contracts.ACPRoleResult {
 		return
 	}
-	// Flush model segments at each chronology boundary. Status and tool-progress
-	// updates do not split a segment.
-	switch header.SessionUpdate {
-	case acpUpdateAgentMessageChunk:
-		b.flushThoughtBuffer()
-	case acpUpdateAgentThoughtChunk:
-		b.flushAssistantBuffer()
-	case UpdateToolCall, acpUpdatePlan:
-		b.flushThoughtBuffer()
-		b.flushAssistantBuffer()
-	case UpdateToolCallUpdate:
-		if StatusIsFinal(header.Status) {
-			b.flushThoughtBuffer()
-			b.flushAssistantBuffer()
-		}
-	case acpUpdateUsageUpdate,
-		contracts.ACPUpdateCurrentMode,
-		acpUpdateUserMessageChunk,
-		acpUpdateAvailableCommandsUpdate,
-		acpUpdateConfigOptionUpdate,
-		acpUpdateSessionInfoUpdate:
-		// no flush. session_info_update carries the runtime's own title and modified
-		// time, and one arrives for every turn, so a flush here split each assembled
-		// message in two. The switch below reads nothing from it.
-	default:
-		b.flushThoughtBuffer()
-		b.flushAssistantBuffer()
+	if b.main().handleUpdate(header, update) {
+		return
 	}
 
 	switch header.SessionUpdate {
-	case acpUpdateAgentMessageChunk:
-		b.bufferACPChunk(header.Content, acpUpdateAgentMessageChunk)
-	case acpUpdateAgentThoughtChunk:
-		b.handleAgentThoughtChunk(header.Content)
-	case UpdateToolCall:
-		b.handleToolCall(update)
-	case UpdateToolCallUpdate:
-		b.handleToolCallUpdate(update)
-	case acpUpdatePlan:
-		b.handlePlan(update)
-	case acpUpdateUsageUpdate:
+	case contracts.ACPUpdateUsageUpdate:
 		b.handleUsageUpdate(update)
-	case acpUpdateConfigOptionUpdate:
+	case contracts.ACPUpdateConfigOptionUpdate:
 		// Shared model channel for every ACP provider; mode handled per-provider.
 		b.handleACPConfigOptionUpdate(update)
 	case contracts.ACPUpdateCurrentMode:
 		b.handleACPModeUpdate(update)
-	case acpUpdateUserMessageChunk:
+	case contracts.ACPUpdateUserMessageChunk:
 		// No-op: user_message_chunk is history replay.
-	case acpUpdateAvailableCommandsUpdate:
+	case contracts.ACPUpdateAvailableCommandsUpdate:
 		b.observeAvailableCommands(update)
-	case acpUpdateSessionInfoUpdate:
+	case contracts.ACPUpdateSessionInfoUpdate:
 		// Session metadata: the runtime's own title and its modified time. Neither is
 		// conversation, and one update arrives for every turn, so persisting it put a
 		// raw-JSON row in every transcript. A provider that reads a field of its own
@@ -427,11 +363,14 @@ func (b *Base) handleACPUpdate(update json.RawMessage) {
 		//
 		// The title is a real answer the runtime computes, and LeapMux gives its tabs
 		// their own names. Adopting it is a presentation decision, so it stays unread here.
-	default:
-		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update}, agent.SpanInfo{}); err != nil {
-			slog.Error("persist unknown acp sessionUpdate", "agent_id", b.AgentID(), "type", header.SessionUpdate, "error", err)
-		}
 	}
+}
+
+// ApplySubagentObservation applies one subagent observation that the provider
+// read outside a tool call of the main session -- a notification that reports
+// the spawn or the end of a subagent, or the progress of a workflow run.
+func (b *Base) ApplySubagentObservation(obs *SubagentObservation) {
+	b.main().applySubagentObservation(obs)
 }
 
 // observeAvailableCommands replaces the advertised ACP command set. A change
@@ -450,10 +389,24 @@ func (b *Base) observeAvailableCommands(update json.RawMessage) {
 		slog.Warn("acp available commands unmarshal failed", "provider", b.ProviderName(), "agent_id", b.AgentID(), "error", err)
 		return
 	}
-	commands := make(map[string]struct{}, len(values))
+	names := make([]string, 0, len(values))
 	for _, value := range values {
-		if value.Name != "" {
-			commands[value.Name] = struct{}{}
+		names = append(names, value.Name)
+	}
+	b.ReplaceAvailableCommands(names)
+}
+
+// ReplaceAvailableCommands replaces the command set that the agent offers.
+// The base reads the standard available_commands_update, and a provider whose
+// agent lists its commands somewhere else as well -- Grok Build states them in
+// its initialize response, before any update -- reports that list here, so
+// the goal control does not wait for the first prompt. A change can add or
+// remove a goal command, so it republishes the goal capabilities.
+func (b *Base) ReplaceAvailableCommands(names []string) {
+	commands := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if name != "" {
+			commands[name] = struct{}{}
 		}
 	}
 	b.Mu.Lock()
@@ -472,12 +425,27 @@ func (b *Base) HasAvailableCommand(command string) bool {
 	return ok
 }
 
-// ClearContext sends a session/new request on the running ACP process,
-// replacing the current session with a fresh one. After the session is
-// created, the reapplySettings callback (if set) re-applies provider-
-// specific settings such as model and permission mode.
+// ClearContext replaces the current session with a fresh one on the running
+// ACP process, through session/new.
+//
+// The outgoing session must do nothing afterwards that LeapMux does not show
+// (see session_retirement.go). So before session/new, the clear releases the
+// outgoing session: it answers each control request that the session holds
+// open, and it sends session/cancel when a turn runs. After the swap, it closes
+// the rows of the outgoing session and ends that session with the agent. The
+// reapplySettings callback (if set) then applies the provider settings, such as
+// the model and the permission mode, to the new session.
+//
+// A session/new that fails leaves the outgoing session current, with its turn
+// stopped, as a stop leaves it.
 func (b *Base) ClearContext() (string, error) {
 	b.sessionMu.Lock()
+	outgoingSessionID := b.CurrentSessionID()
+	if outgoingSessionID != "" {
+		if err := b.releaseOutgoingSession(outgoingSessionID); err != nil {
+			slog.Warn("acp cancel the turn of the outgoing session", "provider", b.ProviderName(), "agent_id", b.AgentID(), "error", err)
+		}
+	}
 	// Host terminals belong to the outgoing session. Release the current set
 	// before session/new. The session swap releases any set created during it.
 	b.releaseSessionTerminals()
@@ -499,6 +467,11 @@ func (b *Base) ClearContext() (string, error) {
 	// for the same reason, so it clears that state here.
 	if b.hooks.ClearProviderState != nil {
 		b.hooks.ClearProviderState()
+	}
+	// An agent that answered session/new with the outgoing id serves that session
+	// still, so nothing of it is retired.
+	if outgoingSessionID != "" && outgoingSessionID != sessionID {
+		b.retireSession(outgoingSessionID)
 	}
 
 	// A goal belongs to a SESSION, and this call replaced the session. Codex and
@@ -536,7 +509,7 @@ func (b *Base) newSessionLocked() (sessionID string, resp json.RawMessage, outgo
 			b.finishSessionUpdates()
 		}
 	}()
-	_, params := buildACPSessionRequest("", b.currentWorkingDir(), MethodSessionNew, "")
+	_, params := buildACPSessionRequest("", b.currentWorkingDir(), MethodSessionNew, "", b.hooks.SessionParams)
 	resp, err = b.SendRequest(MethodSessionNew, json.RawMessage(params), b.APITimeout())
 	if err != nil {
 		return "", nil, acpTurnSnapshot{}, err
@@ -566,6 +539,9 @@ func (b *Base) newSessionLocked() (sessionID string, resp json.RawMessage, outgo
 			// of the NEXT turn, because ClearContext reaches here without passing
 			// clearActivePrompt.
 			b.resetTurnStateLocked()
+			// Every option payload after this point is newer than resp, which the
+			// ClearContext refresh reads last. See applySessionRefresh.
+			b.options.markSessionStart()
 			b.Mu.Unlock()
 		})
 	})
@@ -588,7 +564,8 @@ func (b *Base) WithSessionID(fn func(sessionID string) error) error {
 }
 
 // secondaryAxis is the fixed (option id, label, order) presentation of an ACP provider's
-// secondary axis -- permission mode (Cursor/Goose/Reasonix) or primary agent (OpenCode/Kilo).
+// secondary axis -- permission mode (Cursor/Goose/Grok Build/Kiro/Qwen Code/Reasonix) or primary agent
+// (OpenCode/Kilo).
 // The triple is fixed per axis (every permission-mode provider labels it "Mode", every
 // primary-agent provider "Primary Agent"), so each is declared exactly once below and shared
 // by the live channel (secondaryChannel) and the static per-provider registration
@@ -733,9 +710,9 @@ func (b *Base) buildSecondaryChannel() acpSecondaryChannel {
 	} else {
 		// The else branch maps permission-mode AND the unmapped channel to the permission-mode
 		// field/setter (preserving secondaryAxisFor's mapping). The native modes channel carries
-		// permission modes; an unmapped provider (Reasonix) never reaches the refresh path, so
-		// rebuild/hiddenFilter/persistShape are wired to the permission-mode shapes but
-		// unreachable for it.
+		// permission modes. No provider selects the unmapped channel today; one that did would
+		// never reach the refresh path, so rebuild/hiddenFilter/persistShape are wired to the
+		// permission-mode shapes but unreachable for it.
 		sc.field, sc.set, sc.logKey = &b.permissionMode, b.setSecondary, "permissionMode"
 		sc.available = &b.availableModes
 		sc.rebuild = func(modes []ModeInfo, reported string) {
@@ -800,7 +777,7 @@ func (b *Base) reapplyModelAndSecondary() {
 }
 
 // setSecondary sends a session/set_mode RPC for the agent's secondary axis (permission mode for
-// Cursor/Goose/Reasonix, primary agent for OpenCode/Kilo) and writes the resolved value into the
+// the permission-mode providers, primary agent for OpenCode/Kilo) and writes the resolved value into the
 // corresponding local field. It reads the available-list and field POINTERS off secondaryChannel()
 // rather than naming b.availableModes/b.permissionMode (or their primary-agent twins) directly, so
 // the former setPermissionMode/setPrimaryAgent twins collapse into one body and "which field this
@@ -863,6 +840,7 @@ func (b *Base) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
 		ok = acpApplySetting(b.ProviderName(), b.AgentID(), sc.logKey, secondary, sc.set) && ok
 	}
 	ok = b.applyOptionUpdates(options) && ok
+	ok = b.applyLocalOptions(options) && ok
 
 	// A live change can alter the option-group SET -- most often switching to a model whose
 	// reasoning-effort variants differ surfaces, drops, or re-levels the effort axis (folded
@@ -941,7 +919,9 @@ func (b *Base) applySessionRefresh(resp json.RawMessage) {
 	// pair a freshly-changed option with a stale model/secondary in the persisted row.
 	b.Mu.Lock()
 	b.refreshModelsLocked(models, modelsFieldInfos, model, b.hooks.ModelIDNormalizer)
+	secondaryListBefore := *sc.available
 	sc.refreshLocked(modes, secondaryVal, configOptions)
+	secondaryListChanged := !protoSliceEqual(secondaryListBefore, *sc.available)
 	// Refresh the mutable option groups from the new session, next to the mapped channels.
 	// The session response's configOptions are a complete snapshot, so this is a no-op for
 	// providers that surface no option (Cursor) and correctly drops any option the new
@@ -949,7 +929,19 @@ func (b *Base) applySessionRefresh(resp json.RawMessage) {
 	// the stored options untouched. The KeepingStored variant keeps an option value at
 	// what reapplyOptions just re-pushed (the user's choice) rather than reverting it
 	// to this captured snapshot's server default, which predates the re-push.
-	_, optionListChanged := b.applyOptionGroupsKeepingStoredLocked(configOptions)
+	//
+	// A reapply write that returned the options of the new session supersedes this
+	// snapshot as a whole, and the fold is then skipped. The snapshot would drop each
+	// option that the write revealed: Kiro omits the effort axis from its session/new
+	// response and reports it only after the reapply's model write. The list change
+	// is then measured from the groups before the swap, which the reader saw last,
+	// because the writes of the reapply broadcast nothing.
+	var optionListChanged bool
+	if b.options.foldedSinceSessionStart() {
+		optionListChanged = b.options.groupsChangedSinceSessionStart()
+	} else {
+		_, optionListChanged = b.applyOptionGroupsKeepingStoredLocked(configOptions)
+	}
 	snapshotModel, snapshotSecondary, persistMode, optionValues := b.snapshotRefreshForPersistLocked(sc)
 	sessionID := b.sessionID
 	b.Mu.Unlock()
@@ -970,6 +962,11 @@ func (b *Base) applySessionRefresh(resp json.RawMessage) {
 	// are kept (re-pushed before this refresh), so this seldom double-fires.
 	if optionListChanged {
 		b.sink.BroadcastStatusActive(sessionID)
+	}
+	// The new session can offer a different mode list, which a provider can
+	// derive its goal actions from. See handleACPConfigOptionUpdate.
+	if secondaryListChanged {
+		b.sink.PublishGoalCapabilities()
 	}
 }
 
@@ -996,7 +993,7 @@ func (b *Base) refreshModelsLocked(models []*agent.ModelInfo, modelsFieldInfos [
 // the native modes channel and resolves *sc.field against it the same way the handshake does:
 // adopt a valid reported value, keep the still-selectable stored selection (re-pushed by
 // reapplySettings just before this), else re-seed to default-or-first. An empty rebuild keeps
-// the prior list. A configOptions `mode` override (Cursor/Goose/Reasonix permission mode, or
+// the prior list. A configOptions `mode` override (the permission mode of a permission-mode provider, or
 // OpenCode/Kilo primary agent) wins when present. Caller holds the owning Base.Mu (the
 // closures touch Base fields).
 func (sc acpSecondaryChannel) refreshLocked(modes []ModeInfo, reportedSecondary string, configOptions []ConfigOption) {
@@ -1148,44 +1145,54 @@ func acpApplySetting(providerName, agentID, name, value string, apply func(strin
 }
 
 // acpStandardInitParams marshals the standard ACP "initialize" params shared by
-// OpenCode, Kilo, Goose, Cursor, and Reasonix: protocol version 1, the
-// LeapMux clientInfo, and clientCapabilities.
+// every ACP provider: protocol version 1, the LeapMux clientInfo, and
+// clientCapabilities.
 //
 // clientCapabilities.terminal is true so agents that honor the ACP host
 // terminal capability (Goose, Reasonix) route shells through terminal/*;
 // handlers live in terminal.go and surface KindShell background-task
-// rows. fs.* stays false until separate host filesystem support lands.
-// See https://github.com/leapmux/leapmux/issues/370.
-func acpStandardInitParams(meta map[string]any) (json.RawMessage, error) {
+// rows. hostTerminal is false for a provider that runs its shell commands
+// itself (Hooks.DisableHostTerminal). fs.* stays false until separate host
+// filesystem support lands. See https://github.com/leapmux/leapmux/issues/370.
+func acpStandardInitParams(meta map[string]any, hostTerminal bool, requestMeta map[string]any) (json.RawMessage, error) {
 	capabilities := map[string]any{
 		"fs":          map[string]bool{"readTextFile": false, "writeTextFile": false},
-		"terminal":    true,
+		"terminal":    hostTerminal,
 		"elicitation": map[string]any{"form": map[string]any{}, "url": map[string]any{}},
 	}
 	if len(meta) > 0 {
 		capabilities["_meta"] = meta
 	}
-	params, err := json.Marshal(map[string]any{
+	params := map[string]any{
 		"protocolVersion":    1,
 		"clientInfo":         map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
 		"clientCapabilities": capabilities,
-	})
+	}
+	if len(requestMeta) > 0 {
+		params["_meta"] = requestMeta
+	}
+	encoded, err := json.Marshal(params)
 	if err != nil {
 		return nil, fmt.Errorf("marshal initialize params: %w", err)
 	}
-	return params, nil
+	return encoded, nil
 }
 
 // buildACPSessionRequest builds a newSession or loadSession JSON-RPC request.
-func buildACPSessionRequest(resumeSessionID, workingDir, newMethod, resumeMethod string) (method string, params []byte) {
-	p := map[string]interface{}{
+// adjust, when set, changes the params before they are encoded
+// (Hooks.SessionParams).
+func buildACPSessionRequest(resumeSessionID, workingDir, newMethod, resumeMethod string, adjust func(method string, params map[string]any)) (method string, params []byte) {
+	p := map[string]any{
 		"cwd":        workingDir,
-		"mcpServers": []interface{}{},
+		"mcpServers": []any{},
 	}
 	method = newMethod
 	if resumeSessionID != "" {
 		p["sessionId"] = resumeSessionID
 		method = resumeMethod
+	}
+	if adjust != nil {
+		adjust(method, p)
 	}
 	params, err := json.Marshal(p)
 	if err != nil {
@@ -1196,8 +1203,8 @@ func buildACPSessionRequest(resumeSessionID, workingDir, newMethod, resumeMethod
 
 // wireTurnActive points the base's turn-state hook at b.sink.
 //
-// Called once in Start, so a new ACP provider cannot forget it: every one of
-// the six reaches that constructor, and none of them wires this itself. The
+// Called once in Start, so a new ACP provider cannot forget it: every ACP
+// provider reaches that constructor, and none of them wires this itself. The
 // tests that pin the behavior call this too rather than building a hook of
 // their own, so a test cannot pass against wiring the constructor does not do.
 //
@@ -1210,10 +1217,19 @@ func buildACPSessionRequest(resumeSessionID, workingDir, newMethod, resumeMethod
 func (b *Base) wireTurnActive() {
 	b.publishTurnActive = func(active bool, seq uint64) {
 		b.Mu.Lock()
-		steerable := active && b.steerMethod != ""
+		steerable := active && b.steersLocked()
 		b.Mu.Unlock()
 		providerkit.PublishTurnStateTo(b.sink, agent.TurnState{Active: active, Steerable: steerable}, seq)
 	}
+}
+
+// steersLocked reports whether this agent can steer a running turn: the
+// handshake found an advertised steer method, or the provider steers by a
+// route of its own. It is the ONE answer for SupportsSteering and for the
+// steerable flag of each published turn, so the Steer control and the input
+// queue cannot disagree. The caller holds b.Mu.
+func (b *Base) steersLocked() bool {
+	return b.steerMethod != "" || b.hooks.SteersByOwnRoute
 }
 
 // notePromptActive republishes the turn state from promptActive, the single
@@ -1235,13 +1251,14 @@ func (b *Base) notePromptActive() {
 }
 
 // SupportsSteering reports whether the handshake found an advertised steer
-// method. An ACP server declares that method in its initialize response, so a
-// provider that steers through it can answer only after the handshake. A
-// provider that steers by another route overrides this method.
+// method, or the provider steers by a route of its own
+// (Hooks.SteersByOwnRoute). An ACP server declares that method in its
+// initialize response, so a provider that steers through it can answer only
+// after the handshake.
 func (b *Base) SupportsSteering() bool {
 	b.Mu.Lock()
 	defer b.Mu.Unlock()
-	return b.steerMethod != ""
+	return b.steersLocked()
 }
 
 func (b *Base) SteerAdvertised(content string, attachments []*leapmuxv1.Attachment) error {
@@ -1285,7 +1302,8 @@ func (b *Base) Stop() {
 	b.clearActivePrompt()
 	b.releaseAllTerminals()
 	b.Process.Stop()
-	b.finishIncompleteACPPrompt(agent.MessageCompletionInterrupted)
+	b.finishAllTurnOutput(agent.MessageCompletionInterrupted)
+	b.finishAllChildConversations()
 }
 
 // Wait blocks until the agent process exits, then tears down any host
@@ -1294,7 +1312,8 @@ func (b *Base) Stop() {
 func (b *Base) Wait() error {
 	err := b.Process.Wait()
 	b.releaseAllTerminals()
-	b.finishIncompleteACPPrompt(b.ProcessExitCompletion())
+	b.finishAllTurnOutput(b.ProcessExitCompletion())
+	b.finishAllChildConversations()
 	return err
 }
 
@@ -1352,6 +1371,9 @@ func (b *Base) clearActivePrompt() {
 // otherwise be stamped interrupted for as long as the tab stays idle.
 func (b *Base) resetTurnStateLocked() {
 	b.promptActive = false
+	b.agentTurnActive = false
+	b.agentTurnQueued = false
+	b.queuedAgentTurnEnd = nil
 	b.steerRunID = ""
 	b.interruptRequested = false
 }
@@ -1369,53 +1391,6 @@ func (b *Base) extractACPChunkText(content json.RawMessage, kind string) string 
 		return ""
 	}
 	return c.Text
-}
-
-// bufferACPChunk extracts text from a pre-parsed content envelope and counts it.
-func (b *Base) bufferACPChunk(content json.RawMessage, eventType string) {
-	text := b.extractACPChunkText(content, eventType)
-	if text == "" {
-		return
-	}
-	b.appendAssistant(text)
-	b.sink.ReportProgress(agent.ModelTextProgress("acp:"+eventType, text))
-}
-
-// handleAgentThoughtChunk buffers an agent_thought_chunk notification's text
-// for later flushing. ACP providers vary in chunk size. Persisting each
-// notification would produce a separate Thinking row for each token. The
-// buffer flushes when another event interrupts it or when the turn ends.
-func (b *Base) handleAgentThoughtChunk(content json.RawMessage) {
-	text := b.extractACPChunkText(content, acpUpdateAgentThoughtChunk)
-	if text == "" {
-		return
-	}
-	// A chunk opens a segment when the thought buffer was empty before it.
-	freshSegment := b.appendThought(text)
-	// A new reasoning segment completes the preceding assistant counter scope.
-	if freshSegment {
-		b.sink.ReportProgress(agent.CompleteModelProgress("acp:" + acpUpdateAgentMessageChunk))
-	}
-	b.sink.ReportProgress(agent.ModelTextProgress("acp:"+acpUpdateAgentThoughtChunk, text))
-}
-
-// flushThoughtBuffer persists the buffered thought text (if any) as one assembled
-// reasoning message and resets the buffer.
-func (b *Base) flushThoughtBuffer() {
-	b.flushTextBuffer(agent.AssembledMessageKindReasoning)
-}
-
-// flushAssistantBuffer persists one completed assistant-text segment.
-func (b *Base) flushAssistantBuffer() {
-	b.flushTextBuffer(agent.AssembledMessageKindText)
-}
-
-func (b *Base) flushTextBuffer(kind agent.AssembledMessageKind) {
-	text := b.takeText(kind)
-	if text == "" {
-		return
-	}
-	b.persistCompletedACPText(kind, text)
 }
 
 // persistPromptResponse stores the turn-end row. The caller closes each text
@@ -1496,12 +1471,20 @@ const (
 type SubagentObservation struct {
 	// Registry fields. RowKey is the provider linkage key (toolCallId / child
 	// session id). Empty RowKey => no registry write.
-	RowKey   string
-	Kind     bgtask.Kind // defaults to Subagent
-	Title    string
-	Activity string
-	Status   bgtask.Status
-	GroupKey string
+	RowKey string
+	Kind   bgtask.Kind // defaults to Subagent
+	Title  string
+	// TitleIsCommand marks Title as the verbatim command of a shell row, which
+	// a client sets as code. Only a provider that states the command itself sets
+	// it (see bgtask.Item.TitleIsCommand).
+	TitleIsCommand bool
+	Activity       string
+	Status         bgtask.Status
+	// GroupKey and GroupLabel place the row in a group, and give the label of the group. A
+	// provider that runs a workflow of subagents groups the workflow row and
+	// each of its agents under the id of the run.
+	GroupKey   string
+	GroupLabel string
 	// ChildAgentKey, when non-empty, drives EnsureChildAgent so the row links
 	// to a transcript (openable tab). Empty => registry-only.
 	ChildAgentKey string
@@ -1546,193 +1529,6 @@ type SubagentObservation struct {
 	// native tool result, so the report stays visible in both conversations.
 	ReportID string
 	Report   agent.SubagentReport
-}
-
-func (b *Base) handleToolCall(update json.RawMessage) {
-	var tc ToolCallEnvelope
-	if err := json.Unmarshal(update, &tc); err != nil {
-		slog.Warn("acp tool_call unmarshal failed", "provider", b.ProviderName(), "agent_id", b.AgentID(), "error", err)
-		return
-	}
-	if tc.ToolCallID == "" {
-		return
-	}
-
-	spanType := tc.Kind
-	if spanType == "" {
-		spanType = UpdateToolCall
-	}
-
-	// Ask the provider's detector BEFORE persisting, so a spawn it recognizes
-	// here never reserves a color and never opens a span. The observation is
-	// applied further down, at the point it was applied before.
-	var obs *SubagentObservation
-	if b.hooks.SubagentFromToolCall != nil {
-		obs = b.hooks.SubagentFromToolCall(tc)
-	}
-	b.rememberACPToolSubagentRow(tc.ToolCallID, obs)
-
-	// Persist a final tool call as a closing row. It closes an earlier pending
-	// call when one exists. A call that first arrives final opens no span.
-	if StatusIsFinal(tc.Status) {
-		opened := b.sink.GetSpanType(tc.ToolCallID) != ""
-		b.completeTool(tc.ToolCallID)
-		b.completeACPToolOutput(tc.ToolCallID)
-		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update}, agent.SpanInfo{
-			SpanID: tc.ToolCallID, SpanType: spanType, Closing: true,
-		}); err != nil {
-			slog.Error("persist final acp tool_call", "agent_id", b.AgentID(), "kind", tc.Kind, "status", tc.Status, "error", err)
-		}
-		if opened {
-			b.sink.CloseSpan(tc.ToolCallID)
-		}
-		b.applySubagentObservation(obs)
-		return
-	}
-	b.rememberIncompleteACPTool(tc.ToolCallID, update)
-
-	// A subagent spawn owns no span: its output lands in its own child
-	// transcript, so a rail held open for the whole subagent run only pushes
-	// every concurrent tool one column right.
-	spawns := ObservationIsSpawn(obs)
-	if err := providerkit.OpenToolSpan(b.sink, agent.MessageContent{Original: update}, tc.ToolCallID, spanType, spawns); err != nil {
-		slog.Error("persist acp tool_call", "agent_id", b.AgentID(), "kind", tc.Kind, "error", err)
-	} else {
-		b.rememberACPToolRequest(tc.ToolCallID, update)
-	}
-	b.applySubagentObservation(obs)
-}
-
-// rememberIncompleteACPTool retains a tool call that opened but has not ended.
-//
-// The frame is kept UNCHANGED. An earlier build rewrote `sessionUpdate` to
-// `tool_call_update` and replaced the agent's status with `in_progress`, so an
-// interrupted turn stored a frame the agent never sent. The turn-end row now stores
-// the agent's own last frame, and LeapMux's own completion column states that the
-// call did not finish.
-func (b *Base) rememberIncompleteACPTool(toolCallID string, update json.RawMessage) {
-	var incoming map[string]json.RawMessage
-	if json.Unmarshal(update, &incoming) != nil {
-		return
-	}
-	b.rememberIncompleteTool(toolCallID, incoming, update)
-}
-
-func (b *Base) handleToolCallUpdate(update json.RawMessage) {
-	incoming, tcu, ok := parseACPToolCallUpdate(update)
-	if !ok {
-		slog.Warn("acp tool_call_update decode failed", "provider", b.ProviderName(), "agent_id", b.AgentID())
-		return
-	}
-	if tcu.ToolCallID == "" {
-		return
-	}
-	b.enrichACPToolRequest(tcu.ToolCallID, incoming)
-	// BEFORE the output hooks, because a claimed notification is not output: a
-	// progress sentence and a platform event carry no chunk to count, and letting
-	// them reach the merge below would fold an empty update into the stored row.
-	//
-	// A FINAL status still falls through. The hook claims an update by its
-	// notification type alone and never reads the status, so a frame that carried
-	// both would have returned before `completeTool`, `persistClosingACPTool` and
-	// `CloseSpan` -- leaving the row a spinning card for the rest of the session,
-	// with its result never stored and nothing logged. Goose's own protocol is not
-	// supposed to send that pair, but nothing here enforces it.
-	if b.hooks.ToolNotification != nil && b.hooks.ToolNotification(tcu) && !StatusIsFinal(tcu.Status) {
-		return
-	}
-	if b.hooks.ToolOutput != nil {
-		if out, ok := b.hooks.ToolOutput(tcu); ok {
-			b.sink.ReportProgress(agent.OutputTotalProgress(tcu.ToolCallID, out.Total, out.TotalIsMinimum))
-			// The content-bearing path below reports the tail of a provider whose
-			// output rides in the update's own content, so an empty one here is a
-			// provider with nothing extra to say rather than a call with no output.
-			if out.Tail != "" {
-				b.sink.ReportProgress(agent.OutputTailProgress(tcu.ToolCallID, out.Tail, out.TailLost))
-			}
-		}
-	}
-	originalUpdate := update
-	update, tcu, ok = b.mergeACPToolCallUpdate(tcu.ToolCallID, incoming, StatusIsFinal(tcu.Status), originalUpdate)
-	if !ok {
-		return
-	}
-
-	// Goose's tool-request meta rides content-less in_progress updates, so the
-	// subagent hook runs BEFORE the content-less early-return below. OpenCode/
-	// Kilo final updates close on the final-status branch below.
-	if b.hooks.SubagentFromToolCallUpdate != nil {
-		if obs := b.hooks.SubagentFromToolCallUpdate(tcu); obs != nil {
-			b.rememberACPToolSubagentRow(tcu.ToolCallID, obs)
-			b.applySubagentObservation(obs)
-			// A spawn recognized only HERE already opened a span at its
-			// tool_call, so give that span back now. Kilo is why: it opens the
-			// spawn with `rawInput: {}` and fills the spawn shape only on the
-			// first in-progress update. CloseSpan frees the column although the
-			// subagent keeps running; the recorded span type survives it, so the
-			// closing branch below still persists the real kind.
-			//
-			// Only before the final status. Freeing the column removes it from
-			// the active set, so the closing branch would find nothing to mark
-			// connector_end: the rail drawn for the whole call would stop
-			// mid-transcript instead of ending. A spawn learned that late keeps
-			// its span and closes it once, below.
-			//
-			// Only ONCE per tool call. The detector re-runs on every update, and
-			// a provider that echoes its rawInput re-reports the spawn on each
-			// one; without the note every later update would take the tracker
-			// mutex and re-scan the active set to remove a span that is already
-			// gone, for the whole subagent run.
-			if !StatusIsFinal(tcu.Status) && ObservationIsSpawn(obs) &&
-				b.markSpawnSpanReleased(tcu.ToolCallID) {
-				b.sink.CloseSpan(tcu.ToolCallID)
-			}
-		}
-	}
-
-	switch tcu.Status {
-	case "", "in_progress":
-		// ACP tool output is cumulative. Count growth from the latest snapshot.
-		full := ToolCallText(tcu.Content)
-		if full == "" {
-			return
-		}
-		limited := strings.HasPrefix(full, providerkit.LimitedOutputPrefix)
-		if limited {
-			full = strings.TrimPrefix(full, providerkit.LimitedOutputPrefix)
-		}
-		observed := b.ObserveCumulativeOutput(tcu.ToolCallID, full, limited)
-		b.sink.ReportProgress(agent.OutputTotalProgress(tcu.ToolCallID, observed.Total, observed.Minimum))
-		// The Agent Client Protocol sends the whole output on every update, so the
-		// text above IS the tail. `limited` is the provider's own statement that it
-		// dropped earlier bytes.
-		b.sink.ReportProgress(agent.OutputTailProgress(tcu.ToolCallID, full, limited))
-	case "completed", "failed", "cancelled":
-		b.completeTool(tcu.ToolCallID)
-		b.completeACPToolOutput(tcu.ToolCallID)
-
-		content := b.acpMessageContent(originalUpdate, update)
-		// The reader stopped this turn, so the row reports the stop rather than the
-		// status a cancelled call happens to carry. Cursor and Reasonix send
-		// `failed` for a command the reader stopped, and `Error` states the wrong
-		// cause; OpenCode and Kilo send an empty `completed`, which states none.
-		if b.acpInterruptRequested() {
-			content.Completion = agent.MessageCompletionInterrupted
-		}
-		if err := b.persistClosingACPTool(tcu.ToolCallID, content); err != nil {
-			slog.Error("persist acp tool_call_update", "agent_id", b.AgentID(), "status", tcu.Status, "error", err)
-		}
-		b.sink.CloseSpan(tcu.ToolCallID)
-	}
-}
-
-func (b *Base) mergeACPToolCallUpdate(
-	toolCallID string,
-	incoming map[string]json.RawMessage,
-	final bool,
-	original json.RawMessage,
-) (json.RawMessage, ToolCallUpdateEnvelope, bool) {
-	return b.mergeToolUpdate(toolCallID, incoming, final, original)
 }
 
 func parseACPToolCallUpdate(update json.RawMessage) (map[string]json.RawMessage, ToolCallUpdateEnvelope, bool) {
@@ -1784,141 +1580,6 @@ func decodeACPToolCallUpdate(fields map[string]json.RawMessage) (ToolCallUpdateE
 // it must not take a span either.
 func ObservationIsSpawn(obs *SubagentObservation) bool {
 	return obs != nil && obs.RowKey != "" && obs.Spawns
-}
-
-// applySubagentObservation translates a provider hook's neutral observation
-// into registry and child-transcript calls. A nil observation is a no-op. The shared ACP final-status map
-// lives here so every provider agrees: completed->Completed, failed->Failed,
-// cancelled->Stopped.
-//
-// A close-only observation (Mode == ModeCloseOnly) skips the upsert: it
-// closes an existing row without first creating one. This matters for
-// Goose/Cursor, whose closing-update hooks fire for EVERY tool_call, not just
-// spawns -- the detector sets the Mode explicitly instead of relying on which
-// fields happen to be empty.
-func (b *Base) applySubagentObservation(obs *SubagentObservation) {
-	if obs == nil || obs.RowKey == "" || b.sink == nil {
-		return
-	}
-	// Resolve the child agent id once so the upsert, report, and close use one transcript.
-	if obs.Prompt != "" {
-		b.subagentPrompts.Remember(obs.RowKey, obs.Prompt)
-	}
-	rowKey := obs.RowKey
-	promptKey := obs.RowKey
-	// Rename the spawn row before child resolution. OpenCode and Kilo learn the
-	// child session id only on the final update. EnsureChildAgent must attach to
-	// that renamed row rather than create a second row beside it.
-	if obs.RenameFrom != "" && obs.RenameFrom != obs.RowKey {
-		promptKey = obs.RenameFrom
-		if err := b.sink.RenameBackgroundTask(obs.RenameFrom, obs.RowKey); err != nil {
-			slog.Warn("acp subagent rename failed", "provider", b.ProviderName(), "from", obs.RenameFrom, "to", obs.RowKey, "error", err)
-			// Keep all later work on the row that still exists. Creating a child
-			// under the new key after a failed rename would split one task in two.
-			rowKey = obs.RenameFrom
-		}
-	}
-	childAgentID := ""
-	if obs.ChildAgentKey != "" && rowKey == obs.RowKey {
-		var err error
-		spawnSpanID := obs.RowKey
-		if obs.RenameFrom != "" {
-			spawnSpanID = obs.RenameFrom
-		}
-		childAgentID, err = b.sink.EnsureChildAgent(spawnSpanID, obs.ChildAgentKey, obs.Title)
-		if err != nil {
-			slog.Warn("acp subagent ensure child failed", "provider", b.ProviderName(), "row_key", rowKey, "error", err)
-		}
-		// The child exists now, so spend the prompt the spawn remembered.
-		// PersistChildPrompt is a no-op once the transcript has a message, so a
-		// repeated observation cannot duplicate it.
-		if childAgentID != "" {
-			if prompt := b.subagentPrompts.Take(promptKey); prompt != "" {
-				if err := b.sink.PersistChildPrompt(childAgentID, prompt); err != nil {
-					slog.Warn("acp subagent prompt persist failed", "provider", b.ProviderName(), "row_key", rowKey, "error", err)
-				}
-			}
-		}
-	}
-	// A rename+close operates on the existing spawn row. It skips the upsert
-	// because the rename already preserved the row's fields.
-	if obs.Mode != ModeCloseOnly && obs.RenameFrom == "" {
-		kind := obs.Kind
-		if kind == bgtask.KindUnspecified {
-			kind = bgtask.KindSubagent
-		}
-		if err := b.sink.UpsertBackgroundTask(bgtask.Upsert{
-			RowKey:        rowKey,
-			Kind:          kind,
-			ChildAgentID:  childAgentID,
-			ParentAgentID: b.AgentID(),
-			Title:         obs.Title,
-			ActiveForm:    obs.Activity,
-			GroupKey:      obs.GroupKey,
-			Status:        obs.Status,
-		}); err != nil {
-			slog.Warn("acp subagent upsert failed", "provider", b.ProviderName(), "row_key", rowKey, "error", err)
-		}
-		if obs.ChildTranscriptPayload != nil && childAgentID != "" {
-			if err := b.sink.PersistChildMessage(childAgentID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, obs.ChildTranscriptPayload, agent.SpanInfo{}); err != nil {
-				slog.Warn("acp subagent child persist failed", "provider", b.ProviderName(), "row_key", rowKey, "error", err)
-			}
-		}
-	}
-	lookupOK := true
-	if obs.Report.Text != "" || (obs.CloseRow && childAgentID == "") {
-		var resolvedChildID string
-		var err error
-		resolvedChildID, _, _, err = b.sink.LookupBackgroundTask(rowKey)
-		if err != nil {
-			slog.Warn("acp subagent child lookup failed", "provider", b.ProviderName(), "row_key", rowKey, "error", err)
-			lookupOK = false
-		} else if childAgentID == "" {
-			childAgentID = resolvedChildID
-		}
-	}
-	if obs.Report.Text != "" {
-		if lookupOK && childAgentID != "" {
-			providerkit.PersistChildSubagentReport(b.sink, agent.ChildSubagentReportWrite{
-				RowKey: rowKey,
-				Write: agent.SubagentReportWrite{
-					ReportID: obs.ReportID,
-					Report:   obs.Report,
-				},
-			})
-		}
-	}
-	if obs.CloseRow {
-		// The row is over; an unspent prompt has no transcript left to open.
-		//
-		// Drop BOTH keys. The prompt was remembered under the key the SPAWN
-		// carried, and a provider that learns the child's stable id only on the
-		// closing update (OpenCode, Kilo) re-keys the row, so obs.RowKey here is
-		// the new key and RenameFrom is the one the prompt sits under. Forgetting
-		// only obs.RowKey deletes a key that was never inserted and leaves the
-		// spawn's entry to accumulate for the life of the process.
-		b.subagentPrompts.Forget(obs.RowKey)
-		if obs.RenameFrom != "" {
-			b.subagentPrompts.Forget(obs.RenameFrom)
-		}
-		if err := b.sink.CloseBackgroundTask(rowKey, obs.Status); err != nil {
-			slog.Warn("acp subagent close failed", "provider", b.ProviderName(), "row_key", rowKey, "error", err)
-		}
-		// Release the child's per-agent service state so a long-running root
-		// that cycles many subagents does not retain a stale SpanTracker + sink
-		// ref per closed child until the root itself closes. The transcript row survives.
-		if childAgentID != "" {
-			b.sink.CleanupChildAgent(childAgentID)
-		}
-	}
-}
-
-// markSpawnSpanReleased records that this tool call's span was given back, and
-// reports whether THIS call is the one that did it. Only the first caller gets
-// true, so the release runs once however many times the detector re-reports the
-// spawn.
-func (b *Base) markSpawnSpanReleased(toolCallID string) bool {
-	return b.markSpanReleased(toolCallID)
 }
 
 // StatusIsFinal reports whether an ACP tool_call status ends the call. These
@@ -2055,12 +1716,17 @@ func (b *Base) startACPHandshake(
 	if b.hooks.AdvertisedSteerMethod != nil {
 		steerMethod = b.hooks.AdvertisedSteerMethod(initResp)
 	}
+	if b.hooks.InitializeResponse != nil {
+		b.hooks.InitializeResponse(initResp)
+	}
+	closesSessions := advertisesSessionClose(initResp)
 	b.Mu.Lock()
 	b.steerMethod = steerMethod
+	b.closesSessions = closesSessions
 	b.Mu.Unlock()
 
 	// 2. Send session request (resume or new).
-	sessionMethod, sessionParams := buildACPSessionRequest(opts.ResumeSessionID, opts.WorkingDir, sessionCfg.NewMethod, sessionCfg.ResumeMethod)
+	sessionMethod, sessionParams := buildACPSessionRequest(opts.ResumeSessionID, opts.WorkingDir, sessionCfg.NewMethod, sessionCfg.ResumeMethod, b.hooks.SessionParams)
 	sessionResp, err := b.SendRequest(sessionMethod, json.RawMessage(sessionParams), timeout)
 	if err != nil {
 		cleanup()
@@ -2134,11 +1800,15 @@ type StartSpec[T any] struct {
 	AfterHandshake func(*T, *SessionResult, agent.Options) error // post-handshake apply step; nil for none
 }
 
-// Start launches an ACP agent subprocess and performs the initialize +
-// session handshake, centralizing the boilerplate shared by every ACP provider
-// (Cursor, Goose, Kilo, OpenCode, Reasonix). Providers differ only in
-// the StartSpec fields: the binary/args, an optional rc marker, the session
-// config, the hooks set in configure, and the post-handshake apply step.
+// Start launches an ACP agent subprocess and performs the initialize and
+// session handshake, which every ACP provider shares. The providers differ
+// only in these StartSpec fields:
+//
+//   - The binary and its arguments.
+//   - An optional rc marker.
+//   - The session config.
+//   - The hooks that Configure returns.
+//   - The step that applies the settings after the handshake.
 func Start[T any](ctx context.Context, opts agent.Options, sink agent.ProviderServices, spec StartSpec[T]) (_ agent.Agent, retErr error) {
 	ctx, cancel := context.WithCancel(ctx)
 
@@ -2221,7 +1891,7 @@ func Start[T any](ctx context.Context, opts agent.Options, sink agent.ProviderSe
 		}
 	}()
 
-	initParams, err := acpStandardInitParams(b.hooks.ClientCapabilityMeta)
+	initParams, err := acpStandardInitParams(b.hooks.ClientCapabilityMeta, !b.hooks.DisableHostTerminal, b.hooks.InitializeMeta)
 	if err != nil {
 		return nil, err
 	}
@@ -2258,7 +1928,6 @@ func Start[T any](ctx context.Context, opts agent.Options, sink agent.ProviderSe
 // so no provider overrides this.
 func (b *Base) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	b.Mu.Lock()
-	defer b.Mu.Unlock()
 	var groups []*leapmuxv1.AvailableOptionGroup
 	if mg := agent.ModelOptionGroup(b.availableModels, b.model, agent.EffortSubGroups); mg != nil {
 		groups = append(groups, mg)
@@ -2266,7 +1935,39 @@ func (b *Base) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	if grp := b.secondaryOptionGroupLocked(); grp != nil {
 		groups = append(groups, grp)
 	}
-	return append(groups, b.options.groups...)
+	groups = append(groups, b.options.groups...)
+	b.Mu.Unlock()
+	// Outside b.Mu: the provider keeps these groups under a lock of its own.
+	if b.hooks.LocalOptionGroups != nil {
+		groups = append(groups, b.hooks.LocalOptionGroups()...)
+	}
+	return groups
+}
+
+// applyLocalOptions writes each value of a local option group that the update
+// changes (Hooks.LocalOptionGroups). It returns false when a write failed.
+func (b *Base) applyLocalOptions(options optionmap.Map) bool {
+	if b.hooks.LocalOptionGroups == nil || b.hooks.ApplyLocalOption == nil {
+		return true
+	}
+	ok := true
+	for _, group := range b.hooks.LocalOptionGroups() {
+		value, present := options[group.GetId()]
+		if !present || value == "" || value == group.GetCurrentValue() {
+			continue
+		}
+		ok = acpApplySetting(b.ProviderName(), b.AgentID(), group.GetId(), value, func(v string) error {
+			handled, err := b.hooks.ApplyLocalOption(group.GetId(), v)
+			if err != nil {
+				return err
+			}
+			if !handled {
+				return fmt.Errorf("the provider owns no local option %s", group.GetId())
+			}
+			return nil
+		}) && ok
+	}
+	return ok
 }
 
 // secondaryOptionGroupLocked builds the mapped secondary-axis group (permission mode or
@@ -2327,10 +2028,13 @@ type ModeInfo struct {
 }
 
 // ModelInfo is the JSON shape shared by all ACP providers for model metadata.
+// Meta is the provider's own `_meta` of the model, which Hooks.ModelDecorator
+// reads.
 type ModelInfo struct {
-	ModelID     string `json:"modelId"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	ModelID     string          `json:"modelId"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Meta        json.RawMessage `json:"_meta,omitempty"`
 }
 
 type ConfigOption struct {
@@ -2356,6 +2060,9 @@ type ConfigOptionValue struct {
 	Value       string `json:"value"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	// Meta is the provider `_meta` of the value. The model select carries the
+	// metadata of each model here, which reaches Hooks.ModelDecorator.
+	Meta json.RawMessage `json:"_meta,omitempty"`
 }
 
 // buildACPModels converts a list of ModelInfo into proto AvailableModel messages.
@@ -2509,6 +2216,7 @@ func acpModelInfosFromConfigOption(option ConfigOption) ([]ModelInfo, string) {
 			ModelID:     candidate.Value,
 			Name:        candidate.Name,
 			Description: candidate.Description,
+			Meta:        candidate.Meta,
 		})
 	}
 	return infos, option.CurrentValue
@@ -2573,8 +2281,20 @@ func (b *Base) buildModels(infos []ModelInfo, currentModelID string) ([]*agent.M
 		currentModelID = b.hooks.ModelIDNormalizer(currentModelID)
 	}
 	if b.hooks.ModelDecorator != nil {
+		// The metadata of the FIRST info of each final id, which is the info that
+		// buildACPModels kept for that id.
+		metadata := make(map[string]json.RawMessage, len(infos))
+		for _, info := range infos {
+			id := info.ModelID
+			if b.hooks.ModelIDNormalizer != nil {
+				id = b.hooks.ModelIDNormalizer(id)
+			}
+			if _, seen := metadata[id]; !seen {
+				metadata[id] = info.Meta
+			}
+		}
 		for _, m := range models {
-			b.hooks.ModelDecorator(m)
+			b.hooks.ModelDecorator(m, metadata[m.Id])
 		}
 	}
 	return models, currentModelID
@@ -2617,14 +2337,23 @@ func (b *Base) applyHandshakeModels(handshake *SessionResult) {
 // otherwise-healthy session whose other settings were already applied. The model
 // is written via effectiveSetModel so the "how to write a model" decision (Cursor's
 // wire-mapped setCursorModel vs the base setModel) lives in exactly one place.
+//
+// A provider whose agent reports some options only after a model write
+// (Hooks.ModelWriteRevealsOptions) gets the write in both no-op cases: an empty
+// request writes the current model, and a request that matches it writes it
+// again. Only a session that reports no model at all stays without a write.
 func (b *Base) trySetStartupModel(requested string) {
-	if requested == "" {
-		return
-	}
 	b.Mu.Lock()
 	current := b.model
 	b.Mu.Unlock()
-	if requested == current {
+	reveals := b.hooks.ModelWriteRevealsOptions
+	if requested == "" && reveals {
+		requested = current
+	}
+	if requested == "" {
+		return
+	}
+	if requested == current && !reveals {
 		return
 	}
 	if err := b.effectiveSetModel()(requested); err != nil {
@@ -2635,7 +2364,7 @@ func (b *Base) trySetStartupModel(requested string) {
 }
 
 // applyStartupPermissionMode applies a requested permission mode during startup
-// for providers that track one (Cursor, Goose, Reasonix). It is a no-op
+// for providers that track one (Cursor, Goose, Grok Build, Kiro, Qwen Code, Reasonix). It is a no-op
 // when the request is empty or already matches the server's current mode. Unlike
 // the model, the mode is mandatory: a rejected mode returns an error so the caller
 // aborts startup.
@@ -2651,7 +2380,7 @@ func (b *Base) trySetStartupModel(requested string) {
 //
 // The current mode is read under b.Mu: startACPHandshake starts the reader
 // goroutine before Start* reaches this point, and that goroutine can write
-// permissionMode concurrently (syncConfigOptionModeLocked for Cursor/Goose/Reasonix).
+// permissionMode concurrently (syncConfigOptionModeLocked for a permission-mode provider).
 // This mirrors trySetStartupModel's locked read of b.model.
 func (b *Base) applyStartupPermissionMode(requested string, defaulted bool) error {
 	if requested == "" {
@@ -2676,12 +2405,13 @@ func (b *Base) applyStartupPermissionMode(requested string, defaulted bool) erro
 // applyHandshakeMode sets availableModes and the permission mode from a session
 // handshake (under the lock), falling back to defaultMode when the server reports none.
 // A `mode` config option overrides the permission mode read from the modes channel only
-// for a provider that consumes it (ModeChannelPermissionMode -- Cursor/Goose/Reasonix);
+// for a provider that consumes it (ModeChannelPermissionMode);
 // for an unmapped provider it is left to applyOptionGroupsLocked to
 // surface as a option group, matching the runtime and ClearContext paths so the option
 // resolves the same way at every seam instead of being applied as the permission mode here
 // but surfaced uniformly there.
-// Used by ACP providers that track a permission mode (Cursor, Goose, Reasonix).
+// Used by ACP providers that track a permission mode (Cursor, Goose, Grok Build,
+// Kiro, Qwen Code, Reasonix).
 func (b *Base) applyHandshakeMode(handshake *SessionResult, defaultMode string) {
 	modes := buildACPModes(handshake.Modes, handshake.CurrentModeID, nil)
 	OrderModesPreferredFirst(modes, b.hooks.PreferredFirstMode)
@@ -2719,7 +2449,7 @@ func (b *Base) applySecondaryStartup(handshake *SessionResult, opts agent.Option
 }
 
 // ApplyPermissionModeStartup runs the post-handshake startup sequence for the
-// permission-mode providers (Cursor, Goose, Reasonix): write the mode channel from the
+// permission-mode providers (Cursor, Goose, Grok Build, Kiro, Qwen Code, Reasonix): write the mode channel from the
 // handshake and push the requested permission mode. Cursor passes its normalized model
 // id; trySetStartupModel routes through effectiveSetModel, which picks Cursor's
 // wire-mapping setCursorModel automatically. See applySecondaryStartup for the shared
@@ -2749,7 +2479,7 @@ func (b *Base) ApplyPrimaryAgentStartup(handshake *SessionResult, opts agent.Opt
 // handleACPConfigOptionUpdate processes a config_option_update notification. The
 // model channel is handled uniformly for every ACP provider; the configOptions
 // `mode` select is applied as the permission mode for ModeChannelPermissionMode
-// providers (Cursor/Goose/Reasonix) or the primary agent for ModeChannelPrimaryAgent
+// providers or the primary agent for ModeChannelPrimaryAgent
 // providers (OpenCode/Kilo); any unmapped option is surfaced as a mutable option
 // group. All
 // channels mutate under a single lock so a concurrent settings read can never observe
@@ -2779,9 +2509,8 @@ func (b *Base) handleACPConfigOptionUpdate(update json.RawMessage) {
 	// agent -> full refresh).
 	sc := b.secondaryChannel()
 	var secondaryValue string
-	var secondaryChanged bool
+	var secondaryChanged, secondaryListChanged bool
 	if sc.syncConfigOverride != nil {
-		var secondaryListChanged bool
 		secondaryValue, secondaryChanged, secondaryListChanged = sc.syncConfigOverride(options)
 		listChanged = listChanged || secondaryListChanged
 	}
@@ -2820,6 +2549,14 @@ func (b *Base) handleACPConfigOptionUpdate(update json.RawMessage) {
 		// broadcast a status refresh directly -- its StatusChange re-fetches the live
 		// model list and option groups, surfacing the new options.
 		b.sink.BroadcastStatusActive(sessionID)
+	}
+	// A provider can derive its goal actions from the modes that the session
+	// offers (Reasonix sets a goal through its `goal` mode), so a new mode list
+	// can add or remove a goal action. The capability is read from the live
+	// agent and broadcast only when republished, so without this the goal card
+	// kept the actions of the list the session reported first.
+	if secondaryListChanged {
+		b.sink.PublishGoalCapabilities()
 	}
 }
 
@@ -2962,7 +2699,7 @@ func (b *Base) syncConfigOptionSelectLocked(
 // `mode` select of a configOptions payload, returning the new mode value, whether
 // it changed, and whether the available-mode list changed. The caller must hold
 // b.Mu. Used by ACP providers whose configOptions `mode` maps to the permission
-// mode (Cursor, Goose, Reasonix).
+// mode (Cursor, Goose, Grok Build, Kiro, Qwen Code, Reasonix).
 func (b *Base) syncConfigOptionModeLocked(options []ConfigOption) (string, bool, bool) {
 	return b.syncConfigOptionSelectLocked(options, nil, b.hooks.PreferredFirstMode, &b.availableModes, &b.permissionMode)
 }
@@ -3406,31 +3143,20 @@ func (b *Base) applyStartupOptions(opts agent.Options) {
 // request that the client withdraws without a reader decision. It invents no decision
 // the reader did not make.
 func acpPermissionCancelAnswer() any {
-	return map[string]any{"outcome": map[string]any{"outcome": acpPermissionOutcomeCancelled}}
+	return map[string]any{"outcome": map[string]any{"outcome": contracts.ACPPermissionOutcomeCancelled}}
 }
 
-// cancelSession sends a session/cancel notification.
+// cancelSession sends a session/cancel notification for the current session.
 func (b *Base) cancelSession() error {
-	return b.WithSessionID(func(sessionID string) error {
-		params, err := json.Marshal(map[string]interface{}{
-			"sessionId": sessionID,
-		})
-		if err != nil {
-			return fmt.Errorf("marshal cancel params: %w", err)
-		}
-		return b.SendNotification(MethodSessionCancel, json.RawMessage(params))
-	})
+	return b.WithSessionID(b.sendSessionCancel)
 }
 
-// Interrupt aborts the active ACP turn by sending the
-// `session/cancel` notification — the wire format every ACP server
-// in our roster (Cursor, Kilo, OpenCode, Goose, Reasonix)
-// recognizes, and the one Provider.IsInterrupt classifier expects.
+// Interrupt aborts the active ACP turn by sending the `session/cancel`
+// notification. Every ACP server that LeapMux supports recognizes that wire
+// format, and the Provider.IsInterrupt classifier expects it.
 //
-// Embedded into every ACP-derived agent (cursor.Agent, kilo.Agent,
-// opencode.Agent, goose.Agent, reasonix.Agent) via the Base
-// embedding chain, so a single implementation covers all five
-// providers.
+// Every ACP agent embeds Base, so this one implementation serves every ACP
+// provider.
 //
 // No-op when no session is open (sessionID still empty) so
 // the worker InterruptAgent RPC can be called unconditionally without
@@ -3450,7 +3176,9 @@ func (b *Base) Interrupt() error {
 	b.noteACPInterruptRequested()
 	// The answers go FIRST. The agent blocks on them, so a cancel that arrives while
 	// one is outstanding stops nothing until the block is released.
-	b.WithdrawAllControlRequests(b.sink)
+	// releaseOutgoingSession keeps the same order for a context clear, which
+	// already holds sessionMu and so cannot cancel through WithSessionID.
+	b.withdrawTurnControls()
 	return b.cancelSession()
 }
 
@@ -3494,12 +3222,6 @@ func (b *Base) handleACPCancelRequest(params json.RawMessage) {
 	b.WithdrawControlRequest(b.sink, identity.Key)
 }
 
-func (b *Base) handlePlan(update json.RawMessage) {
-	if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update}, agent.SpanInfo{}); err != nil {
-		slog.Error("persist acp plan", "agent_id", b.AgentID(), "error", err)
-	}
-}
-
 // handleOutput dispatches a single parsed output line. Used as the providerkit.LineHandler
 // for ReadOutputLoop.
 func (b *Base) handleOutput(line *providerkit.ParsedLine) {
@@ -3520,9 +3242,9 @@ func (b *Base) handleACPOutput(line *providerkit.ParsedLine) {
 	case acpMethodSessionUpdate:
 		b.handleACPSessionUpdate(line.Params)
 	case contracts.MCPElicitationMethodACP:
-		b.PublishControlRequest(b.sink, line.Raw, providerkit.MCPElicitationCancelAnswer())
+		b.PublishSessionControlRequest(line, providerkit.MCPElicitationCancelAnswer())
 	case acpMethodSessionRequestPermission:
-		b.PublishControlRequest(b.sink, line.Raw, acpPermissionCancelAnswer())
+		b.PublishSessionControlRequest(line, acpPermissionCancelAnswer())
 	case acpMethodCancelRequestSnake, acpMethodCancelRequestCamel:
 		b.handleACPCancelRequest(line.Params)
 	case acpMethodTerminalCreate,
@@ -3549,14 +3271,15 @@ func (b *Base) handleACPOutput(line *providerkit.ParsedLine) {
 func (b *Base) PublishTurnActive() agent.TurnState {
 	b.Mu.Lock()
 	active := b.promptActive
-	steerable := active && b.steerMethod != ""
+	steerable := active && b.steersLocked()
 	b.Mu.Unlock()
 	b.notePromptActive()
 	return agent.TurnState{Active: active, Steerable: steerable}
 }
 
 // IsCurrentSession reports whether sessionID is the session this agent is
-// serving right now.
+// serving right now. Before the agent knows its session, which is during the
+// handshake of the start, every session counts as the current one.
 //
 // It takes b.Mu only, because b.Mu is what guards b.sessionID: newSessionLocked
 // writes the field under b.Mu and WithSessionID reads it under b.Mu.

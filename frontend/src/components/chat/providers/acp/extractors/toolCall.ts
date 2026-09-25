@@ -448,8 +448,14 @@ export function acpSpecFor<K extends ToolKind>(facts: ACPToolFacts, kind: K): { 
   return withoutResult(spec)
 }
 
-/** Whether this frame supplied result data, including a retained one-row body. */
-function acpResultAvailable(facts: ACPToolFacts): boolean {
+/**
+ * Whether this frame supplied result data, including a retained one-row body.
+ *
+ * A row that a turn end closed is finished with no result frame when the agent never
+ * answered the call, and it holds no answer then. An adapter that builds a result of
+ * its own asks this first, as {@link acpSpecFor} does.
+ */
+export function acpResultAvailable(facts: ACPToolFacts): boolean {
   return facts.lifecycle.resultFrameLanded
     || (facts.finished && (
       facts.content.length > 0
@@ -619,8 +625,12 @@ export function acpToolFacts(rawTool: Record<string, unknown>, supplemental?: un
   // frame before the payload readers see it.
   const outcome = retainedOutcome(completion)
   let tool: Record<string, unknown> = rawTool
+  // An absent or empty kind states no kind at all, so it reads as `unspecified`.
+  // `toolKind('')` answers `other`, which means "a kind word LeapMux does not know",
+  // and each reader of that answer then drew the empty word as the header and as the
+  // card's tool name.
   const rawKind = pickString(tool, 'kind')
-  const wireKind = toolKind(rawKind)
+  const wireKind = toolKind(rawKind || undefined)
   // Read BEFORE the kind is chosen, because the kind now depends on it: a known kind
   // whose input is a scalar cannot fill its typed request. The test itself needs no
   // kind, so there is no cycle.

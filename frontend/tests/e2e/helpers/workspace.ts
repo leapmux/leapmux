@@ -44,11 +44,17 @@ export async function withAgentWorkspace(
     provider: AgentProvider
     prefix: string
     openOptions?: AgentOpenOverrides
+    /**
+     * The agent's working directory. Omit it for a fresh private directory of the
+     * run, which suits every provider that reads no configuration from the git
+     * repository around it.
+     */
+    workingDir?: () => string
   },
   use: (workspace: WorkspaceFixture) => Promise<void>,
 ): Promise<void> {
   await withTestWorkspace(server, options.prefix, async (workspace) => {
-    const workingDir = createTestDirectory(`${options.prefix}-wd-`)
+    const workingDir = options.workingDir?.() ?? createTestDirectory(`${options.prefix}-wd-`)
     const defaults = agentOpenOptions(agentSettings(options.provider))
     await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspace.workspaceId, workingDir, {
       agentProvider: options.provider,

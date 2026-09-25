@@ -31,6 +31,31 @@ const TITLE_REQUEST = '(?:^|\\n)\\s*(?:(?:generate|create|write|suggest|produce)
 const JSON_TITLE_FORM = '(?:valid JSON object|\\{\\s*"title")'
 
 /**
+ * Grok Build's session title prompt.
+ *
+ * Grok titles a session through its own system prompt and FORCES its `session_title`
+ * tool through `tool_choice`, so the answer is a call of that tool rather than a
+ * line of text. Grok offers no switch for this first title (the later refresh has
+ * one, which the E2E environment turns off), and a child session asks for one as
+ * well.
+ */
+const GROK_TITLE_REQUEST = '^You are tasked with generating the session title\\b'
+
+/** The tool Grok forces for a session title, and the argument that carries it. */
+const GROK_TITLE_TOOL = 'session_title'
+
+/**
+ * Kiro's intent classification.
+ *
+ * Before a turn in one of its spec modes, Kiro asks a model of its own whether the
+ * prompt asks for a spec or for task execution, and it states the question in the
+ * request's `agentMode`. The answer is a JSON object of the two confidences. A failed
+ * classification falls back to a local guess, but it would consume the step that the
+ * test scripted for the turn.
+ */
+const KIRO_INTENT_CLASSIFICATION = '"agentMode":"intent-classification"'
+
+/**
  * The turns a provider runs for itself.
  *
  * A provider names its session from its own prompt, at a moment the test does
@@ -45,6 +70,16 @@ export const HOUSEKEEPING_RULES: readonly MockModelRule[] = [
   },
   { name: 'title-system', when: { system: TITLE_REQUEST }, respond: { text: MOCK_SESSION_TITLE } },
   { name: 'title-user', when: { user: TITLE_REQUEST }, respond: { text: MOCK_SESSION_TITLE } },
+  {
+    name: 'title-grok',
+    when: { system: GROK_TITLE_REQUEST },
+    respond: { toolCalls: [{ id: 'grok-session-title', name: GROK_TITLE_TOOL, arguments: { [GROK_TITLE_TOOL]: MOCK_SESSION_TITLE } }] },
+  },
+  {
+    name: 'intent-kiro',
+    when: { protocol: 'aws-event-stream', body: KIRO_INTENT_CLASSIFICATION },
+    respond: { text: JSON.stringify({ specGeneration: 0.9, taskExecution: 0.1 }) },
+  },
 ]
 
 /** A script: the ordered queue, the rules that bypass it, or both. */

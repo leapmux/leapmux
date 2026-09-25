@@ -23,7 +23,7 @@ type acpPlanNotification struct {
 // ExtractTodoEvent reads an ACP plan off one persisted message.
 //
 // Every ACP provider shares this shape, which is why it sits on Provider rather
-// than on each of the six that embed it.
+// than on each provider type that embeds it.
 //
 // The discriminator is the only signal. Two byte searches are the cheap exit for the
 // great majority of messages, and they are deliberately independent: one key/value

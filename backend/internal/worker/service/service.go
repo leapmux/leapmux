@@ -624,6 +624,15 @@ func New(cfg Config) *Service {
 				"agent_id", agentID, "edge", what, "error", err)
 		}
 	})
+	svc.Output.SetRequeueDroppedInputFunc(func(agentID, dropID, content string, attachments []*leapmuxv1.Attachment) (bool, error) {
+		_, added, err := svc.InputQueue.EnqueueReportingAdded(bgCtx(), inputqueue.NewItem{
+			ID: droppedInputID(agentID, dropID), AgentID: agentID,
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: content,
+			Attachments:      queueAttachments(attachments),
+			ReclassifyOnEdit: true,
+		})
+		return added, err
+	})
 	svc.startAgentFn = svc.Agents.StartAgent
 	svc.startBackgroundAgentFn = svc.Agents.StartBackgroundAgent
 	svc.startTerminalFn = svc.Terminals.StartTerminal

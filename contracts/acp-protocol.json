@@ -1,5 +1,5 @@
 {
-  "_readme": "The Agent Client Protocol defines these session updates, message roles, tool-call content blocks and terminal-result fields. LeapMux owns the SET of keys in the supplement tables, not their spellings: a tool row keeps the fields the protocol delivered LATE, or that no protocol frame carries at all, in its own supplemental content beside the agent's original bytes, and seven of the ten keys are the protocol's own field names carried across unchanged. Only `protocol` and `terminals` are names LeapMux chose; `rawOutput` is the protocol's own tool-call field, which the worker reuses as the key it stores a native record under. The worker writes that envelope and the browser plugin reads it back, so every key in it is a cross-language dispatch key. `terminalResult` holds the nested field names of the `terminals` payload, because those cross the boundary exactly as the top-level keys do. Six providers share these tables, because all six speak this protocol.",
+  "_readme": "The Agent Client Protocol defines these session updates, message roles, tool-call content blocks and terminal-result fields. LeapMux owns the SET of keys in the supplement tables, not their spellings: a tool row keeps the fields the protocol delivered LATE, or that no protocol frame carries at all, in its own supplemental content beside the agent's original bytes, and seven of the ten keys are the protocol's own field names carried across unchanged. Only `protocol` and `terminals` are names LeapMux chose; `rawOutput` is the protocol's own tool-call field, which the worker reuses as the key it stores a native record under. The worker writes that envelope and the browser plugin reads it back, so every key in it is a cross-language dispatch key. `terminalResult` holds the nested field names of the `terminals` payload, because those cross the boundary exactly as the top-level keys do. Every provider that speaks this protocol shares these tables. `permissionOutcomes` holds the `outcome` words of a reply to session/request_permission: the browser writes them into the reply, and the worker reads them back or writes a `cancelled` reply itself.",
   "_unread": {
     "toolKinds": {
       "Edit": {
@@ -73,6 +73,10 @@
   },
   "blockTypes": {
     "Terminal": "terminal"
+  },
+  "permissionOutcomes": {
+    "Selected": "selected",
+    "Cancelled": "cancelled"
   },
   "structs": {
     "ACPTerminalResult": {

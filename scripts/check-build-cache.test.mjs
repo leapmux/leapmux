@@ -39,12 +39,26 @@ function fixture(change = () => {}) {
   return dir
 }
 
+/**
+ * The environment of a process that the test starts in fixture dir.
+ *
+ * The test reads what Task prints as text, so color is off. A developer's
+ * FORCE_COLOR would otherwise make Task wrap each line in escape codes, and a
+ * check for an exact line would fail although the line is there.
+ */
+function childEnv(dir, extra = {}) {
+  const env = { ...process.env, TASK_TEMP_DIR: join(dir, '.task'), NO_COLOR: '1', ...extra }
+  delete env.FORCE_COLOR
+  delete env.CLICOLOR_FORCE
+  return env
+}
+
 function run(dir, target, env = {}) {
   return spawnSync(taskExecutable, [target], {
     cwd: dir,
     encoding: 'utf8',
     maxBuffer: 8 * 1024 * 1024,
-    env: { ...process.env, TASK_TEMP_DIR: join(dir, '.task'), ...env },
+    env: childEnv(dir, env),
   })
 }
 
@@ -76,7 +90,7 @@ describe('native build cache check', () => {
     expectSuccess(spawnSync(executable, ['check-build-cache'], {
       cwd: dir,
       encoding: 'utf8',
-      env: { ...process.env, TASK_TEMP_DIR: join(dir, '.task') },
+      env: childEnv(dir),
     }))
   })
 
@@ -189,6 +203,7 @@ describe('native build cache check', () => {
     const result = spawnSync(process.execPath, [join(dir, 'scripts/check-build-cache.mjs'), join(dir, 'missing-task')], {
       cwd: dir,
       encoding: 'utf8',
+      env: childEnv(dir),
     })
     expect(result.status).not.toBe(0)
     expect(result.stderr).toContain('Cannot start Task')
@@ -201,7 +216,7 @@ describe('native build cache check', () => {
     const result = spawnSync(process.execPath, [join(dir, 'scripts/check-build-cache.mjs'), taskExecutable], {
       cwd: dir,
       encoding: 'utf8',
-      env: { ...process.env, TASK_TEMP_DIR: join(dir, '.task'), TASK_DRY: 'true' },
+      env: childEnv(dir, { TASK_DRY: 'true' }),
     })
     expect(result.status).not.toBe(0)
     expect(result.stderr).toContain('Build commands ran: compile')

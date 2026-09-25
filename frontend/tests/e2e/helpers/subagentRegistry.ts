@@ -11,14 +11,30 @@
  * Playwright's global expect timeout applies to each call. The config is in
  * `playwright.config.ts`. `./subagentRegistry.test.ts` holds both halves
  * of the `:visible` rule as a source-level guard.
+ *
+ * The stop of a subagent from its own tab starts at a registry row too, so its
+ * shared scenario (`exerciseChildInterrupt`) lives here as well.
  */
 import type { Locator, Page } from '@playwright/test'
-import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import type { MockModelMatcher, MockModelStep } from './mockModelScript'
+import type { ModelScript } from './modelScriptFixture'
 import { ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect } from '../fixtures'
 import { getTestChannel } from './api'
 import { countGoalTransitionsInMessages } from './goalTransitions'
-import { stableBox } from './ui'
+import { MAX_STEP_DELAY_MS } from './mockModelScript'
+import { spawnSubagentToolCall } from './providerToolCalls'
+import {
+  ARITHMETIC_ANSWER_TEXT,
+  ARITHMETIC_PROMPT,
+  assistantBubbles,
+  expectAssistantAnswer,
+  messageBubbles,
+  sendMessage,
+  stableBox,
+  tabById,
+} from './ui'
 
 const FINAL_STATUSES = ['completed', 'failed', 'stopped', 'interrupted'] as const
 
@@ -290,19 +306,158 @@ export async function requireRegistryRow(
 /**
  * Open a subagent's transcript from its sidebar row and return the new tab's id.
  *
- * Counting the agent tabs, clicking, asserting the count grew by one, and
- * reading the id off the newly-rendered tab is the same five statements in every
- * spec that opens a child, and the id must come from the rendered tab strip --
- * the hub's tab list is empty throughout these runs.
+ * Reading the ids of the agent tabs, clicking, asserting the count grew by one,
+ * and taking the one id that is new is the same sequence in every spec that
+ * opens a child, and the id must come from the rendered tab strip -- the hub's
+ * tab list is empty throughout these runs. The new id is the one that the strip
+ * did not hold, not the one at a given position: a child tab opens beside its
+ * parent, so a second child lands before the first.
  */
 export async function openChildTabFromRow(page: Page, row: Locator): Promise<string> {
   const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
-  const tabsBefore = await agentTabs.count()
+  const tabIds = async () => agentTabs.evaluateAll(tabs => tabs.map(tab => tab.getAttribute('data-tab-id') ?? ''))
+  const before = new Set(await tabIds())
   await row.click()
-  await expect(agentTabs).toHaveCount(tabsBefore + 1)
-  const childTabId = await agentTabs.nth(tabsBefore).getAttribute('data-tab-id') ?? ''
-  expect(childTabId).not.toBe('')
-  return childTabId
+  await expect(agentTabs).toHaveCount(before.size + 1)
+  const added = (await tabIds()).filter(id => !before.has(id))
+  expect(added, 'one new agent tab').toHaveLength(1)
+  expect(added[0]).not.toBe('')
+  return added[0]!
+}
+
+/**
+ * The task of a subagent whose turn runs until something stops it. A
+ * `childTurn` matcher selects on these words.
+ */
+export const HELD_CHILD_TASK = 'Count slowly to one hundred'
+
+/** The description of that subagent, which its registry row shows. */
+const HELD_CHILD_TITLE = 'Count to one hundred'
+
+/** The name of the rule that holds the child's turn open. */
+const HELD_CHILD_RULE = 'the child counts until something stops it'
+
+/** What one provider needs to open the tab of a subagent that keeps working. */
+export interface HeldChildCase {
+  provider: AgentProvider
+  /**
+   * The matcher that selects the child's OWN model turn, and no other request.
+   * It must select on {@link HELD_CHILD_TASK}.
+   *
+   * The script holds every request that it selects. A test rule precedes the
+   * housekeeping rules, so a matcher that also selects the session title that
+   * a child asks for holds that request as well, and the held rule then
+   * reports two matches for one child.
+   */
+  childTurn: MockModelMatcher
+  /** The root's turns after the turn that spawns the child, in order. */
+  rootTurnsAfterSpawn: MockModelStep[]
+}
+
+/** The subagent that {@link openHeldChildTab} leaves working. */
+export interface HeldChild {
+  /** Its registry row. */
+  row: Locator
+  /** The id of the child's tab, which is the child agent's id. */
+  childTabId: string
+  /** The id of the root's tab, which the child's tab opened beside. */
+  rootTabId: string
+  /** How many requests the rule that holds the child's turn answered. */
+  heldTurns: () => Promise<number>
+}
+
+/**
+ * Spawn a subagent whose model turn stays open, and open its tab.
+ *
+ * The mock holds the child's answer for as long as it permits, which is as long
+ * as the test timeout, so only a stop ends the child's turn inside a test. When
+ * this returns, the child's model request is open, its row is running, and its
+ * tab is the active tab.
+ */
+export async function openHeldChildTab(page: Page, modelScript: ModelScript, test: HeldChildCase): Promise<HeldChild> {
+  await modelScript.rule({
+    name: HELD_CHILD_RULE,
+    when: test.childTurn,
+    respond: { text: 'One, two, three.', delayMs: MAX_STEP_DELAY_MS },
+  })
+  await modelScript.queue(
+    {
+      toolCalls: [spawnSubagentToolCall(test.provider, 'spawn-held-child', {
+        description: HELD_CHILD_TITLE,
+        prompt: modelScript.prompt(`${HELD_CHILD_TASK}.`),
+      })],
+    },
+    ...test.rootTurnsAfterSpawn,
+  )
+  // The root's tab is the only agent tab before the spawn. The hub's tab list
+  // is empty throughout these runs, so the id comes from the rendered strip.
+  const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+  await expect(agentTabs).toHaveCount(1)
+  const rootTabId = await agentTabs.getAttribute('data-tab-id') ?? ''
+  expect(rootTabId, 'the root tab has an id').not.toBe('')
+
+  await sendMessage(page, modelScript.prompt('Delegate the count to a subagent.'))
+  await modelScript.waitForSteps(1)
+  const row = await requireRegistryRow(page)
+  await expect(row).toContainText(HELD_CHILD_TITLE)
+  await expect(row).toHaveAttribute('data-status', 'running')
+  const heldTurns = async () => (await modelScript.status()).ruleMatches[HELD_CHILD_RULE] ?? 0
+  // The child asked the model for its turn, and the held answer keeps that
+  // request open: whatever ends the turn now ends it in the middle.
+  await expect.poll(heldTurns).toBe(1)
+  await expect.poll(async () => await row.getAttribute('data-child-agent-id')).not.toBe('')
+  const childTabId = await openChildTabFromRow(page, row)
+  return { row, childTabId, rootTabId, heldTurns }
+}
+
+/** The root's answer after the spawn's result states the stop. */
+const ROOT_AFTER_CHILD_STOP = 'The subagent stopped before it finished.'
+
+/** What one provider needs for {@link exerciseChildInterrupt}. */
+export type ChildInterruptCase = Omit<HeldChildCase, 'rootTurnsAfterSpawn'>
+
+/**
+ * Stop a working subagent through the Interrupt control of its own tab, and
+ * prove that the stop ends the child's turn alone.
+ *
+ * The control is on the child's tab only when the worker states that the
+ * provider can stop one subagent (`AgentInfo.accepts_interrupt`), and the
+ * press reaches the provider through the worker's `InterruptChild`. The user
+ * sees each of these:
+ *
+ * - The child's tab offers Interrupt while the child works.
+ * - After the press, the child's row and its transcript state a stop, and the
+ *   control goes away.
+ * - The root goes on with its own turn, and takes the next prompt.
+ */
+export async function exerciseChildInterrupt(page: Page, modelScript: ModelScript, test: ChildInterruptCase): Promise<void> {
+  const child = await openHeldChildTab(page, modelScript, { ...test, rootTurnsAfterSpawn: [{ text: ROOT_AFTER_CHILD_STOP }] })
+
+  const interrupt = page.locator('[data-testid="interrupt-button"]:visible')
+  await expect(interrupt).toBeVisible()
+  await interrupt.click()
+
+  // A stop, not a failure and not a completion: the held answer never arrived.
+  await expect(child.row).toHaveAttribute('data-status', 'stopped')
+  await expect(messageBubbles(page).filter({ hasText: 'Subagent stopped' })).toBeVisible()
+  await expect(interrupt).toHaveCount(0)
+
+  // The root reads the spawn's result and answers with its next turn.
+  await modelScript.waitForSteps()
+  await tabById(page, child.rootTabId).click()
+  await expect(assistantBubbles(page).filter({ hasText: ROOT_AFTER_CHILD_STOP })).toBeVisible()
+  // The root's turn ends. Not `waitForAgentIdle`: each tab of a tile mounts its
+  // own chat, and the child's hidden chat keeps its indicator, so an unscoped
+  // indicator locator matches two elements and fails in strict mode.
+  await expect(page.locator('[data-testid="thinking-indicator"]:visible')).toHaveCount(0)
+  // The stop paused the child's input queue, not the root's, so the next prompt
+  // reaches the root at once.
+  await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+  await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+  await modelScript.waitForSteps()
+  await expectAssistantAnswer(page)
+  // Nothing asked for the child's turn again after the stop.
+  expect(await child.heldTurns()).toBe(1)
 }
 
 /**

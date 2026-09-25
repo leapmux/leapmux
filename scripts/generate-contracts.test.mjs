@@ -59,6 +59,7 @@ import {
   emitTsExternalApps,
   emitTsHeaders,
   emitTsListen,
+  emitTsProviderFrameKinds,
   emitTsProviders,
   emitTsRetry,
   emitTsSessionInfo,
@@ -573,6 +574,54 @@ describe('checkProviderProtocol', () => {
     const pinned = { ...spec, tables: [{ key: 'events', goTagPin: 'backend/x.go' }, { key: 'modes' }] }
     expectContractError(() => checkProviderProtocol(pinned, ok()), 'must give goTagPin as the path')
   })
+
+  it('accepts each frameKind value', () => {
+    const marked = { ...spec, tables: [{ key: 'events', frameKind: 'name' }, { key: 'modes', frameKind: 'prefix' }] }
+    expect(checkProviderProtocol(marked, ok())).toEqual({})
+  })
+
+  // The collector reads only `name` and `prefix`. A misspelled mark would take the
+  // table out of the lint with no message.
+  it.each(['names', 'Name', '', true])('rejects the frameKind %j', (frameKind) => {
+    const marked = { ...spec, tables: [{ key: 'events', frameKind }, { key: 'modes' }] }
+    expectContractError(() => checkProviderProtocol(marked, ok()), 'which is not one of name, prefix')
+  })
+})
+
+describe('emitTsProviderFrameKinds', () => {
+  const first = {
+    spec: { name: 'first-protocol', tables: [{ key: 'events', frameKind: 'name' }, { key: 'modes' }, { key: 'families', frameKind: 'prefix' }] },
+    p: { events: { Started: 'turn.started', Ended: 'turn.ended' }, modes: { Plan: 'plan' }, families: { Hook: 'hook.' } },
+  }
+  const second = {
+    spec: { name: 'second-protocol', tables: [{ key: 'methods', frameKind: 'name' }] },
+    p: { methods: { Ended: 'turn.ended', Quoted: 'say "hi"' } },
+  }
+
+  it('emits each literal of each marked table, in the order of the domains, the tables and the keys', () => {
+    const ts = emitTsProviderFrameKinds([first, second])
+    const rows = ts.split('\n').filter(line => line.startsWith('  { literal:'))
+    expect(rows).toEqual([
+      '  { literal: "turn.started", match: "name", source: "first-protocol events" },',
+      '  { literal: "turn.ended", match: "name", source: "first-protocol events" },',
+      '  { literal: "hook.", match: "prefix", source: "first-protocol families" },',
+      '  { literal: "turn.ended", match: "name", source: "second-protocol methods" },',
+      '  { literal: "say \\"hi\\"", match: "name", source: "second-protocol methods" },',
+    ])
+  })
+
+  it('leaves out a table that states no frameKind', () => {
+    expect(emitTsProviderFrameKinds([first])).not.toContain('"plan"')
+  })
+
+  it('emits an empty list when no table is marked', () => {
+    const unmarked = { spec: { name: 'bare-protocol', tables: [{ key: 'modes' }] }, p: { modes: { Plan: 'plan' } } }
+    expect(emitTsProviderFrameKinds([unmarked])).toContain('export const PROVIDER_FRAME_KINDS: readonly ProviderFrameKind[] = [\n]\n')
+  })
+
+  it('gives the same output for the same input', () => {
+    expect(emitTsProviderFrameKinds([first, second])).toBe(emitTsProviderFrameKinds([first, second]))
+  })
 })
 
 describe('_unread exemptions', () => {
@@ -820,9 +869,12 @@ describe('generate', () => {
     expect(Object.keys(files).sort()).toEqual([
       'backend/generated/contracts/acp-protocol.go',
       'backend/generated/contracts/agent-input.go',
+      'backend/generated/contracts/amp-protocol.go',
       'backend/generated/contracts/captcha.go',
       'backend/generated/contracts/chat-history.go',
       'backend/generated/contracts/claude-protocol.go',
+      'backend/generated/contracts/cline-protocol.go',
+      'backend/generated/contracts/codewhale-protocol.go',
       'backend/generated/contracts/codex-bypass.go',
       'backend/generated/contracts/codex-protocol.go',
       'backend/generated/contracts/copilot-protocol.go',
@@ -830,12 +882,18 @@ describe('generate', () => {
       'backend/generated/contracts/desktop.go',
       'backend/generated/contracts/external-apps.go',
       'backend/generated/contracts/goose-protocol.go',
+      'backend/generated/contracts/grok-protocol.go',
       'backend/generated/contracts/headers.go',
+      'backend/generated/contracts/kimi-protocol.go',
+      'backend/generated/contracts/kiro-protocol.go',
       'backend/generated/contracts/listen.go',
       'backend/generated/contracts/mcp-elicitation.go',
+      'backend/generated/contracts/mimo-protocol.go',
+      'backend/generated/contracts/ohmypi-protocol.go',
       'backend/generated/contracts/opencode-protocol.go',
       'backend/generated/contracts/pi-protocol.go',
       'backend/generated/contracts/providers.go',
+      'backend/generated/contracts/qwen-protocol.go',
       'backend/generated/contracts/reasonix-protocol.go',
       'backend/generated/contracts/retry.go',
       'backend/generated/contracts/scopes.go',
@@ -852,9 +910,12 @@ describe('generate', () => {
       'desktop/rust/src/generated/contracts.rs',
       'frontend/src/generated/contracts/acp-protocol.ts',
       'frontend/src/generated/contracts/agent-input.ts',
+      'frontend/src/generated/contracts/amp-protocol.ts',
       'frontend/src/generated/contracts/captcha.ts',
       'frontend/src/generated/contracts/chat-history.ts',
       'frontend/src/generated/contracts/claude-protocol.ts',
+      'frontend/src/generated/contracts/cline-protocol.ts',
+      'frontend/src/generated/contracts/codewhale-protocol.ts',
       'frontend/src/generated/contracts/codex-bypass.ts',
       'frontend/src/generated/contracts/codex-protocol.ts',
       'frontend/src/generated/contracts/copilot-protocol.ts',
@@ -862,12 +923,19 @@ describe('generate', () => {
       'frontend/src/generated/contracts/desktop.ts',
       'frontend/src/generated/contracts/external-apps.ts',
       'frontend/src/generated/contracts/goose-protocol.ts',
+      'frontend/src/generated/contracts/grok-protocol.ts',
       'frontend/src/generated/contracts/headers.ts',
+      'frontend/src/generated/contracts/kimi-protocol.ts',
+      'frontend/src/generated/contracts/kiro-protocol.ts',
       'frontend/src/generated/contracts/listen.ts',
       'frontend/src/generated/contracts/mcp-elicitation.ts',
+      'frontend/src/generated/contracts/mimo-protocol.ts',
+      'frontend/src/generated/contracts/ohmypi-protocol.ts',
       'frontend/src/generated/contracts/opencode-protocol.ts',
       'frontend/src/generated/contracts/pi-protocol.ts',
+      'frontend/src/generated/contracts/provider-frame-kinds.ts',
       'frontend/src/generated/contracts/providers.ts',
+      'frontend/src/generated/contracts/qwen-protocol.ts',
       'frontend/src/generated/contracts/reasonix-protocol.ts',
       'frontend/src/generated/contracts/retry.ts',
       'frontend/src/generated/contracts/scopes.ts',
@@ -915,6 +983,17 @@ describe('generate', () => {
       .toContain('ClaudeModeBypassPermissions = "bypassPermissions"')
     expect(files['frontend/src/generated/contracts/claude-protocol.ts'])
       .toContain('export const CLAUDE_DEFAULT_MODE = CLAUDE_MODE.Default')
+  })
+
+  // The lint reads this list, so each marked table of the real contracts must reach it.
+  it('collects the frame kinds of the real contracts', () => {
+    const kinds = generate(join(ROOT, 'contracts'), DESCRIPTOR)['frontend/src/generated/contracts/provider-frame-kinds.ts']
+    expect(kinds).toContain('{ literal: "session.idle", match: "name", source: "copilot-protocol events" },')
+    expect(kinds).toContain('{ literal: "session.canvas.", match: "prefix", source: "copilot-protocol eventPrefixes" },')
+    expect(kinds).toContain('{ literal: "compact_boundary", match: "name", source: "claude-protocol systemSubtypes" },')
+    expect(kinds).toContain('{ literal: "question.asked", match: "name", source: "opencode-protocol events" },')
+    // A tool name is not a frame kind, so the Copilot tool table stays out.
+    expect(kinds).not.toContain('source: "copilot-protocol tools"')
   })
 
   it('fails loudly when a registered domain is missing its contract file', () => {
@@ -1611,14 +1690,14 @@ describe('checkWorkerVocab / checkDesktop', () => {
 
   it('rejects a missing or empty DEV frontend URL', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       tauriEvents: events(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
     }), 'devFrontendUrl must be a non-empty URL string')
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: '',
       tauriEvents: events(),
       windowBehavior: behavior(),
@@ -1678,7 +1757,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
 
   it('rejects two Tauri events sharing one name', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: { channelMessage: 'same:event', channelClose: 'same:event', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
       windowBehavior: behavior(),
@@ -1689,7 +1768,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
 
   it('rejects two desktop env vars sharing one name', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'SAME_X', binaryHash: 'SAME_X', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'SAME_X', binaryHash: 'SAME_X', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: behavior(),
@@ -1700,7 +1779,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
 
   it('rejects a desktop value with no name-table entry instead of emitting nothing', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', extra: 'D_W' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V', extra: 'D_W' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
       windowBehavior: behavior(),
@@ -1708,7 +1787,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       windowMode: windowMode(),
     }), 'has no DESKTOP_GO_ENV_NAMES entry')
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c', extra: 'e:x' },
       windowBehavior: behavior(),
@@ -1716,7 +1795,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       windowMode: windowMode(),
     }), 'has no DESKTOP_RS_EVENT_NAMES entry')
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: { ...behavior(), extra: { one: 'x', two: 'y' } },
@@ -1731,7 +1810,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
     DESKTOP_RS_MACOS_ONLY_EVENTS.add('noSuchEvent')
     try {
       expectContractError(() => checkDesktop({
-        envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+        envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
         devFrontendUrl: 'http://localhost:4328',
         tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
         windowBehavior: behavior(),
@@ -1745,7 +1824,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   it('rejects one setting whose two tokens are the same string', () => {
     // Equal tokens give the pill group two options that store one value.
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: { ...behavior(), trayOnClose: { tray: 'tray', quit: 'tray' } },
@@ -1759,7 +1838,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   // that setting.
   it('checks token uniqueness for a setting no name table knows yet', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: { ...behavior(), closeToDock: { dock: 'dock', tray: 'dock' } },
@@ -1782,7 +1861,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   // wrong state.
   it('rejects two launch-visibility states sharing one token', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: behavior(),
@@ -1793,7 +1872,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
 
   it('rejects a launch-visibility key with no name-table entry', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: behavior(),
@@ -1807,7 +1886,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   // replaces three manual copies.
   it('rejects two window modes sharing one token', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: behavior(),
@@ -1849,6 +1928,16 @@ describe('checkWorkerVocab / checkDesktop', () => {
     expect(d.envVars.devFrontend).toBe('LEAPMUX_HUB_DEV_FRONTEND')
     expect(emitGoDesktop(d)).toContain('EnvDevFrontend = "LEAPMUX_HUB_DEV_FRONTEND"')
     expect(emitRsDesktop(d)).toContain('pub const ENV_DEV_FRONTEND: &str = "LEAPMUX_HUB_DEV_FRONTEND"')
+  })
+
+  it('emits the agent helper env var to Go and Rust', () => {
+    // The worker sets it for an agent whose CLI starts the worker's executable again
+    // as a helper, and the Rust shell removes an inherited copy from the sidecar. A
+    // one-sided change lets that copy turn the sidecar into a helper.
+    const d = readContract('desktop')
+    expect(d.envVars.agentHelper).toBe('LEAPMUX_AGENT_HELPER')
+    expect(emitGoDesktop(d)).toContain('EnvAgentHelper = "LEAPMUX_AGENT_HELPER"')
+    expect(emitRsDesktop(d)).toContain('pub const ENV_AGENT_HELPER: &str = "LEAPMUX_AGENT_HELPER"')
   })
 
   it('emits the frame cap to Go and Rust from one contract value', () => {

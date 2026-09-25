@@ -1170,6 +1170,8 @@ tasks:
       - frontend/package.json
       - frontend/bun.lock
       - frontend/*config*
+      # The rules of the chat-pipeline plugin. A rule change must lint every file again.
+      - frontend/eslint/**/*
       - frontend/vitest*.ts
       - frontend/scripts/**/*
       - frontend/src/**/*

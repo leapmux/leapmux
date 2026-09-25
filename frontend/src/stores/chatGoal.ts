@@ -8,9 +8,9 @@ import { assignDefined } from '~/lib/jsonPick'
 // Provider-neutral session-goal model + conversions
 //
 // A session goal is a standing objective the agent works toward, re-checked at
-// the end of every turn until the condition holds. Codex, ZCode, Claude Code
-// and Reasonix each report one in their own wire shape; the worker normalizes
-// them, so this module sees one shape and the UI has one renderer.
+// the end of every turn until the condition holds. Codex, ZCode, Claude Code,
+// Reasonix and MiMo Code each report one in their own wire shape. The worker
+// normalizes them, so this module sees one shape and the UI has one renderer.
 //
 // There is at most ONE goal per agent -- every CLI with the feature enforces
 // that itself -- so this is a single value, not a list.
@@ -105,13 +105,13 @@ export interface GoalSurface {
  * Whether this agent has a goal surface at all: a goal to show, or the ability
  * to be given one.
  *
- * The provider flag decides whether the FEATURE exists; this decides whether
- * the card can hold anything. Both are needed. A surface built from the flag
- * alone draws a card reading "No session goal." with no button, for the whole
- * life of a Reasonix tab, of a stopped agent, of a Claude Code build older than
- * 2.1.139, and of a Goose or Copilot process that has not yet advertised its
- * command -- because `goalActionState` reports `set` as hidden for an empty
- * action list, and the button is the only route to a first goal.
+ * The running agent's supported actions decide whether the FEATURE exists; this
+ * decides whether the card can hold anything. Both are needed. A surface built
+ * from the actions alone draws a card reading "No session goal." with no button,
+ * for the whole life of an Oh My Pi tab, of a stopped agent, of a Claude Code
+ * build older than 2.1.139, and of a Goose or Copilot process that has not yet
+ * advertised its command -- because `goalActionState` reports `set` as hidden
+ * for an empty action list, and the button is the only route to a first goal.
  *
  * The rule lives HERE, beside the surface it describes, because both surface
  * builders ask it and a rule spelled twice can be spelled two ways.
@@ -250,7 +250,7 @@ export function goalStatusLabel(status: GoalStatus): string {
  *
  * The three answers are distinct situations, and each deserves its own
  * treatment. A provider's gap is PERMANENT -- Claude Code has no pause or
- * resume, and Reasonix can report a goal but never change one -- so a control
+ * resume, and Oh My Pi can report a goal but never change one -- so a control
  * for it would never light up and is better absent than dead. A control the
  * current goal state refuses comes BACK, so it holds its place and says why. A
  * disabled control with no explanation is what this exists to avoid.

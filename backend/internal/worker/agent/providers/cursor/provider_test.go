@@ -160,3 +160,10 @@ func TestCursorPlanRequestCarriesARejectedCancelAnswer(t *testing.T) {
 	assert.NotContains(t, answers, `8`, "Cursor defines no outcome for a withdrawn question")
 	assert.ElementsMatch(t, []string{"jsonrpc:7", "jsonrpc:8"}, sink.CanceledControls())
 }
+
+// The plugin states the child capabilities that the agent type implements. A
+// subagent tab reads them before its root runs.
+func TestPluginStatesTheChildCapabilitiesOfTheAgent(t *testing.T) {
+	t.Parallel()
+	agenttest.AssertChildCapabilities(t, Registration().Plugin, (*Agent)(nil))
+}

@@ -14,17 +14,25 @@
 export type CommandResult = CommandResultBase & CommandExit
 
 /**
- * How the PROCESS itself ended: with a code of its own, or with the signal that ended
- * it. Never both, and a command that has not returned states neither.
+ * How the COMMAND ended: with a code of its own, with the signal that ended it, or
+ * with a failure that its provider states without either -- a command that did not
+ * start, or that ran out of time. Never two, and a command that has not returned
+ * states none.
  *
- * The two are exclusive at the source -- one `os.ProcessState` answers with a code or
- * with a signal -- and the label reads the code FIRST. A result that stated both drew
- * "Success" for a process the OS had killed, and dropped the signal on the way.
- * Writing it as a union is what makes that pair impossible to build.
+ * The code and the signal are exclusive at the source -- one `os.ProcessState`
+ * answers with a code or with a signal -- and the label reads the code FIRST. A result
+ * that stated both drew "Success" for a process the OS had killed, and dropped the
+ * signal on the way. Writing it as a union is what makes that pair impossible to
+ * build.
+ *
+ * `failed` belongs here and not to the row's status, because one call can run
+ * several commands: a call that completed can hold one command that failed, and only
+ * that command's result can say so.
  */
 export type CommandExit
-  = | { exitCode?: number | null, signal?: never }
-    | { exitCode?: never, signal: string }
+  = | { exitCode?: number | null, signal?: never, failed?: never }
+    | { exitCode?: never, signal: string, failed?: never }
+    | { exitCode?: never, signal?: never, failed: true }
 
 interface CommandResultBase {
   output: string
@@ -52,12 +60,14 @@ export function commandExit(source: CommandResult): CommandExit {
     return { exitCode: source.exitCode }
   if (source.signal !== undefined)
     return { signal: source.signal }
+  if (source.failed === true)
+    return { failed: true }
   return source.exitCode === null ? { exitCode: null } : {}
 }
 
 /**
- * Whether the PROCESS reported a failure: a known non-zero exit code, or -- where no
- * code is known -- the signal that ended it.
+ * Whether the COMMAND reported a failure: a known non-zero exit code, or -- where no
+ * code is known -- the signal that ended it, or a failure with neither.
  *
  * The CALL's own status is a separate question, and the caller asks it separately.
  * This took a `status` parameter once, typed as a bare `string` a caller could spell
@@ -66,5 +76,15 @@ export function commandExit(source: CommandResult): CommandExit {
 export function commandIsError(exit: CommandExit): boolean {
   if (typeof exit.exitCode === 'number')
     return exit.exitCode !== 0
-  return !!exit.signal
+  return !!exit.signal || exit.failed === true
+}
+
+/**
+ * One command result with the way it ended REPLACED, never merged: a code, a signal
+ * and a failure with neither exclude each other, and the result may already state
+ * one of them.
+ */
+export function withCommandExit(command: CommandResult, exit: CommandExit): CommandResult {
+  const { exitCode: _exitCode, signal: _signal, failed: _failed, ...rest } = command
+  return { ...rest, ...exit }
 }

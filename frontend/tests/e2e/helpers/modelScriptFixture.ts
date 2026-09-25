@@ -14,6 +14,25 @@ import { getGlobalState } from './server'
 const STEP_WAIT_TIMEOUT_MS = 180_000
 
 /**
+ * How long before the test's own deadline a stalled step wait gives up.
+ *
+ * The wait's error states how far the script got and which requests it did not
+ * answer. Playwright's timeout states only that the test ran out of time, so the
+ * wait must end first, with time left for the error and the fixture's teardown.
+ */
+export const STEP_WAIT_REPORT_MARGIN_MS = 5_000
+
+/** Options of `startModelScript`. */
+export interface ModelScriptOptions {
+  /**
+   * The time (epoch milliseconds) at which the test's own timeout ends it, or
+   * undefined for a test with no timeout. It is read at each wait, so a test that
+   * raised its timeout before the wait keeps the longer one.
+   */
+  testDeadline?: () => number | undefined
+}
+
+/**
  * One model script for the lifetime of one test.
  *
  * A test queues the answers it expects, marks each prompt it sends, and the
@@ -79,7 +98,7 @@ export interface ModelScriptLifecycle {
  * `fixtures.ts` wraps this as the `modelScript` fixture. It stays a plain
  * function so the helper's own unit test does not need a browser.
  */
-export async function startModelScript(serverURL: string): Promise<ModelScriptLifecycle> {
+export async function startModelScript(serverURL: string, options: ModelScriptOptions = {}): Promise<ModelScriptLifecycle> {
   const id = `test-${randomUUID()}`
   // A scenario with no step is legal: `registerMockModelScenario` always adds
   // the housekeeping rules, and every step arrives later through `queue`.
@@ -97,7 +116,7 @@ export async function startModelScript(serverURL: string): Promise<ModelScriptLi
     rule: (...rules) => extendMockModelScenario(serverURL, id, { rules }),
     fallback: step => extendMockModelScenario(serverURL, id, { fallback: step }),
     status: () => readScenarioStatus(serverURL, id),
-    waitForSteps: (count = queued, timeoutMs = STEP_WAIT_TIMEOUT_MS) => waitForSteps(serverURL, id, count, timeoutMs),
+    waitForSteps: (count = queued, timeoutMs = STEP_WAIT_TIMEOUT_MS) => waitForSteps(serverURL, id, count, timeoutMs, options.testDeadline?.()),
     allowUnconsumed: (reason) => {
       if (!reason)
         throw new Error('allowUnconsumed needs the reason the queue stays unconsumed')
@@ -121,18 +140,30 @@ export async function startModelScript(serverURL: string): Promise<ModelScriptLi
   }
 }
 
-/** Poll the scenario until it consumed `count` steps. */
+/**
+ * Poll the scenario until it consumed `count` steps.
+ *
+ * The wait ends at `timeoutMs`, or STEP_WAIT_REPORT_MARGIN_MS before the test's own
+ * deadline, whichever comes first.
+ */
 async function waitForSteps(
   serverURL: string,
   id: string,
   count: number,
   timeoutMs: number,
+  testDeadline: number | undefined,
 ): Promise<MockModelScenarioStatus> {
-  const deadline = Date.now() + timeoutMs
+  const started = Date.now()
+  const beforeTestEnds = testDeadline === undefined ? Infinity : testDeadline - STEP_WAIT_REPORT_MARGIN_MS
+  const deadline = Math.min(started + timeoutMs, beforeTestEnds)
+  // The limit that applied, stated as a number, so the message is the same on every run.
+  const limit = deadline === beforeTestEnds
+    ? `${Math.max(0, deadline - started)}ms, before the test's own timeout`
+    : `${timeoutMs}ms`
   let status = await readScenarioStatus(serverURL, id)
   while (status.nextStep < count) {
     if (Date.now() >= deadline)
-      throw new Error(`The model script reached ${status.nextStep} of ${count} answers in ${timeoutMs}ms: ${describe(status)}`)
+      throw new Error(`The model script reached ${status.nextStep} of ${count} answers in ${limit}: ${describe(status)}`)
     await new Promise(resolve => setTimeout(resolve, 50))
     status = await readScenarioStatus(serverURL, id)
   }
@@ -160,11 +191,19 @@ export async function runModelScriptFixture(
   testInfo: {
     status?: string
     expectedStatus?: string
+    /** The test's timeout in milliseconds; 0 when it has none. */
+    timeout?: number
     outputPath?: (name: string) => string
     attach?: (name: string, options: { path: string, contentType: string }) => Promise<void>
   },
+  /** When the test's timer started (the `testStartedAt` fixture). */
+  testStartedAt?: number,
 ): Promise<void> {
-  const lifecycle = await startModelScript(getGlobalState().mockModelUrl)
+  const lifecycle = await startModelScript(getGlobalState().mockModelUrl, {
+    testDeadline: () => testStartedAt !== undefined && testInfo.timeout !== undefined && testInfo.timeout > 0
+      ? testStartedAt + testInfo.timeout
+      : undefined,
+  })
   try {
     await use(lifecycle.script)
   }

@@ -49,6 +49,20 @@ export function buildAllowResponse(
 }
 
 /**
+ * The same control response with the id of one offered choice beside its behavior.
+ *
+ * A plan approval can offer answers beyond a plain approve and reject
+ * (`PlanChoice`), and the choice rides the neutral envelope as `choice`. The worker
+ * reads it with `DecodeControlChoice` (backend/internal/worker/agent/control_response.go)
+ * and each provider maps the id onto its own answer. The input is not changed.
+ */
+export function withControlChoice(envelope: Record<string, unknown>, choice: string): Record<string, unknown> {
+  const outer = isObject(envelope.response) ? envelope.response : {}
+  const inner = isObject(outer.response) ? outer.response : {}
+  return { ...envelope, response: { ...outer, response: { ...inner, choice } } }
+}
+
+/**
  * The placeholder reject message emitted when the user declines a control request WITHOUT
  * typing a reason. Must stay byte-identical to the backend's `ControlRejectedByUserMessage`
  * (backend/internal/worker/agent/control_response.go), whose `NormalizeRejectionMessage` collapses it

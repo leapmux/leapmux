@@ -5,8 +5,8 @@ import (
 	"context"
 	"io"
 	"testing"
-	"time"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newACPTurnBase builds the base all six ACP providers embed, wired the way
+// newACPTurnBase builds the base every ACP provider embeds, wired the way
 // Start wires it. Going through wireTurnActive rather than a hand-built
 // closure is deliberate: a test that built its own hook would pass even if the
 // constructor stopped wiring one, which is the failure these exist to catch.
@@ -46,8 +46,8 @@ func TestACPTurnActive_ThePublishFollowsALaterSinkWrap(t *testing.T) {
 	// thinkingResetSink. A hook that captured the raw sink would publish past
 	// every decorator for the life of the process -- and this flag is the input
 	// queue's only dispatch guard, so a decorator that ever overrode
-	// SetTurnState would silently hold every later message of all six ACP
-	// providers.
+	// SetTurnState would silently hold every later message of every ACP
+	// provider.
 	var out bytes.Buffer
 	b, sink := newACPTurnBase(t, agenttest.NopStdin(&out))
 	b.sink = &swallowingSink{ProviderServices: agent.NewProviderServices(sink)}
@@ -72,7 +72,7 @@ func TestACPTurnActive_PromptOpensTheTurnAndTheResponseCloses(t *testing.T) {
 	// -- which persists the turn end -- and only then is the flag cleared.
 	b.HandleJSONRPCResponseForTest(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}`)))
 
-	assert.Eventually(t, func() bool { return len(sink.TurnActives()) == 2 }, time.Second, 5*time.Millisecond)
+	testutil.RequireEventually(t, func() bool { return len(sink.TurnActives()) == 2 })
 	assert.Equal(t, []bool{true, false}, sink.TurnActives())
 }
 
@@ -119,7 +119,7 @@ func TestTurnEndPrecedesTheClear_ACP(t *testing.T) {
 	require.NoError(t, b.SendInput("hi", nil))
 	b.HandleJSONRPCResponseForTest(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}`)))
 
-	assert.Eventually(t, func() bool { return len(sink.TurnLifecycle()) == 4 }, time.Second, 5*time.Millisecond)
+	testutil.RequireEventually(t, func() bool { return len(sink.TurnLifecycle()) == 4 })
 	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
 }
 
@@ -153,7 +153,7 @@ func TestACPTurnActive_ProviderErrorPersistsBufferedText(t *testing.T) {
 
 	b.HandleJSONRPCResponseForTest(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"provider failed"}}`)))
 
-	require.Eventually(t, func() bool { return sink.MessageCount() == 1 }, time.Second, 5*time.Millisecond)
+	testutil.RequireEventually(t, func() bool { return sink.MessageCount() == 1 })
 	assert.JSONEq(t, `{
 		"type":"assembled_message",
 		"kind":"text",

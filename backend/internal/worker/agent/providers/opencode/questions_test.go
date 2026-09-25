@@ -350,6 +350,41 @@ func TestOpenCodeQuestions_ReadsAMultiLineEvent(t *testing.T) {
 	}, 3*time.Second, 5*time.Millisecond, "the indented question reaches the reader")
 }
 
+// The stream can end in the middle of an event. That event is discarded, not
+// handled half read: the reconnect that follows restates the pending list, so
+// the question is not lost with it. A whole event before the cut still counts.
+func TestOpenCodeQuestions_DiscardsAnEventThatTheStreamCutOff(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	questions := &openCodeQuestions{}
+	questions.Configure(sink)
+	second := strings.ReplaceAll(opencodetest.FakeQuestion, "que_1", "que_2")
+	cut := strings.TrimSuffix(opencodetest.AskedEvent(second), "\n\n")
+
+	err := questions.readEvents(context.Background(), strings.NewReader(opencodetest.AskedEvent(opencodetest.FakeQuestion)+cut))
+
+	require.NoError(t, err, "a stream that ends is no failure")
+	published := sink.PublishedControls()
+	require.Len(t, published, 1)
+	assert.Equal(t, "opencode-question:que_1", published[0].RequestID)
+}
+
+// An event larger than the limit fails the stream rather than growing the
+// buffer without limit. The bridge then reconnects, and the pending list
+// restates what the stream dropped.
+func TestOpenCodeQuestions_RefusesAnEventOverTheLimit(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	questions := &openCodeQuestions{}
+	questions.Configure(sink)
+	huge := "data: " + strings.Repeat("x", openCodeQuestionMaxEvent+1) + "\n\n"
+
+	err := questions.readEvents(context.Background(), strings.NewReader(huge))
+
+	require.Error(t, err)
+	assert.Empty(t, sink.PublishedControls())
+}
+
 // A bridge nobody configured must take no frame. Every agent test that builds a bare
 // agent reaches SendRawInput through it, and a bridge that claimed a frame there
 // would answer a daemon that does not exist.

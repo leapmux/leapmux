@@ -45,7 +45,7 @@ describe('acpExtractControl', () => {
   })
 
   /*
-   * `options` is wire data, and six providers share this reader. A STRING was the
+   * `options` is wire data, and every ACP provider shares this reader. A STRING was the
    * quiet case: its `length` is the length of the string, so the payload read as a
    * permission request, the layout walked its CHARACTERS, and the decision row drew
    * one empty button for each of them.

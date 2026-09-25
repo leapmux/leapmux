@@ -125,22 +125,26 @@ func steerableInputKind(kind leapmuxv1.AgentInputKind) bool {
 }
 
 func (s *Store) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
-	return s.enqueue(ctx, input, nil)
+	snapshot, _, err := s.enqueue(ctx, input, nil)
+	return snapshot, err
 }
 
-// enqueue applies the extra database mutation before committing the input and snapshot.
-func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, error) {
+// enqueue queues input, applies the extra database mutation, and commits both
+// with the snapshot. It reports whether this call added the item. A repeat of an
+// item that the queue holds, or that it already delivered, adds nothing: it
+// answers the current snapshot and false.
+func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, bool, error) {
 	if !validateIdentity(input.ID) || !validateIdentity(input.AgentID) {
-		return Snapshot{}, fmt.Errorf("%w: agent and input IDs are required", ErrInvalidInput)
+		return Snapshot{}, false, fmt.Errorf("%w: agent and input IDs are required", ErrInvalidInput)
 	}
 	input.Kind = s.classifier.Classify(input.Kind, input.Text)
 	if err := validateContent(input.Kind, input.Text, input.Attachments); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, false, err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	commit := func() (Snapshot, error) {
@@ -152,40 +156,42 @@ func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) 
 		return commitSnapshot(ctx, tx, input.AgentID)
 	}
 	if err := ensureState(ctx, tx, input.AgentID); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, false, err
 	}
 
 	existing, existingAttachments, found, err := getItem(ctx, tx, input.AgentID, input.ID, true)
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, false, err
 	}
 	if found {
 		if existing.Kind != input.Kind || existing.Text != input.Text || existing.TargetMode != input.TargetMode ||
 			existing.PrepareContext != input.PrepareContext || existing.ReclassifyOnEdit != input.ReclassifyOnEdit ||
 			!attachmentsEqual(existingAttachments, input.Attachments) {
-			return Snapshot{}, ErrConflict
+			return Snapshot{}, false, ErrConflict
 		}
-		return commit()
+		snapshot, err := commit()
+		return snapshot, false, err
 	}
 	var acceptedAgentID, acceptedIdempotencyKey string
 	err = tx.QueryRowContext(ctx, `SELECT agent_id, idempotency_key FROM messages WHERE id = ?`, input.ID).Scan(&acceptedAgentID, &acceptedIdempotencyKey)
 	if err == nil {
 		if acceptedAgentID != input.AgentID || acceptedIdempotencyKey == "" ||
 			acceptedIdempotencyKey != inputIdempotencyKey(input) {
-			return Snapshot{}, ErrConflict
+			return Snapshot{}, false, ErrConflict
 		}
-		return commit()
+		snapshot, err := commit()
+		return snapshot, false, err
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return Snapshot{}, err
+		return Snapshot{}, false, err
 	}
 
 	var count int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_input_queue_items WHERE agent_id = ?`, input.AgentID).Scan(&count); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, false, err
 	}
 	if count >= MaxItems {
-		return Snapshot{}, ErrQueueFull
+		return Snapshot{}, false, ErrQueueFull
 	}
 	var aggregate int64
 	if err := tx.QueryRowContext(ctx, `
@@ -193,14 +199,14 @@ func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) 
 		FROM agent_input_queue_attachments a
 		JOIN agent_input_queue_items i ON i.id = a.item_id
 		WHERE i.agent_id = ?`, input.AgentID).Scan(&aggregate); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, false, err
 	}
 	if aggregate+attachmentBytes(input.Attachments) > MaxQueueAttachmentBytes {
-		return Snapshot{}, ErrQueueAttachmentsLarge
+		return Snapshot{}, false, ErrQueueAttachmentsLarge
 	}
 	var orderIndex int64
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(order_index), 0) + 1 FROM agent_input_queue_items WHERE agent_id = ?`, input.AgentID).Scan(&orderIndex); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, false, err
 	}
 	now := nowText()
 	if _, err := tx.ExecContext(ctx, `
@@ -209,20 +215,21 @@ func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) 
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
 		input.ID, input.AgentID, orderIndex, input.Kind, input.Text, input.TargetMode, input.PrepareContext, input.ReclassifyOnEdit,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, now, now); err != nil {
-		return Snapshot{}, normalizeConstraintError(err)
+		return Snapshot{}, false, normalizeConstraintError(err)
 	}
 	if err := replaceAttachments(ctx, tx, input.ID, input.Attachments); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, false, err
 	}
 	if input.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK {
 		if err := placeControlFeedback(ctx, tx, input.AgentID, input.ID); err != nil {
-			return Snapshot{}, err
+			return Snapshot{}, false, err
 		}
 	}
 	if err := bumpRevision(ctx, tx, input.AgentID); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, false, err
 	}
-	return commit()
+	snapshot, err := commit()
+	return snapshot, err == nil, err
 }
 
 func (s *Store) Snapshot(ctx context.Context, agentID string) (Snapshot, error) {

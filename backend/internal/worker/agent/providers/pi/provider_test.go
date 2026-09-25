@@ -63,3 +63,10 @@ func TestProviderFor_PiClassification(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"type":"compaction_start","attempt":2}`, string(merged))
 }
+
+// The plugin states the child capabilities that the agent type implements. A
+// subagent tab reads them before its root runs.
+func TestPluginStatesTheChildCapabilitiesOfTheAgent(t *testing.T) {
+	t.Parallel()
+	agenttest.AssertChildCapabilities(t, Registration().Plugin, (*Agent)(nil))
+}

@@ -6,6 +6,7 @@ import { Index, Show } from 'solid-js'
 import { CompactSwitch } from '~/components/common/CompactSwitch'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { moreHorizontalTrigger } from '~/components/common/moreHorizontalTrigger'
+import { Tooltip } from '~/components/common/Tooltip'
 import { keepFocusOnPress } from '~/lib/focusRetention'
 import { dangerMenuItem } from '~/styles/shared.css'
 import { actionButtonClass, ControlActionRow } from './ControlActionRow'
@@ -34,6 +35,12 @@ export interface ControlDecisionAction {
    */
   destructive?: boolean
   disabled?: boolean
+  /**
+   * What the action does, when its label does not say it all. The overflow menu
+   * shows it as the item's tooltip, as the settings menu shows an option's
+   * description.
+   */
+  description?: string
 }
 
 /** Renders the shared options and decision layout for a control request. */
@@ -96,18 +103,27 @@ export const ControlDecisionFooter: Component<{
           <Show when={!props.hasEditorContent && additionalActions().length}>
             <DropdownMenu trigger={moreHorizontalTrigger({ 'title': 'More actions', 'data-testid': 'control-more-actions' })} aria-label="More actions">
               <Index each={additionalActions()}>
-                {decision => (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    class={decision().destructive ? dangerMenuItem : undefined}
-                    disabled={decision().disabled}
-                    onClick={() => invokeControlAction(decision().onSelect)}
-                    data-testid={decision().testId}
-                  >
-                    {decision().label}
-                  </button>
-                )}
+                {(decision) => {
+                  const item = () => (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      class={decision().destructive ? dangerMenuItem : undefined}
+                      disabled={decision().disabled}
+                      onClick={() => invokeControlAction(decision().onSelect)}
+                      data-testid={decision().testId}
+                    >
+                      {decision().label}
+                    </button>
+                  )
+                  // Wrap only when there is a description. A Tooltip mounts its own
+                  // wrapper and listeners even with nothing to show.
+                  return (
+                    <Show when={decision().description} fallback={item()}>
+                      {description => <Tooltip text={description()}>{item()}</Tooltip>}
+                    </Show>
+                  )
+                }}
               </Index>
             </DropdownMenu>
           </Show>

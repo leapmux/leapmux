@@ -4,8 +4,10 @@
 // This module is not a `.test.ts`, so `~/components/chat/settingsGroups` fails
 // to resolve here although a sibling spec may use it.
 import { OPTION_ID_EFFORT } from '../../src/components/chat/settingsGroups'
+import { ACCOUNT_DEFAULT_MODEL } from '../../src/generated/contracts/worker-vocab'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { MOCK_MODELS, MOCK_PROVIDER_IDS } from './helpers/mockAgentEnvironment'
+import { KIRO_DEFAULT_MOCK_MODEL } from './helpers/kiroSurface'
+import { KIMI_MOCK_MODELS, MOCK_MODELS, MOCK_PROVIDER_IDS, QWEN_MODEL_ID } from './helpers/mockAgentEnvironment'
 
 /** The model, and the reasoning effort where the provider has one. */
 export interface AgentE2ESettings {
@@ -17,11 +19,14 @@ export interface AgentE2ESettings {
 /**
  * Concrete settings for every end-to-end agent fixture.
  *
- * EVERY provider reaches the mock model endpoint. Nine take a model out of
- * `MOCK_MODELS`, which the isolated agent configuration writes. Cursor takes
- * `auto`, because its model does not come from a local runtime at all: the CLI
- * asks its own backend for a catalogue, and `helpers/cursorSurface.ts` answers
- * that call with `CURSOR_MOCK_MODELS`, whose default variant answers to `auto`.
+ * EVERY provider reaches the mock model endpoint. Every provider but Cursor and
+ * Kimi Code takes a model out of `MOCK_MODELS`, which the isolated agent
+ * configuration writes. Kimi Code takes an alias out of `KIMI_MOCK_MODELS`,
+ * because it addresses a model by the key of its configured model table rather
+ * than by the model identifier. Cursor takes `auto`, because its model does not
+ * come from a local runtime at all: the CLI asks its own backend for a
+ * catalogue, and `helpers/cursorSurface.ts` answers that call with
+ * `CURSOR_MOCK_MODELS`, whose default variant answers to `auto`.
  *
  * Keep this catalog explicit so an account default cannot change what a test
  * observes. `satisfies` makes a new provider a typecheck failure here rather
@@ -35,12 +40,35 @@ export const AGENT_E2E_SETTINGS = {
   // LeapMux normalizes to. See the note above.
   [AgentProvider.CURSOR]: { model: 'auto' },
   [AgentProvider.GOOSE]: { model: MOCK_MODELS.zai, effort: 'high' },
+  [AgentProvider.KIMI_CODE]: { model: KIMI_MOCK_MODELS.thinking, effort: 'high' },
   [AgentProvider.KILO]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
+  // Kiro's catalogue comes from its own service, which `helpers/kiroSurface.ts`
+  // answers. The effort differs from the model's own default, so a start that
+  // failed to apply it shows.
+  [AgentProvider.KIRO]: { model: KIRO_DEFAULT_MOCK_MODEL.modelId, effort: 'medium' },
+  // MiMo reads the OpenCode family's provider block, and its effort is the model's
+  // reasoning variant.
+  [AgentProvider.MIMO_CODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
   [AgentProvider.OPENCODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
   [AgentProvider.PI]: { model: MOCK_MODELS.pi, effort: 'high' },
+  [AgentProvider.GROK_BUILD]: { model: MOCK_MODELS.grok, effort: 'medium' },
+  // Qwen states a model as `<id>(<auth type>)`.
+  [AgentProvider.QWEN_CODE]: { model: QWEN_MODEL_ID, effort: 'high' },
+  // omp addresses a model as `<provider>/<id>`, the provider of its own `models.yml`.
+  [AgentProvider.OH_MY_PI]: { model: `${MOCK_PROVIDER_IDS.ohMyPi}/${MOCK_MODELS.ohMyPi}`, effort: 'high' },
   [AgentProvider.REASONIX]: { model: MOCK_MODELS.deepseek },
   // ZCode requires the provider-qualified identifier of its configured model.
   [AgentProvider.ZCODE]: { model: `${MOCK_PROVIDER_IDS.zcode}/${MOCK_MODELS.zai}`, effort: 'high' },
+  // A bare id: the model belongs to the provider that the isolated
+  // configuration selects.
+  [AgentProvider.CODEWHALE]: { model: MOCK_MODELS.deepseek },
+  // Amp has no model axis and no effort axis: its agent mode chooses both, on its
+  // own service. The account-default sentinel states that, and the worker sends no
+  // model to Amp.
+  [AgentProvider.AMP]: { model: ACCOUNT_DEFAULT_MODEL },
+  // The model of the isolated `openai-compatible` settings. Cline's catalog states no
+  // reasoning ladder for a model of that provider, so the model has no effort axis.
+  [AgentProvider.CLINE]: { model: MOCK_MODELS.cline },
 } as const satisfies Record<Exclude<AgentProvider, AgentProvider.UNSPECIFIED>, AgentE2ESettings>
 
 /** The pinned settings of one provider. */
@@ -71,11 +99,12 @@ export function agentOpenOptions(settings: AgentE2ESettings) {
  * The `LEAPMUX_*_DEFAULT_*` pairs a spawned hub or worker needs, so the catalog
  * states the mapping once instead of at each `spawn` call.
  *
- * Claude Code, Codex and Copilot each read a model and an effort: Copilot's
- * native protocol drives its reasoning axis through the well-known effort id
- * (`session.model.setReasoningEffort`). The other Agent Client Protocol providers
- * register neither key, so their fixtures pin the settings through the open
- * request (`agentOpenOptions`).
+ * The pairs cover Claude Code, Codex and Copilot, the providers of the specs
+ * that spawn their own hub or worker. Copilot's native protocol drives its
+ * reasoning axis through the well-known effort id
+ * (`session.model.setReasoningEffort`). Most other providers register such keys
+ * also, but no spec spawns a process for them: their fixtures pin the settings
+ * through the open request (`agentOpenOptions`).
  *
  * `LEAPMUX_WORKER_NAME` stays at each call site, because it differs by site.
  */

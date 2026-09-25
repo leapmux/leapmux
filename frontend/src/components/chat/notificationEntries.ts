@@ -34,6 +34,9 @@ const INTERRUPTED_LABEL = 'Interrupted'
 // The instruction matters as much as the fact: the second Interrupt press is the one the
 // worker escalates into a forced stop, and the row is where the reader learns that.
 const INTERRUPT_IGNORED_LABEL = 'Interrupt ignored — press Interrupt again to force it'
+// The worker writes this row and queues the message independently, so the queue can
+// deliver the message before the row lands. The words read correctly on either side.
+const INPUT_REQUEUED_LABEL = 'Message queued again — the agent dropped it before the model read it'
 const UNKNOWN_ERROR_LABEL = 'Unknown error'
 export const COMPACTING_LABEL = 'Compacting context...'
 // Claude Code emits no metadata for a microcompaction, so this label carries no
@@ -108,6 +111,8 @@ export function leapmuxNotificationEntry(
       return [{ kind: 'text', text: INTERRUPTED_LABEL }]
     case NOTIFICATION_TYPE.StopIgnored:
       return [{ kind: 'text', text: INTERRUPT_IGNORED_LABEL }]
+    case NOTIFICATION_TYPE.InputRequeued:
+      return [{ kind: 'text', text: INPUT_REQUEUED_LABEL }]
     // A live status the provider reported in its own words. The worker
     // normalized it, so one row draws every provider's.
     case NOTIFICATION_TYPE.AgentStatus: {

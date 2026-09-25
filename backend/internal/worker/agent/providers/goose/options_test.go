@@ -3,6 +3,7 @@ package goose
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -21,10 +22,10 @@ func TestIsEffortConfigOption(t *testing.T) {
 
 	assert.True(t, acp.IsEffortConfigOptionForTest(acp.ConfigOption{ID: "x", Category: "thought_level"}, ""), "category match")
 	assert.True(t, acp.IsEffortConfigOptionForTest(acp.ConfigOption{ID: agent.OptionIDEffort}, ""), "OpenCode/Kilo effort id (no category)")
-	assert.True(t, acp.IsEffortConfigOptionForTest(acp.ConfigOption{ID: "thinking_effort"}, ConfigThinkingEffort), "Goose's declared effort id (no category)")
+	assert.True(t, acp.IsEffortConfigOptionForTest(acp.ConfigOption{ID: "thinking_effort"}, contracts.GooseConfigThinkingEffort), "Goose's declared effort id (no category)")
 	assert.False(t, acp.IsEffortConfigOptionForTest(acp.ConfigOption{ID: "thinking_effort"}, ""),
 		"another provider's convention id is not an effort axis for a provider that declares none")
-	assert.False(t, acp.IsEffortConfigOptionForTest(acp.ConfigOption{ID: "reasoning_effort"}, ConfigThinkingEffort),
+	assert.False(t, acp.IsEffortConfigOptionForTest(acp.ConfigOption{ID: "reasoning_effort"}, contracts.GooseConfigThinkingEffort),
 		"an id the running provider does not declare is not matched")
 	assert.False(t, acp.IsEffortConfigOptionForTest(acp.ConfigOption{ID: "allow_all"}, ""), "a non-effort config option is not matched")
 	assert.False(t, acp.IsEffortConfigOptionForTest(acp.ConfigOption{ID: "model", Category: "model"}, ""), "the model channel is not effort")
@@ -41,7 +42,7 @@ func TestBuildOptionGroup_EffortSortedByKnownIDWithoutCategory(t *testing.T) {
 	t.Parallel()
 
 	option := acp.ConfigOption{
-		ID: ConfigThinkingEffort, Name: "Thinking Effort", // no Category
+		ID: contracts.GooseConfigThinkingEffort, Name: "Thinking Effort", // no Category
 		Options: []acp.ConfigOptionValue{{Value: "low"}, {Value: "medium"}, {Value: "high"}},
 	}
 	ids := func(grp *leapmuxv1.AvailableOptionGroup) []string {
@@ -51,7 +52,7 @@ func TestBuildOptionGroup_EffortSortedByKnownIDWithoutCategory(t *testing.T) {
 		}
 		return order
 	}
-	assert.Equal(t, []string{"high", "medium", "low"}, ids(acp.BuildOptionGroupForTest(option, "high", ConfigThinkingEffort)),
+	assert.Equal(t, []string{"high", "medium", "low"}, ids(acp.BuildOptionGroupForTest(option, "high", contracts.GooseConfigThinkingEffort)),
 		"effort options are reordered strongest-first by id even without a thought_level category")
 	assert.Equal(t, []string{"low", "medium", "high"}, ids(acp.BuildOptionGroupForTest(option, "high", "")),
 		"an undeclared convention id keeps the server's order")

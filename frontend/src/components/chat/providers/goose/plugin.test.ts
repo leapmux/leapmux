@@ -31,6 +31,10 @@ describe('goose provider', () => {
     expect(plugin?.configuration?.triggerModeGroupKey).toBe('permissionMode')
   })
 
+  it('states its own reasoning axis for the effort chip', () => {
+    expect(plugin?.configuration?.effortGroupKey).toBe('thinking_effort')
+  })
+
   it('derives a control-response label via the default ACP permission path (no question hook)', () => {
     // Goose has no question protocol, so it gets the shared acpControlResponseSummary default.
     expect(plugin?.controls?.controlResponseDisplay!({

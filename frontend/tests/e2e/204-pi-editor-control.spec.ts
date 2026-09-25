@@ -49,9 +49,9 @@ export default function (pi) {
       ], async (modelScenario) => {
         await sendMessage(page, modelScenario.prompt('Run the configured editor probe.'))
         const banner = page.getByTestId('control-banner').filter({ visible: true })
-        const editor = page.getByTestId('pi-editor')
+        const editor = page.getByTestId('dialog-editor')
         await expect(banner).toContainText('Edit the probe text')
-        await expect(banner.getByTestId('pi-editor')).toBeVisible()
+        await expect(banner.getByTestId('dialog-editor')).toBeVisible()
         await expect(page.getByTestId('composer-editor')).toBeHidden()
         expect(await editor.evaluate((element) => {
           const banner = element.closest('[data-testid="control-banner"]')!

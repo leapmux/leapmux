@@ -13,7 +13,7 @@ import {
 } from './controlResponse'
 import { piExtractControl } from './extractControl'
 import { isPiMcpApproval, piMcpApproval } from './mcpApproval'
-import { PiControlActions } from './PiControlActions'
+import { PiPlanApprovalActions } from './PiPlanApprovalActions'
 import { isPiPlanApproval } from './planRequest'
 
 /** The complete Pi control channel, separate from provider registration. */
@@ -68,7 +68,12 @@ export const piControls: ProviderControlCapability = {
     return response
   },
   extractControl: piExtractControl,
-  // Pi answers dialogs with confirm, value, or cancel envelopes. Its plan
-  // approval sends an action word. None is a permission decision.
-  controlActionsFor: () => PiControlActions,
+  // Pi answers a dialog with a confirm, a value or a cancellation envelope.
+  dialogResponder: {
+    confirm: piConfirmResponse,
+    value: piValueResponse,
+    cancel: piCancelResponse,
+  },
+  // Pi's plan menu answers with its own action words, which no shared row states.
+  controlActionsFor: payload => isPiPlanApproval(payload) ? PiPlanApprovalActions : undefined,
 }

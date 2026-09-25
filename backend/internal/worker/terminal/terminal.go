@@ -15,6 +15,7 @@ import (
 	pty "github.com/aymanbagabas/go-pty"
 	"github.com/coder/quartz"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/util/procutil"
@@ -404,7 +405,10 @@ type Options struct {
 // of the spawn a test can assert on: `exec.Cmd` resolves duplicates last-wins,
 // so a layered pin is invisible to the child process and visible only here.
 func spawnEnv(environ, extraEnv []string) []string {
-	env := envutil.ScrubAppImageEnvSlice(envutil.PinEnv(environ,
+	// The provider-helper variable points at one agent's helper spec (see
+	// agent.HelperFunc). A terminal that inherited it would run a plain
+	// `leapmux` as that agent's helper, so the spawn never passes it on.
+	env := envutil.ScrubAppImageEnvSlice(envutil.PinEnv(envutil.FilterEnv(environ, contracts.EnvAgentHelper),
 		"TERM=xterm-256color",
 		gitutil.GitOptionalLocksOff,
 	))

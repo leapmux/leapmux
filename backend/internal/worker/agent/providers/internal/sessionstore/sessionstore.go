@@ -505,8 +505,9 @@ func ContentBlockText(content json.RawMessage) string {
 
 // Query runs one SQL-backed store's listing query.
 //
-// Five providers keep their sessions in a SQLite database, and the steps around
-// the query are the same for every one of them: refuse an empty working
+// Several providers keep their sessions in a SQLite database -- Codex, Goose,
+// and the OpenCode store that OpenCode, Kilo, ZCode and MiMo Code read -- and
+// the steps around the query are the same for every one of them: refuse an empty working
 // directory, open the store read-only, turn an ABSENT store into the empty
 // result rather than a failure, bind the cleaned working directory and the
 // limit, skip a row this reader cannot scan, and order the survivors. Only the

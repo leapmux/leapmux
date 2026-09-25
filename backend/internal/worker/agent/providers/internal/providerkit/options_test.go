@@ -3,6 +3,9 @@ package providerkit
 import (
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -81,6 +84,38 @@ func TestFilterGroupOptions_PreservesTemplateFields(t *testing.T) {
 
 	assert.Len(t, tmpl.GetOptions(), 3, "filtering must not mutate the shared template")
 	assert.Nil(t, FilterGroupOptions(nil, func(*leapmuxv1.AvailableOption) bool { return true }))
+}
+
+// TestCloneOptionGroupTemplate_CopiesEveryField sets EVERY field of the option-group
+// message. A new field of AvailableOptionGroup that the hand-written copy misses then
+// fails here, and does not disappear from each projected group without notice. The
+// read-only reason showed the need: a clone that dropped it replaced a provider's own
+// words with the generic "controlled by the agent".
+func TestCloneOptionGroupTemplate_CopiesEveryField(t *testing.T) {
+	t.Parallel()
+
+	tmpl := &leapmuxv1.AvailableOptionGroup{}
+	fields := tmpl.ProtoReflect().Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		field := fields.Get(i)
+		switch {
+		case field.IsList() && field.Message() != nil:
+			list := tmpl.ProtoReflect().Mutable(field).List()
+			list.Append(protoreflect.ValueOfMessage((&leapmuxv1.AvailableOption{Id: "a", Name: "A"}).ProtoReflect()))
+		case field.Kind() == protoreflect.StringKind:
+			tmpl.ProtoReflect().Set(field, protoreflect.ValueOfString("value of "+string(field.Name())))
+		case field.Kind() == protoreflect.BoolKind:
+			tmpl.ProtoReflect().Set(field, protoreflect.ValueOfBool(true))
+		case field.Kind() == protoreflect.Int32Kind:
+			tmpl.ProtoReflect().Set(field, protoreflect.ValueOfInt32(7))
+		default:
+			t.Fatalf("field %s has a kind this test cannot fill; extend the test", field.Name())
+		}
+	}
+
+	assert.True(t, proto.Equal(tmpl, cloneOptionGroupTemplate(tmpl)), "the clone carries every field")
+	assert.True(t, proto.Equal(tmpl, LiveGroup(tmpl, tmpl.GetCurrentValue())), "LiveGroup carries every field")
+	assert.Equal(t, "value of read_only_reason", LiveGroup(tmpl, "").GetReadOnlyReason())
 }
 
 // TestReadOnlyModelAndEffortGroups verifies the hidden-UI read-only projection: the model

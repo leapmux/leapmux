@@ -35,7 +35,6 @@ const codexPlugin: ProviderPlugin = {
     // Multi-Agent V2 rejects direct app-server input for spawned child threads.
     // The child tab is a read-only transcript.
     supportsSubagentSend: false,
-    supportsSubagentInterrupt: true,
     attachments: {
       text: true,
       image: true,

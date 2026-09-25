@@ -592,6 +592,7 @@ describe('classifyMessage', () => {
       { type: 'goal_updated', objective: 'Ship it', goal_status: 'active' },
       { type: 'goal_cleared', objective: 'Ship it' },
       { type: 'stop_ignored' },
+      { type: 'input_requeued' },
     ])('classifies a wrapped $type', (notification) => {
       const result = classifyMessage(input(notification, wrapper(notification)))
       expect(result.kind).toBe('notification')

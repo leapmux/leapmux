@@ -16,10 +16,6 @@ const (
 	openCodeHiddenSummary = "summary"
 )
 
-const (
-	MethodSessionResume = "session/resume"
-)
-
 func fallbackOpenCodePrimaryAgents() []*leapmuxv1.AvailableOption {
 	return []*leapmuxv1.AvailableOption{
 		{Id: PrimaryAgentBuild, Name: providerkit.TitleCaseID(PrimaryAgentBuild, "")},

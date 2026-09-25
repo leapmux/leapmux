@@ -166,6 +166,7 @@ async function resetSharedPage(
 export const test = base.extend<
   {
     activePageState: ActivePageState
+    testStartedAt: number
     hubStateReset: void
     modelScript: ModelScript
     toastRecorder: void
@@ -180,6 +181,15 @@ export const test = base.extend<
     leapmuxServer: ServerInfo
   }
 >({
+  // When the test's timer started. Playwright's test timeout covers the setup of
+  // every test fixture, and this one is the first automatic fixture and depends on
+  // nothing, so it reads the clock as that timer starts. The model script ends a
+  // stalled wait before the test's own deadline, which it computes from this.
+  // eslint-disable-next-line no-empty-pattern
+  testStartedAt: [async ({}, use) => {
+    await use(Date.now())
+  }, { auto: true }],
+
   // Global setup starts one dev instance for the complete run.
   // eslint-disable-next-line no-empty-pattern
   leapmuxServer: [async ({}, use) => {
@@ -295,8 +305,7 @@ export const test = base.extend<
   // this test did not queue fails THIS test. A test that sends a prompt without
   // `modelScript.prompt` reaches the ambient scenario instead, which answers a
   // provider's own title turn and refuses everything else.
-  // eslint-disable-next-line no-empty-pattern
-  modelScript: async ({}, use, testInfo) => runModelScriptFixture(use, testInfo),
+  modelScript: async ({ testStartedAt }, use, testInfo) => runModelScriptFixture(use, testInfo, testStartedAt),
 
   // Record page errors for every test that inherits this fixture. Do not fail the test here.
   // An uncaught app exception can otherwise appear only as a timeout on an unrelated locator.

@@ -17,7 +17,7 @@ import { AskUserQuestionActions, AskUserQuestionContent } from './controls/AskUs
 import { actionButtonClass, ControlActionRow } from './controls/ControlActionRow'
 import { invokeControlAction } from './controls/controlResponseError'
 import { canAnswerControlRequest, controlPayloadFaultNotice, controlResponseStateNotice } from './controls/controlResponseState'
-import { DialogRequestContent } from './controls/DialogRequestControl'
+import { DialogRequestActions, DialogRequestContent } from './controls/DialogRequestControl'
 import { ElicitationActions, ElicitationContent } from './controls/ElicitationControl'
 import { ExitPlanModeActions } from './controls/ExitPlanModeControl'
 import { GenericToolActions } from './controls/GenericToolControl'
@@ -207,6 +207,13 @@ export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
   // rather than drawing buttons that answer nothing.
   const sendPermissionOption = () => pluginFor(props.agentProvider)?.controls?.sendPermissionOption
     ?? (() => Promise.reject(new Error('This provider offers permission options but no way to send one.')))
+  // A dialog, and how this provider answers one. A provider that sends a dialog and
+  // states no responder reaches the fallback pair below.
+  const dialogAnswer = () => {
+    const dialog = surfaceOf(props.controlSurface, 'dialog')?.dialog
+    const responder = pluginFor(props.agentProvider)?.controls?.dialogResponder
+    return dialog && responder ? { dialog, responder } : undefined
+  }
   return (
     <Show when={props.request}>
       {request => (
@@ -259,18 +266,19 @@ export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
                 and the order is what decides who answers. The question and the
                 elicitation are cross-provider surfaces and come first. Then a
                 provider answers its OWN request wherever `controlActionsFor`
-                claims it -- Codex's decision words, Pi's dialog envelopes,
-                Cursor's create-plan verdict. Everything left is answered from
-                the model.
+                claims it -- Codex's decision words, Pi's plan menu, Cursor's
+                create-plan verdict. Everything left is answered from the model:
+                a dialog through the provider's `dialogResponder`, a plan, and a
+                permission.
 
                 The FALLBACK is the shared Allow/Deny pair, and it is what keeps the
                 invariant this banner exists for: the agent's turn blocks until an
                 answer reaches it, so a surface with no buttons blocks it forever. The
                 content half switches over all five kinds of the closed model and this
-                one answers four -- `dialog` reaches the fallback, because the one
-                provider that sends a dialog claims it above with its own envelopes,
-                and a second one would otherwise draw a dialog nobody could dismiss.
-                The pair is a way OUT of such a request, not the right words for it.
+                one answers each of them. A `dialog` of a provider that states no
+                `dialogResponder` reaches the fallback, because a dialog nobody could
+                dismiss would block the turn. The pair is a way OUT of such a request,
+                not the right words for it.
               */}
               <Switch fallback={<GenericToolActions {...props} request={request()} />}>
                 <Match when={question()}>
@@ -301,8 +309,11 @@ export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
                 <Match when={pluginActions()}>
                   {ownActions => <Dynamic component={ownActions()} {...props} request={request()} />}
                 </Match>
+                <Match when={dialogAnswer()}>
+                  {answer => <DialogRequestActions {...props} request={request()} dialog={answer().dialog} responder={answer().responder} />}
+                </Match>
                 <Match when={surfaceOf(props.controlSurface, 'plan')}>
-                  <ExitPlanModeActions {...props} request={request()} />
+                  {plan => <ExitPlanModeActions {...props} request={request()} choices={plan().choices} />}
                 </Match>
                 <Match when={surfaceOf(props.controlSurface, 'permission')}>
                   {permission => (

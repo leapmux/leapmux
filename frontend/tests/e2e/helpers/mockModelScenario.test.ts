@@ -1,4 +1,5 @@
 import type { MockModelServer } from './mockModelServer'
+import { Buffer } from 'node:buffer'
 import { afterEach, describe, expect, it } from 'vitest'
 import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
 import {
@@ -86,6 +87,57 @@ describe('HOUSEKEEPING_RULES', () => {
       ])
       expect(title).toBe(MOCK_SESSION_TITLE)
       await complete(server, [{ role: 'user', content: scenario.prompt('Run.') }])
+    })
+  })
+
+  // Grok forces its `session_title` tool for the first title of a session, and it
+  // offers no switch for that call.
+  it('answers Grok\'s forced title tool with a call of that tool', async () => {
+    const server = await startServer()
+    await withMockModelScenario(server.url, [{ text: 'Primary answer' }], async (scenario) => {
+      const marked = scenario.prompt('Inspect the parser.')
+      const response = await fetch(`${server.url}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          stream: false,
+          tool_choice: { type: 'function', function: { name: 'session_title' } },
+          messages: [
+            { role: 'system', content: 'You are tasked with generating the session title. The user is asking software engineering questions.' },
+            { role: 'user', content: `<user_query>\n${marked}\n</user_query>` },
+          ],
+        }),
+      })
+      expect(response.status).toBe(200)
+      const body = await response.json() as { choices: Array<{ message: { tool_calls: Array<{ function: { name: string, arguments: string } }> } }> }
+      const call = body.choices[0]!.message.tool_calls[0]!
+      expect(call.function.name).toBe('session_title')
+      expect(JSON.parse(call.function.arguments)).toEqual({ session_title: MOCK_SESSION_TITLE })
+      expect(await complete(server, [{ role: 'user', content: marked }])).toBe('Primary answer')
+      expect(await scenario.status()).toMatchObject({ nextStep: 1, ruleMatches: { 'title-grok': 1 } })
+    })
+  })
+
+  // Kiro classifies the intent of a prompt before a turn in a spec mode, with the
+  // prompt and its marker in the request.
+  it('answers Kiro\'s intent classification without consuming a step', async () => {
+    const server = await startServer()
+    await withMockModelScenario(server.url, [{ text: 'Primary answer' }], async (scenario) => {
+      const kiroTurn = (agentMode: string) => fetch(`${server.url}/`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-amz-json-1.0', 'x-amz-target': 'KiroRuntimeService.GenerateAssistantResponse' },
+        body: JSON.stringify({
+          conversationState: { conversationId: 's', history: [], currentMessage: { userInputMessage: { content: scenario.prompt('Build a to-do app.') } } },
+          agentMode,
+        }),
+      })
+      const classification = await kiroTurn('intent-classification')
+      expect(classification.status).toBe(200)
+      expect(Buffer.from(await classification.arrayBuffer()).toString('utf8')).toContain('specGeneration')
+      const turn = await kiroTurn('spec')
+      expect(turn.status).toBe(200)
+      expect(Buffer.from(await turn.arrayBuffer()).toString('utf8')).toContain('Primary answer')
+      expect(await scenario.status()).toMatchObject({ nextStep: 1, ruleMatches: { 'intent-kiro': 1 } })
     })
   })
 

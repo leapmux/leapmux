@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "amp_subagent_title_conformance.schema.json",
+  "title": "Amp subagent title conformance corpus",
+  "description": "Shared by backend/internal/worker/agent/providers/amp/subagent_test.go and frontend/src/components/chat/providers/amp/extractors/agent.test.ts. Each case is one subagent call and the title that both the registry row and the transcript card show.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "cases"],
+  "properties": {
+    "_readme": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" } }
+      ]
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tool", "input", "title", "why"],
+        "properties": {
+          "tool": { "enum": ["Task", "oracle", "librarian", "finder"] },
+          "input": { "type": "object" },
+          "title": { "type": "string", "minLength": 1 },
+          "why": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

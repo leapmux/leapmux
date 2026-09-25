@@ -71,11 +71,6 @@ func (b *Base) finishPromptRequest(sessionID string, response json.RawMessage, e
 	if !current {
 		return
 	}
-	defer b.clearActivePrompt()
-	if err == nil {
-		b.handleACPPromptResponse(response)
-		return
-	}
 	// A prompt that fails BECAUSE the reader stopped it is a stop, not a failure.
 	//
 	// `IsStopped` asks whether the agent PROCESS is shut down, which a stop button
@@ -84,6 +79,17 @@ func (b *Base) finishPromptRequest(sessionID string, response json.RawMessage, e
 	// command stored `status: in_progress` with `completion: error`, and the row read
 	// `Error` for work the reader had chosen to end.
 	stopped := b.IsStopped() || b.acpInterruptRequested()
+	if b.hooks.PromptEnded != nil {
+		b.hooks.PromptEnded(err, stopped)
+	}
+	if err == nil {
+		b.handleACPPromptResponse(response)
+		b.endTurn(sessionID)
+		return
+	}
+	// A failed turn ends like any other: an agent turn queued behind it still
+	// takes over, and input that it never read still reaches the agent.
+	defer b.endTurn(sessionID)
 	completion := agent.MessageCompletionError
 	if stopped {
 		completion = agent.MessageCompletionInterrupted
@@ -102,10 +108,14 @@ func (b *Base) SendPromptDetached(content string, attachments []*leapmuxv1.Attac
 	b.Mu.Lock()
 	sessionID := b.sessionID
 	b.Mu.Unlock()
-	params, err := json.Marshal(map[string]interface{}{
+	fields := map[string]any{
 		"sessionId": sessionID,
 		"prompt":    BuildPromptBlocks(content, agent.ClassifyAttachments(attachments)),
-	})
+	}
+	if b.hooks.PromptParams != nil {
+		b.hooks.PromptParams(fields)
+	}
+	params, err := json.Marshal(fields)
 	if err != nil {
 		return fmt.Errorf("marshal ACP prompt params: %w", err)
 	}

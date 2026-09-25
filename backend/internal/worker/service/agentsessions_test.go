@@ -567,3 +567,36 @@ func TestListAgentSessions_RanksBySessionsLatestMessageTime(t *testing.T) {
 	assert.Equal(t, []string{"handle-recent", "handle-older"}, summaryHandles(resp.GetSessions()),
 		"the picker sorted the session that just ran below an older one")
 }
+
+// queryRecordingPlugin records the query a provider's store reader receives.
+type queryRecordingPlugin struct {
+	agent.ProviderDefaults
+	got chan agent.StoredSessionQuery
+}
+
+func (p queryRecordingPlugin) ListStoredSessions(_ context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
+	p.got <- q
+	return nil, nil
+}
+
+// TestListAgentSessions_HandsTheReaderTheAgentShell pins that a provider whose
+// sessions only its own CLI can list runs that CLI through the shell the
+// worker launches agents through. Amp is the case: its threads live on its
+// server, and a CLI started without the login environment would not find the
+// login that the agent itself uses.
+func TestListAgentSessions_HandsTheReaderTheAgentShell(t *testing.T) {
+	t.Parallel()
+	plugin := queryRecordingPlugin{got: make(chan agent.StoredSessionQuery, 1)}
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+	svc, d, w := setupTestService(t, withRegistry(registryWithPlugin(t, provider, plugin)))
+	svc.UseLoginShell = true
+	dir := t.TempDir()
+
+	listAgentSessions(t, d, w, provider, dir)
+
+	q := <-plugin.got
+	assert.Equal(t, svc.agentShell(), q.Shell)
+	assert.NotEmpty(t, q.Shell, "the default shell resolves to a real shell")
+	assert.True(t, q.LoginShell, "the reader runs the login shell when agents do")
+	assert.Equal(t, svc.HomeDir, q.HomeDir)
+}

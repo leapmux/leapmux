@@ -16,6 +16,15 @@ enum AgentProvider {
   AGENT_PROVIDER_PI = 8;
   AGENT_PROVIDER_REASONIX = 9;
   AGENT_PROVIDER_ZCODE = 10;
+  AGENT_PROVIDER_CODEWHALE = 11;
+  AGENT_PROVIDER_KIMI_CODE = 12;
+  AGENT_PROVIDER_MIMO_CODE = 13;
+  AGENT_PROVIDER_QWEN_CODE = 14;
+  AGENT_PROVIDER_OH_MY_PI = 15;
+  AGENT_PROVIDER_GROK_BUILD = 16;
+  AGENT_PROVIDER_KIRO = 17;
+  AGENT_PROVIDER_AMP = 18;
+  AGENT_PROVIDER_CLINE = 19;
 }
 
 // AgentStatus tracks the lifecycle state of an agent.
@@ -261,6 +270,11 @@ message AgentInfo {
   // so its child transcripts are read-only. The frontend gates the composer on
   // this field.
   bool accepts_messages = 18;
+  // Whether this agent's turn can be interrupted from its own tab. Roots:
+  // always true. Children: true only when the feeding provider can interrupt a
+  // subagent turn inside its process (Provider.SupportsChildInterrupt). The
+  // frontend shows the Interrupt control of a child tab on this field.
+  bool accepts_interrupt = 25;
   // The ROOT owner agent id (the top of the parent_agent_id chain). For a root
   // agent this equals its own id. The background-task registry and the root's
   // TodosChanged/BackgroundTasksChanged events are keyed by this id, so a child
@@ -355,6 +369,10 @@ message AvailableOptionGroup {
   string default_value = 5;             // Provider default option id
   bool mutable = 6;                     // false => agent-controlled, render read-only
   int32 order = 7;                      // Ascending display order in the popover
+  // Why a read-only group cannot change, in words the reader can act on. Empty
+  // for a mutable group, and for a read-only group whose reason is only that the
+  // agent controls it.
+  string read_only_reason = 8;
 }
 
 // --- Agent Messaging ---
@@ -808,11 +826,22 @@ message AgentTodosChanged {
 }
 
 // BackgroundTaskItem is a row in the provider-neutral background-task registry
-// that drives the "Background tasks" sidebar section. Sources include Claude
-// Task*/Workflow events, Codex collab/subAgentActivity, ACP tool notifications
-// (OpenCode/Kilo/Goose/Reasonix), and Pi tool-execution updates. Same security
-// posture as TodoItem: content lives only in worker SQLite and travels only
-// over the E2EE WatchEvents channel.
+// that drives the "Background tasks" sidebar section. Sources include:
+//
+//   - Claude Task*/Workflow events.
+//   - Codex collab/subAgentActivity.
+//   - ACP tool notifications, and the subagent and workflow extensions of
+//     Qwen Code, Grok Build and Kiro.
+//   - Pi tool-execution updates.
+//   - Codewhale agent calls, workflow runs, and background shell jobs.
+//   - Kimi Code subagent, AgentSwarm and background-task events.
+//   - MiMo Code actor calls, workflow runs, and their events.
+//   - Oh My Pi task calls, subagent frames, and background jobs.
+//   - Amp subagent tool calls and background shell commands.
+//   - Cline spawn_agent calls and agent-team runs.
+//
+// Same security posture as TodoItem: content lives only in worker SQLite and
+// travels only over the E2EE WatchEvents channel.
 message BackgroundTaskItem {
   string id = 1;              // registry row_key (provider linkage key)
   BackgroundTaskKind kind = 2;
@@ -868,9 +897,21 @@ message AgentBackgroundTasksChanged {
 
 // AgentGoal is the provider-neutral session goal: a standing objective the
 // agent keeps working toward, re-checked at the end of every turn, until the
-// check says the condition holds. Sources are Codex thread/goal/updated,
-// ZCode's session snapshot `goal`, Claude Code's `active_goal` stdout frame,
-// and Reasonix's _reasonix.io/session/status_update.
+// check says the condition holds. Sources are:
+//
+//   - Codex thread/goal/updated.
+//   - ZCode's session snapshot `goal`.
+//   - Claude Code's `active_goal` stdout frame.
+//   - GitHub Copilot's session.autopilotObjective.getState.
+//   - Pi's pi-goal-x tool results and goal files.
+//   - Reasonix's _reasonix.io/session/status_update.
+//   - Codewhale's thread_goal_updated event.
+//   - Kimi Code's goal.updated event.
+//   - MiMo Code's session.goal event.
+//   - Qwen Code's `_meta.goalState`.
+//   - Oh My Pi's goal_updated frame.
+//   - Grok Build's goal_updated session update.
+//   - Kiro's `_kiro/workflow/*` notifications of its goal workflow.
 //
 // There is at most ONE goal per agent. Every CLI that has the feature enforces
 // that itself, so this is a single message rather than a list.
@@ -884,7 +925,7 @@ message AgentGoal {
   AgentGoalStatus status = 2;
   // The provider's OWN status word ("usageLimited", "notSatisfied",
   // "verifying"). `status` branches the UI; this keeps the precision that
-  // mapping five vocabularies onto four values loses, for display only.
+  // mapping each provider's vocabulary onto four values loses, for display only.
   string status_detail = 3;
   // Part of the goal's IDENTITY, not decoration: Codex puts no goal id on the
   // wire, so a goal restarted with the same objective text is distinguishable
@@ -900,24 +941,46 @@ message AgentGoal {
 
 // AgentGoalStatus is the neutral status vocabulary. Four of its values come
 // from the providers, because the UI branches three ways (pause iff active,
-// resume iff paused, clear always) and the providers' own enums do not agree:
-// Codex says active/paused/blocked/usageLimited/budgetLimited/complete, ZCode
-// says active/paused/verifying/verified/notSatisfied/failed. A neutral enum
-// with a value per provider word would pretend to a precision the mapping does
-// not have -- AgentGoal.status_detail carries the provider's word instead.
+// resume iff paused, clear always) and the providers' own enums do not agree.
+// For example:
+//
+//   - Codex says active/paused/blocked/usageLimited/budgetLimited/complete.
+//   - ZCode says active/paused/verifying/verified/notSatisfied/failed.
+//   - Grok Build has five words for a pause alone.
+//
+// A neutral enum with a value per provider word would pretend to a precision
+// the mapping does not have -- AgentGoal.status_detail carries the provider's
+// word instead.
 enum AgentGoalStatus {
   // No goal. This is the zero value, so an absent goal and a goal with no
   // status are the same thing, which is what every caller wants.
   AGENT_GOAL_STATUS_UNSPECIFIED = 0;
   AGENT_GOAL_STATUS_ACTIVE = 1;
   AGENT_GOAL_STATUS_PAUSED = 2;
-  // Not progressing and needs the user: Codex blocked/usageLimited/
-  // budgetLimited, ZCode notSatisfied/failed, Reasonix blocked/stopped.
+  // Not progressing and needs the user:
+  //
+  //   - Codex blocked/usageLimited/budgetLimited.
+  //   - ZCode notSatisfied/failed.
+  //   - GitHub Copilot cap_reached.
+  //   - Pi blocked/budget_limited.
+  //   - Reasonix blocked/stopped.
+  //   - Codewhale blocked/usage_limited/budget_limited.
+  //   - Kimi Code blocked.
+  //   - MiMo Code's impossible verdict, its re-entry limit, and a judge that
+  //     failed.
+  //   - Qwen Code blocked/usage_limited.
+  //   - Oh My Pi budget-limited.
+  //   - Grok Build blocked/budget_limited.
+  //   - Kiro's goal workflow that failed.
+  //
+  // Every provider also maps a word that this build does not know here: a
+  // status the worker cannot read is one it must not offer Pause for.
   AGENT_GOAL_STATUS_BLOCKED = 3;
   AGENT_GOAL_STATUS_DONE = 4;
-  // The objective is stored, and no live process pursues it. The WORKER writes
-  // this, never a provider: at boot for every goal that outlived the process,
-  // and when one agent's process exits.
+  // The objective is stored, and no live process pursues it. The WORKER derives
+  // this, never a provider, and it stores it nowhere: it reads the running-agent
+  // map each time it projects a stored goal, so no process exit can leave a
+  // stale status behind.
   //
   // It is a state of its own because the two alternatives both lie. Keeping the
   // last status draws a live Active dot and working Pause and Clear buttons for
@@ -947,8 +1010,9 @@ message AgentGoalChanged {
   AgentGoal goal = 2;
   // What the RUNNING agent can do, decided by the worker from the live process
   // -- never a static per-provider table. Goal support is version-dependent
-  // (Claude Code shipped /goal in 2.1.139, ZCode in 3.10.2). Goose and Copilot
-  // also advertise their commands at runtime. A hardcoded table would offer a
+  // (Claude Code shipped /goal in 2.1.139, ZCode in 3.10.2). Goose, Copilot,
+  // Qwen Code and Grok Build also advertise their commands at runtime, and a
+  // Grok Build configuration can turn goals off. A hardcoded table would offer a
   // button that does nothing against an older CLI. Empty when the agent does
   // not run, or when its provider can report a goal but cannot change it.
   //
@@ -956,9 +1020,10 @@ message AgentGoalChanged {
   // does NOT: "this agent can set a goal" is exactly what the empty state needs
   // to know, and a capability hanging off the absent goal could never say it.
   //
-  // Same posture as AgentInfo.accepts_messages: derived from a type assertion
-  // on the running agent, so the capability cannot drift from the code that
-  // implements it.
+  // Derived from a type assertion on the running agent, so the capability
+  // cannot drift from the code that implements it. AgentInfo.accepts_messages
+  // and accepts_interrupt are static provider capabilities instead, and a
+  // conformance suite pins each one to the agent type that implements it.
   repeated AgentGoalAction supported_actions = 3;
   // When the worker last WROTE the goal columns, in the same layout
   // AgentGoal.created_at uses. Empty when the agent never had a goal.
@@ -1137,8 +1202,10 @@ message UpdateAgentGoalRequest {
   string objective = 3;
 }
 
-// Deliberately empty, like InterruptAgentResponse. Only Codex's
-// thread/goal/set returns the resulting goal; a response field that four of
-// five providers cannot fill would be a field that lies. The AgentGoalChanged
+// Deliberately empty, like InterruptAgentResponse. Only a few side-band
+// commands (Codex's thread/goal/set, ZCode's session/goal) reply with the
+// resulting goal. A text-route provider knows nothing when this RPC returns,
+// because the queue has not delivered its command yet. A response field that
+// most providers cannot fill would be a field that lies. The AgentGoalChanged
 // broadcast is the single source of the new state.
 message UpdateAgentGoalResponse {}

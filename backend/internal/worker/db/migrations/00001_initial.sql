@@ -38,7 +38,7 @@ CREATE TABLE agents (
     -- CreateAgent binds the column, so the DEFAULT below is unreachable and the
     -- CHECK is the only guard.
     agent_provider   INTEGER NOT NULL DEFAULT 1
-        CHECK (agent_provider BETWEEN 1 AND 10),
+        CHECK (agent_provider BETWEEN 1 AND 19),
     -- Subagent linkage. parent_agent_id is set ONLY for virtual child agents
     -- (subagent transcripts fed by the parent provider's process; they never
     -- own a process). spawn_span_id is the tool_use span in the PARENT
@@ -149,12 +149,11 @@ CREATE TABLE messages (
     span_color          INTEGER NOT NULL DEFAULT 0,
     -- An AgentProvider ordinal. UNSPECIFIED (0) is outside the CHECK, because
     -- every message comes from one provider's process, so a 0 here is an unset
-    -- field rather than a state. Ordinal 3 is a removed provider that the proto
-    -- RESERVES, so no row may carry it either;
-    -- TestAgentProviderReservesTheRemovedOrdinal fails the suite if a new
-    -- enumerator claims 3.
+    -- field rather than a state. The enum has no hole, so the CHECK states a
+    -- plain range; TestAgentProviderOrdinalsAreContiguous fails the suite if a
+    -- hole appears.
     agent_provider      INTEGER NOT NULL DEFAULT 1
-        CHECK (agent_provider BETWEEN 1 AND 10),
+        CHECK (agent_provider BETWEEN 1 AND 19),
     -- Scroll-rail jump-mark classifier (0=none, see proto MarkType). Set at write
     -- time so the rail can list marked seqs without decompressing content.
     mark_type           INTEGER NOT NULL DEFAULT 0,
@@ -307,7 +306,7 @@ CREATE TABLE control_response_answers (
     -- that recorded 0 for a forgotten write would match an agent whose provider
     -- field was also unset.
     agent_provider INTEGER NOT NULL
-        CHECK (agent_provider BETWEEN 1 AND 10),
+        CHECK (agent_provider BETWEEN 1 AND 19),
     input_id TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (agent_id, request_id, claim_token)
 );

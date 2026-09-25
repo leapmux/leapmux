@@ -8,13 +8,20 @@
  * server accepts cannot drift.
  */
 
-/** The three request shapes the installed coding agents send. */
-export type MockModelProtocol = 'openai-chat-completions' | 'openai-responses' | 'anthropic-messages'
+/**
+ * The request shapes the installed coding agents send.
+ *
+ * `aws-event-stream` is the one vendor service among them: Kiro's own service, which
+ * takes AWS JSON 1.0 and answers a turn with an AWS event stream. See
+ * `./kiroSurface`.
+ */
+export type MockModelProtocol = 'openai-chat-completions' | 'openai-responses' | 'anthropic-messages' | 'aws-event-stream'
 
 export const MOCK_MODEL_PROTOCOLS: readonly MockModelProtocol[] = [
   'openai-chat-completions',
   'openai-responses',
   'anthropic-messages',
+  'aws-event-stream',
 ]
 
 /** The reserved scenario that answers a request carrying no marker. */
@@ -95,7 +102,25 @@ export interface MockModelStep {
   delayMs?: number
   /** Deliver `text` progressively. See `MockModelTextStream`. */
   stream?: MockModelTextStream
+  /**
+   * Values that the answer copies from the request, keyed by placeholder name.
+   *
+   * Each value is a regular-expression source with one capture group. The
+   * server tests it against every string of the request body, and the LAST
+   * match supplies the value. The server then replaces each `{{name}}` in
+   * `text`, `reasoning`, and every tool-call string with that value.
+   *
+   * This exists for a value that the agent chooses at run time and the test
+   * cannot know. Kimi Code is the case: it gives each plan a random file path
+   * and states it only in its system reminder, and the model must write the
+   * plan to that exact path. A capture that matches nothing makes the request
+   * unexpected, so the turn fails with its body recorded.
+   */
+  captures?: Record<string, string>
 }
+
+/** `{{name}}`, where the name follows the rules of a JavaScript identifier. */
+const CAPTURE_PLACEHOLDER = /\{\{([a-z_]\w*)\}\}/gi
 
 /**
  * `text` split the way `stream` asks, or the whole of it as one piece.
@@ -305,14 +330,130 @@ function parseStep(value: unknown, label: string): MockModelStep {
   const stream = parseTextStream(value.stream, label)
   if (stream && value.text === undefined)
     throw new Error(`Model ${label} states stream but no text to deliver`)
-  return {
+  const captures = parseCaptures(value.captures, label)
+  if (captures && error)
+    throw new Error(`Model ${label} cannot combine captures with an error`)
+  const step: MockModelStep = {
     ...(typeof value.reasoning === 'string' ? { reasoning: value.reasoning } : {}),
     ...(typeof value.text === 'string' ? { text: value.text } : {}),
     ...(toolCalls ? { toolCalls } : {}),
     ...(error ? { error } : {}),
     ...(delayMs === undefined ? {} : { delayMs }),
     ...(stream === undefined ? {} : { stream }),
+    ...(captures === undefined ? {} : { captures }),
   }
+  if (captures) {
+    // A placeholder with no capture would reach the agent as literal braces,
+    // and a capture that no placeholder uses states a match that nothing reads.
+    const used = new Set(stepPlaceholders(step))
+    for (const name of used) {
+      if (!Object.hasOwn(captures, name))
+        throw new Error(`Model ${label} uses {{${name}}} but declares no capture for it`)
+    }
+    for (const name of Object.keys(captures)) {
+      if (!used.has(name))
+        throw new Error(`Model ${label} declares capture ${name} but no {{${name}}} placeholder uses it`)
+    }
+  }
+  return step
+}
+
+function parseCaptures(value: unknown, label: string): Record<string, string> | undefined {
+  if (value === undefined)
+    return undefined
+  if (!isRecord(value) || Object.keys(value).length === 0)
+    throw new Error(`Model ${label} captures must be an object with at least one entry`)
+  const captures: Record<string, string> = {}
+  for (const [name, source] of Object.entries(value)) {
+    if (!/^[a-z_]\w*$/i.test(name))
+      throw new Error(`Model ${label} capture name ${name} must be an identifier`)
+    if (typeof source !== 'string' || !source)
+      throw new Error(`Model ${label} capture ${name} must be a non-empty pattern`)
+    let pattern: RegExp
+    try {
+      pattern = new RegExp(source)
+    }
+    catch (error) {
+      throw new Error(`Model ${label} capture ${name} is not a valid regular expression`, { cause: error })
+    }
+    // An alternation with the empty string always matches, so the match array
+    // states how many groups the pattern declares.
+    const groups = new RegExp(`${pattern.source}|`).exec('')!.length - 1
+    if (groups !== 1)
+      throw new Error(`Model ${label} capture ${name} must declare exactly one capture group, not ${groups}`)
+    captures[name] = source
+  }
+  return captures
+}
+
+/** Every placeholder name that the step's strings use, with repeats. */
+function stepPlaceholders(step: MockModelStep): string[] {
+  const names: string[] = []
+  visitStrings([step.text, step.reasoning, step.toolCalls], (text) => {
+    for (const match of text.matchAll(CAPTURE_PLACEHOLDER))
+      names.push(match[1]!)
+  })
+  return names
+}
+
+/** The step with each placeholder resolved, or the name of the capture that found no match. */
+export type ResolvedStep = { step: MockModelStep } | { unmatchedCapture: string }
+
+/**
+ * Resolve a step's captures against one request body.
+ *
+ * A step without captures returns unchanged, so a script that states literal
+ * braces in its text keeps them.
+ */
+export function resolveStepCaptures(step: MockModelStep, body: unknown): ResolvedStep {
+  if (!step.captures)
+    return { step }
+  const values = new Map<string, string>()
+  for (const [name, source] of Object.entries(step.captures)) {
+    const pattern = new RegExp(source, 'g')
+    let last: string | undefined
+    visitStrings(body, (text) => {
+      for (const match of text.matchAll(pattern)) {
+        if (match[1] !== undefined)
+          last = match[1]
+      }
+    })
+    if (last === undefined)
+      return { unmatchedCapture: name }
+    values.set(name, last)
+  }
+  const fill = (text: string): string => text.replace(CAPTURE_PLACEHOLDER, (whole, name: string) => values.get(name) ?? whole)
+  const resolved: MockModelStep = {
+    ...step,
+    ...(step.text === undefined ? {} : { text: fill(step.text) }),
+    ...(step.reasoning === undefined ? {} : { reasoning: fill(step.reasoning) }),
+    ...(step.toolCalls === undefined ? {} : { toolCalls: step.toolCalls.map(call => fillToolCall(call, fill)) }),
+  }
+  // The resolved step states literal values. Keeping the captures would let a
+  // second resolution match the filled text against the patterns again.
+  delete resolved.captures
+  return { step: resolved }
+}
+
+/**
+ * The call with each placeholder filled, in every string that it holds.
+ *
+ * `stepPlaceholders` accepts a placeholder in any string of a call, the id, the
+ * name and the namespace included. The fill therefore walks the same strings, so
+ * no placeholder that the parser accepts reaches the agent as literal braces.
+ */
+function fillToolCall(call: MockModelToolCall, fill: (text: string) => string): MockModelToolCall {
+  return fillValue(call, fill) as MockModelToolCall
+}
+
+function fillValue(value: unknown, fill: (text: string) => string): unknown {
+  if (typeof value === 'string')
+    return fill(value)
+  if (Array.isArray(value))
+    return value.map(item => fillValue(item, fill))
+  if (isRecord(value))
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, fillValue(item, fill)]))
+  return value
 }
 
 function parseTextStream(value: unknown, label: string): MockModelTextStream | undefined {

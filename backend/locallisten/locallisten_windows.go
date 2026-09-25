@@ -8,12 +8,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os/user"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Microsoft/go-winio"
+
+	"github.com/leapmux/leapmux/util/useronly"
 )
 
 const pipePrefix = `\\.\pipe\`
@@ -36,7 +37,7 @@ var errCloseStuck = errors.New("npipe listener did not close")
 
 func listenNpipe(name string) (net.Listener, error) {
 	pipePath := fullPipePath(name)
-	sddl, err := userOnlySDDL()
+	sddl, err := useronly.PipeSDDL()
 	if err != nil {
 		return nil, fmt.Errorf("npipe listen: build security descriptor: %w", err)
 	}
@@ -195,15 +196,6 @@ func fullPipePath(name string) string {
 		return name
 	}
 	return pipePrefix + name
-}
-
-// userOnlySDDL returns an SDDL granting Generic All only to the current user's SID.
-func userOnlySDDL() (string, error) {
-	u, err := user.Current()
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("O:%sG:%sD:(A;;GA;;;%s)", u.Uid, u.Uid, u.Uid), nil
 }
 
 func unixDialer(string) func(ctx context.Context) (net.Conn, error) {

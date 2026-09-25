@@ -19,6 +19,10 @@ import { piExtractTool } from './toolCommon'
  *
  * Pi's stream is flat JSONL, so the row's own `type` and the classification already
  * agree on what this is; the work here is turning the frame into the neutral shape.
+ *
+ * No Pi frame reads as thinking. The worker persists the thinking of each assistant
+ * message as a reasoning row of its own, in LeapMux's assembled-message envelope,
+ * which the shared transcript draws before any plugin reads a row.
  */
 export function piExtractRow(input: RowExtractionInput): ChatRow | null {
   const { category, resolved: parsed, span } = input
@@ -32,12 +36,8 @@ export function piExtractRow(input: RowExtractionInput): ChatRow | null {
         return plan.kind === 'text' ? { kind: 'assistant-text', text: plan.text } : { kind: 'assistant-plan', text: plan.text }
       // A message with no text block is a row with nothing to show, not one this
       // provider failed to read.
-      const text = isObject(payload) ? piContentText(payload, 'text') : ''
+      const text = isObject(payload) ? piContentText(payload) : ''
       return text ? { kind: 'assistant-text', text } : { kind: 'hidden' }
-    }
-    case 'assistant_thinking': {
-      const text = isObject(payload) ? piContentText(payload, 'thinking') : ''
-      return { kind: 'assistant-thinking', text }
     }
     case 'assistant_plan': {
       // The same reader the classifier used, so the two layers state one answer.

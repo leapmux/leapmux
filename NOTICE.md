@@ -741,11 +741,12 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 
 ### Other Third-Party Notices
 
-- [@lobehub/icons-static-svg 1.87.0 (MIT)](#lobehubicons-static-svg-1870-mit)
+- [@lobehub/icons-static-svg 1.95.1 (MIT)](#lobehubicons-static-svg-1951-mit)
 - [@shikijs/themes (syntax themes) (MIT)](#shikijsthemes-syntax-themes-mit)
 - [awesome-claude-spinners (MIT)](#awesome-claude-spinners-mit)
 - [ayu (theme palette) (MIT)](#ayu-theme-palette-mit)
 - [Catppuccin (theme palette) (MIT)](#catppuccin-theme-palette-mit)
+- [Codewhale brand mark (MIT)](#codewhale-brand-mark-mit)
 - [Dimidium (terminal palette) (Zlib)](#dimidium-terminal-palette-zlib)
 - [Everforest (theme palette) (MIT)](#everforest-theme-palette-mit)
 - [gruvbox (theme palette) (MIT)](#gruvbox-theme-palette-mit)
@@ -753,6 +754,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [iTerm2-Color-Schemes (terminal palettes) (MIT)](#iterm2-color-schemes-terminal-palettes-mit)
 - [Nord (theme palette) (MIT)](#nord-theme-palette-mit)
 - [Nord Light for VS Code (light syntax themes) (MIT)](#nord-light-for-vs-code-light-syntax-themes-mit)
+- [Oh My Pi brand mark (MIT)](#oh-my-pi-brand-mark-mit)
 - [One (theme palette) (MIT)](#one-theme-palette-mit)
 - [pi-mono brand mark (MIT)](#pi-mono-brand-mark-mit)
 - [Primer (theme palette) (MIT)](#primer-theme-palette-mit)
@@ -107658,7 +107660,7 @@ The following items are not tracked by any package manager — their
 sources were copied or adapted into this repository. They are listed
 separately to make their provenance explicit.
 
-### @lobehub/icons-static-svg 1.87.0 (MIT)
+### @lobehub/icons-static-svg 1.95.1 (MIT)
 
 Source: <https://github.com/lobehub/lobe-icons>
 
@@ -107789,6 +107791,38 @@ The Latte and Mocha hex values behind the Catppuccin theme in `frontend/src/styl
 MIT License
 
 Copyright (c) 2021 Catppuccin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### Codewhale brand mark (MIT)
+
+Source: <https://github.com/Hmbown/CodeWhale>
+
+The Codewhale provider icon (`icons/agents/codewhale.svg` and the
+`CodewhaleIcon` SVG component in `frontend/src/components/common/AgentProviderIcon.tsx`)
+is the gradient mark from the Codewhale repository (`brand/mark-gradient.svg`).
+
+```
+MIT License
+
+Copyright (c) 2024-2025 DeepSeek-TUI Contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -108071,6 +108105,41 @@ Source: <https://github.com/huytd/vscode-nord-light>
 
 ```
 Copyright Huy Tran
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### Oh My Pi brand mark (MIT)
+
+Source: <https://github.com/can1357/oh-my-pi>
+
+The Oh My Pi provider icon (`icons/agents/oh-my-pi.svg` and the
+`OhMyPiIcon` SVG component in `frontend/src/components/common/AgentProviderIcon.tsx`)
+is the gradient pi glyph from the Oh My Pi repository
+(`packages/collab-web/public/favicon.svg`), without its background tile.
+
+```
+MIT License
+
+Copyright (c) 2025 Mario Zechner
+Copyright (c) 2025-2026 Can Bölük
+Copyright (c) 2026 Stencil Labs, Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

@@ -1,5 +1,5 @@
 {
-  "_readme": "Goose permission modes that both the Go provider and the TypeScript plugin use. Goose owns these wire values. The key order carries no meaning: the Go provider decides the order it lists the modes in, and orderModesPreferredFirst applies it. defaultMode is the mode a session with no stored one falls back to; it is Smart Approve rather than Auto because Auto is the mode Goose's own bypass preset selects. `subagent` identifies the extension and the tool Goose spawns a subagent through: the worker registers the child row from those two words and the browser draws the agent card from the same pair, so a Goose release that renames either one must move both sides together. `subagentRequest` holds the fields of the request itself, which Goose delivers inside logging metadata rather than as a protocol frame: the worker reads the tool name out of it for the child's activity line, and the browser reads the same object to draw the request row.",
+  "_readme": "Goose permission modes that both the Go provider and the TypeScript plugin use. Goose owns these wire values. The key order carries no meaning: the Go provider decides the order it lists the modes in, and orderModesPreferredFirst applies it. defaultMode is the mode a session with no stored one falls back to; it is Smart Approve rather than Auto because Auto is the mode Goose's own bypass preset selects. `subagent` identifies the extension and the tool Goose spawns a subagent through: the worker registers the child row from those two words and the browser draws the agent card from the same pair, so a Goose release that renames either one must move both sides together. `subagentRequest` holds the fields of the request itself, which Goose delivers inside logging metadata rather than as a protocol frame: the worker reads the tool name out of it for the child's activity line, and the browser reads the same object to draw the request row. `configIds` holds the config-option id of Goose's reasoning axis: the worker drives the axis through it, and the browser shows its chip in the status bar under the same id.",
   "modes": {
     "SmartApprove": "smart_approve",
     "Auto": "auto",
@@ -13,5 +13,8 @@
   },
   "subagentRequest": {
     "ToolCall": "tool_call"
+  },
+  "configIds": {
+    "ThinkingEffort": "thinking_effort"
   }
 }

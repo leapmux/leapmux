@@ -164,6 +164,15 @@ type Provider interface {
 	// a child of a steering provider keeps an enabled composer; every other
 	// child tab is read-only. The default is false.
 	SupportsChildSteering() bool
+	// SupportsChildInterrupt reports whether a running agent of this provider
+	// can interrupt a subagent turn inside the same process (ChildInterrupter).
+	// It drives AgentInfo.accepts_interrupt for child tabs: a child of such a
+	// provider shows an Interrupt control. The default is false.
+	//
+	// It is stated, not derived, because a child tab needs it before its root
+	// runs. agenttest.AssertChildCapabilities pins it to the agent type, so it
+	// cannot drift from the code that implements it.
+	SupportsChildInterrupt() bool
 	// ReportsDefaultModelSentinel reports whether this provider's own model
 	// catalog lists DefaultModelSentinel as a selectable entry meaning "the
 	// account default". Only such a provider gives that entry the default badge
@@ -206,12 +215,17 @@ type Provider interface {
 	// storage holds for the query's working directory, newest first.
 	//
 	// A provider decision because every CLI keeps its history in a different
-	// place and a different shape: a SQLite index (Codex, OpenCode, Kilo,
-	// Goose, ZCode), one SQLite file per session (Cursor), a directory named
-	// after a mangled copy of the working directory (Claude, Pi), or a sidecar
-	// beside each transcript (Reasonix, Copilot). Which of those to read, and
-	// where the title and the last-activity time sit inside it, is exactly the
-	// knowledge that must not leak into shared code.
+	// place and a different shape:
+	//
+	//   - A SQLite index: Codex, OpenCode, Kilo, MiMo Code, Goose, ZCode.
+	//   - One SQLite file per session: Cursor.
+	//   - A directory named after a mangled copy of the working directory:
+	//     Claude, Pi, Kimi Code, Qwen Code, Grok Build, Oh My Pi.
+	//   - A sidecar beside each transcript: Reasonix, Copilot.
+	//
+	// Which of those to read, and where the title and the last-activity time
+	// sit inside it, is exactly the knowledge that must not leak into shared
+	// code.
 	//
 	// It reads files another program owns, so an implementation must never
 	// write to one, and must report the empty result for a store that is
@@ -337,6 +351,10 @@ func (ProviderDefaults) EndsSubagentTranscript([]byte) bool { return false }
 // SupportsChildSteering defaults to false for a provider whose running agents
 // cannot send direct input to a child conversation.
 func (ProviderDefaults) SupportsChildSteering() bool { return false }
+
+// SupportsChildInterrupt defaults to false for a provider whose running agents
+// cannot interrupt a child turn.
+func (ProviderDefaults) SupportsChildInterrupt() bool { return false }
 
 // ReportsDefaultModelSentinel defaults to false: a provider whose CLI reports
 // concrete model ids only must keep the default badge on the entry its own

@@ -56,6 +56,69 @@
       "parseAliases": [
         "glm"
       ]
+    },
+    "AGENT_PROVIDER_CODEWHALE": {
+      "displayName": "Codewhale",
+      "cliAlias": "codewhale",
+      "parseAliases": []
+    },
+    "AGENT_PROVIDER_KIMI_CODE": {
+      "displayName": "Kimi Code",
+      "cliAlias": "kimi-code",
+      "parseAliases": [
+        "kimi"
+      ]
+    },
+    "AGENT_PROVIDER_MIMO_CODE": {
+      "displayName": "MiMo Code",
+      "cliAlias": "mimo-code",
+      "parseAliases": [
+        "mimo"
+      ]
+    },
+    "AGENT_PROVIDER_QWEN_CODE": {
+      "displayName": "Qwen Code",
+      "cliAlias": "qwen-code",
+      "parseAliases": [
+        "qwen"
+      ]
+    },
+    "AGENT_PROVIDER_OH_MY_PI": {
+      "displayName": "Oh My Pi",
+      "cliAlias": "oh-my-pi",
+      "parseAliases": [
+        "omp"
+      ]
+    },
+    "AGENT_PROVIDER_GROK_BUILD": {
+      "displayName": "Grok Build",
+      "cliAlias": "grok-build",
+      "parseAliases": [
+        "grok"
+      ]
+    },
+    "AGENT_PROVIDER_KIRO": {
+      "displayName": "Kiro",
+      "cliAlias": "kiro",
+      "parseAliases": [
+        "kiro-cli"
+      ]
+    },
+    "AGENT_PROVIDER_AMP": {
+      "displayName": "Amp",
+      "cliAlias": "amp",
+      "parseAliases": [
+        "Amp Code",
+        "amp-code"
+      ]
+    },
+    "AGENT_PROVIDER_CLINE": {
+      "displayName": "Cline",
+      "cliAlias": "cline",
+      "parseAliases": [
+        "Cline CLI",
+        "cline-cli"
+      ]
     }
   }
 }

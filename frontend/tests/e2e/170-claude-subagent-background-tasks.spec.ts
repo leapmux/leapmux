@@ -1,18 +1,25 @@
 /**
  * 170 — Claude Code subagent + background tasks (the full flow).
  *
- * Covers: registry section appears on spawn, opening the subagent tab adjacent
- * to the parent, parent/child transcript isolation (worker-backed), and a
- * background shell row. Claude is the only provider with full-fidelity child
- * transcripts (--forward-subagent-text).
+ * Covers:
  *
- * Resilience notes: the row's child-agent-id lands via EnsureChildAgent, which
- * the section renders asynchronously; the spec polls for a non-empty id before
- * clicking. The shell test tolerates the model not choosing run_in_background
- * (it asserts only when a shell row actually appears).
+ * - The registry section that a spawn opens.
+ * - The subagent tab, which opens beside the parent.
+ * - The isolation of the parent and child transcripts, read from the worker.
+ * - The subagent tab of a provider that cannot stop one subagent alone, which
+ *   draws no Interrupt control.
+ * - A background shell row.
+ *
+ * Claude forwards a subagent's own text to the worker
+ * (`--forward-subagent-text`), so the child transcript holds it.
+ *
+ * The row's child-agent-id lands through EnsureChildAgent, which the section
+ * renders asynchronously, so the spec polls for a non-empty id before it clicks.
+ * Every spawn and every command is scripted, so a missing row fails the spec.
  */
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, test } from './fixtures'
+import { MAX_STEP_DELAY_MS } from './helpers/mockModelScript'
 import { backgroundBashToolCall, spawnSubagentToolCall } from './helpers/providerToolCalls'
 import {
   backgroundTasksSection,
@@ -20,11 +27,13 @@ import {
   expectNoRegistryRows,
   expectRowBecomesFinal,
   expectSectionPersists,
+  HELD_CHILD_TASK,
   listAgents,
   openChildTabFromRow,
+  openHeldChildTab,
   requireRegistryRow,
 } from './helpers/subagentRegistry'
-import { expectClipsLongText, expectClipsToOneLine, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { expectClipsLongText, expectClipsToOneLine, sendMessage, tabById, waitForAgentIdle } from './helpers/ui'
 
 test.describe('Claude subagent background tasks', () => {
   test('routes session-goal commands through the input queue', async ({
@@ -81,9 +90,8 @@ test.describe('Claude subagent background tasks', () => {
     await modelScript.waitForSteps()
     await waitForAgentIdle(page, 180_000)
 
-    // 3. Sidebar: section + a subagent row. The model may choose not to spawn
-    //    one at all, which is its discretion rather than a defect here, so the
-    //    spawn-dependent assertions skip rather than fail.
+    // 3. Sidebar: section + a subagent row. The spawn is scripted, so a
+    //    missing row is a defect, and requireRegistryRow fails on it.
     const row = await requireRegistryRow(page)
     await expect(backgroundTasksSection(page)).toBeVisible()
 
@@ -156,6 +164,51 @@ test.describe('Claude subagent background tasks', () => {
 
     await expect(page.locator(`[data-testid="tab"][data-tab-id="${childTabId}"]`)).toHaveCount(0)
     await expect(agentTabs).toHaveCount(0)
+  })
+
+  // The Claude Code provider cannot stop one subagent alone: it implements no
+  // `agent.ChildInterrupter`. So the worker states `accepts_interrupt: false`
+  // for a Claude child, and the child's tab draws no Interrupt control,
+  // although the child works.
+  test('a working subagent\'s tab draws no Interrupt control', async ({
+    authenticatedWorkspace,
+    page,
+    leapmuxServer,
+    modelScript,
+  }) => {
+    void authenticatedWorkspace
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    await expectNoRegistryRows(page)
+
+    // Claude launches the subagent asynchronously and asks for the root's next
+    // turn at once. That turn is held too, so the root's own turn still runs
+    // when the test stops it below.
+    const child = await openHeldChildTab(page, modelScript, {
+      provider: AgentProvider.CLAUDE_CODE,
+      childTurn: { user: HELD_CHILD_TASK },
+      rootTurnsAfterSpawn: [{ text: 'The subagent works in the background.', delayMs: MAX_STEP_DELAY_MS }],
+    })
+
+    // The worker's answer, which the tab reads.
+    await expect.poll(async () => {
+      const agents = await listAgents(hubUrl, adminToken, workerId, [child.childTabId])
+      const found = agents?.find(a => a.id === child.childTabId)
+      return found ? { child: found.parentAgentId !== '', acceptsInterrupt: found.acceptsInterrupt } : null
+    }).toEqual({ child: true, acceptsInterrupt: false })
+    // The child works, so a provider that could stop it would offer the control
+    // here. This tab offers none.
+    await expect(page.locator('[data-testid="thinking-indicator"]:visible')).toBeVisible()
+    await expect(child.row).toHaveAttribute('data-status', 'running')
+    await expect(page.locator('[data-testid="interrupt-button"]:visible')).toHaveCount(0)
+
+    // The root's Interrupt stops the whole turn, the subagent with it.
+    await modelScript.waitForSteps()
+    await tabById(page, child.rootTabId).click()
+    const rootInterrupt = page.locator('[data-testid="interrupt-button"]:visible')
+    await expect(rootInterrupt).toBeVisible()
+    await rootInterrupt.click()
+    await expect(child.row).toHaveAttribute('data-status', 'stopped')
+    expect(await child.heldTurns()).toBe(1)
   })
 
   test('background shell appears as a non-clickable shell row', async ({ authenticatedWorkspace, page, modelScript }) => {

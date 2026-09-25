@@ -11,6 +11,7 @@ import { PreferencesProvider, usePreferences } from '~/context/PreferencesContex
 import { AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { makeMessage, rawContent, wrapContent } from '~/test-support/messageFactory'
+import { toolFrame } from '~/test-support/mimoFixtures'
 
 // jsdom does not provide ResizeObserver or Worker
 beforeAll(() => {
@@ -55,6 +56,7 @@ describe('standalone MCP result actions', () => {
     { provider: AgentProvider.ZCODE, content: { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', result: { success: true, content: output, display: { kind: 'mcp_tool', serverName: 'docs', toolName: 'lookup' } } } } },
     { provider: AgentProvider.CODEX, content: { item: { id: 'call', type: 'mcpToolCall', status: 'completed', server: 'docs', tool: 'lookup', arguments: {}, result: { content: [{ type: 'text', text: output }] } } } },
     { provider: AgentProvider.PI, content: { type: 'tool_execution_end', toolCallId: 'call', toolName: 'mcp', result: { content: [{ type: 'text', text: output }], details: { server: 'docs', tool: 'lookup' } } } },
+    { provider: AgentProvider.MIMO_CODE, content: toolFrame('docs_lookup', { input: {}, output }, 'call') },
   ])('renders one result toolbar for provider $provider', ({ provider, content }) => {
     render(() => <PreferencesProvider><MessageBubble message={makeMsg({ agentProvider: provider, source: MessageSource.AGENT, spanId: 'call', content: rawContent(content) })} /></PreferencesProvider>)
     expect(screen.getAllByTestId('message-toolbar')).toHaveLength(1)

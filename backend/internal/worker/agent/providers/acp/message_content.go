@@ -130,7 +130,7 @@ func ToolCallID(original []byte) string {
 		SessionUpdate string `json:"sessionUpdate"`
 		ToolCallID    string `json:"toolCallId"`
 	}
-	if json.Unmarshal(original, &tool) != nil || (tool.SessionUpdate != UpdateToolCall && tool.SessionUpdate != UpdateToolCallUpdate) {
+	if json.Unmarshal(original, &tool) != nil || (tool.SessionUpdate != contracts.ACPUpdateToolCall && tool.SessionUpdate != contracts.ACPUpdateToolCallUpdate) {
 		return ""
 	}
 	return tool.ToolCallID

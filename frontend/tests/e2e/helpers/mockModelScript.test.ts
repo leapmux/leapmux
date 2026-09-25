@@ -7,6 +7,7 @@ import {
   matchesRequest,
   MAX_STEP_DELAY_MS,
   parseScenarioSpec,
+  resolveStepCaptures,
   SCENARIO_MARKER,
   selectScenarioID,
   systemText,
@@ -262,5 +263,144 @@ describe('parseScenarioSpec stream', () => {
   it('holds a stream pause to the same cap as a step delay', () => {
     expect(() => parseScenarioSpec({ steps: [{ text: 'a', stream: { chunkChars: 1, delayMs: MAX_STEP_DELAY_MS + 1 } }] }))
       .toThrow('delayMs must be an integer from 0 to')
+  })
+})
+
+describe('parseScenarioSpec captures', () => {
+  const planWrite = { id: 'w', name: 'Write', arguments: { path: '{{planFile}}', content: '# Plan' } }
+
+  it('keeps a capture that a placeholder uses', () => {
+    const spec = parseScenarioSpec({ steps: [{ toolCalls: [planWrite], captures: { planFile: 'Plan file: (\\S+)' } }] })
+    expect(spec.steps[0]!.captures).toEqual({ planFile: 'Plan file: (\\S+)' })
+  })
+
+  it('refuses a placeholder that no capture declares', () => {
+    expect(() => parseScenarioSpec({ steps: [{ text: 'Wrote {{planFile}} and {{other}}.', captures: { planFile: '(x)' } }] }))
+      .toThrow('uses {{other}} but declares no capture for it')
+  })
+
+  it('refuses a capture that no placeholder uses', () => {
+    expect(() => parseScenarioSpec({ steps: [{ text: 'No placeholder.', captures: { planFile: '(x)' } }] }))
+      .toThrow('declares capture planFile but no {{planFile}} placeholder uses it')
+  })
+
+  it('refuses an empty map, a bad name, an empty pattern, and an invalid pattern', () => {
+    expect(() => parseScenarioSpec({ steps: [{ text: 'a', captures: {} }] }))
+      .toThrow('captures must be an object with at least one entry')
+    expect(() => parseScenarioSpec({ steps: [{ text: '{{1st}}', captures: { '1st': '(x)' } }] }))
+      .toThrow('capture name 1st must be an identifier')
+    expect(() => parseScenarioSpec({ steps: [{ text: '{{a}}', captures: { a: '' } }] }))
+      .toThrow('capture a must be a non-empty pattern')
+    expect(() => parseScenarioSpec({ steps: [{ text: '{{a}}', captures: { a: '(' } }] }))
+      .toThrow('capture a is not a valid regular expression')
+  })
+
+  it('requires exactly one capture group, so the value is never ambiguous', () => {
+    expect(() => parseScenarioSpec({ steps: [{ text: '{{a}}', captures: { a: 'x' } }] }))
+      .toThrow('must declare exactly one capture group, not 0')
+    expect(() => parseScenarioSpec({ steps: [{ text: '{{a}}', captures: { a: '(x)(y)' } }] }))
+      .toThrow('must declare exactly one capture group, not 2')
+    // A non-capturing group does not count.
+    expect(() => parseScenarioSpec({ steps: [{ text: '{{a}}', captures: { a: '(?:x)(y)' } }] })).not.toThrow()
+  })
+
+  it('refuses captures on an error step, which has no text to fill', () => {
+    expect(() => parseScenarioSpec({ steps: [{ error: { status: 500, message: 'boom' }, captures: { a: '(x)' } }] }))
+      .toThrow('cannot combine captures with an error')
+  })
+})
+
+describe('resolveStepCaptures', () => {
+  const body = {
+    messages: [
+      { role: 'system', content: 'You are an agent.' },
+      { role: 'user', content: [{ type: 'text', text: 'Plan file: /home/a/plans/old.md' }] },
+      { role: 'user', content: 'Plan file: /home/a/plans/new-plan.md\nThen write.' },
+    ],
+  }
+
+  it('returns a step without captures unchanged, literal braces included', () => {
+    const step = { text: 'Keep {{this}} literal.' }
+    expect(resolveStepCaptures(step, body)).toEqual({ step })
+  })
+
+  it('fills text, reasoning, and every tool-call string from the last match', () => {
+    const resolved = resolveStepCaptures({
+      reasoning: 'Write to {{planFile}}.',
+      text: 'The plan lives at {{planFile}}.',
+      toolCalls: [
+        { id: 'w', name: 'Write', arguments: { path: '{{planFile}}', nested: [{ note: 'see {{planFile}}' }], count: 2 } },
+        { id: 'c', name: 'exec', input: 'cat {{planFile}}' },
+      ],
+      captures: { planFile: 'Plan file: (\\S+)' },
+    }, body)
+    expect(resolved).toEqual({
+      step: {
+        reasoning: 'Write to /home/a/plans/new-plan.md.',
+        text: 'The plan lives at /home/a/plans/new-plan.md.',
+        toolCalls: [
+          { id: 'w', name: 'Write', arguments: { path: '/home/a/plans/new-plan.md', nested: [{ note: 'see /home/a/plans/new-plan.md' }], count: 2 } },
+          { id: 'c', name: 'exec', input: 'cat /home/a/plans/new-plan.md' },
+        ],
+      },
+    })
+  })
+
+  it('matches the raw string, not its JSON escape, so a backslash path survives', () => {
+    const resolved = resolveStepCaptures(
+      { text: '{{path}}', captures: { path: 'Plan file: (\\S+)' } },
+      { messages: [{ role: 'user', content: 'Plan file: C:\\plans\\a.md' }] },
+    )
+    expect(resolved).toEqual({ step: { text: 'C:\\plans\\a.md' } })
+  })
+
+  it('reports the capture that matched nothing', () => {
+    expect(resolveStepCaptures({ text: '{{planFile}}', captures: { planFile: 'Plan file: (\\S+)' } }, { messages: [] }))
+      .toEqual({ unmatchedCapture: 'planFile' })
+  })
+
+  it('accepts an empty capture group as a real value', () => {
+    expect(resolveStepCaptures({ text: '[{{v}}]', captures: { v: 'value=(\\w*);' } }, { note: 'value=;' }))
+      .toEqual({ step: { text: '[]' } })
+  })
+
+  // The parser accepts a placeholder in every string of a tool call, so the
+  // resolution must fill every one of them. Otherwise the braces reach the agent.
+  it('fills a placeholder in the id, the name, and the namespace of a tool call', () => {
+    const spec = parseScenarioSpec({
+      steps: [{
+        toolCalls: [{ id: 'call-{{n}}', name: 'tool_{{n}}', namespace: 'ns_{{n}}', arguments: { value: 1 } }],
+        captures: { n: 'Number: (\\d+)' },
+      }],
+    })
+    expect(resolveStepCaptures(spec.steps[0]!, { note: 'Number: 42' })).toEqual({
+      step: { toolCalls: [{ id: 'call-42', name: 'tool_42', namespace: 'ns_42', arguments: { value: 1 } }] },
+    })
+  })
+
+  // A rule answers again and again, so each resolution must leave the step that
+  // the scenario keeps as the script stated it.
+  it('leaves the step that it resolves unchanged, so a repeated rule resolves again', () => {
+    const step = {
+      text: 'At {{planFile}}.',
+      toolCalls: [{ id: 'w', name: 'Write', arguments: { path: '{{planFile}}' } }],
+      captures: { planFile: 'Plan file: (\\S+)' },
+    }
+    const before = structuredClone(step)
+    expect(resolveStepCaptures(step, { note: 'Plan file: /a.md' })).toMatchObject({ step: { text: 'At /a.md.' } })
+    expect(step).toEqual(before)
+    expect(resolveStepCaptures(step, { note: 'Plan file: /b.md' })).toMatchObject({ step: { text: 'At /b.md.' } })
+  })
+
+  it('reports the first capture that matched nothing, when another one matched', () => {
+    expect(resolveStepCaptures(
+      { text: '{{found}} {{missing}}', captures: { found: 'a=(\\w+)', missing: 'b=(\\w+)' } },
+      { note: 'a=1' },
+    )).toEqual({ unmatchedCapture: 'missing' })
+  })
+
+  it('refuses a request body that holds no string at all', () => {
+    expect(resolveStepCaptures({ text: '{{v}}', captures: { v: '(x)' } }, null)).toEqual({ unmatchedCapture: 'v' })
+    expect(resolveStepCaptures({ text: '{{v}}', captures: { v: '(x)' } }, { count: 1, flag: true })).toEqual({ unmatchedCapture: 'v' })
   })
 })

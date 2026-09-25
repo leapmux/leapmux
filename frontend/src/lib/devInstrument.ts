@@ -6,7 +6,7 @@
  * whole body when `import.meta.env.LEAPMUX_DEV` is false, leaving only the
  * unused thunk reference (which the JIT elides too).
  *
- * The e2e test `121-claude-agent-open-timing.spec.ts` listens on
+ * The e2e test `090-claude-agent-open-timing.spec.ts` listens on
  * `leapmux:rpc-send` / `leapmux:rpc-recv` to measure handler latency.
  */
 export function emitDevEvent(name: string, detail: () => Record<string, unknown>): void {

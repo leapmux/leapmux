@@ -161,7 +161,8 @@ mod contracts_generated {
     include!("generated/contracts.rs");
 }
 pub(crate) use contracts_generated::{
-    DEV_FRONTEND_URL, ENV_BINARY_HASH, ENV_DEV_ENDPOINT, ENV_DEV_FRONTEND, MAX_FRAME_SIZE_BYTES,
+    DEV_FRONTEND_URL, ENV_AGENT_HELPER, ENV_BINARY_HASH, ENV_DEV_ENDPOINT, ENV_DEV_FRONTEND,
+    MAX_FRAME_SIZE_BYTES,
 };
 
 /// The shell's own record of the dev sidecar it last bootstrapped, written for

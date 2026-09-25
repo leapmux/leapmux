@@ -273,6 +273,11 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // box the reason is about, so a note above it repeated the same sentence a
   // few pixels higher.
   const disabled = () => !!props.disabledReason
+  // The queue controls -- the pause banner and the composer's pause toggle --
+  // belong to a composer that takes input. A read-only subagent tab takes no
+  // message, so its queue can hold none, and an interrupt that paused that queue
+  // must not offer a Resume that the tab cannot use.
+  const queueControlsShown = () => !disabled()
   const preferences = usePreferences()
   // The retry confirmation belongs to the dialog below, not to the queue-edit
   // session: it holds the input the user asked to retry, and no edit is open.
@@ -649,7 +654,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         data-no-status-bar={preferences.showComposerStatusBar() ? undefined : ''}
       >
         <AgentInputQueuePauseBanner
-          paused={queuePaused()}
+          paused={queuePaused() && queueControlsShown()}
           busy={pauseInFlight()}
           reason={props.inputQueue?.pauseReason ?? AgentInputQueuePauseReason.UNSPECIFIED}
           onResume={() => setQueuePaused(false)}
@@ -880,7 +885,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                   layout: 'corner' as const,
                   node: () => (
                     <div class={styles.actionCluster} data-testid="composer-actions">
-                      <AgentInputQueuePauseButton paused={queuePaused()} busy={pauseInFlight()} onToggle={() => setQueuePaused(!queuePaused())} />
+                      <Show when={queueControlsShown()}>
+                        <AgentInputQueuePauseButton paused={queuePaused()} busy={pauseInFlight()} onToggle={() => setQueuePaused(!queuePaused())} />
+                      </Show>
                       <Show when={ctrl.showInterrupt()}>
                         {/*
                           The tooltip is the ONLY name this button has below

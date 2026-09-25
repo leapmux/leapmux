@@ -52,7 +52,7 @@ export function commandStatusLabel(status: ToolCallStatus, exit: CommandExit): s
     return toolOutcomeLabel('failed', `exit ${exit.exitCode}`)
   if (exit.signal)
     return toolOutcomeLabel('failed', exit.signal)
-  if (status === 'failed')
+  if (exit.failed || status === 'failed')
     return toolOutcomeLabel('failed')
   return toolOutcomeLabel('succeeded')
 }

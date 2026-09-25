@@ -2,7 +2,7 @@
  * The ZCode install probe the E2E specs share with the worker.
  *
  * Kept out of `zcode-fixtures.ts` so a vitest unit test can import it without
- * loading Playwright or spawning `zcode --help`.
+ * loading Playwright.
  */
 import { posix, win32 } from 'node:path'
 
@@ -97,11 +97,16 @@ export function zcodeConfigHasUsableProvider(text: string): boolean {
  * `~/.zcode/v2/config.json`, and it fails on either — so a machine that has the desktop
  * application but was never signed in must SKIP, not run six specs that each time out
  * at `sendMessage` with a message that names nothing.
+ *
+ * `launcherUnusableReason` states why the run cannot start the launcher on PATH,
+ * such as a mise shim. The worker takes that launcher before the bundled script, so
+ * an unusable launcher skips even when a bundled script exists.
  */
 export function computeZCodeE2ESkipReason(opts: {
   scriptOverride: string | undefined
   scriptExists: (path: string) => boolean
   launcherOnPath: boolean
+  launcherUnusableReason: string | null
   platform: NodeJS.Platform
   home: string
   env: NodeJS.ProcessEnv
@@ -111,9 +116,11 @@ export function computeZCodeE2ESkipReason(opts: {
     ? (opts.scriptExists(opts.scriptOverride)
         ? null
         : `LEAPMUX_ZCODE_SCRIPT points at a missing file: ${opts.scriptOverride}`)
-    : (opts.launcherOnPath || zcodeScriptCandidatePaths(opts.platform, opts.home, opts.env).some(opts.scriptExists)
-        ? null
-        : 'ZCode E2E requires a zcode launcher on PATH or a ZCode.app / ZCode install that carries zcode.cjs')
+    : opts.launcherUnusableReason !== null
+      ? `ZCode E2E cannot start the zcode launcher on PATH. ${opts.launcherUnusableReason}`
+      : (opts.launcherOnPath || zcodeScriptCandidatePaths(opts.platform, opts.home, opts.env).some(opts.scriptExists)
+          ? null
+          : 'ZCode E2E requires a zcode launcher on PATH or a ZCode.app / ZCode install that carries zcode.cjs')
   if (installed)
     return installed
 

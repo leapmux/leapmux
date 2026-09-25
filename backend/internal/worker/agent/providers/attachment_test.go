@@ -13,7 +13,7 @@ func TestNormalizeAttachmentsForProvider_DefaultAcceptsEverything(t *testing.T) 
 
 	registry := Registry()
 
-	// Cursor, Kilo, Goose, OpenCode (all ACP with no restrictive hook) and an unknown/UNSPECIFIED
+	// Cursor, Kilo, Goose, OpenCode, Qwen Code, Grok Build (all ACP with no restrictive hook) and an unknown/UNSPECIFIED
 	// provider (via the ProviderDefaults that Registry.Plugin answers) accept the full text+image+PDF+binary set -- the
 	// switch-default behavior preserved after moving policy behind the Provider interface.
 	fullSet := []*leapmuxv1.Attachment{
@@ -27,6 +27,8 @@ func TestNormalizeAttachmentsForProvider_DefaultAcceptsEverything(t *testing.T) 
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED,
 	} {
 		t.Run(provider.String(), func(t *testing.T) {

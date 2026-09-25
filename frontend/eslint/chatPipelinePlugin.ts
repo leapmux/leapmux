@@ -1,11 +1,17 @@
 import type { TSESLint, TSESTree } from '@typescript-eslint/utils'
-import { dirname, extname, resolve } from 'node:path'
+import type { ProviderFrameKind } from '../src/generated/contracts/provider-frame-kinds'
+import { createHash } from 'node:crypto'
+import { readdirSync, readFileSync } from 'node:fs'
+import { dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AST_NODE_TYPES, ESLintUtils } from '@typescript-eslint/utils'
 import ts from 'typescript'
+import { PROVIDER_FRAME_KINDS } from '../src/generated/contracts/provider-frame-kinds'
+import { PROVIDER_WIRE_TOKENS, wireTokenSources } from './providerWireTokens'
 
 const createRule = ESLintUtils.RuleCreator(name => `https://leapmux.dev/eslint/${name}`)
-const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const eslintRoot = dirname(fileURLToPath(import.meta.url))
+const frontendRoot = resolve(eslintRoot, '..')
 
 function moduleText(node: TSESTree.Node | null | undefined): string | null {
   return node?.type === AST_NODE_TYPES.Literal && typeof node.value === 'string' ? node.value : null
@@ -103,13 +109,16 @@ function typeContainsName(checker: ts.TypeChecker, type: ts.Type, pattern: RegEx
     .some(member => typeContainsName(checker, member, pattern, seen))
 }
 
-const noProviderDecision = createRule<[], 'providerDecision'>({
+const noProviderDecision = createRule<[], 'providerDecision' | 'wireToken'>({
   name: 'no-provider-decision',
   meta: {
     type: 'problem',
     docs: { description: 'Route provider decisions through provider plugins.' },
     schema: [],
-    messages: { providerDecision: 'Shared code must not decide by AgentProvider. Move this decision into a provider module.' },
+    messages: {
+      providerDecision: 'Shared code must not decide by AgentProvider. Move this decision into a provider module.',
+      wireToken: '"{{token}}" identifies a frame of {{sources}}. Shared code must not decide by it. Move this decision into the provider module that owns it.',
+    },
   },
   defaultOptions: [],
   create(context) {
@@ -130,7 +139,12 @@ const noProviderDecision = createRule<[], 'providerDecision'>({
       return /^(?:\w+\.)*AgentProvider\.[A-Z0-9_]+$/.test(checker.typeToString(type))
     }
     const report = (node: TSESTree.Node) => context.report({ node, messageId: 'providerDecision' })
-    const providerWireToken = /^(?:(?:cursor|_goose|mcp)\/[a-z_/]+|_reasonix\.io\/[a-z_/]+|session\/(?:update|request_permission|new|prompt|load)|interaction\/requestUserInput|tool_call_update|agent_message_chunk|agent_thought_chunk|available_commands_update|session_info_update|config_option_update|commandExecution|fileChange|mcpToolCall|dynamicToolCall|collabAgentToolCall|entry_appended|tool_execution_start|tool_execution_end|agent_settled|compaction_start|compaction_end|tool_use_result|compact_boundary)$/
+    const isWireToken = (text: string): boolean => wireTokenSources(PROVIDER_WIRE_TOKENS, text).length > 0
+    const reportWireToken = (node: TSESTree.Node, token: string): void => {
+      const sources = wireTokenSources(PROVIDER_WIRE_TOKENS, token)
+      if (sources.length > 0)
+        context.report({ node, messageId: 'wireToken', data: { token, sources: sources.join(', ') } })
+    }
     const tsIsProvider = (node: ts.Node): boolean =>
       typeContainsName(checker, checker.getTypeAtLocation(node), /(?:^|\.)AgentProvider(?:$|\.)/)
       || /\bAgentProvider\b/.test(node.getText())
@@ -167,7 +181,7 @@ const noProviderDecision = createRule<[], 'providerDecision'>({
             return
           }
         }
-        if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && providerWireToken.test(node.text)) {
+        if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && isWireToken(node.text)) {
           decision = true
           return
         }
@@ -176,8 +190,10 @@ const noProviderDecision = createRule<[], 'providerDecision'>({
       visit(declaration)
       return decision
     }
-    const symbolAtExpression = (node: ts.Expression): ts.Symbol | undefined => {
-      let current = node
+    // A node, not only an expression: the map gives a keyword token for some callees,
+    // and a keyword has no symbol.
+    const symbolAtExpression = (node: ts.Node): ts.Symbol | undefined => {
+      let current: ts.Node = node
       while (ts.isParenthesizedExpression(current) || ts.isAsExpression(current) || ts.isTypeAssertionExpression(current) || ts.isNonNullExpression(current) || ts.isSatisfiesExpression(current))
         current = current.expression
       const symbolNode = ts.isPropertyAccessExpression(current) ? current.name : current
@@ -241,12 +257,13 @@ const noProviderDecision = createRule<[], 'providerDecision'>({
           report(node)
       },
       Literal(node) {
-        if (typeof node.value === 'string' && providerWireToken.test(node.value))
-          report(node)
+        if (typeof node.value === 'string')
+          reportWireToken(node, node.value)
       },
       TemplateElement(node) {
-        if (providerWireToken.test(node.value.cooked))
-          report(node)
+        // `cooked` is null for a tagged template with an invalid escape.
+        if (node.value.cooked !== null)
+          reportWireToken(node, node.value.cooked)
       },
     }
   },
@@ -359,7 +376,32 @@ const pluginRegistrationOnly = createRule<[], 'inlineHook'>({
   },
 })
 
+/**
+ * A digest of the rule modules and of the frame kinds that they read.
+ *
+ * ESLint keys its cache on the resolved configuration, and it writes a plugin into
+ * that key as `meta.name@meta.version`. A plugin with no version adds nothing to the
+ * key. Then a rule change, or a new frame kind in a contract, keeps the cached result
+ * of each unchanged file, and `eslint --cache` passes a file that now breaks a rule.
+ */
+export function rulesVersion(modules: ReadonlyArray<readonly [name: string, source: string]>, kinds: readonly ProviderFrameKind[]): string {
+  const hash = createHash('sha256')
+  for (const [name, source] of modules)
+    hash.update(`${name}\0${source}\0`)
+  hash.update(JSON.stringify(kinds))
+  return hash.digest('hex').slice(0, 16)
+}
+
+/** Each rule module in this directory, with its source. A test is not rule code. */
+function ruleModules(): Array<[name: string, source: string]> {
+  return readdirSync(eslintRoot)
+    .filter(file => file.endsWith('.ts') && !file.endsWith('.test.ts'))
+    .sort()
+    .map(file => [file, readFileSync(join(eslintRoot, file), 'utf8')])
+}
+
 const plugin: TSESLint.FlatConfig.Plugin = {
+  meta: { name: 'chat-pipeline', version: rulesVersion(ruleModules(), PROVIDER_FRAME_KINDS) },
   rules: {
     'layer-imports': layerImports,
     'no-provider-decision': noProviderDecision,

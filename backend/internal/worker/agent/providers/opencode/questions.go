@@ -1,7 +1,6 @@
 package opencode
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	gopsnet "github.com/shirou/gopsutil/v4/net"
 	"github.com/shirou/gopsutil/v4/process"
 )
@@ -413,37 +413,13 @@ func (q *openCodeQuestions) consume(ctx context.Context) error {
 }
 
 // readEvents reads server-sent events and hands each one's data to handleEvent.
-//
-// One event's data may span several `data:` lines, which the standard joins with a
-// newline, and a blank line ends the event. The daemon writes one line per event
-// today; reading the general form costs little and keeps a longer question from
-// arriving as two halves that each parse as nothing.
+// providerkit.ReadSSE states the event-stream rules, including the discard of
+// an event that the stream ends in the middle of: the reconnect that follows
+// restates the pending list, so no question is lost with it.
 func (q *openCodeQuestions) readEvents(ctx context.Context, body io.Reader) error {
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64<<10), openCodeQuestionMaxEvent)
-	var data []byte
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(bytes.TrimSpace(line)) == 0 {
-			if len(data) > 0 {
-				q.handleEvent(ctx, data)
-				data = nil
-			}
-			continue
-		}
-		field, ok := bytes.CutPrefix(line, []byte("data:"))
-		if !ok {
-			continue
-		}
-		if len(data) > 0 {
-			data = append(data, '\n')
-		}
-		data = append(data, bytes.TrimPrefix(field, []byte(" "))...)
-	}
-	if len(data) > 0 {
-		q.handleEvent(ctx, data)
-	}
-	return scanner.Err()
+	return providerkit.ReadSSE(body, openCodeQuestionMaxEvent, func(event providerkit.SSEEvent) {
+		q.handleEvent(ctx, event.Data)
+	})
 }
 
 func (q *openCodeQuestions) handleEvent(ctx context.Context, data []byte) {

@@ -15,14 +15,23 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/amp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/cline"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/codewhale"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/codex"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/copilot"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/cursor"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/goose"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/grok"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/kilo"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/kimi"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/kiro"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/mimo"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/ohmypi"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/pi"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/qwen"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/reasonix"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/zcode"
 )
@@ -42,6 +51,15 @@ func Registrations() []agent.Registration {
 		pi.Registration(),
 		reasonix.Registration(),
 		zcode.Registration(),
+		codewhale.Registration(),
+		kimi.Registration(),
+		mimo.Registration(),
+		qwen.Registration(),
+		ohmypi.Registration(),
+		grok.Registration(),
+		kiro.Registration(),
+		amp.Registration(),
+		cline.Registration(),
 	}
 }
 

@@ -17,7 +17,7 @@ import (
 // and that each one resolves.
 func TestEveryRegisteredProviderResolvesALaunch(t *testing.T) {
 	registry := Registry()
-	assert.Len(t, registry.Providers(), 10)
+	assert.Len(t, registry.Providers(), 19)
 	// Every provider must resolve to SOMETHING, or its Start returns an error before it
 	// spawns anything. NewRegistry already refuses a locator that states no way to find
 	// the program; this is where a locator that states one but resolves nothing surfaces.
@@ -29,11 +29,14 @@ func TestEveryRegisteredProviderResolvesALaunch(t *testing.T) {
 		for _, provider := range registry.Providers() {
 			reg, _ := registry.Registration(provider)
 			spec, err := providerkit.ResolveLaunch(context.Background(), agent.Options{Shell: shell}, reg)
-			// ZCode resolves against the real machine, so it may legitimately report that
-			// it is not installed. Every other provider must name a program.
+			// ZCode and Codewhale resolve against the real machine, so each may
+			// legitimately report that it is not installed. Every other provider must
+			// name a program.
 			if err != nil {
-				assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, provider,
-					"provider %v has neither a resolver nor a registered binary name", provider)
+				assert.Contains(t, []leapmuxv1.AgentProvider{
+					leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+					leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE,
+				}, provider, "provider %v has neither a resolver nor a registered binary name", provider)
 				continue
 			}
 			assert.NotEmptyf(t, spec.Program, "provider %v resolved to an empty program", provider)

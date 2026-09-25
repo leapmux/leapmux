@@ -505,10 +505,10 @@ const SESSION_INVISIBLE = new RegExp(`[${SESSION_INVISIBLE_CLASS}]`)
  * is accepted and means "no resume".
  *
  * This is the generic half of a two-shape resume handle, and it is deliberately
- * provider-neutral: WHICH values are paths is a provider's own resolver rule
- * and lives in that provider's plugin (`validateResumeHandle` — Pi's is the
- * only one today). What a session file path may look like is the same question
- * for any provider that has one.
+ * provider-neutral: WHICH values are paths is a provider's own resolver rule,
+ * which each provider's plugin states in its `validateResumeHandle`. What a
+ * session file path may look like is the same question for any provider that
+ * has one.
  *
  * It is DELIBERATELY narrower than the worker's rule. It refuses only what is
  * wrong on every host -- a relative path, a `..` escape, an invisible-format
@@ -537,6 +537,31 @@ export function validateSessionFilePath(value: string): string | null {
   if (PATH_TRAVERSAL.test(value))
     return 'Session file path must not contain ".."'
   return null
+}
+
+/**
+ * Validates a resume handle that is EITHER a session file path or a session ID,
+ * for a provider whose CLI tells the two apart by shape: a value that holds a
+ * separator, or ends in `.jsonl`, is a path, and anything else is an ID the CLI
+ * matches inside the working directory's session directory.
+ *
+ * Pi's `--session` and Oh My Pi's `--resume` both resolve a handle this way, and
+ * each plugin's `validateResumeHandle` states that its CLI does. The test must
+ * stay identical to the CLI's own: it decides which rule judges a handle, and
+ * the CLI decides which lookup consumes it. The worker's copy is
+ * `providerkit.SessionFileHandleIsPath`, and
+ * `testdata/pi_resume_handle_conformance.json` pins the two together.
+ *
+ * Neither half can serve both shapes. The token rule bans `\` and caps the value
+ * at 128 bytes, which a real session path passes neither of, and the path rule
+ * requires an absolute path, which an ID never is.
+ */
+export function validateSessionFileOrIdHandle(value: string): string | null {
+  if (value === '')
+    return null
+  if (!/[/\\]/.test(value) && !value.endsWith('.jsonl'))
+    return validateSessionId(value)
+  return validateSessionFilePath(value)
 }
 
 /**
