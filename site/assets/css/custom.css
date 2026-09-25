@@ -179,3 +179,60 @@
 .content a {
   text-underline-offset: 2px;
 }
+
+/*
+  Provider logo grid (the Coding Agents page). Hextra's prose CSS puts each
+  image on its own line, so the container owns the layout: a wrapping grid of
+  fixed 64px cells, left-aligned.
+*/
+.provider-logos {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 64px);
+  gap: 12px;
+  justify-content: start;
+  margin-block: 1rem;
+}
+
+.provider-logos img {
+  display: block;
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  margin: 0;
+}
+
+/*
+  Feature-matrix header logos: one fixed size, so every provider column gets
+  the same header width. The matrix is the last section of its page, so the
+  sibling selector picks its table and no other.
+*/
+.content th img {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  vertical-align: middle;
+}
+
+/*
+  Feature matrix: the feature names get their own wider column, and every
+  provider column shares the rest equally. Tight cells keep the symbol and its
+  footnote markers on one line.
+*/
+#feature-matrix ~ table {
+  table-layout: fixed;
+}
+
+#feature-matrix ~ table th:first-child {
+  width: 20%;
+}
+
+#feature-matrix ~ table th,
+#feature-matrix ~ table td {
+  padding: 4px 2px;
+  text-align: center;
+}
+
+#feature-matrix ~ table th:first-child,
+#feature-matrix ~ table td:first-child {
+  text-align: left;
+}

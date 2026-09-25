@@ -13,7 +13,7 @@ For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/t
 
 LeapMux integrates nineteen coding-agent providers. It detects the coding agents installed on the Worker automatically and lists them in the New agent dialog.
 
-<p>
+<div class="provider-logos">
   <a href="https://claude.com/product/claude-code"><img src="/icons/agents/claude-code.svg" width="64" height="64" title="Claude Code" alt="Claude Code"></a>&nbsp;
   <a href="https://openai.com/codex/"><img src="/icons/agents/codex.svg" width="64" height="64" title="Codex" alt="Codex"></a>&nbsp;
   <a href="https://cursor.com/cli"><img src="/icons/agents/cursor.svg" width="64" height="64" title="Cursor" alt="Cursor"></a>&nbsp;
@@ -33,7 +33,7 @@ LeapMux integrates nineteen coding-agent providers. It detects the coding agents
   <a href="https://kiro.dev/cli/"><img src="/icons/agents/kiro.svg" width="64" height="64" title="Kiro" alt="Kiro"></a>&nbsp;
   <a href="https://ampcode.com/"><img src="/icons/agents/amp.svg" width="64" height="64" title="Amp" alt="Amp"></a>&nbsp;
   <a href="https://cline.bot/cli"><img src="/icons/agents/cline.svg" width="64" height="64" title="Cline" alt="Cline"></a>
-</p>
+</div>
 
 All nineteen are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. The Goals & To-dos sidebar appears for an agent that has a to-do list, and for an agent whose CLI has a session goal. The available models, settings, and prompt styles vary from provider to provider; the [feature matrix](#feature-matrix) lists the differences.
 
@@ -335,7 +335,7 @@ See [Control CLI](/docs/using/control-cli/) for the full command tree, entity-ID
 
 Every provider runs the core workflow: chat, streamed tool calls, permission prompts, and session resume. Beyond that, support differs. Each cell is ✅ when LeapMux supports the feature for that provider, and ❌ when it does not. A small number after a symbol marks a note below the table.
 
-| Feature | Claude Code | Codex | Cursor | GitHub Copilot | Kilo | OpenCode | Goose | Pi¹ | Reasonix | ZCode | Codewhale | Kimi Code | MiMo Code | Qwen Code | Oh My Pi | Grok Build | Kiro | Amp | Cline |
+| Feature | <img src="/icons/agents/claude-code.svg" width="32" height="32" title="Claude Code" alt="Claude Code"> | <img src="/icons/agents/codex.svg" width="32" height="32" title="Codex" alt="Codex"> | <img src="/icons/agents/cursor.svg" width="32" height="32" title="Cursor" alt="Cursor"> | <img src="/icons/agents/github-copilot.svg" width="32" height="32" title="GitHub Copilot" alt="GitHub Copilot"> | <img src="/icons/agents/kilo.svg" width="32" height="32" title="Kilo" alt="Kilo"> | <img src="/icons/agents/opencode.svg" width="32" height="32" title="OpenCode" alt="OpenCode"> | <img src="/icons/agents/goose.svg" width="32" height="32" title="Goose" alt="Goose"> | <img src="/icons/agents/pi.svg" width="32" height="32" title="Pi" alt="Pi">¹ | <img src="/icons/agents/reasonix.svg" width="32" height="32" title="Reasonix" alt="Reasonix"> | <img src="/icons/agents/zcode.svg" width="32" height="32" title="ZCode" alt="ZCode"> | <img src="/icons/agents/codewhale.svg" width="32" height="32" title="Codewhale" alt="Codewhale"> | <img src="/icons/agents/kimi-code.svg" width="32" height="32" title="Kimi Code" alt="Kimi Code"> | <img src="/icons/agents/mimo-code.svg" width="32" height="32" title="MiMo Code" alt="MiMo Code"> | <img src="/icons/agents/qwen-code.svg" width="32" height="32" title="Qwen Code" alt="Qwen Code"> | <img src="/icons/agents/oh-my-pi.svg" width="32" height="32" title="Oh My Pi" alt="Oh My Pi"> | <img src="/icons/agents/grok-build.svg" width="32" height="32" title="Grok Build" alt="Grok Build"> | <img src="/icons/agents/kiro.svg" width="32" height="32" title="Kiro" alt="Kiro"> | <img src="/icons/agents/amp.svg" width="32" height="32" title="Amp" alt="Amp"> | <img src="/icons/agents/cline.svg" width="32" height="32" title="Cline" alt="Cline"> |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Text attachments | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Image attachments | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅² | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
