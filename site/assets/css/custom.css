@@ -203,11 +203,13 @@
 
 /*
   Feature-matrix header logos: one fixed size, so every provider column gets
-  the same header width.
+  the same header width. inline-block keeps the footnote marker of a provider
+  on the same line (the theme's block-level img rule would break it).
 */
 .content th img {
-  width: 32px;
-  height: 32px;
+  display: inline-block;
+  width: 24px;
+  height: 24px;
   object-fit: contain;
   vertical-align: middle;
 }
@@ -216,7 +218,8 @@
   Feature matrix: the wrapper scrolls horizontally, the feature names get
   their own wider column, and every provider column shares the rest equally.
   No cell ever breaks a line -- a symbol keeps its footnote markers -- so the
-  table sets a minimum width and scrolls instead of wrapping.
+  table sets a minimum width and scrolls instead of wrapping. Cell padding and
+  text alignment stay the theme's.
 */
 .feature-matrix {
   overflow-x: auto;
@@ -224,21 +227,36 @@
 
 .feature-matrix table {
   table-layout: fixed;
-  min-width: 1080px;
+  min-width: 1078px;
 }
 
 .feature-matrix table th:first-child {
   width: 280px;
 }
 
-.feature-matrix table th,
-.feature-matrix table td {
-  padding: 4px 2px;
-  text-align: center;
-  white-space: nowrap;
+.feature-matrix table th:not(:first-child) {
+  width: 42px;
 }
 
-.feature-matrix table th:first-child,
-.feature-matrix table td:first-child {
-  text-align: left;
+/*
+  A footnote marker links to its note; the symbol rides along so the whole
+  cell is clickable. No underline: the line would cut through the emoji.
+*/
+.feature-matrix table a {
+  text-decoration: none;
+}
+
+/*
+  Notes are numbered list items, so each one gets a zero-height anchor to
+  jump to. The scroll margin keeps the target clear of the sticky header.
+*/
+.note-anchor {
+  display: block;
+  height: 0;
+  scroll-margin-top: 4rem;
+}
+
+.feature-matrix table th,
+.feature-matrix table td {
+  white-space: nowrap;
 }
