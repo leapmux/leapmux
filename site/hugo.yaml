@@ -36,6 +36,22 @@ module:
   proxy: "https://proxy.golang.org"
   imports:
     - path: github.com/imfing/hextra
+  # Project mounts replace Hugo's defaults, so the defaults are listed here.
+  # The provider logos live once, at the repository root: the README and this
+  # site both show them, and the mount keeps one copy.
+  mounts:
+    - source: assets
+      target: assets
+    - source: content
+      target: content
+    - source: i18n
+      target: i18n
+    - source: layouts
+      target: layouts
+    - source: static
+      target: static
+    - source: ../icons/agents
+      target: static/icons/agents
 
 markup:
   goldmark:

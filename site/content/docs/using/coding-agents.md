@@ -11,53 +11,31 @@ For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/t
 
 ## Choosing a provider
 
-### Supported providers
+LeapMux integrates nineteen coding-agent providers. It detects the coding agents installed on the Worker automatically and lists them in the New agent dialog.
 
-LeapMux integrates nineteen coding-agent providers:
+<p>
+  <a href="https://claude.com/product/claude-code"><img src="/icons/agents/claude-code.svg" width="64" height="64" title="Claude Code" alt="Claude Code"></a>&nbsp;
+  <a href="https://openai.com/codex/"><img src="/icons/agents/codex.svg" width="64" height="64" title="Codex" alt="Codex"></a>&nbsp;
+  <a href="https://cursor.com/cli"><img src="/icons/agents/cursor.svg" width="64" height="64" title="Cursor" alt="Cursor"></a>&nbsp;
+  <a href="https://github.com/features/copilot/cli"><img src="/icons/agents/github-copilot.svg" width="64" height="64" title="GitHub Copilot" alt="GitHub Copilot"></a>&nbsp;
+  <a href="https://kilo.ai/cli"><img src="/icons/agents/kilo.svg" width="64" height="64" title="Kilo" alt="Kilo"></a>&nbsp;
+  <a href="https://opencode.ai/"><img src="/icons/agents/opencode.svg" width="64" height="64" title="OpenCode" alt="OpenCode"></a>&nbsp;
+  <a href="https://block.github.io/goose/"><img src="/icons/agents/goose.svg" width="64" height="64" title="Goose" alt="Goose"></a>&nbsp;
+  <a href="https://pi.dev/"><img src="/icons/agents/pi.svg" width="64" height="64" title="Pi" alt="Pi"></a>&nbsp;
+  <a href="https://github.com/esengine/DeepSeek-Reasonix"><img src="/icons/agents/reasonix.svg" width="64" height="64" title="Reasonix" alt="Reasonix"></a>&nbsp;
+  <a href="https://zcode.z.ai/"><img src="/icons/agents/zcode.svg" width="64" height="64" title="ZCode" alt="ZCode"></a>&nbsp;
+  <a href="https://codewhale.net/en/product"><img src="/icons/agents/codewhale.svg" width="64" height="64" title="Codewhale" alt="Codewhale"></a>&nbsp;
+  <a href="https://moonshotai.github.io/kimi-code/en/"><img src="/icons/agents/kimi-code.svg" width="64" height="64" title="Kimi Code" alt="Kimi Code"></a>&nbsp;
+  <a href="https://mimo.xiaomi.com/coder"><img src="/icons/agents/mimo-code.svg" width="64" height="64" title="MiMo Code" alt="MiMo Code"></a>&nbsp;
+  <a href="https://qwenlm.github.io/qwen-code-docs/en/users/overview"><img src="/icons/agents/qwen-code.svg" width="64" height="64" title="Qwen Code" alt="Qwen Code"></a>&nbsp;
+  <a href="https://omp.sh"><img src="/icons/agents/oh-my-pi.svg" width="64" height="64" title="Oh My Pi" alt="Oh My Pi"></a>&nbsp;
+  <a href="https://x.ai/cli"><img src="/icons/agents/grok-build.svg" width="64" height="64" title="Grok Build" alt="Grok Build"></a>&nbsp;
+  <a href="https://kiro.dev/cli/"><img src="/icons/agents/kiro.svg" width="64" height="64" title="Kiro" alt="Kiro"></a>&nbsp;
+  <a href="https://ampcode.com/"><img src="/icons/agents/amp.svg" width="64" height="64" title="Amp" alt="Amp"></a>&nbsp;
+  <a href="https://cline.bot/cli"><img src="/icons/agents/cline.svg" width="64" height="64" title="Cline" alt="Cline"></a>
+</p>
 
-| Provider | CLI binary detected on the Worker |
-| --- | --- |
-| Claude Code | `claude` |
-| Codex | `codex` (or `codex-x86_64-pc-windows-msvc`) |
-| Cursor | `cursor-agent` |
-| GitHub Copilot | `copilot` |
-| Kilo | `kilo` |
-| OpenCode | `opencode` |
-| Goose | `goose` |
-| Pi | `pi` |
-| Reasonix | `reasonix` |
-| ZCode | `zcode`, or the desktop application (see [below](#zcode-setup)) |
-| Codewhale | `codewhale` |
-| Kimi Code | `kimi` |
-| MiMo Code | `mimo` |
-| Qwen Code | `qwen` |
-| Oh My Pi | `omp` |
-| Grok Build | `grok` |
-| Kiro | `kiro-cli-chat` |
-| Amp | `amp` |
-| Cline | `cline` |
-
-All nineteen are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. The Goals & To-dos sidebar appears for an agent that has a to-do list, and for an agent whose CLI has a session goal. The available models, settings, and prompt styles vary from provider to provider (each CLI exposes its own); the rest of this chapter covers those per-provider details.
-
-### Providers installed on a Worker
-
-A provider only appears in the picker if its CLI is installed on the selected Worker. When you choose a Worker, LeapMux probes its shell for each provider's binary (`command -v <binary>`) and shows only the providers it finds. ZCode is the exception: it ships no command, so LeapMux looks for its desktop installation instead (see [ZCode setup](#zcode-setup)).
-
-While that probe is still loading, LeapMux shows a default list of all nineteen providers, sorted alphabetically by label; once the probe completes, the list narrows to the providers actually installed on the Worker.
-
-If no provider is detected, the picker shows a disabled **No agents available** button. Install the relevant CLI on the Worker and use the **Refresh available providers** button to re-probe.
-
-### ZCode setup
-
-ZCode ships no command of its own, so LeapMux looks for it in three steps and takes the first that answers:
-
-1. The `LEAPMUX_ZCODE_SCRIPT` environment variable, which points straight at a `zcode.cjs`. Pair it with `LEAPMUX_ZCODE_NODE` to name the interpreter as well.
-2. A `zcode` command on the Worker's `PATH`. Your own wrapper script wins over the installed application.
-3. The `zcode.cjs` inside the ZCode desktop installation — under `ZCode.app` on macOS, `Programs\ZCode` or `Program Files\ZCode` on Windows, and `~/.local/share/ZCode`, `/opt/ZCode`, `/usr/share/zcode` or `/usr/lib/zcode` on Linux. LeapMux runs it with an interpreter that provides `node:sqlite`: a `node` on `PATH`, or the installation's own bundled runtime.
-
-The `node:sqlite` requirement is not cosmetic — ZCode keeps its session store in it. An interpreter without that module is rejected during the probe rather than failing on the first message.
-
-ZCode also reads its credentials and its model list from the desktop application's own configuration at `~/.zcode/v2/config.json`. Sign in to ZCode once and LeapMux picks the same providers and models up; LeapMux only reads that file and never writes it. Without it, the provider reports that ZCode is not configured instead of starting an agent that fails on every turn.
+All nineteen are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. The Goals & To-dos sidebar appears for an agent that has a to-do list, and for an agent whose CLI has a session goal. The available models, settings, and prompt styles vary from provider to provider; the [feature matrix](#feature-matrix) lists the differences.
 
 ## Opening a new agent
 
