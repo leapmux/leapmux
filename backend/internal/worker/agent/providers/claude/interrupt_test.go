@@ -43,6 +43,44 @@ func newClaudeInterruptRig(t *testing.T) *claudeInterruptRig {
 // writes `beforeAck` to stdout before it answers the control request it captured.
 func newClaudeInterruptRigWithPreamble(t *testing.T, beforeAck []string) *claudeInterruptRig {
 	t.Helper()
+	return newClaudeInterruptRigResponding(t, beforeAck, claudeControlSuccessResponse)
+}
+
+// newClaudeInterruptRigWithControlError is newClaudeInterruptRig whose fake CLI
+// answers every control request with the failure shape Claude Code emits,
+// carrying errMsg.
+func newClaudeInterruptRigWithControlError(t *testing.T, errMsg string) *claudeInterruptRig {
+	t.Helper()
+	return newClaudeInterruptRigResponding(t, nil, func(rec recordedClaudeControl) map[string]any {
+		return map[string]any{
+			"type": "control_response",
+			"response": map[string]any{
+				"subtype":    "error",
+				"request_id": rec.RequestID,
+				"error":      errMsg,
+			},
+		}
+	})
+}
+
+// claudeControlSuccessResponse builds the control_response shape that
+// terminates the pending wait inside sendControlAndWait with a success.
+func claudeControlSuccessResponse(rec recordedClaudeControl) map[string]any {
+	return map[string]any{
+		"type": "control_response",
+		"response": map[string]any{
+			"subtype":    "success",
+			"request_id": rec.RequestID,
+			"response":   map[string]any{},
+		},
+	}
+}
+
+// newClaudeInterruptRigResponding builds the rig the type above describes.
+// respond constructs the control_response the fake CLI returns for each
+// captured control request; beforeAck lines reach the reader first.
+func newClaudeInterruptRigResponding(t *testing.T, beforeAck []string, respond func(recordedClaudeControl) map[string]any) *claudeInterruptRig {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	stdinReader, stdinWriter, err := os.Pipe()
 	require.NoError(t, err)
@@ -95,18 +133,7 @@ func newClaudeInterruptRigWithPreamble(t *testing.T, beforeAck []string) *claude
 				}
 			}
 
-			// Construct the matching control_response shape Claude
-			// Code emits: response.subtype="success" terminates the
-			// pending wait inside sendControlAndWait.
-			resp := map[string]any{
-				"type": "control_response",
-				"response": map[string]any{
-					"subtype":    "success",
-					"request_id": rec.RequestID,
-					"response":   map[string]any{},
-				},
-			}
-			b, _ := json.Marshal(resp)
+			b, _ := json.Marshal(respond(rec))
 			b = append(b, '\n')
 			if _, err := stdoutWriter.Write(b); err != nil {
 				return
@@ -229,6 +256,50 @@ func TestClaudeCodeAgent_Interrupt_AfterStopErrors(t *testing.T) {
 	err := rig.agent.Interrupt()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stopped")
+}
+
+// InterruptChild addresses the CLI's task registry by the registry row key,
+// which IS the task_id. The child is registered the way a live run is: a
+// task_started event puts it in the task index.
+func TestClaudeCodeAgent_InterruptChild_SendsStopTaskRequest(t *testing.T) {
+	t.Parallel()
+
+	rig := newClaudeInterruptRig(t)
+	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
+
+	require.NoError(t, rig.agent.InterruptChild("task-1"))
+
+	captured := rig.captured()
+	require.Len(t, captured, 1)
+	rec := captured[0]
+	assert.Equal(t, "control_request", rec.Type)
+	assert.NotEmpty(t, rec.RequestID, "request_id must be populated for response correlation")
+
+	var inner struct {
+		Subtype string `json:"subtype"`
+		TaskID  string `json:"task_id"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Request, &inner))
+	assert.Equal(t, "stop_task", inner.Subtype,
+		"Claude Code stops a subagent with the {subtype:'stop_task'} control_request")
+	assert.Equal(t, "task-1", inner.TaskID,
+		"stop_task names the CLI's own task id, which the registry row key carries")
+}
+
+// A stop_task the CLI refuses surfaces to the caller unchanged. It is a
+// provider-side failure, not a missing route and not a missing capability, so
+// the two sentinels must not mask the reason.
+func TestClaudeCodeAgent_InterruptChild_TheStopTaskErrorSurfaces(t *testing.T) {
+	t.Parallel()
+
+	rig := newClaudeInterruptRigWithControlError(t, "no such task")
+	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-2","tool_use_id":"spawn-2","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
+
+	err := rig.agent.InterruptChild("task-2")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no such task")
+	assert.NotErrorIs(t, err, agent.ErrChildRouteNotReady)
+	assert.NotErrorIs(t, err, agent.ErrChildOperationUnsupported)
 }
 
 func TestInterrupt_ClaudeWireFormatMatchesProviderClassifier(t *testing.T) {

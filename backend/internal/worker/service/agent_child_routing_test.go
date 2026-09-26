@@ -13,6 +13,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -234,19 +235,20 @@ func TestListAgentMessagesChildReturnsEmptyTasks(t *testing.T) {
 // TestInterruptAgentOnChildRoutesViaChildInterrupter verifies InterruptAgent on a
 // child agent routes through the child-steering path (Agents.InterruptChild on
 // the owner) rather than interrupting the child id directly. The strongest
-// feasible service-level assertion uses the rejection disposition unique to
-// that path: a RUNNING owner that does NOT implement ChildInterrupter (the mock
-// owner here is a claude.Agent, which never steers) makes InterruptChild
-// return ErrChildOperationUnsupported, which the handler maps to
-// FailedPrecondition "this subagent cannot be interrupted". That arm is ONLY
-// reachable through InterruptChild -- the direct-interrupt arm (owner not
-// running, or a non-child target) produces NotFound instead -- so observing it
-// proves the routing went via Agents.InterruptChild(ownerID, rowKey).
+// feasible service-level assertions use the rejection dispositions unique to
+// that path -- the direct-interrupt arm (owner not running, or a non-child
+// target) produces NotFound for every case below, so observing any other
+// disposition proves the routing went via Agents.InterruptChild(ownerID,
+// rowKey):
 //
-// A companion subtest covers the owner-not-running arm: with no mock owner
-// registered, InterruptChild returns ErrAgentNotFound and the handler reports
-// NotFound "agent not found or not running" (still via the child path, not a
-// direct Interrupt on the child id).
+//   - a RUNNING owner that does NOT implement ChildInterrupter makes the
+//     Manager's capability check return ErrChildOperationUnsupported, which the
+//     handler maps to FailedPrecondition "this subagent cannot be interrupted";
+//   - a RUNNING owner that implements ChildInterrupter but holds no route to
+//     the child returns ErrChildRouteNotReady, which the handler maps to
+//     Unavailable "route is not ready ... retry";
+//   - with no owner process at all, InterruptChild returns ErrAgentNotFound and
+//     the handler reports NotFound "agent not found or not running".
 func TestInterruptAgentOnChildRoutesViaChildInterrupter(t *testing.T) {
 	t.Parallel()
 
@@ -256,11 +258,46 @@ func TestInterruptAgentOnChildRoutesViaChildInterrupter(t *testing.T) {
 		t.Parallel()
 		svc, d, childID, rootID := setupChildAgentTest(t)
 
-		// Start a mock owner process. claudetest.StartEcho wraps it as a
-		// claude.Agent, which does NOT implement ChildInterrupter -- so
-		// InterruptChild returns ErrChildOperationUnsupported, the unique
-		// FailedPrecondition disposition that proves the child-steering path
-		// was taken (rather than Agents.Interrupt on the child id).
+		// Start a mock owner process. agenttest.NonSteerable wraps
+		// claudetest.StartEcho's claude.Agent through the Agent INTERFACE, so
+		// the concrete type's optional child methods -- InterruptChild, which
+		// Claude implements so a subagent tab can stop one -- are not promoted
+		// and the Manager's ChildInterrupter assertion answers false. That
+		// yields the unique FailedPrecondition disposition below.
+		_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
+			AgentID:    rootID,
+			WorkingDir: t.TempDir(),
+			HomeDir:    t.TempDir(),
+		}, svc.Output.NewSink(rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), agenttest.NonSteerable(claudetest.StartEcho))
+		require.NoError(t, err)
+		defer svc.Agents.StopAgent(rootID)
+
+		w := newTestWriter()
+		dispatch(d, "InterruptAgent", &leapmuxv1.InterruptAgentRequest{
+			AgentId: childID,
+		}, w)
+
+		rejs := w.rejections()
+		require.Len(t, rejs, 1, "the child-steering-unsupported path must reject")
+		assert.Equal(t, int32(codes.FailedPrecondition), rejs[0].code,
+			"ErrChildOperationUnsupported maps to FailedPrecondition, proving InterruptChild routing")
+		assert.Contains(t, rejs[0].message, "cannot be interrupted")
+		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, childID)
+		require.NoError(t, snapshotErr)
+		assert.True(t, snapshot.Paused)
+		assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, snapshot.PauseReason)
+	})
+
+	t.Run("runningOwnerWithUnreadyChildRouteReportsUnavailable", func(t *testing.T) {
+		t.Parallel()
+		svc, d, childID, rootID := setupChildAgentTest(t)
+
+		// An UNWRAPPED claudetest.StartEcho is a claude.Agent, which implements
+		// ChildInterrupter: a subagent's tab stops one through the stop_task
+		// control_request. The mock process never announced a task_started, so
+		// the owner's task index holds no route to this child and InterruptChild
+		// reports ErrChildRouteNotReady -- the retryable disposition, unique to
+		// the child path.
 		_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 			AgentID:    rootID,
 			WorkingDir: t.TempDir(),
@@ -275,10 +312,10 @@ func TestInterruptAgentOnChildRoutesViaChildInterrupter(t *testing.T) {
 		}, w)
 
 		rejs := w.rejections()
-		require.Len(t, rejs, 1, "the child-steering-unsupported path must reject")
-		assert.Equal(t, int32(codes.FailedPrecondition), rejs[0].code,
-			"ErrChildOperationUnsupported maps to FailedPrecondition, proving InterruptChild routing")
-		assert.Contains(t, rejs[0].message, "cannot be interrupted")
+		require.Len(t, rejs, 1, "an unready child route must reject with a retryable disposition")
+		assert.Equal(t, int32(codes.Unavailable), rejs[0].code,
+			"ErrChildRouteNotReady maps to Unavailable, proving InterruptChild routing")
+		assert.Contains(t, rejs[0].message, "route is not ready")
 		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, childID)
 		require.NoError(t, snapshotErr)
 		assert.True(t, snapshot.Paused)
@@ -398,7 +435,7 @@ func TestAgentToProto_ChildCapabilitiesFollowTheProvider(t *testing.T) {
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD, false, true},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE, false, true},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, true, false},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, false, false},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, false, true},
 	} {
 		t.Run(tc.provider.String(), func(t *testing.T) {
 			t.Parallel()

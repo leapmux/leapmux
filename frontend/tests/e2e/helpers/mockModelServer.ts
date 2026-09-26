@@ -827,12 +827,12 @@ async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: 
       created: 1,
       model,
       choices: [{ index: 0, message, finish_reason: toolCalls ? 'tool_calls' : 'stop' }],
-      usage: usage('prompt_tokens', 'completion_tokens'),
-    })
+      usage: usage('prompt_tokens', 'completion_tokens', step),
+    }, step)
     return
   }
 
-  writeSSEHeaders(response)
+  writeSSEHeaders(response, step)
   const chunks = textChunks(step)
   // The FIRST chunk rides with the role, the reasoning and the tool calls, so a
   // step that streams no text writes exactly the one delta it always wrote.
@@ -879,7 +879,7 @@ async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: 
     created: 1,
     model,
     choices: [],
-    usage: usage('prompt_tokens', 'completion_tokens'),
+    usage: usage('prompt_tokens', 'completion_tokens', step),
   })
   response.end('data: [DONE]\n\n')
 }
@@ -893,12 +893,12 @@ async function writeOpenAIResponse(response: ServerResponse, requestBody: unknow
       status: 'completed',
       model: modelFrom(requestBody),
       output,
-      usage: responseUsage(),
-    })
+      usage: responseUsage(step),
+    }, step)
     return
   }
 
-  writeSSEHeaders(response)
+  writeSSEHeaders(response, step)
   writeSSEEvent(response, { type: 'response.created', response: { id } })
   const chunks = textChunks(step)
   for (const [outputIndex, item] of output.entries()) {
@@ -930,7 +930,7 @@ async function writeOpenAIResponse(response: ServerResponse, requestBody: unknow
     }
     writeSSEEvent(response, { type: 'response.output_item.done', output_index: outputIndex, item })
   }
-  writeSSEEvent(response, { type: 'response.completed', response: { id, status: 'completed', output, usage: responseUsage() } })
+  writeSSEEvent(response, { type: 'response.completed', response: { id, status: 'completed', output, usage: responseUsage(step) } })
   response.end()
 }
 
@@ -1003,6 +1003,8 @@ async function writeAnthropicMessage(response: ServerResponse, requestBody: unkn
     content.push({ type: 'tool_use', id: tool.id, name: tool.name, input: tool.arguments })
   }
   const stopReason = step.toolCalls?.length ? 'tool_use' : 'end_turn'
+  const inputTokens = step.usage?.inputTokens ?? 1
+  const outputTokens = step.usage?.outputTokens ?? 1
   if (!streamRequested(requestBody)) {
     writeJSON(response, 200, {
       id,
@@ -1012,12 +1014,12 @@ async function writeAnthropicMessage(response: ServerResponse, requestBody: unkn
       content,
       stop_reason: stopReason,
       stop_sequence: null,
-      usage: { input_tokens: 1, output_tokens: 1 },
-    })
+      usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+    }, step)
     return
   }
 
-  writeSSEHeaders(response)
+  writeSSEHeaders(response, step)
   writeSSEEvent(response, {
     type: 'message_start',
     message: {
@@ -1028,7 +1030,7 @@ async function writeAnthropicMessage(response: ServerResponse, requestBody: unkn
       content: [],
       stop_reason: null,
       stop_sequence: null,
-      usage: { input_tokens: 1, output_tokens: 0 },
+      usage: { input_tokens: inputTokens, output_tokens: 0 },
     },
   })
   let index = 0
@@ -1058,7 +1060,7 @@ async function writeAnthropicMessage(response: ServerResponse, requestBody: unkn
     writeSSEEvent(response, { type: 'content_block_stop', index })
     index++
   }
-  writeSSEEvent(response, { type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: 1 } })
+  writeSSEEvent(response, { type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: outputTokens } })
   writeSSEEvent(response, { type: 'message_stop' })
   response.end()
 }
@@ -1092,25 +1094,83 @@ function streamRequested(body: unknown): boolean {
   return isRecord(body) && body.stream === true
 }
 
-function usage(inputKey: string, outputKey: string): Record<string, number> {
-  return { [inputKey]: 1, [outputKey]: 1, total_tokens: 2 }
+function usage(inputKey: string, outputKey: string, step?: MockModelStep): Record<string, number> {
+  const input = step?.usage?.inputTokens ?? 1
+  const output = step?.usage?.outputTokens ?? 1
+  return { [inputKey]: input, [outputKey]: output, total_tokens: input + output }
 }
 
-function responseUsage(): Record<string, unknown> {
+function responseUsage(step?: MockModelStep): Record<string, unknown> {
+  const input = step?.usage?.inputTokens ?? 1
+  const output = step?.usage?.outputTokens ?? 1
   return {
-    input_tokens: 1,
+    input_tokens: input,
     input_tokens_details: { cached_tokens: 0 },
-    output_tokens: 1,
+    output_tokens: output,
     output_tokens_details: { reasoning_tokens: 0 },
-    total_tokens: 2,
+    total_tokens: input + output,
   }
 }
 
-function writeSSEHeaders(response: ServerResponse): void {
+/**
+ * The HTTP headers that carry one step's rate-limit surface.
+ *
+ * Claude Code reads the `anthropic-ratelimit-unified-*` family and emits its
+ * own `rate_limit_event` when the status changes (see
+ * `claude-code/src/services/claudeAiLimits.ts`). OpenAI-family CLIs read the
+ * standard `x-ratelimit-*` names. The leapmux-prefixed pair records the step's
+ * own vocabulary for assertions that do not care which CLI forwarded it.
+ */
+function rateLimitHeaders(step: MockModelStep | undefined): Record<string, string> {
+  const rateLimits = step?.rateLimits
+  if (!rateLimits)
+    return {}
+  const allowed = rateLimits.status === 'allowed'
+  const reset = rateLimits.resetsAt === undefined
+    ? undefined
+    : String(rateLimits.resetsAt)
+  const utilization = rateLimits.utilization === undefined
+    ? undefined
+    : String(rateLimits.utilization)
+  const headers: Record<string, string> = {
+    'anthropic-ratelimit-unified-status': rateLimits.status,
+    'anthropic-ratelimit-unified-representative-claim': rateLimits.type,
+    'x-ratelimit-limit-requests': '1000',
+    'x-ratelimit-remaining-requests': allowed ? '999' : '0',
+    'x-ratelimit-limit-tokens': '1000000',
+    'x-ratelimit-remaining-tokens': allowed ? '999000' : '0',
+    'x-leapmux-e2e-ratelimit-type': rateLimits.type,
+    'x-leapmux-e2e-ratelimit-status': rateLimits.status,
+  }
+  // The 5h window is the one the E2E steps name. A type of `seven_day` rides
+  // on the 7d pair instead, because Claude reads each window from its own
+  // abbrev and a mislabelled pair is a status the CLI never asked for.
+  const abbrev = rateLimits.type.startsWith('seven_day') ? '7d' : '5h'
+  if (utilization !== undefined)
+    headers[`anthropic-ratelimit-unified-${abbrev}-utilization`] = utilization
+  if (reset !== undefined) {
+    headers[`anthropic-ratelimit-unified-${abbrev}-reset`] = reset
+    headers['anthropic-ratelimit-unified-reset'] = reset
+    const resetHttp = new Date(rateLimits.resetsAt! * 1000).toUTCString()
+    headers['x-ratelimit-reset-requests'] = resetHttp
+    headers['x-ratelimit-reset-tokens'] = resetHttp
+    headers['x-leapmux-e2e-ratelimit-resets-at'] = reset
+  }
+  if (utilization !== undefined)
+    headers['x-leapmux-e2e-ratelimit-utilization'] = utilization
+  // A warning is the surpassed-threshold pair. `allowed` and `rejected` need
+  // none: Claude reads the status header alone for those.
+  if (rateLimits.status === 'allowed_warning' && utilization !== undefined)
+    headers[`anthropic-ratelimit-unified-${abbrev}-surpassed-threshold`] = utilization
+  return headers
+}
+
+function writeSSEHeaders(response: ServerResponse, step?: MockModelStep): void {
   response.writeHead(200, {
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
     'connection': 'close',
+    ...rateLimitHeaders(step),
   })
 }
 
@@ -1122,6 +1182,9 @@ function writeSSEEvent(response: ServerResponse, value: { type: string } & Recor
   response.write(`event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`)
 }
 
-function writeJSON(response: ServerResponse, status: number, value: unknown): void {
-  response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(value))
+function writeJSON(response: ServerResponse, status: number, value: unknown, step?: MockModelStep): void {
+  response.writeHead(status, {
+    'content-type': 'application/json',
+    ...rateLimitHeaders(step),
+  }).end(JSON.stringify(value))
 }

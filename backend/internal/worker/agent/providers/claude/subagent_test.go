@@ -172,6 +172,44 @@ func TestClaude_PendingTaskEndIgnoresEmptySpan(t *testing.T) {
 	assert.Nil(t, a.tasks.runs.pendingEnd, "no entry recorded for an empty spawn span")
 }
 
+// Claude can stop one subagent alone but cannot send input to one: the CLI
+// answers the stop_task control_request and exposes no wire path for a child
+// message. The asymmetry is a product fact, so it is asserted here as well as
+// through agenttest.AssertChildCapabilities.
+func TestClaude_InterruptChildWithoutChildSteering(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, claudeProvider{}.SupportsChildSteering(),
+		"Claude Code exposes no wire path that sends input to a subagent")
+	_, sendsDirectInput := any(&Agent{}).(agent.ChildSteerer)
+	assert.False(t, sendsDirectInput, "the agent must not implement ChildSteerer")
+	_, interruptsChild := any(&Agent{}).(agent.ChildInterrupter)
+	assert.True(t, interruptsChild, "the CLI's stop_task control_request stops one subagent alone")
+}
+
+// InterruptChild takes the registry row key, which IS the CLI's task_id, and
+// the task index is this process's route to it. A key the index does not hold
+// reports ErrChildRouteNotReady -- the handler maps that sentinel to a retry --
+// and every shape of the one condition answers the same way: a key this
+// process never saw (a row of a previous process, as after a worker restart),
+// the empty key, a pre-start row still keyed by its spawn span, and a run
+// whose final notification already dropped its entry.
+func TestClaude_InterruptChildWithoutALiveTaskReturnsRetryable(t *testing.T) {
+	t.Parallel()
+
+	a := newTestAgent(agent.NewProviderServices(&agenttest.Sink{}))
+
+	require.ErrorIs(t, a.InterruptChild("task-unknown"), agent.ErrChildRouteNotReady)
+	require.ErrorIs(t, a.InterruptChild(""), agent.ErrChildRouteNotReady)
+	require.ErrorIs(t, a.InterruptChild("prestart:spawn-1"), agent.ErrChildRouteNotReady)
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
+	assert.True(t, a.tasks.knowsTask("task-1"), "a task_started of this process registers the route")
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","status":"completed"}`))
+	require.ErrorIs(t, a.InterruptChild("task-1"), agent.ErrChildRouteNotReady,
+		"a finished run has nothing to stop, and its row key alone is no route")
+}
+
 // A forwarded child envelope can arrive BEFORE its task_started -- the same
 // reorder recordPendingTaskEnd exists for on the result side. With no task id
 // there was no registry row, and a child's row IS its run: the subagent read

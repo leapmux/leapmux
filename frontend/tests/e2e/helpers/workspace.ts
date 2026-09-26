@@ -7,6 +7,13 @@ import { createTestDirectory } from './runDirectory'
 
 export interface WorkspaceFixture {
   workspaceId: string
+  /**
+   * The agent's working directory, when the fixture opened an agent.
+   *
+   * A tool-result image test writes a PNG here so the provider's own read tool
+   * can open it. A workspace-only fixture has none.
+   */
+  workingDir?: string
 }
 
 interface WorkspaceServer {
@@ -65,6 +72,6 @@ export async function withAgentWorkspace(
         ...options.openOptions?.optionValues,
       },
     })
-    await use(workspace)
+    await use({ ...workspace, workingDir })
   })
 }

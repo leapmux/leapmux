@@ -310,6 +310,62 @@ describe('parseScenarioSpec captures', () => {
   })
 })
 
+describe('parseScenarioSpec usage and rateLimits', () => {
+  it('keeps a stated usage block and leaves every absent count at the default', () => {
+    const spec = parseScenarioSpec({ steps: [{ text: 'ok', usage: { inputTokens: 12000 } }] })
+    expect(spec.steps[0]!.usage).toEqual({ inputTokens: 12000 })
+  })
+
+  it('keeps a rateLimits surface with only the required fields', () => {
+    const spec = parseScenarioSpec({
+      steps: [{ text: 'ok', rateLimits: { type: 'five_hour', status: 'exceeded' } }],
+    })
+    expect(spec.steps[0]!.rateLimits).toEqual({ type: 'five_hour', status: 'exceeded' })
+  })
+
+  it('keeps utilization and resetsAt when the step states them', () => {
+    const spec = parseScenarioSpec({
+      steps: [{
+        text: 'ok',
+        usage: { inputTokens: 50, outputTokens: 7, contextWindow: 200000 },
+        rateLimits: { type: 'weekly', status: 'allowed', utilization: 0.4, resetsAt: 1893456000 },
+      }],
+    })
+    expect(spec.steps[0]!.usage).toEqual({ inputTokens: 50, outputTokens: 7, contextWindow: 200000 })
+    expect(spec.steps[0]!.rateLimits).toEqual({ type: 'weekly', status: 'allowed', utilization: 0.4, resetsAt: 1893456000 })
+  })
+
+  it('refuses a negative or fractional token count', () => {
+    expect(() => parseScenarioSpec({ steps: [{ text: 'a', usage: { inputTokens: -1 } }] }))
+      .toThrow('usage inputTokens must be a non-negative integer')
+    expect(() => parseScenarioSpec({ steps: [{ text: 'a', usage: { outputTokens: 1.5 } }] }))
+      .toThrow('usage outputTokens must be a non-negative integer')
+    expect(() => parseScenarioSpec({ steps: [{ text: 'a', usage: { contextWindow: Number.NaN } }] }))
+      .toThrow('usage contextWindow must be a non-negative integer')
+  })
+
+  it('refuses a rateLimits object that misses type or status', () => {
+    expect(() => parseScenarioSpec({ steps: [{ text: 'a', rateLimits: { status: 'allowed' } }] }))
+      .toThrow('rateLimits type must be a non-empty string')
+    expect(() => parseScenarioSpec({ steps: [{ text: 'a', rateLimits: { type: 'five_hour' } }] }))
+      .toThrow('rateLimits status must be a non-empty string')
+  })
+
+  it('refuses a utilization outside 0 to 1 and a negative resetsAt', () => {
+    expect(() => parseScenarioSpec({ steps: [{ text: 'a', rateLimits: { type: 't', status: 's', utilization: 1.5 } }] }))
+      .toThrow('rateLimits utilization must be a number from 0 to 1')
+    expect(() => parseScenarioSpec({ steps: [{ text: 'a', rateLimits: { type: 't', status: 's', resetsAt: -1 } }] }))
+      .toThrow('rateLimits resetsAt must be a non-negative integer')
+  })
+
+  it('refuses usage or rateLimits on an error step, which carries no answer', () => {
+    expect(() => parseScenarioSpec({ steps: [{ error: { status: 500, message: 'boom' }, usage: { inputTokens: 1 } }] }))
+      .toThrow('cannot combine usage with an error')
+    expect(() => parseScenarioSpec({ steps: [{ error: { status: 500, message: 'boom' }, rateLimits: { type: 't', status: 's' } }] }))
+      .toThrow('cannot combine rateLimits with an error')
+  })
+})
+
 describe('resolveStepCaptures', () => {
   const body = {
     messages: [

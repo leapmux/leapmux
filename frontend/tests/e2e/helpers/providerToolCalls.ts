@@ -264,7 +264,19 @@ const TOOL_VOCABULARY = {
       name: 'Bash',
       arguments: { command, description: 'Run the scripted command in the background', run_in_background: true },
     }),
-    updateTodos: null,
+    // `TodoWrite` re-sends the WHOLE list on every call. `status` is the same
+    // vocabulary the sidebar draws (`pending`, `in_progress`, `completed`).
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'TodoWrite',
+      arguments: {
+        todos: steps.map(({ step, status }) => ({
+          content: step,
+          status,
+          activeForm: status === 'in_progress' ? `Working on: ${step}` : step,
+        })),
+      },
+    }),
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
@@ -399,7 +411,17 @@ const TOOL_VOCABULARY = {
       arguments: { agent_type: 'explore', name: identifierFrom(description), description, prompt },
     }),
     backgroundBash: null,
-    updateTodos: null,
+    // Copilot's `update_todo` takes a MARKDOWN checklist in `todos`. Only `x`
+    // (any case) reads as completed; every other marker stays pending.
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'update_todo',
+      arguments: {
+        todos: steps
+          .map(({ step, status }) => `- [${status === 'completed' ? 'x' : ' '}] ${step}`)
+          .join('\n'),
+      },
+    }),
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
@@ -427,7 +449,18 @@ const TOOL_VOCABULARY = {
       arguments: { description, prompt, report: report ?? '' },
     }),
     backgroundBash: null,
-    updateTodos: null,
+    // Cursor's `updateTodos` carries `todos` as a list. Its own status words
+    // (`TODO_STATUS_IN_PROGRESS`) fold onto the neutral ones the sidebar draws.
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'updateTodos',
+      arguments: {
+        todos: steps.map(({ step, status }) => ({
+          content: step,
+          status: status === 'in_progress' ? 'TODO_STATUS_IN_PROGRESS' : status === 'completed' ? 'TODO_STATUS_COMPLETED' : 'TODO_STATUS_PENDING',
+        })),
+      },
+    }),
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
@@ -445,7 +478,17 @@ const TOOL_VOCABULARY = {
     askUserQuestion: null,
     spawnSubagent: (id, { description, prompt }) => ({ id, name: 'delegate', arguments: { instructions: prompt, description } }),
     backgroundBash: null,
-    updateTodos: null,
+    // Goose's todo extension takes a MARKDOWN checklist (`- [x] done`). The
+    // extractor reads only `completed` and `pending` off that checklist.
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'todo__todo_write',
+      arguments: {
+        content: steps
+          .map(({ step, status }) => `- [${status === 'completed' ? 'x' : ' '}] ${step}`)
+          .join('\n'),
+      },
+    }),
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
@@ -601,7 +644,18 @@ const TOOL_VOCABULARY = {
       arguments: { description, prompt, subagent_type: 'general' },
     }),
     backgroundBash: null,
-    updateTodos: null,
+    // `todowrite` states the whole list, with `content`/`status`/`activeForm`.
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'todowrite',
+      arguments: {
+        todos: steps.map(({ step, status }) => ({
+          content: step,
+          status,
+          activeForm: status === 'in_progress' ? `Working on: ${step}` : step,
+        })),
+      },
+    }),
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
@@ -811,7 +865,18 @@ const TOOL_VOCABULARY = {
       arguments: { prompt, description },
     }),
     backgroundBash: null,
-    updateTodos: null,
+    // `todo_write` states the whole list as `todos`.
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'todo_write',
+      arguments: {
+        todos: steps.map(({ step, status }) => ({
+          content: step,
+          status,
+          activeForm: status === 'in_progress' ? `Working on: ${step}` : step,
+        })),
+      },
+    }),
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
@@ -828,7 +893,18 @@ const TOOL_VOCABULARY = {
     askUserQuestion: (id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } }),
     spawnSubagent: (id, { description, prompt }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose' } }),
     backgroundBash: null,
-    updateTodos: null,
+    // ZCode's `TodoWrite` states the whole list as `todos`.
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'TodoWrite',
+      arguments: {
+        todos: steps.map(({ step, status }) => ({
+          content: step,
+          status,
+          activeForm: status === 'in_progress' ? `Working on: ${step}` : step,
+        })),
+      },
+    }),
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
@@ -937,8 +1013,21 @@ const TOOL_VOCABULARY = {
       name: 'Bash',
       arguments: { command, description: 'Run the scripted command in the background', run_in_background: true },
     }),
-    updateTodos: null,
-    createGoal: null,
+    // `TodoWrite` replaces the whole list on every call. Its items take
+    // `content`, a required `activeForm` and `status`; the CLI reads the
+    // `newTodos` half as the list to save.
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'TodoWrite',
+      arguments: {
+        oldTodos: [],
+        newTodos: steps.map(({ step, status }) => ({ content: step, activeForm: step, status })),
+      },
+    }),
+    // `CreateGoal` takes the goal as `condition`, not `objective`.
+    createGoal: (id, objective) => ({ id, name: 'CreateGoal', arguments: { condition: objective } }),
+    // `UpdateGoal` REPLACES the condition; there is no complete or block verb.
+    // `/goal clear` is the user's route and has no tool form.
     completeGoal: null,
     blockGoal: null,
     mcpTool: null,
@@ -1119,10 +1208,18 @@ const TOOL_VOCABULARY = {
       name: 'Bash',
       arguments: { command, description: 'Run the scripted command in the background', run_in_background: true },
     }),
-    updateTodos: (id, todos) => ({ id, name: 'WriteTodos', arguments: { todos } }),
+    // `WriteTodos` replaces the whole list. Its items take `description` and
+    // `status` only — the schema refuses every other key.
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'WriteTodos',
+      arguments: { todos: steps.map(({ step, status }) => ({ description: step, status })) },
+    }),
     createGoal: (id, objective) => ({ id, name: 'CreateGoal', arguments: { objective } }),
-    completeGoal: id => ({ id, name: 'UpdateGoal', arguments: { status: 'completed' } }),
-    blockGoal: (id, reason) => ({ id, name: 'UpdateGoal', arguments: { status: 'blocked', reason } }),
+    // `UpdateGoal` takes one status word: `complete` or `blocked`. Its schema
+    // states no reason field, so the builder drops the one its caller holds.
+    completeGoal: id => ({ id, name: 'UpdateGoal', arguments: { status: 'complete' } }),
+    blockGoal: id => ({ id, name: 'UpdateGoal', arguments: { status: 'blocked' } }),
     mcpTool: null,
   },
   [AgentProvider.DROID]: {
@@ -1401,4 +1498,26 @@ export function diracEditAnchorCapture(content: string): Record<string, string> 
  */
 export function junieAnswerToolCall(id: string, fullAnswer: string): MockModelToolCall {
   return { id, name: 'answer', arguments: { full_answer: fullAnswer } }
+}
+
+/**
+ * Junie's `create_plan` tool runs its explore-plan subagent and returns a
+ * grounded plan. It takes no arguments: the task travels in the request.
+ *
+ * The explore-plan subagent asks the model again, so a scenario answers that
+ * turn with a `report_plan` call (see {@link junieReportPlanToolCall}). The
+ * resulting plan raises Junie's own plan-review request and fills the to-do
+ * sidebar with the plan's entries.
+ */
+export function junieCreatePlanToolCall(id: string): MockModelToolCall {
+  return { id, name: 'create_plan', arguments: {} }
+}
+
+/**
+ * Junie's `report_plan` tool, called by the explore-plan subagent, reports the
+ * plan text. Junie turns it into a plan proposal: a plan-review request and the
+ * plan's entries in the to-do sidebar.
+ */
+export function junieReportPlanToolCall(id: string, plan: string): MockModelToolCall {
+  return { id, name: 'report_plan', arguments: { plan } }
 }

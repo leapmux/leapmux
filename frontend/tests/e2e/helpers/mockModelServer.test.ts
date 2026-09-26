@@ -193,6 +193,66 @@ describe('createMockModelServer', () => {
     expect(anthropic).toContain('"type":"signature_delta"')
   })
 
+  // A test that asserts context usage needs a count other than 1, and a test of
+  // rate-limit state needs the headers a CLI parses. Both ride on one step.
+  it('reports the step usage and rate-limit surface on every protocol', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'usage-limits', {
+      steps: [{
+        text: 'Answered.',
+        usage: { inputTokens: 12000, outputTokens: 40, contextWindow: 200000 },
+        rateLimits: { type: 'five_hour', status: 'exceeded', utilization: 0.92, resetsAt: 1893456000 },
+      }, {
+        text: 'Answered.',
+        usage: { inputTokens: 12000, outputTokens: 40, contextWindow: 200000 },
+        rateLimits: { type: 'five_hour', status: 'exceeded', utilization: 0.92, resetsAt: 1893456000 },
+      }, {
+        text: 'Answered.',
+        usage: { inputTokens: 12000, outputTokens: 40, contextWindow: 200000 },
+        rateLimits: { type: 'five_hour', status: 'exceeded', utilization: 0.92, resetsAt: 1893456000 },
+      }],
+    })
+    const prompt = mockScenarioPrompt('usage-limits', 'Answer once.')
+
+    const completion = await chat(server, prompt)
+    expect(completion.headers.get('x-leapmux-e2e-ratelimit-type')).toBe('five_hour')
+    expect(completion.headers.get('x-leapmux-e2e-ratelimit-status')).toBe('exceeded')
+    expect(completion.headers.get('x-leapmux-e2e-ratelimit-utilization')).toBe('0.92')
+    expect(completion.headers.get('x-leapmux-e2e-ratelimit-resets-at')).toBe('1893456000')
+    // The pair Claude Code reads before it emits `rate_limit_event`.
+    expect(completion.headers.get('anthropic-ratelimit-unified-status')).toBe('exceeded')
+    expect(completion.headers.get('anthropic-ratelimit-unified-representative-claim')).toBe('five_hour')
+    expect(completion.headers.get('anthropic-ratelimit-unified-5h-utilization')).toBe('0.92')
+    expect(completion.headers.get('anthropic-ratelimit-unified-5h-reset')).toBe('1893456000')
+    expect(completion.headers.get('x-ratelimit-remaining-requests')).toBe('0')
+    const completionBody = await completion.text()
+    expect(completionBody).toContain('"prompt_tokens":12000')
+    expect(completionBody).toContain('"completion_tokens":40')
+    expect(completionBody).toContain('"total_tokens":12040')
+
+    const responses = await fetch(`${server.url}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ stream: true, input: [{ role: 'user', content: prompt }] }),
+    })
+    expect(responses.headers.get('anthropic-ratelimit-unified-status')).toBe('exceeded')
+    const responsesBody = await responses.text()
+    expect(responsesBody).toContain('"input_tokens":12000')
+    expect(responsesBody).toContain('"output_tokens":40')
+    expect(responsesBody).toContain('"total_tokens":12040')
+
+    const anthropic = await fetch(`${server.url}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ stream: true, messages: [{ role: 'user', content: prompt }] }),
+    })
+    expect(anthropic.headers.get('anthropic-ratelimit-unified-status')).toBe('exceeded')
+    expect(anthropic.headers.get('anthropic-ratelimit-unified-5h-utilization')).toBe('0.92')
+    const anthropicBody = await anthropic.text()
+    expect(anthropicBody).toContain('"input_tokens":12000')
+    expect(anthropicBody).toContain('"output_tokens":40')
+  })
+
   // Every model API defaults `stream` to false. A client that omits the flag
   // reads one JSON body, and an event stream in reply fails to parse.
   it('answers a request that states no stream flag with one JSON body in each protocol', async () => {

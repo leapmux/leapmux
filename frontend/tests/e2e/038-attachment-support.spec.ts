@@ -24,6 +24,20 @@ function createTestBinary(name = 'test.bin'): string {
   return path
 }
 
+/** Create a minimal PDF: header, one empty page, EOF. Enough for a MIME sniff. */
+function createTestPdf(name = 'test.pdf'): string {
+  const path = join(createTestDirectory('attachment-'), name)
+  writeFileSync(path, Buffer.from('%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 20 20]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n', 'utf8'))
+  return path
+}
+
+/** Create a plain text file for the text-attachment path. */
+function createTestText(name = 'test.txt'): string {
+  const path = join(createTestDirectory('attachment-'), name)
+  writeFileSync(path, 'leapmux text attachment fixture\n')
+  return path
+}
+
 test.describe('Attachment Support', () => {
   test('attach item opens file dialog and attachment appears in strip', async ({ page, authenticatedWorkspace }) => {
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
@@ -186,6 +200,41 @@ test.describe('Attachment Support', () => {
     // A toast should have been shown in the DOM (output element with .toast-message).
     const toast = page.locator('output .toast-message')
     await expect(toast).toContainText('binary')
+  })
+
+  // Claude Code is one of the providers the matrix marks for PDF attachments.
+  // The accept attribute and the kind classifier both have unit coverage; this
+  // is the composer path end to end.
+  test('a PDF attaches and sends', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    const fileInput = page.locator('[data-testid="file-input"]')
+    await fileInput.setInputFiles(createTestPdf('spec.pdf'))
+    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
+    await expect(page.locator('[data-testid="attachment-pill"]').first()).toContainText('spec.pdf')
+
+    await editor.click()
+    await page.keyboard.type('Read the attached PDF.')
+    await page.keyboard.press('Meta+Enter')
+    await expect(editor).toHaveText('')
+    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(0)
+  })
+
+  test('a text file attaches and sends', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    const fileInput = page.locator('[data-testid="file-input"]')
+    await fileInput.setInputFiles(createTestText('notes.txt'))
+    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
+    await expect(page.locator('[data-testid="attachment-pill"]').first()).toContainText('notes.txt')
+
+    await editor.click()
+    await page.keyboard.type('Summarize the attached notes.')
+    await page.keyboard.press('Meta+Enter')
+    await expect(editor).toHaveText('')
+    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(0)
   })
 
   test('attachment-only message (no text) can be sent', async ({ page, authenticatedWorkspace }) => {

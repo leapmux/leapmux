@@ -302,6 +302,72 @@ describe('updateTodosToolCall', () => {
     expect(call.name).toBe('todo_write')
     expect(call.arguments).toEqual({ todos: [{ content: 'First', status: 'completed' }, { content: 'Second', status: 'in_progress' }] })
   })
+
+  // Claude, ZCode and Reasonix state the whole list as `todos` with
+  // `content`/`status`/`activeForm`. The sidebar draws the neutral statuses,
+  // and `activeForm` is a display string the schema allows.
+  it('writes the Claude list as TodoWrite todos', () => {
+    expect(updateTodosToolCall(AgentProvider.CLAUDE_CODE, 'call-1', [
+      { step: 'First', status: 'completed' },
+      { step: 'Second', status: 'in_progress' },
+    ])).toEqual({
+      id: 'call-1',
+      name: 'TodoWrite',
+      arguments: {
+        todos: [
+          { content: 'First', status: 'completed', activeForm: 'First' },
+          { content: 'Second', status: 'in_progress', activeForm: 'Working on: Second' },
+        ],
+      },
+    })
+  })
+
+  it('writes the ZCode and Reasonix lists in their own tool names', () => {
+    expect(updateTodosToolCall(AgentProvider.ZCODE, 'call-1', [{ step: 'One', status: 'pending' }]).name).toBe('TodoWrite')
+    expect(updateTodosToolCall(AgentProvider.REASONIX, 'call-1', [{ step: 'One', status: 'pending' }]).name).toBe('todo_write')
+  })
+
+  // Goose and Copilot take a markdown checklist. Only `x` reads as completed;
+  // every other marker stays pending. Goose's field is `content`; Copilot's is
+  // `todos`.
+  it('writes the Goose checklist in content, and the Copilot checklist in todos', () => {
+    const steps = [
+      { step: 'First', status: 'completed' as const },
+      { step: 'Second', status: 'pending' as const },
+      { step: 'Third', status: 'in_progress' as const },
+    ]
+    expect(updateTodosToolCall(AgentProvider.GOOSE, 'call-1', steps)).toEqual({
+      id: 'call-1',
+      name: 'todo__todo_write',
+      arguments: { content: '- [x] First\n- [ ] Second\n- [ ] Third' },
+    })
+    expect(updateTodosToolCall(AgentProvider.GITHUB_COPILOT, 'call-1', steps)).toEqual({
+      id: 'call-1',
+      name: 'update_todo',
+      arguments: { todos: '- [x] First\n- [ ] Second\n- [ ] Third' },
+    })
+  })
+
+  // OpenCode's `todowrite` takes the same `content`/`status`/`activeForm` list
+  // as Claude. Cursor folds the neutral statuses onto its own enum words.
+  it('writes the OpenCode list as todowrite, and the Cursor list as updateTodos', () => {
+    expect(updateTodosToolCall(AgentProvider.OPENCODE, 'call-1', [{ step: 'One', status: 'pending' }]).name).toBe('todowrite')
+    expect(updateTodosToolCall(AgentProvider.CURSOR, 'call-1', [
+      { step: 'First', status: 'completed' },
+      { step: 'Second', status: 'in_progress' },
+      { step: 'Third', status: 'pending' },
+    ])).toEqual({
+      id: 'call-1',
+      name: 'updateTodos',
+      arguments: {
+        todos: [
+          { content: 'First', status: 'TODO_STATUS_COMPLETED' },
+          { content: 'Second', status: 'TODO_STATUS_IN_PROGRESS' },
+          { content: 'Third', status: 'TODO_STATUS_PENDING' },
+        ],
+      },
+    })
+  })
 })
 
 describe('editToolCall', () => {

@@ -91,6 +91,44 @@ export interface MockModelTextStream {
   delayMs: number
 }
 
+/**
+ * Token counts a step reports in its usage block.
+ *
+ * Every field is optional. An absent field keeps the mock's default of 1, so a
+ * step that only needs a bigger `inputTokens` need not state the rest.
+ */
+export interface MockModelUsage {
+  inputTokens?: number
+  outputTokens?: number
+  /**
+   * Context-window size the client may pair with `inputTokens`.
+   *
+   * Some CLIs surface context usage only when the response or their own catalog
+   * states a window. The mock cannot change a catalog; this field feeds the
+   * response shapes that carry a window alongside usage.
+   */
+  contextWindow?: number
+}
+
+/**
+ * Rate-limit surface on one answer.
+ *
+ * The mock writes the standard provider response headers, so a CLI that parses
+ * them can emit its own rate-limit state. A step that wants the request refused
+ * states `error` with status 429 instead; that path is separate because an
+ * error answer carries no output.
+ */
+export interface MockModelRateLimits {
+  /** `five_hour`, `weekly`, `primary`, `secondary`, … The provider's own vocabulary. */
+  type: string
+  /** `allowed`, `exceeded`, `rate_limited`, `rejected`, … */
+  status: string
+  /** Fraction of the window used, from 0 to 1. */
+  utilization?: number
+  /** Unix seconds when the window resets. */
+  resetsAt?: number
+}
+
 /** One model answer. A step carries output or an error, never both. */
 export interface MockModelStep {
   /** The thinking the model reports before its answer. */
@@ -102,6 +140,10 @@ export interface MockModelStep {
   delayMs?: number
   /** Deliver `text` progressively. See `MockModelTextStream`. */
   stream?: MockModelTextStream
+  /** Token counts on the usage block. Defaults to 1 input and 1 output. */
+  usage?: MockModelUsage
+  /** Rate-limit headers and body fields on the answer. */
+  rateLimits?: MockModelRateLimits
   /**
    * Values that the answer copies from the request, keyed by placeholder name.
    *
@@ -333,6 +375,12 @@ function parseStep(value: unknown, label: string): MockModelStep {
   const captures = parseCaptures(value.captures, label)
   if (captures && error)
     throw new Error(`Model ${label} cannot combine captures with an error`)
+  const usage = parseUsage(value.usage, label)
+  if (usage && error)
+    throw new Error(`Model ${label} cannot combine usage with an error`)
+  const rateLimits = parseRateLimits(value.rateLimits, label)
+  if (rateLimits && error)
+    throw new Error(`Model ${label} cannot combine rateLimits with an error`)
   const step: MockModelStep = {
     ...(typeof value.reasoning === 'string' ? { reasoning: value.reasoning } : {}),
     ...(typeof value.text === 'string' ? { text: value.text } : {}),
@@ -340,6 +388,8 @@ function parseStep(value: unknown, label: string): MockModelStep {
     ...(error ? { error } : {}),
     ...(delayMs === undefined ? {} : { delayMs }),
     ...(stream === undefined ? {} : { stream }),
+    ...(usage === undefined ? {} : { usage }),
+    ...(rateLimits === undefined ? {} : { rateLimits }),
     ...(captures === undefined ? {} : { captures }),
   }
   if (captures) {
@@ -475,6 +525,48 @@ function parseDelay(value: unknown, label: string): number | undefined {
   if (!Number.isInteger(value) || Number(value) < 0 || Number(value) > MAX_STEP_DELAY_MS)
     throw new Error(`Model ${label} delayMs must be an integer from 0 to ${MAX_STEP_DELAY_MS}`)
   return Number(value)
+}
+
+function parseUsage(value: unknown, label: string): MockModelUsage | undefined {
+  if (value === undefined)
+    return undefined
+  if (!isRecord(value))
+    throw new Error(`Model ${label} usage must be an object`)
+  const usage: MockModelUsage = {}
+  for (const key of ['inputTokens', 'outputTokens', 'contextWindow'] as const) {
+    const raw = value[key]
+    if (raw === undefined)
+      continue
+    if (!Number.isInteger(raw) || Number(raw) < 0)
+      throw new Error(`Model ${label} usage ${key} must be a non-negative integer`)
+    usage[key] = Number(raw)
+  }
+  return usage
+}
+
+function parseRateLimits(value: unknown, label: string): MockModelRateLimits | undefined {
+  if (value === undefined)
+    return undefined
+  if (!isRecord(value))
+    throw new Error(`Model ${label} rateLimits must be an object`)
+  const type = value.type
+  const status = value.status
+  if (typeof type !== 'string' || !type)
+    throw new Error(`Model ${label} rateLimits type must be a non-empty string`)
+  if (typeof status !== 'string' || !status)
+    throw new Error(`Model ${label} rateLimits status must be a non-empty string`)
+  const rateLimits: MockModelRateLimits = { type, status }
+  if (value.utilization !== undefined) {
+    if (typeof value.utilization !== 'number' || Number(value.utilization) < 0 || Number(value.utilization) > 1)
+      throw new Error(`Model ${label} rateLimits utilization must be a number from 0 to 1`)
+    rateLimits.utilization = value.utilization
+  }
+  if (value.resetsAt !== undefined) {
+    if (!Number.isInteger(value.resetsAt) || Number(value.resetsAt) < 0)
+      throw new Error(`Model ${label} rateLimits resetsAt must be a non-negative integer`)
+    rateLimits.resetsAt = Number(value.resetsAt)
+  }
+  return rateLimits
 }
 
 function parseToolCall(value: unknown, label: string, toolIndex: number): MockModelToolCall {

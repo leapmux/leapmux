@@ -698,7 +698,7 @@ Every provider runs the core workflow: chat, streamed tool calls, permission pro
     </tr>
     <tr>
       <td>Send to a subagent</td>
-      <td>❌</td>
+      <td><a href="#note-36" aria-label="Note 36">❌³⁶</a></td>
       <td>❌</td>
       <td>❌</td>
       <td>❌</td>
@@ -711,7 +711,7 @@ Every provider runs the core workflow: chat, streamed tool calls, permission pro
     </tr>
     <tr>
       <td>Interrupt a subagent</td>
-      <td>❌</td>
+      <td><a href="#note-16" aria-label="Note 16">✅¹⁶</a></td>
       <td>✅</td>
       <td>❌</td>
       <td>❌</td>
@@ -984,7 +984,7 @@ Every provider runs the core workflow: chat, streamed tool calls, permission pro
       <td>✅</td>
       <td>✅</td>
       <td>✅</td>
-      <td>✅</td>
+      <td><a href="#note-37" aria-label="Note 37">❌³⁷</a></td>
     </tr>
     <tr>
       <td>Model</td>
@@ -1114,16 +1114,16 @@ Every provider runs the core workflow: chat, streamed tool calls, permission pro
       <td>❌</td>
       <td>❌</td>
       <td>❌</td>
-      <td>✅</td>
+      <td><a href="#note-38" aria-label="Note 38">❌³⁸</a></td>
     </tr>
     <tr>
       <td>Interrupt a subagent</td>
       <td>❌</td>
       <td>✅</td>
       <td>❌</td>
-      <td><a href="#note-16" aria-label="Note 16">❌¹⁶</a></td>
+      <td>✅</td>
       <td>❌</td>
-      <td><a href="#note-16" aria-label="Note 16">❌¹⁶</a></td>
+      <td>✅</td>
       <td>❌</td>
       <td>❌</td>
       <td>❌</td>
@@ -1189,10 +1189,10 @@ Every provider runs the core workflow: chat, streamed tool calls, permission pro
     <tr>
       <td>PDF attachments</td>
       <td>❌</td>
-      <td>✅</td>
+      <td>❌</td>
       <td>❌</td>
       <td>✅</td>
-      <td>✅</td>
+      <td>❌</td>
       <td><a href="#note-25" aria-label="Note 25">✅²⁵</a></td>
     </tr>
     <tr>
@@ -1314,12 +1314,12 @@ Every provider runs the core workflow: chat, streamed tool calls, permission pro
     </tr>
     <tr>
       <td>Bypass permissions shortcut</td>
+      <td><a href="#note-37" aria-label="Note 37">❌³⁷</a></td>
       <td>✅</td>
+      <td><a href="#note-37" aria-label="Note 37">❌³⁷</a></td>
+      <td><a href="#note-37" aria-label="Note 37">❌³⁷</a></td>
       <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
+      <td><a href="#note-37" aria-label="Note 37">❌³⁷</a></td>
     </tr>
     <tr>
       <td>Model</td>
@@ -1404,11 +1404,11 @@ Every provider runs the core workflow: chat, streamed tool calls, permission pro
     </tr>
     <tr>
       <td>Send to a subagent</td>
-      <td>✅</td>
-      <td>✅</td>
+      <td><a href="#note-38" aria-label="Note 38">❌³⁸</a></td>
+      <td><a href="#note-38" aria-label="Note 38">❌³⁸</a></td>
       <td>❌</td>
-      <td>✅</td>
-      <td>✅</td>
+      <td><a href="#note-38" aria-label="Note 38">❌³⁸</a></td>
+      <td><a href="#note-38" aria-label="Note 38">❌³⁸</a></td>
       <td>❌</td>
     </tr>
     <tr>
@@ -1469,7 +1469,7 @@ Every provider runs the core workflow: chat, streamed tool calls, permission pro
 13. <span class="note-anchor" id="note-13"></span>Amp's Mode picks the model and the effort, so Amp offers no Model or Reasoning effort. A thread keeps Amp's mode of its first message; start a new session to use another mode. Cursor's effort rides its model ids, so Cursor offers no Reasoning effort. Factory Droid's effort is `none`, `low`, `medium` or `high`. ZCode's own `auto` mode is not offered: the shipped build denies every tool call under it.
 14. <span class="note-anchor" id="note-14"></span>Claude Code (Haiku), GitHub Copilot, ZCode, Kiro and Cline offer Reasoning effort only when the chosen model offers levels.
 15. <span class="note-anchor" id="note-15"></span>Claude Code, Goose, Kilo, Qwen Code and Grok Build take a goal only when their CLI advertises its `goal` command. Kimi Code takes one only while the engine's goal feature runs. Reasonix sets a goal only in Goal mode; otherwise it can only clear one. Kiro needs a live goal run for clear, pause and resume, and works on a goal for at most five rounds before it pauses it; resume the goal to continue. Qwen Code's `/loop` command and its scheduled prompts are off in LeapMux.
-16. <span class="note-anchor" id="note-16"></span>The worker can stop these subagents, but the subagent tab shows no Interrupt button.
+16. <span class="note-anchor" id="note-16"></span>The Interrupt control of a subagent tab is what `SupportsChildInterrupt` reports. Claude Code stops a child through its `stop_task` control request, on the CLI's own task id. A provider that reports no interrupt leaves the child tab without that control.
 17. <span class="note-anchor" id="note-17"></span>Cursor's protocol surface exposes no steer method. Goose and Reasonix steer only when the CLI advertises a steer method. Qwen Code takes a steer at its next tool gap.
 18. <span class="note-anchor" id="note-18"></span>A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow as** offers **Once**, **Session**, **Command rule**, or **Host rule**. ZCode's "always" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.
 19. <span class="note-anchor" id="note-19"></span>Kiro's prompts follow its own rules. Its scope applies to **Deny** as well: **Always** with **Deny** refuses the same call in every workspace until you remove the rule in Kiro's settings. Kiro runs the working directory's hooks (`.kiro/hooks/`) without asking. In Supervised Autopilot, a turn ends with a review of its file changes: **Allow** keeps them, **Deny** restores each file. Its **Content Collection** setting decides whether Kiro may use your session content to improve its service.
@@ -1489,3 +1489,6 @@ Every provider runs the core workflow: chat, streamed tool calls, permission pro
 33. <span class="note-anchor" id="note-33"></span>Dirac and Fast Agent nest a subagent under the parent tool call. The child transcript is readable, but the subagent is one card in the parent's transcript rather than a session of its own.
 34. <span class="note-anchor" id="note-34"></span>Junie advertises steering (`_meta.steering.supported`) but offers no steer method in its ACP catalog. LeapMux steers by queueing a follow-up prompt, which starts the next turn rather than inserting into the running one.
 35. <span class="note-anchor" id="note-35"></span>Letta Code's `Workflow` tool exists in the toolset but emits no workflow grouping events on the wire. A background process summary can carry `kind:"workflow"`, and LeapMux draws no group from it.
+36. <span class="note-anchor" id="note-36"></span>Claude Code's own TUI can send a message to a Task subagent (it queues the message while the child runs, or resumes the child when it is idle). LeapMux cannot: it drives Claude over stream-json stdin, whose user message carries no child or task id, so a typed message always lands on the root session. The child tab is therefore read-only. Closing this needs a wire path that injects into a subagent conversation.
+37. <span class="note-anchor" id="note-37"></span>The Bypass permissions shortcut is the plus-menu / banner control that switches the session to the provider's own bypass mode. A provider whose plugin declares no permission preset renders no shortcut, whatever its CLI can do. CodeBuddy, Junie, Dirac, Qoder and Fast Agent are in that group today.
+38. <span class="note-anchor" id="note-38"></span>Only Kimi Code and MiMo Code accept a typed message on a subagent tab today. Junie, Letta Code, Qoder CLI and Factory Droid state on the wire that a child takes no further input, so their child tabs are read-only. Earlier drafts of this table marked them ✅; that was wrong.

@@ -204,3 +204,10 @@ func (claudeProvider) PermissionModeFromRawInput(content string) (string, bool) 
 	}
 	return msg.Request.Mode, true
 }
+
+// SupportsChildInterrupt is true: a subagent's tab can stop its running turn,
+// through the stop_task control_request. Claude exposes no wire path that
+// sends input to a subagent, so SupportsChildSteering keeps its default false
+// and this provider implements ChildInterrupter alone. See InterruptChild in
+// subagent.go.
+func (claudeProvider) SupportsChildInterrupt() bool { return true }
