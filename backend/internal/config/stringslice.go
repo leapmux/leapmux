@@ -2,9 +2,10 @@ package config
 
 import "strings"
 
-// StringSliceFlag is a repeatable string flag. Each Set call appends one value
-// verbatim, so a value that contains the separator the environment variable
-// uses stays whole: `--listen "unix:/tmp/a,b.sock"` is one address, not two.
+// StringSliceFlag is a repeatable string flag. Each Set call appends one
+// value, taking the whole token except its leading and trailing spaces, so a
+// value that contains the separator the environment variable uses stays
+// whole: `--listen "unix:/tmp/a,b.sock"` is one address, not two.
 //
 // String joins the values with commas, which is the spelling the flag's help
 // line and FlagProvider.Value.String() read. Get returns the slice itself,
@@ -24,11 +25,14 @@ func NewStringSliceFlag(target *[]string, def []string) *StringSliceFlag {
 	return &StringSliceFlag{target: target, def: def}
 }
 
-// Set appends one value. It never splits: the separator is an environment
-// variable convention, not a flag one.
+// Set appends one value. It never splits -- the separator is an environment
+// variable convention, not a flag one -- but it does trim the surrounding
+// spaces, so `--listen " :4327"` and `LEAPMUX_HUB_LISTEN=":4327"` name the
+// same address. The interior of a value is untouched: a socket path that
+// holds a space keeps it.
 func (f *StringSliceFlag) Set(s string) error {
 	f.set = true
-	*f.target = append(*f.target, s)
+	*f.target = append(*f.target, strings.TrimSpace(s))
 	return nil
 }
 
@@ -51,7 +55,8 @@ func (f *StringSliceFlag) Get() []string {
 // SplitListValue splits an environment variable's value into list entries.
 // The separator is a comma, which a socket path almost never holds; a path
 // that does goes in the config file or a repeated flag, where it needs no
-// separator at all.
+// separator at all. Each piece loses its leading and trailing spaces and
+// keeps the rest, so `" foo , bar baz "` is the list ["foo", "bar baz"].
 func SplitListValue(value string) []string {
 	if value == "" {
 		return nil

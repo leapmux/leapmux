@@ -38,13 +38,46 @@ func TestStringSliceFlag_ReportsTheJoinedString(t *testing.T) {
 }
 
 // SplitListValue is the ENV side: the separator is a comma there, empty is
-// no list, and the pieces are trimmed.
+// no list, and each piece loses its LEADING and TRAILING spaces. The middle
+// of a value is untouched, so a socket path or a named pipe that holds a
+// space keeps it: " foo , bar baz " is the list ["foo", "bar baz"].
 func TestSplitListValue(t *testing.T) {
 	assert.Nil(t, SplitListValue(""))
 	assert.Equal(t, []string{":8080", ":9090"}, SplitListValue(":8080,:9090"))
 	assert.Equal(t, []string{":8080", "unix:/tmp/x.sock"}, SplitListValue(":8080, unix:/tmp/x.sock"))
 	assert.Equal(t, []string{"unix:/tmp/a", "b.sock"}, SplitListValue("unix:/tmp/a,b.sock"),
 		"the env form splits on commas even inside one path")
+	assert.Equal(t, []string{"foo", "bar baz"}, SplitListValue(" foo , bar baz "),
+		"leading and trailing spaces go; the space in the middle of 'bar baz' stays")
+}
+
+// Set trims the same way: one shell token loses its leading and trailing
+// spaces and keeps the rest, so the flag and the environment name an address
+// alike. A token of spaces alone trims to an empty value rather than
+// vanishing, so the caller's validation rejects it at its index instead of
+// the list silently losing an entry.
+func TestStringSliceFlag_SetTrimsTheEndsAndKeepsTheMiddle(t *testing.T) {
+	var target []string
+	f := NewStringSliceFlag(&target, nil)
+
+	require.NoError(t, f.Set(" :4327 "))
+	require.NoError(t, f.Set("bar baz"))
+	require.NoError(t, f.Set("unix:/tmp/my dir/s.sock"))
+	require.NoError(t, f.Set("   "))
+	assert.Equal(t, []string{":4327", "bar baz", "unix:/tmp/my dir/s.sock", ""}, target)
+}
+
+// String reports the TRIMMED spelling, so the help line and the value
+// FlagProvider stores name the address the hub will actually bind rather than
+// the one the operator typed with stray spaces.
+func TestStringSliceFlag_ReportsTheTrimmedSpelling(t *testing.T) {
+	var target []string
+	f := NewStringSliceFlag(&target, nil)
+
+	require.NoError(t, f.Set(" :4327 "))
+	require.NoError(t, f.Set(" :9090"))
+	assert.Equal(t, ":4327,:9090", f.String())
+	assert.Equal(t, []string{":4327", ":9090"}, f.Get())
 }
 
 // A separator run keeps its empty pieces rather than dropping them. Dropping
