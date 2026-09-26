@@ -46,3 +46,15 @@ func TestSplitListValue(t *testing.T) {
 	assert.Equal(t, []string{"unix:/tmp/a", "b.sock"}, SplitListValue("unix:/tmp/a,b.sock"),
 		"the env form splits on commas even inside one path")
 }
+
+// A separator run keeps its empty pieces rather than dropping them. Dropping
+// them would turn a typo into "no entry here", which the caller reads as the
+// platform default and binds more than the operator asked for; keeping them
+// fails validation at the entry's index instead.
+func TestSplitListValue_KeepsEmptyPiecesSoATypoFailsRatherThanBindsTheDefaults(t *testing.T) {
+	assert.Equal(t, []string{"", ""}, SplitListValue(","))
+	assert.Equal(t, []string{"", "", ""}, SplitListValue(",,"))
+	assert.Equal(t, []string{":8080", ""}, SplitListValue(":8080,"))
+	assert.Equal(t, []string{"", ":8080"}, SplitListValue(" , :8080"))
+	assert.Equal(t, []string{"", "", ""}, SplitListValue(" , , "))
+}

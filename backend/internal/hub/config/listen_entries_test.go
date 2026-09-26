@@ -232,6 +232,8 @@ func TestLoad_ListenEntryThatIsNeitherKindFailsWithItsIndex(t *testing.T) {
 		{"missing target after unix", "unix:"},
 		{"missing target after npipe", "npipe:"},
 		{"bare string with no scheme or port", "just-a-name"},
+		{"an empty entry", ""},
+		{"a whitespace-only entry", "   "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, err := Load([]string{"-listen", ":8080", "-listen", tc.arg})
