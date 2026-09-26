@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import { Buffer } from 'node:buffer'
 import { getUserId } from './helpers/api'
+import { steerQueuedInput } from './helpers/steer'
 import { COARSE_POINTER_METRICS, touchDragGripOnto } from './helpers/touch'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, loginViaToken, openWorkspace, sendMessage, waitForAgentIdle, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, processTest as test } from './process-control-fixtures'
@@ -293,14 +294,10 @@ test.describe('agent input queue', () => {
     await modelScript.waitForSteps()
     await expect(page.getByTestId('interrupt-button')).toBeVisible()
 
-    await sendMessage(page, modelScript.prompt('Stop the report now and reply with the single word STEERED.'))
-    const queued = page.getByTestId(/^queued-input-/).filter({ hasText: 'Stop the report' })
-    await expect(queued).toBeVisible()
-    const steer = queued.getByRole('button', { name: 'Steer' })
-    await expect(steer).toBeVisible()
-
-    await steer.click()
-    await expect(queued).toHaveCount(0)
+    await steerQueuedInput(page, {
+      message: modelScript.prompt('Stop the report now and reply with the single word STEERED.'),
+      match: 'Stop the report',
+    })
   })
 
   test('spaces the pause banner, the queue, the attachments and the composer alike', async ({ page, authenticatedWorkspace }) => {

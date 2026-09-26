@@ -1,11 +1,12 @@
 import { expectAttachmentOutcome } from './helpers/attachments'
+import { expectContextUsage } from './helpers/contextUsage'
 import {
   ARITHMETIC_ANSWER_TEXT,
   ARITHMETIC_PROMPT,
   sendMessage,
   waitForAgentIdle,
 } from './helpers/ui'
-import { expect, LETTA_E2E_SKIP_REASON, LETTA_TITLE_RULE, lettaTest } from './letta-fixtures'
+import { LETTA_E2E_SKIP_REASON, LETTA_TITLE_RULE, lettaTest } from './letta-fixtures'
 
 lettaTest.skip(!!LETTA_E2E_SKIP_REASON, LETTA_E2E_SKIP_REASON || '')
 
@@ -30,22 +31,15 @@ lettaTest.describe('Letta Code attachments and context usage', () => {
   lettaTest('the agent info grid follows the usage the model reports', async ({ authenticatedLettaWorkspace, page, modelScript }) => {
     void authenticatedLettaWorkspace
     await modelScript.rule(LETTA_TITLE_RULE)
+    const usage = { inputTokens: 12000, outputTokens: 40 }
     await modelScript.queue({
       text: ARITHMETIC_ANSWER_TEXT,
-      usage: { inputTokens: 12000, outputTokens: 40 },
+      usage,
     })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
     await waitForAgentIdle(page, 180_000)
 
-    const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
-    await expect(infoTrigger).toBeVisible()
-    await infoTrigger.click()
-    const popover = page.locator('[data-testid="agent-info-popover"]')
-    await expect(popover).toBeVisible()
-    const grid = popover.getByTestId('context-usage-grid')
-    await expect(grid).toBeVisible()
-    await expect(grid).toContainText('12')
-    await expect(grid).toContainText('40')
+    await expectContextUsage(page, usage)
   })
 })

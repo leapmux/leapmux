@@ -83,6 +83,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return nil, err
 	}
 
+	effort := opts.Effort()
 	baseArgs := []string{
 		"--config-dir", qoderConfigRoot(opts),
 		"-w", opts.WorkingDir,
@@ -102,6 +103,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	if model := opts.Model(); model != "" {
 		baseArgs = append(baseArgs, "-m", model)
 	}
+	baseArgs = append(baseArgs, qoderEffortArgs(effort)...)
 	baseArgs = append(baseArgs, sessionArgs...)
 
 	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
@@ -128,6 +130,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		opts:           opts,
 		model:          opts.Model(),
 		permissionMode: permissionModeWire(opts.PermissionMode()),
+		effort:         effort,
 		pendingControl: make(map[string]chan<- qoderControlResult),
 	}
 	if opts.ResumeSessionID != "" {
@@ -164,6 +167,18 @@ func qoderConfigRoot(opts agent.Options) string {
 		return opts.HomeDir + "/.qoder"
 	}
 	return ".qoder"
+}
+
+// qoderEffortArgs returns the `--reasoning-effort` pair for one level.
+//
+// Auto and the empty value send no flag at all, so the CLI keeps whatever
+// default the model resolves. Every other level is one of the words Qoder's own
+// effort validator admits.
+func qoderEffortArgs(effort string) []string {
+	if effort == "" || effort == agent.EffortAuto {
+		return nil
+	}
+	return []string{"--reasoning-effort", effort}
 }
 
 // qoderPermissionFlag maps the wire mode onto the snake_case flag vocabulary.

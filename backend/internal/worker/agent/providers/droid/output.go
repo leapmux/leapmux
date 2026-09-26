@@ -115,6 +115,13 @@ func (a *Agent) handleNotification(line []byte, env *droidEnvelope) {
 	case contracts.DroidToolNotificationToolResult:
 		a.onToolResult(payload)
 	case contracts.DroidNotificationAgentTurnCompleted:
+		// A turn end for a CHILD session disarms that child's flag, not the
+		// main turn. The notification envelope names the session.
+		if params.SessionID != "" && params.SessionID != a.mainSessionID() {
+			a.disarmChildTurn(params.SessionID)
+			a.persistNotification(payload)
+			return
+		}
 		a.onAgentTurnCompleted(payload)
 	case contracts.DroidNotificationSettingsUpdated:
 		a.onSettingsUpdated(payload)
@@ -124,6 +131,8 @@ func (a *Agent) handleNotification(line []byte, env *droidEnvelope) {
 		a.persistNotification(payload)
 	case contracts.DroidNotificationError:
 		a.onError(payload)
+	case droidNotificationChildSessionAvailable:
+		a.onChildSessionAvailable(payload)
 	default:
 		// An unknown notification type must move nothing. Persist it so the
 		// browser can still draw it, and leave the turn flag alone.
@@ -143,6 +152,31 @@ func (a *Agent) persistRow(payload []byte, span agent.SpanInfo) {
 	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload}, span); err != nil {
 		slog.Debug("droid: persist message failed", "agent_id", a.AgentID(), "error", err)
 	}
+}
+
+// onChildSessionAvailable arms the child's turn and persists the announcement.
+// The child starts running as soon as its parent's Task tool spawns it, so the
+// announcement marks the turn active.
+func (a *Agent) onChildSessionAvailable(payload []byte) {
+	var n struct {
+		Type           string `json:"type"`
+		ChildSessionID string `json:"childSessionId"`
+	}
+	if err := json.Unmarshal(payload, &n); err != nil {
+		slog.Debug("droid: bad child_session_available", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	if n.ChildSessionID != "" {
+		a.armChildTurn(n.ChildSessionID)
+	}
+	a.persistNotification(payload)
+}
+
+// mainSessionID returns the session id of the main conversation.
+func (a *Agent) mainSessionID() string {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return a.sessionID
 }
 
 // droidWorkingState is the payload of droid_working_state_changed.

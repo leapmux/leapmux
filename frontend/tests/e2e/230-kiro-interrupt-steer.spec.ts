@@ -4,7 +4,8 @@ import process from 'node:process'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { isAlive, listProcesses, newProcessesMatching, withDescendants } from './helpers/processTree'
 import { bashToolCall } from './helpers/providerToolCalls'
-import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { expectSteeredReply, steerQueuedInput } from './helpers/steer'
+import { openWorkspace, sendMessage, waitForAgentIdle } from './helpers/ui'
 import { closeAgentViaAPI } from './helpers/worktree'
 import { expect, KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from './kiro-fixtures'
 
@@ -67,12 +68,10 @@ kiroTest.describe('Kiro interrupt, steering and process lifetime', () => {
       await modelScript.waitForSteps(1)
       await expect(page.locator('[data-testid="interrupt-button"]:visible')).toBeVisible()
 
-      await sendMessage(page, modelScript.prompt('Reply with the single word STEERED when the command ends.'))
-      const queued = page.getByTestId(/^queued-input-/).filter({ hasText: 'Reply with the single word STEERED' })
-      await expect(queued).toBeVisible()
-      await queued.getByRole('button', { name: 'Steer' }).click()
-      // The row leaves the queue once the worker sent the steer to Kiro.
-      await expect(queued).toHaveCount(0)
+      await steerQueuedInput(page, {
+        message: modelScript.prompt('Reply with the single word STEERED when the command ends.'),
+        match: 'Reply with the single word STEERED',
+      })
     }
     finally {
       // Also on a failure, so the command of the agent ends.
@@ -84,7 +83,7 @@ kiroTest.describe('Kiro interrupt, steering and process lifetime', () => {
     // The steer rode the same turn: the request after the command carries it.
     const afterCommand = (await modelScript.status()).requests.find(request => request.stepIndex === 1)
     expect(JSON.stringify(afterCommand?.body)).toContain('Reply with the single word STEERED')
-    await expect(assistantBubbles(page).filter({ hasText: 'STEERED' }).first()).toBeVisible()
+    await expectSteeredReply(page, 'STEERED', 'first')
   })
 
   kiroTest('stops the whole process tree when the agent closes', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

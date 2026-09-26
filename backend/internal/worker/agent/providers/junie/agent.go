@@ -3,6 +3,8 @@ package junie
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -12,6 +14,17 @@ import (
 // Agent manages one Junie ACP process.
 type Agent struct {
 	acp.Base
+
+	// goalMu guards the goal-report bookkeeping. It is separate from Base.Mu so
+	// the goal fold never takes the base lock.
+	goalMu sync.Mutex
+	// goalStartedAt is when this process began. A goal whose createdAt
+	// predates it was stored by an earlier run and its first report is a
+	// restatement.
+	goalStartedAt time.Time
+	// goalLast is the fingerprint of the last goal report, and nil when the
+	// goal is absent. It separates a restatement from a transition.
+	goalLast *junieGoalFingerprint
 }
 
 // This assertion makes a missing Agent method a compile error.

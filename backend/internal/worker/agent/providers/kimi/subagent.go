@@ -50,6 +50,11 @@ type kimiChild struct {
 	// ended is true while the subagent's registry row is closed. A resync reads
 	// it to tell a row it must close or open again from one that is right.
 	ended bool
+	// interrupted records that InterruptChild stopped this subagent. A cancel
+	// we asked for is a USER interrupt, so the closing row reports
+	// StatusInterrupted and the divider reads "Subagent interrupted"; a
+	// model-side cancel keeps the plain stop word.
+	interrupted bool
 }
 
 // kimiChildIndex maps each subagent of the current session to its child.
@@ -299,6 +304,14 @@ func (a *Agent) endSubagent(subagentID string, status bgtask.Status, summary, fa
 	if !linked {
 		return
 	}
+	// A cancel WE asked for is a user interrupt, not a plain stop: the row
+	// closes as StatusInterrupted and the divider reads "Subagent interrupted".
+	// A subagent that completed before the cancel reached it keeps its
+	// completion. The mark is spent here so only one closer uses it.
+	interrupted := child.interrupted
+	if interrupted && status != bgtask.StatusCompleted {
+		status = bgtask.StatusInterrupted
+	}
 	completion := agent.MessageCompletionInterrupted
 	if status == bgtask.StatusFailed {
 		completion = agent.MessageCompletionError
@@ -323,6 +336,7 @@ func (a *Agent) endSubagent(subagentID string, status bgtask.Status, summary, fa
 	a.children.update(subagentID, func(c *kimiChild) {
 		c.taskID = ""
 		c.ended = true
+		c.interrupted = false
 	})
 	providerkit.LogRegistryRefusal("kimi", "close", a.sink.CloseBackgroundTask(child.rowKey, status))
 	a.sink.CleanupChildAgent(child.childAgentID)
@@ -726,7 +740,14 @@ func (a *Agent) InterruptChild(childKey string) error {
 	}
 	ctx, cancel := a.requestContext()
 	defer cancel()
-	return a.api.post(ctx, kimiItemPath(sessionID, "tasks", child.taskID, kimiActionCancel), nil, nil)
+	if err := a.api.post(ctx, kimiItemPath(sessionID, "tasks", child.taskID, kimiActionCancel), nil, nil); err != nil {
+		return err
+	}
+	// Mark after the cancel acked: the closer that reaches the transcript
+	// spends this, and the divider then reads "Subagent interrupted" rather
+	// than the plain stop word.
+	a.children.update(agentID, func(c *kimiChild) { c.interrupted = true })
+	return nil
 }
 
 // errKimiChildUnknown reports a row key that identifies no subagent of the

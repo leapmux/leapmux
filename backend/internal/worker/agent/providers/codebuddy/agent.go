@@ -27,6 +27,15 @@ type Agent struct {
 	turnOrder      providerkit.TurnSeq
 	activityRev    uint64
 
+	// hasGoalCommand records whether the running CLI advertises /goal in its
+	// `slash_commands` list. It gates the goal controls on the CLI's own
+	// statement, never on a version table.
+	hasGoalCommand bool
+	// goalCommandKnown records whether the init frame arrived at all. Absent is
+	// UNKNOWN, which still allows the goal: a cold-started process can accept
+	// the command before its first stdout frame.
+	goalCommandKnown bool
+
 	// pendingControl routes a control_response to the caller waiting on its
 	// request id. See control.go.
 	pendingControlMu sync.Mutex

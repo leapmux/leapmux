@@ -160,6 +160,37 @@ func TestKimiSubagentEndStatus(t *testing.T) {
 	}
 }
 
+// A cancel WE asked for is a user interrupt, not a plain stop: the row closes
+// as StatusInterrupted and the divider reads "Subagent interrupted". A
+// model-side cancel that no interrupt asked for keeps the plain stop word, so
+// the two readings stay apart.
+func TestKimiInterruptChildClosesAsInterrupted(t *testing.T) {
+	t.Parallel()
+
+	rig := newKimiTestRig(t, agent.Options{})
+	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": "user"}})
+	spawnAgent(t, rig, "agent-0", "call_child", nil)
+	require.NoError(t, rig.agent.InterruptChild("session_1/agent-0"))
+	endSubagent(t, rig, "agent-0", contracts.KimiEventSubagentCancelled, nil)
+
+	row, _ := childOf(t, rig.sink, "session_1/agent-0")
+	assert.Equal(t, bgtask.StatusInterrupted, row.Status,
+		"a stop InterruptChild asked for closes as interrupted, not a plain stop")
+}
+
+func TestKimiModelCancelWithoutAnInterruptSaysStopped(t *testing.T) {
+	t.Parallel()
+
+	rig := newKimiTestRig(t, agent.Options{})
+	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": "user"}})
+	spawnAgent(t, rig, "agent-0", "call_child", nil)
+	endSubagent(t, rig, "agent-0", contracts.KimiEventSubagentCancelled, nil)
+
+	row, _ := childOf(t, rig.sink, "session_1/agent-0")
+	assert.Equal(t, bgtask.StatusStopped, row.Status,
+		"a cancel nobody asked for keeps the plain stop word")
+}
+
 func TestKimiSwarmMembersAreOneWorkflow(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)

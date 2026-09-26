@@ -57,6 +57,12 @@ func (codebuddyProvider) ResolveControlResponse(ctx agent.ControlResponseContext
 // read, in which case the caller forwards the bytes unchanged. Only a payload
 // that actually states allow or deny is translated: a foreign shape (a JSON-RPC
 // result, an elicitation reply) passes through untouched.
+//
+// An allow forwards the `updatedInput` the browser folded its answer into: an
+// AskUserQuestion reply arrives as the whole tool input with `answers` added,
+// and CodeBuddy merges that object into the tool call. A deny carries the
+// user's reason in `reason`, which is the field CodeBuddy's own permission
+// reader takes.
 func translateCanUseToolAnswer(content []byte) ([]byte, bool) {
 	requestID, behavior, message, decoded := agent.DecodeControlBehavior(content)
 	if !decoded || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
@@ -66,8 +72,10 @@ func translateCanUseToolAnswer(content []byte) ([]byte, bool) {
 	if !answer.Allowed {
 		answer.Reason = message
 		if answer.Reason == "" {
-			answer.Reason = "Rejected by user."
+			answer.Reason = agent.ControlRejectedByUserMessage
 		}
+	} else if updatedInput := agent.DecodeControlUpdatedInput(content); updatedInput != nil {
+		answer.UpdatedInput = updatedInput
 	}
 	out := map[string]any{
 		"type":       frameTypeControlResponse,

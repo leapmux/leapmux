@@ -48,21 +48,33 @@ func (qoderProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 // decision object. ok is false when the payload is not a can_use_tool answer;
 // only a payload that actually states allow or deny is translated.
 //
+// An allow carries the `updatedInput` the browser folded its answer into, and
+// states NO outcome beside it: Qoder resolves an explicit outcome first and
+// would then drop the input (see canUseToolAnswer). An allow that modifies
+// nothing states `proceed_once`. A deny carries the user's words on `message`
+// and `reason` and states no outcome either, so the words reach the model.
+//
 // The frame keeps NO top-level `request_id`: Qoder's StructuredIOReader
 // validates the envelope and rejects a frame that carries one as a malformed
 // control_response, and the pending request matches on `response.request_id`.
 func translateQoderCanUseTool(content []byte) ([]byte, bool) {
-	requestID, behavior, _, decoded := agent.DecodeControlBehavior(content)
+	requestID, behavior, message, decoded := agent.DecodeControlBehavior(content)
 	if !decoded || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
 		return nil, false
 	}
-	allow := behavior == agent.ControlBehaviorAllow
-	answer := canUseToolAnswer{
-		Behavior: behavior,
-		Outcome:  contracts.QoderPermissionOutcomeProceedOnce,
-	}
-	if !allow {
-		answer.Outcome = contracts.QoderPermissionOutcomeCancel
+	answer := canUseToolAnswer{Behavior: behavior}
+	if behavior == agent.ControlBehaviorAllow {
+		if updatedInput := agent.DecodeControlUpdatedInput(content); updatedInput != nil {
+			answer.UpdatedInput = updatedInput
+		} else {
+			answer.Outcome = contracts.QoderPermissionOutcomeProceedOnce
+		}
+	} else if message != "" {
+		// Only the words the user typed. A bare deny states no message, so the
+		// placeholder the browser auto-fills is never handed to the model as if
+		// the user had written it.
+		answer.Message = message
+		answer.Reason = message
 	}
 	out := map[string]any{
 		"type": frameTypeControlResponse,

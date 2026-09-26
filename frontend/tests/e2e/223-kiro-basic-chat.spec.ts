@@ -1,4 +1,5 @@
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, bandRows, expectAssistantAnswer, sendMessage, visibleOnly, waitForAgentIdle } from './helpers/ui'
+import { expectRateLimitNotice } from './helpers/rateLimit'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, bandRows, expectAssistantAnswer, sendMessage, waitForAgentIdle } from './helpers/ui'
 import { expect, KIRO_E2E_SKIP_REASON, kiroTest } from './kiro-fixtures'
 
 kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
@@ -56,7 +57,7 @@ kiroTest.describe('Kiro basic chat', () => {
     await modelScript.fallback({ error: { status: 429, code: 'ThrottlingException', message: 'Rate exceeded' } })
     await sendMessage(page, modelScript.prompt('Say hello.'))
     await waitForAgentIdle(page, 120_000)
-    await expect(visibleOnly(page.getByText(KIRO_THROTTLE_TEXT, { exact: false })).first()).toBeVisible()
+    await expectRateLimitNotice(page, KIRO_THROTTLE_TEXT)
     expect((await modelScript.status()).requests.length, 'Kiro made the model call').toBeGreaterThan(0)
   })
 })

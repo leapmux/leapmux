@@ -47,6 +47,10 @@ type Agent struct {
 	// controls holds every permission and question LeapMux published and
 	// nothing resolved yet.
 	controls map[string]*droidPendingControl
+	// childTurns tracks each child session's turn flag. The key is the
+	// childSessionId of child_session_available, which is also the registry
+	// row key.
+	childTurns map[string]bool
 	// generation holds the streamed assistant text until the message completes.
 	generation providerkit.GenerationBuffer
 

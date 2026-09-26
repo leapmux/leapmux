@@ -47,7 +47,11 @@ type lettaCommand struct {
 	RequestID      string         `json:"request_id,omitempty"`
 	Payload        map[string]any `json:"payload,omitempty"`
 	// runtime_start puts its fields at the top level, not under payload.
+	// A resume names an EXISTING pair (agent_id + conversation_id) and never
+	// sets the create_* fields: the protocol makes each pair mutually
+	// exclusive. The create path is the mirror image.
 	AgentID            string         `json:"agent_id,omitempty"`
+	ConversationID     string         `json:"conversation_id,omitempty"`
 	CreateAgent        map[string]any `json:"create_agent,omitempty"`
 	CreateConversation map[string]any `json:"create_conversation,omitempty"`
 	Mode               string         `json:"mode,omitempty"`

@@ -14,6 +14,7 @@
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest, expect } from './codex-fixtures'
 import { updateTodosToolCall } from './helpers/providerToolCalls'
+import { steerQueuedInput } from './helpers/steer'
 import {
   countGoalTransitions,
   expandGoalsAndTodosSection,
@@ -54,14 +55,10 @@ codexTest.describe('Codex session goal', () => {
     // The Interrupt button proves that the provider-started goal turn runs.
     // Send while that condition still holds, so the message enters the queue.
     await expect(page.getByTestId('interrupt-button')).toBeVisible()
-    await sendMessage(page, modelScript.prompt('Stop now, mark the goal complete, and reply with STEERED.'))
-    const queued = page.getByTestId(/^queued-input-/).filter({ hasText: 'Stop now' })
-    await expect(queued).toBeVisible()
-
-    const steer = queued.getByRole('button', { name: 'Steer' })
-    await expect(steer).toBeVisible()
-    await steer.click()
-    await expect(queued).toHaveCount(0)
+    await steerQueuedInput(page, {
+      message: modelScript.prompt('Stop now, mark the goal complete, and reply with STEERED.'),
+      match: 'Stop now',
+    })
   })
 
   codexTest('set a goal from the panel, pause it, resume it, and clear it', async ({

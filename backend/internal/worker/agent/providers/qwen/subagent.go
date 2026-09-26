@@ -370,15 +370,30 @@ func (a *Agent) finishBackgroundTask(task qwenBackgroundTask) bool {
 // aborts the subagent's model request, and Qwen 0.24 reports the aborted
 // subagent as failed. A subagent that completed before the stop reached it
 // keeps its completion.
+// closingStatus reports the registry status a subagent's row lands on, given
+// what Qwen said and whether this process stopped it.
+//
+// A stop this process asked for (InterruptChild) is a USER interrupt, not a
+// plain stop: the row closes as StatusInterrupted and the divider reads
+// "Subagent interrupted". A subagent that completed before the stop reached it
+// keeps its completion. A Qwen abort reports the subagent as failed, so a stop
+// upgrades that too; the record goes before the cancel (see stopChild) because
+// Qwen can report the abort before it answers the cancel.
 func (a *Agent) closingStatus(rowKey string, status bgtask.Status) bgtask.Status {
 	a.stateMu.Lock()
 	stopped := a.children.stopped[rowKey]
 	delete(a.children.stopped, rowKey)
 	a.stateMu.Unlock()
-	if stopped && status == bgtask.StatusFailed {
-		return bgtask.StatusStopped
+	if !stopped {
+		return status
 	}
-	return status
+	if status == bgtask.StatusCompleted {
+		return status
+	}
+	// A failed or a plain-stopped verdict after OUR stop is the interrupt we
+	// asked for. The frontend draws "Subagent interrupted" for StatusInterrupted
+	// and "Subagent stopped" for StatusStopped.
+	return bgtask.StatusInterrupted
 }
 
 // recordStop records or forgets the stop of the subagent that the spawn

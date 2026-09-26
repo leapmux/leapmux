@@ -984,7 +984,7 @@ Every provider runs the core workflow: chat, streamed tool calls, permission pro
       <td>✅</td>
       <td>✅</td>
       <td>✅</td>
-      <td><a href="#note-37" aria-label="Note 37">❌³⁷</a></td>
+      <td>✅</td>
     </tr>
     <tr>
       <td>Model</td>
@@ -1408,7 +1408,7 @@ Every provider runs the core workflow: chat, streamed tool calls, permission pro
       <td><a href="#note-38" aria-label="Note 38">❌³⁸</a></td>
       <td>❌</td>
       <td><a href="#note-38" aria-label="Note 38">❌³⁸</a></td>
-      <td><a href="#note-38" aria-label="Note 38">❌³⁸</a></td>
+      <td>✅</td>
       <td>❌</td>
     </tr>
     <tr>
@@ -1490,5 +1490,5 @@ Every provider runs the core workflow: chat, streamed tool calls, permission pro
 34. <span class="note-anchor" id="note-34"></span>Junie advertises steering (`_meta.steering.supported`) but offers no steer method in its ACP catalog. LeapMux steers by queueing a follow-up prompt, which starts the next turn rather than inserting into the running one.
 35. <span class="note-anchor" id="note-35"></span>Letta Code's `Workflow` tool exists in the toolset but emits no workflow grouping events on the wire. A background process summary can carry `kind:"workflow"`, and LeapMux draws no group from it.
 36. <span class="note-anchor" id="note-36"></span>Claude Code's own TUI can send a message to a Task subagent (it queues the message while the child runs, or resumes the child when it is idle). LeapMux cannot: it drives Claude over stream-json stdin, whose user message carries no child or task id, so a typed message always lands on the root session. The child tab is therefore read-only. Closing this needs a wire path that injects into a subagent conversation.
-37. <span class="note-anchor" id="note-37"></span>The Bypass permissions shortcut is the plus-menu / banner control that switches the session to the provider's own bypass mode. A provider whose plugin declares no permission preset renders no shortcut, whatever its CLI can do. CodeBuddy, Junie, Dirac, Qoder and Fast Agent are in that group today.
-38. <span class="note-anchor" id="note-38"></span>Only Kimi Code and MiMo Code accept a typed message on a subagent tab today. Junie, Letta Code, Qoder CLI and Factory Droid state on the wire that a child takes no further input, so their child tabs are read-only. Earlier drafts of this table marked them ✅; that was wrong.
+37. <span class="note-anchor" id="note-37"></span>The Bypass permissions shortcut is the plus-menu / banner control that switches the session to the provider's own bypass mode. A provider whose plugin declares no permission preset renders no shortcut, whatever its CLI can do. Junie, Dirac, Qoder and Fast Agent are in that group today.
+38. <span class="note-anchor" id="note-38"></span>Kimi Code, MiMo Code and Factory Droid accept a typed message on a subagent tab today. Junie, Letta Code and Qoder CLI state on the wire that a child takes no further input, so their child tabs are read-only. Earlier drafts of this table marked the read-only three ✅; that was wrong.

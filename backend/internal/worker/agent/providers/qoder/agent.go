@@ -22,6 +22,7 @@ type Agent struct {
 	sessionID      string
 	model          string
 	permissionMode string
+	effort         string
 	active         bool
 	turnOrder      providerkit.TurnSeq
 	activityRev    uint64
@@ -166,9 +167,13 @@ func (a *Agent) Wait() error {
 // OptionGroups returns every configuration axis this agent currently reports.
 func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	a.mu.Lock()
+	effort := a.effort
 	mode := a.permissionMode
 	a.mu.Unlock()
-	return []*leapmuxv1.AvailableOptionGroup{qoderPermissionModeGroup(mode)}
+	return []*leapmuxv1.AvailableOptionGroup{
+		qoderEffortGroup(effort),
+		qoderPermissionModeGroup(mode),
+	}
 }
 
 // SettingsSnapshot returns the live option values.
@@ -176,11 +181,14 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return agent.ConfirmedSettings(map[string]string{
+		agent.OptionIDEffort:         a.effort,
 		agent.OptionIDPermissionMode: a.permissionMode,
 	})
 }
 
-// UpdateSettings applies a live permission-mode change.
+// UpdateSettings applies a live change. A permission-mode change sends
+// set_permission_mode; an effort change restarts the agent (Qoder takes
+// `--reasoning-effort` at launch), so it reports RestartRequired.
 func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
 	result := agent.SettingsApplyResult{AppliedLive: true, Settlements: agent.OptionSettlements{}}
 	if value, ok := options[agent.OptionIDPermissionMode]; ok {
@@ -192,12 +200,18 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 		}
 	}
 	for id := range options {
+		// An effort change needs the launch flag, so it settles only after a
+		// restart. Every other axis this agent does not apply live says the
+		// same.
 		if id != agent.OptionIDPermissionMode {
 			result.Settlements[id] = agent.OptionSettlement{State: agent.OptionSettlementUnresolved}
 		}
 	}
 	a.mu.Lock()
-	surfaced := optionmap.Map{agent.OptionIDPermissionMode: a.permissionMode}
+	surfaced := optionmap.Map{
+		agent.OptionIDEffort:         a.effort,
+		agent.OptionIDPermissionMode: a.permissionMode,
+	}
 	a.mu.Unlock()
 	result.SurfacedOptions = surfaced
 	return result

@@ -496,6 +496,22 @@ export async function openAboutDialog(page: Page): Promise<Locator> {
 }
 
 /**
+ * Open the agent info card and return its popover.
+ *
+ * The card is the popover of the status-bar info trigger. It carries the
+ * context-usage and the rate-limit rows, so those helpers share this
+ * navigation rather than repeat the open sequence.
+ */
+export async function openAgentInfoCard(page: Page): Promise<Locator> {
+  const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
+  await expect(infoTrigger).toBeVisible()
+  await infoTrigger.click()
+  const popover = page.locator('[data-testid="agent-info-popover"]')
+  await expect(popover).toBeVisible()
+  return popover
+}
+
+/**
  * Open Preferences and select a category.
  * Desktop uses sidebar tabs, and phones use a section menu.
  * category specifies the navigation ID. If absent, keep the dialog default.

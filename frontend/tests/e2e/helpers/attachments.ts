@@ -4,6 +4,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { createTestDirectory } from './runDirectory'
+import { waitForSettingsHydrated } from './ui'
 
 /**
  * Attachment fixtures and the composer flows that consume them.
@@ -78,6 +79,11 @@ export async function expectAttachmentOutcome(
   kind: AttachmentKind,
   options: { supported: boolean, fileName?: string },
 ): Promise<void> {
+  // The composer refuses a kind from the agent's own capability map. Until the
+  // panel receives the agent, it holds the default provider's map, which
+  // accepts more kinds than some providers do. The settings menu is offered
+  // from that same configuration, so its readiness is the gate.
+  await waitForSettingsHydrated(page)
   const path = writeAttachmentFixture(kind, options.fileName)
   const name = options.fileName ?? path.split('/').pop()!
   await attachFile(page, path)

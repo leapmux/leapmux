@@ -13,9 +13,12 @@ import { expect } from '@playwright/test'
  * tool and that LeapMux rendered the result.
  */
 
-/** A 2x2 PNG with distinct corner pixels. Decodable, large enough to see. */
-const TINY_PNG_BASE64
-  = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=='
+/**
+ * A 64x64 RGBA PNG: a teal field with a green marker square. Valid chunks and
+ * CRCs, large enough that no decoder rejects it as a degenerate image.
+ */
+const TOOL_IMAGE_PNG_BASE64
+  = 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAb0lEQVR42u3YMREAIAwEwZcYicjBFSigykwatjgDW15S63wdAAAAAAAAAODdTi8AAAAAAAAAAAAAAAAAAAAAgCECAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJjqArCUycOeoJLSAAAAAElFTkSuQmCC'
 
 /**
  * Write a PNG into `workingDir` and return its file name.
@@ -25,7 +28,7 @@ const TINY_PNG_BASE64
  */
 export function writeToolImage(workingDir: string, marker: string): string {
   const name = `tool-image-${marker}.png`
-  writeFileSync(join(workingDir, name), Buffer.from(TINY_PNG_BASE64, 'base64'))
+  writeFileSync(join(workingDir, name), Buffer.from(TOOL_IMAGE_PNG_BASE64, 'base64'))
   return name
 }
 
@@ -35,27 +38,43 @@ export function toolRows(page: Page): Locator {
 }
 
 /**
- * Assert a tool row carries an inline image.
+ * The inline image of a tool result, in either row layout.
  *
- * The row's `<img>` is the only element the chat renders for a picture in a
- * tool result. A text placeholder has no `img`, so this check is not satisfied
- * by the file name alone.
+ * Every tool picture draws through the shared image-result view, whose open
+ * control wraps the image. A lookup for that control reaches the picture of a
+ * merged row and of a split request/result pair alike.
  */
-export async function expectToolRowImage(page: Page, fileName: string): Promise<void> {
-  const row = toolRows(page).filter({ hasText: fileName }).first()
-  await expect(row).toBeVisible()
-  await expect(row.locator('img').first()).toBeVisible()
+function toolResultImages(page: Page): Locator {
+  return page.locator('button[aria-label="Open image"] img')
 }
 
 /**
- * Assert a tool row holds the file name but draws no picture.
+ * Assert a tool call of `fileName` drew an inline image.
+ *
+ * Two row layouts exist. A provider that merges the call and its result into one
+ * row draws the picture inside the row that names the file. A provider that keeps
+ * a request row beside a result row names the file in the request row and draws
+ * the picture in the result row, which drops its header -- and with it the
+ * `data-tool-message` hook. A text placeholder has no image element, so the file
+ * name alone cannot satisfy this check.
+ */
+export async function expectToolRowImage(page: Page, fileName: string): Promise<void> {
+  await expect(toolRows(page).filter({ hasText: fileName }).first()).toBeVisible()
+  const image = toolResultImages(page).first()
+  await expect(image).toBeVisible()
+  // An `img` element alone proves nothing: a broken picture keeps the element
+  // and draws a placeholder. A decoded image reports its pixel width.
+  await expect.poll(() => image.evaluate(el => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
+}
+
+/**
+ * Assert a tool call of `fileName` ran and drew no picture.
  *
  * Codewhale and Cline build tool results as text only (matrix note 3). A
  * provider that restores a picture from another store may also draw none on
  * this path. The name alone proves the tool ran.
  */
 export async function expectToolRowWithoutImage(page: Page, fileName: string): Promise<void> {
-  const row = toolRows(page).filter({ hasText: fileName }).first()
-  await expect(row).toBeVisible()
-  await expect(row.locator('img')).toHaveCount(0)
+  await expect(toolRows(page).filter({ hasText: fileName }).first()).toBeVisible()
+  await expect(toolResultImages(page)).toHaveCount(0)
 }

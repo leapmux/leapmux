@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,12 +61,19 @@ func lettaConversationEntry(dir string, entry os.DirEntry) (sessionstore.Entry, 
 	return sessionstore.NamedFileInside(lettaConversationFile)(dir, entry)
 }
 
+// readLettaConversationRecord reads one conversation's record file.
+func readLettaConversationRecord(path string) (lettaConversationRecord, error) {
+	var record lettaConversationRecord
+	err := sessionstore.ReadSidecarFile(path, sessionstore.MaxSidecarBytes, func(data []byte) error {
+		return json.Unmarshal(data, &record)
+	})
+	return record, err
+}
+
 // readLettaConversation reads one conversation's record.
 func readLettaConversation(entry sessionstore.Entry, workingDir string) (agent.StoredSession, bool) {
-	var record lettaConversationRecord
-	if err := sessionstore.ReadSidecarFile(filepath.Join(entry.Path, lettaConversationFile), sessionstore.MaxSidecarBytes, func(data []byte) error {
-		return json.Unmarshal(data, &record)
-	}); err != nil {
+	record, err := readLettaConversationRecord(filepath.Join(entry.Path, lettaConversationFile))
+	if err != nil {
 		return agent.StoredSession{}, false
 	}
 	id := strings.TrimSpace(record.ID)
@@ -81,4 +89,34 @@ func readLettaConversation(entry sessionstore.Entry, workingDir string) (agent.S
 		Title:     sessionstore.TrimTitle(id),
 		UpdatedAt: entry.ModTime,
 	}, true
+}
+
+// lettaResumeAgentID resolves the agent of a stored conversation.
+//
+// A resume addresses an EXISTING conversation, so runtime_start must name the
+// agent that conversation belongs to. The conversation record names it. A
+// conversation id with no record behind it is an error: the alternative is to
+// fall back to create_*, which would start a NEW conversation in place of the
+// one the caller asked for.
+func lettaResumeAgentID(opts agent.Options, conversationID string) (string, error) {
+	id := strings.TrimSpace(conversationID)
+	if id == "" {
+		return "", errors.New("resume conversation: the conversation id is empty")
+	}
+	root := lettaBackendRoot(agent.StoredSessionQuery{
+		WorkingDir: opts.WorkingDir,
+		HomeDir:    opts.HomeDir,
+	})
+	if root == "" {
+		return "", fmt.Errorf("resume conversation %q: the Letta local backend store is not configured", id)
+	}
+	record, err := readLettaConversationRecord(filepath.Join(root, lettaConversationsDir, id, lettaConversationFile))
+	if err != nil {
+		return "", fmt.Errorf("resume conversation %q: %w", id, err)
+	}
+	agentID := strings.TrimSpace(record.AgentID)
+	if agentID == "" {
+		return "", fmt.Errorf("resume conversation %q: its record names no agent", id)
+	}
+	return agentID, nil
 }

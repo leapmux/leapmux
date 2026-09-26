@@ -75,11 +75,28 @@ type assistantMessage struct {
 
 // canUseToolAnswer is the object the Qoder control_response carries for a
 // can_use_tool decision. The browser sends the neutral behavior envelope; the
-// worker translates it here. Qoder's outcomes are proceed_once, proceed_always,
-// proceed_always_and_save, cancel and modify_with_editor.
+// worker translates it here.
+//
+// Qoder's own answer reader accepts two spellings. A decision can state an
+// `outcome` (proceed_once, proceed_always, proceed_always_and_save, cancel,
+// modify_with_editor) or a `behavior` with the fields that go with it. LeapMux
+// states `behavior`, because that is the shape that carries the two things a
+// decision needs: the user's rejection words and a modified tool input.
+//
+// A rejection carries the words on BOTH `message` and `reason`: the reader
+// takes `message` on the `behavior` spelling and `reason` on the `allowed`
+// spelling, and a deny must reach the model whichever reader runs.
+//
+// `updatedInput` must travel WITHOUT an `outcome`. The reader resolves an
+// explicit outcome first and then takes the modified input from a `payload`
+// field, so an answer that states both `outcome:"proceed_once"` and
+// `updatedInput` drops the input -- which is exactly what an AskUserQuestion
+// reply would lose.
 type canUseToolAnswer struct {
 	Behavior        string         `json:"behavior"`
 	Outcome         string         `json:"outcome,omitempty"`
+	Message         string         `json:"message,omitempty"`
+	Reason          string         `json:"reason,omitempty"`
 	UpdatedInput    map[string]any `json:"updatedInput,omitempty"`
 	PermissionScope string         `json:"permissionScope,omitempty"`
 }

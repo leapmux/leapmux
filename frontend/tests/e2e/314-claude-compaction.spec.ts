@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
+import { expectCompactionNotice } from './helpers/compaction'
 import { sendMessage, waitForAgentIdle } from './helpers/ui'
 
 test.describe('Claude Code compaction notice', () => {
@@ -22,7 +23,6 @@ test.describe('Claude Code compaction notice', () => {
     await sendMessage(page, '/compact')
     await waitForAgentIdle(page)
 
-    const chat = page.locator('[data-chat-scroll-container="true"]:visible')
-    await expect(chat.filter({ hasText: 'Context compacted' }).first()).toBeVisible()
+    await expectCompactionNotice(page)
   })
 })

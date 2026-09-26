@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/coder/quartz"
 
@@ -121,11 +122,8 @@ func (a *Agent) openConversation(opts agent.Options) error {
 	// runtime_start puts its fields at the top level, not under a payload, and
 	// the discriminator is `type`, not `kind`. A fresh agent is created through
 	// `create_agent`; `agent_id` alone fails with 401 because the agent does not
-	// exist yet. The response carries the real agent and conversation ids.
-	model := opts.Model()
-	if model == "" {
-		model = defaultModels[0].Id
-	}
+	// exist yet. A resume names an existing pair instead. The response carries
+	// the real agent and conversation ids either way.
 	// Install the waiter BEFORE the command leaves: adoptRuntime runs on the
 	// readLoop goroutine and can settle the moment the response arrives.
 	waiter := newRuntimeWaiter()
@@ -137,14 +135,34 @@ func (a *Agent) openConversation(opts agent.Options) error {
 	a.Mu.Unlock()
 
 	cmd := newLettaCommand("runtime_start", "rs-1")
-	cmd.CreateAgent = map[string]any{
-		"body": map[string]any{
-			"name":   "leapmux-agent",
-			"model":  model,
-			"system": "You are a helpful assistant.",
-		},
+	if resume := strings.TrimSpace(opts.ResumeSessionID); resume != "" {
+		// A resume names an EXISTING conversation. runtime_start takes
+		// `conversation_id` + `agent_id` in place of the create_* fields: each
+		// pair is mutually exclusive on the wire. The agent id comes from the
+		// conversation record, because the runtime scope needs both.
+		agentID, err := lettaResumeAgentID(opts, resume)
+		if err != nil {
+			return err
+		}
+		cmd.AgentID = agentID
+		cmd.ConversationID = resume
+	} else {
+		model := opts.Model()
+		if model == "" {
+			model = defaultModels[0].Id
+		}
+		// `create_agent` alone produces the conversation too: the live
+		// runtime_start response reports both ids. An explicit
+		// `create_conversation` is for an agent-free conversation or a custom
+		// conversation body, neither of which LeapMux sends.
+		cmd.CreateAgent = map[string]any{
+			"body": map[string]any{
+				"name":   "leapmux-agent",
+				"model":  model,
+				"system": "You are a helpful assistant.",
+			},
+		}
 	}
-	cmd.CreateConversation = map[string]any{}
 	cmd.Mode = mode
 	if err := a.sendCommand(cmd); err != nil {
 		return err

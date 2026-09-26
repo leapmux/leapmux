@@ -5,7 +5,7 @@
   "description": "Every table is a map from the identifier both languages spell (PascalCase) to the literal Qoder sends or LeapMux chose. A table may never be empty.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["_readme", "frameKinds", "controlRequestSubtypes", "systemSubtypes", "modes", "permissionOutcomes", "capabilities"],
+  "required": ["_readme", "frameKinds", "controlRequestSubtypes", "systemSubtypes", "modes", "effortLevels", "permissionOutcomes", "capabilities"],
   "$defs": {
     "table": {
       "type": "object",
@@ -44,6 +44,7 @@
     "systemSubtypes": { "$ref": "#/$defs/table" },
     "modes": { "$ref": "#/$defs/table" },
     "defaultMode": { "type": "string", "minLength": 1 },
+    "effortLevels": { "$ref": "#/$defs/table" },
     "permissionOutcomes": { "$ref": "#/$defs/table" },
     "capabilities": { "$ref": "#/$defs/table" }
   }

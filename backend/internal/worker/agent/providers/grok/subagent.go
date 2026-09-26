@@ -73,6 +73,11 @@ type childState struct {
 	subagentBySession map[string]string
 	// workflows maps a workflow run id to its name, the label of its group.
 	workflows map[string]string
+	// interrupted records the subagents this process stopped through
+	// InterruptChild. A cancel we asked for is a USER interrupt, so the closing
+	// row reports StatusInterrupted and the divider reads "Subagent
+	// interrupted"; a model-side cancel keeps the plain stop word.
+	interrupted map[string]bool
 }
 
 // linkedSubagent is the registry row and the child session of one subagent.
@@ -111,6 +116,25 @@ func (c *childState) unlink(subagentID string) (linkedSubagent, bool) {
 	delete(c.subagentByRow, linked.rowKey)
 	delete(c.subagentBySession, linked.childSession)
 	return linked, true
+}
+
+// markInterrupted records that InterruptChild stopped this subagent. Caller
+// must hold stateMu.
+func (c *childState) markInterrupted(subagentID string) {
+	if c.interrupted == nil {
+		c.interrupted = make(map[string]bool)
+	}
+	c.interrupted[subagentID] = true
+}
+
+// takeInterrupted reports whether InterruptChild stopped this subagent, and
+// spends the mark so only one closer uses it. Caller must hold stateMu.
+func (c *childState) takeInterrupted(subagentID string) bool {
+	if !c.interrupted[subagentID] {
+		return false
+	}
+	delete(c.interrupted, subagentID)
+	return true
 }
 
 // grokToolMeta is the part of a tool call's `_meta["x.ai/tool"]` that LeapMux reads.
@@ -348,6 +372,7 @@ func (a *Agent) handleSubagentFinished(update json.RawMessage) {
 	}
 	a.stateMu.Lock()
 	child, known := a.children.unlink(finished.SubagentID)
+	interrupted := a.children.takeInterrupted(finished.SubagentID)
 	a.stateMu.Unlock()
 	rowKey := child.rowKey
 	if !known {
@@ -357,9 +382,17 @@ func (a *Agent) handleSubagentFinished(update json.RawMessage) {
 	if report == "" {
 		report = finished.Error
 	}
+	status := grokSubagentStatus(finished.Status)
+	// A cancel WE asked for is a user interrupt, not a plain stop: the row
+	// closes as StatusInterrupted and the divider reads "Subagent interrupted".
+	// A subagent that completed before the cancel reached it keeps its
+	// completion.
+	if interrupted && status != bgtask.StatusCompleted {
+		status = bgtask.StatusInterrupted
+	}
 	a.ApplySubagentObservation(&acp.SubagentObservation{
 		RowKey:   rowKey,
-		Status:   grokSubagentStatus(finished.Status),
+		Status:   status,
 		CloseRow: true,
 		Mode:     acp.ModeCloseOnly,
 		ReportID: finished.SubagentID,
@@ -386,6 +419,12 @@ func (a *Agent) InterruptChild(childKey string) error {
 	if _, err := a.SendRequest(grokSubagentCancelMethod, params, a.APITimeout()); err != nil {
 		return fmt.Errorf("stop the Grok subagent: %w", err)
 	}
+	// Mark after the cancel acked: the closer that reaches the transcript
+	// spends this, and the divider then reads "Subagent interrupted" rather
+	// than the plain stop word.
+	a.stateMu.Lock()
+	a.children.markInterrupted(subagentID)
+	a.stateMu.Unlock()
 	return nil
 }
 

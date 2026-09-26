@@ -51,9 +51,10 @@ func (droidProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) e
 	return providerkit.RejectPDFAndBinaryAttachment(droidAttachmentLabel, attachment)
 }
 
-// SupportsChildSteering is false: a Droid child session is driven by its own
-// Task tool and LeapMux cannot address it.
-func (droidProvider) SupportsChildSteering() bool { return false }
+// SupportsChildSteering is true: droid.add_user_message routes by
+// params.sessionId, so a child session id addresses the child. The registry
+// row key of a child is its childSessionId (see child_steer.go).
+func (droidProvider) SupportsChildSteering() bool { return true }
 
 // SupportsChildInterrupt is false for the same reason.
 func (droidProvider) SupportsChildInterrupt() bool { return false }

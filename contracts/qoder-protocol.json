@@ -1,5 +1,5 @@
 {
-  "_readme": "Qoder CLI's stream-json vocabulary (`qodercli -p --input-format stream-json --output-format stream-json`), for the tables that BOTH the Go provider and the TS renderer plugin read. Qoder is a rebranded Gemini CLI with a stream-json translation layer on top: the envelope looks like Claude Code's and the semantics differ, so this contract shares no table with claude-protocol.json. `frameKinds` are the top-level `type` values. `controlRequestSubtypes` are the ~30 control-channel subtypes both sides dispatch on; goals and steering live only here. `systemSubtypes` are the system-line subtypes both sides classify. `modes` are the permission-mode words on the wire (camelCase; the flag vocabulary is snake_case and is normalized before emission). `permissionOutcomes` are the decision outcomes a can_use_tool answer carries. `capabilities` are the runtime negotiation strings from init.capabilities, which gate goal, plan, rewind and interrupt behavior. The can_use_tool answer fields and the goal tool names are Go-only where the browser never spells them, and live in providers/qoder/protocol.go.",
+  "_readme": "Qoder CLI's stream-json vocabulary (`qodercli -p --input-format stream-json --output-format stream-json`), for the tables that BOTH the Go provider and the TS renderer plugin read. Qoder is a rebranded Gemini CLI with a stream-json translation layer on top: the envelope looks like Claude Code's and the semantics differ, so this contract shares no table with claude-protocol.json. `frameKinds` are the top-level `type` values. `controlRequestSubtypes` are the ~30 control-channel subtypes both sides dispatch on; goals and steering live only here. `systemSubtypes` are the system-line subtypes both sides classify. `modes` are the permission-mode words on the wire (camelCase; the flag vocabulary is snake_case and is normalized before emission). `effortLevels` are the --reasoning-effort values Qoder owns (the words its own effort validator admits). `permissionOutcomes` are the decision outcomes a can_use_tool answer carries. `capabilities` are the runtime negotiation strings from init.capabilities, which gate goal, plan, rewind and interrupt behavior. The can_use_tool answer fields and the goal tool names are Go-only where the browser never spells them, and live in providers/qoder/protocol.go.",
   "_unread": {
     "frameKinds": {
       "Attachment": {
@@ -293,6 +293,14 @@
     "Plan": "plan"
   },
   "defaultMode": "Default",
+  "effortLevels": {
+    "None": "none",
+    "Low": "low",
+    "Medium": "medium",
+    "High": "high",
+    "Xhigh": "xhigh",
+    "Max": "max"
+  },
   "permissionOutcomes": {
     "ProceedOnce": "proceed_once",
     "ProceedAlways": "proceed_always",

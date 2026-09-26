@@ -106,6 +106,36 @@ func DecodeControlChoice(content []byte) string {
 	return strings.TrimSpace(cr.Response.Response.Choice)
 }
 
+// DecodeControlUpdatedInput returns the modified tool input a control response
+// carries beside its behavior, or nil when it carries none.
+//
+// It is the reader for `buildAllowResponse`'s `updatedInput`
+// (frontend/src/utils/controlResponse.ts): the browser sends the whole tool
+// input back with the answer it changed -- an AskUserQuestion reply folds its
+// answers into that input -- and a provider that forwards a modified input to
+// its own CLI reads it here. DecodeControlBehavior leaves it alone, so its
+// callers keep the shape they had.
+//
+// A present but non-object value reads as absent, because a tool input is an
+// object and anything else is a payload this reader must not hand on as one.
+func DecodeControlUpdatedInput(content []byte) map[string]any {
+	var cr struct {
+		Response struct {
+			Response struct {
+				UpdatedInput json.RawMessage `json:"updatedInput"`
+			} `json:"response"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(content, &cr); err != nil {
+		return nil
+	}
+	var updated map[string]any
+	if err := json.Unmarshal(cr.Response.Response.UpdatedInput, &updated); err != nil {
+		return nil
+	}
+	return updated
+}
+
 // DecodeControlBehavior decodes the frontend's neutral approve/reject control-response envelope
 // (ControlBehaviorEnvelope), returning the trimmed request id, behavior, and rejection
 // message. ok is false only when the bytes don't parse as JSON. The message is the user's typed

@@ -76,30 +76,38 @@ func (a *Agent) handleInboundControlRequest(raw []byte) {
 	}
 }
 
-// handleSystem reads the init frame and publishes the rest verbatim.
+// handleSystem reads the init frame and the goal reports, and publishes the
+// rest verbatim.
 func (a *Agent) handleSystem(raw []byte) {
 	var envelope struct {
 		Subtype string `json:"subtype"`
 	}
-	if json.Unmarshal(raw, &envelope) == nil && envelope.Subtype == contracts.QoderSystemSubtypeInit {
-		var init systemInitMessage
-		if json.Unmarshal(raw, &init) == nil {
-			a.mu.Lock()
-			if init.SessionID != "" {
-				a.sessionID = init.SessionID
+	if json.Unmarshal(raw, &envelope) == nil {
+		switch envelope.Subtype {
+		case contracts.QoderSystemSubtypeInit:
+			var init systemInitMessage
+			if json.Unmarshal(raw, &init) == nil {
+				a.mu.Lock()
+				if init.SessionID != "" {
+					a.sessionID = init.SessionID
+				}
+				if init.Model != "" {
+					a.model = init.Model
+				}
+				if init.Permission != "" {
+					a.permissionMode = init.Permission
+				}
+				a.capabilities = init.Capabilities
+				sessionID := a.sessionID
+				a.mu.Unlock()
+				if sessionID != "" {
+					a.sink.UpdateSessionID(sessionID)
+				}
 			}
-			if init.Model != "" {
-				a.model = init.Model
-			}
-			if init.Permission != "" {
-				a.permissionMode = init.Permission
-			}
-			a.capabilities = init.Capabilities
-			sessionID := a.sessionID
-			a.mu.Unlock()
-			if sessionID != "" {
-				a.sink.UpdateSessionID(sessionID)
-			}
+		case contracts.QoderSystemSubtypeGoalUpdated:
+			a.handleGoalUpdated(raw)
+		case contracts.QoderSystemSubtypeGoalCleared:
+			a.handleGoalCleared(raw)
 		}
 	}
 	a.persistRaw(raw)
@@ -143,13 +151,19 @@ func (a *Agent) persistRaw(raw []byte) {
 	}
 }
 
-// HandleOutput processes a single NDJSON line from Qoder.
+// HandleOutput processes a single NDJSON line from Qoder. It runs the same
+// pipeline as the reader loop: a pending control_response is answered first,
+// and only an unconsumed line reaches handleOutput.
 func (a *Agent) HandleOutput(content []byte) {
 	var envelope MessageEnvelope
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		return
 	}
-	a.handleOutput(&providerkit.ParsedLine{Raw: content, Type: string(envelope.Type)})
+	line := &providerkit.ParsedLine{Raw: content, Type: string(envelope.Type)}
+	if a.handlePendingControlResponse(line) {
+		return
+	}
+	a.handleOutput(line)
 }
 
 // handlePendingControlResponse intercepts a control_response that answers one

@@ -2,6 +2,7 @@ package junie
 
 import (
 	"context"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -51,6 +52,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		NewAgent:      func() *Agent { return &Agent{} },
 		Base:          func(a *Agent) *acp.Base { return &a.Base },
 		Configure: func(a *Agent, _ agent.ProviderServices) acp.Hooks {
+			a.goalStartedAt = time.Now()
 			return acp.Hooks{
 				InitialModel:     model,
 				ModeChannel:      acp.ModeChannelPermissionMode,
@@ -66,6 +68,10 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				ModelIDNormalizer:    normalizeJunieModelID,
 				ModelSetter:          a.setJunieModel,
 				SubagentFromToolCall: junieSubagentFromToolCall,
+				// Junie's goal rides a session_info_update under _meta.goal.
+				// The hook folds it into the goal sink instead of letting the
+				// update fall through to verbatim persistence.
+				SessionMetadataHandler: a.handleGoalMeta,
 			}
 		},
 		AfterHandshake: func(a *Agent, handshake *acp.SessionResult, opts agent.Options) error {

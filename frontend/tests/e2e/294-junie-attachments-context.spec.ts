@@ -1,7 +1,8 @@
 import { expectAttachmentOutcome } from './helpers/attachments'
+import { expectContextUsage } from './helpers/contextUsage'
 import { junieAnswerToolCall } from './helpers/providerToolCalls'
 import { sendMessage, waitForAgentIdle } from './helpers/ui'
-import { expect, JUNIE_E2E_SKIP_REASON, junieTest } from './junie-fixtures'
+import { JUNIE_E2E_SKIP_REASON, junieTest } from './junie-fixtures'
 
 junieTest.skip(!!JUNIE_E2E_SKIP_REASON, JUNIE_E2E_SKIP_REASON || '')
 
@@ -23,22 +24,15 @@ junieTest.describe('Junie attachments and context usage', () => {
       { name: 'junie-capability-filter', when: { system: 'capability filter agent' }, respond: { text: '' } },
       { name: 'junie-task-name', when: { system: 'task description summarizer' }, respond: { text: 'Usage task' } },
     )
+    const usage = { inputTokens: 12000, outputTokens: 40 }
     await modelScript.queue({
       toolCalls: [junieAnswerToolCall('junie-usage-answer', 'Usage recorded.')],
-      usage: { inputTokens: 12000, outputTokens: 40 },
+      usage,
     })
     await sendMessage(page, modelScript.prompt('Reply once.'))
     await modelScript.waitForSteps()
     await waitForAgentIdle(page, 120_000)
 
-    const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
-    await expect(infoTrigger).toBeVisible()
-    await infoTrigger.click()
-    const popover = page.locator('[data-testid="agent-info-popover"]')
-    await expect(popover).toBeVisible()
-    const grid = popover.getByTestId('context-usage-grid')
-    await expect(grid).toBeVisible()
-    await expect(grid).toContainText('12')
-    await expect(grid).toContainText('40')
+    await expectContextUsage(page, usage)
   })
 })

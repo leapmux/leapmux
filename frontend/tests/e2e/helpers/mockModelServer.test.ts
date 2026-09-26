@@ -225,6 +225,13 @@ describe('createMockModelServer', () => {
     expect(completion.headers.get('anthropic-ratelimit-unified-5h-utilization')).toBe('0.92')
     expect(completion.headers.get('anthropic-ratelimit-unified-5h-reset')).toBe('1893456000')
     expect(completion.headers.get('x-ratelimit-remaining-requests')).toBe('0')
+    // The family Codex parses before it publishes `account/rateLimits/updated`.
+    expect(completion.headers.get('x-codex-primary-used-percent')).toBe('92')
+    expect(completion.headers.get('x-codex-primary-window-minutes')).toBe('300')
+    expect(completion.headers.get('x-codex-primary-reset-at')).toBe('1893456000')
+    expect(completion.headers.get('x-codex-limit-name')).toBe('five_hour')
+    expect(completion.headers.get('x-codex-rate-limit-reached-type')).toBe('rate_limit_reached')
+    expect(completion.headers.get('x-codex-secondary-used-percent')).toBeNull()
     const completionBody = await completion.text()
     expect(completionBody).toContain('"prompt_tokens":12000')
     expect(completionBody).toContain('"completion_tokens":40')
@@ -251,6 +258,25 @@ describe('createMockModelServer', () => {
     const anthropicBody = await anthropic.text()
     expect(anthropicBody).toContain('"input_tokens":12000')
     expect(anthropicBody).toContain('"output_tokens":40')
+  })
+
+  // A `seven_day` step rides Codex's secondary window, not its primary one.
+  it('maps a seven_day rate-limit step onto the Codex secondary window', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'weekly-limits', {
+      steps: [{
+        text: 'Answered.',
+        rateLimits: { type: 'seven_day', status: 'allowed_warning', utilization: 0.81, resetsAt: 1894000000 },
+      }],
+    })
+    const prompt = mockScenarioPrompt('weekly-limits', 'Answer once.')
+    const completion = await chat(server, prompt)
+    expect(completion.headers.get('x-codex-secondary-used-percent')).toBe('81')
+    expect(completion.headers.get('x-codex-secondary-window-minutes')).toBe('10080')
+    expect(completion.headers.get('x-codex-secondary-reset-at')).toBe('1894000000')
+    expect(completion.headers.get('x-codex-primary-used-percent')).toBeNull()
+    expect(completion.headers.get('x-codex-rate-limit-reached-type')).toBeNull()
+    await completion.text()
   })
 
   // Every model API defaults `stream` to false. A client that omits the flag

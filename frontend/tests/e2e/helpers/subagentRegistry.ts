@@ -414,7 +414,17 @@ export async function openHeldChildTab(page: Page, modelScript: ModelScript, tes
 const ROOT_AFTER_CHILD_STOP = 'The subagent stopped before it finished.'
 
 /** What one provider needs for {@link exerciseChildInterrupt}. */
-export type ChildInterruptCase = Omit<HeldChildCase, 'rootTurnsAfterSpawn'>
+export type ChildInterruptCase = Omit<HeldChildCase, 'rootTurnsAfterSpawn'> & {
+  /**
+   * The word the closing divider uses. Defaults to `interrupted`.
+   *
+   * Every provider that stops one subagent through `InterruptChild` reports a
+   * user interrupt as its own outcome, so the row closes as `interrupted` and
+   * the divider reads "Subagent interrupted". A provider that reports a plain
+   * stop instead states `stopped` here.
+   */
+  finalStatus?: 'stopped' | 'interrupted'
+}
 
 /**
  * Stop a working subagent through the Interrupt control of its own tab, and
@@ -431,6 +441,7 @@ export type ChildInterruptCase = Omit<HeldChildCase, 'rootTurnsAfterSpawn'>
  * - The root goes on with its own turn, and takes the next prompt.
  */
 export async function exerciseChildInterrupt(page: Page, modelScript: ModelScript, test: ChildInterruptCase): Promise<void> {
+  const finalStatus = test.finalStatus ?? 'interrupted'
   const child = await openHeldChildTab(page, modelScript, { ...test, rootTurnsAfterSpawn: [{ text: ROOT_AFTER_CHILD_STOP }] })
 
   const interrupt = page.locator('[data-testid="interrupt-button"]:visible')
@@ -438,8 +449,10 @@ export async function exerciseChildInterrupt(page: Page, modelScript: ModelScrip
   await interrupt.click()
 
   // A stop, not a failure and not a completion: the held answer never arrived.
-  await expect(child.row).toHaveAttribute('data-status', 'stopped')
-  await expect(messageBubbles(page).filter({ hasText: 'Subagent stopped' })).toBeVisible()
+  // The divider word matches the registry status, so a provider that reports a
+  // user interrupt as `interrupted` draws "Subagent interrupted".
+  await expect(child.row).toHaveAttribute('data-status', finalStatus)
+  await expect(messageBubbles(page).filter({ hasText: `Subagent ${finalStatus}` })).toBeVisible()
   await expect(interrupt).toHaveCount(0)
 
   // The root reads the spawn's result and answers with its next turn.

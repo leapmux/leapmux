@@ -168,7 +168,9 @@ test.describe('Claude subagent background tasks', () => {
   // The Claude Code provider stops one subagent alone through the CLI's own
   // `stop_task` control request (`agent.ChildInterrupter`). So the worker
   // states `accepts_interrupt: true`, and the child's tab offers Interrupt
-  // while the child works.
+  // while the child works. A stop that WE asked for is a user interrupt, so
+  // the closing divider reads "Subagent interrupted" and the row closes as
+  // `interrupted`.
   test('the Interrupt control of a working subagent\'s tab stops that subagent alone', async ({
     authenticatedWorkspace,
     page,

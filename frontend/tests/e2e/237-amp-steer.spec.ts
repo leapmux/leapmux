@@ -1,7 +1,8 @@
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { AMP_E2E_SKIP_REASON, ampTest, expect } from './amp-fixtures'
 import { bashToolCall } from './helpers/providerToolCalls'
-import { assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
+import { expectSteeredReply, steerQueuedInput } from './helpers/steer'
+import { sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
 
 /**
  * 237 — Amp steering.
@@ -24,15 +25,14 @@ ampTest('steers a running turn after its tool', async ({ authenticatedAmpWorkspa
   await expect(page.getByTestId('interrupt-button')).toBeVisible()
 
   // The turn runs, so the message waits in the queue, which offers to steer with it.
-  await sendMessage(page, 'Also append the word steered to your final reply.')
-  const queued = page.getByTestId(/^queued-input-/).filter({ hasText: 'Also append the word steered' })
-  await expect(queued).toBeVisible()
-  await queued.getByRole('button', { name: 'Steer' }).click()
-  await expect(queued).toHaveCount(0)
+  await steerQueuedInput(page, {
+    message: 'Also append the word steered to your final reply.',
+    match: 'Also append the word steered',
+  })
 
   const status = await modelScript.waitForSteps()
   await waitForAgentIdle(page, 180_000)
-  await expect(assistantBubbles(page).filter({ hasText: 'finished steered' }).last()).toBeVisible()
+  await expectSteeredReply(page, 'finished steered', 'last')
   await expect(userBubbles(page).filter({ hasText: 'Also append the word steered' }).first()).toBeVisible()
   // The steering line reached the model at the interruption point after the tool,
   // inside the same turn: the one turn spent both steps.

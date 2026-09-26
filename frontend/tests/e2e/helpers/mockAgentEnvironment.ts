@@ -1102,6 +1102,10 @@ function openCodeFamilyModel(id: string, name: string, variantOptions: (variant:
     reasoning: true,
     temperature: false,
     tool_call: true,
+    // MiMo's read tool returns an image or a PDF only when the model declares
+    // the input modality. An absent entry reads as false and the tool answers
+    // with a text refusal instead of the file.
+    modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
     release_date: '2026-01-01',
     limit: { context: 128_000, output: 16_000 },
     cost: { input: 0, output: 0 },

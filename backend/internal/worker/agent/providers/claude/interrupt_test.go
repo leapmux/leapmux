@@ -14,6 +14,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -300,6 +301,39 @@ func TestClaudeCodeAgent_InterruptChild_TheStopTaskErrorSurfaces(t *testing.T) {
 	assert.Contains(t, err.Error(), "no such task")
 	assert.NotErrorIs(t, err, agent.ErrChildRouteNotReady)
 	assert.NotErrorIs(t, err, agent.ErrChildOperationUnsupported)
+}
+
+// A stop WE asked for is a user interrupt, not a plain stop: the closing row
+// reports StatusInterrupted and the divider reads "Subagent interrupted". A
+// `stopped` notification that no interrupt asked for keeps the plain stop
+// word, so the two readings stay apart.
+func TestClaudeCodeAgent_InterruptChild_TheClosingRowSaysInterrupted(t *testing.T) {
+	t.Parallel()
+
+	rig := newClaudeInterruptRig(t)
+	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-3","tool_use_id":"spawn-3","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
+	require.NoError(t, rig.agent.InterruptChild("task-3"))
+
+	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-3","tool_use_id":"spawn-3","status":"stopped"}`))
+
+	tasks := rig.sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.StatusInterrupted, tasks[0].Status,
+		"a stop InterruptChild asked for closes as interrupted, not a plain stop")
+}
+
+func TestClaudeCodeAgent_AStoppedRowWithoutAnInterruptSaysStopped(t *testing.T) {
+	t.Parallel()
+
+	rig := newClaudeInterruptRig(t)
+	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-4","tool_use_id":"spawn-4","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
+
+	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-4","tool_use_id":"spawn-4","status":"stopped"}`))
+
+	tasks := rig.sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.StatusStopped, tasks[0].Status,
+		"a stop nobody asked for keeps the plain stop word")
 }
 
 func TestInterrupt_ClaudeWireFormatMatchesProviderClassifier(t *testing.T) {

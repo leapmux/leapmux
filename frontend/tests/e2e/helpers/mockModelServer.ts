@@ -4,6 +4,7 @@ import type { Duplex } from 'node:stream'
 import type {
   MockModelError,
   MockModelProtocol,
+  MockModelRateLimits,
   MockModelRequestRecord,
   MockModelRule,
   MockModelScenarioSpec,
@@ -1117,9 +1118,11 @@ function responseUsage(step?: MockModelStep): Record<string, unknown> {
  *
  * Claude Code reads the `anthropic-ratelimit-unified-*` family and emits its
  * own `rate_limit_event` when the status changes (see
- * `claude-code/src/services/claudeAiLimits.ts`). OpenAI-family CLIs read the
- * standard `x-ratelimit-*` names. The leapmux-prefixed pair records the step's
- * own vocabulary for assertions that do not care which CLI forwarded it.
+ * `claude-code/src/services/claudeAiLimits.ts`). Codex reads the
+ * `x-codex-*` family and publishes `account/rateLimits/updated` (see
+ * `codex-api/src/rate_limits.rs`). OpenAI-family CLIs read the standard
+ * `x-ratelimit-*` names. The leapmux-prefixed pair records the step's own
+ * vocabulary for assertions that do not care which CLI forwarded it.
  */
 function rateLimitHeaders(step: MockModelStep | undefined): Record<string, string> {
   const rateLimits = step?.rateLimits
@@ -1162,6 +1165,31 @@ function rateLimitHeaders(step: MockModelStep | undefined): Record<string, strin
   // none: Claude reads the status header alone for those.
   if (rateLimits.status === 'allowed_warning' && utilization !== undefined)
     headers[`anthropic-ratelimit-unified-${abbrev}-surpassed-threshold`] = utilization
+  Object.assign(headers, codexRateLimitHeaders(rateLimits))
+  return headers
+}
+
+/**
+ * The `x-codex-*` rate-limit header family Codex parses off a model response.
+ *
+ * Codex reads `x-codex-primary-*` as its 5-hour window and
+ * `x-codex-secondary-*` as its 7-day window. `used-percent` is 0 to 100,
+ * while the step's `utilization` is 0 to 1. A step names ONE window through
+ * `type`; the other window stays absent so Codex reports one tier.
+ */
+function codexRateLimitHeaders(rateLimits: MockModelRateLimits): Record<string, string> {
+  const window = rateLimits.type.startsWith('seven_day') ? 'secondary' : 'primary'
+  const minutes = rateLimits.type.startsWith('seven_day') ? '10080' : '300'
+  const headers: Record<string, string> = {
+    [`x-codex-${window}-window-minutes`]: minutes,
+    'x-codex-limit-name': rateLimits.type,
+  }
+  if (rateLimits.utilization !== undefined)
+    headers[`x-codex-${window}-used-percent`] = String(rateLimits.utilization * 100)
+  if (rateLimits.resetsAt !== undefined)
+    headers[`x-codex-${window}-reset-at`] = String(rateLimits.resetsAt)
+  if (rateLimits.status === 'exceeded' || rateLimits.status === 'rate_limited')
+    headers['x-codex-rate-limit-reached-type'] = 'rate_limit_reached'
   return headers
 }
 

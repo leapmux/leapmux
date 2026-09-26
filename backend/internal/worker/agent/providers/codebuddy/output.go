@@ -65,6 +65,7 @@ func (a *Agent) handleSystem(raw []byte) {
 				a.sink.UpdateSessionID(sessionID)
 			}
 		}
+		a.observeSlashCommands(raw)
 	}
 	a.persistRaw(raw)
 }
@@ -254,9 +255,15 @@ func (a *Agent) persistRaw(raw []byte) {
 	}
 }
 
-// HandleOutput processes a single NDJSON line from CodeBuddy.
+// HandleOutput processes a single NDJSON line from CodeBuddy. It runs the same
+// pipeline as the reader loop: a pending control_response is answered first,
+// and only an unconsumed line reaches handleOutput.
 func (a *Agent) HandleOutput(content []byte) {
-	a.handleOutput(&providerkit.ParsedLine{Raw: content, Type: string(envelopeType(content))})
+	line := &providerkit.ParsedLine{Raw: content, Type: string(envelopeType(content))}
+	if a.handlePendingControlResponse(line) {
+		return
+	}
+	a.handleOutput(line)
 }
 
 // envelopeType extracts the top-level `type` of one frame.

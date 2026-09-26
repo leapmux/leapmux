@@ -721,7 +721,7 @@ func TestQwenStoppedForegroundChildClosesAsStopped(t *testing.T) {
 		stopErr bool
 		want    bgtask.Status
 	}{
-		{name: "the stop that Qwen carried out", stop: cancelled, want: bgtask.StatusStopped},
+		{name: "the stop that Qwen carried out", stop: cancelled, want: bgtask.StatusInterrupted},
 		{name: "no stop", want: bgtask.StatusFailed},
 		{
 			name: "a stop that found the subagent over",
@@ -799,8 +799,9 @@ func TestQwenStopOfAChildChangesNoOtherVerdict(t *testing.T) {
 }
 
 // A background subagent ends with Qwen's notice, which can state a failure for
-// the same abort. The stop decides there too.
-func TestQwenStoppedBackgroundChildClosesAsStopped(t *testing.T) {
+// the same abort. The stop decides there too: a stop WE asked for is a user
+// interrupt, so the row closes as interrupted rather than a plain stop.
+func TestQwenStoppedBackgroundChildClosesAsInterrupted(t *testing.T) {
 	t.Parallel()
 	const tasks = `[{"kind":"agent","id":"general-purpose-call_686a7e3e21","toolUseId":"call_686a7e3e21","status":"running","isBackgrounded":true}]`
 	a, sink, _ := newQwenAgent(t, nil, qwenTaskResponder(tasks, `{"cancelled":true,"status":"running"}`))
@@ -814,7 +815,7 @@ func TestQwenStoppedBackgroundChildClosesAsStopped(t *testing.T) {
 
 	row, ok := sink.BackgroundTask("call_686a7e3e21")
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusStopped, row.Status)
+	assert.Equal(t, bgtask.StatusInterrupted, row.Status)
 }
 
 func TestQwenTaskRunsAndCancellable(t *testing.T) {
