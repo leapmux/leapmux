@@ -385,6 +385,11 @@ func (c *Config) LoadState() (*State, error) {
 }
 
 // ClearState removes the persisted state file.
+//
+// It does NOT remove the temp file an interrupted write left beside it, so a
+// deregistered worker leaves the same credentials on disk under a name with a
+// random suffix. `atomicfile.RemoveTempFiles` is the call that closes this;
+// https://github.com/leapmux/leapmux/issues/494 tracks it.
 func (c *Config) ClearState() error {
 	return os.Remove(c.StatePath())
 }
