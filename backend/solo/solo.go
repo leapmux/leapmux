@@ -22,6 +22,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/logging"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/worker"
@@ -134,8 +135,8 @@ type Config struct {
 	// SkipBanner suppresses the ASCII art banner and access URL.
 	SkipBanner bool
 	// NoTCP disables the TCP listener. When true, the Hub only listens on
-	// the Unix domain socket. This is used by the desktop app to avoid
-	// opening a TCP port.
+	// the local IPC socket (unix:<path> on Unix, npipe:<name> on Windows).
+	// This is used by the desktop app to avoid opening a TCP port.
 	NoTCP bool
 }
 
@@ -197,6 +198,9 @@ type Instance struct {
 // connections (unix:<path> on Unix, npipe:<name> on Windows). Callers that
 // need to dial the Hub from within the same process tree (e.g. the desktop
 // proxy) should use this rather than reconstructing a path.
+//
+// With several local listeners bound it reports the first, in configuration
+// order; the rest still answer.
 func (i *Instance) LocalListenURL() string {
 	return i.listenURL
 }
@@ -467,10 +471,6 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 	}
 	logging.SetLevel(level)
 
-	if cfg.NoTCP {
-		hubCfg.Listen = ""
-	}
-
 	if !cfg.SkipBanner {
 		logging.PrintBanner(modeName)
 	}
@@ -479,6 +479,19 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 	dataDir := hubCfg.DataDir
 	hubCfg.DataDir = filepath.Join(dataDir, "hub")
 	workerDataDir := filepath.Join(dataDir, "worker")
+
+	// NoTCP (the desktop) opens no TCP port: the bind set becomes the local
+	// IPC half of what the launcher configured -- the local entries when it
+	// named any, and otherwise the platform's local IPC URL. It runs after the
+	// data-dir split because that default derives from the hub's own data
+	// directory.
+	if cfg.NoTCP {
+		local, localErr := hubCfg.LocalListenURLs()
+		if localErr != nil {
+			return nil, fmt.Errorf("resolve local listen addresses: %w", localErr)
+		}
+		hubCfg.Listen = local
+	}
 
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
@@ -514,10 +527,19 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 
 	// Resolved BEFORE the contexts exist, so no failure path has to cancel them:
 	// Instance.shutdown stays the only place either cancel is ever reached.
-	listenURL, err := hubCfg.LocalListenURL()
+	// Several local listeners may be bound; the first is the one the embedded
+	// worker dials and Instance.LocalListenURL reports. The rest still answer.
+	localURLs, err := hubCfg.LocalListenURLs()
 	if err != nil {
-		return nil, fmt.Errorf("resolve local-listen URL: %w", err)
+		return nil, fmt.Errorf("resolve local listen URL: %w", err)
 	}
+	if len(localURLs) == 0 {
+		// Unreachable: ListenEntries guarantees a local IPC address. The
+		// scalar below needs a list to take it from, and a panic in Start
+		// would hide the configuration at fault.
+		return nil, errors.New("hub bind set holds no local IPC address")
+	}
+	listenURL := localURLs[0]
 
 	// Two sibling contexts, both DETACHED from ctx (values kept, cancellation
 	// not), so cancellation reaches the Hub and the Worker in the order
@@ -708,6 +730,10 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 
 // soloState persists the auto-registered worker credentials.
 type soloState struct {
+	// PID is the process that wrote this file: stamped at write time by
+	// persistState, and first in the JSON so a reader sees it before anything
+	// else.
+	PID              int    `json:"pid"`
 	WorkerID         string `json:"worker_id"`
 	AuthToken        string `json:"auth_token"`
 	RegisteredBy     string `json:"registered_by,omitempty"`
@@ -1027,37 +1053,19 @@ func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, stateP
 // were misread as a deletion -- so the write that produces the file the next
 // launch reads must not be able to corrupt it.
 func persistState(statePath string, s *soloState) error {
+	s.PID = os.Getpid()
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal state: %w", err)
 	}
-	dir := filepath.Dir(statePath)
-	tmp, err := os.CreateTemp(dir, ".worker-state-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp state file: %w", err)
-	}
-	tmpName := tmp.Name()
-	removeTmp := true
-	defer func() {
-		if removeTmp {
-			_ = os.Remove(tmpName)
-		}
-	}()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
+	// Atomic, with mode 0600 surviving the rename: a crash mid-write must not
+	// leave a truncated credentials file. atomicfile.WriteFile keeps the
+	// temporary name unique per call, which is what makes the write safe
+	// between processes -- every long-lived command rotates this token by
+	// itself, and a shared temporary name would interleave their bytes.
+	if err := atomicfile.WriteFile(statePath, data, 0o600); err != nil {
 		return fmt.Errorf("write state: %w", err)
 	}
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod state: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close state: %w", err)
-	}
-	if err := os.Rename(tmpName, statePath); err != nil {
-		return fmt.Errorf("commit state: %w", err)
-	}
-	removeTmp = false
 	return nil
 }
 
@@ -1164,7 +1172,7 @@ func defaultExtraFlags() []hubconfig.ExtraFlagDef {
 // and are DB-backed restart-class settings for the rare case it is not.
 func defaultCLIFlags() []string {
 	return []string{
-		"listen", "local-listen", "data-dir", "dev-frontend",
+		"listen", "data-dir", "dev-frontend",
 		"storage-sqlite-max-conns", "storage-sqlite-cache-size", "storage-sqlite-mmap-size",
 		"log-level",
 	}

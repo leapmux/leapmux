@@ -33,7 +33,7 @@ func startTestServer(t *testing.T, cfg *config.Config, opts ...ServerOption) *Se
 	t.Helper()
 
 	cfg.DataDir = t.TempDir()
-	cfg.LocalListen = locallistentest.UniqueListenURL(t, "lmx-hub-test")
+	cfg.Listen = append(cfg.Listen, locallistentest.UniqueListenURL(t, "lmx-hub-test"))
 	cfg.Storage = config.StorageConfig{Type: config.StorageTypeSQLite}
 
 	srv, err := NewServer(cfg, opts...)

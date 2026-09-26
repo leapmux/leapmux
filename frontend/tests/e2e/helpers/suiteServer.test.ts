@@ -3,7 +3,7 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { refusedHostsReport, startSuiteServer } from './suiteServer'
+import { hubUrlFromStateJson, refusedHostsReport, startSuiteServer } from './suiteServer'
 
 /**
  * The happy path of `startSuiteServer` is the suite itself: every E2E run
@@ -57,25 +57,24 @@ describe('startSuiteServer', () => {
     expect(await settledServerCount(before)).toBe(before)
   })
 
-  it.skipIf(process.platform === 'win32')('binds the hub\'s local IPC socket at a path that fits sun_path', async () => {
+  it.skipIf(process.platform === 'win32')('binds the hub\'s local IPC socket from --listen at a path that fits sun_path', async () => {
     // macOS refuses a Unix socket path longer than 104 bytes with
     // `bind: invalid argument`, and the run directory of a checkout nested
     // under `.tmp/wt/` is already past it. The default socket is
     // `<data-dir>/hub/hub.sock`, which is as long as the data dir is deep, so
-    // the start must pass `LEAPMUX_HUB_LOCAL_LISTEN` at a short path of its
-    // own. Dropping that variable fails every spec on a deep checkout with a
-    // bind error and names none of them.
+    // the start must name the socket itself, in a repeated `--listen`, at a
+    // short path of its own -- not through an environment variable. Dropping
+    // that argument fails every spec on a deep checkout with a bind error and
+    // names none of them.
     const root = scratchRoot()
-    const binary = join(root, 'record-env')
-    const recorded = join(root, 'recorded-env.json')
-    writeFileSync(binary, `#!/bin/sh\nif [ "$1" = "dev" ]; then\n  node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ listen: process.env.LEAPMUX_HUB_LOCAL_LISTEN, argv: process.argv.slice(2) }))' ${JSON.stringify(recorded)} "$@"\n  exit 1\nfi\nexit 0\n`)
-    chmodSync(binary, 0o755)
+    const { binary, recorded } = writeRecordingFakeBinary(root)
 
     await startSuiteServer({ binaryPath: binary, tmpDir: root }).catch(() => {})
-    const record = JSON.parse(readFileSync(recorded, 'utf8')) as { listen: string, argv: string[] }
+    const record = JSON.parse(readFileSync(recorded, 'utf8')) as FakeRunRecord
 
-    expect(record.listen).toMatch(/^unix:/)
-    const socketPath = record.listen.slice('unix:'.length)
+    const sockets = record.argv.filter(entry => entry.startsWith('unix:'))
+    expect(sockets, `the argv must name one local IPC socket: ${JSON.stringify(record.argv)}`).toHaveLength(1)
+    const socketPath = sockets[0]?.slice('unix:'.length) ?? ''
     // The whole point: short enough for the 104-byte sun_path limit, with room
     // to spare so a longer tmpdir prefix still fits.
     expect(socketPath.length, `socket path is ${socketPath.length} bytes: ${socketPath}`).toBeLessThan(104)
@@ -84,6 +83,88 @@ describe('startSuiteServer', () => {
     const dataDirIndex = record.argv.indexOf('-data-dir')
     expect(dataDirIndex).toBeGreaterThanOrEqual(0)
     expect(socketPath.startsWith(record.argv[dataDirIndex + 1] ?? '')).toBe(false)
+    // The short path comes from the flag, not from an environment variable.
+    expect(record.localListenEnv).toBeNull()
+    expect(record.listenEnv).toBeNull()
+  })
+
+  it.skipIf(process.platform === 'win32')('asks for an ephemeral TCP port and builds the hub URL from the state file', async () => {
+    // The suite must not choose a port: scanning for a free one and rebinding
+    // it is a window another process can win. It passes `127.0.0.1:0` and
+    // reads the resolved address the hub writes to its state file. The fake
+    // writes a KNOWN TCP entry there; the startup failure must name it, which
+    // is only possible if the suite took the port from the file.
+    const root = scratchRoot()
+    const { binary } = writeRecordingFakeBinary(root)
+
+    const failure = await startSuiteServer({ binaryPath: binary, tmpDir: root }).then(
+      () => null,
+      (error: unknown) => error,
+    )
+    expect(failure, 'the fake hub serves no API, so the start must fail').not.toBeNull()
+    // The URL the suite waited on names the port the fake wrote to the state
+    // file, under the browser host. The suite has no other source for it.
+    expect(String(failure)).toContain('localhost:44321')
+  })
+})
+
+interface FakeRunRecord {
+  argv: string[]
+  listenEnv: string | null
+  localListenEnv: string | null
+}
+
+/**
+ * A `leapmux dev` stand-in that records what the suite passed and writes the
+ * hub state file with a known TCP entry, then exits.
+ *
+ * It writes `<data-dir>/hub/state.json` exactly as the hub does after binding,
+ * with `127.0.0.1:44321` as the resolved TCP address: the suite has no other
+ * source for that port, so a start that names it took it from the file.
+ */
+function writeRecordingFakeBinary(root: string): { binary: string, recorded: string } {
+  const binary = join(root, 'record-dev')
+  const recorded = join(root, 'recorded.json')
+  writeFileSync(binary, `#!/bin/sh
+if [ "$1" = "dev" ]; then
+  node -e '
+    const fs = require("fs"), path = require("path");
+    const recorded = process.argv[1];
+    const args = process.argv.slice(2);
+    const dataDir = args[args.indexOf("-data-dir") + 1];
+    const unixEntry = args.find(a => a.startsWith("unix:")) ?? null;
+    const stateDir = path.join(dataDir, "hub");
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, "state.json"), JSON.stringify({ pid: 1, listen: ["127.0.0.1:44321", unixEntry] }));
+    fs.writeFileSync(recorded, JSON.stringify({ argv: args, listenEnv: process.env.LEAPMUX_HUB_LISTEN ?? null, localListenEnv: process.env.LEAPMUX_HUB_LOCAL_LISTEN ?? null }));
+  ' ${JSON.stringify(recorded)} "$@"
+  exit 1
+fi
+exit 0
+`)
+  chmodSync(binary, 0o755)
+  return { binary, recorded }
+}
+
+describe('hubUrlFromStateJson', () => {
+  it('takes the port from the one TCP entry of the bind set', () => {
+    expect(hubUrlFromStateJson(JSON.stringify({ pid: 7, listen: ['127.0.0.1:44321', 'unix:/tmp/hub.sock'] })))
+      .toBe('http://localhost:44321')
+  })
+
+  it('rejects a bind set with no TCP entry', () => {
+    expect(() => hubUrlFromStateJson(JSON.stringify({ pid: 7, listen: ['unix:/tmp/hub.sock'] })))
+      .toThrow(/expected one TCP address/)
+  })
+
+  it('rejects a bind set with more than one TCP entry', () => {
+    expect(() => hubUrlFromStateJson(JSON.stringify({ pid: 7, listen: ['127.0.0.1:1', '127.0.0.1:2'] })))
+      .toThrow(/expected one TCP address/)
+  })
+
+  it('rejects a TCP entry that names no port', () => {
+    expect(() => hubUrlFromStateJson(JSON.stringify({ pid: 7, listen: ['127.0.0.1:'] })))
+      .toThrow(/names no port/)
   })
 })
 

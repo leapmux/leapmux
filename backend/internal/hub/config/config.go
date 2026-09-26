@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
+	"github.com/leapmux/leapmux/internal/hub/listenset"
 	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/memlimit"
@@ -101,9 +103,17 @@ const (
 // `leapmux control admin settings` without a restart (or on restart, for the
 // keys marked restart-class).
 type Config struct {
-	Listen            string        `koanf:"listen"`
-	LocalListen       string        `koanf:"local_listen"`
-	DataDir           string        `koanf:"data_dir"`
+	// Listen is every address the hub accepts connections on. An entry is a
+	// TCP address (`:4327`, `127.0.0.1:4327`) or a local IPC URL
+	// (`unix:<path>`, `npipe:<name>`). The flag is repeatable and the
+	// environment variable is comma-delimited. The list is the bind set, with
+	// the platform's local IPC URL added when it names none; see ListenEntries.
+	Listen  []string `koanf:"listen"`
+	DataDir string   `koanf:"data_dir"`
+	// defaultTCP is the address ListenEntries binds when Listen is empty. It
+	// comes from the launcher (the hub and solo name different addresses), so
+	// it is not a setting and no file, environment variable or flag writes it.
+	defaultTCP        string
 	DevFrontend       string        `koanf:"dev_frontend"`
 	LogLevel          string        `koanf:"log_level"`
 	EncryptionKeyPath string        `koanf:"encryption_key_path"`
@@ -498,6 +508,14 @@ func strFlag(name, koanfKey, category, usage string, def string) flagDef {
 	return flagDef{name: name, koanfKey: koanfKey, category: category, usage: usage, value: def}
 }
 
+// strSliceFlag registers a REPEATABLE string flag: each occurrence appends one
+// value. The default is the whole list, so a caller that sets nothing gets
+// every default entry and a caller that sets one gets only that one -- the
+// list a user gives replaces the default list, it does not extend it.
+func strSliceFlag(name, koanfKey, category, usage string, def []string) flagDef {
+	return flagDef{name: name, koanfKey: koanfKey, category: category, usage: usage, value: def}
+}
+
 func intFlag(name, koanfKey, category, usage string, def int) flagDef {
 	return flagDef{name: name, koanfKey: koanfKey, category: category, usage: usage, value: def}
 }
@@ -542,6 +560,11 @@ func (fd flagDef) register(fs *flag.FlagSet) {
 		// The FlagProvider reads a set flag back through Value.String(), so the
 		// destination only has to outlive this call, not be reachable from here.
 		fs.Var(internalconfig.NewDurationFlag(new(time.Duration), v), fd.name, fd.usage)
+	case []string:
+		// Same: the destination only has to outlive this call. FlagProvider
+		// reads the values back through Get() because a []string field cannot
+		// unmarshal from the joined string.
+		fs.Var(internalconfig.NewStringSliceFlag(new([]string), v), fd.name, fd.usage)
 	default:
 		panic(fmt.Sprintf("config: flag %q has an unsupported default type %T", fd.name, fd.value))
 	}
@@ -648,8 +671,7 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	}
 
 	allFlags := []flagDef{
-		strFlag("listen", "listen", "Server options", "TCP listen address (e.g. ':4327' or '127.0.0.1:4327')", listen),
-		strFlag("local-listen", "local_listen", "Server options", "local IPC listen URL (unix:<path> or npipe:<name>); platform default used if empty", ""),
+		strSliceFlag("listen", "listen", "Server options", "listen address, repeatable: a TCP address (':4327', '127.0.0.1:4327') or a local IPC URL ('unix:<path>', 'npipe:<name>'). The list is the bind set, and at least one local IPC address is always bound: the platform's local IPC URL is added when the list names none, so `leapmux control` keeps the access that socket carries. LEAPMUX_HUB_LISTEN takes the same addresses comma-delimited", nil),
 		strFlag("data-dir", "data_dir", "Server options", "data directory", "."),
 		strFlag("dev-frontend", "dev_frontend", "Server options", "frontend dev server URL for local development reverse proxy", ""),
 		strFlag("log-level", "log_level", "Server options", "log level (debug, info, warn, error)", defaultLogLevel),
@@ -733,7 +755,11 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	k := koanf.New(internalconfig.Delim)
 	fp := internalconfig.NewFlagProvider(fs, fieldMap)
 
-	if err := internalconfig.Load(k, defaults, configPath, "LEAPMUX_HUB_", fp); err != nil {
+	// `listen` is the one environment variable that holds a delimited list:
+	// LEAPMUX_HUB_LISTEN is the comma-delimited form of the repeatable flag.
+	envListKeys := map[string]bool{"listen": true}
+
+	if err := internalconfig.Load(k, defaults, configPath, "LEAPMUX_HUB_", envListKeys, fp); err != nil {
 		return nil, false, fmt.Errorf("load config: %w", err)
 	}
 
@@ -742,16 +768,28 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		return nil, false, fmt.Errorf("unmarshal config: %w", err)
 	}
 
-	// Validate --local-listen early: malformed values should surface at
-	// startup with a clear error rather than failing later inside Serve.
-	if cfg.LocalListen != "" {
-		if _, _, err := locallisten.Parse(cfg.LocalListen); err != nil {
-			return nil, false, fmt.Errorf("invalid local_listen: %w", err)
+	// Validate every --listen entry early: a malformed value should surface
+	// at startup with a clear error rather than failing later inside Serve.
+	// An entry is either a local IPC URL or a TCP address. An entry that
+	// carries the local scheme with no target ("unix:", "npipe:") fails HERE:
+	// falling through to the TCP parser would read "unix:" as a host named
+	// "unix" on the port the operating system chooses.
+	for i, entry := range cfg.Listen {
+		_, _, localErr := locallisten.Parse(entry)
+		if localErr == nil {
+			continue
+		}
+		if errors.Is(localErr, locallisten.ErrMissingTarget) {
+			return nil, false, fmt.Errorf("invalid listen[%d]: %w", i, localErr)
+		}
+		if _, err := listenset.Parse(entry); err != nil {
+			return nil, false, fmt.Errorf("invalid listen[%d]: %w", i, err)
 		}
 	}
 
 	// Resolve relative data_dir against config file directory.
 	cfg.DataDir = internalconfig.ResolveDataDir(cfg.DataDir, configPath, configDir)
+	cfg.defaultTCP = listen
 	cfg.SoloMode = opts.SoloMode
 
 	// Populate extra flag values.
@@ -852,13 +890,98 @@ func (c *Config) EncryptionKeyFilePath() string {
 	return filepath.Join(c.DataDir, "encryption.key")
 }
 
-// LocalListenURL returns the local IPC listen URL the hub should bind.
-// If the user set --local-listen explicitly, that value is returned verbatim.
-// Otherwise a per-platform default is used: unix:<data-dir>/hub.sock on Unix,
-// npipe:leapmux-hub-<SID> on Windows.
-func (c *Config) LocalListenURL() (string, error) {
-	if c.LocalListen != "" {
-		return c.LocalListen, nil
+// ListenEntries is every address the hub binds.
+//
+// INVARIANT: the result holds at least one local IPC address, whatever the
+// caller gives. `leapmux control` reaches a hub without a login over local IPC
+// alone -- SoloGate admits no other caller -- and a hub that bound no local
+// socket would silently take that access away. So a list of TCP addresses
+// alone still gains the platform's local IPC URL, and a list that names a
+// local entry is already covered.
+//
+// Otherwise the list is the bind set: what the user gives is what binds. A
+// list of local entries alone binds no TCP address, and a list that names a
+// local entry replaces the platform default rather than adding to it. An
+// empty Listen takes both platform defaults -- the launcher's TCP address and
+// the local IPC URL.
+func (c *Config) ListenEntries() ([]string, error) {
+	if len(c.Listen) == 0 {
+		local, err := defaultLocalListen(c.DataDir)
+		if err != nil {
+			return nil, err
+		}
+		return []string{c.defaultTCPAddr(), local}, nil
 	}
-	return defaultLocalListen(c.DataDir)
+	_, gotLocal := SplitListen(c.Listen)
+	if len(gotLocal) > 0 {
+		return c.Listen, nil
+	}
+	local, err := defaultLocalListen(c.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	return append(append([]string{}, c.Listen...), local), nil
+}
+
+// defaultTCPAddr is the launcher's TCP address: the one an empty bind list
+// takes. ListenEntries and PrimaryTCPListen both ask here, so the empty-list
+// clause of the rule has one home.
+func (c *Config) defaultTCPAddr() string {
+	if c.defaultTCP != "" {
+		return c.defaultTCP
+	}
+	return defaultListen
+}
+
+// PrimaryTCPListen is the TCP address a browser-facing URL should name: the
+// first TCP address of the bind set, or "" when the set holds none -- a list
+// of local IPC URLs alone binds no TCP address. An empty list takes the
+// launcher's TCP address, which is what this reports for it.
+//
+// The first of several is the primary. It is the address the hub's own links
+// (mail, OAuth redirect, passkey origin) name; the rest still answer, and
+// every bound address is in the listener report.
+//
+// It never resolves the local IPC default, so unlike ListenEntries it cannot
+// fail.
+func (c *Config) PrimaryTCPListen() string {
+	tcp, _ := SplitListen(c.Listen)
+	if len(tcp) > 0 {
+		return tcp[0]
+	}
+	if len(c.Listen) > 0 {
+		return ""
+	}
+	return c.defaultTCPAddr()
+}
+
+// LocalListenURLs returns every local IPC URL of the bind set, in
+// configuration order. ListenEntries guarantees at least one; see its
+// INVARIANT.
+//
+// The first of several is the one a co-located caller dials (the solo
+// worker's HubURL, the desktop proxy); the rest still answer.
+func (c *Config) LocalListenURLs() ([]string, error) {
+	entries, err := c.ListenEntries()
+	if err != nil {
+		return nil, err
+	}
+	_, local := SplitListen(entries)
+	return local, nil
+}
+
+// SplitListen splits the bind list the way the bind path does: which entries
+// are TCP addresses and which are local IPC URLs. The schemes cannot collide
+// -- a local entry carries a `unix:` or `npipe:` prefix and a TCP address does
+// not -- so the split is a prefix test, and an entry that is neither fails the
+// caller's validation before it reaches here.
+func SplitListen(entries []string) (tcp []string, local []string) {
+	for _, e := range entries {
+		if locallisten.IsLocal(e) {
+			local = append(local, e)
+			continue
+		}
+		tcp = append(tcp, e)
+	}
+	return tcp, local
 }

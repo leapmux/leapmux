@@ -114,7 +114,7 @@ func TestWellKnownMetadataIsMounted(t *testing.T) {
 	// A LISTEN address, because the documents are built from the hub's own
 	// address and a hub that has none refuses to publish them at all. See
 	// TestWellKnownMetadataRefusesWithoutAnAddress.
-	srv := startTestServer(t, &config.Config{Listen: "127.0.0.1:4327"})
+	srv := startTestServer(t, &config.Config{Listen: []string{"127.0.0.1:4327"}})
 	handler := srv.server.Handler
 
 	for _, path := range []string{

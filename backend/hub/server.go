@@ -207,9 +207,12 @@ type Server struct {
 	listeners *listenerSet
 	// listenerErrs carries a TCP listener that stopped without being asked
 	// to. Serve selects on it; a deliberate close never reaches it.
-	listenerErrs      chan error
-	localLn           net.Listener
-	listenURL         string
+	listenerErrs    chan error
+	localLns        []net.Listener
+	localListenURLs []string
+	// statePath is the state file NewServer wrote; every teardown that
+	// releases the listeners removes it again.
+	statePath         string
 	cancelHandlers    context.CancelFunc
 	shutdownCh        chan struct{}
 	authContexts      *auth.AuthContextRegistry
@@ -218,8 +221,8 @@ type Server struct {
 	revocationWatcher *revocationwatcher.Watcher
 }
 
-// NewServer creates a new Hub server. It binds the TCP port and local IPC
-// listener (to fail fast on conflicts), opens the database, runs migrations,
+// NewServer creates a new Hub server. It binds every address of the bind set
+// (to fail fast on conflicts), opens the database, runs migrations,
 // bootstraps defaults, and wires all services. Call Serve() to start listening.
 func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	var so serverOptions
@@ -235,10 +238,10 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// exactly what is open without restating the subset (see acquiredResources).
 	var acquired acquiredResources
 
-	// Bind both listeners before any database work so that concurrent
+	// Bind the whole bind set before any database work so that concurrent
 	// instances (e.g. solo + CLI, or two desktop apps sharing the per-user
 	// pipe name) fail fast on conflict without a TOCTOU window. Binding
-	// the local listener here also avoids a race where solo.Start's
+	// the local listeners here also avoids a race where solo.Start's
 	// dial-based readiness probe could connect to a foreign listener on
 	// the same name (e.g. another running Solo instance) while our own
 	// Serve goroutine still propagates the bind failure.
@@ -247,33 +250,77 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// the store opens below, and moving this bind after the store would give
 	// up the fail-fast property the paragraph above describes. The listener
 	// set applies them further down, once the settings manager has loaded.
-	var tcpLn net.Listener
-	var baseAddr *listenset.Addr
-	if cfg.Listen != "" {
-		parsed, parseErr := listenset.Parse(cfg.Listen)
-		if parseErr != nil {
-			return nil, fmt.Errorf("listen tcp: %w", parseErr)
-		}
-		baseAddr = &parsed
-		var listenErr error
-		tcpLn, listenErr = net.Listen("tcp", parsed.DialAddr())
-		if listenErr != nil {
-			return nil, fmt.Errorf("listen tcp: %w", listenErr)
-		}
+	entries, err := cfg.ListenEntries()
+	if err != nil {
+		return nil, acquired.close(
+			fmt.Errorf("resolve listen addresses: %w", err))
 	}
-	acquired.tcpLn = tcpLn
+	tcpEntries, localEntries := config.SplitListen(entries)
+	// resolvedByEntry maps each entry to the address it resolved to, in the
+	// DIAL form a client connects to: a `--listen :0` request shows the port
+	// the operating system chose. It feeds the state file below.
+	resolvedByEntry := make(map[string]string, len(entries))
+	var bound []baseBinding
+	for _, e := range tcpEntries {
+		parsed, parseErr := listenset.Parse(e)
+		if parseErr != nil {
+			return nil, acquired.close(
+				fmt.Errorf("listen tcp %q: %w", e, parseErr))
+		}
+		ln, listenErr := net.Listen("tcp", parsed.DialAddr())
+		if listenErr != nil {
+			return nil, acquired.close(
+				fmt.Errorf("listen tcp %q: %w", e, listenErr))
+		}
+		bound = append(bound, baseBinding{ln: ln, addr: parsed})
+		acquired.tcpLns = append(acquired.tcpLns, ln)
+		resolvedByEntry[e] = resolvePort(parsed, ln).DialAddr()
+	}
+	// The local IPC URLs come from the same list, bound through locallisten so
+	// each one gets the platform socket (and the 0600 mode on Unix). ListenEntries
+	// guarantees at least one; see its INVARIANT.
+	var localLns []net.Listener
+	var localListenURLs []string
+	for _, e := range localEntries {
+		ln, listenErr := locallisten.Listen(e)
+		if listenErr != nil {
+			return nil, acquired.close(
+				fmt.Errorf("listen local %q: %w", e, listenErr))
+		}
+		localLns = append(localLns, ln)
+		localListenURLs = append(localListenURLs, e)
+		acquired.localLns = localLns
+		resolvedByEntry[e] = e
+	}
 
-	// The listener set takes over the base listener HERE, so the failure paths
-	// below release it through the set rather than twice, and so the reporter
-	// can hold it by value. It gets its http.Server later, once the mux and the
+	// The state file, written only now that every listener is bound and every
+	// address resolved: it must never claim an address the hub does not answer
+	// on. It is removed on every teardown that releases the listeners (see
+	// serverTeardownErrors and acquiredResources.close), so a failed start
+	// leaves no file claiming a hub that is not running. A crash leaves it;
+	// the pid is what tells a reader it is stale.
+	stateListen := make([]string, 0, len(entries))
+	for _, e := range entries {
+		stateListen = append(stateListen, resolvedByEntry[e])
+	}
+	statePath, stateErr := writeStateFile(cfg.DataDir, stateListen)
+	if stateErr != nil {
+		return nil, acquired.close(
+			fmt.Errorf("write state file: %w", stateErr))
+	}
+	acquired.statePath = statePath
+
+	// The listener set takes over the base listeners HERE, so the failure paths
+	// below release them through the set rather than twice, and so the reporter
+	// can hold them by value. It gets its http.Server later, once the mux and the
 	// CSP that server is built from exist; see setServer.
 	//
 	// listenerErrs is buffered by one: Serve reads the FIRST fault and tears
 	// the hub down, so a listener that fails while that teardown runs must not
 	// park its goroutine on an unread channel.
 	listenerErrs := make(chan error, 1)
-	listeners := newListenerSet(tcpLn, baseAddr, listenerErrs)
-	acquired.tcpLn = nil
+	listeners := newListenerSet(bound, listenerErrs)
+	acquired.tcpLns = nil
 	acquired.listeners = listeners
 
 	// listenReports answers "which TCP address does a browser reach this hub
@@ -286,19 +333,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// and no consumer repeats it. Extra addresses are hidden_in_hub, so only a
 	// solo hub has any, and in `leapmux hub` and `leapmux dev` this returns
 	// exactly what it always did.
-	listenReports := listenReporter{set: listeners, configured: cfg.Listen}
-
-	listenURL, err := cfg.LocalListenURL()
-	if err != nil {
-		return nil, acquired.close(
-			fmt.Errorf("resolve local-listen URL: %w", err))
-	}
-	localLn, err := locallisten.Listen(listenURL)
-	if err != nil {
-		return nil, acquired.close(
-			fmt.Errorf("listen local: %w", err))
-	}
-	acquired.localLn = localLn
+	listenReports := listenReporter{set: listeners, configured: tcpEntries}
 
 	st, err := storeopen.Open(context.Background(), cfg)
 	if err != nil {
@@ -813,6 +848,17 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// of bug where a mux route doing unlimited I/O parks the drain. net/http
 	// derives connCtx from BaseContext in Serve->conn.serve, and h2c's
 	// sc.baseCtx comes from the same chain.
+	// localIPC is EXACTLY the set of listeners locallisten.Listen created.
+	// BaseContext marks a request local-IPC only when its listener is in this
+	// set -- never from the peer's address -- so a TCP listener can never grant
+	// the credential-free path SoloGate opens for local IPC. A listener added
+	// later (an extra address) is bound by listenerSet through net.Listen and
+	// lands outside this set by construction.
+	localIPC := make(map[net.Listener]struct{}, len(localLns))
+	for _, ln := range localLns {
+		localIPC[ln] = struct{}{}
+	}
+
 	server := &http.Server{
 		// httpsec wraps the WHOLE mux, not the frontend handler alone: nosniff
 		// and Referrer-Policy protect every response, and the hub renders HTML
@@ -839,9 +885,10 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		// is what makes the mark reliable. A named-pipe connection reports a
 		// network name that a third-party package owns, so a rename there
 		// would silently turn every desktop request into a remote one -- while
-		// this pointer is the listener the hub itself created.
+		// this pointer is the listener the hub itself created. The set is the
+		// locallisten.Listen results ONLY; see localIPC above.
 		BaseContext: func(ln net.Listener) context.Context {
-			if ln == localLn {
+			if _, isLocal := localIPC[ln]; isLocal {
 				return peer.WithLocalIPC(handlerCtx)
 			}
 			return handlerCtx
@@ -960,8 +1007,9 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		server:            server,
 		listeners:         listeners,
 		listenerErrs:      listenerErrs,
-		localLn:           localLn,
-		listenURL:         listenURL,
+		localLns:          localLns,
+		localListenURLs:   localListenURLs,
+		statePath:         statePath,
 		cancelHandlers:    cancelHandlers,
 		shutdownCh:        shutdownCh,
 		authContexts:      authContexts,
@@ -1105,8 +1153,6 @@ func (s *Server) GetAdminUser(ctx context.Context) (userID string, err error) {
 // Serve starts the Hub server on the listeners that NewServer pre-bound.
 // It blocks until ctx is cancelled, then performs graceful shutdown.
 func (s *Server) Serve(ctx context.Context) error {
-	localLn := s.localLn
-	listenURL := s.listenURL
 	serveCtx, cancelServe := context.WithCancelCause(ctx)
 	defer cancelServe(nil)
 
@@ -1136,7 +1182,8 @@ func (s *Server) Serve(ctx context.Context) error {
 		return serverTeardownErrors{
 			primary:       primary,
 			tcpListener:   s.listeners.Close(),
-			localListener: closeServerListener(localLn),
+			localListener: closeServerListeners(s.localLns),
+			stateFile:     removeStateFile(s.statePath),
 			httpClose:     s.server.Close(),
 			watcherClose:  watcherCloseErr,
 			storeClose:    s.store.Close(),
@@ -1219,7 +1266,9 @@ func (s *Server) Serve(ctx context.Context) error {
 		defer cancel()
 		httpShutdownErr := s.server.Shutdown(shutdownCtx)
 		httpCloseErr := s.server.Close()
-		locallisten.CloseAccepted(s.localLn)
+		for _, ln := range s.localLns {
+			locallisten.CloseAccepted(ln)
+		}
 
 		shutdownDone <- serverTeardownErrors{
 			httpShutdown: httpShutdownErr,
@@ -1233,22 +1282,26 @@ func (s *Server) Serve(ctx context.Context) error {
 	// filters out the returns caused by its own deliberate closes. Only a
 	// listener that stopped without being asked to reaches listenerErrs.
 	//
-	// The local IPC listener stays here, served directly. It is bound once
-	// and never rebound, so it needs none of that machinery.
+	// The local IPC listeners stay here, served directly. They are bound once
+	// and never rebound, so they need none of that machinery. Each Serve return
+	// still lands on localErrCh, so the first fault tears the hub down and the
+	// drain below gathers the rest.
 	s.listeners.Serve()
-	localErrCh := make(chan error, 1)
-	go func() { localErrCh <- s.server.Serve(localLn) }()
+	localErrCh := make(chan error, len(s.localLns))
+	for _, ln := range s.localLns {
+		go func(ln net.Listener) { localErrCh <- s.server.Serve(ln) }(ln)
+	}
 
 	if bound := s.listeners.Bound(); len(bound) > 0 {
-		slog.Info("hub listening", "listen", boundAddressesForLog(bound), "local", listenURL)
+		slog.Info("hub listening", "listen", boundAddressesForLog(bound), "local", s.localListenURLs)
 	} else {
-		slog.Info("hub listening", "local", listenURL)
+		slog.Info("hub listening", "local", s.localListenURLs)
 	}
 
 	var teardownErrs serverTeardownErrors
-	localDone := false
+	localsHeard := 0
 	recordLocalResult := func(err error) {
-		localDone = true
+		localsHeard++
 		if err == nil || errors.Is(err, http.ErrServerClosed) {
 			return
 		}
@@ -1268,13 +1321,17 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 
 	// Shutdown closes every listener. Drain their results before releasing
-	// the store so no handler can race a closed database.
-	if !localDone {
+	// the store so no handler can race a closed database. The select above
+	// consumed at most one local result; the rest are read here.
+	for localsHeard < len(s.localLns) {
 		recordLocalResult(<-localErrCh)
 	}
 	// The set's goroutines end when Shutdown closes their listeners; Close
 	// waits for every one of them, so no handler outlives the store below.
 	teardownErrs.tcpListener = errors.Join(teardownErrs.tcpListener, s.listeners.Close())
+	// With the listeners released, the state file would claim a hub that is no
+	// longer running; it goes beside them.
+	teardownErrs.stateFile = removeStateFile(s.statePath)
 
 	// 5. Wait for the shutdown goroutine to complete.
 	shutdownErrs := <-shutdownDone
@@ -1366,6 +1423,7 @@ type serverTeardownErrors struct {
 	primary       error
 	tcpListener   error
 	localListener error
+	stateFile     error
 	httpShutdown  error
 	httpClose     error
 	watcherClose  error
@@ -1377,6 +1435,7 @@ func (e serverTeardownErrors) finalize() error {
 		e.primary,
 		errwrap.Wrap(e.tcpListener, "TCP listener"),
 		errwrap.Wrap(e.localListener, "local listener"),
+		errwrap.Wrap(e.stateFile, "remove state file"),
 		errwrap.Wrap(e.httpShutdown, "shut down HTTP server"),
 		errwrap.Wrap(e.httpClose, "force-close HTTP server"),
 		errwrap.Wrap(e.watcherClose, "close revocation watcher"),
@@ -1402,12 +1461,15 @@ func (e serverTeardownErrors) finalize() error {
 // same "remember to extend the sites below" trap in miniature: a new acquired.close
 // site added after them would have leaked both.
 type acquiredResources struct {
-	// tcpLn is the base listener BEFORE the listener set exists to own it.
-	// NewServer clears it and sets listeners at the handover, so the two are
-	// never both populated and the socket is never closed twice.
-	tcpLn          net.Listener
-	listeners      *listenerSet
-	localLn        net.Listener
+	// tcpLns are the base listeners BEFORE the listener set exists to own them.
+	// NewServer clears them and sets listeners at the handover, so the two are
+	// never both populated and a socket is never closed twice.
+	tcpLns    []net.Listener
+	listeners *listenerSet
+	localLns  []net.Listener
+	// statePath is the state file this construction wrote, empty until it did.
+	// A construction that never wrote removes nothing: see removeStateFile.
+	statePath      string
 	store          store.Store
 	authContexts   *auth.AuthContextRegistry
 	crdtRegistry   *crdt.Registry
@@ -1433,8 +1495,9 @@ func (r acquiredResources) close(primary error) error {
 	return serverTeardownErrors{
 		primary:       primary,
 		storeClose:    closeStore(r.store),
-		localListener: closeServerListener(r.localLn),
-		tcpListener:   errors.Join(closeServerListener(r.tcpLn), closeListenerSet(r.listeners)),
+		localListener: closeServerListeners(r.localLns),
+		stateFile:     removeStateFile(r.statePath),
+		tcpListener:   errors.Join(closeServerListeners(r.tcpLns), closeListenerSet(r.listeners)),
 	}.finalize()
 }
 
@@ -1452,12 +1515,16 @@ func closeStore(st store.Store) error {
 	return st.Close()
 }
 
-func closeServerListener(listener net.Listener) error {
-	if listener == nil {
-		return nil
+func closeServerListeners(listeners []net.Listener) error {
+	var errs []error
+	for _, listener := range listeners {
+		if listener == nil {
+			continue
+		}
+		// Return the raw error; finalize() adds the "TCP listener" / "local
+		// listener" prefix, mirroring closeStore so every teardown error reads
+		// at a single depth instead of nesting ("TCP listener: close: <err>").
+		errs = append(errs, listener.Close())
 	}
-	// Return the raw error; finalize() adds the "TCP listener" / "local
-	// listener" prefix, mirroring closeStore so every teardown error reads at
-	// a single depth instead of nesting ("TCP listener: close: <err>").
-	return listener.Close()
+	return errors.Join(errs...)
 }

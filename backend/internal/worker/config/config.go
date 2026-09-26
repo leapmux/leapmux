@@ -17,6 +17,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
@@ -134,6 +135,10 @@ func (c *Config) applyDurationDefaults() {
 
 // State holds the worker's persistent state (saved to disk after registration).
 type State struct {
+	// PID is the process that wrote this file. It comes first in the JSON so
+	// a reader sees it before anything else, and it is stamped at write time
+	// by SaveState, never filled in by a caller.
+	PID       int    `json:"pid"`
 	WorkerID  string `json:"worker_id"`
 	AuthToken string `json:"auth_token"`
 	// No registered_by: the Hub delivers the worker's owner on every connect
@@ -293,7 +298,9 @@ func Load(args []string) (*Config, bool, error) {
 	k := koanf.New(internalconfig.Delim)
 	fp := internalconfig.NewFlagProvider(fs, fieldMap)
 
-	if err := internalconfig.Load(k, defaults, configPath, "LEAPMUX_WORKER_", fp); err != nil {
+	// The worker has no list-typed environment variable: every key it reads
+	// holds one value.
+	if err := internalconfig.Load(k, defaults, configPath, "LEAPMUX_WORKER_", nil, fp); err != nil {
 		return nil, false, fmt.Errorf("load config: %w", err)
 	}
 
@@ -382,11 +389,14 @@ func (c *Config) ClearState() error {
 	return os.Remove(c.StatePath())
 }
 
-// SaveState persists state to disk.
+// SaveState persists state to disk: atomically (a reader never sees a
+// half-written credentials file), with mode 0600 surviving the rename, and
+// the pid stamped from this process as the first field.
 func (c *Config) SaveState(s *State) error {
+	s.PID = os.Getpid()
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(c.StatePath(), data, 0o600)
+	return atomicfile.WriteFile(c.StatePath(), data, 0o600)
 }

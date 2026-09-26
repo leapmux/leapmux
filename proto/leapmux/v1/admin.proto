@@ -177,8 +177,9 @@ message GetListenStatusRequest {}
 
 message GetListenStatusResponse {
   repeated NetworkInterface interfaces = 1;
-  // The address -listen named, in the form -listen carries. Read-only: it
-  // is a command-line option, never a setting.
+  // The primary TCP address --listen named (the first of several), in the
+  // form --listen carries, or "" when the bind set holds no TCP address.
+  // Read-only: it is a command-line option, never a setting.
   string default_address = 2;
   // The stored extra_listen_addresses value, canonically spelled.
   repeated string configured = 3;

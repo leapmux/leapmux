@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -47,11 +48,23 @@ func setupOAuthTestServerWithSettings(t *testing.T) (*httptest.Server, store.Sto
 	return setupOAuthTestServerWithListen(t, ":4327")
 }
 
-// setupOAuthTestServerWithListen varies the bind address, which is what
-// decides whether this hub can run a passkey ceremony at all: an empty
-// listen has no browser-reachable origin, so RPConfigFromSettings refuses
-// and passkeys are cleanly unavailable. The account-shape rule still refuses
-// a provider step-up for an account that holds such a passkey.
+// bindSetForTest turns the helper's listen argument into a bind-set list: the
+// TCP address as given, or a local-only list when the caller wants a hub with
+// no browser-reachable origin (which is what an empty argument has always
+// meant here).
+func bindSetForTest(t *testing.T, listen string) []string {
+	t.Helper()
+	if listen != "" {
+		return []string{listen}
+	}
+	return []string{"unix:" + filepath.Join(t.TempDir(), "hub.sock")}
+}
+
+// setupOAuthTestServerWithListen varies the bind set, which is what decides
+// whether this hub can run a passkey ceremony at all: a LOCAL-ONLY bind set
+// has no browser-reachable origin, so RPConfigFromSettings refuses and
+// passkeys are cleanly unavailable. The account-shape rule still refuses a
+// provider step-up for an account that holds such a passkey.
 func setupOAuthTestServerWithListen(t *testing.T, listen string) (*httptest.Server, store.Store, *keystore.Keystore, *settings.Manager) {
 	return setupOAuthTestServerOver(t, listen, nil)
 }
@@ -83,7 +96,7 @@ func setupOAuthTestServerOver(
 	require.NoError(t, err)
 
 	cfg := &config.Config{
-		Listen: listen,
+		Listen: bindSetForTest(t, listen),
 	}
 	set := servicetest.NewSettingsManager(t, st, ks)
 	enableSignup(t, set)
@@ -411,7 +424,7 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	require.NoError(t, err)
 
 	cfg := &config.Config{
-		Listen: ":4327",
+		Listen: []string{":4327"},
 	}
 	set := servicetest.NewSettingsManager(t, st, ks)
 	enableSignup(t, set)
@@ -787,7 +800,7 @@ func TestCompleteOAuthSignup_UntrustedFailClosedWhenVerificationEmailFails(t *te
 	ks, err := keystore.New(map[uint32][32]byte{1: key})
 	require.NoError(t, err)
 
-	cfg := &config.Config{Listen: ":4327"}
+	cfg := &config.Config{Listen: []string{":4327"}}
 	set := servicetest.NewSettingsManager(t, st, ks)
 	enableSignup(t, set)
 	enableEmailVerification(t, set)
@@ -1005,7 +1018,7 @@ func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := &config.Config{
-		Listen: ":4327",
+		Listen: []string{":4327"},
 	}
 
 	idpHandler := service.NewIdPHandler(st, cfg, servicetest.NewSettingsManager(t, st, ks), auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)

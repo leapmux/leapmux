@@ -26,7 +26,7 @@ import (
 func startTestServerIn(t *testing.T, cfg *config.Config, dataDir, localListen string) (*Server, func()) {
 	t.Helper()
 	cfg.DataDir = dataDir
-	cfg.LocalListen = localListen
+	cfg.Listen = append(cfg.Listen, localListen)
 	cfg.Storage = config.StorageConfig{Type: config.StorageTypeSQLite}
 
 	srv, err := NewServer(cfg)
@@ -87,7 +87,7 @@ func TestServer_ASettingsWriteBindsAndUnbindsWhileServing(t *testing.T) {
 	base := "127.0.0.1:" + strconv.Itoa(basePort)
 	extra := "127.0.0.1:" + strconv.Itoa(extraPort)
 
-	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	srv := startTestServer(t, &config.Config{Listen: []string{base}, SoloMode: true})
 	requireAnswers(t, base)
 
 	writeExtraListeners(t, srv, extra)
@@ -112,7 +112,7 @@ func TestServer_AWildcardMergesTheListenAddress(t *testing.T) {
 	port := freePorts(t, 1)[0]
 	base := "127.0.0.1:" + strconv.Itoa(port)
 
-	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	srv := startTestServer(t, &config.Config{Listen: []string{base}, SoloMode: true})
 	requireAnswers(t, base)
 
 	// A wildcard answers other machines, so the cross-key rule holds the write
@@ -148,7 +148,7 @@ func TestServer_AStoredAddressThatCannotBindDoesNotStopTheHub(t *testing.T) {
 	base := "127.0.0.1:" + strconv.Itoa(basePort)
 	occupied := "127.0.0.1:" + strconv.Itoa(occupiedPort)
 
-	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	srv := startTestServer(t, &config.Config{Listen: []string{base}, SoloMode: true})
 	requireAnswers(t, base)
 
 	blocker, err := net.Listen("tcp", occupied)
@@ -171,7 +171,7 @@ func TestServer_AnUnrelatedSettingsWriteLeavesTheListenersAlone(t *testing.T) {
 	base := "127.0.0.1:" + strconv.Itoa(basePort)
 	extra := "127.0.0.1:" + strconv.Itoa(extraPort)
 
-	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	srv := startTestServer(t, &config.Config{Listen: []string{base}, SoloMode: true})
 	writeExtraListeners(t, srv, extra)
 	requireAnswers(t, extra)
 
@@ -201,7 +201,7 @@ func TestServer_AnUnrelatedSettingsWriteLeavesTheListenersAlone(t *testing.T) {
 func TestServer_ASettingsWriteRefusesAHostName(t *testing.T) {
 	ports := freePorts(t, 2)
 	base := "127.0.0.1:" + strconv.Itoa(ports[0])
-	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	srv := startTestServer(t, &config.Config{Listen: []string{base}, SoloMode: true})
 	requireAnswers(t, base)
 
 	doc := json.RawMessage(`{"addresses":["hub.example:` + strconv.Itoa(ports[1]) + `"]}`)
@@ -229,13 +229,13 @@ func TestServer_StoredAddressesBindAgainOnTheNextStart(t *testing.T) {
 	dataDir := t.TempDir()
 	localListen := locallistentest.UniqueListenURL(t, "lmx-hub-restart")
 
-	first, stopFirst := startTestServerIn(t, &config.Config{Listen: base, SoloMode: true}, dataDir, localListen)
+	first, stopFirst := startTestServerIn(t, &config.Config{Listen: []string{base}, SoloMode: true}, dataDir, localListen)
 	writeExtraListeners(t, first, extra)
 	requireAnswers(t, extra)
 	stopFirst()
 	requireStopsAnswering(t, extra)
 
-	second, _ := startTestServerIn(t, &config.Config{Listen: base, SoloMode: true}, dataDir, localListen)
+	second, _ := startTestServerIn(t, &config.Config{Listen: []string{base}, SoloMode: true}, dataDir, localListen)
 	requireAnswers(t, extra)
 	requireAnswers(t, base)
 	assert.ElementsMatch(t, []string{base, extra}, servingAddresses(second))
@@ -251,7 +251,7 @@ func TestServer_StoredAddressesBindAgainOnTheNextStart(t *testing.T) {
 func TestServer_RefusesAnExposingAddressWithNoPassword(t *testing.T) {
 	port := freePorts(t, 1)[0]
 	base := "127.0.0.1:" + strconv.Itoa(port)
-	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	srv := startTestServer(t, &config.Config{Listen: []string{base}, SoloMode: true})
 	requireAnswers(t, base)
 
 	err := srv.SettingsManager().Update(context.Background(), settings.KeyExtraListenAddresses,
@@ -289,12 +289,12 @@ func TestServer_AHubIgnoresASoloStoredAddress(t *testing.T) {
 	dir := t.TempDir()
 	local := locallistentest.UniqueListenURL(t, "lmx-hub-solo-row")
 
-	solo, stopSolo := startTestServerIn(t, &config.Config{Listen: base, SoloMode: true}, dir, local)
+	solo, stopSolo := startTestServerIn(t, &config.Config{Listen: []string{base}, SoloMode: true}, dir, local)
 	writeExtraListeners(t, solo, extra)
 	require.ElementsMatch(t, []string{base, extra}, servingAddresses(solo))
 	stopSolo()
 
-	hub, _ := startTestServerIn(t, &config.Config{Listen: base, SoloMode: false}, dir, local)
+	hub, _ := startTestServerIn(t, &config.Config{Listen: []string{base}, SoloMode: false}, dir, local)
 	assert.Equal(t, []string{base}, servingAddresses(hub),
 		"a hub must serve only what -listen gave it")
 }

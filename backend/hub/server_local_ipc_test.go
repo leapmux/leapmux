@@ -26,7 +26,7 @@ import (
 // the named pipe on Windows -- the way the desktop shell's sidecar does.
 func localIPCClient(t *testing.T, srv *Server) leapmuxv1connect.AdminSettingsServiceClient {
 	t.Helper()
-	dial, err := locallisten.Dialer(srv.listenURL)
+	dial, err := locallisten.Dialer(srv.localListenURLs[0])
 	require.NoError(t, err)
 	httpClient := &http.Client{
 		Transport: &http.Transport{DialContext: locallisten.HTTPDialContext(dial)},
@@ -58,7 +58,7 @@ func listSettings(c leapmuxv1connect.AdminSettingsServiceClient) error {
 // RPC without first taking responsibility for the account.
 func TestServer_PasswordlessSoloTCPRejectsAdministratorRPC(t *testing.T) {
 	base := "127.0.0.1:" + strconv.Itoa(freePorts(t, 1)[0])
-	startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	startTestServer(t, &config.Config{Listen: []string{base}, SoloMode: true})
 	requireAnswers(t, base)
 
 	err := listSettings(tcpClient(base))
@@ -68,7 +68,7 @@ func TestServer_PasswordlessSoloTCPRejectsAdministratorRPC(t *testing.T) {
 
 func TestServer_TCPInitialSoloPasswordCreatesVerifiedSession(t *testing.T) {
 	base := "127.0.0.1:" + strconv.Itoa(freePorts(t, 1)[0])
-	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	srv := startTestServer(t, &config.Config{Listen: []string{base}, SoloMode: true})
 	requireAnswers(t, base)
 	require.NoError(t, srv.settings.Update(context.Background(), requestsource.KeyTrustedProxyRanges,
 		json.RawMessage(`["127.0.0.1"]`)))
@@ -128,7 +128,7 @@ func TestServer_TCPInitialSoloPasswordCreatesVerifiedSession(t *testing.T) {
 // admitted both would satisfy either case alone.
 func TestServer_TheLocalSocketStaysCredentialFreeWhenTCPStopsBeing(t *testing.T) {
 	base := "127.0.0.1:" + strconv.Itoa(freePorts(t, 1)[0])
-	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	srv := startTestServer(t, &config.Config{Listen: []string{base}, SoloMode: true})
 	requireAnswers(t, base)
 
 	// Local IPC receives the synthetic account before setup. TCP can call only
@@ -168,7 +168,7 @@ func TestServer_TheLocalSocketStaysCredentialFreeWhenTCPStopsBeing(t *testing.T)
 // works and in the same one when it does not, which is the whole assertion.
 func TestServer_TheLoginBudgetIsKeyedByTheCallersAddress(t *testing.T) {
 	base := "127.0.0.1:" + strconv.Itoa(freePorts(t, 1)[0])
-	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	srv := startTestServer(t, &config.Config{Listen: []string{base}, SoloMode: true})
 	requireAnswers(t, base)
 
 	overTCP := tcpAuthClient(base)
@@ -216,7 +216,7 @@ func tcpAuthClient(addr string) leapmuxv1connect.AuthServiceClient {
 
 func localIPCAuthClient(t *testing.T, srv *Server) leapmuxv1connect.AuthServiceClient {
 	t.Helper()
-	dial, err := locallisten.Dialer(srv.listenURL)
+	dial, err := locallisten.Dialer(srv.localListenURLs[0])
 	require.NoError(t, err)
 	return leapmuxv1connect.NewAuthServiceClient(
 		&http.Client{

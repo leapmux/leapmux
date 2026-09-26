@@ -210,7 +210,7 @@ func TestMerge(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name   string
-		base   string // "" means no base (the NoTCP desktop)
+		bases  []string // empty means no base (the NoTCP desktop)
 		extras []string
 		want   []string
 	}{
@@ -219,9 +219,9 @@ func TestMerge(t *testing.T) {
 			want: nil,
 		},
 		{
-			name: "the base alone",
-			base: "127.0.0.1:4327",
-			want: []string{"127.0.0.1:4327"},
+			name:  "the base alone",
+			bases: []string{"127.0.0.1:4327"},
+			want:  []string{"127.0.0.1:4327"},
 		},
 		{
 			name:   "an extra alone, with no base",
@@ -231,43 +231,43 @@ func TestMerge(t *testing.T) {
 		{
 			// The example from the requirement.
 			name:   "a wildcard extra absorbs the loopback base on its port",
-			base:   "127.0.0.1:4327",
+			bases:  []string{"127.0.0.1:4327"},
 			extras: []string{"*:4327"},
 			want:   []string{"*:4327"},
 		},
 		{
 			name:   "an extra equal to the base collapses to one",
-			base:   "127.0.0.1:4327",
+			bases:  []string{"127.0.0.1:4327"},
 			extras: []string{"127.0.0.1:4327"},
 			want:   []string{"127.0.0.1:4327"},
 		},
 		{
 			name:   "two equal extras collapse to one, and neither drops the other",
-			base:   "127.0.0.1:4327",
+			bases:  []string{"127.0.0.1:4327"},
 			extras: []string{"*:9000", "*:9000"},
 			want:   []string{"127.0.0.1:4327", "*:9000"},
 		},
 		{
 			name:   "a wildcard on another port leaves the base alone",
-			base:   "127.0.0.1:4327",
+			bases:  []string{"127.0.0.1:4327"},
 			extras: []string{"*:9000"},
 			want:   []string{"127.0.0.1:4327", "*:9000"},
 		},
 		{
 			name:   "a specific extra survives beside a loopback base",
-			base:   "127.0.0.1:4327",
+			bases:  []string{"127.0.0.1:4327"},
 			extras: []string{"192.168.1.24:8080"},
 			want:   []string{"127.0.0.1:4327", "192.168.1.24:8080"},
 		},
 		{
 			name:   "an IPv4 wildcard base absorbs an IPv4 extra and keeps an IPv6 one",
-			base:   "0.0.0.0:4327",
+			bases:  []string{"0.0.0.0:4327"},
 			extras: []string{"192.168.1.24:4327", "[::1]:4327"},
 			want:   []string{"0.0.0.0:4327", "[::1]:4327"},
 		},
 		{
 			name:   "a wildcard extra absorbs both wildcards and every literal on its port",
-			base:   "0.0.0.0:4327",
+			bases:  []string{"0.0.0.0:4327"},
 			extras: []string{"*:4327", "[::]:4327", "192.168.1.24:4327"},
 			want:   []string{"*:4327"},
 		},
@@ -278,22 +278,26 @@ func TestMerge(t *testing.T) {
 		},
 		{
 			name:   "a name is never absorbed by an address it may not resolve to",
-			base:   "127.0.0.1:4327",
+			bases:  []string{"127.0.0.1:4327"},
 			extras: []string{"hub.example:9000"},
 			want:   []string{"127.0.0.1:4327", "hub.example:9000"},
+		},
+		{
+			name:   "several bases survive, with an extra folding only the one it covers",
+			bases:  []string{"127.0.0.1:4327", ":9090"},
+			extras: []string{"*:4327"},
+			// The wildcard bases canonicalise: ":9090" reports as "*:9090".
+			want: []string{"*:4327", "*:9090"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			var base *listenset.Addr
-			if tc.base != "" {
-				b := listenset.MustParse(tc.base)
-				base = &b
-			}
+			bases, err := listenset.ParseAll(tc.bases)
+			require.NoError(t, err)
 			extras, err := listenset.ParseAll(tc.extras)
 			require.NoError(t, err)
 
-			got := listenset.Strings(listenset.Merge(base, extras))
+			got := listenset.Strings(listenset.Merge(bases, extras))
 			assert.Equal(t, tc.want, emptyToNil(got))
 		})
 	}
@@ -321,7 +325,7 @@ func TestMerge_ResultHoldsNoCoveringPair(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	got := listenset.Merge(&base, extras)
+	got := listenset.Merge([]listenset.Addr{base}, extras)
 	for i, a := range got {
 		for j, b := range got {
 			if i == j {

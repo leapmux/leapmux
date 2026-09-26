@@ -40,7 +40,11 @@ func TestLoad(t *testing.T) {
 		cfg, showVersion, err := Load(nil)
 		require.NoError(t, err)
 		assert.False(t, showVersion)
-		assert.Equal(t, ":4327", cfg.Listen)
+		assert.Empty(t, cfg.Listen, "the flag default is empty; the platform default is applied at bind time")
+		entries, err := cfg.ListenEntries()
+		require.NoError(t, err)
+		assert.Equal(t, []string{":4327"}, tcpOf(t, entries))
+		assert.NotEmpty(t, localOf(t, entries))
 		assert.Equal(t, filepath.Join(home, ".config/leapmux/hub"), cfg.DataDir)
 		assert.Equal(t, "", cfg.DevFrontend)
 		assert.Equal(t, sqlitedb.DefaultMaxConns, cfg.SQLiteDBConfig().MaxConns)
@@ -50,7 +54,7 @@ func TestLoad(t *testing.T) {
 	t.Run("config file overrides defaults", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		configPath := filepath.Join(tmpDir, "hub.yaml")
-		yamlContent := `listen: ":9999"
+		yamlContent := `listen: [":9999"]
 storage:
   sqlite:
     max_conns: 16
@@ -60,7 +64,7 @@ log_level: "debug"
 
 		cfg, _, err := Load([]string{"-config", configPath})
 		require.NoError(t, err)
-		assert.Equal(t, ":9999", cfg.Listen)
+		assert.Equal(t, []string{":9999"}, cfg.Listen)
 		assert.Equal(t, 16, cfg.SQLiteDBConfig().MaxConns)
 		assert.Equal(t, "debug", cfg.LogLevel)
 		// data_dir defaults to "." resolved against config file dir.
@@ -70,7 +74,7 @@ log_level: "debug"
 	t.Run("env vars override config file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		configPath := filepath.Join(tmpDir, "hub.yaml")
-		yamlContent := `listen: ":9999"
+		yamlContent := `listen: [":9999"]
 log_level: "debug"
 `
 		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
@@ -79,7 +83,7 @@ log_level: "debug"
 
 		cfg, _, err := Load([]string{"-config", configPath})
 		require.NoError(t, err)
-		assert.Equal(t, ":7777", cfg.Listen)
+		assert.Equal(t, []string{":7777"}, cfg.Listen)
 		assert.Equal(t, "debug", cfg.LogLevel) // from config file
 	})
 
@@ -88,7 +92,7 @@ log_level: "debug"
 
 		cfg, _, err := Load([]string{"-listen", ":5555"})
 		require.NoError(t, err)
-		assert.Equal(t, ":5555", cfg.Listen)
+		assert.Equal(t, []string{":5555"}, cfg.Listen)
 	})
 
 	t.Run("version flag", func(t *testing.T) {
@@ -100,7 +104,7 @@ log_level: "debug"
 	t.Run("missing config file silently ignored", func(t *testing.T) {
 		cfg, _, err := Load([]string{"-config", "/nonexistent/hub.yaml"})
 		require.NoError(t, err)
-		assert.Equal(t, ":4327", cfg.Listen) // uses default
+		assert.Empty(t, cfg.Listen, "the flag default is empty; the platform default is applied at bind time")
 	})
 
 	t.Run("invalid YAML returns error", func(t *testing.T) {
@@ -153,7 +157,10 @@ func TestLoadWithOptions(t *testing.T) {
 			DefaultListen: "127.0.0.1:4327",
 		})
 		require.NoError(t, err)
-		assert.Equal(t, "127.0.0.1:4327", cfg.Listen)
+		assert.Empty(t, cfg.Listen, "DefaultListen sets the launcher's TCP default, not the flag value")
+		entries, err := cfg.ListenEntries()
+		require.NoError(t, err)
+		assert.Equal(t, []string{"127.0.0.1:4327"}, tcpOf(t, entries))
 	})
 
 	t.Run("SoloMode set on output", func(t *testing.T) {
@@ -182,14 +189,14 @@ func TestLoadWithOptions(t *testing.T) {
 			CLIFlags: []string{"listen", "data-dir", "log-level"},
 		})
 		require.NoError(t, err)
-		assert.Equal(t, ":9999", cfg.Listen)
+		assert.Equal(t, []string{":9999"}, cfg.Listen)
 	})
 
 	t.Run("config file values for all fields work with CLIFlags restriction", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		configPath := filepath.Join(tmpDir, "solo.yaml")
 		yamlContent := `dev_frontend: "http://localhost:5173"
-local_listen: "unix:/tmp/leapmux.sock"
+encryption_key_path: "/tmp/leapmux-enc.key"
 `
 		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
 
@@ -201,7 +208,7 @@ local_listen: "unix:/tmp/leapmux.sock"
 		// restriction narrows which CLI flags are registered, not which config keys
 		// are read.
 		assert.Equal(t, "http://localhost:5173", cfg.DevFrontend)
-		assert.Equal(t, "unix:/tmp/leapmux.sock", cfg.LocalListen)
+		assert.Equal(t, "/tmp/leapmux-enc.key", cfg.EncryptionKeyPath)
 	})
 
 	t.Run("custom DefaultConfigDir used for data dir resolution", func(t *testing.T) {
@@ -355,7 +362,7 @@ func TestValidate(t *testing.T) {
 	t.Run("removed storage backends are unsupported", func(t *testing.T) {
 		for _, storageType := range []StorageType{"mongodb", "dynamodb"} {
 			cfg := &Config{
-				Listen:  ":4327",
+				Listen:  []string{":4327"},
 				DataDir: t.TempDir(),
 				Storage: StorageConfig{Type: storageType},
 			}
@@ -370,7 +377,7 @@ func TestValidate(t *testing.T) {
 		tmpDir := t.TempDir()
 		dataDir := filepath.Join(tmpDir, "data")
 
-		cfg := &Config{Listen: ":4327", DataDir: dataDir}
+		cfg := &Config{Listen: []string{":4327"}, DataDir: dataDir}
 		require.NoError(t, cfg.Validate())
 
 		info, err := os.Stat(dataDir)

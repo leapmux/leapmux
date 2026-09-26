@@ -203,8 +203,8 @@ func TestLoadOrCreateWorkerState_CorruptStateReRegistersLoudlyAndPreserves(t *te
 
 // persistState writes atomically (temp file in the same dir, then rename), so a
 // reader never observes a half-written file. The observable contract from outside
-// is: the written file round-trips through the parser, and no .tmp remnants are
-// left behind on success.
+// is: the written file round-trips through the parser, and no temp remnants are
+// left behind on success. The temp is atomicfile's `<name>.tmp<random>`.
 func TestPersistState_RoundTripsAndLeavesNoTempRemnants(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "worker-state.json")
@@ -213,9 +213,29 @@ func TestPersistState_RoundTripsAndLeavesNoTempRemnants(t *testing.T) {
 	require.NoError(t, persistState(path, &in))
 
 	assert.Equal(t, in, readState(t, path), "the written state must round-trip exactly")
-	tmpRemnants, err := filepath.Glob(filepath.Join(dir, ".worker-state-*.tmp"))
+	tmpRemnants, err := filepath.Glob(path + ".tmp*")
 	require.NoError(t, err)
 	assert.Empty(t, tmpRemnants, "a successful atomic write must not leave temp files behind")
+}
+
+// persistState stamps the pid as the FIRST field and keeps the file at 0600:
+// the pid is how a reader tells which process wrote the file, and the mode is
+// what keeps the credentials in it to their owner.
+func TestPersistState_PIDIsFirstAndModeIs0600(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	in := soloState{WorkerID: "w1", AuthToken: "tok"}
+
+	require.NoError(t, persistState(path, &in))
+
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Regexp(t, `^\{\s*"pid"`, string(raw), "pid must be the first JSON key")
+	assert.Equal(t, os.Getpid(), readState(t, path).PID, "the writer names this process")
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(),
+		"the credentials file must not be readable by anyone but its owner")
 }
 
 // The deferral arm's discriminator. "No admin has completed /setup yet" is the ONE

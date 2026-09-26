@@ -45,7 +45,8 @@ type ListenReporter interface {
 // reporter applies when nothing is bound, spelled a second time. Stating it
 // once as a default keeps the two from drifting.
 type ConfiguredListen struct {
-	// Listen is the address -listen gave, or "" for a hub that binds no TCP.
+	// Listen is the primary TCP address --listen gave, or "" for a hub that
+	// binds no TCP address.
 	Listen string
 }
 
@@ -97,7 +98,7 @@ type AdminNetworkServiceDeps struct {
 func NewAdminNetworkService(deps AdminNetworkServiceDeps) *AdminNetworkService {
 	listen := deps.Listen
 	if listen == nil {
-		listen = ConfiguredListen{Listen: deps.Config.Listen}
+		listen = ConfiguredListen{Listen: deps.Config.PrimaryTCPListen()}
 	}
 	interfaces := deps.Interfaces
 	if interfaces == nil {
@@ -138,7 +139,7 @@ func (s *AdminNetworkService) GetListenStatus(
 
 	out := &leapmuxv1.GetListenStatusResponse{
 		Interfaces:     ifaces,
-		DefaultAddress: s.cfg.Listen,
+		DefaultAddress: s.cfg.PrimaryTCPListen(),
 		Configured:     configured,
 		PasswordSet:    s.soloGate.PasswordSet(ctx),
 	}

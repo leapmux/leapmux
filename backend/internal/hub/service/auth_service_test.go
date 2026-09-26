@@ -1562,9 +1562,9 @@ func TestGetSystemInfo_DevModeReportsSetupRequired(t *testing.T) {
 func TestGetSystemInfo_WorkerHubURL(t *testing.T) {
 	t.Parallel()
 
-	t.Run("PublicURL wins over Listen", func(t *testing.T) {
+	t.Run("PublicURL wins over the bind set", func(t *testing.T) {
 		cfg := testConfig()
-		cfg.Listen = ":4327"
+		cfg.Listen = []string{":4327"}
 
 		client, _, _ := setupEmptyAuthTestServer(t, cfg, func(t *testing.T, set *settings.Manager) {
 			require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, "https://hub.example.com"))
@@ -1575,23 +1575,24 @@ func TestGetSystemInfo_WorkerHubURL(t *testing.T) {
 		assert.Equal(t, "https://hub.example.com", resp.Msg.GetWorkerHubUrl())
 	})
 
-	t.Run("empty Listen and no PublicURL falls back to LocalListen", func(t *testing.T) {
-		// NoTCP/desktop scenario: empty Listen, no PublicURL → local socket URL.
+	t.Run("a local-only bind set and no PublicURL falls back to the local socket", func(t *testing.T) {
+		// NoTCP/desktop scenario: a local-only bind set, no PublicURL → the
+		// local socket URL workers can always dial locally.
 		cfg := testConfig()
-		cfg.Listen = ""
-		cfg.LocalListen = "unix:" + filepath.Join(t.TempDir(), "hub.sock")
+		local := "unix:" + filepath.Join(t.TempDir(), "hub.sock")
+		cfg.Listen = []string{local}
 
 		client, _, _ := setupEmptyAuthTestServer(t, cfg, nil)
 
 		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 		require.NoError(t, err)
-		assert.Equal(t, cfg.LocalListen, resp.Msg.GetWorkerHubUrl())
+		assert.Equal(t, local, resp.Msg.GetWorkerHubUrl())
 	})
 
-	t.Run("TCP enabled and no PublicURL leaves WorkerHubUrl empty", func(t *testing.T) {
+	t.Run("a TCP bind set and no PublicURL leaves WorkerHubUrl empty", func(t *testing.T) {
 		// Frontend then falls back to window.location.origin.
 		cfg := testConfig()
-		cfg.Listen = ":4327"
+		cfg.Listen = []string{":4327"}
 
 		client, _, _ := setupEmptyAuthTestServer(t, cfg, nil)
 
