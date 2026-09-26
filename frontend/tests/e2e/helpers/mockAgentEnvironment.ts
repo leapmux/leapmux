@@ -1,6 +1,8 @@
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { agentSearchPathEnv } from './binaryOnPath'
+import { delimiter, join } from 'node:path'
+import process from 'node:process'
+import { agentSearchPath, agentSearchPathEnv, findBinary } from './binaryOnPath'
 
 const MODEL_KEY = 'leapmux-e2e-model-key'
 const COPILOT_TOKEN = 'github_pat_leapmuxe2e000000000000000000000000000000000000000000'
@@ -42,6 +44,20 @@ export const MOCK_MODELS = {
    * word of its own.
    */
   cline: 'cline-e2e',
+  /** Factory Droid. Its BYOK custom-model entry sends this id unchanged. */
+  droid: 'droid-e2e',
+  /** Letta Code. The model handle is `provider/model`. */
+  letta: 'letta-e2e',
+  /** CodeBuddy Code. */
+  codebuddy: 'codebuddy-e2e',
+  /** Qoder CLI. */
+  qoder: 'qoder-e2e',
+  /** Junie. */
+  junie: 'junie-e2e',
+  /** Dirac. */
+  dirac: 'dirac-e2e',
+  /** Fast Agent. */
+  fastagent: 'fastagent-e2e',
 } as const
 
 /**
@@ -124,6 +140,18 @@ const QWEN_AUTH_TYPE = 'openai'
 
 /** The model id Qwen reports for the model its configuration pins. */
 export const QWEN_MODEL_ID = `${MOCK_MODELS.qwen}(${QWEN_AUTH_TYPE})`
+export const JUNIE_MOCK_MODEL = 'custom:mock-model'
+export const FAST_AGENT_MOCK_MODEL = 'gpt-4o'
+
+/**
+ * The model id a fixture pins for a provider that addresses a custom entry by
+ * a QUALIFIED handle. CodeBuddy takes `custom-local:<id>`, Qoder
+ * `<provider>/<model>`, and Letta Code `provider/model`. A bare
+ * `MOCK_MODELS` value selects no custom entry for these three.
+ */
+export const CODEBUDDY_MODEL_ID = `custom-local:${MOCK_MODELS.deepseek}`
+export const QODER_MODEL_ID = `mockprov/${MOCK_MODELS.deepseek}`
+export const LETTA_MODEL_ID = `openai-compatible/${MOCK_MODELS.letta}`
 
 /**
  * The switches that stop Grok Build from calling the model outside a turn a test
@@ -318,11 +346,11 @@ interface MockAgentEnvironmentOptions {
 }
 
 /** Write isolated agent configuration and return its process environment. */
-export function createMockAgentEnvironment(
+export async function createMockAgentEnvironment(
   runDir: string,
   serverURL: string,
   options: MockAgentEnvironmentOptions = {},
-): MockAgentEnvironment {
+): Promise<MockAgentEnvironment> {
   const origin = mockServerOrigin(serverURL)
   const openAIBaseURL = `${origin}/v1`
   const homeDir = join(runDir, 'agent-home')
@@ -344,14 +372,24 @@ export function createMockAgentEnvironment(
   const kiroSettingsDir = join(kiroHome, 'settings')
   const kimiHome = join(homeDir, '.kimi-code')
   const ohMyPiAgentDir = join(homeDir, '.omp', 'profiles', OH_MY_PI_PROFILE, 'agent')
+  const codebuddyHome = join(homeDir, '.codebuddy')
+  const qoderHome = join(homeDir, '.qoder')
+  const junieModelsDir = join(runDir, 'junie-models')
+  const diracDir = join(homeDir, '.dirac')
+  const fastAgentHome = join(homeDir, '.fast-agent')
+  const cliShimsDir = join(runDir, 'cli-shims')
   const clineDir = join(homeDir, '.cline')
+  const factoryHome = join(homeDir, '.factory')
+  const lettaHome = join(homeDir, '.letta')
+  const lettaBackendDir = join(runDir, 'letta-backend')
+  const lettaProvidersDir = join(lettaBackendDir, 'providers')
   const clineDataDir = join(clineDir, 'data')
   const clineSettingsDir = join(clineDataDir, 'settings')
   const clineCacheDir = join(clineDataDir, 'cache')
   // MiMo keeps its data, configuration, state and cache under one root. It must be
   // an absolute path, because MiMo refuses to start with a relative one.
   const mimoHome = join(runDir, 'mimocode-home')
-  for (const directory of [codexHome, piAgentDir, reasonixHome, zcodeDir, copilotHome, cursorConfigDir, codewhaleHome, grokHome, qwenHome, kiroSettingsDir, kimiHome, ohMyPiAgentDir, mimoHome, clineSettingsDir, clineCacheDir])
+  for (const directory of [codexHome, piAgentDir, reasonixHome, zcodeDir, copilotHome, cursorConfigDir, codewhaleHome, grokHome, qwenHome, kiroSettingsDir, kimiHome, ohMyPiAgentDir, mimoHome, clineSettingsDir, clineCacheDir, codebuddyHome, qoderHome, factoryHome, lettaHome, lettaBackendDir, lettaProvidersDir, junieModelsDir, join(diracDir, 'data', 'state'), fastAgentHome, cliShimsDir])
     mkdirSync(directory, { recursive: true })
 
   writeFileSync(join(codexHome, 'config.toml'), codexConfig(openAIBaseURL), { mode: 0o600 })
@@ -368,6 +406,10 @@ export function createMockAgentEnvironment(
   writeFileSync(join(codewhaleHome, 'config.toml'), codewhaleConfig(openAIBaseURL), { mode: 0o600 })
   writeFileSync(join(grokHome, 'config.toml'), grokConfig(openAIBaseURL), { mode: 0o600 })
   writeJSON(join(qwenHome, 'settings.json'), qwenSettings(openAIBaseURL))
+  writeJSON(join(codebuddyHome, 'models.json'), codebuddyModels(openAIBaseURL))
+  writeJSON(join(codebuddyHome, 'settings.json'), codebuddySettings())
+  writeJSON(join(qoderHome, 'settings.json'), qoderSettings(openAIBaseURL))
+  qoderEndpointCaches(qoderHome, origin)
   writeJSON(join(kiroSettingsDir, 'cli.json'), kiroSettings(origin))
   const zcodeConfigPath = join(zcodeDir, 'config.json')
   const zcodePersonalConfigPath = join(zcodeDir, 'provider_config.json')
@@ -378,6 +420,15 @@ export function createMockAgentEnvironment(
   writeJSON(join(clineSettingsDir, 'providers.json'), clineProviders(openAIBaseURL, clineWrittenAt))
   writeJSON(join(clineSettingsDir, 'global-settings.json'), { telemetryOptOut: true, autoUpdateEnabled: false })
   writeJSON(join(clineCacheDir, 'feature-flags.json'), clineFeatureFlags(clineWrittenAt))
+  writeJSON(join(factoryHome, 'settings.json'), droidSettings(openAIBaseURL))
+  writeJSON(join(lettaBackendDir, 'providers', 'auth.json'), lettaAuth(openAIBaseURL))
+  // `letta backend local` writes this. Without it the App Server creates agents
+  // against the cloud API and runtime_start fails 401.
+  writeJSON(join(lettaHome, 'settings.json'), { preferredBackendMode: 'local' })
+  writeJSON(join(junieModelsDir, 'mock-model.json'), junieModelProfile(`${origin}/v1/chat/completions`))
+  writeFileSync(join(diracDir, 'data', 'globalState.json'), JSON.stringify({ telemetrySetting: 'disabled', autoApproveAllToggled: true, yoloModeToggled: true }), { mode: 0o600 })
+  writeFileSync(join(fastAgentHome, 'fast-agent.yaml'), fastAgentConfig(openAIBaseURL), { mode: 0o600 })
+  await prepareLettaBackend(lettaHome, lettaBackendDir, openAIBaseURL)
 
   const openCodeConfig = JSON.stringify(openCodeFamilyConfig(openAIBaseURL))
   return {
@@ -580,8 +631,401 @@ export function createMockAgentEnvironment(
       ...ampEnv(origin, homeDir),
 
       ...clineEnv(clineDir, clineDataDir),
+
+      ...droidEnv(homeDir, openAIBaseURL),
+
+      ...lettaEnv(lettaHome, lettaBackendDir),
+      ...codebuddyEnv(codebuddyHome),
+      ...qoderEnv(qoderHome),
+      ...junieEnv(homeDir, junieModelsDir, options.realHomeDir),
+      DIRAC_PROVIDER: 'openai',
+      DIRAC_BASE_URL: openAIBaseURL,
+      DIRAC_API_KEY: MODEL_KEY,
+      DIRAC_MODEL: MOCK_MODELS.deepseek,
+      DIRAC_DIR: diracDir,
+      FAST_AGENT_HOME: fastAgentHome,
+      ...credentialStoreShimEnv(cliShimsDir, process.env.PATH),
     },
   }
+}
+
+/**
+ * Factory Droid's isolated configuration.
+ *
+ * `FACTORY_HOME_OVERRIDE` is the primary isolation seam. It names the directory
+ * that HOLDS `.factory` — not `.factory` itself — so the CLI reads its settings
+ * from `<override>/.factory/settings.json` and keeps every session, log and
+ * telemetry file under that tree. The settings file's `customModels[].baseUrl`
+ * is the BYOK path that points at the mock. Every switch below stops a request
+ * that no test scripts.
+ */
+function droidEnv(homeDir: string, baseURL: string): Record<string, string> {
+  return {
+    FACTORY_HOME_OVERRIDE: homeDir,
+    FACTORY_API_BASE_URL: baseURL,
+    FACTORY_API_KEY: MODEL_KEY,
+    FACTORY_DROID_AUTO_UPDATE_ENABLED: '0',
+    // An unroutable sink keeps telemetry off the network.
+    FACTORY_TELEMETRY_INGEST_BASE_URL: 'http://127.0.0.1:9',
+    FACTORY_OTEL_ENABLED: '0',
+    FACTORY_AIRGAP_ENABLED: '1',
+    FACTORY_DISABLE_DYNAMIC_CONFIG: '1',
+    FACTORY_DISABLE_KEYRING: '1',
+  }
+}
+
+/** Factory Droid's BYOK settings, which point the model at the mock. */
+function droidSettings(baseURL: string): Record<string, unknown> {
+  return {
+    customModels: [
+      {
+        model: MOCK_MODELS.droid,
+        id: `custom:Droid-0`,
+        index: 0,
+        baseUrl: baseURL,
+        apiKey: MODEL_KEY,
+        displayName: 'Mock Model',
+        maxOutputTokens: 8192,
+        noImageSupport: true,
+        provider: 'generic-chat-completion-api',
+      },
+    ],
+    sessionDefaultSettings: {
+      model: `custom:Droid-0`,
+      reasoningEffort: 'none',
+      autonomyMode: 'normal',
+    },
+  }
+}
+
+/**
+ * Letta Code's isolated configuration.
+ *
+ * `LETTA_LOCAL_BACKEND_DIR` moves the flat-file store, `LETTA_HOME` the agent
+ * settings and transcripts. The PATH must contain a real node plus the `letta`
+ * bin: subagents re-exec `letta`, and a mise shim fails under an isolated HOME.
+ */
+function lettaEnv(lettaHome: string, lettaBackendDir: string): Record<string, string> {
+  return {
+    LETTA_HOME: lettaHome,
+    LETTA_LOCAL_BACKEND_DIR: lettaBackendDir,
+    // The App Server refuses to start a runtime without an API key in the
+    // environment, even when the local backend has a provider record.
+    LETTA_API_KEY: MODEL_KEY,
+    LETTA_CODE_TELEM: '0',
+    DO_NOT_TRACK: '1',
+    LETTA_CODE_OFFLINE: '1',
+    LETTA_DISABLE_MODS: '1',
+  }
+}
+
+/** Letta Code's provider credential record, which points the model at the mock. */
+function lettaAuth(baseURL: string): Record<string, unknown> {
+  return {
+    version: 1,
+    providers: {
+      'openai-compatible': {
+        auth: { type: 'api', key: MODEL_KEY },
+        base_url: baseURL,
+      },
+    },
+  }
+}
+
+/**
+ * CodeBuddy's custom-local model catalog.
+ *
+ * CodeBuddy reads `models.json` from `$CODEBUDDY_CONFIG_DIR` and selects an
+ * entry through the `custom-local:` id prefix. The `url` MUST end in
+ * `/chat/completions`, and the mock MUST stream SSE: CodeBuddy always sends
+ * `stream: true`, and a plain JSON completion is dropped with
+ * `error_during_execution`.
+ */
+function codebuddyModels(baseURL: string): Record<string, unknown> {
+  return {
+    models: [{
+      id: MOCK_MODELS.deepseek,
+      name: 'Mock Model',
+      vendor: 'Mock',
+      apiKey: MODEL_KEY,
+      maxInputTokens: 128_000,
+      maxOutputTokens: 4096,
+      url: `${baseURL}/chat/completions`,
+      temperature: 0,
+      supportsToolCall: true,
+      supportsImages: false,
+    }],
+    availableModels: [MOCK_MODELS.deepseek],
+  }
+}
+
+/** The model CodeBuddy starts on, as the `custom-local:` prefix selects it. */
+function codebuddySettings(): Record<string, unknown> {
+  return { model: CODEBUDDY_MODEL_ID }
+}
+
+/**
+ * CodeBuddy's isolated environment.
+ *
+ * `configDir` is the directory that holds `models.json` and `settings.json`.
+ * CODEBUDDY_CONFIG_DIR and a per-agent HOME are the isolation knobs that
+ * matter. The four switches below turn off the telemetry/Galileo collectors,
+ * the auto-updater and the trace collector, which are the only requests a
+ * start sends that no test scripts.
+ */
+function codebuddyEnv(configDir: string): Record<string, string> {
+  return {
+    CODEBUDDY_CONFIG_DIR: configDir,
+    DISABLE_TELEMETRY: '1',
+    DISABLE_GALILEO: '1',
+    DISABLE_AUTOUPDATER: '1',
+    CODEBUDDY_DISABLE_TRACE_COLLECTOR: '1',
+    CODEBUDDY_DISABLE_WORKFLOWS: '1',
+  }
+}
+
+/**
+ * Qoder's custom provider.
+ *
+ * Qoder reads `settings.json` from its `--config-dir` and selects a model as
+ * `<provider>/<model>`. One `providers` entry alone registers the model: a
+ * `modelConfigs.customModels` entry for the SAME key is a second registration,
+ * and Qoder drops the provider with `model key ... conflicts with an existing
+ * catalog model`, after which the model call falls through to the real Qoder
+ * API. The entry therefore lives in `providers` alone.
+ */
+function qoderSettings(baseURL: string): Record<string, unknown> {
+  return {
+    providers: {
+      mockprov: {
+        type: 'openai-compatible',
+        protocol: 'openai',
+        authType: 'bearer',
+        // The schema spells the key `baseUrl` (camelCase, not `baseURL`).
+        baseUrl: baseURL,
+        apiKey: MODEL_KEY,
+        displayName: 'Mock Provider',
+        models: [{ model: MOCK_MODELS.deepseek, displayName: 'Mock Model' }],
+      },
+    },
+  }
+}
+
+/**
+ * Qoder's isolated environment and its mocked-auth recipe.
+ *
+ * The headless auth gate blocks stream-json until the account is authenticated.
+ * The E2E recipe mocks authentication the way Cursor and Copilot do:
+ *
+ *   - `QODER_SDK_AUTH_PAYLOAD_FILE` installs a fake access token through the SDK
+ *     auth seam (`initFromAccessToken`), which is the one credential injection
+ *     that reaches the stream-json path. `QODER_AGENT_SDK_ENTRYPOINT` is the
+ *     switch that selects it, and the CLI consumes the payload file once.
+ *   - `qoderEndpointCaches` pre-seeds the endpoint-election caches, so the
+ *     token exchange (`/api/v1/jobToken/exchange`), the userinfo lookup and the
+ *     model call all land on `handleQoderAuthRoute` and the model endpoint in
+ *     `./mockModelServer`. The SDK model entry alone is not enough: a
+ *     `modelConfigs.customModels` key beside the `providers` entry makes Qoder
+ *     drop the provider as a catalog conflict.
+ *
+ * `--config-dir` is the isolation knob, and the worker passes it. The switches
+ * below pin the GLOBAL site, skip the developer's rc files, keep the credential
+ * store out of the macOS keychain and disable Alibaba HTTPDNS.
+ */
+function qoderEnv(runDir: string): Record<string, string> {
+  // The SDK auth payload is a file the CLI reads once at startup. It is NOT a
+  // secret: the mock accepts any token, and no real account is reached.
+  const authPayloadPath = join(runDir, 'qoder-sdk-auth.json')
+  writeJSON(authPayloadPath, { type: 'accessToken', accessToken: MODEL_KEY })
+  return {
+    QODER_SITE: 'GLOBAL',
+    // Pin the environment to `prod` with no region suffix. `QODER_ENV` is
+    // `"<env>-<region>"`, and a region other than `auto` elects endpoints for
+    // `securityInference` alone -- the openapi call then falls through to the
+    // real `openapi.qoder.sh` and the token exchange never reaches the mock.
+    QODER_ENV: 'prod',
+    QODER_NO_RC: '1',
+    QODER_FORCE_FILE_STORAGE: '1',
+    QODER_HTTPDNS: '0',
+    // The mocked-auth recipe. See the block comment above.
+    QODER_AGENT_SDK_ENTRYPOINT: '1',
+    QODER_SDK_AUTH_PAYLOAD_FILE: authPayloadPath,
+    // In SDK mode a custom provider is gated behind this switch; without it
+    // `isCustomProviderEntryEnabled()` is false and the mockprov model is never
+    // registered, so the model call falls through to the real Qoder API.
+    QODER_SDK_CUSTOM_BASE_URL_BYOK: '1',
+    // EMPTY, which Qoder reads as unset, so a developer's own token cannot
+    // reach the E2E Qoder. The mock serves authentication, so a real PAT is
+    // both unnecessary and refused.
+    QODER_PERSONAL_ACCESS_TOKEN: '',
+    QODER_SESSION_ID: '',
+    QODER_CLI: '',
+    QODERCN_CLI: '',
+    QODER_REMOTE_CHILD: '',
+  }
+}
+
+/**
+ * Pre-seeds Qoder's endpoint-election caches so every elected purpose (center,
+ * inference, securityInference, openapi) points at the mock.
+ *
+ * Without this the CLI elects the real `*.qoder.sh` endpoints on a cold start:
+ * the token exchange and the model call never reach the mock, and the headless
+ * auth gate fails with "Not logged in · Please run /login". The v1 cache is the
+ * seam the auth path reads (an auth run without it dies with
+ * `access_token_invalid` before any exchange), and the v2 cache is what the
+ * election refresh writes. Both carry a 24h TTL, so the fixture writes a fresh
+ * `updatedAt` on every run.
+ */
+function qoderEndpointCaches(qoderHome: string, origin: string): void {
+  const cacheDir = join(qoderHome, '.cache')
+  mkdirSync(cacheDir, { recursive: true })
+  const now = Date.now()
+  const purposes = ['center', 'inference', 'securityInference', 'openapi']
+  const endpointSets = Object.fromEntries(
+    purposes.map(purpose => [purpose, { candidates: [origin], selected: origin }]),
+  )
+  const v2 = { version: 2, entries: { prod: { endpointSets, updatedAt: now } } }
+  writeJSON(join(cacheDir, 'qoder-client-endpoint-cache.json'), v2)
+  writeJSON(join(cacheDir, 'qoder-client-endpoint-cache-public.json'), v2)
+  const v1 = {
+    version: 1,
+    entries: {
+      prod: {
+        endpoint: origin,
+        inferEndpoints: [origin],
+        securityEndpoint: origin,
+        securityEndpoints: [origin],
+        centerEndpoint: origin,
+        centerEndpoints: [origin],
+        openapiEndpoint: origin,
+        openapiEndpoints: [origin],
+        updatedAt: now,
+      },
+    },
+  }
+  writeJSON(join(cacheDir, 'endpoint-cache.json'), v1)
+}
+
+/**
+ * Re-materializes the SDK auth payload file before one Qoder launch.
+ *
+ * `qodercli` DELETES `QODER_SDK_AUTH_PAYLOAD_FILE` after it reads the one-shot
+ * credential, so a second agent from the same environment starts with the file
+ * gone and dies with `access_token_invalid` (exit 41). The fixtures call this
+ * before each agent they open; the file is a fixture artifact, not a secret.
+ */
+export function refreshQoderSdkAuthPayload(agentEnv: Record<string, string>): void {
+  const path = agentEnv.QODER_SDK_AUTH_PAYLOAD_FILE
+  if (path)
+    writeJSON(path, { type: 'accessToken', accessToken: MODEL_KEY })
+}
+
+/**
+ * Junie's custom model profile, as one `*.json` file of a folder that
+ * `--model-location` or a `model-locations` config entry names.
+ *
+ * The FILE NAME is the profile identifier: `mock-model.json` is the model
+ * `custom:mock-model` (`JUNIE_MOCK_MODEL`). The `id` field is the model name
+ * that the ENDPOINT receives, not the profile identifier. `baseUrl` is the
+ * FULL endpoint because Junie never appends `/chat/completions`.
+ */
+function junieModelProfile(fullEndpoint: string): Record<string, unknown> {
+  return {
+    id: MOCK_MODELS.junie,
+    displayName: 'Mock Model',
+    providerName: 'Mock',
+    baseUrl: fullEndpoint,
+    apiKey: MODEL_KEY,
+    apiType: 'OpenAICompletion',
+    maxContextLength: 200000,
+  }
+}
+
+/**
+ * Junie's isolated store, its install root and the one configuration file that
+ * points it at the mock's model profile.
+ *
+ * `JUNIE_HOME` holds the sessions and the secrets. It is the isolated home's
+ * `.junie`, so a developer's own store is never read or written.
+ *
+ * `JUNIE_DATA` is the install root that holds `versions/`. The managed `junie`
+ * shim resolves the version to run from `$JUNIE_DATA/versions` (or
+ * `$JUNIE_DATA/current`), and the isolated HOME has no install. The run points
+ * it at the DEVELOPER'S install root: the versions are the programs the test
+ * must run, and nothing under them is session state.
+ *
+ * `JUNIE_CONFIG_LOCATION` names the one config file that states
+ * `model-locations`. The worker launches Junie with
+ * `--model-default-locations=false`, so neither `$JUNIE_HOME/models` nor
+ * `<project>/.junie/models` is scanned; the explicit location is how the
+ * environment supplies the mock's profile. Explicit config locations stay
+ * enabled under that flag.
+ */
+function junieEnv(homeDir: string, modelsDir: string, realHomeDir: string | undefined): Record<string, string> {
+  const junieHome = join(homeDir, '.junie')
+  mkdirSync(junieHome, { recursive: true })
+  const configPath = join(modelsDir, 'config.json')
+  writeJSON(configPath, { 'model-locations': [modelsDir] })
+  const env: Record<string, string> = {
+    JUNIE_HOME: junieHome,
+    JUNIE_CONFIG_LOCATION: configPath,
+  }
+  const installRoot = realHomeDir === undefined ? undefined : join(realHomeDir, '.local', 'share', 'junie')
+  if (installRoot !== undefined)
+    env.JUNIE_DATA = installRoot
+  return env
+}
+
+/** fast-agent's model routing: `gpt-4o` goes to this `openai` block. */
+function fastAgentConfig(baseURL: string): string {
+  return `default_model: "${FAST_AGENT_MOCK_MODEL}"
+openai:
+  api_key: "${MODEL_KEY}"
+  base_url: "${baseURL}"
+`
+}
+
+/**
+ * The PATH entry that shadows the system credential-store CLIs with stubs that
+ * refuse every call, and launches Junie through a wrapper that keeps those
+ * stubs first on its PATH. Written under `shimsDir`.
+ *
+ * Junie's secure-storage layer decides between the system keyring and its own
+ * file store by running `which security` and then a keychain round-trip
+ * (`__junie_availability_check_`). The round-trip touches the DEVELOPER'S
+ * keychain, which a test must never do. A stub `security` that fails every call
+ * makes the round-trip fail, so Junie keeps every secret in its file store
+ * under the isolated JUNIE_HOME. The probe is the same shape on Linux
+ * (`secret-tool`). Windows needs none: its store is the Win32 credential
+ * manager, which no PATH entry shadows.
+ *
+ * A stub on the launch PATH alone does not reach Junie: the agent starts
+ * through the user's shell, and the shell's startup files rebuild PATH (this
+ * machine's `~/.zshenv` does, and drops every added entry). The `junie` wrapper
+ * this writes re-prepends the stub directory AFTER those startup files and then
+ * execs the real CLI, so the stub is first on the PATH that Junie's own probe
+ * resolves. The worker launches the wrapper because `shimsDir` is first on its
+ * PATH; the skip check runs in the Playwright process and finds the real CLI.
+ */
+function credentialStoreShimEnv(shimsDir: string, searchPath: string | undefined): Record<string, string> {
+  if (process.platform === 'win32')
+    return {}
+  const stubbed = process.platform === 'darwin' ? ['security'] : ['secret-tool']
+  for (const name of stubbed) {
+    const stub = join(shimsDir, name)
+    writeFileSync(stub, `#!/bin/sh\necho "leapmux e2e: refusing to touch the system credential store" >&2\nexit 1\n`, { mode: 0o755 })
+  }
+  const realJunie = findBinary('junie')
+  if (realJunie !== null) {
+    writeFileSync(join(shimsDir, 'junie'), `#!/bin/sh\nexport PATH=${posixQuote(shimsDir)}:"$PATH"\nexec ${posixQuote(realJunie)} "$@"\n`, { mode: 0o755 })
+  }
+  return { PATH: [shimsDir, searchPath ?? process.env.PATH ?? ''].join(delimiter) }
+}
+
+/** Quote one value for a POSIX shell. */
+function posixQuote(value: string): string {
+  return `'${value.replaceAll('\'', '\'\\\'\'')}'`
 }
 
 function mockServerOrigin(value: string): string {
@@ -1192,4 +1636,43 @@ function clineFeatureFlags(updatedAt: number): Record<string, unknown> {
 
 function writeJSON(path: string, value: unknown): void {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })
+}
+
+/**
+ * Run the two CLI steps the App Server needs before an agent starts.
+ *
+ * `letta backend local` pins the local backend, and `letta connect
+ * openai-compatible` discovers the mock's models so the agent's model handle
+ * resolves. Both write the isolated store; neither reaches a real account.
+ * Each step fails on a repeat run, which is fine: the store is already
+ * prepared.
+ */
+async function prepareLettaBackend(lettaHome: string, lettaBackendDir: string, baseURL: string): Promise<void> {
+  // The real install dirs go first on PATH: the `letta` entry is a JS file
+  // whose `#!/usr/bin/env node` must resolve to a real node, not a mise shim.
+  // HOME must be the isolated home too: `letta model list` reads the model
+  // catalog under HOME, not only LETTA_HOME, and the real HOME holds the
+  // developer's own records.
+  //
+  // Every proxy variable is stripped: the loopback mock must be reached
+  // direct, or the model-discovery request never arrives and the catalog is
+  // empty.
+  const base = { ...process.env }
+  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy'])
+    delete base[key]
+  const env = { ...base, ...lettaEnv(lettaHome, lettaBackendDir), HOME: lettaHome, PATH: agentSearchPath(process.env.PATH), NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' }
+  const letta = findBinary('letta', env)
+  if (letta === null)
+    return
+  for (const args of [
+    ['backend', 'local'],
+    ['connect', 'openai-compatible', '--base-url', baseURL, '--api-key', MODEL_KEY],
+  ]) {
+    try {
+      execFileSync(letta, args, { env, encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'] })
+    }
+    catch {
+      // A repeat run fails each step against a store that is already prepared.
+    }
+  }
 }

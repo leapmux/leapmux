@@ -34,8 +34,8 @@ func TestAcpStandardInitParams_ClientCapabilitiesTerminal_AllGOOS(t *testing.T) 
 
 	fs, ok := caps["fs"].(map[string]interface{})
 	require.True(t, ok)
-	assert.Equal(t, false, fs["readTextFile"])
-	assert.Equal(t, false, fs["writeTextFile"])
+	assert.Equal(t, true, fs["readTextFile"], "the fs host answers fs/read_text_file (fs.go)")
+	assert.Equal(t, true, fs["writeTextFile"], "the fs host answers fs/write_text_file (fs.go)")
 }
 
 // A provider that runs its shell commands itself withholds the host terminal,
@@ -53,7 +53,7 @@ func TestAcpStandardInitParams_WithholdsTheHostTerminal(t *testing.T) {
 	assert.JSONEq(t, `{"clientType":"leapmux"}`, string(params.Meta), "the request metadata sits beside the capabilities")
 	assert.JSONEq(t, `false`, string(params.ClientCapabilities["terminal"]))
 	assert.JSONEq(t, `{"vendor":{"flag":true}}`, string(params.ClientCapabilities["_meta"]))
-	assert.JSONEq(t, `{"readTextFile":false,"writeTextFile":false}`, string(params.ClientCapabilities["fs"]))
+	assert.JSONEq(t, `{"readTextFile":true,"writeTextFile":true}`, string(params.ClientCapabilities["fs"]))
 }
 
 func TestExpandACPTerminalResultPersistsReleasedOutput(t *testing.T) {

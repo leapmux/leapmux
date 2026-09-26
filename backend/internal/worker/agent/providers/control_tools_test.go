@@ -51,9 +51,10 @@ func TestOnlyCodexSynthesizesAnInterruptNotice(t *testing.T) {
 // Shared service code consumes only these provider-neutral classifications, so
 // provider wire names do not leak back into service-level plan-mode policy.
 //
-// Claude, Codex, ZCode, Kimi Code and MiMo Code each pin their own reading in their
-// own package. ZCode and Kimi Code are here although their tools are their own: their
-// names equal Claude's. MiMo reads its own `plan_exit` approval.
+// Claude, Codex, ZCode, Kimi Code, MiMo Code, CodeBuddy Code and Qoder CLI each
+// pin their own reading in their own package. ZCode, Kimi Code, CodeBuddy and Qoder
+// are here although their tools are their own: their names equal Claude's. MiMo
+// reads its own `plan_exit` approval.
 func TestOnlyThePlanModeProvidersReadAPlanModeTool(t *testing.T) {
 	t.Parallel()
 
@@ -63,6 +64,8 @@ func TestOnlyThePlanModeProvidersReadAPlanModeTool(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE:       true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE:   true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE:   true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY:   true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER:       true,
 	}
 	registry := Registry()
 	tools := []string{claude.ToolNameEnterPlanMode, claude.ToolNameExitPlanMode, codex.ToolNamePlanModePrompt}

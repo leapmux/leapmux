@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "letta-protocol.schema.json",
+  "title": "Letta Code App Server wire vocabulary",
+  "description": "Every table is a map from the identifier both languages spell (PascalCase, so the Go constant and the TS key derive from one name) to the literal Letta sends or LeapMux chose. A table may never be empty: an empty one would emit an enum no dispatch can match.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "commands",
+    "messages",
+    "deltaKinds",
+    "deltaFields",
+    "tools",
+    "subagentStates",
+    "loopStatuses",
+    "modes",
+    "reply"
+  ],
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "unread": {
+      "description": "The per-key exemptions this domain states. `contractsAreConsumed.test.mjs` holds every KEY of a table to a reader on each side the table declares. A key one side genuinely never reads states that here.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "pattern": "^[A-Z][A-Za-z0-9]*$"
+        },
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sides", "why"],
+          "properties": {
+            "sides": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "enum": ["go", "ts"] }
+            },
+            "why": { "type": "string", "minLength": 31 }
+          }
+        }
+      }
+    },
+    "structs": {
+      "description": "Go structs generated from this domain.",
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[A-Z][A-Za-z0-9]*$" },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["table", "fields"],
+        "properties": {
+          "doc": { "type": "string", "minLength": 1 },
+          "table": { "type": "string", "minLength": 1 },
+          "fields": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["key", "type"],
+              "properties": {
+                "key": { "type": "string", "pattern": "^[A-Z][A-Za-z0-9]*$" },
+                "type": { "type": "string", "minLength": 1 },
+                "omitempty": { "type": "boolean" },
+                "table": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "_unread": { "$ref": "#/$defs/unread" },
+    "commands": { "$ref": "#/$defs/table" },
+    "messages": { "$ref": "#/$defs/table" },
+    "deltaKinds": { "$ref": "#/$defs/table" },
+    "deltaFields": { "$ref": "#/$defs/table" },
+    "tools": { "$ref": "#/$defs/table" },
+    "subagentStates": { "$ref": "#/$defs/table" },
+    "loopStatuses": { "$ref": "#/$defs/table" },
+    "modes": { "$ref": "#/$defs/table" },
+    "reply": { "$ref": "#/$defs/table" },
+    "structs": { "$ref": "#/$defs/structs" }
+  }
+}

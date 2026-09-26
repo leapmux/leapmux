@@ -8,6 +8,8 @@ import {
   blockGoalToolCall,
   completeGoalToolCall,
   createGoalToolCall,
+  diracEditAnchorCapture,
+  diracRespondToolCall,
   editToolCall,
   enterPlanModeToolCall,
   exitPlanModeFromFileToolCall,
@@ -59,7 +61,7 @@ const OPERATIONS = [
 
 describe('TOOL_VOCABULARY', () => {
   it('answers for every provider the proto enum declares', () => {
-    expect(PROVIDERS).toHaveLength(19)
+    expect(PROVIDERS).toHaveLength(26)
     for (const provider of PROVIDERS)
       expect(() => hasToolFor(provider, 'bash'), `provider ${provider}`).not.toThrow()
   })
@@ -71,7 +73,8 @@ describe('TOOL_VOCABULARY', () => {
 
   it('offers a shell tool for every provider', () => {
     // The one operation every agent has. A null here would strand the specs
-    // that script a command, which is most of them.
+    // that script a command, which is most of them. A pending provider's
+    // placeholder vocabulary has no shell tool yet; its package adds one.
     for (const provider of PROVIDERS.filter(p => p !== AgentProvider.CURSOR))
       expect(hasToolFor(provider, 'bash'), `provider ${provider}`).toBe(true)
   })
@@ -305,7 +308,12 @@ describe('editToolCall', () => {
   it('carries both sides of the hunk for every provider that offers an edit tool', () => {
     for (const provider of PROVIDERS.filter(p => hasToolFor(p, 'edit'))) {
       const call = editToolCall(provider, 'call-1', { path: '/tmp/a.txt', before: 'ALPHA', after: 'BETA' })
-      const payload = call.input ?? JSON.stringify(call.arguments)
+      let payload = call.input ?? JSON.stringify(call.arguments)
+      // Dirac's edit names the old line by an ANCHOR§CONTENT coordinate the
+      // step captures out of the request, so its old text rides the capture
+      // source rather than the call arguments.
+      if (provider === AgentProvider.DIRAC)
+        payload += JSON.stringify(diracEditAnchorCapture('ALPHA'))
       expect(payload, `provider ${provider} keeps the old text`).toContain('ALPHA')
       expect(payload, `provider ${provider} keeps the new text`).toContain('BETA')
       expect(payload, `provider ${provider} keeps the path`).toContain('/tmp/a.txt')
@@ -639,6 +647,87 @@ function patchTextOf(call: MockModelToolCall): string {
 
 // A patch marks each line of a hunk. An unmarked line is not part of the hunk, so
 // apply_patch refuses the patch or applies another change.
+describe('the Junie tool vocabulary', () => {
+  const junie = AgentProvider.JUNIE
+
+  it('runs a command through bash and reads through open_entire_file', () => {
+    expect(bashToolCall(junie, 'c', 'ls')).toEqual({ id: 'c', name: 'bash', arguments: { command: 'ls' } })
+    expect(readToolCall(junie, 'c', '/w/a.ts')).toEqual({ id: 'c', name: 'open_entire_file', arguments: { path: '/w/a.ts' } })
+    expect(writeToolCall(junie, 'c', { path: '/w/b.ts', content: 'x' })).toEqual({
+      id: 'c',
+      name: 'create',
+      arguments: { filename: '/w/b.ts', content: 'x' },
+    })
+  })
+
+  it('edits through search_replace with the search and replace blocks', () => {
+    expect(editToolCall(junie, 'c', { path: '/w/a.ts', before: 'old', after: 'new' })).toEqual({
+      id: 'c',
+      name: 'search_replace',
+      arguments: { file_path: '/w/a.ts', search: 'old', replace: 'new' },
+    })
+  })
+
+  it('names every ask_user question and spawns a subagent by task', () => {
+    expect(askUserQuestionToolCall(junie, 'c', [{ question: 'Which?', header: 'Pick', options: [{ label: 'A', description: 'The first' }] }]))
+      .toEqual({
+        id: 'c',
+        name: 'ask_user',
+        arguments: {
+          questions: [{ name: 'Pick', question: 'Which?', options: [{ title: 'A', description: 'The first' }], allowMultiple: false }],
+        },
+      })
+    expect(spawnSubagentToolCall(junie, 'c', { description: 'Probe it', prompt: 'Go.' })).toEqual({
+      id: 'c',
+      name: 'spawn_subagent',
+      arguments: { agent: 'general_purpose', name: 'Probe it', task: 'Go.' },
+    })
+  })
+})
+
+describe('the Dirac tool vocabulary', () => {
+  const dirac = AgentProvider.DIRAC
+
+  it('sends the schema fields alone, never the rawInput tool stamp', () => {
+    // Dirac stamps `tool` into the rawInput it REPORTS; the model that sends it
+    // gets "Unsupported response parameter: tool".
+    expect(bashToolCall(dirac, 'c', 'ls')).toEqual({ id: 'c', name: 'execute_command', arguments: { commands: ['ls'] } })
+    expect(readToolCall(dirac, 'c', '/w/a.ts')).toEqual({
+      id: 'c',
+      name: 'read_file',
+      arguments: { paths: ['/w/a.ts'], include_anchors: true },
+    })
+    expect(writeToolCall(dirac, 'c', { path: '/w/b.ts', content: 'x' })).toEqual({
+      id: 'c',
+      name: 'write_to_file',
+      arguments: { path: '/w/b.ts', content: 'x' },
+    })
+  })
+
+  it('edits through edit_file by ANCHOR§CONTENT coordinate', () => {
+    expect(editToolCall(dirac, 'c', { path: '/w/a.ts', before: 'old', after: 'new' })).toEqual({
+      id: 'c',
+      name: 'edit_file',
+      arguments: {
+        files: [{
+          path: '/w/a.ts',
+          edits: [{ edit_type: 'replace', anchor: '{{editAnchor}}', end_anchor: '{{editAnchor}}', text: 'new' }],
+        }],
+      },
+    })
+    expect(diracEditAnchorCapture('old')).toEqual({ editAnchor: '([A-Z][a-zA-Z]*§old)' })
+  })
+
+  it('ends a turn through respond without the rawInput tool stamp', () => {
+    expect(diracRespondToolCall('c', 'complete', 'Done.')).toEqual({
+      id: 'c',
+      name: 'respond',
+      arguments: { operation: 'complete', text: 'Done.' },
+    })
+    expect(hasToolFor(dirac, 'spawnSubagent'), 'use_subagents is unverified in this build').toBe(false)
+  })
+})
+
 describe('editToolCall patch text', () => {
   it.each([AgentProvider.AMP, AgentProvider.CODEX])('marks each line of a multi-line hunk for provider %s', (provider) => {
     const call = editToolCall(provider, 'c', { path: 'a.ts', before: 'one\ntwo', after: 'three\nfour' })
@@ -696,5 +785,37 @@ describe('the Codewhale tool vocabulary', () => {
   it('offers no plan-mode tool and no goal creation, which are thread settings', () => {
     for (const operation of ['enterPlanMode', 'exitPlanMode', 'createGoal', 'completeGoal'] as const)
       expect(hasToolFor(codewhale, operation), operation).toBe(false)
+  })
+})
+
+describe('the Fast Agent tool vocabulary', () => {
+  const fastAgent = AgentProvider.FAST_AGENT
+
+  it('runs a command through execute, and reads and writes through the text-file tools', () => {
+    // The live `-x` runtime answers `bash` with "Tool 'bash' is not available.
+    // Available tools: attach_media, edit_file, execute, read_text_file,
+    // write_text_file." -- so the names below are the whole contract.
+    expect(bashToolCall(fastAgent, 'c', 'ls')).toEqual({ id: 'c', name: 'execute', arguments: { command: 'ls' } })
+    expect(readToolCall(fastAgent, 'c', '/w/a.ts')).toEqual({ id: 'c', name: 'read_text_file', arguments: { path: '/w/a.ts' } })
+    expect(writeToolCall(fastAgent, 'c', { path: '/w/b.ts', content: 'x\ny' })).toEqual({
+      id: 'c',
+      name: 'write_text_file',
+      arguments: { path: '/w/b.ts', content: 'x\ny' },
+    })
+  })
+
+  it('edits through edit_file with the old and new text', () => {
+    expect(editToolCall(fastAgent, 'c', { path: '/w/a.ts', before: 'old', after: 'new' })).toEqual({
+      id: 'c',
+      name: 'edit_file',
+      arguments: { path: '/w/a.ts', old_string: 'old', new_string: 'new' },
+    })
+  })
+
+  it('offers no background shell, plan-mode, question, to-do, goal, or MCP tool', () => {
+    // `execute`'s schema is command/args/env/cwd with additionalProperties
+    // false, and no separate background tool is offered.
+    for (const operation of ['backgroundBash', 'enterPlanMode', 'exitPlanMode', 'exitPlanModeFromFile', 'askUserQuestion', 'updateTodos', 'createGoal', 'completeGoal', 'blockGoal', 'mcpTool'] as const)
+      expect(hasToolFor(fastAgent, operation), operation).toBe(false)
   })
 })

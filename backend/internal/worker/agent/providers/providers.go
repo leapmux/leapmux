@@ -18,19 +18,26 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/amp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/cline"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/codebuddy"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/codewhale"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/codex"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/copilot"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/cursor"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/dirac"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/droid"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/fastagent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/goose"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/grok"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/junie"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/kilo"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/kimi"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/kiro"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/letta"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/mimo"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/ohmypi"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/pi"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/qoder"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/qwen"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/reasonix"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/zcode"
@@ -60,6 +67,13 @@ func Registrations() []agent.Registration {
 		kiro.Registration(),
 		amp.Registration(),
 		cline.Registration(),
+		codebuddy.Registration(),
+		junie.Registration(),
+		letta.Registration(),
+		dirac.Registration(),
+		qoder.Registration(),
+		droid.Registration(),
+		fastagent.Registration(),
 	}
 }
 

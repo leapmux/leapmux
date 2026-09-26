@@ -428,6 +428,14 @@ function editFrames(provider: AgentProvider): TranscriptFrame[] {
       frame('result', provider, 'parity-edit', 'apply_patch', { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'parity-edit', content: landed, is_error: false }] } }),
     ]
   }
+  if (provider === AgentProvider.CODEBUDDY || provider === AgentProvider.QODER) {
+    // Both speak Anthropic-shaped content blocks: an assistant `tool_use` and a
+    // user `tool_result` carrying the structured change.
+    return [
+      frame('request', provider, 'parity-edit', 'Edit', { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'parity-edit', name: 'Edit', input: { file_path: path, old_string: before, new_string: after } }] } }),
+      frame('result', provider, 'parity-edit', 'Edit', { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'parity-edit', content: 'Saved' }] }, tool_use_result: { filePath: path, oldString: before, newString: after } }),
+    ]
+  }
   if (provider === AgentProvider.CLINE) {
     // Cline's `editor` states the change it asked for, and its result confirms it.
     return [
@@ -478,11 +486,25 @@ function editFrames(provider: AgentProvider): TranscriptFrame[] {
       frame('result', provider, 'parity-edit', 'edit', { sessionUpdate: 'tool_call_update', toolCallId: 'parity-edit', status: 'completed', content: [{ type: 'diff', path, oldText: before, newText: after }], _meta: { toolName: 'edit' } }),
     ]
   }
+  if (provider === AgentProvider.LETTA) {
+    return [
+      frame('request', provider, 'parity-edit', 'Edit', { kind: 'stream_delta', payload: { message_type: 'client_tool_start', tool_call_id: 'parity-edit', tool_name: 'Edit', tool_input: { path, old_string: before, new_string: after } } }),
+      frame('result', provider, 'parity-edit', 'Edit', { kind: 'stream_delta', payload: { message_type: 'tool_return_message', tool_call_id: 'parity-edit', tool_name: 'Edit', tool_return: 'Saved' } }),
+    ]
+  }
+  if (provider === AgentProvider.DROID) {
+    return [
+      frame('request', provider, 'parity-edit', 'Edit', { type: 'tool_call', toolUse: { type: 'tool_use', id: 'parity-edit', name: 'Edit', input: { file_path: path, old_string: before, new_string: after } } }),
+      frame('result', provider, 'parity-edit', 'Edit', { type: 'tool_result', toolUseId: 'parity-edit', toolName: 'Edit', content: 'Saved', isError: false }),
+    ]
+  }
   const input = provider === AgentProvider.GOOSE
     ? { path, before, after }
-    : provider === AgentProvider.REASONIX
+    : provider === AgentProvider.REASONIX || provider === AgentProvider.DIRAC || provider === AgentProvider.FAST_AGENT
       ? { path, old_string: before, new_string: after }
-      : { filePath: path, oldString: before, newString: after }
+      : provider === AgentProvider.JUNIE
+        ? { file_path: path, old_string: before, new_string: after }
+        : { filePath: path, oldString: before, newString: after }
   void shared
   return [
     frame('request', provider, 'parity-edit', 'edit', {
@@ -490,7 +512,7 @@ function editFrames(provider: AgentProvider): TranscriptFrame[] {
       toolCallId: 'parity-edit',
       kind: 'edit',
       status: 'pending',
-      title: provider === AgentProvider.REASONIX ? 'edit_file' : 'edit',
+      title: provider === AgentProvider.REASONIX || provider === AgentProvider.DIRAC || provider === AgentProvider.FAST_AGENT ? 'edit_file' : 'edit',
       rawInput: input,
       ...(provider === AgentProvider.GOOSE ? { _meta: { goose: { toolCall: { toolName: 'edit', extensionName: 'developer' } } } } : {}),
     }),
@@ -518,6 +540,13 @@ const EDIT_PROVIDERS = [
   ['MiMo Code', AgentProvider.MIMO_CODE],
   ['Amp', AgentProvider.AMP],
   ['Cline', AgentProvider.CLINE],
+  ['CodeBuddy Code', AgentProvider.CODEBUDDY],
+  ['Qoder CLI', AgentProvider.QODER],
+  ['Letta Code', AgentProvider.LETTA],
+  ['Factory Droid', AgentProvider.DROID],
+  ['Junie', AgentProvider.JUNIE],
+  ['Dirac', AgentProvider.DIRAC],
+  ['Fast Agent', AgentProvider.FAST_AGENT],
 ] as const
 
 describe('an applied file edit renders its diff', () => {
@@ -526,6 +555,8 @@ describe('an applied file edit renders its diff', () => {
   it('lists every provider once', () => {
     const listed = EDIT_PROVIDERS.map(([, provider]) => provider)
     expect(new Set(listed).size).toBe(listed.length)
+    // A pending provider has no wire-shape edit frames yet; its package adds
+    // the case. The settled set is what this matrix must cover today.
     expect([...listed].sort((a, b) => a - b)).toEqual([...ALL_PROVIDERS].sort((a, b) => a - b))
   })
 

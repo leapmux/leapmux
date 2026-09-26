@@ -629,6 +629,19 @@ func (c *conversation) rememberToolRequest(toolID string, content []byte) {
 	c.out.toolRequestContents[toolID] = &acpToolRequestContent{original: append([]byte(nil), content...)}
 }
 
+// noteToolRequestFields folds late request fields into the open tool call that
+// states no input yet. The fs host uses it: a filesystem runtime opens the call
+// with no rawInput and never revises it, so the host's own fs/* request is the
+// first place the arguments appear -- exactly the late-input revision the
+// supplement carries.
+func (c *conversation) noteToolRequestFields(fields map[string]json.RawMessage) {
+	toolID := c.out.latestOpenToolWithoutInput()
+	if toolID == "" {
+		return
+	}
+	c.enrichToolRequest(toolID, fields)
+}
+
 // enrichToolRequest publishes late input fields while the tool still runs.
 // Output and completion remain on the result row.
 func (c *conversation) enrichToolRequest(toolID string, fields map[string]json.RawMessage) {

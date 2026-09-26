@@ -1,0 +1,361 @@
+{
+  "_readme": "Letta Code's App Server WebSocket vocabulary (protocol_v2, the server that `letta server --listen` runs), for the tables that BOTH the Go provider and the TS renderer plugin read. The worker persists each transcript row as Letta's own `stream_delta` payload, so the browser plugin dispatches on the same `message_type` and reads the same fields (`deltaFields`). `commands` holds the client->server command `kind` values and `messages` the server->client message `kind` values; the worker writes a command and reads a message, and the browser reads the persisted payload of a message that reached the transcript. `deltaKinds` holds the `message_type` of a `stream_delta`, which both sides dispatch on. `tools` holds the tool names both sides dispatch on: the worker opens a subagent row for `Agent`, answers the question request of `AskUserQuestion`, and streams the output of `Bash`; the browser draws each one. `subagentStates` holds the `status` values of `update_subagent_state`, which both sides read as the child lifecycle. `loopStatuses` holds the `update_loop_status` values, which the worker reads as the busy signal and the browser words the status chip from. Letta owns every value above except `modes` and `reply`: LeapMux owns `modes` (the value set of the permission-mode axis, mapped onto `runtime_start.mode`) and `reply` (the fields of the browser's decision; the approval payload is FLAT -- `kind`, `request_id` and `decision` sit at the top level, never under a `response` key).",
+  "_unread": {
+    "commands": {
+      "AbortMessage": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "AgentList": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "AppServerInfo": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ConversationList": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Input": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ListModels": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "RuntimeStart": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Sync": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "UpdateModel": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      }
+    },
+    "messages": {
+      "AbortMessageResponse": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "AppServerInfoResponse": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ControlRequest": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "InputAccepted": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "LoopError": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "StreamDelta": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "UpdateLoopStatus": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "UpdateQueue": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "UpdateSubagentState": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      }
+    },
+    "deltaFields": {
+      "AgentID": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Content": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ConversationID": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Reason": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Runtime": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Status": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "StopReason": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "SubagentID": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "TurnID": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      }
+    },
+    "subagentStates": {
+      "Completed": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Error": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Pending": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Running": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      }
+    },
+    "reply": {
+      "Answers": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Behavior": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Decision": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Kind": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Message": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Questions": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "RequestID": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "UpdatedInput": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      }
+    }
+  },
+  "commands": {
+    "Input": "input",
+    "AbortMessage": "abort_message",
+    "RuntimeStart": "runtime_start",
+    "Sync": "sync",
+    "AppServerInfo": "app_server_info",
+    "AgentList": "agent_list",
+    "ConversationList": "conversation_list",
+    "ListModels": "list_models",
+    "UpdateModel": "update_model"
+  },
+  "messages": {
+    "ControlRequest": "control_request",
+    "InputAccepted": "input_accepted",
+    "StreamDelta": "stream_delta",
+    "TurnFinished": "turn_finished",
+    "UpdateSubagentState": "update_subagent_state",
+    "UpdateLoopStatus": "update_loop_status",
+    "AbortMessageResponse": "abort_message_response",
+    "UpdateQueue": "update_queue",
+    "LoopError": "loop_error",
+    "AppServerInfoResponse": "app_server_info_response"
+  },
+  "deltaKinds": {
+    "AssistantMessage": "assistant_message",
+    "ToolReturnMessage": "tool_return_message",
+    "UserMessage": "user_message",
+    "ReasoningMessage": "reasoning_message",
+    "UsageStatistics": "usage_statistics",
+    "StopReason": "stop_reason",
+    "ClientToolStart": "client_tool_start",
+    "ClientToolEnd": "client_tool_end",
+    "Status": "status",
+    "Retry": "retry",
+    "LoopError": "loop_error"
+  },
+  "deltaFields": {
+    "Kind": "kind",
+    "MessageType": "message_type",
+    "SubagentID": "subagent_id",
+    "Runtime": "runtime",
+    "AgentID": "agent_id",
+    "ConversationID": "conversation_id",
+    "Content": "content",
+    "ToolCallID": "tool_call_id",
+    "ToolName": "tool_name",
+    "ToolInput": "tool_input",
+    "ToolReturn": "tool_return",
+    "Status": "status",
+    "Reason": "reason",
+    "StopReason": "stop_reason",
+    "TurnID": "turn_id"
+  },
+  "tools": {
+    "Bash": "Bash",
+    "Read": "Read",
+    "Edit": "Edit",
+    "Write": "Write",
+    "Agent": "Agent",
+    "AskUserQuestion": "AskUserQuestion",
+    "TaskCreate": "TaskCreate",
+    "TaskGet": "TaskGet",
+    "TaskList": "TaskList",
+    "TaskUpdate": "TaskUpdate",
+    "TaskStop": "TaskStop",
+    "Monitor": "Monitor",
+    "Wake": "Wake",
+    "Workflow": "Workflow",
+    "Skill": "Skill",
+    "UpdatePlan": "UpdatePlan",
+    "SetWorkingDirectory": "SetWorkingDirectory",
+    "EnterWorktree": "EnterWorktree",
+    "ExitWorktree": "ExitWorktree",
+    "SendAgentMessage": "SendAgentMessage"
+  },
+  "subagentStates": {
+    "Pending": "pending",
+    "Running": "running",
+    "Completed": "completed",
+    "Error": "error"
+  },
+  "loopStatuses": {
+    "WaitingOnInput": "WAITING_ON_INPUT",
+    "SendingAPIRequest": "SENDING_API_REQUEST",
+    "WaitingForAPIResponse": "WAITING_FOR_API_RESPONSE",
+    "ProcessingAPIResponse": "PROCESSING_API_RESPONSE"
+  },
+  "modes": {
+    "Standard": "standard",
+    "AcceptEdits": "acceptEdits",
+    "Unrestricted": "unrestricted",
+    "Strict": "strict"
+  },
+  "reply": {
+    "Kind": "kind",
+    "RequestID": "request_id",
+    "Decision": "decision",
+    "Behavior": "behavior",
+    "Message": "message",
+    "UpdatedInput": "updated_input",
+    "Questions": "questions",
+    "Answers": "answers"
+  }
+}

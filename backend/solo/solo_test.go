@@ -268,6 +268,22 @@ func TestInstanceShutdown_IsIdempotent(t *testing.T) {
 	assert.Equal(t, int32(1), hubCancels.Load())
 }
 
+// TestDefaultCLIFlagsCarryTheLocalListenBootstrapFlag pins that `leapmux solo`
+// and `leapmux dev` accept --local-listen. It is a bind-time bootstrap flag like
+// --listen and --data-dir: the hub's default IPC socket path is
+// `<data-dir>/hub/hub.sock`, and on macOS that path must fit the 104-byte
+// sun_path limit -- a run directory under a deep checkout (a worktree under
+// .tmp/wt/) blows past it and the bind fails with "invalid argument". A launcher
+// that cannot shorten the socket path has no way out.
+func TestDefaultCLIFlagsCarryTheLocalListenBootstrapFlag(t *testing.T) {
+	t.Parallel()
+
+	flags := defaultCLIFlags()
+	for _, name := range []string{"listen", "data-dir", "local-listen"} {
+		require.Contains(t, flags, name, "solo and dev must expose the bootstrap flag %q", name)
+	}
+}
+
 // TestDefaultExtraFlagsCarryWorkerScopedKnobs pins that solo's extra flags are the
 // worker-scoped settings the embedded worker needs. max-incomplete-chunked is the
 // load-bearing case: it is NOT a hub setting (the Hub's chunk-count cap is
@@ -555,10 +571,7 @@ func soloStartEnv(t *testing.T, devMode bool) Config {
 		SkipBanner: true,
 		NoTCP:      true,
 		DevMode:    devMode,
-		// local-listen is not in solo's own --help allowlist, so the test has to
-		// widen it to reach the flag.
-		CLIFlags: append(defaultCLIFlags(), "local-listen"),
-		Args:     []string{"--local-listen=" + locallistentest.UniqueListenURL(t, "leapmux-hub-solo")},
+		Args:       []string{"--local-listen=" + locallistentest.UniqueListenURL(t, "leapmux-hub-solo")},
 	}
 }
 

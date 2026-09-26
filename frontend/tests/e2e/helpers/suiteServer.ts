@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'node:child_process'
 import { execFile, spawn } from 'node:child_process'
 import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
 import { promisify } from 'node:util'
@@ -78,6 +79,7 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
   const serverLogPath = join(options.tmpDir, 'suite-server.log')
   let proc: ChildProcess | undefined
   let stopped = false
+  let socketDir = ''
 
   const stop = async () => {
     if (stopped)
@@ -90,19 +92,32 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
       mockModel.close(),
     ])
     rmSync(dataDir, { recursive: true, force: true })
+    if (socketDir)
+      rmSync(socketDir, { recursive: true, force: true })
   }
 
   try {
     await bootstrapFirstAdmin(options.binaryPath, hubDataDir(dataDir))
     const port = await findFreePort()
     const hubUrl = `http://${E2E_BROWSER_HOST}:${port}`
-    const mockAgent = createMockAgentEnvironment(
+    // Awaiting matters: the function runs each provider's CLI setup (Letta's
+    // `backend local` / `connect`, which discover the mock's model catalog). A
+    // caller that left it unawaited started the worker against an agent
+    // environment whose setup was still in flight, and Letta's catalog was
+    // empty.
+    const mockAgent = await createMockAgentEnvironment(
       options.tmpDir,
       mockModel.url,
       process.env.HOME ? { realHomeDir: process.env.HOME } : {},
     )
     const log = openSync(serverLogPath, 'a')
     try {
+      // The hub's local socket binds at a short path: macOS `sun_path` caps a
+      // Unix socket at 104 bytes, and the run's data directory is already long.
+      // `LEAPMUX_HUB_LOCAL_LISTEN` is the variable the hub reads; there is no
+      // `-local-listen` flag on `leapmux dev`.
+      socketDir = mkdtempSync(join(tmpdir(), 'lm-e2e-sock-'))
+      const localListen = `unix:${join(socketDir, 'hub.sock')}`
       proc = spawn(options.binaryPath, [
         'dev',
         '-listen',
@@ -111,7 +126,12 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
         dataDir,
       ], {
         stdio: ['ignore', log, log],
-        env: hubSpawnEnv({ ...agentDefaultsEnv(), ...mockAgent.env, LEAPMUX_WORKER_NAME: 'Local' }),
+        env: hubSpawnEnv({
+          ...agentDefaultsEnv(),
+          ...mockAgent.env,
+          LEAPMUX_WORKER_NAME: 'Local',
+          LEAPMUX_HUB_LOCAL_LISTEN: localListen,
+        }),
       })
       trackProcess(options.tmpDir, proc)
     }

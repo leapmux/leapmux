@@ -57,6 +57,15 @@ var agentIdentityEnvScrubKeys = []string{
 	"GOOSE_TERMINAL", "AGENT_SESSION_ID",
 	// Pi.
 	"PI_CODING_AGENT",
+	// Factory Droid -- identity and nesting markers its Task tool injects into
+	// child processes (FACTORY_SESSION_PARENT_ID and the DROID_ spellings).
+	"FACTORY_SESSION_PARENT_ID", "DROID_PARENT_SESSION_ID", "FACTORY_PROJECT_DIR",
+	"CLAUDE_PROJECT_DIR", "DROID_PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT",
+	// Letta Code -- identity and nesting markers its subagent launcher injects.
+	"LETTA_AGENT_ID", "AGENT_ID", "LETTA_CONVERSATION_ID", "CONVERSATION_ID",
+	"LETTA_PARENT_AGENT_ID", "LETTA_PARENT_CONVERSATION_ID", "LETTA_SUBAGENT_NAME",
+	"LETTA_CODE_AGENT_ROLE", "LETTA_CODE_AGENT_TYPE", "LETTA_CODE_SUBAGENT_TAG",
+	"LETTA_MEMORY_DIR", "MEMORY_DIR", "TRANSCRIPT_PATH",
 	// Grok Build (ACP) -- the session id that it states to each command, MCP
 	// server and hook that it runs.
 	"GROK_SESSION_ID",

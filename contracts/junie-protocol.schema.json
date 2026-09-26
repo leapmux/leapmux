@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "junie-protocol.schema.json",
+  "title": "Junie wire vocabulary",
+  "description": "Every table is a map from the identifier both languages spell (PascalCase, so the Go constant and the TS key derive from one name) to the literal Junie sends. A table may never be empty: an empty one would emit an enum no dispatch can match, and the generator's own coverage check would have nothing to compare.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "modes",
+    "defaultMode",
+    "toolNames",
+    "spawnFields"
+  ],
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "unread": {
+      "description": "The per-key exemptions this domain states. `contractsAreConsumed.test.mjs` holds every KEY of a table to a reader on each side the table declares. A key one side genuinely never reads states that here.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "pattern": "^[A-Z][A-Za-z0-9]*$"
+        },
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sides",
+            "why"
+          ],
+          "properties": {
+            "sides": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "go",
+                  "ts"
+                ]
+              }
+            },
+            "why": {
+              "type": "string",
+              "minLength": 31
+            }
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "_unread": {
+      "$ref": "#/$defs/unread"
+    },
+    "modes": {
+      "$ref": "#/$defs/table"
+    },
+    "defaultMode": {
+      "description": "The key in `modes` a fresh Junie session runs on. A key, not a literal, so it cannot name a mode the table does not carry -- the generator checks the membership.",
+      "type": "string",
+      "pattern": "^[A-Z][A-Za-z0-9]*$"
+    },
+    "toolNames": {
+      "$ref": "#/$defs/table"
+    },
+    "spawnFields": {
+      "$ref": "#/$defs/table"
+    }
+  }
+}

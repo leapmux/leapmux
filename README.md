@@ -36,7 +36,14 @@ LeapMux is a workspace for running several coding agents and shell terminals at 
   <a href="https://x.ai/cli"><img src="icons/agents/grok-build.svg" width="64" height="64" title="Grok Build"></a>&nbsp;
   <a href="https://kiro.dev/cli/"><img src="icons/agents/kiro.svg" width="64" height="64" title="Kiro"></a>&nbsp;
   <a href="https://ampcode.com/"><img src="icons/agents/amp.svg" width="64" height="64" title="Amp"></a>&nbsp;
-  <a href="https://cline.bot/cli"><img src="icons/agents/cline.svg" width="64" height="64" title="Cline"></a>
+  <a href="https://cline.bot/cli"><img src="icons/agents/cline.svg" width="64" height="64" title="Cline"></a>&nbsp;
+  <a href="https://codebuddy.ai"><img src="icons/agents/codebuddy.svg" width="64" height="64" title="CodeBuddy Code"></a>&nbsp;
+  <a href="https://www.jetbrains.com/junie/"><img src="icons/agents/junie.svg" width="64" height="64" title="Junie"></a>&nbsp;
+  <a href="https://docs.letta.com/letta-code"><img src="icons/agents/letta.svg" width="64" height="64" title="Letta Code"></a>&nbsp;
+  <a href="https://dirac.run"><img src="icons/agents/dirac.svg" width="64" height="64" title="Dirac"></a>&nbsp;
+  <a href="https://qoder.com"><img src="icons/agents/qoder.svg" width="64" height="64" title="Qoder CLI"></a>&nbsp;
+  <a href="https://docs.factory.ai/"><img src="icons/agents/droid.svg" width="64" height="64" title="Factory Droid"></a>&nbsp;
+  <a href="https://fast-agent.ai"><img src="icons/agents/fast-agent.svg" width="64" height="64" title="Fast Agent"></a>
 </p>
 
 > **📖 Want to use LeapMux?**
@@ -482,4 +489,4 @@ See the [LICENSE](LICENSE.md) file for full details.
 
 ## Disclaimer
 
-All product names, logos, and trademarks are the property of their respective owners. LeapMux is not affiliated with, endorsed by, or sponsored by Alibaba Cloud, Amazon Web Services, Amp Frontier Corporation, Anomaly, Anthropic, Anysphere, Apple, Block, Cline Bot Inc., Cognition, Don Ho, Earendil, GitHub, Google, JetBrains, Kilo Code, Microsoft, Moonshot AI, OpenAI, Stencil Labs, Sublime HQ, xAI, Xiaomi, Z.ai, Zed Industries, or any other third party. Coding agent, editor, and IDE icons are used solely to indicate compatibility and are reproduced here for identification purposes only.
+All product names, logos, and trademarks are the property of their respective owners. LeapMux is not affiliated with, endorsed by, or sponsored by Alibaba Cloud, Amazon Web Services, Amp Frontier Corporation, Anomaly, Anthropic, Anysphere, Apple, Block, Cline Bot Inc., Cognition, Don Ho, Earendil, Factory, GitHub, Google, JetBrains, Kilo Code, Letta, Inc., Microsoft, Moonshot AI, OpenAI, Stencil Labs, Sublime HQ, xAI, Xiaomi, Z.ai, Zed Industries, or any other third party. Coding agent, editor, and IDE icons are used solely to indicate compatibility and are reproduced here for identification purposes only.

@@ -139,6 +139,41 @@ func (o *acpTurnOutput) holdsOpenTool(toolCallID string) bool {
 	return open
 }
 
+// latestOpenToolWithoutInput returns the id of the most recently opened tool
+// call whose stored request states no raw input, or "" when every open call has
+// one. A filesystem runtime opens the call and only then asks the host to read
+// or write the file, so the host sees the arguments first -- as that request.
+// The caller folds them into the row (see conversation.noteToolRequestFields).
+func (o *acpTurnOutput) latestOpenToolWithoutInput() string {
+	o.turnMu.Lock()
+	defer o.turnMu.Unlock()
+	bestID := ""
+	var best uint64
+	for id, state := range o.toolUpdateState {
+		if toolRequestStatesInput(state) {
+			continue
+		}
+		if bestID == "" || state.order > best {
+			bestID, best = id, state.order
+		}
+	}
+	return bestID
+}
+
+// toolRequestStatesInput reports whether a stored request carries a raw input
+// with content. An empty object states no field a reader can use.
+func toolRequestStatesInput(state *acpToolUpdateState) bool {
+	raw := state.fields["rawInput"]
+	if len(raw) == 0 {
+		return false
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return true // a scalar input is still an input
+	}
+	return len(object) > 0
+}
+
 // markPromptBoundaryLocked records the end of the prompt's output, because an
 // agent turn now waits behind the prompt. It returns the prompt's text, which
 // the caller persists at once, so the agent turn's text starts a segment of its

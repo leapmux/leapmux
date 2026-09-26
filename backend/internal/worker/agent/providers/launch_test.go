@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -17,7 +18,7 @@ import (
 // and that each one resolves.
 func TestEveryRegisteredProviderResolvesALaunch(t *testing.T) {
 	registry := Registry()
-	assert.Len(t, registry.Providers(), 19)
+	assert.Len(t, registry.Providers(), len(agentlabels.AllProviders()))
 	// Every provider must resolve to SOMETHING, or its Start returns an error before it
 	// spawns anything. NewRegistry already refuses a locator that states no way to find
 	// the program; this is where a locator that states one but resolves nothing surfaces.

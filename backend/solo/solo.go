@@ -1164,7 +1164,7 @@ func defaultExtraFlags() []hubconfig.ExtraFlagDef {
 // and are DB-backed restart-class settings for the rare case it is not.
 func defaultCLIFlags() []string {
 	return []string{
-		"listen", "data-dir", "dev-frontend",
+		"listen", "local-listen", "data-dir", "dev-frontend",
 		"storage-sqlite-max-conns", "storage-sqlite-cache-size", "storage-sqlite-mmap-size",
 		"log-level",
 	}

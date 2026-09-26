@@ -104,9 +104,10 @@ describe('provider registration', () => {
   // The registry is populated by SIDE-EFFECT imports, so a provider nobody imported and
   // a provider whose plugin failed to register read the same from `pluginFor`. The
   // count is what separates the two: every supported provider holds exactly one
-  // entry, which the duplicate-refusal below keeps from ever becoming two.
+  // entry, which the duplicate-refusal below keeps from ever becoming two. A
+  // pending provider has no plugin yet and is excluded until its package lands.
   it('registers every supported provider exactly once', () => {
-    expect(ALL_PROVIDERS).toHaveLength(19)
+    expect(ALL_PROVIDERS).toHaveLength(26)
     for (const provider of ALL_PROVIDERS)
       expect(pluginFor(provider), AgentProvider[provider]).toBeDefined()
   })

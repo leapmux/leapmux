@@ -59,7 +59,7 @@ In solo mode the Hub and Worker run in the same process, so the E2EE protocol is
 
 ## Which coding agents are supported?
 
-LeapMux supports nineteen agent providers: **Claude Code**, **Codex**, **Cursor**, **GitHub Copilot**, **Kilo**, **OpenCode**, **Goose**, **Pi**, **Reasonix**, **ZCode**, **Codewhale**, **Kimi Code**, **MiMo Code**, **Qwen Code**, **Oh My Pi**, **Grok Build**, **Kiro**, **Amp**, and **Cline**. All nineteen are first-class, and LeapMux gives each the same core surface where the underlying CLI supports it: chat, tool calls, permission prompts, plan tracking, and session resume.
+LeapMux supports twenty-six agent providers: **Claude Code**, **Codex**, **Cursor**, **GitHub Copilot**, **Kilo**, **OpenCode**, **Goose**, **Pi**, **Reasonix**, **ZCode**, **Codewhale**, **Kimi Code**, **MiMo Code**, **Qwen Code**, **Oh My Pi**, **Grok Build**, **Kiro**, **Amp**, **Cline**, **CodeBuddy Code**, **Junie**, **Letta Code**, **Dirac**, **Qoder CLI**, **Factory Droid**, and **Fast Agent**. All twenty-six are first-class, and LeapMux gives each the same core surface where the underlying CLI supports it: chat, tool calls, permission prompts, plan tracking, and session resume.
 
 A provider only appears in the picker when LeapMux detects its CLI binary on the Worker. If `claude` or `codex` is not installed on the machine that runs the Worker, that provider does not appear. ZCode is the exception to the binary rule: it ships no command, so LeapMux looks for its desktop installation instead.
 

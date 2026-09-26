@@ -77,6 +77,7 @@ describe('AgentProviderIcon', () => {
       AgentProvider.CODEWHALE,
       AgentProvider.QWEN_CODE,
       AgentProvider.OH_MY_PI,
+      AgentProvider.CODEBUDDY,
     ]
     const { container } = render(() => (
       <>
@@ -84,7 +85,7 @@ describe('AgentProviderIcon', () => {
         <For each={gradientProviders}>{provider => <AgentProviderIcon provider={provider} size={16} />}</For>
       </>
     ))
-    const ids = [...container.querySelectorAll('linearGradient')].map(gradient => gradient.id)
+    const ids = [...container.querySelectorAll('linearGradient, radialGradient')].map(gradient => gradient.id)
     expect(ids).toHaveLength(gradientProviders.length * 2)
     expect(new Set(ids).size).toBe(ids.length)
     for (const path of container.querySelectorAll('path[fill^="url("]')) {

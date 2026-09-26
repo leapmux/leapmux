@@ -28,14 +28,26 @@ export function contentBlocksCopyable(content: readonly McpContentItem[]): strin
   return content.map(contentText).filter(Boolean).join('\n\n')
 }
 
+/**
+ * The content blocks of a generic result, or none when the row states no array.
+ *
+ * A provider can write a result shaped for another kind under the generic card
+ * (a file-change result, an execute result). Such a row has no `content`, and a
+ * crash on it is a renderer defect. Reading the array defensively turns a
+ * malformed row into an empty block list the body already draws.
+ */
+function genericContent(result: GenericToolResult): readonly McpContentItem[] {
+  return Array.isArray(result.content) ? result.content : []
+}
+
 /** The text that Copy writes for a generic result. */
 export function genericResultCopyable(result: GenericToolResult): string {
-  return [contentBlocksCopyable(result.content), result.structuredJson, result.error].filter(Boolean).join('\n\n')
+  return [contentBlocksCopyable(genericContent(result)), result.structuredJson, result.error].filter(Boolean).join('\n\n')
 }
 
 /** Whether a generic request or result exceeds the collapsed display. */
 export function genericResultCollapsible(result: GenericToolResult, argsJson: string): boolean {
-  return [argsJson, result.structuredJson, result.error, ...result.content.map(item => item.type === 'image' ? undefined : item.type === 'resource' ? item.text : contentText(item))]
+  return [argsJson, result.structuredJson, result.error, ...genericContent(result).map(item => item.type === 'image' ? undefined : item.type === 'resource' ? item.text : contentText(item))]
     .some(text => text !== undefined && textNeedsCollapse(text))
 }
 
@@ -116,8 +128,8 @@ export function GenericToolBody(props: {
         <div class={toolInputSummary}>Arguments</div>
         <McpTextView text={argsText()} expanded={expanded} {...(props.context !== undefined ? { context: props.context } : {})} />
       </Show>
-      <Show when={props.result.content.length > 0}>
-        <McpContentList items={props.result.content} {...(props.indexOffset !== undefined ? { indexOffset: props.indexOffset } : {})} {...(props.title !== undefined ? { title: props.title } : {})} failed={failed()} {...(props.actions !== undefined ? { actions: props.actions } : {})} {...(props.holdDisplay !== undefined ? { holdDisplay: props.holdDisplay } : {})} {...(props.context !== undefined ? { context: props.context } : {})} expanded={expanded} />
+      <Show when={genericContent(props.result).length > 0}>
+        <McpContentList items={genericContent(props.result)} {...(props.indexOffset !== undefined ? { indexOffset: props.indexOffset } : {})} {...(props.title !== undefined ? { title: props.title } : {})} failed={failed()} {...(props.actions !== undefined ? { actions: props.actions } : {})} {...(props.holdDisplay !== undefined ? { holdDisplay: props.holdDisplay } : {})} {...(props.context !== undefined ? { context: props.context } : {})} expanded={expanded} />
       </Show>
       <Show when={props.result.structuredJson}>
         <div class={toolInputSummary}>Structured</div>
@@ -126,7 +138,7 @@ export function GenericToolBody(props: {
       <Show when={props.result.error}>
         <div class={toolResultError}><McpTextView text={props.result.error!} expanded={expanded} {...(props.context !== undefined ? { context: props.context } : {})} /></div>
       </Show>
-      <Show when={isFinishedToolCallStatus(props.status) && props.result.content.length === 0 && !props.result.structuredJson && !props.result.error}>
+      <Show when={isFinishedToolCallStatus(props.status) && genericContent(props.result).length === 0 && !props.result.structuredJson && !props.result.error}>
         <div class={toolResultPrompt}>{EMPTY_RESULT_NOTICE}</div>
       </Show>
     </div>

@@ -1,7 +1,7 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { mcpToolCallDisplayName, parseMcpContentItem, parseMcpToolName } from '../model/mcpToolCall'
-import { GenericToolBody } from './genericToolCall'
+import { genericResultCollapsible, GenericToolBody } from './genericToolCall'
 
 it('gives an empty completed result visible content without inventing copyable output', () => {
   const { container } = render(() => <GenericToolBody request={{ args: {} }} result={{ content: [] }} status="completed" />)
@@ -100,5 +100,27 @@ describe('parseMcpToolName', () => {
     expect(parseMcpToolName('mcp____echo')).toBeNull()
     expect(parseMcpToolName('Bash')).toBeNull()
     expect(parseMcpToolName('')).toBeNull()
+  })
+})
+
+// A malformed row is a renderer defect if it crashes the view. A generic result
+// whose `content` array is absent (a provider wrote the execute shape under the
+// generic kind) must render and answer, not throw.
+describe('genericResultCollapsible', () => {
+  it('reads a result with no content array without throwing', () => {
+    expect(genericResultCollapsible({ output: 'Saved' } as never, '')).toBe(false)
+  })
+
+  it('reads a result with an empty content array without throwing', () => {
+    expect(genericResultCollapsible({ content: [] }, '')).toBe(false)
+  })
+})
+
+describe('GenericToolBody', () => {
+  it('renders a result with no content array without throwing', () => {
+    // The body reads `content` alone, so a result shaped otherwise draws the
+    // empty notice. It must not throw.
+    const { container } = render(() => <GenericToolBody request={{ args: {} }} result={{ output: 'Saved' } as never} status="completed" />)
+    expect(container.textContent).toBe('[no output]')
   })
 })

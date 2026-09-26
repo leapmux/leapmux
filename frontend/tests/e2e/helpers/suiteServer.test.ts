@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -55,6 +55,35 @@ describe('startSuiteServer', () => {
     const before = openServerCount()
     await startSuiteServer({ binaryPath: join(root, 'no-such-leapmux'), tmpDir: root }).catch(() => {})
     expect(await settledServerCount(before)).toBe(before)
+  })
+
+  it.skipIf(process.platform === 'win32')('binds the hub\'s local IPC socket at a path that fits sun_path', async () => {
+    // macOS refuses a Unix socket path longer than 104 bytes with
+    // `bind: invalid argument`, and the run directory of a checkout nested
+    // under `.tmp/wt/` is already past it. The default socket is
+    // `<data-dir>/hub/hub.sock`, which is as long as the data dir is deep, so
+    // the start must pass `LEAPMUX_HUB_LOCAL_LISTEN` at a short path of its
+    // own. Dropping that variable fails every spec on a deep checkout with a
+    // bind error and names none of them.
+    const root = scratchRoot()
+    const binary = join(root, 'record-env')
+    const recorded = join(root, 'recorded-env.json')
+    writeFileSync(binary, `#!/bin/sh\nif [ "$1" = "dev" ]; then\n  node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ listen: process.env.LEAPMUX_HUB_LOCAL_LISTEN, argv: process.argv.slice(2) }))' ${JSON.stringify(recorded)} "$@"\n  exit 1\nfi\nexit 0\n`)
+    chmodSync(binary, 0o755)
+
+    await startSuiteServer({ binaryPath: binary, tmpDir: root }).catch(() => {})
+    const record = JSON.parse(readFileSync(recorded, 'utf8')) as { listen: string, argv: string[] }
+
+    expect(record.listen).toMatch(/^unix:/)
+    const socketPath = record.listen.slice('unix:'.length)
+    // The whole point: short enough for the 104-byte sun_path limit, with room
+    // to spare so a longer tmpdir prefix still fits.
+    expect(socketPath.length, `socket path is ${socketPath.length} bytes: ${socketPath}`).toBeLessThan(104)
+    expect(socketPath.endsWith('/hub.sock')).toBe(true)
+    // The default would be the deep data dir; a short path must not be it.
+    const dataDirIndex = record.argv.indexOf('-data-dir')
+    expect(dataDirIndex).toBeGreaterThanOrEqual(0)
+    expect(socketPath.startsWith(record.argv[dataDirIndex + 1] ?? '')).toBe(false)
   })
 })
 

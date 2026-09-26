@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -62,6 +63,8 @@ const (
 	acpMethodTerminalWaitForExit = "terminal/wait_for_exit"
 	acpMethodTerminalKill        = "terminal/kill"
 	acpMethodTerminalRelease     = "terminal/release"
+	acpMethodFSReadTextFile      = "fs/read_text_file"
+	acpMethodFSWriteTextFile     = "fs/write_text_file"
 )
 
 // ACP session update type constants.
@@ -82,7 +85,7 @@ const (
 	// the configOptions `mode` select for it -- it drives the mode through the native
 	// modes/current_mode_update channel instead. A configOptions `mode` is
 	// surfaced as a mutable option group rather than applied as the permission mode.
-	// This is the zero-value default; no provider currently selects it.
+	// This is the zero-value default; fast-agent selects it.
 	ModeChannelUnmapped ModeChannel = iota
 	// ModeChannelPermissionMode: the configOptions `mode` select drives the permission
 	// mode (Cursor, Goose, Grok Build, Kiro, Qwen Code, Reasonix).
@@ -627,12 +630,10 @@ func StaticSecondaryGroup(modeChannel ModeChannel, options []*leapmuxv1.Availabl
 // running agent's b.secondaryFallback from this so each provider states its fallback list exactly
 // ONCE (in the static groups it both registers and passes to Start) rather than also in its
 // hooks. secondaryGroup stamps Options verbatim, so the unwrapped list is the same slice the
-// provider passed in. Returns nil for the unmapped channel, which no provider selects today, and
-// for groups that carry no such group (Reasonix passes no groups).
+// provider passed in. The unmapped channel takes the same fallback as the permission-mode
+// family (it is that family); returns nil for groups that carry no such group (Reasonix
+// passes no groups).
 func SecondaryFallbackFrom(optionGroups []*leapmuxv1.AvailableOptionGroup, modeChannel ModeChannel) []*leapmuxv1.AvailableOption {
-	if modeChannel == ModeChannelUnmapped {
-		return nil
-	}
 	g := optionids.GroupByID(optionGroups, secondaryAxisFor(modeChannel).optionID)
 	return g.GetOptions()
 }
@@ -710,9 +711,7 @@ func (b *Base) buildSecondaryChannel() acpSecondaryChannel {
 	} else {
 		// The else branch maps permission-mode AND the unmapped channel to the permission-mode
 		// field/setter (preserving secondaryAxisFor's mapping). The native modes channel carries
-		// permission modes. No provider selects the unmapped channel today; one that did would
-		// never reach the refresh path, so rebuild/hiddenFilter/persistShape are wired to the
-		// permission-mode shapes but unreachable for it.
+		// permission modes; the unmapped channel (fast-agent) reads its mode from there.
 		sc.field, sc.set, sc.logKey = &b.permissionMode, b.setSecondary, "permissionMode"
 		sc.available = &b.availableModes
 		sc.rebuild = func(modes []ModeInfo, reported string) {
@@ -755,6 +754,27 @@ func (b *Base) effectiveSetModel() func(string) error {
 	return b.setModel
 }
 
+// effectiveSetMode returns the secondary-axis writer, preferring the provider's
+// override (Junie's SetModeViaConfigOption, which routes around its unsupported
+// session/set_mode) over the base acpSetMode. The default writer keeps the
+// available-list guard; an override owns its own validation.
+func (b *Base) effectiveSetMode() func(string) error {
+	if b.hooks.ModeSetter != nil {
+		return b.hooks.ModeSetter
+	}
+	return b.setSecondaryViaSetMode
+}
+
+// setSecondaryViaSetMode writes the secondary axis with session/set_mode, refusing
+// a value the current option list does not offer.
+func (b *Base) setSecondaryViaSetMode(value string) error {
+	sc := b.secondaryChannel()
+	b.Mu.Lock()
+	available := *sc.available
+	b.Mu.Unlock()
+	return b.acpSetMode(value, available)
+}
+
 // reapplyModelAndSecondary re-applies the current model and the secondary setting
 // (permission mode or primary agent, per modeChannel) after a session/new, then the
 // config options. The model setter and secondary channel are derived from the provider,
@@ -776,20 +796,18 @@ func (b *Base) reapplyModelAndSecondary() {
 	b.reapplyOptions(storedOptions)
 }
 
-// setSecondary sends a session/set_mode RPC for the agent's secondary axis (permission mode for
-// the permission-mode providers, primary agent for OpenCode/Kilo) and writes the resolved value into the
-// corresponding local field. It reads the available-list and field POINTERS off secondaryChannel()
-// rather than naming b.availableModes/b.permissionMode (or their primary-agent twins) directly, so
-// the former setPermissionMode/setPrimaryAgent twins collapse into one body and "which field this
-// axis touches" lives only in secondaryChannel(). modeChannel is fixed at construction, so the
-// re-derivation here resolves the same channel the caller's sc did.
+// setSecondary sends the secondary axis write (session/set_mode for the default
+// providers, a provider override otherwise) and writes the resolved value into the
+// corresponding local field. It reads the available-list and field POINTERS off
+// secondaryChannel() rather than naming b.availableModes/b.permissionMode (or their
+// primary-agent twins) directly, so the former setPermissionMode/setPrimaryAgent twins
+// collapse into one body and "which field this axis touches" lives only in
+// secondaryChannel(). modeChannel is fixed at construction, so the re-derivation here
+// resolves the same channel the caller's sc did. The wire decision itself lives in
+// effectiveSetMode, so Junie's set_config_option route shares this body.
 func (b *Base) setSecondary(value string) error {
 	sc := b.secondaryChannel()
-	b.Mu.Lock()
-	available := *sc.available
-	b.Mu.Unlock()
-
-	if err := b.acpSetMode(value, available); err != nil {
+	if err := b.effectiveSetMode()(value); err != nil {
 		return err
 	}
 	b.Mu.Lock()
@@ -1152,11 +1170,12 @@ func acpApplySetting(providerName, agentID, name, value string, apply func(strin
 // terminal capability (Goose, Reasonix) route shells through terminal/*;
 // handlers live in terminal.go and surface KindShell background-task
 // rows. hostTerminal is false for a provider that runs its shell commands
-// itself (Hooks.DisableHostTerminal). fs.* stays false until separate host
-// filesystem support lands. See https://github.com/leapmux/leapmux/issues/370.
+// itself (Hooks.DisableHostTerminal). fs.* is true so an agent that edits
+// through the client (Dirac's `edit_file`) reads and writes the same file
+// state the host sees; handlers live in fs.go (issue #370).
 func acpStandardInitParams(meta map[string]any, hostTerminal bool, requestMeta map[string]any) (json.RawMessage, error) {
 	capabilities := map[string]any{
-		"fs":          map[string]bool{"readTextFile": false, "writeTextFile": false},
+		"fs":          map[string]bool{"readTextFile": true, "writeTextFile": true},
 		"terminal":    hostTerminal,
 		"elicitation": map[string]any{"form": map[string]any{}, "url": map[string]any{}},
 	}
@@ -1922,10 +1941,10 @@ func Start[T any](ctx context.Context, opts agent.Options, sink agent.ProviderSe
 // OptionGroups returns one ACP provider's configuration axes as option groups:
 // the model group, then -- for a provider with a secondary axis (permission mode or
 // primary agent) -- that mapped group carrying its current value, then any mutable option
-// groups the server surfaced. A model-only provider (ModeChannelUnmapped, which no
-// provider selects today) omits the secondary group. One body serves every ACP family;
-// the axis specifics come from secondaryChannel and the per-provider secondaryFallback,
-// so no provider overrides this.
+// groups the server surfaced. The secondary group is omitted when it has neither options
+// nor a current value to report. One body serves every ACP family; the axis specifics come
+// from secondaryChannel and the per-provider secondaryFallback, so no provider overrides
+// this.
 func (b *Base) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	b.Mu.Lock()
 	var groups []*leapmuxv1.AvailableOptionGroup
@@ -1972,16 +1991,18 @@ func (b *Base) applyLocalOptions(options optionmap.Map) bool {
 
 // secondaryOptionGroupLocked builds the mapped secondary-axis group (permission mode or
 // primary agent) with its live current value, falling back to the static secondaryFallback
-// list before the session reports a catalog. Returns nil for a model-only provider. Caller
-// holds b.Mu.
+// list before the session reports a catalog. The unmapped channel takes the same group: it
+// is the permission-mode family too, tracking the mode on the native modes channel rather
+// than a configOptions `mode` select. Returns nil when the group has nothing to say -- no
+// options to offer and no current value to report. Caller holds b.Mu.
 func (b *Base) secondaryOptionGroupLocked() *leapmuxv1.AvailableOptionGroup {
-	if b.hooks.ModeChannel == ModeChannelUnmapped {
-		return nil
-	}
 	sc := b.secondaryChannel()
 	options := *sc.available
 	if len(options) == 0 {
 		options = b.secondaryFallback
+	}
+	if len(options) == 0 && *sc.field == "" {
+		return nil
 	}
 	return secondaryGroup(sc.secondaryAxis, options, *sc.field)
 }
@@ -2049,11 +2070,64 @@ type ConfigOption struct {
 	// Type is the widget kind. The spec defines "select" only today; an empty
 	// value is treated as "select" (see isSelectableConfigOption). Any other
 	// (future) type is ignored defensively.
-	Type         string              `json:"type"`
-	Name         string              `json:"name"`
-	Description  string              `json:"description"`
+	Type        string `json:"type"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// CurrentValue is the rendered string form of the wire value (see
+	// UnmarshalJSON): a non-select widget sends its own JSON type there.
 	CurrentValue string              `json:"currentValue"`
 	Options      []ConfigOptionValue `json:"options"`
+}
+
+// UnmarshalJSON accepts any JSON scalar for `currentValue`. The field reads as a
+// string everywhere downstream, but a server that advertises a non-select widget
+// sends the value in that widget's own JSON type -- Dirac's `type: "boolean"`
+// auto_approve/yolo arrive as JSON bools. isSelectableConfigOption drops those
+// widgets from the option machinery, so no code surfaces the value, but the session
+// parse must not die on it: the Type field already commits to ignoring unknown
+// widget types defensively, and this is the value half of that same posture.
+// Strings unquote, null and an absent value stay "", and any other scalar keeps its
+// compact JSON literal.
+func (c *ConfigOption) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		ID           string              `json:"id"`
+		Category     string              `json:"category"`
+		Type         string              `json:"type"`
+		Name         string              `json:"name"`
+		Description  string              `json:"description"`
+		CurrentValue json.RawMessage     `json:"currentValue"`
+		Options      []ConfigOptionValue `json:"options"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	c.ID = wire.ID
+	c.Category = wire.Category
+	c.Type = wire.Type
+	c.Name = wire.Name
+	c.Description = wire.Description
+	c.CurrentValue = configOptionCurrentString(wire.CurrentValue)
+	c.Options = wire.Options
+	return nil
+}
+
+// configOptionCurrentString renders a config option's raw currentValue as the
+// string the option machinery stores. An absent or null value, and a JSON string,
+// take their usual reading; any other scalar (a boolean or number widget's value)
+// keeps its compact JSON literal rather than failing the parse.
+func configOptionCurrentString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return string(raw)
+	}
+	return compact.String()
 }
 
 type ConfigOptionValue struct {
@@ -2129,26 +2203,6 @@ func isSelectableConfigOption(o ConfigOption) bool {
 	return o.Type == "" || o.Type == "select"
 }
 
-// acpSelectableConfigOptionByID returns the SELECTABLE config option with the given id. It resolves
-// a (non-conforming) daemon reporting the SAME id more than once to a STABLE choice -- the
-// content-smallest match (acpConfigOptionContentLess) -- rather than whichever the server listed
-// first, so the claimed model/mode axis can't flip between payloads sent in different orders.
-// Mirrors acpConfigOptionByCategory's lowest-id determinism for the category pass. It also scans
-// PAST a non-selectable first match to a selectable later one. ("", false) when no selectable match.
-func acpSelectableConfigOptionByID(options []ConfigOption, id string) (ConfigOption, bool) {
-	found := false
-	var best ConfigOption
-	for _, option := range options {
-		if option.ID != id || !isSelectableConfigOption(option) {
-			continue
-		}
-		if !found || acpConfigOptionContentLess(option, best) {
-			best, found = option, true
-		}
-	}
-	return best, found
-}
-
 // acpConfigOptionContentLess is a stable total order over config options, used ONLY to break a
 // duplicate-id tie deterministically -- two options sharing an id is a spec violation, so this
 // carries no semantic meaning; it just makes the resolution slice-order-independent. Orders by
@@ -2172,35 +2226,50 @@ func acpConfigOptionValuesKey(o ConfigOption) string {
 	return strings.Join(vals, "\x00")
 }
 
-// acpConfigOptionByCategory returns the selectable config option for a semantic
-// category, in two passes: first the option whose `category` matches (the ACP
-// spec's intended signal), then -- for the providers we ship today, which omit
-// `category` and use the literal well-known id -- the option whose `id` matches
-// `fallbackID`. Both passes skip non-selectable options (see
-// isSelectableConfigOption), so an unknown widget type is ignored rather than
-// dispatched as a model/mode. Returns the matched option and true, or a zero option
-// and false when neither pass finds a selectable match.
-//
-// BOTH passes resolve a (pathological) duplicate deterministically so the claimed axis can't flip
-// between payloads the server lists in different orders: the category pass picks the LOWEST id among
-// same-category matches -- breaking an exact-id tie (two options sharing BOTH category and id) by the
-// content-smallest occurrence -- and the id-fallback picks the content-smallest among same-id matches
-// (acpSelectableConfigOptionByID). Mirrors thoughtLevelConfigOptionID's sorted resolution.
+// acpConfigOptionByCategory returns the selectable config option that carries a
+// semantic channel, in ONE pass over the candidates a server may name it by:
+// the exact well-known id, or the `category` reserved for the channel (the ACP
+// spec's intended signal for a server that uses opaque ids). The well-known id
+// wins even over a category match -- a category tag can over-apply, and Junie
+// tags its Brave Mode setting `category: "mode"` beside the real `mode` select,
+// so dispatching on the tag loses the session mode entirely. The id is the
+// protocol's own name; "MUST NOT be required for correctness" means a server
+// may omit it, not that its presence is advisory. Both signals on one option
+// need no tie-break, and a duplicate id resolves to the content-smallest
+// occurrence (acpConfigOptionContentLess) so the claimed axis can't flip
+// between payloads the server lists in different orders. Returns the matched
+// option and true, or a zero option and false when no selectable option carries
+// either signal.
 func acpConfigOptionByCategory(options []ConfigOption, category, fallbackID string) (ConfigOption, bool) {
 	found := false
 	var best ConfigOption
 	for _, option := range options {
-		if option.Category != category || !isSelectableConfigOption(option) {
+		if !isSelectableConfigOption(option) {
 			continue
 		}
-		if !found || option.ID < best.ID || (option.ID == best.ID && acpConfigOptionContentLess(option, best)) {
+		if option.ID != fallbackID && option.Category != category {
+			continue
+		}
+		if !found || acpConfigOptionPreferred(option, best, fallbackID) {
 			best, found = option, true
 		}
 	}
-	if found {
-		return best, true
+	return best, found
+}
+
+// acpConfigOptionPreferred orders two candidates of acpConfigOptionByCategory:
+// the one carrying the well-known id wins outright, then the lowest id, then the
+// content-smallest duplicate of one id. A strict weak ordering, so the winner
+// never depends on the order the server lists them in.
+func acpConfigOptionPreferred(candidate, incumbent ConfigOption, fallbackID string) bool {
+	candidateKnown, incumbentKnown := candidate.ID == fallbackID, incumbent.ID == fallbackID
+	if candidateKnown != incumbentKnown {
+		return candidateKnown
 	}
-	return acpSelectableConfigOptionByID(options, fallbackID)
+	if candidate.ID != incumbent.ID {
+		return candidate.ID < incumbent.ID
+	}
+	return acpConfigOptionContentLess(candidate, incumbent)
 }
 
 // acpModelInfosFromConfigOption converts a `model` select config option into the
@@ -2887,6 +2956,36 @@ func (b *Base) SetModelViaConfigOption(wireModel string) error {
 	return nil
 }
 
+// SetModeViaConfigOption writes the secondary-axis value to the daemon via ACP's
+// session/set_config_option (configId "mode"), WITHOUT touching the local mode
+// field -- the caller stores it, exactly as SetModelViaConfigOption leaves b.model
+// to its caller. The mirror of SetModelViaConfigOption for a daemon that rejects
+// session/set_mode and spells its mode contract as a config option (Junie: "use
+// session/set_config_option with configId=\"mode\""). The response's refreshed
+// configOptions fold back like the model write's, so a mode change that alters the
+// mutable option set lands at once.
+func (b *Base) SetModeViaConfigOption(wireMode string) error {
+	resp, err := b.sendSessionRPC(MethodSessionSetConfigOption, map[string]interface{}{
+		"configId": ConfigOptionIDMode,
+		"value":    wireMode,
+	})
+	if err != nil {
+		return err
+	}
+	options := parseACPConfigOptions(resp)
+	if len(options) > 0 {
+		b.Mu.Lock()
+		b.options.clearUnresolved()
+		b.applyOptionGroupsLocked(options)
+		b.Mu.Unlock()
+	} else {
+		b.Mu.Lock()
+		b.options.markKnownUnresolved()
+		b.Mu.Unlock()
+	}
+	return nil
+}
+
 // setModel writes the model via session/set_config_option and updates the local field.
 func (b *Base) setModel(model string) error {
 	if err := b.SetModelViaConfigOption(model); err != nil {
@@ -3253,6 +3352,8 @@ func (b *Base) handleACPOutput(line *providerkit.ParsedLine) {
 		acpMethodTerminalKill,
 		acpMethodTerminalRelease:
 		b.handleTerminalMethod(line)
+	case acpMethodFSReadTextFile, acpMethodFSWriteTextFile:
+		b.handleFSMethod(line)
 	default:
 		if b.hooks.ExtraMethod != nil && b.hooks.ExtraMethod(line) {
 			return

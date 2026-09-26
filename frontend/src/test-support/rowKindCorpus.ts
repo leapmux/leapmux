@@ -272,6 +272,74 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     category: 'tool_use',
   },
 
+  // --- Dirac (transcribed from the `dirac --acp` probe `conv2.log`) -------
+  {
+    provider: Provider.DIRAC,
+    name: 'respond complete call',
+    payload: {
+      sessionUpdate: 'tool_call',
+      toolCallId: '1790338601902-2',
+      name: 'respond',
+      title: 'Task Completed',
+      kind: 'other',
+      status: 'pending',
+      rawInput: { tool: 'respond', operation: 'complete', text: 'MOCK-ARITHMETIC-ANSWER 4' },
+      _meta: { 'dev.dirac/seq': 13 },
+    },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.DIRAC,
+    name: 'usage update',
+    payload: { sessionUpdate: 'usage_update', used: 52, size: 200000 },
+    category: 'hidden',
+  },
+
+  // --- Junie (transcribed from the `junie --acp=true` probe `acp-prompt.log`) ---
+  {
+    provider: Provider.JUNIE,
+    name: 'bash call',
+    payload: {
+      sessionUpdate: 'tool_call',
+      toolCallId: '74d03a40-c505-4103-9d59-9f925c31ea39',
+      title: 'ls',
+      kind: 'execute',
+      status: 'in_progress',
+      content: [],
+      locations: [],
+      rawInput: { command: 'ls', cwd: '/work' },
+    },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.JUNIE,
+    name: 'session info update',
+    payload: { sessionUpdate: 'session_info_update', title: 'Greeting task' },
+    category: 'hidden',
+  },
+
+  // --- Fast Agent (transcribed from the `fast-agent acp` probe `acp-wire.log`) ---
+  {
+    provider: Provider.FAST_AGENT,
+    name: 'read_text_file call',
+    payload: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'e35b43a0ac184985b1bdc88e2b59f63a',
+      title: 'environment/read_text_file',
+      kind: 'read',
+      status: 'pending',
+      content: [],
+      rawInput: { path: '/path/to/file' },
+    },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.FAST_AGENT,
+    name: 'available commands update',
+    payload: { sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'status', description: 'Show status' }] },
+    category: 'hidden',
+  },
+
   // --- Grok Build (captured from a live `grok agent stdio` session) -----
   {
     provider: Provider.GROK_BUILD,
@@ -701,6 +769,74 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     category: 'control_response',
   },
 
+  // --- CodeBuddy Code -----------------------------------------------------
+  {
+    provider: Provider.CODEBUDDY,
+    name: 'assistant text',
+    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.CODEBUDDY,
+    name: 'assistant thinking',
+    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'Consider...', signature: 'sig' }] } },
+    category: 'assistant_thinking',
+  },
+  {
+    provider: Provider.CODEBUDDY,
+    name: 'tool use',
+    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_cb1', name: 'Read', input: { file_path: '/repo/a.ts' } }] } },
+    category: 'tool_use',
+    spanType: 'Read',
+  },
+  {
+    provider: Provider.CODEBUDDY,
+    name: 'tool result',
+    payload: { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'file contents', tool_use_id: 'toolu_cb1' }] } },
+    category: 'tool_result',
+    spanType: 'Read',
+  },
+  {
+    provider: Provider.CODEBUDDY,
+    name: 'turn end',
+    payload: { type: 'result', subtype: 'success', result: 'Done', num_turns: 1 },
+    category: 'result_divider',
+  },
+
+  // --- Qoder CLI ----------------------------------------------------------
+  {
+    provider: Provider.QODER,
+    name: 'assistant text',
+    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.QODER,
+    name: 'assistant thinking',
+    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'Consider...', signature: 'sig' }] } },
+    category: 'assistant_thinking',
+  },
+  {
+    provider: Provider.QODER,
+    name: 'tool use',
+    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_qd1', name: 'Read', input: { file_path: '/repo/a.ts' } }] } },
+    category: 'tool_use',
+    spanType: 'Read',
+  },
+  {
+    provider: Provider.QODER,
+    name: 'tool result',
+    payload: { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'file contents', tool_use_id: 'toolu_qd1' }] } },
+    category: 'tool_result',
+    spanType: 'Read',
+  },
+  {
+    provider: Provider.QODER,
+    name: 'turn end',
+    payload: { type: 'result', subtype: 'success', result: 'Done', num_turns: 1 },
+    category: 'result_divider',
+  },
+
   // --- A provider with no plugin -----------------------------------------
   {
     // UNSPECIFIED reaches the reader while a tab's worker metadata still loads, and
@@ -711,5 +847,89 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     name: 'frame of an unknown provider',
     payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } },
     category: 'unsupported_provider',
+  },
+  // --- Letta Code --------------------------------------------------------
+  {
+    provider: Provider.LETTA,
+    name: 'assistant text',
+    payload: { kind: 'stream_delta', payload: { message_type: 'assistant_message', content: [{ type: 'text', text: 'Hello from the mock model.' }] } },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.LETTA,
+    name: 'reasoning',
+    payload: { kind: 'stream_delta', payload: { message_type: 'reasoning_message', content: [{ type: 'text', text: 'The user says hello.' }] } },
+    category: 'assistant_thinking',
+  },
+  {
+    provider: Provider.LETTA,
+    name: 'tool call',
+    payload: { kind: 'stream_delta', payload: { message_type: 'client_tool_start', tool_call_id: 'call_1', tool_name: 'Bash', tool_input: { command: 'echo hi' } } },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.LETTA,
+    name: 'tool result',
+    payload: { kind: 'stream_delta', payload: { message_type: 'tool_return_message', tool_call_id: 'call_1', tool_name: 'Bash', tool_return: 'hi\n' } },
+    category: 'tool_result',
+  },
+  {
+    provider: Provider.LETTA,
+    name: 'turn end',
+    payload: { kind: 'turn_finished', payload: { turn_id: 't1', stop_reason: 'end_turn' } },
+    category: 'result_divider',
+  },
+  // The shapes the worker really persists. The wire discriminator of a
+  // protocol_v2 message is `type`, never `kind`, and the turn end is FLAT: its
+  // fields sit at the top level beside that `type`.
+  {
+    provider: Provider.LETTA,
+    name: 'turn end of the live frame',
+    payload: { type: 'turn_finished', turn_id: 'batch-direct-1', stop_reason: 'end_turn', run_id: 'local-run-1' },
+    category: 'result_divider',
+  },
+  {
+    provider: Provider.LETTA,
+    name: 'assembled assistant text',
+    payload: { type: 'assembled_message', kind: 'text', text: '6912', completion: 'complete' },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.LETTA,
+    name: 'user row LeapMux writes',
+    payload: { content: 'What is 1234 + 5678? Reply with just the number.' },
+    category: 'user_content',
+  },
+
+  // --- Factory Droid -----------------------------------------------------
+  {
+    provider: Provider.DROID,
+    name: 'assistant text',
+    payload: { type: 'assembled', kind: 'text', text: 'Hello from the mock model.' },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.DROID,
+    name: 'tool call',
+    payload: { type: 'tool_call', toolUse: { type: 'tool_use', id: 'call_1', name: 'Execute', input: { command: 'echo hi' } } },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.DROID,
+    name: 'tool result',
+    payload: { type: 'tool_result', toolUseId: 'call_1', content: 'hi\n', isError: false },
+    category: 'tool_result',
+  },
+  {
+    provider: Provider.DROID,
+    name: 'turn end',
+    payload: { type: 'agent_turn_completed', reason: 'completed', turnId: 't1' },
+    category: 'result_divider',
+  },
+  {
+    provider: Provider.DROID,
+    name: 'working state notice',
+    payload: { type: 'droid_working_state_changed', newState: 'idle' },
+    category: 'notification',
   },
 ]

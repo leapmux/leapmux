@@ -241,6 +241,11 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
       if (handleIdentityRoute(request, response, url))
         return
 
+      // Qoder CLI's auth and catalog routes. The CLI reaches them at the origin
+      // its `QODER_CENTER_ENDPOINT` names, which is the mock itself.
+      if (handleQoderAuthRoute(request, response, url, ownPort))
+        return
+
       // Amp's own service, which is not a model API either.
       if (isAmpPath(url.pathname)) {
         await amp.handleHttp(request, response, url)
@@ -658,6 +663,68 @@ function handleIdentityRoute(request: IncomingMessage, response: ServerResponse,
       session_token: 'leapmux-e2e-session-token',
       selected_model: { id: 'gpt-5.6-luna', name: 'gpt-5.6-luna', capabilities: modelCapabilities() },
     })
+    return true
+  }
+  return false
+}
+
+/**
+ * Qoder CLI's own auth and catalog routes, served from the mock.
+ *
+ * The headless auth gate blocks stream-json until the account is authenticated.
+ * The E2E recipe mocks authentication the way Cursor and Copilot do: the
+ * `QODER_CENTER_ENDPOINT` seam points Qoder's `center` API at this mock, and the
+ * SDK access-token payload (`QODER_SDK_AUTH_PAYLOAD_FILE`) installs a fake
+ * credential that the mock accepts. The routes below are the calls the CLI makes
+ * before its first model request; each carries no prompt, so it answers from a
+ * fixed shape. See `.tmp/impl/reports/codebuddy-qoder.md` for the full recipe.
+ */
+function handleQoderAuthRoute(request: IncomingMessage, response: ServerResponse, url: URL, ownPort: number): boolean {
+  const origin = `http://127.0.0.1:${ownPort}`
+  if (url.pathname === '/algo/api/v3/service/region/endpoints' || url.pathname === '/algo/api/v5/service/region/endpoints') {
+    // The endpoint-election parser reads `centerNodes`/`inferNodes`/`security`/
+    // `openapiNodes` off the top level and elects each origin it lists. Listing
+    // the mock's own origin routes every later call -- the token exchange, the
+    // userinfo lookup and the model call -- back here.
+    const body = {
+      centerNodes: [origin],
+      inferNodes: [origin],
+      security: [origin],
+      openapiNodes: [origin],
+    }
+    console.error('[qoder-auth] region/endpoints ->', JSON.stringify(body))
+    writeJSON(response, 200, body)
+    return true
+  }
+  if (request.method === 'POST' && (url.pathname === '/api/v1/jobToken/exchange' || url.pathname === '/api/v1/jobToken/refresh')) {
+    // `identity.job.exchange` reads `token` (or `access_token`) off the body and
+    // installs it. A far-future expiry keeps the refresh path quiet.
+    writeJSON(response, 200, {
+      token: 'leapmux-e2e-token',
+      access_token: 'leapmux-e2e-token',
+      refresh_token: 'leapmux-e2e-token',
+      expires_at: Date.now() + 86_400_000,
+      refresh_token_expires_at: Date.now() + 86_400_000 * 30,
+    })
+    return true
+  }
+  if (request.method === 'GET' && url.pathname === '/api/v1/userinfo') {
+    writeJSON(response, 200, { id: 'leapmux-e2e', uid: 'leapmux-e2e', username: 'leapmux-e2e', name: 'LeapMux E2E', email: 'e2e@leapmux.test' })
+    return true
+  }
+  if (url.pathname === '/api/v3/user/status') {
+    // `allow_byok >= 2` is what `ta()` reads to decide that custom providers are
+    // allowed. Below that the `mockprov` model is never registered and the model
+    // call falls through to the real Qoder API.
+    writeJSON(response, 200, { code: 0, success: true, data: {}, featureSwitches: { allow_byok: 2 } })
+    return true
+  }
+  if (url.pathname === '/algo/api/v2/model/list' || url.pathname === '/api/v2/user/plan') {
+    writeJSON(response, 200, { code: 0, success: true, data: {} })
+    return true
+  }
+  if (url.pathname === '/ide-text/latest') {
+    writeJSON(response, 200, { code: 0, success: true, data: {} })
     return true
   }
   return false

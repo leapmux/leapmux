@@ -66,6 +66,10 @@ frontend/src/spinners/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 .codex/
+.dirac-cache/
+.fast-agent/
+.letta/
+.mimocode/
 .pi/tasks/
 .zcode/plans/
 

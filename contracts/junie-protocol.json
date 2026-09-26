@@ -1,0 +1,15 @@
+{
+  "_readme": "Junie owns the session mode ids and the tool names below. LeapMux owns no value in this file. Both sides read them -- the worker falls back to the safe mode and maps the `spawn_subagent` call to a subagent registry row, and the browser plugin wires the plan toggle and draws the same call from the same words. Junie stamps no tool name on an ACP tool call: `title` is the call's display label, so the subagent mapping reads the `agent` and `handle` fields of `rawInput` that only `spawn_subagent` carries.",
+  "modes": {
+    "Default": "default",
+    "Plan": "plan"
+  },
+  "defaultMode": "Default",
+  "toolNames": {
+    "SpawnSubagent": "spawn_subagent"
+  },
+  "spawnFields": {
+    "Agent": "agent",
+    "Handle": "handle"
+  }
+}

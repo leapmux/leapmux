@@ -215,11 +215,12 @@
 }
 
 /*
-  Feature matrix: the wrapper scrolls horizontally, the feature names get
-  their own wider column, and every provider column shares the rest equally.
-  No cell ever breaks a line -- a symbol keeps its footnote markers -- so the
-  table sets a minimum width and scrolls instead of wrapping. Cell padding and
-  text alignment stay the theme's.
+  Feature matrix: one table with a header row every ten provider columns, so
+  no block is wider than the prose column and the table never scrolls. The
+  feature names get a narrow column that wraps; every provider column shares
+  the rest equally and never breaks a line, so a symbol keeps its footnote
+  marker. Cell padding and text alignment stay the theme's, which keeps the
+  "Feature" header cell in the same style as the logo header cells beside it.
 */
 .feature-matrix {
   overflow-x: auto;
@@ -227,14 +228,9 @@
 
 .feature-matrix table {
   table-layout: fixed;
-  min-width: 1030px;
   /* The theme scrolls each table on its own (display: block with overflow).
-     That scrollport would capture the sticky column while the wrapper scrolls
-     the box away, so the matrix table is a real table again and the wrapper is
-     the only scroller. Sticky cells are also inert under border-collapse:
-     collapse, so the matrix uses separate borders and keeps the collapsed
-     look: each cell draws its right and bottom edge, and the table draws the
-     frame. */
+     The matrix table is a real table again so its borders collapse cleanly:
+     each cell draws its right and bottom edge, and the table draws the frame. */
   display: table;
   overflow: visible;
   border-collapse: separate;
@@ -247,33 +243,11 @@
 }
 
 .feature-matrix table th:first-child {
-  width: 232px;
+  width: 150px;
 }
 
 .feature-matrix table th:not(:first-child) {
   width: 42px;
-}
-
-/*
-  The feature column stays visible during horizontal scroll: it sticks to the
-  scroll wrapper's left edge over the page background. The theme switches dark
-  mode with a class, not a media query.
-*/
-.feature-matrix table th:first-child,
-.feature-matrix table td:first-child {
-  position: sticky;
-  left: 0;
-  z-index: 1;
-  background: var(--hx-color-white);
-}
-
-.feature-matrix table th:first-child {
-  z-index: 2;
-}
-
-.dark .feature-matrix table th:first-child,
-.dark .feature-matrix table td:first-child {
-  background: var(--hx-color-dark);
 }
 
 /*
@@ -299,4 +273,15 @@
   white-space: nowrap;
   border-left: 0;
   border-top: 0;
+}
+
+/*
+  The feature column is the only one that wraps, so a long label takes the
+  narrow width instead of widening the table into a scrollbar. It is body
+  text, not a header: the theme's `th` bold would shout every row label.
+*/
+.feature-matrix table td:first-child {
+  white-space: normal;
+  font-weight: normal;
+  text-align: left;
 }

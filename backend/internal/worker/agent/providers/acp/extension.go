@@ -161,6 +161,13 @@ type Hooks struct {
 	// resolves it, and UpdateSettings and the reapply path use that, so one body
 	// serves Cursor and the plain providers alike.
 	ModelSetter func(string) error
+	// ModeSetter, when set, replaces how the base writes the secondary axis over
+	// ACP. Junie rejects session/set_mode and takes the mode through
+	// session/set_config_option with configId "mode" (SetModeViaConfigOption).
+	// Nil falls back to the base session/set_mode write (acpSetMode).
+	// effectiveSetMode resolves it, so the startup, UpdateSettings and reapply
+	// paths share one decision.
+	ModeSetter func(string) error
 	// ModelWriteRevealsOptions states that the agent reports some config
 	// options of a model only after the client writes that model. Kiro reports
 	// the effort axis of a model this way: its session/new and session/load

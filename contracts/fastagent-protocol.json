@@ -1,0 +1,7 @@
+{
+  "_readme": "fast-agent owns the session mode id below. LeapMux owns no value in this file. Both sides read it -- the worker falls back to the one mode a default fast-agent setup reports and lists it on the permission-mode axis, and the browser plugin badges that same default on the settings panel. fast-agent's modes are its configured agents; a default setup has one, and the session reports it on the `modes` channel.",
+  "modes": {
+    "Agent": "agent"
+  },
+  "defaultMode": "Agent"
+}

@@ -208,13 +208,22 @@ function acpFileChangeParts(kind: 'edit' | 'write', facts: ACPToolFacts): { requ
   // word "Edit" and no file.
   const changes = acpFileEditsFromToolCallRawInput(kind === 'write' ? 'write' : 'edit', args)
     .map(source => ({ ...source, showLineNumbers: false }))
-  const request: FileChangeRequest = { changes }
   const sources = Array.isArray(facts.tool.content)
     ? facts.tool.content.flatMap((entry) => {
         const source = acpFileEditFromToolCallContent([entry])
         return fileEditHasDiff(source) ? [source] : []
       })
     : []
+  // A call may state its change as a CONTENT diff rather than input fields:
+  // Junie's `search_replace` reports `{type:'diff', path, oldText, newText}` and a
+  // `locations` path, with no rawInput at all. The row composes its header from
+  // the REQUEST at every state, so the content diff fills the request when the
+  // input states none -- a request with no change degrades the row and the
+  // renderer loses the diff.
+  const requestChanges = changes.length > 0
+    ? changes
+    : sources.map(source => ({ ...source, showLineNumbers: false }))
+  const request: FileChangeRequest = { changes: requestChanges }
   return sources.length > 0 ? { request, result: { changes: sources } } : { request }
 }
 

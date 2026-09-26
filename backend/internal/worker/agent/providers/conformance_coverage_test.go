@@ -39,6 +39,13 @@ var providerDirs = map[leapmuxv1.AgentProvider]string{
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO:           "kiro",
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP:            "amp",
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE:          "cline",
+	leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY:      "codebuddy",
+	leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER:          "qoder",
+	leapmuxv1.AgentProvider_AGENT_PROVIDER_LETTA:          "letta",
+	leapmuxv1.AgentProvider_AGENT_PROVIDER_DROID:          "droid",
+	leapmuxv1.AgentProvider_AGENT_PROVIDER_JUNIE:          "junie",
+	leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC:          "dirac",
+	leapmuxv1.AgentProvider_AGENT_PROVIDER_FAST_AGENT:     "fastagent",
 }
 
 // requiredSuites states, for each package directory, the agenttest suites that
@@ -51,6 +58,7 @@ var providerDirs = map[leapmuxv1.AgentProvider]string{
 // the base implements those rules for all eight of them. OpenCode also runs the
 // busy refusal over its own agent type.
 var requiredSuites = map[string][]string{
+
 	"amp": {
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
@@ -69,6 +77,24 @@ var requiredSuites = map[string][]string{
 		"AssertPreservesTheResponseWithoutARequest", "AssertTokenResumeRule", "AssertChildCapabilities",
 	},
 	"cline": {
+		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
+		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
+		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
+		"AssertTokenResumeRule", "AssertChildCapabilities",
+	},
+	"codebuddy": {
+		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
+		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
+		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
+		"AssertTokenResumeRule", "AssertChildCapabilities",
+	},
+	"qoder": {
+		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
+		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
+		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
+		"AssertTokenResumeRule", "AssertChildCapabilities",
+	},
+	"droid": {
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
@@ -97,7 +123,16 @@ var requiredSuites = map[string][]string{
 	"goose": {"RequireReadsSessionStore", "AssertChildCapabilities"},
 	"grok":  {"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities"},
 	"kilo":  {"RequireReadsSessionStore", "AssertChildCapabilities"},
-	"kiro":  {"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities"},
+	"letta": {
+		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
+		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
+		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
+		"AssertTokenResumeRule", "AssertChildCapabilities",
+	},
+	"kiro":      {"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities"},
+	"dirac":     {"RequireReadsSessionStore", "AssertChildCapabilities"},
+	"fastagent": {"RequireReadsSessionStore", "AssertChildCapabilities"},
+	"junie":     {"RequireReadsSessionStore", "AssertChildCapabilities"},
 	"kimi": {
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",

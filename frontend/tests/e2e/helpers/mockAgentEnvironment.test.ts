@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { CLINE_PROVIDER_ID, createMockAgentEnvironment, KIMI_MOCK_MODELS, KIRO_E2E_API_KEY, MOCK_MODEL_IDS, MOCK_MODELS, MOCK_PROVIDER_IDS, OH_MY_PI_PROFILE, QWEN_MODEL_ID } from './mockAgentEnvironment'
+import { CLINE_PROVIDER_ID, CODEBUDDY_MODEL_ID, createMockAgentEnvironment, JUNIE_MOCK_MODEL, KIMI_MOCK_MODELS, KIRO_E2E_API_KEY, LETTA_MODEL_ID, MOCK_MODEL_IDS, MOCK_MODELS, MOCK_PROVIDER_IDS, OH_MY_PI_PROFILE, QODER_MODEL_ID, QWEN_MODEL_ID, refreshQoderSdkAuthPayload } from './mockAgentEnvironment'
 
 let directory: string
 
@@ -21,8 +21,8 @@ describe('createMockAgentEnvironment', () => {
     'http://user:secret@127.0.0.1:43210',
     'http://127.0.0.1:43210/?key=value',
     'http://127.0.0.1:43210/#fragment',
-  ])('refuses a server URL that is not a loopback HTTP origin, before it writes configuration: %s', (url) => {
-    expect(() => createMockAgentEnvironment(directory, url)).toThrow('loopback HTTP origin')
+  ])('refuses a server URL that is not a loopback HTTP origin, before it writes configuration: %s', async (url) => {
+    await expect(createMockAgentEnvironment(directory, url)).rejects.toThrow('loopback HTTP origin')
     expect(existsSync(join(directory, 'agent-home'))).toBe(false)
     expect(existsSync(join(directory, 'mimocode-home'))).toBe(false)
   })
@@ -30,20 +30,20 @@ describe('createMockAgentEnvironment', () => {
   it.each([
     ['http://localhost:43210', 'http://localhost:43210'],
     ['http://[::1]:43210/', 'http://[::1]:43210'],
-  ])('accepts every loopback name of the mock: %s', (url, origin) => {
-    const { env } = createMockAgentEnvironment(directory, url)
+  ])('accepts every loopback name of the mock: %s', async (url, origin) => {
+    const { env } = await createMockAgentEnvironment(directory, url)
     expect(env.ANTHROPIC_BASE_URL).toBe(origin)
     expect(env.OPENAI_BASE_URL).toBe(`${origin}/v1`)
     expect(env.HTTPS_PROXY).toBe(origin)
   })
 
-  it('advertises each pinned model identifier once', () => {
+  it('advertises each pinned model identifier once', async () => {
     expect(new Set(MOCK_MODEL_IDS).size).toBe(MOCK_MODEL_IDS.length)
     expect([...MOCK_MODEL_IDS].sort()).toEqual([...new Set(Object.values(MOCK_MODELS))].sort())
   })
 
-  it('states no Pi package without a real home directory to find them in', () => {
-    const { piAgentDir } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+  it('states no Pi package without a real home directory to find them in', async () => {
+    const { piAgentDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
     expect(JSON.parse(readFileSync(join(piAgentDir, 'settings.json'), 'utf8'))).toEqual({
       defaultProvider: 'zai',
       defaultModel: MOCK_MODELS.pi,
@@ -51,8 +51,8 @@ describe('createMockAgentEnvironment', () => {
     })
   })
 
-  it('routes direct endpoint providers to the mock server', () => {
-    const { env, homeDir, piAgentDir } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+  it('routes direct endpoint providers to the mock server', async () => {
+    const { env, homeDir, piAgentDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
 
     expect(env).toMatchObject({
       HOME: homeDir,
@@ -70,9 +70,9 @@ describe('createMockAgentEnvironment', () => {
   // mock now, so a run must neither read nor write the developer's own Cursor
   // configuration -- and must never reach for the macOS keychain, which raises
   // a modal dialog that nothing on a test machine answers.
-  it('isolates Cursor from the real home directory and the keychain', () => {
+  it('isolates Cursor from the real home directory and the keychain', async () => {
     const realHomeDir = join(directory, 'real-home')
-    const { env, homeDir } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210', { realHomeDir })
+    const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210', { realHomeDir })
 
     expect(env.CURSOR_CONFIG_DIR).toBe(join(homeDir, '.cursor'))
     expect(env.CURSOR_CONFIG_DIR!.startsWith(realHomeDir)).toBe(false)
@@ -81,9 +81,9 @@ describe('createMockAgentEnvironment', () => {
     expect(env.AGENT_CLI_CREDENTIAL_STORE).toBe('memory')
   })
 
-  it('writes Codex, Pi, Reasonix, and ZCode provider files', () => {
+  it('writes Codex, Pi, Reasonix, and ZCode provider files', async () => {
     const realHomeDir = join(directory, 'real-home')
-    const { env, homeDir } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210', { realHomeDir })
+    const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210', { realHomeDir })
 
     const codex = readFileSync(join(env.CODEX_HOME!, 'config.toml'), 'utf8')
     expect(codex).toContain('model_provider = "leapmux-e2e"')
@@ -122,8 +122,8 @@ describe('createMockAgentEnvironment', () => {
     })
   })
 
-  it('writes a Codewhale configuration that reaches the mock and nothing else', () => {
-    const { env, homeDir } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+  it('writes a Codewhale configuration that reaches the mock and nothing else', async () => {
+    const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
 
     expect(env).toMatchObject({
       CODEWHALE_HOME: join(homeDir, '.codewhale'),
@@ -145,8 +145,8 @@ describe('createMockAgentEnvironment', () => {
     expect(codewhale).toContain('[tools]\nuser_input_timeout_seconds = 0')
   })
 
-  it('writes a Kimi Code configuration that reaches only the mock', () => {
-    const { env, homeDir } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+  it('writes a Kimi Code configuration that reaches only the mock', async () => {
+    const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
 
     expect(env).toMatchObject({
       KIMI_CODE_HOME: join(homeDir, '.kimi-code'),
@@ -169,7 +169,7 @@ describe('createMockAgentEnvironment', () => {
     expect(kimi).toContain(`[models."${KIMI_MOCK_MODELS.plain}"]`)
   })
 
-  it('maps each Kimi Code alias onto a model the catalog route already lists', () => {
+  it('maps each Kimi Code alias onto a model the catalog route already lists', async () => {
     // A new identifier would change the catalog every provider reads.
     for (const alias of Object.values(KIMI_MOCK_MODELS)) {
       const [provider, model] = alias.split('/')
@@ -178,8 +178,8 @@ describe('createMockAgentEnvironment', () => {
     }
   })
 
-  it('isolates Oh My Pi in its own profile, which Pi\'s variables cannot reach', () => {
-    const { env, homeDir, ohMyPiAgentDir } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+  it('isolates Oh My Pi in its own profile, which Pi\'s variables cannot reach', async () => {
+    const { env, homeDir, ohMyPiAgentDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
 
     expect(ohMyPiAgentDir).toBe(join(homeDir, '.omp', 'profiles', OH_MY_PI_PROFILE, 'agent'))
     expect(env.OMP_PROFILE).toBe(OH_MY_PI_PROFILE)
@@ -201,8 +201,8 @@ describe('createMockAgentEnvironment', () => {
     expect(models.providers[MOCK_PROVIDER_IDS.ohMyPi].models[0].id).toBe(MOCK_MODELS.ohMyPi)
   })
 
-  it('stops every Oh My Pi request that no test scripts', () => {
-    const { ohMyPiAgentDir } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+  it('stops every Oh My Pi request that no test scripts', async () => {
+    const { ohMyPiAgentDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
     const config = JSON.parse(readFileSync(join(ohMyPiAgentDir, 'config.yml'), 'utf8'))
     const model = `${MOCK_PROVIDER_IDS.ohMyPi}/${MOCK_MODELS.ohMyPi}`
 
@@ -218,13 +218,13 @@ describe('createMockAgentEnvironment', () => {
   })
 
   // The mock refuses the request anyway. The run must not depend on that.
-  it('turns off Kilo telemetry', () => {
-    const { env } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+  it('turns off Kilo telemetry', async () => {
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
     expect(env.KILO_TELEMETRY_LEVEL).toBe('off')
   })
 
-  it('supplies equivalent inline OpenCode and Kilo providers', () => {
-    const { env } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+  it('supplies equivalent inline OpenCode and Kilo providers', async () => {
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
     const openCode = JSON.parse(env.OPENCODE_CONFIG_CONTENT!)
     const kilo = JSON.parse(env.KILO_CONFIG_CONTENT!)
 
@@ -239,8 +239,8 @@ describe('createMockAgentEnvironment', () => {
 
   // MiMo takes the OpenCode family's provider block under its own variable names,
   // and each switch below stops a request that no test scripts.
-  it('points MiMo Code at the same inline provider and closes its other requests', () => {
-    const { env } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+  it('points MiMo Code at the same inline provider and closes its other requests', async () => {
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
     const mimo = JSON.parse(env.MIMOCODE_CONFIG_CONTENT!)
 
     const openCode = JSON.parse(env.OPENCODE_CONFIG_CONTENT!).provider[MOCK_PROVIDER_IDS.openCode]
@@ -278,14 +278,14 @@ describe('createMockAgentEnvironment', () => {
    * agent answered from the real endpoint and the mock saw no request at all,
    * while the test still passed because a real model does arithmetic correctly.
    */
-  it('uses a provider id that no public catalog holds', () => {
+  it('uses a provider id that no public catalog holds', async () => {
     expect(MOCK_PROVIDER_IDS.openCode).toBe('leapmux-e2e')
     for (const id of Object.values(MOCK_PROVIDER_IDS))
       expect(id).toContain('leapmux-e2e')
   })
 
-  it('disables the Codex background memory turn, which carries no scenario marker', () => {
-    const { env } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+  it('disables the Codex background memory turn, which carries no scenario marker', async () => {
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
     const codex = readFileSync(join(env.CODEX_HOME!, 'config.toml'), 'utf8')
     expect(codex).toContain('[memories]')
     expect(codex).toContain('generate_memories = false')
@@ -295,8 +295,8 @@ describe('createMockAgentEnvironment', () => {
   // Grok answers from its own `config.toml`, and every model request it makes
   // outside a scripted turn -- a turn summary, a title refresh, a recap, a memory
   // pass, a prompt suggestion -- would reach the mock with no test to answer it.
-  it('points Grok Build at the mock and turns off its own model calls', () => {
-    const { env, homeDir } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+  it('points Grok Build at the mock and turns off its own model calls', async () => {
+    const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
 
     expect(env.GROK_HOME).toBe(join(homeDir, '.grok'))
     const grok = readFileSync(join(env.GROK_HOME!, 'config.toml'), 'utf8')
@@ -324,8 +324,8 @@ describe('createMockAgentEnvironment', () => {
   // Cursor's calls to the mock into the refusing proxy, and every Cursor turn would
   // fail. Every real host is HTTPS, so the HTTPS proxy alone keeps each of them
   // closed.
-  it('routes HTTPS alone through the refusing proxy, and keeps loopback direct', () => {
-    const { env } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+  it('routes HTTPS alone through the refusing proxy, and keeps loopback direct', async () => {
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
 
     expect(env.HTTPS_PROXY).toBe('http://127.0.0.1:43210')
     expect(env.https_proxy).toBe('http://127.0.0.1:43210')
@@ -337,8 +337,8 @@ describe('createMockAgentEnvironment', () => {
 
   // Kiro reads every endpoint from its own `cli.json`, and it opens remote sessions
   // on its own host whatever the settings state. The refusing proxy stops those.
-  it('points Kiro at the mock, closes every other host, and turns off its own model calls', () => {
-    const { env, homeDir } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+  it('points Kiro at the mock, closes every other host, and turns off its own model calls', async () => {
+    const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
 
     expect(env.KIRO_HOME).toBe(join(homeDir, '.kiro'))
     expect(env.KIRO_DATA_DIR!.startsWith(directory)).toBe(true)
@@ -378,9 +378,9 @@ describe('createMockAgentEnvironment', () => {
     })
   })
 
-  it('points Amp at the mock\'s own service with a fake key, and keeps its data in the isolated home', () => {
+  it('points Amp at the mock\'s own service with a fake key, and keeps its data in the isolated home', async () => {
     const realHomeDir = join(directory, 'real-home')
-    const { env, homeDir } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210', { realHomeDir })
+    const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210', { realHomeDir })
 
     expect(env).toMatchObject({
       AMP_URL: 'http://127.0.0.1:43210',
@@ -398,9 +398,9 @@ describe('createMockAgentEnvironment', () => {
       expect(env[key]!.startsWith(realHomeDir), key).toBe(false)
   })
 
-  it('points Cline at the mock through settings in the isolated home, with telemetry off', () => {
+  it('points Cline at the mock through settings in the isolated home, with telemetry off', async () => {
     const realHomeDir = join(directory, 'real-home')
-    const { env, homeDir } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210', { realHomeDir })
+    const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210', { realHomeDir })
 
     const clineDir = join(homeDir, '.cline')
     const dataDir = join(clineDir, 'data')
@@ -442,8 +442,8 @@ describe('createMockAgentEnvironment', () => {
     expect(flags.updatedAt).toBeGreaterThan(0)
   })
 
-  it('states every Cline variable that moves one part of the data, so no developer value reaches a daemon', () => {
-    const { env } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+  it('states every Cline variable that moves one part of the data, so no developer value reaches a daemon', async () => {
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
 
     // Every `CLINE_*_DIR` and `CLINE_*_PATH` that sdk/packages/shared/src/storage/paths.ts
     // of Cline 3.0.64 reads, the hook and log files, and the build environment,
@@ -477,8 +477,135 @@ describe('createMockAgentEnvironment', () => {
     expect(env.CLINE_BUILD_ENV).toBe('production')
   })
 
-  it('points Qwen Code at the mock with the safe approval mode and no background calls', () => {
-    const { env, homeDir } = createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+  it('points Junie at the mock profile, keeps its store isolated and its install root real', async () => {
+    const realHomeDir = join(directory, 'real-home')
+    const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210', { realHomeDir })
+
+    const junieHome = join(homeDir, '.junie')
+    expect(env).toMatchObject({
+      JUNIE_HOME: junieHome,
+      JUNIE_DATA: join(realHomeDir, '.local', 'share', 'junie'),
+    })
+    expect(env.JUNIE_HOME!.startsWith(realHomeDir)).toBe(false)
+    const config = JSON.parse(readFileSync(env.JUNIE_CONFIG_LOCATION!, 'utf8'))
+    expect(config['model-locations']).toHaveLength(1)
+    const profile = JSON.parse(readFileSync(join(config['model-locations'][0], 'mock-model.json'), 'utf8'))
+    // The file name is the profile identifier (`custom:mock-model`); `id` is
+    // the model name the endpoint receives.
+    expect(profile).toMatchObject({
+      id: MOCK_MODELS.junie,
+      baseUrl: 'http://127.0.0.1:43210/v1/chat/completions',
+      apiType: 'OpenAICompletion',
+      apiKey: 'leapmux-e2e-model-key',
+    })
+    expect(JUNIE_MOCK_MODEL).toBe('custom:mock-model')
+  })
+
+  it('points CodeBuddy at the mock catalog under one config dir, with a qualified model', async () => {
+    const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+
+    const configDir = join(homeDir, '.codebuddy')
+    // The config dir holds models.json and settings.json. A nested
+    // `.codebuddy/.codebuddy` leaves the agent with no catalog at all.
+    expect(env.CODEBUDDY_CONFIG_DIR).toBe(configDir)
+    const models = JSON.parse(readFileSync(join(configDir, 'models.json'), 'utf8'))
+    expect(models.models[0]).toMatchObject({ id: MOCK_MODELS.deepseek, url: 'http://127.0.0.1:43210/v1/chat/completions' })
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'))
+    expect(settings.model).toBe(CODEBUDDY_MODEL_ID)
+    expect(CODEBUDDY_MODEL_ID).toBe(`custom-local:${MOCK_MODELS.deepseek}`)
+    expect(QODER_MODEL_ID).toBe(`mockprov/${MOCK_MODELS.deepseek}`)
+    expect(LETTA_MODEL_ID).toBe(`openai-compatible/${MOCK_MODELS.letta}`)
+  })
+
+  it('opens the Qoder headless gate with a mocked account and pre-seeded endpoints', async () => {
+    // Two independent seams have to hold at once or the agent dies with
+    // "Not logged in · Please run /login" before any model call: the SDK
+    // credential (the one injection that reaches stream-json) and the
+    // endpoint-election caches (without which the exchange and the model call
+    // fall through to the real `*.qoder.sh`).
+    const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    const origin = 'http://127.0.0.1:43210'
+
+    expect(env).toMatchObject({
+      QODER_SITE: 'GLOBAL',
+      QODER_ENV: 'prod',
+      QODER_HTTPDNS: '0',
+      QODER_FORCE_FILE_STORAGE: '1',
+      QODER_AGENT_SDK_ENTRYPOINT: '1',
+      QODER_SDK_CUSTOM_BASE_URL_BYOK: '1',
+      // Empty, not unset: a developer's own PAT must not reach the E2E Qoder.
+      QODER_PERSONAL_ACCESS_TOKEN: '',
+    })
+    const payload = JSON.parse(readFileSync(env.QODER_SDK_AUTH_PAYLOAD_FILE!, 'utf8'))
+    expect(payload).toMatchObject({ type: 'accessToken' })
+
+    const qoderHome = join(homeDir, '.qoder')
+    const cacheDir = join(qoderHome, '.cache')
+    const v1 = JSON.parse(readFileSync(join(cacheDir, 'endpoint-cache.json'), 'utf8'))
+    expect(v1.entries.prod).toMatchObject({
+      endpoint: origin,
+      openapiEndpoint: origin,
+      centerEndpoint: origin,
+    })
+    for (const file of ['qoder-client-endpoint-cache.json', 'qoder-client-endpoint-cache-public.json']) {
+      const v2 = JSON.parse(readFileSync(join(cacheDir, file), 'utf8'))
+      for (const purpose of ['center', 'inference', 'securityInference', 'openapi'])
+        expect(v2.entries.prod.endpointSets[purpose].selected).toBe(origin)
+    }
+
+    // One registration only: a `modelConfigs.customModels` key beside the
+    // `providers` entry makes Qoder drop the provider as a catalog conflict,
+    // and the model call escapes to the real API.
+    const settings = JSON.parse(readFileSync(join(qoderHome, 'settings.json'), 'utf8'))
+    expect(Object.keys(settings.providers)).toEqual(['mockprov'])
+    expect(settings.modelConfigs).toBeUndefined()
+
+    // The CLI deletes the one-shot credential after reading it, so a second
+    // agent from this environment must be able to re-materialize it.
+    unlinkSync(env.QODER_SDK_AUTH_PAYLOAD_FILE!)
+    refreshQoderSdkAuthPayload(env)
+    expect(JSON.parse(readFileSync(env.QODER_SDK_AUTH_PAYLOAD_FILE!, 'utf8'))).toMatchObject({ type: 'accessToken' })
+  })
+
+  it('keeps Factory Droid under one override home and points its BYOK model at the mock', async () => {
+    // `FACTORY_HOME_OVERRIDE` names the directory that HOLDS `.factory`, not
+    // `.factory` itself. A value of `.factory` moves every session, log and
+    // telemetry file one level too deep and the CLI finds no settings.
+    const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    const origin = 'http://127.0.0.1:43210'
+
+    expect(env.FACTORY_HOME_OVERRIDE).toBe(homeDir)
+    expect(env.FACTORY_HOME_OVERRIDE!.endsWith('.factory')).toBe(false)
+    expect(env).toMatchObject({
+      // The same OpenAI-compatible base the BYOK model names. Factory's own
+      // service calls to it are stopped by the airgap switches below, so only
+      // the model path matters.
+      FACTORY_API_BASE_URL: `${origin}/v1`,
+      FACTORY_DROID_AUTO_UPDATE_ENABLED: '0',
+      FACTORY_OTEL_ENABLED: '0',
+      FACTORY_AIRGAP_ENABLED: '1',
+      FACTORY_DISABLE_DYNAMIC_CONFIG: '1',
+      FACTORY_DISABLE_KEYRING: '1',
+    })
+    // An unroutable sink: telemetry must not leave the machine.
+    expect(env.FACTORY_TELEMETRY_INGEST_BASE_URL).toBe('http://127.0.0.1:9')
+
+    const settings = JSON.parse(readFileSync(join(homeDir, '.factory', 'settings.json'), 'utf8'))
+    expect(settings.customModels).toHaveLength(1)
+    expect(settings.customModels[0]).toMatchObject({
+      id: 'custom:Droid-0',
+      baseUrl: `${origin}/v1`,
+      apiKey: 'leapmux-e2e-model-key',
+      provider: 'generic-chat-completion-api',
+    })
+    expect(settings.sessionDefaultSettings).toMatchObject({
+      model: 'custom:Droid-0',
+      autonomyMode: 'normal',
+    })
+  })
+
+  it('points Qwen Code at the mock with the safe approval mode and no background calls', async () => {
+    const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
 
     expect(env.QWEN_HOME).toBe(join(homeDir, '.qwen'))
     const qwen = JSON.parse(readFileSync(join(env.QWEN_HOME!, 'settings.json'), 'utf8'))

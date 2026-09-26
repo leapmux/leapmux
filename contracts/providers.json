@@ -119,6 +119,55 @@
         "Cline CLI",
         "cline-cli"
       ]
+    },
+    "AGENT_PROVIDER_CODEBUDDY": {
+      "displayName": "CodeBuddy Code",
+      "cliAlias": "codebuddy",
+      "parseAliases": [
+        "cbc"
+      ]
+    },
+    "AGENT_PROVIDER_JUNIE": {
+      "displayName": "Junie",
+      "cliAlias": "junie",
+      "parseAliases": [
+        "jetbrains-junie"
+      ]
+    },
+    "AGENT_PROVIDER_LETTA": {
+      "displayName": "Letta Code",
+      "cliAlias": "letta",
+      "parseAliases": [
+        "letta-code"
+      ]
+    },
+    "AGENT_PROVIDER_DIRAC": {
+      "displayName": "Dirac",
+      "cliAlias": "dirac",
+      "parseAliases": []
+    },
+    "AGENT_PROVIDER_QODER": {
+      "displayName": "Qoder CLI",
+      "cliAlias": "qoder",
+      "parseAliases": [
+        "qodercli"
+      ]
+    },
+    "AGENT_PROVIDER_DROID": {
+      "displayName": "Factory Droid",
+      "cliAlias": "droid",
+      "parseAliases": [
+        "factory",
+        "factory-droid"
+      ]
+    },
+    "AGENT_PROVIDER_FAST_AGENT": {
+      "displayName": "Fast Agent",
+      "cliAlias": "fast-agent",
+      "parseAliases": [
+        "fast-agent-mcp",
+        "fast-agent-acp"
+      ]
     }
   }
 }

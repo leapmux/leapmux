@@ -84,9 +84,12 @@ describe('classification and extraction agree on every row kind', () => {
   // no case at all.
   it('covers every registered provider', () => {
     const covered = new Set(ROW_KIND_CASES.map(entry => entry.provider))
-    expect(ALL_PROVIDERS.filter(provider => providerFor(provider) !== undefined && !covered.has(provider))).toEqual([])
+    // A pending provider has no plugin and no corpus rows yet; its package
+    // lands both. The empty-registry guard below still covers the settled set.
+    const settled = ALL_PROVIDERS
+    expect(settled.filter(provider => providerFor(provider) !== undefined && !covered.has(provider))).toEqual([])
     // A sweep of an empty registry would find no gap, so the sweep states that it saw
     // every provider.
-    expect(ALL_PROVIDERS.filter(provider => providerFor(provider) === undefined)).toEqual([])
+    expect(settled.filter(provider => providerFor(provider) === undefined)).toEqual([])
   })
 })

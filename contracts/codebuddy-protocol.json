@@ -1,0 +1,142 @@
+{
+  "_readme": "CodeBuddy Code's stream-json vocabulary (`codebuddy -p --input-format stream-json --output-format stream-json`), for the tables that BOTH the Go provider and the TS renderer plugin read. CodeBuddy's stream is deliberately Claude Code 2.1.220-shaped, but the shapes LeapMux parses differ where it matters, so this contract shares no table with claude-protocol.json. `frameKinds` are the top-level `type` values on stdout. `controlRequestSubtypes` are the request subtypes LeapMux sends and the CLI sends back; both sides dispatch on them. `modes` are the four permission modes get_available_modes advertises. `effortLevels` are the --effort values CodeBuddy owns (not Claude's low/medium/high/ultra set). `systemSubtypes` are the system-line subtypes both sides classify. The can_use_tool answer fields (`allowed`, `reason`, `interrupt`, `updatedInput`) are Go-only: the browser sends the neutral behavior envelope and the worker alone translates it, so they live in providers/codebuddy/protocol.go, per the contracts rule's one-side-only exemption.",
+  "_unread": {
+    "frameKinds": {
+      "ActiveGoal": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ControlNotification": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Error": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ToolProgress": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      }
+    },
+    "controlRequestSubtypes": {
+      "CanUseTool": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "GetAvailableModels": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "GetAvailableModes": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Initialize": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "SetModel": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Steer": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      }
+    },
+    "systemSubtypes": {
+      "Keepalive": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Status": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "TaskNotification": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "TaskStarted": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      }
+    }
+  },
+  "frameKinds": {
+    "System": "system",
+    "Assistant": "assistant",
+    "User": "user",
+    "Result": "result",
+    "ControlNotification": "control_notification",
+    "ToolProgress": "tool_progress",
+    "ActiveGoal": "active_goal",
+    "ConversationReset": "conversation_reset",
+    "Error": "error"
+  },
+  "controlRequestSubtypes": {
+    "Initialize": "initialize",
+    "CanUseTool": "can_use_tool",
+    "SetPermissionMode": "set_permission_mode",
+    "SetModel": "set_model",
+    "GetAvailableModels": "get_available_models",
+    "GetAvailableModes": "get_available_modes",
+    "Interrupt": "interrupt",
+    "Steer": "steer"
+  },
+  "modes": {
+    "Default": "default",
+    "AcceptEdits": "acceptEdits",
+    "Plan": "plan",
+    "BypassPermissions": "bypassPermissions"
+  },
+  "defaultMode": "Default",
+  "effortLevels": {
+    "Minimal": "minimal",
+    "Low": "low",
+    "Medium": "medium",
+    "High": "high",
+    "Xhigh": "xhigh",
+    "Max": "max"
+  },
+  "systemSubtypes": {
+    "Init": "init",
+    "Status": "status",
+    "Keepalive": "keepalive",
+    "TaskStarted": "task_started",
+    "TaskNotification": "task_notification"
+  }
+}

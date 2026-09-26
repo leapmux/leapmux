@@ -1,0 +1,362 @@
+{
+  "_readme": "Factory Droid's stream-jsonrpc vocabulary, for the tables that BOTH the Go provider and the TS renderer plugin read. The worker persists each transcript row as Droid's own notification envelope, so the browser plugin dispatches on the same `notification.type` and reads the same fields (`notifications`, `notificationFields`). `notifications` marks the frame kinds the browser dispatches on that are Droid's alone. `toolNotifications` holds Droid's `tool_call` and `tool_result` notification types WITHOUT the frameKind mark: those two literals are also LeapMux's own `MessageCategory` kinds (`tool_use` / `tool_result`), which shared chat code spells by name, so linting them as wire tokens would forbid a literal the chat model owns. `tools` holds the tool names both sides dispatch on: the worker opens a subagent row for `Task`, answers the question request of `AskUser`, and streams the output of `Execute`; the browser draws each one. `workingStates` holds the `newState` values of `droid_working_state_changed`, which both sides read as the busy/idle signal. `permissionOptions` holds the 17 `selectedOption` values of a `droid.request_permission` answer, and `confirmationTypes` the `confirmationType` words of its `toolUses[]`; the worker answers from the permission mode and the browser words the banner. `askUserFields` holds the fields of one `droid.ask_user` question that both sides read. Factory owns every value above except the `modes` and `efforts` tables and the `reply` fields: LeapMux owns `modes` (the value set of the permission-mode axis, each one mapped onto Droid's own `autonomyMode` at launch), `efforts` (the reasoning-effort axis, which maps onto `--reasoning-effort`), and `reply` (the fields of the browser's decision that carry an ask_user answer).",
+  "_unread": {
+    "notifications": {
+      "ToolExecutionPhaseChanged": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      }
+    },
+    "notificationFields": {
+      "BlockIndex": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "MessageID": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Notification": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Reason": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "SessionID": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "TextDelta": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Title": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "TokenUsage": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      }
+    },
+    "permissionOptions": {
+      "ProceedAlways": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ProceedAlwaysFile": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ProceedAlwaysServer": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ProceedAlwaysTools": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ProceedAutoRun": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ProceedAutoRunHigh": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ProceedAutoRunLow": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ProceedAutoRunMedium": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ProceedEdit": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ProceedNewSession": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ProceedNewSessionHigh": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ProceedNewSessionLow": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ProceedNewSessionMedium": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ProceedReportFalsePositive": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      }
+    },
+    "confirmationTypes": {
+      "ApplyPatch": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "AskUser": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Create": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Edit": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Exec": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ExitSpecMode": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "MCPTool": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "SandboxViolation": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      }
+    },
+    "askUserFields": {
+      "Answers": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Cancelled": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ToolCallID": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      }
+    },
+    "reply": {
+      "Answers": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Cancelled": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Comment": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "SelectedOption": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      }
+    }
+  },
+  "notifications": {
+    "WorkingStateChanged": "droid_working_state_changed",
+    "CreateMessage": "create_message",
+    "AssistantTextDelta": "assistant_text_delta",
+    "AssistantTextComplete": "assistant_text_complete",
+    "AgentTurnCompleted": "agent_turn_completed",
+    "ToolExecutionPhaseChanged": "tool_execution_phase_changed",
+    "SettingsUpdated": "settings_updated",
+    "SessionTitleUpdated": "session_title_updated",
+    "SessionTokenUsageChanged": "session_token_usage_changed",
+    "Error": "error"
+  },
+  "notificationFields": {
+    "Type": "type",
+    "SessionID": "sessionId",
+    "Notification": "notification",
+    "MessageID": "messageId",
+    "BlockIndex": "blockIndex",
+    "TextDelta": "textDelta",
+    "ToolUseID": "toolUseId",
+    "ToolName": "toolName",
+    "ToolUse": "toolUse",
+    "IsError": "isError",
+    "Title": "title",
+    "TokenUsage": "tokenUsage",
+    "Reason": "reason",
+    "Message": "message",
+    "Role": "role",
+    "Content": "content"
+  },
+  "tools": {
+    "Read": "Read",
+    "LS": "LS",
+    "Execute": "Execute",
+    "Edit": "Edit",
+    "ApplyPatch": "ApplyPatch",
+    "Grep": "Grep",
+    "Glob": "Glob",
+    "Create": "Create",
+    "AskUser": "AskUser",
+    "WebSearch": "WebSearch",
+    "TodoWrite": "TodoWrite",
+    "FetchUrl": "FetchUrl",
+    "Task": "Task",
+    "Skill": "Skill",
+    "ToolSearch": "ToolSearch",
+    "ExitSpecMode": "ExitSpecMode",
+    "GenerateImage": "GenerateImage"
+  },
+  "workingStates": {
+    "Idle": "idle",
+    "Thinking": "thinking",
+    "StreamingAssistantMessage": "streaming_assistant_message",
+    "WaitingForToolConfirmation": "waiting_for_tool_confirmation",
+    "ExecutingTool": "executing_tool",
+    "CompactingConversation": "compacting_conversation"
+  },
+  "permissionOptions": {
+    "ProceedOnce": "proceed_once",
+    "ProceedAlways": "proceed_always",
+    "ProceedAlwaysFile": "proceed_always_file",
+    "ProceedAutoRun": "proceed_auto_run",
+    "ProceedAutoRunLow": "proceed_auto_run_low",
+    "ProceedAutoRunMedium": "proceed_auto_run_medium",
+    "ProceedAutoRunHigh": "proceed_auto_run_high",
+    "ProceedNewSession": "proceed_new_session",
+    "ProceedNewSessionLow": "proceed_new_session_low",
+    "ProceedNewSessionMedium": "proceed_new_session_medium",
+    "ProceedNewSessionHigh": "proceed_new_session_high",
+    "ProceedEdit": "proceed_edit",
+    "ProceedAlwaysTools": "proceed_always_tools",
+    "ProceedAlwaysServer": "proceed_always_server",
+    "ProceedReportFalsePositive": "proceed_report_false_positive",
+    "Cancel": "cancel"
+  },
+  "confirmationTypes": {
+    "Edit": "Edit",
+    "Exec": "exec",
+    "Create": "create",
+    "AskUser": "ask_user",
+    "ExitSpecMode": "exit_spec_mode",
+    "ApplyPatch": "apply_patch",
+    "MCPTool": "mcp_tool",
+    "SandboxViolation": "sandbox_violation"
+  },
+  "askUserFields": {
+    "ToolCallID": "toolCallId",
+    "Questions": "questions",
+    "Question": "question",
+    "Options": "options",
+    "MultiSelect": "multiSelect",
+    "Cancelled": "cancelled",
+    "Answers": "answers"
+  },
+  "modes": {
+    "Default": "default",
+    "AutoLow": "auto-low",
+    "AutoMedium": "auto-medium",
+    "AutoHigh": "auto-high"
+  },
+  "efforts": {
+    "None": "none",
+    "Low": "low",
+    "Medium": "medium",
+    "High": "high"
+  },
+  "reply": {
+    "SelectedOption": "selectedOption",
+    "Comment": "comment",
+    "Answers": "answers",
+    "Cancelled": "cancelled"
+  },
+  "toolNotifications": {
+    "ToolCall": "tool_call",
+    "ToolResult": "tool_result"
+  }
+}

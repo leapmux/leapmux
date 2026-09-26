@@ -915,6 +915,307 @@ const TOOL_VOCABULARY = {
     // No test drives a Model Context Protocol tool through Cline.
     mcpTool: null,
   },
+  // Placeholder vocabularies for providers whose wire tool names land with their
+  // packages. Each implementer replaces its entry with the real tool shapes
+  // recorded from that provider's protocol (never a hand-rolled wire shape).
+  [AgentProvider.CODEBUDDY]: {
+    // CodeBuddy's tool names and argument shapes match Claude Code's: the stream
+    // is deliberately Claude Code 2.1.220-shaped. The wire ANSWER to a permission
+    // request differs (`allowed`, not `behavior`), but a tool call frame is the
+    // same Anthropic `tool_use` block.
+    bash: (id, command) => ({ id, name: 'Bash', arguments: { command, description: 'Run the scripted command' } }),
+    edit: (id, { path, before, after }) => ({ id, name: 'Edit', arguments: { file_path: path, old_string: before, new_string: after } }),
+    write: (id, { path, content }) => ({ id, name: 'Write', arguments: { file_path: path, content } }),
+    read: (id, path) => ({ id, name: 'Read', arguments: { file_path: path } }),
+    enterPlanMode: id => ({ id, name: 'EnterPlanMode', arguments: {} }),
+    exitPlanMode: (id, plan) => ({ id, name: 'ExitPlanMode', arguments: { plan } }),
+    exitPlanModeFromFile: null,
+    askUserQuestion: (id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } }),
+    spawnSubagent: (id, { description, prompt }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose' } }),
+    backgroundBash: (id, command) => ({
+      id,
+      name: 'Bash',
+      arguments: { command, description: 'Run the scripted command in the background', run_in_background: true },
+    }),
+    updateTodos: null,
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: null,
+  },
+  [AgentProvider.JUNIE]: {
+    // Junie's tools are OpenAI function calls. `bash` takes the command; the
+    // tool description states that each call is wrapped in `bash -c`.
+    bash: (id, command) => ({ id, name: 'bash', arguments: { command } }),
+    // `search_replace` is Junie's single-hunk edit: `search` is the block to
+    // find, `replace` its replacement.
+    edit: (id, { path, before, after }) => ({ id, name: 'search_replace', arguments: { file_path: path, search: before, replace: after } }),
+    // `create` writes a new file; the path key is `filename`.
+    write: (id, { path, content }) => ({ id, name: 'create', arguments: { filename: path, content } }),
+    // `open_entire_file` reads a file in full.
+    read: (id, path) => ({ id, name: 'open_entire_file', arguments: { path } }),
+    // Plan mode is a config option (`mode: plan`), not a tool: the `plan`
+    // slash command is a `setConfigOption` action.
+    enterPlanMode: null,
+    exitPlanMode: null,
+    exitPlanModeFromFile: null,
+    // `ask_user` arrives over ACP as a permission-shaped request with one
+    // option per choice. Each question takes the REQUIRED `name` (the header)
+    // plus a free-form `question`, and each option a short `title` and a
+    // one-sentence `description`.
+    askUserQuestion: (id, questions) => ({
+      id,
+      name: 'ask_user',
+      arguments: {
+        questions: questions.map(question => ({
+          name: question.header,
+          question: question.question,
+          options: question.options.map(({ label, description }) => ({ title: label, description })),
+          allowMultiple: question.multiSelect ?? false,
+        })),
+      },
+    }),
+    // `spawn_subagent` blocks on the child and returns its result. `agent`
+    // names the subagent kind (required beside `task`), `name` is the label the
+    // row shows, and `task` is the work itself.
+    spawnSubagent: (id, { description, prompt }) => ({
+      id,
+      name: 'spawn_subagent',
+      arguments: { agent: 'general_purpose', name: description, task: prompt },
+    }),
+    // The SAME `bash` tool, with the `background` flag the tool description
+    // documents for long-running processes.
+    backgroundBash: (id, command) => ({ id, name: 'bash', arguments: { command, background: true } }),
+    // No to-do tool: the plan entries serve that role.
+    updateTodos: null,
+    // Goals are a CLI flag (`--goal`), not a tool.
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: null,
+  },
+  [AgentProvider.LETTA]: {
+    bash: (id, command) => ({ id, name: 'Bash', arguments: { command, description: 'Run the scripted command' } }),
+    edit: (id, request) => ({
+      id,
+      name: 'Edit',
+      arguments: { file_path: request.path, old_string: request.before, new_string: request.after },
+    }),
+    write: (id, request) => ({
+      id,
+      name: 'Write',
+      arguments: { file_path: request.path, content: request.content },
+    }),
+    read: (id, path) => ({ id, name: 'Read', arguments: { file_path: path } }),
+    enterPlanMode: null,
+    exitPlanMode: null,
+    exitPlanModeFromFile: null,
+    askUserQuestion: (id, questions) => ({
+      id,
+      name: 'AskUserQuestion',
+      arguments: {
+        questions: questions.map(q => ({
+          question: q.question,
+          header: q.question.slice(0, 30),
+          options: q.options.map(o => ({ label: o.label, description: o.label })),
+          multiSelect: q.multiSelect ?? false,
+        })),
+      },
+    }),
+    spawnSubagent: (id, { description, prompt }) => ({
+      id,
+      name: 'Agent',
+      arguments: { description, prompt, subagent_type: 'general-purpose' },
+    }),
+    backgroundBash: null,
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'TaskUpdate',
+      arguments: {
+        tasks: steps.map(s => ({ subject: s.step, status: s.status })),
+      },
+    }),
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: null,
+  },
+  [AgentProvider.DIRAC]: {
+    // Dirac's tools are its builtin registry, and every call is `additionalProperties:
+    // false`: the model sends the schema fields alone. Dirac stamps the tool name
+    // into `rawInput.tool` itself when it reports a call, so a scripted call that
+    // sends it comes back as "Unsupported response parameter: tool".
+    //
+    // `execute_command` runs in the CLIENT's terminals over ACP, taking one
+    // command per `commands` entry.
+    bash: (id, command) => ({ id, name: 'execute_command', arguments: { commands: [command] } }),
+    // `edit_file` is Dirac's anchor-based edit: each `edit` names its target
+    // line by the full ANCHOR§CONTENT coordinate a prior anchored read reported.
+    // The coordinates carry a conversation-scoped random id, so a scripted call
+    // takes one from the request through `diracEditAnchorCapture`; the `before`
+    // text pins which line the capture reads.
+    edit: (id, { path, after }) => ({
+      id,
+      name: 'edit_file',
+      arguments: {
+        files: [{
+          path,
+          edits: [{ edit_type: 'replace', anchor: '{{editAnchor}}', end_anchor: '{{editAnchor}}', text: after }],
+        }],
+      },
+    }),
+    // `write_to_file` creates or overwrites a file.
+    write: (id, { path, content }) => ({ id, name: 'write_to_file', arguments: { path, content } }),
+    // `read_file` reads files, and states `include_anchors` so the result
+    // carries the ANCHOR§CONTENT coordinates a later `edit_file` needs.
+    read: (id, path) => ({ id, name: 'read_file', arguments: { paths: [path], include_anchors: true } }),
+    // Plan mode is `session/set_mode` with `plan`, not a tool. The plan
+    // APPROVAL is deferred: the `respond plan` call ends the turn and the
+    // answer arrives as the next prompt.
+    enterPlanMode: null,
+    exitPlanMode: null,
+    exitPlanModeFromFile: null,
+    // `respond {operation: question}` raises a followup card, which becomes an
+    // ACP form elicitation. The options are the `options` argument of the
+    // `respond` call, 2 to 5 free-form labels.
+    askUserQuestion: (id, questions) => ({
+      id,
+      name: 'respond',
+      arguments: {
+        operation: 'question',
+        text: questions.map(question => question.question).join('\n\n'),
+        options: questions[0]?.options.map(({ label }) => label) ?? [],
+      },
+    }),
+    // `use_subagents` runs one or more children behind one aggregate card. It
+    // is registered but the live model list omits it in this build, so no wire
+    // shape is verified and no spec may script one.
+    spawnSubagent: null,
+    // Dirac has no separate background-shell tool.
+    backgroundBash: null,
+    // No to-do tool: the `respond plan` entries are the only checklist.
+    updateTodos: null,
+    // Goals are interactive-CLI only.
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    // No MCP client in the current core.
+    mcpTool: null,
+  },
+  [AgentProvider.QODER]: {
+    // Qoder's tool names and argument shapes match Claude Code's: its stream-json
+    // layer translates a Qoder/Gemini event stream into Anthropic-shaped messages.
+    bash: (id, command) => ({ id, name: 'Bash', arguments: { command, description: 'Run the scripted command' } }),
+    edit: (id, { path, before, after }) => ({ id, name: 'Edit', arguments: { file_path: path, old_string: before, new_string: after } }),
+    write: (id, { path, content }) => ({ id, name: 'Write', arguments: { file_path: path, content } }),
+    read: (id, path) => ({ id, name: 'Read', arguments: { file_path: path } }),
+    enterPlanMode: id => ({ id, name: 'EnterPlanMode', arguments: {} }),
+    exitPlanMode: (id, plan) => ({ id, name: 'ExitPlanMode', arguments: { plan } }),
+    exitPlanModeFromFile: null,
+    askUserQuestion: (id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } }),
+    spawnSubagent: (id, { description, prompt }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose' } }),
+    backgroundBash: (id, command) => ({
+      id,
+      name: 'Bash',
+      arguments: { command, description: 'Run the scripted command in the background', run_in_background: true },
+    }),
+    updateTodos: (id, todos) => ({ id, name: 'WriteTodos', arguments: { todos } }),
+    createGoal: (id, objective) => ({ id, name: 'CreateGoal', arguments: { objective } }),
+    completeGoal: id => ({ id, name: 'UpdateGoal', arguments: { status: 'completed' } }),
+    blockGoal: (id, reason) => ({ id, name: 'UpdateGoal', arguments: { status: 'blocked', reason } }),
+    mcpTool: null,
+  },
+  [AgentProvider.DROID]: {
+    bash: (id, command) => ({ id, name: 'Execute', arguments: { command } }),
+    edit: (id, request) => ({
+      id,
+      name: 'Edit',
+      arguments: { file_path: request.path, old_string: request.before, new_string: request.after },
+    }),
+    write: (id, request) => ({
+      id,
+      name: 'Create',
+      arguments: { file_path: request.path, content: request.content },
+    }),
+    read: (id, path) => ({ id, name: 'Read', arguments: { file_path: path } }),
+    enterPlanMode: null,
+    exitPlanMode: (id, plan) => ({ id, name: 'ExitSpecMode', arguments: { plan } }),
+    exitPlanModeFromFile: null,
+    // Droid's AskUser takes one plain-text `questionnaire`, not a questions
+    // array. The format is numbered `[question]` blocks with `[topic]` and
+    // `[option]` lines.
+    askUserQuestion: (id, questions) => ({
+      id,
+      name: 'AskUser',
+      arguments: {
+        questionnaire: questions.map((q, i) => [
+          `${i + 1}. [question] ${q.question}${q.multiSelect ? ' (multi)' : ''}`,
+          '[topic] Question',
+          ...q.options.map(o => `[option] ${o.label}`),
+        ].join('\n')).join('\n\n'),
+      },
+    }),
+    spawnSubagent: (id, { description, prompt, background }) => ({
+      id,
+      name: 'Task',
+      arguments: {
+        description,
+        prompt,
+        ...(background !== undefined ? { background } : {}),
+      },
+    }),
+    backgroundBash: null,
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'TodoWrite',
+      arguments: {
+        todos: steps.map(s => ({ content: s.step, status: s.status })),
+      },
+    }),
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: null,
+  },
+  [AgentProvider.FAST_AGENT]: {
+    // fast-agent's coding tools, of the `-x` shell runtime. The model-facing
+    // names carry no namespace prefix; the ACP `title` adds `local/` or
+    // `environment/`. The shell tool is `execute`, NOT `bash`: a scripted call
+    // that names `bash` comes back as "Tool 'bash' is not available".
+    bash: (id, command) => ({ id, name: 'execute', arguments: { command } }),
+    // `edit_file` is an exact-string replace; an empty `old_string` creates.
+    edit: (id, { path, before, after }) => ({ id, name: 'edit_file', arguments: { path, old_string: before, new_string: after } }),
+    // `write_text_file` creates or overwrites a file.
+    write: (id, { path, content }) => ({ id, name: 'write_text_file', arguments: { path, content } }),
+    // `read_text_file` reads a text file.
+    read: (id, path) => ({ id, name: 'read_text_file', arguments: { path } }),
+    // There is no plan-approval request. The ACP `plan` update is a to-do
+    // display only.
+    enterPlanMode: null,
+    exitPlanMode: null,
+    exitPlanModeFromFile: null,
+    // No questions over ACP: the `__human_input` tool has no ACP callback and
+    // raises "No elicitation input callback registered".
+    askUserQuestion: null,
+    // The `subagent` tool (enabled by `--subagents`) wraps the child run in one
+    // nested tool call.
+    spawnSubagent: (id, { description, prompt }) => ({
+      id,
+      name: 'subagent',
+      arguments: { task: `${description}\n\n${prompt}` },
+    }),
+    // The live `execute` schema takes command/args/env/cwd and NOTHING else,
+    // and no separate background tool is offered: a detached run has no wire
+    // shape to script.
+    backgroundBash: null,
+    // No to-do tool; the `plan` ACP update is a display.
+    updateTodos: null,
+    // No goal concept in the ACP surface.
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: null,
+  },
 } as const satisfies Record<Exclude<AgentProvider, AgentProvider.UNSPECIFIED>, ProviderToolVocabulary>
 
 function vocabulary(provider: AgentProvider): ProviderToolVocabulary {
@@ -1076,4 +1377,28 @@ export function kiroCompleteTodosToolCall(id: string, taskIds: string[]): MockMo
 /** Whether a provider offers a tool for one operation. */
 export function hasToolFor(provider: AgentProvider, operation: keyof ProviderToolVocabulary): boolean {
   return vocabulary(provider)[operation] !== null
+}
+
+export function diracRespondToolCall(id: string, operation: 'complete' | 'progress' | 'plan' | 'question', text: string, options?: string[]): MockModelToolCall {
+  return {
+    id,
+    name: 'respond',
+    arguments: { operation, text, ...(options ? { options } : {}) },
+  }
+}
+export function diracEditAnchorCapture(content: string): Record<string, string> {
+  return { editAnchor: `([A-Z][a-zA-Z]*§${content.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})` }
+}
+
+/**
+ * Junie's `answer` tool delivers the final answer and, with `is_terminal`
+ * left at its default, ends the session's task.
+ *
+ * Junie REJECTS a text-only model reply ("Your response is missing a tool
+ * call") and retries six times before it cancels the prompt, so every scripted
+ * main-agent turn must carry a tool call. `answer` is the one that states the
+ * answer text.
+ */
+export function junieAnswerToolCall(id: string, fullAnswer: string): MockModelToolCall {
+  return { id, name: 'answer', arguments: { full_answer: fullAnswer } }
 }

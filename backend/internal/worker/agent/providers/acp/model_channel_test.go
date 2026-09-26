@@ -327,6 +327,28 @@ func TestUnmappedProvider_HandshakeConfigMode_SurfacedGenericNotDoubleApplied(t 
 	assert.Equal(t, "plan", base.options.values[ConfigOptionIDMode])
 }
 
+// TestOptionGroups_UnmappedChannelSurfacesItsNativeModes guards the fast-agent
+// shape: the unmapped channel tracks its permission mode on the native modes
+// channel, so the catalog must carry a permission-mode group built from those
+// modes. Suppressing the group would leave the session's reported mode invisible
+// in the settings panel.
+func TestOptionGroups_UnmappedChannelSurfacesItsNativeModes(t *testing.T) {
+	t.Parallel()
+
+	var base Base // ModeChannelUnmapped
+	base.applyHandshakeMode(&SessionResult{
+		CurrentModeID: "agent",
+		Modes:         []ModeInfo{{ID: "agent", Name: "Agent"}},
+	}, "agent")
+
+	groups := base.OptionGroups()
+	require.Len(t, groups, 1)
+	assert.Equal(t, agent.OptionIDPermissionMode, groups[0].GetId())
+	require.Len(t, groups[0].GetOptions(), 1)
+	assert.Equal(t, "agent", groups[0].GetOptions()[0].GetId())
+	assert.Equal(t, "agent", groups[0].GetCurrentValue())
+}
+
 // The base dispatcher handles a config_option_update model change for ANY ACP
 // provider with no per-provider wiring. OpenCode and Kilo register no config
 // option handler at all, yet their model list and current model stay in sync --
@@ -446,19 +468,58 @@ func TestDefaultOrFirstOption(t *testing.T) {
 
 // --- Config-option dispatch by spec `category` (with id fallback) ---
 
-// acpConfigOptionByCategory prefers the spec's `category` signal; the well-known id
-// is only a back-compat fallback for the providers we ship today, which omit it.
+// acpConfigOptionByCategory prefers the exact well-known id, then the spec's
+// `category`. The id is the protocol's own name for the select; the category is
+// the signal for a server that uses opaque ids -- and it can over-apply (Junie
+// tags its Brave Mode setting `category: "mode"` beside the real `mode` select).
 
-func TestACPConfigOptionByCategory_PrefersCategoryOverID(t *testing.T) {
+func TestACPConfigOptionByCategory_PrefersWellKnownIDOverCategoryTag(t *testing.T) {
 	t.Parallel()
 
+	// The Junie shape: the real mode select carries the well-known id and NO
+	// category, while a sibling setting claims the reserved category. Dispatching
+	// on the tag loses the session mode entirely.
 	options := []ConfigOption{
-		{ID: "opaque", Category: acpConfigOptionCategoryModel, CurrentValue: "a"},
-		{ID: ConfigOptionIDModel, CurrentValue: "b"}, // a coincidental id match
+		{ID: "brave_mode", Category: acpConfigOptionCategoryMode, CurrentValue: "brave-auto"},
+		{ID: ConfigOptionIDMode, CurrentValue: "default"},
 	}
+	got1, ok1 := acpConfigOptionByCategory([]ConfigOption{options[0], options[1]}, acpConfigOptionCategoryMode, ConfigOptionIDMode)
+	got2, ok2 := acpConfigOptionByCategory([]ConfigOption{options[1], options[0]}, acpConfigOptionCategoryMode, ConfigOptionIDMode)
+	require.True(t, ok1)
+	require.True(t, ok2)
+	assert.Equal(t, ConfigOptionIDMode, got1.ID, "the well-known id wins over a category tag on a sibling")
+	assert.Equal(t, got1.ID, got2.ID, "the winner does not depend on server-reported slice order")
+}
+
+func TestACPConfigOptionByCategory_FallsBackToCategoryWhenTheIDIsOpaque(t *testing.T) {
+	t.Parallel()
+
+	// A server that names its select opaquely is the case `category` exists for.
+	options := []ConfigOption{{ID: "opaque", Category: acpConfigOptionCategoryModel, CurrentValue: "a"}}
 	option, ok := acpConfigOptionByCategory(options, acpConfigOptionCategoryModel, ConfigOptionIDModel)
 	require.True(t, ok)
-	assert.Equal(t, "opaque", option.ID, "the category match wins over the id fallback")
+	assert.Equal(t, "opaque", option.ID)
+}
+
+// TestACPConfigOptionByCategory_PrefersWellKnownIDWithinCategory guards the Junie shape: a
+// daemon that tags TWO options with the reserved `mode` category, where only one IS the
+// well-known `mode` select (Junie's `brave_mode` sits beside it under the same category).
+// The well-known id must win over a lexicographically lower sibling id, or the mode channel
+// claims the wrong option and the safe-default mode is "unknown".
+func TestACPConfigOptionByCategory_PrefersWellKnownIDWithinCategory(t *testing.T) {
+	t.Parallel()
+
+	mode := ConfigOption{ID: ConfigOptionIDMode, Category: acpConfigOptionCategoryMode, CurrentValue: "default",
+		Options: []ConfigOptionValue{{Value: "default"}, {Value: "plan"}}}
+	brave := ConfigOption{ID: "brave_mode", Category: acpConfigOptionCategoryMode, CurrentValue: "brave-auto",
+		Options: []ConfigOptionValue{{Value: "brave-auto"}, {Value: "on"}, {Value: "off"}}}
+
+	got1, ok1 := acpConfigOptionByCategory([]ConfigOption{mode, brave}, acpConfigOptionCategoryMode, ConfigOptionIDMode)
+	got2, ok2 := acpConfigOptionByCategory([]ConfigOption{brave, mode}, acpConfigOptionCategoryMode, ConfigOptionIDMode)
+	require.True(t, ok1)
+	require.True(t, ok2)
+	assert.Equal(t, ConfigOptionIDMode, got1.ID, "the well-known id wins among category matches")
+	assert.Equal(t, got1.ID, got2.ID, "the winner does not depend on server-reported slice order")
 }
 
 func TestACPConfigOptionByCategory_FallsBackToIDWhenNoCategory(t *testing.T) {
@@ -1154,6 +1215,18 @@ func TestEffectiveSetModel_FallsBackToBaseSetter(t *testing.T) {
 	assert.True(t, called, "a set modelSetter override is used")
 }
 
+func TestEffectiveSetMode_FallsBackToBaseSetter(t *testing.T) {
+	t.Parallel()
+
+	var b Base
+	assert.NotNil(t, b.effectiveSetMode(), "a nil modeSetter falls back to the base set_mode write")
+
+	called := false
+	b.hooks.ModeSetter = func(string) error { called = true; return nil }
+	_ = b.effectiveSetMode()("x")
+	assert.True(t, called, "a set modeSetter override is used")
+}
+
 func TestModelDecorator_ReadsTheMetadataOfEachModel(t *testing.T) {
 	t.Parallel()
 	b := &Base{}
@@ -1228,4 +1301,27 @@ func TestModelInfo_DecodesItsMetadata(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, session.Models, 1)
 	assert.JSONEq(t, `{"contextLimit":200000}`, string(session.Models[0].Meta))
+}
+
+// TestParseACPSessionResult_ToleratesNonStringCurrentValue guards the Dirac shape: a
+// config option of a non-select widget type sends its current value as that widget's
+// own JSON type (`type: "boolean"` auto_approve/yolo arrive as JSON bools). The
+// session parse must survive -- isSelectableConfigOption drops those widgets from the
+// option machinery, so nobody surfaces the value -- instead of aborting startup over
+// it. Strings and null keep their old readings.
+func TestParseACPSessionResult_ToleratesNonStringCurrentValue(t *testing.T) {
+	t.Parallel()
+	session, err := parseACPSessionResult(json.RawMessage(`{"sessionId":"s","configOptions":[` +
+		`{"id":"mode","type":"select","category":"mode","currentValue":"act","options":[{"value":"plan"},{"value":"act"}]},` +
+		`{"id":"auto_approve","type":"boolean","category":"mode","currentValue":false},` +
+		`{"id":"yolo","type":"boolean","category":"mode","currentValue":true},` +
+		`{"id":"threshold","type":"number","currentValue":3},` +
+		`{"id":"note","type":"string","currentValue":null}]}`))
+	require.NoError(t, err)
+	require.Len(t, session.ConfigOptions, 5)
+	assert.Equal(t, "act", session.ConfigOptions[0].CurrentValue, "a string value parses unchanged")
+	assert.Equal(t, "false", session.ConfigOptions[1].CurrentValue, "a bool keeps its JSON literal")
+	assert.Equal(t, "true", session.ConfigOptions[2].CurrentValue)
+	assert.Equal(t, "3", session.ConfigOptions[3].CurrentValue, "a number keeps its JSON literal")
+	assert.Equal(t, "", session.ConfigOptions[4].CurrentValue, "null reads as the empty value it always did")
 }

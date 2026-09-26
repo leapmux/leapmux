@@ -1,0 +1,14 @@
+{
+  "_readme": "Dirac owns the session mode ids and the tool names below. LeapMux owns no value in this file. Both sides read them -- the worker falls back to the safe mode and maps the `use_subagents` card to a subagent registry row, and the browser plugin wires the plan toggle and draws the same card from the same words. The `rawInput` field that names a tool is `tool`, spelled in each provider's own struct tag; the name it carries is the `toolNames` value.",
+  "modes": {
+    "Act": "act",
+    "Plan": "plan"
+  },
+  "defaultMode": "Act",
+  "configIds": {
+    "ReasoningEffort": "reasoning_effort"
+  },
+  "toolNames": {
+    "UseSubagents": "use_subagents"
+  }
+}

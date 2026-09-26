@@ -7,7 +7,7 @@ import { OPTION_ID_EFFORT } from '../../src/components/chat/settingsGroups'
 import { ACCOUNT_DEFAULT_MODEL } from '../../src/generated/contracts/worker-vocab'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { KIRO_DEFAULT_MOCK_MODEL } from './helpers/kiroSurface'
-import { KIMI_MOCK_MODELS, MOCK_MODELS, MOCK_PROVIDER_IDS, QWEN_MODEL_ID } from './helpers/mockAgentEnvironment'
+import { CODEBUDDY_MODEL_ID, FAST_AGENT_MOCK_MODEL, JUNIE_MOCK_MODEL, KIMI_MOCK_MODELS, LETTA_MODEL_ID, MOCK_MODELS, MOCK_PROVIDER_IDS, QODER_MODEL_ID, QWEN_MODEL_ID } from './helpers/mockAgentEnvironment'
 
 /** The model, and the reasoning effort where the provider has one. */
 export interface AgentE2ESettings {
@@ -36,39 +36,29 @@ export const AGENT_E2E_SETTINGS = {
   [AgentProvider.CLAUDE_CODE]: { model: MOCK_MODELS.anthropic, effort: 'medium' },
   [AgentProvider.CODEX]: { model: MOCK_MODELS.openai, effort: 'medium' },
   [AgentProvider.GITHUB_COPILOT]: { model: MOCK_MODELS.openai, effort: 'medium' },
-  // `auto` is the alias of the mock catalogue's default variant, and the one
-  // LeapMux normalizes to. See the note above.
   [AgentProvider.CURSOR]: { model: 'auto' },
   [AgentProvider.GOOSE]: { model: MOCK_MODELS.zai, effort: 'high' },
   [AgentProvider.KIMI_CODE]: { model: KIMI_MOCK_MODELS.thinking, effort: 'high' },
-  [AgentProvider.KILO]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
-  // Kiro's catalogue comes from its own service, which `helpers/kiroSurface.ts`
-  // answers. The effort differs from the model's own default, so a start that
-  // failed to apply it shows.
   [AgentProvider.KIRO]: { model: KIRO_DEFAULT_MOCK_MODEL.modelId, effort: 'medium' },
-  // MiMo reads the OpenCode family's provider block, and its effort is the model's
-  // reasoning variant.
-  [AgentProvider.MIMO_CODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
-  [AgentProvider.OPENCODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
   [AgentProvider.PI]: { model: MOCK_MODELS.pi, effort: 'high' },
   [AgentProvider.GROK_BUILD]: { model: MOCK_MODELS.grok, effort: 'medium' },
-  // Qwen states a model as `<id>(<auth type>)`.
   [AgentProvider.QWEN_CODE]: { model: QWEN_MODEL_ID, effort: 'high' },
-  // omp addresses a model as `<provider>/<id>`, the provider of its own `models.yml`.
-  [AgentProvider.OH_MY_PI]: { model: `${MOCK_PROVIDER_IDS.ohMyPi}/${MOCK_MODELS.ohMyPi}`, effort: 'high' },
   [AgentProvider.REASONIX]: { model: MOCK_MODELS.deepseek },
-  // ZCode requires the provider-qualified identifier of its configured model.
-  [AgentProvider.ZCODE]: { model: `${MOCK_PROVIDER_IDS.zcode}/${MOCK_MODELS.zai}`, effort: 'high' },
-  // A bare id: the model belongs to the provider that the isolated
-  // configuration selects.
   [AgentProvider.CODEWHALE]: { model: MOCK_MODELS.deepseek },
-  // Amp has no model axis and no effort axis: its agent mode chooses both, on its
-  // own service. The account-default sentinel states that, and the worker sends no
-  // model to Amp.
   [AgentProvider.AMP]: { model: ACCOUNT_DEFAULT_MODEL },
-  // The model of the isolated `openai-compatible` settings. Cline's catalog states no
-  // reasoning ladder for a model of that provider, so the model has no effort axis.
   [AgentProvider.CLINE]: { model: MOCK_MODELS.cline },
+  [AgentProvider.JUNIE]: { model: JUNIE_MOCK_MODEL },
+  [AgentProvider.CODEBUDDY]: { model: CODEBUDDY_MODEL_ID },
+  [AgentProvider.LETTA]: { model: LETTA_MODEL_ID },
+  [AgentProvider.DIRAC]: { model: MOCK_MODELS.deepseek },
+  [AgentProvider.DROID]: { model: 'custom:Droid-0', effort: 'none' },
+  [AgentProvider.QODER]: { model: QODER_MODEL_ID },
+  [AgentProvider.FAST_AGENT]: { model: FAST_AGENT_MOCK_MODEL },
+  [AgentProvider.KILO]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
+  [AgentProvider.MIMO_CODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
+  [AgentProvider.OPENCODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
+  [AgentProvider.OH_MY_PI]: { model: `${MOCK_PROVIDER_IDS.ohMyPi}/${MOCK_MODELS.ohMyPi}`, effort: 'high' },
+  [AgentProvider.ZCODE]: { model: `${MOCK_PROVIDER_IDS.zcode}/${MOCK_MODELS.zai}`, effort: 'high' },
 } as const satisfies Record<Exclude<AgentProvider, AgentProvider.UNSPECIFIED>, AgentE2ESettings>
 
 /** The pinned settings of one provider. */

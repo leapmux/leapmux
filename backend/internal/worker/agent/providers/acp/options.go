@@ -520,7 +520,7 @@ func (g *optionState) apply(options []ConfigOption, authority payloadAuthority, 
 	// DETERMINISTICALLY (acpConfigOptionContentLess) -- regardless of the order the server lists the
 	// duplicates -- so the surfaced group can't flip its value/options between two payloads that list
 	// the same duplicates in different orders (which would fire a redundant status broadcast + catalog
-	// write each push). This mirrors acpSelectableConfigOptionByID's tie-break for the claimed
+	// write each push). This mirrors acpConfigOptionByCategory's tie-break for the claimed
 	// model/mode axes. A single winner per id is required regardless: two groups sharing a key corrupt
 	// the frontend's <For each={groupIds()}> reconciliation (it keys rows by id). First-occurrence
 	// order is kept for display; the change comparators below are order-INSENSITIVE, so only the per-id
