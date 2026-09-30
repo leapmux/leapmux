@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { nativeToolResult } from './helpers/nativeToolResult'
 import { askUserQuestionToolCall, bashToolCall } from './helpers/providerToolCalls'
 import { messageContents, sendMessage, waitForAgentIdle } from './helpers/ui'
 import { expect, LETTA_E2E_SKIP_REASON, LETTA_TITLE_RULE, lettaTest } from './letta-fixtures'
@@ -81,7 +82,7 @@ lettaTest.describe('Letta Code control requests', () => {
           { question: 'Which color do you prefer?', header: 'Color', options: [{ label: 'Blue', description: 'The color blue' }, { label: 'Red', description: 'The color red' }] },
         ])],
       },
-      { text: 'You chose Blue.' },
+      { text: 'The answer was recorded.' },
     )
     await sendMessage(page, modelScript.prompt('Ask me a question.'))
     await modelScript.waitForSteps(1)
@@ -89,13 +90,16 @@ lettaTest.describe('Letta Code control requests', () => {
     await expect(banner(page)).toContainText('Which color do you prefer?')
     // A question option is a radio inside a label, not a button: every other
     // provider's control spec clicks the option by its `question-option-*` id.
-    await page.locator('[data-testid="question-option-Blue"]:visible').click()
+    await page.locator('[data-testid="question-option-Red"]:visible').click()
     // A question is answered by its Submit button. Allow/Deny is the permission
     // pair; the question control offers Submit/Stop.
     await page.getByTestId('control-submit-btn').filter({ visible: true }).click()
 
-    await modelScript.waitForSteps()
+    const status = await modelScript.waitForSteps()
     await waitForAgentIdle(page, 180_000)
+    const answer = nativeToolResult(status.requests.find(request => request.stepIndex === 1), 'ask-1')
+    expect(answer).toContain('Red')
+    expect(answer).not.toContain('Blue')
     await expect(banner(page)).toHaveCount(0)
   })
 })

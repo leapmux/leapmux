@@ -764,10 +764,10 @@ func TestBgTask_LoadSeedsCacheFromDB(t *testing.T) {
 // worker installs (bootstrap's SetOnExit -> Service.HandleAgentProcessExit).
 // That handler is where "the process behind this work is gone" becomes a status
 // on the rows, and nothing else asserted it -- so a change that stopped calling
-// it would leave every in-flight subagent and shell row 'running' forever: the
-// sidebar shows work that is not happening, and the parent tab keeps a thinking
-// indicator that an active row is enough to pin.
-func TestBgTask_ProcessExitGivesEveryActiveRowAFinalStatus(t *testing.T) {
+// it would leave every open subagent and shell row behind after its process
+// dies. A running row would keep the parent tab busy, and a paused row could
+// appear resumable when no process owns it.
+func TestBgTask_ProcessExitGivesEveryOpenRowAFinalStatus(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -794,13 +794,16 @@ func TestBgTask_ProcessExitGivesEveryActiveRowAFinalStatus(t *testing.T) {
 		return bgtask.StatusUnspecified
 	}
 
-	// Both kinds, plus a row that already ended: a crash must end the work in
-	// flight and leave the finished row's own outcome alone.
+	// Both kinds, a paused row, and a row that already ended: a crash must close
+	// every open row and leave the finished row's outcome alone.
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "sub", Kind: bgtask.KindSubagent, Title: "review the diff", Status: bgtask.StatusRunning,
 	}))
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "shell", Kind: bgtask.KindShell, Title: "npm test", Status: bgtask.StatusPending,
+	}))
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "paused", Kind: bgtask.KindSubagent, Title: "paused child", Status: bgtask.StatusPaused,
 	}))
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "done", Kind: bgtask.KindSubagent, Title: "already finished", Status: bgtask.StatusRunning,
@@ -811,6 +814,7 @@ func TestBgTask_ProcessExitGivesEveryActiveRowAFinalStatus(t *testing.T) {
 	svc.HandleAgentProcessExit("agent-1", 1, errors.New("boom"), false)
 	assert.Equal(t, bgtask.StatusInterrupted, statusOf("sub"), "a running subagent row ends when its process dies")
 	assert.Equal(t, bgtask.StatusInterrupted, statusOf("shell"), "a queued shell row ends too -- it will never run")
+	assert.Equal(t, bgtask.StatusInterrupted, statusOf("paused"), "a paused child cannot resume after its process dies")
 	assert.Equal(t, bgtask.StatusCompleted, statusOf("done"), "a row that already ended keeps its own outcome")
 
 	// An explicit stop is a deliberate user action, not a failure.

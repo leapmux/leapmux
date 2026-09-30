@@ -1,7 +1,9 @@
+import type { McpContentItem } from '../../../model/mcpToolCall'
 import type { ChatRow } from '../../../model/row'
 import type { RowExtractionInput } from '~/components/chat/rowExtractionTypes'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { leapmuxPlanExecutionRow, leapmuxUserRow } from '../../../leapmuxRows'
+import { parseMcpContentItem } from '../../../model/mcpToolCall'
 import { toolCallRow } from '../../../model/row'
 import { anthropicBlock, anthropicBlocks, anthropicBlockText, anthropicToolCall } from './toolCommon'
 
@@ -56,7 +58,7 @@ function toolSpanRow(
   const callId = String(use?.id ?? result?.tool_use_id ?? '')
   const toolName = String(use?.name ?? requestUse?.name ?? '')
   const args = (use?.input && isObject(use.input) ? use.input : {}) as Record<string, unknown>
-  const resultText = result ? resultContentText(result) : ''
+  const content = result ? resultContent(result) : { text: '', ordered: [] }
   const isError = result?.is_error === true
 
   const role = span.role === 'result' || (span.role === 'other' && !use) ? 'result' : 'request'
@@ -64,11 +66,12 @@ function toolSpanRow(
     callId,
     toolName,
     args,
-    resultText,
+    resultText: content.text,
+    resultContent: content.ordered,
     isError,
     lifecycle: {
       frameStatus: result ? 'completed' : 'in_progress',
-      providerOutcome: null,
+      providerOutcome: isError ? 'failed' : null,
       retainedOutcome: null,
       rowFinal: result !== undefined,
       resultFrameLanded: result !== undefined,
@@ -77,16 +80,22 @@ function toolSpanRow(
   return toolCallRow(call, role, span.visibleRows)
 }
 
-// A tool_result `content` is a string or a list of text blocks.
-function resultContentText(result: Record<string, unknown>): string {
+// A tool_result is a string or a list of content blocks. Keep the old text
+// body for text-only results. A mixed result stays in wire order as content.
+function resultContent(result: Record<string, unknown>): { text: string, ordered: McpContentItem[] } {
   const content = result.content
   if (typeof content === 'string')
-    return content
+    return { text: content, ordered: [] }
   if (Array.isArray(content)) {
-    return content
-      .filter(item => isObject(item) && pickString(item, 'type') === 'text')
+    const blocks = content.filter(isObject)
+    const ordered = blocks.map(parseMcpContentItem)
+    if (ordered.some(item => item.type === 'image'))
+      return { text: '', ordered }
+    const text = blocks
+      .filter(item => pickString(item, 'type') === 'text')
       .map(item => anthropicBlockText(item, 'text'))
       .join('')
+    return { text, ordered: [] }
   }
-  return ''
+  return { text: '', ordered: [] }
 }

@@ -30,6 +30,9 @@ func TestANewSessionIsSubscribedAtOnce(t *testing.T) {
 	assert.Equal(t, map[string]any{"source": sessionSource, "interactive": true}, metadata)
 	assert.Equal(t, r.agent.opts.WorkingDir, create.str("cwd"))
 	assert.Equal(t, r.agent.workspaceRoot, create.str("workspaceRoot"))
+	var config map[string]any
+	require.True(t, create.field("sessionConfig", &config))
+	assert.Equal(t, map[string]any{"enabled": true, "strategy": "basic"}, config["compaction"])
 }
 
 func TestAResumeCreatesTheSessionUnderItsStoredID(t *testing.T) {
@@ -48,6 +51,7 @@ func TestAResumeCreatesTheSessionUnderItsStoredID(t *testing.T) {
 	var config map[string]any
 	require.True(t, create.field("sessionConfig", &config))
 	assert.Equal(t, "stored-1", config["sessionId"])
+	assert.Equal(t, map[string]any{"enabled": true, "strategy": "basic"}, config["compaction"])
 	var messages []any
 	require.True(t, create.field("initialMessages", &messages))
 	assert.Len(t, messages, 2)

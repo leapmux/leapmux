@@ -7,14 +7,27 @@
 // against the REAL repo tree (not a fixture copy), the same way
 // sync-versions.test.mjs pins its claim registry.
 
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it } from 'bun:test'
 
 import { buildAjv, discoverJsonFiles, formatFailureLines, resolveSchemaPath, RULES, toPosixRel, validateAll, validateSchemalessDir } from './validate-json.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
+const SCRATCH_ROOT = join(ROOT, '.tmp')
+const scratchDirs = []
+
+function scratchDirectory(prefix) {
+  mkdirSync(SCRATCH_ROOT, { recursive: true })
+  const directory = mkdtempSync(join(SCRATCH_ROOT, prefix))
+  scratchDirs.push(directory)
+  return directory
+}
+
+afterEach(() => {
+  for (const directory of scratchDirs.splice(0))
+    rmSync(directory, { recursive: true, force: true })
+})
 
 describe('RULES', () => {
   it('keeps every schema file itself out of scope', () => {
@@ -46,6 +59,8 @@ describe('discoverJsonFiles', () => {
       'testdata/noise_rekey_vectors.json',
       'backend/internal/hub/usersettings/testdata/account_schema.json',
       'frontend/src/lib/syntaxThemes/nord-light.json',
+      'frontend/tests/e2e/feature-matrix/features.json',
+      'frontend/tests/e2e/feature-matrix/checklist.json',
       'scripts/license-overrides/extra/pi-mono/metadata.json',
       'scripts/license-overrides/go/github.com-bmizerany-assert/expected.json',
     ]) {
@@ -109,7 +124,7 @@ describe('validateAll', () => {
   })
 
   it('ignores a JSON file no include pattern matches', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'validate-json-'))
+    const dir = scratchDirectory('validate-json-')
     // At the temp root, not under contracts/ or testdata/: out of scope by
     // design, so it is neither validated nor reported as schemaless.
     writeFileSync(join(dir, 'wire.json'), '{}')
@@ -118,7 +133,7 @@ describe('validateAll', () => {
   })
 
   it('reports invalid data and schemaless files separately', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'validate-json-'))
+    const dir = scratchDirectory('validate-json-')
     mkdirSync(join(dir, 'testdata'))
     mkdirSync(join(dir, 'contracts'))
     writeFileSync(join(dir, 'contracts', 'retry.json'), JSON.stringify({ nope: true }))
@@ -138,7 +153,7 @@ describe('validateAll', () => {
   })
 
   it('reports an unparseable data file and an unparseable schema as failures, not crashes', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'validate-json-'))
+    const dir = scratchDirectory('validate-json-')
     mkdirSync(join(dir, 'contracts'))
     writeFileSync(join(dir, 'contracts', 'broken.json'), '{not json')
     writeFileSync(join(dir, 'contracts', 'broken.schema.json'), '{also not json')
@@ -177,7 +192,7 @@ describe('formatFailureLines', () => {
 
 describe('validateSchemalessDir', () => {
   it('reports a schemaless and an invalid contract separately', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'validate-json-schemaless-'))
+    const dir = scratchDirectory('validate-json-schemaless-')
     writeFileSync(join(dir, 'schemaless.json'), '{}')
     writeFileSync(join(dir, 'invalid.json'), '{"nope":1}')
     writeFileSync(join(dir, 'invalid.schema.json'), JSON.stringify({
@@ -197,7 +212,7 @@ describe('validateSchemalessDir', () => {
     // contract named v0.json was reported against a bogus v/.json path
     // while the real file silently never validated. The map call must pass
     // the name alone.
-    const dir = mkdtempSync(join(tmpdir(), 'validate-json-digit-'))
+    const dir = scratchDirectory('validate-json-digit-')
     writeFileSync(join(dir, 'v0.json'), '{"ok":true}')
     writeFileSync(join(dir, 'v0.schema.json'), JSON.stringify({
       type: 'object',

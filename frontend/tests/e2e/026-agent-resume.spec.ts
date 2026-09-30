@@ -29,6 +29,7 @@ test.describe('Agent Session Resume', () => {
   }
 
   test('should resume agent session after worker restart', async ({ separateHubWorker, page, modelScript }) => {
+    const priorAnswerMarker = 'CLAUDE_RESUME_PRIOR_ANSWER_MARKER'
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Resume Test')
@@ -43,10 +44,12 @@ test.describe('Agent Session Resume', () => {
 
       // Send a message and wait for response
       await editor.click()
-      await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+      await modelScript.queue({ text: `${ARITHMETIC_ANSWER_TEXT} ${priorAnswerMarker}` })
       await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
+      const initial = await modelScript.waitForSteps(1)
+      expect(JSON.stringify(initial.requests.find(request => request.stepIndex === 0)?.body)).not.toContain(priorAnswerMarker)
 
       // Wait for the assistant's response
       await expectAnswerAndTurnEnd(page)
@@ -70,6 +73,10 @@ test.describe('Agent Session Resume', () => {
       await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
       await page.keyboard.type(modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
       await page.keyboard.press('Meta+Enter')
+      const resumed = await modelScript.waitForSteps(2)
+      const nextBody = JSON.stringify(resumed.requests.find(request => request.stepIndex === 1)?.body)
+      expect(nextBody).toContain(priorAnswerMarker)
+      expect(nextBody).toContain(SECOND_ARITHMETIC_PROMPT)
 
       // Wait for a response - the agent should have resumed. The answer "3333"
       // does not occur in the first answer "6912", so this waits for the new

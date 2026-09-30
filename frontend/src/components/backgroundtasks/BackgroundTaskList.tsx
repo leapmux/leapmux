@@ -14,7 +14,7 @@ import {
   backgroundTaskStatusLabel,
   filterBackgroundTasksByKind,
   groupBackgroundTasks,
-  isActiveBackgroundTaskStatus,
+  isOpenBackgroundTaskStatus,
   opensSubagentTranscript,
   sortBackgroundTasks,
 } from '~/stores/chatBackgroundTasks'
@@ -124,7 +124,7 @@ function titleClass(item: BackgroundTaskItem): string {
 //
 // The caller passes the title it already computed, so the row cleans once.
 function secondary(item: BackgroundTaskItem, title: string): string {
-  const raw = isActiveBackgroundTaskStatus(item.status)
+  const raw = isOpenBackgroundTaskStatus(item.status)
     ? item.activity || item.description || ''
     : backgroundTaskEndLabel(item.status)
   const text = raw ? cleanName(raw) : ''
@@ -136,7 +136,7 @@ function secondary(item: BackgroundTaskItem, title: string): string {
 // Returns '', never undefined, because ClippedText counts an empty detail
 // as absent.
 function secondaryTooltip(item: BackgroundTaskItem): string {
-  if (isActiveBackgroundTaskStatus(item.status))
+  if (isOpenBackgroundTaskStatus(item.status))
     return ''
   return backgroundTaskEndTooltip(item.status) ?? ''
 }
@@ -152,6 +152,7 @@ function statusDotClass(status: BackgroundTaskItem['status']): string {
     case 'interrupted':
       return statusDotStyles.statusDotDanger
     case 'stopped':
+    case 'paused':
       return statusDotStyles.statusDotMuted
     // A queued task is drawn as a hollow ring, not a filled dot. Running is the
     // only state that pulses, and the pulse is suppressed under reduced motion --
@@ -166,7 +167,7 @@ function statusDotClass(status: BackgroundTaskItem['status']): string {
 
 /**
  * BackgroundTaskList renders the ROWS of the background-task registry for the
- * kind its host selected. It sorts active-first (running before pending),
+ * kind its host selected. It sorts working rows first, then paused rows,
  * groups by workflow/phase, and renders a kind icon, a title with its status dot
  * at the end of the title line, and a secondary line. Each line is held to one
  * line and clipped, and gives its full text on hover. Subagent rows with a
@@ -245,7 +246,7 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
           <div class={styles.titleRow}>
             <ClippedText text={title()} class={titleClass(item)} />
             {/* Status reads as COLOR on one constant dot, not as a different
-                glyph per state. Six shapes made the column a legend to
+                glyph per state. Separate shapes made the column a legend to
                 memorize; one dot in the status palette (in progress /
                 succeeded / failed) is legible at a glance, and an in-progress
                 dot pulses so activity is visible without a spinner. The exact
@@ -297,7 +298,7 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
     'class': styles.taskRow,
     get 'classList'() {
       return {
-        [styles.taskStruck]: !isActiveBackgroundTaskStatus(item.status),
+        [styles.taskStruck]: !isOpenBackgroundTaskStatus(item.status),
         // taskRowStatic drops the pointer cursor taskRow sets. A getter, because
         // a subagent row becomes clickable mid-life -- see renderRow.
         [styles.taskRowStatic]: clickable ? !clickable() : true,

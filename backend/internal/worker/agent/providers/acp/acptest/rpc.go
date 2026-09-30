@@ -76,7 +76,7 @@ func NewAgentForRPCWithRequestResponder[T any, P acpTestPeer](
 		scanner := bufio.NewScanner(readPipe)
 		for scanner.Scan() {
 			var req struct {
-				ID     int64                  `json:"id"`
+				ID     json.RawMessage        `json:"id"`
 				Method string                 `json:"method"`
 				Params map[string]interface{} `json:"params"`
 			}
@@ -87,11 +87,18 @@ func NewAgentForRPCWithRequestResponder[T any, P acpTestPeer](
 			mu.Lock()
 			requests = append(requests, recorded)
 			mu.Unlock()
+			if req.Method == "" || len(req.ID) == 0 || string(req.ID) == "null" {
+				continue
+			}
+			var id int64
+			if err := json.Unmarshal(req.ID, &id); err != nil {
+				continue
+			}
 			body := agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 			if respond != nil {
 				body = respond(recorded)
 			}
-			base.Deliver(req.ID, agenttest.JSONRPCResponse(req.ID, body))
+			base.Deliver(id, agenttest.JSONRPCResponse(id, body))
 		}
 	}()
 

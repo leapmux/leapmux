@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { DIRAC_E2E_SKIP_REASON, diracTest, expect, openDiracAgent } from './dirac-fixtures'
 import { bashToolCall, diracEditAnchorCapture, diracRespondToolCall, editToolCall, readToolCall } from './helpers/providerToolCalls'
-import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
+import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 diracTest.skip(!!DIRAC_E2E_SKIP_REASON, DIRAC_E2E_SKIP_REASON || '')
 
@@ -15,9 +15,8 @@ diracTest.describe('Dirac tool execution', () => {
   // opaque), so the script reads first and the edit step captures the
   // coordinate out of the request.
   //
-  // `$((...))` is command substitution, so Dirac's safe-command check refuses
-  // the marker command and raises the banner. The test approves it; without
-  // that click the call waits forever and the later steps never run.
+  // The isolated Dirac home enables automatic approval. The command uses
+  // arithmetic expansion so only a shell execution can produce dirac-42.
   diracTest('runs a command, a read and an edit with its diff', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const { workingDir } = await openDiracAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
     const note = join(workingDir, 'note.txt')
@@ -34,12 +33,9 @@ diracTest.describe('Dirac tool execution', () => {
       { toolCalls: [diracRespondToolCall('dirac-respond', 'complete', 'Both tools ran.')] },
     )
     await sendMessage(page, modelScript.prompt('Run the scripted tools, then complete.'))
-    await modelScript.waitForSteps(1)
-    await waitForControlBanner(page)
-    await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
-
     await modelScript.waitForSteps()
     await waitForAgentIdle(page, 120_000)
+    await expect(page.getByTestId('control-banner').filter({ visible: true })).toHaveCount(0)
 
     const tools = page.locator('[data-tool-message]:visible')
     await expect(tools.filter({ hasText: 'dirac-42' }).first()).toBeVisible()

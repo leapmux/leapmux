@@ -103,11 +103,11 @@ type codexChildRoute struct {
 // codexCollabTransition maps a collab agentsStates status to one child
 // transition. An interrupted child remains resumable.
 //
-// A resumable "interrupted" child stays Running in the registry (with a paused
-// activity line). This is an IN-SESSION Codex collab pause, not a worker
+// A resumable "interrupted" child stays open as Paused in the registry. This
+// is an in-session Codex collab pause, not a worker
 // restart: the child thread is paused inside the running owner process and
-// resumeAgent restarts it in the same process, so the same row_key legitimately
-// cycles running -> interrupted -> running. The wire "interrupted" must NOT map
+// resumeAgent restarts it in the same process, so the same row key can move
+// from Running to Paused and back to Running. The wire "interrupted" cannot map
 // to StatusInterrupted: that status is final (IsFinished reports true), so
 // the registry's monotonic-final guard would absorb the later "running"
 // upsert that arrives when resumeAgent resumes the child, leaving the row stuck
@@ -125,7 +125,7 @@ func codexCollabTransition(s string) codexChildTransition {
 	case "shutdown":
 		return codexChildTransition{status: bgtask.StatusStopped, completion: agent.MessageCompletionInterrupted}
 	case "interrupted":
-		return codexChildTransition{status: bgtask.StatusRunning, activity: "paused"}
+		return codexChildTransition{status: bgtask.StatusPaused, activity: "paused"}
 	default:
 		return codexChildTransition{status: bgtask.StatusRunning}
 	}
@@ -149,7 +149,7 @@ func codexChildTurnTransition(params json.RawMessage) codexChildTransition {
 	case "failed":
 		return codexChildTransition{status: bgtask.StatusFailed, completion: agent.MessageCompletionError}
 	case "cancelled", "canceled", "interrupted", "aborted":
-		return codexChildTransition{status: bgtask.StatusRunning, activity: "paused"}
+		return codexChildTransition{status: bgtask.StatusPaused, activity: "paused"}
 	default:
 		return codexChildTransition{status: bgtask.StatusRunning}
 	}
@@ -251,7 +251,8 @@ func (a *Agent) upsertCollabChildRow(up bgtask.Upsert) error {
 // handleCodexSubAgentActivity handles a v2 subAgentActivity item (registry
 // only; never persisted). The started item is the V2 spawn authority: it
 // supplies the spawn call ID, child thread ID, and canonical task path. The
-// completed and interrupted items close the run. Interacted keeps it active.
+// completed item closes the run. An interrupted item pauses it. Interacted
+// keeps it active.
 func (a *Agent) handleCodexSubAgentActivity(item json.RawMessage, parentThreadID string) bool {
 	var act struct {
 		Type          string `json:"type"`
@@ -281,10 +282,8 @@ func (a *Agent) handleCodexSubAgentActivity(item json.RawMessage, parentThreadID
 		return true
 	}
 	if act.Kind == "interrupted" {
-		a.completeCodexChildRun(act.AgentThreadID, codexChildTransition{
-			status:     bgtask.StatusFailed,
-			completion: agent.MessageCompletionError,
-		})
+		providerkit.LogRegistryRefusal("codex", "pause child",
+			a.sink.UpdateBackgroundTaskStatus(act.AgentThreadID, bgtask.StatusPaused, "paused"))
 		return true
 	}
 

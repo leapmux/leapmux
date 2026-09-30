@@ -113,14 +113,17 @@ type Config struct {
 	// defaultTCP is the address ListenEntries binds when Listen is empty. It
 	// comes from the launcher (the hub and solo name different addresses), so
 	// it is not a setting and no file, environment variable or flag writes it.
-	defaultTCP        string
-	DevFrontend       string        `koanf:"dev_frontend"`
-	LogLevel          string        `koanf:"log_level"`
-	EncryptionKeyPath string        `koanf:"encryption_key_path"`
-	Storage           StorageConfig `koanf:"storage"`
-	SoloMode          bool
-	DevMode           bool              // Dev mode: non-solo but with auto-bootstrapped admin
-	Extras            map[string]string // Extra flag values not in the hub Config struct
+	defaultTCP string
+	// resolvedPrimaryTCP is the assigned address of the primary TCP listener.
+	// NewServer sets it on its private config copy after the listener binds.
+	resolvedPrimaryTCP string
+	DevFrontend        string        `koanf:"dev_frontend"`
+	LogLevel           string        `koanf:"log_level"`
+	EncryptionKeyPath  string        `koanf:"encryption_key_path"`
+	Storage            StorageConfig `koanf:"storage"`
+	SoloMode           bool
+	DevMode            bool              // Dev mode: non-solo but with auto-bootstrapped admin
+	Extras             map[string]string // Extra flag values not in the hub Config struct
 }
 
 // StorageType identifies a storage backend.
@@ -933,10 +936,10 @@ func (c *Config) defaultTCPAddr() string {
 	return defaultListen
 }
 
-// PrimaryTCPListen is the TCP address a browser-facing URL should name: the
-// first TCP address of the bind set, or "" when the set holds none -- a list
-// of local IPC URLs alone binds no TCP address. An empty list takes the
-// launcher's TCP address, which is what this reports for it.
+// PrimaryTCPListen is the TCP address a browser-facing URL should use. Once
+// NewServer binds the first TCP listener, it returns the assigned address.
+// Before that bind, it returns the configured address. A local-only bind set
+// returns "". An empty list takes the launcher's TCP address.
 //
 // The first of several is the primary. It is the address the hub's own links
 // (mail, OAuth redirect, passkey origin) name; the rest still answer, and
@@ -945,6 +948,9 @@ func (c *Config) defaultTCPAddr() string {
 // It never resolves the local IPC default, so unlike ListenEntries it cannot
 // fail.
 func (c *Config) PrimaryTCPListen() string {
+	if c.resolvedPrimaryTCP != "" {
+		return c.resolvedPrimaryTCP
+	}
 	tcp, _ := SplitListen(c.Listen)
 	if len(tcp) > 0 {
 		return tcp[0]
@@ -953,6 +959,14 @@ func (c *Config) PrimaryTCPListen() string {
 		return ""
 	}
 	return c.defaultTCPAddr()
+}
+
+// WithResolvedPrimaryTCPListen gives one running server its assigned address.
+// The caller's config keeps the configured bind request, including port zero.
+func (c *Config) WithResolvedPrimaryTCPListen(address string) *Config {
+	copy := *c
+	copy.resolvedPrimaryTCP = address
+	return &copy
 }
 
 // LocalListenURLs returns every local IPC URL of the bind set, in

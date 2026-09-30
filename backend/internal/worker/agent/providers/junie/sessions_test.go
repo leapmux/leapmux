@@ -12,7 +12,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
 
 func TestJunieReadsItsSessionStore(t *testing.T) {
@@ -25,6 +24,21 @@ func TestJunieReadsItsSessionStore(t *testing.T) {
 		}})
 		return "session-260925-201309-19zf"
 	})
+}
+
+func TestJunieStoredSessionsUsesProcessEnvWhenGetenvIsUnset(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("JUNIE_HOME", home)
+	writeJunieIndex(t, home, []junieIndexRecord{{
+		SessionID: "resumable", Project: "/work", TaskName: "Resume", UpdatedAt: 1000,
+	}})
+
+	got, err := junieStoredSessions(t.Context(), agent.StoredSessionQuery{
+		WorkingDir: "/work",
+		HomeDir:    t.TempDir(),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"resumable"}, agenttest.Handles(got))
 }
 
 func TestJunieStoredSessionsFiltersByWorkingDir(t *testing.T) {
@@ -84,28 +98,6 @@ func TestJunieTimestampMillis(t *testing.T) {
 	assert.Equal(t, want, junieTimestampMillis(1790334807396, 1790334789400))
 	assert.Equal(t, time.UnixMilli(1790334789400).UTC(), junieTimestampMillis(0, 1790334789400))
 	assert.True(t, junieTimestampMillis(0, 0).IsZero())
-}
-
-func TestJunieSubagentFromToolCallMapsTheSpawn(t *testing.T) {
-	t.Parallel()
-	tc := acp.ToolCallEnvelope{
-		ToolCallID: "spawn-1",
-		Title:      "Explore the tree",
-		RawInput:   json.RawMessage(`{"agent":"general_purpose","extraContext":"look around","handle":""}`),
-	}
-	obs := junieSubagentFromToolCall(tc)
-	require.NotNil(t, obs)
-	assert.Equal(t, "spawn-1", obs.RowKey)
-	assert.Equal(t, "look around", obs.Prompt)
-}
-
-func TestJunieSubagentFromToolCallIgnoresOtherTools(t *testing.T) {
-	t.Parallel()
-	assert.Nil(t, junieSubagentFromToolCall(acp.ToolCallEnvelope{
-		ToolCallID: "cmd-1",
-		RawInput:   json.RawMessage(`{"command":"ls","cwd":"/work"}`),
-	}))
-	assert.Nil(t, junieSubagentFromToolCall(acp.ToolCallEnvelope{ToolCallID: "bare"}))
 }
 
 // writeJunieIndex seeds `sessions/index.jsonl` under the Junie home.

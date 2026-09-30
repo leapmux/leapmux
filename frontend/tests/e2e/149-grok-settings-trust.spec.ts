@@ -5,7 +5,9 @@ import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from './agentSettings'
 import { expect, GROK_E2E_SKIP_REASON, grokTest, openGrokAgent } from './grok-fixtures'
 import { openAgentViaAPI } from './helpers/api'
-import { mcpToolCall } from './helpers/providerToolCalls'
+import { GROK_ALT_MODEL_ID } from './helpers/mockAgentEnvironment'
+import { exerciseProviderSteer } from './helpers/providerSteer'
+import { bashToolCall, mcpToolCall, writeToolCall } from './helpers/providerToolCalls'
 import { createTestDirectory } from './helpers/runDirectory'
 import { applyPermissionPreset, assistantBubbles, chooseSettingsOption, expectSettingsChip, expectSettingsOptionChosen, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from './helpers/ui'
 import { createGitRepo } from './helpers/worktree'
@@ -58,10 +60,34 @@ for await (const line of createInterface({ input: process.stdin })) {
 `
 
 grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
+  grokTest('switches the model for the next native request', async ({ authenticatedGrokWorkspace, page, modelScript }) => {
+    void authenticatedGrokWorkspace
+    await waitForSettingsHydrated(page)
+    await chooseSettingsOption(page, `model-${GROK_ALT_MODEL_ID}`)
+    await waitForSettingsIdle(page)
+    await expectSettingsOptionChosen(page, `model-${GROK_ALT_MODEL_ID}`)
+
+    await modelScript.queue({ text: 'The alternate model answered.' })
+    await sendMessage(page, modelScript.prompt('Reply once with the alternate model.'))
+    const status = await modelScript.waitForSteps()
+    await waitForAgentIdle(page)
+    const body = JSON.stringify(status.requests.find(request => request.stepIndex === 0)?.body)
+    expect(body.includes(`"model":"${GROK_ALT_MODEL_ID}"`)).toBe(true)
+
+    await page.reload()
+    await expectSettingsOptionChosen(page, `model-${GROK_ALT_MODEL_ID}`)
+  })
+
+  grokTest('steers a queued message into the active turn', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+    await openGrokAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { approvalMode: 'always-approve' })
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    await exerciseProviderSteer(page, modelScript, AgentProvider.GROK_BUILD)
+  })
+
   // Grok reports its session mode and never its approval mode, so the approval
   // presets land on LeapMux's own approval option, and both survive a reload.
-  grokTest('switches the effort, the session mode and the approval presets, and keeps them after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
-    await openGrokAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+  grokTest('sends the effort and session mode into native turns, and keeps the presets after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+    const { workingDir } = await openGrokAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Default')
@@ -75,22 +101,95 @@ grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
     await expectSettingsOptionChosen(page, 'reasoning_effort-high')
     await expectSettingsChip(page, /^high$/i)
 
+    await modelScript.queue({ text: 'The high effort turn ended.' })
+    await sendMessage(page, modelScript.prompt('Answer once at high effort.'))
+    const effortStatus = await modelScript.waitForSteps()
+    await waitForAgentIdle(page)
+    const effortRequest = effortStatus.requests.find(request => request.stepIndex === 0)
+    expect((effortRequest?.body as { reasoning_effort?: unknown } | undefined)?.reasoning_effort).toBe('high')
+
     await chooseSettingsOption(page, 'permissionMode-plan')
     await waitForSettingsIdle(page)
     await expectSettingsChip(page, 'Plan')
 
-    await applyPermissionPreset(page, 'smart')
-    await expectSettingsOptionChosen(page, 'approvalMode-auto')
-    await applyPermissionPreset(page, 'bypass')
-    await expectSettingsOptionChosen(page, 'approvalMode-always-approve')
+    const written = join(workingDir, 'plan-denied-proof.txt')
+    await modelScript.queue(
+      { toolCalls: [writeToolCall(AgentProvider.GROK_BUILD, 'plan-write-proof', { path: written, content: 'GROK_PLAN_WRITE_42\n' })] },
+      { text: 'The Plan turn ended.' },
+    )
+    await sendMessage(page, modelScript.prompt('Try the scripted file write in Plan mode.'))
+    await modelScript.waitForSteps()
+    await waitForAgentIdle(page)
+    expect(existsSync(written)).toBe(false)
+    const planRequest = (await modelScript.status()).requests.find(request => request.stepIndex === 2)
+    const planMessages = (planRequest?.body as { messages?: { role?: string, content?: unknown }[] } | undefined)?.messages ?? []
+    const planToolResults = planMessages.filter(message => message.role === 'tool')
+    expect(JSON.stringify(planToolResults)).toMatch(/plan|refus|denied|not allowed/i)
 
     await page.reload()
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Plan')
     await expectSettingsOptionChosen(page, 'reasoning_effort-high')
+    await chooseSettingsOption(page, 'permissionMode-default')
+    await waitForSettingsIdle(page)
+    await expectSettingsChip(page, 'Default')
+
+    await applyPermissionPreset(page, 'smart')
+    await expectSettingsOptionChosen(page, 'approvalMode-auto')
+
+    const autoProof = join(workingDir, 'grok-auto-proof.txt')
+    await modelScript.queue(
+      { toolCalls: [bashToolCall(AgentProvider.GROK_BUILD, 'smart-touch', 'touch grok-auto-proof.txt')] },
+      { text: 'The Smart command ended.' },
+    )
+    await sendMessage(page, modelScript.prompt('Try the scripted command under Smart permissions.'))
+    await modelScript.waitForSteps()
+    await waitForAgentIdle(page)
+    const banner = page.getByTestId('control-banner').filter({ visible: true })
+    await expect(banner).toHaveCount(0)
+    expect(existsSync(autoProof)).toBe(true)
+
+    await modelScript.rule({
+      name: 'grok-smart-removal',
+      when: { system: '^You review a command that a coding agent wants to run' },
+      respond: { text: JSON.stringify({ thinking: 'The command removes a file.', shouldBlock: true, reason: 'Ask the user before removal.' }) },
+      once: true,
+    })
+    const removeProof = 'rm -rf grok-auto-proof.txt'
+    await modelScript.queue(
+      { toolCalls: [bashToolCall(AgentProvider.GROK_BUILD, 'smart-remove', removeProof)] },
+      { text: 'The Smart removal was blocked.' },
+    )
+    await sendMessage(page, modelScript.prompt('Try the scripted removal under Smart permissions.'))
+    const smartStatus = await modelScript.waitForSteps()
+    await waitForAgentIdle(page)
+    await expect(banner).toHaveCount(0)
+    const smartRequest = smartStatus.requests.find(request => request.stepIndex === 6)
+    const smartMessages = (smartRequest?.body as { messages?: { role?: string, content?: unknown, tool_call_id?: string }[] } | undefined)?.messages ?? []
+    expect(smartMessages.find(message => message.tool_call_id === 'smart-remove')?.content).toContain('Auto mode blocked this action')
+    expect(existsSync(autoProof)).toBe(true)
+    expect((await modelScript.status()).ruleMatches['grok-smart-removal']).toBe(1)
+
+    await applyPermissionPreset(page, 'bypass')
     await expectSettingsOptionChosen(page, 'approvalMode-always-approve')
 
-    await chooseSettingsOption(page, 'permissionMode-default')
+    await modelScript.queue(
+      { toolCalls: [bashToolCall(AgentProvider.GROK_BUILD, 'bypass-remove', removeProof)] },
+      { text: 'The Bypass removal ended.' },
+    )
+    await sendMessage(page, modelScript.prompt('Run the scripted removal under Bypass permissions.'))
+    const bypassStatus = await modelScript.waitForSteps()
+    await expect(banner).toHaveCount(0)
+    await waitForAgentIdle(page)
+    expect(existsSync(autoProof)).toBe(false)
+    expect(bypassStatus.ruleMatches['grok-smart-removal']).toBe(1)
+
+    await page.reload()
+    await waitForSettingsHydrated(page)
+    await expectSettingsChip(page, 'Default')
+    await expectSettingsOptionChosen(page, 'reasoning_effort-high')
+    await expectSettingsOptionChosen(page, 'approvalMode-always-approve')
+
     await chooseSettingsOption(page, 'approvalMode-ask')
     await waitForSettingsIdle(page)
     await expectSettingsChip(page, 'Default')
@@ -140,7 +239,7 @@ grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
     await expect(banner).toHaveCount(0)
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     expect(JSON.stringify((await modelScript.status()).requests.at(-1)?.body)).toContain('FORM_ROUND_TRIP_OK')
     await expect(assistantBubbles(page).filter({ hasText: 'The form came back.' })).toBeVisible()
   })

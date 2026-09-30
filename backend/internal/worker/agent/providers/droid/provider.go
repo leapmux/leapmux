@@ -3,6 +3,7 @@ package droid
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -48,7 +49,13 @@ func (droidProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 // ValidateAttachment accepts text and images. A PDF and a binary file are
 // refused with a reason.
 func (droidProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	return providerkit.RejectPDFAndBinaryAttachment(droidAttachmentLabel, attachment)
+	if err := providerkit.RejectPDFAndBinaryAttachment(droidAttachmentLabel, attachment); err != nil {
+		return err
+	}
+	if attachment.Kind == agent.AttachmentKindImage && len(attachment.Data) == 0 {
+		return fmt.Errorf("factory Droid does not support an empty image attachment: %s", attachment.Filename)
+	}
+	return nil
 }
 
 // SupportsChildSteering is true: droid.add_user_message routes by

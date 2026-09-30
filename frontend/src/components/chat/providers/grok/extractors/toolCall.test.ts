@@ -95,6 +95,42 @@ describe('grokToolCallAdapter', () => {
   })
 
   describe('use_tool', () => {
+    it('draws an MCP image from Grok\'s raw output when ACP content is empty', () => {
+      const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg=='
+      const url = `data:image/png;base64,${data}`
+      const call = ended('use_tool', { tool_name: 'image_probe__show', tool_input: {} }, '', {
+        content: [],
+        rawOutput: {
+          type: 'MCP',
+          tool_name: 'show',
+          server_name: 'image_probe',
+          output: { OkayOutput: 'MCP image shot.png\n[image content will be provided separately]' },
+          extracted_images: [{ data, mime_type: 'image/png' }],
+        },
+      })
+      expect(call.kind).toBe('mcp')
+      expect(call.kind === 'mcp' && call.result).toEqual({
+        content: [
+          { type: 'text', text: 'MCP image shot.png' },
+          { type: 'image', source: { url } },
+        ],
+      })
+    })
+
+    it('draws a native MCP data URI when Grok did not extract it', () => {
+      const url = 'data:image/png;base64,aGVsbG8='
+      const call = ended('use_tool', { tool_name: 'image_probe__show', tool_input: {} }, '', {
+        content: [],
+        rawOutput: { type: 'MCP', output: { OkayOutput: `MCP image shot.png\n${url}` } },
+      })
+      expect(call.kind === 'mcp' && call.result).toEqual({
+        content: [
+          { type: 'text', text: 'MCP image shot.png' },
+          { type: 'image', source: { url } },
+        ],
+      })
+    })
+
     it('reads a wrapped tool with no server as the tool alone', () => {
       const call = pending('use_tool', { tool_name: 'lookup', tool_input: { q: 'x' } })
       expect(call.kind === 'mcp' && call.request).toMatchObject({ server: '', tool: 'lookup', args: { q: 'x' } })

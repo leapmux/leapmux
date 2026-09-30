@@ -16,10 +16,13 @@ import { Buffer } from 'node:buffer'
 import { createServer } from 'node:http'
 import { createServer as createHttp2Server } from 'node:http2'
 import { AMP_ACTOR_PATH_PREFIX, createAmpSurface, isAmpPath } from './ampSurface'
-import { answerCursorStartup, CURSOR_RUN_PATH, cursorTaskCallsFrom, isCursorPath, serveCursorRun } from './cursorSurface'
+import { answerCursorStartup, CURSOR_RUN_PATH, cursorToolCallsFrom, isCursorPath, serveCursorRun } from './cursorSurface'
+import { cursorAttachmentPayloads, cursorConversationIdOf } from './cursorWire'
 import { createDualVersionListener } from './dualVersionListener'
 import { isKiroRequest, kiroOperation, kiroSystemText, kiroUserText, serveKiro } from './kiroSurface'
+import { MOCK_MODELS, MODEL_KEY } from './mockAgentEnvironment'
 import {
+  AMBIENT_SCENARIO_ID,
   isRecord,
   lastUserText,
   matchesRequest,
@@ -28,6 +31,7 @@ import {
   selectScenarioID,
   systemText,
   textChunks,
+  validateGateName,
   validateScenarioID,
 } from './mockModelScript'
 import { pauseBetweenChunks } from './responsePause'
@@ -126,8 +130,15 @@ interface ScenarioState {
   /** How many requests the fallback answered; see MAX_FALLBACK_ANSWERS. */
   fallbackAnswers: number
   ruleMatches: Map<string, number>
+  gates: Map<string, ModelGate>
+  closed: boolean
   requests: MockModelRequestRecord[]
   unexpectedRequests: MockModelUnexpectedRequest[]
+}
+
+interface ModelGate {
+  released: boolean
+  waiters: Set<(released: boolean) => void>
 }
 
 interface ModelRequestContext {
@@ -136,11 +147,13 @@ interface ModelRequestContext {
   body: unknown
   systemText: string
   userText: string
+  /** A native conversation can retain a script after the next prompt omits its marker. */
+  scenarioID?: string
 }
 
 /** The step that answers one model request, or the reason that no step answers it. */
 type ScenarioAnswer
-  = | { kind: 'step', step: MockModelStep }
+  = | { kind: 'step', step: MockModelStep, scenario: ScenarioState }
     | { kind: 'missing', message: string }
 
 /**
@@ -157,6 +170,7 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
     throw new Error('The mock model server needs at least one model identifier')
   const models = [...options.models]
   const scenarios = new Map<string, ScenarioState>()
+  const cursorConversationScenarios = new Map<string, string>()
   const http: MockModelHTTPRequestRecord[] = []
   const unmatched: MockModelUnmatchedRequest[] = []
   const refusedHosts = new Map<string, number>()
@@ -175,7 +189,7 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
   // Every surface asks here, so each one records a request of a scenario that no
   // test registered in the same way, and states the same reason.
   const answerFor = (context: ModelRequestContext): ScenarioAnswer => {
-    const scenarioID = selectScenarioID(context.body)
+    const scenarioID = context.scenarioID ?? selectScenarioID(context.body)
     const scenario = scenarios.get(scenarioID)
     if (!scenario) {
       recordUnmatched(unmatched, { ...context, scenarioID, reason: 'the scenario is not registered' })
@@ -184,7 +198,7 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
     const step = selectStep(scenario, context)
     if (!step)
       return { kind: 'missing', message: `The model scenario ${scenarioID} has no answer for this request. Its status lists the reason.` }
-    return { kind: 'step', step }
+    return { kind: 'step', step, scenario }
   }
 
   // Amp's own service, which runs the agent loop and asks the scenarios for each
@@ -201,7 +215,11 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
         userText: inference.userText,
       }
       const answer = answerFor(context)
-      return answer.kind === 'step' ? answer.step : undefined
+      if (answer.kind !== 'step')
+        return undefined
+      if (answer.step.gate && !await holdGate(answer.scenario, answer.step.gate))
+        return undefined
+      return answer.step
     },
   })
 
@@ -232,7 +250,12 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
         return
       }
       if (url.pathname.startsWith('/__e2e/scenarios/')) {
-        await handleScenarioControl(request, response, url, scenarios)
+        await handleScenarioControl(request, response, url, scenarios, (id) => {
+          for (const [conversationID, scenarioID] of cursorConversationScenarios) {
+            if (scenarioID === id)
+              cursorConversationScenarios.delete(conversationID)
+          }
+        })
         return
       }
       if (request.method === 'GET' && isModelsPath(url.pathname)) {
@@ -259,27 +282,43 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
       if (isCursorPath(url.pathname)) {
         if (url.pathname === CURSOR_RUN_PATH) {
           await serveCursorRun(request, response, {
-            answer: async (prompt) => {
+            answer: async (prompt, requestFrame) => {
+              const conversationID = cursorConversationIdOf(requestFrame)
+              const currentScenarioID = selectScenarioID(prompt)
+              let scenarioID = currentScenarioID
+              if (conversationID) {
+                if (currentScenarioID !== AMBIENT_SCENARIO_ID && scenarios.has(currentScenarioID))
+                  cursorConversationScenarios.set(conversationID, currentScenarioID)
+                else if (currentScenarioID === AMBIENT_SCENARIO_ID)
+                  scenarioID = cursorConversationScenarios.get(conversationID) ?? currentScenarioID
+              }
               const context: ModelRequestContext = {
                 // The stream carries protobuf, not JSON. `openai-responses` is
                 // the nearest protocol a matcher can name, and a Cursor test
                 // matches on `user` or `body` rather than on the protocol.
                 protocol: 'openai-responses',
                 path: url.pathname,
-                body: { prompt },
+                body: {
+                  prompt,
+                  attachments: cursorAttachmentPayloads(requestFrame),
+                  conversationId: conversationID,
+                },
                 systemText: '',
                 userText: prompt,
+                scenarioID,
               }
               const answer = answerFor(context)
               if (answer.kind !== 'step')
                 return undefined
-              const { step } = answer
+              const { step, scenario } = answer
+              if (step.gate && !await holdGate(scenario, step.gate, request, response))
+                return undefined
               if (step.delayMs)
                 await new Promise<void>(resolve => setTimeout(resolve, step.delayMs))
-              const taskCalls = cursorTaskCallsFrom(step.toolCalls)
-              if (step.text === undefined && taskCalls.length === 0)
+              const toolCalls = cursorToolCallsFrom(step.toolCalls)
+              if (step.text === undefined && step.reasoning === undefined && toolCalls.length === 0)
                 return undefined
-              return { text: step.text, taskCalls }
+              return { text: step.text, reasoning: step.reasoning, toolCalls, usage: step.usage }
             },
           })
           return
@@ -302,6 +341,8 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
               userText: kiroUserText(kiroBody),
             }
             const answer = answerFor(context)
+            if (answer.kind === 'step' && answer.step.gate && !await holdGate(answer.scenario, answer.step.gate, request, response))
+              return { kind: 'abandoned' }
             if (answer.kind === 'step' && answer.step.delayMs && !await holdOpen(request, response, answer.step.delayMs))
               return { kind: 'abandoned' }
             return answer
@@ -328,7 +369,9 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
         writeJSON(response, 409, { error: { message: answer.message } })
         return
       }
-      const { step } = answer
+      const { step, scenario } = answer
+      if (step.gate && !await holdGate(scenario, step.gate, request, response))
+        return
       if (step.delayMs && !await holdOpen(request, response, step.delayMs))
         return
       if (step.error) {
@@ -391,6 +434,8 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
     url: `http://127.0.0.1:${port}`,
     refusedHosts: () => new Map(refusedHosts),
     close: () => new Promise<void>((resolve, reject) => {
+      for (const scenario of scenarios.values())
+        cancelGates(scenario)
       amp.close()
       server.close(error => error ? reject(error) : resolve())
       http1.closeAllConnections()
@@ -514,6 +559,66 @@ function holdOpen(request: IncomingMessage, response: ServerResponse, delayMs: n
   })
 }
 
+/** Keep a model request open until its test releases the gate. */
+function holdGate(
+  scenario: ScenarioState,
+  name: string,
+  request?: IncomingMessage,
+  response?: ServerResponse,
+): Promise<boolean> {
+  if (scenario.closed)
+    return Promise.resolve(false)
+  let gate = scenario.gates.get(name)
+  if (!gate) {
+    gate = { released: false, waiters: new Set() }
+    scenario.gates.set(name, gate)
+  }
+  if (gate.released)
+    return Promise.resolve(true)
+  const heldGate = gate
+  return new Promise((resolve) => {
+    let settled = false
+    const onDisconnect = () => finish(false)
+    function finish(released: boolean) {
+      if (settled)
+        return
+      settled = true
+      heldGate.waiters.delete(finish)
+      request?.off('aborted', onDisconnect)
+      response?.off('close', onDisconnect)
+      if (!released && response && !response.destroyed)
+        response.destroy()
+      resolve(released)
+    }
+    heldGate.waiters.add(finish)
+    request?.once('aborted', onDisconnect)
+    response?.once('close', onDisconnect)
+    if (request?.aborted || response?.destroyed)
+      finish(false)
+  })
+}
+
+/** Release every request that waits on one gate. */
+function releaseGate(scenario: ScenarioState, name: string): boolean {
+  const gate = scenario.gates.get(name)
+  if (scenario.closed || !gate || gate.released || gate.waiters.size === 0)
+    return false
+  gate.released = true
+  for (const finish of [...gate.waiters])
+    finish(true)
+  return true
+}
+
+/** Cancel held requests before a scenario or the mock server closes. */
+function cancelGates(scenario: ScenarioState): void {
+  scenario.closed = true
+  for (const gate of scenario.gates.values()) {
+    for (const finish of [...gate.waiters])
+      finish(false)
+  }
+  scenario.gates.clear()
+}
+
 function handleRequestLog(request: IncomingMessage, response: ServerResponse, log: MockModelRequestLog): void {
   if (request.method === 'GET') {
     writeJSON(response, 200, log)
@@ -559,8 +664,32 @@ async function handleScenarioControl(
   response: ServerResponse,
   url: URL,
   scenarios: Map<string, ScenarioState>,
+  onDelete: (id: string) => void,
 ): Promise<void> {
-  const id = decodeURIComponent(url.pathname.slice('/__e2e/scenarios/'.length))
+  const suffix = url.pathname.slice('/__e2e/scenarios/'.length)
+  const release = /^([^/]+)\/gates\/([^/]+)\/release$/.exec(suffix)
+  if (release) {
+    const id = decodeURIComponent(release[1]!)
+    const gateName = decodeURIComponent(release[2]!)
+    validateScenarioID(id)
+    validateGateName(gateName)
+    const scenario = scenarios.get(id)
+    if (!scenario) {
+      writeJSON(response, 404, { error: { message: `The model scenario ${id} does not exist` } })
+      return
+    }
+    if (request.method !== 'POST') {
+      writeJSON(response, 405, { error: { message: `Method ${request.method ?? 'UNKNOWN'} is not allowed` } })
+      return
+    }
+    if (!releaseGate(scenario, gateName)) {
+      writeJSON(response, 409, { error: { message: `The model gate ${gateName} is not waiting` } })
+      return
+    }
+    response.writeHead(204).end()
+    return
+  }
+  const id = decodeURIComponent(suffix)
   validateScenarioID(id)
   if (request.method === 'PUT') {
     if (scenarios.has(id)) {
@@ -568,7 +697,7 @@ async function handleScenarioControl(
       return
     }
     const spec = parseScenarioSpec(await readJSONBody(request))
-    const state: ScenarioState = { spec, nextStep: 0, fallbackAnswers: 0, ruleMatches: new Map(), requests: [], unexpectedRequests: [] }
+    const state: ScenarioState = { spec, nextStep: 0, fallbackAnswers: 0, ruleMatches: new Map(), gates: new Map(), closed: false, requests: [], unexpectedRequests: [] }
     scenarios.set(id, state)
     writeJSON(response, 201, scenarioStatus(state))
     return
@@ -594,7 +723,9 @@ async function handleScenarioControl(
       writeJSON(response, 409, status)
       return
     }
+    cancelGates(scenario)
     scenarios.delete(id)
+    onDelete(id)
     response.writeHead(204).end()
     return
   }
@@ -626,23 +757,35 @@ function extendScenario(scenario: ScenarioState, addition: MockModelScenarioSpec
 }
 
 function scenarioStatus(scenario: ScenarioState): MockModelScenarioStatus {
+  const pendingGates = [...scenario.gates]
+    .filter(([, gate]) => gate.waiters.size > 0)
+    .map(([name]) => name)
+    .sort()
   return {
-    complete: scenario.nextStep === scenario.spec.steps.length && scenario.unexpectedRequests.length === 0,
+    complete: scenario.nextStep === scenario.spec.steps.length && scenario.unexpectedRequests.length === 0 && pendingGates.length === 0,
     nextStep: scenario.nextStep,
     stepCount: scenario.spec.steps.length,
     ruleMatches: Object.fromEntries(scenario.ruleMatches),
+    pendingGates,
     requests: scenario.requests,
     unexpectedRequests: scenario.unexpectedRequests,
   }
 }
 
 /**
- * Identity and account routes.
+ * Identity routes that agents call before a model request.
  *
- * GitHub Copilot and Cursor both call these before their first model request.
- * They carry no prompt, so they answer from a fixed shape rather than a script.
+ * These requests carry no prompt. Each route answers with an isolated account
+ * instead of consuming a model script step.
  */
 function handleIdentityRoute(request: IncomingMessage, response: ServerResponse, url: URL): boolean {
+  if (request.method === 'GET' && url.pathname === '/v1/api/cli/whoami') {
+    if (request.headers.authorization !== `Bearer ${MODEL_KEY}`)
+      writeJSON(response, 401, { error: { message: 'The isolated Droid model key is required.' } })
+    else
+      writeJSON(response, 200, { userId: 'leapmux-e2e-user', orgId: 'leapmux-e2e-org' })
+    return true
+  }
   if (request.method === 'GET' && url.pathname === '/copilot_internal/user') {
     const requestOrigin = `http://${request.headers.host ?? '127.0.0.1'}`
     writeJSON(response, 200, {
@@ -662,7 +805,7 @@ function handleIdentityRoute(request: IncomingMessage, response: ServerResponse,
   if (request.method === 'POST' && url.pathname === '/auto') {
     writeJSON(response, 200, {
       session_token: 'leapmux-e2e-session-token',
-      selected_model: { id: 'gpt-5.6-luna', name: 'gpt-5.6-luna', capabilities: modelCapabilities() },
+      selected_model: { id: MOCK_MODELS.openai, name: MOCK_MODELS.openai, capabilities: modelCapabilities(MOCK_MODELS.openai) },
     })
     return true
   }
@@ -683,15 +826,15 @@ function handleIdentityRoute(request: IncomingMessage, response: ServerResponse,
 function handleQoderAuthRoute(request: IncomingMessage, response: ServerResponse, url: URL, ownPort: number): boolean {
   const origin = `http://127.0.0.1:${ownPort}`
   if (url.pathname === '/algo/api/v3/service/region/endpoints' || url.pathname === '/algo/api/v5/service/region/endpoints') {
-    // The endpoint-election parser reads `centerNodes`/`inferNodes`/`security`/
-    // `openapiNodes` off the top level and elects each origin it lists. Listing
-    // the mock's own origin routes every later call -- the token exchange, the
-    // userinfo lookup and the model call -- back here.
+    // The early sync sends cosy-machineid and reads URL strings. The later
+    // client sends cosy-machinecode and reads each v5 node's `url` field.
+    const legacySync = request.headers['cosy-machineid'] !== undefined
+    const node = url.pathname.includes('/v5/') && !legacySync ? { url: origin } : origin
     const body = {
-      centerNodes: [origin],
-      inferNodes: [origin],
-      security: [origin],
-      openapiNodes: [origin],
+      centerNodes: [node],
+      inferNodes: [node],
+      security: [node],
+      openapiNodes: [node],
     }
     console.error('[qoder-auth] region/endpoints ->', JSON.stringify(body))
     writeJSON(response, 200, body)
@@ -740,14 +883,22 @@ function modelCatalog(models: string[]): Record<string, unknown> {
       object: 'model',
       created: 1,
       owned_by: 'leapmux-e2e',
-      capabilities: modelCapabilities(),
+      ...(id === MOCK_MODELS.gooseReasoning ? { supported_endpoints: ['/responses'] } : {}),
+      capabilities: modelCapabilities(id),
     })),
   }
 }
 
-function modelCapabilities(): Record<string, unknown> {
+function modelCapabilities(id: string): Record<string, unknown> {
   return {
-    supports: { vision: true },
+    supports: {
+      vision: true,
+      ...(id === MOCK_MODELS.openai
+        ? { reasoning_effort: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] }
+        : id === MOCK_MODELS.gooseReasoning
+          ? { reasoning_effort: ['low', 'medium', 'high'] }
+          : {}),
+    },
     limits: { max_context_window_tokens: 128_000 },
   }
 }
@@ -818,6 +969,7 @@ async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: 
   const message = {
     role: 'assistant',
     ...(step.reasoning !== undefined ? { reasoning_content: step.reasoning } : {}),
+    ...(step.reasoning !== undefined && model === MOCK_MODELS.openai ? { reasoning: step.reasoning } : {}),
     ...(step.text !== undefined ? { content: step.text } : { content: null }),
     ...(toolCalls ? { tool_calls: toolCalls.map(({ index: _index, ...tool }) => tool) } : {}),
   }
@@ -849,6 +1001,7 @@ async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: 
       delta: {
         role: 'assistant',
         ...(step.reasoning !== undefined ? { reasoning_content: step.reasoning } : {}),
+        ...(step.reasoning !== undefined && model === MOCK_MODELS.openai ? { reasoning: step.reasoning } : {}),
         ...(chunks.length > 0 ? { content: chunks[0] } : {}),
         ...(toolCalls ? { tool_calls: toolCalls } : {}),
       },
@@ -887,33 +1040,45 @@ async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: 
 
 async function writeOpenAIResponse(response: ServerResponse, requestBody: unknown, step: MockModelStep, id: string): Promise<void> {
   const output = responseItems(step, id)
+  const model = modelFrom(requestBody)
+  const responseBase = { id, object: 'response', created_at: 1, model, tools: [] }
+  const completed = { ...responseBase, status: 'completed', output, usage: responseUsage(step) }
   if (!streamRequested(requestBody)) {
-    writeJSON(response, 200, {
-      id,
-      object: 'response',
-      status: 'completed',
-      model: modelFrom(requestBody),
-      output,
-      usage: responseUsage(step),
-    }, step)
+    writeJSON(response, 200, completed, step)
     return
   }
 
   writeSSEHeaders(response, step)
-  writeSSEEvent(response, { type: 'response.created', response: { id } })
+  let sequenceNumber = 0
+  const emit = (event: { type: string } & Record<string, unknown>) => {
+    writeSSEEvent(response, { ...event, sequence_number: sequenceNumber++ })
+  }
+  emit({ type: 'response.created', response: { ...responseBase, status: 'in_progress', output: [] } })
   const chunks = textChunks(step)
   for (const [outputIndex, item] of output.entries()) {
-    // The MESSAGE item is the one a client watches grow, so its text arrives as
-    // deltas before the item that completes it. Every other item type is a
-    // single decision and stays one `output_item.done`.
-    if (item.type === 'message' && chunks.length > 0) {
-      writeSSEEvent(response, { type: 'response.output_item.added', output_index: outputIndex, item: { ...item, status: 'in_progress', content: [] } })
+    const startItem = item.type === 'message'
+      ? { ...item, status: 'in_progress', content: [] }
+      : item.type === 'reasoning'
+        ? { ...item, status: 'in_progress', summary: [], content: [] }
+        : item.type === 'function_call'
+          ? { ...item, status: 'in_progress', arguments: '' }
+          : { ...item, status: 'in_progress' }
+    emit({ type: 'response.output_item.added', output_index: outputIndex, item: startItem })
+
+    if (item.type === 'reasoning') {
+      emit({ type: 'response.reasoning_summary_part.added', output_index: outputIndex, item_id: item.id, summary_index: 0, part: { type: 'summary_text', text: '' } })
+      emit({ type: 'response.reasoning_summary_text.delta', output_index: outputIndex, item_id: item.id, summary_index: 0, delta: step.reasoning })
+      emit({ type: 'response.reasoning_summary_text.done', output_index: outputIndex, item_id: item.id, summary_index: 0, text: step.reasoning })
+      emit({ type: 'response.reasoning_summary_part.done', output_index: outputIndex, item_id: item.id, summary_index: 0, part: { type: 'summary_text', text: step.reasoning } })
+    }
+    if (item.type === 'message') {
+      emit({ type: 'response.content_part.added', output_index: outputIndex, item_id: item.id, content_index: 0, part: { type: 'output_text', text: '', annotations: [] } })
       for (const [chunkIndex, chunk] of chunks.entries()) {
         if (chunkIndex > 0)
           await pauseBetweenChunks(response, step.stream?.delayMs ?? 0)
         if (response.writableEnded)
           return
-        writeSSEEvent(response, {
+        emit({
           type: 'response.output_text.delta',
           output_index: outputIndex,
           item_id: item.id,
@@ -921,17 +1086,22 @@ async function writeOpenAIResponse(response: ServerResponse, requestBody: unknow
           delta: chunk,
         })
       }
-      writeSSEEvent(response, {
+      emit({
         type: 'response.output_text.done',
         output_index: outputIndex,
         item_id: item.id,
         content_index: 0,
         text: step.text ?? '',
       })
+      emit({ type: 'response.content_part.done', output_index: outputIndex, item_id: item.id, content_index: 0, part: { type: 'output_text', text: step.text ?? '', annotations: [] } })
     }
-    writeSSEEvent(response, { type: 'response.output_item.done', output_index: outputIndex, item })
+    if (item.type === 'function_call') {
+      emit({ type: 'response.function_call_arguments.delta', output_index: outputIndex, item_id: item.id, call_id: item.call_id, delta: item.arguments })
+      emit({ type: 'response.function_call_arguments.done', output_index: outputIndex, item_id: item.id, call_id: item.call_id, arguments: item.arguments })
+    }
+    emit({ type: 'response.output_item.done', output_index: outputIndex, item })
   }
-  writeSSEEvent(response, { type: 'response.completed', response: { id, status: 'completed', output, usage: responseUsage(step) } })
+  emit({ type: 'response.completed', response: completed })
   response.end()
 }
 

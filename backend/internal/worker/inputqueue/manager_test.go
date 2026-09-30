@@ -726,32 +726,39 @@ func TestManagerPlannedRestartPreservesQueueState(t *testing.T) {
 	t.Parallel()
 
 	for _, test := range []struct {
-		name             string
-		manualPause      bool
-		processReplaced  bool
-		restartSucceeded bool
-		wantActive       bool
-		wantPaused       bool
-		wantPauseReason  leapmuxv1.AgentInputQueuePauseReason
+		name              string
+		manualPause       bool
+		nativeEndObserved bool
+		oldTurnEnded      bool
+		restartSucceeded  bool
+		wantActive        bool
+		wantPaused        bool
+		wantPauseReason   leapmuxv1.AgentInputQueuePauseReason
 	}{
 		{
-			name:            "successful replacement",
-			processReplaced: true, restartSucceeded: true,
+			name:         "successful replacement",
+			oldTurnEnded: true, restartSucceeded: true,
 		},
 		{
-			name:            "failure before replacement",
-			processReplaced: false, restartSucceeded: false,
+			name:         "failure before replacement",
+			oldTurnEnded: false, restartSucceeded: false,
 			wantActive: true,
 		},
 		{
-			name:            "failed replacement",
-			processReplaced: true, restartSucceeded: false,
+			name:         "failed replacement",
+			oldTurnEnded: true, restartSucceeded: false,
 			wantPaused:      true,
 			wantPauseReason: leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED,
 		},
 		{
+			name:              "failed restart after native turn end",
+			nativeEndObserved: true, oldTurnEnded: true, restartSucceeded: false,
+			wantPaused:      true,
+			wantPauseReason: leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_FAILED,
+		},
+		{
 			name:        "existing manual pause",
-			manualPause: true, processReplaced: true, restartSucceeded: true,
+			manualPause: true, oldTurnEnded: true, restartSucceeded: true,
 			wantPaused:      true,
 			wantPauseReason: leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL,
 		},
@@ -774,8 +781,12 @@ func TestManagerPlannedRestartPreservesQueueState(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, during.Paused)
 			assert.True(t, during.ActiveTurn)
+			if test.nativeEndObserved {
+				_, err = manager.Pause(ctx, "agent-1", leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_FAILED)
+				require.NoError(t, err)
+			}
 
-			require.NoError(t, restart.Finish(ctx, test.processReplaced, test.restartSucceeded))
+			require.NoError(t, restart.Finish(ctx, test.oldTurnEnded, test.restartSucceeded))
 			after, err := manager.Snapshot(ctx, "agent-1")
 			require.NoError(t, err)
 			assert.Equal(t, test.wantActive, after.ActiveTurn)

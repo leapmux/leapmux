@@ -74,7 +74,11 @@ func TestTheSessionStartsWithTheLaunchSettings(t *testing.T) {
 	create := r.hub.commandsNamed(commandSessionCreate)[0]
 	var config map[string]any
 	require.True(t, create.field("sessionConfig", &config))
-	assert.Equal(t, map[string]any{"providerId": testProvider, "modelId": "gpt-5.5"}, config)
+	assert.Equal(t, map[string]any{
+		"providerId": testProvider,
+		"modelId":    "gpt-5.5",
+		"compaction": map[string]any{"enabled": true, "strategy": "basic"},
+	}, config)
 	var runtime map[string]any
 	require.True(t, create.field("runtimeOptions", &runtime))
 	assert.Equal(t, sessionModePlan, runtime["mode"])

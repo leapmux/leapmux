@@ -186,7 +186,7 @@ describe('classifyMessage', () => {
 
   // -- LeapMux's own user row, whatever the provider ------------------------
 
-  describe('a user row with no registered plugin', () => {
+  describe('LeapMux user rows across provider hydration', () => {
     // A tab projected from the CRDT has no provider until metadata hydration ends.
     it('classifies LeapMux\'s flat user payload as user_content', () => {
       const result = classifyMessage(input({ content: 'hi' }, null, AgentProvider.UNSPECIFIED, MessageSource.USER))
@@ -279,6 +279,23 @@ describe('classifyMessage', () => {
       const withoutPlugin = classifyMessage(input(payload, null, AgentProvider.UNSPECIFIED, MessageSource.USER))
       const withPlugin = classifyMessage(input(payload, null, AgentProvider.CLAUDE_CODE, MessageSource.USER))
       expect(withoutPlugin.kind).toBe(withPlugin.kind)
+    })
+
+    it('keeps a CodeBuddy attachment row visible after provider hydration', () => {
+      const result = classifyMessage(input(
+        { content: 'Inspect this file.', attachments: [{ filename: 'codebuddy-blob.bin' }] },
+        null,
+        AgentProvider.CODEBUDDY,
+        MessageSource.USER,
+      ))
+      expect(result.kind).toBe('user_content')
+    })
+
+    it('keeps hidden and plan envelopes distinct from user text', () => {
+      const hidden = classifyMessage(input({ content: 'hidden', hidden: true }, null, AgentProvider.CODEBUDDY, MessageSource.USER))
+      const plan = classifyMessage(input({ content: 'run plan', planExecution: true }, null, AgentProvider.CODEBUDDY, MessageSource.USER))
+      expect(hidden.kind).toBe('hidden')
+      expect(plan.kind).toBe('plan_execution')
     })
   })
 

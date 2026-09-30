@@ -26,7 +26,7 @@ const QUESTION = {
 describe('qwen provider', () => {
   const plugin = providerFor(AgentProvider.QWEN_CODE)!
 
-  describeACPProviderBasics(AgentProvider.QWEN_CODE, { text: true, image: true, pdf: true, binary: true })
+  describeACPProviderBasics(AgentProvider.QWEN_CODE, { text: true, image: true, pdf: true, binary: false })
 
   it('states its own reasoning axis for the effort chip', () => {
     expect(plugin.configuration?.effortGroupKey).toBe('reasoning_effort')

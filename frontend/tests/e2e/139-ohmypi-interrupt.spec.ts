@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import type { ModelScript } from './helpers/modelScriptFixture'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { exerciseProviderSteer } from './helpers/providerSteer'
 import { bashToolCall } from './helpers/providerToolCalls'
 import {
   ARITHMETIC_ANSWER_TEXT,
@@ -20,6 +21,11 @@ import { expect, OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from './ohmypi-fixtures'
  * every provider, and the agent takes the next prompt once the reader resumes it.
  */
 ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
+
+ohMyPiTest('steers a queued message into the active turn', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {
+  void authenticatedOhMyPiWorkspace
+  await exerciseProviderSteer(page, modelScript, AgentProvider.OH_MY_PI)
+})
 
 /**
  * Press Interrupt, and wait until the turn ends as interrupted.
@@ -45,7 +51,7 @@ async function expectAgentStillAnswers(page: Page, modelScript: ModelScript): Pr
   await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
   await expectAssistantAnswer(page)
 }
 

@@ -88,10 +88,12 @@ type Service struct {
 	// points, and only the background one takes a startup permit.
 	startBackgroundAgentFn func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error)
 	startTerminalFn        func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
-	createAgentRecordFn    func(context.Context, db.CreateAgentParams) error
-	getAgentByIDFn         func(context.Context, string) (db.Agent, error)
-	sendControlResponseFn  func(string, []byte) error
-	updateAgentSettingsFn  func(string, OptionMap) agent.SettingsApplyResult
+	// beforeAgentCloseTeardownFn holds a close after admission closes in tests.
+	beforeAgentCloseTeardownFn func(string)
+	createAgentRecordFn        func(context.Context, db.CreateAgentParams) error
+	getAgentByIDFn             func(context.Context, string) (db.Agent, error)
+	sendControlResponseFn      func(string, []byte) error
+	updateAgentSettingsFn      func(string, OptionMap) agent.SettingsApplyResult
 	// batchGitStatusFn runs the concurrent git-status batch for a watch
 	// catch-up. A seam (same contract as its siblings above) so tests can
 	// observe the overlap's cancellation without spawning real git processes.
@@ -148,6 +150,12 @@ type Service struct {
 	// finds nothing running to interrupt, and the honest answer is the benign
 	// one -- the press that began the restart already carried this one's intent.
 	forceStops sync.Map
+
+	// Native tool changes can require a replacement before queued input runs.
+	// The mutex makes restart admission atomic with Shutdown's closed flag.
+	nativeTurnRestartMu sync.Mutex
+	nativeTurnRestarts  map[string]struct{}
+	nativeTurnRestartWG sync.WaitGroup
 
 	// tunnels is the worker-singleton tunnel manager built in RegisterAll. It
 	// owns the half-closed idle reaper goroutine, which Shutdown stops for clean
@@ -617,6 +625,9 @@ func New(cfg Config) *Service {
 			what = "turn start"
 			_, err = svc.InputQueue.TurnStarted(bgCtx(), agentID, state.Steerable)
 		} else {
+			if svc.scheduleNativeTurnRestart(agentID) {
+				return
+			}
 			_, err = svc.InputQueue.TurnEnded(bgCtx(), agentID)
 		}
 		if err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
@@ -729,6 +740,16 @@ func (svc *Service) startTerminal(ctx context.Context, opts terminal.Options, ou
 }
 
 func (svc *Service) createAgentRecord(ctx context.Context, params db.CreateAgentParams) error {
+	if err := validateAgentRecordProvider(params); err != nil {
+		return err
+	}
+	if svc.createAgentRecordFn != nil {
+		return svc.createAgentRecordFn(ctx, params)
+	}
+	return svc.Queries.CreateAgent(ctx, params)
+}
+
+func validateAgentRecordProvider(params db.CreateAgentParams) error {
 	// Every agent row must carry a real provider: the client renders each of the
 	// agent's messages through that provider's renderers, and createMessageRow
 	// refuses to persist a message row for an UNSPECIFIED provider. Enforce the
@@ -740,10 +761,7 @@ func (svc *Service) createAgentRecord(ctx context.Context, params db.CreateAgent
 	if params.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
 		return fmt.Errorf("refusing to create agent %q with UNSPECIFIED agent provider", params.ID)
 	}
-	if svc.createAgentRecordFn != nil {
-		return svc.createAgentRecordFn(ctx, params)
-	}
-	return svc.Queries.CreateAgent(ctx, params)
+	return nil
 }
 
 // clearAgentSessionID forgets the session an agent was in, so the next cold
@@ -892,7 +910,11 @@ func (svc *Service) Shutdown() {
 	// Close the door before anything else, so the drains below are draining a
 	// set that can no longer grow. See the field's comment for what got in
 	// otherwise.
+	svc.nativeTurnRestartMu.Lock()
+	// A scheduler that entered first completes its WaitGroup Add before this
+	// latch closes. A later scheduler sees the latch while it holds this mutex.
 	svc.shuttingDown.Store(true)
+	svc.nativeTurnRestartMu.Unlock()
 	// Set the Output-level shutdown latch too: a shutdown-driven StopAll below
 	// must leave background-task rows ACTIVE so the NEXT boot's RestoreState
 	// sweep labels them 'interrupted' (a truthful "worker restart" label)
@@ -945,6 +967,7 @@ func (svc *Service) Shutdown() {
 	// Queue dispatch runs outside the RPC handler that created it. Join those
 	// goroutines before the startup drains and provider teardown below.
 	waitForInputQueue()
+	svc.nativeTurnRestartWG.Wait()
 
 	// Drain any goroutines spawned by OpenAgent/OpenTerminal so their
 	// trailing DB writes and filesystem work land before the caller

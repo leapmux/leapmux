@@ -25,9 +25,8 @@ import {
  *
  * Cline states no model catalog on its hub, so a session offers the models of the
  * worker's own table for the provider that the user's Cline settings select, and the
- * configured model. The isolated settings select `openai-compatible`, which the table
- * does not hold, so the configured model is the one offered, and it has no effort
- * ladder.
+ * configured model. The isolated settings select `deepseek`, which has two catalog
+ * models. The configured mock model stays available, but it has no effort ladder.
  *
  * Cline fixes a session's tools and system prompt when it creates the session. A
  * change between Plan and Act therefore creates the session again with the same id
@@ -45,7 +44,56 @@ async function modeOptions(page: Page): Promise<string[]> {
 }
 
 clineTest.describe('Cline settings', () => {
-  clineTest('offers the configured model, the three modes, and no effort for a model without a ladder', async ({ askingClineWorkspace, page }) => {
+  clineTest('switches to a model from the native provider catalog', async ({ askingClineWorkspace, page, modelScript }) => {
+    void askingClineWorkspace
+    await waitForSettingsHydrated(page)
+    await chooseSettingsOption(page, 'model-deepseek-v4-pro')
+    await waitForSettingsIdle(page)
+    await expectSettingsChip(page, 'DeepSeek V4 Pro')
+
+    await modelScript.queue({ text: 'The selected model answered.' })
+    await sendMessage(page, modelScript.prompt('Reply once with the selected model.'))
+    const status = await modelScript.waitForSteps()
+    await waitForAgentIdle(page, 180_000)
+    const body = status.requests.find(request => request.stepIndex === 0)?.body
+    if (!body || typeof body !== 'object' || !('model' in body))
+      throw new Error('the Cline model request must state its model')
+    expect(body.model).toBe('deepseek-v4-pro')
+
+    await page.reload()
+    const group = await openSettingsMenu(page, 'model')
+    await expect(group.locator('[data-testid="model-deepseek-v4-pro"] input[type="radio"]')).toBeChecked()
+    await closeComposerMenus(page)
+  })
+
+  clineTest('applies reasoning effort to the native model request', async ({ askingClineWorkspace, page, modelScript }) => {
+    void askingClineWorkspace
+    await waitForSettingsHydrated(page)
+    await chooseSettingsOption(page, 'model-deepseek-v4-pro')
+    await waitForSettingsIdle(page)
+
+    await modelScript.queue({ text: 'Default effort answered.' })
+    await sendMessage(page, modelScript.prompt('Reply once at default effort.'))
+    await modelScript.waitForSteps()
+    await waitForAgentIdle(page, 180_000)
+
+    await chooseSettingsOption(page, 'effort-high')
+    await waitForSettingsIdle(page)
+    await expectSettingsChip(page, 'High')
+
+    await modelScript.queue({ text: 'High effort answered.' })
+    await sendMessage(page, modelScript.prompt('Reply once at high effort.'))
+    const status = await modelScript.waitForSteps()
+    await waitForAgentIdle(page, 180_000)
+    const first = status.requests.find(request => request.stepIndex === 0)?.body
+    const second = status.requests.find(request => request.stepIndex === 1)?.body
+    if (!first || typeof first !== 'object' || !second || typeof second !== 'object')
+      throw new Error('both Cline model requests must be recorded')
+    expect((first as { reasoning_effort?: unknown }).reasoning_effort).toBeUndefined()
+    expect((second as { reasoning_effort?: string }).reasoning_effort).toBe('high')
+  })
+
+  clineTest('offers the configured model, the three modes, and no effort for a model without a ladder', async ({ askingClineWorkspace, page, modelScript }) => {
     void askingClineWorkspace
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, MOCK_MODELS.cline)
@@ -56,6 +104,15 @@ clineTest.describe('Cline settings', () => {
     await expect(settingsGroupTrigger(page, 'model')).toBeVisible()
     await expect(settingsGroupTrigger(page, 'effort')).toHaveCount(0)
     await closeComposerMenus(page)
+
+    await modelScript.queue({ text: 'The configured model answered.' })
+    await sendMessage(page, modelScript.prompt('Reply once with the configured model.'))
+    const status = await modelScript.waitForSteps()
+    await waitForAgentIdle(page, 180_000)
+    const body = status.requests.find(request => request.stepIndex === 0)?.body
+    if (!body || typeof body !== 'object' || !('model' in body))
+      throw new Error('the Cline model request must state its model')
+    expect(body.model).toBe(MOCK_MODELS.cline)
   })
 
   clineTest('Shift+Tab toggles Plan mode from the composer', async ({ askingClineWorkspace, page }) => {

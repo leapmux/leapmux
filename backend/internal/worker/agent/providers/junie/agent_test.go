@@ -44,6 +44,45 @@ func TestJunieModelIDRoundTripsThroughTheDecoratedWireForm(t *testing.T) {
 	// A non-profile id carries no decoration and travels unchanged.
 	assert.Equal(t, "claude-sonnet", normalizeJunieModelID("claude-sonnet"))
 	assert.Equal(t, "claude-sonnet", junieModelIDForWire("claude-sonnet"))
+
+	// The source length and provider identify a proxy even when another proxy
+	// offers the same model. Keep both wire IDs intact.
+	for _, wire := range []string{
+		"v1:24:proxy:leapmux-e2e-openai:gpt-5.3-codex",
+		"v1:11:proxy:other:gpt-5.3-codex",
+	} {
+		assert.Equal(t, wire, normalizeJunieModelID(wire))
+		assert.Equal(t, wire, junieModelIDForWire(wire))
+	}
+}
+
+func TestJunieSetModelKeepsProxyProvidersDistinct(t *testing.T) {
+	t.Parallel()
+	a, requests := newJunieAgentForRPC(t)
+	a.SetModelForTest("v1:24:proxy:leapmux-e2e-openai:gpt-5.3-codex")
+	const other = "v1:11:proxy:other:gpt-5.3-codex"
+
+	require.NoError(t, a.setJunieModel(other))
+
+	assert.Equal(t, other, a.ModelForTest())
+	recorded := requests()
+	require.Len(t, recorded, 1)
+	assert.Equal(t, other, recorded[0].Params["value"])
+}
+
+func TestJunieSetModelCanLeaveAProxyForABareModel(t *testing.T) {
+	t.Parallel()
+	a, requests := newJunieAgentForRPC(t)
+	const current = "v1:24:proxy:leapmux-e2e-openai:gpt-5.3-codex"
+	a.SetModelForTest(current)
+	a.SetAvailableModelsForTest([]*agent.ModelInfo{{Id: current, DisplayName: "Proxy model"}})
+
+	require.NoError(t, a.setJunieModel("gpt-5.3-codex"))
+
+	assert.Equal(t, "gpt-5.3-codex", a.ModelForTest())
+	recorded := requests()
+	require.Len(t, recorded, 1)
+	assert.Equal(t, "gpt-5.3-codex", recorded[0].Params["value"])
 }
 
 // A live model change writes the decorated id and stores the plain one.

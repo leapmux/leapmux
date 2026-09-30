@@ -1,15 +1,14 @@
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, expect } from './codebuddy-fixtures'
 import { enterPlanModeToolCall, exitPlanModeToolCall } from './helpers/providerToolCalls'
-import { expectSettingsChip, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from './helpers/ui'
+import { expectSettingsChip, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from './helpers/ui'
 
 /**
  * 283 — CodeBuddy Code plan approval.
  *
  * `EnterPlanMode` switches the session to Plan without asking. `ExitPlanMode`
- * raises the plan for review: the banner shows the plan controls, a rejection
- * keeps plan mode, and an approval implements the plan and switches the session
- * to Accept Edits (CodeBuddy's own plan-exit mode).
+ * raises a review banner. Rejection keeps Plan. Approval gives the native
+ * model the ExitPlanMode result, then CodeBuddy returns to Default.
  */
 codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
 
@@ -21,7 +20,7 @@ function planText(testId: string): string {
 }
 
 codebuddyTest.describe('CodeBuddy Code plan approval', () => {
-  codebuddyTest('raises the plan for review, keeps plan mode on reject, and implements it on approve', async ({ codebuddyWorkspace, page, modelScript }) => {
+  codebuddyTest('raises review again after rejection and resumes in Default after approval', async ({ codebuddyWorkspace, page, modelScript }) => {
     void codebuddyWorkspace
     await waitForSettingsHydrated(page)
     // Plan mode drives the agent past what a test can count: entering it starts
@@ -45,18 +44,26 @@ codebuddyTest.describe('CodeBuddy Code plan approval', () => {
     await page.keyboard.type('not ready yet', { delay: 50 })
     await page.getByTestId('plan-reject-btn').click()
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
+    await expectSettingsOptionChosen(page, 'permissionMode-plan')
     await expectSettingsChip(page, 'Plan')
 
     await modelScript.queue({ toolCalls: [exitPlanModeToolCall(PROVIDER, 'exit-plan-2', modelScript.prompt(planText('second')))] })
+    await modelScript.rule({
+      name: 'the approved plan continues in the native model',
+      when: { body: 'Exited plan mode' },
+      respond: { text: 'The approved plan continued.' },
+      once: true,
+    })
     await sendMessage(page, modelScript.prompt('Present the plan again.'))
     await modelScript.waitForSteps(1)
     const banner2 = await waitForControlBanner(page)
     await expect(banner2).toContainText('Plan Ready for Review')
     await page.getByTestId('plan-approve-btn').click()
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
-    await waitForAgentIdle(page, 180_000)
-    // An approved plan exit switches the session to Accept Edits.
-    await expectSettingsChip(page, 'Accept Edits')
+    await expect.poll(async () => (await modelScript.status()).ruleMatches['the approved plan continues in the native model'] ?? 0).toBe(1)
+    await waitForAgentIdle(page)
+    // The installed CodeBuddy CLI returns to Default after an approved exit.
+    await expectSettingsOptionChosen(page, 'permissionMode-default')
   })
 })

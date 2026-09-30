@@ -905,9 +905,10 @@ func codexEffortValue(effort string) (string, bool) {
 // sets threadId: startOrResumeThread adds that for the resume case.
 func codexThreadParams(model, cwd, approvalPolicy, sandboxPolicy, serviceTier string) map[string]interface{} {
 	params := map[string]interface{}{
-		"cwd":            cwd,
-		"approvalPolicy": approvalPolicy,
-		"sandbox":        sandboxPolicy,
+		"cwd":                   cwd,
+		"approvalPolicy":        approvalPolicy,
+		"sandbox":               sandboxPolicy,
+		"experimentalRawEvents": true,
 		// Request detailed summaries so app-server emits reasoning summary items.
 		"config": map[string]interface{}{
 			"model_reasoning_summary": "detailed",

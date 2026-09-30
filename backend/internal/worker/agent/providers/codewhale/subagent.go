@@ -101,6 +101,8 @@ type codewhaleChild struct {
 	nextIndex int
 	openTools map[string]string
 	missing   int
+	// The watcher sends only native status changes to the registry.
+	reportedStatus bgtask.Status
 }
 
 // stopAll ends every watcher and waits for each one. It is nil-safe and
@@ -309,20 +311,20 @@ type agentRunRecord struct {
 	ResultSummary string `json:"result_summary"`
 }
 
-// agentRunStatus maps a ledger status onto the registry. final is false for a
-// run that still works, and for a word this build does not know: a final status
-// is absorbing, so guessing one for a live child would close its row early.
-//
-// An interrupted child can continue from its checkpoint when the parent sends
-// it a followup. Its row closes as stopped all the same, because the registry
-// cannot open a final row again.
+// agentRunStatus maps a ledger status onto the registry. An interrupted child
+// can resume from its checkpoint, so its row stays open. Unknown words stay
+// open too: a final registry status cannot return to Running.
 func agentRunStatus(word string) (status bgtask.Status, final bool) {
 	switch word {
+	case "queued", "starting":
+		return bgtask.StatusPending, false
+	case "waiting_for_user", agentRunStatusInterrupted:
+		return bgtask.StatusPaused, false
 	case agentRunStatusCompleted:
 		return bgtask.StatusCompleted, true
 	case agentRunStatusFailed:
 		return bgtask.StatusFailed, true
-	case agentRunStatusCancelled, agentRunStatusInterrupted:
+	case agentRunStatusCancelled:
 		return bgtask.StatusStopped, true
 	default:
 		return bgtask.StatusRunning, false
@@ -381,6 +383,17 @@ func (a *Agent) pollChild(ctx context.Context, sink agent.ProviderServices, chil
 	child.missing = 0
 	status, final := agentRunStatus(record.Status)
 	if !final {
+		if child.reportedStatus == bgtask.StatusUnspecified && status == bgtask.StatusRunning {
+			// startChild already opened the row as Running.
+			child.reportedStatus = status
+		} else if child.reportedStatus != status {
+			// The child sink owns transcript rows; the root sink owns this task row.
+			if err := a.sink.UpdateBackgroundTaskStatus(child.agentID, status, ""); err != nil {
+				slog.Warn("codewhale update a subagent run status", "agent_id", a.AgentID(), "child", child.agentID, "error", err)
+			} else {
+				child.reportedStatus = status
+			}
+		}
 		return false
 	}
 	// The last messages land before the status turns final, so one more read

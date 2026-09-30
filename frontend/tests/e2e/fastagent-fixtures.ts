@@ -56,6 +56,7 @@ export async function openFastAgentAgent(
   const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, workingDir, {
     agentProvider: AgentProvider.FAST_AGENT,
     ...settings,
+    model: optionValues.model ?? settings.model,
     optionValues: { ...settings.optionValues, ...optionValues },
   })
   return { agentId, workingDir }

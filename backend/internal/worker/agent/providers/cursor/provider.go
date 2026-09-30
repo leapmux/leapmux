@@ -3,6 +3,7 @@ package cursor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -26,6 +27,13 @@ const (
 // ACP family shares.
 type cursorProvider struct {
 	acp.Provider
+}
+
+func (cursorProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
+	if attachment.Kind == agent.AttachmentKindPDF || attachment.Kind == agent.AttachmentKindBinary {
+		return fmt.Errorf("cursor ACP omits %s attachment %q", attachment.Kind, attachment.Filename)
+	}
+	return nil
 }
 
 // ListStoredSessions reads Cursor's own session store; see sessions.go.

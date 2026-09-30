@@ -171,6 +171,9 @@ func (a *Agent) createPayload(settings clineSettings, spec sessionSpec) map[stri
 	sessionConfig := map[string]any{
 		"providerId": a.selection.Provider,
 		"modelId":    settings.model,
+		// Hub sessions do not inherit the CLI's compaction default. Enable
+		// basic compaction so overflow recovery can shrink native history.
+		"compaction": map[string]any{"enabled": true, "strategy": "basic"},
 	}
 	if spec.sessionID != "" {
 		sessionConfig["sessionId"] = spec.sessionID

@@ -11,6 +11,7 @@
     "defaultMode",
     "subagent",
     "subagentRequest",
+    "todo",
     "configIds"
   ],
   "$defs": {
@@ -83,6 +84,9 @@
       "$ref": "#/$defs/table"
     },
     "subagentRequest": {
+      "$ref": "#/$defs/table"
+    },
+    "todo": {
       "$ref": "#/$defs/table"
     },
     "configIds": {

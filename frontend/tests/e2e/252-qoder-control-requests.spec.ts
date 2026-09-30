@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { bashToolCall } from './helpers/providerToolCalls'
 import {
@@ -19,7 +21,7 @@ qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
 
 qoderTest.describe('Qoder CLI control requests', () => {
   qoderTest('raises a banner for a tool call and runs it once allowed', async ({ askingQoderWorkspace, page, modelScript }) => {
-    void askingQoderWorkspace
+    const output = join(askingQoderWorkspace.workingDir, 'qoder-control-probe.txt')
     const command = 'printf hi > ./qoder-control-probe.txt'
     const call = bashToolCall(AgentProvider.QODER, 'call-1', command)
     await modelScript.queue({ toolCalls: [call] })
@@ -32,9 +34,27 @@ qoderTest.describe('Qoder CLI control requests', () => {
     await modelScript.waitForSteps(1)
     const banner = page.getByTestId('control-banner').filter({ visible: true })
     await expect(banner).toContainText('qoder-control-probe.txt')
+    expect(existsSync(output)).toBe(false)
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
     await modelScript.waitForSteps()
     await waitForAgentIdle(page, 180_000)
     await expect(banner).toHaveCount(0)
+    expect(readFileSync(output, 'utf8')).toBe('hi')
+  })
+
+  qoderTest('keeps a denied write out of the workspace', async ({ askingQoderWorkspace, page, modelScript }) => {
+    const output = join(askingQoderWorkspace.workingDir, 'qoder-control-denied.txt')
+    const command = 'printf denied > ./qoder-control-denied.txt'
+    await modelScript.queue({ toolCalls: [bashToolCall(AgentProvider.QODER, 'denied-call', command)] })
+    await modelScript.fallback({ text: 'The denied call ended.' })
+    await sendMessage(page, modelScript.prompt(`Try ${command}.`))
+    await modelScript.waitForSteps(1)
+    const banner = page.getByTestId('control-banner').filter({ visible: true })
+    await expect(banner).toContainText('qoder-control-denied.txt')
+    expect(existsSync(output)).toBe(false)
+    await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
+    await waitForAgentIdle(page, 180_000)
+    await expect(banner).toHaveCount(0)
+    expect(existsSync(output)).toBe(false)
   })
 })

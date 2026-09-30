@@ -309,6 +309,11 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 			fmt.Errorf("write state file: %w", stateErr))
 	}
 	acquired.statePath = statePath
+	// Services that build browser origins must use the assigned port. Keep the
+	// configured bind request intact for a later start with the same config.
+	if len(tcpEntries) > 0 {
+		cfg = cfg.WithResolvedPrimaryTCPListen(resolvedByEntry[tcpEntries[0]])
+	}
 
 	// The listener set takes over the base listeners HERE, so the failure paths
 	// below release them through the set rather than twice, and so the reporter

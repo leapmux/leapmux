@@ -113,15 +113,15 @@ func TestOnlyCursorTransformsACreatePlanAnswer(t *testing.T) {
 	assert.NotEqual(t, response, res.Content, "Cursor answers create_plan with its own outcome")
 }
 
-// TestOnlyCodexHasLocalPlanApprovalSettings pins that no provider but Codex
-// states local settings for a plan approval. Codex's own settings are pinned by
-// TestPlanApprovalOptions_PerProvider in its package.
-func TestOnlyCodexHasLocalPlanApprovalSettings(t *testing.T) {
+// TestOnlyCodexAndQoderHaveLocalPlanApprovalSettings checks the providers that
+// supply local settings for a plan approval. Their packages test the settings.
+func TestOnlyCodexAndQoderHaveLocalPlanApprovalSettings(t *testing.T) {
 	t.Parallel()
 
 	registry := Registry()
 	for _, provider := range append(agentlabels.AllProviders(), leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED) {
-		if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
+		if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX ||
+			provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER {
 			continue
 		}
 		assert.Empty(t, registry.Plugin(provider).PlanApprovalOptions(""), "provider %v has no local plan approval settings", provider)

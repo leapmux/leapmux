@@ -6,27 +6,245 @@ import {
   backgroundBashToolCall,
   bashToolCall,
   blockGoalToolCall,
+  clineRunTeammateTaskToolCall,
+  clineSpawnTeammateToolCall,
+  codebuddyFindWorkflowToolCall,
+  codebuddyTaskCreateToolCall,
+  codebuddyTaskUpdateToolCall,
+  codebuddyWaitForMcpServersToolCall,
+  codebuddyWorkflowToolCall,
+  codewhaleWorkflowToolCall,
   completeGoalToolCall,
   createGoalToolCall,
+  cursorCreatePlanToolCall,
+  cursorGenerateImageToolCall,
+  cursorWebFetchPermissionToolCall,
+  diracCondenseToolCall,
   diracEditAnchorCapture,
   diracRespondToolCall,
+  droidToolSearchToolCall,
   editToolCall,
   enterPlanModeToolCall,
   exitPlanModeFromFileToolCall,
   exitPlanModeToolCall,
+  gooseReadImageToolCall,
+  grokWorkflowToolCall,
   hasToolFor,
+  junieSubagentSubmitToolCall,
+  junieSubmitPlanToolCall,
+  kimiAgentSwarmToolCall,
+  kimiReadMediaFileToolCall,
   kiroCompleteTodosToolCall,
   kiroSwitchToExecutionToolCall,
+  lettaTaskCreateToolCall,
+  lettaTaskListToolCall,
+  lettaTaskUpdateToolCall,
+  lettaViewImageToolCall,
   mcpToolCall,
   mimoInteractiveBashToolCall,
   mimoTaskToolCall,
   mimoWorkflowToolCall,
   ohMyPiYieldToolCall,
+  piTodoToolCall,
+  qoderWorkflowToolCall,
+  qwenWorkflowToolCall,
   readToolCall,
+  reasonixViewImageToolCall,
   spawnSubagentToolCall,
   updateTodosToolCall,
   writeToolCall,
+  zcodeCreateWorkflowToolCall,
+  zcodeNodeImageToolCall,
+  zcodeWorkflowSkillToolCall,
 } from './providerToolCalls'
+
+describe('image-read tool calls', () => {
+  it('uses Kimi Code ReadMediaFile for an image path', () => {
+    expect(kimiReadMediaFileToolCall('kimi-image', '/work/shot.png')).toEqual({
+      id: 'kimi-image',
+      name: 'ReadMediaFile',
+      arguments: { path: '/work/shot.png' },
+    })
+  })
+
+  it('uses Goose and Reasonix native image tool schemas', () => {
+    expect(gooseReadImageToolCall('goose-image', '/work/shot.png')).toEqual({
+      id: 'goose-image',
+      name: 'read_image',
+      arguments: { source: '/work/shot.png' },
+    })
+    expect(reasonixViewImageToolCall('reasonix-image', '/work/shot.png')).toEqual({
+      id: 'reasonix-image',
+      name: 'view_image',
+      arguments: { path: '/work/shot.png' },
+    })
+  })
+
+  it('uses the installed ZCode Node schema and escapes image labels', () => {
+    const label = 'image "); nodeRepl.write("forged'
+    expect(zcodeNodeImageToolCall('zcode-image', 'AQID', label)).toEqual({
+      id: 'zcode-image',
+      name: 'mcp__node_repl__js',
+      arguments: {
+        code: `nodeRepl.write(${JSON.stringify(label)}); await nodeRepl.emitImage({ base64: "AQID", mimeType: 'image/png' })`,
+        title: `Show ${label}`,
+      },
+    })
+  })
+
+  it('loads ZCode dynamic workflows before a named inline run', () => {
+    expect(zcodeWorkflowSkillToolCall('load-skill')).toEqual({
+      id: 'load-skill',
+      name: 'Skill',
+      arguments: { skill: 'dynamic-workflows' },
+    })
+    expect(zcodeCreateWorkflowToolCall('create-run', 'e2e-probe', 'return { conclusion: "done" }')).toEqual({
+      id: 'create-run',
+      name: 'CreateWorkflow',
+      arguments: { name: 'e2e-probe', script: 'return { conclusion: "done" }' },
+    })
+  })
+})
+
+describe('Cursor interactive tool calls', () => {
+  it('builds a question with stable native question and option ids', () => {
+    expect(askUserQuestionToolCall(AgentProvider.CURSOR, 'cursor-q', [{
+      header: 'Color',
+      question: 'Which color?',
+      options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Green', description: 'Use green.' }],
+    }])).toEqual({
+      id: 'cursor-q',
+      name: 'askQuestion',
+      arguments: {
+        title: 'Color',
+        questions: [{
+          id: 'question-1',
+          prompt: 'Which color?',
+          allowMultiple: false,
+          options: [{ id: 'option-1-1', label: 'Blue' }, { id: 'option-1-2', label: 'Green' }],
+        }],
+      },
+    })
+  })
+
+  it('refuses a question call with no questions', () => {
+    expect(() => askUserQuestionToolCall(AgentProvider.CURSOR, 'cursor-q', [])).toThrow('at least one question')
+  })
+
+  it('builds native plan and web-fetch approval queries', () => {
+    expect(cursorCreatePlanToolCall('plan-1', 'Review', 'Review the change.', '# Plan')).toEqual({
+      id: 'plan-1',
+      name: 'createPlan',
+      arguments: { name: 'Review', overview: 'Review the change.', plan: '# Plan' },
+    })
+    expect(cursorWebFetchPermissionToolCall('fetch-1', 'https://example.invalid/probe')).toEqual({
+      id: 'fetch-1',
+      name: 'webFetch',
+      arguments: { url: 'https://example.invalid/probe' },
+    })
+  })
+})
+
+describe('Copilot native tool calls', () => {
+  it('builds the installed exit_plan_mode request', () => {
+    expect(exitPlanModeToolCall(AgentProvider.GITHUB_COPILOT, 'copilot-plan', 'Review the change.')).toEqual({
+      id: 'copilot-plan',
+      name: 'exit_plan_mode',
+      arguments: {
+        summary: 'Review the change.',
+        actions: ['autopilot', 'interactive', 'exit_only'],
+        recommendedAction: 'interactive',
+      },
+    })
+  })
+
+  it('builds the installed MCP tool request', () => {
+    expect(mcpToolCall(AgentProvider.GITHUB_COPILOT, 'copilot-form', { server: 'form_probe', tool: 'ask', input: {} })).toEqual({
+      id: 'copilot-form',
+      name: 'form_probe-ask',
+      arguments: {},
+    })
+  })
+})
+
+describe('Amp MCP tool calls', () => {
+  it('uses the installed MCP tool name and input', () => {
+    expect(mcpToolCall(AgentProvider.AMP, 'amp-echo', { server: 'echo_probe', tool: 'echo', input: { value: 'amp' } })).toEqual({
+      id: 'amp-echo',
+      name: 'mcp__echo_probe__echo',
+      arguments: { value: 'amp' },
+    })
+  })
+})
+
+describe('kimiAgentSwarmToolCall', () => {
+  it('uses the native swarm schema for item prompts', () => {
+    expect(kimiAgentSwarmToolCall('swarm', 'Review modules', 'Review {{item}}.', ['module-a'])).toEqual({
+      id: 'swarm',
+      name: 'AgentSwarm',
+      arguments: {
+        description: 'Review modules',
+        subagent_type: 'coder',
+        prompt_template: 'Review {{item}}.',
+        items: ['module-a'],
+      },
+    })
+  })
+})
+
+describe('qwenWorkflowToolCall', () => {
+  it('uses the native inline workflow schema', () => {
+    expect(qwenWorkflowToolCall('run', 'return 1')).toEqual({
+      id: 'run',
+      name: 'workflow',
+      arguments: { script: 'return 1' },
+    })
+  })
+})
+
+describe('codewhaleWorkflowToolCall', () => {
+  it('uses a structured read-only plan with one child', () => {
+    expect(codewhaleWorkflowToolCall('run', 'Probe the workflow', 'Reply with PONG.')).toEqual({
+      id: 'run',
+      name: 'workflow',
+      arguments: {
+        action: 'run',
+        plan: {
+          goal: 'Probe the workflow',
+          risk: 'read_only',
+          phases: [],
+          children: [{ label: 'Probe child', prompt: 'Reply with PONG.', type: 'explore', file_scope: [] }],
+          gates: [],
+        },
+      },
+    })
+  })
+})
+
+describe('grokWorkflowToolCall', () => {
+  it('uses a tagged Rhai script source', () => {
+    expect(grokWorkflowToolCall('run', 'let meta = #{};')).toEqual({
+      id: 'run',
+      name: 'workflow',
+      arguments: { source: { type: 'script', script: 'let meta = #{};' } },
+    })
+  })
+})
+
+describe('Cline teammate tool calls', () => {
+  it('spawns and runs one teammate with the native schemas', () => {
+    expect(clineSpawnTeammateToolCall('spawn', 'reviewer', 'Review the file.')).toEqual({
+      id: 'spawn',
+      name: 'team_spawn_teammate',
+      arguments: { agentId: 'reviewer', rolePrompt: 'Review the file.' },
+    })
+    expect(clineRunTeammateTaskToolCall('run', 'reviewer', 'Find the issue.')).toEqual({
+      id: 'run',
+      name: 'team_run_task',
+      arguments: { agentId: 'reviewer', task: 'Find the issue.', runMode: 'async' },
+    })
+  })
+})
 
 /**
  * Every provider this project supports. Read off the proto enum rather than
@@ -185,7 +403,7 @@ describe('spawnSubagentToolCall', () => {
     // for a roster or a status, and no child runs.
     const call = spawnSubagentToolCall(AgentProvider.CODEWHALE, 'call-1', { description: 'Probe it', prompt: 'Go.' })
     expect(call.name).toBe('agent')
-    expect(call.arguments).toEqual({ action: 'start', name: 'probe_it', type: 'explore', prompt: 'Go.' })
+    expect(call.arguments).toEqual({ action: 'start', name: 'probe_it', type: 'explore', prompt: 'Go.', detached: false })
   })
 
   it('falls back to a usable name when the description reduces to nothing', () => {
@@ -242,6 +460,43 @@ describe('askUserQuestionToolCall', () => {
       { id: 'question_2', header: 'Choice', question: 'Which size?', options: [{ label: 'S', description: 'Small' }], allow_free_text: false, multi_select: true },
     ])
   })
+  it('uses Codex question ids and omits fields outside its native schema', () => {
+    const call = askUserQuestionToolCall(AgentProvider.CODEX, 'codex-question', [
+      { question: 'Which color?', header: 'Color', options: [
+        { label: 'Blue (Recommended)', description: 'Use blue.', preview: 'ignored' },
+        { label: 'Red', description: 'Use red.' },
+      ] },
+    ])
+    expect(call).toMatchObject({
+      id: 'codex-question',
+      name: 'request_user_input',
+      arguments: { questions: [{
+        id: 'question_1',
+        header: 'Color',
+        question: 'Which color?',
+        options: [
+          { label: 'Blue (Recommended)', description: 'Use blue.' },
+          { label: 'Red', description: 'Use red.' },
+        ],
+      }] },
+    })
+  })
+
+  it('uses Copilot ask_user with one question and plain choice labels', () => {
+    const question = {
+      question: 'Which color?',
+      header: 'Color',
+      options: [
+        { label: 'Blue', description: 'Use blue.' },
+        { label: 'Green', description: 'Use green.' },
+      ],
+    }
+    expect(askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, 'copilot-question', [question]))
+      .toEqual({ id: 'copilot-question', name: 'ask_user', arguments: { question: 'Which color?', choices: ['Blue', 'Green'] } })
+    expect(() => askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, 'none', [])).toThrow('exactly one')
+    expect(() => askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, 'two', [question, question])).toThrow('exactly one')
+    expect(() => askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, 'multi', [{ ...question, multiSelect: true }])).toThrow('single-choice')
+  })
 })
 
 describe('mimoInteractiveBashToolCall', () => {
@@ -270,6 +525,27 @@ describe('mcpToolCall', () => {
   // server and the tool.
   it('calls a Model Context Protocol tool in the agent\'s own shape', () => {
     const request = { server: 'form_probe', tool: 'echo', input: { text: 'hi' } }
+    expect(mcpToolCall(AgentProvider.CLAUDE_CODE, 'claude-call', request)).toEqual({
+      id: 'claude-call',
+      name: 'mcp__form_probe__echo',
+      arguments: { text: 'hi' },
+    })
+    expect(mcpToolCall(AgentProvider.CODEX, 'codex-call', request)).toEqual({
+      id: 'codex-call',
+      name: 'echo',
+      namespace: 'mcp__form_probe',
+      arguments: { text: 'hi' },
+    })
+    expect(mcpToolCall(AgentProvider.CURSOR, 'cursor-call', request)).toEqual({
+      id: 'cursor-call',
+      name: 'cursorMcp',
+      arguments: { server: 'form_probe', tool: 'echo', input: { text: 'hi' } },
+    })
+    expect(mcpToolCall(AgentProvider.CODEBUDDY, 'codebuddy-call', request)).toEqual({
+      id: 'codebuddy-call',
+      name: 'mcp__form_probe__echo',
+      arguments: { text: 'hi' },
+    })
     expect(mcpToolCall(AgentProvider.GROK_BUILD, 'call-1', request)).toEqual({
       id: 'call-1',
       name: 'use_tool',
@@ -280,6 +556,66 @@ describe('mcpToolCall', () => {
       name: 'mcp',
       arguments: { tool: 'form_probe_echo', args: { text: 'hi' } },
     })
+    expect(mcpToolCall(AgentProvider.FAST_AGENT, 'call-3', request)).toEqual({
+      id: 'call-3',
+      name: 'form_probe__echo',
+      arguments: { text: 'hi' },
+    })
+    expect(mcpToolCall(AgentProvider.GOOSE, 'goose-call', request)).toEqual({
+      id: 'goose-call',
+      name: 'form_probe__echo',
+      arguments: { text: 'hi' },
+    })
+    expect(mcpToolCall(AgentProvider.CODEWHALE, 'codewhale-call', request)).toEqual({
+      id: 'codewhale-call',
+      name: 'mcp_form_probe_echo',
+      arguments: { text: 'hi' },
+    })
+    expect(mcpToolCall(AgentProvider.QWEN_CODE, 'qwen-call', request)).toEqual({
+      id: 'qwen-call',
+      name: 'mcp__form_probe__echo',
+      arguments: { text: 'hi' },
+    })
+    for (const provider of [AgentProvider.MIMO_CODE, AgentProvider.KILO, AgentProvider.OPENCODE]) {
+      expect(mcpToolCall(provider, 'family-call', request)).toEqual({
+        id: 'family-call',
+        name: 'form_probe_echo',
+        arguments: { text: 'hi' },
+      })
+    }
+  })
+})
+
+describe('codebuddyWaitForMcpServersToolCall', () => {
+  it('waits for the project server before the model calls its tool', () => {
+    expect(codebuddyWaitForMcpServersToolCall('wait-call', ['form_probe']))
+      .toEqual({ id: 'wait-call', name: 'WaitForMcpServers', arguments: { servers: ['form_probe'] } })
+  })
+})
+
+describe('CodeBuddy Workflow tool calls', () => {
+  it('discovers and executes the deferred Workflow tool', () => {
+    expect(codebuddyFindWorkflowToolCall('find')).toEqual({ id: 'find', name: 'ToolSearch', arguments: { tool_names: ['Workflow'] } })
+    expect(codebuddyWorkflowToolCall('run', 'return 1')).toEqual({
+      id: 'run',
+      name: 'DeferExecuteTool',
+      arguments: { toolName: 'Workflow', params: { script: 'return 1' } },
+    })
+  })
+})
+
+describe('CodeBuddy task tool calls', () => {
+  it('uses the native TaskCreate and TaskUpdate schemas', () => {
+    expect(codebuddyTaskCreateToolCall('create', 'Inspect', 'Inspect the repository.')).toEqual({
+      id: 'create',
+      name: 'TaskCreate',
+      arguments: { subject: 'Inspect', description: 'Inspect the repository.' },
+    })
+    expect(codebuddyTaskUpdateToolCall('update', '1', 'completed')).toEqual({
+      id: 'update',
+      name: 'TaskUpdate',
+      arguments: { taskId: '1', status: 'completed' },
+    })
   })
 })
 
@@ -289,6 +625,26 @@ describe('blockGoalToolCall', () => {
       id: 'call-1',
       name: 'update_goal',
       arguments: { status: 'blocked', blocker: 'Stops here.' },
+    })
+  })
+})
+
+describe('piTodoToolCall', () => {
+  it('uses the native incremental create, update, and clear actions', () => {
+    expect(piTodoToolCall('create', { action: 'create', subject: 'Inspect the repository' })).toEqual({
+      id: 'create',
+      name: 'todo',
+      arguments: { action: 'create', subject: 'Inspect the repository' },
+    })
+    expect(piTodoToolCall('update', { action: 'update', id: 1, status: 'completed' })).toEqual({
+      id: 'update',
+      name: 'todo',
+      arguments: { action: 'update', id: 1, status: 'completed' },
+    })
+    expect(piTodoToolCall('clear', { action: 'clear' })).toEqual({
+      id: 'clear',
+      name: 'todo',
+      arguments: { action: 'clear' },
     })
   })
 })
@@ -348,10 +704,16 @@ describe('updateTodosToolCall', () => {
     })
   })
 
-  // OpenCode's `todowrite` takes the same `content`/`status`/`activeForm` list
-  // as Claude. Cursor folds the neutral statuses onto its own enum words.
-  it('writes the OpenCode list as todowrite, and the Cursor list as updateTodos', () => {
-    expect(updateTodosToolCall(AgentProvider.OPENCODE, 'call-1', [{ step: 'One', status: 'pending' }]).name).toBe('todowrite')
+  // OpenCode and Kilo require a priority for each item. Cursor folds the
+  // neutral statuses onto its own enum words.
+  it('writes the OpenCode family list with priorities, and the Cursor list with enum statuses', () => {
+    for (const provider of [AgentProvider.OPENCODE, AgentProvider.KILO]) {
+      expect(updateTodosToolCall(provider, 'call-1', [{ step: 'One', status: 'pending' }])).toEqual({
+        id: 'call-1',
+        name: 'todowrite',
+        arguments: { todos: [{ content: 'One', status: 'pending', priority: 'medium', activeForm: 'One' }] },
+      })
+    }
     expect(updateTodosToolCall(AgentProvider.CURSOR, 'call-1', [
       { step: 'First', status: 'completed' },
       { step: 'Second', status: 'in_progress' },
@@ -393,6 +755,14 @@ describe('editToolCall', () => {
 describe('kimi code vocabulary', () => {
   const kimi = AgentProvider.KIMI_CODE
 
+  it('calls a registered MCP tool with its native qualified name', () => {
+    expect(mcpToolCall(kimi, 'kimi-mcp', { server: 'echo_probe', tool: 'echo', input: { value: 'kimi' } })).toEqual({
+      id: 'kimi-mcp',
+      name: 'mcp__echo_probe__echo',
+      arguments: { value: 'kimi' },
+    })
+  })
+
   it('offers no plan-carrying exit, because its exit call raises the plan file', () => {
     expect(hasToolFor(kimi, 'exitPlanMode')).toBe(false)
     expect(exitPlanModeFromFileToolCall(kimi, 'call-1', [
@@ -405,8 +775,8 @@ describe('kimi code vocabulary', () => {
     })
   })
 
-  it('offers the plan-file exit for no other provider', () => {
-    expect(PROVIDERS.filter(p => hasToolFor(p, 'exitPlanModeFromFile'))).toEqual([kimi])
+  it('offers the plan-file exit only for Kimi Code and Qoder CLI', () => {
+    expect(PROVIDERS.filter(p => hasToolFor(p, 'exitPlanModeFromFile'))).toEqual([kimi, AgentProvider.QODER])
   })
 
   it('writes the question in snake case and drops the preview the schema refuses', () => {
@@ -458,11 +828,40 @@ describe('kimi code vocabulary', () => {
   })
 })
 
-// Grok Build and Qwen Code state a spawn's foreground or background ALWAYS: Qwen
-// 0.24 backgrounds an agent unless the call says otherwise, so a builder that left
-// the flag out would let a CLI release pick the path a test drives.
+describe('qoder cli vocabulary', () => {
+  it('passes a native Workflow script without changing its source', () => {
+    const script = 'export const meta = { name: "probe", description: "Run one child." };'
+    expect(qoderWorkflowToolCall('qoder-workflow', script)).toEqual({
+      id: 'qoder-workflow',
+      name: 'Workflow',
+      arguments: { script },
+    })
+  })
+
+  it('reads the plan file on ExitPlanMode without a plan argument', () => {
+    const qoder = AgentProvider.QODER
+    expect(hasToolFor(qoder, 'exitPlanMode')).toBe(false)
+    expect(exitPlanModeFromFileToolCall(qoder, 'exit-qoder', [])).toEqual({
+      id: 'exit-qoder',
+      name: 'ExitPlanMode',
+      arguments: {},
+    })
+  })
+
+  it('calls a registered MCP tool by its native qualified name', () => {
+    expect(mcpToolCall(AgentProvider.QODER, 'qoder-mcp-form', { server: 'form_probe', tool: 'ask', input: {} })).toEqual({
+      id: 'qoder-mcp-form',
+      name: 'mcp__form_probe__ask',
+      arguments: {},
+    })
+  })
+})
+
+// These providers state a spawn's foreground or background choice on the native
+// wire. An omitted flag lets a CLI release choose which path the test drives.
 describe('spawnSubagentToolCall background flag', () => {
   it.each([
+    [AgentProvider.CODEWHALE, 'detached'],
     [AgentProvider.GROK_BUILD, 'background'],
     [AgentProvider.QWEN_CODE, 'run_in_background'],
   ])('states the flag both ways for provider %s', (provider, flag) => {
@@ -475,6 +874,63 @@ describe('spawnSubagentToolCall background flag', () => {
     const call = spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'call-1', { description: 'd', prompt: 'p', background: true })
     expect(call.arguments).not.toHaveProperty('background')
     expect(call.arguments).not.toHaveProperty('run_in_background')
+  })
+})
+
+describe('Droid Task tool call', () => {
+  it('states a valid child type and both native await choices', () => {
+    const request = { description: 'Inspect the parser', prompt: 'Count the files.' }
+    expect(spawnSubagentToolCall(AgentProvider.DROID, 'droid-task', request)).toEqual({
+      id: 'droid-task',
+      name: 'Task',
+      arguments: { subagent_type: 'explorer', description: 'Inspect the parser', prompt: 'Count the files.', await: true },
+    })
+    expect(spawnSubagentToolCall(AgentProvider.DROID, 'droid-task-bg', { ...request, background: true })).toEqual({
+      id: 'droid-task-bg',
+      name: 'Task',
+      arguments: { subagent_type: 'explorer', description: 'Inspect the parser', prompt: 'Count the files.', await: false },
+    })
+  })
+})
+
+describe('Droid file tool calls', () => {
+  it('uses the installed Read and Edit argument names', () => {
+    const path = '/work/droid-note.txt'
+    expect(readToolCall(AgentProvider.DROID, 'read-note', path)).toEqual({
+      id: 'read-note',
+      name: 'Read',
+      arguments: { file_path: path },
+    })
+    expect(editToolCall(AgentProvider.DROID, 'edit-note', { path, before: 'before', after: 'after' })).toEqual({
+      id: 'edit-note',
+      name: 'Edit',
+      arguments: { file_path: path, old_str: 'before', new_str: 'after' },
+    })
+  })
+})
+
+describe('Droid MCP tool call', () => {
+  it('uses the native three-underscore server and tool name', () => {
+    expect(droidToolSearchToolCall('search-1', 'form_probe ask')).toEqual({
+      id: 'search-1',
+      name: 'ToolSearch',
+      arguments: { query: 'form_probe ask' },
+    })
+    expect(mcpToolCall(AgentProvider.DROID, 'form-1', { server: 'form_probe', tool: 'ask', input: {} })).toEqual({
+      id: 'form-1',
+      name: 'form_probe___ask',
+      arguments: {},
+    })
+  })
+})
+
+describe('Cursor GenerateImage tool call', () => {
+  it('keeps the native image path and bytes in its scripted result', () => {
+    expect(cursorGenerateImageToolCall('image-1', 'A teal square', '/work/square.png', 'iVBORw0KGgo')).toEqual({
+      id: 'image-1',
+      name: 'generateImage',
+      arguments: { description: 'A teal square', filePath: '/work/square.png', imageData: 'iVBORw0KGgo' },
+    })
   })
 })
 
@@ -577,6 +1033,14 @@ describe('the Oh My Pi tool vocabulary', () => {
 
   const omp = AgentProvider.OH_MY_PI
 
+  it('uses the minted MCP tool name', () => {
+    expect(mcpToolCall(omp, 'omp-mcp', { server: 'echo_probe', tool: 'echo', input: { value: 'omp' } })).toEqual({
+      id: 'omp-mcp',
+      name: 'mcp__echo_probe_echo',
+      arguments: { value: 'omp' },
+    })
+  })
+
   it('addresses a file by path in the read, write and replace-mode edit tools', () => {
     expect(bashToolCall(omp, 'call-1', 'ls')).toEqual({ id: 'call-1', name: 'bash', arguments: { command: 'ls' } })
     expect(readToolCall(omp, 'call-1', 'notes.txt')).toEqual({ id: 'call-1', name: 'read', arguments: { path: 'notes.txt' } })
@@ -630,6 +1094,14 @@ describe('the Oh My Pi tool vocabulary', () => {
 
 describe('the Cline tool vocabulary', () => {
   const cline = AgentProvider.CLINE
+
+  it('uses the SDK MCP server and tool separator', () => {
+    expect(mcpToolCall(cline, 'cline-mcp', { server: 'echo_probe', tool: 'echo', input: { value: 'cline' } })).toEqual({
+      id: 'cline-mcp',
+      name: 'echo_probe__echo',
+      arguments: { value: 'cline' },
+    })
+  })
 
   it('uses Cline\'s own tools and their argument names', () => {
     expect(bashToolCall(cline, 'c', 'echo hi')).toEqual({ id: 'c', name: 'run_commands', arguments: { commands: ['echo hi'] } })
@@ -691,15 +1163,18 @@ describe('the Amp tool vocabulary', () => {
       .toEqual({ id: 'c', name: 'Task', arguments: { description: 'Probe it', prompt: 'Go.' } })
   })
 
-  it('offers no plan-mode, question, to-do, goal, or MCP tool', () => {
-    for (const operation of ['enterPlanMode', 'exitPlanMode', 'exitPlanModeFromFile', 'askUserQuestion', 'updateTodos', 'createGoal', 'completeGoal', 'blockGoal', 'mcpTool'] as const)
+  it('offers no plan mode, question, to-do, or goal tool', () => {
+    for (const operation of ['enterPlanMode', 'exitPlanMode', 'exitPlanModeFromFile', 'askUserQuestion', 'updateTodos', 'createGoal', 'completeGoal', 'blockGoal'] as const)
       expect(hasToolFor(amp, operation), operation).toBe(false)
+    expect(hasToolFor(amp, 'mcpTool')).toBe(true)
   })
 })
 
 /**
  * The patch text of an apply_patch call: Amp states it as an argument, and Codex
  * states it as the JSON string literal that its `exec` source passes.
+ * A patch marks each hunk line. An unmarked line is not part of the hunk,
+ * so apply_patch refuses the patch or applies another change.
  */
 function patchTextOf(call: MockModelToolCall): string {
   const argument = call.arguments?.patchText
@@ -711,8 +1186,6 @@ function patchTextOf(call: MockModelToolCall): string {
   return JSON.parse(literal) as string
 }
 
-// A patch marks each line of a hunk. An unmarked line is not part of the hunk, so
-// apply_patch refuses the patch or applies another change.
 describe('the Junie tool vocabulary', () => {
   const junie = AgentProvider.JUNIE
 
@@ -746,13 +1219,63 @@ describe('the Junie tool vocabulary', () => {
     expect(spawnSubagentToolCall(junie, 'c', { description: 'Probe it', prompt: 'Go.' })).toEqual({
       id: 'c',
       name: 'spawn_subagent',
-      arguments: { agent: 'general_purpose', name: 'Probe it', task: 'Go.' },
+      arguments: { agent: 'junie-cli-docs', name: 'Probe it', task: 'Go.' },
+    })
+    expect(spawnSubagentToolCall(junie, 'custom', {
+      description: 'Read the test file',
+      prompt: 'Read note.txt.',
+      agentType: 'leapmux-e2e-child',
+    })).toEqual({
+      id: 'custom',
+      name: 'spawn_subagent',
+      arguments: { agent: 'leapmux-e2e-child', name: 'Read the test file', task: 'Read note.txt.' },
+    })
+  })
+
+  it('submits a plan through the installed submit tool', () => {
+    expect(junieSubmitPlanToolCall(
+      'p',
+      'probe-plan',
+      [{ name: 'Requirements', content: 'Inspect the repository.' }],
+      [{ name: 'Inspect the repository', description: 'Read the relevant files.' }],
+    )).toEqual({
+      id: 'p',
+      name: 'submit',
+      arguments: {
+        name: 'probe-plan',
+        proposal: [{ name: 'Requirements', content: 'Inspect the repository.' }],
+        delivery_plan: [{ name: 'Inspect the repository', description: 'Read the relevant files.' }],
+      },
+    })
+  })
+
+  it('submits the bundled documentation child answer with solution_summary', () => {
+    expect(junieSubagentSubmitToolCall('child', 'Junie keeps sessions in its home.')).toEqual({
+      id: 'child',
+      name: 'submit',
+      arguments: { solution_summary: 'Junie keeps sessions in its home.' },
+    })
+  })
+
+  it('uses the native MCP server and tool spelling', () => {
+    expect(mcpToolCall(junie, 'form-call', { server: 'form_probe', tool: 'ask', input: {} })).toEqual({
+      id: 'form-call',
+      name: 'mcp_form_probe_ask',
+      arguments: {},
     })
   })
 })
 
 describe('the Dirac tool vocabulary', () => {
   const dirac = AgentProvider.DIRAC
+
+  it('returns the native compaction context through condense', () => {
+    expect(diracCondenseToolCall('summary-1', 'Keep the branch state.')).toEqual({
+      id: 'summary-1',
+      name: 'condense',
+      arguments: { context: 'Keep the branch state.' },
+    })
+  })
 
   it('sends the schema fields alone, never the rawInput tool stamp', () => {
     // Dirac stamps `tool` into the rawInput it REPORTS; the model that sends it
@@ -790,7 +1313,14 @@ describe('the Dirac tool vocabulary', () => {
       name: 'respond',
       arguments: { operation: 'complete', text: 'Done.' },
     })
-    expect(hasToolFor(dirac, 'spawnSubagent'), 'use_subagents is unverified in this build').toBe(false)
+  })
+
+  it('spawns a child with the native use_subagents array', () => {
+    expect(spawnSubagentToolCall(dirac, 'c', { description: 'Count files', prompt: 'Count the files.' })).toEqual({
+      id: 'c',
+      name: 'use_subagents',
+      arguments: { subagents: [{ task_title: 'Count files', prompt: 'Count the files.' }] },
+    })
   })
 })
 
@@ -829,6 +1359,11 @@ describe('the MiMo Code tool vocabulary', () => {
 
   it('offers no whole-list to-do update, because its task tool acts on one item', () => {
     expect(hasToolFor(mimo, 'updateTodos')).toBe(false)
+  })
+
+  it('calls the local MCP tool under its server prefix', () => {
+    expect(mcpToolCall(mimo, 'ask-1', { server: 'form_probe', tool: 'ask', input: {} }))
+      .toEqual({ id: 'ask-1', name: 'form_probe_ask', arguments: {} })
   })
 })
 
@@ -878,10 +1413,51 @@ describe('the Fast Agent tool vocabulary', () => {
     })
   })
 
-  it('offers no background shell, plan-mode, question, to-do, goal, or MCP tool', () => {
+  it('spawns a child with the native message argument', () => {
+    expect(spawnSubagentToolCall(fastAgent, 'c', { description: 'Count files', prompt: 'Count the files.' })).toEqual({
+      id: 'c',
+      name: 'subagent',
+      arguments: { message: 'Count the files.', label: 'Count files' },
+    })
+  })
+
+  it('offers no background shell, plan-mode, question, to-do, or goal tool', () => {
     // `execute`'s schema is command/args/env/cwd with additionalProperties
     // false, and no separate background tool is offered.
-    for (const operation of ['backgroundBash', 'enterPlanMode', 'exitPlanMode', 'exitPlanModeFromFile', 'askUserQuestion', 'updateTodos', 'createGoal', 'completeGoal', 'blockGoal', 'mcpTool'] as const)
+    for (const operation of ['backgroundBash', 'enterPlanMode', 'exitPlanMode', 'exitPlanModeFromFile', 'askUserQuestion', 'updateTodos', 'createGoal', 'completeGoal', 'blockGoal'] as const)
       expect(hasToolFor(fastAgent, operation), operation).toBe(false)
+    expect(hasToolFor(fastAgent, 'mcpTool')).toBe(true)
+  })
+})
+
+describe('the Letta Code task vocabulary', () => {
+  it('opens an image with the native ViewImage tool', () => {
+    expect(lettaViewImageToolCall('image-1', '/work/shot.png')).toEqual({
+      id: 'image-1',
+      name: 'ViewImage',
+      arguments: { path: '/work/shot.png' },
+    })
+  })
+
+  it('offers no one-call whole-list update for its TaskCreate and TaskUpdate tools', () => {
+    expect(hasToolFor(AgentProvider.LETTA, 'updateTodos')).toBe(false)
+  })
+
+  it('uses the installed TaskCreate, TaskUpdate, and TaskList argument fields', () => {
+    expect(lettaTaskCreateToolCall('create-1', 'Inspect', 'Read the files.')).toEqual({
+      id: 'create-1',
+      name: 'TaskCreate',
+      arguments: { subject: 'Inspect', description: 'Read the files.' },
+    })
+    expect(lettaTaskUpdateToolCall('update-1', 'task_1', 'completed')).toEqual({
+      id: 'update-1',
+      name: 'TaskUpdate',
+      arguments: { taskId: 'task_1', status: 'completed' },
+    })
+    expect(lettaTaskListToolCall('list-1')).toEqual({
+      id: 'list-1',
+      name: 'TaskList',
+      arguments: {},
+    })
   })
 })

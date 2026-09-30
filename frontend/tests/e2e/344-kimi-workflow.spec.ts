@@ -1,0 +1,52 @@
+import { kimiAgentSwarmToolCall } from './helpers/providerToolCalls'
+import { expandBackgroundTasksSection, expectRowBecomesFinal } from './helpers/subagentRegistry'
+import { applyPermissionPreset, assistantBubbles, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from './helpers/ui'
+import { workflowGroupHeading, workflowRowsShareGroup } from './helpers/workflowGrouping'
+import { expect, KIMI_E2E_SKIP_REASON, kimiTest } from './kimi-fixtures'
+
+kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
+
+kimiTest.describe('Kimi Code workflow grouping', () => {
+  kimiTest('groups native AgentSwarm members under its description', async ({ authenticatedKimiWorkspace, page, modelScript }) => {
+    void authenticatedKimiWorkspace
+    await waitForSettingsHydrated(page)
+    await applyPermissionPreset(page, 'bypass')
+
+    const description = 'Review the probe items'
+    await modelScript.rule(
+      {
+        name: 'the first swarm member answers',
+        when: { system: 'You are now running as a subagent', body: 'Reply with exactly SWARM_ALPHA' },
+        respond: { text: 'SWARM_ALPHA' },
+        once: true,
+      },
+      {
+        name: 'the second swarm member answers',
+        when: { system: 'You are now running as a subagent', body: 'Reply with exactly SWARM_BRAVO' },
+        respond: { text: 'SWARM_BRAVO' },
+        once: true,
+      },
+    )
+    await modelScript.queue(
+      { toolCalls: [kimiAgentSwarmToolCall('swarm-run', description, modelScript.prompt('Reply with exactly {{item}}.'), ['SWARM_ALPHA', 'SWARM_BRAVO'])] },
+      { text: 'The swarm finished.' },
+    )
+    await sendMessage(page, modelScript.prompt('Run one native AgentSwarm member and report completion.'))
+    await modelScript.waitForSteps()
+    await waitForAgentIdle(page)
+    await expect(assistantBubbles(page).filter({ hasText: 'The swarm finished.' }).first()).toBeVisible()
+    const status = await modelScript.status()
+    expect(status.ruleMatches['the first swarm member answers']).toBe(1)
+    expect(status.ruleMatches['the second swarm member answers']).toBe(1)
+
+    await expandBackgroundTasksSection(page)
+    const members = page.locator('[data-testid="bg-task-row"]:visible[data-kind="workflow"]')
+    await expect(members).toHaveCount(2)
+    for (const member of await members.all()) {
+      await expectRowBecomesFinal(page, member)
+      await expect(member).toHaveAttribute('data-status', 'completed')
+      await expect.poll(() => workflowGroupHeading(member)).toContain(description)
+    }
+    await expect.poll(() => workflowRowsShareGroup(members.nth(0), members.nth(1))).toBe(true)
+  })
+})

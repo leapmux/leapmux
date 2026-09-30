@@ -15,15 +15,18 @@ import (
 func TestOpenCodeSteerUsesConcurrentACPPrompt(t *testing.T) {
 	t.Parallel()
 
-	agent, requests := acptest.NewAgentForRPC(t,
+	ag, requests := acptest.NewAgentForRPC(t,
 		func() *Agent { return &Agent{} },
 		func(agent *Agent) *acp.Base { return &agent.Base },
 	)
-	agent.SetPromptActiveForTest(true)
-	require.NoError(t, agent.SteerInput("guide the turn", nil))
+	ag.SetSinkForTest(agent.NewProviderServices(&agenttest.Sink{}))
+	ag.SetPromptActiveForTest(true)
+	require.NoError(t, ag.SteerInput("guide the turn", nil))
 	require.Eventually(t, func() bool { return len(requests()) == 1 }, time.Second, time.Millisecond)
 	assert.Equal(t, acp.MethodSessionPrompt, requests()[0].Method)
 	assert.Equal(t, "session-1", requests()[0].Params["sessionId"])
+	require.Eventually(t, func() bool { return !ag.IsPendingForTest(1) }, 30*time.Second, 5*time.Millisecond,
+		"the detached callback must finish before the fixture closes its peer")
 }
 
 // OpenCode steers with a second session/prompt, so it steers although it

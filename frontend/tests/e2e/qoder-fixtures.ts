@@ -8,14 +8,15 @@
  * model from the mock endpoint under an isolated `--config-dir`. No test reaches
  * a Qoder account, a real model, or the developer's own Qoder configuration.
  */
-import type { Page } from '@playwright/test'
+import type { Page, TestInfo } from '@playwright/test'
+import { existsSync, readdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { QODER_MODE } from '../../src/generated/contracts/qoder-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from './agentSettings'
 import { test as base, expect } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
 import { missingBinaryReason } from './helpers/binaryOnPath'
-import { refreshQoderSdkAuthPayload } from './helpers/mockAgentEnvironment'
 import { createTestDirectory } from './helpers/runDirectory'
 import { loginViaToken, openWorkspace } from './helpers/ui'
 import { withAgentWorkspace } from './helpers/workspace'
@@ -49,17 +50,37 @@ interface QoderAgentServer {
 const ACCEPT_EDITS = { optionValues: { permissionMode: QODER_MODE.AcceptEdits } }
 
 function qoderWorkspace(prefix: string, openOptions?: { optionValues: Record<string, string> }) {
-  return async ({ page, leapmuxServer }: { page: Page, leapmuxServer: QoderAgentServer }, use: (fixture: QoderWorkspaceFixture) => Promise<void>) => {
-    // The CLI consumes the SDK auth payload on first read; every launch needs
-    // its own copy of the one-shot credential file.
-    refreshQoderSdkAuthPayload(leapmuxServer.agentEnv)
+  return async ({ page, leapmuxServer }: { page: Page, leapmuxServer: QoderAgentServer }, use: (fixture: QoderWorkspaceFixture) => Promise<void>, testInfo: TestInfo) => {
     const workingDir = createQoderWorkingDir()
     await withAgentWorkspace(leapmuxServer, { provider: AgentProvider.QODER, prefix, ...(openOptions ? { openOptions } : {}), workingDir: () => workingDir }, async (workspace) => {
       await loginViaToken(page, leapmuxServer.adminToken)
       await openWorkspace(page, workspace.workspaceId)
-      await use({ ...workspace, workingDir })
+      try {
+        await use({ ...workspace, workingDir })
+      }
+      finally {
+        if (testInfo.status !== testInfo.expectedStatus)
+          await attachQoderNativeLog(leapmuxServer.agentEnv, testInfo)
+      }
     })
   }
+}
+
+/** Keep the native endpoint trace when a Qoder browser test fails. */
+async function attachQoderNativeLog(agentEnv: Record<string, string>, testInfo: TestInfo): Promise<void> {
+  const authFile = agentEnv.QODER_SDK_AUTH_PAYLOAD_FILE
+  if (!authFile)
+    return
+  const runsDir = join(dirname(authFile), 'logs', 'runs')
+  if (!existsSync(runsDir))
+    return
+  const runs = readdirSync(runsDir, { withFileTypes: true })
+  const latest = runs.filter(entry => entry.isDirectory()).map(entry => entry.name).sort().at(-1)
+  if (!latest)
+    return
+  const path = join(runsDir, latest, 'qodercli.log')
+  if (existsSync(path))
+    await testInfo.attach('qoder-native-log', { path, contentType: 'text/plain' })
 }
 
 export const qoderTest = base.extend<{ qoderWorkspace: QoderWorkspaceFixture, askingQoderWorkspace: QoderWorkspaceFixture }>({
@@ -80,7 +101,6 @@ export async function openQoderAgent(
   optionValues: Record<string, string> = {},
   workingDir: string = createQoderWorkingDir(),
 ): Promise<{ agentId: string, workingDir: string }> {
-  refreshQoderSdkAuthPayload(server.agentEnv)
   const settings = agentOpenOptions(agentSettings(AgentProvider.QODER))
   const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, workingDir, {
     agentProvider: AgentProvider.QODER,
@@ -91,3 +111,8 @@ export async function openQoderAgent(
 }
 
 export { expect }
+
+/** Assert the Qoder mode chip, without matching the separate effort chip. */
+export async function expectQoderModeChip(page: Page, mode: string): Promise<void> {
+  await expect(page.locator('[data-testid="composer-mode-trigger"]:visible')).toContainText(mode)
+}

@@ -299,6 +299,65 @@ func TestKimiRecordsNotices(t *testing.T) {
 	assert.Equal(t, 5, rig.sink.NotificationCount(), "an agent that discards its output records nothing")
 }
 
+func TestKimiManualCompactionReleasesTheInputQueue(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual"})
+
+	rig.feed(t, map[string]any{
+		"type":   contracts.KimiEventCompactionCompleted,
+		"result": map[string]any{"summary": "Keep the task state.", "compactedCount": 3, "tokensBefore": 120, "tokensAfter": 20},
+	})
+	last, published := rig.sink.LastTurnActive()
+	assert.True(t, published, "the completed event must release the queue's compact turn")
+	assert.False(t, last, "the completed event releases queued input")
+}
+
+func TestKimiAutoCompactionKeepsTheUserTurnActive(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	rig.startTurn(t, 1, contracts.KimiOriginUser)
+	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "auto"})
+	rig.feed(t, map[string]any{
+		"type":   contracts.KimiEventCompactionCompleted,
+		"result": map[string]any{"summary": "Keep the task state.", "compactedCount": 3, "tokensBefore": 120, "tokensAfter": 20},
+	})
+	last, published := rig.sink.LastTurnActive()
+	assert.True(t, published)
+	assert.True(t, last, "auto compaction does not release the user's active turn")
+}
+
+func TestKimiRepeatedCompactionCompletionKeepsTheNextTurnActive(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual"})
+	completed := map[string]any{
+		"type":   contracts.KimiEventCompactionCompleted,
+		"result": map[string]any{"summary": "Keep the task state.", "compactedCount": 3, "tokensBefore": 120, "tokensAfter": 20},
+	}
+	rig.feed(t, completed)
+	rig.startTurn(t, 2, contracts.KimiOriginUser)
+	rig.feed(t, completed)
+	last, published := rig.sink.LastTurnActive()
+	assert.True(t, published)
+	assert.True(t, last, "a duplicate completion cannot release the next turn")
+}
+
+func TestKimiManualCompactionWithoutACompletedResultReleasesTheInputQueue(t *testing.T) {
+	t.Parallel()
+	for _, eventType := range []string{contracts.KimiEventCompactionBlocked, contracts.KimiEventCompactionCancelled} {
+		t.Run(eventType, func(t *testing.T) {
+			t.Parallel()
+			rig := newKimiOutputRig(t)
+			rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual"})
+			rig.feed(t, map[string]any{"type": eventType})
+			last, published := rig.sink.LastTurnActive()
+			assert.True(t, published, "the native result must release the queue's compact turn")
+			assert.False(t, last, "the native result releases queued input")
+		})
+	}
+}
+
 func TestKimiFailedTurn(t *testing.T) {
 	t.Parallel()
 

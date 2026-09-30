@@ -1,5 +1,6 @@
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { CODEWHALE_E2E_SKIP_REASON, CODEWHALE_SERVES_JOB_ROUTES, codewhaleTest, expect } from './codewhale-fixtures'
+import { exerciseLiveChildTranscript } from './helpers/liveChildTranscript'
 import { backgroundBashToolCall, spawnSubagentToolCall } from './helpers/providerToolCalls'
 import {
   expectNoRegistryRows,
@@ -13,15 +14,28 @@ import { assistantBubbles, sendMessage, userBubbles } from './helpers/ui'
 /**
  * 166 -- Codewhale subagent registry and child transcript.
  *
- * The `agent` tool returns at once with the child's id, and the child runs in
- * the background. The runtime reports nothing about the child on the thread's
- * own stream, so the worker reads the child's transcript file and its run
- * record until the run ends. When the child ends, the runtime also starts a
- * parent turn of its own that hands the child's answer to the model.
+ * The `agent` tool returns a child ID at once. The child runs in the
+ * background. The runtime omits child events from the parent thread stream.
+ * The Worker reads the child transcript and run record until the run ends.
+ * The runtime then starts a parent turn that gives the model the child answer.
  */
 codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
 
 codewhaleTest.describe('Codewhale subagent registry', () => {
+  codewhaleTest('shows the child prompt while the child remains open', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {
+    void authenticatedCodewhaleWorkspace
+    await exerciseLiveChildTranscript(page, modelScript, {
+      provider: AgentProvider.CODEWHALE,
+      childWhen: { user: 'Reply with CHILD_LIVE_DONE' },
+      childTask: 'Reply with CHILD_LIVE_DONE.',
+      parentTask: 'Delegate the live child task.',
+      holdParentAnswer: true,
+      background: true,
+      // A resumable native interruption keeps the child tab open as Paused.
+      allowPaused: true,
+    })
+  })
+
   codewhaleTest('a spawned child gets a registry row, a transcript tab and a report', async ({
     authenticatedCodewhaleWorkspace,
     page,

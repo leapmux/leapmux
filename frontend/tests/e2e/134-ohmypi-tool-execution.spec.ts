@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { bashToolCall, editToolCall, readToolCall, writeToolCall } from './helpers/providerToolCalls'
 import { createTestDirectory } from './helpers/runDirectory'
+import { expectToolRowImage, writeToolImage } from './helpers/toolImages'
 import { messageContents, sendMessage, waitForAgentIdle } from './helpers/ui'
 import { expect, OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from './ohmypi-fixtures'
 
@@ -21,6 +22,21 @@ async function chatText(page: Parameters<typeof messageContents>[0]): Promise<st
 }
 
 ohMyPiTest.describe('Oh My Pi tool execution', () => {
+  ohMyPiTest('draws a PNG returned by its Read tool', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {
+    const workingDir = authenticatedOhMyPiWorkspace.workingDir
+    if (!workingDir)
+      throw new Error('the Oh My Pi fixture needs a working directory')
+    const name = writeToolImage(workingDir, 'omp-read')
+    await modelScript.queue(
+      { toolCalls: [readToolCall(AgentProvider.OH_MY_PI, 'read-image', join(workingDir, name))] },
+      { text: 'The image read finished.' },
+    )
+    await sendMessage(page, modelScript.prompt('Read the PNG file.'))
+    await modelScript.waitForSteps()
+    await waitForAgentIdle(page)
+    await expectToolRowImage(page, name)
+  })
+
   ohMyPiTest('draws the output of a command', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {
     void authenticatedOhMyPiWorkspace
     // The command text states no `omp-42`, so only the command's own output
@@ -31,7 +47,7 @@ ohMyPiTest.describe('Oh My Pi tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Run the arithmetic command.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect.poll(() => chatText(page)).toContain('omp-42')
     // omp appends a `Wall time: <n> seconds` notice to every output. The
@@ -50,7 +66,7 @@ ohMyPiTest.describe('Oh My Pi tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Create the notes and read them back.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect.poll(() => chatText(page)).toContain('omp-read-3')
     // The E2E profile's `replace` edit makes omp print the bare file text, with no
@@ -71,7 +87,7 @@ ohMyPiTest.describe('Oh My Pi tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Change parity.ts.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     const diff = page.locator('[data-file-diff]:visible')
     await expect(diff.filter({ hasText: 'const parityAfter = 2' }).first()).toBeVisible()
@@ -87,7 +103,7 @@ ohMyPiTest.describe('Oh My Pi tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Write the note.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     expect(readFileSync(path, 'utf8')).toBe('omp was here\n')
     await expect.poll(() => chatText(page)).toContain('note.txt')

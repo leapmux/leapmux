@@ -94,7 +94,7 @@ func TestGrokUpdateSettingsSwitchesTheApprovalModeLive(t *testing.T) {
 
 	assert.True(t, result.AppliedLive)
 	syncPeer(t, a)
-	sent := requestsFor(requests(), grokYoloModeChangedMethod)
+	sent := requestsFor(requests(), "_x.ai/yolo_mode_changed")
 	require.Len(t, sent, 1)
 	assert.Equal(t, map[string]any{
 		"yolo_mode": true, "auto_mode": false, "permission_mode": "always-approve", "clientIdentifier": grokClientIdentifier,
@@ -105,6 +105,29 @@ func TestGrokUpdateSettingsSwitchesTheApprovalModeLive(t *testing.T) {
 	params := map[string]any{}
 	a.adjustSessionParams("session/new", params)
 	assert.Equal(t, map[string]any{"yoloMode": true, "autoMode": false}, params["_meta"])
+}
+
+func TestGrokUpdateSettingsNotifiesAutoAndAskWithNativeMethod(t *testing.T) {
+	t.Parallel()
+	a, _, requests := newGrokAgent(t, agent.Options{}, nil)
+
+	auto := a.UpdateSettings(map[string]string{contracts.GrokOptionApprovalMode: contracts.GrokApprovalModeAuto})
+	assert.True(t, auto.AppliedLive)
+	syncPeer(t, a)
+	sent := requestsFor(requests(), "_x.ai/yolo_mode_changed")
+	require.Len(t, sent, 1)
+	assert.Equal(t, map[string]any{
+		"yolo_mode": false, "auto_mode": true, "permission_mode": "auto", "clientIdentifier": grokClientIdentifier,
+	}, sent[0].Params)
+
+	ask := a.UpdateSettings(map[string]string{contracts.GrokOptionApprovalMode: contracts.GrokApprovalModeAsk})
+	assert.True(t, ask.AppliedLive)
+	syncPeer(t, a)
+	sent = requestsFor(requests(), "_x.ai/yolo_mode_changed")
+	require.Len(t, sent, 2)
+	assert.Equal(t, map[string]any{
+		"yolo_mode": false, "auto_mode": false, "permission_mode": "default", "clientIdentifier": grokClientIdentifier,
+	}, sent[1].Params)
 }
 
 func TestGrokUpdateSettingsLeavesAnUnchangedApprovalModeAlone(t *testing.T) {

@@ -90,6 +90,9 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 		isFinished: func(r bgtask.Item) bool {
 			return r.Status.IsFinished()
 		},
+		isWorking: func(r bgtask.Item) bool {
+			return r.Status.IsWorking()
+		},
 		deleteByKey: func(ctx context.Context, q *db.Queries, ownerID, key string) error {
 			_, err := q.DeleteAgentBackgroundTaskByRowKey(ctx, db.DeleteAgentBackgroundTaskByRowKeyParams{
 				OwnerAgentID: ownerID,
@@ -589,6 +592,9 @@ func (h *OutputHandler) MarkAgentBackgroundTasksExited(rootAgentID string, stopp
 		slog.Warn("mark background tasks ended failed", "agent_id", rootAgentID, "error", err)
 		return
 	}
+	// The SQL write also ends retained rows that the display cap hid. Their
+	// keys no longer count as working after this point.
+	cache.evictedActive = nil
 	// The cache catches up to the write it just made, so the broadcast below
 	// reports the display list the DB now holds. `changed` is the CACHE's answer
 	// on purpose: a row the display list never held moved nothing the client can
@@ -1614,19 +1620,18 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 		// agent row (EnsureChildAgent inserts the child before this upsert links
 		// it), leaving an unopenable transcript.
 		//
-		// A pool with no finished row gives up its oldest ACTIVE one. That needs
+		// A pool with no finished row gives up its oldest open one. That needs
 		// no special case for the linkage, because retention keeps a linked row
 		// in the table -- the cap limits what the sidebar shows, not what the
 		// registry indexes. An unlinked active row (a running shell) does lose
-		// its persisted row, which is the honest cost of a pool that is full of
-		// running work, and is what the warning records.
+		// its persisted row, which is the cost of a full pool of open work.
 		bucket := int64(merged.Kind)
 		evictedRow, dropped, err := reg.makeRoomLocked(ctx, bucket)
 		if err != nil {
 			return registryChange{}, err
 		}
 		if dropped && !evictedRow.Status.IsFinished() {
-			slog.Warn("background task registry at cap with no finished row; dropping the oldest active row from the display list",
+			slog.Warn("background task registry at cap with no finished row; dropping the oldest open row from the display list",
 				"owner", rootAgentID, "row_key", task.RowKey, "kind", bucket, "cap", bgtask.MaxTasks,
 				"evicted_row_key", evictedRow.RowKey, "retained_in_store", evictedRow.ChildAgentID != "")
 		}

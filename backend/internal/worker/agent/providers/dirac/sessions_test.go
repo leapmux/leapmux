@@ -25,6 +25,12 @@ func TestDiracReadsItsSessionStore(t *testing.T) {
 	})
 }
 
+func TestDiracHomeUsesTheProcessEnvironmentWithoutAQueryHook(t *testing.T) {
+	t.Setenv("DIRAC_DIR", "")
+	home := t.TempDir()
+	assert.Equal(t, filepath.Join(home, ".dirac"), diracHome(agent.StoredSessionQuery{HomeDir: home}))
+}
+
 func TestDiracStoredSessionsFiltersByWorkingDir(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()

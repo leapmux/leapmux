@@ -7,11 +7,13 @@ import { classifyCopilotMessage, copilotResultDivider } from './classification'
 import { copilotCompactionBoundary, copilotNotificationEntry } from './extractors/notification'
 import { copilotExtractRow } from './extractors/row'
 import { copilotControls } from './pluginControls'
+import { resolveCopilotMessage } from './resolveMessage'
 import { copilotContextUsage } from './sessionMetadata'
 import { copilotRelatedMessages, copilotSpanRole } from './spanRole'
 
 const copilotPlugin: ProviderPlugin = {
   transcript: {
+    resolveMessage: resolveCopilotMessage,
     classify: classifyCopilotMessage,
     extractRow: copilotExtractRow,
     spanRole: copilotSpanRole,
@@ -25,7 +27,7 @@ const copilotPlugin: ProviderPlugin = {
     compactionBoundaryFromMessage: copilotCompactionBoundary,
   },
   configuration: {
-    attachments: { text: true, image: true, pdf: true, binary: true },
+    attachments: { text: true, image: true, pdf: false, binary: false },
     // Copilot's plan axis is its SESSION mode, beside the permission mode its presets
     // drive. The two are independent, which is why the mode chip reads the session-mode
     // group and the presets write the permission-mode one.

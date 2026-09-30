@@ -413,6 +413,23 @@ func TestHandleCodexOutput_MultiAgentV2PersistsPromptAndMirrorsFinalReport(t *te
 	assert.Equal(t, "parser-review", reports[0]["label"])
 }
 
+func TestHandleCodexOutput_RawResponseMirrorsAddNoTranscriptRows(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	for _, raw := range []string{
+		`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","item":{"type":"function_call","name":"exec_command","arguments":"{}","call_id":"call-1"}}}`,
+		`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}}}`,
+		`{"method":"rawResponse/completed","params":{"threadId":"main-thread","responseId":"response-1"}}`,
+	} {
+		handleCodexOutput(a, providerkit.ParseLine([]byte(raw)))
+	}
+
+	assert.Zero(t, sink.MessageCount())
+	assert.Zero(t, sink.NotificationCount())
+}
+
 func TestHandleCodexOutput_V1ChildMirrorsFinalReportWithoutAnAgentPath(t *testing.T) {
 	t.Parallel()
 
@@ -2594,8 +2611,7 @@ func TestCodexCollabStatusToRegistry_ResumableInterrupted(t *testing.T) {
 		{"errored", bgtask.StatusFailed, true, false},
 		{"notFound", bgtask.StatusFailed, true, false},
 		{"shutdown", bgtask.StatusStopped, true, false},
-		// The fix: interrupted stays Running (resumable), NOT final.
-		{"interrupted", bgtask.StatusRunning, false, true},
+		{"interrupted", bgtask.StatusPaused, false, true},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -2626,10 +2642,10 @@ func TestCodexChildTurnRegistryStatus(t *testing.T) {
 	}{
 		{providerStatus: "completed", wantStatus: bgtask.StatusCompleted, wantFinished: true},
 		{providerStatus: "failed", wantStatus: bgtask.StatusFailed, wantFinished: true},
-		{providerStatus: "cancelled", wantStatus: bgtask.StatusRunning, wantActivity: "paused"},
-		{providerStatus: "canceled", wantStatus: bgtask.StatusRunning, wantActivity: "paused"},
-		{providerStatus: "interrupted", wantStatus: bgtask.StatusRunning, wantActivity: "paused"},
-		{providerStatus: "aborted", wantStatus: bgtask.StatusRunning, wantActivity: "paused"},
+		{providerStatus: "cancelled", wantStatus: bgtask.StatusPaused, wantActivity: "paused"},
+		{providerStatus: "canceled", wantStatus: bgtask.StatusPaused, wantActivity: "paused"},
+		{providerStatus: "interrupted", wantStatus: bgtask.StatusPaused, wantActivity: "paused"},
+		{providerStatus: "aborted", wantStatus: bgtask.StatusPaused, wantActivity: "paused"},
 		{providerStatus: "futureStatus", wantStatus: bgtask.StatusRunning},
 	}
 	for _, test := range tests {
@@ -2650,9 +2666,8 @@ func TestCodexChildTurnRegistryStatus(t *testing.T) {
 	assert.Empty(t, transition.activity)
 }
 
-// Codex uses the activity item as its own liveness signal. Interrupted stops
-// liveness just like completed, so the registry must release the active count.
-func TestCodexSubAgentActivity_InterruptedFailsTheRun(t *testing.T) {
+// An interrupted activity pauses the row. A later interaction resumes it.
+func TestCodexSubAgentActivity_InterruptedPausesTheRun(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
@@ -2663,8 +2678,16 @@ func TestCodexSubAgentActivity_InterruptedFailsTheRun(t *testing.T) {
 	assert.True(t, a.handleCodexSubAgentActivity(item, "main-thread"), "consumed the activity item")
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
-	assert.Equal(t, bgtask.StatusFailed, rows[0].Status)
-	assert.True(t, rows[0].Status.IsFinished(), "the interrupted run no longer counts as active")
+	assert.Equal(t, bgtask.StatusPaused, rows[0].Status)
+	assert.False(t, rows[0].Status.IsFinished(), "the interrupted run stays open")
+	assert.False(t, rows[0].Status.IsWorking(), "the interrupted run is idle")
+
+	interacted := json.RawMessage(`{"type":"subAgentActivity","id":"interact-1","agentThreadId":"thr-1","agentPath":"/root/reviewer","kind":"interacted"}`)
+	assert.True(t, a.handleCodexSubAgentActivity(interacted, "main-thread"))
+	rows = sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusRunning, rows[0].Status)
+	assert.True(t, rows[0].Status.IsWorking())
 }
 
 // subAgentActivity is the THIRD writer that reports a collab child active again,

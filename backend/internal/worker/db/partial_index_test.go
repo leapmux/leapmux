@@ -65,8 +65,38 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 	for _, c := range []struct {
 		name  string
 		index string
+		seek  string
 		run   func(t *testing.T)
 	}{
+		{
+			name:  "HasOpenAgentForNativeSession",
+			index: "idx_agents_open_native_owner",
+			seek:  "SEARCH a USING INDEX idx_agents_open_native_owner",
+			run: func(t *testing.T) {
+				open, err := q.HasOpenAgentForNativeSession(t.Context(),
+					queries.HasOpenAgentForNativeSessionParams{
+						AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC,
+						SessionID:     "native-session",
+						TargetAgentID: "target",
+					})
+				require.NoError(t, err)
+				assert.False(t, open)
+			},
+		},
+		{
+			name:  "FindClosedAgentWithTranscriptForNativeSession",
+			index: "idx_agents_closed_native_session",
+			seek:  "SEARCH a USING INDEX idx_agents_closed_native_session",
+			run: func(t *testing.T) {
+				_, err := q.FindClosedAgentWithTranscriptForNativeSession(t.Context(),
+					queries.FindClosedAgentWithTranscriptForNativeSessionParams{
+						AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC,
+						WorkingDir:     "/work/project",
+						AgentSessionID: "native-session",
+					})
+				require.ErrorIs(t, err, sql.ErrNoRows)
+			},
+		},
 		{
 			name:  "ListMessagesByAgentAndSpan",
 			index: "idx_messages_span_id",
@@ -149,6 +179,10 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 			plan := explainPlan(t, connection, recorder.query, recorder.args)
 			assert.Containsf(t, plan, c.index,
 				"%s must seek %s; plan:\n%s\nquery:\n%s", c.name, c.index, plan, recorder.query)
+			if c.seek != "" {
+				assert.Containsf(t, plan, c.seek,
+					"%s must use the index for the root agent row; plan:\n%s\nquery:\n%s", c.name, plan, recorder.query)
+			}
 		})
 		covered[c.index] = struct{}{}
 	}

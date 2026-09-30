@@ -28,6 +28,22 @@ type zcodeProvider struct {
 // a chat that shows each one separately is unreadable. The key includes the tool
 // name so two different tools' denials stay distinguishable.
 func (zcodeProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
+	var state struct {
+		Method string `json:"method"`
+		Params struct {
+			Reason string `json:"reason"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(raw, &state) == nil && state.Method == contracts.ZCodeMethodStateUpdated {
+		switch state.Params.Reason {
+		case contracts.ZCodeStateReasonCompactStarted:
+			return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "zcode:compaction"}
+		case contracts.ZCodeStateReasonSessionCompacted,
+			contracts.ZCodeStateReasonSessionCompactFailed,
+			contracts.ZCodeStateReasonSessionCompactCancelled:
+			return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "zcode:compaction"}
+		}
+	}
 	var env zcodeEventEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return agent.NotificationClassification{}

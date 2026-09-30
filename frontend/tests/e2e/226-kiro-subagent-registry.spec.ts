@@ -1,4 +1,5 @@
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { exerciseLiveChildTranscript } from './helpers/liveChildTranscript'
 import { spawnSubagentToolCall } from './helpers/providerToolCalls'
 import {
   expectNoRegistryRows,
@@ -21,6 +22,18 @@ import { expect, KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from './kiro-fi
 kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
 
 kiroTest.describe('Kiro subagent registry', () => {
+  kiroTest('shows the child prompt while the child still runs', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+    const { workingDir } = await openKiroAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { policyPreset: 'allow-all' })
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    await exerciseLiveChildTranscript(page, modelScript, {
+      provider: AgentProvider.KIRO,
+      childWhen: { body: '"agentMode":"context-gatherer"', user: 'Reply with CHILD_LIVE_DONE' },
+      childTask: 'Reply with CHILD_LIVE_DONE.',
+      parentTask: 'Delegate the live child task.',
+      toolProof: { workingDir },
+    })
+  })
+
   kiroTest('a subagent opens a row and a child transcript with its answer', async ({
     page,
     authenticatedEmptyWorkspace,

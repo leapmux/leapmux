@@ -91,8 +91,8 @@ func droidSanitizeCwd(cwd string) string {
 	return strings.ReplaceAll(cwd, "/", "-")
 }
 
-// droidInitRequestID is the id the worker gives initialize_session. The
-// response that answers it carries the session id every later request needs.
+// droidInitRequestID is the id the worker gives initialize_session or
+// load_session. The reply settles startup before the worker accepts input.
 const droidInitRequestID = "leapmux-init"
 
 // droidEnvelope is the stream-jsonrpc message envelope. Every message the
@@ -147,17 +147,31 @@ type initializeParams struct {
 	Model           string `json:"model,omitempty"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	AutonomyMode    string `json:"autonomyMode,omitempty"`
-	SessionID       string `json:"sessionId,omitempty"`
+}
+
+// loadSessionParams are the droid.load_session params. A resume reads the
+// native transcript instead of creating a new session with the saved id.
+type loadSessionParams struct {
+	SessionID string `json:"sessionId"`
 }
 
 // addUserMessageParams are the droid.add_user_message params. The prompt
 // argument is forbidden with a streaming --input-format, so every turn goes
 // over this method. `text` is a plain string; a probe proved a `content` array
-// is refused with `params.text: Required`.
+// is refused with `params.text: Required`. Images ride the separate `images`
+// field, which carries each supported image as base64 data.
 type addUserMessageParams struct {
-	SessionID      string `json:"sessionId"`
-	Text           string `json:"text"`
-	QueuePlacement string `json:"queuePlacement,omitempty"`
+	SessionID      string            `json:"sessionId"`
+	Text           string            `json:"text"`
+	Images         []droidInputImage `json:"images,omitempty"`
+	QueuePlacement string            `json:"queuePlacement,omitempty"`
+}
+
+// droidInputImage is one of Droid's base64 input image sources.
+type droidInputImage struct {
+	Type      string `json:"type"`
+	MediaType string `json:"mediaType"`
+	Data      string `json:"data"`
 }
 
 // interruptParams are the droid.interrupt_session params.
@@ -165,17 +179,16 @@ type interruptParams struct {
 	SessionID string `json:"sessionId"`
 }
 
-// updateSettingsParams are the droid.update_session_settings params.
+// updateSettingsParams are the top-level droid.update_session_settings params.
 type updateSettingsParams struct {
-	SessionID string          `json:"sessionId"`
-	Settings  json.RawMessage `json:"settings"`
+	ModelID         string `json:"modelId,omitempty"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	InteractionMode string `json:"interactionMode,omitempty"`
+	AutonomyLevel   string `json:"autonomyLevel,omitempty"`
 }
 
-// queuePlacement values for add_user_message.
-const (
-	droidQueueEndOfTurn = "end_of_turn"
-	droidQueueEndOfLoop = "end_of_loop"
-)
+// Droid processes end_of_turn inside an active loop and starts a turn when idle.
+const droidQueueEndOfTurn = "end_of_turn"
 
 // autonomyMode values on the wire. The CLI's `--auto low|medium|high` maps to
 // the auto-* spellings; the default `normal` is read-only.

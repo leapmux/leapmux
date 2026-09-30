@@ -1,3 +1,4 @@
+import { exerciseManualCompaction } from './helpers/manualCompaction'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, sendMessage, waitForAgentIdle } from './helpers/ui'
 import { expect, OPENCODE_E2E_SKIP_REASON, opencodeTest } from './opencode-fixtures'
 
@@ -12,4 +13,9 @@ opencodeTest('renders an assistant answer and clears the thinking indicator', as
   await waitForAgentIdle(page, 120_000)
   await expectAssistantAnswer(page)
   await expect(page.getByTestId('thinking-indicator')).not.toBeVisible()
+})
+
+opencodeTest('compacts a scripted conversation on request', async ({ authenticatedOpencodeWorkspace, page, modelScript }) => {
+  void authenticatedOpencodeWorkspace
+  await exerciseManualCompaction(page, modelScript, { summaryRequestMarker: 'Create a new anchored summary from the conversation history' })
 })

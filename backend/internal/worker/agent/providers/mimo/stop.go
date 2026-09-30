@@ -126,6 +126,12 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion) {
 	held := a.takeUnreportedFailureLocked()
 	a.turnActive = false
 	a.interruptRequested = false
+	a.sessionSwitching = false
+	a.compactionAck = nil
+	a.manualCompactionID = ""
+	a.manualCompactionReady = false
+	a.manualFollowupSending = false
+	a.manualFollowupBusy = false
 	a.Mu.Unlock()
 	if held != nil {
 		// No turn end persists this failure now, and it can be the reason why the

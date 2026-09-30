@@ -71,6 +71,7 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 		DisableHostTerminal:  true,
 		ClientCapabilityMeta: kiroClientCapabilities(),
 		SessionParams:        a.adjustSessionParams,
+		PromptParams:         kiroPromptParams,
 		ModelDecorator:       decorateModel,
 		LocalOptionGroups:    a.localOptionGroups,
 		ApplyLocalOption:     a.applyLocalOption,

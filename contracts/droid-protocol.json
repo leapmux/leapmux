@@ -4,10 +4,9 @@
     "notifications": {
       "ToolExecutionPhaseChanged": {
         "sides": [
-          "go",
-          "ts"
+          "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "The worker stores the phase frame whole. The browser reads its type and hides routine phase updates."
       }
     },
     "notificationFields": {
@@ -253,6 +252,7 @@
     "SettingsUpdated": "settings_updated",
     "SessionTitleUpdated": "session_title_updated",
     "SessionTokenUsageChanged": "session_token_usage_changed",
+    "SessionCompacted": "session_compacted",
     "Error": "error"
   },
   "notificationFields": {
@@ -339,6 +339,7 @@
   },
   "modes": {
     "Default": "default",
+    "Spec": "spec",
     "AutoLow": "auto-low",
     "AutoMedium": "auto-medium",
     "AutoHigh": "auto-high"

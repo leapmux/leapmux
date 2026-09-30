@@ -5,7 +5,14 @@
   },
   "methods": {
     "RequestUserInput": "interaction/requestUserInput",
-    "RequestPermission": "interaction/requestPermission"
+    "RequestPermission": "interaction/requestPermission",
+    "StateUpdated": "state.updated"
+  },
+  "stateReasons": {
+    "CompactStarted": "compact_started",
+    "SessionCompacted": "session_compacted",
+    "SessionCompactFailed": "session_compact_failed",
+    "SessionCompactCancelled": "session_compact_cancelled"
   },
   "actions": {
     "Accept": "accept",

@@ -1,5 +1,5 @@
 {
-  "_readme": "Letta Code's App Server WebSocket vocabulary (protocol_v2, the server that `letta server --listen` runs), for the tables that BOTH the Go provider and the TS renderer plugin read. The worker persists each transcript row as Letta's own `stream_delta` payload, so the browser plugin dispatches on the same `message_type` and reads the same fields (`deltaFields`). `commands` holds the client->server command `kind` values and `messages` the server->client message `kind` values; the worker writes a command and reads a message, and the browser reads the persisted payload of a message that reached the transcript. `deltaKinds` holds the `message_type` of a `stream_delta`, which both sides dispatch on. `tools` holds the tool names both sides dispatch on: the worker opens a subagent row for `Agent`, answers the question request of `AskUserQuestion`, and streams the output of `Bash`; the browser draws each one. `subagentStates` holds the `status` values of `update_subagent_state`, which both sides read as the child lifecycle. `loopStatuses` holds the `update_loop_status` values, which the worker reads as the busy signal and the browser words the status chip from. Letta owns every value above except `modes` and `reply`: LeapMux owns `modes` (the value set of the permission-mode axis, mapped onto `runtime_start.mode`) and `reply` (the fields of the browser's decision; the approval payload is FLAT -- `kind`, `request_id` and `decision` sit at the top level, never under a `response` key).",
+  "_readme": "Letta Code's protocol_v2 App Server runs through `letta server --listen`. These tables hold wire values that the Go provider and TypeScript plugin both read. The Worker stores native `stream_delta` payloads. It stores one payload in the native shape per tool call when a message contains several calls. The plugin reads the same `message_type` and `deltaFields`. `commands` lists client command kinds. `messages` lists server message kinds. `deltaKinds` lists stream message types. `tools` lists native tool names both sides use. The Worker opens subagent rows for `Agent`, answers `AskUserQuestion`, and streams `Bash` output. The plugin draws each tool. `subagentStates` lists child lifecycle values. `loopStatuses` lists busy-state values. Letta owns these values except `modes` and `reply`. LeapMux owns `modes`, which maps permission choices to `runtime_start.mode`. LeapMux owns `reply`, the flat browser decision fields. `kind`, `request_id`, and `decision` stay at the top level, never under `response`.",
   "_unread": {
     "commands": {
       "AbortMessage": {
@@ -280,6 +280,7 @@
   },
   "deltaKinds": {
     "AssistantMessage": "assistant_message",
+    "ToolCallMessage": "tool_call_message",
     "ToolReturnMessage": "tool_return_message",
     "UserMessage": "user_message",
     "ReasoningMessage": "reasoning_message",
@@ -300,6 +301,10 @@
     "ConversationID": "conversation_id",
     "Content": "content",
     "ToolCallID": "tool_call_id",
+    "ToolCalls": "tool_calls",
+    "ToolCall": "tool_call",
+    "Name": "name",
+    "Arguments": "arguments",
     "ToolName": "tool_name",
     "ToolInput": "tool_input",
     "ToolReturn": "tool_return",

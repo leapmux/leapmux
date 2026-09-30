@@ -301,6 +301,7 @@ const (
 	StatusUnspecified = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_UNSPECIFIED)
 	StatusPending     = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PENDING)
 	StatusRunning     = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING)
+	StatusPaused      = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PAUSED)
 	StatusCompleted   = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_COMPLETED)
 	StatusFailed      = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_FAILED)
 	StatusStopped     = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_STOPPED)
@@ -309,7 +310,7 @@ const (
 
 // MinFinalStatus is the lowest FINAL ordinal, and the whole predicate the SQL
 // needs: `status >= MinFinalStatus` selects the final rows and `status <`
-// selects the active ones. The queries bind it rather than listing four status
+// selects the open ones. The queries bind it rather than listing four status
 // words, so the split follows a renumber instead of going stale.
 //
 // It states a property of the ORDER of the enum, which nothing in proto
@@ -319,10 +320,16 @@ const (
 const MinFinalStatus = StatusCompleted
 
 // IsFinished reports whether s is a final status -- one that makes a row
-// eligible for cap-eviction. Unspecified, Pending and Running rows are never
-// evicted; a row leaves only through a transition into a final status.
+// eligible for cap eviction. Unspecified, Pending, Running, and Paused are
+// open. A row becomes eligible for eviction only when it reaches a final status.
 func (s Status) IsFinished() bool {
 	return s == StatusCompleted || s == StatusFailed || s == StatusStopped || s == StatusInterrupted
+}
+
+// IsWorking reports whether a task currently contributes to agent activity.
+// A paused task stays open for a later turn but does not keep its tab busy.
+func (s Status) IsWorking() bool {
+	return s == StatusPending || s == StatusRunning
 }
 
 // Item mirrors leapmuxv1.BackgroundTaskItem in a plain-Go shape so the
@@ -630,6 +637,8 @@ func StatusWire(s Status) string {
 	switch s {
 	case StatusRunning:
 		return "running"
+	case StatusPaused:
+		return "paused"
 	case StatusCompleted:
 		return "completed"
 	case StatusFailed:

@@ -11,7 +11,7 @@ export const droidControls: ProviderControlCapability = {
   extractControl: droidExtractControl,
   controlResponseDisplay: cr => controlBehaviorDisplay(cr.response),
   buildControlResponse: (_payload, content, requestId) => buildDenyResponse(requestId, content),
-  // Droid's four autonomy modes are the permission-mode axis. Auto (High)
+  // Droid's autonomy modes are the permission-mode axis. Auto (High)
   // answers every call at once, which is what Bypass means.
   permissionPresets: { bypass: { sets: { permissionMode: DROID_MODE.AutoHigh } } },
   askUserQuestion: {

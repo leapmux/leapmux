@@ -70,6 +70,7 @@ export const CodeLanguagePopover: Component<CodeLanguagePopoverProps> = (props) 
     >
       <FilterableListbox
         items={LANGUAGE_ITEMS}
+        ariaLabel="Code language"
         placeholder="Filter languages..."
         testIdPrefix="code-lang"
         onSelect={langId => props.onApply(langId === 'plaintext' ? '' : langId)}

@@ -59,12 +59,12 @@ function piCompactionDetail(m: Record<string, unknown>): CompactionDetails {
 /**
  * The compaction boundary a Pi message states, or null when it states none.
  *
- * An ABORTED `compaction_end` produced no boundary at all, so the context size did
- * not move and the grid must not refresh from it.
+ * An aborted or failed `compaction_end` produced no boundary. A successful
+ * native frame carries `result`, even when it has no token count.
  */
 export function piCompactionBoundary(parsed: ParsedMessageContent): CompactionDetails | null {
   const inner = getInnerMessage(parsed)
-  if (!isObject(inner) || pickString(inner, 'type') !== PI_EVENT.CompactionEnd || inner.aborted === true)
+  if (!isObject(inner) || pickString(inner, 'type') !== PI_EVENT.CompactionEnd || inner.aborted === true || !pickObject(inner, 'result'))
     return null
   return piCompactionDetail(inner)
 }
@@ -82,9 +82,11 @@ export function piNotificationEntry(msg: Record<string, unknown>): NotificationE
   if (type === PI_EVENT.CompactionStart)
     return [{ kind: 'compaction', phase: 'start' }]
   if (type === PI_EVENT.CompactionEnd) {
-    return msg.aborted === true
-      ? [{ kind: 'compaction', phase: 'end', error: 'aborted' }]
-      : [{ kind: 'compaction', phase: 'end', detail: piCompactionDetail(msg) }]
+    if (msg.aborted === true)
+      return [{ kind: 'compaction', phase: 'end', error: 'aborted' }]
+    if (!pickObject(msg, 'result'))
+      return [{ kind: 'compaction', phase: 'end', error: pickString(msg, 'errorMessage') || 'no compaction result' }]
+    return [{ kind: 'compaction', phase: 'end', detail: piCompactionDetail(msg) }]
   }
 
   if (type === PI_EVENT.AutoRetryStart) {

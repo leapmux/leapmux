@@ -18,7 +18,8 @@
 import type { Page } from '@playwright/test'
 import type { MockModelRule } from './helpers/mockModelScript'
 import type { WorkspaceFixture } from './helpers/workspace'
-import { DROID_MODE } from '../../src/generated/contracts/droid-protocol'
+import { OPTION_ID_EFFORT } from '../../src/components/chat/settingsGroups'
+import { DROID_EFFORT, DROID_MODE } from '../../src/generated/contracts/droid-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
@@ -65,6 +66,7 @@ export interface DroidWorkspaceFixture extends WorkspaceFixture {
  * Default.
  */
 const AUTO_HIGH = { optionValues: { permissionMode: DROID_MODE.AutoHigh } }
+const REASONING_AUTO_HIGH = { optionValues: { ...AUTO_HIGH.optionValues, [OPTION_ID_EFFORT]: DROID_EFFORT.High } }
 
 interface DroidAgentServer {
   hubUrl: string
@@ -87,10 +89,13 @@ function droidWorkspace(prefix: string, openOptions?: { optionValues: Record<str
 export const droidTest = base.extend<{
   /** An agent in Auto (High), which raises no banner for a tool call. */
   authenticatedDroidWorkspace: DroidWorkspaceFixture
+  /** A custom-model agent with high reasoning effort. */
+  authenticatedReasoningDroidWorkspace: DroidWorkspaceFixture
   /** An agent in LeapMux's default Default mode, which asks before a change. */
   askingDroidWorkspace: DroidWorkspaceFixture
 }>({
   authenticatedDroidWorkspace: droidWorkspace('droid-e2e', AUTO_HIGH),
+  authenticatedReasoningDroidWorkspace: droidWorkspace('droid-e2e-reasoning', REASONING_AUTO_HIGH),
   askingDroidWorkspace: droidWorkspace('droid-e2e-ask'),
 })
 

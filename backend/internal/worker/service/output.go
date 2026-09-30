@@ -2478,6 +2478,9 @@ func (h *OutputHandler) todoOps() registryOps[cachedTodo] {
 		isFinished: func(r cachedTodo) bool {
 			return r.item.Status.IsFinished()
 		},
+		isWorking: func(r cachedTodo) bool {
+			return !r.item.Status.IsFinished()
+		},
 		deleteByKey: func(ctx context.Context, q *db.Queries, ownerID, key string) error {
 			_, err := q.DeleteAgentTodoByRowKey(ctx, db.DeleteAgentTodoByRowKeyParams{
 				AgentID: ownerID,

@@ -8,9 +8,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -34,6 +36,15 @@ func TestCodebuddyPlanModeControl(t *testing.T) {
 	assert.Equal(t, agent.PlanModeControlNone, p.PlanModeControl("Bash"))
 }
 
+func TestCodebuddyPlanModePermissionMode(t *testing.T) {
+	t.Parallel()
+
+	p := codebuddyProvider{}
+	assert.Equal(t, contracts.CodebuddyModePlan, p.PlanModePermissionMode(agent.PlanModeControlEnter))
+	assert.Equal(t, contracts.CodebuddyModeAcceptEdits, p.PlanModePermissionMode(agent.PlanModeControlExit))
+	assert.Empty(t, p.PlanModePermissionMode(agent.PlanModeControlNone))
+}
+
 func TestCodebuddyTurnEndToolUses(t *testing.T) {
 	t.Parallel()
 
@@ -41,11 +52,17 @@ func TestCodebuddyTurnEndToolUses(t *testing.T) {
 	count, ok := p.TurnEndToolUses([]byte(`{"type":"result","num_tool_uses":3}`))
 	assert.True(t, ok)
 	assert.Equal(t, int32(3), count)
+	count, ok = p.TurnEndToolUses([]byte(`{"type":"result","num_tool_uses":0}`))
+	assert.True(t, ok)
+	assert.Zero(t, count)
 
 	_, ok = p.TurnEndToolUses([]byte(`{"type":"result"}`))
 	assert.False(t, ok)
 
 	_, ok = p.TurnEndToolUses([]byte(`{`))
+	assert.False(t, ok)
+
+	_, ok = p.TurnEndToolUses([]byte(`{"type":"result","num_tool_uses":-1}`))
 	assert.False(t, ok)
 }
 
@@ -74,7 +91,7 @@ func TestCodebuddyReadsItsSessionStore(t *testing.T) {
 	t.Parallel()
 	agenttest.RequireReadsSessionStore(t, codebuddyProvider{}, func(t *testing.T, home, dir string) string {
 		projects := filepath.Join(home, ".codebuddy", "projects")
-		slug := mangleCodebuddyPath(dir)
+		slug := codebuddyProjectSlug(dir)
 		projectDir := filepath.Join(projects, slug)
 		require.NoError(t, os.MkdirAll(projectDir, 0o755))
 		handle := "session-codebuddy-1"
@@ -91,19 +108,28 @@ func TestCodebuddyReadsItsSessionStore(t *testing.T) {
 // newOfflineAgent builds an agent with no process, for the suites that drive
 // only the turn flag and the input-session guard.
 func newOfflineAgent(t *testing.T, sink *agenttest.Sink) *Agent {
+	return newOfflineAgentWithRuntime(t, sink, nil, nil)
+}
+
+func newOfflineAgentWithRuntime(t *testing.T, sink *agenttest.Sink, clock quartz.Clock, processDone chan struct{}) *Agent {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	return &Agent{
+	a := &Agent{
 		Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{
 			AgentID: "test-agent", ProviderName: "codebuddy", Ctx: ctx, Cancel: cancel,
 			Stdin: agenttest.NopStdin(io.Discard),
+			Clock: clock, ProcessDone: processDone,
 		}),
 		sink:           agent.NewModelProgressResetSink(agent.NewProviderServices(sink)),
 		sessionID:      "session-1",
 		permissionMode: "default",
 		pendingControl: make(map[string]chan<- codebuddyControlResult),
 	}
+	t.Cleanup(func() {
+		cancel()
+		a.stopWorkflowArchiveRetries()
+	})
+	return a
 }
 
 func TestCodebuddyPublishTurnActiveRaisesItsToken(t *testing.T) {

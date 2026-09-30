@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openPinnedModeAgentViaAPI } from './helpers/api'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, expectSettingsChip, expectUserMessage, loginViaToken, messageBubbles, openSettingsMenu, openWorkspace, visibleOnly } from './helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, expectSettingsChip, expectUserMessage, loginViaToken, messageBubbles, openSettingsMenu, openWorkspace, visibleOnly, waitForAgentIdle } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Settings and /clear after Worker restart', () => {
@@ -26,6 +26,7 @@ test.describe('Settings and /clear after Worker restart', () => {
 
       // Wait for the assistant's response containing "6912"
       await expectAssistantAnswer(page)
+      await waitForAgentIdle(page)
 
       // Step 2: Restart the Worker (stop + start). All persistent data
       // (workspaces, agents, messages) is stored on the Worker's SQLite DB,

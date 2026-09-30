@@ -170,6 +170,25 @@ func TestQwenIsJSONRPCReply(t *testing.T) {
 	}
 }
 
+func TestQwenAttachmentPolicyRejectsGenericBinary(t *testing.T) {
+	t.Parallel()
+
+	registry := agenttest.MustNewRegistry(Registration())
+	accepted := []*leapmuxv1.Attachment{
+		{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("hello")},
+		{Filename: "image.png", MimeType: "image/png", Data: []byte{0x89, 0x50}},
+		{Filename: "document.pdf", MimeType: "application/pdf", Data: []byte("%PDF")},
+	}
+	normalized, err := registry.NormalizeAttachments(leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE, accepted)
+	require.NoError(t, err)
+	require.Len(t, normalized, len(accepted))
+
+	binary := &leapmuxv1.Attachment{Filename: "archive.bin", MimeType: "application/octet-stream", Data: []byte{0xff, 0x00}}
+	normalized, err = registry.NormalizeAttachments(leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE, append(accepted, binary))
+	require.ErrorContains(t, err, binary.Filename)
+	require.Nil(t, normalized)
+}
+
 func TestQwenForwardsASelectedOptionOfThePlanApproval(t *testing.T) {
 	t.Parallel()
 	reply := []byte(`{"jsonrpc":"2.0","id":"jsonrpc:5","result":{"outcome":{"outcome":"selected","optionId":"restore_previous"}}}`)

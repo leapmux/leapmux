@@ -1,9 +1,12 @@
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import process from 'node:process'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { readToolCall } from './helpers/providerToolCalls'
-import { expectToolRowWithoutImage, writeToolImage } from './helpers/toolImages'
+import { writeMcpImageServer } from './helpers/mcpImageServer'
+import { mcpToolCall, readToolCall } from './helpers/providerToolCalls'
+import { expectMcpToolImage, expectToolRowWithoutImage, writeToolImage } from './helpers/toolImages'
 import { expectSettingsOptionChosen, openWorkspace, sendMessage, waitForAgentIdle } from './helpers/ui'
-import { KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from './kiro-fixtures'
+import { expect, KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from './kiro-fixtures'
 
 kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
 
@@ -33,5 +36,31 @@ kiroTest.describe('Kiro images in tool results', () => {
     await waitForAgentIdle(page, 120_000)
 
     await expectToolRowWithoutImage(page, 'tool-image-kiro-58')
+  })
+
+  kiroTest('renders the image returned by a local MCP tool', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+    let imageName = ''
+    let ready = ''
+    await openKiroAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { policyPreset: 'allow-all' }, (workingDir) => {
+      imageName = writeToolImage(workingDir, 'kiro-mcp')
+      const server = writeMcpImageServer(workingDir, imageName)
+      ready = server.ready
+      const settings = join(workingDir, '.kiro', 'settings')
+      mkdirSync(settings, { recursive: true })
+      writeFileSync(join(settings, 'mcp.json'), JSON.stringify({ mcpServers: { image_probe: { command: process.execPath, args: server.args } } }))
+    })
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    await expect.poll(() => existsSync(ready)).toBe(true)
+
+    const callID = 'show-kiro-image'
+    await modelScript.queue(
+      { toolCalls: [mcpToolCall(KIRO, callID, { server: 'image_probe', tool: 'show', input: {} })] },
+      { text: 'The MCP tool returned an image.' },
+    )
+    await sendMessage(page, modelScript.prompt('Call the image_probe show tool.'))
+    const status = await modelScript.waitForSteps()
+    await waitForAgentIdle(page, 120_000)
+    expect(JSON.stringify(status.requests.find(request => request.stepIndex === 1)?.body)).toContain(`MCP image ${imageName}`)
+    await expectMcpToolImage(page, imageName, callID)
   })
 })

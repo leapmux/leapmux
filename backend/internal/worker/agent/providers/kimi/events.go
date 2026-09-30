@@ -98,11 +98,13 @@ func (a *Agent) dispatchEvent(event kimiEvent) {
 		a.handleToolResult(event)
 	case contracts.KimiEventTurnStepCompleted:
 		a.handleStepCompleted(event)
-	case contracts.KimiEventTurnStepRetrying,
-		contracts.KimiEventCompactionStarted,
-		contracts.KimiEventCompactionCompleted,
+	case contracts.KimiEventCompactionStarted:
+		a.handleCompactionStarted(event)
+	case contracts.KimiEventCompactionCompleted,
 		contracts.KimiEventCompactionBlocked,
-		contracts.KimiEventCompactionCancelled,
+		contracts.KimiEventCompactionCancelled:
+		a.handleCompactionFinished(event)
+	case contracts.KimiEventTurnStepRetrying,
 		contracts.KimiEventWarning,
 		contracts.KimiEventTaskNotified:
 		a.persistEventNotification(event)

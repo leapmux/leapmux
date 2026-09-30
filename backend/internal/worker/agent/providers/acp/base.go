@@ -1330,6 +1330,9 @@ func (b *Base) Stop() {
 // on the intentional-stop path; releaseAllTerminals is idempotent).
 func (b *Base) Wait() error {
 	err := b.Process.Wait()
+	if b.hooks.BeforeWaitCleanup != nil {
+		b.hooks.BeforeWaitCleanup()
+	}
 	b.releaseAllTerminals()
 	b.finishAllTurnOutput(b.ProcessExitCompletion())
 	b.finishAllChildConversations()
@@ -2090,15 +2093,19 @@ type ConfigOption struct {
 // compact JSON literal.
 func (c *ConfigOption) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		ID           string              `json:"id"`
-		Category     string              `json:"category"`
-		Type         string              `json:"type"`
-		Name         string              `json:"name"`
-		Description  string              `json:"description"`
-		CurrentValue json.RawMessage     `json:"currentValue"`
-		Options      []ConfigOptionValue `json:"options"`
+		ID           string            `json:"id"`
+		Category     string            `json:"category"`
+		Type         string            `json:"type"`
+		Name         string            `json:"name"`
+		Description  string            `json:"description"`
+		CurrentValue json.RawMessage   `json:"currentValue"`
+		Options      []json.RawMessage `json:"options"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	options, err := flattenConfigOptionValues(wire.Options)
+	if err != nil {
 		return err
 	}
 	c.ID = wire.ID
@@ -2107,8 +2114,33 @@ func (c *ConfigOption) UnmarshalJSON(data []byte) error {
 	c.Name = wire.Name
 	c.Description = wire.Description
 	c.CurrentValue = configOptionCurrentString(wire.CurrentValue)
-	c.Options = wire.Options
+	c.Options = options
 	return nil
+}
+
+// flattenConfigOptionValues keeps the selectable values inside ACP option
+// groups. A group has an options array and no value of its own.
+func flattenConfigOptionValues(raw []json.RawMessage) ([]ConfigOptionValue, error) {
+	values := make([]ConfigOptionValue, 0, len(raw))
+	for _, item := range raw {
+		var choice struct {
+			ConfigOptionValue
+			Options []json.RawMessage `json:"options"`
+		}
+		if err := json.Unmarshal(item, &choice); err != nil {
+			return nil, fmt.Errorf("decode an ACP config option value: %w", err)
+		}
+		if choice.Options != nil {
+			children, err := flattenConfigOptionValues(choice.Options)
+			if err != nil {
+				return nil, err
+			}
+			values = append(values, children...)
+			continue
+		}
+		values = append(values, choice.ConfigOptionValue)
+	}
+	return values, nil
 }
 
 // configOptionCurrentString renders a config option's raw currentValue as the

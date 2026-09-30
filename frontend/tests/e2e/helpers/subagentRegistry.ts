@@ -23,7 +23,6 @@ import { ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, ListAg
 import { expect } from '../fixtures'
 import { getTestChannel } from './api'
 import { countGoalTransitionsInMessages } from './goalTransitions'
-import { MAX_STEP_DELAY_MS } from './mockModelScript'
 import { spawnSubagentToolCall } from './providerToolCalls'
 import {
   ARITHMETIC_ANSWER_TEXT,
@@ -242,7 +241,7 @@ export async function expectNoRegistryRows(page: Page): Promise<void> {
 }
 
 export interface RowFilter {
-  kind?: 'subagent' | 'shell'
+  kind?: 'subagent' | 'shell' | 'workflow'
   status?: string
   titleContains?: string
 }
@@ -336,10 +335,13 @@ const HELD_CHILD_TITLE = 'Count to one hundred'
 
 /** The name of the rule that holds the child's turn open. */
 const HELD_CHILD_RULE = 'the child counts until something stops it'
+const HELD_CHILD_GATE = 'held-child-answer'
 
 /** What one provider needs to open the tab of a subagent that keeps working. */
 export interface HeldChildCase {
   provider: AgentProvider
+  /** The provider's display title when it differs from the task description. */
+  rowTitle?: string
   /**
    * The matcher that selects the child's OWN model turn, and no other request.
    * It must select on {@link HELD_CHILD_TASK}.
@@ -369,16 +371,14 @@ export interface HeldChild {
 /**
  * Spawn a subagent whose model turn stays open, and open its tab.
  *
- * The mock holds the child's answer for as long as it permits, which is as long
- * as the test timeout, so only a stop ends the child's turn inside a test. When
- * this returns, the child's model request is open, its row is running, and its
- * tab is the active tab.
+ * The mock holds the child's answer at an explicit gate. When this returns,
+ * the child's model request is open, its row is running, and its tab is active.
  */
 export async function openHeldChildTab(page: Page, modelScript: ModelScript, test: HeldChildCase): Promise<HeldChild> {
   await modelScript.rule({
     name: HELD_CHILD_RULE,
     when: test.childTurn,
-    respond: { text: 'One, two, three.', delayMs: MAX_STEP_DELAY_MS },
+    respond: { text: 'One, two, three.', gate: HELD_CHILD_GATE },
   })
   await modelScript.queue(
     {
@@ -399,12 +399,12 @@ export async function openHeldChildTab(page: Page, modelScript: ModelScript, tes
   await sendMessage(page, modelScript.prompt('Delegate the count to a subagent.'))
   await modelScript.waitForSteps(1)
   const row = await requireRegistryRow(page)
-  await expect(row).toContainText(HELD_CHILD_TITLE)
+  await expect(row).toContainText(test.rowTitle ?? HELD_CHILD_TITLE)
   await expect(row).toHaveAttribute('data-status', 'running')
   const heldTurns = async () => (await modelScript.status()).ruleMatches[HELD_CHILD_RULE] ?? 0
-  // The child asked the model for its turn, and the held answer keeps that
-  // request open: whatever ends the turn now ends it in the middle.
-  await expect.poll(heldTurns).toBe(1)
+  // The child asked the model for its turn. The gate keeps that request open.
+  await modelScript.waitForGate(HELD_CHILD_GATE)
+  expect(await heldTurns()).toBe(1)
   await expect.poll(async () => await row.getAttribute('data-child-agent-id')).not.toBe('')
   const childTabId = await openChildTabFromRow(page, row)
   return { row, childTabId, rootTabId, heldTurns }
@@ -481,17 +481,17 @@ export async function expectRegistryRow(page: Page, filter: RowFilter): Promise<
   await expandBackgroundTasksSection(page)
   await expect(backgroundTasksSection(page)).toBeVisible()
   let row = page.locator('[data-testid="bg-task-row"]:visible')
-  if (filter.kind)
-    row = row.filter({ has: page.locator(`[data-kind="${filter.kind}"]`) })
-  // data-status / data-kind are attributes ON the row element itself in some
-  // render paths and on children in others; match both.
-  if (filter.status) {
-    row = row.filter({
-      has: page.locator(`[data-status="${filter.status}"], [data-status="${filter.status}"]`),
-    }).or(
-      page.locator(`[data-testid="bg-task-row"]:visible[data-status="${filter.status}"]`),
-    )
+  const withAttribute = (rows: Locator, name: 'data-kind' | 'data-status', value: string): Locator => {
+    const match = page.locator(`[${name}="${value}"]:visible`)
+    const onRow = rows.and(match)
+    // A nested field counts only when the row has no value of its own.
+    const missingOnRow = rows.and(page.locator(`[data-testid="bg-task-row"]:visible:not([${name}])`))
+    return onRow.or(missingOnRow.filter({ has: match }))
   }
+  if (filter.kind)
+    row = withAttribute(row, 'data-kind', filter.kind)
+  if (filter.status)
+    row = withAttribute(row, 'data-status', filter.status)
   if (filter.titleContains)
     row = row.filter({ hasText: filter.titleContains })
   await expect(row.first()).toBeVisible()

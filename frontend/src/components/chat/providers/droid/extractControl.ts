@@ -1,5 +1,5 @@
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
-import { DROID_NOTIFICATION_FIELD } from '~/generated/contracts/droid-protocol'
+import { DROID_NOTIFICATION_FIELD, DROID_TOOL } from '~/generated/contracts/droid-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { droidToolKind } from './toolKinds'
 
@@ -21,6 +21,8 @@ export function droidExtractControl(input: ControlExtractionInput): ExtractedCon
   const toolUse = pickObject(payload, DROID_NOTIFICATION_FIELD.ToolUse) ?? {}
   // Droid's `toolUse` marshals `name`, not `toolName`.
   const toolName = pickString(toolUse, 'name') || pickString(toolUse, DROID_NOTIFICATION_FIELD.ToolName) || 'Tool'
+  if (toolName === DROID_TOOL.ExitSpecMode)
+    return { kind: 'plan' }
   const toolInput = pickObject(toolUse, 'input') ?? {}
   const shell = droidToolKind(toolName) === 'execute'
   const command = shell ? pickString(toolInput, 'command') || pickString(toolInput, 'cmd') : ''

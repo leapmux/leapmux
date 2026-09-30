@@ -19,9 +19,8 @@ var fastagentLocator = launch.Binaries("fast-agent")
 // creation, so the session supplies the catalog. Its modes are its configured
 // agents, and the default setup has one -- the permission-mode axis carries that
 // single `agent` mode, reported on the native modes channel. There is no
-// per-session approval switch to pair with it: the launch passes
-// `--no-permissions`, and the local filesystem tools bypass the permission
-// system entirely.
+// per-session approval switch to pair with it: the ACP permission handler
+// asks for each tool that needs approval, and the mode axis selects agents.
 func Registration() agent.Registration {
 	return agent.Registration{
 		Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_FAST_AGENT,

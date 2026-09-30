@@ -141,6 +141,7 @@ func (a *Agent) settleAfterExit(completion agent.MessageCompletion) {
 	}
 	a.turnActive = false
 	a.turnSteerable = false
+	a.manualCompactionActive = false
 	a.Mu.Unlock()
 
 	// Each run writes to its own transcript, so the order of the runs does not

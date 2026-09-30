@@ -2,7 +2,7 @@
  * Cline E2E fixtures.
  *
  * The worker starts one private Cline hub for each agent and drives it over Cline's
- * hub WebSocket protocol. Cline calls the model through its `openai-compatible`
+ * hub WebSocket protocol. Cline calls the model through its `deepseek`
  * provider, which `helpers/mockAgentEnvironment.ts` points at the mock endpoint in
  * Cline's own settings under an isolated HOME. No test reaches a Cline account, a
  * real model, or the developer's own Cline hub.

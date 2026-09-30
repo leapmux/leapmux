@@ -35,6 +35,8 @@ export const RULES = [
   { include: 'testdata/*.json' },
   // Package-local test fixtures (e.g. the usersettings account schema).
   { include: 'backend/**/testdata/*.json' },
+  // The published provider matrix and its feature definitions are E2E data.
+  { include: 'frontend/tests/e2e/feature-matrix/*.json' },
   // Vendored shiki/VS Code themes: one shared schema for the family.
   {
     include: 'frontend/src/lib/syntaxThemes/*.json',

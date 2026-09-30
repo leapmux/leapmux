@@ -1,3 +1,4 @@
+import { exerciseManualCompaction } from './helpers/manualCompaction'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, sendMessage, waitForAgentIdle } from './helpers/ui'
 import { KILO_E2E_SKIP_REASON, kiloTest } from './kilo-fixtures'
 
@@ -10,5 +11,10 @@ kiloTest.describe('Kilo Basic Chat', () => {
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await waitForAgentIdle(page, 120_000)
     await expectAssistantAnswer(page)
+  })
+
+  kiloTest('compacts a scripted conversation on request', async ({ authenticatedKiloWorkspace, page, modelScript }) => {
+    void authenticatedKiloWorkspace
+    await exerciseManualCompaction(page, modelScript, { summaryRequestMarker: 'Create a new anchored summary from the conversation history' })
   })
 })

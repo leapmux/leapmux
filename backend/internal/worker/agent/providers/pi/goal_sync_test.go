@@ -34,6 +34,21 @@ func piGoalSyncRig(t *testing.T) (*piTestRig, *agenttest.Sink, string) {
 	return rig, sink, goalPath
 }
 
+func holdPiGoalPromptReply(t *testing.T, rig *piTestRig) func() {
+	t.Helper()
+	releasePrompt := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(releasePrompt) }) }
+	t.Cleanup(release)
+	rig.holdResponse(CommandPrompt, releasePrompt)
+	return release
+}
+
+func writePiSessionWithoutFocus(t *testing.T, rig *piTestRig) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(rig.agent.sessionFile, []byte(`{"type":"session","id":"session","version":3}`+"\n"), 0o600))
+}
+
 func TestPiGoalCommandsUseOnlyInstalledExtensionCommands(t *testing.T) {
 	t.Parallel()
 	rig := newPiTestRig(t, agent.NewProviderServices(&agenttest.Sink{}))
@@ -98,6 +113,150 @@ func TestPiGoalCommandRefreshesConfirmedState(t *testing.T) {
 		goal, ok := sink.LastGoal()
 		return ok && goal.Status == agent.GoalStatusActive && goal.Objective == "Resumed objective"
 	}, time.Second, time.Millisecond)
+}
+
+// A goal command can start an autonomous model turn before its prompt reply.
+// The first refresh may read no focused goal; the later goal file must reach the sidebar while that reply stays open.
+func TestPiGoalRefreshFindsGoalBeforeDetachedCommandReply(t *testing.T) {
+	t.Parallel()
+	rig, sink, goalPath := piGoalSyncRig(t)
+	a := rig.agent
+	writePiSessionWithoutFocus(t, rig)
+	require.NoError(t, os.Remove(goalPath))
+	a.Mu.Lock()
+	a.extensionCommands = map[string]bool{"goal-direct": true}
+	a.goal.retryDelay = time.Millisecond
+	a.goal.retryLimit = 5
+	a.Mu.Unlock()
+	focusReady := make(chan struct{})
+	var focusOnce sync.Once
+	release := holdPiGoalPromptReply(t, rig)
+	reveal := func() { focusOnce.Do(func() { close(focusReady) }) }
+	t.Cleanup(reveal)
+	var reads atomic.Int32
+	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+		switch request.Type {
+		case CommandPrompt:
+			return nil, true, ""
+		case CommandGetEntries:
+			if reads.Add(1) == 1 {
+				return json.RawMessage(`{"entries":[],"leafId":null}`), true, ""
+			}
+			<-focusReady
+			return json.RawMessage(`{"entries":[{"type":"custom","id":"focus","parentId":null,"customType":"pi-goal-focus","data":{"version":1,"focusedGoalId":"goal"}}],"leafId":"focus"}`), true, ""
+		default:
+			return nil, false, "Unexpected command"
+		}
+	})
+	_, err := a.PerformGoalAction(agent.GoalActionSet, "Objective")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return reads.Load() > 0 }, 2*time.Second, time.Millisecond)
+	require.NoError(t, os.WriteFile(goalPath, []byte(`{"version":3,"id":"goal","objective":"Objective","status":"active"}`), 0o600))
+	reveal()
+	require.Eventually(t, func() bool {
+		goal, ok := sink.LastGoal()
+		return ok && goal.Objective == "Objective" && goal.Status == agent.GoalStatusActive
+	}, 2*time.Second, time.Millisecond, "the focused goal must appear before the prompt reply")
+	release()
+}
+
+func TestPiGoalRefreshStopsWhenPendingGoalNeverAppears(t *testing.T) {
+	t.Parallel()
+	rig, sink, _ := piGoalSyncRig(t)
+	a := rig.agent
+	writePiSessionWithoutFocus(t, rig)
+	a.Mu.Lock()
+	a.extensionCommands = map[string]bool{"goal-direct": true}
+	a.goal.retryDelay = time.Nanosecond
+	a.goal.retryLimit = 2
+	a.Mu.Unlock()
+	release := holdPiGoalPromptReply(t, rig)
+	var reads atomic.Int32
+	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+		switch request.Type {
+		case CommandPrompt:
+			return nil, true, ""
+		case CommandGetEntries:
+			reads.Add(1)
+			return json.RawMessage(`{"entries":[],"leafId":null}`), true, ""
+		default:
+			return nil, false, "Unexpected command"
+		}
+	})
+	_, err := a.PerformGoalAction(agent.GoalActionSet, "Objective")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		a.Mu.Lock()
+		defer a.Mu.Unlock()
+		return reads.Load() == 3 && !a.goal.running
+	}, 2*time.Second, time.Millisecond)
+	assert.Empty(t, sink.Goals(), "a missing focused goal must not create a sidebar entry")
+	assert.Equal(t, int32(3), reads.Load(), "the first read plus two bounded retries")
+	release()
+}
+
+func TestPiGoalClearDoesNotRetryAnEmptySnapshotWhileReplyIsPending(t *testing.T) {
+	t.Parallel()
+	rig, sink, _ := piGoalSyncRig(t)
+	a := rig.agent
+	writePiSessionWithoutFocus(t, rig)
+	a.Mu.Lock()
+	a.extensionCommands = map[string]bool{"goal-clear": true}
+	a.goal.retryDelay = time.Nanosecond
+	a.goal.retryLimit = 2
+	a.Mu.Unlock()
+	release := holdPiGoalPromptReply(t, rig)
+	var reads atomic.Int32
+	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+		switch request.Type {
+		case CommandPrompt:
+			return nil, true, ""
+		case CommandGetEntries:
+			reads.Add(1)
+			return json.RawMessage(`{"entries":[],"leafId":null}`), true, ""
+		default:
+			return nil, false, "Unexpected command"
+		}
+	})
+	_, err := a.PerformGoalAction(agent.GoalActionClear, "")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		a.Mu.Lock()
+		defer a.Mu.Unlock()
+		return reads.Load() >= 1 && !a.goal.running
+	}, 2*time.Second, time.Millisecond)
+	assert.Equal(t, int32(1), reads.Load(), "a Clear with no goal is already settled")
+	assert.Empty(t, sink.Goals())
+	release()
+}
+
+func TestPiGoalRefreshIgnoresAnotherSessionPendingActivation(t *testing.T) {
+	t.Parallel()
+	rig, sink, _ := piGoalSyncRig(t)
+	a := rig.agent
+	writePiSessionWithoutFocus(t, rig)
+	a.Mu.Lock()
+	a.extensionCommands = map[string]bool{"goal-direct": true}
+	a.goal.pendingActivations = map[string]int{"old-session": 1}
+	a.goal.retryDelay = time.Nanosecond
+	a.goal.retryLimit = 2
+	a.Mu.Unlock()
+	var reads atomic.Int32
+	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+		if request.Type != CommandGetEntries {
+			return nil, false, "Unexpected command"
+		}
+		reads.Add(1)
+		return json.RawMessage(`{"entries":[],"leafId":null}`), true, ""
+	})
+	a.schedulePiGoalRefresh(false)
+	require.Eventually(t, func() bool {
+		a.Mu.Lock()
+		defer a.Mu.Unlock()
+		return reads.Load() >= 1 && !a.goal.running
+	}, 2*time.Second, time.Millisecond)
+	assert.Equal(t, int32(1), reads.Load(), "an old session must not add retries")
+	assert.Empty(t, sink.Goals())
 }
 
 func TestPiGoalPublicationRejectsStaleReadsAndShutdown(t *testing.T) {

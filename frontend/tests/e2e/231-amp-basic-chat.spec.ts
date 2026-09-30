@@ -1,7 +1,9 @@
 import { AMP_E2E_SKIP_REASON, ampTest, expect } from './amp-fixtures'
+import { exerciseContextUsage } from './helpers/contextUsage'
 import {
   ARITHMETIC_ANSWER_TEXT,
   ARITHMETIC_PROMPT,
+  bandRows,
   expectAssistantAnswer,
   messageContents,
   SECOND_ARITHMETIC_ANSWER,
@@ -23,14 +25,20 @@ import {
 ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
 
 ampTest.describe('Amp basic chat', () => {
+  ampTest('reports model usage in the agent info card', async ({ authenticatedAmpWorkspace, page, modelScript }) => {
+    void authenticatedAmpWorkspace
+    await exerciseContextUsage(page, modelScript)
+  })
+
   ampTest('renders an assistant answer and ends the turn with a timed divider', async ({ authenticatedAmpWorkspace, page, modelScript }) => {
     void authenticatedAmpWorkspace
     await modelScript.queue({ reasoning: 'Add the two numbers.', text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expectAssistantAnswer(page)
+    await expect(bandRows(page, 'thought').filter({ hasText: 'Add the two numbers.' }).first()).toBeVisible()
     await expect(page.getByTestId('thinking-indicator')).not.toBeVisible()
     // Amp states no duration of its own for a turn. The worker measures the turn
     // and adds it, so the divider always states a time.
@@ -51,13 +59,13 @@ ampTest.describe('Amp basic chat', () => {
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expectAssistantAnswer(page)
 
     await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
 
     // The second inference carries the first prompt and the first answer: the

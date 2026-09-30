@@ -22,10 +22,12 @@ import { registerAmbientScenario } from './mockModelScenario'
 import { createMockModelServer } from './mockModelServer'
 import { stopProcess } from './process'
 import { trackProcess } from './processRegistry'
-import { E2E_BROWSER_HOST, hubDataDir, hubSpawnEnv } from './server'
+import { hubDataDir, hubSpawnEnv, hubUrlFromStateJson, resolvedHubTCPFromStateJson, waitForHubReady, waitForHubStateFile } from './server'
 
 export interface SuiteServerState {
   hubUrl: string
+  /** The resolved primary bind address that the hub publishes as its default URL. */
+  boundHubUrl: string
   adminToken: string
   adminUserId: string
   workerId: string
@@ -143,8 +145,10 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
     // The hub writes its resolved bind set to <data-dir>/state.json once every
     // listener is bound; the TCP entry there is the port the browser reaches.
     const statePath = join(hubDataDir(dataDir), 'state.json')
-    const hubUrl = hubUrlFromStateJson(await waitForHubStateFile(statePath, proc))
-    await waitForSuiteServer(hubUrl, proc)
+    const state = await waitForHubStateFile(statePath, proc)
+    const hubUrl = hubUrlFromStateJson(state)
+    const boundHubUrl = `http://${resolvedHubTCPFromStateJson(state)}`
+    await waitForHubReady(hubUrl, proc)
     const adminToken = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
     await elevateSessionViaAPI(hubUrl, adminToken, TEST_ADMIN_PASSWORD)
     const [adminUserId, workerId, newuserToken] = await Promise.all([
@@ -156,6 +160,7 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
     return {
       state: {
         hubUrl,
+        boundHubUrl,
         adminToken,
         adminUserId,
         workerId,
@@ -196,138 +201,6 @@ async function bootstrapFirstAdmin(binaryPath: string, dataDir: string): Promise
     dataDir,
   ], {
     env: { ...process.env, LEAPMUX_LOG_LEVEL: 'error' },
-  })
-}
-
-/**
- * The browser-facing hub URL a state file names.
- *
- * The hub writes `<data-dir>/state.json` after every listener is bound, with
- * the resolved bind set in `listen`. The TCP entry is the one that is not a
- * local IPC URL; its port is the one the operating system assigned to the
- * `127.0.0.1:0` request. A bind set with no TCP entry (or with more than one)
- * is not a state this suite starts, so it fails rather than guessing.
- */
-export function hubUrlFromStateJson(raw: string): string {
-  const state = JSON.parse(raw) as { listen?: string[] }
-  const listen = state.listen ?? []
-  const tcp = listen.filter(entry => !entry.startsWith('unix:') && !entry.startsWith('npipe:'))
-  const entry = tcp[0]
-  if (tcp.length !== 1 || entry === undefined)
-    throw new Error(`expected one TCP address in the hub state file's listen list, got ${JSON.stringify(listen)}`)
-  const separator = entry.lastIndexOf(':')
-  const port = entry.slice(separator + 1)
-  if (separator < 0 || !/^\d+$/.test(port))
-    throw new Error(`the TCP address ${entry} names no port`)
-  return `http://${E2E_BROWSER_HOST}:${port}`
-}
-
-/**
- * Read the hub's state file once it appears, or fail when the process dies or
- * the deadline passes. The poll never sleeps a fixed time: a hub that binds
- * fast starts the suite fast.
- */
-function waitForHubStateFile(statePath: string, proc: ChildProcess, timeoutMs = 30_000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let finished = false
-    let retry: ReturnType<typeof setTimeout> | undefined
-    const deadline = setTimeout(() => finish(undefined, new Error(`The hub wrote no state file at ${statePath} within ${timeoutMs}ms`)), timeoutMs)
-    const onError = (error: Error) => finish(undefined, error)
-    // The file wins over the exit: a process that writes its state file and
-    // exits at once has still told the suite where the hub was.
-    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-      try {
-        finish(readFileSync(statePath, 'utf8'))
-        return
-      }
-      catch {}
-      finish(undefined, new Error(`The shared server exited before it wrote ${statePath}: code=${code ?? 'none'} signal=${signal ?? 'none'}`))
-    }
-    proc.once('error', onError)
-    proc.once('exit', onExit)
-    // A process that already exited never fires 'exit' again; without this
-    // the waiter would hold its whole deadline for a dead server.
-    if (proc.exitCode !== null || proc.signalCode !== null)
-      onExit(proc.exitCode, proc.signalCode)
-
-    function finish(content: string | undefined, error?: Error) {
-      if (finished)
-        return
-      finished = true
-      clearTimeout(deadline)
-      clearTimeout(retry)
-      proc.removeListener('error', onError)
-      proc.removeListener('exit', onExit)
-      if (error)
-        reject(error)
-      else
-        resolve(content as string)
-    }
-
-    function check() {
-      try {
-        finish(readFileSync(statePath, 'utf8'))
-        return
-      }
-      catch {}
-      if (!finished)
-        retry = setTimeout(check, 25)
-    }
-    check()
-  })
-}
-
-/** Wait until the server responds or its process exits. */
-function waitForSuiteServer(url: string, proc: ChildProcess, timeoutMs = 30_000): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let finished = false
-    let retry: ReturnType<typeof setTimeout> | undefined
-    let lastError: unknown
-    const deadline = setTimeout(() => finish(new Error(`Server at ${url} did not start within ${timeoutMs}ms`, { cause: lastError })), timeoutMs)
-
-    const onError = (error: Error) => finish(error)
-    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-      finish(new Error(`The shared server at ${url} exited before startup completed: code=${code ?? 'none'} signal=${signal ?? 'none'}`))
-    }
-    proc.once('error', onError)
-    proc.once('exit', onExit)
-    // A process that already exited never fires 'exit' again; without this
-    // the waiter would hold its whole deadline for a dead server.
-    if (proc.exitCode !== null || proc.signalCode !== null)
-      onExit(proc.exitCode, proc.signalCode)
-
-    function finish(error?: Error) {
-      if (finished)
-        return
-      finished = true
-      clearTimeout(deadline)
-      clearTimeout(retry)
-      proc.removeListener('error', onError)
-      proc.removeListener('exit', onExit)
-      if (error)
-        reject(error)
-      else
-        resolve()
-    }
-
-    async function check() {
-      try {
-        const response = await fetch(url)
-        if (response.ok) {
-          await response.body?.cancel()
-          finish()
-          return
-        }
-        await response.body?.cancel()
-        lastError = new Error(`Startup request returned HTTP ${response.status}`)
-      }
-      catch (error) {
-        lastError = error
-      }
-      if (!finished)
-        retry = setTimeout(check, 25)
-    }
-    void check()
   })
 }
 

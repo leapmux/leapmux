@@ -42,7 +42,7 @@ describe('opencode classify', () => {
 
   // Attachment caps, assembled-text handling and config_option_update hiding are the
   // standard Agent Client Protocol behaviours; the cases below are OpenCode's own.
-  describeACPProviderBasics(AgentProvider.OPENCODE, { text: true, image: true, pdf: true, binary: true })
+  describeACPProviderBasics(AgentProvider.OPENCODE, { text: true, image: true, pdf: true, binary: false })
 
   it('reports its reasoning axis under the well-known effort id', () => {
     // OpenCode's daemon gives the axis the id `effort`, so the plugin states no id of its own.

@@ -2233,7 +2233,8 @@ export const PROVIDER_PROTOCOLS = [
     title: 'ZCode',
     // goTable/tsTable name the emitted symbol per table; the key set is the contract's.
     tables: [
-      { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'ZCodeMethod', doc: 'interaction request methods' },
+      { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'ZCodeMethod', doc: 'interaction request and state notification methods' },
+      { key: 'stateReasons', goTable: 'StateReason', tsTable: 'STATE_REASON', tsType: 'ZCodeStateReason', doc: 'state.updated reasons for context compaction' },
       { key: 'actions', goTable: 'Action', tsTable: 'ACTION', tsType: 'ZCodeAction', doc: 'native input response actions' },
       { key: 'replyFields', goTable: 'ReplyField', tsTable: 'REPLY_FIELD', tsType: 'ZCodeReplyField', doc: 'native input response fields' },
       { key: 'answerFields', goTable: 'AnswerField', tsTable: 'ANSWER_FIELD', tsType: 'ZCodeAnswerField', doc: 'native answer fields' },
@@ -2270,6 +2271,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'GooseMode', doc: 'permission modes' },
       { key: 'subagent', goTable: 'Subagent', tsTable: 'SUBAGENT', tsType: 'GooseSubagent', doc: 'the extension and tool a subagent spawn rides' },
       { key: 'subagentRequest', goTable: 'SubagentRequest', tsTable: 'SUBAGENT_REQUEST', tsType: 'GooseSubagentRequestField', doc: 'fields of the subagent tool request, which rides inside logging metadata' },
+      { key: 'todo', goTable: 'Todo', tsTable: 'TODO', tsType: 'GooseTodo', doc: 'the extension and tool that writes the native checklist' },
       { key: 'configIds', goTable: 'Config', tsTable: 'CONFIG', tsType: 'GooseConfigId', doc: 'config-option ids of the axes both sides address by id' },
     ],
   },
@@ -2509,12 +2511,13 @@ export const PROVIDER_PROTOCOLS = [
     tsPrefix: 'REASONIX',
     title: 'Reasonix',
     preamble: [
-      'Reasonix owns the tool, capability, mode and approval names, and the field names of',
-      'the tool record it writes into its own transcript. LeapMux owns the envelope key that',
-      'wraps that record. Both sides read them -- the worker matches the stored record against',
-      'the protocol result, the browser plugin reads the same record back out of the supplement.',
+      'Reasonix owns its request method, tools, capabilities, modes, approval values and',
+      'tool-record fields. Both sides read the method and the stored record. The worker routes',
+      'the request and matches the record against the protocol result. The browser reads the',
+      'request into a form and the stored record from the supplement.',
     ].join('\n// '),
     tables: [
+      { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'ReasonixMethod', doc: 'native requests both sides dispatch on' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'ReasonixMode', doc: 'session modes' },
       { key: 'configIds', goTable: 'Config', tsTable: 'CONFIG', tsType: 'ReasonixConfig', doc: 'config option identifiers' },
       { key: 'approvalValues', goTable: 'Approval', tsTable: 'APPROVAL', tsType: 'ReasonixApproval', readers: ['ts'], readersWhy: 'the worker forwards the tool_approval option value without reading it; the browser spells Yolo alone, to build the bypass preset, and Reasonix labels the three choices itself on the option group it sends', doc: 'tool approval values' },
@@ -2769,15 +2772,12 @@ export const PROVIDER_PROTOCOLS = [
     tsPrefix: 'JUNIE',
     title: 'Junie',
     preamble: [
-      'Junie owns the session mode ids, the tool names and the spawn fields below. LeapMux',
-      'owns no value in this file. Both sides read them -- the worker falls back to the safe',
-      'mode and maps the `spawn_subagent` call to a subagent registry row from its raw input,',
-      'and the browser plugin wires the plan toggle and draws the same call.',
+      'Junie owns the session mode ids below. The worker falls back to the safe mode, and',
+      'the browser plugin wires the plan toggle from the same values. Junie reports child',
+      'sessions through its native ACP extension, which the provider reads directly.',
     ].join('\n// '),
     tables: [
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'JunieMode', doc: 'session modes, carried on LeapMux\'s permission-mode axis' },
-      { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'JunieTool', doc: 'tool names both sides dispatch on' },
-      { key: 'spawnFields', goTable: 'SpawnField', tsTable: 'SPAWN_FIELD', tsType: 'JunieSpawnField', goTagPin: 'backend/internal/worker/agent/providers/junie/contract_tags_test.go', doc: 'fields of a `spawn_subagent` raw input that identify the call' },
     ],
   },
   {

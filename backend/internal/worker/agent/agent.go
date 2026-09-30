@@ -654,6 +654,12 @@ type ContextCompactor interface {
 	CompactContext() error
 }
 
+// NativeTurnRestarter reports a launch-only change made by a native tool.
+// The Worker replaces the process with the same session before it sends queued input.
+type NativeTurnRestarter interface {
+	NativeTurnRestartRequired() bool
+}
+
 // InputSteerer adds input to an active turn. The queue calls it only for an
 // explicit Steer operation. Normal dispatch always starts a later turn.
 type InputSteerer interface {

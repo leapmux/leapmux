@@ -1,8 +1,9 @@
 import type { Page } from '@playwright/test'
 import type { MockModelUsage } from './mockModelScript'
+import type { ModelScript } from './modelScriptFixture'
 import { expect } from '@playwright/test'
 import { formatTokenCount } from '../../../src/components/chat/rendererUtils'
-import { openAgentInfoCard } from './ui'
+import { openAgentInfoCard, sendMessage, waitForAgentIdle } from './ui'
 
 /**
  * Context usage on the agent info card.
@@ -50,4 +51,14 @@ export async function expectContextUsage(page: Page, usage: MockModelUsage): Pro
   const popover = await openAgentInfoCard(page)
   for (const marker of usageMarkers(usage))
     await expect(popover).toContainText(marker)
+}
+
+/** Verify that the provider reports the mock's token counts to the agent card. */
+export async function exerciseContextUsage(page: Page, modelScript: ModelScript): Promise<void> {
+  const usage = { inputTokens: 12_000, outputTokens: 40, contextWindow: 128_000 }
+  await modelScript.queue({ text: 'Usage recorded.', usage })
+  await sendMessage(page, modelScript.prompt('Reply once.'))
+  await modelScript.waitForSteps()
+  await waitForAgentIdle(page, 120_000)
+  await expectContextUsage(page, usage)
 }

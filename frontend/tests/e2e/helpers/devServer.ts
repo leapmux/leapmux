@@ -6,6 +6,7 @@
 import type { Buffer } from 'node:buffer'
 import type { ChildProcess } from 'node:child_process'
 import { rmSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   closeTestChannels,
   getUserId,
@@ -19,7 +20,7 @@ import { cleanupOnFailure, finishCleanup } from './cleanup'
 import { stopProcess } from './process'
 import { spawnTestProcess } from './processRegistry'
 import { createTestDirectory } from './runDirectory'
-import { findFreePort, getGlobalState, hubSpawnEnv, waitForServer } from './server'
+import { getGlobalState, hubDataDir, hubSpawnEnv, hubUrlFromStateJson, resolvedHubTCPFromStateJson, waitForHubReady, waitForHubStateFile } from './server'
 
 export interface DevServerHandle {
   hubUrl: string
@@ -66,10 +67,8 @@ export async function startDevServer(opts: StartDevServerOptions = {}): Promise<
 export async function startUnseededDevServer(opts: StartDevServerOptions = {}): Promise<UnseededDevServerHandle> {
   const { binaryPath } = getGlobalState()
   const dataDir = createTestDirectory(`${opts.dataDirPrefix ?? 'leapmux-e2e-'}-`)
-  const port = await findFreePort()
-  const hubUrl = `http://localhost:${port}`
 
-  const proc = spawnTestProcess(binaryPath, ['dev', '-listen', `:${port}`, '-data-dir', dataDir], {
+  const proc = spawnTestProcess(binaryPath, ['dev', '-listen', '127.0.0.1:0', '-data-dir', dataDir], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: hubSpawnEnv(opts.env),
   })
@@ -83,9 +82,11 @@ export async function startUnseededDevServer(opts: StartDevServerOptions = {}): 
     proc.stderr?.resume()
   }
 
-  const handle = { hubUrl, proc, dataDir }
+  const handle = { hubUrl: '', proc, dataDir }
   return cleanupOnFailure(async () => {
-    await waitForServer(hubUrl)
+    const statePath = join(hubDataDir(dataDir), 'state.json')
+    handle.hubUrl = hubUrlFromStateJson(await waitForHubStateFile(statePath, proc))
+    await waitForHubReady(handle.hubUrl, proc)
     return handle
   }, () => stopDevServer(handle))
 }
@@ -99,7 +100,7 @@ export async function stopDevServer(handle: DevServerHandle | UnseededDevServerH
 
 export interface SoloServerHandle {
   hubUrl: string
-  /** The address `-listen` was given, so a spec can assert what the panel shows. */
+  /** The resolved primary TCP address, which the network panel shows. */
   listen: string
   proc: ChildProcess
   dataDir: string
@@ -123,11 +124,9 @@ export interface StartSoloServerOptions extends StartDevServerOptions {
 export async function startSoloServer(opts: StartSoloServerOptions = {}): Promise<SoloServerHandle> {
   const { binaryPath } = getGlobalState()
   const dataDir = createTestDirectory(`${opts.dataDirPrefix ?? 'leapmux-e2e-solo'}-`)
-  const port = await findFreePort()
-  const listen = `${opts.listenHost ?? '127.0.0.1'}:${port}`
-  const hubUrl = `http://127.0.0.1:${port}`
+  const requestedListen = `${opts.listenHost ?? '127.0.0.1'}:0`
 
-  const proc = spawnTestProcess(binaryPath, ['solo', '-listen', listen, '-data-dir', dataDir], {
+  const proc = spawnTestProcess(binaryPath, ['solo', '-listen', requestedListen, '-data-dir', dataDir], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: hubSpawnEnv(opts.env),
   })
@@ -141,9 +140,13 @@ export async function startSoloServer(opts: StartSoloServerOptions = {}): Promis
     proc.stderr?.resume()
   }
 
-  const handle = { hubUrl, listen, proc, dataDir }
+  const handle = { hubUrl: '', listen: '', proc, dataDir }
   return cleanupOnFailure(async () => {
-    await waitForServer(hubUrl)
+    const statePath = join(hubDataDir(dataDir), 'state.json')
+    const state = await waitForHubStateFile(statePath, proc)
+    handle.listen = resolvedHubTCPFromStateJson(state)
+    handle.hubUrl = hubUrlFromStateJson(state, '127.0.0.1')
+    await waitForHubReady(handle.hubUrl, proc)
     return handle
   }, () => stopSoloServer(handle))
 }

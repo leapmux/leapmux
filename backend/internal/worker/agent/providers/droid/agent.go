@@ -1,6 +1,7 @@
 package droid
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,8 +11,8 @@ import (
 	"github.com/coder/quartz"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -25,9 +26,14 @@ import (
 type Agent struct {
 	providerkit.Process
 
-	sink       agent.ProviderServices
-	workingDir string
-	clock      quartz.Clock
+	sink            agent.ProviderServices
+	workingDir      string
+	homeDir         string
+	clock           quartz.Clock
+	launchOpts      agent.Options
+	launchSpec      launch.Spec
+	cleanupSettings func()
+	cleanupOnce     sync.Once
 
 	// dispatchMu serializes event dispatch. The reader goroutine and
 	// HandleOutput both reach handleFrame.
@@ -35,15 +41,11 @@ type Agent struct {
 
 	// --- guarded by Mu ---
 
-	sessionID   string
-	turnActive  bool
-	settings    droidSettings
-	catalog     droidCatalog
-	turnToolUse int
-	// messageSeq maps a Droid message id to the span the worker opened for it.
-	messageSpans map[string]string
-	// tools holds every tool call the agent opened and nothing closed yet.
-	tools map[string]*droidTool
+	sessionID  string
+	turnActive bool
+	compaction *droidCompaction
+	settings   droidSettings
+	catalog    droidCatalog
 	// controls holds every permission and question LeapMux published and
 	// nothing resolved yet.
 	controls map[string]*droidPendingControl
@@ -51,8 +53,37 @@ type Agent struct {
 	// childSessionId of child_session_available, which is also the registry
 	// row key.
 	childTurns map[string]bool
-	// generation holds the streamed assistant text until the message completes.
-	generation providerkit.GenerationBuffer
+	// startupReply settles the native initialize or load request before Start
+	// exposes this agent to a caller that can send a prompt.
+	startupReply chan error
+
+	// settingsApplyMu serializes native updates so one readback cannot confirm
+	// another caller's choice. rpcMu guards the request inboxes and context read.
+	settingsApplyMu       sync.Mutex
+	rpcMu                 sync.Mutex
+	pendingReplies        map[string]chan droidEnvelope
+	pendingSettings       map[string]chan droidSettingsUpdated
+	contextRefreshPending bool
+	contextRefreshQueued  bool
+
+	// dispatchMu guards these maps and every droidOutputState.
+	childSpawns        map[string]droidChildSpawn
+	childAgents        map[string]string
+	childAnnouncements map[string]droidChildAnnouncementID
+	outputStates       map[string]*droidOutputState
+	tailMu             sync.Mutex
+	childTails         map[string]*droidChildTail
+	tailClosing        bool
+	// beforeChildTailStateRead controls the replay lock order in tests only.
+	beforeChildTailStateRead func()
+	// beforeChildTailStart controls Stop during a deferred start in tests only.
+	beforeChildTailStart func()
+	// beforeChildTailRun controls the map-publish/start gap in tests only.
+	beforeChildTailRun func()
+	childConnMu        sync.Mutex
+	childConns         map[string]*droidChildConnection
+	childClosing       bool
+	childStopOnce      sync.Once
 
 	sendMu  sync.Mutex
 	stopped bool
@@ -71,7 +102,8 @@ var errAgentStopped = errors.New("the Factory Droid process has stopped")
 type droidSettings struct {
 	model           string
 	reasoningEffort string
-	autonomyMode    string
+	interactionMode string
+	autonomyLevel   string
 	permissionMode  string
 }
 
@@ -95,6 +127,14 @@ type droidTool struct {
 	input  json.RawMessage
 }
 
+// droidOutputState holds one native session's transcript assembly.
+type droidOutputState struct {
+	messageSpans map[string]string
+	tools        map[string]*droidTool
+	turnToolUse  int
+	generation   providerkit.GenerationBuffer
+}
+
 // droidPendingControl is one published control request awaiting an answer.
 type droidPendingControl struct {
 	requestID string
@@ -116,23 +156,22 @@ const (
 // message is queued -- and never waits for the turn. A running turn refuses the
 // input with ErrAgentBusy, so the LeapMux input queue holds it.
 func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, content, attachments)
+	return a.sendInput(nil, content, attachments, false)
 }
 
 // SendInputForSession delivers a user message when the session it states is
 // still the current one.
 func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(&sessionID, content, attachments)
+	return a.sendInput(&sessionID, content, attachments, false)
 }
 
-// SupportsSteering reports true: droid.add_user_message with
-// queuePlacement "end_of_loop" inserts into the running turn's next
-// interruption point.
+// SupportsSteering reports true: Droid accepts end_of_turn during a running
+// turn and puts that user message into the active agent loop.
 func (a *Agent) SupportsSteering() bool { return true }
 
 // SteerInput adds a message to the running turn.
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, content, attachments, droidQueueEndOfLoop)
+	return a.sendInput(nil, content, attachments, true)
 }
 
 // sendInput writes one droid.add_user_message request.
@@ -140,9 +179,9 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 // A plain message during a turn would be queued by Droid itself and become the
 // next turn out of LeapMux's sight, so the agent refuses a new message while a
 // turn runs: the LeapMux input queue owns queueing. A steering message uses
-// queuePlacement "end_of_loop" and needs the turn.
-func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, queuePlacement ...string) error {
-	text, err := buildUserText(content, attachments)
+// the same native placement while the turn is active.
+func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
+	message, err := buildUserMessage(content, attachments)
 	if err != nil {
 		return err
 	}
@@ -160,10 +199,13 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		return errAgentStopped
 	}
 	active := a.turnActive
+	compacting := a.compaction != nil
 	sessionID := a.sessionID
 	a.Mu.Unlock()
 
-	steer := len(queuePlacement) > 0 && queuePlacement[0] == droidQueueEndOfLoop
+	if compacting {
+		return agent.ErrAgentBusy
+	}
 	if steer {
 		if !active {
 			return agent.ErrNoActiveTurn
@@ -172,14 +214,11 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		return agent.ErrAgentBusy
 	}
 
-	placement := droidQueueEndOfTurn
-	if steer {
-		placement = droidQueueEndOfLoop
-	}
 	params := addUserMessageParams{
 		SessionID:      sessionID,
-		Text:           text,
-		QueuePlacement: placement,
+		Text:           message.Text,
+		Images:         message.Images,
+		QueuePlacement: droidQueueEndOfTurn,
 	}
 	if !steer {
 		a.armTurn()
@@ -193,28 +232,36 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	return nil
 }
 
-// buildUserText joins the message and its attachments into the one string
-// `droid.add_user_message` takes.
-func buildUserText(content string, attachments []*leapmuxv1.Attachment) (string, error) {
+// droidUserMessage holds the text and images of one native user message.
+type droidUserMessage struct {
+	Text   string
+	Images []droidInputImage
+}
+
+// buildUserMessage sends text inline and images as native base64 sources.
+func buildUserMessage(content string, attachments []*leapmuxv1.Attachment) (droidUserMessage, error) {
 	parts := []string{}
+	images := []droidInputImage{}
 	if text := strings.TrimSpace(content); text != "" {
 		parts = append(parts, text)
 	}
-	for _, att := range attachments {
-		if att == nil {
-			continue
+	for _, attachment := range agent.ClassifyAttachments(attachments) {
+		if err := (droidProvider{}).ValidateAttachment(attachment); err != nil {
+			return droidUserMessage{}, err
 		}
-		// Droid's text field cannot carry an image. The file name is the
-		// reference the reader sees; the bytes stay out of the message.
-		if strings.HasPrefix(att.GetMimeType(), "image/") {
-			parts = append(parts, "[image: "+att.GetFilename()+"]")
-			continue
-		}
-		if s := strings.TrimSpace(string(att.GetData())); s != "" {
-			parts = append(parts, s)
+		switch attachment.Kind {
+		case agent.AttachmentKindImage:
+			images = append(images, droidInputImage{
+				Type: "base64", MediaType: attachment.MIMEType,
+				Data: base64.StdEncoding.EncodeToString(attachment.Data),
+			})
+		case agent.AttachmentKindText:
+			parts = append(parts, providerkit.BuildInlineTextAttachmentBlock(attachment))
+		default:
+			return droidUserMessage{}, fmt.Errorf("factory Droid cannot send the attachment %s", attachment.Filename)
 		}
 	}
-	return strings.Join(parts, "\n\n"), nil
+	return droidUserMessage{Text: strings.Join(parts, "\n\n"), Images: images}, nil
 }
 
 // armTurn marks a turn active and publishes the flag. A repeat of the current
@@ -241,14 +288,15 @@ func (a *Agent) disarmTurn() {
 	}
 	a.turnActive = false
 	seq := a.NextTurnSeq()
+	compacting := a.compaction != nil
 	a.Mu.Unlock()
-	a.sink.SetTurnState(agent.TurnState{Active: false}, seq)
+	a.sink.SetTurnState(agent.TurnState{Active: compacting}, seq)
 }
 
 // PublishTurnActive republishes the turn flag through the sink.
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
-	state := agent.TurnState{Active: a.turnActive, Steerable: a.turnActive}
+	state := agent.TurnState{Active: a.turnActive || a.compaction != nil, Steerable: a.turnActive && a.compaction == nil}
 	a.Mu.Unlock()
 	a.sink.SetTurnState(state, a.nextTurnSeq())
 	return state
@@ -280,168 +328,32 @@ func (a *Agent) ClearContext() (string, error) {
 	return "", agent.ErrContextClearUnsupported
 }
 
-// CompactContext asks Droid to compact the conversation.
-func (a *Agent) CompactContext() error {
-	a.Mu.Lock()
-	sessionID := a.sessionID
-	a.Mu.Unlock()
-	if sessionID == "" {
-		return agent.ErrCompactionUnsupported
-	}
-	return a.request(droidMethodCompactSession, map[string]string{"sessionId": sessionID})
-}
-
-// OptionGroups returns the live configuration axes.
-func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	a.Mu.Lock()
-	settings := a.settings
-	catalog := a.catalog
-	a.Mu.Unlock()
-
-	groups := make([]*leapmuxv1.AvailableOptionGroup, 0, 3)
-	if len(catalog.models) > 0 {
-		groups = append(groups, droidModelGroup(catalog.models, settings.model))
-	}
-	effort := droidEffortGroup(settings.reasoningEffort, catalog.models, settings.model)
-	if effort != nil {
-		groups = append(groups, effort)
-	}
-	groups = append(groups, &leapmuxv1.AvailableOptionGroup{
-		Id:           agent.OptionIDPermissionMode,
-		Label:        PermissionModeLabel,
-		CurrentValue: settings.permissionMode,
-		Mutable:      true,
-		Order:        agent.OptionOrderPermissionMode,
-		Options:      permissionModeGroup.GetOptions(),
-	})
-	return groups
-}
-
-// SettingsSnapshot reports the live option values.
-func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
-	groups := a.OptionGroups()
-	values := map[string]string{}
-	for _, g := range groups {
-		if g.GetId() != "" && g.GetCurrentValue() != "" {
-			values[g.GetId()] = g.GetCurrentValue()
-		}
-	}
-	return agent.ConfirmedSettings(values)
-}
-
-// UpdateSettings applies each included non-empty option to the running agent.
-func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
-	a.Mu.Lock()
-	sessionID := a.sessionID
-	a.Mu.Unlock()
-	if sessionID == "" {
-		return agent.RestartRequiredSettings(options)
-	}
-
-	patch := map[string]string{}
-	for id, value := range options {
-		if value == "" {
-			continue
-		}
-		switch id {
-		case agent.OptionIDModel:
-			patch["modelId"] = value
-		case agent.OptionIDEffort:
-			patch["reasoningEffort"] = value
-		case agent.OptionIDPermissionMode:
-			patch["autonomyMode"] = droidAutonomyForMode(value)
-		}
-	}
-	if len(patch) == 0 {
-		return agent.ConfirmedSettings(nil)
-	}
-	raw, err := json.Marshal(patch)
-	if err != nil {
-		return agent.RestartRequiredSettings(options)
-	}
-	if err := a.request(droidMethodUpdateSessionSettings, updateSettingsParams{
-		SessionID: sessionID,
-		Settings:  raw,
-	}); err != nil {
-		return agent.RestartRequiredSettings(options)
-	}
-	a.Mu.Lock()
-	if v, ok := patch["modelId"]; ok {
-		a.settings.model = v
-	}
-	if v, ok := patch["reasoningEffort"]; ok {
-		a.settings.reasoningEffort = v
-	}
-	if v, ok := patch["autonomyMode"]; ok {
-		a.settings.autonomyMode = v
-	}
-	if mode := droidModeForAutonomy(a.settings.autonomyMode); mode != "" {
-		a.settings.permissionMode = mode
-	}
-	a.Mu.Unlock()
-	return agent.ConfirmedSettings(options)
-}
-
-// droidAutonomyForMode maps LeapMux's permission mode onto Droid's autonomy axis.
-func droidAutonomyForMode(mode string) string {
-	switch mode {
-	case "auto-low":
-		return droidAutonomyAutoLow
-	case "auto-medium":
-		return droidAutonomyAutoMedium
-	case "auto-high":
-		return droidAutonomyAutoHigh
-	default:
-		return droidAutonomyNormal
-	}
-}
-
-// droidModeForAutonomy maps Droid's autonomy axis back onto LeapMux's mode.
-func droidModeForAutonomy(autonomy string) string {
-	switch autonomy {
-	case droidAutonomyAutoLow:
-		return "auto-low"
-	case droidAutonomyAutoMedium:
-		return "auto-medium"
-	case droidAutonomyAutoHigh:
-		return "auto-high"
-	case droidAutonomyNormal:
-		return "default"
-	default:
-		return ""
-	}
-}
-
-// request sends one JSON-RPC request and waits for its response.
-func (a *Agent) request(method string, params any) error {
-	raw, err := json.Marshal(params)
-	if err != nil {
-		return err
-	}
-	env := newDroidEnvelope(droidTypeRequest)
-	env.ID = a.nextRequestID()
-	env.Method = method
-	env.Params = raw
-	line, err := env.Marshal()
-	if err != nil {
-		return err
-	}
-	// The response is routed by the reader; a fire-and-forget write is the
-	// delivery. Errors surface as notifications the driver logs.
-	return a.WriteStdin(append(line, '\n'))
-}
-
-// nextRequestID issues a JSON-RPC request id.
-func (a *Agent) nextRequestID() string {
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	return fmt.Sprintf("leapmux-%d", a.NextTurnSeq())
-}
-
 // Stop ends the process.
 func (a *Agent) Stop() {
 	a.Mu.Lock()
 	a.stopped = true
 	a.Mu.Unlock()
+	a.markChildTailsClosing()
 	a.Process.Stop()
+	a.stopChildConnections()
+	a.stopChildTails()
+	a.cleanupRuntimeSettings()
+}
+
+// Wait returns the native process result after its child processes and
+// temporary settings are closed.
+func (a *Agent) Wait() error {
+	err := a.Process.Wait()
+	a.stopChildConnections()
+	a.stopChildTails()
+	a.cleanupRuntimeSettings()
+	return err
+}
+
+func (a *Agent) cleanupRuntimeSettings() {
+	a.cleanupOnce.Do(func() {
+		if a.cleanupSettings != nil {
+			a.cleanupSettings()
+		}
+	})
 }

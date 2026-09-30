@@ -37,6 +37,7 @@ package pi
 // "response", id} envelope.
 const (
 	CommandPrompt             = "prompt"
+	CommandCompact            = "compact"
 	CommandAbort              = "abort"
 	CommandSetModel           = "set_model"
 	CommandSetThinkingLevel   = "set_thinking_level"

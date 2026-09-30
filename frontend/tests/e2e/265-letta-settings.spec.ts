@@ -6,6 +6,7 @@ import {
   closeComposerMenus,
   expectAssistantAnswer,
   expectSettingsChip,
+  expectSettingsOptionChosen,
   openPlusMenu,
   sendMessage,
   settingsGroupTrigger,
@@ -18,11 +19,9 @@ import { expect, LETTA_E2E_SKIP_REASON, LETTA_TITLE_RULE, lettaTest } from './le
 /**
  * 265 — Letta Code settings.
  *
- * The isolated `providers/auth.json` pins `openai-compatible`, and the model
- * handle is `provider/model`, so the model group offers the configured one. The
- * permission-mode axis maps onto `runtime_start.mode`; a change there reaches the
- * running session as an `update_model` command where the axis supports it, and
- * needs a restart for the mode.
+ * The isolated provider config points at the mock model server. The model
+ * menu reads native model handles, and a model write waits for its reply.
+ * A permission-mode change needs a session restart.
  */
 lettaTest.skip(!!LETTA_E2E_SKIP_REASON, LETTA_E2E_SKIP_REASON || '')
 
@@ -53,5 +52,25 @@ lettaTest.describe('Letta Code settings', () => {
     await chooseSettingsOption(page, 'permissionMode-strict')
     await waitForSettingsIdle(page)
     await expectSettingsChip(page, 'Strict')
+  })
+
+  lettaTest('sends a selected model on the next request and keeps it after reload', async ({ authenticatedLettaWorkspace, page, modelScript }) => {
+    void authenticatedLettaWorkspace
+    const alternate = `openai/${MOCK_MODELS.openai}`
+    await waitForSettingsHydrated(page)
+    await chooseSettingsOption(page, `model-${alternate}`)
+    await waitForSettingsIdle(page)
+    await expectSettingsOptionChosen(page, `model-${alternate}`)
+
+    await modelScript.rule(LETTA_TITLE_RULE)
+    await modelScript.queue({ text: 'The selected model answered.' })
+    await sendMessage(page, modelScript.prompt('Reply once after the model switch.'))
+    const status = await modelScript.waitForSteps()
+    await waitForAgentIdle(page, 180_000)
+    expect(status.requests.find(request => request.stepIndex === 0)?.body).toMatchObject({ model: MOCK_MODELS.openai })
+
+    await page.reload()
+    await waitForSettingsHydrated(page)
+    await expectSettingsOptionChosen(page, `model-${alternate}`)
   })
 })

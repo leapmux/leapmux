@@ -441,6 +441,32 @@ func TestListAgentSessions_ExcludesATabOpenInAnotherDirectory(t *testing.T) {
 	// under dirA.
 	seedResumableAgent(t, svc, "a-live", "ses_x", "Open elsewhere", dirB,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, false)
+	seedOpenCodeStoredSession(t, svc, dirA, "ses_x")
+
+	resp := listAgentSessions(t, d, w, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, dirA)
+	assert.Empty(t, summaryHandles(resp.GetSessions()),
+		"a handle a live process holds is never offered, whichever directory holds the tab")
+}
+
+func TestListAgentSessions_ExcludesAPendingResumeClaim(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t)
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
+		ID: "a-pending", WorkingDir: dirB, HomeDir: svc.HomeDir,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		Resumed:       1, PendingResumeSessionID: "ses_x",
+	}))
+	seedOpenCodeStoredSession(t, svc, dirA, "ses_x")
+
+	resp := listAgentSessions(t, d, w, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, dirA)
+	assert.Empty(t, summaryHandles(resp.GetSessions()),
+		"a pending manual resume hides the handle before native startup confirms it")
+}
+
+func seedOpenCodeStoredSession(t *testing.T, svc *Service, workingDir, sessionID string) {
+	t.Helper()
 
 	store := filepath.Join(svc.HomeDir, ".local", "share", "opencode", "opencode.db")
 	require.NoError(t, os.MkdirAll(filepath.Dir(store), 0o755))
@@ -451,13 +477,9 @@ func TestListAgentSessions_ExcludesATabOpenInAnotherDirectory(t *testing.T) {
 		time_created integer NOT NULL, time_updated integer, time_archived integer)`)
 	require.NoError(t, err)
 	_, err = sqlDB.Exec(`INSERT INTO session (id, directory, title, time_created, time_updated) VALUES
-		('ses_x', ?, 'The CLI still files it here', 1000, 3000)`, dirA)
+		(?, ?, 'The CLI still files it here', 1000, 3000)`, sessionID, workingDir)
 	require.NoError(t, err)
 	require.NoError(t, sqlDB.Close())
-
-	resp := listAgentSessions(t, d, w, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, dirA)
-	assert.Empty(t, summaryHandles(resp.GetSessions()),
-		"a handle a live process holds is never offered, whichever directory holds the tab")
 }
 
 func TestListAgentSessions_EmptyStoreAndNoRecordsIsAnEmptyList(t *testing.T) {

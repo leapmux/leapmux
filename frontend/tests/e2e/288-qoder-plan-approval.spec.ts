@@ -1,43 +1,60 @@
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { enterPlanModeToolCall, exitPlanModeToolCall } from './helpers/providerToolCalls'
-import { expectSettingsChip, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from './helpers/ui'
-import { expect, QODER_E2E_SKIP_REASON, qoderTest } from './qoder-fixtures'
+import { enterPlanModeToolCall, exitPlanModeFromFileToolCall, writeToolCall } from './helpers/providerToolCalls'
+import { sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from './helpers/ui'
+import { expect, expectQoderModeChip, QODER_E2E_SKIP_REASON, qoderTest } from './qoder-fixtures'
 
 /**
  * 288 — Qoder CLI plan approval.
  *
- * `EnterPlanMode` switches the session to Plan without asking. `ExitPlanMode`
- * raises the plan for review: the banner shows the plan controls, a rejection
- * keeps plan mode, and an approval implements the plan and switches the session
- * to Accept Edits (Qoder's own plan-exit mode).
+ * `EnterPlanMode` asks before it switches to Plan. `ExitPlanMode` raises the
+ * plan for review. A rejection keeps Plan active. An approval leaves Plan and
+ * applies the mode that the review control selects.
  */
 qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
 
 const PROVIDER = AgentProvider.QODER
 
-/** The plan text the exit call raises for approval. `testId` keeps two runs apart. */
-function planText(testId: string): string {
-  return `# Dummy plan ${testId}\n\nNever execute this plan.`
+/** The plan text that Qoder reads from its plan file. */
+function planText(revision: string): string {
+  return `# Dummy plan ${revision}\n\nNever execute this plan.`
+}
+
+const PLAN_FILE_CAPTURE = { planFile: '(?:create your plan at|already exists at) (\\S+?\\.md)' }
+
+function planSteps(revision: string) {
+  return [
+    {
+      toolCalls: [writeToolCall(PROVIDER, `write-plan-${revision}`, { path: '{{planFile}}', content: planText(revision) })],
+      captures: PLAN_FILE_CAPTURE,
+    },
+    { toolCalls: [exitPlanModeFromFileToolCall(PROVIDER, `exit-plan-${revision}`, [])] },
+  ]
 }
 
 qoderTest.describe('Qoder CLI plan approval', () => {
-  qoderTest('raises the plan for review, keeps plan mode on reject, and implements it on approve', async ({ qoderWorkspace, page, modelScript }) => {
+  qoderTest('reviews the plan, retains it on reject, and applies the selected mode on approve', async ({ qoderWorkspace, page, modelScript }) => {
     void qoderWorkspace
     await waitForSettingsHydrated(page)
     // Plan mode drives the agent past what a test can count: entering it starts
     // a mode the provider keeps working in, and each verdict starts more turns.
     await modelScript.fallback({ text: 'Working through the plan.' })
 
-    await modelScript.queue(
-      { toolCalls: [enterPlanModeToolCall(PROVIDER, 'enter-plan')] },
-      { toolCalls: [exitPlanModeToolCall(PROVIDER, 'exit-plan-1', modelScript.prompt(planText('first')))] },
-    )
+    await modelScript.queue({ toolCalls: [enterPlanModeToolCall(PROVIDER, 'enter-plan')] })
     await sendMessage(page, modelScript.prompt('Enter plan mode and present the plan.'))
-    await modelScript.waitForSteps(2)
+    await modelScript.waitForSteps()
+    const enterBanner = await waitForControlBanner(page)
+    await expect(enterBanner).toContainText('EnterPlanMode')
+    await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
+    await waitForAgentIdle(page)
+    await expectQoderModeChip(page, 'Plan')
+
+    await modelScript.queue(...planSteps('first'))
+    await sendMessage(page, modelScript.prompt('Write the plan file, then present it for review.'))
+    await modelScript.waitForSteps()
 
     const banner = await waitForControlBanner(page)
     await expect(banner).toContainText('Plan Ready for Review')
-    await expectSettingsChip(page, 'Plan')
+    await expectQoderModeChip(page, 'Plan')
 
     // A typed reply rejects the plan with feedback, and the session stays in
     // plan mode.
@@ -46,17 +63,26 @@ qoderTest.describe('Qoder CLI plan approval', () => {
     await page.getByTestId('plan-reject-btn').click()
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
     await waitForAgentIdle(page, 180_000)
-    await expectSettingsChip(page, 'Plan')
+    await expectQoderModeChip(page, 'Plan')
 
-    await modelScript.queue({ toolCalls: [exitPlanModeToolCall(PROVIDER, 'exit-plan-2', modelScript.prompt(planText('second')))] })
-    await sendMessage(page, modelScript.prompt('Present the plan again.'))
-    await modelScript.waitForSteps(1)
+    await modelScript.queue(...planSteps('second'))
+    await sendMessage(page, modelScript.prompt('Revise the plan file and present it again.'))
+    await modelScript.waitForSteps()
     const banner2 = await waitForControlBanner(page)
     await expect(banner2).toContainText('Plan Ready for Review')
     await page.getByTestId('plan-approve-btn').click()
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
     await waitForAgentIdle(page, 180_000)
-    // An approved plan exit switches the session to Accept Edits.
-    await expectSettingsChip(page, 'Accept Edits')
+    // The review control selects Auto. The next turn keeps the approved plan.
+    await expectQoderModeChip(page, 'Auto')
+    await modelScript.queue({ text: 'The approved mode stayed active.' })
+    await sendMessage(page, modelScript.prompt('Reply after the approved plan.'))
+    const status = await modelScript.waitForSteps()
+    await waitForAgentIdle(page, 180_000)
+    const nextRequest = status.requests.find(request => request.stepIndex === status.stepCount - 1)
+    expect(nextRequest).toBeDefined()
+    const nextBody = JSON.stringify(nextRequest?.body)
+    expect(nextBody.includes('# Dummy plan second')).toBe(true)
+    expect(nextBody.includes('Exited Plan Mode')).toBe(true)
   })
 })

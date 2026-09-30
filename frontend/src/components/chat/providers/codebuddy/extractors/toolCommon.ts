@@ -8,7 +8,7 @@ import { toolRequestFor } from '../../defaultToolRequests'
 import { codebuddyToolKind } from '../toolKinds'
 
 /** One reader per tool kind: the shared default request table. */
-const ANTHROPIC_TOOL_READERS: ToolCallSpecReaderTable<AnthropicToolFacts> = {
+const CODEBUDDY_TOOL_READERS: ToolCallSpecReaderTable<CodebuddyToolFacts> = {
   unspecified: (facts): ToolCallSpecVariant<'unspecified'> => ({ kind: 'unspecified', request: toolRequestFor('unspecified', facts.args, facts, {}) }),
   other: (facts): ToolCallSpecVariant<'other'> => ({ kind: 'other', request: toolRequestFor('other', facts.args, facts, {}) }),
   agent: (facts): ToolCallSpecVariant<'agent'> => ({ kind: 'agent', request: toolRequestFor('agent', facts.args, facts, {}) }),
@@ -41,8 +41,8 @@ const ANTHROPIC_TOOL_READERS: ToolCallSpecReaderTable<AnthropicToolFacts> = {
   write: (facts): ToolCallSpecVariant<'write'> => ({ kind: 'write', request: toolRequestFor('write', facts.args, facts, {}) }),
 }
 
-/** The facts one Anthropic-shaped tool call carries. */
-export interface AnthropicToolFacts {
+/** The facts a live frame or stored function record supplies for one tool call. */
+export interface CodebuddyToolFacts {
   callId: string
   toolName: string
   args: Record<string, unknown>
@@ -52,17 +52,15 @@ export interface AnthropicToolFacts {
 }
 
 /**
- * Read one Anthropic-shaped tool call into the shared model.
+ * Read one CodeBuddy tool call into the shared model.
  *
- * Both CodeBuddy Code and Qoder CLI speak Anthropic content blocks: an
- * assistant `tool_use` carries the id, name and input, and a user
- * `tool_result` carries the output. The shared default request table reads the
- * arguments; neither provider spells its tool arguments differently from it.
+ * Live frames carry Anthropic content blocks. Stored Workflow child records
+ * carry top-level function calls. Both paths supply the same normalized facts.
  */
-export function anthropicToolCall(facts: AnthropicToolFacts): ToolCall {
+export function codebuddyToolCall(facts: CodebuddyToolFacts): ToolCall {
   const kind: ToolKind = codebuddyToolKind(facts.toolName)
   const envelope: ToolCallEnvelope = { id: facts.callId, name: facts.toolName, lifecycle: facts.lifecycle }
-  const spec = readToolCallSpec(ANTHROPIC_TOOL_READERS, kind, facts)
+  const spec = readToolCallSpec(CODEBUDDY_TOOL_READERS, kind, facts)
   return createToolCall(envelope, {
     ...spec,
     ...(facts.resultText ? { result: facts.isError ? failedResult(facts.resultText) : unparsedResult(facts.resultText) } : {}),

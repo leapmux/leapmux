@@ -4,7 +4,7 @@ import type { ToolKind } from '../../../model/toolKind'
 import type { ACPToolCallAdapter, ACPToolFacts } from '../../acp/extractors/toolCall'
 import { rawTodosToItems } from '~/components/chat/normalizers/todo'
 import { ACP_SUPPLEMENT, ACP_SUPPLEMENT_REQUEST } from '~/generated/contracts/acp-protocol'
-import { GOOSE_SUBAGENT } from '~/generated/contracts/goose-protocol'
+import { GOOSE_SUBAGENT, GOOSE_TODO } from '~/generated/contracts/goose-protocol'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { withCommandExit } from '../../../model/commandResult'
@@ -16,7 +16,7 @@ import { flattenAcpContent } from '../../acp/content'
 import { acpRemapFacts, acpSpecFor, acpToolFacts } from '../../acp/extractors/toolCall'
 import { gooseAgentRequest, gooseAgentResult } from '../extractors/agent'
 import { gooseSubagentToolCall, isGooseSubagentToolRequest } from '../extractors/subagentToolRequest'
-import { GOOSE_DEVELOPER_EXTENSION, GOOSE_DEVELOPER_TOOL, GOOSE_TODO_EXTENSION, GOOSE_TODO_TOOL, GOOSE_TOOL_KINDS, isGooseDeveloperTool } from '../toolKinds'
+import { GOOSE_DEVELOPER_EXTENSION, GOOSE_DEVELOPER_TOOL, GOOSE_TOOL_KINDS, isGooseDeveloperTool } from '../toolKinds'
 
 /**
  * One `read_image` specification, with the file and the size the result states.
@@ -112,7 +112,7 @@ function gooseCall(facts: ACPToolFacts, base: () => ToolCallSpec): ToolCallSpec 
   // checklist, and a status test here drops the row to the generic server card. The
   // `content` test stays: a call that carries no list cannot draw one, and an empty
   // checklist claims that the agent cleared the list.
-  if (extension === GOOSE_TODO_EXTENSION && name === GOOSE_TODO_TOOL && typeof args.content === 'string') {
+  if (extension === GOOSE_TODO.Extension && name === GOOSE_TODO.Tool && typeof args.content === 'string') {
     const markdown = pickString(args, 'content')
     const lines = markdown.split(/\r?\n/).filter(line => line.trim() !== '')
     const entries = lines.map(line => /^[-*+] \[([ x])\] (.+)$/i.exec(line))
@@ -231,7 +231,7 @@ function gooseCall(facts: ACPToolFacts, base: () => ToolCallSpec): ToolCallSpec 
       return { ...gooseImageSpec(acpSpecFor(remapFacts, GOOSE_TOOL_KINDS[name]), tool, input), ...named }
     return { ...acpSpecFor(remapFacts, kind), ...named }
   }
-  if (!extension || !name || extension === GOOSE_TODO_EXTENSION)
+  if (!extension || !name || extension === GOOSE_TODO.Extension)
     return { ...base(), ...named }
   // The lifecycle the shared ladder applies to every kind it builds, stated here
   // because this branch answers before that ladder runs. A server call that FAILED

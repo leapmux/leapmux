@@ -1,17 +1,14 @@
 import { junieAnswerToolCall } from './helpers/providerToolCalls'
-import { assistantBubbles, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { assistantBubbles, bandRows, sendMessage, waitForAgentIdle } from './helpers/ui'
 import { expect, JUNIE_E2E_SKIP_REASON, junieTest } from './junie-fixtures'
 
 junieTest.skip(!!JUNIE_E2E_SKIP_REASON, JUNIE_E2E_SKIP_REASON || '')
 
 /**
- * Junie answers THREE model calls per task: a capability filter, a task-name
- * summarizer and the main agent. The first two are housekeeping turns, so they
- * ride `rule` and never take the answer the test scripted for the main turn.
- * The main agent REJECTS a text-only reply and retries six times, so its
- * answers carry a tool call: `answer` is the one that states the answer text.
+ * Junie asks for a capability filter and task title before the main answer.
+ * Rules answer those requests. The main answer uses Junie's `answer` tool.
  */
-junieTest.describe('Junie Basic Chat', () => {
+junieTest.describe('Junie basic chat', () => {
   junieTest('send message and receive response', async ({ authenticatedJunieWorkspace, page, modelScript }) => {
     void authenticatedJunieWorkspace
     await modelScript.rule(
@@ -30,5 +27,26 @@ junieTest.describe('Junie Basic Chat', () => {
     await sendMessage(page, modelScript.prompt('Say hello.'))
     await waitForAgentIdle(page, 120_000)
     await expect(assistantBubbles(page).filter({ hasText: 'Hello from the mock model.' }).first()).toBeVisible()
+  })
+
+  junieTest('does not expose model reasoning as an ACP thought row', async ({ authenticatedResponsesJunieWorkspace, page, modelScript }) => {
+    void authenticatedResponsesJunieWorkspace
+    const reasoning = 'JUNIE_THOUGHT_MARKER I compare the two values.'
+    await modelScript.rule(
+      { name: 'junie-capability-filter', when: { system: 'capability filter agent' }, respond: { text: '' } },
+      { name: 'junie-task-name', when: { system: 'task description summarizer' }, respond: { text: 'Arithmetic task' } },
+    )
+    await modelScript.queue({ reasoning, toolCalls: [junieAnswerToolCall('junie-thought-answer', 'The answer is 6912.')] })
+    await sendMessage(page, modelScript.prompt('Add 1234 and 5678.'))
+    const status = await modelScript.waitForSteps()
+    await waitForAgentIdle(page, 120_000)
+
+    const request = status.requests.find(record => record.stepIndex === 0)
+    expect(request?.path).toBe('/v1/responses')
+    await expect(assistantBubbles(page).filter({ hasText: 'The answer is 6912.' }).first()).toBeVisible()
+    // The ACP bridge emits thought chunks from system events. It does not send
+    // the reasoning item of this model response as a thought row.
+    await expect(bandRows(page, 'thought')).toHaveCount(0)
+    await expect(bandRows(page, 'text').filter({ hasText: reasoning })).toHaveCount(0)
   })
 })

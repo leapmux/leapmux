@@ -266,6 +266,20 @@ describe('parseScenarioSpec stream', () => {
   })
 })
 
+describe('parseScenarioSpec gate', () => {
+  it('keeps a release gate on a scripted answer', () => {
+    expect(parseScenarioSpec({ steps: [{ text: 'Answer.', gate: 'child-answer' }] }).steps[0])
+      .toEqual({ text: 'Answer.', gate: 'child-answer' })
+  })
+
+  it('rejects a missing, malformed, or timed release gate', () => {
+    for (const gate of ['', 'bad/name', 'a b'])
+      expect(() => parseScenarioSpec({ steps: [{ text: 'Answer.', gate }] })).toThrow('gate')
+    expect(() => parseScenarioSpec({ steps: [{ text: 'Answer.', gate: 'child-answer', delayMs: 5 }] }))
+      .toThrow('gate')
+  })
+})
+
 describe('parseScenarioSpec captures', () => {
   const planWrite = { id: 'w', name: 'Write', arguments: { path: '{{planFile}}', content: '# Plan' } }
 

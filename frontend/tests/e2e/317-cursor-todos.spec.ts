@@ -18,8 +18,8 @@ cursorTest.describe('tracks the Cursor to-do list', () => {
           { step: 'List three checks', status: 'in_progress' },
           { step: 'Report their purpose', status: 'pending' },
         ])],
+        text: 'The plan is written.',
       },
-      { text: 'The plan is written.' },
     )
     await sendMessage(page, modelScript.prompt('Write a three-step to-do list.'))
     await modelScript.waitForSteps()
@@ -41,8 +41,8 @@ cursorTest.describe('tracks the Cursor to-do list', () => {
           { step: 'List three checks', status: 'completed' },
           { step: 'Report their purpose', status: 'completed' },
         ])],
+        text: 'Every step is done.',
       },
-      { text: 'Every step is done.' },
     )
     await sendMessage(page, modelScript.prompt('Mark every step done.'))
     await modelScript.waitForSteps()

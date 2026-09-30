@@ -688,6 +688,39 @@ func kimiWithRetainedOutput(frame []byte, output string, truncated bool) []byte 
 
 // --- notices ---
 
+// handleCompactionStarted keeps manual compaction active until a native result.
+func (a *Agent) handleCompactionStarted(event kimiEvent) {
+	a.persistEventNotification(event)
+	if event.AgentID != kimiMainAgentID {
+		return
+	}
+	var payload struct {
+		Trigger string `json:"trigger"`
+	}
+	if !event.decode(&payload) || payload.Trigger != "manual" {
+		return
+	}
+	a.Mu.Lock()
+	a.manualCompactionActive = true
+	a.Mu.Unlock()
+	a.PublishTurnActive()
+}
+
+// handleCompactionFinished releases the queue after a manual result.
+func (a *Agent) handleCompactionFinished(event kimiEvent) {
+	a.persistEventNotification(event)
+	if event.AgentID != kimiMainAgentID {
+		return
+	}
+	a.Mu.Lock()
+	manual := a.manualCompactionActive
+	a.manualCompactionActive = false
+	a.Mu.Unlock()
+	if manual {
+		a.PublishTurnActive()
+	}
+}
+
 // persistEventNotification records a notice event -- a compaction, a retry, a
 // warning, a task notification -- in the transcript of the agent it belongs to.
 func (a *Agent) persistEventNotification(event kimiEvent) {

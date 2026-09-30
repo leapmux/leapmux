@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
@@ -678,7 +679,7 @@ func (b *zcodeStatePatchBody) hasSettings() bool {
 // agent's settings and usage, so a mode or model the AGENT changed mid-turn
 // (ZCode's own EnterPlanMode / ExitPlanMode tools do exactly that) reaches the
 // picker, and the context-usage readout tracks the turn.
-func (a *Agent) handleZCodeStateUpdated(params json.RawMessage) {
+func (a *Agent) handleZCodeStateUpdated(params json.RawMessage, raw []byte) {
 	if len(params) == 0 {
 		return
 	}
@@ -687,6 +688,7 @@ func (a *Agent) handleZCodeStateUpdated(params json.RawMessage) {
 		slog.Warn("zcode state.updated unmarshal failed", "agent_id", a.AgentID(), "error", err)
 		return
 	}
+	defer a.handleZCodeCompactionState(notif, raw)
 	if len(notif.Patch) == 0 {
 		return
 	}
@@ -742,6 +744,32 @@ func (a *Agent) handleZCodeStateUpdated(params json.RawMessage) {
 		agent.OptionIDEffort:         after.effort,
 		agent.OptionIDPermissionMode: after.mode,
 	})
+}
+
+// handleZCodeCompactionState stores the native state transition that the
+// settings snapshot alone cannot show. Completion also releases the queue turn.
+func (a *Agent) handleZCodeCompactionState(notif zcodeStatePatch, raw []byte) {
+	if notif.Scope != ScopeSession || !a.isCurrentZCodeSession(notif.SessionID) {
+		return
+	}
+	switch notif.Reason {
+	case contracts.ZCodeStateReasonCompactStarted,
+		contracts.ZCodeStateReasonSessionCompacted,
+		contracts.ZCodeStateReasonSessionCompactFailed,
+		contracts.ZCodeStateReasonSessionCompactCancelled:
+	default:
+		return
+	}
+	if len(raw) > 0 {
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
+			Original: raw, AgentSessionID: notif.SessionID,
+		}, agent.SpanInfo{}); err != nil {
+			slog.Error("zcode persist compaction state", "agent_id", a.AgentID(), "error", err)
+		}
+	}
+	if notif.Reason != contracts.ZCodeStateReasonCompactStarted {
+		a.finishZCodeCompaction(notif.SessionID)
+	}
 }
 
 // zcodeSettingsTriple is the comparable snapshot of the three settable axes, used to

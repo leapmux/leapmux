@@ -159,5 +159,13 @@ func (svc *Service) recordControlResponsePlanMode(agentID string, provider leapm
 	if current.AgentProvider != provider || current.AgentSessionID != plan.requestMeta.AgentSessionID {
 		return nil
 	}
+	plugin := svc.Agents.Registry().Plugin(provider)
+	if plan.resolution.PlanModeControl == agent.PlanModeControlExit && plan.behavior() == agent.ControlBehaviorAllow {
+		mode := resolveTargetMode(plan.settings.GetPermissionMode(), plugin.PlanModePermissionMode(agent.PlanModeControlExit))
+		if options := plugin.PlanApprovalOptions(mode); len(options) > 0 {
+			_, err := svc.applyPlanOptionsLocked(current, options)
+			return err
+		}
+	}
 	return svc.applyControlResponsePlanModeMutations(current, plan)
 }

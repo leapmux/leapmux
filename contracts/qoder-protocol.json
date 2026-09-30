@@ -1,51 +1,40 @@
 {
-  "_readme": "Qoder CLI's stream-json vocabulary (`qodercli -p --input-format stream-json --output-format stream-json`), for the tables that BOTH the Go provider and the TS renderer plugin read. Qoder is a rebranded Gemini CLI with a stream-json translation layer on top: the envelope looks like Claude Code's and the semantics differ, so this contract shares no table with claude-protocol.json. `frameKinds` are the top-level `type` values. `controlRequestSubtypes` are the ~30 control-channel subtypes both sides dispatch on; goals and steering live only here. `systemSubtypes` are the system-line subtypes both sides classify. `modes` are the permission-mode words on the wire (camelCase; the flag vocabulary is snake_case and is normalized before emission). `effortLevels` are the --reasoning-effort values Qoder owns (the words its own effort validator admits). `permissionOutcomes` are the decision outcomes a can_use_tool answer carries. `capabilities` are the runtime negotiation strings from init.capabilities, which gate goal, plan, rewind and interrupt behavior. The can_use_tool answer fields and the goal tool names are Go-only where the browser never spells them, and live in providers/qoder/protocol.go.",
+  "_readme": "This contract defines Qoder CLI's stream-JSON vocabulary. The Go provider reads lifecycle and control frames. The TypeScript plugin classifies transcript frames. The stream envelope resembles Claude Code's, but its behavior differs, so the two providers have separate contracts. `frameKinds` lists top-level `type` values. `controlRequestSubtypes` lists control-channel requests. `systemSubtypes` lists system-line events. `modes` lists the wire permission values in camelCase; launch flags use snake_case. `effortLevels` lists values accepted by `--reasoning-effort`. `permissionOutcomes` lists tool-decision results. `capabilities` lists the features from the init frame. Go-only control-answer fields and goal tool names live in providers/qoder/protocol.go.",
   "_unread": {
     "frameKinds": {
       "Attachment": {
         "sides": [
-          "go",
-          "ts"
+          "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "The worker stores this frame whole. The browser hides this internal kind, and Go does not branch on its specific word."
       },
       "CommandLifecycle": {
         "sides": [
-          "go",
-          "ts"
+          "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "The worker stores this frame whole. The browser hides this internal kind, and Go does not branch on its specific word."
       },
       "Progress": {
         "sides": [
-          "go",
-          "ts"
+          "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "The worker stores this frame whole. The browser hides this internal kind, and Go does not branch on its specific word."
       },
       "StreamEvent": {
         "sides": [
-          "go",
-          "ts"
+          "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "The worker stores this frame whole. The browser hides this internal kind, and Go does not branch on its specific word."
       },
       "ToolProgress": {
         "sides": [
-          "go",
-          "ts"
+          "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "The worker stores this frame whole. The browser hides this internal kind, and Go does not branch on its specific word."
       }
     },
     "controlRequestSubtypes": {
       "CanUseTool": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
-      "ClearGoal": {
         "sides": [
           "go"
         ],
@@ -87,31 +76,13 @@
         ],
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       },
-      "ResumeGoal": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
       "SetContextWindow": {
         "sides": [
           "go"
         ],
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       },
-      "SetGoal": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
       "SetGoalMaxTurns": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
-      "SetModel": {
         "sides": [
           "go"
         ],
@@ -125,37 +96,13 @@
       }
     },
     "systemSubtypes": {
-      "AvailableModelsUpdate": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
       "CompactBoundary": {
         "sides": [
           "go"
         ],
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       },
-      "GoalCleared": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
-      "GoalUpdated": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
       "Interrupt": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
-      "PlanModeChanged": {
         "sides": [
           "go"
         ],
@@ -186,6 +133,12 @@
           "go"
         ],
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Cancel": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Go provider sends a deny reason without an explicit cancel outcome. It does not read the Cancel constant."
       }
     },
     "capabilities": {
@@ -196,18 +149,6 @@
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       },
       "GoalMaxTurnsV1": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
-      "GoalResumeV1": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
-      "GoalV1": {
         "sides": [
           "go"
         ],

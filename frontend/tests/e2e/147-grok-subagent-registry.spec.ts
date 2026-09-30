@@ -1,5 +1,6 @@
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, GROK_E2E_SKIP_REASON, grokTest, openGrokAgent } from './grok-fixtures'
+import { exerciseLiveChildTranscript } from './helpers/liveChildTranscript'
 import { spawnSubagentToolCall } from './helpers/providerToolCalls'
 import {
   exerciseChildInterrupt,
@@ -35,6 +36,18 @@ grokTest.skip(!!GROK_E2E_SKIP_REASON, GROK_E2E_SKIP_REASON || '')
 const GROK_SUBAGENT_SYSTEM = 'You are a Grok Build subagent\\b'
 
 grokTest.describe('Grok Build subagent registry', () => {
+  grokTest('shows the child prompt while the child still runs', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+    const { workingDir } = await openGrokAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { approvalMode: 'always-approve' })
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    await exerciseLiveChildTranscript(page, modelScript, {
+      provider: AgentProvider.GROK_BUILD,
+      childWhen: { system: GROK_SUBAGENT_SYSTEM, user: 'Reply with CHILD_LIVE_DONE' },
+      childTask: 'Reply with CHILD_LIVE_DONE.',
+      parentTask: 'Delegate the live child task.',
+      toolProof: { workingDir },
+    })
+  })
+
   grokTest('a foreground subagent opens a row and a child transcript with its report', async ({
     page,
     authenticatedEmptyWorkspace,

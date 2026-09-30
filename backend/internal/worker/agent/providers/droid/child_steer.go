@@ -1,24 +1,20 @@
 package droid
 
 import (
-	"errors"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Droid child steering.
 //
-// The daemon routes `droid.add_user_message` by `params.sessionId` (the binary's
-// `handleAddUserMessage` claims the turn submission under
-// `r.params.sessionId`), so a child session id addresses the child. The
-// `child_session_available` notification announces each child as
-// `{childSessionId, toolUseId, subagentType, description}`, and the registry
-// row key is that `childSessionId`.
+// The stream JSON-RPC adapter ignores params.sessionId when it runs a turn.
+// It uses the one session loaded in that process. A child send therefore uses
+// a separate process that loaded the child session through droid.load_session.
+// The child_session_available notification supplies its stable session id.
 //
-// A send uses queuePlacement "end_of_turn" and refuses a busy child, so the
-// LeapMux input queue holds the message. A steer uses "end_of_loop" and needs a
-// running turn.
+// A native background child without a bound process is busy but cannot take a
+// steer through the root process. The input queue holds a send until it ends.
 
 // child_session_available is the notification type that announces a child
 // session. It is not yet in the droid-protocol contract table; the binary
@@ -27,78 +23,83 @@ const droidNotificationChildSessionAvailable = "child_session_available"
 
 var _ agent.ChildSteerer = (*Agent)(nil)
 
-// SendChildInput sends a user message to a child session. The message is
-// queued for the child's next turn ("end_of_turn"). A running child refuses
-// with ErrAgentBusy so the LeapMux queue holds the message.
+// SendChildInput sends through a process loaded with the child session. A
+// running native background child makes the queue hold the message.
 func (a *Agent) SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendChildMessage(childKey, content, attachments, droidQueueEndOfTurn)
+	childID, err := a.registeredChildID(childKey)
+	if err != nil {
+		return err
+	}
+	a.Mu.Lock()
+	backgroundRunning := a.childTurns[childKey]
+	stopped := a.stopped
+	a.Mu.Unlock()
+	if stopped {
+		return errAgentStopped
+	}
+	if backgroundRunning {
+		return agent.ErrAgentBusy
+	}
+	child, err := a.childConnection(childKey, childID)
+	if err != nil {
+		return err
+	}
+	if err := child.SendInputForSession(childKey, content, attachments); err != nil {
+		return err
+	}
+	providerkit.LogRegistryRefusal("droid", "revive child", a.sink.ReviveBackgroundTask(childKey))
+	a.resumeChildTail(childKey)
+	a.finishExitedChild(childKey, child)
+	return nil
 }
 
-// SteerChildInput adds a message to a child's running turn. The message is
-// injected at the child's next interruption point ("end_of_loop").
+// SteerChildInput uses only an active process already bound to the child.
 func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendChildMessage(childKey, content, attachments, droidQueueEndOfLoop)
+	if _, err := a.registeredChildID(childKey); err != nil {
+		return err
+	}
+	if !a.ActiveChildTurnState(childKey).Steerable {
+		return agent.ErrNoActiveTurn
+	}
+	a.childConnMu.Lock()
+	connection := a.childConns[childKey]
+	a.childConnMu.Unlock()
+	if connection == nil {
+		return agent.ErrNoActiveTurn
+	}
+	<-connection.ready
+	if connection.err != nil {
+		return connection.err
+	}
+	return connection.agent.SteerInput(content, attachments)
 }
 
 // ActiveChildTurnState reports a child's turn after a refusal. The queue reads
 // it to decide whether a refused message is offered as a steer.
 func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {
 	a.Mu.Lock()
-	running := a.childTurns[childKey]
+	backgroundRunning := a.childTurns[childKey]
 	a.Mu.Unlock()
-	return agent.TurnState{Active: running, Steerable: running}
-}
-
-// sendChildMessage writes one droid.add_user_message addressed to a child.
-//
-// The child session id IS the registry row key (the `childSessionId` of
-// `child_session_available`), so the key the service resolved from the registry
-// is the id the daemon routes by. A send arms the child's turn; a steer needs
-// one already running.
-func (a *Agent) sendChildMessage(childKey, content string, attachments []*leapmuxv1.Attachment, queuePlacement string) error {
-	if childKey == "" {
-		return errors.New("the child session id is empty")
+	if backgroundRunning {
+		return agent.TurnState{Active: true, Steerable: false}
 	}
-	text, err := buildUserText(content, attachments)
-	if err != nil {
-		return err
-	}
-
-	a.sendMu.Lock()
-	defer a.sendMu.Unlock()
-
-	a.Mu.Lock()
-	if a.stopped {
-		a.Mu.Unlock()
-		return errAgentStopped
-	}
-	running := a.childTurns[childKey]
-	a.Mu.Unlock()
-
-	steer := queuePlacement == droidQueueEndOfLoop
-	if steer {
-		if !running {
-			return agent.ErrNoActiveTurn
+	a.childConnMu.Lock()
+	connection := a.childConns[childKey]
+	a.childConnMu.Unlock()
+	if connection != nil {
+		select {
+		case <-connection.ready:
+			if connection.agent != nil {
+				connection.agent.Mu.Lock()
+				active := connection.agent.turnActive
+				connection.agent.Mu.Unlock()
+				return agent.TurnState{Active: active, Steerable: active}
+			}
+		default:
+			return agent.TurnState{Active: true, Steerable: false}
 		}
-	} else if running {
-		return agent.ErrAgentBusy
 	}
-
-	params := addUserMessageParams{
-		SessionID:      childKey,
-		Text:           text,
-		QueuePlacement: queuePlacement,
-	}
-	if !steer {
-		a.armChildTurn(childKey)
-	}
-	if err := a.request(droidMethodAddUserMessage, params); err != nil {
-		if !steer {
-			a.disarmChildTurn(childKey)
-		}
-		return err
-	}
-	return nil
+	return agent.TurnState{}
 }
 
 // armChildTurn marks a child's turn running. A repeat publishes nothing.

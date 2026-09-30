@@ -10,6 +10,7 @@ import { qwenQuestionHandling } from './pluginControls'
 
 registerACPProvider({
   provider: AgentProvider.QWEN_CODE,
+  attachments: { text: true, image: true, pdf: true, binary: false },
   effortGroupKey: QWEN_CONFIG.ReasoningEffort,
   toolCallAdapter: qwenToolCallAdapter,
   defaultPermissionMode: QWEN_MODE.Default,

@@ -2,6 +2,7 @@ import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, expect } from './codebuddy-fi
 import {
   ARITHMETIC_ANSWER_TEXT,
   ARITHMETIC_PROMPT,
+  bandRows,
   expectAssistantAnswer,
   sendMessage,
   waitForAgentIdle,
@@ -20,12 +21,26 @@ import {
 codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
 
 codebuddyTest.describe('CodeBuddy Code basic chat', () => {
+  codebuddyTest('draws model reasoning in a thought row', async ({ codebuddyWorkspace, page, modelScript }) => {
+    void codebuddyWorkspace
+    await modelScript.queue({ reasoning: 'I inspect the numbers first.', text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps()
+    await waitForAgentIdle(page)
+    await expect(bandRows(page, 'thought').filter({ hasText: 'I inspect the numbers first.' }).first()).toBeVisible()
+    await expectAssistantAnswer(page)
+
+    await page.reload()
+    await expect(bandRows(page, 'thought').filter({ hasText: 'I inspect the numbers first.' }).first()).toBeVisible()
+    await expectAssistantAnswer(page)
+  })
+
   codebuddyTest('draws the answer and ends the turn', async ({ codebuddyWorkspace, page, modelScript }) => {
     void codebuddyWorkspace
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expectAssistantAnswer(page)
     await expect(page.getByTestId('thinking-indicator')).not.toBeVisible()
@@ -40,13 +55,13 @@ codebuddyTest.describe('CodeBuddy Code basic chat', () => {
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expectAssistantAnswer(page)
 
     await modelScript.queue({ text: 'The second answer.' })
     await sendMessage(page, modelScript.prompt('And the second question?'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expectAssistantAnswer(page)
   })
 })

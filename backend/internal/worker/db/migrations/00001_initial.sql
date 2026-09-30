@@ -25,6 +25,10 @@ CREATE TABLE agents (
     -- layers away.
     title_auto_generated INTEGER NOT NULL DEFAULT 1,
     agent_session_id TEXT NOT NULL DEFAULT '',
+    -- A selected native handle stays here during startup. It is not a
+    -- confirmed session ID, so the picker uses it only to exclude an open
+    -- handle. The provider's session update clears it atomically.
+    pending_resume_session_id TEXT NOT NULL DEFAULT '',
     resumed          INTEGER NOT NULL DEFAULT 0,
     -- options: chosen option values keyed by option-group id (model, effort,
     -- permissionMode, and provider-specific axes), as a JSON object.
@@ -98,6 +102,18 @@ CREATE INDEX idx_agents_parent ON agents(parent_agent_id) WHERE parent_agent_id 
 -- (provider, working directory) pair, which no other index covers, and it runs
 -- on the path of a dialog that opens on every "New agent" click.
 CREATE INDEX idx_agents_provider_working_dir ON agents(agent_provider, working_dir);
+-- An open native session belongs to one tab. A pending claim uses a separate
+-- column so the unconfirmed handle never looks like provider history.
+CREATE UNIQUE INDEX idx_agents_open_native_owner
+    ON agents(agent_provider,
+      COALESCE(NULLIF(agent_session_id,''), NULLIF(pending_resume_session_id,'')))
+    WHERE closed_at IS NULL AND parent_agent_id IS NULL
+      AND (agent_session_id <> '' OR pending_resume_session_id <> '');
+-- Finds the newest closed Worker tree with retained messages for a native
+-- session before OpenAgent copies its transcripts into the new tree.
+CREATE INDEX idx_agents_closed_native_session
+    ON agents(agent_provider, working_dir, agent_session_id, closed_at DESC)
+    WHERE closed_at IS NOT NULL AND agent_session_id <> '' AND parent_agent_id IS NULL;
 -- Serves the agents leg of tab_locations, which the quake reference count
 -- reads on every agent close and every reconcile pass. The pair index above
 -- cannot: working_dir is not its leftmost column, so that lookup scanned the
@@ -595,14 +611,14 @@ CREATE TABLE agent_background_tasks (
     -- an upsert that forgot to set the status fails the write rather than
     -- storing a row no reader can classify.
     --
-    -- The ordinals are ordered: PENDING (1) and RUNNING (2) are the ACTIVE
-    -- statuses and COMPLETED (3) through INTERRUPTED (6) the FINAL ones. The
-    -- queries bind that boundary as one parameter rather than listing four
+    -- The ordinals are ordered: PENDING (1) and RUNNING (2) are working,
+    -- PAUSED (3) is open but idle, and COMPLETED (4) through INTERRUPTED (7)
+    -- are final. The queries bind that boundary rather than listing four
     -- values, and TestBackgroundTaskFinalStatusesAreTheTopOfTheRange pins the
     -- split against bgtask.Status.IsFinished, so a new status added on the
     -- wrong side of it fails the suite instead of silently joining the other
     -- pool.
-    status          INTEGER NOT NULL CHECK (status BETWEEN 1 AND 6),
+    status          INTEGER NOT NULL CHECK (status BETWEEN 1 AND 7),
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     ended_at        DATETIME,

@@ -633,10 +633,10 @@ func (m *Manager) BeginPlannedRestart(ctx context.Context, agentID string) (*Pla
 	}, nil
 }
 
-// Finish records that the replaced process cannot finish its old turn. A
-// successful replacement restores only the temporary pause that this guard
-// created. A failed launch keeps that pause for an explicit retry.
-func (r *PlannedRestart) Finish(ctx context.Context, processReplaced, restartSucceeded bool) error {
+// Finish clears an old turn that cannot send another end signal. A process
+// replacement or an already observed native turn end makes oldTurnEnded true.
+// A successful replacement restores only this guard's temporary pause.
+func (r *PlannedRestart) Finish(ctx context.Context, oldTurnEnded, restartSucceeded bool) error {
 	if r == nil {
 		return nil
 	}
@@ -646,8 +646,8 @@ func (r *PlannedRestart) Finish(ctx context.Context, processReplaced, restartSuc
 		// Only the last restart in flight resumes. An overlapping restart keeps
 		// its own process stop ahead of the queue.
 		last := r.coordinator.plannedRestarts == 0
-		resumeQueue := last && r.resumeQueue && (!processReplaced || restartSucceeded)
-		snapshot, changed, err := r.manager.store.finishPlannedRestart(ctx, r.agentID, processReplaced, resumeQueue)
+		resumeQueue := last && r.resumeQueue && (!oldTurnEnded || restartSucceeded)
+		snapshot, changed, err := r.manager.store.finishPlannedRestart(ctx, r.agentID, oldTurnEnded, resumeQueue)
 		if err == nil && changed {
 			r.manager.observer.QueueChanged(snapshot)
 		}

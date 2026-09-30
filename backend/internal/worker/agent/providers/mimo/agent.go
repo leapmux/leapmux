@@ -59,7 +59,14 @@ type Agent struct {
 	// --- guarded by Mu ---
 
 	sessionID string
-	catalog   mimoCatalog
+	// sessionSwitching blocks new work on the old session while ClearContext
+	// creates and installs its replacement.
+	sessionSwitching bool
+	// inputSends counts HTTP prompt calls by session. ClearContext aborts a
+	// session that still owns a call, even before MiMo reports a busy turn.
+	inputSends map[string]int
+
+	catalog mimoCatalog
 	// model is the `<provider>/<model>` every prompt states. Empty until the
 	// catalog names one, and then the server picks.
 	model string
@@ -106,6 +113,16 @@ type Agent struct {
 	// compactionAck is non-nil while CompactContext waits for the compaction to
 	// start.
 	compactionAck chan struct{}
+	// manualCompactionID identifies the main-agent compaction that the Worker
+	// requested. The native route holds its reply through the following turn.
+	manualCompactionID string
+	// manualCompactionReady lets the next plain input join that native loop.
+	manualCompactionReady bool
+	// manualFollowupSending marks the HTTP call that sends that next input.
+	// manualFollowupBusy records a busy event during the call. A refused call
+	// cannot start a turn, so the event takes effect only after acceptance.
+	manualFollowupSending bool
+	manualFollowupBusy    bool
 
 	// buffers holds each actor's streamed text until its part ends. The map is
 	// guarded by Mu; each buffer has its own lock.
@@ -154,6 +171,7 @@ func newAgentState(sink agent.ProviderServices, rpc mimoRPC, workingDir string, 
 		connected:   make(chan struct{}),
 		streamDone:  make(chan struct{}),
 		clock:       clock,
+		inputSends:  map[string]int{},
 		messages:    map[string]*mimoMessageRecord{},
 		parts:       map[string]*mimoTextPart{},
 		tools:       map[string]*mimoToolCall{},
@@ -211,24 +229,79 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		a.Mu.Unlock()
 		return fmt.Errorf("agent is stopped")
 	}
-	sessionID, turnActive := a.sessionID, a.turnActive
-	request := a.promptRequestLocked(parts, "")
-	a.Mu.Unlock()
-	if sessionID == "" {
-		return fmt.Errorf("agent has no MiMo session")
-	}
-	if !steer && turnActive {
+	if a.sessionSwitching {
+		a.Mu.Unlock()
 		return agent.ErrAgentBusy
 	}
-	if steer && !turnActive {
+	sessionID, turnActive := a.sessionID, a.turnActive
+	compactionPending := a.compactionAck != nil || a.manualCompactionID != ""
+	if sessionID == "" {
+		a.Mu.Unlock()
+		return fmt.Errorf("agent has no MiMo session")
+	}
+	if !steer && (turnActive || compactionPending) {
+		a.Mu.Unlock()
+		return agent.ErrAgentBusy
+	}
+	if steer && (!turnActive || compactionPending) {
+		a.Mu.Unlock()
 		return agent.ErrNoActiveTurn
 	}
-	if err := a.rpc.promptAsync(a.Context(), sessionID, request); err != nil {
+	request := a.promptRequestLocked(parts, "")
+	manualFollowup := !steer && !turnActive && sessionID != "" && a.manualCompactionReady
+	if manualFollowup {
+		if a.manualFollowupSending {
+			a.Mu.Unlock()
+			return agent.ErrAgentBusy
+		}
+		a.manualFollowupSending = true
+		a.manualFollowupBusy = false
+	}
+	a.inputSends[sessionID]++
+	a.Mu.Unlock()
+	err = a.rpc.promptAsync(a.Context(), sessionID, request)
+	if manualFollowup {
+		// An event can report busy before prompt_async answers. The stream
+		// handler and this acceptance edge must apply in one order.
+		a.dispatchMu.Lock()
+		a.Mu.Lock()
+		a.inputSends[sessionID]--
+		if a.inputSends[sessionID] == 0 {
+			delete(a.inputSends, sessionID)
+		}
+		sameSession := a.sessionID == sessionID
+		accepted := err == nil && sameSession && !a.StoppedLocked()
+		startTurn := accepted && a.manualFollowupBusy
+		if sameSession {
+			a.manualFollowupSending = false
+			a.manualFollowupBusy = false
+			if accepted {
+				a.manualCompactionReady = false
+				a.lastTurnFailed = false
+			}
+		}
+		a.Mu.Unlock()
+		if startTurn {
+			a.beginTurn()
+		}
+		a.dispatchMu.Unlock()
+	} else {
+		a.Mu.Lock()
+		a.inputSends[sessionID]--
+		if a.inputSends[sessionID] == 0 {
+			delete(a.inputSends, sessionID)
+		}
+		if err == nil && a.sessionID == sessionID {
+			a.lastTurnFailed = false
+			if !steer {
+				a.manualCompactionReady = false
+			}
+		}
+		a.Mu.Unlock()
+	}
+	if err != nil {
 		return classifyDeliveryError("prompt", err)
 	}
-	a.Mu.Lock()
-	a.lastTurnFailed = false
-	a.Mu.Unlock()
 	return nil
 }
 
@@ -288,14 +361,18 @@ func classifyDeliveryError(operation string, err error) error {
 	return fmt.Errorf("%w: MiMo did not confirm the %s: %w", agent.ErrDeliveryUncertain, operation, err)
 }
 
-// PublishTurnActive republishes the turn flag. Every site that writes
-// turnActive calls it after the write, with a.Mu released.
+// PublishTurnActive republishes the effective turn. A pending native
+// compaction keeps the queue closed even before MiMo reports busy.
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
-	active := a.turnActive
+	compactionPending := a.compactionAck != nil || a.manualCompactionID != ""
+	state := agent.TurnState{
+		Active:    a.turnActive || compactionPending,
+		Steerable: a.turnActive && !compactionPending,
+	}
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
-	return providerkit.PublishSteerableTurnActiveTo(a.sink, active, seq)
+	return providerkit.PublishTurnStateTo(a.sink, state, seq)
 }
 
 // HandleOutput receives one event, for a test that feeds the stream by hand.

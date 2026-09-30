@@ -36,6 +36,7 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 		WorkingDir: opts.WorkingDir,
 	})
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
+	taskLogRoot, taskLogDirect := lettaTaskLogRoot(cmd.Env)
 	stdin, stdout, stderrPipe, err := providerkit.SetupProcessPipes(cmd, cancel)
 	if err != nil {
 		cancel()
@@ -43,10 +44,12 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 	}
 
 	a := &Agent{
-		Process:    providerkit.NewProcess(opts, "letta", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
-		sink:       agent.NewModelProgressResetSink(sink),
-		workingDir: opts.WorkingDir,
-		clock:      quartz.NewReal(),
+		Process:       providerkit.NewProcess(opts, "letta", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
+		sink:          agent.NewModelProgressResetSink(sink),
+		workingDir:    opts.WorkingDir,
+		taskLogRoot:   taskLogRoot,
+		taskLogDirect: taskLogDirect,
+		clock:         quartz.NewReal(),
 	}
 	if err := a.StartCmd(cmd, cancel); err != nil {
 		cancel()
@@ -87,7 +90,7 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 
 	if err := a.openConversation(opts); err != nil {
 		cleanup()
-		return nil, a.FormatStartupError("runtime_start", err)
+		return nil, a.FormatStartupError("session setup", err)
 	}
 	return a, nil
 }
@@ -109,8 +112,8 @@ func (r *lettaReadyReader) observe(line []byte) bool {
 	return r.waiter.Observe(line)
 }
 
-// openConversation sends runtime_start and WAITS for the response that states
-// the runtime identity.
+// openConversation waits for the runtime identity and model catalog before
+// the worker sends user input or reads settings.
 //
 // The wait is load-bearing. An `input` frame sent before the identity exists
 // carries an empty runtime scope, and the App Server drops that input without
@@ -177,7 +180,7 @@ func (a *Agent) openConversation(opts agent.Options) error {
 	if agentID == "" || conversationID == "" {
 		return errors.New("runtime_start named no agent and conversation")
 	}
-	return nil
+	return a.loadModelCatalog(opts.EffectiveStartupTimeout())
 }
 
 // lettaModeFor maps LeapMux's permission mode onto runtime_start.mode.

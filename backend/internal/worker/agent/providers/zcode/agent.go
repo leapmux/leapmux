@@ -76,6 +76,9 @@ type Agent struct {
 	// instead of dropping it.
 	lastSeq    int64
 	turnActive bool
+	// A native compaction runs outside the prompt turn. Keep its session until a
+	// state.updated result ends it, so the input queue stays busy meanwhile.
+	compactionSessionID string
 	// backgroundTurn is true while the running turn was started by a background
 	// task rather than by the user. Such a turn must not end the user's turn.
 	backgroundTurn bool
@@ -135,11 +138,11 @@ type Agent struct {
 }
 
 var _ agent.Agent = (*Agent)(nil)
+var _ agent.ContextCompactor = (*Agent)(nil)
 
-// zcodeSendRetryWindow limits how long SendInput retries a send the app-server
-// refused because a turn is already running. The refusal is transient -- the turn
-// ends -- but the wait needs a limit, because SendInput must return long
-// before the browser's own deadline.
+// zcodeSendRetryWindow limits how long SendInput retries a native busy refusal.
+// A recently ended turn can hold the prompt lock briefly. SendInput still
+// returns before the browser's own deadline if the lock does not clear.
 const (
 	zcodeSendRetryWindow   = 3 * time.Second
 	zcodeSendRetryInterval = 250 * time.Millisecond
@@ -151,31 +154,73 @@ const (
 // for the turn -- the Agent.SendInput contract. A refusal because a turn is already
 // running is retried briefly, because it is transient by construction.
 func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(content, attachments, false)
+	return a.sendInputForSession(nil, content, attachments)
 }
 
-// Agent steers. Manager.SupportsSteering answers false, with no build error, for a
-// provider that stops satisfying InputSteerer, so this assertion makes that
-// regression a compile error.
-var _ agent.InputSteerer = (*Agent)(nil)
+// CompactContext starts ZCode's native asynchronous context summary.
+// The state.updated completion closes the queue turn after this RPC accepts it.
+func (a *Agent) CompactContext() error {
+	a.Mu.Lock()
+	if a.StoppedLocked() {
+		a.Mu.Unlock()
+		return fmt.Errorf("agent is stopped")
+	}
+	sessionID := a.sessionID
+	if sessionID == "" {
+		a.Mu.Unlock()
+		return fmt.Errorf("agent has no ZCode session")
+	}
+	if a.turnActive || a.compactionSessionID != "" {
+		a.Mu.Unlock()
+		return agent.ErrAgentBusy
+	}
+	a.compactionSessionID = sessionID
+	a.Mu.Unlock()
+	a.PublishTurnActive()
 
-// SupportsSteering always reports true. A plain session/send during an active
-// turn needs no handshake discovery: the app-server admits it itself, steering
-// the text into the running turn when the turn is steerable and otherwise
-// queueing it as a follow-up that drains at the next boundary. Both paths are
-// observable on the event stream (turn.steerQueued / turn.steerDrained), which
-// the dispatcher persists as notifications.
-func (a *Agent) SupportsSteering() bool { return true }
-
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(content, attachments, true)
+	raw, err := a.sendZCodeRequest(MethodSessionCompact, map[string]any{
+		"sessionId": sessionID,
+		"inputId":   id.Short(),
+	}, a.APITimeout())
+	if err != nil {
+		a.finishZCodeCompaction(sessionID)
+		var responseErr *zcodeError
+		if errors.As(err, &responseErr) {
+			return err
+		}
+		return fmt.Errorf("%w: ZCode did not confirm session/compact delivery: %v", agent.ErrDeliveryUncertain, err)
+	}
+	var ack struct {
+		Compact struct {
+			State string `json:"state"`
+		} `json:"compact"`
+	}
+	if json.Unmarshal(raw, &ack) != nil || (ack.Compact.State != "accepted" && ack.Compact.State != "already_running") {
+		a.finishZCodeCompaction(sessionID)
+		return fmt.Errorf("%w: ZCode returned no valid compaction receipt", agent.ErrDeliveryUncertain)
+	}
+	return nil
 }
 
-func (a *Agent) sendInput(content string, attachments []*leapmuxv1.Attachment, steer bool) error {
-	return a.sendInputForSession(nil, content, attachments, steer)
+// finishZCodeCompaction drops only the pending request for this session.
+// A completion from a replaced session cannot release the new session's turn.
+func (a *Agent) finishZCodeCompaction(sessionID string) {
+	a.Mu.Lock()
+	if a.compactionSessionID != sessionID {
+		a.Mu.Unlock()
+		return
+	}
+	a.compactionSessionID = ""
+	if !a.turnActive {
+		a.cancelStoppedZCodeTurnLocked()
+	}
+	a.Mu.Unlock()
+	a.PublishTurnActive()
 }
 
-func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
+// ZCode's installed app-server refuses session/send while a prompt runs.
+// The Worker therefore waits until that turn ends before it sends queued input.
+func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.Mu.Unlock()
@@ -185,16 +230,13 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		a.Mu.Unlock()
 		return fmt.Errorf("agent is stopped")
 	}
-	sessionID, model, turnActive := a.sessionID, a.model, a.turnActive
+	sessionID, model, turnActive := a.sessionID, a.model, a.turnActive || a.compactionSessionID != ""
 	a.Mu.Unlock()
 	if sessionID == "" {
 		return fmt.Errorf("agent has no ZCode session")
 	}
-	if !steer && turnActive {
+	if turnActive {
 		return agent.ErrAgentBusy
-	}
-	if steer && !turnActive {
-		return agent.ErrNoActiveTurn
 	}
 
 	text, wire, err := a.buildZCodeInput(content, attachments, model)
@@ -202,10 +244,8 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		return err
 	}
 
-	// The params carry NO delivery hint. The app-server's session/send schema is
-	// strict and rejects any key it does not know (a `requestedDelivery` field
-	// fails the whole request with -32602), and the server already decides
-	// steer-or-queue itself for a send that lands during a turn.
+	// The app-server's session/send schema rejects delivery hints such as
+	// requestedDelivery with -32602.
 	params := map[string]any{
 		"sessionId": sessionID,
 		"content":   text,
@@ -224,14 +264,6 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 			}
 			if json.Unmarshal(raw, &ack) == nil && !ack.Accepted {
 				return fmt.Errorf("the app-server did not accept the message")
-			}
-			if steer {
-				a.Mu.Lock()
-				stillActive := a.turnActive
-				a.Mu.Unlock()
-				if !stillActive {
-					return agent.ErrNoActiveTurn
-				}
 			}
 			return nil
 		}
@@ -257,5 +289,5 @@ func classifyZCodeInputDeliveryError(err error) error {
 }
 
 func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(&sessionID, content, attachments, false)
+	return a.sendInputForSession(&sessionID, content, attachments)
 }

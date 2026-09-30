@@ -1,13 +1,26 @@
 import { Buffer } from 'node:buffer'
+import { fromBinary, toJson } from '@bufbuild/protobuf'
+import { ValueSchema } from '@bufbuild/protobuf/wkt'
 import { describe, expect, it } from 'vitest'
 import {
   connectEndOfStream,
   connectFrame,
+  cursorAttachmentPayloads,
   cursorAvailableModels,
+  cursorConversationIdOf,
   cursorDefaultModel,
+  cursorGenerateImageCompleted,
+  cursorGenerateImageStarted,
+  cursorInteractionQuery,
+  cursorInteractionResponseOf,
+  cursorMcpExec,
+  cursorMcpResponseOf,
   cursorPromptOf,
   cursorSetBlob,
   cursorTextDelta,
+  cursorThinkingDelta,
+  cursorTodoCompleted,
+  cursorTodoStarted,
   cursorTurnEnded,
   cursorUsableModels,
   descend,
@@ -114,10 +127,68 @@ describe('cursorPromptOf', () => {
   })
 })
 
+describe('cursorConversationIdOf', () => {
+  it('reads the Run request conversation ID beside the action', () => {
+    const prompt = readLengthDelimitedFields(clientMessageWithPrompt('Continue.')).get(1)![0]!
+    const run = Buffer.concat([prompt, encodeStringField(5, 'cursor-conversation-1')])
+    expect(cursorConversationIdOf(encodeLengthDelimited(1, run))).toBe('cursor-conversation-1')
+  })
+
+  it('keeps an absent or empty conversation ID distinct', () => {
+    expect(cursorConversationIdOf(clientMessageWithPrompt('New.'))).toBeUndefined()
+    expect(cursorConversationIdOf(encodeLengthDelimited(1, encodeStringField(5, '')))).toBe('')
+  })
+
+  it('ignores an ID on a message that does not open a Run request', () => {
+    expect(cursorConversationIdOf(encodeLengthDelimited(7, encodeStringField(5, 'heartbeat')))).toBeUndefined()
+  })
+})
+
+describe('cursorAttachmentPayloads', () => {
+  const runWithContext = (context: Uint8Array) => {
+    const userMessage = Buffer.concat([encodeStringField(1, 'Inspect.'), encodeLengthDelimited(3, context)])
+    const userAction = encodeLengthDelimited(1, userMessage)
+    const action = encodeLengthDelimited(1, userAction)
+    const run = encodeLengthDelimited(2, action)
+    return encodeLengthDelimited(1, run)
+  }
+
+  it('reads inline image, document, and file content from the selected context', () => {
+    const image = Buffer.concat([encodeLengthDelimited(8, Uint8Array.from([0x89, 0x50])), encodeStringField(7, 'image/png')])
+    const document = Buffer.concat([encodeLengthDelimited(8, Uint8Array.from([0x25, 0x50])), encodeStringField(3, 'report.pdf'), encodeStringField(4, 'application/pdf')])
+    const file = Buffer.concat([encodeStringField(1, 'text fixture'), encodeStringField(2, 'notes.txt')])
+    const context = Buffer.concat([encodeLengthDelimited(1, image), encodeLengthDelimited(25, document), encodeLengthDelimited(4, file)])
+
+    expect(cursorAttachmentPayloads(runWithContext(context))).toEqual([
+      { kind: 'image', data: 'iVA=', mimeType: 'image/png' },
+      { kind: 'document', data: 'JVA=', filename: 'report.pdf', mimeType: 'application/pdf' },
+      { kind: 'file', data: 'text fixture', filename: 'notes.txt' },
+    ])
+  })
+
+  it('reads inline bytes from a blob-id-with-data attachment', () => {
+    const blob = encodeLengthDelimited(9, encodeLengthDelimited(2, Uint8Array.from([0, 0xFF])))
+    expect(cursorAttachmentPayloads(runWithContext(encodeLengthDelimited(1, blob))))
+      .toEqual([{ kind: 'image', data: 'AP8=' }])
+  })
+
+  it('returns no inline payload for a blob reference or a message with no context', () => {
+    expect(cursorAttachmentPayloads(clientMessageWithPrompt('No attachment.'))).toEqual([])
+    const blobIDOnly = encodeLengthDelimited(1, encodeLengthDelimited(1, Uint8Array.from([1, 2])))
+    expect(cursorAttachmentPayloads(runWithContext(blobIDOnly))).toEqual([])
+  })
+})
+
 describe('cursorTextDelta', () => {
   it('nests the text three fields deep, which reads back through the same path', () => {
     const message = cursorTextDelta('CURSOR_MOCK_OK')
     expect(new TextDecoder().decode(descend(message, [1, 1, 1])!)).toBe('CURSOR_MOCK_OK')
+  })
+})
+
+describe('cursorThinkingDelta', () => {
+  it('puts thinking text in the installed interaction update field', () => {
+    expect(new TextDecoder().decode(descend(cursorThinkingDelta('I checked.'), [1, 4, 1])!)).toBe('I checked.')
   })
 })
 
@@ -128,6 +199,13 @@ describe('cursorTurnEnded', () => {
     // 0x0A: interaction_update, field 1, length-delimited, two bytes long.
     // 0x72: turn_ended, field 14, length-delimited -- (14 << 3) | 2 -- and empty.
     expect([...cursorTurnEnded()]).toEqual([0x0A, 0x02, 0x72, 0x00])
+  })
+
+  it('encodes scripted input and output token counts', () => {
+    // The installed TurnEndedUpdate descriptor sets input_tokens=1 and output_tokens=2.
+    expect([...cursorTurnEnded({ inputTokens: 12_000, outputTokens: 40 })])
+      .toEqual([0x0A, 0x07, 0x72, 0x05, 0x08, 0xE0, 0x5D, 0x10, 0x28])
+    expect([...cursorTurnEnded({ inputTokens: 0 })]).toEqual([0x0A, 0x04, 0x72, 0x02, 0x08, 0x00])
   })
 })
 
@@ -347,5 +425,194 @@ describe('cursorSetBlob', () => {
     const args = setBlobArgs(cursorSetBlob(1, new Uint8Array(0), new Uint8Array(0)))
     expect(args.get(FIELD_SET_BLOB_ID)![0]!.byteLength).toBe(0)
     expect(args.get(FIELD_SET_BLOB_DATA)![0]!.byteLength).toBe(0)
+  })
+})
+
+describe('cursorTodoStarted and cursorTodoCompleted', () => {
+  const call = {
+    callID: 'todo-1',
+    todos: [
+      { id: '1', content: 'Inspect', status: 'completed' as const },
+      { id: '2', content: 'Report', status: 'in_progress' as const },
+    ],
+    merge: false,
+  }
+
+  it('writes native Todo ids, content, and enum statuses on the started update', () => {
+    // InteractionUpdate.tool_call_started -> ToolCall.update_todos_tool_call
+    // -> UpdateTodosToolCall.args -> UpdateTodosArgs.todos.
+    const first = descend(cursorTodoStarted(call), [1, 2, 2, 9, 1, 1])!
+    const second = readLengthDelimitedFields(descend(cursorTodoStarted(call), [1, 2, 2, 9, 1])!).get(1)![1]!
+    expect(new TextDecoder().decode(readLengthDelimitedFields(first).get(1)![0]!)).toBe('1')
+    expect(new TextDecoder().decode(readLengthDelimitedFields(first).get(2)![0]!)).toBe('Inspect')
+    expect([...first.slice(-2)]).toEqual([0x18, 3])
+    expect([...second.slice(-2)]).toEqual([0x18, 2])
+  })
+
+  it('writes the completed Todo list and native success count', () => {
+    // InteractionUpdate.tool_call_completed -> ToolCall.update_todos_tool_call
+    // -> UpdateTodosToolCall.result -> UpdateTodosResult.success.
+    const success = descend(cursorTodoCompleted(call), [1, 3, 2, 9, 2, 1])!
+    const items = readLengthDelimitedFields(success).get(1)
+    expect(items).toHaveLength(2)
+    expect(new TextDecoder().decode(readLengthDelimitedFields(items![1]!).get(2)![0]!)).toBe('Report')
+    expect([...success.slice(-4)]).toEqual([0x10, 2, 0x18, 0])
+  })
+
+  it('keeps an empty replacement list as a valid snapshot', () => {
+    const empty = { callID: 'clear', todos: [], merge: false }
+    expect(descend(cursorTodoStarted(empty), [1, 2, 2, 9, 1, 1])).toBeUndefined()
+    expect(descend(cursorTodoCompleted(empty), [1, 3, 2, 9, 2, 1])).toBeDefined()
+  })
+})
+
+describe('cursorGenerateImageStarted and cursorGenerateImageCompleted', () => {
+  const call = { callID: 'image-1', description: 'A teal square', filePath: '/work/teal.png', imageData: 'cG5n' }
+
+  it('encodes the native tool id and image request', () => {
+    const started = cursorGenerateImageStarted(call)
+    const tool = descend(started, [1, 2, 2])!
+    const fields = readLengthDelimitedFields(tool)
+    expect(new TextDecoder().decode(fields.get(57)?.[0])).toBe(call.callID)
+    const args = descend(tool, [28, 1])!
+    expect(new TextDecoder().decode(readLengthDelimitedFields(args).get(1)?.[0])).toBe(call.description)
+    expect(new TextDecoder().decode(readLengthDelimitedFields(args).get(2)?.[0])).toBe(call.filePath)
+    expect(descend(tool, [28, 2])).toBeUndefined()
+  })
+
+  it('encodes the native success with a file path and image data', () => {
+    const completed = cursorGenerateImageCompleted(call)
+    const success = descend(completed, [1, 3, 2, 28, 2, 1])!
+    const fields = readLengthDelimitedFields(success)
+    expect(new TextDecoder().decode(fields.get(1)?.[0])).toBe(call.filePath)
+    expect(new TextDecoder().decode(fields.get(2)?.[0])).toBe(call.imageData)
+  })
+})
+
+describe('cursorInteractionQuery and cursorInteractionResponseOf', () => {
+  function reply(id: number, field: number, payload: Uint8Array): Uint8Array {
+    return encodeLengthDelimited(6, Buffer.concat([
+      Uint8Array.from([0x08, ...encodeVarint(id)]),
+      encodeLengthDelimited(field, payload),
+    ]))
+  }
+
+  it('encodes a native question query with stable ids and choices', () => {
+    const query = cursorInteractionQuery(300, {
+      kind: 'question',
+      callID: 'cursor-q',
+      title: 'Color',
+      questions: [{ id: 'question-1', prompt: 'Which color?', allowMultiple: false, options: [{ id: 'option-1-1', label: 'Blue' }] }],
+    })
+    const request = descend(query, [7, 3])!
+    expect(new TextDecoder().decode(readLengthDelimitedFields(request).get(2)?.[0])).toBe('cursor-q')
+    const args = descend(request, [1])!
+    expect(new TextDecoder().decode(readLengthDelimitedFields(args).get(1)?.[0])).toBe('Color')
+    const question = descend(args, [2])!
+    expect(new TextDecoder().decode(readLengthDelimitedFields(question).get(2)?.[0])).toBe('Which color?')
+    const option = descend(question, [3])!
+    expect(new TextDecoder().decode(readLengthDelimitedFields(option).get(1)?.[0])).toBe('option-1-1')
+    expect([...query]).toContain(0xAC)
+  })
+
+  it('encodes plan and web-fetch queries in their own union fields', () => {
+    const plan = cursorInteractionQuery(301, { kind: 'plan', callID: 'plan-1', name: 'Review', overview: 'No edits', plan: '# Plan' })
+    expect(new TextDecoder().decode(descend(plan, [7, 7, 1, 1]))).toBe('# Plan')
+    expect(new TextDecoder().decode(descend(plan, [7, 7, 1, 4]))).toBe('Review')
+    const fetch = cursorInteractionQuery(302, { kind: 'webFetch', callID: 'fetch-1', url: 'https://example.invalid/probe' })
+    expect(new TextDecoder().decode(descend(fetch, [7, 9, 1, 1]))).toBe('https://example.invalid/probe')
+    expect(new TextDecoder().decode(descend(fetch, [7, 9, 1, 2]))).toBe('fetch-1')
+  })
+
+  it('decodes the selected native question option and multi-byte query id', () => {
+    const answer = Buffer.concat([encodeStringField(1, 'question-1'), encodeStringField(2, 'option-1-1')])
+    const question = encodeLengthDelimited(1, encodeLengthDelimited(1, encodeLengthDelimited(1, answer)))
+    expect(cursorInteractionResponseOf(reply(300, 3, question))).toEqual({
+      kind: 'question',
+      id: 300,
+      answers: [{ questionID: 'question-1', selectedOptionIDs: ['option-1-1'] }],
+    })
+  })
+
+  it('decodes plan approval and a web-fetch refusal', () => {
+    const plan = encodeLengthDelimited(1, encodeLengthDelimited(1, new Uint8Array(0)))
+    expect(cursorInteractionResponseOf(reply(301, 7, plan))).toEqual({ kind: 'plan', id: 301, accepted: true })
+    const refused = encodeLengthDelimited(2, encodeStringField(1, 'Denied'))
+    expect(cursorInteractionResponseOf(reply(302, 9, refused))).toEqual({ kind: 'webFetch', id: 302, approved: false, reason: 'Denied' })
+  })
+
+  it('ignores other client messages and refuses a response without an id', () => {
+    expect(cursorInteractionResponseOf(encodeLengthDelimited(1, new Uint8Array(0)))).toBeUndefined()
+    expect(() => cursorInteractionResponseOf(encodeLengthDelimited(6, encodeLengthDelimited(9, new Uint8Array(0)))))
+      .toThrow('no valid query id')
+  })
+})
+
+describe('cursorMcpExec and cursorMcpResponseOf', () => {
+  function reply(id: number | undefined, result: Uint8Array): Uint8Array {
+    return encodeLengthDelimited(2, Buffer.concat([
+      ...(id === undefined ? [] : [Uint8Array.from([0x08, ...encodeVarint(id)])]),
+      encodeLengthDelimited(11, result),
+    ]))
+  }
+
+  it('encodes the native local tool and every JSON input value', () => {
+    const encoded = cursorMcpExec(301, {
+      callID: 'mcp-1',
+      server: 'form_probe',
+      tool: 'echo',
+      input: { count: 0, enabled: false, nested: { values: [null, -2, 'blue'] } },
+    })
+    const exec = descend(encoded, [2])!
+    const args = descend(exec, [11])!
+    const fields = readLengthDelimitedFields(args)
+    expect(new TextDecoder().decode(fields.get(1)?.[0])).toBe('form_probe-echo')
+    expect(new TextDecoder().decode(fields.get(3)?.[0])).toBe('mcp-1')
+    expect(new TextDecoder().decode(fields.get(5)?.[0])).toBe('form_probe-echo')
+    expect(new TextDecoder().decode(fields.get(9)?.[0])).toBe('form_probe')
+    const input = Object.fromEntries((fields.get(2) ?? []).map((entry) => {
+      const key = new TextDecoder().decode(descend(entry, [1]))
+      const value = fromBinary(ValueSchema, descend(entry, [2])!)
+      return [key, toJson(ValueSchema, value)]
+    }))
+    expect(input).toEqual({ count: 0, enabled: false, nested: { values: [null, -2, 'blue'] } })
+    expect([...args]).toContain(0x40)
+  })
+
+  it('keeps an empty input and refuses non-JSON values', () => {
+    const call = { callID: 'mcp-1', server: 'form_probe', tool: 'ask', input: {} }
+    expect(readLengthDelimitedFields(descend(cursorMcpExec(301, call), [2, 11])!).get(2)).toBeUndefined()
+    expect(() => cursorMcpExec(301, { ...call, input: { count: Number.NaN } })).toThrow('non-finite number')
+    expect(() => cursorMcpExec(301, { ...call, input: { missing: undefined } })).toThrow('non-JSON value')
+    const cycle: Record<string, unknown> = {}
+    cycle.self = cycle
+    expect(() => cursorMcpExec(301, { ...call, input: cycle })).toThrow('cycle')
+  })
+
+  it('reads native success text and an error with the correlated id', () => {
+    const text = encodeLengthDelimited(1, encodeStringField(1, 'FORM_ROUND_TRIP_OK'))
+    const success = encodeLengthDelimited(1, text)
+    expect(cursorMcpResponseOf(reply(301, encodeLengthDelimited(1, success)))).toEqual({
+      id: 301,
+      success: true,
+      text: 'FORM_ROUND_TRIP_OK',
+    })
+    expect(cursorMcpResponseOf(reply(302, encodeLengthDelimited(2, encodeStringField(1, 'server unavailable'))))).toEqual({
+      id: 302,
+      success: false,
+      text: 'server unavailable',
+    })
+    const missingTool = Buffer.concat([encodeStringField(1, 'form_probe_ask'), encodeStringField(2, 'ask')])
+    expect(cursorMcpResponseOf(reply(303, encodeLengthDelimited(5, missingTool)))).toEqual({
+      id: 303,
+      success: false,
+      text: 'tool form_probe_ask not found; available: ask',
+    })
+  })
+
+  it('ignores unrelated frames and refuses a result without an execution id', () => {
+    expect(cursorMcpResponseOf(encodeLengthDelimited(1, new Uint8Array(0)))).toBeUndefined()
+    expect(() => cursorMcpResponseOf(reply(undefined, encodeLengthDelimited(1, new Uint8Array(0)))))
+      .toThrow('no valid execution id')
   })
 })

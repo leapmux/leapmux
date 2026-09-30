@@ -24,7 +24,7 @@ async function chatText(page: Page): Promise<string> {
 
 /**
  * The text of the tool message that answers one call in a Chat Completions request.
- * Cline calls the mock through its `openai-compatible` provider, which speaks that
+ * Cline calls the mock through its DeepSeek provider, which speaks that
  * protocol.
  */
 function toolMessageText(body: unknown, callId: string): string {

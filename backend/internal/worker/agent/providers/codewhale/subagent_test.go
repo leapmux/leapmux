@@ -76,23 +76,69 @@ func TestSubagentTitle(t *testing.T) {
 
 func TestAgentRunStatus(t *testing.T) {
 	t.Parallel()
-	for word, want := range map[string]bgtask.Status{
-		"completed":   bgtask.StatusCompleted,
-		"failed":      bgtask.StatusFailed,
-		"cancelled":   bgtask.StatusStopped,
-		"interrupted": bgtask.StatusStopped,
+	for _, tc := range []struct {
+		word   string
+		status bgtask.Status
+		final  bool
+	}{
+		{word: "queued", status: bgtask.StatusPending},
+		{word: "starting", status: bgtask.StatusPending},
+		{word: "running", status: bgtask.StatusRunning},
+		{word: "model_wait", status: bgtask.StatusRunning},
+		{word: "running_tool", status: bgtask.StatusRunning},
+		{word: "waiting_for_user", status: bgtask.StatusPaused},
+		{word: "interrupted", status: bgtask.StatusPaused},
+		{word: "completed", status: bgtask.StatusCompleted, final: true},
+		{word: "failed", status: bgtask.StatusFailed, final: true},
+		{word: "cancelled", status: bgtask.StatusStopped, final: true},
+		{word: "a_later_word", status: bgtask.StatusRunning},
+		{word: "", status: bgtask.StatusRunning},
 	} {
-		status, final := agentRunStatus(word)
-		assert.True(t, final, word)
-		assert.Equal(t, want, status, word)
+		status, final := agentRunStatus(tc.word)
+		assert.Equal(t, tc.status, status, tc.word)
+		assert.Equal(t, tc.final, final, tc.word)
 	}
-	// Every other word of the ledger is a child that still works. A child parked
-	// for a followup is one of them, and so is a word from a later release.
-	for _, word := range []string{"queued", "starting", "running", "waiting_for_user", "model_wait", "running_tool", "a_later_word", ""} {
-		status, final := agentRunStatus(word)
-		assert.False(t, final, word)
-		assert.Equal(t, bgtask.StatusRunning, status, word)
+}
+
+func TestInterruptedChildRunResumesWithoutClosingItsRegistryRow(t *testing.T) {
+	t.Parallel()
+	rt := newFakeRuntime(t)
+	var nativeStatus atomic.Value
+	nativeStatus.Store("interrupted")
+	rt.handle(http.MethodGet, routeAgentRuns+"/"+testChildID, func(w http.ResponseWriter, _ *http.Request) {
+		writeFakeJSON(w, http.StatusOK, map[string]any{"status": nativeStatus.Load().(string)})
+	})
+	a, sink := newTestAgent(t, rt)
+	child := &codewhaleChild{
+		agentID:   testChildID,
+		childID:   "child-1",
+		path:      filepath.Join(t.TempDir(), "absent.jsonl"),
+		nudge:     make(chan struct{}, 1),
+		openTools: map[string]string{},
 	}
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: testChildID, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, Status: bgtask.StatusRunning,
+	}))
+	childSink := sink.ChildSink(child.childID)
+	ctx := testutil.DeadlineContext(t)
+
+	assert.False(t, a.pollChild(ctx, childSink, child))
+	task, ok := sink.BackgroundTask(testChildID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusPaused, task.Status)
+	assert.Empty(t, sink.Child(child.childID).ClosedSpans(), "a resumable child keeps its transcript open")
+
+	nativeStatus.Store("model_wait")
+	assert.False(t, a.pollChild(ctx, childSink, child))
+	task, ok = sink.BackgroundTask(testChildID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, task.Status)
+
+	nativeStatus.Store("completed")
+	assert.True(t, a.pollChild(ctx, childSink, child))
+	task, ok = sink.BackgroundTask(testChildID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusCompleted, task.Status)
 }
 
 func TestASubagentIsFollowedToItsEnd(t *testing.T) {

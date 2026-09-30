@@ -5,7 +5,7 @@ import { registerACPProvider } from '../acp/registerACPProvider'
 registerACPProvider({
   provider: AgentProvider.FAST_AGENT,
   defaultPermissionMode: FASTAGENT_MODE.Agent,
-  // fast-agent exposes no plan mode and no per-session model switch over ACP.
-  // Its local filesystem tools bypass the permission system, so the permission
-  // axis carries only the shell and MCP tools that do gate.
+  // Fast Agent exposes no plan mode and no live model switch over ACP.
+  // Its permission handler asks before shell, MCP, and local file tools run.
+  attachments: { text: true, image: true, pdf: true, binary: false },
 })

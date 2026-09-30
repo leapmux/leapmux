@@ -50,6 +50,24 @@ func TestResolveControlResponseWritesAResponseEnvelope(t *testing.T) {
 	assert.Equal(t, "proceed_once", result["selectedOption"])
 }
 
+func TestResolveControlResponseClassifiesNativeSpecApproval(t *testing.T) {
+	t.Parallel()
+	request := []byte(`{"type":"permission_request","requestId":"droid-perm-exit-1","rpcId":"rpc-exit-1","toolUse":{"type":"tool_use","id":"exit-1","name":"ExitSpecMode","input":{"plan":"# Native plan"}},"confirmationType":"exit_spec_mode"}`)
+	response := []byte(`{"response":{"request_id":"droid-perm-exit-1","response":{"behavior":"allow"}}}`)
+	resolution := droidProvider{}.ResolveControlResponse(agent.ControlResponseContext{
+		RequestID: "droid-perm-exit-1", RequestPayload: request, ResponseContent: response,
+	})
+	require.False(t, resolution.Withhold)
+	assert.Equal(t, agent.PlanModeControlExit, resolution.PlanModeControl)
+	var envelope struct {
+		ID     string          `json:"id"`
+		Result json.RawMessage `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(resolution.Content, &envelope))
+	assert.Equal(t, "rpc-exit-1", envelope.ID)
+	assert.JSONEq(t, `{"selectedOption":"proceed_once"}`, string(envelope.Result))
+}
+
 func TestResolveControlResponseAnswersAnAskUser(t *testing.T) {
 	t.Parallel()
 	request, _ := json.Marshal(map[string]any{

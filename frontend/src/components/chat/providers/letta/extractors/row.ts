@@ -55,18 +55,29 @@ function lettaToolRow(
 ): ChatRow | null {
   if (!isObject(payload))
     return null
-  // The worker persists the stream_delta's own payload object. A raw frame
-  // wraps it under `payload`, so normalize before reading.
+  // The worker persists a native payload for each row. It narrows a native
+  // multi-call message to one call per row. A raw frame wraps its payload.
   const nested = pickObject(payload, 'payload')
   const source = nested && Object.keys(nested).length > 0 ? nested : payload
-  const name = pickString(source, LETTA_DELTA_FIELD.ToolName) || 'Tool'
-  const id = pickString(source, LETTA_DELTA_FIELD.ToolCallID)
   // A result frame states no input of its own. Fall back to the request side of
   // the span, which carries the call's arguments.
   const requestPayload = span.request?.parentObject
   const requestNested = isObject(requestPayload) ? pickObject(requestPayload, 'payload') : undefined
   const requestSource = requestNested && Object.keys(requestNested).length > 0 ? requestNested : requestPayload
-  const args = pickObject(source, LETTA_DELTA_FIELD.ToolInput) ?? (isObject(requestSource) ? pickObject(requestSource, LETTA_DELTA_FIELD.ToolInput) : undefined) ?? {}
+  const nativeCall = lettaNativeToolCall(source)
+  const requestCall = lettaNativeToolCall(requestSource)
+  const name = pickString(source, LETTA_DELTA_FIELD.ToolName)
+    || pickString(nativeCall, LETTA_DELTA_FIELD.Name)
+    || pickString(requestCall, LETTA_DELTA_FIELD.Name)
+    || 'Tool'
+  const id = pickString(source, LETTA_DELTA_FIELD.ToolCallID)
+    || pickString(nativeCall, LETTA_DELTA_FIELD.ToolCallID)
+    || pickString(requestCall, LETTA_DELTA_FIELD.ToolCallID)
+  const args = pickObject(source, LETTA_DELTA_FIELD.ToolInput)
+    ?? (isObject(requestSource) ? pickObject(requestSource, LETTA_DELTA_FIELD.ToolInput) : undefined)
+    ?? lettaNativeToolArgs(nativeCall)
+    ?? lettaNativeToolArgs(requestCall)
+    ?? {}
   const toolReturn = source[LETTA_DELTA_FIELD.ToolReturn]
   const resultText = toolReturn !== undefined
     ? (typeof toolReturn === 'string' ? toolReturn : JSON.stringify(toolReturn))
@@ -111,4 +122,27 @@ function lettaToolRow(
       : {}),
   })
   return toolCallRow(call, isResult ? 'result' : 'request', span.visibleRows)
+}
+
+function lettaNativeToolCall(source: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  const singular = pickObject(source, LETTA_DELTA_FIELD.ToolCall)
+  if (singular)
+    return singular
+  const calls = source?.[LETTA_DELTA_FIELD.ToolCalls]
+  return Array.isArray(calls) ? (calls.find(isObject) ?? null) : null
+}
+
+function lettaNativeToolArgs(call: Record<string, unknown> | null): Record<string, unknown> | null {
+  const raw = call?.[LETTA_DELTA_FIELD.Arguments]
+  if (isObject(raw))
+    return raw
+  if (typeof raw !== 'string')
+    return null
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return isObject(parsed) ? parsed : null
+  }
+  catch {
+    return null
+  }
 }

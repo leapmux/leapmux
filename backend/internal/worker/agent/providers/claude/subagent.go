@@ -735,16 +735,16 @@ func (a *Agent) InterruptChild(childKey string) error {
 	if err != nil {
 		return err
 	}
+	// The CLI can close the task before it answers stop_task. Record the user
+	// interrupt before sending, so that closing notification sees it.
+	a.tasks.markInterrupted(childKey)
 	// The agent's own context, so a process exit unblocks the wait; APITimeout
 	// caps the hold, exactly as the root interrupt does.
 	_, err = a.sendControlAndWait(a.Context(), string(body), a.APITimeout())
 	if err != nil {
+		a.tasks.clearInterrupted(childKey)
 		return err
 	}
-	// Mark after the CLI acked the stop: the closer that reaches the transcript
-	// spends this, and the divider then reads "Subagent interrupted" rather
-	// than the plain stop word.
-	a.tasks.markInterrupted(childKey)
 	return nil
 }
 
@@ -1452,6 +1452,12 @@ func (i *claudeTaskIndex) markInterrupted(taskID string) {
 		i.runs.interrupted = make(map[string]struct{})
 	}
 	i.runs.interrupted[taskID] = struct{}{}
+}
+
+func (i *claudeTaskIndex) clearInterrupted(taskID string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	delete(i.runs.interrupted, taskID)
 }
 
 // takeInterrupted reports whether InterruptChild stopped this task, and

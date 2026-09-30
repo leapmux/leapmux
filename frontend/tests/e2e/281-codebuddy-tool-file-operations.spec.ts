@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, expect } from './codebuddy-fixtures'
 import { bashToolCall, editToolCall, readToolCall, writeToolCall } from './helpers/providerToolCalls'
+import { expectToolRowWithoutImage, writeToolImage } from './helpers/toolImages'
 import { sendMessage, waitForAgentIdle } from './helpers/ui'
 
 /**
@@ -18,6 +19,22 @@ codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
 const PROVIDER = AgentProvider.CODEBUDDY
 
 codebuddyTest.describe('CodeBuddy Code file tool execution', () => {
+  codebuddyTest('shows the native Read placeholder without an inline image', async ({ codebuddyWorkspace, page, modelScript }) => {
+    const { workingDir } = codebuddyWorkspace
+    const name = writeToolImage(workingDir, 'codebuddy-read')
+    await modelScript.queue(
+      { toolCalls: [readToolCall(PROVIDER, 'read-image', join(workingDir, name))] },
+      { text: 'The image read finished.' },
+    )
+    await sendMessage(page, modelScript.prompt('Read the PNG file.'))
+    const status = await modelScript.waitForSteps()
+    await waitForAgentIdle(page)
+    const second = status.requests.find(request => request.stepIndex === 1)
+    expect(second?.protocol).toBe('openai-chat-completions')
+    expect(JSON.stringify(second?.body).includes('data:image/png;base64,iVBORw0KGgo')).toBe(true)
+    await expectToolRowWithoutImage(page, name)
+  })
+
   codebuddyTest('seeds, reads and edits a file, and draws the edit diff', async ({ codebuddyWorkspace, page, modelScript }) => {
     const { workingDir } = codebuddyWorkspace
     const fileName = 'codebuddy-file-probe.txt'
@@ -31,7 +48,7 @@ codebuddyTest.describe('CodeBuddy Code file tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Create the file, read it, then change parityBefore to parityAfter.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     const diff = page.locator('[data-file-diff]:visible')
     await expect(diff.filter({ hasText: 'const parityAfter = 2' }).first()).toBeVisible()
@@ -52,7 +69,7 @@ codebuddyTest.describe('CodeBuddy Code file tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt(`Write ${fileName} with one marker line.`))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     expect(readFileSync(filePath, 'utf8'), 'the write landed on disk').toContain('written-42')
   })

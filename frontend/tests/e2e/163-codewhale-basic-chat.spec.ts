@@ -1,4 +1,6 @@
 import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest, expect } from './codewhale-fixtures'
+import { exerciseContextUsage } from './helpers/contextUsage'
+import { exerciseManualCompaction } from './helpers/manualCompaction'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, bandRows, expectAssistantAnswer, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
@@ -6,6 +8,11 @@ codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
 const REASONING = 'I add the two numbers.'
 
 codewhaleTest.describe('Codewhale basic chat', () => {
+  codewhaleTest('reports model usage in the agent info card', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {
+    void authenticatedCodewhaleWorkspace
+    await exerciseContextUsage(page, modelScript)
+  })
+
   codewhaleTest('answers a message and keeps its thinking after a reload', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {
     void authenticatedCodewhaleWorkspace
     // The `deepseek` route reads `reasoning_content` as thinking, so the
@@ -46,5 +53,10 @@ codewhaleTest.describe('Codewhale basic chat', () => {
     expect(requests).toHaveLength(2)
     expect(JSON.stringify(requests[1]!.body)).toContain('The code word is HALIBUT.')
     await expect(assistantBubbles(page).filter({ hasText: 'You asked me to remember HALIBUT.' })).toBeVisible()
+  })
+
+  codewhaleTest('compacts a scripted conversation on request', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {
+    void authenticatedCodewhaleWorkspace
+    await exerciseManualCompaction(page, modelScript, { summaryRequestMarker: 'You are performing a context checkpoint compaction' })
   })
 })

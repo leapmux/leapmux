@@ -5,15 +5,16 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
 
 // Qoder writes one JSONL transcript per session at
-// `<config>/projects/<encoded-project-path>/<session-uuid>.jsonl`. The encoding
-// replaces `/` with `-`, matching CodeBuddy's and Claude's project slug.
+// `<config>/projects/<project-slug>/<session-uuid>.jsonl`.
 
 const qoderProjectsDirName = "projects"
 
@@ -23,10 +24,35 @@ func qoderConfigDir(q agent.StoredSessionQuery) string {
 	return sessionstore.HomeDirFromEnv(q, "QODER_CONFIG_DIR", ".qoder")
 }
 
-// mangleQoderPath reproduces Qoder's project slug: every path separator becomes
-// a hyphen.
-func mangleQoderPath(path string) string {
-	return strings.ReplaceAll(filepath.Clean(path), string(filepath.Separator), "-")
+// qoderProjectSlug matches the installed CLI's ASCII replacement and 200-unit
+// cap. The CLI hashes UTF-16 units and replaces both halves of an astral rune.
+func qoderProjectSlug(path string) string {
+	path = filepath.Clean(path)
+	var builder strings.Builder
+	builder.Grow(len(path))
+	for _, ch := range path {
+		switch {
+		case ch >= 'a' && ch <= 'z', ch >= 'A' && ch <= 'Z', ch >= '0' && ch <= '9':
+			builder.WriteRune(ch)
+		case ch > 0xFFFF:
+			builder.WriteString("--")
+		default:
+			builder.WriteByte('-')
+		}
+	}
+	slug := builder.String()
+	if len(slug) <= 200 {
+		return slug
+	}
+	hash := uint32(5381)
+	for _, unit := range utf16.Encode([]rune(path)) {
+		hash = hash*33 ^ uint32(unit)
+	}
+	signed := int64(int32(hash))
+	if signed < 0 {
+		signed = -signed
+	}
+	return slug[:200] + "-" + strconv.FormatInt(signed, 36)
 }
 
 // qoderTranscriptRecord is the union of the fields this reader takes.
@@ -52,7 +78,7 @@ func qoderStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]age
 		return nil, nil
 	}
 	projects := filepath.Join(configDir, qoderProjectsDirName)
-	dir := filepath.Join(projects, mangleQoderPath(workingDir))
+	dir := filepath.Join(projects, qoderProjectSlug(workingDir))
 	if _, err := os.Stat(dir); err != nil {
 		return nil, nil
 	}

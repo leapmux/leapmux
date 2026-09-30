@@ -365,6 +365,7 @@ func TestCodexThreadParams(t *testing.T) {
 	// A non-default service tier is included.
 	fast := codexThreadParams("gpt-5.4", "/work", DefaultApprovalPolicy, contracts.CodexOptionDefaultSandboxPolicy, ServiceTierFast)
 	assert.Equal(t, map[string]interface{}{"model_reasoning_summary": "detailed"}, fast["config"])
+	assert.Equal(t, true, fast["experimentalRawEvents"], "spawn arguments must reach the live child transcript")
 	assert.Equal(t, "gpt-5.4", fast["model"])
 	assert.Equal(t, "/work", fast["cwd"])
 	assert.Equal(t, DefaultApprovalPolicy, fast["approvalPolicy"])

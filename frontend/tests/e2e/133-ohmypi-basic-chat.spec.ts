@@ -4,6 +4,7 @@ import {
   bandRows,
   expectAssistantAnswer,
   messageContents,
+  openAgentInfoCard,
   SECOND_ARITHMETIC_ANSWER,
   SECOND_ARITHMETIC_ANSWER_TEXT,
   SECOND_ARITHMETIC_PROMPT,
@@ -26,12 +27,23 @@ const REASONING = 'I add the two numbers.'
 ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
 
 ohMyPiTest.describe('Oh My Pi basic chat', () => {
+  ohMyPiTest('reports model usage in the agent info card', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {
+    void authenticatedOhMyPiWorkspace
+    await modelScript.queue({ text: 'Usage recorded.', usage: { inputTokens: 12_000, outputTokens: 40, contextWindow: 128_000 } })
+    await sendMessage(page, modelScript.prompt('Reply once.'))
+    await modelScript.waitForSteps()
+    await waitForAgentIdle(page, 120_000)
+    // OMP adds its own token estimate for the post-answer context tail.
+    const popover = await openAgentInfoCard(page)
+    await expect(popover).toContainText(/Context\s*12\.\dk\s*\/\s*128\.0k/)
+  })
+
   ohMyPiTest('renders an assistant answer and ends the turn with a timed divider', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {
     void authenticatedOhMyPiWorkspace
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expectAssistantAnswer(page)
     await expect(page.getByTestId('thinking-indicator')).not.toBeVisible()
@@ -57,7 +69,7 @@ ohMyPiTest.describe('Oh My Pi basic chat', () => {
     await modelScript.queue({ reasoning: REASONING, text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     const expectSeparateRows = async () => {
       await expectAssistantAnswer(page)
@@ -81,13 +93,13 @@ ohMyPiTest.describe('Oh My Pi basic chat', () => {
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expectAssistantAnswer(page)
 
     await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
 
     // The second request carries the first prompt and the first answer, which is

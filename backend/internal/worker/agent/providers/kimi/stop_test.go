@@ -69,6 +69,25 @@ func TestKimiWaitSettlesWhatTheProcessLeftOpen(t *testing.T) {
 	}
 }
 
+func TestKimiProcessExitReleasesManualCompaction(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual"})
+	active, published := rig.sink.LastTurnActive()
+	require.True(t, published)
+	require.True(t, active, "manual compaction holds the queue before process exit")
+
+	rig.agent.SimulateExitForTest()
+	require.NoError(t, rig.agent.Wait())
+	active, published = rig.sink.LastTurnActive()
+	require.True(t, published)
+	assert.False(t, active, "a dead process cannot own a compaction turn")
+	rig.agent.Mu.Lock()
+	manual := rig.agent.manualCompactionActive
+	rig.agent.Mu.Unlock()
+	assert.False(t, manual, "process exit clears the native compaction state")
+}
+
 // exitOnShutdown makes the rig's process exit when the fake receives
 // POST /shutdown, as the real server does. The rig runs no process, so nothing
 // else ends it.

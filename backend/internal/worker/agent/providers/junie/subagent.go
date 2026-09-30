@@ -2,47 +2,82 @@ package junie
 
 import (
 	"encoding/json"
+	"log/slog"
+	"strings"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
-// junieSubagentFromToolCall maps Junie's `spawn_subagent` call to a SUBAGENT
-// registry row. Junie stamps no tool name on an ACP tool call -- `title` is
-// the call's display label -- so this reads the `agent` field of `rawInput`,
-// which only `spawn_subagent` carries. The `handle` field is the continuation
-// key of a follow-up spawn; a call that carries one is a new turn of the same
-// child and opens no second row.
-func junieSubagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObservation {
-	input := parseJunieSpawnInput(tc.RawInput)
-	if input.Agent == "" {
-		return nil
-	}
-	title := tc.Title
-	if title == "" {
-		title = contracts.JunieToolSpawnSubagent
-	}
-	return &acp.SubagentObservation{
-		RowKey:   tc.ToolCallID,
-		Title:    title,
-		Activity: title,
-		Prompt:   input.ExtraContext,
-	}
+const (
+	junieSubagentSpawnedUpdate = "subagent_spawned"
+	junieSubagentStateUpdate   = "subagent_state_update"
+)
+
+// Junie sends these updates only when the initialize request advertises
+// nativeSubagentSessions. Its fallback tool card has no child session or task.
+type junieSubagentUpdate struct {
+	SubagentSessionID string `json:"subagentSessionId"`
+	Name              string `json:"name"`
+	Task              string `json:"task"`
+	State             string `json:"state"`
 }
 
-// junieSpawnInput is the subset of a `spawn_subagent` raw input that the
-// mapping reads.
-type junieSpawnInput struct {
-	Agent        string `json:"agent"`
-	Handle       string `json:"handle"`
-	ExtraContext string `json:"extraContext"`
+// handleSessionMetadata folds Junie's goal and child-session updates into the
+// Worker state. The base handles every other ACP update.
+func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]json.RawMessage, update json.RawMessage) bool {
+	if a.handleGoalMeta(updateType, metadata, update) {
+		return true
+	}
+	switch updateType {
+	case junieSubagentSpawnedUpdate, junieSubagentStateUpdate:
+	default:
+		return false
+	}
+	var event junieSubagentUpdate
+	if err := json.Unmarshal(update, &event); err != nil {
+		slog.Warn("junie child update is unreadable", "agent_id", a.AgentID(), "error", err)
+		return true
+	}
+	childID := strings.TrimSpace(event.SubagentSessionID)
+	if childID == "" || a.IsCurrentSession(childID) {
+		slog.Warn("junie child update has an invalid session id", "agent_id", a.AgentID(), "child_session_id", childID)
+		return true
+	}
+	if updateType == junieSubagentSpawnedUpdate {
+		title := strings.TrimSpace(event.Name)
+		if title == "" {
+			title = "Subagent"
+		}
+		a.ApplySubagentObservation(&acp.SubagentObservation{
+			RowKey: childID, ChildAgentKey: childID, Title: title,
+			Prompt: event.Task, Status: bgtask.StatusRunning, Spawns: true,
+		})
+		a.AttachChildSession(childID, childID)
+		a.startChildTail(childID, title, event.Task)
+		return true
+	}
+	status, ok := junieSubagentFinalStatus(event.State)
+	if !ok {
+		slog.Warn("junie child update has an unknown state", "agent_id", a.AgentID(), "child_session_id", childID, "state", event.State)
+		return true
+	}
+	a.finishChildTail(childID)
+	a.ApplySubagentObservation(&acp.SubagentObservation{
+		RowKey: childID, Status: status, CloseRow: true, Mode: acp.ModeCloseOnly,
+	})
+	return true
 }
 
-func parseJunieSpawnInput(raw json.RawMessage) junieSpawnInput {
-	var input junieSpawnInput
-	if len(raw) == 0 {
-		return input
+func junieSubagentFinalStatus(state string) (bgtask.Status, bool) {
+	switch state {
+	case "completed":
+		return bgtask.StatusCompleted, true
+	case "failed", "disconnected":
+		return bgtask.StatusFailed, true
+	case "cancelled":
+		return bgtask.StatusStopped, true
+	default:
+		return bgtask.StatusUnspecified, false
 	}
-	_ = json.Unmarshal(raw, &input)
-	return input
 }

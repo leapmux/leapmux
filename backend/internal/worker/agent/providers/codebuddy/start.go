@@ -3,6 +3,7 @@ package codebuddy
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -37,31 +38,30 @@ func codebuddyAgentEnv(environ []string) []string {
 		"DISABLE_GALILEO=1",
 		"DISABLE_AUTOUPDATER=1",
 		"CODEBUDDY_DISABLE_TRACE_COLLECTOR=1",
-		"CODEBUDDY_DISABLE_WORKFLOWS=1",
 	)
 	return env
 }
 
 // codebuddySessionArgs returns the argv pair that pins or resumes the session.
-func codebuddySessionArgs(resumeSessionID string) ([]string, error) {
+func codebuddySessionArgs(resumeSessionID string) ([]string, string, error) {
 	if resumeSessionID == "" {
 		sessionID, err := uuid.NewRandom()
 		if err != nil {
-			return nil, fmt.Errorf("create CodeBuddy session ID: %w", err)
+			return nil, "", fmt.Errorf("create CodeBuddy session ID: %w", err)
 		}
-		return []string{"--session-id", sessionID.String()}, nil
+		return []string{"--session-id", sessionID.String()}, sessionID.String(), nil
 	}
 	if err := validate.ValidateSessionID(resumeSessionID); err != nil {
-		return nil, providerkit.ResumeFailedError(resumeSessionID,
+		return nil, "", providerkit.ResumeFailedError(resumeSessionID,
 			fmt.Errorf("the stored session ID is not a valid token: %w", err))
 	}
-	return []string{"--resume", resumeSessionID}, nil
+	return []string{"--resume", resumeSessionID}, resumeSessionID, nil
 }
 
 // Start spawns one CodeBuddy process and begins reading its output.
 //
-// CodeBuddy emits nothing until it receives input on stdin, so Start returns
-// without waiting for the init message. The session ID is pinned at launch.
+// CodeBuddy emits no init frame before the first user prompt. Start reads its
+// model catalog through a control request and pins the session ID at launch.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
@@ -71,7 +71,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return nil, err
 	}
 
-	sessionArgs, err := codebuddySessionArgs(opts.ResumeSessionID)
+	sessionArgs, sessionID, err := codebuddySessionArgs(opts.ResumeSessionID)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -115,15 +115,12 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		Process:        providerkit.NewProcess(opts, "codebuddy", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
 		sink:           agent.NewModelProgressResetSink(sink),
 		opts:           opts,
+		sessionID:      sessionID,
 		model:          opts.Model(),
 		effort:         effort,
 		permissionMode: permissionModeWire(opts.PermissionMode()),
 		pendingControl: make(map[string]chan<- codebuddyControlResult),
 	}
-	if opts.ResumeSessionID != "" {
-		a.sessionID = opts.ResumeSessionID
-	}
-
 	if err := a.StartCmd(cmd, cancel); err != nil {
 		cancel()
 		return nil, err
@@ -131,10 +128,11 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	a.DrainStderr(stderrPipe)
 	scanner := agent.NewStdoutScanner(stdout)
 	go a.readOutputLoop(scanner)
-
-	if a.sessionID != "" {
-		a.sink.UpdateSessionID(a.sessionID)
+	if err := a.loadModelCatalog(); err != nil {
+		slog.Warn("codebuddy: model catalog unavailable", "agent_id", a.AgentID(), "error", err)
 	}
+
+	a.sink.UpdateSessionID(sessionID)
 	return a, nil
 }
 

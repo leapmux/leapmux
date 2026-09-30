@@ -4,8 +4,9 @@ import type { QuestionRequest } from './helpers/providerToolCalls'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import { nativeToolResult } from './helpers/nativeToolResult'
 import { askUserQuestionToolCall } from './helpers/providerToolCalls'
-import { loginViaToken, openAgentViaUI, openWorkspace, sendMessage, sidebarLeaves, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
+import { loginViaToken, openAgentViaUI, openWorkspace, sendMessage, sidebarLeaves, waitForAgentIdle, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
 
 /** Wait for the control request banner to appear and return a scoped locator. */
 async function waitForControlBanner(page: Page) {
@@ -114,11 +115,14 @@ test.describe('Control Request - AskUserQuestion', () => {
     await expect(submitBtn).toBeEnabled()
     await submitBtn.click()
 
-    // Wait for assistant response containing "Blue"
-    await page.waitForFunction(() => {
-      const body = document.body.textContent || ''
-      return body.includes('Blue')
-    })
+    await waitForAgentIdle(page)
+    const status = await modelScript.status()
+    const answerRequest = status.requests.find(request => request.fallback === true)
+    expect(answerRequest?.protocol).toBe('anthropic-messages')
+    const answer = nativeToolResult(answerRequest, 'ask-user')
+    expect(answer).toContain('Blue')
+    expect(answer).not.toContain('Red color')
+    expect(answer).not.toContain('Green color')
   })
 
   test('multi-question - pagination with option selection', async ({ page, authenticatedWorkspace, modelScript }) => {

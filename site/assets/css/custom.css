@@ -201,11 +201,38 @@
   margin: 0;
 }
 
-/*
-  Feature-matrix header logos: one fixed size, so every provider column gets
-  the same header width. inline-block keeps the footnote marker of a provider
-  on the same line (the theme's block-level img rule would break it).
-*/
+.provider-link {
+  position: relative;
+}
+
+.provider-hover-label {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 0.25rem);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  background: var(--hx-color-gray-900);
+  color: white;
+  font-size: 0.75rem;
+  line-height: 1.25;
+  white-space: nowrap;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.provider-link:hover .provider-hover-label,
+.provider-link:focus-visible .provider-hover-label {
+  visibility: visible;
+}
+
+.dark .provider-hover-label {
+  background: var(--hx-color-gray-100);
+  color: var(--hx-color-gray-900);
+}
+
+/* Keep each provider logo beside its note link in the table header. */
 .content th img {
   display: inline-block;
   width: 24px;
@@ -214,23 +241,14 @@
   vertical-align: middle;
 }
 
-/*
-  Feature matrix: one table with a header row every ten provider columns, so
-  no block is wider than the prose column and the table never scrolls. The
-  feature names get a narrow column that wraps; every provider column shares
-  the rest equally and never breaks a line, so a symbol keeps its footnote
-  marker. Cell padding and text alignment stay the theme's, which keeps the
-  "Feature" header cell in the same style as the logo header cells beside it.
-*/
+/* Group provider columns in tables that can scroll on a narrow screen. */
 .feature-matrix {
   overflow-x: auto;
 }
 
 .feature-matrix table {
   table-layout: fixed;
-  /* The theme scrolls each table on its own (display: block with overflow).
-     The matrix table is a real table again so its borders collapse cleanly:
-     each cell draws its right and bottom edge, and the table draws the frame. */
+  /* The outer container scrolls. This table keeps one border for each cell. */
   display: table;
   overflow: visible;
   border-collapse: separate;
@@ -250,22 +268,9 @@
   width: 42px;
 }
 
-/*
-  A footnote marker links to its note; the symbol rides along so the whole
-  cell is clickable. No underline: the line would cut through the emoji.
-*/
+/* Keep an underline off the compact note markers beside each symbol. */
 .feature-matrix table a {
   text-decoration: none;
-}
-
-/*
-  Notes are numbered list items, so each one gets a zero-height anchor to
-  jump to. The scroll margin keeps the target clear of the sticky header.
-*/
-.note-anchor {
-  display: block;
-  height: 0;
-  scroll-margin-top: 4rem;
 }
 
 .feature-matrix table th,
@@ -275,13 +280,33 @@
   border-top: 0;
 }
 
-/*
-  The feature column is the only one that wraps, so a long label takes the
-  narrow width instead of widening the table into a scrollbar. It is body
-  text, not a header: the theme's `th` bold would shout every row label.
-*/
-.feature-matrix table td:first-child {
+/* Let feature labels wrap inside their narrow column. */
+.feature-matrix table tbody th:first-child {
   white-space: normal;
   font-weight: normal;
   text-align: left;
+}
+
+.feature-matrix table tbody th:first-child a {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.feature-matrix-definitions dt {
+  font-weight: 600;
+  margin-block-start: 0.75rem;
+  scroll-margin-top: 4rem;
+}
+
+.feature-matrix-definitions dd {
+  margin-inline-start: 0;
+}
+
+.feature-matrix-notes li,
+.feature-matrix-notes div[id^="note-"] {
+  scroll-margin-top: 4rem;
+}
+
+.feature-matrix-notes div[id^="note-"] {
+  margin-block: 0.75rem;
 }

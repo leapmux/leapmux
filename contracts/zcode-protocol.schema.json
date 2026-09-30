@@ -10,6 +10,7 @@
     "events",
     "toolPrefixes",
     "methods",
+    "stateReasons",
     "actions",
     "replyFields",
     "answerFields",
@@ -150,6 +151,9 @@
       "$ref": "#/$defs/table"
     },
     "methods": {
+      "$ref": "#/$defs/table"
+    },
+    "stateReasons": {
       "$ref": "#/$defs/table"
     },
     "actions": {

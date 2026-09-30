@@ -2,6 +2,7 @@ import type { Locator, Page } from '@playwright/test'
 import { mimoWorkflowToolCall } from './helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from './helpers/subagentRegistry'
 import { assistantBubbles, bandRows, messageBubbles, messageContents, sendMessage, tabById, userBubbles, waitForAgentIdle } from './helpers/ui'
+import { workflowGroupHeading, workflowRowsShareGroup } from './helpers/workflowGrouping'
 /**
  * 239 — MiMo Code workflow.
  *
@@ -60,23 +61,6 @@ function registryRow(page: Page, kind: 'subagent' | 'workflow', title: string): 
   return page.locator(`[data-testid="bg-task-row"]:visible[data-kind="${kind}"]`).filter({ hasText: title }).first()
 }
 
-/**
- * The text of the group heading above one registry row, or null for a row in no
- * group.
- *
- * The list draws each ungrouped row first, and then each group as its heading
- * followed by its rows, all as siblings. So the nearest sibling above a row that
- * is not a row itself is the heading of that row's group.
- */
-async function groupHeadingOf(row: Locator): Promise<string | null> {
-  return row.evaluate((element) => {
-    let sibling = element.previousElementSibling
-    while (sibling && sibling.getAttribute('data-testid') === 'bg-task-row')
-      sibling = sibling.previousElementSibling
-    return sibling?.textContent?.trim() ?? null
-  })
-}
-
 mimoTest.describe('MiMo Code workflow', () => {
   mimoTest('a workflow run shows its subagents in the registry, each in a transcript of its own', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {
     void authenticatedMiMoWorkspace
@@ -123,7 +107,7 @@ mimoTest.describe('MiMo Code workflow', () => {
     const workflowRow = registryRow(page, 'workflow', WORKFLOW_NAME)
     await expectRowBecomesFinal(page, workflowRow)
     await expect(workflowRow).toHaveAttribute('data-status', 'completed')
-    await expect.poll(() => groupHeadingOf(workflowRow)).toContain(WORKFLOW_NAME)
+    await expect.poll(() => workflowGroupHeading(workflowRow)).toContain(WORKFLOW_NAME)
 
     for (const [index, { label, word }] of helpers.entries()) {
       // One row for each subagent, in the run's group, closed as completed, and
@@ -131,7 +115,8 @@ mimoTest.describe('MiMo Code workflow', () => {
       const row = registryRow(page, 'subagent', label)
       await expectRowBecomesFinal(page, row)
       await expect(row).toHaveAttribute('data-status', 'completed')
-      await expect.poll(() => groupHeadingOf(row)).toContain(WORKFLOW_NAME)
+      await expect.poll(() => workflowGroupHeading(row)).toContain(WORKFLOW_NAME)
+      await expect.poll(() => workflowRowsShareGroup(workflowRow, row)).toBe(true)
       // `getAttribute` answers null for an absent attribute, and null is not '', so
       // the poll reads an absent attribute as the empty id it states.
       await expect.poll(async () => await row.getAttribute('data-child-agent-id') ?? '').not.toBe('')

@@ -25,14 +25,17 @@ import (
 type Agent struct {
 	providerkit.Process
 
-	sink       agent.ProviderServices
-	workingDir string
-	clock      quartz.Clock
-	wsURL      string
-	ws         *wsConn
+	sink          agent.ProviderServices
+	workingDir    string
+	taskLogRoot   string
+	taskLogDirect bool
+	clock         quartz.Clock
+	wsURL         string
+	ws            *wsConn
 
 	dispatchMu sync.Mutex
 	sendMu     sync.Mutex
+	settingsMu sync.Mutex
 
 	// --- guarded by Mu ---
 
@@ -43,11 +46,14 @@ type Agent struct {
 	settings       lettaSettings
 	catalog        lettaCatalog
 	tools          map[string]*lettaTool
+	children       map[string]*lettaChild
 	controls       map[string]*lettaPendingControl
 	generation     providerkit.GenerationBuffer
 	// runtimeReady holds the open runtime_start handshake, until the response
 	// settles it. Start waits on it before it returns the agent.
-	runtimeReady *runtimeWaiter
+	runtimeReady   *runtimeWaiter
+	catalogPending *lettaCatalogPending
+	modelPending   *lettaModelUpdatePending
 }
 
 var (
@@ -77,6 +83,14 @@ type lettaCatalog struct {
 type lettaModel struct {
 	id          string
 	displayName string
+}
+
+type lettaModelUpdatePending struct {
+	requestID     string
+	model         string
+	effort        string
+	effortPresent bool
+	waiter        *runtimeWaiter
 }
 
 // lettaTool is one open tool call.
@@ -206,19 +220,22 @@ func buildUserMessages(content string, attachments []*leapmuxv1.Attachment) ([]a
 	if text != "" {
 		blocks = append(blocks, map[string]any{"type": "text", "text": text})
 	}
-	for _, att := range attachments {
-		if att == nil {
-			continue
+	for _, attachment := range agent.ClassifyAttachments(attachments) {
+		if err := (lettaProvider{}).ValidateAttachment(attachment); err != nil {
+			return nil, err
 		}
-		if strings.HasPrefix(att.GetMimeType(), "image/") {
+		if attachment.Kind == agent.AttachmentKindImage {
 			blocks = append(blocks, map[string]any{
-				"type":       "image",
-				"media_type": att.GetMimeType(),
-				"data":       att.GetData(),
+				"type": "image",
+				"source": map[string]any{
+					"type":       "base64",
+					"media_type": attachment.MIMEType,
+					"data":       attachment.Data,
+				},
 			})
 			continue
 		}
-		if s := strings.TrimSpace(string(att.GetData())); s != "" {
+		if s := strings.TrimSpace(string(attachment.Data)); s != "" {
 			blocks = append(blocks, map[string]any{"type": "text", "text": s})
 		}
 	}
@@ -296,19 +313,16 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	// current value, because the chip resolves its label by looking that value
 	// up in the options -- a list that omits it draws the group label instead
 	// of the model the session is running.
-	models := catalog.models
+	models := append([]lettaModel(nil), catalog.models...)
+	seen := make(map[string]bool, len(models))
+	for _, model := range models {
+		seen[model.id] = true
+	}
+	if settings.model != "" && !seen[settings.model] {
+		models = append(models, lettaModel{id: settings.model, displayName: settings.model})
+	}
 	if len(models) == 0 {
-		seen := map[string]bool{}
-		if settings.model != "" {
-			models = append(models, lettaModel{id: settings.model, displayName: settings.model})
-			seen[settings.model] = true
-		}
-		for _, m := range defaultModels {
-			if !seen[m.Id] {
-				models = append(models, lettaModel{id: m.Id, displayName: m.DisplayName})
-				seen[m.Id] = true
-			}
-		}
+		models = []lettaModel{{id: defaultModels[0].Id, displayName: defaultModels[0].DisplayName}}
 	}
 	groups = append(groups, lettaModelGroup(models, settings.model))
 	groups = append(groups, &leapmuxv1.AvailableOptionGroup{
@@ -334,50 +348,94 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 	return agent.ConfirmedSettings(values)
 }
 
-// UpdateSettings applies each included non-empty option to the running agent.
+// UpdateSettings applies model and effort changes to the running agent.
+// An empty effort restores the native default. A changed mode needs a restart.
 func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
 	a.Mu.Lock()
 	agentID := a.agentID
+	previous := a.settings
 	a.Mu.Unlock()
+	mode, modeRequested := options[agent.OptionIDPermissionMode]
+	if modeRequested && mode != previous.permissionMode {
+		return agent.RestartRequiredSettings(options)
+	}
 	if agentID == "" {
 		return agent.RestartRequiredSettings(options)
 	}
-	patch := map[string]any{}
-	for id, value := range options {
-		if value == "" {
-			continue
-		}
-		switch id {
-		case agent.OptionIDModel:
-			patch["model"] = value
-		case agent.OptionIDEffort:
-			patch["reasoning_effort"] = value
-		}
-	}
-	if len(patch) == 0 {
-		// A permission-mode change reaches runtime_start only; the live server
-		// takes no mid-run mode command, so it needs a restart.
-		if _, ok := options[agent.OptionIDPermissionMode]; ok {
-			return agent.RestartRequiredSettings(options)
+	model, modelPresent := options[agent.OptionIDModel]
+	effort, effortPresent := options[agent.OptionIDEffort]
+	if !modelPresent && !effortPresent {
+		if modeRequested {
+			return agent.ConfirmedSettings(map[string]string{agent.OptionIDPermissionMode: previous.permissionMode})
 		}
 		return agent.ConfirmedSettings(nil)
+	}
+	if modelPresent && model == "" && !effortPresent {
+		confirmed := map[string]string{agent.OptionIDModel: previous.model}
+		if modeRequested {
+			confirmed[agent.OptionIDPermissionMode] = previous.permissionMode
+		}
+		return agent.ConfirmedSettings(confirmed)
+	}
+	if model == "" {
+		model = previous.model
+	}
+	if model == "" {
+		return agent.RestartRequiredSettings(options)
+	}
+	patch := map[string]any{"model_handle": model}
+	if effortPresent {
+		if effort == "" {
+			patch["reasoning_effort"] = nil
+		} else {
+			patch["reasoning_effort"] = effort
+		}
 	}
 	cmd := newLettaCommand("update_model", a.nextRequestID())
 	scope := a.runtime()
 	cmd.Runtime = &scope
 	cmd.Payload = patch
+	pending := &lettaModelUpdatePending{requestID: cmd.RequestID, model: model, effort: effort, effortPresent: effortPresent, waiter: newRuntimeWaiter()}
+	a.Mu.Lock()
+	a.modelPending = pending
+	a.Mu.Unlock()
 	if err := a.sendCommand(cmd); err != nil {
+		a.clearModelPending(pending)
 		return agent.RestartRequiredSettings(options)
 	}
+	if err := pending.waiter.wait(a.Context(), a.ProcessDone(), lettaSendWait); err != nil {
+		a.clearModelPending(pending)
+		a.Mu.Lock()
+		current := a.settings
+		a.Mu.Unlock()
+		confirmed := map[string]string{}
+		if _, ok := options[agent.OptionIDModel]; ok {
+			confirmed[agent.OptionIDModel] = current.model
+		}
+		if _, ok := options[agent.OptionIDEffort]; ok {
+			confirmed[agent.OptionIDEffort] = current.reasoningLevel
+		}
+		if modeRequested {
+			confirmed[agent.OptionIDPermissionMode] = current.permissionMode
+		}
+		return agent.ConfirmedSettings(confirmed)
+	}
 	a.Mu.Lock()
-	if v, ok := patch["model"].(string); ok {
-		a.settings.model = v
-	}
-	if v, ok := patch["reasoning_effort"].(string); ok {
-		a.settings.reasoningLevel = v
-	}
+	current := a.settings
 	a.Mu.Unlock()
-	return agent.ConfirmedSettings(options)
+	confirmed := map[string]string{}
+	if _, ok := options[agent.OptionIDModel]; ok {
+		confirmed[agent.OptionIDModel] = current.model
+	}
+	if _, ok := options[agent.OptionIDEffort]; ok {
+		confirmed[agent.OptionIDEffort] = current.reasoningLevel
+	}
+	if modeRequested {
+		confirmed[agent.OptionIDPermissionMode] = current.permissionMode
+	}
+	return agent.ConfirmedSettings(confirmed)
 }
 
 // Stop ends the process.

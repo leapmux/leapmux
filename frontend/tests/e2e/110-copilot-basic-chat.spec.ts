@@ -48,7 +48,7 @@ copilotTest.describe('Copilot Basic Chat', () => {
    * pursues it, so the queue is paused for the whole test: the objective is stored
    * either way, and no model turn runs.
    */
-  copilotTest('sets, pauses and clears a native session goal', async ({ authenticatedCopilotWorkspace, page }) => {
+  copilotTest('sets, pauses, resumes and clears a native session goal', async ({ authenticatedCopilotWorkspace, page }) => {
     void authenticatedCopilotWorkspace
     const objective = 'Keep the native Copilot objective until the browser clears it.'
     const queue = page.locator('[data-testid="agent-input-queue"]:visible')
@@ -75,6 +75,12 @@ copilotTest.describe('Copilot Basic Chat', () => {
     await page.reload()
     await expandGoalsAndTodosSection(page)
     await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText(objective)
+    await expectGoalStatus(page, 'paused')
+
+    await openGoalMenu(page)
+    await goalAction(page, 'resume').click()
+    await expectGoalStatus(page, 'active')
+    await expect(queue).toBeVisible()
 
     await openGoalMenu(page)
     await goalAction(page, 'clear').click()

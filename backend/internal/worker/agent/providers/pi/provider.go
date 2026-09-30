@@ -58,16 +58,20 @@ func (piProvider) ResolveResumeHandle(handle, homeDir string) (string, error) {
 
 func (piProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
 	var env struct {
-		Type string `json:"type"`
+		Type    string                     `json:"type"`
+		Aborted bool                       `json:"aborted"`
+		Result  map[string]json.RawMessage `json:"result"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return agent.NotificationClassification{}
 	}
 	switch env.Type {
 	case contracts.PiEventCompactionEnd:
-		// The boundary signal — repeated boundaries collapse so the chat
-		// shows one marker for "the conversation was compacted at this
-		// point", not a sequence.
+		if env.Aborted || env.Result == nil {
+			// A failed end replaces its start status without creating a boundary.
+			return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "pi:" + contracts.PiEventCompactionStart}
+		}
+		// Each completed boundary stays in the transcript.
 		return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "pi:" + contracts.PiEventCompactionEnd}
 	case contracts.PiEventCompactionStart:
 		// In-progress indicator. Latest wins so the UI shows "compacting…"

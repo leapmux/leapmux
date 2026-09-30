@@ -8,12 +8,13 @@ import { GROK_META, GROK_TOOL } from '~/generated/contracts/grok-protocol'
 import { isObject, pickFirstString, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { questionsFromWire } from '../../../controls/types'
 import { withCommandExit } from '../../../model/commandResult'
-import { mcpToolCallRequest, parseMcpContentItem, splitPrefixedPair } from '../../../model/mcpToolCall'
+import { mcpToolCallRequest, splitPrefixedPair } from '../../../model/mcpToolCall'
 import { failedResult, isUnparsedToolResult, proseResult } from '../../../model/toolCall'
 import { acpRemapFacts, acpSpecFor } from '../../acp/extractors/toolCall'
 import { TOOL_FILE_PATH_KEYS } from '../../toolInputKeys'
 import { GROK_TOOL_KINDS, GROK_TOOL_NAME, isGrokTool } from '../toolKinds'
 import { grokAgentRequest, grokAgentRun, grokWorkflowRequest, grokWorkflowRun } from './agent'
+import { grokMcpContent } from './mcp'
 import { grokCommandExit, grokGrepResult, grokListResult, grokRawOutput } from './results'
 
 /**
@@ -111,7 +112,7 @@ function grokMcpSpec(facts: ACPToolFacts, name: string, server: string, tool: st
   return {
     ...mcpToolCallRequest(server, tool, input),
     name,
-    ...(facts.finished ? { result: facts.status === 'failed' ? failedResult(facts.text) : { content: facts.content.map(parseMcpContentItem) } } : {}),
+    ...(facts.finished ? { result: facts.status === 'failed' ? failedResult(facts.text) : { content: grokMcpContent(facts) } } : {}),
   }
 }
 

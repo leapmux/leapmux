@@ -43,6 +43,46 @@ const lettaLiveListModelsResponse = `{"type":"list_models_response","request_id"
 
 const lettaLiveUsageStatistics = `{"type":"stream_delta","delta":{"message_type":"usage_statistics","prompt_tokens":10,"completion_tokens":2,"total_tokens":12},"runtime":{"agent_id":"agent-local-1","conversation_id":"local-conv-1"},"event_seq":13,"emitted_at":"2026-09-25T21:18:53.280Z","idempotency_key":"stream_delta:13:x"}`
 
+func TestUsageStatisticsReportsNativeContextCounts(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := &Agent{sink: agent.NewProviderServices(sink)}
+	a.HandleOutput([]byte(`{"type":"stream_delta","delta":{"message_type":"usage_statistics","prompt_tokens":12000,"completion_tokens":40,"total_tokens":12040}}`))
+
+	value, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
+	require.True(t, ok)
+	usage, ok := value.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, int64(12000), usage[contracts.ContextUsageFieldInputTokens])
+	assert.Equal(t, int64(40), usage[contracts.ContextUsageFieldOutputTokens])
+	assert.NotContains(t, usage, contracts.ContextUsageFieldContextWindow)
+}
+
+func TestUsageStatisticsKeepsZeroAndRejectsInvalidCounts(t *testing.T) {
+	t.Parallel()
+	zeroSink := &agenttest.Sink{}
+	zeroAgent := &Agent{sink: agent.NewProviderServices(zeroSink)}
+	zeroAgent.HandleOutput([]byte(`{"type":"stream_delta","delta":{"message_type":"usage_statistics","prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`))
+	value, ok := zeroSink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
+	require.True(t, ok)
+	usage, ok := value.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, int64(0), usage[contracts.ContextUsageFieldInputTokens])
+	assert.Equal(t, int64(0), usage[contracts.ContextUsageFieldOutputTokens])
+
+	for _, frame := range []string{
+		`{"type":"stream_delta","delta":{"message_type":"usage_statistics","prompt_tokens":-1,"completion_tokens":4}}`,
+		`{"type":"stream_delta","delta":{"message_type":"usage_statistics","prompt_tokens":4}}`,
+		`{"type":"stream_delta","delta":{"message_type":"usage_statistics","prompt_tokens":"4","completion_tokens":2}}`,
+	} {
+		sink := &agenttest.Sink{}
+		a := &Agent{sink: agent.NewProviderServices(sink)}
+		a.HandleOutput([]byte(frame))
+		_, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
+		assert.False(t, ok, frame)
+	}
+}
+
 const lettaLiveStopReasonDelta = `{"type":"stream_delta","delta":{"message_type":"stop_reason","stop_reason":"end_turn"},"runtime":{"agent_id":"agent-local-1","conversation_id":"local-conv-1"},"event_seq":14,"emitted_at":"2026-09-25T21:18:53.281Z","idempotency_key":"stream_delta:14:x"}`
 
 // The assistant text of a live stream_delta reaches the transcript when the
@@ -61,6 +101,51 @@ func TestStreamDeltaCarriesItsBodyInTheDeltaField(t *testing.T) {
 	require.NotEmpty(t, found, "the turn produces a transcript row")
 	assert.True(t, strings.Contains(strings.Join(found, "\n"), "MOCK-REPLY-OK"),
 		"the assistant text reaches the transcript, rows: %v", found)
+}
+
+// The local App Server emits a reasoning string beside content. The worker
+// must assemble that field before it emits the turn end.
+func TestLocalReasoningDeltaUsesReasoningField(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := &Agent{sink: agent.NewProviderServices(sink)}
+	for _, frame := range []string{
+		`{"type":"stream_delta","delta":{"message_type":"reasoning_message","reasoning":"Compare "}}`,
+		`{"type":"stream_delta","delta":{"message_type":"reasoning_message","reasoning":"the values."}}`,
+		lettaLiveTurnFinished,
+	} {
+		a.HandleOutput([]byte(frame))
+	}
+
+	var reasoningRows []map[string]any
+	for _, row := range sink.Messages() {
+		var payload map[string]any
+		if err := json.Unmarshal(row.Content, &payload); err != nil {
+			continue
+		}
+		if payload[contracts.AssembledMessageFieldKind] == contracts.AssembledMessageKindReasoning {
+			reasoningRows = append(reasoningRows, payload)
+		}
+	}
+	require.Len(t, reasoningRows, 1, "the native reasoning chunks create one row")
+	assert.Equal(t, "Compare the values.", reasoningRows[0][contracts.AssembledMessageFieldText])
+}
+
+func TestReasoningDeltaStillReadsContentBlocks(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := &Agent{sink: agent.NewProviderServices(sink)}
+	a.HandleOutput([]byte(`{"type":"stream_delta","delta":{"message_type":"reasoning_message","content":[{"type":"text","text":"Older format."}]}}`))
+	a.HandleOutput([]byte(lettaLiveTurnFinished))
+
+	var found bool
+	for _, row := range sink.Messages() {
+		var payload map[string]any
+		if json.Unmarshal(row.Content, &payload) == nil && payload[contracts.AssembledMessageFieldKind] == contracts.AssembledMessageKindReasoning {
+			found = payload[contracts.AssembledMessageFieldText] == "Older format."
+		}
+	}
+	assert.True(t, found, "the prior content-block shape still creates a reasoning row")
 }
 
 // A live update_loop_status arms the turn: its body names the status in

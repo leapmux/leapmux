@@ -1,4 +1,5 @@
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { exerciseLiveChildTranscript } from './helpers/liveChildTranscript'
 import { ohMyPiYieldToolCall, spawnSubagentToolCall } from './helpers/providerToolCalls'
 import {
   expectNoRegistryRows,
@@ -28,6 +29,17 @@ ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
 const REPORT = 'Apple, banana, cherry. One, two, three. Done.'
 
 ohMyPiTest.describe('Oh My Pi subagent registry', () => {
+  ohMyPiTest('shows the child prompt while the child still runs', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {
+    void authenticatedOhMyPiWorkspace
+    await exerciseLiveChildTranscript(page, modelScript, {
+      provider: AgentProvider.OH_MY_PI,
+      childWhen: { user: 'Complete assignment thoroughly', body: '"name":"yield"' },
+      childTask: 'Reply with CHILD_LIVE_DONE.',
+      parentTask: 'Delegate the live child task.',
+      childResponse: { toolCalls: [ohMyPiYieldToolCall('yield-live-report', 'CHILD_LIVE_DONE')] },
+    })
+  })
+
   ohMyPiTest('follows a subagent from its spawn to its report', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {
     void authenticatedOhMyPiWorkspace
     await expectNoRegistryRows(page)

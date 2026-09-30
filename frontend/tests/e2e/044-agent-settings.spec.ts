@@ -1,5 +1,14 @@
-import { applyPermissionPreset, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, openAgentViaUI, openPlusMenu, openSettingsMenu, permissionModeOffered, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, settingsGroupTrigger, visibleOnly, waitForSettingsHydrated, waitForSettingsIdle } from './helpers/ui'
+import type { MockModelRequestRecord } from './helpers/mockModelScript'
+import { isObject } from '../../src/lib/jsonPick'
+import { applyPermissionPreset, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, openAgentViaUI, openPlusMenu, openSettingsMenu, permissionModeOffered, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, settingsGroupTrigger, visibleOnly, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from './helpers/ui'
 import { expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
+
+function nativeSystemInstructions(request: MockModelRequestRecord | undefined): string {
+  expect(request?.protocol).toBe('anthropic-messages')
+  const body = isObject(request?.body) ? request.body : null
+  const messages = Array.isArray(body?.messages) ? body.messages : []
+  return JSON.stringify(messages.filter(message => isObject(message) && message.role === 'system'))
+}
 
 test.describe('Agent Settings', () => {
   test('default settings on startup', async ({ authenticatedWorkspace, page }) => {
@@ -122,6 +131,24 @@ test.describe('Agent Settings', () => {
     await expectSettingsChip(page, 'Default')
   })
 
+  test('plan mode reaches the native request after a default turn', async ({ authenticatedWorkspace, page, modelScript }) => {
+    void authenticatedWorkspace
+    await modelScript.queue({ text: 'The Default turn ended.' })
+    await sendMessage(page, modelScript.prompt('Reply once in the selected mode.'))
+    const defaultStatus = await modelScript.waitForSteps(1)
+    await waitForAgentIdle(page)
+
+    await chooseSettingsOption(page, 'permissionMode-plan')
+    await waitForSettingsIdle(page)
+    await modelScript.queue({ text: 'The Plan turn ended.' })
+    await sendMessage(page, modelScript.prompt('Reply once in the selected mode.'))
+    const planned = await modelScript.waitForSteps(2)
+    await waitForAgentIdle(page)
+    const marker = 'Plan mode is active. The user indicated'
+    expect(nativeSystemInstructions(defaultStatus.requests.find(request => request.stepIndex === 0))).not.toContain(marker)
+    expect(nativeSystemInstructions(planned.requests.find(request => request.stepIndex === 1))).toContain(marker)
+  })
+
   test('switch model', async ({ authenticatedWorkspace, page }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
@@ -163,7 +190,8 @@ test.describe('Agent Settings', () => {
     })
   })
 
-  test('switch effort', async ({ authenticatedWorkspace, page }) => {
+  test('sends the selected effort in the next native request', async ({ authenticatedWorkspace, page, modelScript }) => {
+    void authenticatedWorkspace
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
@@ -173,6 +201,12 @@ test.describe('Agent Settings', () => {
     await openSettingsMenu(page, 'effort')
     await expect(page.locator('[data-testid="effort-high"] input[type="radio"]')).toBeChecked()
     await page.keyboard.press('Escape')
+
+    await modelScript.queue({ text: 'Claude answered at high effort.' })
+    await sendMessage(page, modelScript.prompt('Reply once after the effort switch.'))
+    const status = await modelScript.waitForSteps()
+    expect(status.requests.find(request => request.stepIndex === 0)?.body).toMatchObject({ output_config: { effort: 'high' } })
+    await expectAssistantAnswer(page, { answer: /Claude answered at high effort\./ })
   })
 
   test('effort hidden when haiku selected', async ({ authenticatedWorkspace, page }) => {
@@ -314,16 +348,9 @@ test.describe('Agent Settings', () => {
     await page.keyboard.press('Escape')
   })
 
-  // RENAMED from "a supported effort survives a model switch". It does not
-  // survive: a model switch RESOLVES the effort against the new model, so the
-  // session lands on a tier that model offers. The old name described a
-  // carry-over that two measurements disproved -- xhigh on Opus settles to high
-  // on Sonnet, and medium on Sonnet does not return as medium on Opus.
-  //
-  // The invariant worth holding is the one that protects the session: after a
-  // switch the effort is always a tier the NEW model supports, so a launch can
-  // never carry one it would refuse.
-  test('a model switch settles the effort on a tier the new model supports', async ({ authenticatedWorkspace, page }) => {
+  // A model edit resets effort to Auto. Claude restarts without an effort flag,
+  // then reports the level that the new model selected.
+  test('a model switch settles the effort on a tier the new model supports', async ({ authenticatedWorkspace, page, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
@@ -339,8 +366,8 @@ test.describe('Agent Settings', () => {
     await expect(effortChecked('xhigh')).toBeChecked()
     await page.keyboard.press('Escape')
 
-    // Sonnet does not offer xhigh, so the session clamps to high rather than
-    // carrying a tier the model refuses.
+    // The model switch clears the Opus effort. The installed CLI reports Medium
+    // after the Sonnet restart, and the next model request must use that level.
     await chooseSettingsOption(page, 'model-sonnet')
     await expectSettingsChip(page, 'Sonnet')
     await waitForSettingsIdle(page)
@@ -348,8 +375,14 @@ test.describe('Agent Settings', () => {
     await openSettingsMenu(page, 'effort')
     await expect(page.locator('[data-testid="effort-xhigh"]')).toBeVisible()
     await expect(effortChecked('xhigh')).not.toBeChecked()
-    await expect(effortChecked('high')).toBeChecked()
+    await expect(effortChecked('medium')).toBeChecked()
     await page.keyboard.press('Escape')
+
+    await modelScript.queue({ text: 'Claude answered after the model switch.' })
+    await sendMessage(page, modelScript.prompt('Reply once after switching to Sonnet.'))
+    const status = await modelScript.waitForSteps()
+    expect(status.requests.find(request => request.stepIndex === 0)?.body).toMatchObject({ output_config: { effort: 'medium' } })
+    await expectAssistantAnswer(page, { answer: /Claude answered after the model switch\./ })
   })
 
   test('permission mode persistence across refresh', async ({ authenticatedWorkspace, page }) => {

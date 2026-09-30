@@ -4,7 +4,7 @@ import ts from 'typescript'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { collectE2EFiles } from '~/test-support/e2eFiles'
 import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
-import { E2E_BROWSER_HOST, hubSpawnEnv, mockAgentEnv, waitForServer } from './server'
+import { E2E_BROWSER_HOST, hubSpawnEnv, hubUrlFromStateJson, mockAgentEnv, resolvedHubTCPFromStateJson, waitForServer } from './server'
 
 describe('E2E_BROWSER_HOST', () => {
   it('matches the browser session-cookie domain', () => {
@@ -12,7 +12,66 @@ describe('E2E_BROWSER_HOST', () => {
   })
 })
 
+describe('hubUrlFromStateJson', () => {
+  it('takes the assigned port from the one TCP entry', () => {
+    const state = JSON.stringify({ pid: 7, listen: ['127.0.0.1:44321', 'unix:/tmp/hub.sock'] })
+    expect(resolvedHubTCPFromStateJson(state)).toBe('127.0.0.1:44321')
+    expect(hubUrlFromStateJson(state)).toBe('http://localhost:44321')
+    expect(hubUrlFromStateJson(state, '127.0.0.1')).toBe('http://127.0.0.1:44321')
+  })
+
+  it('rejects a bind set with no TCP entry', () => {
+    expect(() => hubUrlFromStateJson(JSON.stringify({ listen: ['unix:/tmp/hub.sock'] })))
+      .toThrow(/expected one TCP address/)
+  })
+
+  it('rejects a bind set with more than one TCP entry', () => {
+    expect(() => hubUrlFromStateJson(JSON.stringify({ listen: ['127.0.0.1:1', '127.0.0.1:2'] })))
+      .toThrow(/expected one TCP address/)
+  })
+
+  it.each(['127.0.0.1:', '127.0.0.1:0', '127.0.0.1:65536', '127.0.0.1:1e3'])('rejects a TCP address without a usable port: %s', (address) => {
+    expect(() => hubUrlFromStateJson(JSON.stringify({ listen: [address] })))
+      .toThrow(/names no usable port/)
+  })
+
+  it('rejects an unreadable listen set', () => {
+    expect(() => hubUrlFromStateJson('{}')).toThrow(/expected one TCP address/)
+    expect(() => hubUrlFromStateJson('{"listen":[7]}')).toThrow(/expected one TCP address/)
+    expect(() => hubUrlFromStateJson('null')).toThrow(/expected one TCP address/)
+  })
+})
+
 describe('hubSpawnEnv', () => {
+  it('removes inherited plain HTTP proxies after applying the mock environment', () => {
+    const proxyNames = ['HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy'] as const
+    const before = proxyNames.map(name => process.env[name])
+    for (const name of proxyNames)
+      process.env[name] = 'http://parent-proxy.invalid:8080'
+    try {
+      const mockProxy = 'http://127.0.0.1:43210'
+      const env = hubSpawnEnv({
+        HTTPS_PROXY: mockProxy,
+        https_proxy: mockProxy,
+        HTTP_PROXY: 'http://caller-proxy.invalid:8080',
+        NO_PROXY: '127.0.0.1,localhost,::1',
+      })
+      for (const name of proxyNames)
+        expect(env[name], name).toBeUndefined()
+      expect(env.HTTPS_PROXY).toBe(mockProxy)
+      expect(env.https_proxy).toBe(mockProxy)
+      expect(env.NO_PROXY).toBe('127.0.0.1,localhost,::1')
+    }
+    finally {
+      for (const [index, name] of proxyNames.entries()) {
+        if (before[index] === undefined)
+          delete process.env[name]
+        else
+          process.env[name] = before[index]
+      }
+    }
+  })
+
   it('clears an inherited development frontend URL', () => {
     const before = process.env.LEAPMUX_HUB_DEV_FRONTEND
     process.env.LEAPMUX_HUB_DEV_FRONTEND = 'http://localhost:5173'

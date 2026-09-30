@@ -3,14 +3,27 @@ package qoder
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // qoderProvider is the stateless wire-format plugin for Qoder CLI.
 type qoderProvider struct {
 	agent.ProviderDefaults
+}
+
+// ValidateAttachment permits only the content blocks Qoder's stream input reads.
+func (qoderProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
+	if err := providerkit.RejectPDFAndBinaryAttachment("Qoder CLI", attachment); err != nil {
+		return err
+	}
+	if attachment.Kind == agent.AttachmentKindImage && len(attachment.Data) == 0 {
+		return fmt.Errorf("qoder CLI does not support an empty image attachment: %s", attachment.Filename)
+	}
+	return nil
 }
 
 // IsInterrupt recognizes Qoder's own interrupt frame: a control_request whose
@@ -108,12 +121,24 @@ func (qoderProvider) PlanModeControl(toolName string) agent.PlanModeControlKind 
 	}
 }
 
-// PlanModePermissionMode returns the mode an approved plan exit switches to.
+// PlanModePermissionMode returns the mode an approved plan transition shows.
 func (qoderProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) string {
-	if kind == agent.PlanModeControlExit {
+	switch kind {
+	case agent.PlanModeControlEnter:
+		return contracts.QoderModePlan
+	case agent.PlanModeControlExit:
 		return contracts.QoderModeAcceptEdits
+	default:
+		return ""
 	}
-	return ""
+}
+
+// PlanApprovalOptions applies the selected policy after native Plan ends.
+func (qoderProvider) PlanApprovalOptions(mode string) map[string]string {
+	if mode == "" {
+		mode = contracts.QoderModeAcceptEdits
+	}
+	return map[string]string{agent.OptionIDPermissionMode: mode}
 }
 
 // IsSelfDisplayingControlTool reports false: Qoder echoes no control answer

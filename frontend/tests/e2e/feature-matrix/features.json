@@ -1,0 +1,165 @@
+{
+  "_readme": "Feature labels and exact behavior for the coding-agent matrix.",
+  "features": [
+    {
+      "id": "text-attachments",
+      "label": "Text attachments",
+      "description": "The agent can use the contents of an attached text file. A filename alone does not count."
+    },
+    {
+      "id": "image-attachments",
+      "label": "Image attachments",
+      "description": "The agent can use the bytes of an attached image through its native input path."
+    },
+    {
+      "id": "pdf-attachments",
+      "label": "PDF attachments",
+      "description": "The agent can use the bytes of an attached PDF. A filename or placeholder does not count."
+    },
+    {
+      "id": "other-binary-attachments",
+      "label": "Other binary attachments",
+      "description": "The agent can use the bytes of an attached binary file other than an image or PDF. A filename or placeholder does not count."
+    },
+    {
+      "id": "images-in-tool-results",
+      "label": "Images in tool results",
+      "description": "LeapMux shows an image in the tool result row from live result bytes or the provider's stored attachment record."
+    },
+    {
+      "id": "thinking-in-the-transcript",
+      "label": "Thinking in the transcript",
+      "description": "LeapMux shows reasoning or thinking content from the provider's native output in the chat transcript."
+    },
+    {
+      "id": "context-usage",
+      "label": "Context usage",
+      "description": "Agent info shows the provider's reported context use as token counts or an occupancy ratio."
+    },
+    {
+      "id": "compaction-notice",
+      "label": "Compaction notice",
+      "description": "The chat transcript shows a completed native compaction boundary or status. A start notice or a smaller context without a completed notice does not count."
+    },
+    {
+      "id": "manual-compaction",
+      "label": "Manual compaction",
+      "description": "A user command from LeapMux starts native context compaction, and the next model turn uses the compacted context."
+    },
+    {
+      "id": "rate-limit-state",
+      "label": "Rate-limit state",
+      "description": "Agent info shows a provider-reported quota window, use, or reset time. A retry notice alone does not count."
+    },
+    {
+      "id": "model-context-on-resume",
+      "label": "Model context on resume",
+      "description": "After LeapMux reopens a native session, the next model turn can use prior conversation context. Saved LeapMux chat rows alone do not count."
+    },
+    {
+      "id": "permission-prompts",
+      "label": "Permission prompts",
+      "description": "LeapMux shows a tool approval question and sends the user's allow or deny decision through the provider's control path."
+    },
+    {
+      "id": "plan-mode",
+      "label": "Plan mode",
+      "description": "The user can enter a provider mode that plans work before it makes changes."
+    },
+    {
+      "id": "plan-approval-banner",
+      "label": "Plan approval banner",
+      "description": "LeapMux shows the provider's completed plan in a banner that accepts an approval or rejection."
+    },
+    {
+      "id": "agent-questions",
+      "label": "Agent questions",
+      "description": "LeapMux shows a question from the agent and returns the user's selected or typed answer through the native question path."
+    },
+    {
+      "id": "mcp-tool-execution",
+      "label": "MCP tool execution",
+      "description": "The agent calls a Model Context Protocol tool, receives its result, and can use that result in a subsequent model request."
+    },
+    {
+      "id": "mcp-input-request",
+      "label": "MCP input request",
+      "description": "LeapMux collects fields requested by a Model Context Protocol server through a form or native questions and returns the answers to the server."
+    },
+    {
+      "id": "smart-permissions-shortcut",
+      "label": "Smart permissions shortcut",
+      "description": "A LeapMux shortcut selects the provider's safety-assisted permission preset. The preset can approve, block, or ask about a tool call."
+    },
+    {
+      "id": "bypass-permissions-shortcut",
+      "label": "Bypass permissions shortcut",
+      "description": "A LeapMux shortcut selects the provider's own mode that runs tools without permission prompts."
+    },
+    {
+      "id": "model",
+      "label": "Model",
+      "description": "The user can select a model in LeapMux, and the provider uses that selection in a native model request."
+    },
+    {
+      "id": "reasoning-effort",
+      "label": "Reasoning effort",
+      "description": "The user can select a reasoning level in LeapMux, and the provider applies it to a native model request."
+    },
+    {
+      "id": "mode",
+      "label": "Mode",
+      "description": "The user can select a provider mode in LeapMux, and the provider applies that mode to the session."
+    },
+    {
+      "id": "session-goal-set-and-clear",
+      "label": "Session goal: set and clear",
+      "description": "The Goals sidebar lets the user set a standing objective and clear it through the provider's native goal path."
+    },
+    {
+      "id": "session-goal-pause-and-resume",
+      "label": "Session goal: pause and resume",
+      "description": "The Goals sidebar lets the user pause an active objective and resume it through the provider's native goal path."
+    },
+    {
+      "id": "to-do-sidebar",
+      "label": "To-do sidebar",
+      "description": "A native to-do or plan update appears with item statuses in LeapMux's Goals and To-dos sidebar."
+    },
+    {
+      "id": "background-tasks-sidebar",
+      "label": "Background tasks sidebar",
+      "description": "A provider-reported subagent or background process appears with its status in the Background tasks sidebar."
+    },
+    {
+      "id": "subagent-transcript-tab",
+      "label": "Subagent transcript tab",
+      "description": "A subagent has a separate tab that shows its messages. The messages do not stay only inside the parent's tool card."
+    },
+    {
+      "id": "subagent-live-transcript",
+      "label": "Subagent live transcript",
+      "description": "The subagent tab receives transcript rows, including tool activity, while the child runs and before its final report arrives."
+    },
+    {
+      "id": "send-to-a-subagent",
+      "label": "Send to a subagent",
+      "description": "A message typed in the subagent tab reaches that native child session instead of the parent session."
+    },
+    {
+      "id": "interrupt-a-subagent",
+      "label": "Interrupt a subagent",
+      "description": "The subagent tab's Interrupt control stops the native child task without stopping its parent."
+    },
+    {
+      "id": "steer-mid-turn",
+      "label": "Steer mid-turn",
+      "description": "New user input reaches the agent's current turn before it ends, instead of waiting in the next-turn queue."
+    },
+    {
+      "id": "workflow-grouping",
+      "label": "Workflow grouping",
+      "description": "The Background tasks sidebar shows two or more native workflow work rows under one workflow heading."
+    }
+  ]
+}

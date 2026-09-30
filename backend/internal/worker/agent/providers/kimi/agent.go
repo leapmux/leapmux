@@ -64,6 +64,9 @@ type Agent struct {
 	// turnSteerable is true while the running main turn takes a steer: a
 	// tracked prompt started it (kimiOriginTakesSteer).
 	turnSteerable bool
+	// manualCompactionActive keeps the input queue closed until the native
+	// compaction result arrives. A manual compact emits no turn.ended event.
+	manualCompactionActive bool
 	// settings is the live configuration of the main agent. See settings.go.
 	settings kimiSettings
 	// catalog is the model list GET /models reported, and the configured
@@ -281,11 +284,11 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 // and for a running turn that no tracked prompt started.
 const kimiCodePromptNotPending = 40402
 
-// PublishTurnActive republishes the main turn flag, and whether the running
-// turn takes a steer (kimiOriginTakesSteer).
+// PublishTurnActive reports a main turn or manual compaction to the input queue.
+// Only a running user turn takes a steer (kimiOriginTakesSteer).
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
-	state := agent.TurnState{Active: a.turnActive, Steerable: a.turnActive && a.turnSteerable}
+	state := agent.TurnState{Active: a.turnActive || a.manualCompactionActive, Steerable: a.turnActive && a.turnSteerable && !a.manualCompactionActive}
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
 	return providerkit.PublishTurnStateTo(a.sink, state, seq)

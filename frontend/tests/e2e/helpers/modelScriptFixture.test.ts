@@ -165,6 +165,19 @@ describe('startModelScript', () => {
     await finish(true)
   })
 
+  it('waits for a held model request and releases its answer', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url)
+    await script.queue({ text: 'Child answer.', gate: 'child-answer' })
+
+    const answerPromise = answer(server, script.prompt('Ask the child.'))
+    const status = await script.waitForGate('child-answer')
+    expect(status).toMatchObject({ nextStep: 1, pendingGates: ['child-answer'], complete: false })
+    await script.releaseGate('child-answer')
+    expect(await answerPromise).toBe('Child answer.')
+    await finish(true)
+  })
+
   it('reports the state it reached when the answers never arrive', async () => {
     const server = await startServer()
     const { script, finish } = await startModelScript(server.url)

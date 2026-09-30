@@ -184,6 +184,9 @@ func droidResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 		RPCID      string `json:"rpcId"`
 		RequestID  string `json:"requestId"`
 		ToolCallID string `json:"toolCallId"`
+		ToolUse    struct {
+			Name string `json:"name"`
+		} `json:"toolUse"`
 	}
 	if err := json.Unmarshal(ctx.RequestPayload, &request); err != nil {
 		return agent.ControlResponseResolution{Content: ctx.ResponseContent, Withhold: true}
@@ -215,7 +218,11 @@ func droidResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 	if err != nil {
 		return agent.ControlResponseResolution{Withhold: true}
 	}
-	return agent.ControlResponseResolution{Content: raw}
+	resolution := agent.ControlResponseResolution{Content: raw}
+	if request.Type == "permission_request" {
+		resolution.PlanModeControl = (droidProvider{}).PlanModeControl(request.ToolUse.Name)
+	}
+	return resolution
 }
 
 // droidResponseEnvelope wraps a result in the JSON-RPC response Droid reads on

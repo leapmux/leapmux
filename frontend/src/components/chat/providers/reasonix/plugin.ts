@@ -1,6 +1,7 @@
 import { REASONIX_APPROVAL, REASONIX_CONFIG, REASONIX_MODE } from '~/generated/contracts/reasonix-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from '../acp/registerACPProvider'
+import { reasonixElicitation } from './elicitation'
 import { reasonixToolCallAdapter } from './extractors/toolCall'
 
 registerACPProvider({
@@ -8,6 +9,7 @@ registerACPProvider({
   provider: AgentProvider.REASONIX,
   defaultPermissionMode: REASONIX_MODE.Normal,
   planValue: REASONIX_MODE.Plan,
+  elicitation: reasonixElicitation,
   permissionPresets: {
     bypass: { sets: { [REASONIX_CONFIG.ToolApproval]: REASONIX_APPROVAL.Yolo } },
   },

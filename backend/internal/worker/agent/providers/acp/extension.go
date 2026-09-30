@@ -121,6 +121,10 @@ type Hooks struct {
 	// provider that keeps an update it consumed as a record: Kiro ends a turn
 	// that it started by itself with an update, which becomes the turn-end row.
 	SessionMetadataHandler func(updateType string, metadata map[string]json.RawMessage, update json.RawMessage) bool
+	// SessionNotificationMetadata reads the `_meta` on the outer session/update
+	// notification. It stays separate from the update's own `_meta`, which can
+	// identify a child transcript or another provider update.
+	SessionNotificationMetadata func(metadata map[string]json.RawMessage)
 	// SubagentFromToolCall and SubagentFromToolCallUpdate translate a tool_call
 	// and a tool_call_update into a neutral SubagentObservation. The
 	// observation drives the background-task registry and the child transcripts.
@@ -195,6 +199,10 @@ type Hooks struct {
 	// ClearProviderState drops the provider state that the tool-call ids of the
 	// outgoing session key. ClearContext calls it.
 	ClearProviderState func()
+	// BeforeWaitCleanup lets a provider finish writes that process exit started.
+	// Wait calls it after Process.Wait and before it ends the turn and child
+	// conversations. A provider must not send another request to the exited process.
+	BeforeWaitCleanup func()
 	// ChildUpdateRoute reads the registry row key of the subagent that one
 	// update of the main session belongs to, from the update type and its
 	// `_meta`. It returns "" for an update of the main session. Qwen Code tags

@@ -10,7 +10,7 @@ const MODE_SMART_APPROVE = 'smart_approve'
 describe('goose provider', () => {
   const plugin = providerFor(AgentProvider.GOOSE)!
 
-  describeACPProviderBasics(AgentProvider.GOOSE, { text: true, image: true, pdf: true, binary: true })
+  describeACPProviderBasics(AgentProvider.GOOSE, { text: true, image: true, pdf: false, binary: false })
 
   it('maps smart and bypass permissions to Goose modes', () => {
     expect(plugin?.controls?.permissionPresets).toEqual({

@@ -1,7 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { delimiter, join, resolve } from 'node:path'
+import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { CLINE_PROVIDER_ID, CODEBUDDY_MODEL_ID, createMockAgentEnvironment, JUNIE_MOCK_MODEL, KIMI_MOCK_MODELS, KIRO_E2E_API_KEY, LETTA_MODEL_ID, MOCK_MODEL_IDS, MOCK_MODELS, MOCK_PROVIDER_IDS, OH_MY_PI_PROFILE, QODER_MODEL_ID, QWEN_MODEL_ID, refreshQoderSdkAuthPayload } from './mockAgentEnvironment'
+import { findBinary } from './binaryOnPath'
+import { CLINE_PROVIDER_ID, CODEBUDDY_ALT_MODEL_ID, CODEBUDDY_ALT_MODEL_WIRE_ID, CODEBUDDY_MODEL_ID, CODEWHALE_VISION_MODEL_ID, createMockAgentEnvironment, DROID_MOCK_MODEL_IDS, GROK_ALT_MODEL_ID, JUNIE_MOCK_MODEL, JUNIE_NATIVE_EFFORT_MODEL, JUNIE_PROXY_PROVIDER, JUNIE_RESPONSES_MODEL, KIMI_MOCK_MODELS, KIRO_E2E_API_KEY, LETTA_MODEL_ID, LETTA_REASONING_MODEL_ID, LETTA_VISION_MODEL_ID, MOCK_MODEL_IDS, MOCK_MODELS, MOCK_PROVIDER_IDS, OH_MY_PI_ALT_MODEL_ID, OH_MY_PI_ALT_MODEL_WIRE_ID, OH_MY_PI_PROFILE, QODER_ALTERNATE_MODEL_ID, QODER_MODEL_ID, QWEN_ALT_MODEL_ID, QWEN_ALT_MODEL_WIRE_ID, QWEN_MODEL_ID, REASONIX_ALT_MODEL_ID, REASONIX_ALT_PROVIDER_ID } from './mockAgentEnvironment'
 
 let directory: string
 
@@ -14,6 +18,31 @@ beforeEach(() => {
 afterEach(() => rmSync(directory, { recursive: true, force: true }))
 
 describe('createMockAgentEnvironment', () => {
+  it.runIf(process.platform !== 'win32')('keeps mise install directories after inserting credential-store shims', async () => {
+    const installDir = join(directory, 'mise-install')
+    const miseDir = join(directory, 'mise-bin')
+    const shimDir = join(directory, 'mise-shims')
+    mkdirSync(installDir)
+    mkdirSync(miseDir)
+    mkdirSync(shimDir)
+    const mise = join(miseDir, 'mise')
+    writeFileSync(mise, `#!/bin/sh\nif [ "$1" = bin-paths ]; then\n  printf '%s\\n' '${installDir}'\nfi\n`, { mode: 0o755 })
+    symlinkSync(mise, join(shimDir, 'sample-agent'))
+
+    const before = process.env.PATH
+    process.env.PATH = shimDir
+    try {
+      const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+      expect(env.PATH?.split(delimiter)).toEqual([join(directory, 'cli-shims'), installDir, shimDir])
+    }
+    finally {
+      if (before === undefined)
+        delete process.env.PATH
+      else
+        process.env.PATH = before
+    }
+  })
+
   it.each([
     'https://127.0.0.1:43210',
     'http://example.com:43210',
@@ -47,6 +76,7 @@ describe('createMockAgentEnvironment', () => {
     expect(JSON.parse(readFileSync(join(piAgentDir, 'settings.json'), 'utf8'))).toEqual({
       defaultProvider: 'zai',
       defaultModel: MOCK_MODELS.pi,
+      compaction: { keepRecentTokens: 32 },
       packages: [],
     })
   })
@@ -63,6 +93,27 @@ describe('createMockAgentEnvironment', () => {
       GITHUB_COPILOT_API_TOKEN: 'leapmux-e2e-model-key',
     })
     expect(env.PI_CODING_AGENT_DIR).toBe(piAgentDir)
+    expect(MOCK_MODELS.goose).toBe('gpt-4o')
+    expect(MOCK_MODELS.gooseReasoning).toBe('gpt-5.4')
+    expect(env.GOOSE_MODEL).toBe(MOCK_MODELS.goose)
+    expect(MOCK_MODEL_IDS).toContain(MOCK_MODELS.gooseReasoning)
+    expect(env.GOOSE_PATH_ROOT).toBe(join(homeDir, '.goose'))
+    const gooseConfig = readFileSync(join(env.GOOSE_PATH_ROOT!, 'config', 'config.yaml'), 'utf8')
+    expect(gooseConfig).toContain('todo:\n    enabled: true\n    type: platform\n    name: todo')
+    const gooseFormServer = join(env.GOOSE_PATH_ROOT!, 'form-server.mjs')
+    expect(gooseConfig).toContain('form_probe:\n    enabled: true\n    type: stdio\n    name: form_probe')
+    expect(gooseConfig).toContain(`cmd: ${JSON.stringify(process.execPath)}`)
+    expect(gooseConfig).toContain(`- ${JSON.stringify(gooseFormServer)}`)
+    expect(readFileSync(gooseFormServer, 'utf8')).toContain('elicitation/create')
+  })
+
+  it('routes Fast Agent reasoning models through an isolated ZAI endpoint', async () => {
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    const config = readFileSync(join(env.FAST_AGENT_HOME!, 'fast-agent.yaml'), 'utf8')
+
+    expect(MOCK_MODELS.zai).toBe('glm-5.3-flash')
+    expect(config).toContain('default_model: "gpt-4o"')
+    expect(config).toContain('zai:\n  api_key: "leapmux-e2e-model-key"\n  base_url: "http://127.0.0.1:43210/v1"')
   })
 
   // Cursor's configuration used to live in the REAL home directory, because it
@@ -89,6 +140,9 @@ describe('createMockAgentEnvironment', () => {
     expect(codex).toContain('model_provider = "leapmux-e2e"')
     expect(codex).toContain('base_url = "http://127.0.0.1:43210/v1"')
     expect(codex).toContain('wire_api = "responses"')
+    expect(codex).toContain('[mcp_servers.form_probe]')
+    expect(codex).toContain(`args = [${JSON.stringify(join(env.CODEX_HOME!, 'form-server.mjs'))}]`)
+    expect(readFileSync(join(env.CODEX_HOME!, 'form-server.mjs'), 'utf8')).toContain('elicitation/create')
 
     const pi = JSON.parse(readFileSync(join(env.PI_CODING_AGENT_DIR!, 'models.json'), 'utf8'))
     expect(pi.providers.zai).toMatchObject({
@@ -97,6 +151,9 @@ describe('createMockAgentEnvironment', () => {
       apiKey: 'leapmux-e2e-model-key',
     })
     expect(pi.providers.zai.models[0].id).toBe('glm-5.3')
+    expect(pi.providers.zai.models[0].input).toEqual(['text', 'image'])
+    expect(pi.providers.zai.models[1].id).toBe(MOCK_MODELS.zai)
+    expect(pi.providers.zai.models[1].compat.supportsReasoningEffort).toBe(true)
     expect(JSON.parse(readFileSync(join(env.PI_CODING_AGENT_DIR!, 'settings.json'), 'utf8')).packages).toContain(
       join(realHomeDir, '.pi', 'agent', 'npm', 'node_modules', 'pi-goal-x'),
     )
@@ -104,6 +161,10 @@ describe('createMockAgentEnvironment', () => {
     const reasonix = readFileSync(join(env.REASONIX_HOME!, 'config.toml'), 'utf8')
     expect(reasonix).toContain('base_url = "http://127.0.0.1:43210/v1"')
     expect(reasonix).toContain('api_key_env = "LEAPMUX_E2E_MODEL_API_KEY"')
+    expect(reasonix).toContain(`vision_models = ["${MOCK_MODELS.deepseek}"]`)
+    expect(reasonix).toContain(`default_model = "deepseek/${MOCK_MODELS.deepseek}"`)
+    expect(reasonix).toContain(`name = "${REASONIX_ALT_PROVIDER_ID}"\nkind = "openai"\nbase_url = "http://127.0.0.1:43210/v1"\nmodel = "${MOCK_MODELS.pi}"`)
+    expect(REASONIX_ALT_MODEL_ID).toBe(`${REASONIX_ALT_PROVIDER_ID}/${MOCK_MODELS.pi}`)
 
     const zcodePath = join(homeDir, '.zcode', 'v2', 'config.json')
     const zcodePersonalPath = join(homeDir, '.zcode', 'v2', 'provider_config.json')
@@ -113,6 +174,7 @@ describe('createMockAgentEnvironment', () => {
       apiKey: 'leapmux-e2e-model-key',
       baseURL: 'http://127.0.0.1:43210/v1',
     })
+    expect(Object.keys(zcode.provider[MOCK_PROVIDER_IDS.zcode].models)).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi])
     const zcodePersonal = JSON.parse(readFileSync(zcodePersonalPath, 'utf8'))
     expect(zcodePersonal).toMatchObject({
       schemaVersion: 1,
@@ -120,6 +182,10 @@ describe('createMockAgentEnvironment', () => {
         defaultModelSelection: { providerId: MOCK_PROVIDER_IDS.zcode, modelId: MOCK_MODELS.zai },
       },
     })
+    const personalProvider = zcodePersonal.config.providerConfigRules.providerRules[0]
+    expect(personalProvider.config.personalModelIds).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi])
+    expect(personalProvider.config.modelOrder).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi])
+    expect(zcodePersonal.config.modelConfigRules.providerModelRules.map((rule: { modelId: string }) => rule.modelId)).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi])
   })
 
   it('writes a Codewhale configuration that reaches the mock and nothing else', async () => {
@@ -135,6 +201,7 @@ describe('createMockAgentEnvironment', () => {
     expect(codewhale).toContain('provider = "deepseek"')
     expect(codewhale).toContain(`default_text_model = "${MOCK_MODELS.deepseek}"`)
     expect(codewhale).toContain('[providers.deepseek]\nbase_url = "http://127.0.0.1:43210/v1"\napi_key = "leapmux-e2e-model-key"')
+    expect(codewhale).toContain('model = "deepseek-v4-flash-vision-exp"')
     expect(codewhale).toContain('telemetry = false')
     // Each of these stops a model request that no test scripts, or a wait that
     // would deny an approval on its own.
@@ -143,6 +210,34 @@ describe('createMockAgentEnvironment', () => {
     expect(codewhale).toContain('[update]\ncheck_for_updates = false')
     expect(codewhale).toContain('[snapshots]\nenabled = false')
     expect(codewhale).toContain('[tools]\nuser_input_timeout_seconds = 0')
+    const echoServer = join(directory, 'mcp-echo.mjs')
+    expect(JSON.parse(readFileSync(join(env.CODEWHALE_HOME!, 'mcp.json'), 'utf8'))).toEqual({
+      servers: { echo_probe: { command: process.execPath, args: [echoServer] } },
+    })
+    expect(readFileSync(echoServer, 'utf8')).toContain('MCP_ECHO:')
+  })
+
+  it('pins Codewhale image capability to the exact mock endpoint', async () => {
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    const catalog = JSON.parse(readFileSync(join(env.CODEWHALE_HOME!, 'catalog', 'provider-catalogs.json'), 'utf8'))
+    const fingerprint = createHash('sha256').update('http://127.0.0.1:43210/v1').digest('hex')
+    const entry = catalog.cache.entries[`deepseek:deepseek\x1F${fingerprint}`]
+
+    expect(catalog.schema_version).toBe(2)
+    expect(entry).toMatchObject({
+      provider: 'deepseek:deepseek',
+      base_url_fingerprint: fingerprint,
+      status: { state: 'fresh' },
+    })
+    expect(entry.offerings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        provider: 'deepseek',
+        wire_model_id: CODEWHALE_VISION_MODEL_ID,
+        endpoint_key: 'chat',
+        modalities: { input: ['text', 'image'], output: ['text'] },
+        source: { kind: 'live', base_url_fingerprint: fingerprint, fetched_at: entry.fetched_at },
+      }),
+    ]))
   })
 
   it('writes a Kimi Code configuration that reaches only the mock', async () => {
@@ -167,6 +262,9 @@ describe('createMockAgentEnvironment', () => {
     expect(kimi).toContain(`[models."${KIMI_MOCK_MODELS.thinking}"]`)
     expect(kimi).toContain('support_efforts = ["low", "medium", "high"]')
     expect(kimi).toContain(`[models."${KIMI_MOCK_MODELS.plain}"]`)
+    expect(JSON.parse(readFileSync(join(env.KIMI_CODE_HOME!, 'mcp.json'), 'utf8'))).toEqual({
+      mcpServers: { echo_probe: { command: process.execPath, args: [join(directory, 'mcp-echo.mjs')] } },
+    })
   })
 
   it('maps each Kimi Code alias onto a model the catalog route already lists', async () => {
@@ -199,6 +297,11 @@ describe('createMockAgentEnvironment', () => {
       apiKey: 'LEAPMUX_E2E_MODEL_API_KEY',
     })
     expect(models.providers[MOCK_PROVIDER_IDS.ohMyPi].models[0].id).toBe(MOCK_MODELS.ohMyPi)
+    expect(models.providers[MOCK_PROVIDER_IDS.ohMyPi].models[1].id).toBe(OH_MY_PI_ALT_MODEL_WIRE_ID)
+    expect(OH_MY_PI_ALT_MODEL_ID).toBe(`${MOCK_PROVIDER_IDS.ohMyPi}/${OH_MY_PI_ALT_MODEL_WIRE_ID}`)
+    expect(JSON.parse(readFileSync(join(ohMyPiAgentDir, 'mcp.json'), 'utf8'))).toEqual({
+      mcpServers: { echo_probe: { type: 'stdio', command: process.execPath, args: [join(directory, 'mcp-echo.mjs')] } },
+    })
   })
 
   it('stops every Oh My Pi request that no test scripts', async () => {
@@ -213,6 +316,7 @@ describe('createMockAgentEnvironment', () => {
       todo: { reminders: false },
       retry: { enabled: false },
       async: { enabled: false },
+      compaction: { asyncEnabled: false, keepRecentTokens: 128 },
       edit: { mode: 'replace' },
     })
   })
@@ -234,11 +338,15 @@ describe('createMockAgentEnvironment', () => {
       baseURL: 'http://127.0.0.1:43210/v1',
     })
     expect(openCode.provider[MOCK_PROVIDER_IDS.openCode].models[MOCK_MODELS.zai]).toBeDefined()
+    expect(openCode.provider[MOCK_PROVIDER_IDS.openCode].models[MOCK_MODELS.pi]).toBeDefined()
+    expect(openCode.provider[MOCK_PROVIDER_IDS.openCode].models[MOCK_MODELS.zai].variants.low).toEqual({ reasoningEffort: 'low' })
     expect(openCode.model).toBe(`${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`)
+    expect(openCode.compaction).toEqual({ tail_turns: 2 })
+    expect(openCode.mcp.echo_probe).toEqual({ type: 'local', command: [process.execPath, join(directory, 'mcp-echo.mjs')] })
   })
 
-  // MiMo takes the OpenCode family's provider block under its own variable names,
-  // and each switch below stops a request that no test scripts.
+  // MiMo takes the OpenCode family's provider block under its own variable names.
+  // Each switch below stops a request that no test scripts.
   it('points MiMo Code at the same inline provider and closes its other requests', async () => {
     const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
     const mimo = JSON.parse(env.MIMOCODE_CONFIG_CONTENT!)
@@ -246,15 +354,18 @@ describe('createMockAgentEnvironment', () => {
     const openCode = JSON.parse(env.OPENCODE_CONFIG_CONTENT!).provider[MOCK_PROVIDER_IDS.openCode]
     const provider = mimo.provider[MOCK_PROVIDER_IDS.openCode]
     expect(provider.options).toEqual(openCode.options)
-    // The second model and the reasoning options of each variant are MiMo's alone,
-    // for the settings spec that reads both off the next request.
+    // Both configurations send the selected effort to the mock model.
     expect(Object.keys(provider.models)).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi])
-    expect(Object.keys(openCode.models)).toEqual([MOCK_MODELS.zai])
+    expect(Object.keys(openCode.models)).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi])
     expect(provider.models[MOCK_MODELS.pi].variants.low).toEqual({ reasoningEffort: 'low' })
-    expect(openCode.models[MOCK_MODELS.zai].variants.low).toEqual({})
+    expect(openCode.models[MOCK_MODELS.zai].variants.low).toEqual({ reasoningEffort: 'low' })
     expect(Object.keys(provider.models[MOCK_MODELS.zai].variants)).toEqual(Object.keys(openCode.models[MOCK_MODELS.zai].variants))
     expect(mimo.model).toBe(`${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`)
     expect(mimo.enabled_providers).toEqual([MOCK_PROVIDER_IDS.openCode])
+    const confirmationServer = join(env.MIMOCODE_HOME!, 'mcp-confirmation.mjs')
+    expect(mimo.mcp.form_probe).toEqual({ type: 'local', command: [process.execPath, confirmationServer] })
+    expect(mimo.mcp.echo_probe).toEqual({ type: 'local', command: [process.execPath, join(directory, 'mcp-echo.mjs')] })
+    expect(readFileSync(confirmationServer, 'utf8')).toContain('elicitation/create')
     expect(mimo.agent.title).toEqual({ disable: true })
     for (const retry of Object.values(mimo.retry))
       expect(retry).toEqual({ mode: 'bounded', maxRetries: 0 })
@@ -290,6 +401,7 @@ describe('createMockAgentEnvironment', () => {
     expect(codex).toContain('[memories]')
     expect(codex).toContain('generate_memories = false')
     expect(codex).toContain('use_memories = false')
+    expect(codex).toContain('[tools.update_plan]\nenabled = true')
   })
 
   // Grok answers from its own `config.toml`, and every model request it makes
@@ -306,6 +418,7 @@ describe('createMockAgentEnvironment', () => {
     expect(grok).toContain('base_url = "http://127.0.0.1:43210/v1"')
     expect(grok).toContain('api_backend = "chat_completions"')
     expect(grok).toContain('[model."grok-4.6"]\nhidden = true')
+    expect(grok).toContain(`[model."${GROK_ALT_MODEL_ID}"]\nmodel = "${GROK_ALT_MODEL_ID}"`)
     expect(env).toMatchObject({
       GROK_DISABLE_AUTOUPDATER: '1',
       GROK_TELEMETRY_ENABLED: 'false',
@@ -422,6 +535,7 @@ describe('createMockAgentEnvironment', () => {
     expect(env).not.toHaveProperty('CLINE_MODEL')
 
     const providers = JSON.parse(readFileSync(join(dataDir, 'settings', 'providers.json'), 'utf8'))
+    expect(CLINE_PROVIDER_ID).toBe('deepseek')
     expect(providers).toEqual({
       version: 1,
       lastUsedProvider: CLINE_PROVIDER_ID,
@@ -437,6 +551,9 @@ describe('createMockAgentEnvironment', () => {
     })
     expect(MOCK_MODEL_IDS).toContain(MOCK_MODELS.cline)
     expect(JSON.parse(readFileSync(join(dataDir, 'settings', 'global-settings.json'), 'utf8'))).toEqual({ telemetryOptOut: true, autoUpdateEnabled: false })
+    expect(JSON.parse(readFileSync(join(dataDir, 'settings', 'cline_mcp_settings.json'), 'utf8'))).toEqual({
+      mcpServers: { echo_probe: { transport: { type: 'stdio', command: process.execPath, args: [join(directory, 'mcp-echo.mjs')] } } },
+    })
     const flags = JSON.parse(readFileSync(join(dataDir, 'cache', 'feature-flags.json'), 'utf8'))
     expect(flags).toMatchObject({ version: 2, userId: null, flagsPayload: { featureFlags: {}, featureFlagPayloads: {} } })
     expect(flags.updatedAt).toBeGreaterThan(0)
@@ -488,6 +605,15 @@ describe('createMockAgentEnvironment', () => {
     })
     expect(env.JUNIE_HOME!.startsWith(realHomeDir)).toBe(false)
     const config = JSON.parse(readFileSync(env.JUNIE_CONFIG_LOCATION!, 'utf8'))
+    const agentLocations = config['agent-locations']
+    expect(agentLocations).toEqual([join(directory, 'junie-agents')])
+    if (!Array.isArray(agentLocations) || typeof agentLocations[0] !== 'string')
+      return
+    const childProfile = readFileSync(join(agentLocations[0], 'leapmux-e2e-child.md'), 'utf8')
+    expect(childProfile).toContain('name: leapmux-e2e-child')
+    expect(childProfile).toContain('model: custom:mock-model')
+    expect(childProfile).toContain('You are the LeapMux test subagent.')
+    expect(agentLocations[0].startsWith(realHomeDir)).toBe(false)
     expect(config['model-locations']).toHaveLength(1)
     const profile = JSON.parse(readFileSync(join(config['model-locations'][0], 'mock-model.json'), 'utf8'))
     // The file name is the profile identifier (`custom:mock-model`); `id` is
@@ -499,6 +625,43 @@ describe('createMockAgentEnvironment', () => {
       apiKey: 'leapmux-e2e-model-key',
     })
     expect(JUNIE_MOCK_MODEL).toBe('custom:mock-model')
+    const responses = JSON.parse(readFileSync(join(config['model-locations'][0], 'mock-responses.json'), 'utf8'))
+    expect(responses).toMatchObject({
+      id: MOCK_MODELS.junie,
+      baseUrl: 'http://127.0.0.1:43210/v1/responses',
+      apiType: 'OpenAIResponses',
+      apiKey: 'leapmux-e2e-model-key',
+    })
+    expect(JUNIE_RESPONSES_MODEL).toBe('custom:mock-responses')
+    expect(existsSync(join(config['model-locations'][0], 'mock-effort.json'))).toBe(false)
+    expect(config.provider).toBe(JUNIE_PROXY_PROVIDER)
+    expect(config.proxies).toEqual([{
+      'name': JUNIE_PROXY_PROVIDER,
+      'kind': 'OpenAI',
+      'api-url': 'http://127.0.0.1:43210',
+      'headers': ['Authorization: Bearer leapmux-e2e-model-key'],
+    }])
+    expect(JUNIE_NATIVE_EFFORT_MODEL).toBe('gpt-5.3-codex')
+  })
+
+  it.runIf(process.platform === 'darwin' && existsSync('/bin/zsh'))('keeps the credential stub ahead of the keychain after shell startup', async () => {
+    const hostileStartup = join(directory, 'hostile-zdotdir')
+    mkdirSync(hostileStartup)
+    writeFileSync(join(hostileStartup, '.zshenv'), 'export PATH=/usr/bin:/bin\n')
+    const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    const shimDir = env.PATH?.split(delimiter)[0]
+    expect(shimDir).toBeTruthy()
+    for (const flags of ['-lic', '-ic']) {
+      const resolved = execFileSync('/bin/zsh', [flags, 'command -v security || true; command -v junie || true'], {
+        cwd: directory,
+        env: { ...process.env, ZDOTDIR: hostileStartup, ...env },
+        encoding: 'utf8',
+      }).trim().split('\n')
+      expect(resolved[0]).toBe(join(shimDir!, 'security'))
+      if (findBinary('junie') !== null)
+        expect(resolved[1]).toBe(join(shimDir!, 'junie'))
+    }
+    expect(env.ZDOTDIR).toBe(homeDir)
   })
 
   it('points CodeBuddy at the mock catalog under one config dir, with a qualified model', async () => {
@@ -509,12 +672,22 @@ describe('createMockAgentEnvironment', () => {
     // `.codebuddy/.codebuddy` leaves the agent with no catalog at all.
     expect(env.CODEBUDDY_CONFIG_DIR).toBe(configDir)
     const models = JSON.parse(readFileSync(join(configDir, 'models.json'), 'utf8'))
-    expect(models.models[0]).toMatchObject({ id: MOCK_MODELS.deepseek, url: 'http://127.0.0.1:43210/v1/chat/completions' })
+    expect(models.models[0]).toMatchObject({
+      id: MOCK_MODELS.deepseek,
+      url: 'http://127.0.0.1:43210/v1/chat/completions',
+      supportsImages: true,
+    })
+    expect(models.models[1]).toMatchObject({ id: CODEBUDDY_ALT_MODEL_WIRE_ID, url: 'http://127.0.0.1:43210/v1/chat/completions' })
+    expect(models.availableModels).toContain(CODEBUDDY_ALT_MODEL_WIRE_ID)
     const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'))
     expect(settings.model).toBe(CODEBUDDY_MODEL_ID)
     expect(CODEBUDDY_MODEL_ID).toBe(`custom-local:${MOCK_MODELS.deepseek}`)
+    expect(CODEBUDDY_ALT_MODEL_ID).toBe(`custom-local:${CODEBUDDY_ALT_MODEL_WIRE_ID}`)
     expect(QODER_MODEL_ID).toBe(`mockprov/${MOCK_MODELS.deepseek}`)
+    expect(QODER_ALTERNATE_MODEL_ID).toBe(`mockprov/${MOCK_MODELS.qoder}`)
     expect(LETTA_MODEL_ID).toBe(`openai-compatible/${MOCK_MODELS.letta}`)
+    expect(LETTA_VISION_MODEL_ID).toBe('openai/gpt-4o')
+    expect(LETTA_REASONING_MODEL_ID).toBe('openai/gpt-5.4')
   })
 
   it('opens the Qoder headless gate with a mocked account and pre-seeded endpoints', async () => {
@@ -558,13 +731,29 @@ describe('createMockAgentEnvironment', () => {
     // and the model call escapes to the real API.
     const settings = JSON.parse(readFileSync(join(qoderHome, 'settings.json'), 'utf8'))
     expect(Object.keys(settings.providers)).toEqual(['mockprov'])
+    expect(settings.providers.mockprov.models).toEqual([
+      { model: MOCK_MODELS.deepseek, displayName: 'Mock Model', capabilities: { vision: true } },
+      { model: MOCK_MODELS.qoder, displayName: 'Alternate Mock Model', capabilities: { vision: true } },
+    ])
+    expect(settings.mcpServers.form_probe).toEqual({
+      command: process.execPath,
+      args: [join(qoderHome, 'form-server.mjs')],
+    })
+    expect(existsSync(settings.mcpServers.form_probe.args[0])).toBe(true)
     expect(settings.modelConfigs).toBeUndefined()
 
-    // The CLI deletes the one-shot credential after reading it, so a second
-    // agent from this environment must be able to re-materialize it.
-    unlinkSync(env.QODER_SDK_AUTH_PAYLOAD_FILE!)
-    refreshQoderSdkAuthPayload(env)
-    expect(JSON.parse(readFileSync(env.QODER_SDK_AUTH_PAYLOAD_FILE!, 'utf8'))).toMatchObject({ type: 'accessToken' })
+    // The CLI consumes the file once. The launch shim must restore it for a
+    // Worker restart that the browser fixture cannot call ahead of time.
+    const launcher = join(directory, 'cli-shims', 'qodercli')
+    if (process.platform !== 'win32' && findBinary('qodercli')) {
+      expect(existsSync(launcher)).toBe(true)
+      unlinkSync(env.QODER_SDK_AUTH_PAYLOAD_FILE!)
+      execFileSync(launcher, ['--version'], { env: { ...process.env, ...env }, timeout: 10_000 })
+      expect(JSON.parse(readFileSync(env.QODER_SDK_AUTH_PAYLOAD_FILE!, 'utf8'))).toMatchObject({ type: 'accessToken' })
+    }
+    else {
+      expect(existsSync(launcher)).toBe(false)
+    }
   })
 
   it('keeps Factory Droid under one override home and points its BYOK model at the mock', async () => {
@@ -583,7 +772,7 @@ describe('createMockAgentEnvironment', () => {
       FACTORY_API_BASE_URL: `${origin}/v1`,
       FACTORY_DROID_AUTO_UPDATE_ENABLED: '0',
       FACTORY_OTEL_ENABLED: '0',
-      FACTORY_AIRGAP_ENABLED: '1',
+      FACTORY_AIRGAP_ENABLED: '0',
       FACTORY_DISABLE_DYNAMIC_CONFIG: '1',
       FACTORY_DISABLE_KEYRING: '1',
     })
@@ -591,16 +780,36 @@ describe('createMockAgentEnvironment', () => {
     expect(env.FACTORY_TELEMETRY_INGEST_BASE_URL).toBe('http://127.0.0.1:9')
 
     const settings = JSON.parse(readFileSync(join(homeDir, '.factory', 'settings.json'), 'utf8'))
-    expect(settings.customModels).toHaveLength(1)
+    expect(settings.customModels).toHaveLength(2)
     expect(settings.customModels[0]).toMatchObject({
-      id: 'custom:Droid-0',
+      id: DROID_MOCK_MODEL_IDS.primary,
+      model: MOCK_MODELS.droid,
       baseUrl: `${origin}/v1`,
       apiKey: 'leapmux-e2e-model-key',
       provider: 'generic-chat-completion-api',
+      noImageSupport: false,
+      reasoningEffort: 'high',
+    })
+    expect(settings.customModels[1]).toMatchObject({
+      id: DROID_MOCK_MODEL_IDS.alternate,
+      model: MOCK_MODELS.droidAlt,
+      index: 1,
+      baseUrl: `${origin}/v1`,
+      apiKey: 'leapmux-e2e-model-key',
     })
     expect(settings.sessionDefaultSettings).toMatchObject({
-      model: 'custom:Droid-0',
+      model: DROID_MOCK_MODEL_IDS.primary,
       autonomyMode: 'normal',
+    })
+  })
+
+  it('routes Letta Code\'s built-in vision model to the isolated mock', async () => {
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    const auth = JSON.parse(readFileSync(join(env.LETTA_LOCAL_BACKEND_DIR!, 'providers', 'auth.json'), 'utf8'))
+    expect(auth.providers.openai).toMatchObject({
+      provider_type: 'openai',
+      auth: { type: 'api', key: 'leapmux-e2e-model-key' },
+      base_url: 'http://127.0.0.1:43210/v1',
     })
   })
 
@@ -609,8 +818,17 @@ describe('createMockAgentEnvironment', () => {
 
     expect(env.QWEN_HOME).toBe(join(homeDir, '.qwen'))
     const qwen = JSON.parse(readFileSync(join(env.QWEN_HOME!, 'settings.json'), 'utf8'))
-    expect(qwen.modelProviders.openai[0]).toMatchObject({ id: MOCK_MODELS.qwen, baseUrl: 'http://127.0.0.1:43210/v1', envKey: 'LEAPMUX_E2E_MODEL_API_KEY' })
+    expect(qwen.modelProviders.openai[0]).toMatchObject({
+      id: MOCK_MODELS.qwen,
+      baseUrl: 'http://127.0.0.1:43210/v1',
+      envKey: 'LEAPMUX_E2E_MODEL_API_KEY',
+      capabilities: { vision: true },
+      generationConfig: { modalities: { image: true, pdf: true } },
+    })
+    expect(qwen.modelProviders.openai[1]).toMatchObject({ id: QWEN_ALT_MODEL_WIRE_ID, generationConfig: { modalities: { image: true, pdf: true } } })
+    expect(QWEN_ALT_MODEL_ID).toBe(`${QWEN_ALT_MODEL_WIRE_ID}(openai)`)
     expect(qwen.model.name).toBe(MOCK_MODELS.qwen)
+    expect(qwen.mcpServers.echo_probe).toEqual({ command: process.execPath, args: [join(directory, 'mcp-echo.mjs')] })
     expect(qwen.tools.approvalMode).toBe('default')
     expect(qwen.memory).toEqual({ enableManagedAutoMemory: false, enableManagedAutoDream: false })
     expect(qwen.ui.enableFollowupSuggestions).toBe(false)

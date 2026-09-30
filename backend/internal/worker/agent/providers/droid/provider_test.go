@@ -36,6 +36,26 @@ func TestRegistrationStatesTheSettings(t *testing.T) {
 	assert.Equal(t, "LEAPMUX_DROID_DEFAULT_EFFORT", reg.EnvEffortKey)
 }
 
+func TestRegistrationOffersSpecAsPlanMode(t *testing.T) {
+	t.Parallel()
+	reg := Registration()
+	var modes *leapmuxv1.AvailableOptionGroup
+	for _, group := range reg.OptionGroups {
+		if group.GetId() == agent.OptionIDPermissionMode {
+			modes = group
+			break
+		}
+	}
+	require.NotNil(t, modes)
+	var found bool
+	for _, option := range modes.GetOptions() {
+		if option.GetId() == "spec" {
+			found = true
+		}
+	}
+	assert.True(t, found, "the native Spec mode must be selectable")
+}
+
 func TestResumeHandleKeepsTheTokenRule(t *testing.T) {
 	t.Parallel()
 	agenttest.AssertTokenResumeRule(t, droidProvider{})
@@ -143,7 +163,7 @@ func TestListStoredSessionsReadsTheStore(t *testing.T) {
 	got, err := droidProvider{}.ListStoredSessions(t.Context(), agent.StoredSessionQuery{
 		WorkingDir: work,
 		HomeDir:    home,
-		Getenv:     agenttest.FixtureEnv(map[string]string{"FACTORY_HOME_OVERRIDE": filepath.Join(home, ".factory")}),
+		Getenv:     agenttest.FixtureEnv(map[string]string{"FACTORY_HOME_OVERRIDE": home}),
 	})
 	require.NoError(t, err)
 	require.Len(t, got, 1)
@@ -191,7 +211,7 @@ func TestWorkingStateMovesTheTurnFlag(t *testing.T) {
 func newTestAgent(t *testing.T) *testAgent {
 	t.Helper()
 	sink := &agenttest.Sink{}
-	a := &Agent{sink: agent.NewProviderServices(sink)}
+	a := &Agent{sink: agent.NewProviderServices(sink), sessionID: "s-1"}
 	return &testAgent{agent: a, sink: sink}
 }
 

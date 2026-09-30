@@ -20,6 +20,30 @@ func TestNewStartupCoreRejectsNilClock(t *testing.T) {
 	assert.Panics(t, func() { newStartupCore(nil) })
 }
 
+func TestStartupCoreCloseAdmissionCountsOverlappingCloses(t *testing.T) {
+	t.Parallel()
+	core := newTestStartupCore(t)
+	first := core.holdCloseAdmission("tab-1")
+	second := core.holdCloseAdmission("tab-1")
+	defer first()
+	defer second()
+	entry, closing := core.beginWithCloseState("tab-1", func() {})
+	assert.Nil(t, entry)
+	assert.True(t, closing)
+
+	first()
+	entry, closing = core.beginWithCloseState("tab-1", func() {})
+	assert.Nil(t, entry, "the second close still prevents a new start")
+	assert.True(t, closing)
+
+	second()
+	entry, closing = core.beginWithCloseState("tab-1", func() {})
+	require.NotNil(t, entry, "a failed close that leaves a tab open permits a later start")
+	assert.False(t, closing)
+	core.succeed("tab-1", entry)
+	core.finishEntry(entry)
+}
+
 // beginForTest records an entry and returns a cleanup that pairs with
 // finish() to keep WaitForInFlight happy. Tests use this to exercise
 // the startupCore primitives without the full startup-goroutine

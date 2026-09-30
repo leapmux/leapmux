@@ -4,7 +4,7 @@ import type {
   MockModelStep,
 } from './mockModelScript'
 import { randomUUID } from 'node:crypto'
-import { AMBIENT_SCENARIO_ID, SCENARIO_MARKER, validateScenarioID } from './mockModelScript'
+import { AMBIENT_SCENARIO_ID, SCENARIO_MARKER, validateGateName, validateScenarioID } from './mockModelScript'
 
 /**
  * The test client for the mock model server.
@@ -223,6 +223,17 @@ export async function readScenarioStatus(serverURL: string, id: string): Promise
   if (!response.ok)
     throw new Error(`Could not read model scenario ${id}: ${response.status} ${await response.text()}`)
   return await response.json() as MockModelScenarioStatus
+}
+
+/** Release a scripted model answer that waits at gate. */
+export async function releaseMockModelGate(serverURL: string, id: string, gate: string): Promise<void> {
+  validateScenarioID(id)
+  validateGateName(gate)
+  const endpoint = scenarioEndpoint(serverURL, id)
+  endpoint.pathname += `/gates/${encodeURIComponent(gate)}/release`
+  const response = await fetch(endpoint, { method: 'POST' })
+  if (response.status !== 204)
+    throw new Error(`Could not release model gate ${gate}: ${response.status} ${await response.text()}`)
 }
 
 /**

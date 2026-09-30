@@ -11,6 +11,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
+	"github.com/leapmux/leapmux/util/pathutil"
 )
 
 // Factory Droid keeps every session under its home, in a directory keyed by the
@@ -33,7 +34,13 @@ const droidSessionStartType = "session_start"
 
 // droidDataRoot resolves Factory's home directory.
 func droidDataRoot(q agent.StoredSessionQuery) string {
-	return sessionstore.HomeDirFromEnv(q, droidHomeEnv, droidHomeDirName)
+	if override := strings.TrimSpace(q.Env(droidHomeEnv)); override != "" {
+		return filepath.Join(pathutil.ExpandHome(override, q.Home()), droidHomeDirName)
+	}
+	if home := q.Home(); home != "" {
+		return filepath.Join(home, droidHomeDirName)
+	}
+	return ""
 }
 
 // droidSessionStart is the part of the session_start line the reader takes.

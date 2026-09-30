@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -21,14 +22,17 @@ type Agent struct {
 	sink agent.ProviderServices
 	opts agent.Options
 
-	sessionMu        sync.RWMutex
-	stateMu          sync.Mutex
-	sessionID        string
-	options          optionmap.Map
-	models           []*agent.ModelInfo
-	active           bool
-	turnOrder        providerkit.TurnSeq
-	activityRevision uint64
+	sessionMu sync.RWMutex
+	stateMu   sync.Mutex
+	sessionID string
+	options   optionmap.Map
+	models    []*agent.ModelInfo
+	active    bool
+	// A compaction holds a queue turn but does not accept steering. Its request
+	// revision also keeps a late reply from clearing a replacement session.
+	compactingRevision uint64
+	turnOrder          providerkit.TurnSeq
+	activityRevision   uint64
 
 	// outputMu serializes the reader goroutine against every caller that replaces
 	// or ends the session. It also guards the three maps below, which only those
@@ -50,6 +54,10 @@ type Agent struct {
 	// the order the runtime opened them, so a turn end writes its rows the way the
 	// agent produced them.
 	nativeTextSegments []copilotStreamedText
+	// reasoningSeen prevents an embedded summary and a separate reasoning event
+	// from storing the same thought twice. outputMu guards both fields.
+	reasoningSeen  map[string]struct{}
+	reasoningOrder []string
 
 	controlMu sync.Mutex
 	controls  map[string]*copilotPendingControl
@@ -74,6 +82,7 @@ type Agent struct {
 
 var _ agent.Agent = (*Agent)(nil)
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.ContextCompactor = (*Agent)(nil)
 
 // The keys of the background reads that offReader keeps apart.
 const (
@@ -174,20 +183,30 @@ func (a *Agent) stopNativeConnection() {
 	a.clearNativeControls()
 	a.outputMu.Unlock()
 	a.forgetNativeControlEvents()
+	a.clearNativeCompaction()
 	a.copilotConnection.Stop()
 }
 
-// PublishTurnActive republishes the Worker-visible turn state from a.active.
+// PublishTurnActive republishes the Worker-visible turn state.
 //
-// Every active turn is STEERABLE: Copilot's session.send accepts
-// mode:"immediate" while a turn runs (see SteerInput), so the input queue may
-// offer Steer for any active turn.
+// A model turn accepts session.send with mode:"immediate". A compaction holds
+// the queue while its summary RPC runs, but it does not accept a steer.
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.stateMu.Lock()
-	active := a.active
+	state := a.nativeTurnStateLocked()
 	sequence := a.turnOrder.NextTurnSeq()
 	a.stateMu.Unlock()
-	return providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: active, Steerable: active}, sequence)
+	return providerkit.PublishTurnStateTo(a.sink, state, sequence)
+}
+
+// nativeTurnStateLocked separates a model turn from a compaction RPC. A model
+// turn accepts an immediate steer; a compaction keeps the queue busy alone.
+// The caller holds stateMu.
+func (a *Agent) nativeTurnStateLocked() agent.TurnState {
+	return agent.TurnState{
+		Active:    a.active || a.compactingRevision != 0,
+		Steerable: a.active && a.compactingRevision == 0,
+	}
 }
 
 func (a *Agent) setNativeTurnActive(active bool) bool {
@@ -195,9 +214,10 @@ func (a *Agent) setNativeTurnActive(active bool) bool {
 	previous := a.active
 	a.active = active
 	a.activityRevision++
+	state := a.nativeTurnStateLocked()
 	sequence := a.turnOrder.NextTurnSeq()
 	a.stateMu.Unlock()
-	providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: active, Steerable: active}, sequence)
+	providerkit.PublishTurnStateTo(a.sink, state, sequence)
 	return previous
 }
 
@@ -208,13 +228,101 @@ func (a *Agent) rejectNativeInput(revision uint64) {
 		return
 	}
 	a.active = false
+	state := a.nativeTurnStateLocked()
 	sequence := a.turnOrder.NextTurnSeq()
 	a.stateMu.Unlock()
-	providerkit.PublishTurnStateTo(a.sink, agent.TurnState{}, sequence)
+	providerkit.PublishTurnStateTo(a.sink, state, sequence)
+}
+
+func (a *Agent) clearNativeCompaction() {
+	a.stateMu.Lock()
+	a.compactingRevision = 0
+	a.stateMu.Unlock()
+}
+
+func (a *Agent) finishNativeCompaction(revision uint64) {
+	a.stateMu.Lock()
+	if a.compactingRevision != revision {
+		a.stateMu.Unlock()
+		return
+	}
+	a.compactingRevision = 0
+	if a.activityRevision == revision {
+		a.active = false
+	}
+	state := a.nativeTurnStateLocked()
+	sequence := a.turnOrder.NextTurnSeq()
+	a.stateMu.Unlock()
+	providerkit.PublishTurnStateTo(a.sink, state, sequence)
 }
 
 func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	return a.sendInputForSession(nil, content, attachments)
+}
+
+// CompactContext asks the native runtime to summarize the current session.
+// The RPC can take a model turn, so the response ends the active state after
+// the request leaves this method. The runtime supplies the transcript notices.
+func (a *Agent) CompactContext() error {
+	a.sessionMu.RLock()
+	defer a.sessionMu.RUnlock()
+	if a.IsStopped() {
+		return fmt.Errorf("the Copilot process is stopped")
+	}
+	a.stateMu.Lock()
+	if a.active || a.compactingRevision != 0 {
+		a.stateMu.Unlock()
+		return agent.ErrAgentBusy
+	}
+	sessionID := a.sessionID
+	if sessionID == "" {
+		a.stateMu.Unlock()
+		return fmt.Errorf("the Copilot session is unavailable")
+	}
+	a.active = true
+	a.activityRevision++
+	revision := a.activityRevision
+	a.compactingRevision = revision
+	a.stateMu.Unlock()
+	a.PublishTurnActive()
+
+	params, err := json.Marshal(map[string]any{"sessionId": sessionID, "trigger": "manual"})
+	if err != nil {
+		a.finishNativeCompaction(revision)
+		return fmt.Errorf("encode Copilot compaction request: %w", err)
+	}
+	err = a.SendDetachedRequest("session.history.compact", params, func(raw json.RawMessage, requestErr error) {
+		defer a.finishNativeCompaction(revision)
+		if a.IsStopped() || a.currentNativeSessionID() != sessionID {
+			return
+		}
+		if requestErr != nil {
+			a.reportNativeCompactionError(requestErr)
+			return
+		}
+		var result struct {
+			Success *bool `json:"success"`
+		}
+		if json.Unmarshal(raw, &result) != nil || result.Success == nil {
+			a.reportNativeCompactionError(fmt.Errorf("the Copilot runtime returned no valid compaction result"))
+			return
+		}
+		if !*result.Success {
+			a.reportNativeCompactionError(fmt.Errorf("the Copilot runtime did not compact the context"))
+		}
+	})
+	if err != nil {
+		a.finishNativeCompaction(revision)
+		return providerkit.ClassifyJSONRPCDeliveryError("session.history.compact", err)
+	}
+	return nil
+}
+
+func (a *Agent) reportNativeCompactionError(err error) {
+	a.sink.PersistLeapMuxNotification(map[string]any{
+		contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+		contracts.NotificationFieldError: fmt.Sprintf("Copilot could not compact the context: %v", err),
+	})
 }
 
 func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
@@ -228,7 +336,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		a.stateMu.Unlock()
 		return err
 	}
-	if a.active {
+	if a.active || a.compactingRevision != 0 {
 		a.stateMu.Unlock()
 		return agent.ErrAgentBusy
 	}
@@ -269,10 +377,13 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	return nil
 }
 
-// SupportsSteering always reports true. Copilot's session.send takes a SendMode,
-// and mode:"immediate" interjects the message during an in-progress turn, so the
-// capability needs no handshake discovery.
-func (a *Agent) SupportsSteering() bool { return true }
+// SupportsSteering reports true outside compaction. An ordinary Copilot turn
+// accepts session.send with mode:"immediate"; a summary RPC does not.
+func (a *Agent) SupportsSteering() bool {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.compactingRevision == 0
+}
 
 // SteerInput injects a user message into the RUNNING turn with Copilot's
 // SendMode "immediate".
@@ -293,7 +404,11 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 		return fmt.Errorf("the Copilot session is unavailable")
 	}
 	active := a.active
+	compacting := a.compactingRevision != 0
 	a.stateMu.Unlock()
+	if compacting {
+		return agent.ErrAgentBusy
+	}
 	if !active {
 		return agent.ErrNoActiveTurn
 	}
@@ -362,6 +477,7 @@ func (a *Agent) Stop() {
 	a.clearNativeChildren()
 	a.clearNativeControls()
 	a.outputMu.Unlock()
+	a.clearNativeCompaction()
 	a.setNativeTurnActive(false)
 }
 
@@ -373,6 +489,7 @@ func (a *Agent) Wait() error {
 	a.clearNativeControls()
 	a.outputMu.Unlock()
 	a.forgetNativeControlEvents()
+	a.clearNativeCompaction()
 	a.setNativeTurnActive(false)
 	return err
 }

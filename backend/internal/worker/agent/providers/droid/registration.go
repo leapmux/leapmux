@@ -29,7 +29,8 @@ var permissionModeGroup = &leapmuxv1.AvailableOptionGroup{
 	Mutable:      true,
 	Order:        agent.OptionOrderPermissionMode,
 	Options: []*leapmuxv1.AvailableOption{
-		{Id: contracts.DroidModeDefault, Name: "Default", Description: "Read-only: ask before any tool that changes something"},
+		{Id: contracts.DroidModeDefault, Name: "Default", Description: "Ask before any tool that changes something"},
+		{Id: contracts.DroidModeSpec, Name: "Spec", Description: "Write a plan and ask for approval before implementation"},
 		{Id: contracts.DroidModeAutoLow, Name: "Auto (Low)", Description: "Auto-approve low-risk tools"},
 		{Id: contracts.DroidModeAutoMedium, Name: "Auto (Medium)", Description: "Auto-approve medium-risk tools"},
 		{Id: contracts.DroidModeAutoHigh, Name: "Auto (High)", Description: "Auto-approve every tool"},
@@ -67,7 +68,6 @@ func Registration() agent.Registration {
 		// The running agent reports the models of its BYOK configuration
 		// (catalog.go). The static catalog is empty because a model list would
 		// be Factory's account catalog, which a mock-backed run never reaches.
-		DefaultModels:       defaultModels,
 		OptionGroups:        staticOptionGroups,
 		AdditionalOptionIDs: []string{agent.OptionIDEffort},
 		// A new session, and a session that stored no mode, run Default: Droid's

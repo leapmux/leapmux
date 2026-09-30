@@ -1,6 +1,6 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { focusActiveTerminal } from './helpers/terminal'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, expectAnyVisible, expectAssistantAnswer, expectUserMessage, loginViaToken, openTerminalViaUI, openWorkspace, renameTabViaUI, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, waitForLayoutSave } from './helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, expectAnyVisible, expectAssistantAnswer, expectUserMessage, loginViaToken, openTerminalViaUI, openWorkspace, renameTabViaUI, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, waitForAgentIdle, waitForLayoutSave } from './helpers/ui'
 import { listTerminalsViaAPI } from './helpers/worktree'
 import { ensureWorkerOnline, expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
@@ -34,6 +34,7 @@ test.describe('Full Hub+Worker Restart', () => {
 
       // Verify the user message is also visible
       await expectUserMessage(page, '1234 + 5678')
+      await waitForAgentIdle(page)
 
       // Step 2: Stop Worker first (so agent is terminated), then stop Hub
       await stopWorker(separateHubWorker)

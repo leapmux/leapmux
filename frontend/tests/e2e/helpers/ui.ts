@@ -992,8 +992,21 @@ export async function permissionModeOffered(page: Page, modeId: string): Promise
 
 /** Apply one composer permission preset and wait for the settings round-trip. */
 export async function applyPermissionPreset(page: Page, kind: 'smart' | 'bypass') {
+  const testId = `composer-${kind}-permissions`
+  const action = page.locator('[data-testid="composer-plus-popover"]').getByTestId(testId)
+  await closeComposerMenus(page)
+  if (await action.count() === 0) {
+    // The open menu holds its row list still. Close one probe menu so a late
+    // permission shortcut can enter the next row list.
+    await openPlusMenu(page)
+    await closeComposerMenus(page)
+  }
+  await expect(action).toHaveCount(1)
   const menu = await openPlusMenu(page)
-  await menu.getByTestId(`composer-${kind}-permissions`).click()
+  const offered = menu.getByTestId(testId)
+  await expect(offered).toBeVisible()
+  await expect(offered).toBeEnabled()
+  await offered.click()
   await waitForSettingsIdle(page)
 }
 
@@ -1064,7 +1077,9 @@ export async function chooseSettingsOption(page: Page, testId: string) {
 export async function expectSettingsOptionChosen(page: Page, testId: string) {
   await expect(async () => {
     const menu = await openSettingsMenu(page, settingsGroupIdOf(testId))
-    await expect(menu.locator(`[data-testid="${testId}"]`)).toHaveAttribute('aria-checked', 'true')
+    const option = menu.locator(`[data-testid="${testId}"]`)
+    const selectedAttribute = (await option.getAttribute('role')) === 'option' ? 'aria-selected' : 'aria-checked'
+    await expect(option).toHaveAttribute(selectedAttribute, 'true')
   }).toPass()
   await closeComposerMenus(page)
 }
@@ -1297,21 +1312,21 @@ export async function waitForSettingsIdle(page: Page) {
 }
 
 /**
- * Wait for an option catalog through the model submenu.
+ * Wait for an option catalog through a submenu the provider offers.
  * Status-bar chips can be hidden by a preference. The plus menu remains available.
  * A submenu exists only when the agent supplies a group with at least one option.
  * Close and reopen the menu on each attempt so a previous empty menu cannot hide newly supplied options.
  * So each attempt reads the group once, without waiting. A waiting assertion there would hold an early,
  * empty menu for the whole expect timeout before the next attempt could reopen it.
  */
-export async function waitForSettingsHydrated(page: Page) {
+export async function waitForSettingsHydrated(page: Page, groupId = 'model') {
   const plus = page.locator('[data-testid="composer-plus-trigger"]')
   await expect(plus).toBeVisible()
   await expect(async () => {
     await closeComposerMenus(page)
     await ensureExpanded(plus)
     await expect(page.locator('[data-testid="composer-plus-popover"]')).toBeVisible()
-    expect(await settingsGroupTrigger(page, 'model').isVisible(), 'the menu offers the model group').toBe(true)
+    expect(await settingsGroupTrigger(page, groupId).isVisible(), `the menu offers the ${groupId} group`).toBe(true)
   }).toPass()
   await closeComposerMenus(page)
 }

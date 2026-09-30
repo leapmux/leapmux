@@ -5,8 +5,8 @@ import "encoding/json"
 // CodeBuddy Code NDJSON message types.
 //
 // The stream is Claude Code 2.1.220-shaped, so the envelope family matches
-// providers/claude. The worker does not parse message content: it forwards
-// verbatim bytes and reads only the `type` field for lifecycle management.
+// providers/claude. The worker forwards native frames and reads selected
+// content blocks for tool, child, and session state.
 
 // MessageType is the top-level `type` field of one NDJSON line.
 type MessageType string
@@ -62,6 +62,22 @@ type UserInputContent struct {
 	Content interface{} `json:"content"`
 }
 
+type codebuddyTextBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type codebuddyMediaSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
+type codebuddyMediaBlock struct {
+	Type   string               `json:"type"`
+	Source codebuddyMediaSource `json:"source"`
+}
+
 // CodeBuddy's can_use_tool answer. This is the single hard incompatibility with
 // Claude Code's stream: the CLI-side parser reads `allowed`, not `behavior`.
 // Probe r5 proved a `behavior:"allow"` answer comes back as "Permission denied
@@ -112,19 +128,43 @@ type systemInitMessage struct {
 	PermissionMode string `json:"permissionMode"`
 }
 
-// resultMessage is the part of a `result` line the worker reads. CodeBuddy
-// hardcodes total_cost_usd to 0 and adds modelUsage and _meta.
+// resultMessage is the part of a result line the worker reads.
 type resultMessage struct {
-	SessionID    string `json:"session_id"`
-	IsError      bool   `json:"is_error"`
-	Subtype      string `json:"subtype"`
-	NumTurns     int    `json:"num_turns"`
-	NumToolUses  int32  `json:"num_tool_uses"`
-	TerminalMode string `json:"terminal_reason"`
+	Result     json.RawMessage                `json:"result"`
+	IsError    bool                           `json:"is_error"`
+	SessionID  string                         `json:"session_id"`
+	Usage      *codebuddyUsage                `json:"usage"`
+	ModelUsage map[string]codebuddyModelUsage `json:"modelUsage"`
+	Meta       struct {
+		ContextUsed *int64 `json:"codebuddy.ai/contextUsed"`
+	} `json:"_meta"`
+}
+
+type codebuddyUsage struct {
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+}
+
+type codebuddyModelUsage struct {
+	InputTokens              int64 `json:"inputTokens"`
+	OutputTokens             int64 `json:"outputTokens"`
+	CacheCreationInputTokens int64 `json:"cacheCreationInputTokens"`
+	CacheReadInputTokens     int64 `json:"cacheReadInputTokens"`
+	ContextWindow            int64 `json:"contextWindow"`
 }
 
 // assistantMessage is the part of an `assistant` line the worker reads.
 type assistantMessage struct {
 	ParentToolUseID *string `json:"parent_tool_use_id"`
 	SessionID       string  `json:"session_id"`
+	Message         struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"content"`
+	} `json:"message"`
 }

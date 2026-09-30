@@ -635,11 +635,21 @@ func (a *Agent) handleCompactionPart(event mimoEvent, sessionID string, part mim
 	}
 	a.compactions[part.ID] = phase
 	var ack chan struct{}
+	var releaseManual bool
 	if actorID == mainActorID {
-		// CompactContext compacts the main agent, so only its compaction confirms
-		// the request.
-		ack = a.compactionAck
-		a.compactionAck = nil
+		if phase == compactionStarted {
+			// CompactContext compacts the main agent, so only its compaction
+			// confirms the request.
+			ack = a.compactionAck
+			a.compactionAck = nil
+			if ack != nil {
+				a.manualCompactionID = part.ID
+			}
+		} else if part.ID != "" && part.ID == a.manualCompactionID {
+			a.manualCompactionID = ""
+			a.manualCompactionReady = true
+			releaseManual = true
+		}
 	}
 	a.Mu.Unlock()
 	if ack != nil {
@@ -647,6 +657,15 @@ func (a *Agent) handleCompactionPart(event mimoEvent, sessionID string, part mim
 	}
 	if _, err := a.sinkForActor(actorID).PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, event.raw); err != nil {
 		slog.Error("mimo persist compaction", "agent_id", a.AgentID(), "error", err)
+	}
+	if releaseManual {
+		// The native summarize route keeps its reply until the next prompt
+		// finishes. Release the Worker queue after the summary exists.
+		a.Mu.Lock()
+		a.turnActive = false
+		a.Mu.Unlock()
+		a.sink.ReportProgress(agent.ResetModelProgress())
+		a.PublishTurnActive()
 	}
 }
 
@@ -696,6 +715,13 @@ func (a *Agent) beginTurn() {
 		a.Mu.Unlock()
 		return
 	}
+	if a.manualCompactionReady {
+		if a.manualFollowupSending {
+			a.manualFollowupBusy = true
+		}
+		a.Mu.Unlock()
+		return
+	}
 	// A failure held while no turn ran belongs to no subagent: a subagent's
 	// failed message would have claimed it by now. It is reported before the new
 	// turn, where it happened.
@@ -728,11 +754,22 @@ func (a *Agent) beginTurn() {
 // server accepts it.
 func (a *Agent) endTurn(idle []byte) {
 	a.Mu.Lock()
+	if a.manualCompactionID != "" {
+		// The native summary can report idle before its completed part arrives.
+		// The completed part releases the queued follow-up.
+		a.Mu.Unlock()
+		return
+	}
 	if !a.turnActive {
+		// An idle from the summarize route can precede its follow-up prompt.
+		// Keep that prompt eligible until MiMo accepts it.
+		a.manualFollowupBusy = false
 		a.Mu.Unlock()
 		a.PublishTurnActive()
 		return
 	}
+	a.manualCompactionID = ""
+	a.manualCompactionReady = false
 	if a.turnFailure == nil && a.unattributed != nil {
 		// No message claimed the failure. A failure of the prompt itself, such as
 		// an unknown model, fails no message, and it is the main agent's.

@@ -2,6 +2,7 @@ import { DROID_E2E_SKIP_REASON, DROID_TITLE_RULE, droidTest, expect } from './dr
 import {
   ARITHMETIC_ANSWER_TEXT,
   ARITHMETIC_PROMPT,
+  bandRows,
   expectAssistantAnswer,
   messageContents,
   sendMessage,
@@ -12,15 +13,12 @@ import {
 /**
  * 258 — Factory Droid basic chat.
  *
- * The worker starts one `droid exec --input-format stream-jsonrpc` process for
- * the agent and sends each prompt as `droid.add_user_message` over the
- * stream-jsonrpc channel. Droid asks the mock through its BYOK custom-model
- * entry. One scripted turn proves that a prompt reaches the model and that the
- * answer reaches the chat, and that the turn end closes the turn.
+ * The worker sends prompts as `droid.add_user_message` over stream-jsonrpc.
+ * Droid asks the mock through its custom model. The transcript shows the
+ * answer and the end of the turn.
  *
- * Droid fires a session-title housekeeping turn before the first real one. The
- * `title-droid` rule answers it from its own system prompt, so no scripted step
- * is consumed by it.
+ * Droid asks for a session title before the first main request. The title
+ * rule answers that separate request.
  */
 droidTest.skip(!!DROID_E2E_SKIP_REASON, DROID_E2E_SKIP_REASON || '')
 
@@ -66,5 +64,18 @@ droidTest.describe('Factory Droid basic chat', () => {
     // The request the turn made carries the prompt the user wrote.
     const request = status.requests.find(record => record.stepIndex === 0)
     expect(JSON.stringify(request?.body)).toContain('1234 + 5678')
+  })
+
+  droidTest('draws model reasoning in a thought band', async ({ authenticatedReasoningDroidWorkspace, page, modelScript }) => {
+    void authenticatedReasoningDroidWorkspace
+    const reasoning = 'DROID_THOUGHT_MARKER I compare the two values.'
+    await modelScript.rule(DROID_TITLE_RULE)
+    await modelScript.queue({ reasoning, text: 'The answer is 6912.' })
+    await sendMessage(page, modelScript.prompt('Add 1234 and 5678.'))
+    await modelScript.waitForSteps()
+    await waitForAgentIdle(page, 180_000)
+
+    await expect(bandRows(page, 'thought').filter({ hasText: reasoning }).first()).toBeVisible()
+    await expect(bandRows(page, 'text').filter({ hasText: reasoning })).toHaveCount(0)
   })
 })

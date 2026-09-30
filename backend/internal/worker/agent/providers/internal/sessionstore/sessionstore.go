@@ -1,9 +1,8 @@
-// Package sessionstore holds the readers that several providers share to list
-// the sessions in another program's session store: a read-only SQLite handle, a
-// newest-first directory walk, and a capped JSONL read. The record and the query
-// are provider-neutral, so they live in package agent. Which directory to walk,
-// which table to query and where the title lives are provider decisions, so each
-// provider keeps them in its own package behind Provider.ListStoredSessions.
+// Package sessionstore holds the readers that several providers share for
+// another program's session store: a read-only SQLite handle, a newest-first
+// directory walk, a capped JSONL read, and a checked archive-file read. The
+// session record and listing query are provider-neutral. Providers choose the
+// directory, table, title field, archive path, and ancestor-symlink rule.
 //
 // Every store here belongs to another program. Nothing in this package or its
 // callers may write to a store's DATA. The read is not free of every side

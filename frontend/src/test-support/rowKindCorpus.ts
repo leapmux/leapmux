@@ -928,8 +928,8 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   },
   {
     provider: Provider.DROID,
-    name: 'working state notice',
+    name: 'working state bookkeeping',
     payload: { type: 'droid_working_state_changed', newState: 'idle' },
-    category: 'notification',
+    category: 'hidden',
   },
 ]

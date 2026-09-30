@@ -3,6 +3,7 @@ import { MAX_STEP_DELAY_MS } from './helpers/mockModelScript'
 import { blockGoalToolCall, completeGoalToolCall } from './helpers/providerToolCalls'
 import { expandGoalsAndTodosSection, expectGoalStatus, expectRegistryRow, goalAction, openGoalMenu } from './helpers/subagentRegistry'
 import { messageBubbles, openWorkspace, waitForSettingsHydrated } from './helpers/ui'
+import { workflowGroupHeading, workflowRowsShareGroup } from './helpers/workflowGrouping'
 import { expect, KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from './kiro-fixtures'
 
 kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
@@ -57,8 +58,16 @@ kiroTest.describe('Kiro session goal', () => {
     await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText('Write the release notes.')
 
     await expectGoalStatus(page, 'done')
-    // The workflow run and its step each take a registry row.
-    await expectRegistryRow(page, { titleContains: 'goal · work #1' })
+    const step = await expectRegistryRow(page, { titleContains: 'goal · work #1' })
+    const run = page
+      .locator('[data-testid="bg-task-row"]:visible[data-kind="workflow"]')
+      .filter({ hasText: 'Write the release notes.' })
+      .first()
+    await expect(run).toBeVisible()
+    await expect(step).toHaveAttribute('data-kind', 'subagent')
+    await expect.poll(() => workflowGroupHeading(run)).toBe('goal')
+    await expect.poll(() => workflowGroupHeading(step)).toBe('goal')
+    await expect.poll(() => workflowRowsShareGroup(run, step)).toBe(true)
   })
 
   // A step that reports an error fails the run. The goal card shows the words of

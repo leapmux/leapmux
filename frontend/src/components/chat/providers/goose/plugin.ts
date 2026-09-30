@@ -14,4 +14,5 @@ registerACPProvider({
     bypass: { sets: { permissionMode: GOOSE_MODE.Auto } },
   },
   classifyToolCallUpdate: classifyGooseToolCallUpdate,
+  attachments: { text: true, image: true, pdf: false, binary: false },
 })

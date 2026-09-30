@@ -749,6 +749,30 @@ describe('BackgroundTaskList in-place updates', () => {
     expect(classes(dotBefore)).toContain(statusDotStyles.statusDotSuccess)
   })
 
+  it('keeps a paused child open and updates its activity without rebuilding', () => {
+    const { container, setTasks } = renderLiveList([
+      row({ rowKey: 'child', title: 'Review the diff', status: 'running', activity: 'reading' }),
+    ])
+    const taskRow = container.querySelector<HTMLElement>('[data-testid="bg-task-row"]')!
+    const dot = container.querySelector<HTMLElement>('[data-testid="bg-task-status-dot"]')!
+
+    setTasks(0, 'status', 'paused')
+    setTasks(0, 'activity', 'paused')
+
+    expect(taskRow.dataset.status).toBe('paused')
+    expect(secondaries(container)[0]?.textContent).toBe('paused')
+    expect(classes(taskRow)).not.toContain(styles.taskStruck)
+    expect(classes(dot)).toContain(statusDotStyles.statusDotMuted)
+
+    setTasks(0, 'status', 'running')
+    setTasks(0, 'activity', 'reading again')
+
+    expect(container.querySelector('[data-testid="bg-task-row"]')).toBe(taskRow)
+    expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toBe(dot)
+    expect(secondaries(container)[0]?.textContent).toBe('reading again')
+    expect(classes(taskRow)).not.toContain(styles.taskStruck)
+  })
+
   // The row becomes clickable only once the worker reports the child agent id,
   // which arrives in a later broadcast than the row itself -- so the TAG cannot
   // depend on it. A `Show` keyed on the id swapped a <div> for a <button> and

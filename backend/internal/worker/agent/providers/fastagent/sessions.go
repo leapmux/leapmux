@@ -35,7 +35,7 @@ type fastagentSessionMeta struct {
 // fastagentHome resolves the home directory that holds the session store.
 // `FAST_AGENT_HOME` wins, then the working directory's `.fast-agent`.
 func fastagentHome(q agent.StoredSessionQuery) string {
-	if home := strings.TrimSpace(q.Getenv("FAST_AGENT_HOME")); home != "" {
+	if home := strings.TrimSpace(q.Env("FAST_AGENT_HOME")); home != "" {
 		return home
 	}
 	return filepath.Join(q.WorkingDir, ".fast-agent")

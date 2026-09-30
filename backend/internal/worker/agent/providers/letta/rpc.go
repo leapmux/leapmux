@@ -171,6 +171,7 @@ func (a *Agent) handleFrame(line []byte) {
 		Request    json.RawMessage `json:"request"`
 		LoopStatus json.RawMessage `json:"loop_status"`
 		Subagents  json.RawMessage `json:"subagents"`
+		SubagentID string          `json:"subagent_id"`
 		RequestID  string          `json:"request_id"`
 		Error      string          `json:"error"`
 	}
@@ -189,7 +190,7 @@ func (a *Agent) handleFrame(line []byte) {
 	slog.Debug("letta: frame", "agent_id", a.AgentID(), "type", typ, "len", len(line))
 	switch typ {
 	case "stream_delta":
-		a.onStreamDelta(head.Delta)
+		a.onStreamDelta(head.Delta, head.SubagentID)
 	case "turn_finished":
 		a.onTurnFinished(line)
 	case "update_subagent_state":
@@ -200,6 +201,10 @@ func (a *Agent) handleFrame(line []byte) {
 		a.onControlRequest(line, head.Request, head.RequestID)
 	case "runtime_start_response":
 		a.adoptRuntime(line)
+	case "list_models_response":
+		a.handleListModelsResponse(line)
+	case "update_model_response":
+		a.handleUpdateModelResponse(line)
 	case "loop_error":
 		a.persistNotification(line)
 	case "input_accepted", "abort_message_response":
@@ -218,9 +223,9 @@ func (a *Agent) persistNotification(payload []byte) {
 	}
 }
 
-// persistRow stores one transcript row verbatim.
-func (a *Agent) persistRow(payload []byte, span agent.SpanInfo) {
-	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload}, span); err != nil {
+// persistRowTo stores one transcript row in its native session.
+func (a *Agent) persistRowTo(target agent.ProviderServices, payload []byte, span agent.SpanInfo) {
+	if err := target.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload}, span); err != nil {
 		slog.Debug("letta: persist message failed", "agent_id", a.AgentID(), "error", err)
 	}
 }

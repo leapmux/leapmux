@@ -1,19 +1,19 @@
 package reasonix
 
 import (
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// handleExtraMethod routes Reasonix's own status notifications.
-//
-// MCP elicitation is NOT here: Reasonix sends the standard Agent Client Protocol
-// `elicitation/create`, which the shared dispatcher already publishes. The vendor
-// method this used to read exists nowhere in the Reasonix source, so the branch
-// matched nothing while the live requests arrived through the shared path.
+// handleExtraMethod routes Reasonix's own status and MCP requests.
 func (a *Agent) handleExtraMethod(line *providerkit.ParsedLine) bool {
-	if line.Method != reasonixMethodStatusUpdate {
+	switch line.Method {
+	case reasonixMethodStatusUpdate:
+		a.handleReasonixStatusUpdate(line.Params)
+	case contracts.ReasonixMethodMcpRequestInteraction:
+		a.PublishSessionControlRequest(line, providerkit.MCPElicitationCancelAnswer())
+	default:
 		return false
 	}
-	a.handleReasonixStatusUpdate(line.Params)
 	return true
 }

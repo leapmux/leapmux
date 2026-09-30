@@ -2,6 +2,7 @@ package letta
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,7 +47,7 @@ func lettaStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]age
 	}
 	limit := q.EffectiveLimit()
 	sessions := sessionstore.Collect(ctx, entries, limit, func(entry sessionstore.Entry) (agent.StoredSession, bool) {
-		return readLettaConversation(entry, workingDir)
+		return readLettaConversation(entry)
 	})
 	return agent.SortAndCapSessions(sessions, limit), nil
 }
@@ -70,20 +71,24 @@ func readLettaConversationRecord(path string) (lettaConversationRecord, error) {
 	return record, err
 }
 
+// lettaConversationStorageName encodes the local backend's store key. The
+// native backend writes `conversation:<id>` as an unpadded base64url segment.
+func lettaConversationStorageName(id string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte("conversation:" + id))
+}
+
 // readLettaConversation reads one conversation's record.
-func readLettaConversation(entry sessionstore.Entry, workingDir string) (agent.StoredSession, bool) {
+func readLettaConversation(entry sessionstore.Entry) (agent.StoredSession, bool) {
 	record, err := readLettaConversationRecord(filepath.Join(entry.Path, lettaConversationFile))
 	if err != nil {
 		return agent.StoredSession{}, false
 	}
 	id := strings.TrimSpace(record.ID)
-	if id == "" {
+	if id == "" || id == "default" || entry.Name != lettaConversationStorageName(id) {
 		return agent.StoredSession{}, false
 	}
-	// The conversation record states no cwd; the caller already scoped the walk
-	// to the store, and a conversation is offered for the working directory the
-	// query stated. A conversation that records a different cwd is skipped when
-	// the store carries one.
+	// The native record states no working directory, so the picker lists each
+	// nondefault conversation in this local store.
 	return agent.StoredSession{
 		Handle:    id,
 		Title:     sessionstore.TrimTitle(id),
@@ -103,6 +108,9 @@ func lettaResumeAgentID(opts agent.Options, conversationID string) (string, erro
 	if id == "" {
 		return "", errors.New("resume conversation: the conversation id is empty")
 	}
+	if id == "default" {
+		return "", errors.New("resume conversation: the default conversation needs an agent id")
+	}
 	root := lettaBackendRoot(agent.StoredSessionQuery{
 		WorkingDir: opts.WorkingDir,
 		HomeDir:    opts.HomeDir,
@@ -110,9 +118,12 @@ func lettaResumeAgentID(opts agent.Options, conversationID string) (string, erro
 	if root == "" {
 		return "", fmt.Errorf("resume conversation %q: the Letta local backend store is not configured", id)
 	}
-	record, err := readLettaConversationRecord(filepath.Join(root, lettaConversationsDir, id, lettaConversationFile))
+	record, err := readLettaConversationRecord(filepath.Join(root, lettaConversationsDir, lettaConversationStorageName(id), lettaConversationFile))
 	if err != nil {
 		return "", fmt.Errorf("resume conversation %q: %w", id, err)
+	}
+	if strings.TrimSpace(record.ID) != id {
+		return "", fmt.Errorf("resume conversation %q: the stored conversation id does not match", id)
 	}
 	agentID := strings.TrimSpace(record.AgentID)
 	if agentID == "" {

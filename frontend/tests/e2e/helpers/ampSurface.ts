@@ -124,10 +124,28 @@ export interface AmpSeededThread {
   id: string
   title: string
   tree: string
-  messageCount: number
+  messages: Array<{ role: 'user' | 'assistant', text: string }>
   archived?: boolean
   /** Milliseconds since the epoch. Defaults to now. */
   updatedAt?: number
+}
+
+function isAmpSeededThread(value: unknown): value is AmpSeededThread {
+  if (
+    !isRecord(value)
+    || typeof value.id !== 'string'
+    || value.id === ''
+    || typeof value.title !== 'string'
+    || typeof value.tree !== 'string'
+  ) {
+    return false
+  }
+  if (value.archived !== undefined && typeof value.archived !== 'boolean')
+    return false
+  if (value.updatedAt !== undefined && (typeof value.updatedAt !== 'number' || !Number.isFinite(value.updatedAt)))
+    return false
+  return Array.isArray(value.messages) && value.messages.every(message =>
+    isRecord(message) && (message.role === 'user' || message.role === 'assistant') && typeof message.text === 'string')
 }
 
 export interface AmpSurface {
@@ -165,7 +183,6 @@ interface ActorThread {
   title: string
   archived: boolean
   updatedAt: number
-  seededMessageCount: number
   sockets: Set<ThreadSocket>
   turn: RunningTurn | undefined
   /** Steering messages that arrived during the turn, for its next interruption point. */
@@ -192,7 +209,6 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         title: '',
         archived: false,
         updatedAt: Date.now(),
-        seededMessageCount: 0,
         sockets: new Set(),
         turn: undefined,
         steers: [],
@@ -206,11 +222,20 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
   async function handleHttp(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
     if (url.pathname === AMP_E2E_THREADS_PATH) {
       if (request.method === 'POST') {
-        const seeded = await readJSON(request) as AmpSeededThread
+        const seeded = await readJSON(request)
+        if (!isAmpSeededThread(seeded)) {
+          writeJSON(response, 400, { error: 'The seeded Amp thread is invalid.' })
+          return
+        }
         const thread = threadFor(seeded.id)
         thread.title = seeded.title
         thread.tree = seeded.tree
-        thread.seededMessageCount = seeded.messageCount
+        thread.messages = seeded.messages.map(message => ({
+          role: message.role,
+          content: [{ type: 'text', text: message.text, blockState: 'complete' }],
+          messageId: ampMessageID(),
+        }))
+        thread.seq = thread.messages.length
         thread.archived = seeded.archived === true
         thread.updatedAt = seeded.updatedAt ?? Date.now()
         writeJSON(response, 201, viewOf(thread))
@@ -476,7 +501,7 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
       const messageId = ampMessageID()
       notify(thread, 'inference_tools', { messageId, agentMode: thread.agentMode, tools: [] })
       notify(thread, 'agent_state', { state: 'streaming', messageId, agentMode: thread.agentMode })
-      addMessage(thread, { role: 'assistant', content, messageId, usage: usage(), state: { type: 'complete' } })
+      addMessage(thread, { role: 'assistant', content, messageId, usage: usage(step), state: { type: 'complete' } })
 
       if (calls.length === 0) {
         // A steering line that arrived after the last tool continues the turn.
@@ -617,22 +642,24 @@ function firstText(content: readonly Record<string, unknown>[]): string {
 }
 
 function messageCount(thread: ActorThread): number {
-  return thread.messages.length + thread.seededMessageCount
+  return thread.messages.length
 }
 
 function viewOf(thread: ActorThread): AmpThreadView {
   return { id: thread.id, agentMode: thread.agentMode, tree: thread.tree, title: thread.title, messageCount: messageCount(thread), archived: thread.archived }
 }
 
-function usage(): Record<string, unknown> {
+function usage(step: MockModelStep): Record<string, unknown> {
+  const inputTokens = step.usage?.inputTokens ?? 10
+  const outputTokens = step.usage?.outputTokens ?? 5
   return {
     model: 'mock-model',
-    maxInputTokens: 200_000,
-    inputTokens: 10,
-    outputTokens: 5,
+    maxInputTokens: step.usage?.contextWindow ?? 200_000,
+    inputTokens,
+    outputTokens,
     cacheCreationInputTokens: 0,
     cacheReadInputTokens: 0,
-    totalInputTokens: 10,
+    totalInputTokens: inputTokens,
     timestamp: new Date().toISOString(),
     features: [],
   }

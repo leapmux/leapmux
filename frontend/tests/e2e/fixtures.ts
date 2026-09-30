@@ -23,6 +23,7 @@ import { withTestWorkspace } from './helpers/workspace'
 
 export interface ServerInfo {
   hubUrl: string
+  boundHubUrl: string
   adminToken: string
   /**
    * The administrator user ID.

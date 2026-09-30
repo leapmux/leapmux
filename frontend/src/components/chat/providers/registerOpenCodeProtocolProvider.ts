@@ -41,6 +41,7 @@ export function registerOpenCodeProtocolProvider(opts: OpenCodeProtocolOptions):
     // send one back when the request itself offered none.
     extractControl: openCodeExtractControl,
     planValue: PLAN_PRIMARY_AGENT,
+    attachments: { text: true, image: true, pdf: true, binary: false },
     // OpenCode and Kilo share the question-answer derivation from this single registration site
     // (mirroring the backend's questionRequestContext hook), so it can't drift per provider.
     controlResponseDisplay: openCodeControlResponseSummary,

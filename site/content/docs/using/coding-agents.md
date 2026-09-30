@@ -5,7 +5,7 @@ type: docs
 weight: 3
 ---
 
-Coding agents are the core feature of LeapMux. Each agent is a real coding-assistant CLI (Claude Code, Codex, and others) running on a Worker, wrapped in a chat tab so you can talk to it, watch its tool calls, and approve its actions. This chapter covers which agents are supported and how to open, chat with, and configure one.
+Coding agents are the core feature of LeapMux. Each agent is a real coding-assistant CLI, such as Claude Code or Codex, on a Worker. Its chat tab lets you talk to it, watch tool calls, and approve actions. This chapter covers supported agents and their controls.
 
 For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/tabs-and-layout/). For the git side of opening an agent in a branch or worktree, see [Worktrees & Branches](/docs/using/worktrees-and-branches/). To drive agents from a script instead of the browser, see [Control CLI](/docs/using/control-cli/).
 
@@ -13,36 +13,9 @@ For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/t
 
 LeapMux integrates twenty-six coding-agent providers. It detects the coding agents installed on the Worker automatically and lists them in the New agent dialog.
 
-<div class="provider-logos">
-  <a href="https://claude.com/product/claude-code"><img src="/icons/agents/claude-code.svg" width="64" height="64" title="Claude Code" alt="Claude Code"></a>
-  <a href="https://openai.com/codex/"><img src="/icons/agents/codex.svg" width="64" height="64" title="Codex" alt="Codex"></a>
-  <a href="https://cursor.com/cli"><img src="/icons/agents/cursor.svg" width="64" height="64" title="Cursor" alt="Cursor"></a>
-  <a href="https://github.com/features/copilot/cli"><img src="/icons/agents/github-copilot.svg" width="64" height="64" title="GitHub Copilot" alt="GitHub Copilot"></a>
-  <a href="https://kilo.ai/cli"><img src="/icons/agents/kilo.svg" width="64" height="64" title="Kilo" alt="Kilo"></a>
-  <a href="https://opencode.ai/"><img src="/icons/agents/opencode.svg" width="64" height="64" title="OpenCode" alt="OpenCode"></a>
-  <a href="https://block.github.io/goose/"><img src="/icons/agents/goose.svg" width="64" height="64" title="Goose" alt="Goose"></a>
-  <a href="https://pi.dev/"><img src="/icons/agents/pi.svg" width="64" height="64" title="Pi" alt="Pi"></a>
-  <a href="https://github.com/esengine/DeepSeek-Reasonix"><img src="/icons/agents/reasonix.svg" width="64" height="64" title="Reasonix" alt="Reasonix"></a>
-  <a href="https://zcode.z.ai/"><img src="/icons/agents/zcode.svg" width="64" height="64" title="ZCode" alt="ZCode"></a>
-  <a href="https://codewhale.net/en/product"><img src="/icons/agents/codewhale.svg" width="64" height="64" title="Codewhale" alt="Codewhale"></a>
-  <a href="https://moonshotai.github.io/kimi-code/en/"><img src="/icons/agents/kimi-code.svg" width="64" height="64" title="Kimi Code" alt="Kimi Code"></a>
-  <a href="https://mimo.xiaomi.com/coder"><img src="/icons/agents/mimo-code.svg" width="64" height="64" title="MiMo Code" alt="MiMo Code"></a>
-  <a href="https://qwenlm.github.io/qwen-code-docs/en/users/overview"><img src="/icons/agents/qwen-code.svg" width="64" height="64" title="Qwen Code" alt="Qwen Code"></a>
-  <a href="https://omp.sh"><img src="/icons/agents/oh-my-pi.svg" width="64" height="64" title="Oh My Pi" alt="Oh My Pi"></a>
-  <a href="https://x.ai/cli"><img src="/icons/agents/grok-build.svg" width="64" height="64" title="Grok Build" alt="Grok Build"></a>
-  <a href="https://kiro.dev/cli/"><img src="/icons/agents/kiro.svg" width="64" height="64" title="Kiro" alt="Kiro"></a>
-  <a href="https://ampcode.com/"><img src="/icons/agents/amp.svg" width="64" height="64" title="Amp" alt="Amp"></a>
-  <a href="https://cline.bot/cli"><img src="/icons/agents/cline.svg" width="64" height="64" title="Cline" alt="Cline"></a>
-  <a href="https://codebuddy.ai"><img src="/icons/agents/codebuddy.svg" width="64" height="64" title="CodeBuddy Code" alt="CodeBuddy Code"></a>
-  <a href="https://www.jetbrains.com/junie/"><img src="/icons/agents/junie.svg" width="64" height="64" title="Junie" alt="Junie"></a>
-  <a href="https://docs.letta.com/letta-code"><img src="/icons/agents/letta.svg" width="64" height="64" title="Letta Code" alt="Letta Code"></a>
-  <a href="https://dirac.run"><img src="/icons/agents/dirac.svg" width="64" height="64" title="Dirac" alt="Dirac"></a>
-  <a href="https://qoder.com"><img src="/icons/agents/qoder.svg" width="64" height="64" title="Qoder CLI" alt="Qoder CLI"></a>
-  <a href="https://docs.factory.ai/"><img src="/icons/agents/droid.svg" width="64" height="64" title="Factory Droid" alt="Factory Droid"></a>
-  <a href="https://fast-agent.ai"><img src="/icons/agents/fast-agent.svg" width="64" height="64" title="Fast Agent" alt="Fast Agent"></a>
-</div>
+{{< agent-logos >}}
 
-All twenty-six are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. The Goals & To-dos sidebar appears for an agent that has a to-do list, and for an agent whose CLI has a session goal. The available models, settings, and prompt styles vary from provider to provider; the [feature matrix](#feature-matrix) lists the differences.
+All twenty-six support chat and streamed tool calls. The [feature matrix](#feature-matrix) shows permission prompts and native model context on resume. The Goals & To-dos sidebar appears when an agent has a to-do list or a session goal. Each provider offers its own models and settings. Prompt style also varies.
 
 ## Opening a new agent
 
@@ -65,11 +38,11 @@ The dialog has **no model, effort, or permission-mode fields**. A new session ta
 A resumed session keeps its stored settings. Change settings from the composer after the session starts (see [Changing settings mid-session](#changing-settings-mid-session)).
 {{< /callout >}}
 
-LeapMux remembers your most recently used provider and pre-selects it (when it is available on the chosen Worker), so you usually only have to pick a directory and click **Create**.
+LeapMux remembers your most recently used provider. It pre-selects that provider when the chosen Worker offers it. Then you can pick a directory and click **Create**.
 
 ### Quick-open (no dialog)
 
-If you trigger "new agent" from a tab that already has a Worker and working directory, LeapMux skips the dialog and opens an agent directly, reusing the active tab's provider (or your most-recent provider). It only falls back to the full dialog when the Worker, directory, or provider can't be inferred.
+If the active tab has a Worker and working directory, **New agent** opens an agent without a dialog. It uses that tab's provider or your most recent provider. LeapMux opens the full dialog when it cannot determine the Worker, directory, or provider.
 
 ### Where the new agent lands
 
@@ -77,21 +50,23 @@ The Worker assigns a friendly title from a shared name pool (you'll see titles l
 
 ### Resuming an existing session
 
-To continue a previous conversation, pick it from the **Resume an existing session** field in the New agent dialog. The field lists the sessions the Worker finds for the selected directory and provider, newest first, each labelled with its title and how long ago it ran. A filter box narrows the list, and the refresh button beside the label asks the Worker again.
+To reopen a native session, pick it from the **Resume an existing session** field in the New agent dialog. The field lists recent sessions for the selected provider. It filters by directory when the native store records one. Each entry shows a title and age. A filter box narrows the list, and the refresh button asks the Worker again.
 
-The list comes from two places at once: LeapMux's own record of the agents it ran, and the agent CLI's own session history on that machine. So a session you started by running Claude Code or Codex directly in a terminal appears here too. Where both know a session, LeapMux's record wins.
+The list combines LeapMux's agent records with each CLI's session history on that machine. A session you started in a terminal can appear here too. Where both stores know a session, LeapMux's record wins.
 
-Two kinds of session are left out. A session already open in a tab isn't offered, because two processes against one session store corrupt it — close the tab first. And a session belonging to another directory isn't offered, because the list follows the **Directory** field: change the directory or the provider and the list changes with it. Changing either also clears a session you had already picked, since a session ID means nothing in another directory.
+The list excludes a session that an open Worker tab owns. A second process can corrupt that native session, so close its tab first. A provider that records each session's directory also excludes sessions from another directory. Some native stores record no directory and cannot apply that filter. Changing the directory or provider clears a session you picked.
 
 Leave the field on **Start a new session** to begin fresh. It is a real entry in the menu, so it is also how you take back a session you picked.
 
-The last entry, **Enter a session ID…**, swaps the menu for a text box. Use it for a session the list cannot hold — one from another machine, one a tab still holds open, or one older than the newest fifty. The field also falls back to that box on its own when the Worker finds no sessions at all. Three things cause that: a directory with no history, a provider whose store this machine doesn't have, and a Worker that can't answer. The box checks what you type and reports a session ID it cannot use.
+The last entry, **Enter a session ID…**, swaps the menu for a text box. Use it for a session from another machine or one older than the newest fifty. Manual entry also rejects a session that an open Worker tab owns.
 
-Once you submit, the Worker resumes the prior session using that provider's own resume mechanism, picking up where the earlier conversation left off. If a session can't be resumed, the agent doesn't start and the tab reports why. Send `/clear` in the chat to start a fresh session instead.
+The field shows the box when the Worker finds no sessions. A directory with no history leaves the list empty. An absent native store or a failed Worker request can do the same. The box checks the ID and reports one it cannot use.
+
+Once you submit, the Worker asks the provider to reopen the native session. If a prior LeapMux tab on this Worker saved chat rows, the new tab shows them. An external native session can resume with no earlier Worker chat rows; its provider may replay its own history. The [matrix](#feature-matrix) states whether the provider carries prior model context. If native resume fails, the tab reports why and the agent does not start. Send `/clear` to start a fresh session.
 
 ### Automatic resume
 
-Picking a session is the manual path; most resumption happens automatically. Agent sessions are durable: they resume across Hub restarts, Worker restarts, and client reconnects without you doing anything. When an agent's process has to be respawned — for example after a Worker restarts or after a model/effort change — LeapMux reconnects it to the prior session using that provider's own resume mechanism, and the transcript continues where it left off. As with manual resume, an agent whose resume fails doesn't start, so an empty session never replaces the conversation.
+Picking a session is the manual path; most resumption happens automatically. A Hub restart keeps the existing tab and Worker transcript. A Worker restart or client reconnect does the same. When LeapMux restarts an agent process, it asks the provider to reopen the native session. The matrix states whether that provider also restores prior model context. If native resume fails, LeapMux reports the failure instead of replacing the transcript with an empty session.
 
 ## Chatting with an agent
 
@@ -101,7 +76,7 @@ The chat tab has the conversation transcript above and a Markdown editor at the 
 
 The editor is a full Markdown editor in a single input box. Type your message and send it with the **Send** button (the paper-plane icon) or with the keyboard. While the message is in flight, a spinner replaces the Send icon.
 
-The box starts one line tall, with the **[+]** menu at the left end and the send controls at the right. It expands into a taller layout, with those controls on their own row beneath the text, as soon as the message needs more than one line.
+The box starts one line tall, with the **[+]** menu on the left and send controls on the right. For longer messages, it grows and puts the controls below the text.
 
 Send is disabled when the editor is empty and there are no attachments.
 
@@ -116,13 +91,13 @@ An item in the composer's **[+]** menu controls what the **Enter** key does. The
 | **Enter sends** | Sends the message | (Shift+Enter for a new line) |
 | **Cmd/Ctrl+Enter sends** (default) | Inserts a new line | Cmd+Enter (macOS) / Ctrl+Enter (other platforms) sends |
 
-The default is **Cmd/Ctrl+Enter sends**, so plain Enter adds a newline. Open the **[+]** menu and click **Send with Cmd/Ctrl+Enter** to switch; the choice is saved as a [preference](/docs/using/settings/) and persists across sessions.
+The default is **Cmd/Ctrl+Enter sends**, so plain Enter adds a newline. Open **[+]** and choose **Send with Cmd/Ctrl+Enter** to switch. LeapMux saves the choice as a [preference](/docs/using/settings/) across sessions.
 
 ### Attachments
 
 You can attach files with **[+] > Attach file...**, or by pasting or dropping them into the editor. Pending attachments appear in a strip above the editor. What you can attach depends on the provider. See the [feature matrix](#feature-matrix).
 
-ZCode accepts an image only on a model that declares image input — of the models Z.ai ships today that is GLM-5.3-Flash. Attaching one to a text-only model is refused with a message naming the model, because ZCode would otherwise accept the image and never show it to the model.
+ZCode accepts an image only when the selected model declares image input. LeapMux refuses an image on a text-only model and identifies that model. Without this check, ZCode accepts the image but does not send it to the model.
 
 ### Message persistence and offline behavior
 
@@ -133,7 +108,7 @@ Your messages appear immediately (optimistically) and are reconciled when the se
 While the agent is actively working — and there is no pending permission prompt — an **Interrupt** button (a square icon) appears. Click it to stop the current turn. LeapMux asks the agent to stop via its native interrupt mechanism rather than killing the process.
 
 {{< callout type="info" >}}
-The **Interrupt** button is hidden whenever the agent is waiting on you with a permission or question prompt — answer the prompt instead (see [Permission and approval prompts](#permission-and-approval-prompts)).
+The **Interrupt** button is hidden while the agent waits for your permission or answer. Answer that prompt instead (see [Permission and approval prompts](#permission-and-approval-prompts)).
 {{< /callout >}}
 
 ## The input queue
@@ -193,7 +168,7 @@ sends as usual.
 
 ### Tool calls and results
 
-As an agent works, the transcript shows its assistant text, its thinking (where the provider exposes it), and a row for every tool call it makes, followed by that tool's result. The exact set of tools depends on the provider, but you will commonly see:
+As an agent works, the transcript shows its text and any thinking the provider exposes. Visible tool calls and their results appear in rows. The available tools depend on the provider. Common tool rows include:
 
 - **File reads** — the file the agent opened.
 - **Edits and writes** — rendered with a diff. The result toolbar offers a **split / unified** diff toggle.
@@ -203,7 +178,13 @@ As an agent works, the transcript shows its assistant text, its thinking (where 
 - **Todo / plan updates** — feed a persistent todo sidebar (see below).
 - **MCP tool calls** — calls into Model Context Protocol servers the agent has access to, rendered like any other tool call.
 
-Long tool results are collapsible (an **Expand** button), and most rows have a **Copy** button. Where it makes sense, a row's header also offers a **Quote** button (tooltip "Quote", pulls the row's text into the editor as a quoted reply), a **Copy Markdown** button (tooltip "Copy Markdown"), and a **Copy Raw JSON** button for debugging. The permission-prompt banner (see [Permission and approval prompts](#permission-and-approval-prompts)) carries its own **Copy Raw JSON** action too.
+Use **Expand** to open a long tool result. Most rows have a **Copy** button. Some row headers also offer these controls:
+
+- **Quote** copies the row's text into the editor as a quoted reply.
+- **Copy Markdown** copies the row as Markdown.
+- **Copy Raw JSON** copies the native data for debugging.
+
+The permission banner also offers **Copy Raw JSON** (see [Permission and approval prompts](#permission-and-approval-prompts)).
 
 {{< callout >}}
 Some rows are intentionally hidden to keep the transcript readable — for example, Claude Code suppresses its internal todo-list and tool-search bookkeeping rows. The information still drives the UI (the todo sidebar), it just isn't repeated inline.
@@ -211,9 +192,9 @@ Some rows are intentionally hidden to keep the transcript readable — for examp
 
 ### Images in tool results
 
-When a tool returns an image — a screenshot from an MCP browser tool, a `Read` on a PNG, a generated picture — the row shows the picture itself, scaled to fit the transcript.
+When a tool returns an image, its row shows the picture scaled to fit the transcript.
 
-Click one to open it in its own tab, where you can zoom it (fit, 100%, or any step in between) and pan. When the agent said which file the image came from, LeapMux opens that file instead, so you see it at full resolution straight from the Worker.
+Click the picture to open it in its own tab. There you can zoom and pan. When the agent identifies its source file, LeapMux opens that file at full resolution from the Worker.
 
 Not every image renders inline:
 
@@ -224,7 +205,7 @@ What a tool result can carry differs by provider (see the [feature matrix](#feat
 
 ### Turn boundaries and notifications
 
-The end of each turn is marked by a divider that may carry a label such as a duration ("Took 2.1s") or an error ("API Error: 529 …"). LeapMux also surfaces notifications for events like rate limits, context compaction, retries, and settings changes, collapsing repeated or no-op notifications so they don't flood the transcript.
+A divider marks the end of each turn. It can show a duration or an error. LeapMux also shows provider notifications. It combines repeated or empty notices so they do not fill the transcript.
 
 ### The Goals & To-dos sidebar
 
@@ -240,16 +221,16 @@ A chip on the thinking indicator shows the to-do count and opens the same sectio
 
 ### Subagents and the Background tasks sidebar
 
-When an agent spawns a subagent (for example, Claude Code's Task tool) or runs a background shell, LeapMux tracks it in a **Background tasks** sidebar section. Each row shows the task's live status and, for subagents that own a transcript, is clickable to open the subagent in its own tab alongside its parent. A small chip on the thinking indicator shows the active count and opens the same list as a popover.
+LeapMux lists a subagent when its CLI reports the child. It lists a background shell when the CLI reports a stable process identity and status. Each row in the **Background tasks** sidebar shows the task's live status. A subagent row opens its transcript in a tab beside its parent. A chip on the thinking indicator shows the active count and opens the same list as a popover.
 
-A dynamic workflow runs many subagents for one job, for example a Claude Code workflow, a Kimi Code agent swarm, a Kiro workflow, or a Cline agent team. Its subagents appear together under the workflow's row.
+A dynamic workflow runs many subagents for one job. LeapMux groups those subagents under the workflow row.
 
 Closing a subagent tab closes only the tab. The transcript and registry survive, and you can reopen the tab from the section later. Only providers whose CLIs expose subagent activity appear here; the registry lives in the worker's local database and never reaches the hub.
 
 
 ## Permission and approval prompts
 
-When an agent needs your approval — to run a command, edit a file, or proceed with a plan — or wants to ask you a question, LeapMux shows a **control request** banner directly above the editor. The turn waits on the banner: the agent does nothing with the request until you answer it.
+LeapMux shows a **control request** banner above the editor when the agent asks for approval or an answer. The agent waits until you answer it.
 
 ### The banner
 
@@ -266,11 +247,11 @@ When the provider has a permission shortcut (see [Changing settings mid-session]
 
 ### Questions
 
-A question shows its options as radio buttons (single-select) or checkboxes (multi-select), and you can type a custom answer instead. A prompt that carries several questions shows **Question N of M**, and one submission answers all of them. An MCP server that asks the user for input gets a form on the providers that carry one (see the [feature matrix](#feature-matrix)).
+A question shows its options as radio buttons (single-select) or checkboxes (multi-select), and you can type a custom answer instead. A prompt that carries several questions shows **Question N of M**, and one submission answers all of them. LeapMux collects input requested by an MCP server through a form or provider-native questions (see the [feature matrix](#feature-matrix)).
 
 ### Plan approvals
 
-When an agent finishes planning, the banner shows the plan. **Approve** implements it, **Reject** stays in plan mode and takes your feedback, and **Clear Context** implements it in a fresh session where the provider offers that switch. Some providers end plan mode themselves instead of asking (see the [feature matrix](#feature-matrix)).
+When an agent finishes planning, the banner shows the plan. **Approve** starts the work. **Reject** keeps plan mode and sends your feedback. **Clear Context** starts the work in a fresh session when the provider offers that choice. Some providers end plan mode without asking (see the [feature matrix](#feature-matrix)).
 
 ### Several prompts at once
 
@@ -282,7 +263,7 @@ The exact buttons and their names come from the provider's own protocol.
 
 ### The status bar and the [+] menu
 
-Beneath the editor box is a status bar with one chip per setting axis — the git branch, and the agent's current model, reasoning effort, and mode. Click a chip to change that axis.
+The status bar below the editor shows chips for common settings. It can show the branch, model, reasoning effort, and mode. Click a chip to change that setting.
 
 The **[+]** menu holds every axis, including provider-specific options that have no chip. Each axis has a submenu. The menu also holds **Agent info** for context usage, rate limits, and the session.
 
@@ -314,7 +295,7 @@ For providers that have a plan-mode setting, **Shift+Tab** in the editor toggles
 
 ## Driving agents from a script
 
-Everything in this chapter has a programmatic counterpart in the `leapmux control` CLI, which agents themselves can call (the Worker injects credentials into each spawned agent's environment). The most relevant commands:
+You can also use the `leapmux control` CLI for these actions. Agents can call it because the Worker gives each agent its credentials. Common commands include:
 
 ```bash
 # Send a message to an agent tab
@@ -338,1157 +319,6 @@ See [Control CLI](/docs/using/control-cli/) for the full command tree, entity-ID
 
 ## Feature matrix
 
-Every provider runs the core workflow: chat, streamed tool calls, permission prompts, and session resume. Beyond that, support differs. Each cell is ✅ when LeapMux supports the feature for that provider, and ❌ when it does not. A small number after a symbol marks a note below the table.
+Every provider supports chat and streamed tool calls. Each matrix cell shows ✅ when LeapMux supports a feature and ❌ when it does not. Select a feature label for its exact definition. A note link explains a cell limit or condition.
 
 {{< matrix >}}
-<table>
-  <thead>
-    <tr>
-      <th>Feature</th>
-      <th><a href="https://claude.com/product/claude-code"><img src="/icons/agents/claude-code.svg" width="24" height="24" title="Claude Code" alt="Claude Code"></a></th>
-      <th><a href="https://openai.com/codex/"><img src="/icons/agents/codex.svg" width="24" height="24" title="Codex" alt="Codex"></a></th>
-      <th><a href="https://cursor.com/cli"><img src="/icons/agents/cursor.svg" width="24" height="24" title="Cursor" alt="Cursor"></a></th>
-      <th><a href="https://github.com/features/copilot/cli"><img src="/icons/agents/github-copilot.svg" width="24" height="24" title="GitHub Copilot" alt="GitHub Copilot"></a></th>
-      <th><a href="https://kilo.ai/cli"><img src="/icons/agents/kilo.svg" width="24" height="24" title="Kilo" alt="Kilo"></a></th>
-      <th><a href="https://opencode.ai/"><img src="/icons/agents/opencode.svg" width="24" height="24" title="OpenCode" alt="OpenCode"></a></th>
-      <th><a href="https://block.github.io/goose/"><img src="/icons/agents/goose.svg" width="24" height="24" title="Goose" alt="Goose"></a></th>
-      <th><a href="https://pi.dev/"><img src="/icons/agents/pi.svg" width="24" height="24" title="Pi" alt="Pi"></a><a href="#note-1" aria-label="Note 1">¹</a></th>
-      <th><a href="https://github.com/esengine/DeepSeek-Reasonix"><img src="/icons/agents/reasonix.svg" width="24" height="24" title="Reasonix" alt="Reasonix"></a></th>
-      <th><a href="https://zcode.z.ai/"><img src="/icons/agents/zcode.svg" width="24" height="24" title="ZCode" alt="ZCode"></a></th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Text attachments</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Image attachments</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td><a href="#note-2" aria-label="Note 2">✅²</a></td>
-    </tr>
-    <tr>
-      <td>PDF attachments</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Other binary attachments</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Images in tool results</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-2" aria-label="Note 2">✅²</a></td>
-    </tr>
-    <tr>
-      <td>Thinking in the transcript</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Context usage</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Compaction notice</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-5" aria-label="Note 5">❌⁵</a></td>
-      <td>✅</td>
-      <td><a href="#note-5" aria-label="Note 5">❌⁵</a></td>
-      <td><a href="#note-5" aria-label="Note 5">❌⁵</a></td>
-      <td><a href="#note-5" aria-label="Note 5">❌⁵</a></td>
-      <td>✅</td>
-      <td><a href="#note-5" aria-label="Note 5">❌⁵</a></td>
-      <td><a href="#note-5" aria-label="Note 5">❌⁵</a></td>
-    </tr>
-    <tr>
-      <td>Rate-limit state</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Session resume</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Permission prompts</td>
-      <td>✅</td>
-      <td><a href="#note-18" aria-label="Note 18">✅¹⁸</a></td>
-      <td>✅</td>
-      <td><a href="#note-18" aria-label="Note 18">✅¹⁸</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-18" aria-label="Note 18">✅¹⁸</a></td>
-    </tr>
-    <tr>
-      <td>Plan mode</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Plan approval banner</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-8" aria-label="Note 8">❌⁸</a></td>
-      <td><a href="#note-8" aria-label="Note 8">❌⁸</a></td>
-      <td>❌</td>
-      <td>✅</td>
-      <td><a href="#note-8" aria-label="Note 8">❌⁸</a></td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Agent questions</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-9" aria-label="Note 9">✅⁹</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-10" aria-label="Note 10">❌¹⁰</a></td>
-      <td>✅</td>
-      <td><a href="#note-10" aria-label="Note 10">❌¹⁰</a></td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>MCP input form</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-11" aria-label="Note 11">❌¹¹</a></td>
-      <td><a href="#note-11" aria-label="Note 11">❌¹¹</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-11" aria-label="Note 11">❌¹¹</a></td>
-    </tr>
-    <tr>
-      <td>Smart permissions shortcut</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Bypass permissions shortcut</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-12" aria-label="Note 12">❌¹²</a></td>
-      <td>✅</td>
-      <td><a href="#note-12" aria-label="Note 12">❌¹²</a></td>
-      <td><a href="#note-12" aria-label="Note 12">❌¹²</a></td>
-      <td>✅</td>
-      <td><a href="#note-12" aria-label="Note 12">❌¹²</a></td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Model</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Reasoning effort</td>
-      <td><a href="#note-14" aria-label="Note 14">✅¹⁴</a></td>
-      <td>✅</td>
-      <td><a href="#note-13" aria-label="Note 13">❌¹³</a></td>
-      <td><a href="#note-14" aria-label="Note 14">✅¹⁴</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-14" aria-label="Note 14">✅¹⁴</a></td>
-    </tr>
-    <tr>
-      <td>Mode</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td><a href="#note-13" aria-label="Note 13">✅¹³</a></td>
-    </tr>
-    <tr>
-      <td>Session goal: set and clear</td>
-      <td><a href="#note-15" aria-label="Note 15">✅¹⁵</a></td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td><a href="#note-15" aria-label="Note 15">✅¹⁵</a></td>
-      <td>❌</td>
-      <td><a href="#note-15" aria-label="Note 15">✅¹⁵</a></td>
-      <td>✅</td>
-      <td><a href="#note-15" aria-label="Note 15">✅¹⁵</a></td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Session goal: pause and resume</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td><a href="#note-15" aria-label="Note 15">✅¹⁵</a></td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>To-do sidebar</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Background tasks sidebar</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Subagent transcript tab</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Subagent live transcript</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-22" aria-label="Note 22">❌²²</a></td>
-      <td>✅</td>
-      <td><a href="#note-22" aria-label="Note 22">❌²²</a></td>
-      <td><a href="#note-22" aria-label="Note 22">❌²²</a></td>
-      <td><a href="#note-24" aria-label="Note 24">✅²⁴</a></td>
-      <td><a href="#note-22" aria-label="Note 22">❌²²</a></td>
-      <td><a href="#note-22" aria-label="Note 22">❌²²</a></td>
-      <td><a href="#note-24" aria-label="Note 24">✅²⁴</a></td>
-    </tr>
-    <tr>
-      <td>Send to a subagent</td>
-      <td><a href="#note-36" aria-label="Note 36">❌³⁶</a></td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Interrupt a subagent</td>
-      <td><a href="#note-16" aria-label="Note 16">✅¹⁶</a></td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Steer mid-turn</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-17" aria-label="Note 17">❌¹⁷</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-17" aria-label="Note 17">✅¹⁷</a></td>
-      <td>✅</td>
-      <td><a href="#note-17" aria-label="Note 17">✅¹⁷</a></td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Workflow grouping</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-    </tr>
-  </tbody>
-  <thead>
-    <tr>
-      <th>Feature</th>
-      <th><a href="https://codewhale.net/en/product"><img src="/icons/agents/codewhale.svg" width="24" height="24" title="Codewhale" alt="Codewhale"></a></th>
-      <th><a href="https://moonshotai.github.io/kimi-code/en/"><img src="/icons/agents/kimi-code.svg" width="24" height="24" title="Kimi Code" alt="Kimi Code"></a></th>
-      <th><a href="https://mimo.xiaomi.com/coder"><img src="/icons/agents/mimo-code.svg" width="24" height="24" title="MiMo Code" alt="MiMo Code"></a></th>
-      <th><a href="https://qwenlm.github.io/qwen-code-docs/en/users/overview"><img src="/icons/agents/qwen-code.svg" width="24" height="24" title="Qwen Code" alt="Qwen Code"></a></th>
-      <th><a href="https://omp.sh"><img src="/icons/agents/oh-my-pi.svg" width="24" height="24" title="Oh My Pi" alt="Oh My Pi"></a></th>
-      <th><a href="https://x.ai/cli"><img src="/icons/agents/grok-build.svg" width="24" height="24" title="Grok Build" alt="Grok Build"></a></th>
-      <th><a href="https://kiro.dev/cli/"><img src="/icons/agents/kiro.svg" width="24" height="24" title="Kiro" alt="Kiro"></a></th>
-      <th><a href="https://ampcode.com/"><img src="/icons/agents/amp.svg" width="24" height="24" title="Amp" alt="Amp"></a></th>
-      <th><a href="https://cline.bot/cli"><img src="/icons/agents/cline.svg" width="24" height="24" title="Cline" alt="Cline"></a></th>
-      <th><a href="https://codebuddy.ai"><img src="/icons/agents/codebuddy.svg" width="24" height="24" title="CodeBuddy Code" alt="CodeBuddy Code"></a></th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Text attachments</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Image attachments</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>PDF attachments</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Other binary attachments</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Images in tool results</td>
-      <td><a href="#note-3" aria-label="Note 3">❌³</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-4" aria-label="Note 4">✅⁴</a></td>
-      <td><a href="#note-3" aria-label="Note 3">❌³</a></td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Thinking in the transcript</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Context usage</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Compaction notice</td>
-      <td><a href="#note-5" aria-label="Note 5">❌⁵</a></td>
-      <td>✅</td>
-      <td><a href="#note-5" aria-label="Note 5">❌⁵</a></td>
-      <td><a href="#note-5" aria-label="Note 5">❌⁵</a></td>
-      <td>✅</td>
-      <td><a href="#note-5" aria-label="Note 5">❌⁵</a></td>
-      <td><a href="#note-5" aria-label="Note 5">❌⁵</a></td>
-      <td><a href="#note-5" aria-label="Note 5">❌⁵</a></td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Rate-limit state</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td><a href="#note-6" aria-label="Note 6">❌⁶</a></td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Session resume</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-20" aria-label="Note 20">✅²⁰</a></td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Permission prompts</td>
-      <td><a href="#note-18" aria-label="Note 18">✅¹⁸</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-19" aria-label="Note 19">✅¹⁹</a></td>
-      <td><a href="#note-18" aria-label="Note 18">✅¹⁸</a></td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Plan mode</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-7" aria-label="Note 7">❌⁷</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-4" aria-label="Note 4">❌⁴</a></td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Plan approval banner</td>
-      <td><a href="#note-8" aria-label="Note 8">❌⁸</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-7" aria-label="Note 7">❌⁷</a></td>
-      <td>✅</td>
-      <td><a href="#note-8" aria-label="Note 8">❌⁸</a></td>
-      <td><a href="#note-4" aria-label="Note 4">❌⁴</a></td>
-      <td><a href="#note-8" aria-label="Note 8">✅⁸</a></td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Agent questions</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-4" aria-label="Note 4">❌⁴</a></td>
-      <td><a href="#note-9" aria-label="Note 9">✅⁹</a></td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>MCP input form</td>
-      <td><a href="#note-11" aria-label="Note 11">❌¹¹</a></td>
-      <td><a href="#note-11" aria-label="Note 11">❌¹¹</a></td>
-      <td>✅</td>
-      <td><a href="#note-11" aria-label="Note 11">❌¹¹</a></td>
-      <td><a href="#note-11" aria-label="Note 11">❌¹¹</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-4" aria-label="Note 4">❌⁴</a></td>
-      <td><a href="#note-11" aria-label="Note 11">❌¹¹</a></td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Smart permissions shortcut</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Bypass permissions shortcut</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Model</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-13" aria-label="Note 13">❌¹³</a></td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Reasoning effort</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-14" aria-label="Note 14">✅¹⁴</a></td>
-      <td><a href="#note-13" aria-label="Note 13">❌¹³</a></td>
-      <td><a href="#note-14" aria-label="Note 14">✅¹⁴</a></td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Mode</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-13" aria-label="Note 13">✅¹³</a></td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Session goal: set and clear</td>
-      <td>✅</td>
-      <td><a href="#note-15" aria-label="Note 15">✅¹⁵</a></td>
-      <td>✅</td>
-      <td><a href="#note-15" aria-label="Note 15">✅¹⁵</a></td>
-      <td><a href="#note-7" aria-label="Note 7">❌⁷</a></td>
-      <td><a href="#note-15" aria-label="Note 15">✅¹⁵</a></td>
-      <td><a href="#note-15" aria-label="Note 15">✅¹⁵</a></td>
-      <td><a href="#note-4" aria-label="Note 4">❌⁴</a></td>
-      <td>❌</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Session goal: pause and resume</td>
-      <td>❌</td>
-      <td><a href="#note-15" aria-label="Note 15">✅¹⁵</a></td>
-      <td>❌</td>
-      <td><a href="#note-15" aria-label="Note 15">✅¹⁵</a></td>
-      <td><a href="#note-7" aria-label="Note 7">❌⁷</a></td>
-      <td><a href="#note-15" aria-label="Note 15">✅¹⁵</a></td>
-      <td><a href="#note-15" aria-label="Note 15">✅¹⁵</a></td>
-      <td><a href="#note-4" aria-label="Note 4">❌⁴</a></td>
-      <td>❌</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>To-do sidebar</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-4" aria-label="Note 4">❌⁴</a></td>
-      <td>❌</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Background tasks sidebar</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-21" aria-label="Note 21">✅²¹</a></td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Subagent transcript tab</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-4" aria-label="Note 4">❌⁴</a></td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Subagent live transcript</td>
-      <td><a href="#note-24" aria-label="Note 24">✅²⁴</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-24" aria-label="Note 24">✅²⁴</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-4" aria-label="Note 4">❌⁴</a></td>
-      <td><a href="#note-23" aria-label="Note 23">✅²³</a></td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Send to a subagent</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td><a href="#note-38" aria-label="Note 38">❌³⁸</a></td>
-    </tr>
-    <tr>
-      <td>Interrupt a subagent</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Steer mid-turn</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-17" aria-label="Note 17">✅¹⁷</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Workflow grouping</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-4" aria-label="Note 4">❌⁴</a></td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-  </tbody>
-  <thead>
-    <tr>
-      <th>Feature</th>
-      <th><a href="https://www.jetbrains.com/junie/"><img src="/icons/agents/junie.svg" width="24" height="24" title="Junie" alt="Junie"></a></th>
-      <th><a href="https://docs.letta.com/letta-code"><img src="/icons/agents/letta.svg" width="24" height="24" title="Letta Code" alt="Letta Code"></a></th>
-      <th><a href="https://dirac.run"><img src="/icons/agents/dirac.svg" width="24" height="24" title="Dirac" alt="Dirac"></a></th>
-      <th><a href="https://qoder.com"><img src="/icons/agents/qoder.svg" width="24" height="24" title="Qoder CLI" alt="Qoder CLI"></a></th>
-      <th><a href="https://docs.factory.ai/cli"><img src="/icons/agents/droid.svg" width="24" height="24" title="Factory Droid" alt="Factory Droid"></a></th>
-      <th><a href="https://fast-agent.ai"><img src="/icons/agents/fast-agent.svg" width="24" height="24" title="Fast Agent" alt="Fast Agent"></a></th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Text attachments</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Image attachments</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>PDF attachments</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td><a href="#note-25" aria-label="Note 25">✅²⁵</a></td>
-    </tr>
-    <tr>
-      <td>Other binary attachments</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Images in tool results</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Thinking in the transcript</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Context usage</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Compaction notice</td>
-      <td><a href="#note-5" aria-label="Note 5">❌⁵</a></td>
-      <td><a href="#note-5" aria-label="Note 5">❌⁵</a></td>
-      <td><a href="#note-5" aria-label="Note 5">❌⁵</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-5" aria-label="Note 5">❌⁵</a></td>
-    </tr>
-    <tr>
-      <td>Rate-limit state</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Session resume</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Permission prompts</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-26" aria-label="Note 26">✅²⁶</a></td>
-    </tr>
-    <tr>
-      <td>Plan mode</td>
-      <td><a href="#note-27" aria-label="Note 27">✅²⁷</a></td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-28" aria-label="Note 28">✅²⁸</a></td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Plan approval banner</td>
-      <td><a href="#note-27" aria-label="Note 27">✅²⁷</a></td>
-      <td>❌</td>
-      <td><a href="#note-8" aria-label="Note 8">❌⁸</a></td>
-      <td>✅</td>
-      <td><a href="#note-28" aria-label="Note 28">✅²⁸</a></td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Agent questions</td>
-      <td><a href="#note-29" aria-label="Note 29">✅²⁹</a></td>
-      <td>✅</td>
-      <td><a href="#note-10" aria-label="Note 10">❌¹⁰</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>MCP input form</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-30" aria-label="Note 30">❌³⁰</a></td>
-    </tr>
-    <tr>
-      <td>Smart permissions shortcut</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Bypass permissions shortcut</td>
-      <td><a href="#note-37" aria-label="Note 37">❌³⁷</a></td>
-      <td>✅</td>
-      <td><a href="#note-37" aria-label="Note 37">❌³⁷</a></td>
-      <td><a href="#note-37" aria-label="Note 37">❌³⁷</a></td>
-      <td>✅</td>
-      <td><a href="#note-37" aria-label="Note 37">❌³⁷</a></td>
-    </tr>
-    <tr>
-      <td>Model</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Reasoning effort</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Mode</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-31" aria-label="Note 31">✅³¹</a></td>
-    </tr>
-    <tr>
-      <td>Session goal: set and clear</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Session goal: pause and resume</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>To-do sidebar</td>
-      <td><a href="#note-27" aria-label="Note 27">✅²⁷</a></td>
-      <td>✅</td>
-      <td><a href="#note-32" aria-label="Note 32">❌³²</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td>Background tasks sidebar</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Subagent transcript tab</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-33" aria-label="Note 33">✅³³</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td><a href="#note-33" aria-label="Note 33">✅³³</a></td>
-    </tr>
-    <tr>
-      <td>Subagent live transcript</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Send to a subagent</td>
-      <td><a href="#note-38" aria-label="Note 38">❌³⁸</a></td>
-      <td><a href="#note-38" aria-label="Note 38">❌³⁸</a></td>
-      <td>❌</td>
-      <td><a href="#note-38" aria-label="Note 38">❌³⁸</a></td>
-      <td>✅</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Interrupt a subagent</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Steer mid-turn</td>
-      <td><a href="#note-34" aria-label="Note 34">✅³⁴</a></td>
-      <td><a href="#note-17" aria-label="Note 17">❌¹⁷</a></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td>Workflow grouping</td>
-      <td>❌</td>
-      <td><a href="#note-35" aria-label="Note 35">❌³⁵</a></td>
-      <td>❌</td>
-      <td>✅</td>
-      <td><a href="#note-28" aria-label="Note 28">❌²⁸</a></td>
-      <td>❌</td>
-    </tr>
-  </tbody>
-</table>
-{{< /matrix >}}
-
-
-
-**Notes**
-
-1. <span class="note-anchor" id="note-1"></span>Pi extensions provide these features:
-   - Plan mode and plan approval: [pi-plan-mode](https://pi.dev/packages/@narumitw/pi-plan-mode)
-   - Session goal: [pi-goal-x](https://pi.dev/packages/pi-goal-x)
-   - To-do list: [rpiv-todo](https://pi.dev/packages/@juicesharp/rpiv-todo)
-   - Agent questions: [rpiv-ask-user-question](https://pi.dev/packages/@juicesharp/rpiv-ask-user-question)
-   - MCP prompts: [pi-mcp-adapter](https://pi.dev/packages/pi-mcp-adapter)
-   - Subagent tabs: [pi-subagents](https://pi.dev/packages/@tintinweb/pi-subagents)
-
-   Pi's plan mode is a setting of the extension, not a setting of the provider, so **Shift+Tab** does not toggle it. Type the extension's `/plan` command to start planning.
-2. <span class="note-anchor" id="note-2"></span>ZCode takes an image attachment only on a model that declares image input (see [Attachments](#attachments)). A tool result arrives as text, and LeapMux restores the picture from ZCode's stored attachment records.
-3. <span class="note-anchor" id="note-3"></span>Codewhale and Cline build tool results as text only, so no tool result can carry a picture.
-4. <span class="note-anchor" id="note-4"></span>Amp has no plan mode, to-do tool, session goal or MCP input request. Its question tool (`ask_user_choice`) cannot be answered in stream-JSON mode: the session ends, so LeapMux keeps the tool off. The stream also carries no child messages and no workflow activity. An Amp MCP result is text only; a `Read` of an image file does render.
-5. <span class="note-anchor" id="note-5"></span>The provider's protocol reports no compaction size. The Agent Client Protocol family reports only that compaction runs; ZCode and Amp report none; MiMo Code reports a summary without a size; Codewhale compacts as a turn of its own.
-6. <span class="note-anchor" id="note-6"></span>Kiro shows a rate-limit notice row ("The model service is busy"), not rate-limit state.
-7. <span class="note-anchor" id="note-7"></span>Oh My Pi has plan mode and a session goal, but LeapMux cannot reach them. The `rpc-ui` mode that LeapMux drives has no mode command, and `/plan` and `/goal` are TUI-only. Tracked upstream: [oh-my-pi#8171](https://github.com/can1357/oh-my-pi/issues/8171) and [oh-my-pi#9230](https://github.com/can1357/oh-my-pi/issues/9230).
-8. <span class="note-anchor" id="note-8"></span>For Kilo, OpenCode, Reasonix and Codewhale, the plan arrives with no approval request. Switch the mode back to start the work. Kiro switches back to Default mode and starts the work itself. Codewhale's plan mode refuses edits and commands. Cline discusses the plan in the chat first: say it is good and the banner appears. Dirac's plan card resolves at the next prompt instead of raising an approval banner, so there is no **Approve** to press.
-9. <span class="note-anchor" id="note-9"></span>GitHub Copilot and Cline carry one question per request.
-10. <span class="note-anchor" id="note-10"></span>Goose and Reasonix raise no question request.
-11. <span class="note-anchor" id="note-11"></span>Kimi Code's MCP clients negotiate no elicitation, so an MCP server cannot ask for input. OpenCode and Kilo declare no elicitation capability (tracked upstream: [opencode#23066](https://github.com/anomalyco/opencode/issues/23066)). Qwen Code does not implement it (upstream work on the `feat/mcp-elicitation-support` branch). Codewhale, ZCode, Oh My Pi and Cline carry no MCP input request that LeapMux renders.
-12. <span class="note-anchor" id="note-12"></span>Cursor offers agent, plan and ask modes only. OpenCode and Kilo have no permission-mode axis, and Pi has no permission controls. Letta Code's modes are **Standard**, **Accept Edits**, **Unrestricted** and **Strict**. Factory Droid's Mode axis is its autonomy axis: **Default** (read-only), **Auto (Low)**, **Auto (Medium)** and **Auto (High)**. CodeBuddy Code offers six modes and advertises four of them at startup: **Default**, **Accept Edits**, **Plan** and **Bypass Permissions**.
-13. <span class="note-anchor" id="note-13"></span>Amp's Mode picks the model and the effort, so Amp offers no Model or Reasoning effort. A thread keeps Amp's mode of its first message; start a new session to use another mode. Cursor's effort rides its model ids, so Cursor offers no Reasoning effort. Factory Droid's effort is `none`, `low`, `medium` or `high`. ZCode's own `auto` mode is not offered: the shipped build denies every tool call under it.
-14. <span class="note-anchor" id="note-14"></span>Claude Code (Haiku), GitHub Copilot, ZCode, Kiro and Cline offer Reasoning effort only when the chosen model offers levels.
-15. <span class="note-anchor" id="note-15"></span>Claude Code, Goose, Kilo, Qwen Code and Grok Build take a goal only when their CLI advertises its `goal` command. Kimi Code takes one only while the engine's goal feature runs. Reasonix sets a goal only in Goal mode; otherwise it can only clear one. Kiro needs a live goal run for clear, pause and resume, and works on a goal for at most five rounds before it pauses it; resume the goal to continue. Qwen Code's `/loop` command and its scheduled prompts are off in LeapMux.
-16. <span class="note-anchor" id="note-16"></span>The Interrupt control of a subagent tab is what `SupportsChildInterrupt` reports. Claude Code stops a child through its `stop_task` control request, on the CLI's own task id. A provider that reports no interrupt leaves the child tab without that control.
-17. <span class="note-anchor" id="note-17"></span>Cursor's protocol surface exposes no steer method. Goose and Reasonix steer only when the CLI advertises a steer method. Qwen Code takes a steer at its next tool gap.
-18. <span class="note-anchor" id="note-18"></span>A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow as** offers **Once**, **Session**, **Command rule**, or **Host rule**. ZCode's "always" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.
-19. <span class="note-anchor" id="note-19"></span>Kiro's prompts follow its own rules. Its scope applies to **Deny** as well: **Always** with **Deny** refuses the same call in every workspace until you remove the rule in Kiro's settings. Kiro runs the working directory's hooks (`.kiro/hooks/`) without asking. In Supervised Autopilot, a turn ends with a review of its file changes: **Allow** keeps them, **Deny** restores each file. Its **Content Collection** setting decides whether Kiro may use your session content to improve its service.
-20. <span class="note-anchor" id="note-20"></span>Cline uses your own Cline settings, credentials, and stored sessions. Do not continue one session in your own Cline and in LeapMux at the same time: each one rewrites the stored conversation.
-21. <span class="note-anchor" id="note-21"></span>A Cline agent can run your scheduled Cline automations, and its subagents run their tools without a prompt, so approve a spawn only for a task you trust. Cline hooks and plugins run only in **Auto-approve**, and Cline runs them without asking.
-22. <span class="note-anchor" id="note-22"></span>Cursor, Kilo, OpenCode, Pi and Reasonix deliver the subagent's transcript when it completes: the prompt at spawn and the report at the end. A background spawn of Kilo, OpenCode or Reasonix keeps the prompt only.
-23. <span class="note-anchor" id="note-23"></span>Cline streams one subagent live. When two run at the same time, their transcripts appear when they finish.
-24. <span class="note-anchor" id="note-24"></span>A transcript streams at message boundaries: a long text run appears when its message or turn ends. Goose streams the child's tool rows only, and its text never arrives. ZCode streams the tool cards live and sends the child's text as the final report. Codewhale and Qwen Code tail a transcript file, with about half a second of lag.
-25. <span class="note-anchor" id="note-25"></span>Fast Agent's `attach_media` tool stages images and PDFs, but the ACP surface carries no image in a tool result and no binary attachment beyond what the tool stages.
-26. <span class="note-anchor" id="note-26"></span>Fast Agent prompts only for MCP tools and shell commands. Its local filesystem tools (`read_text_file`, `write_text_file`, `edit_file`) run without a prompt, so a local write is never seen by the banner. Qoder CLI runs a read-only shell command without a prompt in the default mode: only a write, or another call it deems askable, raises the banner.
-27. <span class="note-anchor" id="note-27"></span>Junie's plan mode is a `mode` config option, and a plan review is a request of its own. The to-do list is the plan's entries: Junie sends no separate to-do update.
-28. <span class="note-anchor" id="note-28"></span>Factory Droid's plan surface is its Spec mode. `ExitSpecMode` is the approval. Missions (its multi-agent workflows) are a one-shot `exec` surface and are refused on the streaming input LeapMux drives, so no workflow grouping appears.
-29. <span class="note-anchor" id="note-29"></span>Junie raises a question as a permission-shaped request with one option per choice: questions and permissions share one channel in 26.9.22.
-30. <span class="note-anchor" id="note-30"></span>Fast Agent registers no elicitation callback on the ACP path, so an MCP server cannot ask for input.
-31. <span class="note-anchor" id="note-31"></span>Fast Agent's `agent` mode axis selects the agent, not a permission mode. The permission mode is fixed by the launch flags (`-x --no-permissions`), so the Mode chip shows the agent choice.
-32. <span class="note-anchor" id="note-32"></span>Dirac sends no standalone to-do update. Its plan entries are the only checklist, and they arrive with no approval request.
-33. <span class="note-anchor" id="note-33"></span>Dirac and Fast Agent nest a subagent under the parent tool call. The child transcript is readable, but the subagent is one card in the parent's transcript rather than a session of its own.
-34. <span class="note-anchor" id="note-34"></span>Junie advertises steering (`_meta.steering.supported`) but offers no steer method in its ACP catalog. LeapMux steers by queueing a follow-up prompt, which starts the next turn rather than inserting into the running one.
-35. <span class="note-anchor" id="note-35"></span>Letta Code's `Workflow` tool exists in the toolset but emits no workflow grouping events on the wire. A background process summary can carry `kind:"workflow"`, and LeapMux draws no group from it.
-36. <span class="note-anchor" id="note-36"></span>Claude Code's own TUI can send a message to a Task subagent (it queues the message while the child runs, or resumes the child when it is idle). LeapMux cannot: it drives Claude over stream-json stdin, whose user message carries no child or task id, so a typed message always lands on the root session. The child tab is therefore read-only. Closing this needs a wire path that injects into a subagent conversation.
-37. <span class="note-anchor" id="note-37"></span>The Bypass permissions shortcut is the plus-menu / banner control that switches the session to the provider's own bypass mode. A provider whose plugin declares no permission preset renders no shortcut, whatever its CLI can do. Junie, Dirac, Qoder and Fast Agent are in that group today.
-38. <span class="note-anchor" id="note-38"></span>Kimi Code, MiMo Code and Factory Droid accept a typed message on a subagent tab today. Junie, Letta Code and Qoder CLI state on the wire that a child takes no further input, so their child tabs are read-only. Earlier drafts of this table marked the read-only three ✅; that was wrong.

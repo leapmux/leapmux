@@ -3,6 +3,9 @@ package dirac
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
+
+	"github.com/coder/quartz"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -17,6 +20,13 @@ const diracSteerMethod = "dev.dirac/whisper"
 // Agent manages one Dirac ACP process.
 type Agent struct {
 	acp.Base
+	root       string
+	clock      quartz.Clock
+	childMu    sync.Mutex
+	childState map[string]*diracChildState
+	childDone  map[string]struct{}
+	childStop  chan struct{}
+	archiveWG  sync.WaitGroup
 }
 
 // This assertion makes a missing Agent method a compile error.

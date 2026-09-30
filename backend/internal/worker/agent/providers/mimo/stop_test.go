@@ -336,9 +336,32 @@ func TestStopDoesNotWaitForAStreamThatEnded(t *testing.T) {
 func TestStopWithoutATurnPersistsNothing(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSinkTestAgent(t)
+	a.manualCompactionID = "prt_old"
+	a.manualCompactionReady = true
+	a.manualFollowupSending = true
+	a.manualFollowupBusy = true
+	a.sessionSwitching = true
 	a.SimulateExitForTest()
 
 	a.Stop()
 	assert.Empty(t, sink.Messages())
 	assert.Empty(t, sink.ChildAgentIDs(), "a flush opens no transcript")
+	assert.Empty(t, a.manualCompactionID)
+	assert.False(t, a.manualCompactionReady)
+	assert.False(t, a.manualFollowupSending)
+	assert.False(t, a.manualFollowupBusy)
+	assert.False(t, a.sessionSwitching)
+}
+
+func TestStopWithPendingCompactionStartPublishesInactive(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	a.compactionAck = make(chan struct{})
+	a.SimulateExitForTest()
+
+	a.Stop()
+	assert.Nil(t, a.compactionAck)
+	active, published := sink.LastTurnActive()
+	assert.True(t, published)
+	assert.False(t, active, "the stopped process owns no pending compaction turn")
 }

@@ -87,12 +87,10 @@ func TestQoderUpdateSettingsRestartsForEffort(t *testing.T) {
 	t.Parallel()
 	a, _, _ := newGoalAgent(t)
 
-	result := a.UpdateSettings(optionmap.Map{agent.OptionIDEffort: contracts.QoderEffortLevelHigh})
+	options := optionmap.Map{agent.OptionIDEffort: contracts.QoderEffortLevelHigh}
+	result := a.UpdateSettings(options)
 
-	assert.True(t, result.AppliedLive, "nothing failed live: the axis is waiting for a restart")
-	assert.Equal(t, agent.OptionSettlementUnresolved, result.Settlements[agent.OptionIDEffort].State)
-	assert.Empty(t, result.ConfirmedOptions())
-	assert.Equal(t, "", result.SurfacedOptions[agent.OptionIDEffort], "the running agent still has the launch level")
+	assert.Equal(t, agent.RestartRequiredSettings(options), result)
 }
 
 func TestQoderSettingsSnapshotCarriesTheEffort(t *testing.T) {

@@ -1,9 +1,8 @@
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { hubUrlFromStateJson, refusedHostsReport, startSuiteServer } from './suiteServer'
+import { refusedHostsReport, startSuiteServer } from './suiteServer'
 
 /**
  * The happy path of `startSuiteServer` is the suite itself: every E2E run
@@ -25,7 +24,9 @@ afterEach(() => {
 })
 
 function scratchRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), 'leapmux-suite-server-test-'))
+  const scratch = resolve(import.meta.dirname, '../../../../.tmp')
+  mkdirSync(scratch, { recursive: true })
+  const root = mkdtempSync(join(scratch, 'suite-server-test-'))
   roots.push(root)
   return root
 }
@@ -146,28 +147,6 @@ exit 0
   return { binary, recorded }
 }
 
-describe('hubUrlFromStateJson', () => {
-  it('takes the port from the one TCP entry of the bind set', () => {
-    expect(hubUrlFromStateJson(JSON.stringify({ pid: 7, listen: ['127.0.0.1:44321', 'unix:/tmp/hub.sock'] })))
-      .toBe('http://localhost:44321')
-  })
-
-  it('rejects a bind set with no TCP entry', () => {
-    expect(() => hubUrlFromStateJson(JSON.stringify({ pid: 7, listen: ['unix:/tmp/hub.sock'] })))
-      .toThrow(/expected one TCP address/)
-  })
-
-  it('rejects a bind set with more than one TCP entry', () => {
-    expect(() => hubUrlFromStateJson(JSON.stringify({ pid: 7, listen: ['127.0.0.1:1', '127.0.0.1:2'] })))
-      .toThrow(/expected one TCP address/)
-  })
-
-  it('rejects a TCP entry that names no port', () => {
-    expect(() => hubUrlFromStateJson(JSON.stringify({ pid: 7, listen: ['127.0.0.1:'] })))
-      .toThrow(/names no port/)
-  })
-})
-
 /**
  * How many TCP servers this process holds open.
  *
@@ -177,7 +156,7 @@ describe('hubUrlFromStateJson', () => {
  * pass whatever happened.
  */
 function openServerCount(): number {
-  const active = (process as unknown as { _getActiveHandles?: () => unknown[] })._getActiveHandles
+  const active = Reflect.get(process, '_getActiveHandles') as (() => unknown[]) | undefined
   if (typeof active !== 'function')
     return -1
   return active.call(process).filter(handle => handle?.constructor?.name === 'Server').length

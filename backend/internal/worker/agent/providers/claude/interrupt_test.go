@@ -301,6 +301,12 @@ func TestClaudeCodeAgent_InterruptChild_TheStopTaskErrorSurfaces(t *testing.T) {
 	assert.Contains(t, err.Error(), "no such task")
 	assert.NotErrorIs(t, err, agent.ErrChildRouteNotReady)
 	assert.NotErrorIs(t, err, agent.ErrChildOperationUnsupported)
+
+	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-2","tool_use_id":"spawn-2","status":"stopped"}`))
+	tasks := rig.sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.StatusStopped, tasks[0].Status,
+		"a rejected stop_task must not change a later stop into a user interrupt")
 }
 
 // A stop WE asked for is a user interrupt, not a plain stop: the closing row
@@ -320,6 +326,22 @@ func TestClaudeCodeAgent_InterruptChild_TheClosingRowSaysInterrupted(t *testing.
 	require.Len(t, tasks, 1)
 	assert.Equal(t, bgtask.StatusInterrupted, tasks[0].Status,
 		"a stop InterruptChild asked for closes as interrupted, not a plain stop")
+}
+
+func TestClaudeCodeAgent_InterruptChild_NotificationBeforeAckSaysInterrupted(t *testing.T) {
+	t.Parallel()
+
+	rig := newClaudeInterruptRigWithPreamble(t, []string{
+		`{"type":"system","subtype":"task_notification","task_id":"task-5","tool_use_id":"spawn-5","status":"stopped"}`,
+	})
+	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-5","tool_use_id":"spawn-5","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
+
+	require.NoError(t, rig.agent.InterruptChild("task-5"))
+
+	tasks := rig.sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.StatusInterrupted, tasks[0].Status,
+		"the CLI can close the child before it acknowledges stop_task")
 }
 
 func TestClaudeCodeAgent_AStoppedRowWithoutAnInterruptSaysStopped(t *testing.T) {

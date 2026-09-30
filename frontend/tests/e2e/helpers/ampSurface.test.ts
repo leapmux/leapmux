@@ -128,6 +128,13 @@ async function openThread(current: Mock): Promise<{ threadID: string, client: Cl
 
 const userMessage = (text: string, extra: Record<string, unknown> = {}) => ({ content: [{ type: 'text', text }], messageId: ampMessageID(), ...extra })
 
+function seededMessages(count: number): Array<{ role: 'user' | 'assistant', text: string }> {
+  return Array.from({ length: count }, (_, index) => ({
+    role: index % 2 === 0 ? 'user' : 'assistant',
+    text: `Saved message ${index}.`,
+  }))
+}
+
 describe('amp ids', () => {
   it('spells a message id and a tool-use id the way the protocol validates them', () => {
     expect(ampMessageID()).toMatch(ID_PATTERN.message)
@@ -195,10 +202,10 @@ describe('the Amp REST surface', () => {
 
   it('lists the threads with messages, newest first, and keeps an archived one out', async () => {
     mock = await startMock([])
-    await mock.post(AMP_E2E_THREADS_PATH, { id: 'T-old', title: 'Old', tree: 'file:///work', messageCount: 2, updatedAt: 1000 })
-    await mock.post(AMP_E2E_THREADS_PATH, { id: 'T-new', title: 'New', tree: 'file:///work', messageCount: 4, updatedAt: 2000 })
-    await mock.post(AMP_E2E_THREADS_PATH, { id: 'T-archived', title: 'Archived', tree: 'file:///work', messageCount: 1, archived: true })
-    await mock.post(AMP_E2E_THREADS_PATH, { id: 'T-empty', title: 'Empty', tree: 'file:///work', messageCount: 0 })
+    await mock.post(AMP_E2E_THREADS_PATH, { id: 'T-old', title: 'Old', tree: 'file:///work', messages: seededMessages(2), updatedAt: 1000 })
+    await mock.post(AMP_E2E_THREADS_PATH, { id: 'T-new', title: 'New', tree: 'file:///work', messages: seededMessages(4), updatedAt: 2000 })
+    await mock.post(AMP_E2E_THREADS_PATH, { id: 'T-archived', title: 'Archived', tree: 'file:///work', messages: seededMessages(1), archived: true })
+    await mock.post(AMP_E2E_THREADS_PATH, { id: 'T-empty', title: 'Empty', tree: 'file:///work', messages: [] })
     const listed = await mock.post('/api/internal?listThreads', { params: { limit: 10 } })
     const threads = (listed.result as { threads: Record<string, unknown>[] }).threads
     expect(threads.map(thread => thread.id)).toEqual(['T-new', 'T-old'])
@@ -251,6 +258,19 @@ describe('the Amp actor', () => {
       expect(String(messages[1]!.messageId)).toMatch(ID_PATTERN.message)
     }
     expect(mock.inferences[0]?.userText).toBe('LEAPMUXE2ESCENARIO:s1 hello')
+  })
+
+  it('reports the usage of the scripted answer', async () => {
+    mock = await startMock([{ text: 'Usage recorded.', usage: { inputTokens: 12_000, outputTokens: 40, contextWindow: 128_000 } }])
+    const { client } = await openThread(mock)
+    client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:usage report'))
+    await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
+    expect(client.messages()[1]?.usage).toMatchObject({
+      inputTokens: 12_000,
+      outputTokens: 40,
+      totalInputTokens: 12_000,
+      maxInputTokens: 128_000,
+    })
   })
 
   it('leases a local tool to the executor alone, under its executor name, and continues with the result', async () => {
@@ -519,7 +539,7 @@ describe('the Amp thread list', () => {
   it('pages the list by offset and limit, newest first', async () => {
     mock = await startMock([])
     for (const [id, updatedAt] of [['T-1', 1000], ['T-2', 2000], ['T-3', 3000]] as const)
-      await mock.post(AMP_E2E_THREADS_PATH, { id, title: id, tree: '', messageCount: 1, updatedAt })
+      await mock.post(AMP_E2E_THREADS_PATH, { id, title: id, tree: '', messages: seededMessages(1), updatedAt })
     const page = await mock.post('/api/internal?listThreads', { params: { offset: 1, limit: 1 } })
     expect((page.result as { threads: Record<string, unknown>[] }).threads.map(thread => thread.id)).toEqual(['T-2'])
     // A thread with no tree states no tree rather than an empty one.
@@ -529,7 +549,7 @@ describe('the Amp thread list', () => {
   it('archives a thread that the request states under either key, and ignores an unknown one', async () => {
     mock = await startMock([])
     for (const id of ['T-a', 'T-b', 'T-c'])
-      await mock.post(AMP_E2E_THREADS_PATH, { id, title: id, tree: '', messageCount: 1 })
+      await mock.post(AMP_E2E_THREADS_PATH, { id, title: id, tree: '', messages: seededMessages(1) })
     expect(await mock.post('/api/internal?archiveThread', { params: { threadID: 'T-a' } })).toEqual({ ok: true, result: {} })
     expect(await mock.post('/api/internal?archiveThread', { params: { thread: 'T-b' } })).toEqual({ ok: true, result: {} })
     expect(await mock.post('/api/internal?archiveThread', { params: { thread: 'T-unknown' } })).toEqual({ ok: true, result: {} })
@@ -539,7 +559,40 @@ describe('the Amp thread list', () => {
 
   it('answers a seeded thread with its view', async () => {
     mock = await startMock([])
-    expect(await mock.post(AMP_E2E_THREADS_PATH, { id: 'T-seed', title: 'Seed', tree: 'file:///w', messageCount: 3 }))
+    expect(await mock.post(AMP_E2E_THREADS_PATH, { id: 'T-seed', title: 'Seed', tree: 'file:///w', messages: seededMessages(3) }))
       .toEqual({ id: 'T-seed', agentMode: 'medium', tree: 'file:///w', title: 'Seed', messageCount: 3, archived: false })
+  })
+
+  it('includes seeded messages in the next inference after a thread resumes', async () => {
+    mock = await startMock([{ text: 'The resumed answer.' }])
+    await mock.post(AMP_E2E_THREADS_PATH, {
+      id: 'T-seeded-context',
+      title: 'Saved task',
+      tree: 'file:///work',
+      messages: [
+        { role: 'user', text: 'Remember AMP_PRIOR_CONTEXT_MARKER.' },
+        { role: 'assistant', text: 'AMP_PRIOR_ANSWER_MARKER is the saved answer.' },
+      ],
+    })
+    const client = await CliSocket.open(mock.origin, 'T-seeded-context')
+    client.request('client_resume', {})
+    client.request('client_append_user_msg', userMessage('What was the saved answer?'))
+    await expect.poll(() => mock!.inferences.length).toBe(1)
+    expect(mock.inferences[0]?.body.messages).toMatchObject([
+      { role: 'user', content: [{ type: 'text', text: 'Remember AMP_PRIOR_CONTEXT_MARKER.' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'AMP_PRIOR_ANSWER_MARKER is the saved answer.' }] },
+      { role: 'user', content: [{ type: 'text', text: 'What was the saved answer?' }] },
+    ])
+    client.close()
+  })
+
+  it('refuses a seeded message with a non-conversation role', async () => {
+    mock = await startMock([])
+    const response = await fetch(`${mock.origin}${AMP_E2E_THREADS_PATH}`, {
+      method: 'POST',
+      body: JSON.stringify({ id: 'T-invalid', title: 'Invalid', tree: 'file:///work', messages: [{ role: 'system', text: 'Do not seed this.' }] }),
+    })
+    expect(response.status).toBe(400)
+    expect(await mock.post('/api/internal?listThreads', { params: {} })).toMatchObject({ ok: true, result: { threads: [] } })
   })
 })

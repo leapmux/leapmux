@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { bashToolCall, editToolCall, readToolCall, writeToolCall } from './helpers/providerToolCalls'
-import { sendMessage, waitForAgentIdle } from './helpers/ui'
+import { sendMessage, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
 import { expect, QODER_E2E_SKIP_REASON, qoderTest } from './qoder-fixtures'
 
 /**
@@ -30,6 +30,10 @@ qoderTest.describe('Qoder CLI file tool execution', () => {
       { text: 'The file is edited.' },
     )
     await sendMessage(page, modelScript.prompt('Create the file, read it, then change parityBefore to parityAfter.'))
+    await modelScript.waitForSteps(1)
+    const banner = await waitForControlBanner(page)
+    await expect(banner).toContainText(fileName)
+    await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
     await modelScript.waitForSteps()
     await waitForAgentIdle(page, 180_000)
 

@@ -56,9 +56,6 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 	if opts.Effort() != "" {
 		args = append(args, "--reasoning-effort", opts.Effort())
 	}
-	if opts.ResumeSessionID != "" {
-		args = append(args, "--session-id", opts.ResumeSessionID)
-	}
 	if opts.WorkingDir != "" {
 		args = append(args, "--cwd", opts.WorkingDir)
 	}
@@ -79,10 +76,14 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 	}
 
 	a := &Agent{
-		Process:    providerkit.NewProcess(opts, "droid", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
-		sink:       agent.NewModelProgressResetSink(sink),
-		workingDir: opts.WorkingDir,
-		clock:      quartz.NewReal(),
+		Process:         providerkit.NewProcess(opts, "droid", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
+		sink:            agent.NewModelProgressResetSink(sink),
+		workingDir:      opts.WorkingDir,
+		homeDir:         opts.HomeDir,
+		clock:           quartz.NewReal(),
+		launchOpts:      opts,
+		launchSpec:      spec,
+		cleanupSettings: cleanupSettings,
 	}
 	if err := a.StartCmd(cmd, cancel); err != nil {
 		cancel()
@@ -94,7 +95,6 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 	cleanup := func() {
 		a.Stop()
 		_ = a.Wait()
-		cleanupSettings()
 	}
 
 	go a.ReadLines(agent.NewStdoutScanner(stdout), a.handleFrame)
@@ -106,29 +106,45 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 	return a, nil
 }
 
-// handshake sends droid.initialize_session and records the session id.
+// handshake initializes a new session or loads a saved session, then waits for
+// the native reply before a caller can send input.
 func (a *Agent) handshake(opts agent.Options) error {
-	machineID, err := droidMachineID()
-	if err != nil {
-		return err
+	resumeID := strings.TrimSpace(opts.ResumeSessionID)
+	method := droidMethodLoadSession
+	var params any = loadSessionParams{SessionID: resumeID}
+	if resumeID == "" {
+		machineID, err := droidMachineID()
+		if err != nil {
+			return err
+		}
+		method = droidMethodInitializeSession
+		params = initializeParams{
+			Cwd:             opts.WorkingDir,
+			MachineID:       machineID,
+			Model:           opts.Model(),
+			ReasoningEffort: opts.Effort(),
+			AutonomyMode:    droidAutonomyForMode(opts.PermissionMode()),
+		}
 	}
-	params := initializeParams{
-		Cwd:             opts.WorkingDir,
-		MachineID:       machineID,
-		Model:           opts.Model(),
-		ReasoningEffort: opts.Effort(),
-		AutonomyMode:    droidAutonomyForMode(opts.PermissionMode()),
+	a.Mu.Lock()
+	a.startupReply = make(chan error, 1)
+	if resumeID != "" {
+		a.sessionID = resumeID
 	}
-	if opts.ResumeSessionID != "" {
-		params.SessionID = opts.ResumeSessionID
-	}
+	reply := a.startupReply
+	a.Mu.Unlock()
+	defer func() {
+		a.Mu.Lock()
+		a.startupReply = nil
+		a.Mu.Unlock()
+	}()
 	raw, err := json.Marshal(params)
 	if err != nil {
 		return err
 	}
 	env := newDroidEnvelope(droidTypeRequest)
 	env.ID = droidInitRequestID
-	env.Method = droidMethodInitializeSession
+	env.Method = method
 	env.Params = raw
 	line, err := env.Marshal()
 	if err != nil {
@@ -137,10 +153,21 @@ func (a *Agent) handshake(opts agent.Options) error {
 	if err := a.WriteStdin(append(line, '\n')); err != nil {
 		return err
 	}
-	// The response arrives on the reader goroutine and is folded into state by
-	// handleFrame; the driver does not block on it beyond delivery.
-	a.sink.UpdateSessionID(opts.ResumeSessionID)
-	return nil
+	ctx, cancel := context.WithTimeout(a.Context(), opts.EffectiveStartupTimeout())
+	defer cancel()
+	select {
+	case err := <-reply:
+		return err
+	case <-a.ProcessDone():
+		select {
+		case err := <-reply:
+			return err
+		default:
+		}
+		return errAgentStopped
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // droidAutonomyFlag maps a LeapMux permission mode onto a `--auto` flag value.

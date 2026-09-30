@@ -75,12 +75,13 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// issues a session FILE PATH, which the token rule refuses by
 			// design -- a Windows path holds a backslash, and a deep path runs
 			// past the token byte cap -- so Pi answers for its own shape.
-			// The resolved value is not stored here: the agent process reports
-			// its own session handle back, and `piResumeArgs` resolves the
-			// column again at the argv sink. This call answers the field's
-			// question -- may this handle be submitted at all.
-			if _, err := svc.Agents.Registry().Plugin(r.GetAgentProvider()).
-				ResolveResumeHandle(r.GetAgentSessionId(), svc.HomeDir); err != nil {
+			// The provider resolves this handle once. Its canonical value is
+			// the pending claim and the provider's resume argument. The confirmed
+			// session column stays empty until the provider reports its identity.
+			agentProvider := agent.ProviderOrDefault(r.GetAgentProvider())
+			resumeSessionID, err := svc.Agents.Registry().Plugin(agentProvider).
+				ResolveResumeHandle(r.GetAgentSessionId(), svc.HomeDir)
+			if err != nil {
 				sendInvalidArgument(sender, err.Error())
 				return
 			}
@@ -134,13 +135,11 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				return
 			}
 
-			// Resolve default model based on agent provider.
-			agentProvider := agent.ProviderOrDefault(r.GetAgentProvider())
 			// Resolve the initial option selections: the client's requested values
 			// (model/effort/permissionMode/provider options), filled with provider
 			// defaults for any missing well-known and provider-specific ids.
 			requested := mergeOptions(nil, r.GetOptions())
-			launch := resolveLaunchOptions(svc.Agents.Registry(), requested, agentProvider, r.GetAgentSessionId() != "")
+			launch := resolveLaunchOptions(svc.Agents.Registry(), requested, agentProvider, resumeSessionID != "")
 			options := launch.Options
 			// Reject a spawn whose EXPLICITLY-requested permission mode isn't valid for the provider, so a
 			// typo'd --permission-mode fails fast with a clear error instead of reaching the provider and
@@ -154,17 +153,17 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			}
 
 			// Track whether this agent was created via session resume.
-			resumed := ptrconv.BoolToInt64(r.GetAgentSessionId() != "")
+			resumed := ptrconv.BoolToInt64(resumeSessionID != "")
 
 			agent.TraceStartupPhase(agentID, "gitmode_validated")
 
-			// Persist the agent row + read it back under a fresh background
-			// context: the DB write must survive a mid-RPC disconnect so a
+			// Persist the agent row and any prior Worker transcript under a fresh
+			// background context: the DB write must survive a mid-RPC disconnect so a
 			// retry from the same client doesn't observe a half-created agent
 			// (the validation phase above is the only step that should
 			// fail-fast on disconnect). The actual worktree mutation happens
 			// later inside runAgentStartup, which uses its own startupCtx.
-			if err := svc.createAgentRecord(bgCtx(), db.CreateAgentParams{
+			if err := svc.createAgentRecordWithTranscript(bgCtx(), db.CreateAgentParams{
 				ID:                 agentID,
 				WorkingDir:         plan.PlannedWorkingDir,
 				HomeDir:            svc.HomeDir,
@@ -173,7 +172,11 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				Options:            marshalOptions(options),
 				AgentProvider:      agentProvider,
 				Resumed:            resumed,
-			}); err != nil {
+			}, resumeSessionID); err != nil {
+				if errors.Is(err, errNativeSessionAlreadyOpen) {
+					sendFailedPrecondition(sender, err.Error())
+					return
+				}
 				slog.Error("failed to create agent", "error", err)
 				sendInternalError(sender, "failed to create agent")
 				return
@@ -266,7 +269,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			}
 
 			agentOpts := svc.baseAgentOptions(agentID, plan.PlannedWorkingDir, agentProvider)
-			agentOpts.ResumeSessionID = r.GetAgentSessionId()
+			agentOpts.ResumeSessionID = resumeSessionID
 			agentOpts.Options = options
 			agentOpts.NewSessionDefaultOptionIDs = launch.DefaultedIDs
 			agentOpts.ExtraEnv = remoteEnvs
@@ -2558,7 +2561,7 @@ func (svc *Service) applySettingsLive(dbAgent db.Agent, newOptions OptionMap) (O
 // unchanged request when the restart fails.
 func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionMap) (OptionMap, agent.SettingsApplyResult) {
 	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
-	if _, err := svc.restartAgentPreservingSession(dbAgent, newOptions, settingsRestartMessages); err != nil {
+	if _, err := svc.restartAgentPreservingSession(dbAgent, func(db.Agent) OptionMap { return newOptions }, settingsRestartMessages, restartTurnEndPending); err != nil {
 		return newOptions, unresolvedSettingsResult(newOptions)
 	}
 	// Read the typed snapshot from the relaunched provider. A startup readback
@@ -2614,7 +2617,7 @@ func (svc *Service) forceStopAgentTurn(dbAgent db.Agent) error {
 	// here: resolveResumeSessionID issues a HasUserMessages query, and two separate
 	// resolutions can disagree, so the log line stated an id the relaunch may not have
 	// used -- for exactly the incident a reader consults it for.
-	resumeSessionID, err := svc.restartAgentPreservingSession(dbAgent, parseOptions(dbAgent.Options), forcedStopMessages)
+	resumeSessionID, err := svc.restartAgentPreservingSession(dbAgent, storedRestartOptions, forcedStopMessages, restartTurnEndPending)
 	if err != nil {
 		return err
 	}
@@ -2622,30 +2625,52 @@ func (svc *Service) forceStopAgentTurn(dbAgent db.Agent) error {
 	return nil
 }
 
-// restartAgentPreservingSession replaces the agent's PROCESS while it keeps its
-// session: it pauses the durable input queue, mints and launches a replacement
-// under the per-agent lifecycle lock, resumes the queue, and on failure clears the
-// stale session id and tells the reader.
-//
-// ONE policy, written once. Two callers reach it -- a settings change that needs a
-// relaunch, and a forced stop that replaces a turn the provider would not end --
-// and the lock discipline, the pause/resume pairing and the stale-session clear are
-// the same for both. They were the same when spelled twice too, which is the
-// problem: the next correction to any of the three would have landed in one copy.
-//
-// The WORDS are the only axis that varies, and each caller supplies them whole. A
-// bare sentence FRAGMENT interpolated into four frames read correctly in some frames
-// and not in others: "failed to finish input queue a forced stop" was the result for
-// BOTH callers, "failed to restart agent after an agent settings restart" was circular,
-// and the one message no frame could reach at all told a reader who pressed Stop that
-// the agent failed to RESTART. None of these six lines exists as a searchable literal
-// once it is concatenated either, so a reader holding a log line cannot find its site.
-//
-// It returns the resume session id it actually launched with, so a caller that reports
-// that id reports the one that was used rather than resolving it a second time.
-func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, options OptionMap, messages restartMessages) (string, error) {
+var errAgentClosedDuringLaunch = errors.New("agent tab closed during process launch")
+var errAgentArchivedDuringLaunch = errors.New("agent workspace archived during process launch")
+
+func storedRestartOptions(row db.Agent) OptionMap { return parseOptions(row.Options) }
+
+type restartTurnEnd uint8
+
+const (
+	restartTurnEndPending restartTurnEnd = iota
+	restartTurnEndObserved
+)
+
+// readOpenAgentForLaunch refuses a closing, closed, or missing root tab.
+func (svc *Service) readOpenAgentForLaunch(agentID string) (db.Agent, error) {
+	row, err := svc.getAgentByID(bgCtx(), agentID)
+	if svc.AgentStartup.closing(agentID) || errors.Is(err, sql.ErrNoRows) || err == nil && row.ClosedAt.Valid {
+		return db.Agent{}, errAgentClosedDuringLaunch
+	}
+	if err != nil {
+		return db.Agent{}, fmt.Errorf("read agent for process launch: %w", err)
+	}
+	if row.WorkspaceArchived {
+		return db.Agent{}, errAgentArchivedDuringLaunch
+	}
+	return row, nil
+}
+
+// validateLaunchedAgent stops a process if close reached its tab while the
+// provider started. Manager.StartAgent registers the process before it returns.
+func (svc *Service) validateLaunchedAgent(agentID string) (db.Agent, error) {
+	row, err := svc.readOpenAgentForLaunch(agentID)
+	if err != nil {
+		svc.Agents.StopAndWaitAgent(agentID)
+		return db.Agent{}, err
+	}
+	return row, nil
+}
+
+// restartAgentPreservingSession replaces a process while it keeps its native
+// session. It validates the open tab under the lifecycle lock and checks it
+// again after launch. The option selector receives the latest stored row.
+// A failed launch clears a stale saved session ID. Each caller supplies its
+// own complete error messages and this function keeps the queue pause paired.
+// It returns the session ID that the replacement used.
+func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor func(db.Agent) OptionMap, messages restartMessages, turnEnd restartTurnEnd) (string, error) {
 	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
-	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
 	queueRestart, err := svc.InputQueue.BeginPlannedRestart(bgCtx(), agentID)
 	if err != nil {
 		slog.Error(messages.pauseFailedLog, "agent_id", agentID, "error", err)
@@ -2664,13 +2689,6 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, options Opti
 		}
 	}()
 
-	agentOpts := svc.baseAgentOptions(agentID, dbAgent.WorkingDir, provider)
-	agentOpts.ResumeSessionID = resumeSessionID
-	agentOpts.Options = options
-	agentOpts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(svc.Agents.Registry(), options, provider)
-
-	sink := svc.Output.NewSink(agentID, provider)
-
 	// Hold the per-agent lifecycle lock across the mint AND the restart, which
 	// is why this calls restartAgentLocked. The closure exists so the release is
 	// deferred: a panic inside the mint or the start would otherwise hold this
@@ -2685,20 +2703,70 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, options Opti
 	// and its register would leave the fresh socket registered for a tab that
 	// is already gone. The other three relaunch paths already mint inside this
 	// lock; this one is the odd path out.
+	var resumeSessionID string
+	var rowUnavailable, rowReadFailed bool
 	_, launched, err := func() (map[string]string, bool, error) {
 		unlock := svc.Agents.LockAgent(agentID)
 		defer unlock()
-		return svc.mintAndLaunchReportingStep(bgCtx(), "restart", agentOpts, sink, svc.restartAgentLocked)
+		current, readErr := svc.readOpenAgentForLaunch(agentID)
+		if readErr != nil {
+			rowUnavailable = errors.Is(readErr, errAgentClosedDuringLaunch) || errors.Is(readErr, errAgentArchivedDuringLaunch)
+			rowReadFailed = !rowUnavailable
+			return nil, false, readErr
+		}
+		resumeSessionID = svc.resolveResumeSessionIDForAgent(agentID, current)
+		options := optionsFor(current)
+		agentOpts := svc.baseAgentOptions(agentID, current.WorkingDir, current.AgentProvider)
+		agentOpts.ResumeSessionID = resumeSessionID
+		agentOpts.Options = options
+		agentOpts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(svc.Agents.Registry(), options, current.AgentProvider)
+		sink := svc.Output.NewSink(agentID, current.AgentProvider)
+		confirmed, launched, launchErr := svc.mintAndLaunchReportingStep(bgCtx(), "restart", agentOpts, sink, svc.restartAgentLocked)
+		if launchErr != nil {
+			return confirmed, launched, launchErr
+		}
+		// A database writer that does not take the lifecycle lock can close the
+		// row during the launch. Never leave its new process serving a closed tab.
+		_, readErr = svc.validateLaunchedAgent(agentID)
+		if readErr != nil {
+			rowUnavailable = errors.Is(readErr, errAgentClosedDuringLaunch) || errors.Is(readErr, errAgentArchivedDuringLaunch)
+			rowReadFailed = !rowUnavailable
+			return nil, true, readErr
+		}
+		return confirmed, launched, nil
 	}()
-	if finishErr := queueRestart.Finish(bgCtx(), launched, err == nil); finishErr != nil {
+	if rowUnavailable || rowReadFailed {
+		reason := leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED
+		if rowReadFailed {
+			reason = leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT
+		}
+		if _, pauseErr := svc.InputQueue.Pause(bgCtx(), agentID, reason); pauseErr != nil {
+			slog.Error("failed to pause input after restart row changed", "agent_id", agentID, "error", pauseErr)
+		}
+	} else if err != nil && turnEnd == restartTurnEndObserved {
+		// The native callback already consumed the turn end. A failed restart
+		// cannot send queued input through the old process or wait for another
+		// end event that will never arrive.
+		if _, pauseErr := svc.InputQueue.Pause(bgCtx(), agentID,
+			leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_FAILED); pauseErr != nil {
+			slog.Error("failed to pause input after native restart failure", "agent_id", agentID, "error", pauseErr)
+		}
+	}
+	if finishErr := queueRestart.Finish(bgCtx(), launched || turnEnd == restartTurnEndObserved, err == nil); finishErr != nil {
 		slog.Error(messages.finishFailedLog, "agent_id", agentID, "error", finishErr)
 	}
 	queueRestartFinished = true
 	if err != nil {
+		if errors.Is(err, errAgentClosedDuringLaunch) || errors.Is(err, errAgentArchivedDuringLaunch) {
+			return "", err
+		}
 		slog.Error(messages.restartFailedLog, "agent_id", agentID, "error", err)
-		// Clear stale session ID so ensureAgentRunning won't try to resume a
-		// non-existent session on the next message.
-		svc.clearAgentSessionID(agentID)
+		// A failed mint or prelaunch read leaves the old process running. A
+		// postlaunch read fault stops the replacement, but cannot prove that
+		// the native session is stale. Preserve the saved ID in both cases.
+		if launched && !rowReadFailed {
+			svc.clearAgentSessionID(agentID)
+		}
 		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
 			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
 			contracts.NotificationFieldError: messages.restartFailedNotice + err.Error(),
@@ -2957,6 +3025,12 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 		slog.Error("clear context: failed to fetch agent", "agent_id", agentID, "error", err)
 		return nil, err
 	}
+	if dbAgent.ClosedAt.Valid || svc.AgentStartup.closing(agentID) {
+		return nil, errAgentClosedDuringLaunch
+	}
+	if dbAgent.WorkspaceArchived {
+		return nil, errAgentArchivedDuringLaunch
+	}
 
 	// Broadcast STARTING so frontends gate the thinking indicator and
 	// startup panel correctly while the process is bouncing. Without this,
@@ -3002,6 +3076,9 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 		})
 		return nil, err
 	}
+	if _, err := svc.validateLaunchedAgent(agentID); err != nil {
+		return nil, err
+	}
 	activeDbAgent, err := svc.persistConfirmedStartupSettings(agentID, dbAgent.AgentProvider, launchOptions.Options, confirmedSettings)
 	if err != nil {
 		slog.Warn("clear context: failed to persist confirmed settings", "agent_id", agentID, "error", err)
@@ -3010,6 +3087,9 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	slog.Info("clear context: agent restarted successfully", "agent_id", agentID)
 
 	finish := func() {
+		if _, err := svc.readOpenAgentForLaunch(agentID); err != nil || !svc.Agents.HasAgent(agentID) {
+			return
+		}
 		// Persist context_cleared before broadcasting ACTIVE so the frontend
 		// receives the notification while the startup banner is still showing,
 		// and the banner is replaced atomically by the new message instead of
@@ -3037,9 +3117,8 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 // originally resumed or user messages have been exchanged, or empty string
 // otherwise. The agent assigns a session ID during startup, but no conversation
 // exists until the user actually sends a message — resuming without messages
-// causes errors. When the agent was created via resume (resumed != 0), the
-// conversation lives in Claude Code's session storage so the HasUserMessages
-// check is skipped.
+// causes errors. A manually selected session already exists in the native
+// store, so a resumed agent skips the HasUserMessages check.
 func (svc *Service) resolveResumeSessionID(agentID, currentSessionID string, resumed int64) string {
 	if currentSessionID == "" {
 		return ""
@@ -3052,6 +3131,21 @@ func (svc *Service) resolveResumeSessionID(agentID, currentSessionID string, res
 		return currentSessionID
 	}
 	return ""
+}
+
+// resolveResumeSessionIDForAgent retries a manually selected native session
+// after a Worker crash that happened before the provider confirmed its ID.
+func (svc *Service) resolveResumeSessionIDForAgent(agentID string, row db.Agent) string {
+	return svc.resolveResumeSessionID(agentID, storedSessionID(row), row.Resumed)
+}
+
+// storedSessionID prefers the provider-confirmed ID and falls back to a
+// selected native handle whose first startup did not finish.
+func storedSessionID(row db.Agent) string {
+	if row.AgentSessionID != "" {
+		return row.AgentSessionID
+	}
+	return row.PendingResumeSessionID
 }
 
 // ensureAgentRunning starts the agent process if it is not already running.
@@ -3180,7 +3274,7 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	if preResolvedResumeSessionID != nil {
 		resumeSessionID = *preResolvedResumeSessionID
 	} else {
-		resumeSessionID = svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
+		resumeSessionID = svc.resolveResumeSessionIDForAgent(agentID, dbAgent)
 	}
 	// Register the start before anything can observe it. The registry is what
 	// makes this cold start reachable: a client that connects mid-start replays
@@ -3192,9 +3286,12 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	// message that lands in that window used to spawn a second process for the
 	// same tab.
 	startupCtx, cancel := context.WithCancel(bgCtx())
-	handle := svc.AgentStartup.begin(agentID, cancel)
+	handle, closing := svc.AgentStartup.beginWithCloseState(agentID, cancel)
 	if handle == nil {
 		cancel()
+		if closing {
+			return fmt.Errorf("agent %s is closing; it takes no new process", agentID)
+		}
 		return fmt.Errorf("agent %s already has a startup in progress", agentID)
 	}
 	defer svc.AgentStartup.finishEntry(handle)
@@ -3233,10 +3330,26 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 		svc.broadcastAgentInactive(&dbAgent)
 		return err
 	}
+	if _, err := svc.validateLaunchedAgent(agentID); err != nil {
+		cancel()
+		if !errors.Is(err, errAgentClosedDuringLaunch) && !errors.Is(err, errAgentArchivedDuringLaunch) {
+			slog.Error("ensureAgentRunning: agent row unavailable after launch", "agent_id", agentID, "error", err)
+			svc.broadcastAgentInactive(&dbAgent)
+		}
+		return err
+	}
 	activeDbAgent, err := svc.persistConfirmedStartupSettings(agentID, dbAgent.AgentProvider, launchOptions.Options, confirmedSettings)
 	if err != nil {
 		slog.Warn("ensureAgentRunning: failed to persist confirmed settings", "agent_id", agentID, "error", err)
 		activeDbAgent = dbAgent
+	}
+	if _, err := svc.validateLaunchedAgent(agentID); err != nil {
+		cancel()
+		if !errors.Is(err, errAgentClosedDuringLaunch) && !errors.Is(err, errAgentArchivedDuringLaunch) {
+			slog.Error("ensureAgentRunning: agent row unavailable before active status", "agent_id", agentID, "error", err)
+			svc.broadcastAgentInactive(&dbAgent)
+		}
+		return err
 	}
 
 	slog.Info("ensureAgentRunning: agent started", "agent_id", agentID)
@@ -3520,6 +3633,9 @@ func (svc *Service) initiatePlanExecutionRestart(agentID, targetMode string, dbA
 // restartPlanContextLocked returns the created session even if later settings persistence fails.
 // The caller holds the lifecycle lock.
 func (svc *Service) restartPlanContextLocked(agentID, targetMode string, dbAgent db.Agent) (string, error) {
+	if _, err := svc.readOpenAgentForLaunch(agentID); err != nil {
+		return "", err
+	}
 	// DiscardOutput before stop so shutdown noise ("stream closed") does not
 	// land in the persisted chat history.
 	svc.Agents.DiscardOutputAndStopAgent(agentID)
@@ -3560,7 +3676,7 @@ func (svc *Service) restartPlanContextLocked(agentID, targetMode string, dbAgent
 		})
 		return "", err
 	}
-	current, readErr := svc.Queries.GetAgentByID(bgCtx(), agentID)
+	current, readErr := svc.validateLaunchedAgent(agentID)
 	if readErr != nil {
 		return "", readErr
 	}

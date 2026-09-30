@@ -52,6 +52,8 @@ module:
       target: static
     - source: ../icons/agents
       target: static/icons/agents
+    - source: ../frontend/tests/e2e/feature-matrix
+      target: data/feature_matrix
 
 markup:
   goldmark:

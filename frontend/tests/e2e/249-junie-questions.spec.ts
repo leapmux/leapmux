@@ -1,4 +1,5 @@
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { nativeToolResult } from './helpers/nativeToolResult'
 import { askUserQuestionToolCall, junieAnswerToolCall } from './helpers/providerToolCalls'
 import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from './helpers/ui'
 import { expect, JUNIE_E2E_SKIP_REASON, junieTest, openJunieAgent } from './junie-fixtures'
@@ -44,11 +45,15 @@ junieTest.describe('Junie questions', () => {
     await expect(page.getByText('First').filter({ visible: true }).first()).toBeVisible()
     await expect(page.getByText('Second').filter({ visible: true }).first()).toBeVisible()
 
-    // The turn waits on the answer: pick a choice and approve the request, and
-    // the scripted answer turn runs and states what the user picked.
-    await page.getByText('First').filter({ visible: true }).first().click()
+    // The turn waits for approval. The next native model request must carry
+    // the selected choice, while the scripted answer stays neutral.
+    await page.getByText('Second').filter({ visible: true }).first().click()
     await page.getByRole('button', { name: 'Approve' }).click()
+    const status = await modelScript.waitForSteps(2)
     await waitForAgentIdle(page, 120_000)
+    const answer = nativeToolResult(status.requests.find(request => request.stepIndex === 1), 'junie-question')
+    expect(answer).toContain('Second')
+    expect(answer).not.toContain('First')
     await expect(assistantBubbles(page).filter({ hasText: 'You picked.' }).first()).toBeVisible()
   })
 })

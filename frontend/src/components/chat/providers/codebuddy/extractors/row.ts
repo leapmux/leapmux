@@ -3,13 +3,14 @@ import type { RowExtractionInput } from '~/components/chat/rowExtractionTypes'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { leapmuxPlanExecutionRow, leapmuxUserRow } from '../../../leapmuxRows'
 import { toolCallRow } from '../../../model/row'
-import { anthropicBlock, anthropicBlocks, anthropicBlockText, anthropicToolCall } from './toolCommon'
+import { storedFunctionArgs, storedFunctionCallID, storedFunctionFailed, storedFunctionOutputText } from '../storedFunction'
+import { anthropicBlock, anthropicBlocks, anthropicBlockText, codebuddyToolCall } from './toolCommon'
 
 /**
  * Read one CodeBuddy row into the shared row model.
  *
- * The classification already read the frame's `type` and its content block, so
- * the work here turns the row into the neutral shape.
+ * Classification already read the frame's type. Extraction reads live frames
+ * and stored Workflow child records into neutral rows.
  */
 export function codebuddyExtractRow(input: RowExtractionInput): ChatRow | null {
   const { category, resolved: parsed, span } = input
@@ -19,12 +20,18 @@ export function codebuddyExtractRow(input: RowExtractionInput): ChatRow | null {
 
   switch (category.kind) {
     case 'assistant_text':
+      if (pickString(payload, 'type') === 'message')
+        return storedAssistantTextRow(payload)
       return textRow(payload, 'text', 'assistant-text')
     case 'assistant_thinking':
       return textRow(payload, 'thinking', 'assistant-thinking')
     case 'tool_use':
-    case 'tool_result':
-      return toolSpanRow(payload, span)
+    case 'tool_result': {
+      const type = pickString(payload, 'type')
+      return type === 'function_call' || type === 'function_call_output' || type === 'function_call_result'
+        ? storedFunctionToolRow(payload, span)
+        : toolSpanRow(payload, span)
+    }
     case 'user_content':
       return leapmuxUserRow(payload)
     case 'plan_execution':
@@ -32,6 +39,43 @@ export function codebuddyExtractRow(input: RowExtractionInput): ChatRow | null {
     default:
       return null
   }
+}
+
+function storedAssistantTextRow(payload: Record<string, unknown>): ChatRow {
+  if (pickString(payload, 'role') !== 'assistant' || !Array.isArray(payload.content))
+    return { kind: 'hidden' }
+  const text = payload.content
+    .filter(block => isObject(block) && pickString(block, 'type') === 'output_text')
+    .map(block => isObject(block) ? pickString(block, 'text') ?? '' : '')
+    .join('')
+  return text ? { kind: 'assistant-text', text } : { kind: 'hidden' }
+}
+
+/** Keep a stored native function record in the same tool span as its partner. */
+function storedFunctionToolRow(payload: Record<string, unknown>, span: RowExtractionInput['span']): ChatRow {
+  const isResult = pickString(payload, 'type') !== 'function_call'
+  const requestPayload = span.request?.parentObject
+  const request = isResult && isObject(requestPayload) ? requestPayload : payload
+  const callId = storedFunctionCallID(payload) ?? ''
+  const toolName = pickString(request, 'name') || 'Tool'
+  const args = storedFunctionArgs(request.arguments)
+  const resultText = isResult ? storedFunctionOutputText(payload.output) : ''
+  const isError = isResult && storedFunctionFailed(payload)
+  const call = codebuddyToolCall({
+    callId,
+    toolName,
+    args,
+    resultText,
+    isError,
+    lifecycle: {
+      frameStatus: isResult ? 'completed' : 'in_progress',
+      providerOutcome: isError ? 'failed' : null,
+      retainedOutcome: null,
+      rowFinal: isResult,
+      resultFrameLanded: isResult,
+    },
+  })
+  return toolCallRow(call, isResult ? 'result' : 'request', span.visibleRows)
 }
 
 function textRow(
@@ -60,7 +104,7 @@ function toolSpanRow(
   const isError = result?.is_error === true
 
   const role = span.role === 'result' || (span.role === 'other' && !use) ? 'result' : 'request'
-  const call = anthropicToolCall({
+  const call = codebuddyToolCall({
     callId,
     toolName,
     args,

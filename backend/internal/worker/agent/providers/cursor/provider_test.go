@@ -11,6 +11,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCursorRefusesEmbeddedBlobAttachments(t *testing.T) {
+	t.Parallel()
+	provider := Registration().Plugin
+	for _, kind := range []agent.AttachmentKind{agent.AttachmentKindText, agent.AttachmentKindImage} {
+		assert.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: kind, Filename: "input"}), kind)
+	}
+	for _, kind := range []agent.AttachmentKind{agent.AttachmentKindPDF, agent.AttachmentKindBinary} {
+		assert.ErrorContains(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: kind, Filename: "input"}), string(kind))
+	}
+}
+
 func TestResolveControlResponse_CursorCreatePlanTransformsResponse(t *testing.T) {
 	t.Parallel()
 

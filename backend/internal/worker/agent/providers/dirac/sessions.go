@@ -31,7 +31,7 @@ type diracHistoryRecord struct {
 // diracHome resolves the root that holds `data/`. `DIRAC_DIR` wins, then the
 // home directory's `.dirac` -- the same order the CLI resolves it in.
 func diracHome(q agent.StoredSessionQuery) string {
-	if dir := strings.TrimSpace(q.Getenv("DIRAC_DIR")); dir != "" {
+	if dir := strings.TrimSpace(q.Env("DIRAC_DIR")); dir != "" {
 		return dir
 	}
 	if home := q.Home(); home != "" {

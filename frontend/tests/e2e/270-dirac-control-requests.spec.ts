@@ -22,16 +22,15 @@ async function chatText(page: Page): Promise<string> {
  * 270 — Dirac control requests.
  *
  * Dirac's `execute_command` asks before a command its safe-command check
- * refuses. `$((...))` is command substitution, so a marker command is never
- * safe and always raises the banner. Dirac names its options "Approve once"
- * and "Reject once" on the shared Allow/Deny pair. A turn ends only at the
- * `respond complete` call.
+ * refuses. `$(...)` is command substitution, so this marker command raises
+ * the banner. The shared control card shows Allow and Deny. A turn ends only
+ * at the `respond complete` call.
  */
 diracTest.describe('Dirac control requests', () => {
-  diracTest('runs a command after the reader approves it', async ({ authenticatedDiracWorkspace, page, modelScript }) => {
-    void authenticatedDiracWorkspace
+  diracTest('runs a command after the reader approves it', async ({ askingDiracWorkspace, page, modelScript }) => {
+    void askingDiracWorkspace
     await modelScript.queue(
-      { toolCalls: [bashToolCall(PROVIDER, 'dirac-allow', 'echo "dirac-allow-$((40 + 2))"')] },
+      { toolCalls: [bashToolCall(PROVIDER, 'dirac-allow', 'echo "dirac-allow-$(printf 42)"')] },
       { toolCalls: [diracRespondToolCall('dirac-allow-done', 'complete', 'The command ran.')] },
     )
     await sendMessage(page, modelScript.prompt('Run the scripted command.'))
@@ -40,28 +39,27 @@ diracTest.describe('Dirac control requests', () => {
 
     await waitForControlBanner(page)
     await expect(banner(page)).toContainText('dirac-allow')
-    await expect(page.getByTestId('control-allow-btn').filter({ visible: true })).toHaveText('Approve once')
+    await expect(page.getByTestId('control-allow-btn').filter({ visible: true })).toHaveText('Allow')
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()
     await waitForAgentIdle(page, 120_000)
     await expect(banner(page)).toHaveCount(0)
-    // The marker is arithmetic the command itself computes, so only a run
-    // prints it.
+    // The command computes the marker, so only a run prints it.
     await expect.poll(() => chatText(page)).toContain('dirac-allow-42')
   })
 
-  diracTest('keeps the command from running after the reader rejects it', async ({ authenticatedDiracWorkspace, page, modelScript }) => {
-    void authenticatedDiracWorkspace
+  diracTest('keeps the command from running after the reader rejects it', async ({ askingDiracWorkspace, page, modelScript }) => {
+    void askingDiracWorkspace
     await modelScript.queue(
-      { toolCalls: [bashToolCall(PROVIDER, 'dirac-deny', 'echo "dirac-deny-$((40 + 2))"')] },
+      { toolCalls: [bashToolCall(PROVIDER, 'dirac-deny', 'echo "dirac-deny-$(printf 42)"')] },
       { toolCalls: [diracRespondToolCall('dirac-deny-done', 'complete', 'I did not run it.')] },
     )
     await sendMessage(page, modelScript.prompt('Run the scripted command.'))
     await modelScript.waitForSteps(1)
 
     await waitForControlBanner(page)
-    await expect(page.getByTestId('control-deny-btn').filter({ visible: true })).toHaveText('Reject once')
+    await expect(page.getByTestId('control-deny-btn').filter({ visible: true })).toHaveText('Deny')
     await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()

@@ -114,6 +114,7 @@ func (a *Agent) ClearContext() (string, error) {
 	a.attachedAt = attachedAt
 	a.turnActive = false
 	a.turnSteerable = false
+	a.manualCompactionActive = false
 	a.lastTurnError = ""
 	a.tasks = nil
 	a.goal = kimiGoalState{}

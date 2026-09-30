@@ -1,9 +1,10 @@
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { CLINE_E2E_SKIP_REASON, clineTest, expect } from './cline-fixtures'
-import { expectAttachmentOutcome, sendWithAttachment } from './helpers/attachments'
+import { exerciseAttachmentDelivery, expectRefusedAttachmentsAbsent } from './helpers/attachmentModelProbe'
+import { expectAttachmentOutcome } from './helpers/attachments'
 import { readToolCall } from './helpers/providerToolCalls'
 import { expectToolRowWithoutImage, writeToolImage } from './helpers/toolImages'
-import { assistantBubbles, expectUserMessage, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { sendMessage, waitForAgentIdle } from './helpers/ui'
 
 clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
 
@@ -17,36 +18,21 @@ const CLINE = AgentProvider.CLINE
  * PNG draws the file name and no picture.
  */
 clineTest.describe('Cline attachments', () => {
-  // The file name states a word the prompt never gives, so the name in the user
-  // message can only come from the attachment.
   clineTest('accepts a text attachment and carries it through the turn', async ({ authenticatedClineWorkspace, page, modelScript }) => {
     void authenticatedClineWorkspace
-    await modelScript.queue({ text: 'The note is attached.' })
-    await expectAttachmentOutcome(page, 'text', { supported: true, fileName: 'cline-notes.txt' })
-    await sendWithAttachment(page, modelScript.prompt('Read the attached note.'))
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-
-    await expectUserMessage(page, 'cline-notes.txt')
-    await expect(assistantBubbles(page).filter({ hasText: 'The note is attached.' }).first()).toBeVisible()
+    await exerciseAttachmentDelivery(page, modelScript, 'text', 'cline-notes.txt')
   })
 
   clineTest('accepts an image attachment and carries it through the turn', async ({ authenticatedClineWorkspace, page, modelScript }) => {
     void authenticatedClineWorkspace
-    await modelScript.queue({ text: 'The image is attached.' })
-    await expectAttachmentOutcome(page, 'image', { supported: true, fileName: 'cline-shot.png' })
-    await sendWithAttachment(page, modelScript.prompt('Describe the attached image.'))
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-
-    await expectUserMessage(page, 'cline-shot.png')
-    await expect(assistantBubbles(page).filter({ hasText: 'The image is attached.' }).first()).toBeVisible()
+    await exerciseAttachmentDelivery(page, modelScript, 'image', 'cline-shot.png')
   })
 
-  clineTest('refuses a PDF and a binary file', async ({ authenticatedClineWorkspace, page }) => {
+  clineTest('refuses a PDF and a binary file', async ({ authenticatedClineWorkspace, page, modelScript }) => {
     void authenticatedClineWorkspace
-    await expectAttachmentOutcome(page, 'pdf', { supported: false })
-    await expectAttachmentOutcome(page, 'binary', { supported: false })
+    const pdf = await expectAttachmentOutcome(page, 'pdf', { supported: false })
+    const binary = await expectAttachmentOutcome(page, 'binary', { supported: false })
+    await expectRefusedAttachmentsAbsent(page, modelScript, [pdf, binary])
   })
 })
 

@@ -13,6 +13,7 @@ import {
   filterBackgroundTasksByKind,
   groupBackgroundTasks,
   isActiveBackgroundTaskStatus,
+  isOpenBackgroundTaskStatus,
   opensSubagentTranscript,
   protoBackgroundTaskToStore,
   shouldShowBackgroundTasksSection,
@@ -53,6 +54,14 @@ describe('protoBackgroundTaskToStore', () => {
       .toMatchObject({ rowKey: 'r1', kind: 'subagent', status: 'running', activity: 'a' })
   })
 
+  it('maps a paused wire status to an idle open row', () => {
+    const got = protoBackgroundTaskToStore(proto({ id: 'paused', status: BackgroundTaskStatus.PAUSED, activeForm: 'paused' }))
+    expect(got.status).toBe('paused')
+    expect(got.activity).toBe('paused')
+    expect(isActiveBackgroundTaskStatus(got.status)).toBe(false)
+    expect(isOpenBackgroundTaskStatus(got.status)).toBe(true)
+  })
+
   it('maps shell kind', () => {
     const got = protoBackgroundTaskToStore(proto({ id: 'r1', kind: BackgroundTaskKind.SHELL, status: BackgroundTaskStatus.COMPLETED }))
     expect(got.kind).toBe('shell')
@@ -89,20 +98,22 @@ describe('countActiveBackgroundTasks', () => {
       item({ rowKey: '2', status: 'pending' }),
       item({ rowKey: '3', status: 'completed' }),
       item({ rowKey: '4', status: 'failed' }),
+      item({ rowKey: '5', status: 'paused' }),
     ]
     expect(countActiveBackgroundTasks(items)).toBe(2)
   })
 })
 
 describe('sortBackgroundTasks', () => {
-  it('sorts active first, running before pending, then finished', () => {
+  it('sorts running, pending, paused, and then finished', () => {
     const items = [
       item({ rowKey: 'completed', status: 'completed' }),
       item({ rowKey: 'pending', status: 'pending' }),
+      item({ rowKey: 'paused', status: 'paused' }),
       item({ rowKey: 'running', status: 'running' }),
     ]
     const sorted = sortBackgroundTasks(items)
-    expect(sorted.map(i => i.rowKey)).toEqual(['running', 'pending', 'completed'])
+    expect(sorted.map(i => i.rowKey)).toEqual(['running', 'pending', 'paused', 'completed'])
   })
 })
 
@@ -148,6 +159,12 @@ describe('isActiveBackgroundTaskStatus', () => {
   it('active = pending|running', () => {
     expect(isActiveBackgroundTaskStatus('pending')).toBe(true)
     expect(isActiveBackgroundTaskStatus('running')).toBe(true)
+    expect(isActiveBackgroundTaskStatus('paused')).toBe(false)
+  })
+
+  it('keeps a paused row open', () => {
+    expect(isOpenBackgroundTaskStatus('paused')).toBe(true)
+    expect(isOpenBackgroundTaskStatus('completed')).toBe(false)
   })
 
   it('every finished status is inactive', () => {
@@ -197,6 +214,11 @@ describe('backgroundTaskStatusLabel', () => {
   it('names the in-progress states, which share one dot color', () => {
     expect(backgroundTaskStatusLabel('pending')).toBe('Pending')
     expect(backgroundTaskStatusLabel('running')).toBe('Running')
+  })
+
+  it('labels a paused child separately from working and final children', () => {
+    expect(backgroundTaskStatusLabel('paused')).toBe('Paused')
+    expect(backgroundTaskEndLabel('paused')).toBe('')
   })
 
   it('reuses the final end labels', () => {

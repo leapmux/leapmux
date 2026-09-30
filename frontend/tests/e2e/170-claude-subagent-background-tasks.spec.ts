@@ -19,6 +19,7 @@
  */
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, test } from './fixtures'
+import { exerciseLiveChildTranscript } from './helpers/liveChildTranscript'
 import { backgroundBashToolCall, spawnSubagentToolCall } from './helpers/providerToolCalls'
 import {
   backgroundTasksSection,
@@ -165,6 +166,16 @@ test.describe('Claude subagent background tasks', () => {
     await expect(agentTabs).toHaveCount(0)
   })
 
+  test('shows a child prompt while that child still waits for its model', async ({ authenticatedWorkspace, page, modelScript }) => {
+    void authenticatedWorkspace
+    await exerciseLiveChildTranscript(page, modelScript, {
+      provider: AgentProvider.CLAUDE_CODE,
+      childWhen: { user: 'CHILD_LIVE_CLAUDE_MARKER' },
+      childTask: 'Report CHILD_LIVE_CLAUDE_MARKER.',
+      parentTask: 'Spawn one subagent to report its assigned marker.',
+    })
+  })
+
   // The Claude Code provider stops one subagent alone through the CLI's own
   // `stop_task` control request (`agent.ChildInterrupter`). So the worker
   // states `accepts_interrupt: true`, and the child's tab offers Interrupt
@@ -178,6 +189,9 @@ test.describe('Claude subagent background tasks', () => {
   }) => {
     void authenticatedWorkspace
     await expectNoRegistryRows(page)
+    // Claude can start more root turns when it reports a stopped background
+    // task. Their count depends on when the stop reaches its pending turn.
+    await modelScript.fallback({ text: 'Notification noted.' })
     await exerciseChildInterrupt(page, modelScript, {
       provider: AgentProvider.CLAUDE_CODE,
       childTurn: { user: HELD_CHILD_TASK },

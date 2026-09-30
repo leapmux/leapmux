@@ -44,7 +44,7 @@ const DIVIDER_ICON: Record<NotificationIconHint, LucideIcon> = {
  */
 function NotificationDivider(props: { text: string, loading?: boolean, icon?: NotificationIconHint }): JSXElement {
   return (
-    <div class={resultDivider}>
+    <div class={resultDivider} data-testid="notification-divider">
       <Icon
         icon={props.loading ? LoaderCircle : props.icon ? DIVIDER_ICON[props.icon] : ArrowDownToLine}
         size="sm"

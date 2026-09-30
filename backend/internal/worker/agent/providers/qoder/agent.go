@@ -1,12 +1,12 @@
 package qoder
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -18,15 +18,26 @@ type Agent struct {
 	sink agent.ProviderServices
 	opts agent.Options
 
-	mu             sync.Mutex
-	sessionID      string
-	model          string
-	permissionMode string
-	effort         string
-	active         bool
-	turnOrder      providerkit.TurnSeq
-	activityRev    uint64
-	capabilities   []string
+	mu                   sync.Mutex
+	sessionID            string
+	model                string
+	models               []qoderModel
+	configuredModelsOnce sync.Once
+	configuredModels     []qoderModel
+	permissionMode       string
+	planMode             bool
+	effort               string
+	active               bool
+	turnOrder            providerkit.TurnSeq
+	activityRev          uint64
+	capabilities         []string
+	childStreamMu        sync.Mutex
+	childStreams         map[string]*qoderChildStream
+	workflows            map[qoderWorkflowKey]*qoderWorkflowRun
+	archiveMu            sync.Mutex
+	archiveJobs          map[qoderWorkflowKey]*qoderArchiveJob
+	archiveStopped       bool
+	archiveRetries       sync.WaitGroup
 
 	pendingControlMu sync.Mutex
 	pendingControl   map[string]chan<- qoderControlResult
@@ -71,9 +82,13 @@ func (a *Agent) SendInputForSession(sessionID, content string, attachments []*le
 	return a.sendInputForSession(&sessionID, content, attachments)
 }
 
-func (a *Agent) sendInputForSession(expected *string, content string, _ []*leapmuxv1.Attachment) error {
+func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
 	if a.IsStopped() {
 		return fmt.Errorf("the Qoder process is stopped")
+	}
+	userContent, err := qoderUserContent(content, attachments)
+	if err != nil {
+		return err
 	}
 	a.mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
@@ -91,7 +106,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, _ []*leapm
 
 	msg := UserInputMessage{
 		Type:    MessageTypeUser,
-		Message: UserInputContent{Role: "user", Content: content},
+		Message: UserInputContent{Role: "user", Content: userContent},
 	}
 	raw, err := json.Marshal(msg)
 	if err != nil {
@@ -103,6 +118,35 @@ func (a *Agent) sendInputForSession(expected *string, content string, _ []*leapm
 		return providerkit.ClassifyJSONRPCDeliveryError("user", err)
 	}
 	return nil
+}
+
+// qoderUserContent builds the text and image blocks Qoder's stream input reads.
+func qoderUserContent(content string, attachments []*leapmuxv1.Attachment) (any, error) {
+	classified := agent.ClassifyAttachments(attachments)
+	if len(classified) == 0 {
+		return content, nil
+	}
+	blocks := []any{qoderTextBlock{Type: "text", Text: content}}
+	for _, attachment := range classified {
+		if err := (qoderProvider{}).ValidateAttachment(attachment); err != nil {
+			return nil, err
+		}
+		switch attachment.Kind {
+		case agent.AttachmentKindText:
+			blocks = append(blocks, qoderTextBlock{Type: "text", Text: providerkit.BuildInlineTextAttachmentBlock(attachment)})
+		case agent.AttachmentKindImage:
+			blocks = append(blocks, qoderImageBlock{
+				Type: "image",
+				Source: qoderImageSource{
+					Type: "base64", MediaType: attachment.MIMEType,
+					Data: base64.StdEncoding.EncodeToString(attachment.Data),
+				},
+			})
+		default:
+			return nil, fmt.Errorf("qoder CLI cannot send the attachment %s", attachment.Filename)
+		}
+	}
+	return blocks, nil
 }
 
 // SupportsSteering reports true when the runtime advertises steering. Qoder
@@ -154,67 +198,16 @@ func (a *Agent) Interrupt() error {
 func (a *Agent) Stop() {
 	a.NoteIntentionalStop()
 	a.Process.Stop()
+	a.stopWorkflowArchiveRetries()
 	a.setTurnActive(false)
 }
 
 // Wait waits for the process to exit.
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
+	a.stopWorkflowArchiveRetries()
 	a.setTurnActive(false)
 	return err
-}
-
-// OptionGroups returns every configuration axis this agent currently reports.
-func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	a.mu.Lock()
-	effort := a.effort
-	mode := a.permissionMode
-	a.mu.Unlock()
-	return []*leapmuxv1.AvailableOptionGroup{
-		qoderEffortGroup(effort),
-		qoderPermissionModeGroup(mode),
-	}
-}
-
-// SettingsSnapshot returns the live option values.
-func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return agent.ConfirmedSettings(map[string]string{
-		agent.OptionIDEffort:         a.effort,
-		agent.OptionIDPermissionMode: a.permissionMode,
-	})
-}
-
-// UpdateSettings applies a live change. A permission-mode change sends
-// set_permission_mode; an effort change restarts the agent (Qoder takes
-// `--reasoning-effort` at launch), so it reports RestartRequired.
-func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
-	result := agent.SettingsApplyResult{AppliedLive: true, Settlements: agent.OptionSettlements{}}
-	if value, ok := options[agent.OptionIDPermissionMode]; ok {
-		if err := a.applyPermissionMode(value); err != nil {
-			result.Settlements[agent.OptionIDPermissionMode] = agent.OptionSettlement{State: agent.OptionSettlementUnresolved}
-			result.AppliedLive = false
-		} else {
-			result.Settlements[agent.OptionIDPermissionMode] = agent.OptionSettlement{State: agent.OptionSettlementConfirmed, Value: &value}
-		}
-	}
-	for id := range options {
-		// An effort change needs the launch flag, so it settles only after a
-		// restart. Every other axis this agent does not apply live says the
-		// same.
-		if id != agent.OptionIDPermissionMode {
-			result.Settlements[id] = agent.OptionSettlement{State: agent.OptionSettlementUnresolved}
-		}
-	}
-	a.mu.Lock()
-	surfaced := optionmap.Map{
-		agent.OptionIDEffort:         a.effort,
-		agent.OptionIDPermissionMode: a.permissionMode,
-	}
-	a.mu.Unlock()
-	result.SurfacedOptions = surfaced
-	return result
 }
 
 // ClearContext starts a fresh session. Qoder keeps no in-process clear, so the

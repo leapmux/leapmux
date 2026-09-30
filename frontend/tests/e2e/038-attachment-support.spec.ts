@@ -1,42 +1,7 @@
-import { Buffer } from 'node:buffer'
-import { writeFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { expect, test } from './fixtures'
-import { createTestDirectory } from './helpers/runDirectory'
-import { expectClipsToOneLine } from './helpers/ui'
-
-/** Create a minimal 1x1 PNG file in a temp directory and return its path. */
-function createTestPng(name = 'test.png'): string {
-  // 1x1 red pixel PNG (67 bytes)
-  const png = Buffer.from(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg==',
-    'base64',
-  )
-  const path = join(createTestDirectory('attachment-'), name)
-  writeFileSync(path, png)
-  return path
-}
-
-/** Create a minimal binary file (unsupported for the default provider) for rejection testing. */
-function createTestBinary(name = 'test.bin'): string {
-  const path = join(createTestDirectory('attachment-'), name)
-  writeFileSync(path, Buffer.from([0x00, 0xFF, 0x01, 0xFE]))
-  return path
-}
-
-/** Create a minimal PDF: header, one empty page, EOF. Enough for a MIME sniff. */
-function createTestPdf(name = 'test.pdf'): string {
-  const path = join(createTestDirectory('attachment-'), name)
-  writeFileSync(path, Buffer.from('%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 20 20]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n', 'utf8'))
-  return path
-}
-
-/** Create a plain text file for the text-attachment path. */
-function createTestText(name = 'test.txt'): string {
-  const path = join(createTestDirectory('attachment-'), name)
-  writeFileSync(path, 'leapmux text attachment fixture\n')
-  return path
-}
+import { expectNativeAttachmentProof, expectRefusedAttachmentsAbsent } from './helpers/attachmentModelProbe'
+import { writeAttachmentFixture } from './helpers/attachments'
+import { expectClipsToOneLine, waitForAgentIdle } from './helpers/ui'
 
 test.describe('Attachment Support', () => {
   test('attach item opens file dialog and attachment appears in strip', async ({ page, authenticatedWorkspace }) => {
@@ -52,7 +17,7 @@ test.describe('Attachment Support', () => {
 
     // Upload a file via the hidden input.
     const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestPng('screenshot.png'))
+    await fileInput.setInputFiles(writeAttachmentFixture('image', 'screenshot.png'))
 
     // Attachment strip should appear with one pill.
     const strip = page.locator('[data-testid="attachment-strip"]')
@@ -77,7 +42,7 @@ test.describe('Attachment Support', () => {
 
     // Upload a file.
     const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestPng())
+    await fileInput.setInputFiles(writeAttachmentFixture('image'))
 
     await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
 
@@ -94,7 +59,7 @@ test.describe('Attachment Support', () => {
 
     // Upload a file.
     const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestPng('persist.png'))
+    await fileInput.setInputFiles(writeAttachmentFixture('image', 'persist.png'))
     await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
 
     // Open a new agent tab.
@@ -120,7 +85,7 @@ test.describe('Attachment Support', () => {
 
     // Upload a file.
     const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestPng())
+    await fileInput.setInputFiles(writeAttachmentFixture('image'))
     await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
 
     // Type some text and send.
@@ -156,22 +121,15 @@ test.describe('Attachment Support', () => {
     await expect(editor).toBeVisible()
     await editor.click()
 
-    // WebKitGTK exposes pasted clipboard images via items only; synthesize
-    // that shape since Chromium's DataTransfer doesn't reproduce it.
+    // WebKitGTK exposes pasted images through items but leaves files empty.
+    // Override Chromium's files getter to reproduce that clipboard shape.
     await page.evaluate(() => {
       const blob = new Blob([new Uint8Array([0x89, 0x50, 0x4E, 0x47])], { type: 'image/png' })
       const file = new File([blob], '', { type: 'image/png' })
-      const fakeItem = {
-        kind: 'file',
-        type: 'image/png',
-        getAsFile: () => file,
-      } as unknown as DataTransferItem
-      const fakeClipboardData = {
-        files: [] as unknown as FileList,
-        items: [fakeItem] as unknown as DataTransferItemList,
-      }
-      const event = new Event('paste', { bubbles: true, cancelable: true })
-      Object.defineProperty(event, 'clipboardData', { value: fakeClipboardData })
+      const clipboardData = new DataTransfer()
+      clipboardData.items.add(file)
+      Object.defineProperty(clipboardData, 'files', { value: new DataTransfer().files })
+      const event = new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true })
       document.querySelector('[data-testid="composer-editor"]')!.dispatchEvent(event)
     })
 
@@ -186,13 +144,15 @@ test.describe('Attachment Support', () => {
   // shape. The conversion logic is covered by the platformBridge unit
   // test; manual paste in the desktop build is the only true end-to-end.
 
-  test('unsupported file type rejected with toast', async ({ page, authenticatedWorkspace }) => {
+  test('unsupported file type stays out of the next model request', async ({ page, authenticatedWorkspace, modelScript }) => {
+    void authenticatedWorkspace
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Upload a binary file (unsupported type for the default provider).
     const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestBinary())
+    const rejected = writeAttachmentFixture('binary')
+    await fileInput.setInputFiles(rejected)
 
     // No attachment pill should appear.
     await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(0)
@@ -200,41 +160,52 @@ test.describe('Attachment Support', () => {
     // A toast should have been shown in the DOM (output element with .toast-message).
     const toast = page.locator('output .toast-message')
     await expect(toast).toContainText('binary')
+    await expectRefusedAttachmentsAbsent(page, modelScript, [rejected])
   })
 
   // Claude Code is one of the providers the matrix marks for PDF attachments.
   // The accept attribute and the kind classifier both have unit coverage; this
   // is the composer path end to end.
-  test('a PDF attaches and sends', async ({ page, authenticatedWorkspace }) => {
+  test('a PDF reaches the model', async ({ page, authenticatedWorkspace, modelScript }) => {
     void authenticatedWorkspace
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestPdf('spec.pdf'))
+    const sourcePath = writeAttachmentFixture('pdf', 'spec.pdf')
+    await fileInput.setInputFiles(sourcePath)
     await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
     await expect(page.locator('[data-testid="attachment-pill"]').first()).toContainText('spec.pdf')
 
     await editor.click()
-    await page.keyboard.type('Read the attached PDF.')
+    await modelScript.queue({ text: 'The document arrived.' })
+    await page.keyboard.type(modelScript.prompt('Read the attached PDF.'))
     await page.keyboard.press('Meta+Enter')
     await expect(editor).toHaveText('')
     await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(0)
+    const status = await modelScript.waitForSteps()
+    await expectNativeAttachmentProof(page, status, 'pdf', sourcePath, 'anthropic-messages')
+    await waitForAgentIdle(page)
   })
 
-  test('a text file attaches and sends', async ({ page, authenticatedWorkspace }) => {
+  test('a text file reaches the model', async ({ page, authenticatedWorkspace, modelScript }) => {
     void authenticatedWorkspace
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestText('notes.txt'))
+    const sourcePath = writeAttachmentFixture('text', 'notes.txt')
+    await fileInput.setInputFiles(sourcePath)
     await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
     await expect(page.locator('[data-testid="attachment-pill"]').first()).toContainText('notes.txt')
 
     await editor.click()
-    await page.keyboard.type('Summarize the attached notes.')
+    await modelScript.queue({ text: 'The note arrived.' })
+    await page.keyboard.type(modelScript.prompt('Summarize the attached notes.'))
     await page.keyboard.press('Meta+Enter')
     await expect(editor).toHaveText('')
     await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(0)
+    const status = await modelScript.waitForSteps()
+    await expectNativeAttachmentProof(page, status, 'text', sourcePath, 'anthropic-messages')
+    await waitForAgentIdle(page)
   })
 
   test('attachment-only message (no text) can be sent', async ({ page, authenticatedWorkspace }) => {
@@ -243,7 +214,7 @@ test.describe('Attachment Support', () => {
 
     // Upload a file without typing any text.
     const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestPng('solo.png'))
+    await fileInput.setInputFiles(writeAttachmentFixture('image', 'solo.png'))
     await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
 
     // The send button should be enabled even without text.
@@ -264,22 +235,27 @@ test.describe('Attachment Support', () => {
     // Simulate drag and drop via the file input (Playwright doesn't natively
     // support drag-and-drop of files from the OS, so we use the file input).
     const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestPng('dropped.png'))
+    await fileInput.setInputFiles(writeAttachmentFixture('image', 'dropped.png'))
 
     await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
     await expect(page.locator('[data-testid="attachment-pill"]')).toContainText('dropped.png')
   })
 
-  test('chat history shows attachment list in user message', async ({ page, authenticatedWorkspace }) => {
+  test('the model receives an image and the user row keeps its filename', async ({ page, authenticatedWorkspace, modelScript }) => {
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Upload a file and send with text.
     const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestPng('history.png'))
+    const sourcePath = writeAttachmentFixture('image', 'history.png')
+    await fileInput.setInputFiles(sourcePath)
     await editor.click()
-    await page.keyboard.type('analyze this image')
+    await modelScript.queue({ text: 'The image arrived.' })
+    await page.keyboard.type(modelScript.prompt('analyze this image'))
     await page.keyboard.press('Meta+Enter')
+    const status = await modelScript.waitForSteps()
+    await expectNativeAttachmentProof(page, status, 'image', sourcePath, 'anthropic-messages')
+    await waitForAgentIdle(page)
 
     // The accepted user message contains the attachment filename.
     const userBubbles = page.locator('[class*="userMessage"]')

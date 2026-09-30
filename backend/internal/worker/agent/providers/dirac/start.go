@@ -25,22 +25,28 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	return acp.Start(ctx, opts, sink, acp.StartSpec[Agent]{
 		Registration: Registration(),
 		ProviderName: "dirac",
-		BaseArgs:     []string{"--acp"},
+		BaseArgs:     []string{"--acp", "--subagents"},
 		PinnedEnv:    []string{diracNoAutoUpdateEnv},
 		SessionConfig: acp.SessionConfig{
 			NewMethod:    acp.MethodSessionNew,
 			ResumeMethod: acp.MethodSessionLoad,
 		},
-		NewAgent: func() *Agent { return &Agent{} },
-		Base:     func(a *Agent) *acp.Base { return &a.Base },
+		NewAgent: func() *Agent {
+			return &Agent{root: diracHome(agent.StoredSessionQuery{HomeDir: opts.HomeDir})}
+		},
+		Base: func(a *Agent) *acp.Base { return &a.Base },
 		Configure: func(a *Agent, _ agent.ProviderServices) acp.Hooks {
 			return a.configure(quartz.NewReal())
+		},
+		AfterHandshake: func(a *Agent, handshake *acp.SessionResult, opts agent.Options) error {
+			return a.ApplyPermissionModeStartup(handshake, opts, contracts.DiracModeAct, opts.Model())
 		},
 	})
 }
 
 // configure returns the hooks of one agent.
-func (a *Agent) configure(_ quartz.Clock) acp.Hooks {
+func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
+	a.clock = clock
 	return acp.Hooks{
 		ModeChannel:    acp.ModeChannelPermissionMode,
 		EffortConfigID: contracts.DiracConfigReasoningEffort,
@@ -51,8 +57,13 @@ func (a *Agent) configure(_ quartz.Clock) acp.Hooks {
 		AdvertisedSteerMethod: func(response []byte) string {
 			return diracAdvertisedSteerMethod(response)
 		},
-		ExtraMethod:          a.handleExtraMethod,
-		SubagentFromToolCall: diracSubagentFromToolCall,
+		PromptParams:               diracPromptParams,
+		ExtraMethod:                a.handleExtraMethod,
+		SubagentFromToolCall:       a.subagentFromToolCall,
+		SubagentFromToolCallUpdate: a.subagentFromToolCallUpdate,
+		PromptEnded:                a.hydrateSubagentArchives,
+		ClearProviderState:         a.clearChildState,
+		BeforeWaitCleanup:          a.beforeWaitCleanup,
 		// Dirac's `respond` tool is the control plane: a question rides
 		// elicitation and a plan defers its approval to the next prompt. The
 		// base answers both, so no provider control reader is needed.

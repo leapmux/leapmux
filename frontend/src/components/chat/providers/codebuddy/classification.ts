@@ -4,13 +4,14 @@ import { CODEBUDDY_FRAME_KIND } from '~/generated/contracts/codebuddy-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { isNotificationThreadWrapper } from '../../messageUtils'
 import { notificationClassifierFor } from '../../notificationClassification'
+import { storedFunctionCallID, storedFunctionIsProgress } from './storedFunction'
 
 /**
  * CodeBuddy message classification.
  *
- * The stream is Claude Code-shaped, so an assistant frame carries a `message`
- * with Anthropic content blocks. This plugin reads only what it needs to pick a
- * category; the extraction turns it into the neutral row.
+ * Live frames carry Anthropic content blocks inside `message`. A completed
+ * Workflow child stores its native content blocks on the record itself. This
+ * classifier reads both shapes and leaves the row content to extraction.
  */
 export function classifyCodebuddyMessage(input: ClassificationInput): MessageCategory {
   const parent = input.parentObject
@@ -32,6 +33,17 @@ export function classifyCodebuddyMessage(input: ClassificationInput): MessageCat
   switch (type) {
     case CODEBUDDY_FRAME_KIND.Assistant:
       return classifyAssistant(parent)
+    case 'message':
+      return classifyStoredMessage(parent)
+    case 'function_call':
+      return storedFunctionCallID(parent) && pickString(parent, 'name')
+        ? { kind: 'tool_use' }
+        : { kind: 'unknown' }
+    case 'function_call_output':
+    case 'function_call_result':
+      if (!storedFunctionCallID(parent))
+        return { kind: 'unknown' }
+      return storedFunctionIsProgress(parent) ? { kind: 'hidden' } : { kind: 'tool_result' }
     case CODEBUDDY_FRAME_KIND.User:
       return { kind: 'tool_result' }
     case CODEBUDDY_FRAME_KIND.Result:
@@ -41,6 +53,16 @@ export function classifyCodebuddyMessage(input: ClassificationInput): MessageCat
     default:
       return { kind: 'unknown' }
   }
+}
+
+function classifyStoredMessage(parent: Record<string, unknown>): MessageCategory {
+  if (pickString(parent, 'role') !== 'assistant')
+    return { kind: 'unknown' }
+  const content = Array.isArray(parent.content) ? parent.content : []
+  const hasText = content.some(
+    block => isObject(block) && pickString(block, 'type') === 'output_text' && typeof block.text === 'string' && block.text.length > 0,
+  )
+  return { kind: hasText ? 'assistant_text' : 'hidden' }
 }
 
 function classifyAssistant(parent: Record<string, unknown>): MessageCategory {

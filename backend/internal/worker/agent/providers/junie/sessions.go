@@ -30,7 +30,7 @@ type junieIndexRecord struct {
 // junieHome resolves the root that holds `sessions/`. `JUNIE_HOME` wins, then
 // the home directory's `.junie` -- the same order the CLI resolves it in.
 func junieHome(q agent.StoredSessionQuery) string {
-	if home := strings.TrimSpace(q.Getenv("JUNIE_HOME")); home != "" {
+	if home := strings.TrimSpace(q.Env("JUNIE_HOME")); home != "" {
 		return home
 	}
 	if home := q.Home(); home != "" {

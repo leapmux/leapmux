@@ -6,16 +6,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
-// defaultModels is the static model catalog. It holds one BYOK-shaped entry so
-// a session that never reached the CLI still has a model axis; a running agent
-// replaces it with the list its session reports (settings.go).
-var defaultModels = []*agent.ModelInfo{
-	{
-		Id:          "custom:Mock-0",
-		DisplayName: "Custom model",
-	},
-}
-
 // droidModelGroup builds the model option group from the session's catalog.
 func droidModelGroup(models []droidModel, current string) *leapmuxv1.AvailableOptionGroup {
 	group := &leapmuxv1.AvailableOptionGroup{

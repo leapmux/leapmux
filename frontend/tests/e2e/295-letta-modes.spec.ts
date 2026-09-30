@@ -1,12 +1,20 @@
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { nativeToolResult } from './helpers/nativeToolResult'
+import { writeToolCall } from './helpers/providerToolCalls'
 import {
   chooseSettingsOption,
   closeComposerMenus,
   expectSettingsChip,
   openSettingsMenu,
+  sendMessage,
+  waitForAgentIdle,
+  waitForControlBanner,
   waitForSettingsHydrated,
   waitForSettingsIdle,
 } from './helpers/ui'
-import { expect, LETTA_E2E_SKIP_REASON, lettaTest } from './letta-fixtures'
+import { expect, LETTA_E2E_SKIP_REASON, LETTA_TITLE_RULE, lettaTest } from './letta-fixtures'
 
 lettaTest.skip(!!LETTA_E2E_SKIP_REASON, LETTA_E2E_SKIP_REASON || '')
 
@@ -45,5 +53,41 @@ lettaTest.describe('Letta Code modes', () => {
     await page.reload()
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Accept Edits')
+  })
+
+  lettaTest('asks in Standard and runs a write in Unrestricted', async ({ askingLettaWorkspace, page, modelScript }) => {
+    const file = join(askingLettaWorkspace.workingDir, 'letta-mode-proof.txt')
+    await waitForSettingsHydrated(page)
+    await expectSettingsChip(page, 'Standard')
+    await modelScript.rule(LETTA_TITLE_RULE)
+
+    await modelScript.queue(
+      { toolCalls: [writeToolCall(AgentProvider.LETTA, 'standard-mode-write', { path: file, content: 'standard\n' })] },
+      { text: 'The Standard decision was recorded.' },
+    )
+    await sendMessage(page, modelScript.prompt('Try the requested write in Standard mode.'))
+    await modelScript.waitForSteps(1)
+    const banner = await waitForControlBanner(page)
+    expect(existsSync(file)).toBe(false)
+    await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
+    await modelScript.waitForSteps(2)
+    await waitForAgentIdle(page)
+    expect(existsSync(file)).toBe(false)
+    await expect(banner).toHaveCount(0)
+
+    await chooseSettingsOption(page, 'permissionMode-unrestricted')
+    await waitForSettingsIdle(page)
+    await expectSettingsChip(page, 'Unrestricted')
+    await modelScript.queue(
+      { toolCalls: [writeToolCall(AgentProvider.LETTA, 'unrestricted-mode-write', { path: file, content: 'unrestricted\n' })] },
+      { text: 'The Unrestricted write finished.' },
+    )
+    await sendMessage(page, modelScript.prompt('Write the proof file without asking.'))
+    const status = await modelScript.waitForSteps(4)
+    await waitForAgentIdle(page)
+    await expect(banner).toHaveCount(0)
+    expect(readFileSync(file, 'utf8')).toBe('unrestricted\n')
+    expect(nativeToolResult(status.requests.find(request => request.stepIndex === 3), 'unrestricted-mode-write'))
+      .toContain('letta-mode-proof.txt')
   })
 })

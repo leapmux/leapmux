@@ -3,15 +3,15 @@ import type { NotificationEntry } from '../../model/notification'
 import type { ClassificationInput } from '../registry'
 import { LETTA_DELTA_FIELD, LETTA_DELTA_KIND, LETTA_MESSAGE } from '~/generated/contracts/letta-protocol'
 import { ASSEMBLED_MESSAGE } from '~/generated/contracts/worker-vocab'
-import { pickObject, pickString } from '~/lib/jsonPick'
+import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { isNotificationThreadWrapper } from '../../messageUtils'
 import { notificationClassifierFor } from '../../notificationClassification'
 
 /**
  * Letta Code message classification.
  *
- * The worker persists each stream_delta payload verbatim, so the dispatcher
- * reads the same `message_type` the server wrote.
+ * The worker persists native stream_delta payloads. It stores one payload per
+ * call when a native message carries several tool calls.
  */
 export function classifyLettaMessage(input: ClassificationInput): MessageCategory {
   const notification = notificationClassifierFor(input.agentProvider, lettaNotificationEntry)
@@ -50,6 +50,15 @@ export function classifyLettaMessage(input: ClassificationInput): MessageCategor
       return { kind: 'assistant_thinking' }
     case LETTA_DELTA_KIND.ClientToolStart:
       return { kind: 'tool_use' }
+    case LETTA_DELTA_KIND.ToolCallMessage: {
+      const singular = pickObject(source, LETTA_DELTA_FIELD.ToolCall)
+      const calls = source[LETTA_DELTA_FIELD.ToolCalls]
+      const first = Array.isArray(calls) ? calls.find(isObject) : null
+      const call = singular ?? first
+      return call && pickString(call, LETTA_DELTA_FIELD.ToolCallID) && pickString(call, LETTA_DELTA_FIELD.Name)
+        ? { kind: 'tool_use' }
+        : { kind: 'hidden' }
+    }
     case LETTA_DELTA_KIND.ToolReturnMessage:
     case LETTA_DELTA_KIND.ClientToolEnd:
       return { kind: 'tool_result' }

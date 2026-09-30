@@ -1,10 +1,14 @@
+import type { McpContentItem } from '../../../model/mcpToolCall'
 import type { ChatRow } from '../../../model/row'
 import type { RowExtractionInput } from '~/components/chat/rowExtractionTypes'
 import { DROID_NOTIFICATION_FIELD } from '~/generated/contracts/droid-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { leapmuxUserRow } from '../../../leapmuxRows'
 import { createToolCall } from '../../../model/createToolCall'
+import { parseMcpContentItem } from '../../../model/mcpToolCall'
 import { toolCallRow } from '../../../model/row'
+import { rawTodosToItems } from '../../../normalizers/todo'
+import { toolRequestFor } from '../../defaultToolRequests'
 import { retainedRowIsFinal } from '../../registry'
 import { droidToolKind } from '../toolKinds'
 
@@ -36,14 +40,14 @@ function droidLifecycle(
   completion: RowExtractionInput['resolved']['completion'],
   isError: boolean,
   isResult: boolean,
-  resultText: string | undefined,
+  hasResultContent: boolean,
 ) {
   return {
     frameStatus: 'unstated' as const,
     providerOutcome: isError ? ('failed' as const) : null,
     retainedOutcome: retainedRowIsFinal(completion) ? ('succeeded' as const) : null,
     rowFinal: isResult,
-    resultFrameLanded: resultText !== undefined,
+    resultFrameLanded: hasResultContent,
   }
 }
 
@@ -66,11 +70,11 @@ function droidToolRow(
   const args = pickObject(toolUse, 'input') ?? (requestToolUse ? pickObject(requestToolUse, 'input') : undefined) ?? {}
   const isError = Boolean(payload[DROID_NOTIFICATION_FIELD.IsError])
   const content = payload[DROID_NOTIFICATION_FIELD.Content]
-  const resultText = content !== undefined ? (typeof content === 'string' ? content : JSON.stringify(content)) : undefined
+  const resultContent = droidResultContent(content)
 
   const declared = droidToolKind(name)
   const kind = declared === 'unspecified' ? 'other' : declared
-  const lifecycle = droidLifecycle(completion, isError, isResult, resultText)
+  const lifecycle = droidLifecycle(completion, isError, isResult, content !== undefined)
   const envelope = { id, name, lifecycle }
   // A result frame states no input of its own. The request row draws the diff;
   // the result row keeps the outcome as prose.
@@ -89,22 +93,49 @@ function droidToolRow(
       kind,
       name,
       request: { changes: [change] },
-      ...(resultText !== undefined ? { result: { changes: [change] } } : {}),
+      ...(content !== undefined ? { result: { changes: [change] } } : {}),
     })
     return toolCallRow(call, 'request', span.visibleRows)
   }
 
   // Every other row keeps the generic card: a raw-args request is not a typed
-  // one, and a result frame's request row already drew whatever it had.
+  // one, and a result frame's request row already drew whatever it had. Each
+  // declared kind receives its typed request before its renderer reads it.
+  const requestKind = hasInput && !isResult ? kind : 'other'
+  const request = requestKind === 'todo'
+    ? { items: rawTodosToItems(args.todos) }
+    : toolRequestFor(requestKind, args, {}, {})
   const call = createToolCall(envelope, {
-    kind: hasInput && !isResult ? kind : 'other',
+    kind: requestKind,
     name,
-    request: hasInput && !isResult ? args : { args },
+    request,
     // Only a result frame states an outcome. A request frame with a result
     // trips the `result-before-the-call-finished` fault and degrades.
-    ...(isResult || resultText !== undefined
-      ? { result: { content: resultText !== undefined ? [{ type: 'text' as const, text: resultText }] : [] } }
+    ...(isResult || content !== undefined
+      ? { result: { content: resultContent } }
       : {}),
   })
   return toolCallRow(call, isResult ? 'result' : 'request', span.visibleRows)
+}
+
+/** Read Droid's result blocks without turning a picture into JSON text. */
+function droidResultContent(content: unknown): McpContentItem[] {
+  if (typeof content === 'string')
+    return [{ type: 'text', text: content }]
+  if (!Array.isArray(content)) {
+    const text = JSON.stringify(content)
+    return text === undefined ? [] : [{ type: 'text', text }]
+  }
+  return content.map((block): McpContentItem => {
+    if (isObject(block) && block.type === 'image') {
+      const source = pickObject(block, 'source')
+      if (source?.type === 'base64') {
+        const data = pickString(source, 'data', undefined)
+        const mimeType = pickString(source, 'mediaType', undefined)
+        if (data && mimeType)
+          return { type: 'image', source: { data, mimeType } }
+      }
+    }
+    return parseMcpContentItem(block)
+  })
 }

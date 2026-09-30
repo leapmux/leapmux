@@ -49,13 +49,19 @@ func (b *FamilyBase) SteerInput(content string, attachments []*leapmuxv1.Attachm
 		return agent.ErrNoActiveTurn
 	}
 	return b.SendPromptDetached(content, attachments, func(_ json.RawMessage, err error) {
-		if err == nil || b.IsStopped() {
-			return
-		}
-		slog.Error("acp steer failed", "agent_id", b.AgentID(), "provider", b.ProviderName(), "error", err)
-		b.Sink().PersistLeapMuxNotification(map[string]interface{}{
-			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
-			contracts.NotificationFieldError: fmt.Sprintf("steer failed: %v", err),
-		})
+		b.ReportSteerFailure(err)
+	})
+}
+
+// ReportSteerFailure tells the reader when a detached ACP prompt refused their steer.
+// Kilo also reads this result after its own detached turn completes.
+func (b *FamilyBase) ReportSteerFailure(err error) {
+	if err == nil || b.IsStopped() {
+		return
+	}
+	slog.Error("acp steer failed", "agent_id", b.AgentID(), "provider", b.ProviderName(), "error", err)
+	b.Sink().PersistLeapMuxNotification(map[string]interface{}{
+		contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+		contracts.NotificationFieldError: fmt.Sprintf("steer failed: %v", err),
 	})
 }

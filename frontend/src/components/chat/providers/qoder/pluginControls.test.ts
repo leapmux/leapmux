@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { QODER_MODE } from '~/generated/contracts/qoder-protocol'
 import { CONTROL_REJECTED_BY_USER_MESSAGE } from '~/utils/controlResponse'
 import { createControlAnswerState } from '../../controls/types'
 import { qoderControls } from './pluginControls'
@@ -9,6 +10,31 @@ function approvalPayload(toolName: string, input: Record<string, unknown>): Reco
 }
 
 describe('qoderControls', () => {
+  it('draws a native MCP elicitation as a form and keeps typed answer values', () => {
+    const schema = { type: 'object', properties: { count: { type: 'integer', title: 'Count' } } }
+    const payload = {
+      type: 'control_request',
+      request_id: 'form-1',
+      request: { subtype: 'elicitation', mcp_server_name: 'form_probe', mode: 'form', message: 'Choose the probe settings.', requested_schema: schema },
+    }
+    expect(qoderControls.elicitation?.(payload)).toEqual({
+      mode: 'form',
+      message: 'Choose the probe settings.',
+      server: 'form_probe',
+      schema,
+      url: '',
+      title: '',
+      description: '',
+    })
+    expect(qoderControls.elicitation?.({ request: { subtype: 'can_use_tool' } })).toBeUndefined()
+    expect(qoderControls.controlResponseDisplay?.({
+      requestId: 'form-1',
+      claimToken: '',
+      request: payload,
+      response: { type: 'control_response', response: { response: { action: 'accept', content: { count: 0 } } } },
+    })).toEqual({ kind: 'label', text: 'Approved\nCount: 0' })
+  })
+
   it('allows a permission the composer sends with no reason', () => {
     expect(qoderControls.buildControlResponse?.(approvalPayload('Bash', { command: 'ls' }), '', 'approval:ap1'))
       .toStrictEqual({
@@ -52,11 +78,11 @@ describe('qoderControls', () => {
   })
 })
 
-// Qoder's `dontAsk` auto-DENIES what is not pre-approved and `auto` still
-// asks, so neither is a bypass mode and the shortcut must stay absent.
+// Auto approves safe calls and asks about the rest. Do not offer bypass:
+// Don't Ask denies calls that Qoder does not approve in advance.
 describe('qoderControls permissionPresets', () => {
-  it('offers no permission preset at all', () => {
-    expect(qoderControls.permissionPresets).toBeUndefined()
+  it('maps Smart to Auto without offering bypass', () => {
+    expect(qoderControls.permissionPresets).toEqual({ smart: { sets: { permissionMode: QODER_MODE.Auto } } })
   })
 })
 

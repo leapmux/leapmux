@@ -205,6 +205,24 @@ func TestACPHandshakeModelInfos_NoModels(t *testing.T) {
 	require.Equal(t, "", current)
 }
 
+func TestACPHandshakeModelInfos_FlattensGroupedConfigOptions(t *testing.T) {
+	t.Parallel()
+
+	// Junie groups custom profiles in the model select. The group itself has no
+	// value; its children hold the model IDs that the picker must show.
+	handshake, err := parseACPSessionResult(json.RawMessage(`{"sessionId":"junie-session","configOptions":[{"type":"select","id":"model","category":"model","currentValue":"v1:6:custom:custom:mock-model","options":[{"group":"custom","name":"Custom","options":[{"value":"v1:6:custom:custom:mock-model","name":"Mock Model","_meta":{"contextLimit":200000}},{"value":"v1:6:custom:custom:mock-responses","name":"Mock Responses"}]},{"value":"account-model","name":"Account Model"}]}]}`))
+	require.NoError(t, err)
+
+	models, current := acpHandshakeModelInfos(handshake)
+	assert.Equal(t, "v1:6:custom:custom:mock-model", current)
+	require.Len(t, models, 3)
+	assert.Equal(t, "v1:6:custom:custom:mock-model", models[0].ModelID)
+	assert.Equal(t, "Mock Model", models[0].Name)
+	assert.JSONEq(t, `{"contextLimit":200000}`, string(models[0].Meta))
+	assert.Equal(t, "v1:6:custom:custom:mock-responses", models[1].ModelID)
+	assert.Equal(t, "account-model", models[2].ModelID)
+}
+
 // A server that repeats a model id within a single channel yields one entry.
 func TestBuildACPModels_DedupsRepeatedID(t *testing.T) {
 	t.Parallel()

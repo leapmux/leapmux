@@ -104,11 +104,9 @@ const (
 	goalStatusComplete      = "complete"
 )
 
-// The final status words of the run ledger, GET /v1/agent-runs/{run_id}. The
-// ledger also states queued, starting, running, waiting_for_user, model_wait
-// and running_tool, and none of them is final. `waiting_for_user` is a child
-// parked at a checkpoint until the parent sends it a followup. The browser never
-// reads the ledger, so these words are not in the contract.
+// Status words of the run ledger, GET /v1/agent-runs/{run_id}. An interrupted
+// child can resume from a checkpoint, so only completed, failed, and cancelled
+// close its registry row. The browser never reads these native words.
 const (
 	agentRunStatusCompleted   = "completed"
 	agentRunStatusFailed      = "failed"

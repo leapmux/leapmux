@@ -1,3 +1,4 @@
+import type { McpContentItem } from '../../../model/mcpToolCall'
 import type { ToolCall, ToolCallEnvelope, ToolCallLifecycleFacts, ToolCallSpecReaderTable, ToolCallSpecVariant } from '../../../model/toolCall'
 import type { ToolKind } from '../../../model/toolKind'
 import { isObject, pickString } from '~/lib/jsonPick'
@@ -47,6 +48,7 @@ export interface AnthropicToolFacts {
   toolName: string
   args: Record<string, unknown>
   resultText: string
+  resultContent: McpContentItem[]
   isError: boolean
   lifecycle: ToolCallLifecycleFacts
 }
@@ -54,18 +56,21 @@ export interface AnthropicToolFacts {
 /**
  * Read one Anthropic-shaped tool call into the shared model.
  *
- * Both CodeBuddy Code and Qoder CLI speak Anthropic content blocks: an
- * assistant `tool_use` carries the id, name and input, and a user
- * `tool_result` carries the output. The shared default request table reads the
- * arguments; neither provider spells its tool arguments differently from it.
+ * Qoder CLI speaks Anthropic content blocks. An assistant `tool_use` carries
+ * the id, name, and input. A user `tool_result` carries the output. The
+ * default request table reads Qoder's tool arguments.
  */
 export function anthropicToolCall(facts: AnthropicToolFacts): ToolCall {
   const kind: ToolKind = qoderToolKind(facts.toolName)
   const envelope: ToolCallEnvelope = { id: facts.callId, name: facts.toolName, lifecycle: facts.lifecycle }
   const spec = readToolCallSpec(ANTHROPIC_TOOL_READERS, kind, facts)
+  const resultText = facts.resultContent.length > 0 ? '' : facts.resultText
   return createToolCall(envelope, {
     ...spec,
-    ...(facts.resultText ? { result: facts.isError ? failedResult(facts.resultText) : unparsedResult(facts.resultText) } : {}),
+    ...(facts.lifecycle.resultFrameLanded
+      ? { result: facts.isError ? failedResult(resultText) : unparsedResult(resultText) }
+      : {}),
+    ...(facts.resultContent.length > 0 ? { extraContent: facts.resultContent } : {}),
   })
 }
 

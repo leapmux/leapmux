@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -12,6 +13,15 @@ import (
 // todo.go) in addition to ACP plan events. Each provider embeds it in
 // a plugin type of its own, which adds where that provider keeps its sessions.
 type FamilyProvider struct{ acp.Provider }
+
+// ValidateAttachment refuses a file type that the OpenCode family cannot send
+// through its model path.
+func (FamilyProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
+	if attachment.Kind == agent.AttachmentKindBinary {
+		return fmt.Errorf("OpenCode protocol does not support binary attachments: %s", attachment.Filename)
+	}
+	return nil
+}
 
 // opencodeProvider is the wire-format plugin for OpenCode.
 type opencodeProvider struct{ FamilyProvider }

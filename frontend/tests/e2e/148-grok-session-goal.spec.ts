@@ -35,6 +35,12 @@ grokTest.describe('Grok Build session goal', () => {
 
     await expectGoalStatus(page, 'paused')
 
+    const callsBeforeResume = (await modelScript.status()).ruleMatches['every goal call answers with prose'] ?? 0
+    await openGoalMenu(page)
+    await goalAction(page, 'resume').click()
+    await expect.poll(async () => (await modelScript.status()).ruleMatches['every goal call answers with prose'] ?? 0).toBeGreaterThan(callsBeforeResume)
+    await expectGoalStatus(page, 'paused')
+
     await openGoalMenu(page)
     await goalAction(page, 'clear').click()
     await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()

@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -18,14 +17,19 @@ type Agent struct {
 	sink agent.ProviderServices
 	opts agent.Options
 
-	mu             sync.Mutex
-	sessionID      string
-	model          string
-	permissionMode string
-	effort         string
-	active         bool
-	turnOrder      providerkit.TurnSeq
-	activityRev    uint64
+	mu                        sync.Mutex
+	sessionID                 string
+	model                     string
+	models                    []codebuddyModelInfo
+	permissionMode            string
+	effort                    string
+	active                    bool
+	assistantTextStreamed     bool
+	pendingPlanModeTools      map[string]agent.PlanModeControlKind
+	awaitingRejectedPlanInit  bool
+	nativeTurnRestartRequired bool
+	turnOrder                 providerkit.TurnSeq
+	activityRev               uint64
 
 	// hasGoalCommand records whether the running CLI advertises /goal in its
 	// `slash_commands` list. It gates the goal controls on the CLI's own
@@ -40,30 +44,45 @@ type Agent struct {
 	// request id. See control.go.
 	pendingControlMu sync.Mutex
 	pendingControl   map[string]chan<- codebuddyControlResult
+	tasks            codebuddyTaskIndex
+	archiveMu        sync.Mutex
+	archiveJobs      map[string]*codebuddyArchiveJob
+	archiveChildJobs map[string]*codebuddyArchiveJob
+	archiveStopped   bool
+	archiveRetries   sync.WaitGroup
 }
 
 var _ agent.Agent = (*Agent)(nil)
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.NativeTurnRestarter = (*Agent)(nil)
 
 // codebuddyControlResult is the outcome of one pending control request.
 type codebuddyControlResult struct {
-	Success        bool
-	Error          string
-	Mode           string
-	PermissionMode string
-	Models         []codebuddyModelInfo
-	RawResponse    json.RawMessage
+	Success         bool
+	Error           string
+	Mode            string
+	Model           string
+	Models          []codebuddyModelInfo
+	HasModelCatalog bool
 }
 
-// codebuddyModelInfo is the model catalog entry an initialize or
-// get_available_models response carries.
+// codebuddyModelInfo is one get_available_models entry.
 type codebuddyModelInfo struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID          string `json:"modelId"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 // AgentID returns the worker's identifier for this agent.
 func (a *Agent) AgentIDValue() string { return a.AgentID() }
+
+// NativeTurnRestartRequired reports a native Plan tool change that launch
+// options must carry into the next prompt of this session.
+func (a *Agent) NativeTurnRestartRequired() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.nativeTurnRestartRequired
+}
 
 // PublishTurnActive republishes the turn flag through the sink.
 func (a *Agent) PublishTurnActive() agent.TurnState {
@@ -107,6 +126,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		return agent.ErrAgentBusy
 	}
 	a.active = true
+	a.assistantTextStreamed = false
 	a.activityRev++
 	a.mu.Unlock()
 	a.PublishTurnActive()
@@ -115,7 +135,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		Type: MessageTypeUser,
 		Message: UserInputContent{
 			Role:    "user",
-			Content: content,
+			Content: codebuddyUserContent(content, attachments),
 		},
 	}
 	raw, err := json.Marshal(msg)
@@ -135,7 +155,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 func (a *Agent) SupportsSteering() bool { return true }
 
 // SteerInput injects content into the RUNNING turn through control_request/steer.
-func (a *Agent) SteerInput(content string, _ []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	if a.IsStopped() {
 		return fmt.Errorf("the CodeBuddy process is stopped")
 	}
@@ -149,7 +169,7 @@ func (a *Agent) SteerInput(content string, _ []*leapmuxv1.Attachment) error {
 	body, err := json.Marshal(map[string]any{
 		"subtype":        "steer",
 		"session_id":     sessionID,
-		"content_blocks": []map[string]any{{"type": "text", "text": content}},
+		"content_blocks": codebuddyContentBlocks(content, agent.ClassifyAttachments(attachments)),
 	})
 	if err != nil {
 		return err
@@ -180,73 +200,16 @@ func (a *Agent) Interrupt() error {
 func (a *Agent) Stop() {
 	a.NoteIntentionalStop()
 	a.Process.Stop()
+	a.stopWorkflowArchiveRetries()
 	a.setTurnActive(false)
 }
 
 // Wait waits for the process to exit.
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
+	a.stopWorkflowArchiveRetries()
 	a.setTurnActive(false)
 	return err
-}
-
-// OptionGroups returns every configuration axis this agent currently reports.
-func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	a.mu.Lock()
-	effort := a.effort
-	mode := a.permissionMode
-	a.mu.Unlock()
-	return []*leapmuxv1.AvailableOptionGroup{
-		codebuddyEffortGroup(effort),
-		codebuddyPermissionModeGroup(mode),
-	}
-}
-
-// SettingsSnapshot returns the live option values.
-func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return agent.ConfirmedSettings(map[string]string{
-		agent.OptionIDEffort:         a.effort,
-		agent.OptionIDPermissionMode: a.permissionMode,
-	})
-}
-
-// UpdateSettings applies a live change. A permission-mode change sends
-// set_permission_mode; an effort change restarts the agent (CodeBuddy takes
-// effort only at launch), so it reports RestartRequired.
-func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
-	result := agent.SettingsApplyResult{AppliedLive: true, Settlements: agent.OptionSettlements{}}
-	live := optionmap.Map{}
-	for id, value := range options {
-		switch id {
-		case agent.OptionIDPermissionMode:
-			live[id] = value
-		case agent.OptionIDEffort:
-			result.Settlements[id] = agent.OptionSettlement{State: agent.OptionSettlementUnresolved}
-		default:
-			result.Settlements[id] = agent.OptionSettlement{State: agent.OptionSettlementUnresolved}
-		}
-	}
-	if len(live) > 0 {
-		if err := a.applyPermissionMode(live[agent.OptionIDPermissionMode]); err != nil {
-			for id := range live {
-				result.Settlements[id] = agent.OptionSettlement{State: agent.OptionSettlementUnresolved}
-			}
-			result.AppliedLive = false
-			return result
-		}
-		value := live[agent.OptionIDPermissionMode]
-		result.Settlements[agent.OptionIDPermissionMode] = agent.OptionSettlement{State: agent.OptionSettlementConfirmed, Value: &value}
-	}
-	a.mu.Lock()
-	surfaced := optionmap.Map{
-		agent.OptionIDEffort:         a.effort,
-		agent.OptionIDPermissionMode: a.permissionMode,
-	}
-	a.mu.Unlock()
-	result.SurfacedOptions = surfaced
-	return result
 }
 
 // ClearContext starts a fresh session. CodeBuddy keeps no in-process clear, so

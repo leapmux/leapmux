@@ -23,6 +23,10 @@ type piGoalSync struct {
 	pending  bool
 	snapshot bool
 	stopping bool
+	// Set and Resume can start a model turn before their command replies arrive.
+	// An early empty snapshot must keep reading while either reply remains open.
+	// The session key prevents an old command from refreshing a replacement session.
+	pendingActivations map[string]int
 	// Only the refresh goroutine reads or changes the native session index and
 	// the goal-file cache.
 	reader piGoalSessionReader
@@ -35,15 +39,13 @@ type piGoalSync struct {
 }
 
 const (
-	// Pi writes the session file after its first assistant message. A recovery pass
-	// that lands before that write has no later hint to rely on, so it waits for the
-	// file. The product of the two is the patience: about five seconds, after which
-	// a transcript that never lands stops holding the refresh goroutine open.
+	// Pi can write the transcript or focused goal after the first read. The product
+	// of these values gives either source about five seconds to appear.
 	piGoalRetryDelay = 250 * time.Millisecond
 	piGoalRetryLimit = 20
 )
 
-// retryPolicy states how a pass waits for a transcript Pi has not written yet.
+// retryPolicy states how long a refresh waits for a pending transcript or goal.
 func (g *piGoalSync) retryPolicy() (time.Duration, int) {
 	delay, limit := g.retryDelay, g.retryLimit
 	if delay <= 0 {
@@ -94,11 +96,25 @@ func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (ag
 		}
 		message += " " + objective
 	}
+	activation := action == agent.GoalActionSet || action == agent.GoalActionResume
+	activationSession := ""
+	if activation {
+		a.Mu.Lock()
+		activationSession = a.sessionID
+		if a.goal.pendingActivations == nil {
+			a.goal.pendingActivations = make(map[string]int)
+		}
+		a.goal.pendingActivations[activationSession]++
+		a.Mu.Unlock()
+	}
 	// A clear can await Pi's confirmation dialog, and that dialog has no deadline of
 	// its own. The stdin write is the delivery acceptance, so the response wait runs
 	// on its own goroutine: the read loop stays free to route the answer, and the
 	// caller does not hold an RPC open for as long as the user takes to decide.
 	if err := a.sendPiCommandDetached(CommandPrompt, map[string]any{"message": message}, func(err error) {
+		if activation {
+			a.finishPiGoalActivation(activationSession)
+		}
 		if err != nil && !a.IsStopped() {
 			slog.Error("pi goal command failed", "agent_id", a.AgentID(), "command", command, "error", err)
 			a.sink.PersistLeapMuxNotification(map[string]any{
@@ -110,10 +126,23 @@ func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (ag
 		// moment a read sees the new state.
 		a.schedulePiGoalRefresh(false)
 	}); err != nil {
+		if activation {
+			a.finishPiGoalActivation(activationSession)
+		}
 		return agent.GoalOutcome{}, err
 	}
 	a.schedulePiGoalRefresh(false)
 	return agent.GoalOutcome{}, nil
+}
+
+func (a *Agent) finishPiGoalActivation(sessionID string) {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if remaining := a.goal.pendingActivations[sessionID]; remaining > 1 {
+		a.goal.pendingActivations[sessionID] = remaining - 1
+	} else {
+		delete(a.goal.pendingActivations, sessionID)
+	}
 }
 
 func (a *Agent) stopPiGoalRefresh() {
@@ -163,12 +192,18 @@ func (a *Agent) runPiGoalRefresh() {
 		}
 		sessionID, path, directory := a.sessionID, a.sessionFile, a.workingDir
 		revision, snapshot := a.goal.revision, a.goal.snapshot
+		pendingActivation := a.goal.pendingActivations[sessionID] > 0
 		delay, limit := a.goal.retryPolicy()
 		a.goal.pending = false
 		a.Mu.Unlock()
 		record, err := a.readPiGoalSnapshot(path, directory, sessionID)
 		published, retry := false, false
 		switch {
+		case err == nil && record == nil && pendingActivation && waits < limit:
+			// The command can write the focused goal after this read but before its
+			// reply. Keep the refresh intent until the goal appears or the limit ends.
+			waits++
+			retry = true
 		case err == nil:
 			published = a.publishPiGoal(record, snapshot, &revision)
 			waits = 0
@@ -202,14 +237,14 @@ func (a *Agent) runPiGoalRefresh() {
 		// reaches the scheduling fields, and the check at the top of the next pass
 		// sees a stop that landed while it ran.
 		if retry {
-			a.waitForPiTranscript(delay)
+			a.waitForPiGoalSource(delay)
 		}
 	}
 }
 
-// waitForPiTranscript pauses between two reads of a session file Pi has not
-// written yet. A cancelled context ends the wait early.
-func (a *Agent) waitForPiTranscript(delay time.Duration) {
+// waitForPiGoalSource pauses between reads while the transcript or focused goal
+// has not appeared. A cancelled context ends the wait early.
+func (a *Agent) waitForPiGoalSource(delay time.Duration) {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {

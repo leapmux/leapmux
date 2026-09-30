@@ -4,6 +4,7 @@ import { ALL_PROVIDERS } from '~/generated/contracts/providers'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { elementText, renderThreadElement, renderThreadGlyph, renderThreadHasIcon, renderThreadText } from '~/test-support/messageRenderProbes'
+import { renderNotificationBlocks } from './notificationRenderers'
 
 // Side-effect-register the Claude and Codex plugins so the provider extractor
 // (plugin?.transcript.notificationEntry) actually runs in the tests that pass an agentProvider
@@ -63,6 +64,14 @@ describe('the notification thread: compaction and context_cleared rendering', ()
     const messages = [compactBoundaryMsg]
     expect(renderedContains(messages, 'Context compacted')).toBe(true)
     expect(renderedContains(messages, 'Context cleared')).toBe(false)
+  })
+
+  it('marks a completed compaction divider but not plain notification text', () => {
+    const boundary = render(() => renderThreadElement([compactBoundaryMsg], AgentProvider.CLAUDE_CODE))
+    expect(boundary.container.querySelector('[data-testid="notification-divider"]')?.textContent).toContain('Context compacted')
+
+    const plain = render(() => renderNotificationBlocks([{ kind: 'text', text: 'Context compacted' }]))
+    expect(plain.container.querySelector('[data-testid="notification-divider"]')).toBeNull()
   })
 
   it('compacting spinner: shows spinner', () => {

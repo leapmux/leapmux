@@ -1,5 +1,5 @@
 {
-  "_readme": "Reasonix owns this tool and capability vocabulary, and the field names of the tool record in its own transcript. LeapMux owns the envelope key it wraps that record in. The worker and frontend use the same identifiers.",
+  "_readme": "Reasonix owns this request method, tool and capability vocabulary, and the fields of its transcript tool record. LeapMux owns the envelope key around that record. The worker routes the request and the browser draws its form from the same method identifier.",
   "toolNames": {
     "Task": "task",
     "ReadOnlyTask": "read_only_task",
@@ -18,6 +18,9 @@
   },
   "configIds": {
     "ToolApproval": "tool_approval"
+  },
+  "methods": {
+    "McpRequestInteraction": "_reasonix.io/mcp/request_interaction"
   },
   "_unread": {
     "approvalValues": {

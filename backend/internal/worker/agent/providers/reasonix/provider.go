@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // reasonixProvider is the wire-format plugin for Reasonix. Reasonix speaks ACP,
@@ -13,6 +15,14 @@ import (
 // where Reasonix keeps its sessions and its text-only attachment policy.
 type reasonixProvider struct {
 	acp.Provider
+}
+
+// ResolveControlResponse answers Reasonix's MCP request on its own method.
+func (p reasonixProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
+	if result, ok := providerkit.ResolveMCPElicitationResponse(ctx, contracts.ReasonixMethodMcpRequestInteraction, nil); ok {
+		return result
+	}
+	return p.Provider.ResolveControlResponse(ctx)
 }
 
 // ListStoredSessions reads Reasonix's own session store; see sessions.go.

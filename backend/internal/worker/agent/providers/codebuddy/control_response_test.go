@@ -51,6 +51,28 @@ func TestCodebuddyTranslateAllowWithoutAnUpdateStatesTheOriginalShape(t *testing
 	assert.Equal(t, map[string]any{"allowed": true}, nativeAnswer(t, translated))
 }
 
+func TestCodebuddyResolveControlResponseClassifiesPlanExit(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		tool string
+		want agent.PlanModeControlKind
+	}{
+		{tool: "ExitPlanMode", want: agent.PlanModeControlExit},
+		{tool: "Bash", want: agent.PlanModeControlNone},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			t.Parallel()
+			resolution := (codebuddyProvider{}).ResolveControlResponse(agent.ControlResponseContext{
+				RequestID: "approval:plan-1", ToolName: tc.tool,
+				ResponseContent: browserAnswer(t, "approval:plan-1", agent.ControlBehaviorAllow, "", nil),
+			})
+			assert.False(t, resolution.Withhold)
+			assert.Equal(t, tc.want, resolution.PlanModeControl)
+			assert.Equal(t, true, nativeAnswer(t, resolution.Content)["allowed"])
+		})
+	}
+}
+
 // An allow carries the input the browser folded its answer into. An
 // AskUserQuestion reply is the whole tool input with `answers` added, and
 // CodeBuddy merges that object into the tool call.

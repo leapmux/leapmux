@@ -1,44 +1,34 @@
-import { expect, FAST_AGENT_E2E_SKIP_REASON, fastAgentTest } from './fastagent-fixtures'
-import { expectAttachmentOutcome, sendWithAttachment } from './helpers/attachments'
-import { assistantBubbles, waitForAgentIdle } from './helpers/ui'
+import { FAST_AGENT_E2E_SKIP_REASON, fastAgentTest } from './fastagent-fixtures'
+import { exerciseAttachmentDelivery, expectRefusedAttachmentsAbsent } from './helpers/attachmentModelProbe'
+import { expectAttachmentOutcome } from './helpers/attachments'
 
 fastAgentTest.skip(!!FAST_AGENT_E2E_SKIP_REASON, FAST_AGENT_E2E_SKIP_REASON || '')
 
 /**
  * 278 — Fast Agent attachments.
  *
- * Fast Agent takes text, image and PDF attachments (matrix; the PDF rides its
- * `attach_media` staging, note 25). The composer accepts each kind and the
- * turn carries it.
+ * Fast Agent converts the ACP attachment blocks into model content. The
+ * tests check the model request for text, image, and PDF bytes.
  */
 fastAgentTest.describe('Fast Agent attachments', () => {
-  fastAgentTest('accepts a text attachment and carries it through the turn', async ({ authenticatedFastAgentWorkspace, page, modelScript }) => {
+  fastAgentTest('delivers text attachment bytes to the model', async ({ authenticatedFastAgentWorkspace, page, modelScript }) => {
     void authenticatedFastAgentWorkspace
-    await expectAttachmentOutcome(page, 'text', { supported: true, fileName: 'fa-notes.txt' })
-
-    await modelScript.queue({ text: 'The note is attached.' })
-    await sendWithAttachment(page, modelScript.prompt('Read the attached note.'))
-    await waitForAgentIdle(page, 120_000)
-    await expect(assistantBubbles(page).filter({ hasText: 'The note is attached.' }).first()).toBeVisible()
+    await exerciseAttachmentDelivery(page, modelScript, 'text', 'fa-notes.txt')
   })
 
-  fastAgentTest('accepts an image attachment and carries it through the turn', async ({ authenticatedFastAgentWorkspace, page, modelScript }) => {
+  fastAgentTest('delivers image attachment bytes to the model', async ({ authenticatedFastAgentWorkspace, page, modelScript }) => {
     void authenticatedFastAgentWorkspace
-    await expectAttachmentOutcome(page, 'image', { supported: true, fileName: 'fa-shot.png' })
-
-    await modelScript.queue({ text: 'The image is attached.' })
-    await sendWithAttachment(page, modelScript.prompt('Read the attached image.'))
-    await waitForAgentIdle(page, 120_000)
-    await expect(assistantBubbles(page).filter({ hasText: 'The image is attached.' }).first()).toBeVisible()
+    await exerciseAttachmentDelivery(page, modelScript, 'image', 'fa-shot.png')
   })
 
-  fastAgentTest('accepts a PDF attachment and carries it through the turn', async ({ authenticatedFastAgentWorkspace, page, modelScript }) => {
+  fastAgentTest('delivers PDF attachment bytes to the model', async ({ authenticatedFastAgentWorkspace, page, modelScript }) => {
     void authenticatedFastAgentWorkspace
-    await expectAttachmentOutcome(page, 'pdf', { supported: true, fileName: 'fa-doc.pdf' })
+    await exerciseAttachmentDelivery(page, modelScript, 'pdf', 'fa-doc.pdf')
+  })
 
-    await modelScript.queue({ text: 'The document is attached.' })
-    await sendWithAttachment(page, modelScript.prompt('Read the attached document.'))
-    await waitForAgentIdle(page, 120_000)
-    await expect(assistantBubbles(page).filter({ hasText: 'The document is attached.' }).first()).toBeVisible()
+  fastAgentTest('refuses another binary attachment before a model request', async ({ authenticatedFastAgentWorkspace, page, modelScript }) => {
+    void authenticatedFastAgentWorkspace
+    const rejected = await expectAttachmentOutcome(page, 'binary', { supported: false })
+    await expectRefusedAttachmentsAbsent(page, modelScript, [rejected])
   })
 })

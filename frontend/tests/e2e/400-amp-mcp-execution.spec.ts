@@ -1,0 +1,49 @@
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { AMP_PERMISSION_MODE } from '../../src/generated/contracts/amp-protocol'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { agentOpenOptions, agentSettings } from './agentSettings'
+import { AMP_E2E_SKIP_REASON, ampTest, expect } from './amp-fixtures'
+import { openAgentViaAPI } from './helpers/api'
+import { writeMcpEchoServer } from './helpers/mcpEchoServer'
+import { exerciseMcpEcho } from './helpers/mcpExecution'
+import { createTestDirectory } from './helpers/runDirectory'
+import { openWorkspace } from './helpers/ui'
+
+ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
+
+ampTest.describe('Amp MCP tool execution', () => {
+  ampTest('runs an isolated MCP echo tool through the local executor', async ({ authenticatedEmptyWorkspace, leapmuxServer, modelScript, page }) => {
+    const workingDir = createTestDirectory('amp-mcp-echo-')
+    const server = writeMcpEchoServer(workingDir)
+    const configHome = leapmuxServer.agentEnv.XDG_CONFIG_HOME
+    if (!configHome)
+      throw new Error('the isolated Amp config home is unavailable')
+    const configDir = join(configHome, 'amp')
+    mkdirSync(configDir, { recursive: true })
+    const config = join(configDir, 'settings.json')
+    if (existsSync(config))
+      throw new Error('the isolated Amp MCP configuration already exists')
+    writeFileSync(config, JSON.stringify({ 'amp.mcpServers': { echo_probe: { command: process.execPath, args: [server] } } }))
+    try {
+      const toolCatalog = execFileSync('amp', ['tools', 'list', '--json'], {
+        cwd: workingDir,
+        env: { ...process.env, ...leapmuxServer.agentEnv },
+        encoding: 'utf8',
+      })
+      expect(toolCatalog).toContain('mcp__echo_probe__echo')
+      const settings = agentOpenOptions(agentSettings(AgentProvider.AMP))
+      await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, {
+        agentProvider: AgentProvider.AMP,
+        ...settings,
+        optionValues: { ...settings.optionValues, permissionMode: AMP_PERMISSION_MODE.AllowAll },
+      })
+      await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+      await exerciseMcpEcho(page, modelScript, AgentProvider.AMP, 'amp')
+    }
+    finally {
+      unlinkSync(config)
+    }
+  })
+})

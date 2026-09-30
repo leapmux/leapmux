@@ -1,9 +1,16 @@
+import { exerciseContextUsage } from './helpers/contextUsage'
+import { exerciseManualCompaction } from './helpers/manualCompaction'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, expectAssistantAnswer, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
 import { expect, MIMO_E2E_SKIP_REASON, mimoTest } from './mimo-fixtures'
 
 mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
 
 mimoTest.describe('MiMo Code basic chat', () => {
+  mimoTest('reports model usage in the agent info card', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {
+    void authenticatedMiMoWorkspace
+    await exerciseContextUsage(page, modelScript)
+  })
+
   // One scripted turn proves the whole path: the worker starts `mimo serve`,
   // prompts it over HTTP, reads the answer off the event stream, and ends the
   // turn on the idle status.
@@ -12,7 +19,7 @@ mimoTest.describe('MiMo Code basic chat', () => {
     await modelScript.queue({ reasoning: 'Add the two numbers.', text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expectAssistantAnswer(page)
     await expect(assistantBubbles(page).filter({ hasText: 'Add the two numbers.' })).toBeVisible()
     await expect(page.getByTestId('thinking-indicator')).not.toBeVisible()
@@ -25,7 +32,7 @@ mimoTest.describe('MiMo Code basic chat', () => {
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps(1)
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expectAssistantAnswer(page)
 
     await modelScript.rule({
@@ -35,8 +42,13 @@ mimoTest.describe('MiMo Code basic chat', () => {
       once: true,
     })
     await sendMessage(page, modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
     await expect(userBubbles(page)).toHaveCount(2)
+  })
+
+  mimoTest('compacts a scripted conversation on request', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {
+    void authenticatedMiMoWorkspace
+    await exerciseManualCompaction(page, modelScript, { summaryRequestMarker: 'Write a continuation summary that will allow you' })
   })
 })

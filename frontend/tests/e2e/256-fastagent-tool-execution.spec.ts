@@ -29,8 +29,15 @@ fastAgentTest.describe('Fast Agent tool execution', () => {
       { text: 'All three tools ran.' },
     )
     await sendMessage(page, modelScript.prompt('Run the three scripted tools, then report.'))
+    const banner = page.locator('[data-testid="control-banner"]:visible')
+    for (const step of [1, 2, 3]) {
+      await modelScript.waitForSteps(step)
+      await expect(banner).toBeVisible()
+      await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
+    }
     await modelScript.waitForSteps()
     await waitForAgentIdle(page, 120_000)
+    await expect(banner).toHaveCount(0)
 
     const tools = page.locator('[data-tool-message]:visible')
     await expect(tools.filter({ hasText: 'fast-42' }).first()).toBeVisible()

@@ -307,6 +307,106 @@ func TestNativeCopilotKeepsTheModelCallFailure(t *testing.T) {
 	assert.JSONEq(t, string(raw), string(sink.Messages()[0].Content))
 }
 
+func TestNativeCopilotKeepsReasoningInsideTheFinishedMessage(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantMessage, map[string]any{
+		"messageId": "message-1", "content": "The final answer.",
+		"reasoningOpaque": "reasoning-1", "reasoningText": "I checked the answer.",
+		"reasoningBlocks": map[string]any{
+			"provider": "openai-responses",
+			"blocks": []any{map[string]any{
+				"type": "reasoning", "id": "reasoning-1",
+				"summary": []any{map[string]any{"type": "summary_text", "text": "I checked the answer."}},
+			}},
+		},
+	}))
+
+	messages := sink.Messages()
+	require.Len(t, messages, 2, "the native message contains a thought and an answer")
+	reasoning, ok := copilotEventOfType(messages[0].Content, contracts.CopilotEventAssistantReasoning)
+	require.True(t, ok, "the thought precedes the answer")
+	assert.JSONEq(t, `{"reasoningId":"reasoning-1","content":"I checked the answer."}`, string(reasoning))
+	answer, ok := copilotEventOfType(messages[1].Content, contracts.CopilotEventAssistantMessage)
+	require.True(t, ok)
+	assert.Contains(t, string(answer), `"content":"The final answer."`)
+}
+
+func TestNativeCopilotReadsTheEmbeddedReasoningSummary(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantMessage, map[string]any{
+		"messageId": "message-1", "content": "The final answer.",
+		"reasoningBlocks": map[string]any{
+			"provider": "openai-responses",
+			"blocks": []any{map[string]any{
+				"type": "reasoning", "id": "reasoning-1",
+				"summary": []any{map[string]any{"type": "summary_text", "text": "I checked the answer."}},
+			}},
+		},
+	}))
+
+	messages := sink.Messages()
+	require.Len(t, messages, 2)
+	reasoning, ok := copilotEventOfType(messages[0].Content, contracts.CopilotEventAssistantReasoning)
+	require.True(t, ok)
+	assert.JSONEq(t, `{"reasoningId":"reasoning-1","content":"I checked the answer."}`, string(reasoning))
+}
+
+func TestNativeCopilotDoesNotRepeatStandaloneReasoning(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantReasoning, map[string]any{
+		"reasoningId": "reasoning-1", "content": "I checked the answer.",
+	}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantMessage, map[string]any{
+		"messageId": "message-1", "content": "The final answer.",
+		"reasoningOpaque": "reasoning-1", "reasoningText": "I checked the answer.",
+	}))
+
+	messages := sink.Messages()
+	require.Len(t, messages, 2, "a finished reasoning event already owns the thought row")
+	_, ok := copilotEventOfType(messages[0].Content, contracts.CopilotEventAssistantReasoning)
+	require.True(t, ok)
+	_, ok = copilotEventOfType(messages[1].Content, contracts.CopilotEventAssistantMessage)
+	require.True(t, ok)
+}
+
+func TestNativeCopilotSkipsAnEmptyStandaloneReasoningEvent(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantReasoning, map[string]any{
+		"reasoningId": "reasoning-1", "content": "",
+	}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantMessage, map[string]any{
+		"messageId": "message-1", "content": "The final answer.",
+		"reasoningOpaque": "reasoning-1", "reasoningText": "I checked the answer.",
+	}))
+
+	messages := sink.Messages()
+	require.Len(t, messages, 2)
+	_, ok := copilotEventOfType(messages[0].Content, contracts.CopilotEventAssistantReasoning)
+	require.True(t, ok)
+}
+
+func TestNativeCopilotReasoningIDsHaveALimitAndSessionScope(t *testing.T) {
+	t.Parallel()
+	a, _ := newNativeCopilotForEvents(t)
+
+	for index := range maxCopilotReasoningIDs + 1 {
+		a.rememberReasoning(fmt.Sprintf("reasoning-%d", index))
+	}
+	require.Len(t, a.reasoningSeen, maxCopilotReasoningIDs)
+	assert.False(t, a.sawReasoning("reasoning-0"))
+	assert.True(t, a.sawReasoning(fmt.Sprintf("reasoning-%d", maxCopilotReasoningIDs)))
+	a.sessionID = "session-2"
+	assert.False(t, a.sawReasoning(fmt.Sprintf("reasoning-%d", maxCopilotReasoningIDs)))
+}
+
 // The runtime marks every streaming delta ephemeral and emits the assistant message
 // only once that message is COMPLETE, so an interrupted turn stored nothing and the
 // answer the reader had been watching vanished. Every other provider keeps what the

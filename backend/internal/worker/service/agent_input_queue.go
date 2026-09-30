@@ -175,7 +175,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 			// closed pipe. Return the input to the queue instead.
 			return &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
 		}
-		resumeID := svc.resolveResumeSessionID(item.AgentID, dbAgent.AgentSessionID, dbAgent.Resumed)
+		resumeID := svc.resolveResumeSessionIDForAgent(item.AgentID, dbAgent)
 		return svc.ensureAgentRunning(item.AgentID, &resumeID, queuedStart)
 	}
 

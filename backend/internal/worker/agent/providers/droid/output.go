@@ -2,17 +2,28 @@ package droid
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // droidAttachmentLabel names the provider in an attachment refusal.
 const droidAttachmentLabel = "Factory Droid"
+
+// Droid emits thinking blocks separately from assistant text blocks. The
+// worker assembles both before the browser reads them.
+const (
+	droidNotificationThinkingTextDelta    = "thinking_text_delta"
+	droidNotificationThinkingTextComplete = "thinking_text_complete"
+)
 
 // isDroidRawInterrupt reports whether a raw frame is LeapMux's own interrupt
 // marker for Droid. The browser interrupts through the InterruptAgent call; the
@@ -48,20 +59,38 @@ func (a *Agent) handleFrame(line []byte) {
 		return
 	}
 
+	childSessionID := a.dispatchFrame(line, &env)
+	if childSessionID != "" {
+		a.startChildTail(childSessionID)
+	}
+}
+
+// dispatchFrame keeps native event state in order. A child archive starts after
+// this method releases dispatchMu because its reader can dispatch more events.
+func (a *Agent) dispatchFrame(line []byte, env *droidEnvelope) string {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
 
 	switch env.Type {
 	case droidTypeNotification:
-		a.handleNotification(line, &env)
+		return a.handleNotification(env)
 	case droidTypeRequest:
-		a.handleServerRequest(line, &env)
+		a.handleServerRequest(line, env)
 	case droidTypeResponse:
-		// The initialize_session response carries the session id every later
-		// request needs. The rest of the worker's own requests are
-		// fire-and-forget.
+		// The startup response settles initialize_session or load_session.
 		if env.ID == droidInitRequestID {
-			a.adoptSessionID(&env)
+			if env.Error != nil {
+				a.settleStartup(env.Error)
+			} else {
+				a.settleStartup(a.adoptSessionID(env))
+			}
+			return ""
+		}
+		if a.handleCompactionResponse(*env) {
+			return ""
+		}
+		if a.settleReply(*env) {
+			return ""
 		}
 		if env.Error != nil {
 			slog.Debug("droid: request failed", "agent_id", a.AgentID(), "error", env.Error)
@@ -69,6 +98,7 @@ func (a *Agent) handleFrame(line []byte) {
 	default:
 		slog.Debug("droid: unknown envelope type", "agent_id", a.AgentID(), "type", env.Type)
 	}
+	return ""
 }
 
 // droidNotification is the params of droid.session_notification.
@@ -84,11 +114,11 @@ type droidNotifHead struct {
 
 // handleNotification dispatches one session notification. The worker persists
 // the notification payload verbatim so the browser plugin reads the same shape.
-func (a *Agent) handleNotification(line []byte, env *droidEnvelope) {
+func (a *Agent) handleNotification(env *droidEnvelope) string {
 	var params droidNotification
 	if err := json.Unmarshal(env.Params, &params); err != nil {
 		slog.Debug("droid: bad notification params", "agent_id", a.AgentID(), "error", err)
-		return
+		return ""
 	}
 	payload := params.Notification
 	if len(payload) == 0 {
@@ -98,78 +128,92 @@ func (a *Agent) handleNotification(line []byte, env *droidEnvelope) {
 	var head droidNotifHead
 	if err := json.Unmarshal(payload, &head); err != nil {
 		slog.Debug("droid: bad notification payload", "agent_id", a.AgentID(), "error", err)
-		return
+		return ""
+	}
+	if head.Type == droidNotificationChildSessionAvailable {
+		return a.onChildSessionAvailable(params.SessionID, payload)
+	}
+	target, ok := a.outputTargetFor(params.SessionID)
+	if !ok {
+		slog.Debug("droid: notification from an unknown session", "agent_id", a.AgentID(), "session_id", params.SessionID)
+		return ""
 	}
 
 	switch head.Type {
 	case contracts.DroidNotificationWorkingStateChanged:
-		a.onWorkingStateChanged(payload)
+		a.onWorkingStateChanged(payload, target.childSessionID)
 	case contracts.DroidNotificationCreateMessage:
-		a.onCreateMessage(payload)
+		a.onCreateMessage(payload, target)
 	case contracts.DroidNotificationAssistantTextDelta:
-		a.onAssistantTextDelta(payload)
+		a.onModelTextDelta(payload, agent.AssembledMessageKindText, target)
 	case contracts.DroidNotificationAssistantTextComplete:
-		a.onAssistantTextComplete(payload)
+		a.onModelTextComplete(payload, agent.AssembledMessageKindText, target)
+	case droidNotificationThinkingTextDelta:
+		a.onModelTextDelta(payload, agent.AssembledMessageKindReasoning, target)
+	case droidNotificationThinkingTextComplete:
+		a.onModelTextComplete(payload, agent.AssembledMessageKindReasoning, target)
 	case contracts.DroidToolNotificationToolCall:
-		a.onToolCall(payload)
+		a.onToolCall(payload, target)
 	case contracts.DroidToolNotificationToolResult:
-		a.onToolResult(payload)
+		a.onToolResult(payload, target)
 	case contracts.DroidNotificationAgentTurnCompleted:
-		// A turn end for a CHILD session disarms that child's flag, not the
-		// main turn. The notification envelope names the session.
-		if params.SessionID != "" && params.SessionID != a.mainSessionID() {
-			a.disarmChildTurn(params.SessionID)
-			a.persistNotification(payload)
-			return
-		}
-		a.onAgentTurnCompleted(payload)
+		a.onAgentTurnCompleted(payload, target)
 	case contracts.DroidNotificationSettingsUpdated:
-		a.onSettingsUpdated(payload)
+		if target.childSessionID == "" {
+			a.onSettingsUpdated(payload)
+		} else {
+			a.persistNotification(payload, target)
+		}
 	case contracts.DroidNotificationSessionTitleUpdated:
-		a.persistNotification(payload)
+		a.persistNotification(payload, target)
 	case contracts.DroidNotificationSessionTokenUsageChanged:
-		a.persistNotification(payload)
+		a.persistNotification(payload, target)
+	case contracts.DroidNotificationSessionCompacted:
+		a.persistNotification(payload, target)
+		if target.childSessionID == "" {
+			a.finishCompactionFromNotification()
+			a.refreshContextUsage()
+		}
 	case contracts.DroidNotificationError:
-		a.onError(payload)
-	case droidNotificationChildSessionAvailable:
-		a.onChildSessionAvailable(payload)
+		a.onError(payload, target)
 	default:
 		// An unknown notification type must move nothing. Persist it so the
 		// browser can still draw it, and leave the turn flag alone.
-		a.persistNotification(payload)
+		a.persistNotification(payload, target)
 	}
+	return ""
 }
 
 // persistNotification stores a notification row verbatim.
-func (a *Agent) persistNotification(payload []byte) {
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, payload); err != nil {
+func (a *Agent) persistNotification(payload []byte, target droidOutputTarget) {
+	if _, err := target.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, payload); err != nil {
 		slog.Debug("droid: persist notification failed", "agent_id", a.AgentID(), "error", err)
 	}
 }
 
 // persistRow stores one transcript row verbatim.
-func (a *Agent) persistRow(payload []byte, span agent.SpanInfo) {
-	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload}, span); err != nil {
+func (a *Agent) persistRow(payload []byte, span agent.SpanInfo, target droidOutputTarget) {
+	if err := target.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload}, span); err != nil {
 		slog.Debug("droid: persist message failed", "agent_id", a.AgentID(), "error", err)
 	}
 }
 
-// onChildSessionAvailable arms the child's turn and persists the announcement.
-// The child starts running as soon as its parent's Task tool spawns it, so the
-// announcement marks the turn active.
-func (a *Agent) onChildSessionAvailable(payload []byte) {
+// onChildSessionAvailable registers a native child under its parent session.
+func (a *Agent) onChildSessionAvailable(parentSessionID string, payload []byte) string {
 	var n struct {
 		Type           string `json:"type"`
 		ChildSessionID string `json:"childSessionId"`
 	}
 	if err := json.Unmarshal(payload, &n); err != nil {
 		slog.Debug("droid: bad child_session_available", "agent_id", a.AgentID(), "error", err)
-		return
+		return ""
 	}
-	if n.ChildSessionID != "" {
-		a.armChildTurn(n.ChildSessionID)
+	childSessionID := a.registerChildSession(parentSessionID, payload)
+	target, ok := a.outputTargetFor(parentSessionID)
+	if ok {
+		a.persistNotification(payload, target)
 	}
-	a.persistNotification(payload)
+	return childSessionID
 }
 
 // mainSessionID returns the session id of the main conversation.
@@ -187,7 +231,7 @@ type droidWorkingState struct {
 
 // onWorkingStateChanged moves the turn flag on the named states only. Every
 // other frame must move nothing.
-func (a *Agent) onWorkingStateChanged(payload []byte) {
+func (a *Agent) onWorkingStateChanged(payload []byte, childSessionID string) {
 	var n droidWorkingState
 	if err := json.Unmarshal(payload, &n); err != nil {
 		return
@@ -196,14 +240,22 @@ func (a *Agent) onWorkingStateChanged(payload []byte) {
 	case contracts.DroidWorkingStateThinking, contracts.DroidWorkingStateStreamingAssistantMessage,
 		contracts.DroidWorkingStateExecutingTool, contracts.DroidWorkingStateWaitingForToolConfirmation,
 		contracts.DroidWorkingStateCompactingConversation:
-		a.armTurn()
+		if childSessionID != "" {
+			a.armChildTurn(childSessionID)
+		} else {
+			a.armTurn()
+		}
 	case contracts.DroidWorkingStateIdle:
-		a.disarmTurn()
+		if childSessionID != "" {
+			a.disarmChildTurn(childSessionID)
+		} else {
+			a.disarmTurn()
+		}
 	}
 }
 
 // onCreateMessage records a new message and opens a span for it.
-func (a *Agent) onCreateMessage(payload []byte) {
+func (a *Agent) onCreateMessage(payload []byte, target droidOutputTarget) {
 	var n struct {
 		Type    string          `json:"type"`
 		Message json.RawMessage `json:"message"`
@@ -219,14 +271,12 @@ func (a *Agent) onCreateMessage(payload []byte) {
 		return
 	}
 	spanID := "droid-msg-" + msg.ID
-	a.Mu.Lock()
-	if a.messageSpans == nil {
-		a.messageSpans = make(map[string]string)
+	if target.state.messageSpans == nil {
+		target.state.messageSpans = make(map[string]string)
 	}
-	a.messageSpans[msg.ID] = spanID
-	a.Mu.Unlock()
+	target.state.messageSpans[msg.ID] = spanID
 	// The message envelope is the transcript row; the browser draws it.
-	a.persistRow(payload, agent.SpanInfo{SpanID: spanID})
+	a.persistRow(payload, agent.SpanInfo{SpanID: spanID}, target)
 }
 
 // droidTextDelta is the payload of assistant_text_delta.
@@ -237,41 +287,49 @@ type droidTextDelta struct {
 	TextDelta  string `json:"textDelta"`
 }
 
-// onAssistantTextDelta accumulates streamed assistant text.
-func (a *Agent) onAssistantTextDelta(payload []byte) {
+// onModelTextDelta accumulates one text or thinking block.
+func (a *Agent) onModelTextDelta(payload []byte, kind agent.AssembledMessageKind, target droidOutputTarget) {
 	var n droidTextDelta
 	if err := json.Unmarshal(payload, &n); err != nil {
 		return
 	}
-	a.Mu.Lock()
-	spanID := a.messageSpans[n.MessageID]
-	a.Mu.Unlock()
-	if spanID == "" {
-		spanID = "droid-msg-" + n.MessageID
+	if n.MessageID == "" || n.TextDelta == "" {
+		return
 	}
-	a.generation.Append(spanID, agent.AssembledMessageKindText, n.TextDelta, providerkit.JoinVerbatim)
+	target.state.generation.Append(modelTextScope(target.state, n.MessageID, n.BlockIndex, kind), kind, n.TextDelta, providerkit.JoinVerbatim)
 }
 
-// onAssistantTextComplete flushes the streamed text into a transcript row.
-func (a *Agent) onAssistantTextComplete(payload []byte) {
+// modelTextScope keeps a thinking block separate from the answer that follows.
+func modelTextScope(state *droidOutputState, messageID string, blockIndex int, kind agent.AssembledMessageKind) string {
+	spanID := state.messageSpans[messageID]
+	if spanID == "" {
+		spanID = "droid-msg-" + messageID
+	}
+	if kind == agent.AssembledMessageKindReasoning {
+		return spanID + ":thinking:" + strconv.Itoa(blockIndex)
+	}
+	return spanID
+}
+
+// onModelTextComplete flushes one complete text or thinking block.
+func (a *Agent) onModelTextComplete(payload []byte, kind agent.AssembledMessageKind, target droidOutputTarget) {
 	var n struct {
-		Type      string `json:"type"`
-		MessageID string `json:"messageId"`
+		Type       string `json:"type"`
+		MessageID  string `json:"messageId"`
+		BlockIndex int    `json:"blockIndex"`
 	}
 	if err := json.Unmarshal(payload, &n); err != nil {
 		return
 	}
-	a.Mu.Lock()
-	spanID := a.messageSpans[n.MessageID]
-	a.Mu.Unlock()
-	if spanID == "" {
-		spanID = "droid-msg-" + n.MessageID
+	if n.MessageID == "" {
+		return
 	}
-	raw, ok, err := a.generation.Finish(spanID, agent.MessageCompletionComplete)
+	scope := modelTextScope(target.state, n.MessageID, n.BlockIndex, kind)
+	raw, ok, err := target.state.generation.Finish(scope, agent.MessageCompletionComplete)
 	if err != nil || !ok {
 		return
 	}
-	a.persistRow(raw, agent.SpanInfo{SpanID: spanID})
+	a.persistRow(raw, agent.SpanInfo{SpanID: scope}, target)
 }
 
 // droidToolUse is the tool_use record of a tool_call notification.
@@ -283,7 +341,7 @@ type droidToolUse struct {
 }
 
 // onToolCall opens a tool span.
-func (a *Agent) onToolCall(payload []byte) {
+func (a *Agent) onToolCall(payload []byte, target droidOutputTarget) {
 	var n struct {
 		Type    string       `json:"type"`
 		ToolUse droidToolUse `json:"toolUse"`
@@ -292,20 +350,23 @@ func (a *Agent) onToolCall(payload []byte) {
 		return
 	}
 	spanID := "droid-tool-" + n.ToolUse.ID
-	a.Mu.Lock()
-	if a.tools == nil {
-		a.tools = make(map[string]*droidTool)
+	if target.state.tools == nil {
+		target.state.tools = make(map[string]*droidTool)
 	}
-	a.tools[n.ToolUse.ID] = &droidTool{
+	target.state.tools[n.ToolUse.ID] = &droidTool{
 		id:     n.ToolUse.ID,
 		name:   n.ToolUse.Name,
 		spanID: spanID,
 		input:  n.ToolUse.Input,
 	}
-	a.Mu.Unlock()
-	a.sink.OpenSpan(spanID, "")
-	a.sink.SetSpanType(spanID, n.ToolUse.Name)
-	a.persistRow(payload, agent.SpanInfo{SpanID: spanID, SpanType: n.ToolUse.Name})
+	sessionID := target.childSessionID
+	if sessionID == "" {
+		sessionID = a.mainSessionID()
+	}
+	a.rememberTaskSpawn(sessionID, n.ToolUse)
+	target.sink.OpenSpan(spanID, "")
+	target.sink.SetSpanType(spanID, n.ToolUse.Name)
+	a.persistRow(payload, agent.SpanInfo{SpanID: spanID, SpanType: n.ToolUse.Name}, target)
 }
 
 // droidToolResult is the payload of tool_result.
@@ -317,81 +378,75 @@ type droidToolResult struct {
 }
 
 // onToolResult closes a tool span.
-func (a *Agent) onToolResult(payload []byte) {
+func (a *Agent) onToolResult(payload []byte, target droidOutputTarget) {
 	var n droidToolResult
 	if err := json.Unmarshal(payload, &n); err != nil {
 		return
 	}
-	a.Mu.Lock()
-	tool := a.tools[n.ToolUseID]
-	delete(a.tools, n.ToolUseID)
-	a.turnToolUse++
-	uses := a.turnToolUse
-	a.Mu.Unlock()
+	tool := target.state.tools[n.ToolUseID]
+	delete(target.state.tools, n.ToolUseID)
+	target.state.turnToolUse++
+	if n.IsError {
+		sessionID := target.childSessionID
+		if sessionID == "" {
+			sessionID = a.mainSessionID()
+		}
+		delete(a.childSpawns, droidSpawnKey(sessionID, n.ToolUseID))
+	}
 	spanID := "droid-tool-" + n.ToolUseID
 	if tool != nil {
 		spanID = tool.spanID
 	}
-	a.sink.CloseSpan(spanID)
-	a.persistRow(payload, agent.SpanInfo{SpanID: spanID, Closing: true})
-	_ = uses
+	target.sink.CloseSpan(spanID)
+	a.persistRow(payload, agent.SpanInfo{SpanID: spanID, Closing: true}, target)
 }
 
 // onAgentTurnCompleted ends the turn. PersistTurnEnd runs before the clear, so
 // the turn's tool count reaches the activity latch first.
-func (a *Agent) onAgentTurnCompleted(payload []byte) {
-	a.Mu.Lock()
-	uses := a.turnToolUse
-	a.turnToolUse = 0
-	a.Mu.Unlock()
+func (a *Agent) onAgentTurnCompleted(payload []byte, target droidOutputTarget) {
+	a.persistTurnEnd(payload, target)
+	if target.childSessionID != "" {
+		status := bgtask.StatusCompleted
+		var n struct {
+			Reason string `json:"reason"`
+		}
+		if json.Unmarshal(payload, &n) == nil {
+			switch n.Reason {
+			case "error":
+				status = bgtask.StatusFailed
+			case "interrupted", "cancelled":
+				status = bgtask.StatusInterrupted
+			}
+		}
+		a.closeChildSession(target.childSessionID, status)
+	} else {
+		a.disarmTurn()
+		a.refreshContextUsage()
+	}
+}
+
+// persistTurnEnd records one native outcome without deciding child lifecycle.
+func (a *Agent) persistTurnEnd(payload []byte, target droidOutputTarget) {
+	uses := target.state.turnToolUse
+	target.state.turnToolUse = 0
 
 	content := agent.MessageContent{Original: payload}
 	if uses > 0 {
 		content = agent.WithToolUseCount(content, uses)
 	}
-	if err := a.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
+	if err := target.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
 		slog.Debug("droid: persist turn end failed", "agent_id", a.AgentID(), "error", err)
 	}
-	a.disarmTurn()
-}
-
-// droidSettingsUpdated is the payload of settings_updated.
-type droidSettingsUpdated struct {
-	Type     string `json:"type"`
-	Settings struct {
-		ModelID         string `json:"modelId"`
-		ReasoningEffort string `json:"reasoningEffort"`
-		AutonomyMode    string `json:"autonomyMode"`
-	} `json:"settings"`
-}
-
-// onSettingsUpdated folds the live configuration back into the agent state.
-func (a *Agent) onSettingsUpdated(payload []byte) {
-	var n droidSettingsUpdated
-	if err := json.Unmarshal(payload, &n); err != nil {
-		return
-	}
-	a.Mu.Lock()
-	if n.Settings.ModelID != "" {
-		a.settings.model = n.Settings.ModelID
-	}
-	if n.Settings.ReasoningEffort != "" {
-		a.settings.reasoningEffort = n.Settings.ReasoningEffort
-	}
-	if n.Settings.AutonomyMode != "" {
-		a.settings.autonomyMode = n.Settings.AutonomyMode
-		if mode := droidModeForAutonomy(n.Settings.AutonomyMode); mode != "" {
-			a.settings.permissionMode = mode
-		}
-	}
-	a.Mu.Unlock()
-	a.persistNotification(payload)
 }
 
 // onError surfaces a CLI error as a notification row and ends the turn when one
 // runs.
-func (a *Agent) onError(payload []byte) {
-	a.persistNotification(payload)
+func (a *Agent) onError(payload []byte, target droidOutputTarget) {
+	a.persistNotification(payload, target)
+	if target.childSessionID != "" {
+		a.closeChildSession(target.childSessionID, bgtask.StatusFailed)
+		return
+	}
 	a.Mu.Lock()
 	active := a.turnActive
 	a.Mu.Unlock()
@@ -400,17 +455,24 @@ func (a *Agent) onError(payload []byte) {
 	}
 }
 
-// adoptSessionID records the session id that initialize_session returned, and
-// publishes it. A session opened with a resume handle already knows it; the
-// response confirms the same id and must not replace it with a new one.
-func (a *Agent) adoptSessionID(env *droidEnvelope) {
+// settleStartup sends the result of the one native startup request to Start.
+func (a *Agent) settleStartup(err error) {
+	a.Mu.Lock()
+	reply := a.startupReply
+	a.Mu.Unlock()
+	if reply != nil {
+		select {
+		case reply <- err:
+		default:
+		}
+	}
+}
+
+// adoptSessionID records the new or loaded session identity and settings.
+func (a *Agent) adoptSessionID(env *droidEnvelope) error {
 	var result struct {
-		SessionID string `json:"sessionId"`
-		Settings  struct {
-			ModelID         string `json:"modelId"`
-			ReasoningEffort string `json:"reasoningEffort"`
-			AutonomyMode    string `json:"autonomyMode"`
-		} `json:"settings"`
+		SessionID       string              `json:"sessionId"`
+		Settings        droidNativeSettings `json:"settings"`
 		AvailableModels []struct {
 			ID                        string   `json:"id"`
 			DisplayName               string   `json:"displayName"`
@@ -418,33 +480,45 @@ func (a *Agent) adoptSessionID(env *droidEnvelope) {
 		} `json:"availableModels"`
 	}
 	if err := json.Unmarshal(env.Result, &result); err != nil {
-		slog.Debug("droid: initialize_session result unreadable", "agent_id", a.AgentID(), "error", err)
-		return
+		return fmt.Errorf("read droid startup result: %w", err)
 	}
 	models := make([]droidModel, 0, len(result.AvailableModels))
 	for _, m := range result.AvailableModels {
 		models = append(models, droidModel{id: m.ID, displayName: m.DisplayName, efforts: m.SupportedReasoningEfforts})
 	}
 	a.Mu.Lock()
+	if a.sessionID != "" && result.SessionID != "" && a.sessionID != result.SessionID {
+		expected := a.sessionID
+		a.Mu.Unlock()
+		return fmt.Errorf("droid startup returned session %q instead of %q", result.SessionID, expected)
+	}
 	if a.sessionID == "" {
 		a.sessionID = result.SessionID
 	}
 	sessionID := a.sessionID
+	if sessionID == "" {
+		a.Mu.Unlock()
+		return errors.New("droid startup returned no session id")
+	}
 	if result.Settings.ModelID != "" {
 		a.settings.model = result.Settings.ModelID
 	}
 	if result.Settings.ReasoningEffort != "" {
 		a.settings.reasoningEffort = result.Settings.ReasoningEffort
 	}
-	if result.Settings.AutonomyMode != "" {
-		a.settings.autonomyMode = result.Settings.AutonomyMode
-		if mode := droidModeForAutonomy(result.Settings.AutonomyMode); mode != "" {
-			a.settings.permissionMode = mode
-		}
+	if result.Settings.InteractionMode != "" {
+		a.settings.interactionMode = result.Settings.InteractionMode
+	}
+	if result.Settings.AutonomyLevel != "" {
+		a.settings.autonomyLevel = result.Settings.AutonomyLevel
+	}
+	if mode := droidModeFromSettings(result.Settings); mode != "" {
+		a.settings.permissionMode = mode
 	}
 	if len(models) > 0 {
 		a.catalog.models = models
 	}
 	a.Mu.Unlock()
 	a.sink.UpdateSessionID(sessionID)
+	return nil
 }

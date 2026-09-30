@@ -29,20 +29,30 @@
  * `createDualVersionListener`.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { CursorModel, CursorTaskCall } from './cursorWire'
-import type { MockModelToolCall } from './mockModelScript'
+import type { CursorGenerateImageCall, CursorInteractionCall, CursorInteractionReply, CursorMcpCall, CursorModel, CursorTaskCall, CursorTodoCall, CursorTodoStatus } from './cursorWire'
+import type { MockModelToolCall, MockModelUsage } from './mockModelScript'
 import { Buffer } from 'node:buffer'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { isObject } from '../../../src/lib/jsonPick'
 import {
   connectEndOfStream,
   connectFrame,
   cursorAvailableModels,
   cursorDefaultModel,
+  cursorGenerateImageCompleted,
+  cursorGenerateImageStarted,
+  cursorInteractionQuery,
+  cursorInteractionResponseOf,
+  cursorMcpExec,
+  cursorMcpResponseOf,
   cursorPromptOf,
   cursorSetBlob,
   cursorTaskCompleted,
   cursorTaskStarted,
   cursorTextDelta,
+  cursorThinkingDelta,
+  cursorTodoCompleted,
+  cursorTodoStarted,
   cursorTurnEnded,
   cursorUsableModels,
   takeConnectFrames,
@@ -53,6 +63,21 @@ export const CURSOR_RUN_PATH = '/agent.v1.AgentService/Run'
 
 /** Cursor's subagent tool, whose calls this surface turns into Run-stream updates. */
 export const CURSOR_TASK_TOOL = 'task'
+
+/** Cursor's native image-generation tool in a Run-stream tool call. */
+export const CURSOR_GENERATE_IMAGE_TOOL = 'generateImage'
+
+/** Cursor's native question query in a Run stream. */
+export const CURSOR_QUESTION_TOOL = 'askQuestion'
+
+/** Cursor's native plan query in a Run stream. */
+export const CURSOR_CREATE_PLAN_TOOL = 'createPlan'
+
+/** Cursor's web-fetch approval query in a Run stream. */
+export const CURSOR_WEB_FETCH_TOOL = 'webFetch'
+
+/** Cursor's local MCP execution request in a Run stream. */
+export const CURSOR_MCP_TOOL = 'cursorMcp'
 
 /** The three startup calls that need a real answer; see the note at the top. */
 const CURSOR_AVAILABLE_MODELS_PATH = '/aiserver.v1.AiService/AvailableModels'
@@ -197,20 +222,30 @@ function taskTranscriptRecords(task: CursorScriptedTask): string[] {
 }
 
 /**
- * Write one task's transcript records over the KV channel.
+ * Write transcript records through Cursor's KV channel.
  *
- * The blob id is the SHA-256 of the record, which is how Cursor's own ids read:
- * content-addressed, and 64 hex characters once the client encodes these bytes.
+ * The blob ID is the SHA-256 of the record. Cursor encodes these 32 bytes as
+ * 64 lowercase hex characters in its session database.
  */
-function writeTaskTranscript(response: ServerResponse, task: CursorScriptedTask, firstMessageID: number): number {
+function writeTranscriptRecords(response: ServerResponse, records: readonly string[], firstMessageID: number): number {
   let messageID = firstMessageID
-  for (const record of taskTranscriptRecords(task)) {
+  for (const record of records) {
     const data = new TextEncoder().encode(record)
     const blobID = new Uint8Array(createHash('sha256').update(data).digest())
     response.write(Buffer.from(connectFrame(cursorSetBlob(messageID, blobID, data))))
     messageID += 1
   }
   return messageID
+}
+
+/** Cursor writes each turn's text to the same KV store as its tool results. */
+function textTranscriptRecord(role: 'user' | 'assistant', text: string): string {
+  return JSON.stringify({
+    role,
+    id: randomUUID(),
+    providerOptions: {},
+    content: [{ type: 'text', text }],
+  })
 }
 
 /** What a scripted answer supplies for one Cursor turn. */
@@ -222,51 +257,140 @@ export interface CursorTurnAnswer {
    * refuses a caller that passes the field through from an optional source.
    */
   text?: string | undefined
-  /**
-   * The Task tool calls to run before the text.
-   *
-   * Each one opens and closes in the same turn, which is what a foreground
-   * subagent does. The report is the child's answer, and the agent puts it in
-   * the row and in the child transcript.
-   */
-  taskCalls?: readonly CursorScriptedTask[]
+  /** Native reasoning text emitted before the final answer. */
+  reasoning?: string | undefined
+  /** Native calls and queries run before the final text in the same Run stream. */
+  toolCalls?: readonly CursorScriptedToolCall[]
+  /** Token counts of the scripted turn, sent in the native end update. */
+  usage?: MockModelUsage | undefined
 }
 
-/** One scripted Task tool call, with the report its child returns. */
-export interface CursorScriptedTask extends CursorTaskCall {
+/** One scripted tool call in Cursor's Run stream. */
+export type CursorScriptedToolCall
+  = | { kind: 'task', call: CursorTaskCall, report: string }
+    | { kind: 'todo', call: CursorTodoCall }
+    | { kind: 'generateImage', call: CursorGenerateImageCall }
+    | { kind: 'mcp', call: CursorMcpCall }
+    | CursorInteractionCall
+
+interface CursorScriptedTask extends CursorTaskCall {
   report: string
 }
 
-/**
- * The Task calls inside one scripted step, in Cursor's own wire shape.
- *
- * Cursor resolves a subagent LOCALLY: the CLI never asks the endpoint for the
- * child's turn, so unlike every other provider the child's answer cannot come
- * from a rule. The scripted call carries it as a `report` argument instead, and
- * this is where that convention is read.
- */
-export function cursorTaskCallsFrom(toolCalls: readonly MockModelToolCall[] | undefined): CursorScriptedTask[] {
-  return (toolCalls ?? [])
-    .filter(call => call.name === CURSOR_TASK_TOOL)
-    .map((call) => {
-      const args = call.arguments ?? {}
-      return {
-        callID: call.id,
-        description: String(args.description ?? ''),
-        prompt: String(args.prompt ?? ''),
+/** Decode Cursor's native Todo status words before writing their enum ordinals. */
+function cursorTodoStatus(value: unknown): CursorTodoStatus {
+  switch (value) {
+    case 'TODO_STATUS_PENDING': return 'pending'
+    case 'TODO_STATUS_IN_PROGRESS': return 'in_progress'
+    case 'TODO_STATUS_COMPLETED': return 'completed'
+    case 'TODO_STATUS_CANCELLED': return 'cancelled'
+    default: throw new Error(`Cursor Todo has an unsupported status: ${String(value)}`)
+  }
+}
+
+/** Keep native calls in their scripted order and refuse unknown tool names. */
+// Cursor resolves a child locally. Its report rides inside the scripted Task call
+// because the CLI never asks the endpoint for a separate child turn.
+export function cursorToolCallsFrom(toolCalls: readonly MockModelToolCall[] | undefined): CursorScriptedToolCall[] {
+  return (toolCalls ?? []).flatMap((call): CursorScriptedToolCall[] => {
+    const args = call.arguments ?? {}
+    if (call.name === CURSOR_TASK_TOOL) {
+      return [{
+        kind: 'task',
+        call: { callID: call.id, description: String(args.description ?? ''), prompt: String(args.prompt ?? '') },
         report: String(args.report ?? ''),
+      }]
+    }
+    if (call.name === CURSOR_GENERATE_IMAGE_TOOL) {
+      if (typeof args.description !== 'string' || typeof args.filePath !== 'string' || typeof args.imageData !== 'string')
+        throw new Error('Cursor GenerateImage needs a description, file path, and image data')
+      return [{
+        kind: 'generateImage',
+        call: { callID: call.id, description: args.description, filePath: args.filePath, imageData: args.imageData },
+      }]
+    }
+    if (call.name === CURSOR_QUESTION_TOOL) {
+      if (typeof args.title !== 'string' || !Array.isArray(args.questions) || args.questions.length === 0)
+        throw new Error('Cursor AskQuestion needs a title and questions')
+      const questions = args.questions.map((value, questionIndex) => {
+        if (!isObject(value) || typeof value.id !== 'string' || typeof value.prompt !== 'string' || !Array.isArray(value.options))
+          throw new Error(`Cursor question ${questionIndex + 1} needs an id, prompt, and options`)
+        const options = value.options.map((option, optionIndex) => {
+          if (!isObject(option) || typeof option.id !== 'string' || typeof option.label !== 'string')
+            throw new Error(`Cursor question option ${optionIndex + 1} needs an id and label`)
+          return { id: option.id, label: option.label }
+        })
+        return { id: value.id, prompt: value.prompt, options, allowMultiple: value.allowMultiple === true }
+      })
+      return [{ kind: 'question', callID: call.id, title: args.title, questions }]
+    }
+    if (call.name === CURSOR_CREATE_PLAN_TOOL) {
+      if (typeof args.name !== 'string' || typeof args.overview !== 'string' || typeof args.plan !== 'string')
+        throw new Error('Cursor CreatePlan needs a name, overview, and plan')
+      return [{ kind: 'plan', callID: call.id, name: args.name, overview: args.overview, plan: args.plan }]
+    }
+    if (call.name === CURSOR_WEB_FETCH_TOOL) {
+      if (typeof args.url !== 'string' || !/^https?:\/\//.test(args.url))
+        throw new Error('Cursor WebFetch needs an HTTP URL')
+      return [{ kind: 'webFetch', callID: call.id, url: args.url }]
+    }
+    if (call.name === CURSOR_MCP_TOOL) {
+      if (typeof args.server !== 'string' || !args.server || typeof args.tool !== 'string' || !args.tool || !isObject(args.input))
+        throw new Error('Cursor MCP needs a server, tool, and object input')
+      return [{ kind: 'mcp', call: { callID: call.id, server: args.server, tool: args.tool, input: args.input } }]
+    }
+    if (call.name !== 'updateTodos')
+      throw new Error(`Cursor mock has no native encoder for ${call.name}`)
+    if (!Array.isArray(args.todos))
+      throw new Error('Cursor UpdateTodos needs a todos list')
+    const todos = args.todos.map((value, index) => {
+      if (!isObject(value) || typeof value.content !== 'string')
+        throw new Error(`Cursor Todo row ${index + 1} needs content`)
+      return {
+        id: typeof value.id === 'string' && value.id ? value.id : String(index + 1),
+        content: value.content,
+        status: cursorTodoStatus(value.status),
       }
     })
+    return [{ kind: 'todo', call: { callID: call.id, todos, merge: args.merge === true } }]
+  })
 }
 
 export interface CursorRunHandlers {
   /**
-   * Answer the turn this prompt opens, or report that nothing scripted it.
+   * Answer the turn this prompt opens, with its complete Run request frame.
    *
    * Returning undefined closes the stream with no text, which surfaces in the
    * agent as an empty answer rather than as a hang.
    */
-  answer: (prompt: string) => Promise<CursorTurnAnswer | undefined>
+  answer: (prompt: string, requestFrame: Uint8Array) => Promise<CursorTurnAnswer | undefined>
+}
+
+function cursorInteractionSummary(call: CursorInteractionCall, reply: CursorInteractionReply): string {
+  if (call.kind !== reply.kind)
+    throw new Error(`Cursor replied to ${call.kind} with ${reply.kind}`)
+  switch (reply.kind) {
+    case 'question':
+      return reply.rejectedReason
+        ? `Cursor question rejected: ${reply.rejectedReason}`
+        : `Cursor question selected: ${reply.answers.flatMap(answer => answer.selectedOptionIDs).join(', ') || '(none)'}`
+    case 'plan':
+      return reply.accepted ? 'Cursor plan accepted' : `Cursor plan rejected: ${reply.error ?? 'no reason'}`
+    case 'webFetch':
+      return reply.approved ? 'Cursor web fetch approved' : `Cursor web fetch rejected: ${reply.reason ?? 'no reason'}`
+  }
+}
+
+function finishCursorTurn(response: ServerResponse, answer: CursorTurnAnswer | undefined, blobMessageID: number, nativeReply?: string): void {
+  const text = [answer?.text, nativeReply].filter((part): part is string => part !== undefined && part !== '').join('\n')
+  if (text)
+    writeTranscriptRecords(response, [textTranscriptRecord('assistant', text)], blobMessageID)
+  if (answer?.reasoning)
+    response.write(Buffer.from(connectFrame(cursorThinkingDelta(answer.reasoning))))
+  if (text)
+    response.write(Buffer.from(connectFrame(cursorTextDelta(text))))
+  response.write(Buffer.from(connectFrame(cursorTurnEnded(answer?.usage))))
+  response.end(Buffer.from(connectEndOfStream()))
 }
 
 /**
@@ -285,36 +409,90 @@ export async function serveCursorRun(
   response.writeHead(200, { 'content-type': String(request.headers['content-type'] ?? 'application/connect+proto') })
   let pending = Buffer.alloc(0)
   let answered = false
+  let pendingInteraction: { id: number, call: CursorInteractionCall, answer: CursorTurnAnswer | undefined, blobMessageID: number } | undefined
+  let pendingMcp: { id: number, answer: CursorTurnAnswer | undefined, blobMessageID: number } | undefined
 
   for await (const chunk of request) {
     pending = Buffer.concat([pending, Buffer.from(chunk)])
     const { frames, rest } = takeConnectFrames(new Uint8Array(pending))
     pending = Buffer.from(rest)
     for (const frame of frames) {
+      if (pendingMcp) {
+        const reply = cursorMcpResponseOf(frame)
+        if (!reply)
+          continue
+        if (reply.id !== pendingMcp.id)
+          throw new Error(`Cursor replied to MCP execution ${pendingMcp.id} with id ${reply.id}`)
+        const result = reply.success ? reply.text : `Cursor MCP failed: ${reply.text}`
+        finishCursorTurn(response, pendingMcp.answer, pendingMcp.blobMessageID, result)
+        return
+      }
+      if (pendingInteraction) {
+        const reply = cursorInteractionResponseOf(frame)
+        if (!reply)
+          continue
+        if (reply.id !== pendingInteraction.id)
+          throw new Error(`Cursor replied to query ${pendingInteraction.id} with id ${reply.id}`)
+        finishCursorTurn(response, pendingInteraction.answer, pendingInteraction.blobMessageID, cursorInteractionSummary(pendingInteraction.call, reply))
+        return
+      }
       const prompt = cursorPromptOf(frame)
       if (prompt === undefined || answered)
         continue
       answered = true
-      const answer = await handlers.answer(prompt)
+      const answer = await handlers.answer(prompt, frame)
+      // Cursor's session/load requires store.db. Text updates alone do not create it.
+      let blobMessageID = writeTranscriptRecords(response, [textTranscriptRecord('user', prompt)], 1)
       // A tool call goes out BEFORE the text, in the order a real turn uses:
       // the agent opens the row, runs the child, then speaks.
-      let blobMessageID = 1
-      for (const task of answer?.taskCalls ?? []) {
-        response.write(Buffer.from(connectFrame(cursorTaskStarted(task))))
-        response.write(Buffer.from(connectFrame(cursorTaskCompleted(task, task.report))))
-        // The updates above draw the row; these WRITE the transcript, which is
-        // the only place the child's report survives. See `cursorSetBlob`.
-        blobMessageID = writeTaskTranscript(response, task, blobMessageID)
+      let interaction: CursorInteractionCall | undefined
+      let mcp: CursorMcpCall | undefined
+      for (const tool of answer?.toolCalls ?? []) {
+        if (tool.kind === 'task') {
+          response.write(Buffer.from(connectFrame(cursorTaskStarted(tool.call))))
+          response.write(Buffer.from(connectFrame(cursorTaskCompleted(tool.call, tool.report))))
+          // The updates above draw the row; these WRITE the transcript, which is
+          // the only place the child's report survives. See `cursorSetBlob`.
+          blobMessageID = writeTranscriptRecords(response, taskTranscriptRecords({ ...tool.call, report: tool.report }), blobMessageID)
+        }
+        else if (tool.kind === 'todo') {
+          response.write(Buffer.from(connectFrame(cursorTodoStarted(tool.call))))
+          response.write(Buffer.from(connectFrame(cursorTodoCompleted(tool.call))))
+        }
+        else if (tool.kind === 'generateImage') {
+          response.write(Buffer.from(connectFrame(cursorGenerateImageStarted(tool.call))))
+          response.write(Buffer.from(connectFrame(cursorGenerateImageCompleted(tool.call))))
+        }
+        else if (tool.kind === 'mcp') {
+          if (interaction || mcp)
+            throw new Error('Cursor mock supports one native request per turn')
+          mcp = tool.call
+        }
+        else if (interaction || mcp) {
+          throw new Error('Cursor mock supports one native request per turn')
+        }
+        else {
+          interaction = tool
+        }
       }
-      if (answer?.text !== undefined && answer.text !== '')
-        response.write(Buffer.from(connectFrame(cursorTextDelta(answer.text))))
-      response.write(Buffer.from(connectFrame(cursorTurnEnded())))
-      response.end(Buffer.from(connectEndOfStream()))
+      if (mcp) {
+        const id = 301
+        response.write(Buffer.from(connectFrame(cursorMcpExec(id, mcp))))
+        pendingMcp = { id, answer, blobMessageID }
+        continue
+      }
+      if (interaction) {
+        const id = 300
+        response.write(Buffer.from(connectFrame(cursorInteractionQuery(id, interaction))))
+        pendingInteraction = { id, call: interaction, answer, blobMessageID }
+        continue
+      }
+      finishCursorTurn(response, answer, blobMessageID)
       return
     }
   }
   // The client closed without ever opening a turn. Close the stream cleanly so
   // it reads an empty answer rather than a transport fault.
-  if (!answered)
+  if (!answered || pendingInteraction || pendingMcp)
     response.end(Buffer.from(connectEndOfStream()))
 }

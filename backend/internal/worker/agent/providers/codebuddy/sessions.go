@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -39,11 +40,42 @@ func codebuddyConfigDir(q agent.StoredSessionQuery) string {
 	return sessionstore.HomeDirFromEnv(q, "CODEBUDDY_CONFIG_DIR", ".codebuddy")
 }
 
-// mangleCodebuddyPath reproduces CodeBuddy's project slug: every path
-// separator becomes a hyphen. The research report states the rule as "the cwd
-// path with `/` replaced by `-`".
-func mangleCodebuddyPath(path string) string {
-	return strings.ReplaceAll(filepath.Clean(path), string(filepath.Separator), "-")
+// codebuddyProjectSlug follows the CLI's compressPath rule for its project
+// directory. The CLI resolves existing paths first, folds three separators,
+// and shortens a slug over 255 UTF-8 bytes with a byte-wise DJB2 suffix.
+func codebuddyProjectSlug(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	var builder strings.Builder
+	previousHyphen := false
+	for _, ch := range path {
+		if ch == '/' || ch == '\\' || ch == ':' || ch == '-' {
+			if builder.Len() > 0 && !previousHyphen {
+				builder.WriteByte('-')
+				previousHyphen = true
+			}
+			continue
+		}
+		builder.WriteRune(ch)
+		previousHyphen = false
+	}
+	slug := strings.Trim(builder.String(), "-")
+	if len(slug) <= 255 {
+		return slug
+	}
+	var hash uint32 = 5381
+	for _, value := range []byte(slug) {
+		hash = hash*33 ^ uint32(value)
+	}
+	var prefix strings.Builder
+	for _, ch := range slug {
+		if prefix.Len()+len(string(ch)) > 180 {
+			break
+		}
+		prefix.WriteRune(ch)
+	}
+	return prefix.String() + "-" + strconv.FormatUint(uint64(hash), 36)
 }
 
 // codebuddyTranscriptRecord is the union of the fields this reader takes from a
@@ -72,7 +104,7 @@ func codebuddyStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([
 		return nil, nil
 	}
 	projects := filepath.Join(configDir, codebuddyProjectsDirName)
-	dir := filepath.Join(projects, mangleCodebuddyPath(workingDir))
+	dir := filepath.Join(projects, codebuddyProjectSlug(workingDir))
 	if _, err := os.Stat(dir); err != nil {
 		return nil, nil
 	}

@@ -17,6 +17,7 @@ const codebuddyPlugin: ProviderPlugin = {
   },
   controls: codebuddyControls,
   configuration: {
+    triggerModeGroupKey: 'permissionMode',
     attachments: {
       text: true,
       image: true,

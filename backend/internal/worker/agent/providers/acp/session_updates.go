@@ -69,8 +69,9 @@ func (b *Base) handleACPSessionUpdate(params json.RawMessage) {
 
 func (b *Base) dispatchACPSessionUpdate(params json.RawMessage) {
 	var wrapper struct {
-		SessionID string          `json:"sessionId"`
-		Update    json.RawMessage `json:"update"`
+		SessionID string                     `json:"sessionId"`
+		Update    json.RawMessage            `json:"update"`
+		Meta      map[string]json.RawMessage `json:"_meta"`
 	}
 	if err := json.Unmarshal(params, &wrapper); err != nil {
 		slog.Warn("Read ACP session update", "provider", b.ProviderName(), "agent_id", b.AgentID(), "error", err)
@@ -87,6 +88,9 @@ func (b *Base) dispatchACPSessionUpdate(params json.RawMessage) {
 		}
 		slog.Debug("Ignore ACP update from another session", "provider", b.ProviderName(), "agent_id", b.AgentID(), "session_id", wrapper.SessionID)
 		return
+	}
+	if b.hooks.SessionNotificationMetadata != nil && len(wrapper.Meta) > 0 {
+		b.hooks.SessionNotificationMetadata(wrapper.Meta)
 	}
 	b.handleACPUpdate(wrapper.Update)
 }

@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test'
 import type { ModelScript } from './helpers/modelScriptFixture'
 import { OPTION_ID_PERMISSION_MODE } from '../../src/components/chat/settingsGroups'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { exerciseLiveChildTranscript } from './helpers/liveChildTranscript'
 import { spawnSubagentToolCall } from './helpers/providerToolCalls'
 import {
   exerciseChildInterrupt,
@@ -54,6 +55,18 @@ async function expectChildTranscript(page: Page): Promise<void> {
 }
 
 qwenTest.describe('Qwen Code subagent registry', () => {
+  qwenTest('shows the child prompt while the child still runs', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+    const { workingDir } = await openQwenAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { [OPTION_ID_PERMISSION_MODE]: 'yolo' })
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    await exerciseLiveChildTranscript(page, modelScript, {
+      provider: AgentProvider.QWEN_CODE,
+      childWhen: { user: 'Reply with CHILD_LIVE_DONE' },
+      childTask: 'Reply with CHILD_LIVE_DONE.',
+      parentTask: 'Delegate the live child task.',
+      toolProof: { workingDir },
+    })
+  })
+
   qwenTest('a foreground subagent opens a row and a child transcript with its report', async ({
     page,
     authenticatedEmptyWorkspace,

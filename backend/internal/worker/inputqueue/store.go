@@ -9,30 +9,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
-	"modernc.org/sqlite"
-	sqlitelib "modernc.org/sqlite/lib"
 )
 
 const inputIdempotencyKeyPrefix = "input:"
 
-// acceptBusySnapshotRetries caps how many times Accept starts over. The retry is
-// bounded rather than unbounded because a run of losses that long is a different
-// problem, and a caller waiting on a turn must hear about it.
-const acceptBusySnapshotRetries = 3
-
 type Store struct {
 	db         *sql.DB
 	classifier CommandClassifier
-	// beforeAcceptWrite runs inside accept, after every read and before the first
-	// write. TESTS ONLY, and nil everywhere else: it is the seam that holds one
-	// accept between its snapshot and its write, so another writer can invalidate
-	// that snapshot on purpose. The race is otherwise reachable only by chance,
-	// and a test that waits for chance is a flake either way it lands.
+	// beforeAcceptWrite runs inside Accept, after every read and before the first
+	// write. TESTS ONLY, and nil everywhere else: a second connection tries to
+	// write here to prove Accept already owns write intent.
 	beforeAcceptWrite func()
 }
 
@@ -579,7 +571,7 @@ func (s *Store) pauseForPlannedRestart(ctx context.Context, agentID string) (Sna
 	return snapshot, changed == 1, err
 }
 
-func (s *Store) finishPlannedRestart(ctx context.Context, agentID string, processReplaced, resumeQueue bool) (Snapshot, bool, error) {
+func (s *Store) finishPlannedRestart(ctx context.Context, agentID string, oldTurnEnded, resumeQueue bool) (Snapshot, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Snapshot{}, false, err
@@ -611,7 +603,7 @@ func (s *Store) finishPlannedRestart(ctx context.Context, agentID string, proces
 		nextOwner = pauseOwnerAgentStopped
 	}
 	nextActive := active
-	if processReplaced {
+	if oldTurnEnded {
 		nextActive = false
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET restarting = 0, updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
@@ -738,7 +730,7 @@ func (g dispatchGate) admits(allowPaused, requireActive bool) dispatchRefusal {
 // what the guard sees. The head read takes metadata only: the guards reject most calls,
 // and the head can carry up to MaxItemBytes of attachment data that the call then
 // discards. The dispatch path loads the data after the guards pass.
-func readDispatchGate(ctx context.Context, tx *sql.Tx, agentID string) (dispatchGate, error) {
+func readDispatchGate(ctx context.Context, tx db.DBTX, agentID string) (dispatchGate, error) {
 	var gate dispatchGate
 	if err := tx.QueryRowContext(ctx, `SELECT paused, restarting, active_turn, active_turn_steerable FROM agent_input_queue_state WHERE agent_id = ?`, agentID).
 		Scan(&gate.Paused, &gate.Restarting, &gate.ActiveTurn, &gate.TurnSteerable); err != nil {
@@ -923,27 +915,37 @@ func (s *Store) RequeueAndPause(ctx context.Context, agentID, inputID string, di
 
 // Accept records the transcript for a dispatch that reached the agent.
 //
-// It starts over when SQLite refuses the write against a stale read snapshot,
-// which is safe because the whole attempt is one transaction that rolls back and
-// because `prepared` survives it unchanged: PrepareDispatch already COMMITTED the
-// sequence reservation, so the seq belongs to this item and a concurrent writer
-// takes the next one instead of this one. A retry that finds the item in another
-// state still fails with ErrConflict, which is the guard below.
-func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result DispatchResult) (AcceptedTranscript, Snapshot, error) {
-	for attempt := 0; ; attempt++ {
-		transcript, snapshot, err := s.accept(ctx, prepared, result)
-		if err == nil || attempt == acceptBusySnapshotRetries || !isSQLiteBusySnapshot(err) {
-			return transcript, snapshot, err
-		}
-	}
-}
-
-func (s *Store) accept(ctx context.Context, prepared PreparedDispatch, result DispatchResult) (AcceptedTranscript, Snapshot, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+// It takes write intent before reading the prepared item. The provider already
+// accepted the input, so a concurrent writer must not invalidate a read
+// snapshot and leave its transcript uncertain.
+func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result DispatchResult) (transcript AcceptedTranscript, snapshot Snapshot, err error) {
+	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
-	defer func() { _ = tx.Rollback() }()
+	started, committed := false, false
+	defer func() {
+		if started && !committed {
+			if _, rollbackErr := conn.ExecContext(context.Background(), "ROLLBACK"); rollbackErr != nil {
+				err = errors.Join(err, fmt.Errorf("roll back input acceptance: %w", rollbackErr))
+			}
+		}
+		if closeErr := conn.Close(); closeErr != nil {
+			if committed {
+				slog.Warn("could not release accepted input connection", "error", closeErr)
+			} else {
+				err = errors.Join(err, fmt.Errorf("release input acceptance connection: %w", closeErr))
+			}
+		}
+		if err != nil {
+			transcript, snapshot = AcceptedTranscript{}, Snapshot{}
+		}
+	}()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return AcceptedTranscript{}, Snapshot{}, err
+	}
+	started = true
+	tx := db.DBTX(conn)
 	item, attachments, found, err := getItem(ctx, tx, prepared.Item.AgentID, prepared.Item.ID, true)
 	if err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
@@ -1021,30 +1023,20 @@ func (s *Store) accept(ctx context.Context, prepared PreparedDispatch, result Di
 			return AcceptedTranscript{}, Snapshot{}, err
 		}
 	}
-	snapshot, err := snapshotTx(ctx, tx, item.AgentID)
+	snapshot, err = snapshotTx(ctx, tx, item.AgentID)
 	if err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
+	committed = true
 	return AcceptedTranscript{
 		ID: item.ID, AgentID: item.AgentID, Seq: item.ReservedSeq,
 		Content: compressed, ContentCompression: compression,
 		AgentProvider: provider, MarkType: mark, SpanLines: spanLines,
 		CreatedAt: item.CreatedAt,
 	}, snapshot, nil
-}
-
-// isSQLiteBusySnapshot reports SQLITE_BUSY_SNAPSHOT. A deferred transaction in
-// WAL mode takes its read snapshot at the first read; when another connection
-// commits before this one writes, the write cannot proceed against a snapshot
-// that no longer describes the database, and SQLite refuses it here rather than
-// at COMMIT. The `busy_timeout` handler never sees it, so only a restart clears
-// it -- the hub's own transaction runner carries the same retry.
-func isSQLiteBusySnapshot(err error) bool {
-	var sqliteErr *sqlite.Error
-	return errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlitelib.SQLITE_BUSY_SNAPSHOT
 }
 
 func (s *Store) FailDispatch(ctx context.Context, agentID, inputID string, deliveryErr error, uncertain bool) (Snapshot, error) {
@@ -1395,7 +1387,7 @@ func reserveMessageSeq(ctx context.Context, tx *sql.Tx, agentID string) (int64, 
 	return db.New(tx).ReserveAgentMessageSeq(ctx, agentID)
 }
 
-func bumpRevision(ctx context.Context, tx *sql.Tx, agentID string) error {
+func bumpRevision(ctx context.Context, tx db.DBTX, agentID string) error {
 	_, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET revision = revision + 1, updated_at = ? WHERE agent_id = ?`, nowText(), agentID)
 	return err
 }
@@ -1424,7 +1416,7 @@ func attachmentsEqual(a, b []Attachment) bool {
 	return true
 }
 
-func getItem(ctx context.Context, tx *sql.Tx, agentID, inputID string, loadAttachments bool) (StoredItem, []Attachment, bool, error) {
+func getItem(ctx context.Context, tx db.DBTX, agentID, inputID string, loadAttachments bool) (StoredItem, []Attachment, bool, error) {
 	var item StoredItem
 	var kind, state int32
 	var version int64
@@ -1452,7 +1444,7 @@ func getItem(ctx context.Context, tx *sql.Tx, agentID, inputID string, loadAttac
 // headItem reads the first item in queue order. loadAttachments controls
 // whether it also reads every attachment's DATA, which one item can carry up
 // to MaxItemBytes of; a caller that only tests the item's state passes false.
-func headItem(ctx context.Context, tx *sql.Tx, agentID string, loadAttachments bool) (StoredItem, []Attachment, bool, error) {
+func headItem(ctx context.Context, tx db.DBTX, agentID string, loadAttachments bool) (StoredItem, []Attachment, bool, error) {
 	var inputID string
 	err := tx.QueryRowContext(ctx, `SELECT id FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index LIMIT 1`, agentID).Scan(&inputID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1464,7 +1456,7 @@ func headItem(ctx context.Context, tx *sql.Tx, agentID string, loadAttachments b
 	return getItem(ctx, tx, agentID, inputID, loadAttachments)
 }
 
-func loadItemAttachments(ctx context.Context, tx *sql.Tx, inputID string, loadData bool) ([]Attachment, []AttachmentMetadata, error) {
+func loadItemAttachments(ctx context.Context, tx db.DBTX, inputID string, loadData bool) ([]Attachment, []AttachmentMetadata, error) {
 	query := `SELECT filename, mime_type, size FROM agent_input_queue_attachments WHERE item_id = ? ORDER BY position`
 	if loadData {
 		query = `SELECT filename, mime_type, data, size FROM agent_input_queue_attachments WHERE item_id = ? ORDER BY position`
@@ -1497,7 +1489,7 @@ func loadItemAttachments(ctx context.Context, tx *sql.Tx, inputID string, loadDa
 	return attachments, metadata, rows.Err()
 }
 
-func snapshotTx(ctx context.Context, tx *sql.Tx, agentID string) (Snapshot, error) {
+func snapshotTx(ctx context.Context, tx db.DBTX, agentID string) (Snapshot, error) {
 	var snapshot Snapshot
 	var revision int64
 	var reason int32
@@ -1576,7 +1568,7 @@ func snapshotTx(ctx context.Context, tx *sql.Tx, agentID string) (Snapshot, erro
 
 // loadQueueAttachmentMetadata reads every attachment's metadata for one
 // agent's queue, keyed by item ID. It never reads the attachment data.
-func loadQueueAttachmentMetadata(ctx context.Context, tx *sql.Tx, agentID string) (map[string][]AttachmentMetadata, error) {
+func loadQueueAttachmentMetadata(ctx context.Context, tx db.DBTX, agentID string) (map[string][]AttachmentMetadata, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT a.item_id, a.filename, a.mime_type, a.size
 		FROM agent_input_queue_attachments a
@@ -1650,7 +1642,7 @@ func placeControlFeedback(ctx context.Context, tx *sql.Tx, agentID, inputID stri
 	return writeOrder(ctx, tx, agentID, ids)
 }
 
-func compactOrder(ctx context.Context, tx *sql.Tx, agentID string) error {
+func compactOrder(ctx context.Context, tx db.DBTX, agentID string) error {
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index`, agentID)
 	if err != nil {
 		return err
@@ -1670,7 +1662,7 @@ func compactOrder(ctx context.Context, tx *sql.Tx, agentID string) error {
 	return writeOrder(ctx, tx, agentID, itemIDs)
 }
 
-func writeOrder(ctx context.Context, tx *sql.Tx, agentID string, itemIDs []string) error {
+func writeOrder(ctx context.Context, tx db.DBTX, agentID string, itemIDs []string) error {
 	// Move all rows out of the active key space first. This avoids transient
 	// UNIQUE(agent_id, order_index) conflicts while rows exchange positions.
 	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET order_index = order_index + 1000000 WHERE agent_id = ?`, agentID); err != nil {

@@ -7,7 +7,7 @@ import { OPTION_ID_EFFORT } from '../../src/components/chat/settingsGroups'
 import { ACCOUNT_DEFAULT_MODEL } from '../../src/generated/contracts/worker-vocab'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { KIRO_DEFAULT_MOCK_MODEL } from './helpers/kiroSurface'
-import { CODEBUDDY_MODEL_ID, FAST_AGENT_MOCK_MODEL, JUNIE_MOCK_MODEL, KIMI_MOCK_MODELS, LETTA_MODEL_ID, MOCK_MODELS, MOCK_PROVIDER_IDS, QODER_MODEL_ID, QWEN_MODEL_ID } from './helpers/mockAgentEnvironment'
+import { CODEBUDDY_MODEL_ID, DROID_MOCK_MODEL_IDS, FAST_AGENT_MOCK_MODEL, JUNIE_MOCK_MODEL, KIMI_MOCK_MODELS, LETTA_MODEL_ID, MOCK_MODELS, MOCK_PROVIDER_IDS, QODER_MODEL_ID, QWEN_MODEL_ID } from './helpers/mockAgentEnvironment'
 
 /** The model, and the reasoning effort where the provider has one. */
 export interface AgentE2ESettings {
@@ -37,7 +37,7 @@ export const AGENT_E2E_SETTINGS = {
   [AgentProvider.CODEX]: { model: MOCK_MODELS.openai, effort: 'medium' },
   [AgentProvider.GITHUB_COPILOT]: { model: MOCK_MODELS.openai, effort: 'medium' },
   [AgentProvider.CURSOR]: { model: 'auto' },
-  [AgentProvider.GOOSE]: { model: MOCK_MODELS.zai, effort: 'high' },
+  [AgentProvider.GOOSE]: { model: MOCK_MODELS.goose },
   [AgentProvider.KIMI_CODE]: { model: KIMI_MOCK_MODELS.thinking, effort: 'high' },
   [AgentProvider.KIRO]: { model: KIRO_DEFAULT_MOCK_MODEL.modelId, effort: 'medium' },
   [AgentProvider.PI]: { model: MOCK_MODELS.pi, effort: 'high' },
@@ -51,7 +51,7 @@ export const AGENT_E2E_SETTINGS = {
   [AgentProvider.CODEBUDDY]: { model: CODEBUDDY_MODEL_ID },
   [AgentProvider.LETTA]: { model: LETTA_MODEL_ID },
   [AgentProvider.DIRAC]: { model: MOCK_MODELS.deepseek },
-  [AgentProvider.DROID]: { model: 'custom:Droid-0', effort: 'none' },
+  [AgentProvider.DROID]: { model: DROID_MOCK_MODEL_IDS.primary, effort: 'none' },
   [AgentProvider.QODER]: { model: QODER_MODEL_ID },
   [AgentProvider.FAST_AGENT]: { model: FAST_AGENT_MOCK_MODEL },
   [AgentProvider.KILO]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },

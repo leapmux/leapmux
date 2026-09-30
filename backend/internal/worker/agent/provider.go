@@ -114,8 +114,9 @@ type Provider interface {
 	// exists so the lookup is provider-owned dispatch rather than wire parsing in shared service
 	// code; no provider narrows it, because narrowing to one shape would break the other's flows.
 	ControlResponseRequestID(content []byte) string
-	// PlanApprovalOptions resolves the complete settings for an approved plan prompt.
-	// An empty permission mode keeps the current mode. Bypass requires the preset's exact mode.
+	// PlanApprovalOptions resolves live settings for an approved plan prompt or
+	// plan exit. An empty mode uses the provider's default exit mode.
+	// Bypass requires the preset's exact mode.
 	PlanApprovalOptions(permissionMode string) map[string]string
 	// SyntheticInterruptNotice returns the display text of the synthetic user row the service
 	// persists when the frontend forwards this provider's interrupt frame as a raw message

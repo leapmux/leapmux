@@ -40,11 +40,12 @@ func (codebuddyProvider) IsInterrupt(content string) bool {
 // reason the packages stay separate. The browser sends
 // {response:{request_id, response:{behavior, message}}}; the worker forwards
 // {response:{request_id, response:{allowed, reason, interrupt, updatedInput}}}.
-func (codebuddyProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
+func (p codebuddyProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	res := agent.DefaultControlResponseResolution(ctx)
 	if res.Withhold {
 		return res
 	}
+	res.PlanModeControl = p.PlanModeControl(ctx.ToolName)
 	translated, ok := translateCanUseToolAnswer(res.Content)
 	if ok {
 		res.Content = translated
@@ -110,12 +111,16 @@ func (codebuddyProvider) PlanModeControl(toolName string) agent.PlanModeControlK
 	}
 }
 
-// PlanModePermissionMode returns the mode an approved plan exit switches to.
+// PlanModePermissionMode returns the mode that a plan tool enters.
 func (codebuddyProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) string {
-	if kind == agent.PlanModeControlExit {
+	switch kind {
+	case agent.PlanModeControlEnter:
+		return contracts.CodebuddyModePlan
+	case agent.PlanModeControlExit:
 		return contracts.CodebuddyModeAcceptEdits
+	default:
+		return ""
 	}
-	return ""
 }
 
 // IsSelfDisplayingControlTool reports false: CodeBuddy echoes no control answer
@@ -124,23 +129,13 @@ func (codebuddyProvider) IsSelfDisplayingControlTool(string) bool { return false
 
 // TurnEndToolUses reads the tool-use count of a result frame.
 func (codebuddyProvider) TurnEndToolUses(content []byte) (int32, bool) {
-	var result resultMessage
-	if err := json.Unmarshal(content, &result); err != nil {
+	var result struct {
+		NumToolUses *int32 `json:"num_tool_uses"`
+	}
+	if err := json.Unmarshal(content, &result); err != nil || result.NumToolUses == nil || *result.NumToolUses < 0 {
 		return 0, false
 	}
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(content, &probe); err != nil {
-		return 0, false
-	}
-	raw, present := probe["num_tool_uses"]
-	if !present {
-		return 0, false
-	}
-	var count int32
-	if err := json.Unmarshal(raw, &count); err != nil {
-		return 0, false
-	}
-	return count, true
+	return *result.NumToolUses, true
 }
 
 // EndsSubagentTranscript reports false: CodeBuddy's result ends a turn, and a

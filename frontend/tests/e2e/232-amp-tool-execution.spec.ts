@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { AMP_E2E_SKIP_REASON, ampTest, expect } from './amp-fixtures'
 import { bashToolCall, editToolCall, readToolCall, writeToolCall } from './helpers/providerToolCalls'
+import { expectToolRowImage, writeToolImage } from './helpers/toolImages'
 import { messageContents, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 /**
@@ -22,6 +23,19 @@ async function chatText(page: Page): Promise<string> {
 }
 
 ampTest.describe('Amp tool execution', () => {
+  ampTest('draws a PNG returned by its Read tool', async ({ authenticatedAmpWorkspace, page, modelScript }) => {
+    const { workingDir } = authenticatedAmpWorkspace
+    const name = writeToolImage(workingDir, 'amp-read')
+    await modelScript.queue(
+      { toolCalls: [readToolCall(AgentProvider.AMP, 'read-image', join(workingDir, name))] },
+      { text: 'The image read finished.' },
+    )
+    await sendMessage(page, modelScript.prompt('Read the PNG file.'))
+    await modelScript.waitForSteps()
+    await waitForAgentIdle(page)
+    await expectToolRowImage(page, name)
+  })
+
   ampTest('draws the output of a command', async ({ authenticatedAmpWorkspace, page, modelScript }) => {
     void authenticatedAmpWorkspace
     // The command text states no `amp-42`, so only the command's own output can put
@@ -32,7 +46,7 @@ ampTest.describe('Amp tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Run the arithmetic command.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect.poll(() => chatText(page)).toContain('amp-42')
     // Amp states the result as a JSON record; the row draws its output, not the record.
@@ -51,7 +65,7 @@ ampTest.describe('Amp tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Read the notes back.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect.poll(() => chatText(page)).toContain('amp-read-3')
     // Amp numbers each line `<n>: `. The row draws the file's own lines.
@@ -67,7 +81,7 @@ ampTest.describe('Amp tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Change parity.ts.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     expect(readFileSync(path, 'utf8')).toBe('const parityAfter = 2\n')
     const diff = page.locator('[data-file-diff]:visible')
@@ -83,7 +97,7 @@ ampTest.describe('Amp tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Write the note.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     expect(readFileSync(path, 'utf8')).toBe('amp was here\n')
     await expect.poll(() => chatText(page)).toContain('note.txt')

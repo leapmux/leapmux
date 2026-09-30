@@ -37,13 +37,13 @@ kimiTest.describe('sends to a Kimi Code subagent', () => {
     await modelScript.rule(
       {
         name: 'the child answers its first prompt',
-        when: { system: SUBAGENT_SYSTEM, user: 'first probe' },
+        when: { system: SUBAGENT_SYSTEM, body: 'KIMI_CHILD_FIRST' },
         respond: { text: 'KIMI_CHILD_FIRST' },
         once: true,
       },
       {
         name: 'the child answers the follow-up',
-        when: { system: SUBAGENT_SYSTEM, user: 'follow up' },
+        when: { system: SUBAGENT_SYSTEM, body: 'Now reply with exactly' },
         respond: { text: 'KIMI_CHILD_FOLLOWUP' },
       },
     )

@@ -6,6 +6,7 @@ import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from './agentSettings'
 import { openAgentViaAPI } from './helpers/api'
 import { MOCK_MODELS, MOCK_PROVIDER_IDS } from './helpers/mockAgentEnvironment'
+import { exerciseProviderSteer } from './helpers/providerSteer'
 import { bashToolCall } from './helpers/providerToolCalls'
 import { createTestDirectory } from './helpers/runDirectory'
 import { applyPermissionPreset, chooseSettingsOption, closeComposerMenus, expectSettingsChip, openPlusMenu, openSettingsMenu, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from './helpers/ui'
@@ -22,6 +23,13 @@ function lastStepBody(requests: MockModelRequestRecord[]): Record<string, unknow
 }
 
 mimoTest.describe('MiMo Code settings', () => {
+  mimoTest('steers a queued message into the active turn', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {
+    void authenticatedMiMoWorkspace
+    await waitForSettingsHydrated(page)
+    await applyPermissionPreset(page, 'bypass')
+    await exerciseProviderSteer(page, modelScript, AgentProvider.MIMO_CODE)
+  })
+
   // Each setting is read off the next model request, which is where MiMo applies
   // it: the model id, the reasoning variant and the primary agent's prompt.
   mimoTest('switches the model, the effort and the mode for the next prompt', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {
@@ -41,7 +49,7 @@ mimoTest.describe('MiMo Code settings', () => {
     await modelScript.queue({ text: 'SETTINGS_APPLIED' })
     await sendMessage(page, modelScript.prompt('Describe the plan in one word.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     const body = lastStepBody((await modelScript.status()).requests)
     expect(body.model).toBe(MOCK_MODELS.pi)
@@ -84,7 +92,7 @@ mimoTest.describe('MiMo Code settings', () => {
     )
     await sendMessage(page, modelScript.prompt('Delete doomed.txt.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect(page.locator('[data-testid="control-banner"]')).toHaveCount(0)
     expect(existsSync(file)).toBe(false)
   })

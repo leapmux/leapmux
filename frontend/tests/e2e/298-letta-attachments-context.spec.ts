@@ -1,4 +1,4 @@
-import { expectAttachmentOutcome } from './helpers/attachments'
+import { exerciseAttachmentDelivery } from './helpers/attachmentModelProbe'
 import { expectContextUsage } from './helpers/contextUsage'
 import {
   ARITHMETIC_ANSWER_TEXT,
@@ -13,17 +13,20 @@ lettaTest.skip(!!LETTA_E2E_SKIP_REASON, LETTA_E2E_SKIP_REASON || '')
 /**
  * 298 — Letta Code attachments and context usage.
  *
- * Letta takes a text and an image attachment. The worker and the plugin both
- * reject a PDF (`RejectPDFAndBinaryAttachment`, `pdf: false`), so the matrix
- * cell that marks PDF ✅ is not reproducible here; only text and image are
- * asserted. Context usage reads the usage block the mock reports.
+ * Letta takes text and image attachments. The worker and browser reject PDF
+ * and other binary files. The tests check the model request for file bytes.
  */
 lettaTest.describe('Letta Code attachments and context usage', () => {
-  lettaTest('accepts a text and an image attachment', async ({ authenticatedLettaWorkspace, page }) => {
+  lettaTest('delivers text attachment bytes to the model', async ({ authenticatedLettaWorkspace, page, modelScript }) => {
     void authenticatedLettaWorkspace
-    await expectAttachmentOutcome(page, 'text', { supported: true, fileName: 'lnote.txt' })
-    await page.reload()
-    await expectAttachmentOutcome(page, 'image', { supported: true, fileName: 'lshot.png' })
+    await modelScript.rule(LETTA_TITLE_RULE)
+    await exerciseAttachmentDelivery(page, modelScript, 'text', 'letta-notes.txt')
+  })
+
+  lettaTest('delivers image attachment bytes to the model', async ({ authenticatedVisionLettaWorkspace, page, modelScript }) => {
+    void authenticatedVisionLettaWorkspace
+    await modelScript.rule(LETTA_TITLE_RULE)
+    await exerciseAttachmentDelivery(page, modelScript, 'image', 'letta-shot.png')
   })
 
   // The usage block the mock reports is the only source of these counts. A

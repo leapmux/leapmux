@@ -138,6 +138,8 @@ export interface MockModelStep {
   error?: MockModelError
   /** Hold the answer open for this long. An interrupt test cancels inside that window. */
   delayMs?: number
+  /** Hold the answer until this test releases the gate. */
+  gate?: string
   /** Deliver `text` progressively. See `MockModelTextStream`. */
   stream?: MockModelTextStream
   /** Token counts on the usage block. Defaults to 1 input and 1 output. */
@@ -261,6 +263,8 @@ export interface MockModelScenarioStatus {
   stepCount: number
   /** How many requests each rule answered, keyed by rule name. */
   ruleMatches: Record<string, number>
+  /** Gates that currently hold one or more model requests. */
+  pendingGates: string[]
   requests: MockModelRequestRecord[]
   unexpectedRequests: MockModelUnexpectedRequest[]
 }
@@ -369,6 +373,9 @@ function parseStep(value: unknown, label: string): MockModelStep {
   if (error && (value.text !== undefined || toolCalls !== undefined || value.reasoning !== undefined))
     throw new Error(`Model ${label} cannot combine an error with output`)
   const delayMs = parseDelay(value.delayMs, label)
+  const gate = parseGate(value.gate, label)
+  if (gate !== undefined && delayMs !== undefined)
+    throw new Error(`Model ${label} cannot combine gate with delayMs`)
   const stream = parseTextStream(value.stream, label)
   if (stream && value.text === undefined)
     throw new Error(`Model ${label} states stream but no text to deliver`)
@@ -387,6 +394,7 @@ function parseStep(value: unknown, label: string): MockModelStep {
     ...(toolCalls ? { toolCalls } : {}),
     ...(error ? { error } : {}),
     ...(delayMs === undefined ? {} : { delayMs }),
+    ...(gate === undefined ? {} : { gate }),
     ...(stream === undefined ? {} : { stream }),
     ...(usage === undefined ? {} : { usage }),
     ...(rateLimits === undefined ? {} : { rateLimits }),
@@ -406,6 +414,18 @@ function parseStep(value: unknown, label: string): MockModelStep {
     }
   }
   return step
+}
+
+function parseGate(value: unknown, label: string): string | undefined {
+  if (value === undefined)
+    return undefined
+  validateGateName(value, `Model ${label} gate`)
+  return value
+}
+
+export function validateGateName(value: unknown, label = 'Model gate'): asserts value is string {
+  if (typeof value !== 'string' || !/^[a-z][\w-]{0,63}$/i.test(value))
+    throw new Error(`${label} must use 1 to 64 ASCII letters, digits, underscores, or hyphens and start with a letter`)
 }
 
 function parseCaptures(value: unknown, label: string): Record<string, string> | undefined {

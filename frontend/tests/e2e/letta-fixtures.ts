@@ -2,9 +2,9 @@
  * Letta Code E2E fixtures.
  *
  * The worker starts one `letta server --listen ws://127.0.0.1:0` App Server per
- * agent and drives it over the protocol_v2 WebSocket. Letta calls the model
- * through its `openai-compatible` provider, which `helpers/mockAgentEnvironment.ts`
- * points at the mock endpoint in the isolated `LETTA_LOCAL_BACKEND_DIR`. No test
+ * agent and drives it over the protocol_v2 WebSocket. The default model uses
+ * `openai-compatible`. The image test uses a built-in OpenAI vision model.
+ * Both provider records point at the isolated model server. No test
  * reaches a Letta Cloud account, a real model, or the developer's own `~/.letta`.
  *
  * Letta runs its session title and subagent child turns by itself. A spec that
@@ -23,6 +23,7 @@ import { LETTA_MODE } from '../../src/generated/contracts/letta-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
+import { LETTA_REASONING_MODEL_ID, LETTA_VISION_MODEL_ID } from './helpers/mockAgentEnvironment'
 import { createTestDirectory } from './helpers/runDirectory'
 import { loginViaToken, openWorkspace } from './helpers/ui'
 import { withAgentWorkspace } from './helpers/workspace'
@@ -67,6 +68,8 @@ export interface LettaWorkspaceFixture extends WorkspaceFixture {
  * spec opens its own workspace in Standard.
  */
 const UNRESTRICTED = { optionValues: { permissionMode: LETTA_MODE.Unrestricted } }
+const VISION_UNRESTRICTED = { model: LETTA_VISION_MODEL_ID, optionValues: UNRESTRICTED.optionValues }
+const REASONING_UNRESTRICTED = { model: LETTA_REASONING_MODEL_ID, optionValues: UNRESTRICTED.optionValues }
 
 interface LettaAgentServer {
   hubUrl: string
@@ -75,7 +78,7 @@ interface LettaAgentServer {
 }
 
 /** Open one agent in a fresh directory, log in, and show its workspace. */
-function lettaWorkspace(prefix: string, openOptions?: { optionValues: Record<string, string> }) {
+function lettaWorkspace(prefix: string, openOptions?: { model?: string, optionValues: Record<string, string> }) {
   return async ({ page, leapmuxServer }: { page: Page, leapmuxServer: LettaAgentServer }, use: (fixture: LettaWorkspaceFixture) => Promise<void>) => {
     const workingDir = createTestDirectory('letta-e2e-wd-')
     await withAgentWorkspace(leapmuxServer, { provider: AgentProvider.LETTA, prefix, ...(openOptions ? { openOptions } : {}), workingDir: () => workingDir }, async (workspace) => {
@@ -89,10 +92,16 @@ function lettaWorkspace(prefix: string, openOptions?: { optionValues: Record<str
 export const lettaTest = base.extend<{
   /** An agent in Unrestricted, which raises no banner for a tool call. */
   authenticatedLettaWorkspace: LettaWorkspaceFixture
+  /** A built-in vision model routed through a local provider record. */
+  authenticatedVisionLettaWorkspace: LettaWorkspaceFixture
+  /** A built-in reasoning model routed through a local provider record. */
+  authenticatedReasoningLettaWorkspace: LettaWorkspaceFixture
   /** An agent in LeapMux's default Standard mode, which asks before an approval tool. */
   askingLettaWorkspace: LettaWorkspaceFixture
 }>({
   authenticatedLettaWorkspace: lettaWorkspace('letta-e2e', UNRESTRICTED),
+  authenticatedVisionLettaWorkspace: lettaWorkspace('letta-e2e-vision', VISION_UNRESTRICTED),
+  authenticatedReasoningLettaWorkspace: lettaWorkspace('letta-e2e-reasoning', REASONING_UNRESTRICTED),
   askingLettaWorkspace: lettaWorkspace('letta-e2e-ask'),
 })
 

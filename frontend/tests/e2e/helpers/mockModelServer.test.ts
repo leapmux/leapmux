@@ -1,10 +1,14 @@
 import type { MockModelScript } from './mockModelScenario'
 import type { MockModelScenarioStatus } from './mockModelScript'
 import type { MockModelServer } from './mockModelServer'
+import { Buffer } from 'node:buffer'
 import { request as httpRequest } from 'node:http'
 import { afterEach, describe, expect, it } from 'vitest'
-import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
+import { CURSOR_RUN_PATH } from './cursorSurface'
+import { connectFrame, encodeLengthDelimited, encodeStringField } from './cursorWire'
+import { MOCK_MODEL_IDS, MOCK_MODELS, MODEL_KEY } from './mockAgentEnvironment'
 import { mockScenarioPrompt } from './mockModelScenario'
+import { AMBIENT_SCENARIO_ID } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
 
 const servers: MockModelServer[] = []
@@ -45,6 +49,18 @@ async function waitForStep(server: MockModelServer, id: string, count: number): 
   throw new Error(`Model scenario ${id} did not reach step ${count}`)
 }
 
+/** Wait for a response gate to hold a real model request. */
+async function waitForGate(server: MockModelServer, id: string, gate: string): Promise<MockModelScenarioStatus> {
+  const deadline = Date.now() + 4_000
+  while (Date.now() < deadline) {
+    const status = await readStatus(server, id)
+    if (status.pendingGates.includes(gate))
+      return status
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  throw new Error(`The model scenario ${id} never held gate ${gate}`)
+}
+
 async function responseText(response: Response): Promise<string> {
   expect(response.status).toBe(200)
   return response.text()
@@ -58,7 +74,36 @@ function chat(server: MockModelServer, content: string, stream = true): Promise<
   })
 }
 
+/** Send the native Cursor Run frame with the conversation that owns the prompt. */
+async function cursorRun(server: MockModelServer, conversationID: string, prompt: string): Promise<void> {
+  const action = encodeLengthDelimited(2, encodeLengthDelimited(1, encodeLengthDelimited(1, encodeStringField(1, prompt))))
+  const frame = encodeLengthDelimited(1, Buffer.concat([Buffer.from(action), Buffer.from(encodeStringField(5, conversationID))]))
+  const response = await fetch(`${server.url}${CURSOR_RUN_PATH}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/connect+proto' },
+    body: Buffer.from(connectFrame(frame)),
+  })
+  expect(response.status).toBe(200)
+  await response.arrayBuffer()
+}
+
 describe('createMockModelServer', () => {
+  it('routes a bare Cursor command through its conversation script and clears that route', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'cursor-conversation', { steps: [{ text: 'First answer.' }, { text: 'Command answer.' }] })
+    await registerScenario(server, AMBIENT_SCENARIO_ID, { steps: [{ text: 'Ambient answer.' }] })
+    await cursorRun(server, 'conversation-1', mockScenarioPrompt('cursor-conversation', 'Start this conversation.'))
+    await cursorRun(server, 'conversation-1', '/compact')
+    const scripted = await readStatus(server, 'cursor-conversation')
+    expect(scripted.nextStep).toBe(2)
+    expect(scripted.requests[1]?.body).toEqual({ prompt: '/compact', attachments: [], conversationId: 'conversation-1' })
+
+    const removed = await fetch(`${server.url}/__e2e/scenarios/cursor-conversation`, { method: 'DELETE' })
+    expect(removed.status).toBe(204)
+    await cursorRun(server, 'conversation-1', '/compact')
+    expect((await readStatus(server, AMBIENT_SCENARIO_ID)).nextStep).toBe(1)
+  })
+
   it('refuses to start without a model identifier', async () => {
     await expect(createMockModelServer({ models: [] })).rejects.toThrow('at least one model identifier')
   })
@@ -81,6 +126,43 @@ describe('createMockModelServer', () => {
     expect(status.requests[0]).toMatchObject({ protocol: 'openai-chat-completions', stepIndex: 0 })
   })
 
+  it('holds a model answer until its gate is released', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'held-answer', { steps: [{ text: 'Released answer.', gate: 'child-answer' }] })
+
+    let answered = false
+    const answer = chat(server, mockScenarioPrompt('held-answer', 'Ask the child.'), false)
+      .then(async (response) => {
+        answered = true
+        return responseText(response)
+      })
+    const held = await waitForGate(server, 'held-answer', 'child-answer')
+    expect(held).toMatchObject({ complete: false, nextStep: 1, stepCount: 1 })
+    expect(answered).toBe(false)
+
+    const release = await fetch(`${server.url}/__e2e/scenarios/held-answer/gates/child-answer/release`, { method: 'POST' })
+    expect(release.status).toBe(204)
+    expect(await answer).toContain('Released answer.')
+    expect(await readStatus(server, 'held-answer')).toMatchObject({ complete: true, pendingGates: [] })
+    const duplicate = await fetch(`${server.url}/__e2e/scenarios/held-answer/gates/child-answer/release`, { method: 'POST' })
+    expect(duplicate.status).toBe(409)
+  })
+
+  it('cancels a held answer when the scenario is removed', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'abandoned-gate', { steps: [{ text: 'Never sent.', gate: 'child-answer' }] })
+    const pending = chat(server, mockScenarioPrompt('abandoned-gate', 'Ask the child.'), false)
+    const rejection = expect(pending).rejects.toThrow()
+    await waitForGate(server, 'abandoned-gate', 'child-answer')
+
+    const normal = await fetch(`${server.url}/__e2e/scenarios/abandoned-gate`, { method: 'DELETE' })
+    expect(normal.status).toBe(409)
+    expect(await normal.json()).toMatchObject({ complete: false, pendingGates: ['child-answer'] })
+    const forced = await fetch(`${server.url}/__e2e/scenarios/abandoned-gate?force=true`, { method: 'DELETE' })
+    expect(forced.status).toBe(204)
+    await rejection
+  })
+
   it('advertises the pinned model identifiers and the client identity routes', async () => {
     const server = await startServer()
     const models = await fetch(`${server.url}/models`).then(response => response.json())
@@ -88,6 +170,18 @@ describe('createMockModelServer', () => {
     expect(models.data[0]).toMatchObject({
       capabilities: { supports: { vision: true }, limits: { max_context_window_tokens: 128000 } },
     })
+    const copilotModel = models.data.find((model: { id: string }) => model.id === MOCK_MODELS.openai)
+    expect(copilotModel).toMatchObject({
+      capabilities: { supports: { reasoning_effort: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] } },
+    })
+    expect(copilotModel.supported_endpoints).toBeUndefined()
+    const reasoningModel = models.data.find((model: { id: string }) => model.id === MOCK_MODELS.gooseReasoning)
+    expect(reasoningModel).toMatchObject({
+      supported_endpoints: ['/responses'],
+      capabilities: { supports: { reasoning_effort: ['low', 'medium', 'high'] } },
+    })
+    const piModel = models.data.find((model: { id: string }) => model.id === MOCK_MODELS.pi)
+    expect(piModel.capabilities.supports).not.toHaveProperty('reasoning_effort')
 
     const user = await fetch(`${server.url}/copilot_internal/user`).then(response => response.json())
     expect(user).toMatchObject({
@@ -103,6 +197,41 @@ describe('createMockModelServer', () => {
       session_token: 'leapmux-e2e-session-token',
       selected_model: { id: 'gpt-5.6-luna' },
     })
+  })
+
+  it('answers Droid whoami only for the isolated model key', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'droid-whoami', { steps: [{ text: 'A model answer.' }] })
+    const url = `${server.url}/v1/api/cli/whoami`
+
+    const accepted = await fetch(url, { headers: { authorization: `Bearer ${MODEL_KEY}` } })
+    expect(accepted.status).toBe(200)
+    expect(await accepted.json()).toEqual({ userId: 'leapmux-e2e-user', orgId: 'leapmux-e2e-org' })
+    expect((await fetch(url)).status).toBe(401)
+    expect((await fetch(url, { headers: { authorization: 'Bearer another-key' } })).status).toBe(401)
+
+    const log = await fetch(`${server.url}/__e2e/requests`).then(response => response.json())
+    expect(log.http).toContainEqual({ method: 'GET', path: '/v1/api/cli/whoami', status: 200 })
+    expect((await readStatus(server, 'droid-whoami')).nextStep).toBe(0)
+  })
+
+  it('returns the endpoint shapes read by both Qoder discovery clients', async () => {
+    const server = await startServer()
+    const v3 = await fetch(`${server.url}/algo/api/v3/service/region/endpoints`).then(response => response.json())
+    const legacyV5 = await fetch(`${server.url}/algo/api/v5/service/region/endpoints`, {
+      headers: { 'cosy-machineid': 'mock-machine', 'x-gw-user-id': 'leapmux-e2e' },
+    }).then(response => response.json())
+    const newV5 = await fetch(`${server.url}/algo/api/v5/service/region/endpoints`, {
+      headers: { 'cosy-machinecode': 'mock-code', 'cosy-machinetype': 'darwin', 'x-gw-user-id': 'leapmux-e2e' },
+    }).then(response => response.json())
+
+    for (const key of ['centerNodes', 'inferNodes', 'security', 'openapiNodes']) {
+      expect(v3[key]).toEqual([server.url])
+      expect(legacyV5[key]).toEqual([server.url])
+      expect(newV5[key]).toEqual([{ url: server.url }])
+    }
+    const unknown = await fetch(`${server.url}/algo/api/v5/service/region/unknown`)
+    expect(unknown.status).toBe(404)
   })
 
   it('keeps an HTTP log that a caller can read and clear', async () => {
@@ -139,6 +268,58 @@ describe('createMockModelServer', () => {
     expect(body).toContain('"name":"read_file"')
     expect(body).toContain('"arguments":"{\\"path\\":\\"README.md\\"}"')
     expect(body).toContain('response.completed')
+  })
+
+  it('streams complete OpenAI Responses reasoning events in sequence', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'responses-reasoning', {
+      steps: [
+        { reasoning: 'Compare the values.', text: 'The answer is 6912.' },
+        { reasoning: 'Compare the values.', text: 'The answer is 6912.' },
+      ],
+    })
+
+    const body = await responseText(await fetch(`${server.url}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'reasoning-model',
+        stream: true,
+        input: [{ role: 'user', content: [{ type: 'input_text', text: mockScenarioPrompt('responses-reasoning', 'Add two values.') }] }],
+      }),
+    }))
+    const events = body.split('\n')
+      .filter(line => line.startsWith('data: {'))
+      .map(line => JSON.parse(line.slice('data: '.length)))
+
+    expect(events.map(event => event.sequence_number)).toEqual(events.map((_, index) => index))
+    expect(events[0]).toMatchObject({
+      type: 'response.created',
+      response: { id: expect.any(String), object: 'response', created_at: expect.any(Number), status: 'in_progress', model: 'reasoning-model', output: [], tools: [] },
+    })
+    const eventTypes = events.map(event => event.type)
+    const added = eventTypes.indexOf('response.output_item.added')
+    const delta = eventTypes.indexOf('response.reasoning_summary_text.delta')
+    const done = eventTypes.indexOf('response.output_item.done')
+    expect(added).toBeGreaterThan(0)
+    expect(delta).toBeGreaterThan(added)
+    expect(done).toBeGreaterThan(delta)
+    expect(events[delta]).toMatchObject({ delta: 'Compare the values.', output_index: 0 })
+    expect(events.at(-1)).toMatchObject({
+      type: 'response.completed',
+      response: { id: events[0].response.id, object: 'response', created_at: events[0].response.created_at, status: 'completed', model: 'reasoning-model', tools: [] },
+    })
+
+    const nonStreaming = await fetch(`${server.url}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'reasoning-model',
+        stream: false,
+        input: [{ role: 'user', content: [{ type: 'input_text', text: mockScenarioPrompt('responses-reasoning', 'Add two values again.') }] }],
+      }),
+    })
+    expect(await nonStreaming.json()).toMatchObject({ object: 'response', created_at: events[0].response.created_at, status: 'completed' })
   })
 
   it('streams Anthropic text and tool blocks', async () => {
@@ -191,6 +372,40 @@ describe('createMockModelServer', () => {
     }))
     expect(anthropic).toContain('"type":"thinking_delta","thinking":"Weighing the options."')
     expect(anthropic).toContain('"type":"signature_delta"')
+  })
+
+  it('emits the Copilot OpenAI reasoning field for its native model', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'copilot-reasoning', {
+      steps: [
+        { reasoning: 'Check the CAPI answer.', text: 'Done.' },
+        { reasoning: 'Check the CAPI answer.', text: 'Done.' },
+      ],
+    })
+    const response = await fetch(`${server.url}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: MOCK_MODELS.openai,
+        stream: true,
+        messages: [{ role: 'user', content: mockScenarioPrompt('copilot-reasoning', 'Reply once.') }],
+      }),
+    })
+    const body = await responseText(response)
+    expect(body).toContain('"reasoning":"Check the CAPI answer."')
+
+    const nonstreaming = await fetch(`${server.url}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: MOCK_MODELS.openai,
+        stream: false,
+        messages: [{ role: 'user', content: mockScenarioPrompt('copilot-reasoning', 'Reply once more.') }],
+      }),
+    })
+    expect(await nonstreaming.json()).toMatchObject({
+      choices: [{ message: { reasoning: 'Check the CAPI answer.' } }],
+    })
   })
 
   // A test that asserts context usage needs a count other than 1, and a test of

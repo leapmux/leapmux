@@ -4,11 +4,11 @@ import { LETTA_DELTA_KIND } from '~/generated/contracts/letta-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 
 /**
- * Letta's span role: a `client_tool_start` delta is the request, and a
- * `tool_return_message` or `client_tool_end` delta is the result.
+ * Letta's span role: `client_tool_start` and `tool_call_message` are requests.
+ * `tool_return_message` and `client_tool_end` are results.
  *
- * The worker persists the stream_delta's own payload object. A raw frame wraps
- * it under `payload`, so normalize before reading.
+ * The worker persists a native payload for each tool call. A raw frame wraps
+ * its payload under `payload`, so normalize before reading.
  */
 export function lettaSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
   const parent = parsed.parentObject
@@ -17,7 +17,7 @@ export function lettaSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
   const messageType = pickString(source, 'message_type')
   if (messageType === LETTA_DELTA_KIND.ToolReturnMessage || messageType === LETTA_DELTA_KIND.ClientToolEnd)
     return 'result'
-  if (messageType === LETTA_DELTA_KIND.ClientToolStart)
+  if (messageType === LETTA_DELTA_KIND.ClientToolStart || messageType === LETTA_DELTA_KIND.ToolCallMessage)
     return 'request'
   return 'other'
 }

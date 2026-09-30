@@ -95,7 +95,7 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 		},
 		{
 			column:       "agent_background_tasks.status",
-			check:        "CHECK (status BETWEEN 1 AND 6)",
+			check:        "CHECK (status BETWEEN 1 AND 7)",
 			lastAccepted: int32(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_INTERRUPTED),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.BackgroundTaskStatus_name),
 		},

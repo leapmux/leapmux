@@ -3,6 +3,7 @@ package qwen
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -17,6 +18,15 @@ import (
 // with the answers beside the selected option.
 type qwenProvider struct {
 	acp.Provider
+}
+
+// ValidateAttachment refuses generic binary input that Qwen turns into a
+// placeholder before the model sees its bytes.
+func (qwenProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
+	if attachment.Kind == agent.AttachmentKindBinary {
+		return fmt.Errorf("qwen code cannot send generic binary attachment %q", attachment.Filename)
+	}
+	return nil
 }
 
 // ListStoredSessions reads Qwen's own session store; see sessions.go.

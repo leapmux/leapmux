@@ -11,10 +11,9 @@ import './plugin'
 describe('cursor provider', () => {
   const plugin = providerFor(AgentProvider.CURSOR)!
 
-  // Cursor's attachment caps, assembled-text handling, config_option_update hiding,
-  // and ACP interrupt request are the standard stub behaviours (interrupt is wired unconditionally
-  // by registerACPProvider, so routing through the helper also covers it).
-  describeACPProviderBasics(AgentProvider.CURSOR, { text: true, image: true, pdf: true, binary: true })
+  // Cursor keeps the standard ACP text/image behavior and interrupts. It drops
+  // embedded blob content, so PDF and binary attachments must be refused.
+  describeACPProviderBasics(AgentProvider.CURSOR, { text: true, image: true, pdf: false, binary: false })
 
   it('maps plan mode to agent/plan values', () => {
     expect(plugin?.configuration?.planMode?.currentMode({ optionValues: { permissionMode: 'plan' } })).toBe('plan')

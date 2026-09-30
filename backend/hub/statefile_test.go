@@ -1,7 +1,9 @@
 package hub
 
 import (
+	"context"
 	"encoding/json"
+	"net"
 	"os"
 	"testing"
 
@@ -9,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/webauthn"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
 
@@ -50,6 +53,20 @@ func TestServer_StateFileNamesTheResolvedBindSet(t *testing.T) {
 	assert.Equal(t, srv.PrimaryListenAddr(), got.Listen[0],
 		"a port-0 request must appear as the port the operating system chose")
 	assert.Equal(t, srv.localListenURLs[0], got.Listen[1], "a local entry stays its URL")
+}
+
+// A port-zero bind must use the assigned port for the browser's passkey origin.
+// The state file alone cannot fix a service that still reads the configured 0.
+func TestServer_EphemeralTCPPortAllowsTheBrowserPasskeyOrigin(t *testing.T) {
+	srv := startTestServer(t, &config.Config{Listen: []string{"127.0.0.1:0"}})
+	_, port, err := net.SplitHostPort(srv.PrimaryListenAddr())
+	require.NoError(t, err)
+	require.NotEqual(t, "0", port)
+
+	rp, err := webauthn.RPConfigFromSettings(srv.settings.Snapshot(context.Background()), srv.cfg.PrimaryTCPListen())
+	require.NoError(t, err)
+	assert.True(t, rp.AllowsOrigin("http://localhost:"+port),
+		"the passkey origin must use the assigned port, not the configured port zero")
 }
 
 // A clean shutdown removes the state file: after the listeners are released it

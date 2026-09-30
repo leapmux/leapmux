@@ -109,6 +109,8 @@ type registryOps[T any] struct {
 	setKey func(*T, string)
 	// isFinished reports whether a stored row is final (eligible for eviction).
 	isFinished func(T) bool
+	// isWorking reports whether a retained row contributes to agent activity.
+	isWorking func(T) bool
 	// deleteByKey deletes the persisted row for `key` under `ownerID`.
 	deleteByKey func(ctx context.Context, q *db.Queries, ownerID string, key string) error
 	// retention makes some rows outlive the display cap in the store. Optional:
@@ -498,7 +500,7 @@ func (v registryView[T]) evictAtLocked(ctx context.Context, evictIdx int) (T, bo
 	// Remember an ACTIVE row that survives in the store. It is still running, and
 	// the display list can no longer say so. A row retention did NOT keep is gone
 	// from the table too, so nothing can report it and nothing should try.
-	if !c.ops.isFinished(evicted) && c.ops.retention != nil && c.ops.retention.keep(evicted) {
+	if c.ops.isWorking(evicted) && c.ops.retention != nil && c.ops.retention.keep(evicted) {
 		if c.evictedActive == nil {
 			c.evictedActive = make(map[string]struct{}, 1)
 		}

@@ -1074,8 +1074,10 @@ tasks:
       - testdata/**/*
       - backend/**/testdata/**/*
       - frontend/src/lib/syntaxThemes/**/*
+      - frontend/tests/e2e/feature-matrix/**/*
       - scripts/license-overrides/**/*
       - scripts/validate-json.mjs
+      - scripts/validate-coding-agent-matrix.mjs
     vars:
       JS_CONTEXT:
         sh: *js_context_command
@@ -1085,6 +1087,7 @@ tasks:
     cmds:
       - *forget_artifacts
       - bun scripts/validate-json.mjs
+      - bun scripts/validate-coding-agent-matrix.mjs
       - *record_artifacts
 
   lint-scripts:
@@ -1326,6 +1329,7 @@ tasks:
   dev-site:
     desc: Start the documentation site dev server with live reload (http://localhost:1313)
     cmds:
+      - task: validate-json
       # Live-reloading Hugo server via the go tool dependency (see site/go.mod).
       # GOWORK=off isolates the site module from the root go.work, and hugo
       # server overrides baseURL with the local address so links work locally.
@@ -1486,6 +1490,11 @@ tasks:
       - site/layouts/**/*
       - site/assets/**/*
       - site/i18n/**/*
+      - frontend/tests/e2e/feature-matrix/**/*
+      - contracts/providers.json
+      - scripts/validate-json.mjs
+      - scripts/validate-coding-agent-matrix.mjs
+      - scripts/verify-coding-agent-site.mjs
     vars:
       GO_CONTEXT:
         sh: *go_context_command
@@ -1499,10 +1508,12 @@ tasks:
     status: *artifact_status
     cmds:
       - *forget_artifacts
+      - task: validate-json
       # Run Hugo through the tool dependency in site/go.mod.
       # GOWORK=off keeps the site's dependency graph outside the root workspace.
       # --cleanDestinationDir removes obsolete assets whose content hashes changed.
       - cd site && GOWORK=off go tool hugo --gc --minify --cleanDestinationDir
+      - bun scripts/verify-coding-agent-site.mjs
       - *record_artifacts
 
   # --- Clean ---

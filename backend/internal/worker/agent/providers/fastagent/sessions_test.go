@@ -39,6 +39,12 @@ func TestFastagentReadsItsSessionStore(t *testing.T) {
 	})
 }
 
+func TestFastagentHomeUsesTheProcessEnvironmentWithoutAQueryHook(t *testing.T) {
+	t.Setenv("FAST_AGENT_HOME", "")
+	workingDir := t.TempDir()
+	assert.Equal(t, filepath.Join(workingDir, ".fast-agent"), fastagentHome(agent.StoredSessionQuery{WorkingDir: workingDir}))
+}
+
 func TestFastagentStoredSessionsFiltersByWorkingDir(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()

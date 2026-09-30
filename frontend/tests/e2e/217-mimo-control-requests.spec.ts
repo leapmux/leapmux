@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from './agentSettings'
 import { openAgentViaAPI } from './helpers/api'
+import { nativeToolResult } from './helpers/nativeToolResult'
 import { askUserQuestionToolCall, bashToolCall, mimoInteractiveBashToolCall, readToolCall } from './helpers/providerToolCalls'
 import { createTestDirectory } from './helpers/runDirectory'
 import { messageContents, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
@@ -179,8 +180,11 @@ mimoTest.describe('MiMo Code questions', () => {
     await banner.getByTestId('question-option-Beta').click()
     await page.getByTestId('control-submit-btn').click()
     await expect(banner).toHaveCount(0)
-    await modelScript.waitForSteps()
+    const status = await modelScript.waitForSteps()
     await waitForAgentIdle(page, 120_000)
+    const answer = nativeToolResult(status.requests.find(request => request.stepIndex === 1), 'style-question')
+    expect(answer).toContain('Beta')
+    expect(answer).not.toContain('Alpha')
 
     // The question row reads the answer out of MiMo's own result, under the
     // question's header, and the saved answer states it too.
@@ -234,8 +238,13 @@ mimoTest.describe('MiMo Code questions', () => {
     await expect(submit).toBeEnabled()
     await submit.click()
     await expect(banner).toHaveCount(0)
-    await modelScript.waitForSteps()
+    const status = await modelScript.waitForSteps()
     await waitForAgentIdle(page, 120_000)
+    const answer = nativeToolResult(status.requests.find(request => request.stepIndex === 1), 'pizza-questions')
+    expect(answer).toContain('Cheese')
+    expect(answer).toContain('Basil')
+    expect(answer).toContain('Garden Special')
+    expect(answer).not.toContain('Olives')
 
     await expect(messageContents(page).filter({ hasText: /Toppings\s*—\s*Cheese, Basil/ }).first()).toBeVisible()
     await expect(messageContents(page).filter({ hasText: /Name\s*—\s*Garden Special/ }).first()).toBeVisible()

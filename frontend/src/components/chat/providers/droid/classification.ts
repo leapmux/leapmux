@@ -1,10 +1,9 @@
 import type { MessageCategory } from '../../messageClassifier'
-import type { NotificationEntry } from '../../model/notification'
 import type { ClassificationInput } from '../registry'
 import { DROID_NOTIFICATION, DROID_NOTIFICATION_FIELD, DROID_TOOL_NOTIFICATION } from '~/generated/contracts/droid-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
-import { isNotificationThreadWrapper } from '../../messageUtils'
 import { notificationClassifierFor } from '../../notificationClassification'
+import { droidNotificationEntry } from './extractors/notification'
 
 /**
  * Factory Droid message classification.
@@ -18,7 +17,7 @@ export function classifyDroidMessage(input: ClassificationInput): MessageCategor
   const wrapper = input.wrapper
   if (wrapper && wrapper.messages.length === 0)
     return { kind: 'hidden' }
-  if (isNotificationThreadWrapper(wrapper))
+  if (wrapper)
     return notification(wrapper.messages, 'hidden')
 
   const parent = input.parentObject
@@ -47,21 +46,7 @@ export function classifyDroidMessage(input: ClassificationInput): MessageCategor
       return { kind: 'tool_result' }
     case DROID_NOTIFICATION.AgentTurnCompleted:
       return { kind: 'result_divider' }
-    case DROID_NOTIFICATION.WorkingStateChanged:
-    case DROID_NOTIFICATION.SettingsUpdated:
-    case DROID_NOTIFICATION.SessionTitleUpdated:
-    case DROID_NOTIFICATION.SessionTokenUsageChanged:
-    case DROID_NOTIFICATION.Error:
-      return notification([parent], 'notification')
     default:
       return notification([parent], 'hidden')
   }
-}
-
-/**
- * The notification entry of one provider notice. The raw payload travels whole,
- * so the row draws the provider's own words.
- */
-function droidNotificationEntry(message: Record<string, unknown>): NotificationEntry[] {
-  return [{ kind: 'text', text: JSON.stringify(message) }]
 }

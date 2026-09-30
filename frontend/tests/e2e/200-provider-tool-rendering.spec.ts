@@ -3,6 +3,7 @@ import { agentOpenOptions, agentSettings } from './agentSettings'
 import { expect, test } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
 import { withMockModelScenario } from './helpers/mockModelScenario'
+import { nativeToolResult } from './helpers/nativeToolResult'
 import { askUserQuestionToolCall, bashToolCall, editToolCall, exitPlanModeToolCall, readToolCall, spawnSubagentToolCall } from './helpers/providerToolCalls'
 import { createTestDirectory } from './helpers/runDirectory'
 import { withMockPiModel } from './helpers/scriptedPiModel'
@@ -111,7 +112,10 @@ test.describe('provider tool rendering', () => {
     // The agent's OWN question extension raises this control request, from a
     // scripted tool call. Seeding the request row instead skipped the extension
     // entirely, so nothing proved that ZCode's own payload reaches this surface.
-    await modelScript.queue({ toolCalls: [askUserQuestionToolCall(provider, 'color-question', questions)] })
+    await modelScript.queue(
+      { toolCalls: [askUserQuestionToolCall(provider, 'color-question', questions)] },
+      { text: 'The choice was recorded.' },
+    )
     await page.reload()
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await sendMessage(page, modelScript.prompt('Ask me to pick a color.'))
@@ -125,10 +129,17 @@ test.describe('provider tool rendering', () => {
     await expect(banner.getByRole('region', { name: 'Green preview' }).locator('pre code')).toContainText('const color = "green"')
     await expect(banner.getByRole('region', { name: 'Green preview' })).toBeInViewport()
     expect(await banner.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
-    const option = banner.getByTestId('question-option-Blue')
+    const option = banner.getByTestId('question-option-Green')
     await option.click()
     await expect(option.getByRole('radio')).toBeChecked()
     await expect(page.getByTestId('control-submit-btn')).toBeEnabled()
+    await page.getByTestId('control-submit-btn').click()
+    const status = await modelScript.waitForSteps(2)
+    await waitForAgentIdle(page)
+    const answerRequest = status.requests.find(request => request.stepIndex === 1)
+    const answer = nativeToolResult(answerRequest, 'color-question')
+    expect(answer).toContain('Green')
+    expect(answer).not.toContain('Blue')
   })
 
   for (const answerKind of ['custom', 'selected']) {
@@ -166,6 +177,12 @@ test.describe('provider tool rendering', () => {
         await banner.getByTestId('question-option-Beta').click()
       }
       await page.getByTestId('control-submit-btn').click()
+      const status = await modelScript.waitForSteps(2)
+      await waitForAgentIdle(page)
+      const answerRequest = status.requests.find(request => request.stepIndex === 1)
+      const answer = nativeToolResult(answerRequest, 'style-question')
+      expect(answer).toContain(answerKind === 'custom' ? 'A custom style' : 'Beta')
+      expect(answer).not.toContain('Alpha')
       const chat = page.locator('[data-chat-scroll-container="true"]').filter({ visible: true })
       const result = chat.locator('[data-testid="message-bubble"][data-role="agent"]').filter({ hasText: 'User has answered your questions:' }).filter({ visible: true })
       await expect(result).toContainText(answerKind === 'custom' ? 'A custom style' : 'Beta')

@@ -76,6 +76,41 @@ describe('zcodeToolCall bodies', () => {
     expect(JSON.stringify(call.request)).toContain('renderer')
   })
 
+  it('keeps native Node image bytes in the MCP result', () => {
+    const text = '[Attached image/png: MCP image]\n\nnode-image-probe.png'
+    const call = presentationOf('mcp__node_repl__js', { code: 'nodeRepl.emitImage(...)' }, {
+      success: true,
+      content: text,
+      display: { kind: 'node_repl_images', images: [{ base64: 'AQID', mimeType: 'image/png' }] },
+    })
+    expect(call.kind).toBe('mcp')
+    const content = call.kind === 'mcp' && call.result && 'content' in call.result ? call.result.content : []
+    expect(content).toEqual([
+      { type: 'text', text },
+      { type: 'image', source: { mimeType: 'image/png', data: 'AQID' } },
+    ])
+  })
+
+  it('keeps text when a native Node result has no image', () => {
+    const call = presentationOf('mcp__node_repl__js', { code: 'nodeRepl.write("done")' }, {
+      success: true,
+      content: 'done',
+      display: { kind: 'node_repl_images', images: [] },
+    })
+    expect(call.kind).toBe('mcp')
+    expect(call.kind === 'mcp' && call.result && 'content' in call.result ? call.result.content : []).toEqual([{ type: 'text', text: 'done' }])
+  })
+
+  it('keeps a failed native Node result as an error', () => {
+    const call = presentationOf('mcp__node_repl__js', { code: 'throw Error("failed")' }, {
+      success: false,
+      content: 'The Node tool failed.',
+      display: { kind: 'node_repl_images', images: [{ base64: 'AQID', mimeType: 'image/png' }] },
+    })
+    expect(call.status).toBe('failed')
+    expect(call.result).toEqual({ failure: true, text: 'The Node tool failed.' })
+  })
+
   it('maps a task-stop display to the shared status result', () => {
     const call = presentationOf(ZCODE_TOOL.TaskOutput, {}, {
       success: true,

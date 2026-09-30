@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -70,14 +71,27 @@ func (a *Agent) restoreResumedSession(ctx context.Context, sessionID string) {
 // The goal goes with it too, because MiMo holds a goal per session.
 func (a *Agent) ClearContext() (string, error) {
 	a.Mu.Lock()
-	stopped, oldID, active := a.StoppedLocked(), a.sessionID, a.turnActive
-	a.Mu.Unlock()
+	stopped, oldID := a.StoppedLocked(), a.sessionID
 	if stopped {
+		a.Mu.Unlock()
 		return "", fmt.Errorf("agent is stopped")
 	}
+	if a.sessionSwitching {
+		a.Mu.Unlock()
+		return "", agent.ErrAgentBusy
+	}
+	a.sessionSwitching = true
+	// A compaction route or follow-up HTTP call can still own the old session
+	// after its visible turn ends. Abort it when the session changes.
+	active := a.turnActive || a.inputSends[oldID] > 0 || a.compactionAck != nil || a.manualCompactionID != "" || a.manualCompactionReady
+	a.Mu.Unlock()
 	ctx := a.Context()
 	session, err := a.rpc.createSession(ctx)
 	if err != nil {
+		a.Mu.Lock()
+		a.sessionSwitching = false
+		a.Mu.Unlock()
+		a.PublishTurnActive()
 		return "", fmt.Errorf("create a MiMo session: %w", err)
 	}
 	if oldID != "" && active {
@@ -94,6 +108,7 @@ func (a *Agent) ClearContext() (string, error) {
 	a.Mu.Lock()
 	held := a.takeUnreportedFailureLocked()
 	a.sessionID = session.ID
+	a.sessionSwitching = false
 	a.turnActive = false
 	a.interruptRequested = false
 	a.lastTurnFailed = false
@@ -102,6 +117,11 @@ func (a *Agent) ClearContext() (string, error) {
 	clear(a.parts)
 	clear(a.tools)
 	clear(a.compactions)
+	a.compactionAck = nil
+	a.manualCompactionID = ""
+	a.manualCompactionReady = false
+	a.manualFollowupSending = false
+	a.manualFollowupBusy = false
 	clear(a.buffers)
 	a.usage = mimoUsage{}
 	a.goal = mimoGoalState{}
@@ -111,8 +131,6 @@ func (a *Agent) ClearContext() (string, error) {
 		// the old session's events no longer reach the agent.
 		a.persistFailureRow(held)
 	}
-	a.dispatchMu.Unlock()
-
 	a.spawnPrompts.Clear()
 	a.ResetCumulativeOutput()
 	a.sink.ReportProgress(agent.ResetProgress())
@@ -120,6 +138,7 @@ func (a *Agent) ClearContext() (string, error) {
 	a.sink.ClearGoal(false)
 	a.PublishTurnActive()
 	a.sink.UpdateSessionID(session.ID)
+	a.dispatchMu.Unlock()
 	return session.ID, nil
 }
 
@@ -155,6 +174,10 @@ func (a *Agent) CompactContext() error {
 		a.Mu.Unlock()
 		return fmt.Errorf("agent is stopped")
 	}
+	if a.sessionSwitching {
+		a.Mu.Unlock()
+		return agent.ErrAgentBusy
+	}
 	sessionID := a.sessionID
 	model, ok := splitModelID(a.model)
 	if !ok {
@@ -164,6 +187,14 @@ func (a *Agent) CompactContext() error {
 	if a.compactionAck != nil {
 		a.Mu.Unlock()
 		return fmt.Errorf("a context compaction is already pending")
+	}
+	if a.manualCompactionID != "" {
+		a.Mu.Unlock()
+		return fmt.Errorf("a context compaction is already pending")
+	}
+	if a.manualCompactionReady {
+		a.Mu.Unlock()
+		return fmt.Errorf("MiMo cannot compact again before the next user message")
 	}
 	ack := make(chan struct{})
 	a.compactionAck = ack
@@ -186,6 +217,7 @@ func (a *Agent) CompactContext() error {
 		if err != nil {
 			slog.Warn("mimo compaction failed", "agent_id", a.AgentID(), "error", err)
 		}
+		a.settleManualCompactionRoute(sessionID, err)
 		result <- err
 	}()
 	timer := a.clock.NewTimer(mimoCompactionStartWait, mimoCompactionStartTimerTag)
@@ -198,6 +230,8 @@ func (a *Agent) CompactContext() error {
 		if err != nil {
 			return classifyDeliveryError("compaction", err)
 		}
+		// A route that finished before its start part owns no later native turn.
+		a.PublishTurnActive()
 		return nil
 	case <-timer.C:
 		release()
@@ -206,4 +240,65 @@ func (a *Agent) CompactContext() error {
 		release()
 		return a.ProcessExitError()
 	}
+}
+
+// settleManualCompactionRoute resolves a native route that answered before its
+// completed part reached the event stream. The session store tells whether the
+// summary exists; the route's success alone does not.
+func (a *Agent) settleManualCompactionRoute(sessionID string, routeErr error) {
+	a.Mu.Lock()
+	partID := a.manualCompactionID
+	pending := a.sessionID == sessionID && partID != ""
+	a.Mu.Unlock()
+	if !pending {
+		return
+	}
+	var readErr error
+	var summarized bool
+	if routeErr == nil {
+		var messages []mimoMessageWithParts
+		messages, readErr = a.rpc.messages(a.Context(), sessionID)
+		if readErr == nil {
+			for _, message := range messages {
+				for _, part := range message.Parts {
+					if part.ID == partID && part.Type == contracts.MiMoPartTypeCompaction && compactionEndedIn(part) {
+						summarized = true
+					}
+				}
+			}
+		}
+	}
+	a.dispatchMu.Lock()
+	defer a.dispatchMu.Unlock()
+	a.Mu.Lock()
+	if a.sessionID != sessionID || a.manualCompactionID != partID {
+		a.Mu.Unlock()
+		return
+	}
+	held := a.takeUnreportedFailureLocked()
+	a.manualCompactionID = ""
+	a.manualCompactionReady = routeErr == nil && readErr == nil && summarized && held == nil
+	a.turnActive = false
+	a.Mu.Unlock()
+	if held != nil {
+		a.persistFailureRow(held)
+	} else {
+		kind, message := contracts.NotificationTypeAgentStatus, "MiMo had no context to compact"
+		switch {
+		case routeErr != nil:
+			kind, message = contracts.NotificationTypeAgentError, "MiMo could not compact the context: "+routeErr.Error()
+		case readErr != nil:
+			kind, message = contracts.NotificationTypeAgentError, "MiMo could not read the compacted context: "+readErr.Error()
+		case summarized:
+			message = ""
+		}
+		if message != "" {
+			a.sink.PersistLeapMuxNotification(map[string]any{
+				contracts.NotificationFieldType: kind,
+				contracts.NotificationFieldText: message,
+			})
+		}
+	}
+	a.sink.ReportProgress(agent.ResetModelProgress())
+	a.PublishTurnActive()
 }

@@ -39,7 +39,7 @@ zcodeTest.describe('zcode subagent lifecycle', () => {
         // arguments quote the child's prompt, so a body matcher answers the root
         // with the CHILD's line and the queued root answer is never consumed.
         when: { user: 'printf zcode-tool-ok' },
-        respond: { text: 'ZCODE_CHILD_PONG' },
+        respond: { text: 'ZCODE_CHILD_PONG', gate: 'zcode-child-final' },
       },
     )
     await modelScript.queue({
@@ -50,13 +50,20 @@ zcodeTest.describe('zcode subagent lifecycle', () => {
     })
     await modelScript.queue({ text: 'ZCODE_ROOT_DONE' })
     await sendMessage(page, modelScript.prompt('Spawn one subagent to run the shell probe, then report what it said.'))
+    await modelScript.waitForGate('zcode-child-final')
+    const row = await requireRegistryRow(page)
+    try {
+      await expect.poll(async () => await row.getAttribute('data-child-agent-id')).not.toBe('')
+      await openChildTabFromRow(page, row)
+      await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'printf zcode-tool-ok' }).first()).toBeVisible()
+      await expect(row).not.toHaveAttribute('data-status', 'completed')
+    }
+    finally {
+      await modelScript.releaseGate('zcode-child-final')
+    }
     await modelScript.waitForSteps(2)
     await waitForAgentIdle(page, 180_000)
-
-    const row = await requireRegistryRow(page)
     await expectRowBecomesFinal(page, row)
-    await expect.poll(async () => await row.getAttribute('data-child-agent-id')).not.toBe('')
-    await openChildTabFromRow(page, row)
 
     await expect(userBubbles(page).filter({ hasText: 'ZCODE_CHILD_PONG' })).toBeVisible()
     await expect(page.locator('[data-testid="message-bubble"]:visible')

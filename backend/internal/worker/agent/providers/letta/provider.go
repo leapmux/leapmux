@@ -3,6 +3,7 @@ package letta
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -36,9 +37,15 @@ func (lettaProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 	return lettaResolveControlResponse(ctx)
 }
 
-// ValidateAttachment accepts text and images.
+// ValidateAttachment accepts text and nonempty images of supported types.
 func (lettaProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
-	return providerkit.RejectPDFAndBinaryAttachment(lettaAttachmentLabel, attachment)
+	if err := providerkit.RejectPDFAndBinaryAttachment(lettaAttachmentLabel, attachment); err != nil {
+		return err
+	}
+	if attachment.Kind == agent.AttachmentKindImage && len(attachment.Data) == 0 {
+		return fmt.Errorf("letta code cannot send an empty image attachment: %s", attachment.Filename)
+	}
+	return nil
 }
 
 // SupportsChildSteering is false: a subagent's tab is read-only on the wire

@@ -20,4 +20,12 @@ describe('reasonix provider', () => {
     expect(plugin?.configuration?.triggerModeGroupKey).toBe('permissionMode')
     expect(plugin?.controls?.permissionPresets?.bypass?.sets).toEqual({ tool_approval: 'yolo' })
   })
+
+  it('reads the native MCP form request', () => {
+    const schema = { type: 'object', properties: { count: { type: 'integer', minimum: 0 } } }
+    expect(plugin?.controls?.elicitation?.({
+      method: '_reasonix.io/mcp/request_interaction',
+      params: { sessionId: 'session-1', promptId: 'prompt-1', server: 'form_probe', mode: 'form', message: 'Choose a count.', requestedSchema: schema },
+    })).toEqual({ mode: 'form', message: 'Choose a count.', server: 'form_probe', schema, url: '', title: '', description: '' })
+  })
 })

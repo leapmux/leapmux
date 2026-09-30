@@ -118,11 +118,10 @@ func junieGoalStatus(word string) agent.GoalStatus {
 	}
 }
 
-// handleGoalMeta is the SessionMetadataHandler for Junie's goal reports. It
-// reads `_meta.goal` from a `session_info_update` and folds it into the goal
-// sink. It returns true for an update that carried a goal key, so the base
-// neither dispatches nor persists the update: the fold replaces the verbatim
-// row that the unknown-update default would write.
+// handleGoalMeta reads `_meta.goal` from a `session_info_update` and folds it
+// into the goal sink. handleSessionMetadata calls it before it reads a child
+// update. A goal update returns true, so the base neither dispatches nor
+// persists a verbatim row for it.
 func (a *Agent) handleGoalMeta(updateType string, metadata map[string]json.RawMessage, _ json.RawMessage) bool {
 	if updateType != contracts.ACPUpdateSessionInfoUpdate {
 		return false

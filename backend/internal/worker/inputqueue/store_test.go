@@ -8,11 +8,12 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"modernc.org/sqlite"
+	sqlitelib "modernc.org/sqlite/lib"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
@@ -585,9 +586,8 @@ func TestStoreReservesPositiveSequenceAndCommitsAfterAcceptance(t *testing.T) {
 	assert.JSONEq(t, `[{"span_id":"tool-1"}]`, spanLines)
 }
 
-func TestStoreAcceptRetriesAfterAConcurrentWriterInvalidatesItsSnapshot(t *testing.T) {
+func TestStoreAcceptTakesWriteIntentBeforeItsReads(t *testing.T) {
 	t.Parallel()
-
 	database, store := newStoreFixture(t)
 	ctx := t.Context()
 	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
@@ -595,36 +595,113 @@ func TestStoreAcceptRetriesAfterAConcurrentWriterInvalidatesItsSnapshot(t *testi
 	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
 	require.NoError(t, err)
 	require.NotNil(t, prepared)
-
-	readComplete := make(chan struct{})
-	allowWrite := make(chan struct{})
-	var once sync.Once
-	store.beforeAcceptWrite = func() {
-		once.Do(func() {
-			close(readComplete)
-			<-allowWrite
-		})
-	}
-	type acceptResult struct {
-		transcript AcceptedTranscript
-		err        error
-	}
-	accepted := make(chan acceptResult, 1)
-	go func() {
-		transcript, _, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
-		accepted <- acceptResult{transcript: transcript, err: err}
-	}()
-	<-readComplete
-	_, err = database.ExecContext(ctx, `UPDATE agents SET message_seq_hwm = message_seq_hwm + 1 WHERE id = ?`, "agent-1")
+	competingConn, err := database.Conn(ctx)
 	require.NoError(t, err)
-	close(allowWrite)
+	t.Cleanup(func() { require.NoError(t, competingConn.Close()) })
+	_, err = competingConn.ExecContext(ctx, `PRAGMA busy_timeout=0`)
+	require.NoError(t, err)
 
-	result := <-accepted
-	require.NoError(t, result.err)
-	assert.Equal(t, prepared.ReservedSeq, result.transcript.Seq)
+	var competingErrors []error
+	store.beforeAcceptWrite = func() {
+		_, writeErr := competingConn.ExecContext(ctx, `UPDATE agents SET message_seq_hwm = message_seq_hwm + 1 WHERE id = ?`, "agent-1")
+		competingErrors = append(competingErrors, writeErr)
+	}
+	transcript, snapshot, acceptErr := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+	require.NotEmpty(t, competingErrors, "a second writer must try to enter before Accept writes")
+	for _, competingErr := range competingErrors {
+		var sqliteErr *sqlite.Error
+		require.ErrorAs(t, competingErr, &sqliteErr, "Accept must own write intent before it reads")
+		assert.Equal(t, sqlitelib.SQLITE_BUSY, sqliteErr.Code())
+	}
+	require.NoError(t, acceptErr)
+	assert.Equal(t, prepared.ReservedSeq, transcript.Seq)
+	assert.Empty(t, snapshot.Items)
 	var count int
 	require.NoError(t, database.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE id = ?`, "one").Scan(&count))
 	assert.Equal(t, 1, count)
+}
+
+func TestStoreAcceptRollsBackWhenItsContextIsCanceled(t *testing.T) {
+	t.Parallel()
+	database, store := newStoreFixture(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	store.beforeAcceptWrite = cancel
+
+	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, database.Stats().InUse, "Accept must release its transaction connection")
+	var count int
+	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM messages WHERE id = ?`, "one").Scan(&count))
+	assert.Zero(t, count)
+}
+
+func TestStoreAcceptRollsBackAfterADeferredCommitFailure(t *testing.T) {
+	t.Parallel()
+	database, store := newStoreFixture(t)
+	ctx := t.Context()
+	_, err := database.ExecContext(ctx, `CREATE TABLE accept_commit_guard (parent_id TEXT REFERENCES agents(id) DEFERRABLE INITIALLY DEFERRED)`)
+	require.NoError(t, err)
+	_, err = database.ExecContext(ctx, `CREATE TRIGGER accept_commit_failure AFTER INSERT ON messages BEGIN INSERT INTO accept_commit_guard(parent_id) VALUES ('missing-parent'); END`)
+	require.NoError(t, err)
+	_, err = store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+
+	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+	require.ErrorContains(t, err, "FOREIGN KEY constraint failed")
+	assert.Zero(t, database.Stats().InUse, "Accept must release its transaction connection")
+	var transcriptCount, queuedCount int
+	require.NoError(t, database.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE id = ?`, "one").Scan(&transcriptCount))
+	require.NoError(t, database.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_input_queue_items WHERE id = ? AND state = ?`, "one", leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING).Scan(&queuedCount))
+	assert.Zero(t, transcriptCount)
+	assert.Equal(t, 1, queuedCount, "a failed commit leaves the prepared input for uncertain-delivery handling")
+}
+
+func TestStoreAcceptRejectsAChangedReservedSequence(t *testing.T) {
+	t.Parallel()
+	database, store := newStoreFixture(t)
+	ctx := t.Context()
+	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	prepared.ReservedSeq++
+
+	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+	require.ErrorIs(t, err, ErrConflict)
+	assert.Zero(t, database.Stats().InUse)
+	var transcriptCount int
+	require.NoError(t, database.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE id = ?`, "one").Scan(&transcriptCount))
+	assert.Zero(t, transcriptCount)
+}
+
+func TestStoreAcceptRejectsAMissingPreparedItem(t *testing.T) {
+	t.Parallel()
+	database, store := newStoreFixture(t)
+	ctx := t.Context()
+	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	_, err = database.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`, "agent-1", "one")
+	require.NoError(t, err)
+
+	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+	require.ErrorIs(t, err, ErrConflict)
+	assert.Zero(t, database.Stats().InUse)
+	var transcriptCount int
+	require.NoError(t, database.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE id = ?`, "one").Scan(&transcriptCount))
+	assert.Zero(t, transcriptCount)
 }
 
 func TestStoreRecoveryDistinguishesUncertainAndInterrupted(t *testing.T) {

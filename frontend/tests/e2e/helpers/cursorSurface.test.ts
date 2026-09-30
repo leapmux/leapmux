@@ -4,10 +4,12 @@ import { createServer } from 'node:http'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   answerCursorStartup,
+  CURSOR_GENERATE_IMAGE_TOOL,
+  CURSOR_MCP_TOOL,
   CURSOR_MOCK_MODELS,
   CURSOR_RUN_PATH,
   CURSOR_TASK_TOOL,
-  cursorTaskCallsFrom,
+  cursorToolCallsFrom,
   isCursorPath,
   serveCursorRun,
 } from './cursorSurface'
@@ -25,6 +27,7 @@ const FIELD_INTERACTION_UPDATE = 1
 const FIELD_TEXT_DELTA = 1
 const FIELD_TOOL_CALL_STARTED = 2
 const FIELD_TOOL_CALL_COMPLETED = 3
+const FIELD_THINKING_DELTA = 4
 const FIELD_TURN_ENDED = 14
 /** `AgentServerMessage.kv_server_message`, which carries the transcript blobs. */
 const FIELD_KV_SERVER_MESSAGE = 4
@@ -70,9 +73,11 @@ function updateKinds(body: Buffer): string[] {
     }
     const inner = readLengthDelimitedFields(update)
     if (inner.has(FIELD_TOOL_CALL_STARTED))
-      kinds.push('taskStarted')
+      kinds.push('toolStarted')
     else if (inner.has(FIELD_TOOL_CALL_COMPLETED))
-      kinds.push('taskCompleted')
+      kinds.push('toolCompleted')
+    else if (inner.has(FIELD_THINKING_DELTA))
+      kinds.push('thinkingDelta')
     else if (inner.has(FIELD_TEXT_DELTA))
       kinds.push('textDelta')
     else if (inner.has(FIELD_TURN_ENDED))
@@ -91,7 +96,7 @@ afterEach(async () => {
 })
 
 /** A server that answers `/agent.v1.AgentService/Run` with one scripted turn. */
-async function runStream(answer: Parameters<typeof serveCursorRun>[2]['answer']): Promise<string> {
+async function runStreamBody(answer: Parameters<typeof serveCursorRun>[2]['answer']): Promise<Buffer> {
   const server = createServer((request, response) => {
     void serveCursorRun(request, response, { answer })
   })
@@ -106,7 +111,11 @@ async function runStream(answer: Parameters<typeof serveCursorRun>[2]['answer'])
     headers: { 'content-type': 'application/connect+proto' },
     body: Buffer.from(connectFrame(clientMessageWithPrompt('Say the mock word.'))),
   })
-  return updateKinds(Buffer.from(await response.arrayBuffer())).join(',')
+  return Buffer.from(await response.arrayBuffer())
+}
+
+async function runStream(answer: Parameters<typeof serveCursorRun>[2]['answer']): Promise<string> {
+  return updateKinds(await runStreamBody(answer)).join(',')
 }
 
 describe('isCursorPath', () => {
@@ -157,25 +166,113 @@ describe('CURSOR_MOCK_MODELS', () => {
   })
 })
 
-describe('cursorTaskCallsFrom', () => {
+describe('cursorToolCallsFrom', () => {
   it('answers an empty list for an absent or empty tool-call list', () => {
-    expect(cursorTaskCallsFrom(undefined)).toEqual([])
-    expect(cursorTaskCallsFrom([])).toEqual([])
+    expect(cursorToolCallsFrom(undefined)).toEqual([])
+    expect(cursorToolCallsFrom([])).toEqual([])
   })
 
-  it('keeps only the Task calls', () => {
-    const calls = cursorTaskCallsFrom([
-      { id: 'a', name: 'Bash', arguments: { command: 'echo hi' } },
+  it('keeps a native Task call', () => {
+    const calls = cursorToolCallsFrom([
       { id: 'b', name: CURSOR_TASK_TOOL, arguments: { description: 'Probe', prompt: 'Go.', report: 'PONG' } },
     ])
-    expect(calls).toEqual([{ callID: 'b', description: 'Probe', prompt: 'Go.', report: 'PONG' }])
+    expect(calls).toEqual([{ kind: 'task', call: { callID: 'b', description: 'Probe', prompt: 'Go.' }, report: 'PONG' }])
+  })
+
+  it('refuses an unknown tool instead of silently dropping a scripted call', () => {
+    expect(() => cursorToolCallsFrom([{ id: 'a', name: 'Bash', arguments: { command: 'echo hi' } }]))
+      .toThrow('no native encoder for Bash')
   })
 
   it('substitutes an empty string for each absent argument', () => {
     // The encoder writes every field, so an undefined would reach the wire as
     // the text "undefined" rather than as an absent value.
-    expect(cursorTaskCallsFrom([{ id: 'b', name: CURSOR_TASK_TOOL }]))
-      .toEqual([{ callID: 'b', description: '', prompt: '', report: '' }])
+    expect(cursorToolCallsFrom([{ id: 'b', name: CURSOR_TASK_TOOL }]))
+      .toEqual([{ kind: 'task', call: { callID: 'b', description: '', prompt: '' }, report: '' }])
+  })
+
+  it('keeps Todo calls in order and gives each row a stable native id', () => {
+    expect(cursorToolCallsFrom([
+      { id: 'todo-1', name: 'updateTodos', arguments: { todos: [
+        { content: 'Inspect', status: 'TODO_STATUS_COMPLETED' },
+        { content: 'Report', status: 'TODO_STATUS_IN_PROGRESS' },
+      ] } },
+      { id: 'task-2', name: CURSOR_TASK_TOOL, arguments: { description: 'Review', prompt: 'Check.' } },
+    ])).toEqual([
+      { kind: 'todo', call: { callID: 'todo-1', merge: false, todos: [
+        { id: '1', content: 'Inspect', status: 'completed' },
+        { id: '2', content: 'Report', status: 'in_progress' },
+      ] } },
+      { kind: 'task', call: { callID: 'task-2', description: 'Review', prompt: 'Check.' }, report: '' },
+    ])
+  })
+
+  it('refuses malformed Todo rows and unknown status words', () => {
+    expect(() => cursorToolCallsFrom([{ id: 'x', name: 'updateTodos', arguments: {} }])).toThrow('todos list')
+    expect(() => cursorToolCallsFrom([{ id: 'x', name: 'updateTodos', arguments: { todos: [{ status: 'TODO_STATUS_PENDING' }] } }])).toThrow('needs content')
+    expect(() => cursorToolCallsFrom([{ id: 'x', name: 'updateTodos', arguments: { todos: [{ content: 'Inspect', status: 'wrong' }] } }])).toThrow('unsupported status')
+  })
+
+  it('keeps a native GenerateImage call and its image data', () => {
+    expect(cursorToolCallsFrom([{
+      id: 'image-1',
+      name: CURSOR_GENERATE_IMAGE_TOOL,
+      arguments: { description: 'A square', filePath: '/work/square.png', imageData: 'cG5n' },
+    }])).toEqual([{
+      kind: 'generateImage',
+      call: { callID: 'image-1', description: 'A square', filePath: '/work/square.png', imageData: 'cG5n' },
+    }])
+  })
+
+  it('refuses an incomplete GenerateImage result', () => {
+    expect(() => cursorToolCallsFrom([{
+      id: 'image-1',
+      name: CURSOR_GENERATE_IMAGE_TOOL,
+      arguments: { description: 'A square', filePath: '/work/square.png' },
+    }])).toThrow('needs a description, file path, and image data')
+  })
+
+  it('reads native question, plan, and web-fetch queries', () => {
+    expect(cursorToolCallsFrom([
+      { id: 'q', name: 'askQuestion', arguments: { title: 'Color', questions: [
+        { id: 'question-1', prompt: 'Which color?', options: [{ id: 'blue', label: 'Blue' }], allowMultiple: false },
+      ] } },
+      { id: 'p', name: 'createPlan', arguments: { name: 'Review', overview: 'No edits', plan: '# Plan' } },
+      { id: 'f', name: 'webFetch', arguments: { url: 'https://example.invalid/probe' } },
+    ])).toEqual([
+      { kind: 'question', callID: 'q', title: 'Color', questions: [
+        { id: 'question-1', prompt: 'Which color?', options: [{ id: 'blue', label: 'Blue' }], allowMultiple: false },
+      ] },
+      { kind: 'plan', callID: 'p', name: 'Review', overview: 'No edits', plan: '# Plan' },
+      { kind: 'webFetch', callID: 'f', url: 'https://example.invalid/probe' },
+    ])
+  })
+
+  it('refuses malformed native interaction queries', () => {
+    expect(() => cursorToolCallsFrom([{ id: 'q', name: 'askQuestion', arguments: { title: 'Color', questions: [] } }]))
+      .toThrow('needs a title and questions')
+    expect(() => cursorToolCallsFrom([{ id: 'p', name: 'createPlan', arguments: { name: 'Review' } }]))
+      .toThrow('needs a name, overview, and plan')
+    expect(() => cursorToolCallsFrom([{ id: 'f', name: 'webFetch', arguments: { url: 'file:///work/secret' } }]))
+      .toThrow('needs an HTTP URL')
+  })
+
+  it('keeps a native local MCP call and its structured input', () => {
+    expect(cursorToolCallsFrom([{
+      id: 'mcp-1',
+      name: CURSOR_MCP_TOOL,
+      arguments: { server: 'form_probe', tool: 'echo', input: { count: 0, enabled: false } },
+    }])).toEqual([{
+      kind: 'mcp',
+      call: { callID: 'mcp-1', server: 'form_probe', tool: 'echo', input: { count: 0, enabled: false } },
+    }])
+  })
+
+  it('refuses a local MCP call with no server or object input', () => {
+    expect(() => cursorToolCallsFrom([{ id: 'mcp-1', name: CURSOR_MCP_TOOL, arguments: { server: '', tool: 'ask', input: {} } }]))
+      .toThrow('needs a server, tool, and object input')
+    expect(() => cursorToolCallsFrom([{ id: 'mcp-1', name: CURSOR_MCP_TOOL, arguments: { server: 'form_probe', tool: 'ask', input: [] } }]))
+      .toThrow('needs a server, tool, and object input')
   })
 })
 
@@ -219,9 +316,21 @@ describe('answerCursorStartup', () => {
 })
 
 describe('serveCursorRun', () => {
+  it('writes a native transcript blob for a plain text turn so session/load can reopen it', async () => {
+    const body = await runStreamBody(async () => ({ text: 'Plain answer survives the native session.' }))
+    const records = takeConnectFrames(new Uint8Array(body)).frames.flatMap((frame) => {
+      const data = descend(frame, [FIELD_KV_SERVER_MESSAGE, 3, 2])
+      return data === undefined ? [] : [JSON.parse(new TextDecoder().decode(data))]
+    })
+    expect(records).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'user', content: [{ type: 'text', text: 'Say the mock word.' }] }),
+      expect.objectContaining({ role: 'assistant', content: [{ type: 'text', text: 'Plain answer survives the native session.' }] }),
+    ]))
+  })
+
   it('sends the text and ends the turn when the answer holds no task', async () => {
     expect(await runStream(async () => ({ text: 'Delegated and done.' })))
-      .toBe('textDelta,turnEnded,endOfStream')
+      .toBe('setBlob,setBlob,textDelta,turnEnded,endOfStream')
   })
 
   it('opens the row, closes it, writes the transcript, then speaks', async () => {
@@ -229,15 +338,22 @@ describe('serveCursorRun', () => {
     // child's report survives -- the agent reads them out of Cursor's own store.
     expect(await runStream(async () => ({
       text: 'Delegated and done.',
-      taskCalls: [{ callID: 'task-1', description: 'Probe', prompt: 'Go.', report: 'PONG' }],
-    }))).toBe('taskStarted,taskCompleted,setBlob,setBlob,textDelta,turnEnded,endOfStream')
+      toolCalls: [{ kind: 'task', call: { callID: 'task-1', description: 'Probe', prompt: 'Go.' }, report: 'PONG' }],
+    }))).toBe('setBlob,toolStarted,toolCompleted,setBlob,setBlob,setBlob,textDelta,turnEnded,endOfStream')
+  })
+
+  it('writes a Todo snapshot before its answer', async () => {
+    expect(await runStream(async () => ({
+      text: 'The list is ready.',
+      toolCalls: [{ kind: 'todo', call: { callID: 'todo-1', merge: false, todos: [{ id: '1', content: 'Inspect', status: 'pending' }] } }],
+    }))).toBe('setBlob,toolStarted,toolCompleted,setBlob,textDelta,turnEnded,endOfStream')
   })
 
   it('ends the turn without a delta when the answer holds no text', async () => {
     // An empty string is not a delta either: a zero-length text update reaches
     // the transcript as an empty assistant message rather than as no message.
-    expect(await runStream(async () => ({ text: '' }))).toBe('turnEnded,endOfStream')
-    expect(await runStream(async () => undefined)).toBe('turnEnded,endOfStream')
+    expect(await runStream(async () => ({ text: '' }))).toBe('setBlob,turnEnded,endOfStream')
+    expect(await runStream(async () => undefined)).toBe('setBlob,turnEnded,endOfStream')
   })
 
   it('reads the prompt out of the frame that opens the turn', async () => {
@@ -277,8 +393,23 @@ describe('serveCursorRun', () => {
       headers: { 'content-type': 'application/connect+proto' },
       body,
     })
-    expect(updateKinds(Buffer.from(await response.arrayBuffer())).join(',')).toBe('textDelta,turnEnded,endOfStream')
+    expect(updateKinds(Buffer.from(await response.arrayBuffer())).join(','))
+      .toBe('setBlob,setBlob,textDelta,turnEnded,endOfStream')
     expect(calls).toEqual(['First.'])
+  })
+
+  it('passes the complete Run frame to the answer handler', async () => {
+    let captured: Uint8Array | undefined
+    await runStream(async (_prompt, requestFrame) => {
+      captured = requestFrame
+      return { text: 'ok' }
+    })
+    expect(captured).toEqual(clientMessageWithPrompt('Say the mock word.'))
+  })
+
+  it('streams native thinking before the answer', async () => {
+    const kinds = await runStream(async () => ({ reasoning: 'I checked.', text: 'Done.' }))
+    expect(kinds).toBe('setBlob,setBlob,thinkingDelta,textDelta,turnEnded,endOfStream')
   })
 
   it('closes the stream cleanly when the client opens no turn', async () => {
@@ -306,7 +437,7 @@ describe('serveCursorRun', () => {
     const server = createServer((request, response) => {
       void serveCursorRun(request, response, {
         answer: async () => ({
-          taskCalls: [{ callID: 'task-1', description: 'Probe', prompt: 'Go.', report: 'PONG_FROM_CHILD' }],
+          toolCalls: [{ kind: 'task', call: { callID: 'task-1', description: 'Probe', prompt: 'Go.' }, report: 'PONG_FROM_CHILD' }],
         }),
       })
     })

@@ -1,7 +1,10 @@
 import type { ProviderPlugin } from '../capabilities'
+import { DROID_MODE } from '~/generated/contracts/droid-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { buildPlanMode } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { classifyDroidMessage } from './classification'
+import { droidCompactionBoundary } from './extractors/notification'
 import { droidResultDivider } from './extractors/resultDivider'
 import { droidExtractRow } from './extractors/row'
 import { droidControls } from './pluginControls'
@@ -16,6 +19,9 @@ const droidPlugin: ProviderPlugin = {
     relatedMessages: droidRelatedMessages,
   },
   controls: droidControls,
+  session: {
+    compactionBoundaryFromMessage: droidCompactionBoundary,
+  },
   configuration: {
     // The same policy as the worker's ValidateAttachment.
     attachments: {
@@ -24,6 +30,8 @@ const droidPlugin: ProviderPlugin = {
       pdf: false,
       binary: false,
     },
+    planMode: buildPlanMode('permissionMode', DROID_MODE.Spec, DROID_MODE.Default),
+    triggerModeGroupKey: 'permissionMode',
   },
 }
 

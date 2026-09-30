@@ -8,9 +8,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -32,6 +34,10 @@ func TestQoderPlanModeControl(t *testing.T) {
 	assert.Equal(t, agent.PlanModeControlEnter, p.PlanModeControl("EnterPlanMode"))
 	assert.Equal(t, agent.PlanModeControlExit, p.PlanModeControl("ExitPlanMode"))
 	assert.Equal(t, agent.PlanModeControlNone, p.PlanModeControl("Bash"))
+	assert.Equal(t, contracts.QoderModePlan, p.PlanModePermissionMode(agent.PlanModeControlEnter))
+	assert.Equal(t, contracts.QoderModeAcceptEdits, p.PlanModePermissionMode(agent.PlanModeControlExit))
+	assert.Equal(t, map[string]string{agent.OptionIDPermissionMode: contracts.QoderModeAuto}, p.PlanApprovalOptions(contracts.QoderModeAuto))
+	assert.Equal(t, map[string]string{agent.OptionIDPermissionMode: contracts.QoderModeAcceptEdits}, p.PlanApprovalOptions(""))
 }
 
 func TestQoderTurnEndToolUses(t *testing.T) {
@@ -72,7 +78,7 @@ func TestQoderReadsItsSessionStore(t *testing.T) {
 	t.Parallel()
 	agenttest.RequireReadsSessionStore(t, qoderProvider{}, func(t *testing.T, home, dir string) string {
 		projects := filepath.Join(home, ".qoder", "projects")
-		slug := mangleQoderPath(dir)
+		slug := qoderProjectSlug(dir)
 		projectDir := filepath.Join(projects, slug)
 		require.NoError(t, os.MkdirAll(projectDir, 0o755))
 		handle := "3c33fac3-77c3-4511-8aba-502ed720fdb8"
@@ -89,19 +95,28 @@ func TestQoderReadsItsSessionStore(t *testing.T) {
 // newOfflineAgent builds an agent with no process, for the suites that drive
 // only the turn flag and the input-session guard.
 func newOfflineAgent(t *testing.T, sink *agenttest.Sink) *Agent {
+	return newOfflineAgentWithRuntime(t, sink, nil, nil)
+}
+
+func newOfflineAgentWithRuntime(t *testing.T, sink *agenttest.Sink, clock quartz.Clock, processDone chan struct{}) *Agent {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	return &Agent{
+	a := &Agent{
 		Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{
 			AgentID: "test-agent", ProviderName: "qoder", Ctx: ctx, Cancel: cancel,
 			Stdin: agenttest.NopStdin(io.Discard),
+			Clock: clock, ProcessDone: processDone,
 		}),
 		sink:           agent.NewModelProgressResetSink(agent.NewProviderServices(sink)),
 		sessionID:      "session-1",
 		permissionMode: "default",
 		pendingControl: make(map[string]chan<- qoderControlResult),
 	}
+	t.Cleanup(func() {
+		cancel()
+		a.stopWorkflowArchiveRetries()
+	})
+	return a
 }
 
 func TestQoderPublishTurnActiveRaisesItsToken(t *testing.T) {

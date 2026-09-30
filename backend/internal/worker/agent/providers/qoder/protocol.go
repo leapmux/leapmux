@@ -41,6 +41,25 @@ type UserInputContent struct {
 	Content interface{} `json:"content"`
 }
 
+// qoderTextBlock is a text element of a user input content array.
+type qoderTextBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// qoderImageSource is the base64 image source Qoder accepts on stream input.
+type qoderImageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
+// qoderImageBlock is an image element of a user input content array.
+type qoderImageBlock struct {
+	Type   string           `json:"type"`
+	Source qoderImageSource `json:"source"`
+}
+
 // controlResponseEnvelope routes a control_response to its pending request.
 type controlResponseEnvelope struct {
 	Response struct {

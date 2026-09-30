@@ -18,8 +18,8 @@ lettaTest.skip(!!LETTA_E2E_SKIP_REASON, LETTA_E2E_SKIP_REASON || '')
  * the chip follows.
  */
 lettaTest.describe('Letta Code bypass permissions', () => {
-  lettaTest('the Bypass shortcut switches the session to Unrestricted', async ({ authenticatedLettaWorkspace, page }) => {
-    void authenticatedLettaWorkspace
+  lettaTest('the Bypass shortcut switches the session to Unrestricted', async ({ askingLettaWorkspace, page }) => {
+    void askingLettaWorkspace
     await waitForSettingsHydrated(page)
 
     const menu = await openPlusMenu(page)

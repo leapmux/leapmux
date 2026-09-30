@@ -32,6 +32,9 @@ func (a *Agent) readOutputLoop(scanner *bufio.Scanner) {
 
 // handleOutput dispatches one NDJSON frame.
 func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
+	if a.routeChildFrame(line.Raw) {
+		return
+	}
 	switch line.Type {
 	case contracts.QoderFrameKindSystem:
 		a.handleSystem(line.Raw)
@@ -41,8 +44,11 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 		a.handleResult(line.Raw)
 	case frameTypeControlRequest:
 		a.handleInboundControlRequest(line.Raw)
+	case "user":
+		a.handleWorkflowLaunch(line.Raw)
+		a.persistRaw(line.Raw)
 	default:
-		// user, stream_event, command_lifecycle, tool_progress, progress,
+		// stream_event, command_lifecycle, tool_progress, progress,
 		// attachment: forward verbatim for the browser plugin.
 		a.persistRaw(line.Raw)
 	}
@@ -76,8 +82,7 @@ func (a *Agent) handleInboundControlRequest(raw []byte) {
 	}
 }
 
-// handleSystem reads the init frame and the goal reports, and publishes the
-// rest verbatim.
+// handleSystem applies native state, consumes task events, and publishes other frames.
 func (a *Agent) handleSystem(raw []byte) {
 	var envelope struct {
 		Subtype string `json:"subtype"`
@@ -108,9 +113,35 @@ func (a *Agent) handleSystem(raw []byte) {
 			a.handleGoalUpdated(raw)
 		case contracts.QoderSystemSubtypeGoalCleared:
 			a.handleGoalCleared(raw)
+		case contracts.QoderSystemSubtypeAvailableModelsUpdate:
+			a.handleAvailableModelsUpdate(raw)
+		case contracts.QoderSystemSubtypePlanModeChanged:
+			a.handlePlanModeChanged(raw)
+		case qoderTaskStarted, qoderTaskNotification:
+			if a.handleTaskEvent(raw) {
+				return
+			}
 		}
 	}
 	a.persistRaw(raw)
+}
+
+// handlePlanModeChanged applies Qoder's working state without losing its policy.
+func (a *Agent) handlePlanModeChanged(raw []byte) {
+	var frame struct {
+		PlanMode struct {
+			Active *bool `json:"active"`
+		} `json:"plan_mode"`
+	}
+	if json.Unmarshal(raw, &frame) != nil || frame.PlanMode.Active == nil {
+		return
+	}
+	a.mu.Lock()
+	a.planMode = *frame.PlanMode.Active
+	if !a.planMode && a.permissionMode == contracts.QoderModePlan {
+		a.permissionMode = contracts.QoderModeDefault
+	}
+	a.mu.Unlock()
 }
 
 // handleAssistant publishes the frame verbatim and arms the turn.
@@ -131,6 +162,7 @@ func (a *Agent) handleAssistant(raw []byte) {
 func (a *Agent) handleResult(raw []byte) {
 	a.setTurnActive(false)
 	a.persistRaw(raw)
+	a.broadcastContextUsage(raw)
 }
 
 // armTurnFromOutput marks the turn active when a frame arrives while idle.
@@ -241,29 +273,6 @@ func (a *Agent) sendControlAndWait(requestBody string, timeout time.Duration) (q
 	case <-time.After(timeout):
 		return qoderControlResult{}, errControlTimeout
 	}
-}
-
-// applyPermissionMode sends set_permission_mode and records the result.
-func (a *Agent) applyPermissionMode(mode string) error {
-	body, err := json.Marshal(map[string]string{
-		"subtype": contracts.QoderControlRequestSubtypeSetPermissionMode,
-		"mode":    mode,
-	})
-	if err != nil {
-		return err
-	}
-	resp, err := a.sendControlAndWait(string(body), 2*time.Second)
-	if err != nil {
-		return err
-	}
-	a.mu.Lock()
-	if resp.Mode != "" {
-		a.permissionMode = resp.Mode
-	} else {
-		a.permissionMode = mode
-	}
-	a.mu.Unlock()
-	return nil
 }
 
 // initializeStream completes Qoder's stream-json initialize handshake.

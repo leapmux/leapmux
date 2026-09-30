@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/quartz"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -14,6 +16,18 @@ import (
 // Agent manages one Junie ACP process.
 type Agent struct {
 	acp.Base
+	// launchEffortOverride is the stored effort passed through --effort at start.
+	// An absent override differs from the default level Junie reports in ACP.
+	launchEffortOverride string
+	// homeDir is the fallback when JUNIE_HOME does not select the native store.
+	homeDir string
+	// workingDir links a native session summary to this agent's project.
+	workingDir string
+	// clock drives reads of the native child snapshots while a child runs.
+	clock quartz.Clock
+	// childTailMu guards the readers keyed by their ACP child session IDs.
+	childTailMu sync.Mutex
+	childTails  map[string]*junieChildTail
 
 	// goalMu guards the goal-report bookkeeping. It is separate from Base.Mu so
 	// the goal fold never takes the base lock.

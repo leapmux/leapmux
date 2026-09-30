@@ -1316,6 +1316,24 @@ func (m *Manager) CurrentSettings(agentID string) SettingsApplyResult {
 	return p.SettingsSnapshot()
 }
 
+// NativeTurnRestartRequired asks the running provider whether its native turn
+// changed launch-only state. A stopped or other provider needs no replacement.
+func (m *Manager) NativeTurnRestartRequired(agentID string) bool {
+	m.mu.RLock()
+	p, ok := m.agents[agentID]
+	if ok {
+		if _, exiting := m.exiting[p]; exiting {
+			ok = false
+		}
+	}
+	m.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	restarter, ok := p.(NativeTurnRestarter)
+	return ok && restarter.NativeTurnRestartRequired()
+}
+
 // HasAgent returns true while the Manager owns the agent's lifecycle slot. The
 // slot stays owned through the exit callback so that callback can pause input
 // before another process starts.

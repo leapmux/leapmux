@@ -1,6 +1,7 @@
 import type { ResolvedMessageContent } from '~/components/chat/rowExtractionTypes'
 import type { ToolSpanRole, ToolSpanSide } from '~/lib/messageSpan'
 import { isObject, pickString } from '~/lib/jsonPick'
+import { storedFunctionCallID, storedFunctionIsProgress } from './storedFunction'
 
 /**
  * The role of one CodeBuddy row inside its tool span.
@@ -13,6 +14,10 @@ export function codebuddySpanRole(parsed: ResolvedMessageContent): ToolSpanRole 
   if (!parent || !isObject(parent))
     return 'other'
   const type = pickString(parent, 'type')
+  if (type === 'function_call')
+    return storedFunctionCallID(parent) ? 'request' : 'other'
+  if (type === 'function_call_output' || type === 'function_call_result')
+    return storedFunctionCallID(parent) && !storedFunctionIsProgress(parent) ? 'result' : 'other'
   const message = isObject(parent.message) ? parent.message : undefined
   const content = message && Array.isArray(message.content) ? message.content : []
   const blockType = (name: string) =>
@@ -25,7 +30,12 @@ export function codebuddySpanRole(parsed: ResolvedMessageContent): ToolSpanRole 
   return 'other'
 }
 
-/** CodeBuddy rows are self-contained; no side lookups needed. */
-export function codebuddyRelatedMessages(_parsed: ResolvedMessageContent): readonly ToolSpanSide[] {
-  return []
+/** Native result records need the request's tool name and arguments. */
+export function codebuddyRelatedMessages(parsed: ResolvedMessageContent): readonly ToolSpanSide[] {
+  const parent = parsed.parentObject
+  const type = pickString(parent, 'type')
+  return (type === 'function_call_output' || type === 'function_call_result')
+    && isObject(parent) && storedFunctionCallID(parent) && !storedFunctionIsProgress(parent)
+    ? ['request']
+    : []
 }

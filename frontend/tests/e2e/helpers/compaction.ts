@@ -7,12 +7,13 @@ import { CHAT_SCROLL_CONTAINER } from './ui'
  *
  * A `/compact` turn compacts the context and the transcript draws one notice
  * row for it. The row carries the label plus a detail in parentheses
- * ("Context compacted (manual, 12.0k → 3.0k)"), so the assertions match the
- * label as a substring and take the first row.
+ * ("Context compacted (manual, 12.0k → 3.0k)"). The selector takes the first
+ * visible notification divider whose text starts with the label.
  */
 
 /** The label of the notice row the transcript draws after a compaction. */
 export const COMPACTION_NOTICE_TEXT = 'Context compacted'
+const COMPACTION_NOTICE_PATTERN = new RegExp(`^\\s*${COMPACTION_NOTICE_TEXT}(?:\\s|\\(|$)`)
 
 /**
  * The selector of the chat rows a notice can appear in.
@@ -26,7 +27,9 @@ export function compactionChatSelector(): string {
 
 /** The first notice row in the visible transcript. */
 export function compactionNoticeRow(page: Page): Locator {
-  return page.locator(compactionChatSelector()).filter({ hasText: COMPACTION_NOTICE_TEXT }).first()
+  return page.locator(`${compactionChatSelector()} [data-testid="notification-divider"]:visible`)
+    .filter({ hasText: COMPACTION_NOTICE_PATTERN })
+    .first()
 }
 
 /** Assert the transcript draws the compaction notice. */

@@ -1,17 +1,17 @@
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { expect, test } from './fixtures'
+import { claudeTest, expect } from './claude-fixtures'
 import { readToolCall } from './helpers/providerToolCalls'
 import { expectToolRowImage, writeToolImage } from './helpers/toolImages'
 import { sendMessage, waitForAgentIdle } from './helpers/ui'
 
 const CLAUDE = AgentProvider.CLAUDE_CODE
 
-test.describe('Claude Code images in tool results', () => {
+claudeTest.describe('Claude Code images in tool results', () => {
   // The mock scripts the Read call. The picture in the tool row is produced by
   // the CLI reading the PNG and by LeapMux rendering that result, so the `img`
   // is not something the prompt or the scripted reply can fake.
-  test('a Read of a PNG draws the picture in the tool row', async ({ authenticatedWorkspace, page, modelScript }) => {
-    const workingDir = authenticatedWorkspace.workingDir
+  claudeTest('a Read of a PNG draws the picture in the tool row', async ({ authenticatedClaudeWorkspace, page, modelScript }) => {
+    const workingDir = authenticatedClaudeWorkspace.workingDir
     expect(workingDir, 'the agent workspace must expose a working directory').toBeTruthy()
     const name = writeToolImage(workingDir!, 'claude-42')
 

@@ -152,7 +152,7 @@ func TestListStoredSessionsReadsTheStore(t *testing.T) {
 	work := filepath.Join(home, "workspace", "project")
 	require.NoError(t, os.MkdirAll(work, 0o755))
 	backend := filepath.Join(home, "backend")
-	conv := filepath.Join(backend, "conversations", "local-conv-1")
+	conv := lettaFixtureConversationDir(backend, "local-conv-1")
 	require.NoError(t, os.MkdirAll(conv, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(conv, "conversation.json"), []byte(
 		`{"id":"local-conv-1","agent_id":"agent-local-1"}`,
@@ -172,7 +172,7 @@ func TestReadsSessionStoreThroughTheSuite(t *testing.T) {
 	agenttest.RequireReadsSessionStore(t, lettaProvider{}, func(t *testing.T, home, workingDir string) string {
 		// The reader's fallback store path under the temp home.
 		backend := filepath.Join(home, ".letta-backend")
-		conv := filepath.Join(backend, "conversations", "local-conv-9")
+		conv := lettaFixtureConversationDir(backend, "local-conv-9")
 		require.NoError(t, os.MkdirAll(conv, 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(conv, "conversation.json"), []byte(
 			`{"id":"local-conv-9","agent_id":"agent-local-9"}`,

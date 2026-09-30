@@ -1,10 +1,14 @@
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
 import process from 'node:process'
 import { agentSearchPath, agentSearchPathEnv, findBinary } from './binaryOnPath'
+import { writeMcpConfirmationServer } from './mcpConfirmationServer'
+import { writeMcpEchoServer } from './mcpEchoServer'
+import { writeMcpFormServer } from './mcpFormServer'
 
-const MODEL_KEY = 'leapmux-e2e-model-key'
+export const MODEL_KEY = 'leapmux-e2e-model-key'
 const COPILOT_TOKEN = 'github_pat_leapmuxe2e000000000000000000000000000000000000000000'
 
 /**
@@ -20,8 +24,12 @@ export const MOCK_MODELS = {
   anthropic: 'sonnet',
   /** Codex and GitHub Copilot, over the OpenAI protocols. */
   openai: 'gpt-5.6-luna',
-  /** Goose, Kilo, MiMo Code, OpenCode, and ZCode. */
+  /** Kilo, MiMo Code, OpenCode, and ZCode. */
   zai: 'glm-5.3-flash',
+  /** Goose sends images and tool calls through this Chat Completions model. */
+  goose: 'gpt-4o',
+  /** Goose and Copilot use this reasoning model in focused tests. */
+  gooseReasoning: 'gpt-5.4',
   /** Pi, and the second model of MiMo Code, which a settings spec switches to. */
   pi: 'glm-5.3',
   /** Oh My Pi. */
@@ -39,13 +47,14 @@ export const MOCK_MODELS = {
    */
   qwen: 'qwen-e2e',
   /**
-   * Cline. Its `openai-compatible` provider sends the model id of its settings
-   * unchanged, and Cline never lists the endpoint's models, so the id is one
-   * word of its own.
+   * Cline. Its DeepSeek provider sends the configured model id unchanged.
+   * The worker adds this custom id to the native provider's catalog.
    */
   cline: 'cline-e2e',
   /** Factory Droid. Its BYOK custom-model entry sends this id unchanged. */
   droid: 'droid-e2e',
+  /** Factory Droid's alternate BYOK model for a native settings check. */
+  droidAlt: 'droid-e2e-alt',
   /** Letta Code. The model handle is `provider/model`. */
   letta: 'letta-e2e',
   /** CodeBuddy Code. */
@@ -122,25 +131,62 @@ const LOOPBACK_NO_PROXY = '127.0.0.1,localhost,::1'
 /** Pi addresses a model through a named provider in its own `models.json`. */
 const PI_PROVIDER_ID = 'zai'
 
+/** Goose disables Todo by default. The isolated fixture also supplies a form server. */
+function gooseConfig(formServer: string): string {
+  return `extensions:
+  todo:
+    enabled: true
+    type: platform
+    name: todo
+    description: Enable a todo list for goose so it can keep track of what it is doing
+    display_name: Todo
+    available_tools: []
+  form_probe:
+    enabled: true
+    type: stdio
+    name: form_probe
+    description: Request the disposable probe form
+    cmd: ${JSON.stringify(process.execPath)}
+    args:
+      - ${JSON.stringify(formServer)}
+    envs: {}
+    env_keys: []
+    timeout: 120
+`
+}
+
 /** Reasonix names its provider block, and `default_model` qualifies with it. */
 const REASONIX_PROVIDER_ID = 'deepseek'
+export const REASONIX_ALT_PROVIDER_ID = 'leapmux-e2e-alt'
+export const REASONIX_ALT_MODEL_ID = `${REASONIX_ALT_PROVIDER_ID}/${MOCK_MODELS.pi}`
 
 /**
  * The built-in Codewhale route that the isolated configuration points at the
  * mock.
  *
- * `deepseek` and no custom route, because Codewhale reads `reasoning_content`
- * as thinking only on a route that it knows to reason. On `openai`, the probe
- * saw the reasoning text merged into the answer.
+ * `deepseek` is the built-in provider route. Codewhale reads
+ * `reasoning_content` as thinking only on a route that it knows to reason.
+ * An `openai` route merged the reasoning into the answer during a probe.
  */
 const CODEWHALE_PROVIDER_ID = 'deepseek'
+
+/** The built-in Codewhale model whose route accepts image input. */
+export const CODEWHALE_VISION_MODEL_ID = 'deepseek-v4-flash-vision-exp'
 
 /** The auth type the Qwen configuration selects, which qualifies its model ids. */
 const QWEN_AUTH_TYPE = 'openai'
 
 /** The model id Qwen reports for the model its configuration pins. */
 export const QWEN_MODEL_ID = `${MOCK_MODELS.qwen}(${QWEN_AUTH_TYPE})`
+export const QWEN_ALT_MODEL_WIRE_ID = 'qwen-e2e-alt'
+export const QWEN_ALT_MODEL_ID = `${QWEN_ALT_MODEL_WIRE_ID}(${QWEN_AUTH_TYPE})`
+export const GROK_ALT_MODEL_ID = 'grok-e2e-alt'
+export const OH_MY_PI_ALT_MODEL_WIRE_ID = 'glm-5.3-alt'
+export const OH_MY_PI_ALT_MODEL_ID = `${MOCK_PROVIDER_IDS.ohMyPi}/${OH_MY_PI_ALT_MODEL_WIRE_ID}`
 export const JUNIE_MOCK_MODEL = 'custom:mock-model'
+export const JUNIE_RESPONSES_MODEL = 'custom:mock-responses'
+export const JUNIE_NATIVE_EFFORT_MODEL = 'gpt-5.3-codex'
+export const JUNIE_PROXY_PROVIDER = 'leapmux-e2e-openai'
 export const FAST_AGENT_MOCK_MODEL = 'gpt-4o'
 
 /**
@@ -150,8 +196,13 @@ export const FAST_AGENT_MOCK_MODEL = 'gpt-4o'
  * `MOCK_MODELS` value selects no custom entry for these three.
  */
 export const CODEBUDDY_MODEL_ID = `custom-local:${MOCK_MODELS.deepseek}`
+export const CODEBUDDY_ALT_MODEL_WIRE_ID = 'leapmux-e2e-alt'
+export const CODEBUDDY_ALT_MODEL_ID = `custom-local:${CODEBUDDY_ALT_MODEL_WIRE_ID}`
 export const QODER_MODEL_ID = `mockprov/${MOCK_MODELS.deepseek}`
+export const QODER_ALTERNATE_MODEL_ID = `mockprov/${MOCK_MODELS.qoder}`
 export const LETTA_MODEL_ID = `openai-compatible/${MOCK_MODELS.letta}`
+export const LETTA_VISION_MODEL_ID = 'openai/gpt-4o'
+export const LETTA_REASONING_MODEL_ID = 'openai/gpt-5.4'
 
 /**
  * The switches that stop Grok Build from calling the model outside a turn a test
@@ -269,7 +320,7 @@ function ampEnv(origin: string, homeDir: string): Record<string, string> {
  * client, which takes any base URL and any model id. It reads `reasoning_content`
  * as thinking, which the mock sends.
  */
-export const CLINE_PROVIDER_ID = 'openai-compatible'
+export const CLINE_PROVIDER_ID = 'deepseek'
 
 /**
  * Cline's isolated configuration and data.
@@ -333,6 +384,12 @@ function clineEnv(clineDir: string, clineDataDir: string): Record<string, string
 /** Every pinned identifier, for the mock endpoint's catalog route. */
 export const MOCK_MODEL_IDS: readonly string[] = [...new Set(Object.values(MOCK_MODELS))]
 
+/** The custom-model handles Droid reads from its isolated settings. */
+export const DROID_MOCK_MODEL_IDS = {
+  primary: 'custom:Droid-0',
+  alternate: 'custom:Droid-1',
+} as const
+
 export interface MockAgentEnvironment {
   env: Record<string, string>
   homeDir: string
@@ -357,6 +414,7 @@ export async function createMockAgentEnvironment(
   const codexHome = join(homeDir, '.codex')
   const piAgentDir = join(homeDir, '.pi', 'agent')
   const reasonixHome = join(homeDir, '.reasonix')
+  const gooseRoot = join(homeDir, '.goose')
   const zcodeDir = join(homeDir, '.zcode', 'v2')
   // Cursor's config directory is ISOLATED like every other provider's. It used
   // to be the real home's, because Cursor was the one provider that still
@@ -375,6 +433,7 @@ export async function createMockAgentEnvironment(
   const codebuddyHome = join(homeDir, '.codebuddy')
   const qoderHome = join(homeDir, '.qoder')
   const junieModelsDir = join(runDir, 'junie-models')
+  const junieAgentsDir = join(runDir, 'junie-agents')
   const diracDir = join(homeDir, '.dirac')
   const fastAgentHome = join(homeDir, '.fast-agent')
   const cliShimsDir = join(runDir, 'cli-shims')
@@ -389,26 +448,45 @@ export async function createMockAgentEnvironment(
   // MiMo keeps its data, configuration, state and cache under one root. It must be
   // an absolute path, because MiMo refuses to start with a relative one.
   const mimoHome = join(runDir, 'mimocode-home')
-  for (const directory of [codexHome, piAgentDir, reasonixHome, zcodeDir, copilotHome, cursorConfigDir, codewhaleHome, grokHome, qwenHome, kiroSettingsDir, kimiHome, ohMyPiAgentDir, mimoHome, clineSettingsDir, clineCacheDir, codebuddyHome, qoderHome, factoryHome, lettaHome, lettaBackendDir, lettaProvidersDir, junieModelsDir, join(diracDir, 'data', 'state'), fastAgentHome, cliShimsDir])
+  for (const directory of [codexHome, piAgentDir, reasonixHome, join(gooseRoot, 'config'), zcodeDir, copilotHome, cursorConfigDir, codewhaleHome, grokHome, qwenHome, kiroSettingsDir, kimiHome, ohMyPiAgentDir, mimoHome, clineSettingsDir, clineCacheDir, codebuddyHome, qoderHome, factoryHome, lettaHome, lettaBackendDir, lettaProvidersDir, junieModelsDir, junieAgentsDir, join(diracDir, 'data', 'state'), fastAgentHome, cliShimsDir])
     mkdirSync(directory, { recursive: true })
 
-  writeFileSync(join(codexHome, 'config.toml'), codexConfig(openAIBaseURL), { mode: 0o600 })
+  // macOS zsh's system login profile rebuilds PATH. Reapply the private shims
+  // after that profile, so Junie's `security` probe cannot reach the keychain.
+  const privatePath = `export PATH=${posixQuote(cliShimsDir)}:"$PATH"\n`
+  for (const file of ['.zshrc', '.zlogin'])
+    writeFileSync(join(homeDir, file), privatePath, { mode: 0o600 })
+
+  const codexMcpFormServer = writeMcpFormServer(codexHome, 'form-server.mjs')
+  const mimoMcpConfirmationServer = writeMcpConfirmationServer(mimoHome)
+  const mcpEchoServer = writeMcpEchoServer(runDir)
+  writeFileSync(join(codexHome, 'config.toml'), codexConfig(openAIBaseURL, codexMcpFormServer), { mode: 0o600 })
   writeJSON(join(piAgentDir, 'models.json'), piModels(openAIBaseURL))
   writeJSON(join(piAgentDir, 'settings.json'), {
     defaultProvider: PI_PROVIDER_ID,
     defaultModel: MOCK_MODELS.pi,
+    compaction: { keepRecentTokens: 32 },
     packages: piPackagePaths(options.realHomeDir),
   })
   // YAML is omp's format, and JSON is valid YAML, so the one writer serves.
   writeJSON(join(ohMyPiAgentDir, 'models.yml'), ohMyPiModels(openAIBaseURL))
   writeJSON(join(ohMyPiAgentDir, 'config.yml'), ohMyPiConfig())
+  writeJSON(join(ohMyPiAgentDir, 'mcp.json'), {
+    mcpServers: { echo_probe: { type: 'stdio', command: process.execPath, args: [mcpEchoServer] } },
+  })
   writeFileSync(join(reasonixHome, 'config.toml'), reasonixConfig(openAIBaseURL), { mode: 0o600 })
+  const gooseMcpFormServer = writeMcpFormServer(gooseRoot, 'form-server.mjs')
+  writeFileSync(join(gooseRoot, 'config', 'config.yaml'), gooseConfig(gooseMcpFormServer), { mode: 0o600 })
   writeFileSync(join(codewhaleHome, 'config.toml'), codewhaleConfig(openAIBaseURL), { mode: 0o600 })
+  writeJSON(join(codewhaleHome, 'mcp.json'), { servers: { echo_probe: { command: process.execPath, args: [mcpEchoServer] } } })
+  mkdirSync(join(codewhaleHome, 'catalog'), { recursive: true })
+  writeJSON(join(codewhaleHome, 'catalog', 'provider-catalogs.json'), codewhaleCatalog(openAIBaseURL))
   writeFileSync(join(grokHome, 'config.toml'), grokConfig(openAIBaseURL), { mode: 0o600 })
-  writeJSON(join(qwenHome, 'settings.json'), qwenSettings(openAIBaseURL))
+  writeJSON(join(qwenHome, 'settings.json'), qwenSettings(openAIBaseURL, mcpEchoServer))
   writeJSON(join(codebuddyHome, 'models.json'), codebuddyModels(openAIBaseURL))
   writeJSON(join(codebuddyHome, 'settings.json'), codebuddySettings())
-  writeJSON(join(qoderHome, 'settings.json'), qoderSettings(openAIBaseURL))
+  const qoderMcpFormServer = writeMcpFormServer(qoderHome, 'form-server.mjs')
+  writeJSON(join(qoderHome, 'settings.json'), qoderSettings(openAIBaseURL, qoderMcpFormServer))
   qoderEndpointCaches(qoderHome, origin)
   writeJSON(join(kiroSettingsDir, 'cli.json'), kiroSettings(origin))
   const zcodeConfigPath = join(zcodeDir, 'config.json')
@@ -416,9 +494,15 @@ export async function createMockAgentEnvironment(
   writeJSON(zcodeConfigPath, zcodeLegacyConfig(openAIBaseURL))
   writeJSON(zcodePersonalConfigPath, zcodePersonalConfig(openAIBaseURL))
   writeFileSync(join(kimiHome, 'config.toml'), kimiConfig(openAIBaseURL), { mode: 0o600 })
+  writeJSON(join(kimiHome, 'mcp.json'), {
+    mcpServers: { echo_probe: { command: process.execPath, args: [mcpEchoServer] } },
+  })
   const clineWrittenAt = Date.now()
   writeJSON(join(clineSettingsDir, 'providers.json'), clineProviders(openAIBaseURL, clineWrittenAt))
   writeJSON(join(clineSettingsDir, 'global-settings.json'), { telemetryOptOut: true, autoUpdateEnabled: false })
+  writeJSON(join(clineSettingsDir, 'cline_mcp_settings.json'), {
+    mcpServers: { echo_probe: { transport: { type: 'stdio', command: process.execPath, args: [mcpEchoServer] } } },
+  })
   writeJSON(join(clineCacheDir, 'feature-flags.json'), clineFeatureFlags(clineWrittenAt))
   writeJSON(join(factoryHome, 'settings.json'), droidSettings(openAIBaseURL))
   writeJSON(join(lettaBackendDir, 'providers', 'auth.json'), lettaAuth(openAIBaseURL))
@@ -426,11 +510,19 @@ export async function createMockAgentEnvironment(
   // against the cloud API and runtime_start fails 401.
   writeJSON(join(lettaHome, 'settings.json'), { preferredBackendMode: 'local' })
   writeJSON(join(junieModelsDir, 'mock-model.json'), junieModelProfile(`${origin}/v1/chat/completions`))
+  writeJSON(join(junieModelsDir, 'mock-responses.json'), junieModelProfile(`${origin}/v1/responses`, 'OpenAIResponses'))
+  writeFileSync(join(junieAgentsDir, 'leapmux-e2e-child.md'), junieTestSubagent(), { mode: 0o600 })
   writeFileSync(join(diracDir, 'data', 'globalState.json'), JSON.stringify({ telemetrySetting: 'disabled', autoApproveAllToggled: true, yoloModeToggled: true }), { mode: 0o600 })
   writeFileSync(join(fastAgentHome, 'fast-agent.yaml'), fastAgentConfig(openAIBaseURL), { mode: 0o600 })
   await prepareLettaBackend(lettaHome, lettaBackendDir, openAIBaseURL)
 
-  const openCodeConfig = JSON.stringify(openCodeFamilyConfig(openAIBaseURL))
+  // OpenCode otherwise retains every short seed turn when it compacts. Keep
+  // two recent turns so the browser can prove that the first one left context.
+  const openCodeConfig = JSON.stringify({
+    ...openCodeFamilyConfig(openAIBaseURL, mcpEchoServer),
+    compaction: { tail_turns: 2 },
+  })
+  const searchPathEnv = agentSearchPathEnv()
   return {
     homeDir,
     piAgentDir,
@@ -438,10 +530,13 @@ export async function createMockAgentEnvironment(
     env: {
       HOME: homeDir,
       USERPROFILE: homeDir,
+      // A user's ZDOTDIR can make the login shell load real startup files.
+      // Those files can replace PATH and expose the system keychain to Junie.
+      ZDOTDIR: homeDir,
       // The developer's PATH, with the real install directory of each mise tool
       // before mise's shims, which cannot start a tool under the isolated HOME
       // above. See `agentSearchPath`.
-      ...agentSearchPathEnv(),
+      ...searchPathEnv,
       LEAPMUX_E2E_MODEL_API_KEY: MODEL_KEY,
       NO_PROXY: LOOPBACK_NO_PROXY,
       no_proxy: LOOPBACK_NO_PROXY,
@@ -479,7 +574,8 @@ export async function createMockAgentEnvironment(
       KILO_TELEMETRY_LEVEL: 'off',
 
       GOOSE_PROVIDER: 'openai',
-      GOOSE_MODEL: MOCK_MODELS.zai,
+      GOOSE_MODEL: MOCK_MODELS.goose,
+      GOOSE_PATH_ROOT: gooseRoot,
 
       REASONIX_HOME: reasonixHome,
 
@@ -599,7 +695,7 @@ export async function createMockAgentEnvironment(
       // under its own names. Every switch below stops a request that no test
       // scripts, or a read of the developer's own configuration.
       MIMOCODE_HOME: mimoHome,
-      MIMOCODE_CONFIG_CONTENT: JSON.stringify(mimoCodeConfig(openAIBaseURL)),
+      MIMOCODE_CONFIG_CONTENT: JSON.stringify(mimoCodeConfig(openAIBaseURL, mimoMcpConfirmationServer, mcpEchoServer)),
       MIMOCODE_DISABLE_PROJECT_CONFIG: 'true',
       // The worker pins this one too. It is here so that the configuration states
       // every tool that the specs script.
@@ -636,28 +732,27 @@ export async function createMockAgentEnvironment(
 
       ...lettaEnv(lettaHome, lettaBackendDir),
       ...codebuddyEnv(codebuddyHome),
-      ...qoderEnv(qoderHome),
-      ...junieEnv(homeDir, junieModelsDir, options.realHomeDir),
+      ...qoderEnv(qoderHome, cliShimsDir),
+      ...junieEnv(homeDir, junieModelsDir, junieAgentsDir, origin, options.realHomeDir),
       DIRAC_PROVIDER: 'openai',
       DIRAC_BASE_URL: openAIBaseURL,
       DIRAC_API_KEY: MODEL_KEY,
       DIRAC_MODEL: MOCK_MODELS.deepseek,
       DIRAC_DIR: diracDir,
       FAST_AGENT_HOME: fastAgentHome,
-      ...credentialStoreShimEnv(cliShimsDir, process.env.PATH),
+      ...credentialStoreShimEnv(cliShimsDir, searchPathEnv.PATH ?? process.env.PATH),
     },
   }
 }
 
 /**
- * Factory Droid's isolated configuration.
+ * Isolate Factory Droid's files and service requests.
  *
- * `FACTORY_HOME_OVERRIDE` is the primary isolation seam. It names the directory
- * that HOLDS `.factory` — not `.factory` itself — so the CLI reads its settings
- * from `<override>/.factory/settings.json` and keeps every session, log and
- * telemetry file under that tree. The settings file's `customModels[].baseUrl`
- * is the BYOK path that points at the mock. Every switch below stops a request
- * that no test scripts.
+ * `FACTORY_HOME_OVERRIDE` identifies the directory that contains `.factory`.
+ * Droid reads settings from `<override>/.factory/settings.json`. It keeps its
+ * sessions, logs, and telemetry there. The custom model points at the mock.
+ * The CLI checks its isolated API key at the mock's whoami route. The proxy
+ * rejects requests to other hosts.
  */
 function droidEnv(homeDir: string, baseURL: string): Record<string, string> {
   return {
@@ -668,7 +763,10 @@ function droidEnv(homeDir: string, baseURL: string): Record<string, string> {
     // An unroutable sink keeps telemetry off the network.
     FACTORY_TELEMETRY_INGEST_BASE_URL: 'http://127.0.0.1:9',
     FACTORY_OTEL_ENABLED: '0',
-    FACTORY_AIRGAP_ENABLED: '1',
+    // Keep the built-in model catalog so the effort test can select a real
+    // native ladder. The model endpoint stays on the mock, and the proxy
+    // refuses every request to a real host.
+    FACTORY_AIRGAP_ENABLED: '0',
     FACTORY_DISABLE_DYNAMIC_CONFIG: '1',
     FACTORY_DISABLE_KEYRING: '1',
   }
@@ -676,22 +774,25 @@ function droidEnv(homeDir: string, baseURL: string): Record<string, string> {
 
 /** Factory Droid's BYOK settings, which point the model at the mock. */
 function droidSettings(baseURL: string): Record<string, unknown> {
+  const primary = {
+    model: MOCK_MODELS.droid,
+    id: DROID_MOCK_MODEL_IDS.primary,
+    index: 0,
+    baseUrl: baseURL,
+    apiKey: MODEL_KEY,
+    displayName: 'Mock Model',
+    maxOutputTokens: 8192,
+    noImageSupport: false,
+    reasoningEffort: 'high',
+    provider: 'generic-chat-completion-api',
+  }
   return {
     customModels: [
-      {
-        model: MOCK_MODELS.droid,
-        id: `custom:Droid-0`,
-        index: 0,
-        baseUrl: baseURL,
-        apiKey: MODEL_KEY,
-        displayName: 'Mock Model',
-        maxOutputTokens: 8192,
-        noImageSupport: true,
-        provider: 'generic-chat-completion-api',
-      },
+      primary,
+      { ...primary, model: MOCK_MODELS.droidAlt, id: DROID_MOCK_MODEL_IDS.alternate, index: 1, displayName: 'Alternate Mock Model' },
     ],
     sessionDefaultSettings: {
-      model: `custom:Droid-0`,
+      model: DROID_MOCK_MODEL_IDS.primary,
       reasoningEffort: 'none',
       autonomyMode: 'normal',
     },
@@ -728,6 +829,14 @@ function lettaAuth(baseURL: string): Record<string, unknown> {
         auth: { type: 'api', key: MODEL_KEY },
         base_url: baseURL,
       },
+      'openai': {
+        id: 'local-provider-openai',
+        name: 'openai',
+        provider_type: 'openai',
+        provider_category: 'byok',
+        auth: { type: 'api', key: MODEL_KEY },
+        base_url: baseURL,
+      },
     },
   }
 }
@@ -742,20 +851,23 @@ function lettaAuth(baseURL: string): Record<string, unknown> {
  * `error_during_execution`.
  */
 function codebuddyModels(baseURL: string): Record<string, unknown> {
+  const primary = {
+    id: MOCK_MODELS.deepseek,
+    name: 'Mock Model',
+    vendor: 'Mock',
+    apiKey: MODEL_KEY,
+    maxInputTokens: 128_000,
+    maxOutputTokens: 4096,
+    url: `${baseURL}/chat/completions`,
+    temperature: 0,
+    supportsToolCall: true,
+    // CodeBuddy drops image and document blocks before the model request
+    // when this catalog entry declares text-only input.
+    supportsImages: true,
+  }
   return {
-    models: [{
-      id: MOCK_MODELS.deepseek,
-      name: 'Mock Model',
-      vendor: 'Mock',
-      apiKey: MODEL_KEY,
-      maxInputTokens: 128_000,
-      maxOutputTokens: 4096,
-      url: `${baseURL}/chat/completions`,
-      temperature: 0,
-      supportsToolCall: true,
-      supportsImages: false,
-    }],
-    availableModels: [MOCK_MODELS.deepseek],
+    models: [primary, { ...primary, id: CODEBUDDY_ALT_MODEL_WIRE_ID, name: 'Alternate Mock Model' }],
+    availableModels: [MOCK_MODELS.deepseek, CODEBUDDY_ALT_MODEL_WIRE_ID],
   }
 }
 
@@ -780,7 +892,6 @@ function codebuddyEnv(configDir: string): Record<string, string> {
     DISABLE_GALILEO: '1',
     DISABLE_AUTOUPDATER: '1',
     CODEBUDDY_DISABLE_TRACE_COLLECTOR: '1',
-    CODEBUDDY_DISABLE_WORKFLOWS: '1',
   }
 }
 
@@ -794,8 +905,11 @@ function codebuddyEnv(configDir: string): Record<string, string> {
  * catalog model`, after which the model call falls through to the real Qoder
  * API. The entry therefore lives in `providers` alone.
  */
-function qoderSettings(baseURL: string): Record<string, unknown> {
+function qoderSettings(baseURL: string, formServer: string): Record<string, unknown> {
   return {
+    mcpServers: {
+      form_probe: { command: process.execPath, args: [formServer] },
+    },
     providers: {
       mockprov: {
         type: 'openai-compatible',
@@ -805,7 +919,10 @@ function qoderSettings(baseURL: string): Record<string, unknown> {
         baseUrl: baseURL,
         apiKey: MODEL_KEY,
         displayName: 'Mock Provider',
-        models: [{ model: MOCK_MODELS.deepseek, displayName: 'Mock Model' }],
+        models: [
+          { model: MOCK_MODELS.deepseek, displayName: 'Mock Model', capabilities: { vision: true } },
+          { model: MOCK_MODELS.qoder, displayName: 'Alternate Mock Model', capabilities: { vision: true } },
+        ],
       },
     },
   }
@@ -818,9 +935,9 @@ function qoderSettings(baseURL: string): Record<string, unknown> {
  * The E2E recipe mocks authentication the way Cursor and Copilot do:
  *
  *   - `QODER_SDK_AUTH_PAYLOAD_FILE` installs a fake access token through the SDK
- *     auth seam (`initFromAccessToken`), which is the one credential injection
- *     that reaches the stream-json path. `QODER_AGENT_SDK_ENTRYPOINT` is the
- *     switch that selects it, and the CLI consumes the payload file once.
+ *     auth seam (`initFromAccessToken`), which reaches the stream-json path.
+ *     `QODER_AGENT_SDK_ENTRYPOINT` selects it. The CLI consumes the file once,
+ *     so the isolated launcher writes it before every process start.
  *   - `qoderEndpointCaches` pre-seeds the endpoint-election caches, so the
  *     token exchange (`/api/v1/jobToken/exchange`), the userinfo lookup and the
  *     model call all land on `handleQoderAuthRoute` and the model endpoint in
@@ -832,11 +949,23 @@ function qoderSettings(baseURL: string): Record<string, unknown> {
  * below pin the GLOBAL site, skip the developer's rc files, keep the credential
  * store out of the macOS keychain and disable Alibaba HTTPDNS.
  */
-function qoderEnv(runDir: string): Record<string, string> {
+function qoderEnv(runDir: string, shimsDir: string): Record<string, string> {
   // The SDK auth payload is a file the CLI reads once at startup. It is NOT a
   // secret: the mock accepts any token, and no real account is reached.
   const authPayloadPath = join(runDir, 'qoder-sdk-auth.json')
-  writeJSON(authPayloadPath, { type: 'accessToken', accessToken: MODEL_KEY })
+  const authPayload = { type: 'accessToken', accessToken: MODEL_KEY }
+  writeJSON(authPayloadPath, authPayload)
+  const installedQoder = findBinary('qodercli')
+  if (installedQoder !== null && process.platform !== 'win32') {
+    writeFileSync(join(shimsDir, 'qodercli'), `#!/bin/sh
+set -eu
+if [ -z "$QODER_SDK_AUTH_PAYLOAD_FILE" ]; then
+  exit 1
+fi
+printf '%s\\n' ${posixQuote(JSON.stringify(authPayload))} > "$QODER_SDK_AUTH_PAYLOAD_FILE"
+exec ${posixQuote(installedQoder)} "$@"
+`, { mode: 0o755 })
+  }
   return {
     QODER_SITE: 'GLOBAL',
     // Pin the environment to `prod` with no region suffix. `QODER_ENV` is
@@ -908,43 +1037,42 @@ function qoderEndpointCaches(qoderHome: string, origin: string): void {
 }
 
 /**
- * Re-materializes the SDK auth payload file before one Qoder launch.
- *
- * `qodercli` DELETES `QODER_SDK_AUTH_PAYLOAD_FILE` after it reads the one-shot
- * credential, so a second agent from the same environment starts with the file
- * gone and dies with `access_token_invalid` (exit 41). The fixtures call this
- * before each agent they open; the file is a fixture artifact, not a secret.
- */
-export function refreshQoderSdkAuthPayload(agentEnv: Record<string, string>): void {
-  const path = agentEnv.QODER_SDK_AUTH_PAYLOAD_FILE
-  if (path)
-    writeJSON(path, { type: 'accessToken', accessToken: MODEL_KEY })
-}
-
-/**
  * Junie's custom model profile, as one `*.json` file of a folder that
  * `--model-location` or a `model-locations` config entry names.
  *
- * The FILE NAME is the profile identifier: `mock-model.json` is the model
- * `custom:mock-model` (`JUNIE_MOCK_MODEL`). The `id` field is the model name
- * that the ENDPOINT receives, not the profile identifier. `baseUrl` is the
- * FULL endpoint because Junie never appends `/chat/completions`.
+ * The file name is the profile identifier: `mock-model.json` selects
+ * `custom:mock-model`. The `id` field is the model name that the endpoint
+ * receives. `baseUrl` is the full endpoint for either API type.
  */
-function junieModelProfile(fullEndpoint: string): Record<string, unknown> {
+function junieModelProfile(fullEndpoint: string, apiType: 'OpenAICompletion' | 'OpenAIResponses' = 'OpenAICompletion'): Record<string, unknown> {
   return {
     id: MOCK_MODELS.junie,
-    displayName: 'Mock Model',
+    displayName: apiType === 'OpenAIResponses' ? 'Mock Responses Model' : 'Mock Model',
     providerName: 'Mock',
     baseUrl: fullEndpoint,
     apiKey: MODEL_KEY,
-    apiType: 'OpenAICompletion',
+    apiType,
     maxContextLength: 200000,
   }
 }
 
+/** A child with a file-read turn before its final answer. */
+function junieTestSubagent(): string {
+  return `---
+name: leapmux-e2e-child
+description: Read a local marker file and report its contents in an isolated test.
+model: ${JUNIE_MOCK_MODEL}
+---
+
+You are the LeapMux test subagent.
+Read the file in the task with open_entire_file.
+Then call submit with the marker you read.
+`
+}
+
 /**
  * Junie's isolated store, its install root and the one configuration file that
- * points it at the mock's model profile.
+ * points it at the mock model and custom child profile.
  *
  * `JUNIE_HOME` holds the sessions and the secrets. It is the isolated home's
  * `.junie`, so a developer's own store is never read or written.
@@ -955,18 +1083,29 @@ function junieModelProfile(fullEndpoint: string): Record<string, unknown> {
  * it at the DEVELOPER'S install root: the versions are the programs the test
  * must run, and nothing under them is session state.
  *
- * `JUNIE_CONFIG_LOCATION` names the one config file that states
- * `model-locations`. The worker launches Junie with
+ * `JUNIE_CONFIG_LOCATION` names the one config file that states the custom
+ * model and agent locations plus the isolated proxy endpoint. The worker launches Junie with
  * `--model-default-locations=false`, so neither `$JUNIE_HOME/models` nor
  * `<project>/.junie/models` is scanned; the explicit location is how the
- * environment supplies the mock's profile. Explicit config locations stay
- * enabled under that flag.
+ * environment supplies the mock's profile. The worker also sets
+ * `--agent-default-location=false`; only the test's explicit child directory
+ * supplies a custom child. Both locations stay enabled under those flags.
  */
-function junieEnv(homeDir: string, modelsDir: string, realHomeDir: string | undefined): Record<string, string> {
+function junieEnv(homeDir: string, modelsDir: string, agentsDir: string, mockOrigin: string, realHomeDir: string | undefined): Record<string, string> {
   const junieHome = join(homeDir, '.junie')
   mkdirSync(junieHome, { recursive: true })
   const configPath = join(modelsDir, 'config.json')
-  writeJSON(configPath, { 'model-locations': [modelsDir] })
+  writeJSON(configPath, {
+    'model-locations': [modelsDir],
+    'agent-locations': [agentsDir],
+    'provider': JUNIE_PROXY_PROVIDER,
+    'proxies': [{
+      'name': JUNIE_PROXY_PROVIDER,
+      'kind': 'OpenAI',
+      'api-url': mockOrigin,
+      'headers': [`Authorization: Bearer ${MODEL_KEY}`],
+    }],
+  })
   const env: Record<string, string> = {
     JUNIE_HOME: junieHome,
     JUNIE_CONFIG_LOCATION: configPath,
@@ -983,6 +1122,10 @@ function fastAgentConfig(baseURL: string): string {
 openai:
   api_key: "${MODEL_KEY}"
   base_url: "${baseURL}"
+zai:
+  api_key: "${MODEL_KEY}"
+  base_url: "${baseURL}"
+  default_model: "${MOCK_MODELS.zai}"
 `
 }
 
@@ -1000,21 +1143,22 @@ openai:
  * (`secret-tool`). Windows needs none: its store is the Win32 credential
  * manager, which no PATH entry shadows.
  *
- * A stub on the launch PATH alone does not reach Junie: the agent starts
- * through the user's shell, and the shell's startup files rebuild PATH (this
- * machine's `~/.zshenv` does, and drops every added entry). The `junie` wrapper
- * this writes re-prepends the stub directory AFTER those startup files and then
- * execs the real CLI, so the stub is first on the PATH that Junie's own probe
- * resolves. The worker launches the wrapper because `shimsDir` is first on its
- * PATH; the skip check runs in the Playwright process and finds the real CLI.
+ * A stub on the inherited PATH alone is insufficient. macOS zsh rebuilds PATH
+ * in its system login profile. The isolated zsh startup files restore the stub
+ * directory after that profile. The `junie` wrapper also restores it before it
+ * execs the installed CLI. The worker then starts the wrapper through PATH,
+ * while the Playwright skip check finds the installed CLI in its own process.
  */
+export const CREDENTIAL_STORE_SHIM_LOG = 'credential-store-attempts.log'
+
 function credentialStoreShimEnv(shimsDir: string, searchPath: string | undefined): Record<string, string> {
   if (process.platform === 'win32')
     return {}
   const stubbed = process.platform === 'darwin' ? ['security'] : ['secret-tool']
+  const logPath = join(shimsDir, CREDENTIAL_STORE_SHIM_LOG)
   for (const name of stubbed) {
     const stub = join(shimsDir, name)
-    writeFileSync(stub, `#!/bin/sh\necho "leapmux e2e: refusing to touch the system credential store" >&2\nexit 1\n`, { mode: 0o755 })
+    writeFileSync(stub, `#!/bin/sh\nprintf '%s\\n' ${posixQuote(name)} >> ${posixQuote(logPath)}\necho "leapmux e2e: refusing to touch the system credential store" >&2\nexit 1\n`, { mode: 0o755 })
   }
   const realJunie = findBinary('junie')
   if (realJunie !== null) {
@@ -1036,10 +1180,9 @@ function mockServerOrigin(value: string): string {
   return url.origin
 }
 
-function codexConfig(baseURL: string): string {
+function codexConfig(baseURL: string, mcpFormServer: string): string {
   return `model_provider = "leapmux-e2e"
 check_for_update_on_startup = false
-disable_response_storage = true
 
 # Codex consolidates its own memories in a background turn, against a model of
 # its own choice and with no user prompt. That turn would reach the mock
@@ -1048,6 +1191,15 @@ disable_response_storage = true
 generate_memories = false
 use_memories = false
 dedicated_tools = false
+
+# Codex leaves update_plan off unless its own config enables it. The E2E todo
+# case needs the native tool so its notification can reach the browser.
+[tools.update_plan]
+enabled = true
+
+[mcp_servers.form_probe]
+command = ${JSON.stringify(process.execPath)}
+args = [${JSON.stringify(mcpFormServer)}]
 
 [model_providers.leapmux-e2e]
 name = "LeapMux E2E"
@@ -1061,13 +1213,17 @@ stream_max_retries = 0
 `
 }
 
-function openCodeFamilyConfig(baseURL: string): Record<string, unknown> {
+function openCodeFamilyConfig(baseURL: string, mcpEchoServer: string): Record<string, unknown> {
   return {
     formatter: false,
     lsp: false,
+    mcp: { echo_probe: { type: 'local', command: [process.execPath, mcpEchoServer] } },
     model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`,
     provider: {
-      [MOCK_PROVIDER_IDS.openCode]: openCodeFamilyProvider(baseURL, [openCodeFamilyModel(MOCK_MODELS.zai, 'GLM-5.3 Flash')]),
+      [MOCK_PROVIDER_IDS.openCode]: openCodeFamilyProvider(baseURL, [
+        openCodeFamilyModel(MOCK_MODELS.zai, 'GLM-5.3 Flash'),
+        openCodeFamilyModel(MOCK_MODELS.pi, 'GLM-5.3'),
+      ]),
     },
   }
 }
@@ -1090,11 +1246,10 @@ const REASONING_VARIANTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 /**
  * One model of the mock provider block, with each reasoning variant.
  *
- * `variantOptions` gives the request options that each variant sets. The OpenCode
- * family merges a configured variant over its built-in one, so an empty object
- * sends no reasoning field at all.
+ * Each variant sends its effort to the mock model. The installed OpenCode family
+ * merges a configured variant over its built-in one.
  */
-function openCodeFamilyModel(id: string, name: string, variantOptions: (variant: string) => Record<string, unknown> = () => ({})): Record<string, unknown> {
+function openCodeFamilyModel(id: string, name: string): Record<string, unknown> {
   return {
     id,
     name,
@@ -1110,7 +1265,7 @@ function openCodeFamilyModel(id: string, name: string, variantOptions: (variant:
     limit: { context: 128_000, output: 16_000 },
     cost: { input: 0, output: 0 },
     options: {},
-    variants: Object.fromEntries(REASONING_VARIANTS.map(variant => [variant, variantOptions(variant)])),
+    variants: Object.fromEntries(REASONING_VARIANTS.map(variant => [variant, { reasoningEffort: variant }])),
   }
 }
 
@@ -1120,8 +1275,8 @@ function openCodeFamilyModel(id: string, name: string, variantOptions: (variant:
  *
  * - A second model, so that a spec can switch models and read the switch off
  *   the next request.
- * - Variants that send `reasoning_effort`, so that a spec can read the effort
- *   off the next request too.
+ * - The shared mock model variants send `reasoning_effort`, so a spec can read
+ *   the effort off the next request too.
  * - `enabled_providers` hides MiMo's own built-in providers, so the model menu
  *   holds the mock alone.
  * - `agent.title.disable` stops the title request that otherwise runs beside the
@@ -1131,18 +1286,21 @@ function openCodeFamilyModel(id: string, name: string, variantOptions: (variant:
  * - `snapshot` and `share` keep MiMo from writing git snapshots and from
  *   offering a public link.
  */
-function mimoCodeConfig(baseURL: string): Record<string, unknown> {
+function mimoCodeConfig(baseURL: string, mcpConfirmationServer: string, mcpEchoServer: string): Record<string, unknown> {
   const noRetry = { mode: 'bounded', maxRetries: 0 }
-  const reasoningEffort = (variant: string) => ({ reasoningEffort: variant })
   return {
-    ...openCodeFamilyConfig(baseURL),
+    ...openCodeFamilyConfig(baseURL, mcpEchoServer),
     provider: {
       [MOCK_PROVIDER_IDS.openCode]: openCodeFamilyProvider(baseURL, [
-        openCodeFamilyModel(MOCK_MODELS.zai, 'GLM-5.3 Flash', reasoningEffort),
-        openCodeFamilyModel(MOCK_MODELS.pi, 'GLM-5.3', reasoningEffort),
+        openCodeFamilyModel(MOCK_MODELS.zai, 'GLM-5.3 Flash'),
+        openCodeFamilyModel(MOCK_MODELS.pi, 'GLM-5.3'),
       ]),
     },
     enabled_providers: [MOCK_PROVIDER_IDS.openCode],
+    mcp: {
+      form_probe: { type: 'local', command: [process.execPath, mcpConfirmationServer] },
+      echo_probe: { type: 'local', command: [process.execPath, mcpEchoServer] },
+    },
     agent: { title: { disable: true } },
     autoupdate: false,
     share: 'disabled',
@@ -1152,27 +1310,38 @@ function mimoCodeConfig(baseURL: string): Record<string, unknown> {
 }
 
 function piModels(baseURL: string): Record<string, unknown> {
+  const model = (id: string, name: string) => ({
+    id,
+    name,
+    reasoning: true,
+    input: ['text', 'image'],
+    contextWindow: 128_000,
+    maxTokens: 16_000,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  })
   return {
     providers: {
       [PI_PROVIDER_ID]: {
         baseUrl: baseURL,
         api: 'openai-completions',
         apiKey: MODEL_KEY,
-        models: [{
-          id: MOCK_MODELS.pi,
-          name: 'GLM-5.3',
-          reasoning: true,
-          input: ['text'],
-          contextWindow: 128_000,
-          maxTokens: 16_000,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        }],
+        models: [model(MOCK_MODELS.pi, 'GLM-5.3'), { ...model(MOCK_MODELS.zai, 'GLM-5.3 Flash'), compat: { supportsReasoningEffort: true } }],
       },
     },
   }
 }
 
 function ohMyPiModels(baseURL: string): Record<string, unknown> {
+  const primary = {
+    id: MOCK_MODELS.ohMyPi,
+    name: 'GLM-5.3',
+    // A reasoning model, so the thinking-level axis exists.
+    reasoning: true,
+    input: ['text', 'image'],
+    contextWindow: 128_000,
+    maxTokens: 16_000,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  }
   return {
     providers: {
       [MOCK_PROVIDER_IDS.ohMyPi]: {
@@ -1181,16 +1350,7 @@ function ohMyPiModels(baseURL: string): Record<string, unknown> {
         // literally only when no variable has that name.
         apiKey: 'LEAPMUX_E2E_MODEL_API_KEY',
         api: 'openai-completions',
-        models: [{
-          id: MOCK_MODELS.ohMyPi,
-          name: 'GLM-5.3',
-          // A reasoning model, so the thinking-level axis exists.
-          reasoning: true,
-          input: ['text', 'image'],
-          contextWindow: 128_000,
-          maxTokens: 16_000,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        }],
+        models: [primary, { ...primary, id: OH_MY_PI_ALT_MODEL_WIRE_ID, name: 'GLM-5.3 Alternate' }],
       },
     },
   }
@@ -1310,7 +1470,7 @@ function ohMyPiConfig(): Record<string, unknown> {
     title: { refreshOnReplan: false },
     recap: { enabled: false },
     images: { describeForTextModels: false },
-    compaction: { asyncEnabled: false },
+    compaction: { asyncEnabled: false, keepRecentTokens: 128 },
     magicKeywords: { enabled: false },
     todo: { reminders: false },
     retry: { enabled: false },
@@ -1356,6 +1516,19 @@ max_output_tokens = 16000
 reasoning_protocol = "openai"
 supported_efforts = ["low", "medium", "high"]
 default_effort = "high"
+vision_models = ["${MOCK_MODELS.deepseek}"]
+
+[[providers]]
+name = "${REASONIX_ALT_PROVIDER_ID}"
+kind = "openai"
+base_url = "${baseURL}"
+model = "${MOCK_MODELS.pi}"
+api_key_env = "LEAPMUX_E2E_MODEL_API_KEY"
+context_window = 128000
+max_output_tokens = 16000
+reasoning_protocol = "openai"
+supported_efforts = ["low", "medium", "high"]
+default_effort = "high"
 `
 }
 
@@ -1385,7 +1558,7 @@ allow_shell = true
 [providers.${CODEWHALE_PROVIDER_ID}]
 base_url = "${baseURL}"
 api_key = "${MODEL_KEY}"
-model = "${MOCK_MODELS.deepseek}"
+model = "${CODEWHALE_VISION_MODEL_ID}"
 
 [tools]
 user_input_timeout_seconds = 0
@@ -1402,6 +1575,39 @@ enabled = false
 [reasoning_only]
 max_reprompts = 0
 `
+}
+
+/** Codewhale accepts image input only from a fresh catalog for this endpoint. */
+function codewhaleCatalog(baseURL: string): Record<string, unknown> {
+  const fingerprint = createHash('sha256').update(baseURL).digest('hex')
+  const fetchedAt = Math.floor(Date.now() / 1000)
+  const provider = `${CODEWHALE_PROVIDER_ID}:${CODEWHALE_PROVIDER_ID}`
+  const offering = (model: string, endpoint: string, image: boolean, isDefault: boolean) => ({
+    provider: CODEWHALE_PROVIDER_ID,
+    wire_model_id: model,
+    endpoint_key: endpoint,
+    default_for_provider: isDefault,
+    modalities: { input: image ? ['text', 'image'] : ['text'], output: ['text'] },
+    source: { kind: 'live', base_url_fingerprint: fingerprint, fetched_at: fetchedAt },
+  })
+  return {
+    schema_version: 2,
+    cache: {
+      entries: {
+        [`${provider}\x1F${fingerprint}`]: {
+          provider,
+          base_url_fingerprint: fingerprint,
+          fetched_at: fetchedAt,
+          ttl_secs: 86_400,
+          offerings: [
+            offering(MOCK_MODELS.deepseek, 'responses', false, true),
+            offering(CODEWHALE_VISION_MODEL_ID, 'chat', true, false),
+          ],
+          status: { state: 'fresh' },
+        },
+      },
+    },
+  }
 }
 
 /**
@@ -1494,6 +1700,14 @@ id = "high"
 value = "high"
 label = "High"
 default = false
+
+[model."${GROK_ALT_MODEL_ID}"]
+model = "${GROK_ALT_MODEL_ID}"
+base_url = "${baseURL}"
+name = "Grok E2E Alternate"
+api_key = "${MODEL_KEY}"
+api_backend = "chat_completions"
+context_window = 128000
 `
 }
 
@@ -1527,20 +1741,22 @@ function kiroSettings(origin: string): Record<string, unknown> {
  * and the follow-up suggestions each send a model request after a turn. The
  * to-do tool and workflows are opt-in, and a spec uses both.
  */
-function qwenSettings(baseURL: string): Record<string, unknown> {
+function qwenSettings(baseURL: string, mcpEchoServer: string): Record<string, unknown> {
+  const primary = {
+    id: MOCK_MODELS.qwen,
+    name: 'Qwen E2E',
+    baseUrl: baseURL,
+    envKey: 'LEAPMUX_E2E_MODEL_API_KEY',
+    capabilities: { vision: true, reasoning: { thinking: true, efforts: ['low', 'medium', 'high'], defaultEffort: 'high', disableField: 'reasoning_effort' } },
+    generationConfig: { contextWindowSize: 128_000, modalities: { image: true, pdf: true } },
+  }
   return {
     $version: 4,
     security: { auth: { selectedType: QWEN_AUTH_TYPE } },
     model: { name: MOCK_MODELS.qwen },
+    mcpServers: { echo_probe: { command: process.execPath, args: [mcpEchoServer] } },
     modelProviders: {
-      [QWEN_AUTH_TYPE]: [{
-        id: MOCK_MODELS.qwen,
-        name: 'Qwen E2E',
-        baseUrl: baseURL,
-        envKey: 'LEAPMUX_E2E_MODEL_API_KEY',
-        capabilities: { reasoning: { thinking: true, efforts: ['low', 'medium', 'high'], defaultEffort: 'high', disableField: 'reasoning_effort' } },
-        generationConfig: { contextWindowSize: 128_000 },
-      }],
+      [QWEN_AUTH_TYPE]: [primary, { ...primary, id: QWEN_ALT_MODEL_WIRE_ID, name: 'Qwen E2E Alternate' }],
     },
     tools: { approvalMode: 'default', todoWrite: { enabled: true }, workflowsEnabled: true },
     memory: { enableManagedAutoMemory: false, enableManagedAutoDream: false },
@@ -1567,6 +1783,13 @@ function zcodeLegacyConfig(baseURL: string): Record<string, unknown> {
             modalities: { input: ['text'], output: ['text'] },
             zcode: { priority: 0 },
           },
+          [MOCK_MODELS.pi]: {
+            name: MOCK_MODELS.pi,
+            reasoning: { enabled: true, variants: ['low', 'medium', 'high'], defaultVariant: 'high' },
+            limit: { context: 128_000, output: 16_000 },
+            modalities: { input: ['text'], output: ['text'] },
+            zcode: { priority: 1 },
+          },
         },
       },
     },
@@ -1589,14 +1812,14 @@ function zcodePersonalConfig(baseURL: string): Record<string, unknown> {
             group: 'standard-personal',
             access: { type: 'api-key', apiKey: MODEL_KEY },
             api: { type: 'openai-chat-completions', baseUrl: baseURL },
-            personalModelIds: [modelID],
-            modelOrder: [modelID],
+            personalModelIds: [modelID, MOCK_MODELS.pi],
+            modelOrder: [modelID, MOCK_MODELS.pi],
             visibility: 'visible',
           },
         }],
       },
       modelConfigRules: {
-        providerModelRules: [{ providerId: providerID, modelId: modelID, config: { enabled: true } }],
+        providerModelRules: [modelID, MOCK_MODELS.pi].map(id => ({ providerId: providerID, modelId: id, config: { enabled: true } })),
         manualProviderModelRules: [],
       },
       defaultModelSelection: {

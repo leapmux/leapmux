@@ -383,10 +383,10 @@ export interface ProviderSessionCapability {
    * notification extractor, so `messageParser` holds no provider shape and the two
    * readers cannot disagree about what a boundary is.
    *
-   * Claude, Codex, Pi, Copilot, Kimi Code, Oh My Pi and Cline supply it, and a plugin that omits
+   * Claude, Codex, Pi, Copilot, Kimi Code, Oh My Pi, Cline and Qoder supply it. A plugin that omits
    * it has no boundary with a size to read. The Agent Client Protocol family carries none
    * on that stream: OpenCode, for example, compacts behind an internal agent and reports a
-   * `compacting` status alone, which states no size. ZCode emits no boundary either,
+   * `compacting` status alone, which states no size. ZCode emits a completed state without size,
    * MiMo Code's compaction part states a summary and no size, Codewhale runs a
    * compaction as a turn of its own, and Amp's stream states no compaction at all.
    * The grid therefore holds its pre-compaction reading for those providers until the next

@@ -1,0 +1,127 @@
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { DIRAC_E2E_SKIP_REASON, diracTest, expect, openDiracAgent } from './dirac-fixtures'
+import { diracRespondToolCall, spawnSubagentToolCall } from './helpers/providerToolCalls'
+import { expandBackgroundTasksSection, openChildTabFromRow } from './helpers/subagentRegistry'
+import { assistantBubbles, openWorkspace, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './helpers/ui'
+
+diracTest.skip(!!DIRAC_E2E_SKIP_REASON, DIRAC_E2E_SKIP_REASON || '')
+
+const PROVIDER = AgentProvider.DIRAC
+const CHILD_TASK = 'Count the files and report one number.'
+
+diracTest.describe('Dirac subagent transcript', () => {
+  diracTest('opens each child transcript in its own tab', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+    await openDiracAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const childPrompt = modelScript.prompt(CHILD_TASK)
+    const childAnswer = modelScript.prompt('DIRAC_CHILD_DONE')
+
+    await modelScript.rule(
+      {
+        name: 'the Dirac child reports its count',
+        when: { body: CHILD_TASK },
+        respond: {
+          text: 'DIRAC_CHILD_ARCHIVE_ONLY',
+          toolCalls: [diracRespondToolCall('dirac-child-done', 'complete', childAnswer)],
+          gate: 'dirac-child-reply',
+        },
+        once: true,
+      },
+      {
+        name: 'the Dirac parent completes after the child',
+        when: { body: 'Subagent results:' },
+        respond: { toolCalls: [diracRespondToolCall('dirac-root-done', 'complete', 'DIRAC_ROOT_DONE')] },
+        once: true,
+      },
+    )
+    await modelScript.queue({ toolCalls: [spawnSubagentToolCall(PROVIDER, 'dirac-spawn', { description: 'Count files', prompt: childPrompt })] })
+    await sendMessage(page, modelScript.prompt('Delegate the count, then report.'))
+    await modelScript.waitForGate('dirac-child-reply')
+
+    await expandBackgroundTasksSection(page)
+    const child = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: 'Count files' }).first()
+    await expect(child).toBeVisible()
+    await expect.poll(async () => await child.getAttribute('data-child-agent-id') ?? '').not.toBe('')
+    await openChildTabFromRow(page, child)
+    await expect(userBubbles(page).filter({ hasText: childPrompt }).first()).toBeVisible()
+
+    await modelScript.releaseGate('dirac-child-reply')
+    await modelScript.waitForSteps()
+    await waitForAgentIdle(page, 180_000)
+    await expect(assistantBubbles(page).filter({ hasText: 'DIRAC_CHILD_DONE' }).first()).toBeVisible()
+    await expect(assistantBubbles(page).filter({ hasText: 'DIRAC_CHILD_ARCHIVE_ONLY' }).first()).toBeVisible()
+    await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'DIRAC_CHILD_DONE' }).first()).toBeVisible()
+    const answers = await assistantBubbles(page).allTextContents()
+    expect(answers.findIndex(text => text.includes('DIRAC_CHILD_ARCHIVE_ONLY')))
+      .toBeLessThan(answers.findIndex(text => text.includes('DIRAC_CHILD_DONE')))
+    expect((await modelScript.status()).ruleMatches['the Dirac child reports its count']).toBe(1)
+  })
+
+  diracTest('opens a new child tab when a cleared session reuses the native call id', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+    const { agentId } = await openDiracAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const runs = [
+      { task: 'FIRSTCHILDTASK count the first set.', description: 'First child count', archive: 'DIRACFIRSTARCHIVE', report: 'DIRACFIRSTREPORT', root: 'DIRACFIRSTROOT' },
+      { task: 'SECONDCHILDTASK count the second set.', description: 'Second child count', archive: 'DIRACSECONDARCHIVE', report: 'DIRACSECONDREPORT', root: 'DIRACSECONDROOT' },
+    ] as const
+    let previousChildID = ''
+    let previousPrompt = ''
+    let previousArchive = ''
+
+    for (const [index, run] of runs.entries()) {
+      if (index > 0) {
+        await sendMessage(page, '/clear')
+        await expect(visibleOnly(page.getByText('Context cleared'))).toBeVisible()
+      }
+      const childPrompt = modelScript.prompt(run.task)
+      await modelScript.rule(
+        {
+          name: `dirac-${index}-child`,
+          when: { body: run.task },
+          respond: {
+            text: run.archive,
+            toolCalls: [diracRespondToolCall(`dirac-${index}-child-done`, 'complete', modelScript.prompt(run.report))],
+          },
+          once: true,
+        },
+        {
+          name: `dirac-${index}-parent`,
+          when: { body: 'Subagent results:' },
+          respond: { toolCalls: [diracRespondToolCall(`dirac-${index}-root-done`, 'complete', run.root)] },
+          once: true,
+        },
+      )
+      await modelScript.queue({
+        toolCalls: [spawnSubagentToolCall(PROVIDER, 'dirac-reused-child-call', { description: run.description, prompt: childPrompt })],
+      })
+      await sendMessage(page, modelScript.prompt(`Delegate ${run.description}.`))
+      await modelScript.waitForSteps()
+      await waitForAgentIdle(page, 180_000)
+
+      await expandBackgroundTasksSection(page)
+      const row = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: run.description }).first()
+      await expect(row).toHaveAttribute('data-status', 'completed')
+      const childID = await row.getAttribute('data-child-agent-id')
+      expect(childID).toBeTruthy()
+      if (previousChildID)
+        expect(childID).not.toBe(previousChildID)
+      await openChildTabFromRow(page, row)
+      await expect(userBubbles(page).filter({ hasText: childPrompt }).first()).toBeVisible()
+      await expect(assistantBubbles(page).filter({ hasText: run.archive }).first()).toBeVisible()
+      await expect(assistantBubbles(page).filter({ hasText: run.report }).first()).toBeVisible()
+      if (previousChildID) {
+        await expect(userBubbles(page).filter({ hasText: previousPrompt })).toHaveCount(0)
+        await expect(assistantBubbles(page).filter({ hasText: previousArchive })).toHaveCount(0)
+      }
+      const answers = await assistantBubbles(page).allTextContents()
+      expect(answers.findIndex(text => text.includes(run.archive))).toBeLessThan(answers.findIndex(text => text.includes(run.report)))
+      const status = await modelScript.status()
+      expect(status.ruleMatches[`dirac-${index}-child`]).toBe(1)
+      expect(status.ruleMatches[`dirac-${index}-parent`]).toBe(1)
+      previousChildID = childID ?? ''
+      previousPrompt = childPrompt
+      previousArchive = run.archive
+      await tabById(page, agentId).click()
+    }
+  })
+})

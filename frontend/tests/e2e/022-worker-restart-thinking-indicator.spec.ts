@@ -1,8 +1,8 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT } from './helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, waitForAgentIdle } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
-test.describe('Worker Restart Thinking Indicator', () => {
+test.describe('worker restart thinking indicator', () => {
   test('should hide thinking indicator when worker goes offline during agent turn', async ({ separateHubWorker, page, modelScript }) => {
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId } = separateHubWorker
@@ -68,6 +68,7 @@ test.describe('Worker Restart Thinking Indicator', () => {
 
       // Wait for the assistant's response
       await expectAssistantAnswer(page)
+      await waitForAgentIdle(page)
 
       // Stop the worker
       await stopWorker(separateHubWorker)
@@ -80,41 +81,51 @@ test.describe('Worker Restart Thinking Indicator', () => {
       // Restart the worker
       await restartWorker(separateHubWorker)
 
-      // Thinking indicator should still be hidden (agent not auto-restarted)
+      // The Worker restarts the agent process. Its idle turn shows no thinking indicator.
       await expect(thinkingIndicator).not.toBeVisible()
 
       // Install a MutationObserver BEFORE sending the message so we can
       // detect even a brief flash of the thinking indicator.
       await page.evaluate(() => {
-        (window as any).__thinkingIndicatorSeen = false
+        Reflect.set(window, '__thinkingIndicatorSeen', false)
         const observer = new MutationObserver(() => {
           if (document.querySelector('[data-testid="thinking-indicator"]')) {
-            (window as any).__thinkingIndicatorSeen = true
+            Reflect.set(window, '__thinkingIndicatorSeen', true)
             observer.disconnect()
           }
         })
+        Reflect.set(window, '__thinkingIndicatorObserver', observer)
         observer.observe(document.body, { childList: true, subtree: true })
         // Also check immediately in case it's already visible.
         if (document.querySelector('[data-testid="thinking-indicator"]')) {
-          (window as any).__thinkingIndicatorSeen = true
+          Reflect.set(window, '__thinkingIndicatorSeen', true)
           observer.disconnect()
         }
       })
 
-      // Send a new message — agent should restart and respond. The answer
-      // ("3333") must not be a substring of the first answer ("6912"), which is
-      // still on screen, or this wait would match the stale bubble.
-      await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
-      await editor.click()
-      await page.keyboard.type(modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
-      await page.keyboard.press('Meta+Enter')
+      let sawThinking = false
+      try {
+        // A new message reaches the resumed agent. The distinct answer cannot
+        // match the first turn's saved bubble.
+        await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
+        await editor.click()
+        await page.keyboard.type(modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
+        await page.keyboard.press('Meta+Enter')
+        await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
+      }
+      finally {
+        sawThinking = await page.evaluate(() => {
+          const observer = Reflect.get(window, '__thinkingIndicatorObserver')
+          if (observer instanceof MutationObserver)
+            observer.disconnect()
+          Reflect.deleteProperty(window, '__thinkingIndicatorObserver')
+          const seen = Reflect.get(window, '__thinkingIndicatorSeen') === true
+          Reflect.deleteProperty(window, '__thinkingIndicatorSeen')
+          return seen
+        })
+      }
 
-      // Wait for the assistant's response containing "3333"
-      await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
-
-      // Verify that the thinking indicator was shown at some point during
-      // the turn, even if only briefly before streaming began.
-      const sawThinking = await page.evaluate(() => (window as any).__thinkingIndicatorSeen)
+      // Detect even a short indicator before streaming starts.
       expect(sawThinking).toBe(true)
     }
     finally {

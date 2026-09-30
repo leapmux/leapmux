@@ -182,8 +182,6 @@ func isTextAttachmentMimeType(mimeType string) bool {
 		strings.HasSuffix(mimeType, "+xml")
 }
 
-// ValidateAttachment defaults to accepting every classified attachment. Providers with no
-// restriction (Cursor, Copilot, Kilo, OpenCode, Goose) and unknown providers (via the
-// ProviderDefaults that Registry.Plugin answers for them) inherit this; an ACP provider reaches it
-// through its ProviderDefaults embedding unless its own plugin type states a restrictive policy.
+// ValidateAttachment accepts every classified attachment by default. A provider
+// overrides this method when its native transport cannot send an attachment kind.
 func (ProviderDefaults) ValidateAttachment(ClassifiedAttachment) error { return nil }

@@ -1,6 +1,7 @@
 package letta
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -18,17 +19,69 @@ import (
 // live accept. A failed lookup must not fall back to create_*, which would
 // start a NEW conversation in place of the one the caller asked for.
 
-// lettaResumeStore writes one conversation record under a temp store and
-// points the process environment at it. t.Setenv requires a non-parallel test.
+// lettaFixtureConversationDir calculates the native encoded directory in a
+// test independently of the provider's path builder.
+func lettaFixtureConversationDir(backend, id string) string {
+	key := base64.RawURLEncoding.EncodeToString([]byte("conversation:" + id))
+	return filepath.Join(backend, lettaConversationsDir, key)
+}
+
+// lettaResumeStore writes one conversation record under the native encoded
+// directory and points the process environment at it. t.Setenv requires a
+// non-parallel test.
 func lettaResumeStore(t *testing.T, id, agentID string) string {
 	t.Helper()
 	backend := t.TempDir()
-	conv := filepath.Join(backend, lettaConversationsDir, id)
+	conv := lettaFixtureConversationDir(backend, id)
 	require.NoError(t, os.MkdirAll(conv, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(conv, lettaConversationFile),
 		[]byte(`{"id":"`+id+`","agent_id":"`+agentID+`"}`), 0o644))
 	t.Setenv(lettaBackendDirEnv, backend)
 	return backend
+}
+
+func TestLettaResumeAgentIDRejectsAMismatchedRecord(t *testing.T) {
+	backend := lettaResumeStore(t, "local-conv-1", "agent-local-1")
+	path := filepath.Join(lettaFixtureConversationDir(backend, "local-conv-1"), lettaConversationFile)
+	require.NoError(t, os.WriteFile(path, []byte(`{"id":"another-conversation","agent_id":"agent-local-1"}`), 0o644))
+
+	_, err := lettaResumeAgentID(resumeOptions("local-conv-1"), "local-conv-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match")
+}
+
+func TestLettaStoredSessionsSkipsAmbiguousDefaultConversation(t *testing.T) {
+	backend := t.TempDir()
+	t.Setenv(lettaBackendDirEnv, backend)
+	key := base64.RawURLEncoding.EncodeToString([]byte("default:agent-local-1"))
+	dir := filepath.Join(backend, lettaConversationsDir, key)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, lettaConversationFile),
+		[]byte(`{"id":"default","agent_id":"agent-local-1"}`), 0o644))
+
+	sessions, err := lettaStoredSessions(t.Context(), agent.StoredSessionQuery{WorkingDir: "/work", HomeDir: t.TempDir()})
+	require.NoError(t, err)
+	assert.Empty(t, sessions, "a default conversation needs its agent id to resume safely")
+}
+
+func TestLettaStoredSessionsRejectsWrongDirectoryKey(t *testing.T) {
+	backend := t.TempDir()
+	t.Setenv(lettaBackendDirEnv, backend)
+	dir := filepath.Join(backend, lettaConversationsDir, "local-conv-1")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, lettaConversationFile),
+		[]byte(`{"id":"local-conv-1","agent_id":"agent-local-1"}`), 0o644))
+
+	sessions, err := lettaStoredSessions(t.Context(), agent.StoredSessionQuery{WorkingDir: "/work", HomeDir: t.TempDir()})
+	require.NoError(t, err)
+	assert.Empty(t, sessions, "a record in a nonnative directory cannot resume")
+}
+
+func TestLettaResumeAgentIDRejectsDefaultConversation(t *testing.T) {
+	t.Parallel()
+	_, err := lettaResumeAgentID(agent.Options{HomeDir: t.TempDir()}, "default")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "needs an agent id")
 }
 
 // resumeOptions returns options that resume the stated conversation.
@@ -56,6 +109,7 @@ func TestOpenConversationResumeNamesTheStoredPair(t *testing.T) {
 	assert.NotContains(t, command, "create_conversation", "a resume never creates a conversation")
 
 	fake.replies <- []byte(`{"type":"runtime_start_response","request_id":"rs-1","success":true,"runtime":{"agent_id":"agent-local-1","conversation_id":"local-conv-1"}}`)
+	fake.answerModelCatalog(t)
 	select {
 	case err := <-returned:
 		require.NoError(t, err, "the response settles the resume handshake")
@@ -138,6 +192,7 @@ func TestOpenConversationCreatePathStillCreates(t *testing.T) {
 	assert.NotContains(t, command, "conversation_id", "the create path never names an existing conversation")
 
 	fake.replies <- []byte(lettaLiveRuntimeStartResponse)
+	fake.answerModelCatalog(t)
 	select {
 	case err := <-returned:
 		require.NoError(t, err)

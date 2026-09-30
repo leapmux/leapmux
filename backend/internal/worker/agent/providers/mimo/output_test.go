@@ -548,6 +548,27 @@ func TestCompactionNotifications(t *testing.T) {
 	assert.JSONEq(t, string(ended), string(notifications[1].Content))
 }
 
+func TestAutoCompactionKeepsTheTurnUntilNativeIdle(t *testing.T) {
+	t.Parallel()
+	a, sink, server := newSinkTestAgent(t)
+	started := eventJSON(t, contracts.MiMoEventMessagePartUpdated, map[string]any{"part": map[string]any{
+		"id": "prt_auto", "messageID": "msg_auto", "sessionID": testSessionID,
+		"type": contracts.MiMoPartTypeCompaction, "auto": true,
+	}})
+	ended := eventJSON(t, contracts.MiMoEventMessagePartUpdated, map[string]any{"part": map[string]any{
+		"id": "prt_auto", "messageID": "msg_auto", "sessionID": testSessionID,
+		"type": contracts.MiMoPartTypeCompaction, "auto": true,
+		"projection": map[string]any{"summary": "The context is ready."},
+	}})
+
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy), messageEvent(t, "msg_auto", roleUser, mainActorID, false), started, ended)
+	assert.Equal(t, []bool{true}, sink.TurnActives())
+	assert.ErrorIs(t, a.SendInput("next", nil), agent.ErrAgentBusy)
+	assert.Empty(t, server.requestsTo("POST /session/ses_test/prompt_async"))
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle))
+	assert.Equal(t, []bool{true, false}, sink.TurnActives())
+}
+
 func TestUsageReadout(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSinkTestAgent(t)

@@ -1,6 +1,7 @@
 import {
   ARITHMETIC_ANSWER_TEXT,
   ARITHMETIC_PROMPT,
+  bandRows,
   expectAssistantAnswer,
   messageContents,
   sendMessage,
@@ -12,11 +13,9 @@ import { expect, LETTA_E2E_SKIP_REASON, LETTA_TITLE_RULE, lettaTest } from './le
 /**
  * 262 — Letta Code basic chat.
  *
- * The worker starts one `letta server --listen` App Server for the agent and
- * sends each prompt as a `create_message` input over the protocol_v2 WebSocket.
- * Letta asks the mock through its `openai-compatible` provider. One scripted
- * turn proves that a prompt reaches the model and that the answer reaches the
- * chat, and that the turn end closes the turn.
+ * The worker sends each prompt over Letta's protocol_v2 WebSocket. Letta asks
+ * the mock through its `openai-compatible` provider. The transcript shows the
+ * model answer and the turn end.
  */
 lettaTest.skip(!!LETTA_E2E_SKIP_REASON, LETTA_E2E_SKIP_REASON || '')
 
@@ -59,5 +58,18 @@ lettaTest.describe('Letta Code basic chat', () => {
 
     const request = status.requests.find(record => record.stepIndex === 0)
     expect(JSON.stringify(request?.body)).toContain('1234 + 5678')
+  })
+
+  lettaTest('draws model reasoning in a thought band', async ({ authenticatedReasoningLettaWorkspace, page, modelScript }) => {
+    void authenticatedReasoningLettaWorkspace
+    const reasoning = 'LETTA_THOUGHT_MARKER I compare the two values.'
+    await modelScript.rule(LETTA_TITLE_RULE)
+    await modelScript.queue({ reasoning, text: 'The answer is 6912.' })
+    await sendMessage(page, modelScript.prompt('Add 1234 and 5678.'))
+    await modelScript.waitForSteps()
+    await waitForAgentIdle(page, 180_000)
+
+    await expect(bandRows(page, 'thought').filter({ hasText: reasoning }).first()).toBeVisible()
+    await expect(bandRows(page, 'text').filter({ hasText: reasoning })).toHaveCount(0)
   })
 })

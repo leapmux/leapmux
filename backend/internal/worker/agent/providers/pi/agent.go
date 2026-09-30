@@ -251,6 +251,26 @@ func (a *Agent) preparePiInput(expected *string, content string, attachments []*
 	if !steer && turnActive {
 		return nil, agent.ErrAgentBusy
 	}
+	if instructions, compact := piCompactInstruction(content); compact && !steer {
+		if len(attachments) > 0 {
+			return nil, fmt.Errorf("pi compaction does not accept attachments")
+		}
+		payload := map[string]any{}
+		if instructions != "" {
+			payload["customInstructions"] = instructions
+		}
+		wait, err := a.beginPiCommand(CommandCompact, payload)
+		if err != nil {
+			return nil, err
+		}
+		return func() error {
+			_, err := wait(0)
+			// Compaction ends without agent_end. Publish the idle turn after the
+			// native compact response so queued input can proceed.
+			a.PublishTurnActive()
+			return err
+		}, nil
+	}
 
 	classified := agent.ClassifyAttachments(attachments)
 

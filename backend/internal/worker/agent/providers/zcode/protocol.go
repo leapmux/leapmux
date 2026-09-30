@@ -28,11 +28,12 @@ const (
 	// host supplies the active account plans with this method.
 	MethodUpdateAccountConfig = "provider/updateAccountConfig"
 
-	MethodSessionCreate = "session/create"
-	MethodSessionResume = "session/resume"
-	MethodSessionRead   = "session/read"
-	MethodSessionSend   = "session/send"
-	MethodSessionStop   = "session/stop"
+	MethodSessionCreate  = "session/create"
+	MethodSessionResume  = "session/resume"
+	MethodSessionRead    = "session/read"
+	MethodSessionSend    = "session/send"
+	MethodSessionStop    = "session/stop"
+	MethodSessionCompact = "session/compact"
 
 	MethodSessionSubscribe = "session/subscribe"
 
@@ -63,10 +64,6 @@ const (
 	// {sessionId, seq, type, payload} envelope whose `type` is one of the
 	// ZCodeEvent* constants below.
 	NotifySessionEvent = "session/event"
-	// NotifyStateUpdated is a SESSION-SETTINGS patch, not a session event. It
-	// arrives at the top level (never wrapped in session/event) whenever the model,
-	// mode, thought level, or run status changes -- including mid-turn.
-	NotifyStateUpdated = "state.updated"
 )
 
 // ZCode session event types (the `type` field inside a session/event envelope).

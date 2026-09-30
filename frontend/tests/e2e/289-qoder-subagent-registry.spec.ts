@@ -1,5 +1,6 @@
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { spawnSubagentToolCall } from './helpers/providerToolCalls'
+import { attachQoderWorkerFrames } from './helpers/qoderWorkerFrames'
 import {
   expectNoRegistryRows,
   expectRowBecomesFinal,
@@ -7,24 +8,27 @@ import {
   requireRegistryRow,
 } from './helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { listAgentsViaAPI } from './helpers/worktree'
 import { expect, QODER_E2E_SKIP_REASON, qoderTest } from './qoder-fixtures'
 
 /**
  * 289 — Qoder CLI subagent registry.
  *
- * The `Agent` tool spawns a child agent. In Default mode the spawn raises a
- * banner first; allowing it draws a row in the Background tasks section, and
- * the row opens the child's own transcript tab. The child's model call holds
- * its task as the last user text, so a rule answers it out of order from the
- * parent's turns.
+ * The `Agent` tool spawns a child agent. Qoder's Default policy autoallows this
+ * tool. The registry row opens the child's own transcript tab. The child's
+ * model call holds its task as the last user text, so a rule answers it out of
+ * order from the parent's turns.
  */
 qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
 
 const PROVIDER = AgentProvider.QODER
 
 qoderTest.describe('Qoder CLI subagent registry', () => {
-  qoderTest('follows one subagent from its spawn to its report, with its own transcript', async ({ askingQoderWorkspace, page, modelScript }) => {
-    void askingQoderWorkspace
+  qoderTest('follows one subagent from its spawn to its report, with its own transcript', async ({ askingQoderWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, askingQoderWorkspace.workspaceId)
+    expect(agents).toHaveLength(1)
+    const rootAgentId = agents[0]!.id
     await expectNoRegistryRows(page)
 
     await modelScript.rule({
@@ -43,19 +47,12 @@ qoderTest.describe('Qoder CLI subagent registry', () => {
     )
     await sendMessage(page, modelScript.prompt('Delegate one word to a subagent.'))
 
-    // The spawn is a delegated tool call, so Default asks first. Wait for the
-    // model's answer before the banner: an agent process takes tens of seconds
-    // to start, and the banner assertion's own timeout would otherwise expire
-    // before the turn runs.
-    await modelScript.waitForSteps(1)
-    const banner = page.getByTestId('control-banner').filter({ visible: true })
-    await expect(banner).toContainText('Agent')
-    await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
+    await modelScript.waitForSteps()
+    await waitForAgentIdle(page, 180_000)
+    await attachQoderWorkerFrames(testInfo, leapmuxServer, rootAgentId)
 
     const row = await requireRegistryRow(page)
     await expect(row).toContainText('Ask for one word')
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
 
     await expectRowBecomesFinal(page, row)
     await expect(row).toHaveAttribute('data-status', 'completed')
@@ -63,6 +60,9 @@ qoderTest.describe('Qoder CLI subagent registry', () => {
     await expect(assistantBubbles(page).filter({ hasText: 'The subagent reported PONG.' })).toBeVisible()
 
     await expect.poll(async () => await row.getAttribute('data-child-agent-id') ?? '').not.toBe('')
+    const childAgentId = await row.getAttribute('data-child-agent-id')
+    expect(childAgentId).toBeTruthy()
+    await attachQoderWorkerFrames(testInfo, leapmuxServer, childAgentId!, 'child')
     await openChildTabFromRow(page, row)
     await expect(assistantBubbles(page).filter({ hasText: 'PONG' }).first()).toBeVisible()
   })

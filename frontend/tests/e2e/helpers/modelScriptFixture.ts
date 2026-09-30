@@ -6,8 +6,10 @@ import {
   mockScenarioPrompt,
   readScenarioStatus,
   registerMockModelScenario,
+  releaseMockModelGate,
   removeMockModelScenario,
 } from './mockModelScenario'
+import { validateGateName } from './mockModelScript'
 import { getGlobalState } from './server'
 
 /** Long enough for an agent process to start and run a turn on a loaded machine. */
@@ -77,6 +79,10 @@ export interface ModelScript {
    * returns before the turn begins and the test then reads an empty transcript.
    */
   waitForSteps: (count?: number, timeoutMs?: number) => Promise<MockModelScenarioStatus>
+  /** Wait until a scripted model request stops at gate. */
+  waitForGate: (gate: string, timeoutMs?: number) => Promise<MockModelScenarioStatus>
+  /** Release the model requests that wait at gate. */
+  releaseGate: (gate: string) => Promise<void>
   /**
    * Accept an unconsumed queue at teardown, for the stated reason.
    *
@@ -117,6 +123,8 @@ export async function startModelScript(serverURL: string, options: ModelScriptOp
     fallback: step => extendMockModelScenario(serverURL, id, { fallback: step }),
     status: () => readScenarioStatus(serverURL, id),
     waitForSteps: (count = queued, timeoutMs = STEP_WAIT_TIMEOUT_MS) => waitForSteps(serverURL, id, count, timeoutMs, options.testDeadline?.()),
+    waitForGate: (gate, timeoutMs = STEP_WAIT_TIMEOUT_MS) => waitForGate(serverURL, id, gate, timeoutMs, options.testDeadline?.()),
+    releaseGate: gate => releaseMockModelGate(serverURL, id, gate),
     allowUnconsumed: (reason) => {
       if (!reason)
         throw new Error('allowUnconsumed needs the reason the queue stays unconsumed')
@@ -153,13 +161,7 @@ async function waitForSteps(
   timeoutMs: number,
   testDeadline: number | undefined,
 ): Promise<MockModelScenarioStatus> {
-  const started = Date.now()
-  const beforeTestEnds = testDeadline === undefined ? Infinity : testDeadline - STEP_WAIT_REPORT_MARGIN_MS
-  const deadline = Math.min(started + timeoutMs, beforeTestEnds)
-  // The limit that applied, stated as a number, so the message is the same on every run.
-  const limit = deadline === beforeTestEnds
-    ? `${Math.max(0, deadline - started)}ms, before the test's own timeout`
-    : `${timeoutMs}ms`
+  const { deadline, limit } = waitDeadline(timeoutMs, testDeadline)
   let status = await readScenarioStatus(serverURL, id)
   while (status.nextStep < count) {
     if (Date.now() >= deadline)
@@ -168,6 +170,38 @@ async function waitForSteps(
     status = await readScenarioStatus(serverURL, id)
   }
   return status
+}
+
+/** Poll the scenario until a real model request waits at gate. */
+async function waitForGate(
+  serverURL: string,
+  id: string,
+  gate: string,
+  timeoutMs: number,
+  testDeadline: number | undefined,
+): Promise<MockModelScenarioStatus> {
+  validateGateName(gate)
+  const { deadline, limit } = waitDeadline(timeoutMs, testDeadline)
+  let status = await readScenarioStatus(serverURL, id)
+  while (!status.pendingGates.includes(gate)) {
+    if (Date.now() >= deadline)
+      throw new Error(`The model script did not hold gate ${gate} in ${limit}: ${describe(status)}`)
+    await new Promise(resolve => setTimeout(resolve, 50))
+    status = await readScenarioStatus(serverURL, id)
+  }
+  return status
+}
+
+/** Apply the test deadline to a model-script wait. */
+function waitDeadline(timeoutMs: number, testDeadline: number | undefined): { deadline: number, limit: string } {
+  const started = Date.now()
+  const beforeTestEnds = testDeadline === undefined ? Infinity : testDeadline - STEP_WAIT_REPORT_MARGIN_MS
+  const deadline = Math.min(started + timeoutMs, beforeTestEnds)
+  // Keep the limit in the error so it states which deadline ended the wait.
+  const limit = deadline === beforeTestEnds
+    ? `${Math.max(0, deadline - started)}ms, before the test's own timeout`
+    : `${timeoutMs}ms`
+  return { deadline, limit }
 }
 
 function describe(status: MockModelScenarioStatus): string {

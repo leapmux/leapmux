@@ -45,16 +45,25 @@ async function seedThread(mockModelUrl: string, thread: AmpSeededThread): Promis
   expect(response.status).toBe(201)
 }
 
+function savedMessages(label: string): AmpSeededThread['messages'] {
+  return [
+    { role: 'user', text: 'Remember the earlier topic.' },
+    { role: 'assistant', text: `${label} was the earlier answer.` },
+    { role: 'user', text: 'Keep that answer available.' },
+  ]
+}
+
 ampTest('offers the workspace\'s Amp threads and resumes the one picked', async ({ page, leapmuxServer, modelScript }) => {
   const { hubUrl, adminToken, workerId, dataDir, mockModelUrl } = leapmuxServer
   const subjectDir = createGitRepo(dataDir, `amp-picker-subject-${crypto.randomUUID()}`)
   const otherDir = createGitRepo(dataDir, `amp-picker-other-${crypto.randomUUID()}`)
   const subjectTree = pathToFileURL(realpathSync(subjectDir)).href
   const seeded = `T-${crypto.randomUUID()}`
-  await seedThread(mockModelUrl, { id: seeded, title: 'Seeded Amp thread', tree: subjectTree, messageCount: 3 })
-  await seedThread(mockModelUrl, { id: `T-${crypto.randomUUID()}`, title: 'Archived Amp thread', tree: subjectTree, messageCount: 3, archived: true })
-  await seedThread(mockModelUrl, { id: `T-${crypto.randomUUID()}`, title: 'Empty Amp thread', tree: subjectTree, messageCount: 0 })
-  await seedThread(mockModelUrl, { id: `T-${crypto.randomUUID()}`, title: 'Other workspace thread', tree: pathToFileURL(realpathSync(otherDir)).href, messageCount: 3 })
+  const priorAnswer = 'AMP_PRIOR_ANSWER_MARKER'
+  await seedThread(mockModelUrl, { id: seeded, title: 'Seeded Amp thread', tree: subjectTree, messages: savedMessages(priorAnswer) })
+  await seedThread(mockModelUrl, { id: `T-${crypto.randomUUID()}`, title: 'Archived Amp thread', tree: subjectTree, messages: savedMessages('Archived'), archived: true })
+  await seedThread(mockModelUrl, { id: `T-${crypto.randomUUID()}`, title: 'Empty Amp thread', tree: subjectTree, messages: [] })
+  await seedThread(mockModelUrl, { id: `T-${crypto.randomUUID()}`, title: 'Other workspace thread', tree: pathToFileURL(realpathSync(otherDir)).href, messages: savedMessages('Other workspace') })
 
   // An agent keeps a tab in the workspace, so the New Agent dialog stays reachable.
   const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `Amp Picker ${crypto.randomUUID()}`)
@@ -95,9 +104,12 @@ ampTest('offers the workspace\'s Amp threads and resumes the one picked', async 
   // The resumed tab continues the seeded thread: its messages land in that thread.
   await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-  await modelScript.waitForSteps()
+  const status = await modelScript.waitForSteps()
   await waitForAgentIdle(page, 180_000)
   await expectAssistantAnswer(page)
+  const resumed = JSON.stringify(status.requests.find(request => request.stepIndex === 0)?.body)
+  expect(resumed).toContain(priorAnswer)
+  expect(resumed).toContain(ARITHMETIC_PROMPT)
   const threads = await (await fetch(`${mockModelUrl}${AMP_E2E_THREADS_PATH}`)).json() as AmpThreadView[]
   expect(threads.find(thread => thread.id === seeded)?.messageCount).toBe(5)
 })

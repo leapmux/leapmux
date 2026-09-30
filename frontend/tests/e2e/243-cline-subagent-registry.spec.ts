@@ -1,5 +1,6 @@
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { CLINE_E2E_SKIP_REASON, clineTest, expect } from './cline-fixtures'
+import { exerciseLiveChildTranscript } from './helpers/liveChildTranscript'
 import { spawnSubagentToolCall } from './helpers/providerToolCalls'
 import {
   expectNoRegistryRows,
@@ -26,6 +27,16 @@ import { assistantBubbles, bandRows, sendMessage, tabById, userBubbles, waitForA
 clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
 
 clineTest.describe('Cline subagent registry', () => {
+  clineTest('shows the child prompt while the child still runs', async ({ authenticatedClineWorkspace, page, modelScript }) => {
+    await exerciseLiveChildTranscript(page, modelScript, {
+      provider: AgentProvider.CLINE,
+      childWhen: { user: 'Reply with CHILD_LIVE_DONE' },
+      childTask: 'Reply with CHILD_LIVE_DONE.',
+      parentTask: 'Delegate the live child task.',
+      toolProof: { workingDir: authenticatedClineWorkspace.workingDir },
+    })
+  })
+
   clineTest('follows one subagent from its spawn to its report, with its own transcript', async ({ authenticatedClineWorkspace, page, modelScript }) => {
     void authenticatedClineWorkspace
     await expectNoRegistryRows(page)
@@ -53,7 +64,7 @@ clineTest.describe('Cline subagent registry', () => {
     const row = await requireRegistryRow(page)
     await expect(row).toContainText('Ask for one word')
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expectRowBecomesFinal(page, row)
     await expect(row).toHaveAttribute('data-status', 'completed')
@@ -101,7 +112,7 @@ clineTest.describe('Cline subagent registry', () => {
     )
     await sendMessage(page, modelScript.prompt('Delegate two words to two subagents.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     const alpha = await expectRegistryRow(page, { titleContains: 'Answer alpha' })
     const bravo = await expectRegistryRow(page, { titleContains: 'Answer bravo' })

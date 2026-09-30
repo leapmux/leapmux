@@ -1,3 +1,5 @@
+import type { Page } from '@playwright/test'
+import type { ModelScript } from './helpers/modelScriptFixture'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, GOOSE_E2E_SKIP_REASON, gooseTest } from './goose-fixtures'
 import { updateTodosToolCall } from './helpers/providerToolCalls'
@@ -7,6 +9,14 @@ import { sendMessage, waitForAgentIdle } from './helpers/ui'
 gooseTest.skip(!!GOOSE_E2E_SKIP_REASON, GOOSE_E2E_SKIP_REASON || '')
 
 const GOOSE = AgentProvider.GOOSE
+
+async function allowTodoWrite(page: Page, modelScript: ModelScript, step: number, item: string): Promise<void> {
+  await modelScript.waitForSteps(step)
+  const banner = page.getByTestId('control-banner').filter({ visible: true })
+  await expect(banner).toContainText('todo: todo write')
+  await expect(banner).toContainText(item)
+  await page.getByTestId('control-actions').getByRole('button', { name: 'Allow', exact: true }).click()
+}
 
 gooseTest.describe('tracks the Goose to-do list', () => {
   // Goose's todo extension writes a markdown checklist. The sidebar draws the
@@ -23,7 +33,8 @@ gooseTest.describe('tracks the Goose to-do list', () => {
       { text: 'The checklist is written.' },
     )
     await sendMessage(page, modelScript.prompt('Write a two-step to-do list.'))
-    await modelScript.waitForSteps()
+    await allowTodoWrite(page, modelScript, 1, 'Inspect the repository')
+    await modelScript.waitForSteps(2)
     await waitForAgentIdle(page)
 
     await expect(goalsAndTodosSection(page)).toBeVisible()
@@ -44,7 +55,8 @@ gooseTest.describe('tracks the Goose to-do list', () => {
       { text: 'Every step is done.' },
     )
     await sendMessage(page, modelScript.prompt('Mark every step done.'))
-    await modelScript.waitForSteps()
+    await allowTodoWrite(page, modelScript, 3, 'Report their purpose')
+    await modelScript.waitForSteps(4)
     await waitForAgentIdle(page)
     await expect(list.locator('[data-task-checkbox="completed"]')).toHaveCount(2)
 

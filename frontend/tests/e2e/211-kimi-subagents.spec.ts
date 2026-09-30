@@ -1,4 +1,5 @@
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { exerciseLiveChildTranscript } from './helpers/liveChildTranscript'
 import { backgroundBashToolCall, bashToolCall, spawnSubagentToolCall } from './helpers/providerToolCalls'
 import {
   exerciseChildInterrupt,
@@ -23,6 +24,15 @@ const KIMI = AgentProvider.KIMI_CODE
 const SUBAGENT_SYSTEM = 'You are now running as a subagent'
 
 kimiTest.describe('runs Kimi Code subagents and background tasks', () => {
+  kimiTest('shows the child prompt while the child still runs', async ({ page, modelScript }) => {
+    await exerciseLiveChildTranscript(page, modelScript, {
+      provider: KIMI,
+      childWhen: { system: SUBAGENT_SYSTEM, body: 'CHILD_LIVE_DONE' },
+      childTask: 'Reply with CHILD_LIVE_DONE.',
+      parentTask: 'Delegate the live child task.',
+    })
+  })
+
   // The child's command would stop at a banner under Always Ask. The routing,
   // not the approval, is the subject here.
   kimiTest.beforeEach(async ({ authenticatedKimiWorkspace, page }) => {
