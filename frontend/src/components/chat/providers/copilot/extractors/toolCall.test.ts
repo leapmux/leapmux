@@ -4,9 +4,9 @@ import type { CopilotToolFacts, CopilotToolRow } from './toolCall'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it } from 'vitest'
 import { COPILOT_EVENT, COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
-import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotFrame, copilotToolComplete, copilotToolStart } from '~/test-support/copilotFixtures'
-import { todoTitleOf } from '~/test-support/toolCallFixture'
+import { providerToolCall, providerToolMeta, todoTitleOf } from '~/test-support/toolCallFixture'
 import { toolCallRow } from '../../../model/row'
 import { isToolFailureResult, typedResult } from '../../../model/toolCall'
 import { deriveToolCallStatus } from '../../../model/toolCallLifecycle'
@@ -17,6 +17,8 @@ import { input } from '../../testUtils'
 import { copilotToolKind } from '../toolKinds'
 import { COPILOT_TOOL_READERS, COPILOT_TOOL_REQUEST_OVERRIDES, copilotReclassify, copilotToolCall, copilotToolFacts, copilotToolRow } from './toolCall'
 
+import '../plugin'
+
 const CALL = 'copilot-call'
 
 function parsed(row: Record<string, unknown>): ParsedMessageContent {
@@ -26,29 +28,115 @@ function parsed(row: Record<string, unknown>): ParsedMessageContent {
 /** The finished row for one call, resolved from its start frame and its completion. */
 function resultRow(
   toolName: string,
-  args: Record<string, unknown>,
+  args: Record<string, unknown> | string,
   outcome: { success?: boolean, result?: Record<string, unknown>, error?: Record<string, unknown> },
 ): CopilotToolRow {
-  const row = copilotToolRow(copilotToolComplete(CALL, outcome), toolName, parsed(copilotToolStart(CALL, toolName, args)))
+  const row = copilotToolRow(copilotToolComplete(CALL, outcome), { spanType: toolName, request: parsed(copilotToolStart(CALL, toolName, args)) })
   expect(row).not.toBeNull()
   return row!
 }
 
 /** The facts of one RUNNING call: its start frame alone, with no completion beside it. */
-function startFacts(toolName: string, args: Record<string, unknown>): CopilotToolFacts {
+function startFacts(toolName: string, args: Record<string, unknown> | string): CopilotToolFacts {
   return copilotToolFacts(copilotToolRow(copilotToolStart(CALL, toolName, args))!)
 }
 
 /** The facts of one finished call. */
 function resultFacts(
   toolName: string,
-  args: Record<string, unknown>,
+  args: Record<string, unknown> | string,
   outcome: { success?: boolean, result?: Record<string, unknown>, error?: Record<string, unknown> } = { success: true, result: { content: 'ok' } },
 ): CopilotToolFacts {
   return copilotToolFacts(resultRow(toolName, args, outcome))
 }
 
 describe('copilotToolRow', () => {
+  const NATIVE_PATCH = '*** Begin Patch\n*** Update File: /project/native.ts\n@@\n-before\n+after\n*** End Patch'
+
+  it('keeps raw native patch arguments on a running call', () => {
+    const row = copilotToolRow(copilotFrame(COPILOT_EVENT.ToolStarted, {
+      toolCallId: CALL,
+      toolName: COPILOT_TOOL.ApplyPatch,
+      arguments: NATIVE_PATCH,
+    }))
+    expect(row).not.toBeNull()
+    if (!row)
+      throw new Error('the native patch start has no tool row')
+
+    expect(row.input).toEqual({ input: NATIVE_PATCH })
+    const facts = copilotToolFacts(row)
+    expect(facts.patchText).toBe(NATIVE_PATCH)
+    expect(facts.requestedChanges).toMatchObject([{ filePath: '/project/native.ts', structuredPatch: [{ lines: ['-before', '+after'] }] }])
+    const call = copilotToolCall(row)
+    expect(call.kind).toBe('edit')
+    expect(call.kind === 'edit' && call.request.changes).toMatchObject([{ filePath: '/project/native.ts' }])
+  })
+
+  it('keeps the matching raw native patch on a completed call', () => {
+    const started = parsed(copilotFrame(COPILOT_EVENT.ToolStarted, {
+      toolCallId: CALL,
+      toolName: COPILOT_TOOL.ApplyPatch,
+      arguments: NATIVE_PATCH,
+    }))
+    const row = copilotToolRow(copilotToolComplete(CALL, {
+      success: true,
+      result: { content: 'Updated /project/native.ts' },
+    }), { spanType: COPILOT_TOOL.ApplyPatch, request: started })
+    expect(row).not.toBeNull()
+    if (!row)
+      throw new Error('the native patch completion has no tool row')
+
+    expect(row.input).toEqual({ input: NATIVE_PATCH })
+    expect(copilotToolFacts(row).requestedChanges).toMatchObject([{ filePath: '/project/native.ts', structuredPatch: [{ lines: ['-before', '+after'] }] }])
+    expect(copilotToolCall(row).kind).toBe('edit')
+  })
+
+  it('preserves empty native patch arguments without a file change', () => {
+    const row = copilotToolRow(copilotFrame(COPILOT_EVENT.ToolStarted, {
+      toolCallId: CALL,
+      toolName: COPILOT_TOOL.ApplyPatch,
+      arguments: '',
+    }))
+    expect(row).not.toBeNull()
+    if (!row)
+      throw new Error('the empty patch start has no tool row')
+
+    expect(row.input).toEqual({ input: '' })
+    expect(copilotToolFacts(row).requestedChanges).toBeNull()
+  })
+
+  it('does not interpret another tool raw string as a patch', () => {
+    const row = copilotToolRow(copilotFrame(COPILOT_EVENT.ToolStarted, {
+      toolCallId: CALL,
+      toolName: COPILOT_TOOL.Bash,
+      arguments: NATIVE_PATCH,
+    }))
+    expect(row).not.toBeNull()
+    if (!row)
+      throw new Error('the raw shell start has no tool row')
+
+    expect(row.input).toEqual({})
+    expect(copilotToolFacts(row).requestedChanges).toBeNull()
+  })
+
+  it('does not take a raw patch from another call start', () => {
+    const started = parsed(copilotFrame(COPILOT_EVENT.ToolStarted, {
+      toolCallId: 'another-call',
+      toolName: COPILOT_TOOL.ApplyPatch,
+      arguments: NATIVE_PATCH,
+    }))
+    const row = copilotToolRow(copilotToolComplete(CALL, {
+      success: true,
+      result: { content: 'The current call completed.' },
+    }), { spanType: COPILOT_TOOL.ApplyPatch, request: started })
+    expect(row).not.toBeNull()
+    if (!row)
+      throw new Error('the unpaired completion has no tool row')
+
+    expect(row.input).toEqual({})
+    expect(copilotToolFacts(row).requestedChanges).toBeNull()
+  })
+
   it('reads a failed call from its error, which states why it stopped', () => {
     const row = resultRow(COPILOT_TOOL.Bash, { command: 'run' }, {
       success: false,
@@ -112,22 +200,29 @@ describe('copilotToolCall background shells', () => {
 
 describe('copilotToolCall shell results', () => {
   it('states the shell metadata when the exit block reports no numeric code', () => {
-    const row = resultRow(COPILOT_TOOL.Bash, { command: 'run' }, {
+    const native = copilotToolComplete(CALL, {
       result: {
         content: 'command output',
         contents: [{ type: 'shell_exit', shellId: '7', cwd: '/project', outputFilePath: '/project/.tmp/out.log' }],
       },
     })
-    const call = copilotToolCall(row)
+    const request = parsed(copilotToolStart(CALL, COPILOT_TOOL.Bash, { command: 'run' }))
+    const options = { request, spanId: CALL, spanType: COPILOT_TOOL.Bash, agentSessionId: 'session-1' }
+    const before = JSON.stringify({ native, request })
+    const call = providerToolCall(AgentProvider.GITHUB_COPILOT, native, options)
+    expect(call).not.toBeNull()
+    if (!call)
+      throw new Error('The native Copilot completion requires its registered tool call.')
     expect(call.metadata).toEqual([
       { label: 'Shell ID', value: '7' },
       { label: 'Directory', value: '/project' },
-      { label: 'Output file', value: '/project/.tmp/out.log' },
     ])
-    // The block is the row's own metadata, so it never reaches the extra content as
-    // raw JSON.
+    expect(call.outputFilePaths).toEqual(['/project/.tmp/out.log'])
+    // The shell block supplies metadata, so extra content contains no raw JSON.
     expect(call.extraContent).toBeUndefined()
     expect(call.kind === 'execute' && call.result && 'commands' in call.result ? call.result.commands[0]?.exitCode : undefined).toBeUndefined()
+    expect(providerToolMeta(AgentProvider.GITHUB_COPILOT, native, options)?.copyableContent()).toBe('command output')
+    expect(JSON.stringify({ native, request })).toBe(before)
   })
 
   it('reports the exit code the block states', () => {
@@ -362,10 +457,17 @@ describe('copilot background shells', () => {
   const contents = [{ type: 'shell_exit', exitCode: 1, shellId: '7', cwd: '/p', outputFilePath: '/p/out.log' }]
 
   it('states the exit code, the trailer-free output and the shell rows', () => {
-    const call = copilotToolCall(resultRow(COPILOT_TOOL.ReadBash, { shellId: '7' }, {
+    const native = copilotToolComplete(CALL, {
       success: true,
       result: { content: 'partial output\n<shellId: 7 completed with exit code 1>', contents },
-    }))
+    })
+    const request = parsed(copilotToolStart(CALL, COPILOT_TOOL.ReadBash, { shellId: '7' }))
+    const options = { request, spanId: CALL, spanType: COPILOT_TOOL.ReadBash, agentSessionId: 'session-1' }
+    const before = JSON.stringify({ native, request })
+    const call = providerToolCall(AgentProvider.GITHUB_COPILOT, native, options)
+    expect(call).not.toBeNull()
+    if (!call)
+      throw new Error('The native Copilot background result requires its registered tool call.')
     expect(call.kind).toBe('task')
     const source = call.kind === 'task' && call.result && 'outcome' in call.result ? call.result : undefined
     expect(source?.output).toBe('partial output')
@@ -373,8 +475,10 @@ describe('copilot background shells', () => {
     expect(call.metadata).toEqual([
       { label: 'Shell ID', value: '7' },
       { label: 'Directory', value: '/p' },
-      { label: 'Output file', value: '/p/out.log' },
     ])
+    expect(call.outputFilePaths).toEqual(['/p/out.log'])
+    expect(providerToolMeta(AgentProvider.GITHUB_COPILOT, native, options)?.copyableContent()).toBe('partial output')
+    expect(JSON.stringify({ native, request })).toBe(before)
   })
 
   it('reports a shell that exited cleanly as completed', () => {
@@ -463,17 +567,12 @@ describe('copilot rich content', () => {
  */
 describe('copilot retained rows', () => {
   it('reports a failed turn on the completion row', () => {
-    const row = copilotToolRow(
-      copilotToolComplete(CALL, { success: true, result: { content: 'ok' } }),
-      COPILOT_TOOL.Bash,
-      parsed(copilotToolStart(CALL, COPILOT_TOOL.Bash, { command: 'ls' })),
-      MessageCompletion.ERROR,
-    )
+    const row = copilotToolRow(copilotToolComplete(CALL, { success: true, result: { content: 'ok' } }), { spanType: COPILOT_TOOL.Bash, request: parsed(copilotToolStart(CALL, COPILOT_TOOL.Bash, { command: 'ls' })), completion: MessageCompletion.ERROR })
     expect(row && deriveToolCallStatus(row.lifecycle, row.lifecycle.resultFrameLanded)).toBe('failed')
   })
 
   it('reports a failed turn on a retained start row', () => {
-    const row = copilotToolRow(copilotToolStart(CALL, COPILOT_TOOL.Bash, { command: 'ls' }), COPILOT_TOOL.Bash, undefined, MessageCompletion.ERROR)
+    const row = copilotToolRow(copilotToolStart(CALL, COPILOT_TOOL.Bash, { command: 'ls' }), { spanType: COPILOT_TOOL.Bash, completion: MessageCompletion.ERROR })
     expect(row?.finished).toBe(true)
     expect(row && deriveToolCallStatus(row.lifecycle, row.lifecycle.resultFrameLanded)).toBe('failed')
   })
@@ -482,7 +581,7 @@ describe('copilot retained rows', () => {
   // arrived: the turn ending well says nothing about a call whose completion the
   // runtime never sent.
   it('refuses to call a retained start row completed', () => {
-    const row = copilotToolRow(copilotToolStart(CALL, COPILOT_TOOL.Bash, { command: 'ls' }), COPILOT_TOOL.Bash, undefined, MessageCompletion.COMPLETE)
+    const row = copilotToolRow(copilotToolStart(CALL, COPILOT_TOOL.Bash, { command: 'ls' }), { spanType: COPILOT_TOOL.Bash, completion: MessageCompletion.COMPLETE })
     expect(row?.finished).toBe(true)
     // A succeeded outcome completes nothing and a start lands no result, so the
     // row states no status word at all -- never a completed one.
@@ -508,7 +607,7 @@ describe('copilotToolCall edit-family requests', () => {
   const PATCH = '*** Begin Patch\n*** Update File: /project/a.ts\n@@\n-before\n+after\n*** End Patch'
 
   it('states only the declared keys for the patch it read', () => {
-    const call = copilotToolCall(resultRow(COPILOT_TOOL.ApplyPatch, { input: PATCH }, {
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.ApplyPatch, PATCH, {
       success: true,
       result: { content: 'applied' },
     }))
@@ -521,7 +620,7 @@ describe('copilotToolCall edit-family requests', () => {
   // the arguments the tool was called with are still in hand: the shared degrade states
   // the empty change list in their place, and the card then reads as a call nobody made.
   it('draws a patch it could not read as an uncategorized call', () => {
-    const call = copilotToolCall(resultRow(COPILOT_TOOL.ApplyPatch, { input: UNREADABLE_PATCH }, {
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.ApplyPatch, UNREADABLE_PATCH, {
       success: true,
       result: { content: 'applied' },
     }))
@@ -532,7 +631,7 @@ describe('copilotToolCall edit-family requests', () => {
   // The row still identifies the tool that ran. The uncategorized card heads itself
   // with the tool its request names, which is where the name goes once the kind is gone.
   it('names the tool of a patch it could not read', () => {
-    const call = copilotToolCall(resultRow(COPILOT_TOOL.ApplyPatch, { input: UNREADABLE_PATCH }, { success: true, result: { content: '' } }))
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.ApplyPatch, UNREADABLE_PATCH, { success: true, result: { content: '' } }))
     expect(call.kind === 'mcp' && call.request.tool).toBe(COPILOT_TOOL.ApplyPatch)
   })
 
@@ -612,7 +711,7 @@ describe('copilotToolFacts', () => {
   // read it. The untouched record must NOT, because a picture block with no `uri` of
   // its own takes that path -- and the call itself never sent one.
   it('folds the file one patch operation names into the derived copy alone', () => {
-    const facts = startFacts(COPILOT_TOOL.ApplyPatch, { input: '*** Begin Patch\n*** Add File: made.txt\n+first\n*** End Patch' })
+    const facts = startFacts(COPILOT_TOOL.ApplyPatch, '*** Begin Patch\n*** Add File: made.txt\n+first\n*** End Patch')
     expect(facts.rawArgs.path).toBeUndefined()
     expect(facts.args.path).toBe('made.txt')
     expect(facts.args.content).toBe('first\n')
@@ -649,7 +748,7 @@ describe('copilotToolFacts', () => {
  */
 describe('copilotReclassify', () => {
   it('reads a one-operation patch as the operation it states', () => {
-    const patch = (body: string) => copilotReclassify(startFacts(COPILOT_TOOL.ApplyPatch, { input: `*** Begin Patch\n${body}\n*** End Patch` }))
+    const patch = (body: string) => copilotReclassify(startFacts(COPILOT_TOOL.ApplyPatch, `*** Begin Patch\n${body}\n*** End Patch`))
     expect(patch('*** Add File: made.txt\n+first')).toBe('write')
     expect(patch('*** Delete File: gone.ts')).toBe('delete')
     expect(patch('*** Update File: a.ts\n@@\n-before\n+after')).toBe('edit')
@@ -658,9 +757,7 @@ describe('copilotReclassify', () => {
   // Several operations state no single verb, so the row keeps the edit kind and lists
   // the files instead.
   it('keeps the edit kind for a patch with several operations', () => {
-    expect(copilotReclassify(startFacts(COPILOT_TOOL.ApplyPatch, {
-      input: '*** Begin Patch\n*** Add File: made.txt\n+first\n*** Delete File: gone.ts\n*** End Patch',
-    }))).toBe('edit')
+    expect(copilotReclassify(startFacts(COPILOT_TOOL.ApplyPatch, '*** Begin Patch\n*** Add File: made.txt\n+first\n*** Delete File: gone.ts\n*** End Patch'))).toBe('edit')
   })
 
   it('reads a view that answered prose and named no file as a report', () => {
@@ -774,7 +871,7 @@ describe('COPILOT_TOOL_REQUEST_OVERRIDES', () => {
   })
 
   it('reads an edit from the patch first, then from the replacement the tool carries', () => {
-    const patched = startFacts(COPILOT_TOOL.ApplyPatch, { input: '*** Begin Patch\n*** Update File: a.ts\n@@\n-before\n+after\n*** End Patch' })
+    const patched = startFacts(COPILOT_TOOL.ApplyPatch, '*** Begin Patch\n*** Update File: a.ts\n@@\n-before\n+after\n*** End Patch')
     expect(requestOf('edit', patched).changes.map(change => [change.filePath, change.operation])).toEqual([['a.ts', 'edit']])
     const replaced = startFacts(COPILOT_TOOL.Edit, { path: '/p/a.ts', old_str: 'x', new_str: 'y' })
     expect(requestOf('edit', replaced).changes).toEqual([

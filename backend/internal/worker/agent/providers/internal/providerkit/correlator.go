@@ -7,48 +7,57 @@ import (
 	"time"
 )
 
-// Correlator routes raw response bytes back to pending callers
-// keyed by id. Generic over the id type so JSON-RPC 2.0 (int64) and Pi
-// (opaque string) share the same plumbing without converging on a single
-// envelope shape — the marshal/decode is left to each provider, only the
-// pending-map mechanics live here.
+// Correlator sends raw replies to callers by request ID.
+// Providers retain their own envelope formats and decoders.
 type Correlator[ID comparable] struct {
-	pending sync.Map // ID -> chan json.RawMessage
+	pending sync.Map // ID -> *pendingResponse
 }
 
-// Register allocates a delivery channel for `id` and returns it along
-// with a cleanup function the caller MUST defer to release the slot
-// regardless of whether the response arrived. The channel is buffered
-// (capacity 1) so a late delivery after timeout doesn't block the
-// dispatcher.
+type pendingResponse struct {
+	channel chan json.RawMessage
+	observe func(json.RawMessage)
+}
+
+// Register returns a reply channel and its cleanup function.
+// Defer cleanup even when the request fails.
+// The channel holds one reply, so delivery does not wait for the caller.
 func (c *Correlator[ID]) Register(id ID) (<-chan json.RawMessage, func()) {
+	return c.RegisterObserved(id, nil)
+}
+
+// RegisterObserved calls observe before it sends the reply to the channel.
+// The observer runs on the reader. It must not wait for another reply.
+// An absent or removed request cannot call the observer.
+func (c *Correlator[ID]) RegisterObserved(id ID, observe func(json.RawMessage)) (<-chan json.RawMessage, func()) {
 	ch := make(chan json.RawMessage, 1)
-	c.pending.Store(id, ch)
+	c.pending.Store(id, &pendingResponse{channel: ch, observe: observe})
 	return ch, func() { c.pending.Delete(id) }
 }
 
-// Deliver hands `raw` to the channel registered for `id`. Returns false
-// when no caller was waiting, so the dispatcher can fall through to its
-// default handling for unsolicited responses. The slot is removed
-// atomically with the lookup.
+// Deliver claims one pending request and sends its unchanged reply.
+// It returns false when no request waits for the ID.
+// The atomic lookup prevents duplicate observer calls and duplicate delivery.
 func (c *Correlator[ID]) Deliver(id ID, raw json.RawMessage) bool {
-	chAny, ok := c.pending.LoadAndDelete(id)
+	stored, ok := c.pending.LoadAndDelete(id)
 	if !ok {
 		return false
 	}
-	chAny.(chan json.RawMessage) <- raw
+	response := stored.(*pendingResponse)
+	if response.observe != nil {
+		response.observe(raw)
+	}
+	response.channel <- raw
 	return true
 }
 
-// AwaitResponse blocks until raw bytes arrive on `ch` or a teardown
-// signal fires (process exit, ctx cancel, timeout). The label is
-// interpolated into the timeout error so log messages name the stuck
-// RPC. Lives on Process so any agent — JSON-RPC, Pi, or future —
-// shares the same cancellation semantics.
-//
-// A timeout of 0 means "no timeout": the wait unblocks only on
-// response, process exit, or ctx cancel. Use this for per-turn RPCs
-// whose duration is bounded by the user's request, not by clock time.
+// AwaitResponseTimerTag tags the timer of each AwaitResponse on the process
+// clock, beside the label. A test traps it to end the wait.
+const AwaitResponseTimerTag = "await-response"
+
+// AwaitResponse waits for a reply, process exit, context cancellation, or timeout.
+// Process.Clock supplies the timer. The error identifies the request label.
+// A nonpositive timeout waits without a timer.
+// Use it for a turn that ends through a reply or cancellation.
 func (p *Process) AwaitResponse(
 	ch <-chan json.RawMessage,
 	label string,
@@ -61,20 +70,31 @@ func (p *Process) AwaitResponse(
 		case <-p.processDone:
 			return nil, p.ProcessExitError()
 		case <-p.ctx.Done():
-			return nil, p.ctx.Err()
+			return nil, p.contextEndError()
 		}
 	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	timer := p.Clock().NewTimer(timeout, AwaitResponseTimerTag, label)
+	defer timer.Stop(AwaitResponseTimerTag, label)
 	select {
 	case raw := <-ch:
 		return raw, nil
 	case <-p.processDone:
 		return nil, p.ProcessExitError()
 	case <-p.ctx.Done():
-		return nil, p.ctx.Err()
+		return nil, p.contextEndError()
 	case <-timer.C:
 		return nil, fmt.Errorf("timeout waiting for %s response", label)
+	}
+}
+
+// contextEndError reports the process exit when exit also cancels the context.
+// A select can choose either ready channel. Both paths must report the same cause.
+func (p *Process) contextEndError() error {
+	select {
+	case <-p.processDone:
+		return p.ProcessExitError()
+	default:
+		return p.ctx.Err()
 	}
 }
 

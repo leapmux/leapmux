@@ -24,7 +24,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// Resolve the launch FIRST. A machine with no ZCode at all fails both this and the
 	// catalog load below, and "ZCode is not installed on this machine" is the honest one:
 	// the other tells the user to sign in with an application they do not have.
-	spec, err := providerkit.ResolveLaunch(ctx, opts, Registration())
+	registration := Registration()
+	spec, err := providerkit.ResolveLaunch(ctx, opts, registration)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -52,14 +53,23 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// Wrap already prepended spec.PrefixArgs and seeded
 	// spec.Env onto cmd, so this is the same finalization every provider runs.
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
+	storeLocation, err := zcodeToolStorePaths(ctx, agent.StoredSessionQuery{
+		HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir, EnvEntries: cmd.Environ(),
+		Shell: opts.Shell, LoginShell: opts.LoginShell,
+	}, newZCodeStorageQuery(&spec))
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("resolve the ZCode native store: %w", err)
+	}
 
-	stdin, stdout, stderrPipe, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
 	if err != nil {
 		return nil, err
 	}
+	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
 	a := &Agent{
-		Process:                   providerkit.NewProcess(opts, "zcode", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
+		Process:                   providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "zcode", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
 		sink:                      sink,
 		workingDir:                opts.WorkingDir,
 		workspace:                 zcodeWorkspaceFor(opts.WorkingDir),
@@ -71,7 +81,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		pendingControls:           map[string]json.RawMessage{},
 	}
 	a.sink = agent.NewModelProgressResetSink(a.sink)
-	storeLocation := zcodeToolStorePaths(agent.StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir})
 	a.sink = newZCodeToolTranscript(ctx, a.sink, func() zcodeToolStoreLocation {
 		a.Mu.Lock()
 		defer a.Mu.Unlock()
@@ -95,7 +104,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// what the USER asked for is still readable. applyStartupSettings takes it back.
 	launchRequest := zcodeSettingsRequest{Model: a.model, ThoughtLevel: a.thoughtLevel, Mode: a.mode}
 
-	if err := a.StartCmd(cmd, cancel); err != nil {
+	if err := a.StartCmd(); err != nil {
 		return nil, err
 	}
 	a.DrainStderr(stderrPipe)

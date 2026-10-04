@@ -6,8 +6,10 @@
  * extractor that lifts a path out of raw arguments needs the same alias list.
  */
 export const TOOL_FILE_PATH_KEYS = ['filePath', 'path', 'file_path'] as const
-export const TOOL_OLD_TEXT_KEYS = ['oldText', 'oldString', 'old_string'] as const
-export const TOOL_NEW_TEXT_KEYS = ['newText', 'newString', 'new_string'] as const
+// Junie's `search_replace` states the two sides of a substitution as
+// `search`/`replace`; the three spellings below are the other agents'.
+export const TOOL_OLD_TEXT_KEYS = ['oldText', 'oldString', 'old_string', 'search'] as const
+export const TOOL_NEW_TEXT_KEYS = ['newText', 'newString', 'new_string', 'replace'] as const
 // A move states two paths and neither is a `filePath`. Reasonix's `move_file`
 // sends `source_path`/`destination_path`; the camelCase and old/new spellings
 // are here for the same reason the lists above carry three spellings each.

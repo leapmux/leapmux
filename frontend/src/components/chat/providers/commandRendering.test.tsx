@@ -7,9 +7,12 @@ import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { MIMO_TOOL, MIMO_TOOL_STATUS } from '~/generated/contracts/mimo-protocol'
 import { AgentChatMessageSchema, AgentProvider, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolComplete } from '~/test-support/copilotFixtures'
+import { kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
 import { testMessageSources } from '~/test-support/messageRenderSources'
+import { toolFrame } from '~/test-support/mimoFixtures'
 import { providerToolMeta } from '~/test-support/toolCallFixture'
 import { MessageBubble } from '../MessageBubble'
 import { commandInputCollapsed, toolInputSummary } from '../toolStyles.css'
@@ -982,10 +985,18 @@ describe('retained command completion', () => {
     { provider: AgentProvider.CODEX, result: { item: { id: 'call', type: 'commandExecution', status: 'inProgress', command, aggregatedOutput: output } } },
     { provider: AgentProvider.PI, result: { type: 'tool_execution_end', toolCallId: 'call', toolName: 'bash', args: { command }, result: { content: [{ type: 'text', text: output }] }, isError: true } },
     { provider: AgentProvider.ZCODE, result: { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', toolName: 'Bash', input: { command }, result: { success: false, content: output } } } },
+    // omp's retained row is the call's own START frame, with the partial result the
+    // worker kept beside it already merged in.
+    { provider: AgentProvider.OH_MY_PI, result: { type: 'tool_execution_start', toolCallId: 'call', toolName: 'bash', args: { command }, result: { content: [{ type: 'text', text: output }], details: {} } } },
     // Copilot's interrupted command is its own completion event. The turn's
     // interruption reaches the row as the message completion, not as a status word.
     { provider: AgentProvider.GITHUB_COPILOT, result: copilotToolComplete('call', { success: false, result: { content: output } }), spanType: 'bash' },
-    ...[AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.GOOSE, AgentProvider.REASONIX, AgentProvider.CURSOR].map(provider => ({
+    // Kimi Code sends no result for a call its turn cut off: the worker stores the
+    // call's own start again, with the output it printed before it stopped.
+    { provider: AgentProvider.KIMI_CODE, result: { ...kimiToolStart('call', 'Bash', { command }), output }, spanType: 'Bash' },
+    // MiMo's cut command is its last running update, which states the output so far.
+    { provider: AgentProvider.MIMO_CODE, result: toolFrame(MIMO_TOOL.Bash, { status: MIMO_TOOL_STATUS.Running, input: { command }, metadata: { output } }, 'call'), spanType: MIMO_TOOL.Bash },
+    ...[AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.GOOSE, AgentProvider.REASONIX, AgentProvider.CURSOR, AgentProvider.GROK_BUILD, AgentProvider.KIRO, AgentProvider.QWEN_CODE].map(provider => ({
       provider,
       result: { sessionUpdate: 'tool_call_update', toolCallId: 'call', title: 'Run command', kind: 'execute', status: 'in_progress', rawInput: { command }, content: [{ type: 'content', content: { type: 'text', text: output } }] },
     })),
@@ -1019,6 +1030,10 @@ describe('canonical failure word across the two routes', () => {
   const cases: Array<{ provider: AgentProvider, result: Record<string, unknown>, spanType?: string }> = [
     { provider: AgentProvider.CLAUDE_CODE, result: makeBashResult({ tool_name: 'Bash', stdout: output, stderr: '' }, output, true), spanType: 'Bash' },
     { provider: AgentProvider.GITHUB_COPILOT, result: copilotToolComplete('call', { success: false, result: { content: output } }), spanType: 'bash' },
+    { provider: AgentProvider.KIMI_CODE, result: kimiToolResult('call', `${output}\nCommand failed with exit code: 1.`, { isError: true }), spanType: 'Bash' },
+    // A MiMo turn that fails while a command runs ends the command with its last
+    // running update, and the completion column states the failure.
+    { provider: AgentProvider.MIMO_CODE, result: toolFrame(MIMO_TOOL.Bash, { status: MIMO_TOOL_STATUS.Running, input: { command }, metadata: { output } }, 'call'), spanType: MIMO_TOOL.Bash },
     ...[AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.GOOSE, AgentProvider.REASONIX, AgentProvider.CURSOR].map(provider => ({
       provider,
       result: { sessionUpdate: 'tool_call_update', toolCallId: 'call', title: 'Run command', kind: 'execute', status: 'failed', rawInput: { command }, content: [{ type: 'content', content: { type: 'text', text: output } }] },
@@ -1051,6 +1066,8 @@ describe('retained file completion', () => {
   it.each([
     { provider: AgentProvider.PI, result: { type: 'tool_execution_end', toolCallId: 'read', toolName: 'read', isError: true, result: { content: [{ type: 'text', text: 'partial file output' }] } } },
     { provider: AgentProvider.ZCODE, result: { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'read', toolName: 'Read', result: { success: false, content: 'partial file output' } } } },
+    { provider: AgentProvider.KIMI_CODE, result: { ...kimiToolStart('read', 'Read', { path: '/a.ts' }), output: 'partial file output' } },
+    { provider: AgentProvider.OH_MY_PI, result: { type: 'tool_execution_start', toolCallId: 'read', toolName: 'read', args: { path: '/p/a.ts' }, result: { content: [{ type: 'text', text: 'partial file output' }], details: {} } } },
   ])('renders one interruption header for a file result from provider $provider', ({ provider, result }) => {
     const parsed = { ...input(result, null, provider), completion: MessageCompletion.INTERRUPTED }
     const plugin = providerFor(provider)!

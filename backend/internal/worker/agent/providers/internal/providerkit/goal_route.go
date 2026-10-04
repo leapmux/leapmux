@@ -39,11 +39,23 @@ type GoalTextRoute struct {
 	// a clear word, while Kilo's takes all four.
 	PauseArgs  []string
 	ResumeArgs []string
+	// SetVerb is the word that states an objective when the provider's command
+	// reads the first word of its argument as a verb (Qwen Code's `/goal set`).
+	// A route with one emits it before every objective, so no objective can
+	// reach the provider as a verb, and Set refuses none. Empty means the
+	// command takes the objective as its whole argument.
+	SetVerb string
+	// QueryArgs lists each complete argument that asks for the goal rather than
+	// changing it, in the same form as ClearArgs. The bare command is always a
+	// query. LeapMux never emits a query, but an objective that equals one of
+	// these words would reach the provider as the query, so Set refuses it.
+	QueryArgs []string
 	// SteerCarriesCommand is true when the provider's steer channel reaches the
 	// same command parser as its send channel. Claude Code steers by sending
 	// the identical user message, so a steered command changes its goal. Goose
 	// steers through a separate ACP method whose command handling LeapMux did
-	// not verify, and Copilot refuses steering, so both leave this false.
+	// not verify, and Copilot steers through its own immediate-send route whose
+	// command handling LeapMux did not verify either, so both leave this false.
 	SteerCarriesCommand bool
 }
 
@@ -64,6 +76,9 @@ func (r GoalTextRoute) CommandText(action agent.GoalAction, objective string) (s
 		objective = foldGoalObjective(objective)
 		if objective == "" {
 			return "", fmt.Errorf("%s %s: an objective is required", r.Provider, r.Command)
+		}
+		if r.SetVerb != "" {
+			return r.Command + " " + r.SetVerb + " " + objective, nil
 		}
 		// The command is positional, so a one-word objective that equals a
 		// clear word reaches the provider as a clear. The provider then removes
@@ -134,7 +149,7 @@ func (r GoalTextRoute) verbText(args []string) (string, error) {
 // provider as that verb. The provider then acts on it, and the observer below reads the
 // same text the same way, so nothing reports the difference.
 func (r GoalTextRoute) reservedArgument(objective string) string {
-	for verb, args := range map[string][]string{"clear": r.ClearArgs, "pause": r.PauseArgs, "resume": r.ResumeArgs} {
+	for verb, args := range map[string][]string{"clear": r.ClearArgs, "pause": r.PauseArgs, "resume": r.ResumeArgs, "query": r.QueryArgs} {
 		for _, arg := range args {
 			if strings.EqualFold(objective, arg) {
 				return verb
@@ -171,6 +186,14 @@ func (r GoalTextRoute) parse(text string) (goalTextIntent, string) {
 	if argument == "" {
 		return goalTextBareQuery, ""
 	}
+	if verb, objective, _ := strings.Cut(argument, " "); r.SetVerb != "" && strings.EqualFold(verb, r.SetVerb) {
+		// The provider reads the first word as a verb, so the set verb with no
+		// objective after it installs nothing.
+		if objective == "" {
+			return goalTextBareQuery, ""
+		}
+		return goalTextSet, objective
+	}
 	switch r.reservedArgument(argument) {
 	case "clear":
 		return goalTextClear, ""
@@ -178,6 +201,8 @@ func (r GoalTextRoute) parse(text string) (goalTextIntent, string) {
 		return goalTextPause, ""
 	case "resume":
 		return goalTextResume, ""
+	case "query":
+		return goalTextBareQuery, ""
 	}
 	return goalTextSet, argument
 }

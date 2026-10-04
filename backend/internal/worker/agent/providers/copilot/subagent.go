@@ -97,7 +97,7 @@ func (a *Agent) startNativeSubagent(raw []byte, event copilotEvent) {
 		}
 	}
 	title := sessionstore.FirstNonBlank(input.Name, started.AgentDisplayName, started.AgentName, input.Description, started.AgentDescription)
-	workerAgentID, err := owner.EnsureChildAgent(started.ToolCallID, event.AgentID, title)
+	workerAgentID, err := owner.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: started.ToolCallID, ProviderChildKey: event.AgentID, Title: title})
 	if err != nil {
 		slog.Error("Open Copilot subagent transcript", "agent_id", a.AgentID(), "tool_call_id", started.ToolCallID, "error", err)
 		a.persistNativeFrameTo(owner, raw, agent.SpanInfo{})

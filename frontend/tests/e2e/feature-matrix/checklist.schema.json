@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Coding-agent provider feature checklist",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "sharedNotes", "providerGroups", "cells"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "sharedNotes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/sharedNote" }
+    },
+    "providerGroups": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 10,
+        "items": { "$ref": "#/$defs/provider" }
+      }
+    },
+    "cells": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/id" },
+      "additionalProperties": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": { "$ref": "#/$defs/id" },
+        "additionalProperties": { "$ref": "#/$defs/cell" }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    "noteRefs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "integer", "minimum": 1 }
+    },
+    "sharedNote": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "text": { "type": "string", "minLength": 1 }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "url", "icon", "notes", "noteRefs"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "label": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "pattern": "^https://" },
+        "icon": { "type": "string", "pattern": "^/icons/agents/[a-z0-9-]+\\.svg$" },
+        "notes": { "type": "string" },
+        "noteRefs": { "$ref": "#/$defs/noteRefs" }
+      }
+    },
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["supported", "notes", "noteRefs", "spec", "audit", "verified", "testStatus"],
+      "allOf": [
+        {
+          "if": { "properties": { "testStatus": { "const": "passed" } } },
+          "then": { "properties": { "spec": { "type": "string", "minLength": 1 } } }
+        },
+        {
+          "if": { "properties": { "supported": { "const": true } } },
+          "then": {
+            "properties": {
+              "audit": { "enum": ["covered", "existing-e2e-mapped", "source-verified"] }
+            }
+          },
+          "else": {
+            "properties": {
+              "audit": { "enum": ["unsupported", "refusal-covered", "covered-negative"] }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "supported": { "type": "boolean" },
+        "notes": { "type": "string" },
+        "noteRefs": { "$ref": "#/$defs/noteRefs" },
+        "spec": {
+          "type": "string",
+          "pattern": "^(?:frontend/tests/e2e/(?:[a-z0-9-]+/)*[a-z0-9-]+\\.spec\\.ts)?$"
+        },
+        "audit": {
+          "type": "string",
+          "enum": ["covered", "unsupported", "existing-e2e-mapped", "refusal-covered", "covered-negative", "source-verified"]
+        },
+        "verified": { "type": "boolean" },
+        "testStatus": { "type": "string", "enum": ["pending", "passed"] }
+      }
+    }
+  }
+}

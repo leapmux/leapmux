@@ -1,48 +1,51 @@
+import type { ProviderTranscriptCapability } from './capabilities'
 import type { OpenCodeFamilyToolKinds } from './opencode/extractors/toolCall'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
 import { registerACPProvider } from './acp/registerACPProvider'
-import { extractOpenCodeQuestions, sendOpenCodeQuestionRejectResponse, sendOpenCodeQuestionResponse } from './opencode/askUserQuestion'
 import { openCodeControlResponseSummary } from './opencode/controlResponse'
 import { openCodeExtractControl } from './opencode/extractControl'
 import { openCodeToolCallAdapterFor } from './opencode/extractors/toolCall'
+import { extractOpenCodeQuestions, sendOpenCodeQuestionRejectResponse, sendOpenCodeQuestionResponse } from './openCodeQuestions'
 
 interface OpenCodeProtocolOptions {
   provider: AgentProvider
-  /** Default primary-agent option, e.g. `'build'` for OpenCode, `'code'` for Kilo. */
+  /** Default primary agent: `'build'` for OpenCode or `'code'` for Kilo. */
   defaultPrimaryAgent: string
   /**
-   * The kinds this provider knows that the shared protocol layer does not state.
-   *
-   * The two daemons share a wire format and run different TOOL SETS, so the identity
-   * table is the one part of the family adapter that is per-provider.
+   * The provider's tool kinds that the shared protocol does not state.
+   * The daemons share a wire format, but their tool sets differ.
+   * Each provider supplies its own identity table to the family adapter.
    */
   toolKinds?: OpenCodeFamilyToolKinds
+  /** The provider's pure reader of reported output file paths. */
+  outputFilePaths?: ProviderTranscriptCapability['outputFilePaths']
 }
 
 const PRIMARY_AGENT_KEY = 'primaryAgent'
 const PLAN_PRIMARY_AGENT = 'plan'
 
 /**
- * Register a provider that speaks the OpenCode question/control protocol.
- * OpenCode and Kilo run different daemons but share the same wire format —
- * the only deltas are the provider enum and the default primary-agent label.
+ * Register a provider that speaks the OpenCode question and control protocol.
+ * Each provider supplies its enum and default primary agent.
+ * Kilo also supplies its additional tool kinds.
  */
 export function registerOpenCodeProtocolProvider(opts: OpenCodeProtocolOptions): void {
   registerACPProvider({
     provider: opts.provider,
+    ...(opts.outputFilePaths ? { outputFilePaths: opts.outputFilePaths } : {}),
     toolCallAdapter: openCodeToolCallAdapterFor(opts.toolKinds),
     settingsConfig: {
       kind: 'optionGroup',
       optionGroupKey: PRIMARY_AGENT_KEY,
       defaultValue: opts.defaultPrimaryAgent,
     },
-    // The two daemons answer a permission with one of their own option ids, and
-    // send one back when the request itself offered none.
+    // Each daemon uses its own permission option IDs, including requests that supply no options.
     extractControl: openCodeExtractControl,
     planValue: PLAN_PRIMARY_AGENT,
-    // OpenCode and Kilo share the question-answer derivation from this single registration site
-    // (mirroring the backend's questionRequestContext hook), so it can't drift per provider.
+    attachments: { text: true, image: true, pdf: true, binary: false },
+    // This registration supplies the same question handling for both providers.
+    // The backend's questionRequestContext hook also supplies one family implementation.
     controlResponseDisplay: openCodeControlResponseSummary,
     questionHandling: {
       isRequest: payload => payload?.type === OPENCODE_EVENT.QuestionAsked,

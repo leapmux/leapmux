@@ -4,6 +4,9 @@
 //     handling
 //   - JSONRPCProcess, which adds request correlation and the publication of
 //     control requests
+//   - for a provider whose CLI runs a local HTTP server: Process.ReadLines,
+//     ListenWaiter, HTTPEndpoint, ReadSSE, ReserveLoopbackPort and
+//     NewServerSecret
 //   - the helpers for turn state, tool spans, attachments, option groups, effort
 //     labels and goal commands
 //

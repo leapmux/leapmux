@@ -1,4 +1,5 @@
-// Package jsonfield changes selected JSON values without rewriting unrelated bytes.
+// Package jsonfield reads and changes selected JSON values without rewriting
+// unrelated bytes.
 package jsonfield
 
 import (
@@ -127,4 +128,22 @@ func replace(data []byte, start, end int, value []byte) []byte {
 	result = append(result, data[:start]...)
 	result = append(result, value...)
 	return append(result, data[end:]...)
+}
+
+// Equal compares two encoded JSON values by their compact form, so a difference
+// in spacing alone does not read as a different value. Two empty values are
+// equal, an empty value equals no other value, and a value that is not valid JSON
+// equals nothing.
+//
+// A provider asks it of its own frames: whether a second resolve pass would write
+// the value a row already holds. It reads no provider's shape.
+func Equal(left, right json.RawMessage) bool {
+	if len(left) == 0 || len(right) == 0 {
+		return len(left) == len(right)
+	}
+	var leftCompact, rightCompact bytes.Buffer
+	if json.Compact(&leftCompact, left) != nil || json.Compact(&rightCompact, right) != nil {
+		return false
+	}
+	return bytes.Equal(leftCompact.Bytes(), rightCompact.Bytes())
 }

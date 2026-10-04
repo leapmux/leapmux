@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -73,13 +74,14 @@ type recordingCodexEnsureSink struct {
 	childSinkCalls int
 }
 
-func (s *recordingCodexEnsureSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
+func (s *recordingCodexEnsureSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
+	spawnSpanID, providerChildKey, title := spec.SpawnSpanID, spec.ProviderChildKey, spec.Title
 	s.ensureCalls = append(s.ensureCalls, codexEnsureCall{
 		spawnSpanID:      spawnSpanID,
 		providerChildKey: providerChildKey,
 		title:            title,
 	})
-	return s.Sink.EnsureChildAgent(spawnSpanID, providerChildKey, title)
+	return s.Sink.EnsureChildAgent(spec)
 }
 
 func (s *recordingCodexEnsureSink) ChildSink(childAgentID string) agent.ProviderServices {
@@ -96,18 +98,18 @@ func (s *transientCodexCloseFailureSink) CloseBackgroundTask(rowKey string, stat
 	return s.Sink.CloseBackgroundTask(rowKey, status)
 }
 
-func (s *transientCodexEnsureFailureSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
+func (s *transientCodexEnsureFailureSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
 	if s.ensureFailures > 0 {
 		s.ensureFailures--
 		return "", fmt.Errorf("transient child creation failure")
 	}
-	return s.Sink.EnsureChildAgent(spawnSpanID, providerChildKey, title)
+	return s.Sink.EnsureChildAgent(spec)
 }
 
-func (s *blockingCodexEnsureSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
+func (s *blockingCodexEnsureSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
 	close(s.started)
 	<-s.release
-	return s.Sink.EnsureChildAgent(spawnSpanID, providerChildKey, title)
+	return s.Sink.EnsureChildAgent(spec)
 }
 
 func (s *notificationPersistGuardSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
@@ -411,6 +413,23 @@ func TestHandleCodexOutput_MultiAgentV2PersistsPromptAndMirrorsFinalReport(t *te
 	assert.Equal(t, "subagent_report", reports[0]["type"])
 	assert.Equal(t, "**Parser report**\n\n- Finding", reports[0]["text"])
 	assert.Equal(t, "parser-review", reports[0]["label"])
+}
+
+func TestHandleCodexOutput_RawResponseMirrorsAddNoTranscriptRows(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	for _, raw := range []string{
+		`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","item":{"type":"function_call","name":"exec_command","arguments":"{}","call_id":"call-1"}}}`,
+		`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}}}`,
+		`{"method":"rawResponse/completed","params":{"threadId":"main-thread","responseId":"response-1"}}`,
+	} {
+		handleCodexOutput(a, providerkit.ParseLine([]byte(raw)))
+	}
+
+	assert.Zero(t, sink.MessageCount())
+	assert.Zero(t, sink.NotificationCount())
 }
 
 func TestHandleCodexOutput_V1ChildMirrorsFinalReportWithoutAnAgentPath(t *testing.T) {
@@ -2594,8 +2613,7 @@ func TestCodexCollabStatusToRegistry_ResumableInterrupted(t *testing.T) {
 		{"errored", bgtask.StatusFailed, true, false},
 		{"notFound", bgtask.StatusFailed, true, false},
 		{"shutdown", bgtask.StatusStopped, true, false},
-		// The fix: interrupted stays Running (resumable), NOT final.
-		{"interrupted", bgtask.StatusRunning, false, true},
+		{"interrupted", bgtask.StatusPaused, false, true},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -2626,10 +2644,10 @@ func TestCodexChildTurnRegistryStatus(t *testing.T) {
 	}{
 		{providerStatus: "completed", wantStatus: bgtask.StatusCompleted, wantFinished: true},
 		{providerStatus: "failed", wantStatus: bgtask.StatusFailed, wantFinished: true},
-		{providerStatus: "cancelled", wantStatus: bgtask.StatusRunning, wantActivity: "paused"},
-		{providerStatus: "canceled", wantStatus: bgtask.StatusRunning, wantActivity: "paused"},
-		{providerStatus: "interrupted", wantStatus: bgtask.StatusRunning, wantActivity: "paused"},
-		{providerStatus: "aborted", wantStatus: bgtask.StatusRunning, wantActivity: "paused"},
+		{providerStatus: "cancelled", wantStatus: bgtask.StatusPaused, wantActivity: "paused"},
+		{providerStatus: "canceled", wantStatus: bgtask.StatusPaused, wantActivity: "paused"},
+		{providerStatus: "interrupted", wantStatus: bgtask.StatusPaused, wantActivity: "paused"},
+		{providerStatus: "aborted", wantStatus: bgtask.StatusPaused, wantActivity: "paused"},
 		{providerStatus: "futureStatus", wantStatus: bgtask.StatusRunning},
 	}
 	for _, test := range tests {
@@ -2650,9 +2668,8 @@ func TestCodexChildTurnRegistryStatus(t *testing.T) {
 	assert.Empty(t, transition.activity)
 }
 
-// Codex uses the activity item as its own liveness signal. Interrupted stops
-// liveness just like completed, so the registry must release the active count.
-func TestCodexSubAgentActivity_InterruptedFailsTheRun(t *testing.T) {
+// An interrupted activity pauses the row. A later interaction resumes it.
+func TestCodexSubAgentActivity_InterruptedPausesTheRun(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
@@ -2663,8 +2680,16 @@ func TestCodexSubAgentActivity_InterruptedFailsTheRun(t *testing.T) {
 	assert.True(t, a.handleCodexSubAgentActivity(item, "main-thread"), "consumed the activity item")
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
-	assert.Equal(t, bgtask.StatusFailed, rows[0].Status)
-	assert.True(t, rows[0].Status.IsFinished(), "the interrupted run no longer counts as active")
+	assert.Equal(t, bgtask.StatusPaused, rows[0].Status)
+	assert.False(t, rows[0].Status.IsFinished(), "the interrupted run stays open")
+	assert.False(t, rows[0].Status.IsWorking(), "the interrupted run is idle")
+
+	interacted := json.RawMessage(`{"type":"subAgentActivity","id":"interact-1","agentThreadId":"thr-1","agentPath":"/root/reviewer","kind":"interacted"}`)
+	assert.True(t, a.handleCodexSubAgentActivity(interacted, "main-thread"))
+	rows = sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusRunning, rows[0].Status)
+	assert.True(t, rows[0].Status.IsWorking())
 }
 
 // subAgentActivity is the THIRD writer that reports a collab child active again,
@@ -2942,14 +2967,14 @@ func TestHandleCodexOutput_ThreadSettingsUpdatedRefreshesTheSettings(t *testing.
 	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
 	agent.model, agent.effort, agent.collaborationMode = "gpt-5", "medium", contracts.CodexOptionDefaultCollaborationMode
 
-	line := `{"method":"thread/settings/updated","params":{"threadId":"main-thread","threadSettings":{"model":"gpt-5.4","effort":"high","collaborationMode":"pair"}}}`
+	line := `{"method":"thread/settings/updated","params":{"threadId":"main-thread","threadSettings":{"model":"gpt-5.4","effort":"high","collaborationMode":{"mode":"plan","settings":{"model":"gpt-5.4","reasoning_effort":"high","developer_instructions":null}}}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(line)))
 
 	require.Equal(t, 1, sink.SettingsRefreshCount())
 	refresh := sink.LastSettingsRefresh()
 	assert.Equal(t, "gpt-5.4", refresh.Model)
 	assert.Equal(t, "high", refresh.Effort)
-	assert.Equal(t, "pair", refresh.Options[contracts.CodexOptionCollaborationMode])
+	assert.Equal(t, "plan", refresh.Options[contracts.CodexOptionCollaborationMode])
 	// The frame is a settings fact, never a transcript row.
 	assert.Equal(t, 0, sink.MessageCount())
 }
@@ -2961,7 +2986,7 @@ func TestHandleCodexOutput_ThreadSettingsUpdatedKeepsAnAxisItOmits(t *testing.T)
 
 	sink := &agenttest.Sink{}
 	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
-	agent.model, agent.effort, agent.collaborationMode = "gpt-5", "medium", "pair"
+	agent.model, agent.effort, agent.collaborationMode = "gpt-5", "medium", "plan"
 
 	line := `{"method":"thread/settings/updated","params":{"threadId":"main-thread","threadSettings":{"model":"gpt-5.4"}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(line)))
@@ -2969,7 +2994,7 @@ func TestHandleCodexOutput_ThreadSettingsUpdatedKeepsAnAxisItOmits(t *testing.T)
 	refresh := sink.LastSettingsRefresh()
 	assert.Equal(t, "gpt-5.4", refresh.Model)
 	assert.Equal(t, "medium", refresh.Effort)
-	assert.Equal(t, "pair", refresh.Options[contracts.CodexOptionCollaborationMode])
+	assert.Equal(t, "plan", refresh.Options[contracts.CodexOptionCollaborationMode])
 }
 
 // The live tail keeps advancing after the retention cap stops recording the output.
@@ -3045,4 +3070,308 @@ func TestAppendCodexToolEventRecordsNothingWhenNoRuneFits(t *testing.T) {
 	assert.Empty(t, events)
 	assert.Equal(t, codexIncompleteOutputLimit-2, bytes, "nothing was stored, so nothing was counted")
 	assert.True(t, truncated)
+}
+
+func codexRawExecFrames(t testing.TB) ([]byte, []byte) {
+	t.Helper()
+	return []byte(`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","turnId":"raw-turn","item":{"type":"custom_tool_call","id":"private-response-success-0-item","status":"completed","call_id":"raw-exec-call","name":"exec","input":"text(\"NATIVE_CODE_SUCCESS_\" + (40 + 2));","internal_chat_message_metadata_passthrough":{"turn_id":"raw-turn"}}},"emittedAtMs":1790872800691}`), []byte(`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","turnId":"raw-turn","item":{"type":"custom_tool_call_output","id":"ctco_01a0f856-4dd1-7df3-baad-37767de04096","call_id":"raw-exec-call","output":[{"type":"input_text","text":"Script completed\nWall time 0.0 seconds\nOutput:\n"},{"type":"input_text","text":"NATIVE_CODE_SUCCESS_42"}],"internal_chat_message_metadata_passthrough":{"turn_id":"raw-turn","create_time":1790872800.721981}}},"emittedAtMs":1790872800722}`)
+}
+
+func TestCodexRawExecPersistsCapturedNativeLifecycle(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a.turnID = "raw-turn"
+	request, output := codexRawExecFrames(t)
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	messages := sink.Messages()
+	require.Len(t, messages, 1)
+	assert.Equal(t, request, messages[0].Content)
+	assert.Equal(t, "raw-exec-call", messages[0].SpanID)
+	assert.Equal(t, "exec", messages[0].SpanType)
+	assert.False(t, messages[0].Closing)
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	messages = sink.Messages()
+	require.Len(t, messages, 2)
+	assert.Equal(t, output, messages[1].Content)
+	assert.Equal(t, messages[0].SpanID, messages[1].SpanID)
+	assert.True(t, messages[1].Closing)
+	assert.Equal(t, 1, a.TurnToolUses)
+}
+
+func TestCodexRawExecSuppressesDuplicatesAndUnpairedOutputs(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a.turnID = "raw-turn"
+	request, output := codexRawExecFrames(t)
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	assert.Empty(t, sink.Messages())
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	assert.Len(t, sink.Messages(), 2)
+	assert.Equal(t, 1, a.TurnToolUses)
+}
+
+func TestCodexRawExecRejectsWrongIdentityAndTool(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"wrong thread", "wrong turn", "wrong call", "absent call", "absent input", "nonexec tool", "foreign namespace"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+			a.turnID = "raw-turn"
+			request, output := codexRawExecFrames(t)
+			var frame map[string]any
+			require.NoError(t, json.Unmarshal(request, &frame))
+			params, ok := frame["params"].(map[string]any)
+			require.True(t, ok)
+			item, ok := params["item"].(map[string]any)
+			require.True(t, ok)
+			switch scenario {
+			case "wrong thread":
+				params["threadId"] = "other-thread"
+			case "wrong turn":
+				params["turnId"] = "other-turn"
+			case "wrong call":
+				item["call_id"] = "other-call"
+			case "absent call":
+				delete(item, "call_id")
+			case "absent input":
+				delete(item, "input")
+			case "nonexec tool":
+				item["name"] = "other"
+			case "foreign namespace":
+				item["namespace"] = "other"
+			}
+			changed, err := json.Marshal(frame)
+			require.NoError(t, err)
+			handleCodexOutput(a, providerkit.ParseLine(changed))
+			handleCodexOutput(a, providerkit.ParseLine(output))
+			if scenario == "wrong call" {
+				require.Len(t, sink.Messages(), 1)
+				assert.False(t, sink.Messages()[0].Closing)
+			} else {
+				assert.Empty(t, sink.Messages())
+			}
+		})
+	}
+}
+
+func TestCodexRawExecClearsPendingCallsAtTurnEnd(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a.turnID = "raw-turn"
+	request, output := codexRawExecFrames(t)
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	require.Len(t, sink.Messages(), 1)
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"raw-turn","status":"interrupted"}}}`)))
+	retained := sink.Messages()[1]
+	assert.Equal(t, request, retained.Content)
+	assert.True(t, retained.Closing)
+	assert.Equal(t, agent.MessageCompletionInterrupted, retained.Completion)
+	before := len(sink.Messages())
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	assert.Len(t, sink.Messages(), before)
+}
+
+func TestCodexThreadSettingsReadsCapturedCollaborationObject(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a.model, a.effort, a.collaborationMode = "old", "low", "default"
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"thread/settings/updated","params":{"threadId":"main-thread","threadSettings":{"disabledPluginIds":[],"cwd":"/Users/trustin/Workspaces/leapmux/.tmp/codex159-raw-exec-probe/workspace","approvalPolicy":"never","approvalsReviewer":"user","sandboxPolicy":{"type":"dangerFullAccess"},"activePermissionProfile":null,"model":"gpt-5.6-luna","modelProvider":"private-probe","serviceTier":null,"effort":"medium","summary":null,"collaborationMode":{"mode":"plan","settings":{"model":"gpt-5.6-luna","reasoning_effort":"medium","developer_instructions":null}},"multiAgentMode":"explicitRequestOnly","personality":null}},"emittedAtMs":1790872800652}`)))
+	require.Equal(t, 1, sink.SettingsRefreshCount())
+	refresh := sink.LastSettingsRefresh()
+	assert.Equal(t, "gpt-5.6-luna", refresh.Model)
+	assert.Equal(t, "medium", refresh.Effort)
+	assert.Equal(t, "plan", refresh.Options[contracts.CodexOptionCollaborationMode])
+	assert.Empty(t, sink.Messages())
+}
+
+func TestCodexRawExecPreservesFailureHeaderAndImages(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a.turnID = "raw-turn"
+	request, _ := codexRawExecFrames(t)
+	output := []byte(`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","turnId":"raw-turn","item":{"type":"custom_tool_call_output","call_id":"raw-exec-call","output":[{"type":"input_text","text":"Script failed\nWall time 0.0 seconds\nOutput:\n"},{"type":"input_text","text":"Script error:\nError: NATIVE_CODE_FAILURE"},{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}}}`)
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	messages := sink.Messages()
+	require.Len(t, messages, 2)
+	assert.Equal(t, output, messages[1].Content)
+	assert.True(t, messages[1].Closing)
+}
+
+func TestCodexThreadSettingsIgnoresForeignThread(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a.model = "main-model"
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"thread/settings/updated","params":{"threadId":"foreign-thread","threadSettings":{"model":"foreign-model"}}}`)))
+	assert.Equal(t, "main-model", a.model)
+	assert.Zero(t, sink.SettingsRefreshCount())
+}
+
+type codexRawExecFailingSink struct {
+	agenttest.Sink
+	failures int
+}
+
+func (s *codexRawExecFailingSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	if s.failures > 0 {
+		s.failures--
+		return errors.New("the raw exec row could not be stored")
+	}
+	return s.Sink.PersistMessage(source, content, span)
+}
+
+func TestCodexRawExecRetriesOnlyFailedPersistence(t *testing.T) {
+	t.Parallel()
+	sink := &codexRawExecFailingSink{failures: 1}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a.turnID = "raw-turn"
+	request, output := codexRawExecFrames(t)
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	assert.Empty(t, sink.Messages())
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	require.Len(t, sink.Messages(), 1)
+	sink.failures = 1
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	assert.Len(t, sink.Messages(), 1)
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	assert.Len(t, sink.Messages(), 2)
+	assert.Equal(t, 1, a.TurnToolUses)
+}
+
+func TestCodexRawExecKeepsChildOutputInItsOwnTranscript(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"collabAgentToolCall","id":"spawn-raw-child","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["raw-child"],"prompt":"Run the script.","agentsStates":{}}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"raw-child","turn":{"id":"raw-turn"}}}`)))
+	before := len(sink.Messages())
+	request, output := codexRawExecFrames(t)
+	request = []byte(strings.ReplaceAll(string(request), `"threadId":"main-thread"`, `"threadId":"raw-child"`))
+	output = []byte(strings.ReplaceAll(string(output), `"threadId":"main-thread"`, `"threadId":"raw-child"`))
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	assert.Len(t, sink.Messages(), before)
+	child := sink.Child("child-of-spawn-raw-child")
+	messages := child.Messages()
+	var execRows []agenttest.Message
+	for _, message := range messages {
+		if message.SpanID == "raw-exec-call" {
+			execRows = append(execRows, message)
+		}
+	}
+	require.Len(t, execRows, 2)
+	assert.Equal(t, request, execRows[0].Content)
+	assert.Equal(t, output, execRows[1].Content)
+	assert.True(t, execRows[1].Closing)
+}
+
+func TestCodexRawExecDoesNotReusePairAcrossTurns(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a.turnID = "raw-turn"
+	request, output := codexRawExecFrames(t)
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	require.Len(t, sink.Messages(), 2)
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"raw-turn","status":"completed"}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"next-turn"}}}`)))
+	request = []byte(strings.ReplaceAll(string(request), `"turnId":"raw-turn"`, `"turnId":"next-turn"`))
+	output = []byte(strings.ReplaceAll(string(output), `"turnId":"raw-turn"`, `"turnId":"next-turn"`))
+	before := len(sink.Messages())
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	assert.Len(t, sink.Messages(), before)
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	assert.Len(t, sink.Messages(), before+2)
+}
+
+func TestCodexRawExecPreservesExplicitEmptySource(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a.turnID = "raw-turn"
+	request := []byte(`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","turnId":"raw-turn","item":{"type":"custom_tool_call","call_id":"empty-script","name":"exec","input":""}}}`)
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	require.Len(t, sink.Messages(), 1)
+	assert.Equal(t, request, sink.Messages()[0].Content)
+	assert.False(t, sink.Messages()[0].Closing)
+}
+
+func TestCodexThreadSettingsKeepsAxesWhenNativeObjectIsPartial(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a.model, a.effort, a.collaborationMode = "model", "high", "plan"
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"thread/settings/updated","params":{"threadId":"main-thread","threadSettings":{"collaborationMode":{"mode":"default","settings":{"model":"ignored-inner-model"}}}}}`)))
+	require.Equal(t, 1, sink.SettingsRefreshCount())
+	assert.Equal(t, "model", a.model)
+	assert.Equal(t, "high", a.effort)
+	assert.Equal(t, "default", a.collaborationMode)
+}
+
+func TestCodexThreadSettingsRejectsMalformedNativeMode(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{`"obsolete-string"`, `{"mode":4}`, `[]`} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+			a.model, a.effort, a.collaborationMode = "model", "high", "plan"
+			raw := []byte(`{"method":"thread/settings/updated","params":{"threadId":"main-thread","threadSettings":{"model":"new-model","collaborationMode":` + mode + `}}}`)
+			handleCodexOutput(a, providerkit.ParseLine(raw))
+			assert.Equal(t, "model", a.model)
+			assert.Equal(t, "plan", a.collaborationMode)
+			assert.Zero(t, sink.SettingsRefreshCount())
+		})
+	}
+}
+
+func TestCodexRawExecAcceptsNativeDefaultNamespace(t *testing.T) {
+	t.Parallel()
+	for _, namespace := range []string{"", "functions"} {
+		t.Run(namespace, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+			a.turnID = "raw-turn"
+			request, output := codexRawExecFrames(t)
+			request = []byte(strings.Replace(string(request), `"name":"exec"`, `"name":"exec","namespace":`+strconv.Quote(namespace), 1))
+			output = []byte(strings.Replace(string(output), `"call_id":"raw-exec-call"`, `"call_id":"raw-exec-call","name":"exec","namespace":`+strconv.Quote(namespace), 1))
+			handleCodexOutput(a, providerkit.ParseLine(request))
+			handleCodexOutput(a, providerkit.ParseLine(output))
+			require.Len(t, sink.Messages(), 2)
+			assert.Equal(t, request, sink.Messages()[0].Content)
+			assert.Equal(t, output, sink.Messages()[1].Content)
+		})
+	}
+}
+
+func TestCodexRawExecRejectsForeignResultIdentity(t *testing.T) {
+	t.Parallel()
+	for _, fields := range []string{`"namespace":"foreign"`, `"name":"other-tool"`} {
+		t.Run(fields, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+			a.turnID = "raw-turn"
+			request, output := codexRawExecFrames(t)
+			output = []byte(strings.Replace(string(output), `"call_id":"raw-exec-call"`, `"call_id":"raw-exec-call",`+fields, 1))
+			handleCodexOutput(a, providerkit.ParseLine(request))
+			handleCodexOutput(a, providerkit.ParseLine(output))
+			require.Len(t, sink.Messages(), 1)
+			assert.False(t, sink.Messages()[0].Closing)
+		})
+	}
 }

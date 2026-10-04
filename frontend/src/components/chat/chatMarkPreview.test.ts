@@ -12,11 +12,23 @@ import { prepareChatRow } from './rowPreparation'
 // Register provider plugins so messageMarkPreviewText (called inside warm) can resolve one.
 import '~/components/chat/providers'
 
-/** Force the resolved plugin's previewText to throw, to exercise the extraction guard. */
+/** Make classification fail before row extraction starts. */
+function throwingPlugin(): NonNullable<ReturnType<typeof registry.pluginFor>> {
+  const plugin = registry.pluginFor(AgentProvider.CLAUDE_CODE)
+  if (!plugin)
+    throw new Error('the Claude test needs a registered plugin')
+  return {
+    ...plugin,
+    transcript: {
+      ...plugin.transcript,
+      classify() { throw new Error('boom') },
+    },
+  }
+}
+
 function withThrowingPlugin(body: () => void): void {
-  const spy = vi.spyOn(registry, 'pluginFor').mockReturnValue({
-    previewText() { throw new Error('boom') },
-  } as unknown as ReturnType<typeof registry.pluginFor>)
+  const plugin = throwingPlugin()
+  const spy = vi.spyOn(registry, 'pluginFor').mockReturnValue(plugin)
   try {
     body()
   }
@@ -36,11 +48,22 @@ function userMessage(seq: bigint, text: string): AgentChatMessage {
   })
 }
 
+function agentMessage(seq: bigint, text: string): AgentChatMessage {
+  return create(AgentChatMessageSchema, {
+    id: `m${seq}`,
+    source: MessageSource.AGENT,
+    content: new TextEncoder().encode(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } })),
+    contentCompression: ContentCompression.NONE,
+    seq,
+    agentProvider: AgentProvider.CLAUDE_CODE,
+  })
+}
+
 /** A marked message carrying an arbitrary content shape (default provider Claude). */
-function messageOf(content: Record<string, unknown>, agentProvider = AgentProvider.CLAUDE_CODE): AgentChatMessage {
+function messageOf(content: Record<string, unknown>, agentProvider = AgentProvider.CLAUDE_CODE, source = MessageSource.USER): AgentChatMessage {
   return create(AgentChatMessageSchema, {
     id: 'm1',
-    source: MessageSource.USER,
+    source,
     content: new TextEncoder().encode(JSON.stringify(content)),
     contentCompression: ContentCompression.NONE,
     seq: 5n,
@@ -101,11 +124,10 @@ describe('message mark preview text', () => {
     expect(messageMarkPreviewText(messageOf({ type: 'assistant', message: { content: [] } }))).toBeNull()
   })
 
-  it('degrades to null instead of propagating when a provider plugin previewText throws', () => {
-    // A malformed message a plugin's previewText (or the parse it drives) chokes on must read
-    // as "no preview", not blow up the hover effect / poison the async fetch as transient.
+  it('degrades to null when provider classification throws', () => {
+    // A plugin failure before extraction must not poison the async fetch as transient.
     withThrowingPlugin(() => {
-      expect(messageMarkPreviewText(messageOf({ content: 'x' }))).toBeNull()
+      expect(messageMarkPreviewText(messageOf({ type: 'assistant', message: { content: [{ type: 'text', text: 'x' }] } }, AgentProvider.CLAUDE_CODE, MessageSource.AGENT))).toBeNull()
     })
   })
 
@@ -114,15 +136,18 @@ describe('message mark preview text', () => {
   // `unsupported`, whose card blames the provider for a defect that is LeapMux's --
   // and the preview takes that row as no text, so the dot falls to its mark-type label.
   it('answers an explicit failed extraction when the provider extractor throws', () => {
+    const plugin = registry.pluginFor(AgentProvider.CLAUDE_CODE)
+    if (!plugin)
+      throw new Error('the Claude test needs a registered plugin')
     const spy = vi.spyOn(registry, 'pluginFor').mockReturnValue({
+      ...plugin,
       transcript: {
+        ...plugin.transcript,
         classify: () => ({ kind: 'tool_result' }),
         spanRole: () => 'result',
-        extractRow: () => {
-          throw new Error('boom')
-        },
+        extractRow: () => { throw new Error('boom') },
       },
-    } as unknown as ReturnType<typeof registry.pluginFor>)
+    })
     try {
       const message = messageOf({ type: 'tool_result' })
       const { extraction } = prepareChatRow(message)
@@ -327,12 +352,12 @@ describe('warmMarkPreview', () => {
   })
 
   it('loaded-window extraction throw caches "" synchronously without propagating', () => {
-    // A plugin previewText throw on the SYNC loaded-window path must not escape into the
+    // A classifier throw on the synchronous loaded-window path must not escape into the
     // caller's hover effect; it caches '' (a label), same as any un-previewable message.
     withThrowingPlugin(() => {
       const fetchMessage = vi.fn()
       expect(() =>
-        warmMarkPreview('a1', 4n, testMessageContext({ messageBySeq: () => userMessage(4n, 'x'), fetchMessage })),
+        warmMarkPreview('a1', 4n, testMessageContext({ messageBySeq: () => agentMessage(4n, 'x'), fetchMessage })),
       ).not.toThrow()
       expect(getCachedMarkPreview('a1', 4n)).toBe('')
       expect(fetchMessage).not.toHaveBeenCalled()
@@ -344,11 +369,10 @@ describe('warmMarkPreview', () => {
     // '' once (a label) rather than misreading it as the transient RPC failure the .catch
     // handles -- which would re-fetch the same dot on every hover for the session. The spy is
     // held through the await (not withThrowingPlugin, which would restore before the .then).
-    const spy = vi.spyOn(registry, 'pluginFor').mockReturnValue({
-      previewText() { throw new Error('boom') },
-    } as unknown as ReturnType<typeof registry.pluginFor>)
+    const plugin = throwingPlugin()
+    const spy = vi.spyOn(registry, 'pluginFor').mockReturnValue(plugin)
     try {
-      const fetchMessage = vi.fn().mockResolvedValue(userMessage(9n, 'far'))
+      const fetchMessage = vi.fn().mockResolvedValue(agentMessage(9n, 'far'))
       const deps = testMessageContext({ messageBySeq: () => undefined, fetchMessage })
       warmMarkPreview('a1', 9n, deps)
       await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe(''))

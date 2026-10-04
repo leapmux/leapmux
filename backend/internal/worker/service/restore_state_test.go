@@ -4,12 +4,13 @@ import (
 	"context"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -79,17 +80,8 @@ func TestRestoreStateMarksActiveBackgroundTasksInterrupted(t *testing.T) {
 		"an already-final row must not be relabeled by the boot sweep")
 }
 
-// The boot sweep also CLOSES each transcript it interrupted. A subagent cut off
-// by a worker restart would otherwise show an 'interrupted' row in the sidebar
-// beside a transcript that simply stops, and the tab would keep a thinking
-// indicator that never resolves.
-//
-// The list of children and the write are ONE statement (the UPDATE returns the
-// ids it ended), so the sweep can never mark rows it then fails to close: a
-// separate read before the UPDATE could not be repeated after it, and a failed
-// read followed by a successful UPDATE stranded every one of those transcripts
-// permanently, with no way for a later boot to find them.
-func TestRestoreStateWritesADividerForEachInterruptedChild(t *testing.T) {
+// Boot recovery records interruption without changing any native transcript.
+func TestRestoreStatePreservesNativeMessagesForEachInterruptedChild(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -102,13 +94,16 @@ func TestRestoreStateWritesADividerForEachInterruptedChild(t *testing.T) {
 	}))
 	sink := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
-	// Two live subagents, plus one that already ended: only the live ones are
-	// owed a divider.
-	liveID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	// Only the two active children receive an interrupted registry status.
+	liveID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
-	otherID, err := sink.EnsureChildAgent("span-2", "task-2", "BUILD")
+	otherID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-2", ProviderChildKey: "task-2", Title: "BUILD"})
 	require.NoError(t, err)
-	doneID, err := sink.EnsureChildAgent("span-3", "task-3", "DONE")
+	for _, childID := range []string{liveID, otherID} {
+		require.NoError(t, sink.PersistChildMessage(childID,
+			leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, []byte(`{"type":"text","text":"Native work before the Worker stopped."}`), agent.SpanInfo{}))
+	}
+	doneID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-3", ProviderChildKey: "task-3", Title: "DONE"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-3", bgtask.StatusCompleted))
 	doneBefore := len(transcriptMessages(t, svc, doneID))
@@ -117,9 +112,12 @@ func TestRestoreStateWritesADividerForEachInterruptedChild(t *testing.T) {
 
 	for _, childID := range []string{liveID, otherID} {
 		msgs := transcriptMessages(t, svc, childID)
-		require.Len(t, msgs, 1, "each interrupted child transcript is closed exactly once")
-		assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
-		assert.Equal(t, "interrupted", msgs[0]["status"])
+		require.Len(t, msgs, 1)
+		assert.Equal(t, "Native work before the Worker stopped.", msgs[0]["text"])
+		stored, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(ctx, childID)
+		require.NoError(t, err)
+		assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusInterrupted), stored.Status)
+		assert.True(t, stored.EndedAt.Valid)
 	}
 	assert.Len(t, transcriptMessages(t, svc, doneID), doneBefore,
 		"a child that already ended is not closed a second time")

@@ -518,4 +518,12 @@ describe('compactionContextUsage', () => {
     const result = compactionContextUsage(8000, { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, contextWindow: 0 })
     expect(result.contextWindow).toBe(0)
   })
+
+  it('drops the stated fill of the reading before the compaction', () => {
+    // The fill described the context that the compaction replaced. Kept beside a
+    // post-compaction count of zero, it would draw as the whole reading again.
+    const result = compactionContextUsage(0, { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 88 })
+    expect('usagePercent' in result).toBe(false)
+    expect(result.contextTokens).toBe(0)
+  })
 })

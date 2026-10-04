@@ -197,6 +197,9 @@ func TestHelperCopilotNativeConnection(t *testing.T) {
 			require.NoError(t, err)
 		} else if request.Method == "models.list" {
 			result = json.RawMessage(`{"models":[{"id":"probe-model","name":"Probe model","supportedReasoningEfforts":["low","medium","high"]}]}`)
+		} else if request.Method == "session.options.update" && os.Getenv("LEAPMUX_TEST_COPILOT_REJECT_REASONING_SUMMARIES") != "" {
+			send([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"Reasoning summaries refused"}}`, request.ID)))
+			continue
 		} else if strings.HasPrefix(request.Method, "session.") {
 			var params struct {
 				SessionID        string          `json:"sessionId"`
@@ -257,6 +260,23 @@ func TestHelperCopilotNativeConnection(t *testing.T) {
 					continue
 				}
 				value = map[string]any{"messageId": "delivered-message"}
+			case "session.history.compact":
+				if os.Getenv("LEAPMUX_TEST_COPILOT_COMPACTION_OUTCOME") == "pending" {
+					continue
+				}
+				if os.Getenv("LEAPMUX_TEST_COPILOT_COMPACTION_OUTCOME") == "rpc-error" {
+					send([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"The summary failed"}}`, request.ID)))
+					continue
+				}
+				if os.Getenv("LEAPMUX_TEST_COPILOT_COMPACTION_OUTCOME") == "invalid-result" {
+					value = map[string]any{}
+					break
+				}
+				if os.Getenv("LEAPMUX_TEST_COPILOT_COMPACTION_OUTCOME") == "refused" {
+					value = map[string]any{"success": false, "tokensRemoved": 0, "messagesRemoved": 0}
+					break
+				}
+				value = map[string]any{"success": true, "tokensRemoved": 4, "messagesRemoved": 1}
 			case "session.eventLog.registerInterest":
 				if createCount > 1 && (replacementFailure == "subscription" || replacementFailure == "restore") {
 					replacementFailure = map[string]string{"subscription": "", "restore": "restore"}[replacementFailure]

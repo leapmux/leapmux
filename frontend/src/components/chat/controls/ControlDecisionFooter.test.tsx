@@ -205,6 +205,77 @@ describe('ControlDecisionFooter', () => {
   })
 })
 
+// A menu item states what it does in its tooltip when its label does not say it all.
+// An item with no description gets no tooltip, and a click on either one still selects.
+describe('ControlDecisionFooter action descriptions', () => {
+  function renderMenu(onSelect = vi.fn()) {
+    render(() => (
+      <ControlDecisionFooter
+        hasEditorContent={false}
+        onSendFeedback={vi.fn()}
+        positiveAction={{ label: 'Approve', testId: 'approve', onSelect: vi.fn() }}
+        additionalActions={() => [
+          { label: 'Approve: Option A', testId: 'described', onSelect, description: 'Split the parser first' },
+          { label: 'Request revisions', testId: 'plain', onSelect },
+        ]}
+      />
+    ))
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }))
+  }
+
+  // A keyboard reader reaches the description too: focus opens the tooltip, and the
+  // open tooltip describes the item.
+  it('describes a focused item that states a description, and only that item', () => {
+    vi.useFakeTimers()
+    try {
+      renderMenu()
+      fireEvent.focusIn(screen.getByTestId('described'))
+      vi.advanceTimersByTime(SHOW_DELAY_MS)
+      expect(screen.getByTestId('described')).toHaveAccessibleDescription('Split the parser first')
+      fireEvent.focusOut(screen.getByTestId('described'))
+      fireEvent.focusIn(screen.getByTestId('plain'))
+      vi.advanceTimersByTime(SHOW_DELAY_MS)
+      expect(screen.getByTestId('plain')).not.toHaveAttribute('aria-describedby')
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows the description as the tooltip of the item', () => {
+    vi.useFakeTimers()
+    try {
+      renderMenu()
+      fireEvent.mouseEnter(screen.getByTestId('described'))
+      vi.advanceTimersByTime(SHOW_DELAY_MS)
+      expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('Split the parser first')
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows no tooltip for an item with no description', () => {
+    vi.useFakeTimers()
+    try {
+      renderMenu()
+      fireEvent.mouseEnter(screen.getByTestId('plain'))
+      vi.advanceTimersByTime(SHOW_DELAY_MS)
+      expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('selects a described item on a click, as it selects a plain one', () => {
+    const onSelect = vi.fn()
+    renderMenu(onSelect)
+    fireEvent.click(screen.getByTestId('described'))
+    expect(onSelect).toHaveBeenCalledOnce()
+  })
+})
+
 // "Reject always" and "Allow for this workspace" both land in the overflow menu,
 // and an undifferentiated menu made them read as the same kind of answer. See
 // REMOVALS-FE-1.

@@ -444,7 +444,7 @@ func (a *Agent) openClaudeTaskChild(ev *claudeTaskEnvelope, known claudeKnownTas
 	// transcript, and a subagent's own SendMessage lands on that child's
 	// tracker rather than the root's. See the guard above.
 	if childID == "" && ev.ToolUseID != "" && !restart.restarted() {
-		childID, err = a.sink.EnsureChildAgent(ev.ToolUseID, ev.TaskID, title)
+		childID, err = a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: ev.ToolUseID, ProviderChildKey: ev.TaskID, Title: title})
 	}
 	if childID != "" {
 		a.tasks.rememberTaskChild(ev.TaskID, childID)
@@ -650,6 +650,15 @@ func (a *Agent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
 	if !known {
 		return
 	}
+	// A `stopped` notification for a task this process stopped through
+	// InterruptChild is a USER interrupt, not a plain stop. The frontend draws
+	// "Subagent interrupted" for StatusInterrupted and "Subagent stopped" for
+	// StatusStopped, so the mark decides the word. takeInterrupted spends it:
+	// whichever closer (this notification or the result path) reaches the
+	// transcript first owns the wording.
+	if status == bgtask.StatusStopped && a.tasks.takeInterrupted(ev.TaskID) {
+		status = bgtask.StatusInterrupted
+	}
 	// Remember it BEFORE the writes: a wake for this shell's owner can follow
 	// immediately, and it proves itself with an id this process finalized. The
 	// call filters to shells; forgetTaskIndex below drops the kind, so the read
@@ -697,6 +706,48 @@ var claudeTaskStatusMap = map[string]bgtask.Status{
 	"stopped":   bgtask.StatusStopped,
 }
 
+// InterruptChild stops a subagent's current turn inside the owner process.
+// childKey is the registry row key, which IS the CLI's task_id
+// (handleClaudeTaskStarted upserts the row under it), and stop_task addresses
+// that id in the CLI's own task registry:
+//
+//	{"type":"control_request","request_id":"...",
+//	 "request":{"subtype":"stop_task","task_id":"<task_id>"}}
+//
+// Claude exposes no wire path that sends input to a subagent, so this provider
+// implements ChildInterrupter and not ChildSteerer: a stop is the one child
+// control the CLI answers. The Manager reports ErrChildOperationUnsupported
+// only for a provider that lacks this method.
+//
+// The task index is this process's route to the child. A key it does not hold
+// reports ErrChildRouteNotReady, which the InterruptChild handler maps to a
+// retry: the condition is transient, because a worker restart re-announces
+// every task and a late task_started renames the pre-start row onto its id. A
+// stop_task failure surfaces unchanged.
+func (a *Agent) InterruptChild(childKey string) error {
+	if !a.tasks.knowsTask(childKey) {
+		return fmt.Errorf("%w: unknown claude subagent task %q", agent.ErrChildRouteNotReady, childKey)
+	}
+	body, err := json.Marshal(map[string]string{
+		"subtype": "stop_task",
+		"task_id": childKey,
+	})
+	if err != nil {
+		return err
+	}
+	// The CLI can close the task before it answers stop_task. Record the user
+	// interrupt before sending, so that closing notification sees it.
+	a.tasks.markInterrupted(childKey)
+	// The agent's own context, so a process exit unblocks the wait; APITimeout
+	// caps the hold, exactly as the root interrupt does.
+	_, err = a.sendControlAndWait(a.Context(), string(body), a.APITimeout())
+	if err != nil {
+		a.tasks.clearInterrupted(childKey)
+		return err
+	}
+	return nil
+}
+
 // hasToolResultBlock reports whether a forwarded user envelope carries the
 // child's own tool_result, which is what every genuine one carries.
 func hasToolResultBlock(env *messageEnvelope) bool {
@@ -730,16 +781,16 @@ func (a *Agent) routeSubagentMessage(content []byte, msgType string, env *messag
 	// tool_result. Claude does not implement ChildSteerer, so no typed user
 	// message reaches a child transcript either.
 	//
-	// A SendMessage the parent addresses to a subagent does not reach a child
-	// transcript this way either, and a live recipient is not an exception.
-	// Captured against 2.1.233: the CLI CONCLUDES the recipient's current run
-	// before it delivers. A subagent that was mid-Bash when the parent addressed
-	// it emitted task_notification=completed FIRST, then the parent's SendMessage
-	// tool_use, then a task_started carrying the message as its prompt. The
-	// delivered text rides on exactly two envelopes -- the parent's own tool_use
-	// input, and task_started.prompt -- and never on a forwarded one. So a
-	// recipient is always FINISHED by delivery time, the restart path is the whole
-	// mechanism, and there is no live-delivery case for this guard to drop.
+	// A SendMessage the parent addresses to a subagent is the same story, and a
+	// live recipient is not an exception. Captured against 2.1.233: the CLI
+	// CONCLUDED the recipient's current run before it delivered. A subagent that
+	// was mid-Bash when the parent addressed it emitted task_notification=completed
+	// FIRST, then the parent's SendMessage tool_use, then a task_started carrying
+	// the message as its prompt. On 2.1.281 the tool queues instead
+	// (`queuePendingMessage` when the child runs, `resumeAgentBackground` when it
+	// is idle) -- but either way the delivered text rides on exactly two envelopes,
+	// the parent's own tool_use input and task_started.prompt, and never on a
+	// forwarded one. There is no live-delivery case for this guard to drop.
 	if msgType == claudeMsgTypeUser && !hasToolResultBlock(env) {
 		return
 	}
@@ -761,7 +812,7 @@ func (a *Agent) routeSubagentMessage(content []byte, msgType string, env *messag
 	//
 	// A blank key links nothing, so resolving the child costs no registry write
 	// while the run is still unidentified.
-	childID, err := a.sink.EnsureChildAgent(spawnSpanID, taskID, "")
+	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: spawnSpanID, ProviderChildKey: taskID, Title: ""})
 	if err != nil {
 		slog.Warn("claude route subagent: ensure child failed", "spawn_span", spawnSpanID, "error", err)
 		return
@@ -830,7 +881,17 @@ func (a *Agent) routeSubagentMessage(content []byte, msgType string, env *messag
 	if msgType == claudeMsgTypeResult {
 		// The subagent's final result. Also drives the registry as a
 		// fallback when no task_notification arrived.
-		if err := childSink.PersistTurnEnd(agent.MessageContent{Original: content}, spanInfo); err != nil {
+		//
+		// A result that follows InterruptChild's stop_task is an interrupted
+		// turn, not a finished one: the divider says "Turn interrupted" and the
+		// row closes as interrupted. takeInterrupted spends the mark, so the
+		// task_notification path and this one cannot both claim the wording.
+		interrupted := a.tasks.takeInterrupted(taskID)
+		turnEnd := agent.MessageContent{Original: content}
+		if interrupted {
+			turnEnd.Completion = agent.MessageCompletionInterrupted
+		}
+		if err := childSink.PersistTurnEnd(turnEnd, spanInfo); err != nil {
 			slog.Warn("claude route subagent turn-end failed", "child", childID, "error", err)
 		}
 		// Both branches below report the same outcome, so one reading of IsError
@@ -843,6 +904,9 @@ func (a *Agent) routeSubagentMessage(content []byte, msgType string, env *messag
 		status := bgtask.StatusCompleted
 		if env.IsError {
 			status = bgtask.StatusFailed
+		}
+		if interrupted {
+			status = bgtask.StatusInterrupted
 		}
 		if taskID != "" {
 			providerkit.LogRegistryRefusal("claude", "status", a.sink.UpdateBackgroundTaskStatus(taskID, status, ""))
@@ -991,6 +1055,10 @@ type claudeTaskRunIndex struct {
 	toolUseTask map[string]string
 	taskKind    map[string]bgtask.Kind
 	pendingEnd  map[string]bgtask.Status
+	// interrupted records the tasks this process stopped through InterruptChild.
+	// A stopped task notification after InterruptChild records an interrupted registry status.
+	// The next matching close consumes the marker.
+	interrupted map[string]struct{}
 }
 
 // claudeTaskTranscriptIndex outlives a run. It lets a restarted task recover
@@ -1229,8 +1297,7 @@ const (
 // alone on its own. This text is model-facing prose that no LeapMux code
 // controls, and the two failures are not symmetric: a false NEGATIVE silently
 // restores the whole bug this change exists to fix -- the row reads "finished"
-// for a run that is still going, and the run ends with no closing divider --
-// while a false POSITIVE cannot get past the two proofs above.
+// for a run that still works. A false positive cannot pass the two checks above.
 func claudeWakeTaskID(prompt string) (string, bool) {
 	if !strings.Contains(prompt, claudeWakeOpenTag) || !strings.Contains(prompt, claudeWakeCloseTag) {
 		return "", false
@@ -1353,6 +1420,59 @@ func (i *claudeTaskIndex) forgetTaskIndex(taskID string) {
 	// number of subagents this agent spawned, which is the same limit as the
 	// child sinks the sink already holds.
 	delete(i.runs.taskKind, taskID)
+}
+
+// knowsTask reports whether a task_started of THIS process registered taskID
+// and no final notification or result has dropped it since. It is the
+// interrupt gate (InterruptChild): the map is the process's route to a child,
+// so a miss is a row of a previous process, a run that already ended, or a
+// pre-start row key -- one retryable condition for the caller, whichever it is.
+func (i *claudeTaskIndex) knowsTask(taskID string) bool {
+	if taskID == "" {
+		return false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	_, ok := i.runs.taskKind[taskID]
+	return ok
+}
+
+// markInterrupted records that InterruptChild stopped this task. The closer
+// that spends the mark reports StatusInterrupted, so the divider says
+// "Subagent interrupted" rather than the plain stop word.
+func (i *claudeTaskIndex) markInterrupted(taskID string) {
+	if taskID == "" {
+		return
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.runs.interrupted == nil {
+		i.runs.interrupted = make(map[string]struct{})
+	}
+	i.runs.interrupted[taskID] = struct{}{}
+}
+
+func (i *claudeTaskIndex) clearInterrupted(taskID string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	delete(i.runs.interrupted, taskID)
+}
+
+// takeInterrupted reports whether InterruptChild stopped this task, and
+// spends the mark so only one closer uses it. The result path and the
+// task_notification path can both run for one stop; whichever reaches the
+// transcript first owns the wording, and the other reports a plain stop.
+func (i *claudeTaskIndex) takeInterrupted(taskID string) bool {
+	if taskID == "" {
+		return false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if _, ok := i.runs.interrupted[taskID]; !ok {
+		return false
+	}
+	delete(i.runs.interrupted, taskID)
+	return true
 }
 
 // kindForTask returns what task_started said this task is, or KindUnspecified

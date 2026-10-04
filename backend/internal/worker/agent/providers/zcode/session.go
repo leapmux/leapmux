@@ -366,6 +366,7 @@ func (a *Agent) ClearContext() (string, error) {
 	// them re-armed the window, which then fired into the NEW session.
 	a.Mu.Lock()
 	a.turnActive = false
+	a.compactionSessionID = ""
 	a.backgroundTurn = false
 	a.cancelStoppedZCodeTurnLocked()
 	a.Mu.Unlock()

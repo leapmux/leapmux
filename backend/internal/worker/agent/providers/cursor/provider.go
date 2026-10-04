@@ -3,6 +3,7 @@ package cursor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -20,12 +21,19 @@ const (
 // cursorProvider is the wire-format plugin for Cursor. It is an ACP provider, and it
 // adds the one request Cursor answers in a shape of its own: cursor/create_plan.
 //
-// The named type is what keeps that shape out of Provider, which also serves Goose,
-// Kilo, OpenCode and Reasonix. None of them sends a create-plan request, and a
-// provider-enum test inside the shared type would state Cursor's protocol in code that
-// belongs to five providers.
+// The named type is what keeps that shape out of Provider, which also serves every
+// other ACP provider. None of them sends a create-plan request, and a provider-enum
+// test inside the shared type would state Cursor's protocol in code that the whole
+// ACP family shares.
 type cursorProvider struct {
 	acp.Provider
+}
+
+func (cursorProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
+	if attachment.Kind == agent.AttachmentKindPDF || attachment.Kind == agent.AttachmentKindBinary {
+		return fmt.Errorf("cursor ACP omits %s attachment %q", attachment.Kind, attachment.Filename)
+	}
+	return nil
 }
 
 // ListStoredSessions reads Cursor's own session store; see sessions.go.

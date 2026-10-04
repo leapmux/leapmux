@@ -177,8 +177,12 @@ message GetListenStatusRequest {}
 
 message GetListenStatusResponse {
   repeated NetworkInterface interfaces = 1;
-  // The address -listen named, in the form -listen carries. Read-only: it
-  // is a command-line option, never a setting.
+  // The primary TCP address --listen named (the first of several), in the
+  // form --listen carries, or "" when the bind set holds no TCP address.
+  // It is one address of several when --listen repeated, so the extra-listen
+  // panel merges an incomplete set; making it repeated is
+  // https://github.com/leapmux/leapmux/issues/493.
+  // Read-only: it is a command-line option, never a setting.
   string default_address = 2;
   // The stored extra_listen_addresses value, canonically spelled.
   repeated string configured = 3;

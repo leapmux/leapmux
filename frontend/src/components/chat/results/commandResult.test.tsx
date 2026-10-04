@@ -2,11 +2,25 @@ import type { CommandResult } from '../model/commandResult'
 import type { FinishedToolCallStatus, UnfinishedToolCallStatus } from '../model/toolCallStatus'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { withCommandExit } from '../model/commandResult'
 import { FINISHED_TOOL_STATUSES, UNFINISHED_TOOL_STATUSES } from '../model/toolCallStatus'
 import { CommandResultBody } from './commandResult'
 
 function source(over: Partial<CommandResult> = {}): CommandResult {
-  return { output: 'ok\n', ...over } as CommandResult
+  const base: CommandResult = {
+    output: over.output ?? 'ok\n',
+    ...(over.outputUnavailable !== undefined ? { outputUnavailable: over.outputUnavailable } : {}),
+    ...(over.durationMs !== undefined ? { durationMs: over.durationMs } : {}),
+    ...(over.truncated !== undefined ? { truncated: over.truncated } : {}),
+    ...(over.label !== undefined ? { label: over.label } : {}),
+  }
+  if (over.exitCode !== undefined && over.exitCode !== null)
+    return withCommandExit(base, { exitCode: over.exitCode })
+  if (over.signal !== undefined)
+    return withCommandExit(base, { signal: over.signal })
+  if (over.failed === true)
+    return withCommandExit(base, { failed: true })
+  return over.exitCode === null ? withCommandExit(base, { exitCode: null }) : base
 }
 
 /** The alert glyph, by the class lucide stamps on it. */
@@ -15,8 +29,7 @@ function glyph(container: HTMLElement): string {
 }
 
 describe('CommandResultBody', () => {
-  // A row that succeeded states nothing about its outcome: the header is suppressed
-  // whenever the label IS the success word, so the body is just the output.
+  // Successful commands omit the status header and display their output directly.
   it('draws no status header for a plain command that succeeded', () => {
     const { container } = render(() => <CommandResultBody source={source()} status="completed" />)
     expect(container.textContent).toContain('ok')
@@ -24,9 +37,9 @@ describe('CommandResultBody', () => {
     expect(glyph(container)).toBe('')
   })
 
-  // The CALL's status and the PROCESS's exit code are separate verdicts, and the row
-  // must state a failure from either. `commandIsError` answers only the process half,
-  // so the caller restores the status half -- and nothing pinned that until now.
+  // The call status and process exit code are separate results.
+  // Either can require a failure header.
+  // commandIsError reads only the process exit.
   it('states a failure the STATUS reported, beside a zero exit code', () => {
     const { container } = render(() => <CommandResultBody source={source({ exitCode: 0 })} status="failed" />)
     expect(glyph(container)).toContain('lucide-circle-alert')
@@ -45,6 +58,16 @@ describe('CommandResultBody', () => {
     const { container } = render(() => <CommandResultBody source={source({ signal: 'killed' })} status="completed" />)
     expect(glyph(container)).toContain('lucide-circle-alert')
     expect(container.textContent).toContain('Error (killed)')
+  })
+
+  // A command can fail before startup or after its time limit without a code or signal.
+  // The command failure flag must still identify that failure.
+  // One call can contain several command outcomes.
+  it('states a failure that the command reported without a code or a signal', () => {
+    const { container } = render(() => <CommandResultBody source={source({ output: 'Command failed: spawn nope ENOENT', failed: true })} status="completed" />)
+    expect(glyph(container)).toContain('lucide-circle-alert')
+    expect(container.textContent).toContain('Error')
+    expect(container.textContent).toContain('Command failed: spawn nope ENOENT')
   })
 
   it('words the reader own stop Interrupted, and a refusal Declined', () => {
@@ -77,5 +100,24 @@ describe('CommandResultBody', () => {
   it.each(FINISHED_TOOL_STATUSES)('states that a finished %s stream is empty', (status: FinishedToolCallStatus) => {
     const { container } = render(() => <CommandResultBody source={source({ output: '' })} status={status} />)
     expect(container.textContent).toContain('[no output]')
+  })
+})
+
+describe('CommandResultBody output ownership', () => {
+  it.each([false, true])('marks returned output and excludes the status header when expanded is %s', (expanded) => {
+    const output = ['native first', ...Array.from({ length: 8 }, (_, index) => `line ${index}`), 'native last'].join('\n')
+    const { container } = render(() => <CommandResultBody source={source({ output, exitCode: 7 })} status="failed" context={{ getMessageUiState: () => expanded }} />)
+    const marked = container.querySelectorAll('[data-tool-output-preview]')
+    expect(marked).toHaveLength(1)
+    expect(marked[0]?.textContent).toContain('native first')
+    expect(marked[0]?.textContent).not.toContain('Error (exit 7)')
+    if (expanded)
+      expect(marked[0]?.textContent).toContain('native last')
+  })
+
+  it('keeps the empty stream hint outside output ownership', () => {
+    const { container } = render(() => <CommandResultBody source={source({ output: '', exitCode: 0 })} status="completed" />)
+    expect(container.textContent).toContain('[no output]')
+    expect(container.querySelector('[data-tool-output-preview]')).toBeNull()
   })
 })

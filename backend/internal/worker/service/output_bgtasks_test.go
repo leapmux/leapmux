@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -26,6 +25,45 @@ func setupBgTaskTest(t *testing.T) (agent.ProviderServices, string, func() []db.
 	t.Helper()
 	_, sink, ownerID, listRows := setupBgTaskTestWithService(t)
 	return sink, ownerID, listRows
+}
+
+func TestEnsureChildAgent_UnlinkedChildRequiresNativeIdentity(t *testing.T) {
+	t.Parallel()
+	_, sink, _, rows := setupBgTaskTestWithService(t)
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "", ProviderChildKey: "", Title: "Unidentified child"})
+	require.Error(t, err)
+	assert.Empty(t, rows())
+}
+
+func TestEnsureChildAgent_UnlinkedIdentitySurvivesMissingRegistryAndLateSpan(t *testing.T) {
+	t.Parallel()
+	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+	ctx := context.Background()
+	first, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child-a", Title: "First", Options: OptionMap{"operationPolicy": "interactive"}})
+	require.NoError(t, err)
+	second, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child-b", Title: "Second"})
+	require.NoError(t, err)
+	require.NotEqual(t, first, second)
+	row, err := svc.Queries.GetAgentByID(ctx, first)
+	require.NoError(t, err)
+	assert.Equal(t, "native-child-a", row.ProviderChildKey)
+	assert.Empty(t, row.SpawnSpanID)
+	assert.Equal(t, "interactive", parseOptions(row.Options)["operationPolicy"])
+	_, err = svc.DB.ExecContext(ctx, "DELETE FROM agent_background_tasks WHERE owner_agent_id = ?", ownerID)
+	require.NoError(t, err)
+	svc.Output.bgtasks.Delete(ownerID)
+	restarted := svc.Output.NewSink(ownerID, row.AgentProvider)
+	replay, err := restarted.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child-a", SpawnSpanID: "exact-native-call", Title: "First"})
+	require.NoError(t, err)
+	assert.Equal(t, first, replay)
+	span, err := restarted.ChildSpawnSpan(first)
+	require.NoError(t, err)
+	assert.Equal(t, "exact-native-call", span)
+	_, err = restarted.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child-a", SpawnSpanID: "later-resume-call", Title: "First"})
+	require.NoError(t, err)
+	span, err = restarted.ChildSpawnSpan(first)
+	require.NoError(t, err)
+	assert.Equal(t, "exact-native-call", span)
 }
 
 // setupBgTaskTestWithService is setupBgTaskTest for a test that also reads the
@@ -764,10 +802,10 @@ func TestBgTask_LoadSeedsCacheFromDB(t *testing.T) {
 // worker installs (bootstrap's SetOnExit -> Service.HandleAgentProcessExit).
 // That handler is where "the process behind this work is gone" becomes a status
 // on the rows, and nothing else asserted it -- so a change that stopped calling
-// it would leave every in-flight subagent and shell row 'running' forever: the
-// sidebar shows work that is not happening, and the parent tab keeps a thinking
-// indicator that an active row is enough to pin.
-func TestBgTask_ProcessExitGivesEveryActiveRowAFinalStatus(t *testing.T) {
+// it would leave every open subagent and shell row behind after its process
+// dies. A running row would keep the parent tab busy, and a paused row could
+// appear resumable when no process owns it.
+func TestBgTask_ProcessExitGivesEveryOpenRowAFinalStatus(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -794,13 +832,16 @@ func TestBgTask_ProcessExitGivesEveryActiveRowAFinalStatus(t *testing.T) {
 		return bgtask.StatusUnspecified
 	}
 
-	// Both kinds, plus a row that already ended: a crash must end the work in
-	// flight and leave the finished row's own outcome alone.
+	// Both kinds, a paused row, and a row that already ended: a crash must close
+	// every open row and leave the finished row's outcome alone.
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "sub", Kind: bgtask.KindSubagent, Title: "review the diff", Status: bgtask.StatusRunning,
 	}))
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "shell", Kind: bgtask.KindShell, Title: "npm test", Status: bgtask.StatusPending,
+	}))
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "paused", Kind: bgtask.KindSubagent, Title: "paused child", Status: bgtask.StatusPaused,
 	}))
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "done", Kind: bgtask.KindSubagent, Title: "already finished", Status: bgtask.StatusRunning,
@@ -811,6 +852,7 @@ func TestBgTask_ProcessExitGivesEveryActiveRowAFinalStatus(t *testing.T) {
 	svc.HandleAgentProcessExit("agent-1", 1, errors.New("boom"), false)
 	assert.Equal(t, bgtask.StatusInterrupted, statusOf("sub"), "a running subagent row ends when its process dies")
 	assert.Equal(t, bgtask.StatusInterrupted, statusOf("shell"), "a queued shell row ends too -- it will never run")
+	assert.Equal(t, bgtask.StatusInterrupted, statusOf("paused"), "a paused child cannot resume after its process dies")
 	assert.Equal(t, bgtask.StatusCompleted, statusOf("done"), "a row that already ended keeps its own outcome")
 
 	// An explicit stop is a deliberate user action, not a failure.
@@ -1321,7 +1363,7 @@ func TestBgTask_SeedKeepsTheNewestRowsPastTheCap(t *testing.T) {
 	newest := fmt.Sprintf("agent-%03d", bgtask.MaxTasks+overflow)
 	for i := 1; i <= bgtask.MaxTasks+overflow; i++ {
 		rowKey := fmt.Sprintf("agent-%03d", i)
-		_, err := sink.EnsureChildAgent(fmt.Sprintf("span-%03d", i), rowKey, "SCAN")
+		_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: fmt.Sprintf("span-%03d", i), ProviderChildKey: rowKey, Title: "SCAN"})
 		require.NoError(t, err)
 	}
 	require.Len(t, listRows(), bgtask.MaxTasks+overflow,
@@ -1406,7 +1448,7 @@ func TestBgTask_StatusUpdateReachesARetainedRow(t *testing.T) {
 	t.Parallel()
 
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
-	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
@@ -1417,15 +1459,12 @@ func TestBgTask_StatusUpdateReachesARetainedRow(t *testing.T) {
 	assert.Equal(t, "running Bash", storedRow(t, svc, ownerID, "task-1").ActiveForm)
 }
 
-// The close is the half that ends the subagent, and it owes the child
-// transcript its divider. A dropped close left the row Running AND the
-// transcript with no ending -- until the next boot swept it, which is not the
-// same run and not the same status.
+// A close records the outcome of a retained child without changing its transcript.
 func TestBgTask_CloseReachesARetainedRowAndEndsItsTranscript(t *testing.T) {
 	t.Parallel()
 
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
@@ -1438,9 +1477,7 @@ func TestBgTask_CloseReachesARetainedRowAndEndsItsTranscript(t *testing.T) {
 	assert.True(t, row.EndedAt.Valid, "the close stamps ended_at")
 
 	msgs := transcriptMessages(t, svc, childID)
-	require.Len(t, msgs, 1, "the child transcript gets its closing divider")
-	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
-	assert.Equal(t, "completed", msgs[0]["status"])
+	require.Empty(t, msgs, "registry completion leaves the child transcript unchanged")
 }
 
 // The revive is the applier the whole change exists for: a Claude SendMessage
@@ -1451,7 +1488,7 @@ func TestBgTask_ReviveReachesARetainedRow(t *testing.T) {
 	t.Parallel()
 
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
-	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
@@ -1472,7 +1509,7 @@ func TestBgTask_ReAdmittingARetainedRowHoldsTheDisplayCap(t *testing.T) {
 	t.Parallel()
 
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
-	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1")
@@ -1517,7 +1554,7 @@ func TestBgTask_ANoOpMutationOnARetainedRowLeavesTheDisplayListAlone(t *testing.
 	t.Parallel()
 
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
-	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
@@ -1545,7 +1582,7 @@ func TestBgTask_ANoOpMutationOnARetainedRowDeletesNothing(t *testing.T) {
 	// up retained-but-not-displayed. unlinked-1 is the NEXT finished row and
 	// carries no child, so retention does not keep it -- it is what an eviction
 	// on the re-admit path would delete from the table.
-	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
@@ -1636,7 +1673,7 @@ func TestBgTask_AReviveThatMatchesNothingSparesTheDisplayListForARetainedRow(t *
 	t.Parallel()
 
 	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
-	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	// The row is ACTIVE in the table, so the revive's UPDATE matches nothing.
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
@@ -1661,7 +1698,7 @@ func TestBgTask_EnsureChildAgentFindsTheTranscriptOfARetainedRow(t *testing.T) {
 	t.Parallel()
 
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
-	firstChild, err := sink.EnsureChildAgent("span-1", "thread-1", "collab child")
+	firstChild, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "thread-1", Title: "collab child"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("thread-1", bgtask.StatusCompleted))
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
@@ -1669,7 +1706,7 @@ func TestBgTask_EnsureChildAgentFindsTheTranscriptOfARetainedRow(t *testing.T) {
 		"the row leaves the display list")
 
 	// The re-registration: a DIFFERENT spawn span for the same provider key.
-	againChild, err := sink.EnsureChildAgent("span-2", "thread-1", "collab child")
+	againChild, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-2", ProviderChildKey: "thread-1", Title: "collab child"})
 	require.NoError(t, err)
 
 	assert.Equal(t, firstChild, againChild, "the row's transcript is the one that answers")
@@ -1687,7 +1724,7 @@ func TestBgTask_AReAdmittedRowSurvivesTheNextColdSeed(t *testing.T) {
 	t.Parallel()
 
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
-	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)

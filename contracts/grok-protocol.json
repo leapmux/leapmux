@@ -1,0 +1,52 @@
+{
+  "_readme": "Grok Build speaks the Agent Client Protocol and adds its own extension methods under the `_x.ai/` prefix. xAI owns every method, notification, tool, mode and reply word below; LeapMux owns the option id of the approval mode, which Grok never reports back. The Worker publishes extension requests and converts the answers into native replies. It dispatches native notifications also. The browser draws the requests and builds the replies. It reads the native turn-end notification into a divider. A word that only one side reads stays in that side's code. configIds identifies the option for reasoning effort. The Worker sets effort through that ID. The browser uses the same ID for its status-bar chip.\n\nThe Worker preserves the original native result. Grok can report output_file in its native Bash result. The browser shows that path beside the original preview. LeapMux reads no output file.",
+  "methods": {
+    "AskUserQuestion": "_x.ai/ask_user_question",
+    "ExitPlanMode": "_x.ai/exit_plan_mode",
+    "McpElicit": "_x.ai/mcp/elicit",
+    "FolderTrust": "_x.ai/folder_trust/request",
+    "SessionNotification": "_x.ai/session_notification"
+  },
+  "notifications": {
+    "TurnCompleted": "turn_completed"
+  },
+  "meta": {
+    "Tool": "x.ai/tool"
+  },
+  "toolNames": {
+    "SpawnSubagent": "spawn_subagent"
+  },
+  "modes": {
+    "Default": "default",
+    "Plan": "plan",
+    "Ask": "ask"
+  },
+  "options": {
+    "ApprovalMode": "approvalMode"
+  },
+  "approvalModes": {
+    "Ask": "ask",
+    "Auto": "auto",
+    "AlwaysApprove": "always-approve"
+  },
+  "planOutcomes": {
+    "Approved": "approved",
+    "Cancelled": "cancelled"
+  },
+  "trustOutcomes": {
+    "Trust": "trust",
+    "Reject": "reject"
+  },
+  "questionOutcomes": {
+    "Accepted": "accepted",
+    "Cancelled": "cancelled"
+  },
+  "replyFields": {
+    "Outcome": "outcome",
+    "Feedback": "feedback",
+    "FollowupMessage": "followup_message"
+  },
+  "configIds": {
+    "ReasoningEffort": "reasoning_effort"
+  }
+}

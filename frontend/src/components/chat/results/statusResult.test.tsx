@@ -18,13 +18,11 @@ describe('StatusResultBody', () => {
     expect(container.querySelector('.lucide-octagon-x')).not.toBeNull()
   })
 
-  // A header needs WORDS. `TaskResult.title` is optional, and drawing the header for a
-  // result that states no state word put a lone coloured glyph above the note -- which
-  // tells a reader that something ended and not what. The row's shared outcome header
-  // states the CALL's outcome instead.
+  // A native result without a title needs no standalone status header.
+  // The shared row header still states the call outcome.
   it('draws no header for a result that states no state word', () => {
-    // The absence itself is the case: the title key leaves the fixture rather than
-    // turning explicitly undefined, which the exact-optional type refuses.
+    // Remove the optional title key.
+    // The exact optional type does not admit an explicit undefined value.
     const titleless = source()
     delete titleless.title
     const { container } = render(() => <StatusResultBody source={titleless} />)
@@ -44,17 +42,12 @@ describe('StatusResultBody', () => {
   })
 
   /**
-   * The outcome picks the GLYPH and never a word.
-   *
-   * This card and the subagent card now share one outcome vocabulary, and they state it
-   * differently: the subagent card falls back to the outcome word when a provider names
-   * none, while this one always draws `title` -- the words of the surface that reported
-   * the state. Renaming a member of the shared vocabulary must therefore not reach this
-   * header, which is what makes the two safe to share.
+   * The outcome selects an icon. The native title supplies the displayed words.
+   * Agent cards can use the outcome word as a fallback. Task cards keep the native title.
    */
   it.each(['completed', 'failed', 'running', 'stopped'] as const)('never states the %s outcome as words', (outcome) => {
-    // A note that carries none of the outcome words itself, so the only way one could
-    // reach the header is the outcome field.
+    // This note contains no outcome word.
+    // An outcome word in the view can come only from its outcome field.
     const { container } = render(() => <StatusResultBody source={source({ outcome, title: 'Background task task-42', output: 'Read 4 files.' })} />)
     expect(container.textContent).toContain('Background task task-42')
     expect(container.textContent).not.toContain(outcome)
@@ -81,5 +74,21 @@ describe('taskResultCollapsible', () => {
   it('reports a note longer than the collapsed row', () => {
     const output = Array.from({ length: COLLAPSED_RESULT_ROWS + 2 }, (_, index) => `line ${index}`).join('\n')
     expect(taskResultCollapsible(source({ output }))).toBe(true)
+  })
+})
+
+describe('StatusResultBody output ownership', () => {
+  it('owns only the returned task output when its command and title repeat that text', () => {
+    const { container } = render(() => <StatusResultBody source={source({ title: 'native-output-marker', command: 'printf native-output-marker', output: 'native-output-marker' })} />)
+    const outputs = container.querySelectorAll('[data-tool-output-preview]')
+    expect(outputs).toHaveLength(1)
+    expect(outputs[0]?.textContent).toBe('native-output-marker')
+    expect(outputs[0]?.textContent).not.toContain('printf')
+  })
+
+  it('does not own an empty task output through its repeated command', () => {
+    const { container } = render(() => <StatusResultBody source={source({ command: 'printf native-output-marker', output: '' })} />)
+    expect(container.textContent).toContain('printf native-output-marker')
+    expect(container.querySelector('[data-tool-output-preview]')).toBeNull()
   })
 })

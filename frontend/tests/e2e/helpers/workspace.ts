@@ -7,6 +7,13 @@ import { createTestDirectory } from './runDirectory'
 
 export interface WorkspaceFixture {
   workspaceId: string
+  /**
+   * The agent's working directory, when the fixture opened an agent.
+   *
+   * A tool-result image test writes a PNG here so the provider's own read tool
+   * can open it. A workspace-only fixture has none.
+   */
+  workingDir?: string
 }
 
 interface WorkspaceServer {
@@ -44,11 +51,17 @@ export async function withAgentWorkspace(
     provider: AgentProvider
     prefix: string
     openOptions?: AgentOpenOverrides
+    /**
+     * The agent's working directory. Omit it for a fresh private directory of the
+     * run, which suits every provider that reads no configuration from the git
+     * repository around it.
+     */
+    workingDir?: () => string
   },
   use: (workspace: WorkspaceFixture) => Promise<void>,
 ): Promise<void> {
   await withTestWorkspace(server, options.prefix, async (workspace) => {
-    const workingDir = createTestDirectory(`${options.prefix}-wd-`)
+    const workingDir = options.workingDir?.() ?? createTestDirectory(`${options.prefix}-wd-`)
     const defaults = agentOpenOptions(agentSettings(options.provider))
     await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspace.workspaceId, workingDir, {
       agentProvider: options.provider,
@@ -59,6 +72,6 @@ export async function withAgentWorkspace(
         ...options.openOptions?.optionValues,
       },
     })
-    await use(workspace)
+    await use({ ...workspace, workingDir })
   })
 }

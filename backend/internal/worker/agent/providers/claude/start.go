@@ -170,7 +170,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// already flagged one: a default-model launch sends no --model/--effort
 	// (empty modelEffortArgs) but must still detect a provider configured in the
 	// user's rc files so OptionGroups() can hide the model/effort UI.
-	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, Registration())
+	registration := Registration()
+	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, registration)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -194,13 +195,14 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 
 	// providerkit.SetupProcessPipes configures SIGTERM cancel, WaitDelay, and opens
 	// stdin/stdout/stderr pipes.
-	stdin, stdout, stderrPipe, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
 	if err != nil {
 		return nil, err
 	}
+	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
 	a := &Agent{
-		Process:                providerkit.NewProcess(opts, "claude", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
+		Process:                providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "claude", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
 		model:                  launchModel,
 		sessionID:              sessionArgs[1],
 		effort:                 opts.Effort(),
@@ -213,7 +215,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 
 	agent.TraceStartupPhase(opts.AgentID, "before_exec_start")
-	if err := a.StartCmd(cmd, cancel); err != nil {
+	if err := a.StartCmd(); err != nil {
 		return nil, err
 	}
 	agent.TraceStartupPhase(opts.AgentID, "after_exec_start")

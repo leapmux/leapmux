@@ -14,7 +14,53 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
+
+func TestKiloFamilyHooksKeepNativeChildIdentityAcrossRename(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := &Agent{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	*a.HooksForTest() = opencode.FamilyHooks()
+	a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"kilo-native-call","title":"task","kind":"think","status":"pending","rawInput":{}}`))
+	empty, found := sink.BackgroundTask("kilo-native-call")
+	require.True(t, found)
+	assert.Empty(t, empty.ChildAgentID, "empty native arguments must not claim a child identity")
+	a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"kilo-native-call","title":"Inspect code","kind":"think","status":"in_progress","rawInput":{"description":"Inspect code","prompt":"Read the Kilo entry point.","subagent_type":"explore"}}`))
+	initial, found := sink.BackgroundTask("kilo-native-call")
+	require.True(t, found)
+	require.NotEmpty(t, initial.ChildAgentID)
+	child := sink.Child(initial.ChildAgentID)
+	before := child.Messages()
+	require.Len(t, before, 1)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, before[0].Source)
+	assert.JSONEq(t, `{"content":"Read the Kilo entry point."}`, string(before[0].Content))
+	const completed = `{"sessionUpdate":"tool_call_update","toolCallId":"kilo-native-call","title":"Inspect code","status":"completed","rawOutput":{"output":"Native Kilo report.","metadata":{"sessionId":"ses-kilo-native"}},"content":[{"type":"content","content":{"type":"text","text":"Native Kilo report."}}]}`
+	a.HandleToolCallUpdateForTest(json.RawMessage(completed))
+	a.HandleToolCallUpdateForTest(json.RawMessage(completed))
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "ses-kilo-native", rows[0].RowKey)
+	assert.Equal(t, initial.ChildAgentID, rows[0].ChildAgentID)
+	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+	assert.Equal(t, []string{initial.ChildAgentID}, sink.ChildAgentIDs())
+	assert.Equal(t, before, child.Messages())
+	reports := child.LeapMuxNotifications()
+	if assert.Len(t, reports, 1) {
+		assert.Equal(t, "Native Kilo report.", reports[0]["text"])
+	}
+	var originals []string
+	for _, message := range sink.Messages() {
+		if message.SpanID == "kilo-native-call" && message.Closing {
+			originals = append(originals, string(message.Content))
+		}
+	}
+	require.NotEmpty(t, originals)
+	for _, original := range originals {
+		assert.JSONEq(t, completed, original)
+	}
+}
 
 func newKiloAgentForRPC(t *testing.T) (*Agent, func() []agenttest.RecordedRequest) {
 	return acptest.NewAgentForRPC(t,
@@ -81,7 +127,7 @@ func TestKiloClearContextRefreshesPrimaryAgent(t *testing.T) {
 func TestKiloBuildSessionRequest_NewSession(t *testing.T) {
 	t.Parallel()
 
-	method, params := acp.BuildSessionRequestForTest("", "/workspace", acp.MethodSessionNew, opencode.MethodSessionResume)
+	method, params := acp.BuildSessionRequestForTest("", "/workspace", acp.MethodSessionNew, acp.MethodSessionResume)
 	assert.Equal(t, acp.MethodSessionNew, method)
 
 	var parsed map[string]interface{}
@@ -93,8 +139,8 @@ func TestKiloBuildSessionRequest_NewSession(t *testing.T) {
 func TestKiloBuildSessionRequest_ResumeSession(t *testing.T) {
 	t.Parallel()
 
-	method, params := acp.BuildSessionRequestForTest("session-123", "/workspace", acp.MethodSessionNew, opencode.MethodSessionResume)
-	assert.Equal(t, opencode.MethodSessionResume, method)
+	method, params := acp.BuildSessionRequestForTest("session-123", "/workspace", acp.MethodSessionNew, acp.MethodSessionResume)
+	assert.Equal(t, acp.MethodSessionResume, method)
 
 	var parsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(params, &parsed))

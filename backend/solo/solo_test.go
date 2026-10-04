@@ -268,6 +268,26 @@ func TestInstanceShutdown_IsIdempotent(t *testing.T) {
 	assert.Equal(t, int32(1), hubCancels.Load())
 }
 
+// TestDefaultCLIFlagsCarryTheBindBootstrapFlags pins that `leapmux solo` and
+// `leapmux dev` accept --listen and --data-dir. They are bind-time bootstrap
+// flags: the hub's default IPC socket path is `<data-dir>/hub/hub.sock`, and on
+// macOS that path must fit the 104-byte sun_path limit -- a run directory under
+// a deep checkout (a worktree under .tmp/wt/) blows past it and the bind fails
+// with "invalid argument". A launcher that cannot shorten the socket path has
+// no way out, and --listen carries that now: `--listen unix:<short>/hub.sock`
+// names the local socket. The old --local-listen flag is gone with the second
+// bind knob it served.
+func TestDefaultCLIFlagsCarryTheBindBootstrapFlags(t *testing.T) {
+	t.Parallel()
+
+	flags := defaultCLIFlags()
+	for _, name := range []string{"listen", "data-dir"} {
+		require.Contains(t, flags, name, "solo and dev must expose the bootstrap flag %q", name)
+	}
+	require.NotContains(t, flags, "local-listen",
+		"the second bind knob is gone; --listen carries both address kinds")
+}
+
 // TestDefaultExtraFlagsCarryWorkerScopedKnobs pins that solo's extra flags are the
 // worker-scoped settings the embedded worker needs. max-incomplete-chunked is the
 // load-bearing case: it is NOT a hub setting (the Hub's chunk-count cap is
@@ -531,14 +551,14 @@ func startUntilTornDown(t *testing.T, ctx context.Context, d *testDeps, cfg Conf
 // gets all the way to Serve -- which the seam then fails -- instead of dying
 // earlier in hub.NewServer.
 //
-// It returns the Config to hand Start. The local-listen override is what makes
-// these tests independent of each other: SandboxHome redirects HOME, which is
-// enough to move the Unix socket under a private directory, but the WINDOWS
-// default is npipe:leapmux-hub-<SID> -- derived from the account, not the home
-// -- so every Hub-starting test in this package bound the same process-global
-// pipe name and the second one to reach it failed hub.NewServer with
-// "Access is denied". That is what makes these three tests fail on Windows CI
-// while passing on a developer's Unix machine.
+// It returns the Config to hand Start. The --listen override naming a local
+// IPC URL is what makes these tests independent of each other: SandboxHome
+// redirects HOME, which is enough to move the Unix socket under a private
+// directory, but the WINDOWS default is npipe:leapmux-hub-<SID> -- derived
+// from the account, not the home -- so every Hub-starting test in this package
+// bound the same process-global pipe name and the second one to reach it
+// failed hub.NewServer with "Access is denied". That is what makes these three
+// tests fail on Windows CI while passing on a developer's Unix machine.
 func startFailureEnv(t *testing.T) Config {
 	t.Helper()
 	return soloStartEnv(t, false)
@@ -555,10 +575,9 @@ func soloStartEnv(t *testing.T, devMode bool) Config {
 		SkipBanner: true,
 		NoTCP:      true,
 		DevMode:    devMode,
-		// local-listen is not in solo's own --help allowlist, so the test has to
-		// widen it to reach the flag.
-		CLIFlags: append(defaultCLIFlags(), "local-listen"),
-		Args:     []string{"--local-listen=" + locallistentest.UniqueListenURL(t, "leapmux-hub-solo")},
+		// One local entry is the whole bind set; NoTCP drops the TCP half of
+		// any default anyway.
+		Args: []string{"--listen=" + locallistentest.UniqueListenURL(t, "leapmux-hub-solo")},
 	}
 }
 

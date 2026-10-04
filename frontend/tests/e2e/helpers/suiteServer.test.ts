@@ -1,20 +1,16 @@
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { Server } from 'node:net'
+import { join, resolve } from 'node:path'
+import { setImmediate } from 'node:timers/promises'
 import { afterEach, describe, expect, it } from 'vitest'
-import { startSuiteServer } from './suiteServer'
+import { withCleanup } from './cleanup'
+import { refusedHostsReport, startSuiteServer } from './suiteServer'
 
 /**
- * The happy path of `startSuiteServer` is the suite itself: every E2E run
- * starts one and every specification depends on it, so a broken start fails
- * 683 tests at once and names itself in the first of them.
- *
- * What no specification reaches is the FAILURE path, and that path is where a
- * leak hides. `startSuiteServer` binds a model-server port and creates a data
- * directory BEFORE it runs the binary, so a start that fails after those two
- * has to undo them. A leaked port holds a listener for the rest of the process
- * and a leaked directory survives the run.
+ * Every E2E run tests successful suite startup.
+ * These unit cases test failures after the mock listener and data directory exist.
+ * Failed startup must release both resources.
  */
 
 const roots: string[] = []
@@ -25,7 +21,9 @@ afterEach(() => {
 })
 
 function scratchRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), 'leapmux-suite-server-test-'))
+  const scratch = resolve(import.meta.dirname, '../../../../.tmp')
+  mkdirSync(scratch, { recursive: true })
+  const root = mkdtempSync(join(scratch, 'suite-server-test-'))
   roots.push(root)
   return root
 }
@@ -39,67 +37,149 @@ describe('startSuiteServer', () => {
   })
 
   it('removes the data directory it created when the start fails', async () => {
-    // `mkdtempSync` runs before the binary does, so a start that throws after
-    // it leaves a directory nothing will ever clean up. The suite creates one
-    // per run, and a developer who iterates on a broken build collects them.
+    // Startup creates this directory before it executes the binary. Failure must remove it.
     const root = scratchRoot()
     await startSuiteServer({ binaryPath: join(root, 'no-such-leapmux'), tmpDir: root }).catch(() => {})
     expect(readdirSync(root).filter(entry => entry.startsWith('leapmux-e2e-dev-'))).toEqual([])
   })
 
   it('closes the model server it bound when the start fails', async () => {
-    // The mock endpoint binds a port before the binary runs. A start that threw
-    // without closing it leaves a listener for the rest of the process, and the
-    // next start binds another beside it.
+    // Startup opens the mock listener before it executes the binary. Failure must close it.
     const root = scratchRoot()
-    const before = openServerCount()
+    const before = activeServers()
     await startSuiteServer({ binaryPath: join(root, 'no-such-leapmux'), tmpDir: root }).catch(() => {})
-    expect(await settledServerCount(before)).toBe(before)
+    expect(await settledNewServerCount(before)).toBe(0)
+  })
+
+  it.skipIf(process.platform === 'win32')('binds the hub\'s local IPC socket from --listen at a path that fits sun_path', async () => {
+    // macOS limits a Unix socket path to 104 bytes. Deep workspaces require a separate short path.
+    // The repeated --listen flag must supply that path.
+    const root = scratchRoot()
+    const { binary, recorded } = writeRecordingFakeBinary(root)
+
+    await startSuiteServer({ binaryPath: binary, tmpDir: root }).catch(() => {})
+    const record = JSON.parse(readFileSync(recorded, 'utf8')) as FakeRunRecord
+
+    const sockets = record.argv.filter(entry => entry.startsWith('unix:'))
+    expect(sockets, `the argv must specify one local IPC socket: ${JSON.stringify(record.argv)}`).toHaveLength(1)
+    const socketPath = sockets[0]?.slice('unix:'.length) ?? ''
+    // Leave room below the native Unix socket path limit.
+    expect(socketPath.length, `socket path is ${socketPath.length} bytes: ${socketPath}`).toBeLessThan(104)
+    expect(socketPath.endsWith('/hub.sock')).toBe(true)
+    // The IPC socket must use its separate path.
+    const dataDirIndex = record.argv.indexOf('-data-dir')
+    expect(dataDirIndex).toBeGreaterThanOrEqual(0)
+    expect(socketPath.startsWith(record.argv[dataDirIndex + 1] ?? '')).toBe(false)
+    // The short path comes from the flag, not from an environment variable.
+    expect(record.localListenEnv).toBeNull()
+    expect(record.listenEnv).toBeNull()
+  })
+
+  it.skipIf(process.platform === 'win32')('asks for an ephemeral TCP port and builds the hub URL from the state file', async () => {
+    // Request an ephemeral port to avoid a race between free-port detection and binding.
+    // The fake Hub writes its resolved address into the state file.
+    const root = scratchRoot()
+    const { binary } = writeRecordingFakeBinary(root)
+
+    const failure = await startSuiteServer({ binaryPath: binary, tmpDir: root }).then(
+      () => null,
+      (error: unknown) => error,
+    )
+    expect(failure, 'the fake hub serves no API, so the start must fail').not.toBeNull()
+    // The failed API wait must use the address from the state file.
+    expect(String(failure)).toContain('localhost:44321')
   })
 })
 
-/**
- * How many TCP servers this process holds open.
- *
- * `process._getActiveHandles` is undocumented. The probe below is
- * what stops that from making the assertion vacuous: a runtime that does not
- * supply the function would otherwise answer the same number every time and
- * pass whatever happened.
- */
-function openServerCount(): number {
-  const active = (process as unknown as { _getActiveHandles?: () => unknown[] })._getActiveHandles
+interface FakeRunRecord {
+  argv: string[]
+  listenEnv: string | null
+  localListenEnv: string | null
+}
+
+/** Write a fake dev executable that records arguments and the resolved Hub address. */
+function writeRecordingFakeBinary(root: string): { binary: string, recorded: string } {
+  const binary = join(root, 'record-dev')
+  const recorded = join(root, 'recorded.json')
+  writeFileSync(binary, `#!/bin/sh
+if [ "$1" = "dev" ]; then
+  node -e '
+    const fs = require("fs"), path = require("path");
+    const recorded = process.argv[1];
+    const args = process.argv.slice(2);
+    const dataDir = args[args.indexOf("-data-dir") + 1];
+    const unixEntry = args.find(a => a.startsWith("unix:")) ?? null;
+    const stateDir = path.join(dataDir, "hub");
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, "state.json"), JSON.stringify({ pid: 1, listen: ["127.0.0.1:44321", unixEntry] }));
+    fs.writeFileSync(recorded, JSON.stringify({ argv: args, listenEnv: process.env.LEAPMUX_HUB_LISTEN ?? null, localListenEnv: process.env.LEAPMUX_HUB_LOCAL_LISTEN ?? null }));
+  ' ${JSON.stringify(recorded)} "$@"
+  exit 1
+fi
+exit 0
+`)
+  chmodSync(binary, 0o755)
+  return { binary, recorded }
+}
+
+/** Read actual TCP server identities. The positive control validates the runtime hook. */
+function activeServers(): Set<Server> {
+  const active = Reflect.get(process, '_getActiveHandles')
   if (typeof active !== 'function')
-    return -1
-  return active.call(process).filter(handle => handle?.constructor?.name === 'Server').length
+    throw new Error('The runtime does not supply process._getActiveHandles.')
+  const handles: unknown = Reflect.apply(active, process, [])
+  if (!Array.isArray(handles))
+    throw new Error('The runtime returned an invalid active handle list.')
+  return new Set(handles.filter((handle): handle is Server => handle instanceof Server))
 }
 
 /**
- * The count once it reaches `expected`, or the last count before the deadline.
- *
- * A closed server keeps its handle for a tick or two after its close callback
- * runs, so a count read immediately after the callback still holds it. Polling
- * removes that window without hiding a real leak: a count that never reaches
- * `expected` is returned as it stands, and the assertion fails with the true
- * number rather than with a timeout.
+ * Wait for new server handles to disappear after close.
+ * Compare identities because an earlier closed handle can disappear during this test.
+ * Deferred handle removal needs another event-loop turn after the close callback.
  */
-async function settledServerCount(expected: number, timeoutMs = 2000): Promise<number> {
+async function settledNewServerCount(before: ReadonlySet<Server>, timeoutMs = 30_000): Promise<number> {
   const deadline = Date.now() + timeoutMs
-  let count = openServerCount()
-  while (count !== expected && Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, 10))
-    count = openServerCount()
+  const addedCount = () => [...activeServers()].filter(server => !before.has(server)).length
+  let count = addedCount()
+  while (count !== 0 && Date.now() < deadline) {
+    await setImmediate()
+    count = addedCount()
   }
   return count
 }
 
-describe('openServerCount', () => {
+describe('activeServers', () => {
   it('sees a server open and close, so the leak assertion is not vacuous', async () => {
-    const before = openServerCount()
-    expect(before, 'process._getActiveHandles is unavailable').toBeGreaterThanOrEqual(0)
+    const before = activeServers()
     const server = createServer()
-    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()))
-    expect(openServerCount()).toBe(before + 1)
-    await new Promise<void>(resolve => server.close(() => resolve()))
-    expect(await settledServerCount(before)).toBe(before)
+    expect(before.has(server)).toBe(false)
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', () => {
+        server.off('error', reject)
+        resolve()
+      })
+    })
+    await withCleanup(async () => {
+      expect(activeServers().has(server)).toBe(true)
+    }, () => new Promise<void>((resolve, reject) => {
+      server.close(error => error ? reject(error) : resolve())
+    }))
+    expect(await settledNewServerCount(before)).toBe(0)
+    expect(activeServers().has(server)).toBe(false)
+  })
+})
+
+describe('refusedHostsReport', () => {
+  it('states each refused host once, in a stable order, with its count', () => {
+    expect(refusedHostsReport(new Map([['github.com:443', 2], ['app.kiro.dev:443', 1]]))).toEqual([
+      'The mock proxy refused 1 request to app.kiro.dev:443.',
+      'The mock proxy refused 2 requests to github.com:443.',
+    ])
+  })
+
+  it('states nothing for a run that refused nothing', () => {
+    expect(refusedHostsReport(new Map())).toEqual([])
   })
 })

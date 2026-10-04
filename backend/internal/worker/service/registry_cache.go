@@ -109,6 +109,8 @@ type registryOps[T any] struct {
 	setKey func(*T, string)
 	// isFinished reports whether a stored row is final (eligible for eviction).
 	isFinished func(T) bool
+	// isWorking reports whether a retained row contributes to agent activity.
+	isWorking func(T) bool
 	// deleteByKey deletes the persisted row for `key` under `ownerID`.
 	deleteByKey func(ctx context.Context, q *db.Queries, ownerID string, key string) error
 	// retention makes some rows outlive the display cap in the store. Optional:
@@ -498,7 +500,7 @@ func (v registryView[T]) evictAtLocked(ctx context.Context, evictIdx int) (T, bo
 	// Remember an ACTIVE row that survives in the store. It is still running, and
 	// the display list can no longer say so. A row retention did NOT keep is gone
 	// from the table too, so nothing can report it and nothing should try.
-	if !c.ops.isFinished(evicted) && c.ops.retention != nil && c.ops.retention.keep(evicted) {
+	if c.ops.isWorking(evicted) && c.ops.retention != nil && c.ops.retention.keep(evicted) {
 		if c.evictedActive == nil {
 			c.evictedActive = make(map[string]struct{}, 1)
 		}
@@ -514,6 +516,7 @@ func (v registryView[T]) evictAtLocked(ctx context.Context, evictIdx int) (T, bo
 // therefore put the mirror back: the table is the truth, and a mirror that kept the
 // rolled-back rows would state a list nothing can rebuild until the next cold seed.
 type registryMirror[T any] struct {
+	seeded        bool
 	rows          []T
 	nextSeq       int64
 	evictedActive map[string]struct{}
@@ -531,11 +534,12 @@ func (c *registryCache[T]) mirrorLocked() registryMirror[T] {
 	// The rows are COPIED, not aliased: `slices.Delete` and `append` both write
 	// through the backing array, so a restore that shared it would put back a slice
 	// whose elements the failed attempt had already moved.
-	return registryMirror[T]{rows: slices.Clone(c.Rows), nextSeq: c.nextSeq, evictedActive: hidden}
+	return registryMirror[T]{seeded: c.seeded, rows: slices.Clone(c.Rows), nextSeq: c.nextSeq, evictedActive: hidden}
 }
 
 // restoreLocked puts the display state back to a captured mirror. Caller must hold c.Mu.
 func (c *registryCache[T]) restoreLocked(mirror registryMirror[T]) {
+	c.seeded = mirror.seeded
 	c.Rows = mirror.rows
 	c.nextSeq = mirror.nextSeq
 	c.evictedActive = mirror.evictedActive

@@ -12,7 +12,7 @@ import type { GoalSurface } from '~/stores/chatGoal'
 import type { ChatRailData } from '~/stores/chatMessageMarks'
 
 import ArrowDown from 'lucide-solid/icons/arrow-down'
-import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on, onCleanup, onMount, Show, Switch, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { Spinner } from '~/components/common/Spinner'
@@ -243,6 +243,7 @@ interface ChatViewProps {
 
 export const ChatView: Component<ChatViewProps> = (props) => {
   const prefs = usePreferences()
+  const chatInstanceID = createUniqueId()
 
   // The virtualizer's live mounted-row set, assigned once `virt` is created below.
   // The UI-state cap reads it lazily (at toggle time, always after first render) to
@@ -938,7 +939,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   )
 
   return (
-    <div class={styles.container} data-testid="chat-container">
+    <div class={styles.container} data-testid="chat-container" data-chat-instance-id={chatInstanceID}>
       {/* One shared menu for every row below. The host renders a trigger-less
           popover and is `display: contents`, so it adds no box to this column --
           see ~/styles/popover.css.ts. */}

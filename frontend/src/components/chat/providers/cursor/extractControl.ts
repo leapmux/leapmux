@@ -15,17 +15,18 @@ export function cursorExtractControl(input: ControlExtractionInput): ExtractedCo
   // A QUESTION never reaches here: `askUserQuestion.isRequest` is the one recognizer,
   // and the control surface answers it before any provider's reader runs.
   if (isCursorCreatePlanPayload(payload)) {
-    // Cursor's create-plan request is a plan approval that carries its own name and
-    // overview, which no other provider's plan sends. They read as the operation and
-    // its reason, which is what a permission body already draws.
+    // Cursor sends the plan beside its name and overview. The reader must see the
+    // whole plan before approval, so the permission body draws all three.
     const params = pickObject(payload, 'params')
     const name = pickString(params, 'name')
     const reason = pickString(params, 'overview', undefined)
+    const text = pickString(params, 'plan', undefined)
     return {
       kind: 'permission',
       permission: {
         title: name ? `Create Plan: ${name}` : 'Create Plan',
         ...(reason !== undefined ? { reason } : {}),
+        ...(text ? { text } : {}),
         options: [],
       },
     }

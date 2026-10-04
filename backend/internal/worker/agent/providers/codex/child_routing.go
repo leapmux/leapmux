@@ -172,7 +172,7 @@ func (a *Agent) ensureCodexChildRoute(threadID string) (codexChildRoute, bool) {
 	if !ok {
 		return codexChildRoute{}, false
 	}
-	childID, err := parentSink.EnsureChildAgent(spawnCorrelationID, threadID, title)
+	childID, err := parentSink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: spawnCorrelationID, ProviderChildKey: threadID, Title: title})
 	if err != nil {
 		slog.Warn("codex route child ensure failed", "thread", threadID, "error", err)
 		return codexChildRoute{}, false
@@ -335,6 +335,8 @@ func (a *Agent) replayPendingCodexChildEvents(threadID string, route codexChildR
 			a.handleChildTurnCompleted(threadID, event.params, route)
 		case codexPendingHookCompleted, codexPendingMcpOauthCompleted, codexPendingMcpStartupUpdated:
 			a.persistCodexFailureForSink(route.childSink, route.agentID, event.kind, event.raw)
+		case codexPendingRawExecution:
+			a.handleCodexRawExecution(event.raw, event.params)
 		}
 	}
 }

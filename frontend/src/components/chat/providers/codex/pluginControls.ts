@@ -1,6 +1,6 @@
 import type { ProviderControlCapability } from '../capabilities'
-import { CODEX_BYPASS_SETTINGS } from '~/generated/contracts/codex-bypass'
 import { pickObject, pickString } from '~/lib/jsonPick'
+
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
 import { withElicitationResponse } from '../../controls/elicitationResponse'
 import { buildJsonRpcResult, questionsFromWire } from '../../controls/types'
@@ -14,10 +14,11 @@ import {
 } from './controlResponse'
 import { codexElicitation } from './elicitation'
 import { codexExtractControl, isCodexPlanModePrompt } from './extractControl'
+import { codexPermissionPresets } from './permissionPresets'
 
 /** The complete Codex control channel, separate from provider registration. */
 export const codexControls: ProviderControlCapability = {
-  permissionPresets: { bypass: CODEX_BYPASS_SETTINGS },
+  permissionPresets: codexPermissionPresets,
   preservesSelectionNotes: true,
   controlResponseDisplay: withElicitationResponse(codexElicitation, codexControlResponseSummary),
   askUserQuestion: {
@@ -42,10 +43,9 @@ export const codexControls: ProviderControlCapability = {
       })
     }
     const decisions = resolveCodexDecisions(pickObject(payload, 'params')?.availableDecisions)
-    // This path must answer because the pending request blocks the agent. It uses
-    // the canonical token of the requested polarity when the wire offered no
-    // matching decision. The banner can omit a missing choice; this path cannot
-    // omit the reply.
+    // This path must reply because the pending request blocks the agent.
+    // Use the canonical approval or rejection token when the wire offers no matching decision.
+    // The banner can omit an unavailable choice. This path cannot omit the reply.
     const decision = content
       ? decisions.negative ?? 'cancel'
       : decisions.positive ?? 'accept'

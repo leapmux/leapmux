@@ -13,7 +13,7 @@ const { _getPlaceholderCacheSize, _resetMarkdownCache, markdownArtifactNs, rende
 const { syntaxThemePair } = await import('~/lib/shikiThemes')
 const artifactStore = await import('~/lib/renderArtifactStore')
 
-const mockWorker = renderMarkdownInWorker as unknown as ReturnType<typeof vi.fn>
+const mockWorker = vi.mocked(renderMarkdownInWorker)
 
 /** Flush the worker `.then` microtask plus the coalesced version-bump microtask. */
 async function flushMicrotasks() {
@@ -27,11 +27,11 @@ describe('renderMarkdown off-thread highlight path', () => {
     _resetMarkdownCache()
     mockWorker.mockReset()
     // Make canUseWorker() true: renderMarkdown reads `typeof Worker`.
-    ;(globalThis as unknown as { Worker: unknown }).Worker = class {}
+    vi.stubGlobal('Worker', class {})
   })
 
   afterEach(() => {
-    delete (globalThis as unknown as { Worker?: unknown }).Worker
+    vi.unstubAllGlobals()
   })
 
   it('returns a plain (unhighlighted) placeholder synchronously and dispatches the highlight to the worker', () => {
@@ -45,11 +45,8 @@ describe('renderMarkdown off-thread highlight path', () => {
     expect(html).toContain('language-js')
     expect(html).toContain('const x = 1')
     expect(html).not.toContain('class="shiki')
-    // The pair is an ARGUMENT, captured at dispatch beside the artifact
-    // namespace the reply is filed under. Reading it inside the priority gate's
-    // deferred thunk sent whatever theme was live when the gate released the
-    // job, so a queued render was answered under one theme and persisted under
-    // another's namespace.
+    // Dispatch captures the theme pair and its render-artifact namespace together.
+    // A later theme read could render one theme and store it under another namespace.
     expect(mockWorker).toHaveBeenCalledWith(
       '```js\nconst x = 1\n```',
       syntaxThemePair(),
@@ -207,7 +204,7 @@ describe('renderMarkdown off-thread highlight path', () => {
     dispose?.()
   })
 
-  it('bounds retryable re-dispatch, then caches the plain render and stops (no infinite loop)', async () => {
+  it('limits retry dispatches and caches the plain render after the last attempt', async () => {
     const text = '```rust\nfn stuck() {}\n```'
     // Every attempt keeps failing transiently.
     mockWorker.mockResolvedValue({ html: '<pre>always degraded</pre>', retryable: true, styles: {} })
@@ -219,7 +216,7 @@ describe('renderMarkdown off-thread highlight path', () => {
         renderMarkdown(text)
       })
     })
-    // Drive the bounded retry loop to exhaustion.
+    // Complete every attempt in the capped retry loop.
     for (let i = 0; i < 12; i++)
       await flushMicrotasks()
 
@@ -234,17 +231,16 @@ describe('renderMarkdown off-thread highlight path', () => {
   })
 })
 
-describe('renderMarkdown persisted artifacts (indexeddb warm-start)', () => {
+describe('renderMarkdown persisted render artifacts (indexeddb warm-start)', () => {
   beforeEach(() => {
     _resetMarkdownCache()
     mockWorker.mockReset()
-    ;(globalThis as unknown as { Worker: unknown }).Worker = class {}
+    vi.stubGlobal('Worker', class {})
     vi.stubGlobal('indexedDB', new IDBFactory())
     artifactStore._resetArtifactStoreForTest()
   })
 
   afterEach(() => {
-    delete (globalThis as unknown as { Worker?: unknown }).Worker
     artifactStore._resetArtifactStoreForTest()
     vi.unstubAllGlobals()
   })
@@ -308,7 +304,7 @@ describe('renderMarkdown persisted artifacts (indexeddb warm-start)', () => {
         renderMarkdown(text)
       })
     })
-    // Drive the bounded retry loop to exhaustion; every attempt stays retryable.
+    // Complete the capped retry loop. Every attempt remains retryable.
     await vi.waitFor(() => {
       expect(mockWorker.mock.calls.length).toBeGreaterThanOrEqual(4)
     })

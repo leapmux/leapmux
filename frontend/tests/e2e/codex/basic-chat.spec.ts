@@ -1,0 +1,36 @@
+import { execFileSync } from 'node:child_process'
+import { join } from 'node:path'
+import { expect } from '@playwright/test'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { codexTest } from '../codex-fixtures'
+import { exerciseBasicChat } from '../helpers/nativeConversation'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
+
+// The component tests cover the indicator's visibility transitions.
+// One scripted turn checks provider delivery and the final browser state.
+codexTest('renders an assistant answer and clears the thinking indicator', async ({ authenticatedCodexWorkspace, page, leapmuxServer, modelScript }, testInfo) => {
+  void authenticatedCodexWorkspace
+  try {
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+    await waitForAgentIdle(page, 120_000)
+    await expectAssistantAnswer(page)
+    await expect(page.getByTestId('thinking-indicator')).not.toBeVisible()
+  }
+  catch (error) {
+    // Capture queue state before fixture cleanup deletes the workspace.
+    try {
+      const snapshot = execFileSync('sqlite3', ['-readonly', '-json', join(leapmuxServer.dataDir, 'worker', 'worker.db'), 'SELECT * FROM agent_input_queue_state; SELECT agent_id, id, state, error FROM agent_input_queue_items; SELECT agent_id, COUNT(*) AS message_count, MAX(seq) AS last_seq FROM messages GROUP BY agent_id;'])
+      await testInfo.attach('input-queue-state', { body: snapshot, contentType: 'text/plain' })
+    }
+    catch (diagnosticError) {
+      throw new AggregateError([error, diagnosticError], 'The test and queue diagnostics failed')
+    }
+    throw error
+  }
+})
+
+codexTest('ends an actual native chat turn and restores its answer after reload', async ({ authenticatedCodexWorkspace, page, modelScript }) => {
+  void authenticatedCodexWorkspace
+  await exerciseBasicChat({ page, modelScript, provider: AgentProvider.CODEX })
+})

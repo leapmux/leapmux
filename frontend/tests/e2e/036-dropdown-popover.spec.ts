@@ -6,17 +6,14 @@ import { ARITHMETIC_ANSWER, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistant
 const HAS_TEXT_RE = /.+/
 
 /**
- * The popover's top-left offset from its anchoring trigger.
+ * Measure the popover's offset from its trigger.
  *
- * Both rects are read inside ONE page evaluation rather than as two
- * `boundingBox()` round-trips. Two round-trips can straddle a re-render of the
- * editor footer the trigger lives in, which cost this test twice: the footer
- * re-mounting between them threw a bare "popover or trigger has no bounding
- * box", and any layout shift landing between them was charged to the drag as
- * drift. Measuring both in the same JS turn removes the skew entirely.
- *
- * Retried because the trigger can be transiently absent mid-re-render, which is
- * a property of the page, not of the drag this test is about.
+ * Read both rectangles in one page evaluation.
+ * Two separate boundingBox calls can span an editor-footer update.
+ * That update can remove the trigger and produce a missing-box failure.
+ * A layout shift between those calls can also appear as drag drift.
+ * One JavaScript evaluation measures both rectangles before another render can change them.
+ * Retry the observation because the page can temporarily remove the trigger during a render.
  */
 interface PopoverGeometry {
   dx: number
@@ -290,30 +287,26 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
   })
 })
 
-/**
- * The four padding sides of an element, as computed values.
- *
- * Runs inside the page, so it must not close over anything in this file.
- */
+/** Read all four computed padding values inside the page without a closure over this file. */
 function readPadding(el: Element): string {
   const style = getComputedStyle(el)
   return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft].join(' ')
 }
 
 /**
- * Both insets a card can take, measured from throwaway elements: Oat's own (which a card that
- * FILLS the page, like the auth forms, still uses) and the compact one a FLOATING card takes.
+ * Measure the normal and compact card insets through temporary elements.
+ * Oat supplies the normal inset for a card that fills the page, including authentication forms.
+ * A floating card uses the compact inset.
  *
- * Measured rather than written down as `24px` and `8px 12px`, because every half comes from Oat's
- * spacing scale -- a literal would keep passing on the day that scale changes and the cards
- * silently stop matching the rest of the app. The compact inset arrives as an ARGUMENT, from
- * `~/styles/popoverTokens.ts`, which `popover.css.ts` also reads: Playwright runs no
- * vanilla-extract, so the spec cannot import the class, but it can import the plain value the
- * class is built from, and then there is no second copy to drift.
+ * Read both from Oat's spacing scale instead of fixed pixel values.
+ * Fixed values could still pass after the scale changes and the cards stop matching the app.
+ * The caller supplies the compact value from ~/styles/popoverTokens.ts.
+ * The popover stylesheet reads that same value.
+ * Playwright applies no vanilla-extract transform, so the test imports the plain value rather than the styled class.
  *
- * ONE function for both probes, with its `read` helper defined INSIDE it: Playwright serializes
- * this function into the page, so it must not close over anything in this file -- which also rules
- * out passing `read` in, because a function argument is not serializable either.
+ * Both probes use this function. Define its read helper inside the function.
+ * Playwright serializes the function into the page, so it cannot close over this file.
+ * A function argument cannot cross that serialization boundary either.
  */
 function resolveCardPaddings(popoverPadding: string): { oat: string, popover: string } {
   const read = (configure: (el: HTMLElement) => void): string => {
@@ -441,14 +434,13 @@ test.describe('agent info card', () => {
 })
 
 /**
- * Resolve CSS custom properties to the COMPUTED colour form.
+ * Resolve CSS custom properties to computed colors.
  *
- * Reading a token straight off `:root` returns the authored text
- * (`rgb(34 32 30)`), which never string-matches a computed `rgb(34, 32, 30)`.
- * Assigning each to a throwaway element and reading it back puts them through
- * the same conversion the values under test went through.
- *
- * Runs inside the page, so it must not close over anything in this file.
+ * A root token retains its original syntax, such as rgb(34 32 30).
+ * A computed color uses a different syntax, such as rgb(34, 32, 30).
+ * Assign each token to a temporary element and read its computed color.
+ * The comparison then uses the same conversion for both values.
+ * Execute this function inside the page without a closure over this file.
  */
 function resolveColors(names: string[]): Record<string, string> {
   const probe = document.createElement('div')
@@ -535,20 +527,16 @@ test.describe('menu item appearance', () => {
 })
 
 /**
- * A `popover=auto` nested inside another `popover=auto`.
+ * Test an automatic popover inside another automatic popover.
  *
- * The browser has to treat the inner popover as a DESCENDANT of the outer one.
- * A browser that did not would light-dismiss the outer popover the instant the
- * inner one opened, and every control the inner popover holds would be
- * unreachable from that host. Only a real browser answers that, so it is
- * answered here.
+ * The browser must retain the outer popover when the inner popover opens.
+ * Otherwise the outer popover closes immediately and makes every inner control inaccessible.
+ * Only a browser can establish this behavior.
  *
- * The `[+]` menu and its Agent-info card are the DETERMINISTIC pair: both are
- * always present for any agent, and neither depends on model output. The
- * session goal renders the same nesting inside the to-dos popover, and
- * `180-codex-session-goal.spec.ts` covers that host -- but its chip appears
- * only once the model emits a to-do list, so a run that produced prose instead
- * used to leave the nesting untested everywhere.
+ * The plus menu and Agent info card supply this pair for every agent without requiring model output.
+ * The to-do popover contains the same nesting for a session goal.
+ * codex/session-goal-set-and-clear.spec.ts tests that host after the model publishes its to-do list.
+ * A previous model turn that returned prose left that nested view untested.
  */
 test.describe('nested popovers', () => {
   test('an inner card survives opening inside an outer menu', async ({ page, authenticatedWorkspace, modelScript }) => {
@@ -650,17 +638,21 @@ test.describe('a menu whose click also focuses the tile', () => {
 
     const trigger = page.locator('[data-testid="tab-more-menu"]:visible').first()
     await expect(trigger).toBeVisible()
-    await page.locator('[data-testid="tab-bar"]:visible').first().evaluate((el) => {
-      ;(globalThis as unknown as { __tabBar: Element }).__tabBar = el
-    })
+    const originalTabBar = await page.locator('[data-testid="tab-bar"]:visible').first().elementHandle()
+    if (!originalTabBar)
+      throw new Error('The visible tab bar has no element handle.')
+    try {
+      await trigger.click()
 
-    await trigger.click()
-
-    await expect(trigger).toHaveAttribute('aria-expanded', 'true')
-    await expect(page.locator('menu[popover]:popover-open')).toBeVisible()
-    expect(
-      await page.evaluate(() => (globalThis as unknown as { __tabBar: Element }).__tabBar.isConnected),
-      'the tab bar is the SAME element the click started on',
-    ).toBe(true)
+      await expect(trigger).toHaveAttribute('aria-expanded', 'true')
+      await expect(page.locator('menu[popover]:popover-open')).toBeVisible()
+      expect(
+        await originalTabBar.evaluate(element => element.isConnected),
+        'the original tab bar remains connected after the click',
+      ).toBe(true)
+    }
+    finally {
+      await originalTabBar.dispose()
+    }
   })
 })

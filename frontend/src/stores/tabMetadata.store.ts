@@ -114,6 +114,8 @@ export interface AgentMeta {
   parentAgentId?: string | undefined
   /** Backend-authoritative: a child that accepts user messages is steerable. */
   acceptsMessages?: boolean | undefined
+  /** Backend-authoritative: whether the tab can interrupt this agent's turn. */
+  acceptsInterrupt?: boolean | undefined
   /** Whether the live provider accepts an explicit queue-head steer. */
   supportsSteering?: boolean | undefined
   supportsPreemption?: boolean | undefined

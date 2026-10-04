@@ -1,12 +1,13 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../registry'
-import { CODEX_ITEM, CODEX_METHOD } from '~/generated/contracts/codex-protocol'
+import { CODEX_ITEM, CODEX_METHOD, CODEX_RAW_FIELD, CODEX_RAW_TOOL } from '~/generated/contracts/codex-protocol'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
 import { notificationClassifierFor } from '../../notificationClassification'
 import { isJsonRpcResponseObject } from '../acp/classification'
+import { codexRawExecRole } from './extractors/execute'
 import { extractItem } from './extractors/item'
 import { codexNotificationEntry } from './extractors/notification'
 import { codexPlanItemMarkdown, codexTurnPlanParams, codexTurnPlanTodos } from './extractors/plan'
@@ -68,15 +69,15 @@ const CODEX_NOTIF_METHODS = new Set<string>([
 ])
 
 /**
- * Codex-emitted methods that should not appear in the chat: turn/thread
- * lifecycle, metadata invalidations (skills), connection status
- * (remoteControl), and hook starts. Transcript history can contain these methods,
- * so classify them out both standalone and inside a consolidated thread.
- * The two paths must agree.
+ * Hide informational methods in standalone and consolidated transcript rows.
+ * Both paths must agree. The method groups are:
+ * - Turn and thread lifecycle.
+ * - Skill metadata invalidation.
+ * - Remote-control connection status.
+ * - Hook starts.
  *
- * Module-private. It once fed the browser's working-state heuristic as well,
- * which had to skip anything the chat hides; the Worker now publishes that
- * state, so hiding a method is a rendering decision only.
+ * Native execution requests and outputs bypass raw-item mirror suppression before this lookup.
+ * The Worker supplies working state. This method set controls transcript visibility only.
  */
 const CODEX_HIDDEN_TRANSCRIPT_METHODS = new Set<string>([
   CODEX_METHOD.ThreadStarted,
@@ -140,11 +141,9 @@ type CodexItemClassifier = (item: Record<string, unknown>) => MessageCategory
  */
 const CODEX_ITEM_CLASSIFIERS: Record<string, CodexItemClassifier> = {
   [CODEX_ITEM.AgentMessage]: () => ({ kind: 'assistant_text' }),
-  // A proposed plan leaves the tool path, and BOTH layers read it through the same
-  // function: `classify` said `tool_use` while `extractRow` drew `assistant-plan`,
-  // so the list measured a tool row and the transcript painted a plan card into it.
-  // A plan item with no words states nothing, which is a hidden row and not an
-  // empty band.
+  // Use the same plan reader for classification and extraction.
+  // Measurement and rendering must agree on the row kind.
+  // An empty plan item stays hidden instead of adding an empty band.
   [CODEX_ITEM.Plan]: item => codexPlanItemMarkdown(item) !== null
     ? { kind: 'assistant_plan' }
     : { kind: 'hidden' },
@@ -172,9 +171,8 @@ const CODEX_ITEM_CLASSIFIERS: Record<string, CodexItemClassifier> = {
   [CODEX_ITEM.ExitedReviewMode]: () => ({ kind: 'tool_use' }),
   [CODEX_ITEM.HookPrompt]: () => ({ kind: 'tool_use' }),
   [CODEX_ITEM.FunctionCallOutput]: () => ({ kind: 'tool_use' }),
-  // subAgentActivity (v2) is consumed by the backend's background-task
-  // registry drive and never persisted. A legacy row (pre-migration) must not
-  // render raw JSON, so classify it hidden defensively.
+  // The Worker consumes subAgentActivity in its background-task registry.
+  // It does not persist a transcript row. Hide this shape if it reaches classification.
   [CODEX_ITEM.SubAgentActivity]: () => ({ kind: 'hidden' }),
 }
 
@@ -209,6 +207,14 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
   const subtype = pickString(parent, 'subtype')
   const method = pickString(parent, 'method')
 
+  // Native exec has no typed app-server item. Keep its supported raw rows before mirror suppression.
+  const executionRole = codexRawExecRole(parent)
+  const executionItem = extractItem(parent)
+  if (executionRole === 'request'
+    || (executionRole === 'result' && (input.spanType === CODEX_RAW_TOOL.Exec || executionItem?.[CODEX_RAW_FIELD.Name] === CODEX_RAW_TOOL.Exec))) {
+    return { kind: 'tool_use' }
+  }
+
   // Transcript history can contain lifecycle methods. Keep them hidden.
   if (CODEX_HIDDEN_TRANSCRIPT_METHODS.has(method))
     return { kind: 'hidden' }
@@ -234,9 +240,9 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
   if (type === NOTIFICATION_TYPE.AgentError && parent.error === CODEX_TURN_FAILED_NOTIFICATION)
     return { kind: 'hidden' }
 
-  // The same read the extractor makes, for the same reason the `turn/completed`
-  // gate below states: a frame this claims and `codexTurnPlanRow` then refuses is
-  // measured as a tool row and painted as the raw notification JSON.
+  // Read turn-plan content through the same helper as extraction.
+  // Both readers must agree that the frame contains a tool row.
+  // Otherwise, measurement expects a tool row while rendering shows raw notification JSON.
   if (method === CODEX_METHOD.TurnPlanUpdated && codexTurnPlanTodos(codexTurnPlanParams(parent)) !== null)
     return { kind: 'tool_use' }
 

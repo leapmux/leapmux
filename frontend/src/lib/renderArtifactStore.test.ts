@@ -49,7 +49,7 @@ describe('renderArtifactStore', () => {
     vi.unstubAllGlobals()
   })
 
-  it('round-trips an artifact and misses on unknown sources', async () => {
+  it('stores and reads a render artifact and misses on unknown sources', async () => {
     await putArtifact('ns', 'source-text', '<p>html</p>')
     await expect(getArtifact('ns', 'source-text')).resolves.toBe('<p>html</p>')
     await expect(getArtifact('ns', 'other-text')).resolves.toBeUndefined()

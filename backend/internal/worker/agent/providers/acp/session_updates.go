@@ -69,19 +69,34 @@ func (b *Base) handleACPSessionUpdate(params json.RawMessage) {
 
 func (b *Base) dispatchACPSessionUpdate(params json.RawMessage) {
 	var wrapper struct {
-		SessionID string          `json:"sessionId"`
-		Update    json.RawMessage `json:"update"`
+		SessionID string                     `json:"sessionId"`
+		Update    json.RawMessage            `json:"update"`
+		Meta      map[string]json.RawMessage `json:"_meta"`
 	}
 	if err := json.Unmarshal(params, &wrapper); err != nil {
 		slog.Warn("Read ACP session update", "provider", b.ProviderName(), "agent_id", b.AgentID(), "error", err)
 		return
 	}
+	if len(wrapper.Update) == 0 {
+		return
+	}
+	if b.hooks.SessionUpdateHandler != nil {
+		if owner, found := b.sessionUpdateOwner(wrapper.SessionID); found &&
+			b.hooks.SessionUpdateHandler(wrapper.SessionID, owner, wrapper.Update) {
+			return
+		}
+	}
 	if current := b.CurrentSessionID(); current != "" && wrapper.SessionID != current {
+		// A subagent that runs in a session of its own reaches its transcript.
+		// Every other session is one this agent no longer serves.
+		if rowKey := b.childSessionRow(wrapper.SessionID); rowKey != "" && b.FeedChildUpdate(rowKey, wrapper.Update) {
+			return
+		}
 		slog.Debug("Ignore ACP update from another session", "provider", b.ProviderName(), "agent_id", b.AgentID(), "session_id", wrapper.SessionID)
 		return
 	}
-	if len(wrapper.Update) == 0 {
-		return
+	if b.hooks.SessionNotificationMetadata != nil && len(wrapper.Meta) > 0 {
+		b.hooks.SessionNotificationMetadata(wrapper.Meta)
 	}
 	b.handleACPUpdate(wrapper.Update)
 }

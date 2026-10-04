@@ -30,8 +30,8 @@ use crate::sidecar_ipc::{
 #[cfg(unix)]
 use crate::sidecar_ipc::{finalize_sidecar_streams, SidecarReader, SidecarWriter};
 use crate::{
-    SidecarMetadata, DEV_SIDECAR_CONNECT_TIMEOUT, DEV_SIDECAR_SHUTDOWN_TIMEOUT, ENV_BINARY_HASH,
-    ENV_DEV_ENDPOINT, ENV_DEV_FRONTEND, SIDECAR_PROTOCOL_VERSION,
+    SidecarMetadata, DEV_SIDECAR_CONNECT_TIMEOUT, DEV_SIDECAR_SHUTDOWN_TIMEOUT, ENV_AGENT_HELPER,
+    ENV_BINARY_HASH, ENV_DEV_ENDPOINT, ENV_DEV_FRONTEND, SIDECAR_PROTOCOL_VERSION,
 };
 // `get_sidecar_info_request` / `check_response` / `sidecar_info_from_response`
 // back the unix `fetch_sidecar_info` handshake; the Windows twin lives in
@@ -113,18 +113,7 @@ fn bootstrap_dev_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String
     }
     cleanup_dev_sidecar_artifacts(&endpoint, &metadata_path);
 
-    // Same URL as tauri.conf.json build.devUrl and contracts.devFrontendUrl
-    // (crate::DEV_FRONTEND_URL). Without it, TCP extra listen addresses serve
-    // the embedded SPA from the sidecar binary instead of the Vite/Bun server.
-    let mut command = Command::new(sidecar_path);
-    command
-        .env(ENV_DEV_ENDPOINT, &endpoint)
-        .env(ENV_BINARY_HASH, &binary_hash)
-        .env(ENV_DEV_FRONTEND, crate::DEV_FRONTEND_URL)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit());
-    let child = command
+    let child = dev_sidecar_command(sidecar_path, &endpoint, &binary_hash)
         .spawn()
         .map_err(|err| format!("spawn desktop sidecar: {err}"))?;
 
@@ -159,17 +148,47 @@ fn bootstrap_dev_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String
     }
 }
 
-fn spawn_stdio_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String> {
+/// The command that starts the dev sidecar at `endpoint`.
+#[cfg(any(unix, windows))]
+fn dev_sidecar_command(sidecar_path: &Path, endpoint: &str, binary_hash: &str) -> Command {
+    let mut command = Command::new(sidecar_path);
+    // The sidecar starts with no argument, which is exactly how an agent's CLI
+    // starts the worker's executable as a provider helper. An inherited
+    // LEAPMUX_AGENT_HELPER -- a shell of an Amp agent that launched this app --
+    // would turn the sidecar into that helper, so it never reaches the sidecar.
+    command.env_remove(ENV_AGENT_HELPER);
+    // Same URL as tauri.conf.json build.devUrl and contracts.devFrontendUrl
+    // (crate::DEV_FRONTEND_URL). Without it, TCP extra listen addresses serve
+    // the embedded SPA from the sidecar binary instead of the Vite/Bun server.
+    command
+        .env(ENV_DEV_ENDPOINT, endpoint)
+        .env(ENV_BINARY_HASH, binary_hash)
+        .env(ENV_DEV_FRONTEND, crate::DEV_FRONTEND_URL)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
+    command
+}
+
+/// The command that starts the packaged sidecar over stdio.
+fn stdio_sidecar_command(sidecar_path: &Path) -> Command {
     let mut command = Command::new(sidecar_path);
     // Packaged/release must not inherit a leaked LEAPMUX_HUB_DEV_FRONTEND from
     // the parent environment — that would enable DevProxy onto a URL that is
-    // not running. Debug spawn sets the env explicitly in bootstrap_dev_sidecar.
+    // not running. Debug spawn sets the env explicitly in dev_sidecar_command.
     command.env_remove(ENV_DEV_FRONTEND);
+    // See dev_sidecar_command: an inherited helper variable would turn the
+    // sidecar into a provider helper.
+    command.env_remove(ENV_AGENT_HELPER);
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command
+    command
+}
+
+fn spawn_stdio_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String> {
+    let mut child = stdio_sidecar_command(sidecar_path)
         .spawn()
         .map_err(|err| format!("spawn desktop sidecar: {err}"))?;
     let stdin = child
@@ -348,4 +367,84 @@ fn hash_sidecar_binary(sidecar_path: &Path) -> Result<String, String> {
     }
     let digest = hasher.finalize();
     Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    /// Whether `command` removes `key` from the environment that it hands on.
+    fn removes_env(command: &Command, key: &str) -> bool {
+        command
+            .get_envs()
+            .any(|(name, value)| name == OsStr::new(key) && value.is_none())
+    }
+
+    // The sidecar starts with no argument, which is how an agent's CLI starts
+    // the worker's executable as a provider helper. Each spawn must remove an
+    // inherited LEAPMUX_AGENT_HELPER, or a shell of an Amp agent that launches
+    // the app runs the sidecar as that agent's helper.
+    #[test]
+    fn every_sidecar_spawn_removes_the_agent_helper_variable() {
+        let path = Path::new("leapmux-desktop-sidecar");
+        assert!(removes_env(&stdio_sidecar_command(path), ENV_AGENT_HELPER));
+        #[cfg(any(unix, windows))]
+        assert!(removes_env(
+            &dev_sidecar_command(path, "endpoint", "hash"),
+            ENV_AGENT_HELPER
+        ));
+    }
+
+    #[test]
+    fn the_packaged_sidecar_spawn_removes_the_dev_frontend_variable() {
+        assert!(removes_env(
+            &stdio_sidecar_command(Path::new("leapmux-desktop-sidecar")),
+            ENV_DEV_FRONTEND
+        ));
+    }
+
+    /// The value that `command` sets for `key`, or None when it sets none.
+    fn env_value<'a>(command: &'a Command, key: &str) -> Option<&'a OsStr> {
+        command
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new(key))
+            .and_then(|(_, value)| value)
+    }
+
+    // The dev sidecar learns its endpoint, the hash of its binary and the dev
+    // frontend from its environment, and it starts with no argument. Without the
+    // dev frontend, the TCP extra listen addresses serve the embedded SPA and not
+    // the Vite/Bun server.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn the_dev_sidecar_spawn_states_its_endpoint_hash_and_dev_frontend() {
+        let command = dev_sidecar_command(
+            Path::new("leapmux-desktop-sidecar"),
+            "the-endpoint",
+            "the-hash",
+        );
+        assert_eq!(
+            env_value(&command, ENV_DEV_ENDPOINT),
+            Some(OsStr::new("the-endpoint"))
+        );
+        assert_eq!(
+            env_value(&command, ENV_BINARY_HASH),
+            Some(OsStr::new("the-hash"))
+        );
+        assert_eq!(
+            env_value(&command, ENV_DEV_FRONTEND),
+            Some(OsStr::new(crate::DEV_FRONTEND_URL))
+        );
+        assert_eq!(command.get_args().count(), 0);
+    }
+
+    // The packaged sidecar starts with no argument too, and it takes no dev
+    // endpoint: it talks over its own stdio.
+    #[test]
+    fn the_packaged_sidecar_spawn_sets_no_endpoint() {
+        let command = stdio_sidecar_command(Path::new("leapmux-desktop-sidecar"));
+        assert_eq!(env_value(&command, ENV_DEV_ENDPOINT), None);
+        assert_eq!(command.get_args().count(), 0);
+    }
 }

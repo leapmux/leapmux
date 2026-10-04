@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -68,6 +69,24 @@ func TestNewRegistryRefusesAnUnusableRegistration(t *testing.T) {
 			func(r *agent.Registration) { r.FixedPermissionModes = true },
 			"FixedPermissionModes with no static permission-mode group",
 		},
+		"a helper with a blank name": {
+			func(r *agent.Registration) {
+				r.Helpers = map[string]agent.HelperFunc{" ": func(context.Context, agent.HelperInvocation) int { return 0 }}
+			},
+			"a helper with no name",
+		},
+		"a nil helper": {
+			func(r *agent.Registration) { r.Helpers = map[string]agent.HelperFunc{"permission": nil} },
+			`a nil helper "permission"`,
+		},
+		"an agent directory prefix that the layout cannot hold": {
+			func(r *agent.Registration) { r.AgentDir = &agentdir.Spec{Prefix: "Not-A-Prefix"} },
+			"agent directory prefix",
+		},
+		"an agent directory socket in a subdirectory": {
+			func(r *agent.Registration) { r.AgentDir = &agentdir.Spec{Prefix: "ok", SocketName: "a/b.sock"} },
+			"agent directory socket",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			reg := testRegistration(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
@@ -104,6 +123,37 @@ func TestNewRegistryReportsEveryRefusal(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nil Plugin")
 	assert.Contains(t, err.Error(), "nil Start")
+}
+
+// The sweep finds the provider of a directory by its prefix, so two providers
+// cannot share one.
+func TestNewRegistryRefusesTwoAgentDirSpecsWithOnePrefix(t *testing.T) {
+	t.Parallel()
+
+	first := testRegistration(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
+	first.AgentDir = &agentdir.Spec{Prefix: "same"}
+	second := testRegistration(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	second.AgentDir = &agentdir.Spec{Prefix: "same"}
+	_, err := agent.NewRegistry(first, second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `two agent directory specs have the prefix "same"`)
+}
+
+func TestRegistryAgentDirSpecsListsTheSpecOfEachProviderInEnumOrder(t *testing.T) {
+	t.Parallel()
+
+	codex := testRegistration(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	codex.AgentDir = &agentdir.Spec{Prefix: "second", SocketName: "s.sock"}
+	claude := testRegistration(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	claude.AgentDir = &agentdir.Spec{Prefix: "first"}
+	none := testRegistration(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
+	r := agenttest.MustNewRegistry(codex, none, claude)
+	require.Less(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	specs := r.AgentDirSpecs()
+	require.Len(t, specs, 2, "a provider with no spec adds none")
+	assert.Equal(t, "first", specs[0].Prefix)
+	assert.Equal(t, "second", specs[1].Prefix)
+	assert.Equal(t, "s.sock", specs[1].SocketName)
 }
 
 func TestNewRegistryDefaultsTheModelSubGroups(t *testing.T) {

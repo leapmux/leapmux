@@ -1,3 +1,9 @@
+import type { JsonValue } from '@bufbuild/protobuf'
+import { Buffer } from 'node:buffer'
+import { fromJson, toBinary } from '@bufbuild/protobuf'
+import { ValueSchema } from '@bufbuild/protobuf/wkt'
+import { cursorProtobufNumber, cursorProtobufString, readCursorProtobufFields } from './cursorProtobuf'
+
 /**
  * The wire format `cursor-agent` speaks, in the small part of it a mock needs.
  *
@@ -29,6 +35,8 @@ const WIRE_LENGTH_DELIMITED = 2
 
 /** `agent.v1.AgentClientMessage.run_request`, the client's whole turn request. */
 const FIELD_RUN_REQUEST = 1
+/** `agent.v1.AgentRunRequest.conversation_id`. */
+const FIELD_CONVERSATION_ID = 5
 /** `agent.v1.AgentRunRequest.action`. */
 const FIELD_ACTION = 2
 /** `agent.v1.ConversationAction.user_message_action`. */
@@ -42,8 +50,13 @@ const FIELD_TEXT = 1
 const FIELD_INTERACTION_UPDATE = 1
 /** `agent.v1.InteractionUpdate.text_delta`. */
 const FIELD_TEXT_DELTA = 1
+/** `agent.v1.InteractionUpdate.thinking_delta`. */
+const FIELD_THINKING_DELTA = 4
 /** `agent.v1.InteractionUpdate.turn_ended`. */
 const FIELD_TURN_ENDED = 14
+/** `agent.v1.TurnEndedUpdate.input_tokens` and `.output_tokens`. */
+const FIELD_INPUT_TOKENS = 1
+const FIELD_OUTPUT_TOKENS = 2
 
 /**
  * The path from one `AgentClientMessage` down to the prompt the user sent.
@@ -53,11 +66,19 @@ const FIELD_TURN_ENDED = 14
  * through a message that declares 37 fields this module never names.
  */
 const PROMPT_PATH = [FIELD_RUN_REQUEST, FIELD_ACTION, FIELD_USER_MESSAGE_ACTION, FIELD_USER_MESSAGE, FIELD_TEXT]
+const SELECTED_CONTEXT_PATH = [FIELD_RUN_REQUEST, FIELD_ACTION, FIELD_USER_MESSAGE_ACTION, FIELD_USER_MESSAGE, 3]
+
+export interface CursorAttachmentPayload {
+  kind: 'image' | 'document' | 'file'
+  data: string
+  mimeType?: string
+  filename?: string
+}
 
 /** A base-128 varint: seven bits per byte, high bit set on every byte but the last. */
 export function encodeVarint(value: number): Uint8Array {
-  if (!Number.isInteger(value) || value < 0)
-    throw new Error(`A varint takes a non-negative integer, not ${value}`)
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw new Error(`A varint takes a non-negative integer in the safe integer range, not ${value}`)
   const bytes: number[] = []
   let rest = value
   do {
@@ -70,7 +91,9 @@ export function encodeVarint(value: number): Uint8Array {
 
 /** One length-delimited field: its tag, its length, then the payload. */
 export function encodeLengthDelimited(fieldNumber: number, payload: Uint8Array): Uint8Array {
-  const tag = encodeVarint((fieldNumber << 3) | WIRE_LENGTH_DELIMITED)
+  if (!Number.isInteger(fieldNumber) || fieldNumber <= 0 || fieldNumber > 0x1FFF_FFFF)
+    throw new Error('A protobuf field number must be an integer from 1 through 536870911.')
+  const tag = encodeVarint(fieldNumber * 8 + WIRE_LENGTH_DELIMITED)
   const length = encodeVarint(payload.byteLength)
   const out = new Uint8Array(tag.byteLength + length.byteLength + payload.byteLength)
   out.set(tag, 0)
@@ -132,6 +155,8 @@ export function readLengthDelimitedFields(bytes: Uint8Array): Map<number, Uint8A
         break
       case WIRE_LENGTH_DELIMITED: {
         const length = readVarint()
+        if (length > bytes.length - at)
+          return found
         const value = bytes.subarray(at, at + length)
         at += length
         const list = found.get(fieldNumber)
@@ -176,6 +201,60 @@ export function cursorPromptOf(clientMessage: Uint8Array): string | undefined {
   return text === undefined ? undefined : new TextDecoder().decode(text)
 }
 
+/** Read the native conversation ID that Cursor sends with a Run request. */
+export function cursorConversationIdOf(clientMessage: Uint8Array): string | undefined {
+  const id = descend(clientMessage, [FIELD_RUN_REQUEST, FIELD_CONVERSATION_ID])
+  return id === undefined ? undefined : new TextDecoder().decode(id)
+}
+
+/** Read the inline attachment bytes that Cursor puts in a Run request. */
+export function cursorAttachmentPayloads(clientMessage: Uint8Array): CursorAttachmentPayload[] {
+  const context = descend(clientMessage, SELECTED_CONTEXT_PATH)
+  if (!context)
+    return []
+  const fields = readLengthDelimitedFields(context)
+  const payloads: CursorAttachmentPayload[] = []
+  for (const image of fields.get(1) ?? []) {
+    const parts = readLengthDelimitedFields(image)
+    const data = parts.get(8)?.[0] ?? descend(image, [9, 2])
+    const mimeType = decodeField(parts, 7)
+    if (data) {
+      payloads.push({
+        kind: 'image',
+        data: Buffer.from(data).toString('base64'),
+        ...(mimeType === undefined ? {} : { mimeType }),
+      })
+    }
+  }
+  for (const document of fields.get(25) ?? []) {
+    const parts = readLengthDelimitedFields(document)
+    const data = parts.get(8)?.[0] ?? descend(document, [9, 2])
+    const mimeType = decodeField(parts, 4)
+    const filename = decodeField(parts, 3)
+    if (data) {
+      payloads.push({
+        kind: 'document',
+        data: Buffer.from(data).toString('base64'),
+        ...(mimeType === undefined ? {} : { mimeType }),
+        ...(filename === undefined ? {} : { filename }),
+      })
+    }
+  }
+  for (const file of fields.get(4) ?? []) {
+    const parts = readLengthDelimitedFields(file)
+    const data = decodeField(parts, 1)
+    const filename = decodeField(parts, 2)
+    if (data !== undefined)
+      payloads.push({ kind: 'file', data, ...(filename === undefined ? {} : { filename }) })
+  }
+  return payloads
+}
+
+function decodeField(fields: Map<number, Uint8Array[]>, field: number): string | undefined {
+  const bytes = fields.get(field)?.[0]
+  return bytes === undefined ? undefined : new TextDecoder().decode(bytes)
+}
+
 /** An `AgentServerMessage` carrying one piece of assistant text. */
 export function cursorTextDelta(text: string): Uint8Array {
   return encodeLengthDelimited(
@@ -184,15 +263,27 @@ export function cursorTextDelta(text: string): Uint8Array {
   )
 }
 
+/** An `AgentServerMessage` carrying one piece of native thinking text. */
+export function cursorThinkingDelta(text: string): Uint8Array {
+  return encodeLengthDelimited(
+    FIELD_INTERACTION_UPDATE,
+    encodeLengthDelimited(FIELD_THINKING_DELTA, encodeStringField(FIELD_TEXT, text)),
+  )
+}
+
 /**
  * The `AgentServerMessage` that ends a turn.
  *
- * `TurnEndedUpdate` declares five token counts and every one of them is
- * optional, so the message an agent needs is EMPTY: the whole update encodes as
- * a tag and a zero length.
+ * `TurnEndedUpdate` declares five optional token counts. State the two counts
+ * that a scripted model reports, and leave the others absent.
  */
-export function cursorTurnEnded(): Uint8Array {
-  return encodeLengthDelimited(FIELD_INTERACTION_UPDATE, encodeLengthDelimited(FIELD_TURN_ENDED, new Uint8Array(0)))
+export function cursorTurnEnded(usage?: { inputTokens?: number, outputTokens?: number }): Uint8Array {
+  const counts: Uint8Array[] = []
+  if (usage?.inputTokens !== undefined)
+    counts.push(encodeVarintField(FIELD_INPUT_TOKENS, usage.inputTokens))
+  if (usage?.outputTokens !== undefined)
+    counts.push(encodeVarintField(FIELD_OUTPUT_TOKENS, usage.outputTokens))
+  return encodeLengthDelimited(FIELD_INTERACTION_UPDATE, encodeLengthDelimited(FIELD_TURN_ENDED, concat(counts)))
 }
 
 /**
@@ -224,15 +315,11 @@ const FIELD_VARIANT_STRING_REPRESENTATION = 9
 
 /** One selectable entry in Cursor's model picker. */
 export interface CursorModelVariant {
-  /**
-   * The BRACKETED wire id, e.g. `grok-4.7[context=256k,reasoning_effort=low]`.
-   *
-   * Cursor bakes a variant's whole metadata into this id and reports it nowhere else, and
-   * LeapMux parses it back out for the context window and the effort level. A variant
-   * whose id carries no brackets therefore renders with no metadata, which is valid.
-   */
+  /** The picker ID, such as `grok-4.7[context=256k,reasoning_effort=low]`. */
   id: string
   displayName: string
+  /** Native model parameters that the CLI sends on its next Run request. */
+  parameters?: readonly { id: string, value: string }[]
   /** Marks the entry the agent starts on. At most one variant in a catalogue sets it. */
   isDefault?: boolean
 }
@@ -256,6 +343,10 @@ function encodeBoolField(fieldNumber: number, value: boolean): Uint8Array {
 
 function encodeCursorVariant(variant: CursorModelVariant): Uint8Array {
   return concat([
+    ...(variant.parameters ?? []).map(parameter => encodeLengthDelimited(1, concat([
+      encodeStringField(1, parameter.id),
+      encodeStringField(2, parameter.value),
+    ]))),
     encodeStringField(FIELD_VARIANT_DISPLAY_NAME, variant.displayName),
     encodeBoolField(FIELD_VARIANT_IS_DEFAULT_MAX_CONFIG, variant.isDefault === true),
     encodeBoolField(FIELD_VARIANT_IS_DEFAULT_NON_MAX_CONFIG, variant.isDefault === true),
@@ -347,13 +438,15 @@ const FIELD_UPDATE_CALL_ID = 1
 const FIELD_UPDATE_TOOL_CALL = 2
 
 /**
- * `agent.v1.ToolCall`, a union of 69 tools. Only the Task one matters here.
+ * `agent.v1.ToolCall`, a union of 69 tools.
  *
  * Resolving `#14` took the class whose own `typeName` says `ToolCall` and whose
  * schema lists `19 task_tool_call`, NOT the nearest class of that minified name
  * -- two other classes share it, and one of them is an unrelated `ToolCall`.
  */
 const FIELD_TOOLCALL_TASK = 19
+const FIELD_TOOLCALL_UPDATE_TODOS = 9
+const FIELD_TOOLCALL_GENERATE_IMAGE = 28
 const FIELD_TOOLCALL_TOOL_CALL_ID = 57
 
 /** `TaskToolCall|1 args #0|2 result #1|3 cloud_agent_bc_id 9?`. */
@@ -410,6 +503,89 @@ export interface CursorTaskCall {
   prompt: string
 }
 
+export type CursorTodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
+
+/** One native Todo row. Cursor requires an id in each row it reports. */
+export interface CursorTodoItem {
+  id: string
+  content: string
+  status: CursorTodoStatus
+}
+
+/** One UpdateTodos call in Cursor's Run stream. */
+export interface CursorTodoCall {
+  callID: string
+  todos: readonly CursorTodoItem[]
+  merge: boolean
+}
+
+/** One native GenerateImage call and the image returned by Cursor's server. */
+export interface CursorGenerateImageCall {
+  callID: string
+  description: string
+  filePath: string
+  imageData: string
+}
+
+export interface CursorQuestionOption {
+  id: string
+  label: string
+}
+
+export interface CursorQuestion {
+  id: string
+  prompt: string
+  options: readonly CursorQuestionOption[]
+  allowMultiple: boolean
+}
+
+export type CursorInteractionCall
+  = | { kind: 'question', callID: string, title: string, questions: readonly CursorQuestion[] }
+    | { kind: 'plan', callID: string, name: string, overview: string, plan: string }
+    | { kind: 'webFetch', callID: string, url: string }
+
+export type CursorInteractionReply
+  = | { kind: 'question', id: number, answers: Array<{ questionID: string, selectedOptionIDs: string[], freeformText?: string }>, rejectedReason?: string }
+    | { kind: 'plan', id: number, accepted: boolean, planURI?: string, error?: string }
+    | { kind: 'webFetch', id: number, approved: boolean, reason?: string }
+
+export interface CursorMcpCall {
+  callID: string
+  server: string
+  tool: string
+  input: Record<string, unknown>
+}
+
+export interface CursorMcpReply {
+  id: number
+  success: boolean
+  text: string
+}
+
+/** Operations that the Cursor service delegates to the actual local client. */
+export type CursorExecutionCall
+  = | { kind: 'shell', callID: string, command: string, workingDirectory?: string }
+    | { kind: 'read', callID: string, path: string }
+    | { kind: 'write', callID: string, path: string, content: string }
+    | { kind: 'edit', callID: string, path: string, before: string, after: string }
+
+/** The real client reply, including the native result bytes used by the tool update. */
+export interface CursorExecutionReply {
+  id: number
+  execID?: string
+  kind: 'shell' | 'read' | 'write'
+  success: boolean
+  text: string
+  content?: string
+  data?: Uint8Array
+  path?: string
+  exitCode?: number
+  lines?: number
+  size?: number
+  rawResult: Uint8Array
+  failureKind?: 'error' | 'file-not-found' | 'permission-denied' | 'rejected' | 'timeout' | 'spawn-error' | 'invalid-edit'
+}
+
 function encodeCursorTask(call: CursorTaskCall, report: string | undefined): Uint8Array {
   const args = concat([
     encodeStringField(FIELD_ARGS_DESCRIPTION, call.description),
@@ -442,10 +618,10 @@ function encodeCursorTask(call: CursorTaskCall, report: string | undefined): Uin
   ])
 }
 
-function encodeToolCallUpdate(field: number, call: CursorTaskCall, report: string | undefined): Uint8Array {
+function encodeToolCallUpdate(field: number, callID: string, toolCall: Uint8Array): Uint8Array {
   return encodeLengthDelimited(FIELD_INTERACTION_UPDATE, encodeLengthDelimited(field, concat([
-    encodeStringField(FIELD_UPDATE_CALL_ID, call.callID),
-    encodeLengthDelimited(FIELD_UPDATE_TOOL_CALL, encodeCursorTask(call, report)),
+    encodeStringField(FIELD_UPDATE_CALL_ID, callID),
+    encodeLengthDelimited(FIELD_UPDATE_TOOL_CALL, toolCall),
   ])))
 }
 
@@ -457,7 +633,7 @@ function encodeToolCallUpdate(field: number, call: CursorTaskCall, report: strin
  * what the subagent registry reads.
  */
 export function cursorTaskStarted(call: CursorTaskCall): Uint8Array {
-  return encodeToolCallUpdate(FIELD_TOOL_CALL_STARTED, call, undefined)
+  return encodeToolCallUpdate(FIELD_TOOL_CALL_STARTED, call.callID, encodeCursorTask(call, undefined))
 }
 
 /**
@@ -467,7 +643,484 @@ export function cursorTaskStarted(call: CursorTaskCall): Uint8Array {
  * agent answers with a `tool_call_update` that moves the row to `completed`.
  */
 export function cursorTaskCompleted(call: CursorTaskCall, report: string): Uint8Array {
-  return encodeToolCallUpdate(FIELD_TOOL_CALL_COMPLETED, call, report)
+  return encodeToolCallUpdate(FIELD_TOOL_CALL_COMPLETED, call.callID, encodeCursorTask(call, report))
+}
+
+/** Encode an actual nested child text delta while its parent Task remains open. */
+export function cursorTaskProgress(callID: string, text: string): Uint8Array {
+  if (!callID)
+    throw new Error('The native Cursor Task delta requires its parent call ID.')
+  const child = encodeLengthDelimited(FIELD_TEXT_DELTA, encodeStringField(FIELD_TEXT, text))
+  const taskDelta = encodeLengthDelimited(1, child)
+  const delta = encodeLengthDelimited(2, taskDelta)
+  return encodeLengthDelimited(FIELD_INTERACTION_UPDATE, encodeLengthDelimited(15, concat([
+    encodeStringField(1, callID),
+    encodeLengthDelimited(2, delta),
+  ])))
+}
+
+/** Cursor's TodoStatus enum uses 1 pending, 2 in progress, 3 completed, 4 cancelled. */
+const CURSOR_TODO_STATUS: Record<CursorTodoStatus, number> = {
+  pending: 1,
+  in_progress: 2,
+  completed: 3,
+  cancelled: 4,
+}
+
+function encodeCursorTodoItem(item: CursorTodoItem): Uint8Array {
+  return concat([
+    encodeStringField(1, item.id),
+    encodeStringField(2, item.content),
+    encodeVarintField(3, CURSOR_TODO_STATUS[item.status]),
+  ])
+}
+
+function encodeCursorTodo(call: CursorTodoCall, completed: boolean): Uint8Array {
+  const todos = call.todos.map(item => encodeLengthDelimited(1, encodeCursorTodoItem(item)))
+  const args = encodeLengthDelimited(1, concat([...todos, encodeVarintField(2, Number(call.merge))]))
+  const result = completed
+    ? encodeLengthDelimited(2, encodeLengthDelimited(1, concat([
+        ...todos,
+        encodeVarintField(2, call.todos.length),
+        encodeVarintField(3, Number(call.merge)),
+      ])))
+    : new Uint8Array(0)
+  return concat([
+    encodeLengthDelimited(FIELD_TOOLCALL_UPDATE_TODOS, concat([args, result])),
+    encodeStringField(FIELD_TOOLCALL_TOOL_CALL_ID, call.callID),
+  ])
+}
+
+/** The native UpdateTodos call starts with its list. */
+export function cursorTodoStarted(call: CursorTodoCall): Uint8Array {
+  return encodeToolCallUpdate(FIELD_TOOL_CALL_STARTED, call.callID, encodeCursorTodo(call, false))
+}
+
+/** The completed UpdateTodos call repeats its list and the final count. */
+export function cursorTodoCompleted(call: CursorTodoCall): Uint8Array {
+  return encodeToolCallUpdate(FIELD_TOOL_CALL_COMPLETED, call.callID, encodeCursorTodo(call, true))
+}
+
+function encodeCursorGenerateImage(call: CursorGenerateImageCall, completed: boolean): Uint8Array {
+  const args = concat([
+    encodeStringField(1, call.description),
+    encodeStringField(2, call.filePath),
+  ])
+  const tool = [encodeLengthDelimited(1, args)]
+  if (completed) {
+    const success = concat([
+      encodeStringField(1, call.filePath),
+      encodeStringField(2, call.imageData),
+    ])
+    tool.push(encodeLengthDelimited(2, encodeLengthDelimited(1, success)))
+  }
+  return concat([
+    encodeLengthDelimited(FIELD_TOOLCALL_GENERATE_IMAGE, concat(tool)),
+    encodeStringField(FIELD_TOOLCALL_TOOL_CALL_ID, call.callID),
+  ])
+}
+
+/** Open the native GenerateImage row before the result arrives. */
+export function cursorGenerateImageStarted(call: CursorGenerateImageCall): Uint8Array {
+  return encodeToolCallUpdate(FIELD_TOOL_CALL_STARTED, call.callID, encodeCursorGenerateImage(call, false))
+}
+
+/** Close the native GenerateImage row with the generated file and image data. */
+export function cursorGenerateImageCompleted(call: CursorGenerateImageCall): Uint8Array {
+  return encodeToolCallUpdate(FIELD_TOOL_CALL_COMPLETED, call.callID, encodeCursorGenerateImage(call, true))
+}
+
+function cursorQuestionArgs(call: Extract<CursorInteractionCall, { kind: 'question' }>): Uint8Array {
+  return concat([
+    encodeStringField(1, call.title),
+    ...call.questions.map(question => encodeLengthDelimited(2, concat([
+      encodeStringField(1, question.id),
+      encodeStringField(2, question.prompt),
+      ...question.options.map(option => encodeLengthDelimited(3, concat([
+        encodeStringField(1, option.id),
+        encodeStringField(2, option.label),
+      ]))),
+      encodeVarintField(4, Number(question.allowMultiple)),
+    ]))),
+  ])
+}
+
+/** Send one native Cursor interaction query on the Run stream. */
+export function cursorInteractionQuery(id: number, call: CursorInteractionCall): Uint8Array {
+  let field: number
+  let query: Uint8Array
+  switch (call.kind) {
+    case 'question':
+      field = 3
+      query = concat([
+        encodeLengthDelimited(1, cursorQuestionArgs(call)),
+        encodeStringField(2, call.callID),
+      ])
+      break
+    case 'plan':
+      field = 7
+      query = concat([
+        encodeLengthDelimited(1, concat([
+          encodeStringField(1, call.plan),
+          encodeStringField(3, call.overview),
+          encodeStringField(4, call.name),
+        ])),
+        encodeStringField(2, call.callID),
+      ])
+      break
+    case 'webFetch':
+      field = 9
+      query = encodeLengthDelimited(1, concat([
+        encodeStringField(1, call.url),
+        encodeStringField(2, call.callID),
+      ]))
+      break
+  }
+  return encodeLengthDelimited(7, concat([
+    encodeVarintField(1, id),
+    encodeLengthDelimited(field, query),
+  ]))
+}
+
+function readVarintField(bytes: Uint8Array, wanted: number): number | undefined {
+  let at = 0
+  const take = (): number | undefined => {
+    let value = 0
+    for (let shift = 0; shift < 56 && at < bytes.length; shift += 7) {
+      const byte = bytes[at++]!
+      value += (byte & 0x7F) * 2 ** shift
+      if ((byte & 0x80) === 0)
+        return value <= Number.MAX_SAFE_INTEGER ? value : undefined
+    }
+    return undefined
+  }
+  while (at < bytes.length) {
+    const tag = take()
+    if (tag === undefined)
+      return undefined
+    const field = Math.floor(tag / 8)
+    switch (tag % 8) {
+      case 0: {
+        const value = take()
+        if (value === undefined)
+          return undefined
+        if (field === wanted)
+          return value
+        break
+      }
+      case 1:
+        at += 8
+        break
+      case 2: {
+        const length = take()
+        if (length === undefined)
+          return undefined
+        at += length
+        break
+      }
+      case 5:
+        at += 4
+        break
+      default: return undefined
+    }
+    if (at > bytes.length)
+      return undefined
+  }
+  return undefined
+}
+
+/** Read the native response that answers an interaction query. */
+export function cursorInteractionResponseOf(clientMessage: Uint8Array): CursorInteractionReply | undefined {
+  const response = descend(clientMessage, [6])
+  if (!response)
+    return undefined
+  const id = readVarintField(response, 1)
+  if (id === undefined)
+    throw new Error('Cursor interaction response has no valid query id')
+  const fields = readLengthDelimitedFields(response)
+  if (fields.has(3)) {
+    const result = descend(response, [3, 1])
+    if (!result)
+      throw new Error('Cursor question response has no result')
+    const success = descend(result, [1])
+    if (success) {
+      const answers = (readLengthDelimitedFields(success).get(1) ?? []).map((answer) => {
+        const parts = readLengthDelimitedFields(answer)
+        const freeformText = decodeField(parts, 3)
+        return {
+          questionID: decodeField(parts, 1) ?? '',
+          selectedOptionIDs: (parts.get(2) ?? []).map(bytes => new TextDecoder().decode(bytes)),
+          ...(freeformText === undefined ? {} : { freeformText }),
+        }
+      })
+      return { kind: 'question', id, answers }
+    }
+    return { kind: 'question', id, answers: [], rejectedReason: decodeField(readLengthDelimitedFields(descend(result, [3]) ?? new Uint8Array(0)), 1) ?? 'rejected' }
+  }
+  if (fields.has(7)) {
+    const result = descend(response, [7, 1])
+    if (!result)
+      throw new Error('Cursor plan response has no result')
+    if (descend(result, [1])) {
+      const planURI = decodeField(readLengthDelimitedFields(result), 3)
+      return { kind: 'plan', id, accepted: true, ...(planURI === undefined ? {} : { planURI }) }
+    }
+    const error = decodeField(readLengthDelimitedFields(descend(result, [2]) ?? new Uint8Array(0)), 1)
+    return { kind: 'plan', id, accepted: false, ...(error === undefined ? {} : { error }) }
+  }
+  if (fields.has(9)) {
+    const result = descend(response, [9])!
+    if (descend(result, [1]))
+      return { kind: 'webFetch', id, approved: true }
+    const reason = decodeField(readLengthDelimitedFields(descend(result, [2]) ?? new Uint8Array(0)), 1)
+    return { kind: 'webFetch', id, approved: false, ...(reason === undefined ? {} : { reason }) }
+  }
+  throw new Error('Cursor sent an unsupported interaction response')
+}
+
+function cursorJsonValue(value: unknown, depth = 0, seen = new Set<object>()): JsonValue {
+  if (depth > 32)
+    throw new Error('Cursor MCP input exceeds the JSON nesting limit')
+  if (value === null || typeof value === 'string' || typeof value === 'boolean')
+    return value
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value))
+      throw new Error('Cursor MCP input contains a non-finite number')
+    return value
+  }
+  if (typeof value !== 'object')
+    throw new Error('Cursor MCP input contains a non-JSON value')
+  if (seen.has(value))
+    throw new Error('Cursor MCP input contains a cycle')
+  seen.add(value)
+  try {
+    if (Array.isArray(value))
+      return value.map(item => cursorJsonValue(item, depth + 1, seen))
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype !== Object.prototype && prototype !== null)
+      throw new Error('Cursor MCP input contains a non-JSON object')
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cursorJsonValue(item, depth + 1, seen)]))
+  }
+  finally {
+    seen.delete(value)
+  }
+}
+
+/** Ask the installed Cursor client to run a local MCP tool. */
+export function cursorMcpExec(id: number, call: CursorMcpCall): Uint8Array {
+  const nativeToolName = `${call.server}-${call.tool}`
+  const input = Object.entries(call.input).map(([key, value]) => encodeLengthDelimited(2, concat([
+    encodeStringField(1, key),
+    encodeLengthDelimited(2, toBinary(ValueSchema, fromJson(ValueSchema, cursorJsonValue(value)))),
+  ])))
+  const args = concat([
+    encodeStringField(1, nativeToolName),
+    ...input,
+    encodeStringField(3, call.callID),
+    encodeStringField(4, call.server),
+    encodeStringField(5, nativeToolName),
+    encodeVarintField(8, 1),
+    encodeStringField(9, call.server),
+  ])
+  return encodeLengthDelimited(2, concat([
+    encodeVarintField(1, id),
+    encodeStringField(15, call.callID),
+    encodeLengthDelimited(11, args),
+  ]))
+}
+
+/** Read the native result of one local MCP execution. */
+export function cursorMcpResponseOf(clientMessage: Uint8Array): CursorMcpReply | undefined {
+  const exec = descend(clientMessage, [2])
+  if (!exec)
+    return undefined
+  const result = descend(exec, [11])
+  if (!result)
+    return undefined
+  const id = readVarintField(exec, 1)
+  if (id === undefined)
+    throw new Error('Cursor MCP result has no valid execution id')
+  const success = descend(result, [1])
+  if (success) {
+    const parts = (readLengthDelimitedFields(success).get(1) ?? [])
+      .map(item => descend(item, [1, 1]))
+      .filter((part): part is Uint8Array => part !== undefined)
+    const text = parts.map(part => new TextDecoder().decode(part)).join('\n')
+    return { id, success: readVarintField(success, 2) !== 1, text }
+  }
+  for (const field of [2, 3, 4, 5, 6]) {
+    const failure = descend(result, [field])
+    if (failure) {
+      const parts = readLengthDelimitedFields(failure)
+      const name = decodeField(parts, 1) ?? ''
+      const available = (parts.get(2) ?? []).map(bytes => new TextDecoder().decode(bytes))
+      const details = available.length > 0 ? `; available: ${available.join(', ')}` : ''
+      switch (field) {
+        case 5: return { id, success: false, text: `tool ${name} not found${details}` }
+        case 6: return { id, success: false, text: `server ${name} not found${details}` }
+        default: return { id, success: false, text: name || `MCP result ${field}` }
+      }
+    }
+  }
+  if (descend(result, [7]))
+    return { id, success: true, text: 'MCP tool approved' }
+  throw new Error('Cursor MCP result has no outcome')
+}
+
+/** Encode a source-backed ExecServerMessage on the native Run stream. */
+export function cursorExecutionRequest(id: number, call: CursorExecutionCall): Uint8Array {
+  if (!Number.isInteger(id) || id <= 0 || id > 0xFFFF_FFFF)
+    throw new Error('The native Cursor execution ID must be a positive uint32.')
+  let field: number
+  let args: Uint8Array
+  if (call.kind === 'shell') {
+    field = 2
+    args = concat([
+      encodeStringField(1, call.command),
+      ...(call.workingDirectory !== undefined ? [encodeStringField(2, call.workingDirectory)] : []),
+      encodeVarintField(3, 120_000),
+      encodeStringField(4, call.callID),
+      // The service reports parse failure instead of inventing an allowlist result.
+      encodeLengthDelimited(8, encodeVarintField(1, 1)),
+      encodeStringField(15, 'Run the scripted command'),
+    ])
+  }
+  else if (call.kind === 'read') {
+    field = 7
+    args = concat([encodeStringField(1, call.path), encodeStringField(2, call.callID)])
+  }
+  else if (call.kind === 'write') {
+    field = 3
+    args = concat([
+      encodeStringField(1, call.path),
+      encodeStringField(2, call.content),
+      encodeStringField(3, call.callID),
+      encodeVarintField(4, 1),
+    ])
+  }
+  else {
+    throw new Error('A native Cursor targeted edit must read the file before writing.')
+  }
+  return encodeLengthDelimited(2, concat([
+    encodeVarintField(1, id),
+    encodeStringField(15, call.callID),
+    encodeLengthDelimited(field, args),
+  ]))
+}
+
+/** Decode the actual local client's shell, read, or write result. */
+export function cursorExecutionResponseOf(clientMessage: Uint8Array): CursorExecutionReply | undefined {
+  const outer = readCursorProtobufFields(clientMessage)
+  const rawExec = outer.strings.get(2)?.at(-1)
+  if (!rawExec)
+    return undefined
+  const exec = readCursorProtobufFields(rawExec)
+  const id = cursorProtobufNumber(exec, 1)
+  if (id === undefined || id <= 0 || id > 0xFFFF_FFFF)
+    throw new Error('The native Cursor execution reply has no valid ID.')
+  const entry = ([2, 7, 3] as const).find(field => exec.strings.has(field))
+  if (entry === undefined)
+    return undefined
+  const rawResult = exec.strings.get(entry)!.at(-1)!
+  const result = readCursorProtobufFields(rawResult)
+  const kind = entry === 2 ? 'shell' : entry === 7 ? 'read' : 'write'
+  const execID = cursorProtobufString(exec, 15)
+  const base = { id, ...(execID !== undefined ? { execID } : {}), kind, rawResult } satisfies Pick<CursorExecutionReply, 'id' | 'execID' | 'kind' | 'rawResult'>
+  const outcome = [...result.strings.keys()].find(field => field >= 1 && field <= 7)
+  if (outcome === undefined)
+    throw new Error('The native Cursor execution reply has no outcome.')
+  const fields = readCursorProtobufFields(result.strings.get(outcome)!.at(-1)!)
+  if (kind === 'shell' && (outcome === 1 || outcome === 2)) {
+    const exitCode = cursorProtobufNumber(fields, 3, true) ?? 0
+    const stdout = cursorProtobufString(fields, 5) ?? ''
+    const stderr = cursorProtobufString(fields, 6) ?? ''
+    return { ...base, success: outcome === 1 && exitCode === 0, exitCode, text: `Exit code: ${exitCode}\n${stdout}${stderr ? `\n${stderr}` : ''}` }
+  }
+  if (kind === 'read' && outcome === 1) {
+    const content = cursorProtobufString(fields, 2)
+    const data = fields.strings.get(5)?.at(-1)
+    const path = cursorProtobufString(fields, 1)
+    const lines = cursorProtobufNumber(fields, 3)
+    const size = cursorProtobufNumber(fields, 4)
+    return {
+      ...base,
+      success: true,
+      text: content ?? `Read ${data?.length ?? 0} binary bytes.`,
+      ...(content !== undefined ? { content } : {}),
+      ...(data !== undefined ? { data } : {}),
+      ...(path !== undefined ? { path } : {}),
+      ...(lines !== undefined ? { lines } : {}),
+      ...(size !== undefined ? { size } : {}),
+    }
+  }
+  if (kind === 'write' && outcome === 1) {
+    const content = cursorProtobufString(fields, 4)
+    const path = cursorProtobufString(fields, 1)
+    return { ...base, success: true, text: `Wrote ${path ?? 'the native file'}${content !== undefined ? `\n${content}` : ''}`, ...(content !== undefined ? { content } : {}), ...(path !== undefined ? { path } : {}) }
+  }
+  const failureKind: CursorExecutionReply['failureKind'] = kind === 'read' && outcome === 4
+    ? 'file-not-found'
+    : kind === 'shell' && outcome === 3
+      ? 'timeout'
+      : kind === 'shell' && outcome === 5
+        ? 'spawn-error'
+        : (kind === 'read' && outcome === 5) || (kind === 'write' && outcome === 3) || (kind === 'shell' && outcome === 7)
+            ? 'permission-denied'
+            : (kind === 'read' && outcome === 3) || (kind === 'write' && outcome === 6) || (kind === 'shell' && outcome === 4) ? 'rejected' : 'error'
+  const detail = cursorProtobufString(fields, kind === 'shell' ? 3 : 2)
+    ?? [...fields.strings.values()].flat().map(value => new TextDecoder().decode(value)).join('\n')
+  return { ...base, success: false, failureKind, text: detail || `Native ${kind} ${failureKind}.` }
+}
+
+function executionTool(call: CursorExecutionCall, result?: Uint8Array): Uint8Array {
+  let field: number
+  let args: Uint8Array
+  if (call.kind === 'shell') {
+    field = 1
+    args = concat([encodeStringField(1, call.command), ...(call.workingDirectory !== undefined ? [encodeStringField(2, call.workingDirectory)] : []), encodeStringField(4, call.callID)])
+  }
+  else if (call.kind === 'read') {
+    field = 8
+    args = encodeStringField(1, call.path)
+  }
+  else {
+    field = 12
+    args = concat([encodeStringField(1, call.path), ...(call.kind === 'write' ? [encodeStringField(6, call.content)] : [])])
+  }
+  return concat([
+    encodeLengthDelimited(field, concat([encodeLengthDelimited(1, args), ...(result ? [encodeLengthDelimited(2, result)] : [])])),
+    encodeStringField(57, call.callID),
+  ])
+}
+
+/** Start a native tool row before the client executes its operation. */
+export function cursorExecutionToolStarted(call: CursorExecutionCall): Uint8Array {
+  return encodeToolCallUpdate(FIELD_TOOL_CALL_STARTED, call.callID, executionTool(call))
+}
+
+/** Bind a completed tool update to the actual matching client reply. */
+export function cursorExecutionToolCompleted(call: CursorExecutionCall, reply: CursorExecutionReply, contents: { before: string, after: string }): Uint8Array {
+  let result: Uint8Array
+  if (call.kind === 'shell') {
+    result = reply.rawResult
+  }
+  else if (call.kind === 'read') {
+    result = reply.success
+      ? encodeLengthDelimited(1, concat([
+          ...(reply.content !== undefined ? [encodeStringField(1, reply.content)] : []),
+          ...(reply.data !== undefined ? [encodeLengthDelimited(6, reply.data)] : []),
+          encodeStringField(7, reply.path ?? call.path),
+          ...(reply.lines !== undefined ? [encodeVarintField(4, reply.lines)] : []),
+          ...(reply.size !== undefined ? [encodeVarintField(5, reply.size)] : []),
+        ]))
+      : encodeLengthDelimited(2, encodeStringField(1, reply.text))
+  }
+  else {
+    result = reply.success
+      ? encodeLengthDelimited(1, concat([encodeStringField(1, reply.path ?? call.path), encodeStringField(6, contents.before), encodeStringField(7, contents.after), encodeStringField(8, reply.text)]))
+      : encodeLengthDelimited(7, concat([encodeStringField(1, call.path), encodeStringField(2, reply.text), encodeStringField(5, reply.text)]))
+  }
+  return encodeToolCallUpdate(FIELD_TOOL_CALL_COMPLETED, call.callID, executionTool(call, result))
 }
 
 /**
@@ -535,15 +1188,20 @@ export function connectEndOfStream(trailers: Record<string, unknown> = {}): Uint
  * frame can arrive in several TCP segments, and a length prefix read out of a
  * half-received header would take an arbitrary number as the frame's size.
  */
-export function takeConnectFrames(buffer: Uint8Array): { frames: Uint8Array[], rest: Uint8Array } {
-  const frames: Uint8Array[] = []
+export interface CursorConnectFrame {
+  flags: number
+  payload: Uint8Array
+}
+
+export function takeConnectFrames(buffer: Uint8Array): { frames: CursorConnectFrame[], rest: Uint8Array } {
+  const frames: CursorConnectFrame[] = []
   const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength)
   let at = 0
   while (buffer.byteLength - at >= 5) {
     const length = view.getUint32(at + 1, false)
     if (buffer.byteLength - at - 5 < length)
       break
-    frames.push(buffer.subarray(at + 5, at + 5 + length))
+    frames.push({ flags: buffer[at]!, payload: buffer.subarray(at + 5, at + 5 + length) })
     at += 5 + length
   }
   return { frames, rest: buffer.subarray(at) }

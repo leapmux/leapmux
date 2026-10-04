@@ -39,6 +39,12 @@ const (
 	PlanModeControlPrompt
 )
 
+// ChildCapabilities states the operations that a child accepts in its stored native mode.
+type ChildCapabilities struct {
+	AcceptsMessages  bool
+	AcceptsInterrupt bool
+}
+
 // Provider bundles the per-provider wire-format hooks the service
 // layer invokes without holding a running-agent reference. Plugins are
 // stateless and shared across goroutines — a single instance per provider.
@@ -114,8 +120,9 @@ type Provider interface {
 	// exists so the lookup is provider-owned dispatch rather than wire parsing in shared service
 	// code; no provider narrows it, because narrowing to one shape would break the other's flows.
 	ControlResponseRequestID(content []byte) string
-	// PlanApprovalOptions resolves the complete settings for an approved plan prompt.
-	// An empty permission mode keeps the current mode. Bypass requires the preset's exact mode.
+	// PlanApprovalOptions resolves live settings for an approved plan prompt or
+	// plan exit. An empty mode uses the provider's default exit mode.
+	// Bypass requires the preset's exact mode.
 	PlanApprovalOptions(permissionMode string) map[string]string
 	// SyntheticInterruptNotice returns the display text of the synthetic user row the service
 	// persists when the frontend forwards this provider's interrupt frame as a raw message
@@ -138,32 +145,9 @@ type Provider interface {
 	// turn-end sound for a zero-tool turn, so a provider that cannot say must
 	// return ok=false rather than 0.
 	TurnEndToolUses(content []byte) (count int32, ok bool)
-	// EndsSubagentTranscript reports whether content, as the LAST message of a
-	// SUBAGENT transcript, already announces that the SUBAGENT itself is over.
-	//
-	// Used to decide whether that transcript already ends in a divider. Claude
-	// forwards a subagent's own `result`, so its child transcript closes
-	// itself; writing the worker's neutral subagent-end divider on top would
-	// stack two rules saying the same thing. Providers whose child transcript
-	// simply stops return false and get the neutral divider.
-	//
-	// The question is "does this close the SUBAGENT", NOT "is this a turn-end
-	// envelope". The two differ for a resumable child: a Codex collab thread
-	// draws a turn-end divider after each turn, and its parent can resume it.
-	// Answering the turn-end question would suppress the divider
-	// for exactly the stopped-mid-life child that needs it. Codex therefore
-	// keeps the false default although it does forward a turn end.
-	//
-	// Content-based, not a static capability: the SAME Claude subagent ends
-	// with a forwarded result when it completes and with nothing at all when it
-	// is stopped mid-flight, and only the stopped one needs the neutral divider.
-	EndsSubagentTranscript(content []byte) bool
-	// SupportsChildSteering reports whether a running agent of this provider
-	// can address a subagent conversation inside the same process. It drives
-	// AgentInfo.accepts_messages for child tabs:
-	// a child of a steering provider keeps an enabled composer; every other
-	// child tab is read-only. The default is false.
-	SupportsChildSteering() bool
+	// ChildCapabilities derives child operations from the child's stored native options.
+	// The Worker uses these operations for child tabs and input validation.
+	ChildCapabilities(options optionmap.Map) ChildCapabilities
 	// ReportsDefaultModelSentinel reports whether this provider's own model
 	// catalog lists DefaultModelSentinel as a selectable entry meaning "the
 	// account default". Only such a provider gives that entry the default badge
@@ -206,12 +190,17 @@ type Provider interface {
 	// storage holds for the query's working directory, newest first.
 	//
 	// A provider decision because every CLI keeps its history in a different
-	// place and a different shape: a SQLite index (Codex, OpenCode, Kilo,
-	// Goose, ZCode), one SQLite file per session (Cursor), a directory named
-	// after a mangled copy of the working directory (Claude, Pi), or a sidecar
-	// beside each transcript (Reasonix, Copilot). Which of those to read, and
-	// where the title and the last-activity time sit inside it, is exactly the
-	// knowledge that must not leak into shared code.
+	// place and a different shape:
+	//
+	//   - A SQLite index: Codex, OpenCode, Kilo, MiMo Code, Goose, ZCode.
+	//   - One SQLite file per session: Cursor.
+	//   - A directory named after a mangled copy of the working directory:
+	//     Claude, Pi, Kimi Code, Qwen Code, Grok Build, Oh My Pi.
+	//   - A sidecar beside each transcript: Reasonix, Copilot.
+	//
+	// Which of those to read, and where the title and the last-activity time
+	// sit inside it, is exactly the knowledge that must not leak into shared
+	// code.
 	//
 	// It reads files another program owns, so an implementation must never
 	// write to one, and must report the empty result for a store that is
@@ -323,20 +312,10 @@ func (ProviderDefaults) TurnEndToolUses(content []byte) (int32, bool) {
 	return DefaultTurnEndToolUses(content)
 }
 
-// EndsSubagentTranscript defaults to false: a provider that forwards no
-// subagent-final envelope into its subagent transcripts leaves them to be
-// closed by the worker's neutral subagent-end divider. Only Claude overrides
-// it.
-//
-// Codex keeps this default deliberately although it DOES forward a divider:
-// its per-turn `turn/completed` ends a turn, not the subagent, and the parent
-// can send the child another turn. Answering true there would suppress
-// the closing divider for every stopped child.
-func (ProviderDefaults) EndsSubagentTranscript([]byte) bool { return false }
-
-// SupportsChildSteering defaults to false for a provider whose running agents
-// cannot send direct input to a child conversation.
-func (ProviderDefaults) SupportsChildSteering() bool { return false }
+// ChildCapabilities disables child input and interrupt unless the provider supplies them.
+func (ProviderDefaults) ChildCapabilities(optionmap.Map) ChildCapabilities {
+	return ChildCapabilities{}
+}
 
 // ReportsDefaultModelSentinel defaults to false: a provider whose CLI reports
 // concrete model ids only must keep the default badge on the entry its own

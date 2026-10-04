@@ -51,7 +51,9 @@ describe('end-to-end global setup', () => {
     expect(process.env.E2E_STATE_PATH).toBe(path)
     const state = JSON.parse(readFileSync(path, 'utf8'))
     expect(state.tmpDir).toBe(directory)
-    expect(state.binaryPath).toBe(resolve(import.meta.dirname, '../../..', process.platform === 'win32' ? 'leapmux.exe' : 'leapmux'))
+    // The run's own copy, which the launcher writes. The build output at the
+    // repository root changes when another task pipeline rebuilds it.
+    expect(state.binaryPath).toBe(join(directory, process.platform === 'win32' ? 'leapmux.exe' : 'leapmux'))
     expect(state).toMatchObject({
       hubUrl: 'http://localhost:1234',
       workerId: 'worker',

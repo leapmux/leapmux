@@ -639,3 +639,176 @@ func TestBuildShellWrappedCommand_EnvGateRejectsUnsafeNames(t *testing.T) {
 		}, "gate %+v", gate)
 	}
 }
+
+// Every dialect sets the SetEnv entries after it strips the StripEnvKeys and
+// before the program starts, each in its own syntax and with the value quoted.
+func TestBuildShellWrappedCommand_EveryDialectSetsTheSetEnvEntries(t *testing.T) {
+	cases := []struct {
+		shell string
+		want  []string
+	}{
+		{"/bin/bash", []string{"export LEAPMUX_TEST_PORT='4321' && ", "export LEAPMUX_TEST_PATH='/tmp/a b' && "}},
+		{"/usr/bin/fish", []string{"export LEAPMUX_TEST_PORT='4321' && "}},
+		{"/bin/tcsh", []string{"setenv LEAPMUX_TEST_PORT '4321'; ", "setenv LEAPMUX_TEST_PATH '/tmp/a b'; "}},
+		{"/usr/bin/nu", []string{`$env.LEAPMUX_TEST_PORT = "4321"; `, `$env.LEAPMUX_TEST_PATH = "/tmp/a b"; `}},
+		{"/usr/bin/pwsh", []string{"$env:LEAPMUX_TEST_PORT = '4321'; ", "$env:LEAPMUX_TEST_PATH = '/tmp/a b'; "}},
+	}
+	for _, c := range cases {
+		t.Run(c.shell, func(t *testing.T) {
+			cmd, _, _ := Wrap(context.Background(), WrapSpec{
+				Shell:        c.shell,
+				Launch:       Spec{Program: "cline"},
+				StripEnvKeys: []string{"LEAPMUX_TEST_STRIP"},
+				SetEnv:       []string{"LEAPMUX_TEST_PORT=4321", "LEAPMUX_TEST_PATH=/tmp/a b"},
+				BaseArgs:     []string{"--port", "4321"},
+				WorkingDir:   "/tmp",
+			})
+			inner := cmd.Args[len(cmd.Args)-1]
+			for _, want := range c.want {
+				assert.Contains(t, inner, want)
+			}
+			strip := strings.Index(inner, "LEAPMUX_TEST_STRIP")
+			set := strings.Index(inner, "LEAPMUX_TEST_PORT")
+			program := strings.Index(inner, "cline")
+			require.NotEqual(t, -1, strip)
+			assert.Less(t, strip, set, "the strip runs before the set, so a key in both keeps the set value")
+			assert.Less(t, set, program, "the set runs before the program starts")
+		})
+	}
+}
+
+// A value that the wrapper sets wins over the value that the program inherits
+// from the shell, which is what a profile export would change.
+func TestBuildShellWrappedCommand_SetEnvWinsOverTheInheritedValue(t *testing.T) {
+	if _, err := exec.LookPath("/bin/sh"); err != nil {
+		t.Skip("the test needs /bin/sh")
+	}
+	cmd, delimiter, _ := Wrap(context.Background(), WrapSpec{
+		Shell:      "/bin/sh",
+		Launch:     Spec{Program: "/bin/sh"},
+		SetEnv:     []string{"LEAPMUX_TEST_VALUE=private value"},
+		BaseArgs:   []string{"-c", `printf '%s\n' "$LEAPMUX_TEST_VALUE"`},
+		WorkingDir: t.TempDir(),
+	})
+	cmd.Env = append(cmd.Environ(), "LEAPMUX_TEST_VALUE=inherited")
+	out, err := cmd.Output()
+	require.NoError(t, err)
+	_, after, found := strings.Cut(string(out), delimiter+"\n")
+	require.True(t, found, "the wrapper prints its delimiter: %q", out)
+	assert.Equal(t, "private value\n", after)
+}
+
+func TestBuildShellWrappedCommand_SetEnvRejectsUnsafeEntries(t *testing.T) {
+	for _, entry := range []string{"NO_VALUE", "BAD NAME=1", "BAD;rm -rf=1", "=1"} {
+		t.Run(entry, func(t *testing.T) {
+			assert.Panics(t, func() {
+				Wrap(context.Background(), WrapSpec{
+					Shell:  "/bin/bash",
+					Launch: Spec{Program: "cline"},
+					SetEnv: []string{entry},
+				})
+			})
+		})
+	}
+}
+
+// runWrapped runs a wrapped command with extraEnv after the inherited
+// environment, and returns what the program printed after the delimiter. HOME
+// points at an empty directory, so a shell such as tcsh, which reads its own
+// startup file for every shell, reads none of the user's.
+func runWrapped(t *testing.T, spec WrapSpec, extraEnv ...string) (meta, program string) {
+	t.Helper()
+	cmd, delimiter, _ := Wrap(context.Background(), spec)
+	cmd.Env = append(append(cmd.Environ(), "HOME="+t.TempDir()), extraEnv...)
+	out, err := cmd.Output()
+	require.NoError(t, err, "output: %q", out)
+	before, after, found := strings.Cut(string(out), delimiter+"\n")
+	require.True(t, found, "the wrapper prints its delimiter: %q", out)
+	return before, after
+}
+
+// requireShell skips the test when the shell at path does not exist.
+func requireShell(t *testing.T, path string) {
+	t.Helper()
+	if _, err := exec.LookPath(path); err != nil {
+		t.Skipf("the test needs %s", path)
+	}
+}
+
+// A value may be empty and may hold an equals sign, and a key that the wrapper
+// both strips and sets keeps the set value. Each one reaches the program as
+// SetEnv states it, whatever the program inherits.
+func TestBuildShellWrappedCommand_SetEnvKeepsTheValueAsStated(t *testing.T) {
+	requireShell(t, "/bin/sh")
+	_, out := runWrapped(t, WrapSpec{
+		Shell:        "/bin/sh",
+		Launch:       Spec{Program: "/bin/sh"},
+		StripEnvKeys: []string{"LEAPMUX_TEST_BOTH"},
+		SetEnv:       []string{"LEAPMUX_TEST_EMPTY=", "LEAPMUX_TEST_EQUALS=a=b", "LEAPMUX_TEST_BOTH=set"},
+		BaseArgs:     []string{"-c", `printf '%s|%s|%s\n' "${LEAPMUX_TEST_EMPTY-unset}" "$LEAPMUX_TEST_EQUALS" "$LEAPMUX_TEST_BOTH"`},
+		WorkingDir:   t.TempDir(),
+	}, "LEAPMUX_TEST_EMPTY=inherited", "LEAPMUX_TEST_BOTH=inherited")
+	assert.Equal(t, "|a=b|set\n", out, "an empty value is set and empty, not unset")
+}
+
+// The env gate reads the environment after the wrapper sets SetEnv, so a value
+// that the wrapper sets withholds the gated arguments, as an inherited one does.
+func TestBuildShellWrappedCommand_TheEnvGateReadsTheSetEnvValue(t *testing.T) {
+	requireShell(t, "/bin/sh")
+	for _, tc := range []struct {
+		name     string
+		setEnv   []string
+		wantMeta string
+		wantArg  string
+	}{
+		{"the wrapper sets the gate variable", []string{"LEAPMUX_TEST_GATE_A=on"}, "test_gate_open=false", ""},
+		{"nothing sets the gate variable", nil, "test_gate_open=true", "gated"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			meta, out := runWrapped(t, WrapSpec{
+				Shell:      "/bin/sh",
+				Launch:     Spec{Program: "/bin/sh"},
+				SetEnv:     tc.setEnv,
+				BaseArgs:   []string{"-c", `printf '%s\n' "$1"`, "sh"},
+				EnvGated:   testEnvGate("gated"),
+				WorkingDir: t.TempDir(),
+			}, "LEAPMUX_TEST_GATE_A=", "LEAPMUX_TEST_GATE_B=")
+			assert.Contains(t, meta, tc.wantMeta)
+			assert.Equal(t, tc.wantArg+"\n", out)
+		})
+	}
+}
+
+// csh sets an environment variable with setenv, and a real tcsh proves that
+// the value reaches the program on both paths: the simple one, and the
+// multi-line gate that reads the value the wrapper set.
+func TestBuildShellWrappedCommand_CshSetsTheSetEnvValue(t *testing.T) {
+	requireShell(t, "/bin/tcsh")
+	for _, tc := range []struct {
+		name    string
+		gate    *EnvGatedArgs
+		setEnv  []string
+		wantOut string
+	}{
+		{"the simple path", nil, []string{"LEAPMUX_TEST_VALUE=private value"}, "private value|\n"},
+		{
+			"the gated path",
+			testEnvGate("gated"),
+			[]string{"LEAPMUX_TEST_VALUE=private value", "LEAPMUX_TEST_GATE_B=on"},
+			"private value|\n",
+		},
+		{"the gated path with no gate variable", testEnvGate("gated"), []string{"LEAPMUX_TEST_VALUE=private value"}, "private value|gated\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, out := runWrapped(t, WrapSpec{
+				Shell:      "/bin/tcsh",
+				Launch:     Spec{Program: "/bin/sh"},
+				SetEnv:     tc.setEnv,
+				BaseArgs:   []string{"-c", `printf '%s|%s\n' "$LEAPMUX_TEST_VALUE" "$1"`, "sh"},
+				EnvGated:   tc.gate,
+				WorkingDir: t.TempDir(),
+			}, "LEAPMUX_TEST_VALUE=inherited", "LEAPMUX_TEST_GATE_A=", "LEAPMUX_TEST_GATE_B=")
+			assert.Equal(t, tc.wantOut, out)
+		})
+	}
+}

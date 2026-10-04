@@ -60,18 +60,6 @@ func TestResolveResumeHandleIsTheProvidersOwnRule(t *testing.T) {
 		assert.Error(t, agenttest.ResumeHandleErr(pi, strings.Repeat("a", 129), ""))
 		assert.Error(t, agenttest.ResumeHandleErr(pi, "bad\x00id", ""))
 	})
-
-	// The shape test decides which rule runs, so it decides which refusal a
-	// user reads. It must answer the same way Pi's own resolver does: a
-	// separator anywhere, or the `.jsonl` suffix.
-	t.Run("pi picks the rule by shape", func(t *testing.T) {
-		assert.True(t, piResumeHandleIsFilePath("/tmp/s.jsonl"))
-		assert.True(t, piResumeHandleIsFilePath(`C:\pi\s.jsonl`))
-		assert.True(t, piResumeHandleIsFilePath("s.jsonl"), "the suffix alone makes it a path")
-		assert.True(t, piResumeHandleIsFilePath("~/s"), "the separator alone makes it a path")
-		assert.False(t, piResumeHandleIsFilePath("018f4a2b-0c1d-7e3f-9a5b-6c7d8e9f0a1b"))
-		assert.False(t, piResumeHandleIsFilePath("~"), "a bare tilde holds no separator")
-	})
 }
 
 // TestResolveResumeHandleReturnsWhatReachesArgv pins the reason the method

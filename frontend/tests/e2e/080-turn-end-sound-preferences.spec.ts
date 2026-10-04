@@ -1,8 +1,10 @@
 import type { ModelScript } from './helpers/modelScriptFixture'
+import type { SoundReceiptBoundary } from './helpers/turnEndSound'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, test } from './fixtures'
+import { nativeAgentById } from './helpers/nativeScenario'
 import { bashToolCall } from './helpers/providerToolCalls'
-import { armTurnEndSound, expectDoorbellCount, expectDoorbellQuiet } from './helpers/turnEndSound'
+import { armTurnEndSound, expectDoorbellCount, expectDoorbellQuiet, soundReceiptCursor, waitForIdleSoundReceipt } from './helpers/turnEndSound'
 import { getBrowserPref, loginViaToken, openAgentViaUI, openSettingsAt, sendMessage, waitForAgentIdle, waitForWorkspaceReady } from './helpers/ui'
 
 /**
@@ -20,13 +22,30 @@ const TOOL_USING_PROMPT = 'Run the command `pwd` and tell me the result.'
  * tool call — a text-only answer is the negative case, and the spec has its own
  * test for that.
  */
-async function sendToolTurn(page: Parameters<typeof sendMessage>[0], script: ModelScript): Promise<void> {
+async function sendToolTurn(page: Parameters<typeof sendMessage>[0], script: ModelScript): Promise<SoundReceiptBoundary> {
+  const tab = page.locator('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]:visible').first()
+  const agentId = await tab.getAttribute('data-tab-id')
+  if (!agentId)
+    throw new Error('The sound preference case needs an active agent ID.')
+  const after = await soundReceiptCursor(page)
   await script.queue(
     { toolCalls: [bashToolCall(AgentProvider.CLAUDE_CODE, 'pwd-call', 'pwd')] },
     { text: 'The working directory is above.' },
   )
   await sendMessage(page, script.prompt(TOOL_USING_PROMPT))
   await script.waitForSteps()
+  return { agentId, after }
+}
+
+/** Expire the native sound handler's sixty-second cooldown before a UI-only negative case. */
+async function prepareUiSoundProbe(page: import('@playwright/test').Page, userId: string, script: ModelScript): Promise<void> {
+  await page.clock.install()
+  await armTurnEndSound(page, userId, 'ding-dong')
+  await waitForWorkspaceReady(page)
+  const boundary = await sendToolTurn(page, script)
+  await waitForIdleSoundReceipt(page, boundary)
+  await expectDoorbellCount(page, 1)
+  await page.clock.fastForward(61_000)
 }
 
 /** The scope chip on the turn-end sound row (dual: browser override vs account). */
@@ -125,19 +144,14 @@ test.describe('Turn End Sound Preferences', () => {
     // preference said, so this would pass with the preference plumbing removed
     // entirely -- which is exactly what it did while `setInitialBrowserPref`
     // was silently writing an entry the app discarded.
-    await sendToolTurn(page, modelScript)
+    const boundary = await sendToolTurn(page, modelScript)
     await waitForAgentIdle(page)
-
-    await expectDoorbellQuiet(page, 0)
+    await expectDoorbellQuiet(page, 0, boundary)
   })
 
   test('should NOT play sound when opening and closing Preferences dialog', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
-    await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
-    await waitForWorkspaceReady(page)
-
-    await sendToolTurn(page, modelScript)
-    await expectDoorbellCount(page, 1)
+    await prepareUiSoundProbe(page, leapmuxServer.adminUserId, modelScript)
 
     // Open and close the Preferences dialog (no full navigation)
     const dialog = await openSettingsAt(page)
@@ -149,12 +163,7 @@ test.describe('Turn End Sound Preferences', () => {
 
   test('should NOT play sound when closing an agent tab', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
-    await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
-    await waitForWorkspaceReady(page)
-
-    await sendToolTurn(page, modelScript)
-    await expectDoorbellCount(page, 1)
-    await waitForAgentIdle(page)
+    await prepareUiSoundProbe(page, leapmuxServer.adminUserId, modelScript)
 
     // Open a second agent tab so we have somewhere to land after closing
     await openAgentViaUI(page)
@@ -163,21 +172,21 @@ test.describe('Turn End Sound Preferences', () => {
     const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
     await agentTabs.first().click()
     await expect(agentTabs.first()).toHaveAttribute('aria-selected', 'true')
+    const closingId = await agentTabs.first().getAttribute('data-tab-id')
+    if (!closingId)
+      throw new Error('The close sound probe needs the native agent ID.')
 
     // Close it. Closing a tab whose turn already ended must not re-ring.
     await agentTabs.first().locator('[data-testid="tab-close"]').click()
     await expect(agentTabs).toHaveCount(1)
+    await expect.poll(() => nativeAgentById({ leapmuxServer }, closingId)).toBeNull()
 
     await expectDoorbellQuiet(page, 1)
   })
 
   test('should NOT play sound when opening a new tab', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
-    await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
-    await waitForWorkspaceReady(page)
-
-    await sendToolTurn(page, modelScript)
-    await expectDoorbellCount(page, 1)
+    await prepareUiSoundProbe(page, leapmuxServer.adminUserId, modelScript)
 
     // Opening a new agent tab revises the WatchEvents interest set (no stream
     // restart). A catch-up replay must not be mistaken for a live turn end.
@@ -188,11 +197,7 @@ test.describe('Turn End Sound Preferences', () => {
 
   test('should NOT play sound when switching between agent tabs', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
-    await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
-    await waitForWorkspaceReady(page)
-
-    await sendToolTurn(page, modelScript)
-    await expectDoorbellCount(page, 1)
+    await prepareUiSoundProbe(page, leapmuxServer.adminUserId, modelScript)
 
     // Open a second agent tab, then switch back and forth
     await openAgentViaUI(page)

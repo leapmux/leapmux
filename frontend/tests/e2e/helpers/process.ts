@@ -1,10 +1,20 @@
 import type { ChildProcess } from 'node:child_process'
 import { finishCleanup } from './cleanup'
 
+/** Reject a shutdown delay that cannot fit a positive Node timer. */
+export function validateProcessShutdownDelay(delay: number): void {
+  if (!Number.isFinite(delay) || delay <= 0 || delay > 2_147_483_647)
+    throw new RangeError('The shutdown delay must fit a positive Node timer delay')
+}
+
 /** Stop a process and wait for its exit. Escalate after the graceful shutdown deadline. */
 export function stopProcess(proc: ChildProcess, killAfterMs = 5000): Promise<void> {
-  if (!Number.isFinite(killAfterMs) || killAfterMs <= 0 || killAfterMs > 2_147_483_647)
-    return Promise.reject(new RangeError('The shutdown delay must fit a positive Node timer delay'))
+  try {
+    validateProcessShutdownDelay(killAfterMs)
+  }
+  catch (error) {
+    return Promise.reject(error)
+  }
   if (proc.exitCode !== null || proc.signalCode !== null || proc.pid === undefined)
     return Promise.resolve()
 

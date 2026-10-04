@@ -9,10 +9,11 @@ import { collectAcpToolText } from '../../acp/content'
 /**
  * The reader's name for each subagent type.
  *
- * Cursor spells one type three ways, and all three reach a row. Its stored record
- * writes `subagent_type`. Its protobuf oneof writes a camelCase KEY (`computerUse`).
- * Its `cursor/task` extension frame normalizes the same value to a snake_case WORD
- * (`computer_use`), which is why both spellings are listed.
+ * Cursor supplies three representations of the same type:
+ * - The stored record uses subagent_type.
+ * - The protobuf oneof uses a camelCase key, such as computerUse.
+ * - The cursor/task extension uses a snake_case value, such as computer_use.
+ * Keep both spellings because all three representations reach a row.
  */
 const AGENT_TYPES: Record<string, string> = {
   unspecified: 'General purpose',
@@ -41,8 +42,8 @@ function agentType(input: Record<string, unknown>): string {
   if (saved)
     return pickString(AGENT_TYPES, saved) || saved
   const type = pickObject(input, 'subagentType')
-  // Two custom shapes. The stored record writes the protobuf-JSON `{custom:{name}}`;
-  // the extension frame writes the runtime's own `{custom:"<word>"}`.
+  // The stored record uses the protobuf JSON shape {custom:{name}}.
+  // The extension frame uses the native shape {custom:"<word>"}.
   const custom = pickString(pickObject(type, 'custom'), 'name') || pickString(type, 'custom')
   if (custom)
     return pickString(AGENT_TYPES, custom) || custom
@@ -63,17 +64,18 @@ function duration(value: unknown): string | undefined {
 /**
  * Cursor's native result contains conversation steps that ACP omits.
  *
- * One whole agent payload: the request identifies the run the call asked for, and the
- * result reports the run the native record measured. `input` is the merged
- * arguments -- a caller that holds the `cursor/task` extension frame folds its
- * model, agent id and duration in first, so the row reports the run and not the
- * request.
+ * The request identifies the requested run. The result describes the run that the native record measured.
+ * input contains merged arguments. A cursor/task caller first merges these fields from its extension frame:
+ * - Model.
+ * - Agent ID.
+ * - Duration.
+ * The result row therefore describes the measured run. nativeReport supplies a fallback from the stored native tool record.
  */
 export function cursorAgentCall(
   facts: ACPToolFacts,
   input: Record<string, unknown>,
   native: Record<string, unknown> | null | undefined,
-  savedOutput?: string,
+  nativeReport?: string,
 ): ToolCallSpecVariant<'agent'> {
   const tool = facts.tool
   const raw = pickObject(tool, ACP_SUPPLEMENT.RawOutput)
@@ -81,8 +83,7 @@ export function cursorAgentCall(
   const nativeError = pickObject(pickObject(native, 'output'), 'error')
   const description = pickString(input, 'description') || pickString(tool, 'title').replace(/^Task: /, '')
   const metadata: AgentRun['metadata'] = []
-  // The stored native record states these; a row whose record never arrived takes
-  // them from the `cursor/task` extension frame, which the caller folds into input.
+  // Use the stored native record first. Without that record, use the cursor/task fields that the caller merged into input.
   const agentId = pickString(success, 'agentId') || pickString(input, 'agentId')
   const modelName = pickString(input, 'model')
   const transcript = pickString(success, 'transcriptPath')
@@ -104,13 +105,12 @@ export function cursorAgentCall(
     : []
   const suffix = pickString(success, 'resultSuffix')
   const error = pickString(nativeError, 'error') || pickString(raw, 'error')
-  // `facts.finished`, never `acpToolFinished(tool)`: the frame alone cannot see the
-  // turn's own outcome, so a retained subagent row read as still running and drew
-  // the prompt with the agent's report dropped.
+  // Use facts.finished because the frame alone cannot determine the turn's outcome.
+  // A frame-only check can retain a running prompt after completion and omit the report.
   const finished = facts.finished
   const report = [...reports, suffix].filter(Boolean).join('\n\n')
   const originalOutput = collectAcpToolText(tool, { rawObjects: false })
-  const output = finished ? error || report || savedOutput || originalOutput : originalOutput
+  const output = finished ? error || report || nativeReport || originalOutput : originalOutput
   const source: AgentRun = {
     description,
     agentId,

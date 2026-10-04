@@ -12,25 +12,23 @@ export function messageSpanKey(identity: MessageSpanIdentity): string {
 }
 
 /**
- * The role one message plays in its tool span.
+ * The role of one message in its tool span.
  *
- * `request` is the side that asks -- the tool_use, the start event, the item
- * still running. The word is REQUEST rather than the arrival-order "opener"
- * because routing is by ROLE: a result that arrives first still files as the
- * result, and "opener" stated an order the index never used.
+ * `request` supplies the tool request. `result` supplies its result.
+ * `none` explicitly supplies neither side, such as a hidden progress record.
+ * `other` leaves the role unknown, so the index uses its arrival-order fallback.
+ * A known result keeps its side even when it arrives before the request.
  */
-export type ToolSpanRole = 'request' | 'result' | 'other'
+export type ToolSpanRole = 'request' | 'result' | 'none' | 'other'
 
-/** The two sides a span PAIRS: the request that asks and the result that answers. */
-export type ToolSpanSide = Exclude<ToolSpanRole, 'other'>
+/** The two sides that a span can pair. */
+export type ToolSpanSide = Extract<ToolSpanRole, 'request' | 'result'>
 
 /**
- * The revision of ONE message: its identity, its sequence, and the two counters
- * that can move while the identity stays put -- the store's in-place content
- * version and the supplemental revision a late supplement bumps.
- *
- * Named for the MESSAGE rather than the span: one span holds two of these, one
- * per side, and a row's caches key on the exact set it depends on.
+ * The revision of one message.
+ * Its ID and sequence identify the row. Two counters can change while that identity remains the same.
+ * The content version tracks an in-place body change. The supplemental revision tracks a later supplement.
+ * One span holds a revision for each side. A row cache uses the exact revisions that the row reads.
  */
 export interface MessageRevision {
   id: string

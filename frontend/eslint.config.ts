@@ -195,7 +195,7 @@ export default antfu({
   // LAYER 1 DRAWS NOTHING. A provider plugin reads one agent's wire format and
   // returns the provider-neutral model; `../results/` is what turns that model
   // into markup. A plugin that renders puts one provider's shapes behind a
-  // module the other nine also reach, which is the drift this pipeline exists
+  // module the other providers also reach, which is the drift this pipeline exists
   // to prevent.
   //
   // `layer-imports` already stops a plugin from importing `../results/`, and
@@ -206,7 +206,7 @@ export default antfu({
   //
   // `ignores` carries the whole allowlist, and every path in it is pinned by
   // `src/test-support/chatLayerStructure.test.ts`:
-  //   - the four CONTROL SURFACES, which answer a provider's own permission or
+  //   - the three CONTROL SURFACES, which answer a provider's own permission or
   //     plan prompt. Their markup is provider-specific by nature, so it lives
   //     beside the provider that raises it rather than in a shared renderer
   //     that would have to branch on the provider to draw it.
@@ -220,7 +220,6 @@ export default antfu({
     'src/components/chat/providers/**/*.test.tsx',
     'src/components/chat/providers/codex/CodexControlActions.tsx',
     'src/components/chat/providers/cursor/CursorControlActions.tsx',
-    'src/components/chat/providers/pi/PiControlActions.tsx',
     'src/components/chat/providers/pi/PiPlanApprovalActions.tsx',
     'src/components/chat/providers/acp/testUtils.tsx',
     'src/components/chat/providers/zcode/testUtils.tsx',

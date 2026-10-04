@@ -35,19 +35,6 @@ func (b *FamilyBase) SendRawInput(raw []byte) error {
 	return b.Base.SendRawInput(raw)
 }
 
-// SupportsSteering always reports true, and overrides the Base answer.
-//
-// This family steers with a plain second session/prompt on the SAME session, which
-// is the Agent Client Protocol's own mechanism and not one provider's extension --
-// so it needs no advertised steer method. The Base implementation reads
-// b.steerMethod, which advertisedACPSteerMethod leaves empty for every provider
-// except Goose and Reasonix.
-//
-// It sits on the FAMILY, not on Agent. Kilo runs the same daemon and the
-// same session methods, and while this answer lived one type lower its Steer control
-// was dead with nothing to say why.
-func (b *FamilyBase) SupportsSteering() bool { return true }
-
 // SteerInput sends the steer as a second prompt on the running session.
 //
 // A refusal reaches the READER, not the log alone. The steer is something the reader
@@ -62,13 +49,19 @@ func (b *FamilyBase) SteerInput(content string, attachments []*leapmuxv1.Attachm
 		return agent.ErrNoActiveTurn
 	}
 	return b.SendPromptDetached(content, attachments, func(_ json.RawMessage, err error) {
-		if err == nil || b.IsStopped() {
-			return
-		}
-		slog.Error("acp steer failed", "agent_id", b.AgentID(), "provider", b.ProviderName(), "error", err)
-		b.Sink().PersistLeapMuxNotification(map[string]interface{}{
-			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
-			contracts.NotificationFieldError: fmt.Sprintf("steer failed: %v", err),
-		})
+		b.ReportSteerFailure(err)
+	})
+}
+
+// ReportSteerFailure tells the reader when a detached ACP prompt refused their steer.
+// Kilo also reads this result after its own detached turn completes.
+func (b *FamilyBase) ReportSteerFailure(err error) {
+	if err == nil || b.IsStopped() {
+		return
+	}
+	slog.Error("acp steer failed", "agent_id", b.AgentID(), "provider", b.ProviderName(), "error", err)
+	b.Sink().PersistLeapMuxNotification(map[string]interface{}{
+		contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+		contracts.NotificationFieldError: fmt.Sprintf("steer failed: %v", err),
 	})
 }

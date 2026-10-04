@@ -310,6 +310,11 @@ type OutputHandler struct {
 	// reads, and a wiring that sets one edge and not the other is the exact
 	// fault this callback exists to prevent.
 	turnState func(agentID string, state agent.TurnState)
+	// requeueDroppedInput queues input that a provider dropped as the reader's
+	// next message, and reports whether this call added it. Set via
+	// SetRequeueDroppedInputFunc in service.New. nil in a test that builds an
+	// OutputHandler directly, where RequeueDroppedInput then refuses.
+	requeueDroppedInput func(agentID, dropID, content string, attachments []*leapmuxv1.Attachment) (bool, error)
 
 	// turnPublisher holds, for each root agent id, the sink whose turn flag
 	// counts. A launch adopts one; a publish from any other sink comes from a
@@ -417,6 +422,12 @@ func (h *OutputHandler) SetAgentStartingFunc(fn func(agentID string) bool) {
 // provider publishes. Call it before any agent output is processed.
 func (h *OutputHandler) SetTurnStateFunc(fn func(agentID string, state agent.TurnState)) {
 	h.turnState = fn
+}
+
+// SetRequeueDroppedInputFunc wires the input queue that takes back the input a
+// provider dropped. Call it before any agent output is processed.
+func (h *OutputHandler) SetRequeueDroppedInputFunc(fn func(agentID, dropID, content string, attachments []*leapmuxv1.Attachment) (bool, error)) {
+	h.requeueDroppedInput = fn
 }
 
 // CleanupAgent removes all per-agent state from the handler's maps.
@@ -808,6 +819,8 @@ type agentOutputSink struct {
 	catalogMu        sync.Mutex
 	messageSessionMu sync.RWMutex
 	messageSessionID string
+	// turnEndMu keeps message publication before its completion event during concurrent replay.
+	turnEndMu sync.Mutex
 }
 
 // --- Provider-service facets ---
@@ -828,57 +841,53 @@ func (s *agentOutputSink) PersistMessage(source leapmuxv1.MessageSource, content
 	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, source, s.scopeMessage(content), span, s.tracker)
 }
 
-// PersistTurnEnd persists the universal turn-end divider envelope and
-// fires the git-status auto-broadcast. Each provider's final
-// envelope (Claude type:"result", Codex turn/completed, ACP prompt
-// response, Pi agent_end) routes here, so the side effect is explicit
-// at the call site. Runs BroadcastGitStatus on a goroutine so the
-// agent's stdout-read loop is not blocked by the git subprocesses plus
-// the DB lookup.
+// PersistTurnEnd stores the provider's turn-end envelope and publishes completion.
+// Provider completion handlers call this method explicitly.
+// Examples include:
+//   - Claude type:"result".
+//   - Codex turn/completed.
+//   - The ACP prompt response.
+//   - Pi agent_end.
+//
+// A native key permits only one completion event in its exact agent and session.
+// BroadcastGitStatus runs in a goroutine, so database reads and git commands do not block the provider's stdout reader.
 func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	s.turnEndMu.Lock()
+	defer s.turnEndMu.Unlock()
 	content = s.scopeMessage(content)
-	// Exactly ONE divider closes a subagent transcript, in EITHER arrival order.
-	//
-	// The two events are independent -- Claude's task_notification can reach the
-	// registry before its forwarded result reaches here -- so whichever arrives
-	// first CLAIMS the close, and the loser stands down. This side draws the
-	// richer divider (the duration, and on failure the error label and detail),
-	// so when it wins the transcript keeps that; when the registry won, its
-	// neutral divider already carries the finished status and the transcript
-	// still closes honestly.
-	//
-	// Claimed only for a turn end that actually ENDS the subagent, not every
-	// turn: a Codex collab child draws a turn-end divider at the end of every
-	// turn and then accepts another.
-	//
-	// Child sinks only (agentID != rootAgentID). A root turn end is not a
-	// subagent boundary and must not claim anything.
-	//
-	// Only the PERSIST is suppressed. The turn genuinely ended, so the turn-end
-	// event and the git-status refresh below still owe the client their work:
-	// the event drives the completion sound and the off-screen tab's notification
-	// dot, and the refresh re-reads a working tree the subagent just edited.
-	// Returning here would drop both, nondeterministically, on whichever arrival
-	// order won.
-	endsSubagent := s.agentID != s.rootAgentID &&
-		s.plugin.EndsSubagentTranscript(content.Original)
-	duplicateDivider := endsSubagent && !s.h.claimSubagentTranscriptClose(s.h.bgTaskCtx(), s.agentID)
-	if !duplicateDivider {
-		if err := s.h.persistAndBroadcast(s.agentID, s.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span, s.tracker); err != nil {
-			return err
+	if content.IdempotencyKey != "" {
+		stored, err := s.h.queries.HasAgentTurnEnd(bgCtx(), db.HasAgentTurnEndParams{
+			AgentID: s.agentID, AgentSessionID: content.AgentSessionID, IdempotencyKey: content.IdempotencyKey,
+		})
+		if err != nil {
+			return fmt.Errorf("read native turn completion: %w", err)
+		}
+		if stored {
+			return nil
+		}
+	}
+	// Native completion messages retain their complete duration and error details.
+	// Registry status describes the child lifecycle without replacing provider output.
+	if err := s.h.persistAndBroadcast(s.agentID, s.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span, s.tracker); err != nil {
+		return err
+	}
+	if content.IdempotencyKey != "" {
+		rows, err := s.h.queries.ClaimAgentTurnEnd(bgCtx(), db.ClaimAgentTurnEndParams{
+			AgentID: s.agentID, AgentSessionID: content.AgentSessionID, IdempotencyKey: content.IdempotencyKey,
+		})
+		if err != nil {
+			return fmt.Errorf("claim native turn completion: %w", err)
+		}
+		if rows == 0 {
+			return nil
 		}
 	}
 	provider := s.plugin
 	count, ok := provider.TurnEndToolUses(agent.ResolveMessageContent(provider, content))
-	// Hand the count to the activity latch first. The latch spends it on the
-	// busy->idle EDGE, not here, because this turn can end and still leave a
-	// subagent running -- only the edge knows which turn end actually settled
-	// the agent.
-	//
-	// That makes the order a requirement on every provider: clear the turn flag
-	// AFTER PersistTurnEnd returns, never before. A clear that lands first
-	// settles the agent with no count, and the client then rings the completion
-	// sound for a turn that used no tool.
+	// Record the tool count before the provider clears its turn flag.
+	// The activity latch uses it on the busy-to-idle transition. A running child can postpone that transition after this turn ends.
+	// Every provider must clear its turn flag after PersistTurnEnd returns, never before.
+	// An earlier clear settles the agent without its count and causes a completion sound for a turn that used no tool.
 	s.h.noteTurnEnded(s.agentID, s.rootAgentID, count, ok)
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
 		AgentId: s.agentID,
@@ -922,6 +931,34 @@ func (s *agentOutputSink) SetTurnState(state agent.TurnState, seq uint64) {
 // while it waited for the provider to end the turn.
 func (s *agentOutputSink) ReportInterruptIgnored() {
 	s.h.NoteAgentInterruptIgnored(s.agentID, s.rootAgentID)
+}
+
+// RequeueDroppedInput queues the input as the reader's next message. It writes
+// the row that states why the message appears again only when this call added
+// the item, so a repeat of one drop writes nothing twice.
+//
+// The row and the queued message are written independently. The queue can
+// deliver the message before this writes the row, so the row's words read
+// correctly on either side of the message.
+//
+// A subagent has no input queue of its own, so a child sink refuses.
+func (s *agentOutputSink) RequeueDroppedInput(dropID, content string, attachments []*leapmuxv1.Attachment) error {
+	if s.root != nil {
+		return fmt.Errorf("requeue dropped input: subagent %s has no input queue", s.agentID)
+	}
+	if s.h.requeueDroppedInput == nil {
+		return errors.New("requeue dropped input: no input queue is wired")
+	}
+	added, err := s.h.requeueDroppedInput(s.agentID, dropID, content, attachments)
+	if err != nil {
+		return err
+	}
+	if added {
+		s.PersistLeapMuxNotification(map[string]interface{}{
+			contracts.NotificationFieldType: contracts.NotificationTypeInputRequeued,
+		})
+	}
+	return nil
 }
 
 // turnPublisher identifies the PROCESS behind this sink. A child sink stands for
@@ -1061,6 +1098,10 @@ func (s *agentOutputSink) buildStatusChange(
 	status leapmuxv1.AgentStatus,
 	sessionID string,
 ) *leapmuxv1.AgentStatusChange {
+	// Late settings and handshake replies cannot make a closed tab active.
+	if dbAgent.ClosedAt.Valid && status == leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE {
+		status = leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE
+	}
 	supportsSteering := false
 	if s.h.supportsSteering != nil {
 		supportsSteering = s.h.supportsSteering(s.agentID)
@@ -1544,6 +1585,10 @@ func (s *agentOutputSink) persistCatalogAndBuildStatus(sessionID string) *leapmu
 			"agent_id", s.agentID, "error", err)
 		return nil
 	}
+	// A late provider handshake cannot revive a tab that the Worker already closed.
+	if existingAgent.ClosedAt.Valid {
+		return nil
+	}
 
 	sc := s.buildStatusChange(existingAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, sessionID)
 
@@ -1884,6 +1929,7 @@ func (h *OutputHandler) prepareMessage(agentID string, agentProvider leapmuxv1.A
 		ID:                             msgID,
 		AgentID:                        agentID,
 		AgentSessionID:                 content.AgentSessionID,
+		IdempotencyKey:                 content.IdempotencyKey,
 		Source:                         source,
 		Content:                        compressed,
 		ContentCompression:             compressionType,
@@ -1935,6 +1981,9 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 	}
 	write := h.prepareMessage(agentID, agentProvider, source, content, span, tracker)
 	seq, err := createMessageRow(bgCtx(), h.queries, write.params)
+	if errors.Is(err, sql.ErrNoRows) && content.IdempotencyKey != "" {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -1974,6 +2023,19 @@ func (h *OutputHandler) persistMessageWithTodoEvent(
 	if event.Kind == todoevents.KindUpdate {
 		mutation, ok := reduceTodoUpdate(cache.Rows, event)
 		if !ok {
+			if content.IdempotencyKey != "" {
+				stored, err := h.queries.HasMessageByIdempotencyKey(ctx, db.HasMessageByIdempotencyKeyParams{
+					AgentID: agentID, AgentSessionID: content.AgentSessionID, IdempotencyKey: content.IdempotencyKey,
+				})
+				if err != nil {
+					cache.Mu.Unlock()
+					return fmt.Errorf("read immutable message key: %w", err)
+				}
+				if stored {
+					cache.Mu.Unlock()
+					return nil
+				}
+			}
 			cache.Mu.Unlock()
 			return fmt.Errorf("cannot persist TaskUpdate snapshot for unknown task %q", event.ID)
 		}
@@ -1988,6 +2050,10 @@ func (h *OutputHandler) persistMessageWithTodoEvent(
 
 	write := h.prepareMessage(agentID, agentProvider, source, content, span, tracker)
 	seq, err := createMessageRow(ctx, h.queries, write.params)
+	if errors.Is(err, sql.ErrNoRows) && content.IdempotencyKey != "" {
+		cache.Mu.Unlock()
+		return nil
+	}
 	if err != nil {
 		cache.Mu.Unlock()
 		return err
@@ -2438,6 +2504,9 @@ func (h *OutputHandler) todoOps() registryOps[cachedTodo] {
 		setKey: func(r *cachedTodo, key string) { r.rowKey = key },
 		isFinished: func(r cachedTodo) bool {
 			return r.item.Status.IsFinished()
+		},
+		isWorking: func(r cachedTodo) bool {
+			return !r.item.Status.IsFinished()
 		},
 		deleteByKey: func(ctx context.Context, q *db.Queries, ownerID, key string) error {
 			_, err := q.DeleteAgentTodoByRowKey(ctx, db.DeleteAgentTodoByRowKeyParams{

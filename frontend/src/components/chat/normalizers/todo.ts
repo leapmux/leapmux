@@ -3,6 +3,8 @@ import { isObject } from '~/lib/jsonPick'
 import { todoRowKey } from '~/models/todo'
 
 export function normalizeTodoStatus(raw: unknown): TodoItem['status'] {
+  if (raw === 'blocked')
+    return 'blocked'
   if (raw === 'completed')
     return 'completed'
   if (raw === 'in_progress' || raw === 'inProgress')

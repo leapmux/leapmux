@@ -135,6 +135,7 @@ func (a *Agent) runUnderNativeSession(work func()) {
 // The caller holds sessionMu for writing, so no input and no setting change can reach
 // the session while this runs.
 func (a *Agent) forgetNativeSessionState(nextSessionID string) {
+	a.clearNativeCompaction()
 	a.setNativeTurnActive(false)
 	a.outputMu.Lock()
 	// Store and drop what the OUTGOING session produced before the identity moves, so

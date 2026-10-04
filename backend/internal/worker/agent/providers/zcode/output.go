@@ -30,8 +30,8 @@ func handleZCodeOutput(a *Agent, line *providerkit.ParsedLine) {
 			return
 		}
 		a.dispatchZCodeEvent(event)
-	case NotifyStateUpdated:
-		a.handleZCodeStateUpdated(line.Params)
+	case contracts.ZCodeMethodStateUpdated:
+		a.handleZCodeStateUpdated(line.Params, line.Raw)
 	case "":
 		// An id with no method and no pending request: a reply nobody waited for. It
 		// happens when a request timed out and its answer arrived afterwards.
@@ -193,25 +193,27 @@ func (a *Agent) persistZCodeNotification(event zcodeEventEnvelope) {
 
 // --- turn lifecycle ---
 
-// PublishTurnActive republishes the Worker-visible turn state from turnActive,
-// the single source. Call it after EVERY critical section that writes that
-// field.
+// PublishTurnActive republishes the Worker-visible prompt and compaction state.
+// Call it after every critical section that changes either state.
 //
 // It re-reads rather than taking a value, so a caller cannot publish something
 // the field does not say, and a missing call is the only way the two can drift.
 // Never called with a.Mu held: the sink broadcasts, and a broadcast can block on
 // a slow transport.
 //
-// A BACKGROUND turn counts as active here, deliberately. It persists no divider
+// ZCode has no input-steering method, so neither a prompt nor a compaction is
+// steerable. A BACKGROUND turn counts as active here, deliberately. It persists no divider
 // and closes none of the user's spans, but the agent IS processing, and
 // turnActive is already what Interrupt and Stop read to decide the session is
 // live.
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
-	active := a.turnActive
+	state := agent.TurnState{
+		Active: a.turnActive || a.compactionSessionID != "",
+	}
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
-	return providerkit.PublishSteerableTurnActiveTo(a.sink, active, seq)
+	return providerkit.PublishTurnStateTo(a.sink, state, seq)
 }
 
 // zcodeTurnStarted is the turn.started payload.

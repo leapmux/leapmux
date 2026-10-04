@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/leapmux/leapmux/internal/util/optionmap"
+
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
@@ -97,9 +99,9 @@ func (claudeProvider) Classify(raw json.RawMessage) agent.NotificationClassifica
 	switch env.Subtype {
 	case "status":
 		return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "claude:system:status"}
-	case "api_retry":
-		return agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "claude:system:api_retry"}
-	case "compact_boundary", "microcompact_boundary":
+	case contracts.ClaudeSystemSubtypeApiRetry:
+		return agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "claude:system:" + contracts.ClaudeSystemSubtypeApiRetry}
+	case contracts.ClaudeSystemSubtypeCompactBoundary, contracts.ClaudeSystemSubtypeMicrocompactBoundary:
 		return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "claude:system:" + env.Subtype}
 	default:
 		return agent.NotificationClassification{}
@@ -160,22 +162,6 @@ func (claudeProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) str
 // plan-approval option settlement runs for it.
 func (claudeProvider) PlanApprovalOptions(string) map[string]string { return nil }
 
-// EndsSubagentTranscript recognizes Claude's final `{"type":"result",...}`.
-// With --forward-subagent-text a subagent's own result is forwarded into the
-// child transcript, and a Claude subagent gets exactly one, so a subagent that
-// runs to completion already closes itself and needs no neutral divider
-// stacked on top. A subagent stopped mid-flight forwards no result, so its
-// transcript does not end here and still gets the neutral divider.
-func (claudeProvider) EndsSubagentTranscript(content []byte) bool {
-	var env struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(content, &env); err != nil {
-		return false
-	}
-	return env.Type == claudeMsgTypeResult
-}
-
 // SyntheticInterruptNotice: Claude's interrupt surfaces in its own transcript, so no synthetic
 // notice is persisted for a forwarded interrupt frame.
 func (claudeProvider) SyntheticInterruptNotice() string { return "" }
@@ -203,4 +189,15 @@ func (claudeProvider) PermissionModeFromRawInput(content string) (string, bool) 
 		return "", false
 	}
 	return msg.Request.Mode, true
+}
+
+// ChildCapabilities.AcceptsInterrupt is true: a subagent's tab can stop its running turn,
+// through the stop_task control_request. Claude exposes no wire path that
+// sends input to a subagent, so ChildCapabilities.AcceptsMessages keeps its default false
+// and this provider implements ChildInterrupter alone. See InterruptChild in
+// subagent.go.
+
+// ChildCapabilities states the native child operations that this provider supports.
+func (claudeProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
+	return agent.ChildCapabilities{AcceptsMessages: false, AcceptsInterrupt: true}
 }

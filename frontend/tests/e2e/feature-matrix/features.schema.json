@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Coding-agent feature definitions",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "features"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "features": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/feature" }
+    }
+  },
+  "$defs": {
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "description", "showInMatrix"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "label": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "showInMatrix": { "type": "boolean" }
+      }
+    }
+  }
+}

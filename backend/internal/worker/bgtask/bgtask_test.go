@@ -25,6 +25,7 @@ func TestStatusOrdinalsMatchTheProtoEnum(t *testing.T) {
 		StatusUnspecified: leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_UNSPECIFIED,
 		StatusPending:     leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PENDING,
 		StatusRunning:     leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING,
+		StatusPaused:      leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PAUSED,
 		StatusCompleted:   leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_COMPLETED,
 		StatusFailed:      leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_FAILED,
 		StatusStopped:     leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_STOPPED,
@@ -49,14 +50,14 @@ func TestKindOrdinalsMatchTheProtoEnum(t *testing.T) {
 	}
 }
 
-// The queries split active from final with `status >= min_final_status` rather
+// The queries split open from final with `status >= min_final_status` rather
 // than by listing the four final words, which holds only while the final
 // statuses occupy the TOP of the ordinal range. Nothing in proto enforces that,
 // so this is the check that does -- over every value the enum declares, not
 // only the ones this package names.
 //
 // A new status added below the boundary but meant to be final (or above it and
-// meant to be active) fails here. The schema comment on
+// meant to stay open) fails here. The schema comment on
 // agent_background_tasks.status points at this test by name.
 func TestBackgroundTaskFinalStatusesAreTheTopOfTheRange(t *testing.T) {
 	t.Parallel()
@@ -69,7 +70,16 @@ func TestBackgroundTaskFinalStatusesAreTheTopOfTheRange(t *testing.T) {
 	// The boundary itself is final, and the value below it is not, so the two
 	// pools are non-empty and the comparison is the right strictness.
 	assert.True(t, MinFinalStatus.IsFinished(), "the boundary value must itself be final")
-	assert.False(t, (MinFinalStatus - 1).IsFinished(), "the value below the boundary must be active")
+	assert.False(t, (MinFinalStatus - 1).IsFinished(), "the value below the boundary must stay open")
+}
+
+func TestBackgroundTaskWorkingStatuses(t *testing.T) {
+	t.Parallel()
+	for _, status := range []Status{StatusUnspecified, StatusPending, StatusRunning, StatusPaused, StatusCompleted, StatusFailed, StatusStopped, StatusInterrupted} {
+		want := status == StatusPending || status == StatusRunning
+		assert.Equal(t, want, status.IsWorking(), "status %s", status)
+	}
+	assert.False(t, StatusPaused.IsFinished(), "the paused row remains resumable")
 }
 
 // The registry seeds and caps one pool per kind, and the seed query filters
@@ -82,15 +92,15 @@ func TestKindBucketsAreTheKindOrdinals(t *testing.T) {
 	assert.NotContains(t, KindBuckets(), int64(0))
 }
 
-// StatusWire is the subagent_ended payload vocabulary, which the browser's
-// notificationRenderers narrows. These five words are a cross-language
-// agreement, so they are pinned literally rather than derived.
+// StatusWire supplies the child-report status vocabulary that the browser reads.
+// These literal expectations verify the cross-language agreement.
 func TestStatusWireNamesTheTokensTheBrowserReads(t *testing.T) {
 	t.Parallel()
 
 	for status, want := range map[Status]string{
 		StatusPending:     "pending",
 		StatusRunning:     "running",
+		StatusPaused:      "paused",
 		StatusCompleted:   "completed",
 		StatusFailed:      "failed",
 		StatusStopped:     "stopped",
@@ -100,8 +110,7 @@ func TestStatusWireNamesTheTokensTheBrowserReads(t *testing.T) {
 	}
 }
 
-// An unset status words no divider at all. "pending" would claim the row that
-// just closed is still running.
+// An unspecified report status must not claim a pending child.
 func TestStatusWireLeavesUnspecifiedBlank(t *testing.T) {
 	t.Parallel()
 

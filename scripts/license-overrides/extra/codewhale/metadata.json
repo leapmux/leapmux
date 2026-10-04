@@ -1,0 +1,6 @@
+{
+  "name": "Codewhale brand mark",
+  "license": "MIT",
+  "url": "https://github.com/Hmbown/CodeWhale",
+  "description": "The Codewhale provider icon (`icons/agents/codewhale.svg` and the\n`CodewhaleIcon` SVG component in `frontend/src/components/common/AgentProviderIcon.tsx`)\nis the gradient mark from the Codewhale repository (`brand/mark-gradient.svg`)."
+}

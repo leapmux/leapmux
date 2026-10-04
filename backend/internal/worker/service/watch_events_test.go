@@ -6,15 +6,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -1119,7 +1121,7 @@ func TestReplayActivityIsTheWATCHEDAgentsOwnAnswer(t *testing.T) {
 	svc.Output.processRunning = func(string) bool { return true }
 	settles := holdSettles(t, svc.Output)
 	sink := svc.Output.NewSink("root-own", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
-	childID, err := sink.EnsureChildAgent("spawn-own", "row-own", "finished child")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-own", ProviderChildKey: "row-own", Title: "finished child"})
 	require.NoError(t, err)
 	// This child is DONE while a sibling keeps running, so the two ids disagree:
 	// the child is idle and the root still rolls the sibling up.
@@ -1176,7 +1178,7 @@ func TestWatchChildAgentReplaysWithoutProcess(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	rootSink := svc.Output.NewSink("root-2", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
-	childID, err := rootSink.EnsureChildAgent("spawn-span-watch", "row-key-watch", "child task")
+	childID, err := rootSink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span-watch", ProviderChildKey: "row-key-watch", Title: "child task"})
 	require.NoError(t, err)
 	require.NotEmpty(t, childID)
 	// The root is NOT registered with the agent manager, so agentProcessRunning

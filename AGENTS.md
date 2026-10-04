@@ -1,6 +1,6 @@
 # LeapMux
 
-Multi-agent coding assistant platform for ten agent providers.
+Multi-agent coding assistant platform for twenty-nine agent providers.
 
 - Backend: Go
 - Frontend: SolidJS with vanilla-extract CSS (`.css.ts` files)
@@ -109,8 +109,8 @@ the wrong line. Use `--` and ASCII punctuation, never `—` or smart quotes.
 - `task lint` — all linters (`task lint-backend` / `task lint-frontend` /
   `task lint-desktop`)
 - `task test` — all tests (`task test-backend` / `task test-frontend`)
-- `task test-e2e -- <files>` — only the affected E2E specs (a full run takes
-  about half an hour)
+- `task test-e2e -- <files>` — run the affected E2E specs in isolated shards.
+  Use `--workers=1` for serial execution.
 
 Lint Rust/desktop with `task lint-desktop`, never `cargo clippy` directly: the
 task first builds the Go sidecar that Tauri's bundle resources point at
@@ -157,11 +157,22 @@ through to a default turned the drift into a plausible wrong value.
 
 Each provider is a Go package under `backend/internal/worker/agent/providers/`,
 as each frontend plugin is a folder under `frontend/src/components/chat/providers/`.
-Five providers read their own native protocol: `claude`, `codex`, `copilot`,
-`pi`, `zcode`. Five speak the Agent Client Protocol on the shared base in
-`providers/acp` (`acp.Start`): `opencode`, `cursor`, `kilo`, `goose`,
-`reasonix`. Copilot is NOT ACP — `providers/copilot/connection_test.go` and
-`session_lifecycle_test.go` assert its arguments hold no `--acp`.
+These providers read their own native protocol: `claude`, `codex`, `copilot`,
+`pi`, `zcode`, `codewhale`, `kimi`, `mimo`, `ohmypi`, `amp`, `cline`. These speak the
+Agent Client Protocol on the shared base in `providers/acp` (`acp.Start`):
+`opencode`, `cursor`, `kilo`, `goose`, `reasonix`, `qwen`, `grok`, `kiro`.
+Copilot is NOT ACP — `providers/copilot/connection_test.go` and
+`session_lifecycle_test.go` assert its arguments hold no `--acp`. MiMo Code is
+a fork of OpenCode and is NOT ACP either: `mimo` drives MiMo's own HTTP server,
+because MiMo's ACP adapter mixes a subagent's output into its parent's stream
+and hides errors that only the event stream states. Oh My Pi (`ohmypi`) began
+as a fork of Pi, but its RPC protocol differs from Pi's in its events, its
+commands and its session files, so it shares no code with `pi`. Amp (`amp`)
+streams JSON that resembles Claude Code's stream but is a protocol of its own,
+so it shares no code with `claude`. Cline (`cline`) also offers an ACP mode, but
+`cline` drives Cline's hub WebSocket protocol instead: only the hub carries
+questions, plan approval, steering, the session list, images and reasoning
+effort.
 
 Anything depending on **one provider's wire format or message shapes** MUST live
 in that provider's package, never in shared code (package `agent`,
@@ -179,18 +190,20 @@ and becomes a second source of truth.
   cannot import a provider, and only `providers/**` can import
   `providers/internal/*`. `providers/imports_test.go` states the only edges
   between providers: the ACP family imports `acp`, Kilo builds on `opencode`,
-  and OpenCode, Kilo and ZCode read `opencode/opencodestore`.
+  and OpenCode, Kilo, ZCode and MiMo Code read `opencode/opencodestore`.
   `TestShippedBinaryLinksNoTestSupport` (`cmd/leapmux`) keeps the test-support
   packages (`agenttest`, `acptest`, `claudetest`, …) out of the shipped binary.
 - **Test a provider in its own package.** The shared suites live in
   `agent/agenttest` (with `acp/acptest` and `opencode/opencodetest`), and
   `providers/conformance_coverage_test.go` states which suites each provider
   package must run.
-- **Frontend:** add a method to the `Provider` plugin interface in
-  `frontend/src/components/chat/providers/registry.ts` (e.g. `previewText`,
-  beside `extractQuotableText`) and implement it per plugin. A genuinely neutral
-  shape (`{content}`, `{controlResponse}`) may share a `default*` helper;
-  Anthropic/Codex/Pi/ACP parsing stays in its plugin.
+- **Frontend:** add a member to the capability of `ProviderPlugin` that owns it
+  (`frontend/src/components/chat/providers/capabilities.ts`: `transcript`,
+  `controls`, `session` or `configuration`; e.g. `configuration.effortGroupKey`
+  beside `triggerModeGroupKey`) and implement it per plugin. `registry.ts` only
+  registers and looks up plugins. A genuinely neutral shape (`{content}`,
+  `{controlResponse}`) may share a `default*` helper; Anthropic/Codex/Pi/ACP
+  parsing stays in its plugin.
 
 ### Backend provider package roles
 
@@ -256,21 +269,23 @@ A change that crosses a layer is almost always misplaced. Each layer's
    compile error. Layer 3 never imports `../providers/`, parses provider bytes,
    or branches on `AgentProvider`, a tool name or a wire token.
 
-Only four control surfaces in `providers/` draw: `codex/CodexControlActions.tsx`,
-`cursor/CursorControlActions.tsx`, `pi/PiControlActions.tsx`,
-`pi/PiPlanApprovalActions.tsx`.
+Only three control surfaces in `providers/` draw: `codex/CodexControlActions.tsx`,
+`cursor/CursorControlActions.tsx`, `pi/PiPlanApprovalActions.tsx`.
 
 Enforcement, from `eslint/chatPipelinePlugin.ts`:
 
 - `layer-imports` — every import form, both directions.
 - `no-provider-decision` — a provider comparison, switch or keyed lookup, a
-  helper that decides for you, or a bare wire token as a string literal.
+  helper that decides for you, or a bare wire token as a string literal. The
+  wire tokens come from each contract table that states `frameKind` in
+  `PROVIDER_PROTOCOLS` (`scripts/generate-contracts.mjs`), so a frame kind that
+  a contract gains joins the lint with no edit to the rule.
 - `no-forbidden-assertion`.
 - `plugin-registration-only` — a `plugin.ts` holds the registration and imports
   each hook.
 
 A `no-restricted-syntax` block in `eslint.config.ts` bans JSX under `providers/`
-outside those four surfaces and test files.
+outside those three surfaces and test files.
 `src/test-support/chatLayerStructure.test.ts` guards the structure the rules
 assume; `src/test-support/restrictedSyntaxKeepsBaseRules.test.ts` runs the real
 linter over probe files so a scoped config block cannot silently un-guard a
@@ -332,12 +347,20 @@ layer 1 is where raw shapes are known.
 
 ### E2E tests
 
-One `leapmux dev` process and one mock model server serve the whole run; one
-browser context and tab serve every spec; no test talks to a real model. Hence
-`workers: 1` and `fullyParallel: false`, and about half an hour per full run —
-prefer `task test-e2e -- <files>`. **CI does not run E2E**: neither `task test`
-nor `task test-no-docker` reaches `test-e2e`, so run it locally before claiming
-an E2E change works.
+The launcher starts isolated Playwright processes for the selected files.
+The default count is the smaller of four and the available CPU capacity.
+Use `task test-e2e -- --workers=N <files>` to select the count.
+Use `--workers=1` for serial execution.
+
+Each process owns one `leapmux dev` process and one mock model server.
+Each process owns one browser context and a shared tab also.
+Thus each process retains `workers: 1` and `fullyParallel: false`.
+Every test uses the mock model server.
+The launcher builds once and gives each process a private copy of that binary.
+
+Prefer `task test-e2e -- <files>` during development.
+**CI does not run E2E**: neither `task test` nor `task test-no-docker` reaches `test-e2e`.
+Run E2E tests locally before claiming that an E2E change works.
 
 - **Never start your own hub.** `startSuiteServer` (`helpers/suiteServer.ts`)
   owns it; the `leapmuxServer` fixture gives its URL, tokens and worker id. Take
@@ -357,8 +380,9 @@ an E2E change works.
 - **Isolate explicitly** in `ISOLATED_CONTEXT_SPECS`. `isMobile`, `hasTouch` and
   a non-default `deviceScaleFactor` isolate automatically — they belong to a
   CONTEXT, not a page.
-- **Script the model; never ask it.** The mock answers three model protocols
-  plus Cursor's Connect stream. The `modelScript` fixture states each turn:
+- **Script the model; never ask it.** The mock answers three model APIs and
+  the services of Cursor, Kiro and Amp. The `modelScript` fixture states each
+  turn:
   - `queue` — an ordered turn.
   - `rule` — a turn that cannot be placed in order, such as a subagent's.
   - `fallback` — however many turns a provider starts by itself.
@@ -375,7 +399,7 @@ an E2E change works.
 - **Never `test.skip()` around model behaviour**; script the turn.
   `requireRegistryRow` fails rather than skips and takes no `test` parameter.
 - **No per-call `{ timeout: … }` overrides** on `expect`, `locator.waitFor` or
-  the rest. The one exception sets the bar: `193-tool-running-badge.spec.ts`
+  the rest. The one exception sets the bar: `claude-code/shell-tool-execution.spec.ts`
   waits on the Claude CLI's fixed 30-second `setInterval` through a named
   constant documenting that period. Discuss before adding another.
 - **Scope a chat locator to `:visible`, and a sidebar locator to `:visible` plus

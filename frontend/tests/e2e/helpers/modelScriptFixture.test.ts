@@ -1,13 +1,14 @@
 import type { MockModelServer } from './mockModelServer'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
 import { MOCK_SESSION_TITLE, readScenarioStatus } from './mockModelScenario'
 import { createMockModelServer } from './mockModelServer'
-import { startModelScript } from './modelScriptFixture'
+import { startModelScript, STEP_WAIT_REPORT_MARGIN_MS } from './modelScriptFixture'
 
 const servers: MockModelServer[] = []
 
 afterEach(async () => {
+  vi.restoreAllMocks()
   await Promise.all(servers.splice(0).map(server => server.close()))
 })
 
@@ -33,6 +34,107 @@ async function answer(server: MockModelServer, prompt: string): Promise<string> 
 }
 
 describe('startModelScript', () => {
+  it('rejects native requests that arrive immediately before an allowed queue removal', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url)
+    await script.queue({ text: 'The first native turn has a scripted answer.' })
+    script.allowUnconsumed('the test interrupts before every queued answer is requested')
+    const nativeFetch = globalThis.fetch.bind(globalThis)
+    let injected = false
+    const nativeStatuses: number[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, options) => {
+      const target = typeof input === 'string' ? input : 'url' in input ? input.url : input.toString()
+      const url = new URL(target)
+      if (!injected && options?.method === 'DELETE' && url.pathname.endsWith(`/${script.id}`)) {
+        injected = true
+        for (const text of ['The scripted turn arrives.', 'The extra native turn has no answer.']) {
+          const response = await complete(server, [{ role: 'user', content: script.prompt(text) }])
+          nativeStatuses.push(response.status)
+          await response.arrayBuffer()
+        }
+        await script.queue({ text: 'The interrupted turn never requests this later answer.' })
+      }
+      return nativeFetch(input, options)
+    })
+    await expect(finish(true)).rejects.toThrow('1 request the script did not answer')
+    expect(injected).toBe(true)
+    expect(nativeStatuses).toEqual([200, 409])
+    await expect(readScenarioStatus(server.url, script.id)).rejects.toThrow('Could not read model scenario')
+  })
+
+  it('force-removes an unexpected request after an already failed test', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url)
+    const unexpected = await complete(server, [{ role: 'user', content: script.prompt('The already failed test sends an unexpected turn.') }])
+    expect(unexpected.status).toBe(409)
+    await unexpected.arrayBuffer()
+    await expect(finish(false)).resolves.toBeUndefined()
+    await expect(readScenarioStatus(server.url, script.id)).rejects.toThrow('Could not read model scenario')
+  })
+
+  it('keeps the strict-script failure when forced cleanup also fails', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url)
+    const unexpected = await complete(server, [{ role: 'user', content: script.prompt('This native request is unscripted.') }])
+    expect(unexpected.status).toBe(409)
+    await unexpected.arrayBuffer()
+    await script.queue({ text: 'This later answer stays unused.' })
+    script.allowUnconsumed('the native turn was interrupted')
+    const nativeFetch = globalThis.fetch.bind(globalThis)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, options) => {
+      const target = typeof input === 'string' ? input : 'url' in input ? input.url : input.toString()
+      const url = new URL(target)
+      if (options?.method === 'DELETE' && url.searchParams.get('force') === 'true')
+        return new Response('The cleanup transport failed.', { status: 503 })
+      return nativeFetch(input, options)
+    })
+    await expect(finish(true)).rejects.toMatchObject({
+      errors: [
+        expect.objectContaining({ message: expect.stringMatching(/incomplete:.*1 request the script did not answer/) }),
+        expect.objectContaining({ message: expect.stringContaining('503 The cleanup transport failed.') }),
+      ],
+    })
+  })
+
+  it('fails teardown for an unscripted request even when an unconsumed queue is permitted', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url)
+    const unexpected = await complete(server, [{ role: 'user', content: script.prompt('The native turn was not scripted.') }])
+    expect(unexpected.status).toBe(409)
+    await script.queue({ text: 'The interrupted provider never requests this answer.' })
+    script.allowUnconsumed('the test interrupts the native turn before the next model request')
+    await expect(finish(true)).rejects.toThrow('1 request the script did not answer')
+    await expect(readScenarioStatus(server.url, script.id)).rejects.toThrow('Could not read model scenario')
+  })
+
+  it('rejects a whitespace-only queue exception reason', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url)
+    expect(() => script.allowUnconsumed(' \n\t')).toThrow('needs the reason')
+    await finish(true)
+  })
+
+  it('reads the current whole-test deadline without storing an old value', async () => {
+    const server = await startServer()
+    let deadline: number | undefined
+    const { script, finish } = await startModelScript(server.url, { testDeadline: () => deadline })
+    expect(script.testDeadline()).toBeUndefined()
+    deadline = 240_000
+    expect(script.testDeadline()).toBe(240_000)
+    deadline = 360_000
+    expect(script.testDeadline()).toBe(360_000)
+    deadline = undefined
+    expect(script.testDeadline()).toBeUndefined()
+    await finish(true)
+  })
+
+  it('returns no whole-test deadline when its fixture declares none', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url)
+    expect(script.testDeadline()).toBeUndefined()
+    await finish(true)
+  })
+
   it('registers a scenario that answers a housekeeping turn before any step exists', async () => {
     const server = await startServer()
     const { script, finish } = await startModelScript(server.url)
@@ -165,6 +267,19 @@ describe('startModelScript', () => {
     await finish(true)
   })
 
+  it('waits for a held model request and releases its answer', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url)
+    await script.queue({ text: 'Child answer.', gate: 'child-answer' })
+
+    const answerPromise = answer(server, script.prompt('Ask the child.'))
+    const status = await script.waitForGate('child-answer')
+    expect(status).toMatchObject({ nextStep: 1, pendingGates: ['child-answer'], complete: false })
+    await script.releaseGate('child-answer')
+    expect(await answerPromise).toBe('Child answer.')
+    await finish(true)
+  })
+
   it('reports the state it reached when the answers never arrive', async () => {
     const server = await startServer()
     const { script, finish } = await startModelScript(server.url)
@@ -211,5 +326,38 @@ describe('startModelScript', () => {
     expect(await answer(server, first.script.prompt('Run.'))).toBe('First script')
     await first.finish(true)
     await second.finish(true)
+  })
+
+  // A stalled wait must report script progress before the whole-test timeout.
+  // Set the deadline after server setup so that setup cannot consume the test interval.
+  // Leave 300ms for the wait plus the existing report margin.
+  // Require the wait to fail before the test deadline without fixing its exact poll time.
+  it('ends a stalled wait before the test deadline, with the progress of the script', async () => {
+    const server = await startServer()
+    let deadline: number | undefined
+    const { script, finish } = await startModelScript(server.url, { testDeadline: () => deadline })
+    await script.queue({ text: 'Never asked for' })
+
+    deadline = Date.now() + STEP_WAIT_REPORT_MARGIN_MS + 300
+    await expect(script.waitForSteps()).rejects.toThrow(/reached 0 of 1 answers in \d+ms, before the test's own timeout/)
+    expect(Date.now()).toBeLessThan(deadline)
+    await finish(false)
+  })
+
+  it('ends at once when the test deadline leaves no time for the wait', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url, { testDeadline: () => Date.now() })
+    await script.queue({ text: 'Never asked for' })
+    await expect(script.waitForSteps()).rejects.toThrow(/reached 0 of 1 answers/)
+    await finish(false)
+  })
+
+  // A test without a whole-test deadline keeps the caller's wait limit.
+  it('keeps the limit that the caller states when the test has no deadline', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url, { testDeadline: () => undefined })
+    await script.queue({ text: 'Never asked for' })
+    await expect(script.waitForSteps(1, 200)).rejects.toThrow(/reached 0 of 1 answers/)
+    await finish(false)
   })
 })

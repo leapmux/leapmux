@@ -501,8 +501,8 @@ func TestConsolidateNotificationThread_PiCompactionEndsAllPreserved(t *testing.T
 	t.Parallel()
 
 	msgs := []json.RawMessage{
-		raw(t, map[string]interface{}{"type": "compaction_end", "summary": "first"}),
-		raw(t, map[string]interface{}{"type": "compaction_end", "summary": "second"}),
+		raw(t, map[string]interface{}{"type": "compaction_end", "result": map[string]interface{}{"summary": "first"}}),
+		raw(t, map[string]interface{}{"type": "compaction_end", "result": map[string]interface{}{"summary": "second"}}),
 	}
 	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, msgs)
 	require.Len(t, result, 2, "compaction boundary markers must each be preserved")
@@ -548,9 +548,32 @@ func TestConsolidateNotificationThread_PiCompactionResetsStatus(t *testing.T) {
 
 	msgs := []json.RawMessage{
 		raw(t, map[string]interface{}{"type": "compaction_start", "attempt": 1}),
-		raw(t, map[string]interface{}{"type": "compaction_end", "summary": "done"}),
+		raw(t, map[string]interface{}{"type": "compaction_end", "result": map[string]interface{}{"summary": "done"}}),
 	}
 	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, msgs)
 	require.Len(t, result, 1, "the boundary clears the trailing in-progress status")
-	assert.JSONEq(t, `{"type":"compaction_end","summary":"done"}`, string(result[0]))
+	assert.JSONEq(t, `{"type":"compaction_end","result":{"summary":"done"}}`, string(result[0]))
+}
+
+func TestConsolidateNotificationThread_PiUnsuccessfulCompactionReplacesStatus(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		end  map[string]interface{}
+	}{
+		{name: "failed", end: map[string]interface{}{"type": "compaction_end", "errorMessage": "Nothing to compact"}},
+		{name: "aborted", end: map[string]interface{}{"type": "compaction_end", "aborted": true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			msgs := []json.RawMessage{
+				raw(t, map[string]interface{}{"type": "compaction_start", "attempt": 1}),
+				raw(t, tc.end),
+			}
+			result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, msgs)
+			require.Len(t, result, 1, "a finished compaction cannot leave the start status running")
+			assert.JSONEq(t, string(msgs[1]), string(result[0]))
+		})
+	}
 }

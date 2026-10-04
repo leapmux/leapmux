@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'node:child_process'
 import { execFile, spawn } from 'node:child_process'
 import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
 import { promisify } from 'node:util'
@@ -21,10 +22,12 @@ import { registerAmbientScenario } from './mockModelScenario'
 import { createMockModelServer } from './mockModelServer'
 import { stopProcess } from './process'
 import { trackProcess } from './processRegistry'
-import { E2E_BROWSER_HOST, findFreePort, hubDataDir, hubSpawnEnv } from './server'
+import { hubDataDir, hubSpawnEnv, hubUrlFromStateJson, resolvedHubTCPFromStateJson, waitForHubReady, waitForHubStateFile } from './server'
 
 export interface SuiteServerState {
   hubUrl: string
+  /** The resolved primary bind address that the hub publishes as its default URL. */
+  boundHubUrl: string
   adminToken: string
   adminUserId: string
   workerId: string
@@ -54,6 +57,19 @@ interface SuiteServerOptions {
 
 const execFileAsync = promisify(execFile)
 
+/**
+ * The lines that state each host that the refusing proxy turned away in a run.
+ *
+ * A refusal keeps a request on the machine, and it fails that request at once. These
+ * lines are how a reader learns which real host a process tried to reach, so an
+ * unexpected host is visible and not only refused.
+ */
+export function refusedHostsReport(refused: ReadonlyMap<string, number>): string[] {
+  return [...refused]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([host, count]) => `The mock proxy refused ${count} ${count === 1 ? 'request' : 'requests'} to ${host}.`)
+}
+
 /** Start the LeapMux process and the model server that one test run shares. */
 export async function startSuiteServer(options: SuiteServerOptions): Promise<StartedSuiteServer> {
   const mockModel = await createMockModelServer({ models: MOCK_MODEL_IDS })
@@ -65,38 +81,60 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
   const serverLogPath = join(options.tmpDir, 'suite-server.log')
   let proc: ChildProcess | undefined
   let stopped = false
+  let socketDir = ''
 
   const stop = async () => {
     if (stopped)
       return
     stopped = true
+    for (const line of refusedHostsReport(mockModel.refusedHosts()))
+      process.stderr.write(`${line}\n`)
     await finishCleanup([
       proc ? stopProcess(proc) : Promise.resolve(),
       mockModel.close(),
     ])
     rmSync(dataDir, { recursive: true, force: true })
+    if (socketDir)
+      rmSync(socketDir, { recursive: true, force: true })
   }
 
   try {
     await bootstrapFirstAdmin(options.binaryPath, hubDataDir(dataDir))
-    const port = await findFreePort()
-    const hubUrl = `http://${E2E_BROWSER_HOST}:${port}`
-    const mockAgent = createMockAgentEnvironment(
+    // Awaiting matters: the function runs each provider's CLI setup (Letta's
+    // `backend local` / `connect`, which discover the mock's model catalog). A
+    // caller that left it unawaited started the worker against an agent
+    // environment whose setup was still in flight, and Letta's catalog was
+    // empty.
+    const mockAgent = await createMockAgentEnvironment(
       options.tmpDir,
       mockModel.url,
       process.env.HOME ? { realHomeDir: process.env.HOME } : {},
     )
     const log = openSync(serverLogPath, 'a')
     try {
+      // The hub's local socket binds at a short path: macOS `sun_path` caps a
+      // Unix socket at 104 bytes, and the run's data directory is already long.
+      // `--listen` carries both addresses: an ephemeral TCP port (the operating
+      // system assigns it and the hub reports it in its state file -- scanning
+      // for a free port and rebinding it is a window another process can win)
+      // and the local IPC socket at the short path.
+      socketDir = mkdtempSync(join(tmpdir(), 'lm-e2e-sock-'))
+      const localListen = `unix:${join(socketDir, 'hub.sock')}`
       proc = spawn(options.binaryPath, [
         'dev',
         '-listen',
-        `:${port}`,
+        '127.0.0.1:0',
+        '-listen',
+        localListen,
         '-data-dir',
         dataDir,
       ], {
         stdio: ['ignore', log, log],
-        env: hubSpawnEnv({ ...agentDefaultsEnv(), ...mockAgent.env, LEAPMUX_WORKER_NAME: 'Local' }),
+        env: hubSpawnEnv({
+          ...agentDefaultsEnv(),
+          ...mockAgent.env,
+          LEAPMUX_WORKER_NAME: 'Local',
+        }),
       })
       trackProcess(options.tmpDir, proc)
     }
@@ -104,7 +142,13 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
       closeSync(log)
     }
 
-    await waitForSuiteServer(hubUrl, proc)
+    // The hub writes its resolved bind set to <data-dir>/state.json once every
+    // listener is bound; the TCP entry there is the port the browser reaches.
+    const statePath = join(hubDataDir(dataDir), 'state.json')
+    const state = await waitForHubStateFile(statePath, proc)
+    const hubUrl = hubUrlFromStateJson(state)
+    const boundHubUrl = `http://${resolvedHubTCPFromStateJson(state)}`
+    await waitForHubReady(hubUrl, proc)
     const adminToken = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
     await elevateSessionViaAPI(hubUrl, adminToken, TEST_ADMIN_PASSWORD)
     const [adminUserId, workerId, newuserToken] = await Promise.all([
@@ -116,6 +160,7 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
     return {
       state: {
         hubUrl,
+        boundHubUrl,
         adminToken,
         adminUserId,
         workerId,
@@ -156,56 +201,6 @@ async function bootstrapFirstAdmin(binaryPath: string, dataDir: string): Promise
     dataDir,
   ], {
     env: { ...process.env, LEAPMUX_LOG_LEVEL: 'error' },
-  })
-}
-
-/** Wait until the server responds or its process exits. */
-function waitForSuiteServer(url: string, proc: ChildProcess, timeoutMs = 30_000): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let finished = false
-    let retry: ReturnType<typeof setTimeout> | undefined
-    let lastError: unknown
-    const deadline = setTimeout(() => finish(new Error(`Server at ${url} did not start within ${timeoutMs}ms`, { cause: lastError })), timeoutMs)
-
-    const onError = (error: Error) => finish(error)
-    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-      finish(new Error(`The shared server exited before startup completed: code=${code ?? 'none'} signal=${signal ?? 'none'}`))
-    }
-    proc.once('error', onError)
-    proc.once('exit', onExit)
-
-    function finish(error?: Error) {
-      if (finished)
-        return
-      finished = true
-      clearTimeout(deadline)
-      clearTimeout(retry)
-      proc.removeListener('error', onError)
-      proc.removeListener('exit', onExit)
-      if (error)
-        reject(error)
-      else
-        resolve()
-    }
-
-    async function check() {
-      try {
-        const response = await fetch(url)
-        if (response.ok) {
-          await response.body?.cancel()
-          finish()
-          return
-        }
-        await response.body?.cancel()
-        lastError = new Error(`Startup request returned HTTP ${response.status}`)
-      }
-      catch (error) {
-        lastError = error
-      }
-      if (!finished)
-        retry = setTimeout(check, 25)
-    }
-    void check()
   })
 }
 

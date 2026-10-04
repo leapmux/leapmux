@@ -417,11 +417,12 @@ func (r *AgentResumer) resumeOne(ctx context.Context, agentID string) resumeOutc
 	// worker database, but the only pointer to the provider's side of it is
 	// gone, unprompted, on a path no user asked for.
 	//
-	// skipReason already established that a process ran for this agent, so the
-	// row's session id is the thing to restore. A provider that refuses to
+	// skipReason already established that a process ran or the user selected a
+	// native session, so the confirmed ID or pending claim is what to restore.
+	// A provider that refuses to
 	// resume it fails this one start, which leaves the tab exactly as cold as it
 	// is now and retryable on the next message.
-	resumeSessionID := dbAgent.AgentSessionID
+	resumeSessionID := storedSessionID(dbAgent)
 	if err := svc.ensureAgentRunning(agentID, &resumeSessionID, backgroundStart); err != nil {
 		slog.Warn("agent resume: failed to start agent", "agent_id", agentID, "error", err)
 		return outcomeFailed

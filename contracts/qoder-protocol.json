@@ -1,0 +1,263 @@
+{
+  "_readme": "This contract defines Qoder CLI's stream-JSON vocabulary. The Go provider reads lifecycle and control frames. The TypeScript plugin classifies transcript frames. The stream envelope resembles Claude Code's, but its behavior differs, so the two providers have separate contracts. `frameKinds` lists top-level `type` values. `controlRequestSubtypes` lists control-channel requests. `systemSubtypes` lists system-line events. `modes` lists the wire permission values in camelCase; launch flags use snake_case. `effortLevels` lists values accepted by `--reasoning-effort`. `permissionOutcomes` lists tool-decision results. `capabilities` lists the features from the init frame. Go-only control-answer fields and goal tool names live in providers/qoder/protocol.go.\n\nThe Worker preserves the original native result. Qoder can report persistedOutput.path in that result. The browser shows the path beside the original preview. LeapMux reads no output file.",
+  "_unread": {
+    "frameKinds": {
+      "Attachment": {
+        "sides": [
+          "go"
+        ],
+        "why": "The worker stores this frame whole. The browser hides this internal kind, and Go does not branch on its specific word."
+      },
+      "CommandLifecycle": {
+        "sides": [
+          "go"
+        ],
+        "why": "The worker stores this frame whole. The browser hides this internal kind, and Go does not branch on its specific word."
+      },
+      "Progress": {
+        "sides": [
+          "go"
+        ],
+        "why": "The worker stores this frame whole. The browser hides this internal kind, and Go does not branch on its specific word."
+      },
+      "StreamEvent": {
+        "sides": [
+          "go"
+        ],
+        "why": "The worker stores this frame whole. The browser hides this internal kind, and Go does not branch on its specific word."
+      },
+      "ToolProgress": {
+        "sides": [
+          "go"
+        ],
+        "why": "The worker stores this frame whole. The browser hides this internal kind, and Go does not branch on its specific word."
+      }
+    },
+    "controlRequestSubtypes": {
+      "CanUseTool": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Elicitation": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ElicitationResponse": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "EndSession": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "GenerateSessionTitle": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "GetGoal": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "GetPlanMode": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "SetContextWindow": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "SetGoalMaxTurns": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "SetPlanMode": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      }
+    },
+    "systemSubtypes": {
+      "CompactBoundary": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Interrupt": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Status": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      }
+    },
+    "permissionOutcomes": {
+      "ModifyWithEditor": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ProceedAlways": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ProceedAlwaysAndSave": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Cancel": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Go provider sends a deny reason without an explicit cancel outcome. It does not read the Cancel constant."
+      }
+    },
+    "capabilities": {
+      "BackgroundTasksV1": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "GoalMaxTurnsV1": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "InterruptCancelQueuedV1": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "InterruptReceiptV1": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "PlanModeV1": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "SessionRewindV1": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "SideQuestionV1": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      }
+    }
+  },
+  "frameKinds": {
+    "System": "system",
+    "Assistant": "assistant",
+    "User": "user",
+    "Result": "result",
+    "StreamEvent": "stream_event",
+    "CommandLifecycle": "command_lifecycle",
+    "ToolProgress": "tool_progress",
+    "Progress": "progress",
+    "Attachment": "attachment"
+  },
+  "controlRequestSubtypes": {
+    "Initialize": "initialize",
+    "CanUseTool": "can_use_tool",
+    "Interrupt": "interrupt",
+    "SetModel": "set_model",
+    "SetContextWindow": "set_context_window",
+    "SetPermissionMode": "set_permission_mode",
+    "SetPlanMode": "set_plan_mode",
+    "GetPlanMode": "get_plan_mode",
+    "SetGoal": "set_goal",
+    "SetGoalMaxTurns": "set_goal_max_turns",
+    "ResumeGoal": "resume_goal",
+    "GetGoal": "get_goal",
+    "ClearGoal": "clear_goal",
+    "Elicitation": "elicitation",
+    "ElicitationResponse": "elicitation_response",
+    "GenerateSessionTitle": "generate_session_title",
+    "EndSession": "end_session"
+  },
+  "systemSubtypes": {
+    "Init": "init",
+    "Status": "status",
+    "CompactBoundary": "compact_boundary",
+    "Interrupt": "interrupt",
+    "PlanModeChanged": "plan_mode_changed",
+    "GoalUpdated": "goal_updated",
+    "GoalCleared": "goal_cleared",
+    "AvailableModelsUpdate": "available_models_update"
+  },
+  "modes": {
+    "Default": "default",
+    "AcceptEdits": "acceptEdits",
+    "Auto": "auto",
+    "DontAsk": "dontAsk",
+    "Plan": "plan"
+  },
+  "defaultMode": "Default",
+  "effortLevels": {
+    "None": "none",
+    "Low": "low",
+    "Medium": "medium",
+    "High": "high",
+    "Xhigh": "xhigh",
+    "Max": "max"
+  },
+  "permissionOutcomes": {
+    "ProceedOnce": "proceed_once",
+    "ProceedAlways": "proceed_always",
+    "ProceedAlwaysAndSave": "proceed_always_and_save",
+    "Cancel": "cancel",
+    "ModifyWithEditor": "modify_with_editor"
+  },
+  "capabilities": {
+    "GoalV1": "goal_v1",
+    "GoalMaxTurnsV1": "goal_max_turns_v1",
+    "GoalResumeV1": "goal_resume_v1",
+    "PlanModeV1": "plan_mode_v1",
+    "InterruptReceiptV1": "interrupt_receipt_v1",
+    "InterruptCancelQueuedV1": "interrupt_cancel_queued_v1",
+    "SessionRewindV1": "session_rewind_v1",
+    "BackgroundTasksV1": "background_tasks_v1",
+    "SideQuestionV1": "side_question_v1"
+  }
+}

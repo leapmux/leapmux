@@ -1,4 +1,4 @@
-import type { CompactionDetails, NotificationEntry, NotificationIconHint, SettingChange } from './model/notification'
+import type { CompactionDetails, NotificationEntry, SettingChange } from './model/notification'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { GoalStatus } from '~/stores/chatGoal'
@@ -7,7 +7,6 @@ import { isObject, pickString } from '~/lib/jsonPick'
 import { messagesOf } from '~/lib/messageParser'
 import { formatRateLimitMessage } from '~/lib/rateLimitUtils'
 import { getCachedSettingsGroupLabel, getCachedSettingsLabel } from '~/lib/settingsLabelCache'
-import { backgroundTaskStatusFromWire } from '~/stores/chatBackgroundTasks'
 import { goalStatusFromWire } from '~/stores/chatGoal'
 import { pluginFor } from './providers/registry'
 import { formatShortWait, formatTokenCount } from './rendererUtils'
@@ -25,7 +24,7 @@ import { OPTION_ID_PERMISSION_MODE } from './settingsGroups'
 export type NotificationBlock
   = | { kind: 'text', text: string }
     | { kind: 'subagent-report', label?: string, text: string, status?: string }
-    | { kind: 'divider', text: string, loading?: boolean, icon?: NotificationIconHint }
+    | { kind: 'divider', text: string, loading?: boolean }
 
 // Provider-neutral notification labels. Named constants so the wording lives in one
 // place and every reader refers to it by name.
@@ -34,6 +33,9 @@ const INTERRUPTED_LABEL = 'Interrupted'
 // The instruction matters as much as the fact: the second Interrupt press is the one the
 // worker escalates into a forced stop, and the row is where the reader learns that.
 const INTERRUPT_IGNORED_LABEL = 'Interrupt ignored — press Interrupt again to force it'
+// The worker writes this row and queues the message independently, so the queue can
+// deliver the message before the row lands. The words read correctly on either side.
+const INPUT_REQUEUED_LABEL = 'Message queued again — the agent dropped it before the model read it'
 const UNKNOWN_ERROR_LABEL = 'Unknown error'
 export const COMPACTING_LABEL = 'Compacting context...'
 // Claude Code emits no metadata for a microcompaction, so this label carries no
@@ -108,14 +110,14 @@ export function leapmuxNotificationEntry(
       return [{ kind: 'text', text: INTERRUPTED_LABEL }]
     case NOTIFICATION_TYPE.StopIgnored:
       return [{ kind: 'text', text: INTERRUPT_IGNORED_LABEL }]
+    case NOTIFICATION_TYPE.InputRequeued:
+      return [{ kind: 'text', text: INPUT_REQUEUED_LABEL }]
     // A live status the provider reported in its own words. The worker
     // normalized it, so one row draws every provider's.
     case NOTIFICATION_TYPE.AgentStatus: {
       const text = pickString(m, NOTIFICATION_FIELD.Text).trim()
       return text ? [{ kind: 'status', text }] : []
     }
-    case NOTIFICATION_TYPE.SubagentEnded:
-      return [subagentEndedEntry(m)]
     case NOTIFICATION_TYPE.SubagentReport: {
       const text = pickString(m, NOTIFICATION_FIELD.Text).trim()
       if (!text)
@@ -267,33 +269,6 @@ function goalUpdatedLabel(source: Record<string, unknown>): string | null {
   return `${verb}: ${objective}${suffix}`
 }
 
-/**
- * Label + glyph for the divider that closes a subagent transcript.
- *
- * The glyph is this divider's own. The Background tasks list carries the same states
- * as a COLOUR on one constant dot rather than as a glyph per state, so there is no
- * shared glyph vocabulary to match; the shared reading comes from the label, which
- * lists the same four outcomes.
- */
-function subagentEndedEntry(m: Record<string, unknown>): NotificationEntry {
-  // Narrowed through the store's wire reader, so the four final statuses are spelled
-  // out in one place rather than re-listed here.
-  switch (backgroundTaskStatusFromWire(pickString(m, NOTIFICATION_FIELD.Status) ?? '')) {
-    case 'completed':
-      return { kind: 'divider', text: 'Subagent completed', icon: 'succeeded' }
-    case 'failed':
-      return { kind: 'divider', text: 'Subagent failed', icon: 'failed' }
-    case 'stopped':
-      return { kind: 'divider', text: 'Subagent stopped', icon: 'stopped' }
-    case 'interrupted':
-      return { kind: 'divider', text: 'Subagent interrupted', icon: 'interrupted' }
-    default:
-      // An unknown final status still ends the transcript; say only what is certain
-      // rather than inventing an outcome.
-      return { kind: 'divider', text: 'Subagent ended', icon: 'stopped' }
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Formatting: one structured entry becomes one block
 // ---------------------------------------------------------------------------
@@ -383,7 +358,6 @@ function blocksForEntry(entry: Exclude<NotificationEntry, { kind: 'group' }>): N
         kind: 'divider',
         text: entry.text,
         ...(entry.loading !== undefined ? { loading: entry.loading } : {}),
-        ...(entry.icon !== undefined ? { icon: entry.icon } : {}),
       }]
     case 'rate-limit':
       return entry.tiers.map(tier => ({ kind: 'text' as const, text: formatRateLimitMessage(tier) }))

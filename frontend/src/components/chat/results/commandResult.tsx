@@ -52,7 +52,7 @@ export function commandStatusLabel(status: ToolCallStatus, exit: CommandExit): s
     return toolOutcomeLabel('failed', `exit ${exit.exitCode}`)
   if (exit.signal)
     return toolOutcomeLabel('failed', exit.signal)
-  if (status === 'failed')
+  if (exit.failed || status === 'failed')
     return toolOutcomeLabel('failed')
   return toolOutcomeLabel('succeeded')
 }
@@ -76,43 +76,36 @@ export function CommandResultBody(props: {
   status: ToolCallStatus
   context?: ToolResultRenderContext
 }): JSX.Element {
-  // The shared normalize-then-strip transform (order matters: normalize CR
-  // overwrites first so a leading bare `\r` becomes a `\n` that strip can then
-  // trim). `normalizedCommandOutput` is the single memoized source every
-  // command-result reader uses -- the body here and the toolbar's collapsibility
-  // check alike -- so the two cannot drift.
+  // Normalize carriage-return overwrites before removing leading blank lines.
+  // The body and toolbar reuse the same normalized command text.
   const body = createMemo(() => normalizedCommandOutput(props.source))
   const normalized = createMemo(() => body().text)
   const expanded = () => getToolResultExpanded(props.context)
-  // After CR normalization the output has at most PROGRESS_MAX_ROWS rows
-  // (head + `…` + tail). Widen the row threshold so the default 3-row
-  // collapse doesn't slice the tail/ellipsis we just produced back off.
+  // Carriage-return normalization already limits process rows.
+  // Use that row threshold so ordinary collapse does not remove the retained tail or omission notice.
   const { display, isCollapsed } = useCollapsedLines({
     text: normalized,
     expanded,
     threshold: () => commandCollapseThreshold(body().hadCarriageReturns),
   })
-  // A refusal is not a failure, so it does not take the alert glyph: nothing went
-  // wrong, and the reader is the one who stopped the call. A command that ended
-  // with no error status can still report a non-zero exit code, and that word
-  // belongs in the label -- so the glyph reads the exit code too.
+  // A declined call uses the refusal icon.
+  // A completed call can still report a failed process exit.
+  // The icon and label must read that exit also.
   const exit = () => commandExit(props.source)
   const commandFailed = () => props.status === 'failed' || commandIsError(exit())
   const statusIcon = () => props.status === 'declined' ? Ban : props.status === 'cancelled' || commandFailed() ? CircleAlert : Check
   const statusLabel = () => commandStatusLabel(props.status, exit())
-  // Compared against the shared vocabulary, not a literal: a word that changed in one
-  // place and not the other would hide the header for every failed command.
+  // Use the shared outcome vocabulary.
+  // The status-header condition must use the same success word as the label.
   const showStatusHeader = () => drawsOwnOutcome(props.context) && statusLabel() !== toolOutcomeLabel('succeeded')
 
-  // When the command produced no output, surface a "[no output]" placeholder
-  // alongside whatever metadata we have (duration, exit code). Without this
-  // the bubble is a visually-empty <div> for any successful command that
-  // wrote nothing to stdout/stderr.
+  // A finished command with no output still needs a visible empty-output notice.
+  // Include its duration, exit code, or signal when the source supplies one.
   const emptyOutputHint = createMemo(() => {
     if (normalized())
       return null
-    // A call that has not returned yet has no empty output to state: the tail
-    // may still arrive.
+    // An unfinished call can still receive output.
+    // It must not claim an empty completed stream.
     if (!isFinishedToolCallStatus(props.status))
       return null
     const dur = props.source.durationMs
@@ -130,7 +123,7 @@ export function CommandResultBody(props: {
         when={normalized()}
         fallback={<Show when={emptyOutputHint()}>{hint => <div class={toolInputSummary}>{hint()}</div>}</Show>}
       >
-        <CollapsibleContent kind="ansi-or-pre" text={normalized()} display={display()} isCollapsed={isCollapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />
+        <CollapsibleContent outputPreview kind="ansi-or-pre" text={normalized()} display={display()} isCollapsed={isCollapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />
       </Show>
       <Show when={props.source.truncated}>
         <div class={toolInputSummary}>{TRUNCATION_NOTICE}</div>
@@ -138,8 +131,7 @@ export function CommandResultBody(props: {
     </>
   )
 
-  // Keep the status branch under <Show> so it re-runs when the status or
-  // exitCode changes.
+  // Keep the status branch reactive when the call status or process exit changes.
   return (
     <Show
       when={showStatusHeader()}

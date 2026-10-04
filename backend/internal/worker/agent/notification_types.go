@@ -40,19 +40,6 @@ package agent
 //   - RateLimit and RateLimitEvent: the two wire shapes Claude and Codex use for
 //     rate-limit metadata. Both route into the rate-limit popover.
 //
-//   - SubagentEnded: closes a subagent RUN. The worker writes one into a child
-//     transcript each time that subagent's background-task row reaches a final
-//     status, so the subagent tab shows WHERE it stopped and WHY instead of a
-//     thinking indicator that never resolves. Carries a `status` field holding
-//     the registry's final wire status (completed / failed / stopped /
-//     interrupted). Provider-neutral: the registry close is the one moment every
-//     provider agrees a subagent is over, including the ones whose child
-//     transcript simply stops. One per run, NOT one per transcript, and nothing
-//     follows it only until something does -- Claude restarts a finished
-//     subagent when the parent messages it, and the restarted run ends the same
-//     way, so a transcript holds as many of these as the subagent had runs, each
-//     with more messages below it.
-//
 //   - SubagentReport: a provider-neutral copy of a child's final report for the
 //     parent transcript. Carries `text` and an optional `label`. Providers emit
 //     it only when their native parent result omits the report.

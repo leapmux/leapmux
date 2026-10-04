@@ -1,9 +1,8 @@
-// Package sessionstore holds the readers that several providers share to list
-// the sessions in another program's session store: a read-only SQLite handle, a
-// newest-first directory walk, and a capped JSONL read. The record and the query
-// are provider-neutral, so they live in package agent. Which directory to walk,
-// which table to query and where the title lives are provider decisions, so each
-// provider keeps them in its own package behind Provider.ListStoredSessions.
+// Package sessionstore holds the readers that several providers share for
+// another program's session store: a read-only SQLite handle, a newest-first
+// directory walk, a capped JSONL read, and a checked archive-file read. The
+// session record and listing query are provider-neutral. Providers choose the
+// directory, table, title field, archive path, and ancestor-symlink rule.
 //
 // Every store here belongs to another program. Nothing in this package or its
 // callers may write to a store's DATA. The read is not free of every side
@@ -505,8 +504,9 @@ func ContentBlockText(content json.RawMessage) string {
 
 // Query runs one SQL-backed store's listing query.
 //
-// Five providers keep their sessions in a SQLite database, and the steps around
-// the query are the same for every one of them: refuse an empty working
+// Several providers keep their sessions in a SQLite database -- Codex, Goose,
+// and the OpenCode store that OpenCode, Kilo, ZCode and MiMo Code read -- and
+// the steps around the query are the same for every one of them: refuse an empty working
 // directory, open the store read-only, turn an ABSENT store into the empty
 // result rather than a failure, bind the cleaned working directory and the
 // limit, skip a row this reader cannot scan, and order the survivors. Only the

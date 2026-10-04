@@ -322,11 +322,11 @@ export function zcodeNativeTool(row: ZCodeRow): {
   sessionId: string
   messageId: string
   state: Record<string, unknown>
-  artifacts: Record<string, unknown> | null
+  outputFiles: Record<string, unknown> | null
 } | null {
   const original = zcodeExtractTool(row.parsed)
   const extra = zcodeEnvelope(row.supplemental)
-  const { nativeTool: native, artifacts } = zcodeToolSupplement(row.supplemental)
+  const { nativeTool: native, outputFiles } = zcodeToolSupplement(row.supplemental)
   const data = pickObject(native, ZCODE_STORED_TOOL.Data)
   const state = pickObject(data, ZCODE_STORED_PART.State)
   const sessionId = pickString(native, ZCODE_STORED_TOOL.SessionID)
@@ -356,7 +356,7 @@ export function zcodeNativeTool(row: ZCodeRow): {
     || state[ZCODE_STORED_PART.Status] !== (original.isError ? ZCODE_STORED_PART_STATUS.Error : ZCODE_STORED_PART_STATUS.Completed)) {
     return null
   }
-  return { sessionId, messageId, state, artifacts: artifacts ?? null }
+  return { sessionId, messageId, state, outputFiles: outputFiles ?? null }
 }
 
 /**

@@ -1,8 +1,7 @@
 import { keyframes, style } from '@vanilla-extract/css'
 
-// The checkbox is a 1rem × 1rem SVG square. The outline + fill are
-// drawn inside the SVG (no CSS border) so every state — including the
-// in_progress marching-ants — occupies the same visual footprint.
+// The checkbox occupies a 1rem square.
+// SVG draws each outline and fill inside the same rectangle.
 export const svg = style({
   display: 'inline-block',
   width: '1rem',
@@ -10,17 +9,16 @@ export const svg = style({
   flexShrink: 0,
 })
 
-// Static (un-animated) box outline used for the pending state. Stroke
-// width 1.5 in a 24-unit viewBox → 1px on screen at 1rem display,
-// matching Oat's native `input[type=checkbox]` border.
+// The pending outline uses a 1.5-unit stroke in the 24-unit viewBox.
+// At a 1rem display size, this matches Oat's 1px checkbox border.
 export const boxPending = style({
   fill: 'var(--background)',
   stroke: 'var(--input)',
   strokeWidth: 1.5,
 })
 
-// Filled box for terminal states (completed / deleted). No stroke;
-// the entire box is colored and a contrast-colored glyph overlays it.
+// Fill the whole square for completed and deleted tasks.
+// A contrasting glyph identifies each state.
 export const boxCompleted = style({
   fill: 'var(--primary)',
 })
@@ -40,20 +38,22 @@ export const glyphCompleted = style({
   stroke: 'var(--primary-foreground)',
 })
 
+export const glyphBlocked = style({
+  stroke: 'var(--muted-foreground)',
+})
+
 export const glyphDeleted = style({
   stroke: 'var(--danger-foreground)',
 })
 
-// One full dash-cycle per animation loop (dash 6 + gap 4 = 10) so
-// the loop is seamless. Slower than the original 0.8s so the motion
-// reads as steady progress rather than urgent chasing.
+// Each animation cycle moves by one complete dash pattern: 6 + 4 = 10.
+// The 1.4-second period gives the progress outline a steady speed.
 const ants = keyframes({
   to: { strokeDashoffset: '-10' },
 })
 
-// Marching-ants box used for the in_progress state. Same x/y/width/
-// height/rx as the pending box so the visible square is the same size
-// — no gray border peeks through behind it.
+// The progress outline uses the same rectangle as the pending outline.
+// It hides the static border while its dashes move.
 export const antsRect = style({
   'fill': 'none',
   'stroke': 'var(--primary)',

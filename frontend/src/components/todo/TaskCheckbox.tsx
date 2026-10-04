@@ -10,10 +10,18 @@ interface TaskCheckboxProps {
 }
 
 // Inset by half the stroke width so the outer edge sits flush with the
-// SVG boundary. Used for outlined states (pending, in_progress).
+// SVG boundary. Every outlined state uses this rectangle.
 const INSET_RECT = { x: '0.75', y: '0.75', width: '22.5', height: '22.5', rx: '3' } as const
-// Full-bleed fill for terminal states (completed, deleted).
+// Fill the whole square for completed and deleted tasks.
 const FULL_RECT = { x: '0', y: '0', width: '24', height: '24', rx: '3' } as const
+
+const STATUS_LABELS = {
+  pending: 'Pending',
+  in_progress: 'In progress',
+  completed: 'Completed',
+  deleted: 'Deleted',
+  blocked: 'Blocked',
+} satisfies Record<TaskCheckboxStatus, string>
 
 export const TaskCheckbox: Component<TaskCheckboxProps> = (props) => {
   return (
@@ -22,9 +30,14 @@ export const TaskCheckbox: Component<TaskCheckboxProps> = (props) => {
       viewBox="0 0 24 24"
       xmlns="http://www.w3.org/2000/svg"
       data-task-checkbox={props.status}
-      aria-hidden="true"
+      role="img"
+      aria-label={STATUS_LABELS[props.status]}
     >
       <Switch>
+        <Match when={props.status === 'blocked'}>
+          <rect class={styles.boxPending} {...INSET_RECT} />
+          <path class={`${styles.glyph} ${styles.glyphBlocked}`} d="M6 12 H18" />
+        </Match>
         <Match when={props.status === 'pending'}>
           <rect class={styles.boxPending} {...INSET_RECT} />
         </Match>

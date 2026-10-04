@@ -74,6 +74,32 @@ describe('workspace fixture lifetime', () => {
     expect(openAgentViaAPI).toHaveBeenCalledWith(server.hubUrl, server.adminToken, server.workerId, 'workspace', '/private-directory', expect.objectContaining({ agentProvider: AgentProvider.CODEX }))
   })
 
+  it('opens the agent in the working directory that the caller creates, and makes no private one', async () => {
+    const workingDir = vi.fn(() => '/repository/checkout')
+    await withAgentWorkspace(server, { provider: AgentProvider.KIRO, prefix: 'kiro', workingDir }, async () => {})
+    expect(workingDir).toHaveBeenCalledOnce()
+    expect(createTestDirectory).not.toHaveBeenCalled()
+    expect(openAgentViaAPI).toHaveBeenCalledWith(server.hubUrl, server.adminToken, server.workerId, 'workspace', '/repository/checkout', expect.objectContaining({ agentProvider: AgentProvider.KIRO }))
+  })
+
+  // The directory belongs to the workspace, so the workspace exists first and the
+  // cleanup still deletes it when the directory cannot be made.
+  it('creates the working directory after the workspace, and deletes the workspace when that fails', async () => {
+    const error = new Error('no checkout')
+    const use = vi.fn()
+    await expect(withAgentWorkspace(server, {
+      provider: AgentProvider.KIRO,
+      prefix: 'kiro',
+      workingDir: () => {
+        expect(createWorkspaceViaAPI).toHaveBeenCalledOnce()
+        throw error
+      },
+    }, use)).rejects.toBe(error)
+    expect(use).not.toHaveBeenCalled()
+    expect(openAgentViaAPI).not.toHaveBeenCalled()
+    expect(deleteWorkspaceViaAPI).toHaveBeenCalledOnce()
+  })
+
   it('deletes a workspace after its agent fails to open', async () => {
     const error = new Error('open failed')
     vi.mocked(openAgentViaAPI).mockRejectedValueOnce(error)

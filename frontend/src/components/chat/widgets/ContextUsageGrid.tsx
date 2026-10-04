@@ -39,20 +39,35 @@ export function contextSize(usage: ContextUsageInfo): number {
 }
 
 /**
+ * Whether a reading states the fill alone: a percentage and no token count.
+ *
+ * The one test for that case, so the grid and the info card cannot disagree about
+ * which half of a reading to draw.
+ */
+export function isPercentOnlyUsage(usage: ContextUsageInfo): boolean {
+  return usage.usagePercent !== undefined && contextSize(usage) <= 0
+}
+
+/**
  * Compute context usage percentage from structured token data.
  * Accounts for the autocompact buffer: usable capacity = contextWindow * (1 - buffer%).
  * Uses the context window from usage data, then modelContextWindow, then DEFAULT_CONTEXT_WINDOW.
+ *
+ * A reading with no token count and a percentage of the whole window scales that
+ * percentage to the usable capacity the same way.
  */
 export function computePercentage(usage: ContextUsageInfo | undefined, modelContextWindow?: number, agentProvider?: AgentProvider): number | null {
   if (!usage)
     return null
+  const usableShare = 1 - contextBufferPct(agentProvider) / 100
+  if (usableShare <= 0)
+    return null
+  if (isPercentOnlyUsage(usage))
+    return Math.min(100, Math.max(0, (usage.usagePercent ?? 0) / usableShare))
   const total = contextSize(usage)
   if (total <= 0)
     return null
-  const contextWindow = resolveContextWindow(usage, modelContextWindow)
-  const usable = contextWindow * (1 - contextBufferPct(agentProvider) / 100)
-  if (usable <= 0)
-    return null
+  const usable = resolveContextWindow(usage, modelContextWindow) * usableShare
   return Math.min(100, (total / usable) * 100)
 }
 

@@ -9,12 +9,12 @@ import { input } from '../testUtils'
 const CALL = 'call-1'
 
 /** The paired start frame a fixture's completion reads its name and arguments from. */
-function request(toolName: string, args: Record<string, unknown>): ParsedMessageContent {
+function request(toolName: string, args: Record<string, unknown> | string): ParsedMessageContent {
   return input(copilotToolStart(CALL, toolName, args))
 }
 
 /** A successful completion for one call, with its paired start beside it. */
-function done(toolName: string, args: Record<string, unknown>, result: Record<string, unknown>): ToolResultFixture {
+function done(toolName: string, args: Record<string, unknown> | string, result: Record<string, unknown>): ToolResultFixture {
   return {
     payload: copilotToolComplete(CALL, { success: true, result }),
     options: { request: request(toolName, args), spanType: toolName },
@@ -41,7 +41,7 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [COPILOT_TOOL.View]: done(COPILOT_TOOL.View, { path: '/p/a.ts' }, { content: 'file body' }),
   [COPILOT_TOOL.Create]: done(COPILOT_TOOL.Create, { path: '/p/new.ts', file_text: 'new' }, { content: 'Created' }),
   [COPILOT_TOOL.StrReplaceEditor]: done(COPILOT_TOOL.StrReplaceEditor, { command: 'str_replace', path: '/p/a.ts', old_str: 'x', new_str: 'y' }, { content: 'Edited' }),
-  [COPILOT_TOOL.ApplyPatch]: done(COPILOT_TOOL.ApplyPatch, { input: '*** Begin Patch\n*** Update File: a.ts\n@@\n-before\n+after\n*** End Patch' }, { content: 'Applied' }),
+  [COPILOT_TOOL.ApplyPatch]: done(COPILOT_TOOL.ApplyPatch, '*** Begin Patch\n*** Update File: a.ts\n@@\n-before\n+after\n*** End Patch', { content: 'Applied' }),
   [COPILOT_TOOL.Grep]: done(COPILOT_TOOL.Grep, { pattern: 'needle' }, { content: 'a.ts:needle' }),
   [COPILOT_TOOL.Glob]: done(COPILOT_TOOL.Glob, { pattern: '*.ts' }, { content: 'a.ts' }),
   [COPILOT_TOOL.WebSearch]: done(COPILOT_TOOL.WebSearch, { query: 'q' }, { content: 'searched' }),

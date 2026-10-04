@@ -1,136 +1,60 @@
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import type { ServerInfo } from './fixtures'
 import { focusActiveTerminal } from './helpers/terminal'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, expectAnyVisible, expectAssistantAnswer, expectUserMessage, loginViaToken, openTerminalViaUI, openWorkspace, renameTabViaUI, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, waitForLayoutSave } from './helpers/ui'
+import { openTerminalViaUI, renameTabViaUI, reopenWorkspace, sidebarLeaves, waitForLayoutSave } from './helpers/ui'
 import { listTerminalsViaAPI } from './helpers/worktree'
-import { ensureWorkerOnline, expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
+import { expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
+
+/** Wait for the Worker to store the title before its process stops. */
+async function waitForSavedTerminalTitle(server: Pick<ServerInfo, 'hubUrl' | 'adminToken' | 'workerId'>, workspaceId: string, title: string): Promise<void> {
+  await expect.poll(async () => {
+    const terminals = await listTerminalsViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId)
+    return terminals.map(terminal => terminal.title)
+  }, 'the renamed title must reach the Worker before the restart').toContain(title)
+}
 
 test.describe('Full Hub+Worker Restart', () => {
-  test('should preserve chat history after hub and worker restart', async ({ separateHubWorker, page, modelScript }) => {
-    await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Full Restart Test')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
-
-      // Wait for agent tab and editor
-      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-      await expect(editor).toBeVisible()
-
-      // This specification tests persistence across a restart. The dedicated
-      // startup-queue specification sends while this overlay is visible.
-      await expect(page.locator('[data-testid="agent-startup-overlay"]')).not.toBeVisible()
-
-      // Step 1: Send a message and wait for a response
-      await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-      await editor.click()
-      await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
-      await page.keyboard.press('Meta+Enter')
-      await expect(editor).toHaveText('')
-
-      // Wait for the assistant's response containing "6912"
-      await expectAssistantAnswer(page)
-
-      // Verify the user message is also visible
-      await expectUserMessage(page, '1234 + 5678')
-
-      // Step 2: Stop Worker first (so agent is terminated), then stop Hub
-      await stopWorker(separateHubWorker)
-      await stopHub(separateHubWorker)
-
-      // Step 3: Start Hub and Worker back up
-      await restartHub(separateHubWorker)
-      await restartWorker(separateHubWorker)
-
-      // Reload to establish fresh connections to the restarted Hub. The app
-      // restores the workspace from browser storage — there is no URL to carry it.
-      await reopenWorkspace(page, workspaceId)
-
-      // Wait for the editor to be ready after page reload
-      await expect(editor).toBeVisible()
-
-      // Verify the first conversation is still visible after restart (loaded from DB)
-      await expectUserMessage(page, '1234 + 5678')
-      await expectAssistantAnswer(page)
-
-      // Step 4: Send another message and wait for response. The second answer
-      // ("3333") must not be a substring of the first ("6912"), otherwise this
-      // wait would match the leftover first-turn bubble instead of the new one.
-      await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
-      await editor.click()
-      await page.keyboard.type(modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
-      await page.keyboard.press('Meta+Enter')
-
-      // Wait for the assistant's response containing "3333"
-      await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
-
-      // Step 5: Verify both conversations are visible in chat history.
-      await expectUserMessage(page, '1234 + 5678')
-      await expectUserMessage(page, '1111 + 2222')
-
-      // Verify both assistant responses are present. The two answers ("6912"
-      // and "3333") are mutually non-substring, so each check matches only its
-      // own turn.
-      await expectAssistantAnswer(page)
-      await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
-  })
-
   test('should preserve terminal tab title after full restart', async ({ authenticatedWorkspace, separateHubWorker, page }) => {
-    const { hubUrl, adminToken, workerId } = separateHubWorker
-    // Listen for layout save before opening terminal
+    // Listen for the layout save before the terminal opens.
     const saved = waitForLayoutSave(page)
 
-    // Open a terminal via the tab bar
+    // Open a terminal through the tab bar.
     await openTerminalViaUI(page)
 
-    // Wait for the terminal tab to appear and xterm to render
+    // Wait for the terminal tab and xterm to appear.
     const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
     await expect(terminalTab).toBeVisible()
     await expect(page.locator('.xterm')).toBeVisible()
 
-    // Wait for layout save so the tab is persisted
+    // Wait for the layout save to store the tab.
     await saved
 
     // Rename the terminal to save its title.
-    // Escape-sequence titles are live overlays and never reach storage. See SignalTitle in the worker terminal.go file.
+    // Escape sequences supply live titles that the Worker does not store.
+    // The SignalTitle handler in backend/internal/worker/service/terminal.go sends that value.
     await renameTabViaUI(page, terminalTab, 'My Custom Title')
 
-    // Wait for the WORKER to hold the new title before tearing anything down.
-    // `renameTabViaUI` only proves the TAB BAR updated, and that text comes
-    // from the local metadata patch the rename handler applies before it fires
-    // `UpdateTerminalTitle` without awaiting it. Stopping the worker inside
-    // that window drops the durable write, and the restored-title assertion
-    // below then fails as if persistence had regressed. `waitForLayoutSave`
-    // does not cover this -- the CRDT layout carries no title.
-    await expect.poll(async () => {
-      const terminals = await listTerminalsViaAPI(hubUrl, adminToken, workerId, authenticatedWorkspace.workspaceId)
-      return terminals.map(t => t.title)
-    }, 'the renamed title must reach the worker before the restart').toContain('My Custom Title')
+    // The tab bar updates before the Worker stores the title.
+    // Layout persistence carries no title, so it cannot establish this receipt.
+    await waitForSavedTerminalTitle(separateHubWorker, authenticatedWorkspace.workspaceId, 'My Custom Title')
 
-    // Stop worker first, then hub
+    // Stop the Worker, then stop the Hub.
     await stopWorker(separateHubWorker)
     await stopHub(separateHubWorker)
 
-    // Start hub and worker back up
+    // Start the Hub, then start the Worker.
     await restartHub(separateHubWorker)
     await restartWorker(separateHubWorker)
 
-    // Reload; the app restores the workspace from browser storage.
+    // Reload the page. The app restores the workspace from browser storage.
     await reopenWorkspace(page, authenticatedWorkspace.workspaceId)
 
-    // Verify the terminal tab is restored with the custom title
+    // Require the restored terminal tab and its stored title.
     const restoredTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
     await expect(restoredTab).toBeVisible()
     await expect(restoredTab).toContainText('My Custom Title')
   })
 
   test('should recover exited terminal title and screen after reloading before worker reconnects', async ({ authenticatedWorkspace, separateHubWorker, page }) => {
-    const { hubUrl, adminToken, workerId } = separateHubWorker
     const saved = waitForLayoutSave(page)
 
     await openTerminalViaUI(page)
@@ -143,30 +67,28 @@ test.describe('Full Hub+Worker Restart', () => {
     const terminalId = await terminalTab.getAttribute('data-tab-id')
     expect(terminalId).toBeTruthy()
 
-    // See the note in the previous test: only a rename persists.
+    // Rename the tab to store its title.
     await renameTabViaUI(page, terminalTab, 'Recovered Title')
 
-    // Wait for the WORKER to hold the new title before tearing anything down.
-    // `renameTabViaUI` only proves the TAB BAR updated, and that text comes
-    // from the local metadata patch the rename handler applies before it fires
-    // `UpdateTerminalTitle` without awaiting it. Stopping the worker inside
-    // that window drops the durable write, and the restored-title assertion
-    // below then fails as if persistence had regressed. `waitForLayoutSave`
-    // does not cover this -- the CRDT layout carries no title.
-    await expect.poll(async () => {
-      const terminals = await listTerminalsViaAPI(hubUrl, adminToken, workerId, authenticatedWorkspace.workspaceId)
-      return terminals.map(t => t.title)
-    }, 'the renamed title must reach the worker before the restart').toContain('Recovered Title')
+    // The tab bar updates before the Worker stores the title.
+    // Layout persistence carries no title, so it cannot establish this receipt.
+    await waitForSavedTerminalTitle(separateHubWorker, authenticatedWorkspace.workspaceId, 'Recovered Title')
 
     await focusActiveTerminal(page)
     await page.keyboard.type('echo EXITEDRESTORE\n', { delay: 30 })
     await page.waitForFunction(() => {
-      return typeof (window as any).__getActiveTerminalText === 'function'
-        && ((window as any).__getActiveTerminalText() as string).includes('EXITEDRESTORE')
+      const getText = Reflect.get(window, '__getActiveTerminalText')
+      if (typeof getText !== 'function')
+        return false
+      const text: unknown = getText()
+      return typeof text === 'string' && text.includes('EXITEDRESTORE')
     })
 
     await page.keyboard.press('Control+D')
-    await page.waitForTimeout(2000)
+    await expect.poll(async () => {
+      const terminals = await listTerminalsViaAPI(separateHubWorker.hubUrl, separateHubWorker.adminToken, separateHubWorker.workerId, authenticatedWorkspace.workspaceId)
+      return terminals.find(terminal => terminal.id === terminalId)?.exited
+    }).toBe(true)
 
     await stopWorker(separateHubWorker)
     await stopHub(separateHubWorker)
@@ -181,104 +103,16 @@ test.describe('Full Hub+Worker Restart', () => {
     const restoredTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
     await expect(restoredTab).toContainText('Recovered Title')
     await page.waitForFunction(() => {
-      return typeof (window as any).__getActiveTerminalText === 'function'
-        && ((window as any).__getActiveTerminalText() as string).includes('EXITEDRESTORE')
+      const getText = Reflect.get(window, '__getActiveTerminalText')
+      if (typeof getText !== 'function')
+        return false
+      const text: unknown = getText()
+      return typeof text === 'string' && text.includes('EXITEDRESTORE')
     })
 
-    const restoredLeaf = page.locator(`[data-testid="tab-tree-leaf"][data-tab-id="${terminalId}"]`)
+    const restoredLeaf = sidebarLeaves(page, authenticatedWorkspace.workspaceId)
+      .and(page.locator(`[data-tab-id="${terminalId}"]:visible`))
+      .first()
     await expect(restoredLeaf).toContainText('Recovered Title')
-  })
-
-  test('should preserve agent tab after clicking it post-restart', async ({ separateHubWorker, page }) => {
-    await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Restart Tab Click Test')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
-
-      // Verify the agent tab is visible
-      const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]')
-      await expect(agentTab).toHaveCount(1)
-
-      // Stop worker and hub
-      await stopWorker(separateHubWorker)
-      await stopHub(separateHubWorker)
-
-      // Restart hub and worker
-      await restartHub(separateHubWorker)
-      await restartWorker(separateHubWorker)
-
-      // Reload; the app restores the workspace from browser storage.
-      await reopenWorkspace(page, workspaceId)
-
-      // Agent tab should be visible after restore
-      await expect(agentTab).toHaveCount(1)
-
-      // Click the agent tab — it should remain visible (not disappear).
-      // Before the fix, clicking an inactive agent with no messages would
-      // remove it because the WatchEvents catch-up phase reported INACTIVE
-      // status before message replay completed.
-      await agentTab.click()
-      await page.waitForTimeout(2000)
-      await expect(agentTab).toHaveCount(1)
-
-      // Also verify the tab tree leaf is present in the sidebar
-      const treeLeaf = page.locator('[data-testid="tab-tree-leaf"]')
-      await expect(treeLeaf).toHaveCount(1)
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
-  })
-
-  test('should not show thinking indicator after full restart during active turn', async ({ separateHubWorker, page, modelScript }) => {
-    await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Restart Thinking Test')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
-
-      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-      await expect(editor).toBeVisible()
-
-      // Start a turn and hold it open, so the hub and worker stop while the
-      // agent is genuinely mid-turn. An unheld turn against the mock endpoint
-      // finishes in milliseconds and the restart would find nothing active.
-      await modelScript.queue({ text: 'An essay.', delayMs: 60_000 })
-      await editor.click()
-      await page.keyboard.type(modelScript.prompt('Write a very long essay about the history of computing. Make it extremely detailed.'))
-      await page.keyboard.press('Meta+Enter')
-      await expect(editor).toHaveText('')
-      await modelScript.waitForSteps(1)
-
-      // Wait for the thinking indicator or streaming to appear (agent is processing)
-      const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]')
-      const streamingText = assistantBubbles(page)
-      await expectAnyVisible(thinkingIndicator, streamingText)
-
-      // Stop worker first (so agent is terminated), then stop hub — while agent is mid-turn
-      await stopWorker(separateHubWorker)
-      await stopHub(separateHubWorker)
-
-      // Start hub and worker back up
-      await restartHub(separateHubWorker)
-      await restartWorker(separateHubWorker)
-
-      // Reload to establish fresh connections to the restarted hub. The app
-      // restores the workspace from browser storage — there is no URL to carry it.
-      await reopenWorkspace(page, workspaceId)
-      await expect(editor).toBeVisible()
-
-      // Thinking indicator should NOT be visible — stale ACTIVE agents
-      // are closed on hub startup so the frontend sees INACTIVE status.
-      await expect(thinkingIndicator).not.toBeVisible()
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
   })
 })

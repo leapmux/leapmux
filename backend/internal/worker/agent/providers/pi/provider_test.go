@@ -25,7 +25,7 @@ func TestProviderFor_PiClassification(t *testing.T) {
 	)
 	assert.Equal(t,
 		agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "pi:compaction_end"},
-		plugin.Classify(json.RawMessage(`{"type":"compaction_end","sessionId":"s1","summary":"compacted"}`)),
+		plugin.Classify(json.RawMessage(`{"type":"compaction_end","sessionId":"s1","result":{"summary":"compacted"}}`)),
 		"compaction_end is the boundary signal — each occurrence is preserved as a marker",
 	)
 	assert.Equal(t,
@@ -62,4 +62,26 @@ func TestProviderFor_PiClassification(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"type":"compaction_start","attempt":2}`, string(merged))
+}
+
+func TestPiFailedCompactionEndDoesNotCreateABoundary(t *testing.T) {
+	t.Parallel()
+	plugin := Registration().Plugin
+	for _, raw := range []string{
+		`{"type":"compaction_end","reason":"manual","aborted":false,"errorMessage":"Nothing to compact (session too small)"}`,
+		`{"type":"compaction_end","reason":"manual","aborted":false,"result":null,"errorMessage":"Nothing to compact (session too small)"}`,
+		`{"type":"compaction_end","reason":"manual","aborted":true}`,
+	} {
+		assert.Equal(t,
+			agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "pi:compaction_start"},
+			plugin.Classify(json.RawMessage(raw)), raw,
+		)
+	}
+}
+
+// The plugin states the child capabilities that the agent type implements. A
+// subagent tab reads them before its root runs.
+func TestPluginStatesTheChildCapabilitiesOfTheAgent(t *testing.T) {
+	t.Parallel()
+	agenttest.AssertChildCapabilities(t, Registration().Plugin, (*Agent)(nil))
 }

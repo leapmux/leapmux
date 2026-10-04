@@ -95,6 +95,8 @@ export interface ToolCallDegradation {
 export interface ToolCallBase {
   id: string
   name: string
+  /** Native output file paths. Their contents remain outside the row model. */
+  outputFilePaths?: readonly string[]
   title?: string
   label?: string
   icon?: ToolIconHint

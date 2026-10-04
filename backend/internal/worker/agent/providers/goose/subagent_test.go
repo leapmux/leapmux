@@ -122,7 +122,7 @@ func TestACP_GooseSpawnAndToolRequestProduceOneRow(t *testing.T) {
 		Meta:       json.RawMessage(`{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}`),
 	})
 	require.NotNil(t, spawnObs)
-	b.ApplySubagentObservationForTest(spawnObs)
+	b.ApplySubagentObservation(spawnObs)
 
 	// A tool-request update carries a DIFFERENT per-request subagent_id; the fix
 	// keys the row/link off the spawn toolCallId so no second row opens.
@@ -133,7 +133,7 @@ func TestACP_GooseSpawnAndToolRequestProduceOneRow(t *testing.T) {
 		Meta:       reqMeta,
 	})
 	require.NotNil(t, reqObs)
-	b.ApplySubagentObservationForTest(reqObs)
+	b.ApplySubagentObservation(reqObs)
 
 	// Exactly one row, keyed by the spawn toolCallId (not g-sub-1).
 	tasks := sink.BackgroundTasks()
@@ -146,7 +146,7 @@ func TestACP_GooseSpawnAndToolRequestProduceOneRow(t *testing.T) {
 		Status:     "completed",
 	})
 	require.NotNil(t, closeObs)
-	b.ApplySubagentObservationForTest(closeObs)
+	b.ApplySubagentObservation(closeObs)
 
 	tasks = sink.BackgroundTasks()
 	require.Len(t, tasks, 1, "still one row after close")

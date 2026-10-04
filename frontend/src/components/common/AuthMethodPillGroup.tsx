@@ -1,4 +1,4 @@
-import type { PillOptions } from './PillGroup'
+import type { PillOptions } from './pillOptions'
 import type { AuthMethod, AuthMethodSelection } from '~/lib/authMethodSelection'
 import { passkeyBlocker } from '~/lib/systemInfo'
 import { passkeyBlockerMessage } from '~/lib/webauthn'

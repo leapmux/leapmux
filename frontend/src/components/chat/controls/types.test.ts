@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { buildJsonRpcResult, CONTROL_ALLOW_CHOICE_ID, createControlAnswerState, createControlChoice, createControlSwitch, questionsFromWire } from './types'
+import type { ControlResponseSender } from './types'
+import { describe, expect, it, vi } from 'vitest'
+import { buildJsonRpcResult, CONTROL_ALLOW_CHOICE_ID, createControlAnswerState, createControlChoice, createControlSwitch, questionsFromWire, sendSelectedOptionResponse } from './types'
 
 /**
  * A cast is not a check.
@@ -187,5 +188,25 @@ describe('createControlChoice', () => {
 
     expect(pill.choice()).toBe('smart')
     expect(bound.choices()).toEqual({ 'control-permissions-pill': 'smart' })
+  })
+})
+
+// The Agent Client Protocol reply that selects one option. The ACP family and MiMo
+// Code send each permission answer through it, and the agent reads the literal
+// `selected` outcome, so the test pins the wire word rather than the constant.
+describe('sendSelectedOptionResponse', () => {
+  it('sends the selected option as a JSON-RPC result under the worker request id', async () => {
+    const onRespond = vi.fn<ControlResponseSender>().mockResolvedValue(undefined)
+    await sendSelectedOptionResponse(onRespond, 'jsonrpc:3', 'reject-1')
+    expect(onRespond).toHaveBeenCalledOnce()
+    const [bytes, options] = onRespond.mock.calls[0]!
+    expect(JSON.parse(new TextDecoder().decode(bytes))).toEqual({ jsonrpc: '2.0', id: 'jsonrpc:3', result: { outcome: { outcome: 'selected', optionId: 'reject-1' } } })
+    expect(options).toBeUndefined()
+  })
+
+  it('passes a send failure to its caller', async () => {
+    const failure = new Error('worker unreachable')
+    const onRespond = vi.fn<ControlResponseSender>().mockRejectedValue(failure)
+    await expect(sendSelectedOptionResponse(onRespond, 'jsonrpc:3', 'allow-1')).rejects.toBe(failure)
   })
 })

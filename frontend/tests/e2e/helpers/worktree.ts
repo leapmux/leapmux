@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test'
 import { execSync } from 'node:child_process'
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
+import { expect } from '@playwright/test'
 import {
   AgentStatus,
   CloseAgentRequestSchema,
@@ -22,7 +23,6 @@ import {
   ListTerminalsRequestSchema,
   ListTerminalsResponseSchema,
 } from '../../../src/generated/proto/leapmux/v1/terminal_pb'
-import { expect } from '../fixtures'
 import { API_POLL_INTERVAL_MS, authedHeaders, createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './api'
 import { expectAnyVisible, isMaybeVisible } from './ui'
 

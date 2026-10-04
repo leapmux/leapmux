@@ -1,0 +1,143 @@
+import { Buffer } from 'node:buffer'
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
+import { isObject } from '../../../src/lib/jsonPick'
+
+export interface GrokWorkflowLaunch {
+  runId: string
+  name: string
+  scriptPath: string
+}
+
+export interface GrokWorkflowCompletion {
+  runId: string
+  status: 'completed' | 'failed'
+  text: string
+}
+
+/** Construct the unique name that the native Rhai metadata receives. */
+export function grokWorkflowName(label: 'output' | 'error', marker: string): string {
+  const name = `native-code-${label}-${marker.toLowerCase()}`
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name) || Buffer.byteLength(name) > 64)
+    throw new Error('The native Grok workflow name must use lowercase words and at most 64 bytes.')
+  return name
+}
+
+/** Match the native report label that includes the workflow objective. */
+export function grokWorkflowReportLabel(name: string, objective: string): string {
+  const label = name.trim()
+  if (!label)
+    throw new Error('The native Grok report requires its workflow name.')
+  const detail = objective.trim()
+  return detail ? `${label}: ${detail}` : label
+}
+
+/** Read the exact native launch result instead of the requested script. */
+export function grokWorkflowLaunch(frames: readonly unknown[], callId: string): GrokWorkflowLaunch {
+  if (!callId.trim())
+    throw new Error('The native Grok workflow requires an exact launch call ID.')
+  const results = frames.filter(isObject).filter(frame => frame.sessionUpdate === 'tool_call_update'
+    && frame.toolCallId === callId && frame.status === 'completed')
+  if (results.length !== 1)
+    throw new Error('The native Grok workflow requires one exact launch result.')
+  const value = results[0]?.rawOutput
+  if (!isObject(value) || value.type !== 'Workflow' || typeof value.run_id !== 'string' || !value.run_id.trim()
+    || value.task_id !== value.run_id || typeof value.name !== 'string' || !value.name.trim()
+    || typeof value.script_path !== 'string' || !isAbsolute(value.script_path)) {
+    throw new Error('The native Grok workflow launch has no exact run or script identity.')
+  }
+  return { runId: value.run_id, name: value.name, scriptPath: value.script_path }
+}
+
+/** Read the native final manifest. A running manifest supplies no final result. */
+export function grokWorkflowCompletion(value: unknown, launch: GrokWorkflowLaunch): GrokWorkflowCompletion | null {
+  if (!isObject(value) || value.version !== 4 || typeof value.script_revision !== 'number'
+    || !Number.isSafeInteger(value.script_revision) || value.script_revision < 0 || !isObject(value.state)) {
+    throw new Error('The native Grok workflow manifest is invalid.')
+  }
+  const state = value.state
+  if (state.run_id !== launch.runId || state.name !== launch.name)
+    throw new Error('The native Grok workflow manifest belongs to another run.')
+  if (state.status !== 'complete' && state.status !== 'failed') {
+    if (state.status === 'active')
+      return null
+    throw new Error('The native Grok workflow did not complete or fail.')
+  }
+  if (!Array.isArray(state.history) || !state.history.every(isObject))
+    throw new Error('The native Grok workflow has no completion history.')
+  const event = state.status === 'complete' ? 'workflow_completed' : 'workflow_failed'
+  const final = state.history.filter(isObject).filter(entry => entry.event === event)
+  if (final.length !== 1)
+    throw new Error('The native Grok workflow requires one exact completion event.')
+  const text = state.status === 'complete' ? state.result_summary : state.pause_message
+  if (typeof text !== 'string' || (state.status === 'failed' && final[0]?.detail !== text))
+    throw new Error('The native Grok workflow has no matching final output.')
+  return { runId: launch.runId, status: state.status === 'complete' ? 'completed' : 'failed', text }
+}
+
+/** Validate the native output file against its private profile, session, and run. */
+export function grokWorkflowManifestPath(launch: GrokWorkflowLaunch, nativeHome: string, sessionId: string): string {
+  if (!nativeHome || !sessionId || !launch.runId || !isAbsolute(launch.scriptPath))
+    throw new Error('The native Grok full tool output requires its private session identity.')
+  const root = realpathSync(nativeHome)
+  const path = relative(root, launch.scriptPath)
+  const parts = path.split(sep)
+  if (isAbsolute(path) || parts.includes('..') || parts[0] !== 'sessions'
+    || parts.at(-4) !== sessionId || parts.at(-3) !== 'workflows'
+    || parts.at(-2) !== launch.runId || basename(launch.scriptPath) !== 'script.rhai') {
+    throw new Error('The native Grok full tool output belongs to another profile, session, or run.')
+  }
+  let current = root
+  for (const part of parts) {
+    current = join(current, part)
+    if (lstatSync(current).isSymbolicLink())
+      throw new Error('The native Grok full tool output path contains a symbolic link.')
+  }
+  return join(dirname(launch.scriptPath), 'state.json')
+}
+
+interface GrokManifestReader {
+  open: (path: string) => number
+  stat: (fd: number) => { size: number, isFile: () => boolean }
+  read: (fd: number) => string
+  close: (fd: number) => void
+}
+
+const manifestReader: GrokManifestReader = {
+  open: path => openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW),
+  stat: fstatSync,
+  read: fd => readFileSync(fd, 'utf8'),
+  close: closeSync,
+}
+
+/** The reader argument lets tests control read and close failures on the same descriptor. */
+export function readGrokWorkflowManifest(path: string, io: GrokManifestReader = manifestReader): unknown {
+  const fd = io.open(path)
+  let value: unknown
+  let failed = false
+  let primary: unknown
+  try {
+    const stat = io.stat(fd)
+    if (!stat.isFile() || !Number.isSafeInteger(stat.size) || stat.size < 0 || stat.size > 512 * 1024)
+      throw new Error('The native Grok manifest exceeds its file limit.')
+    const text = io.read(fd)
+    if (Buffer.byteLength(text) > 512 * 1024)
+      throw new Error('The native Grok manifest exceeds its byte limit.')
+    value = JSON.parse(text)
+  }
+  catch (error) {
+    failed = true
+    primary = error
+  }
+  try {
+    io.close(fd)
+  }
+  catch (error) {
+    if (failed)
+      throw new AggregateError([primary, error], 'The native Grok manifest read and close failed.')
+    throw error
+  }
+  if (failed)
+    throw primary
+  return value
+}

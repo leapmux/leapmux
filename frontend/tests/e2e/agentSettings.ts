@@ -4,8 +4,11 @@
 // This module is not a `.test.ts`, so `~/components/chat/settingsGroups` fails
 // to resolve here although a sibling spec may use it.
 import { OPTION_ID_EFFORT } from '../../src/components/chat/settingsGroups'
+import { ACCOUNT_DEFAULT_MODEL } from '../../src/generated/contracts/worker-vocab'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { MOCK_MODELS, MOCK_PROVIDER_IDS } from './helpers/mockAgentEnvironment'
+import { DEEPSEEK_HARNESS_MODEL_ID } from './helpers/deepseekHarnessEnvironment'
+import { KIRO_DEFAULT_MOCK_MODEL } from './helpers/kiroSurface'
+import { CODEBUDDY_MODEL_ID, COMMAND_CODE_MODEL_ID, DROID_MOCK_MODEL_IDS, FAST_AGENT_MOCK_MODEL, GEMINI_MODEL_ID, JUNIE_MOCK_MODEL, KIMI_MOCK_MODELS, LETTA_MODEL_ID, MOCK_MODELS, MOCK_PROVIDER_IDS, QODER_MODEL_ID, QWEN_MODEL_ID } from './helpers/mockAgentEnvironment'
 
 /** The model, and the reasoning effort where the provider has one. */
 export interface AgentE2ESettings {
@@ -17,11 +20,14 @@ export interface AgentE2ESettings {
 /**
  * Concrete settings for every end-to-end agent fixture.
  *
- * EVERY provider reaches the mock model endpoint. Nine take a model out of
- * `MOCK_MODELS`, which the isolated agent configuration writes. Cursor takes
- * `auto`, because its model does not come from a local runtime at all: the CLI
- * asks its own backend for a catalogue, and `helpers/cursorSurface.ts` answers
- * that call with `CURSOR_MOCK_MODELS`, whose default variant answers to `auto`.
+ * EVERY provider reaches the mock model endpoint. Every provider but Cursor and
+ * Kimi Code takes a model out of `MOCK_MODELS`, which the isolated agent
+ * configuration writes. Kimi Code takes an alias out of `KIMI_MOCK_MODELS`,
+ * because it addresses a model by the key of its configured model table rather
+ * than by the model identifier. Cursor takes `auto`, because its model does not
+ * come from a local runtime at all: the CLI asks its own backend for a
+ * catalogue, and `helpers/cursorSurface.ts` answers that call with
+ * `CURSOR_MOCK_MODELS`, whose default variant answers to `auto`.
  *
  * Keep this catalog explicit so an account default cannot change what a test
  * observes. `satisfies` makes a new provider a typecheck failure here rather
@@ -31,15 +37,31 @@ export const AGENT_E2E_SETTINGS = {
   [AgentProvider.CLAUDE_CODE]: { model: MOCK_MODELS.anthropic, effort: 'medium' },
   [AgentProvider.CODEX]: { model: MOCK_MODELS.openai, effort: 'medium' },
   [AgentProvider.GITHUB_COPILOT]: { model: MOCK_MODELS.openai, effort: 'medium' },
-  // `auto` is the alias of the mock catalogue's default variant, and the one
-  // LeapMux normalizes to. See the note above.
   [AgentProvider.CURSOR]: { model: 'auto' },
-  [AgentProvider.GOOSE]: { model: MOCK_MODELS.zai, effort: 'high' },
-  [AgentProvider.KILO]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
-  [AgentProvider.OPENCODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
+  [AgentProvider.GOOSE]: { model: MOCK_MODELS.goose },
+  [AgentProvider.KIMI_CODE]: { model: KIMI_MOCK_MODELS.thinking, effort: 'high' },
+  [AgentProvider.KIRO]: { model: KIRO_DEFAULT_MOCK_MODEL.modelId, effort: 'medium' },
   [AgentProvider.PI]: { model: MOCK_MODELS.pi, effort: 'high' },
+  [AgentProvider.GROK_BUILD]: { model: MOCK_MODELS.grok, effort: 'medium' },
+  [AgentProvider.QWEN_CODE]: { model: QWEN_MODEL_ID, effort: 'high' },
   [AgentProvider.REASONIX]: { model: MOCK_MODELS.deepseek },
-  // ZCode requires the provider-qualified identifier of its configured model.
+  [AgentProvider.CODEWHALE]: { model: MOCK_MODELS.deepseek },
+  [AgentProvider.AMP]: { model: ACCOUNT_DEFAULT_MODEL },
+  [AgentProvider.CLINE]: { model: MOCK_MODELS.cline },
+  [AgentProvider.JUNIE]: { model: JUNIE_MOCK_MODEL },
+  [AgentProvider.CODEBUDDY]: { model: CODEBUDDY_MODEL_ID },
+  [AgentProvider.LETTA]: { model: LETTA_MODEL_ID },
+  [AgentProvider.DIRAC]: { model: MOCK_MODELS.deepseek },
+  [AgentProvider.DROID]: { model: DROID_MOCK_MODEL_IDS.primary, effort: 'none' },
+  [AgentProvider.QODER]: { model: QODER_MODEL_ID },
+  [AgentProvider.COMMAND_CODE]: { model: COMMAND_CODE_MODEL_ID, effort: 'high' },
+  [AgentProvider.DEEPSEEK_HARNESS]: { model: DEEPSEEK_HARNESS_MODEL_ID, effort: 'high' },
+  [AgentProvider.GEMINI_CLI]: { model: GEMINI_MODEL_ID },
+  [AgentProvider.FAST_AGENT]: { model: FAST_AGENT_MOCK_MODEL },
+  [AgentProvider.KILO]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
+  [AgentProvider.MIMO_CODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
+  [AgentProvider.OPENCODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
+  [AgentProvider.OH_MY_PI]: { model: `${MOCK_PROVIDER_IDS.ohMyPi}/${MOCK_MODELS.ohMyPi}`, effort: 'high' },
   [AgentProvider.ZCODE]: { model: `${MOCK_PROVIDER_IDS.zcode}/${MOCK_MODELS.zai}`, effort: 'high' },
 } as const satisfies Record<Exclude<AgentProvider, AgentProvider.UNSPECIFIED>, AgentE2ESettings>
 
@@ -71,11 +93,12 @@ export function agentOpenOptions(settings: AgentE2ESettings) {
  * The `LEAPMUX_*_DEFAULT_*` pairs a spawned hub or worker needs, so the catalog
  * states the mapping once instead of at each `spawn` call.
  *
- * Claude Code, Codex and Copilot each read a model and an effort: Copilot's
- * native protocol drives its reasoning axis through the well-known effort id
- * (`session.model.setReasoningEffort`). The other Agent Client Protocol providers
- * register neither key, so their fixtures pin the settings through the open
- * request (`agentOpenOptions`).
+ * The pairs cover Claude Code, Codex and Copilot, the providers of the specs
+ * that spawn their own hub or worker. Copilot's native protocol drives its
+ * reasoning axis through the well-known effort id
+ * (`session.model.setReasoningEffort`). Most other providers register such keys
+ * also, but no spec spawns a process for them: their fixtures pin the settings
+ * through the open request (`agentOpenOptions`).
  *
  * `LEAPMUX_WORKER_NAME` stays at each call site, because it differs by site.
  */

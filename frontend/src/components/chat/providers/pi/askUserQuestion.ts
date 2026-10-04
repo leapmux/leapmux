@@ -29,11 +29,10 @@ export function piSelectOptions(payload: Record<string, unknown>): Array<{ label
 }
 
 /**
- * Build the canonical ControlQuestion[] for a Pi `extension_ui_request`. Used
- * by both `piPlugin?.controls?.askUserQuestion.extractQuestions` (registry surface) and
- * `PiControlContent` / `PiControlActions` (controls bubble), so a single
- * source of truth defines the question id, prompt, and options for any
- * given Pi payload.
+ * Build the canonical ControlQuestion[] for a Pi `extension_ui_request`. The
+ * shared question form reads it through
+ * `piPlugin.controls.askUserQuestion.extractQuestions`, so one function defines
+ * the question id, prompt, and options for any given Pi payload.
  */
 export function piQuestionsFromPayload(payload: Record<string, unknown>, source?: ParsedMessageContent): ControlQuestion[] {
   const method = pickString(payload, 'method')

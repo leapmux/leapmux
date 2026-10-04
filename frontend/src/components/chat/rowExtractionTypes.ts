@@ -5,31 +5,19 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ToolSpanRole } from '~/lib/messageSpan'
 import type { TodoItem } from '~/models/todo'
 
-// ---------------------------------------------------------------------------
-// The INPUT side of row extraction.
-//
-// These types describe what an extractor reads: a parsed provider payload, the
-// shared classification, the tool span, and an optional task snapshot. None of
-// them is part of what extraction produces, and
-// `model/row.ts` holds only the latter -- so a provider-neutral output model no
-// longer has to import `ParsedMessageContent` for a field the renderer never
-// sees.
-//
-// They sit above `model/` rather than inside it for the same reason: the model is the
-// boundary the renderers read, and a renderer that can reach a raw parsed
-// payload through it has a second route to the provider's wire format.
-// ---------------------------------------------------------------------------
+// These types describe extraction inputs. The model contains extraction outputs.
+// Keep parsed provider payloads outside model/ so renderers cannot read native bytes.
+// A renderer must use the neutral row model as its only input.
 
-/** The role a MESSAGE plays in its tool span; the per-provider `spanRole` hook decides it. */
+/** The provider's `spanRole` hook selects this message's role in its tool span. */
 export type { ToolSpanRole } from '~/lib/messageSpan'
 
 /**
  * A parse with the provider's supplemental content merged in, and nothing else.
  *
- * The BRAND is the compile-time boundary: only `resolveMessageForRendering()`
- * constructs this type, so a classifier, a span-role reader or an extractor
- * cannot accept the raw bytes the worker stored -- the merge has to have run.
- * `extractRow` therefore receives resolved content by construction.
+ * Only `resolveMessageForRendering` constructs this brand.
+ * Classifiers and extractors must receive the resolved payload. Span-role readers require it also.
+ * The brand prevents raw stored bytes from bypassing resolution.
  */
 declare const resolvedMessageContent: unique symbol
 
@@ -44,7 +32,7 @@ export interface ToolSpanContext {
   request: ResolvedMessageContent | undefined
   /** The span's result, or undefined while the call still runs. */
   result: ResolvedMessageContent | undefined
-  /** Where the CURRENT message sits in the span, decided by message id. */
+  /** The current message's role, selected through its message ID. */
   role: ToolSpanRole
   /** The span rows that exist in the loaded transcript window. */
   visibleRows: ToolSpanRowPresence
@@ -53,9 +41,8 @@ export interface ToolSpanContext {
 /**
  * Everything one row extraction reads.
  *
- * `sides` arrives already resolved, so a plugin never reaches back into
- * `context.sources` for a side the caller had in hand -- each read there is a fresh
- * resolution outside the memo that produced this input.
+ * The caller resolves the span's request and result once.
+ * Plugins read those objects directly. They must not resolve sibling rows outside the caller's cache.
  */
 export interface RowExtractionInput {
   /** The row's own content with its supplemental data merged: the resolved brand, by construction. */
@@ -64,6 +51,8 @@ export interface RowExtractionInput {
   category: MessageCategory
   /** The request and result of this row's tool span, plus this row's role. */
   span: ToolSpanContext
+  /** The stored span ID selects this row's native call when a frame contains several calls. */
+  spanId?: string
   /** The worker's `span_type` column, which identifies the tool on every span row. */
   spanType?: string
   /** LeapMux's own reading of how the row ended, which a provider frame can contradict. */

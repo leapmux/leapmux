@@ -143,7 +143,7 @@ func (w *stoppedTurnWindow) dropTimer() {
 // intentionalStop marks the graceful stop before Process.Stop sets stopped, and
 // processExited marks an exit nobody asked for.
 func (a *Agent) armStoppedZCodeTurnLocked() {
-	if !a.turnActive || a.StoppedLocked() || a.ProcessExitedLocked() || a.IntentionalStopRequested() {
+	if (!a.turnActive && a.compactionSessionID == "") || a.StoppedLocked() || a.ProcessExitedLocked() || a.IntentionalStopRequested() {
 		return
 	}
 	after := a.afterFunc
@@ -201,7 +201,7 @@ func (a *Agent) cancelStoppedZCodeTurnLocked() {
 // replies with an empty object.
 func (a *Agent) Interrupt() error {
 	a.Mu.Lock()
-	stopped, turnActive, sessionID := a.StoppedLocked(), a.turnActive, a.sessionID
+	stopped, turnActive, sessionID := a.StoppedLocked(), a.turnActive || a.compactionSessionID != "", a.sessionID
 	a.Mu.Unlock()
 	if stopped {
 		return fmt.Errorf("agent is stopped")
@@ -218,6 +218,10 @@ func (a *Agent) Interrupt() error {
 	// ran between them saw a fresh armedAt with no window armed -- the half-applied
 	// state that stopProvenIgnoredLocked must never observe.
 	a.Mu.Lock()
+	if !a.turnActive && a.compactionSessionID == "" {
+		a.Mu.Unlock()
+		return nil
+	}
 	a.stopWindow.open(time.Now())
 	a.armStoppedZCodeTurnLocked()
 	a.Mu.Unlock()
@@ -282,7 +286,7 @@ func (a *Agent) endStoppedZCodeTurn(generation uint64) {
 		a.Mu.Unlock()
 		return
 	}
-	if !a.turnActive {
+	if !a.turnActive && a.compactionSessionID == "" {
 		// The turn ended on its own while this window watched, and the path that
 		// ended it left the window armed. Retire it and write nothing.
 		a.cancelStoppedZCodeTurnLocked()
@@ -290,6 +294,7 @@ func (a *Agent) endStoppedZCodeTurn(generation uint64) {
 		return
 	}
 	a.turnActive = false
+	a.compactionSessionID = ""
 	a.backgroundTurn = false
 	a.cancelStoppedZCodeTurnLocked()
 	a.Mu.Unlock()
@@ -375,13 +380,16 @@ func (a *Agent) Stop() {
 	a.Mu.Lock()
 	stopWasPending := a.stopWindow.armed()
 	a.cancelStoppedZCodeTurnLocked()
-	stopped, turnActive, sessionID := a.StoppedLocked(), a.turnActive, a.sessionID
+	stopped, turnActive, sessionID := a.StoppedLocked(), a.turnActive || a.compactionSessionID != "", a.sessionID
 	a.Mu.Unlock()
 	if !stopped && turnActive && sessionID != "" {
 		// Best-effort: a failure falls through to the hard tear-down below.
 		_, _ = a.sendZCodeRequest(MethodSessionStop, map[string]any{"sessionId": sessionID}, zcodeStopTimeout)
 	}
 	a.Process.Stop()
+	a.Mu.Lock()
+	a.compactionSessionID = ""
+	a.Mu.Unlock()
 	a.flushZCodeGeneration(agent.MessageCompletionInterrupted)
 	a.persistIncompleteZCodeTools(agent.MessageCompletionInterrupted)
 	if stopWasPending {
@@ -394,6 +402,9 @@ func (a *Agent) Stop() {
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
 	a.cancelStoppedZCodeTurn()
+	a.Mu.Lock()
+	a.compactionSessionID = ""
+	a.Mu.Unlock()
 	completion := a.ProcessExitCompletion()
 	a.flushZCodeGeneration(completion)
 	a.persistIncompleteZCodeTools(completion)

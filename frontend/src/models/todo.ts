@@ -28,7 +28,7 @@ export interface TodoItem {
    */
   rowKey: string
   content: string
-  status: 'pending' | 'in_progress' | 'completed' | 'deleted'
+  status: 'pending' | 'in_progress' | 'completed' | 'deleted' | 'blocked'
   activeForm: string
   /** Long-form description from Claude Task* tools; absent elsewhere. */
   description?: string

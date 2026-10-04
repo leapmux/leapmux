@@ -73,7 +73,7 @@ type Source interface {
 	// NewChild builds the source of a child transcript. A provider whose subagents
 	// need no transcript of their own returns nil, and the wrapped sink then serves
 	// the child directly.
-	NewChild() Source
+	NewChild(childAgentID string, services agent.ProviderServices) Source
 }
 
 // SourceDefaults supplies the default of every OPTIONAL method of
@@ -94,7 +94,7 @@ func (SourceDefaults) ObserveMessage(agent.MessageContent, agent.SpanInfo) {}
 
 func (SourceDefaults) FinishTurn() {}
 
-func (SourceDefaults) NewChild() Source { return nil }
+func (SourceDefaults) NewChild(_ string, _ agent.ProviderServices) Source { return nil }
 
 // Transcript recovers fields that a provider omits from tool notifications.
 // Results reach the transcript immediately. Later transcript boundaries can enrich them.
@@ -554,7 +554,7 @@ func (s *Transcript) ChildSink(childAgentID string) agent.ProviderServices {
 	if child = s.children[childAgentID]; child != nil {
 		return child
 	}
-	source := s.source.NewChild()
+	source := s.source.NewChild(childAgentID, delegate)
 	if source == nil {
 		return delegate
 	}

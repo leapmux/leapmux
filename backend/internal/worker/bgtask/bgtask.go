@@ -26,15 +26,11 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-// MaxTasks caps how many rows OF EACH KIND an agent's background-task registry
-// ships to clients and holds in memory. Finished rows are evicted past this cap
-// (oldest first); active rows are never evicted. Matches the agent_todos
-// guardrail.
-//
-// PER KIND, not per registry: a run that opens hundreds of shells would
-// otherwise evict every finished subagent, and the subagent rows are the ones
-// that carry a transcript worth revisiting. Each kind gets its own pool, so a
-// burst of one cannot push out the other.
+// MaxTasks caps the display rows for each background-task kind.
+// Eviction selects the oldest finished row first. A full pool with no finished row evicts its oldest active display row.
+// A row linked to a child transcript remains in storage after display eviction.
+// An unlinked row leaves storage also.
+// Separate pools keep a burst of shell tasks from evicting subagent display rows.
 const MaxTasks = 64
 
 // RowKeyByteLimit caps a provider-supplied registry row key.
@@ -301,6 +297,7 @@ const (
 	StatusUnspecified = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_UNSPECIFIED)
 	StatusPending     = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PENDING)
 	StatusRunning     = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING)
+	StatusPaused      = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PAUSED)
 	StatusCompleted   = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_COMPLETED)
 	StatusFailed      = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_FAILED)
 	StatusStopped     = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_STOPPED)
@@ -309,7 +306,7 @@ const (
 
 // MinFinalStatus is the lowest FINAL ordinal, and the whole predicate the SQL
 // needs: `status >= MinFinalStatus` selects the final rows and `status <`
-// selects the active ones. The queries bind it rather than listing four status
+// selects the open ones. The queries bind it rather than listing four status
 // words, so the split follows a renumber instead of going stale.
 //
 // It states a property of the ORDER of the enum, which nothing in proto
@@ -319,10 +316,16 @@ const (
 const MinFinalStatus = StatusCompleted
 
 // IsFinished reports whether s is a final status -- one that makes a row
-// eligible for cap-eviction. Unspecified, Pending and Running rows are never
-// evicted; a row leaves only through a transition into a final status.
+// eligible for cap eviction. Unspecified, Pending, Running, and Paused are
+// open. A row becomes eligible for eviction only when it reaches a final status.
 func (s Status) IsFinished() bool {
 	return s == StatusCompleted || s == StatusFailed || s == StatusStopped || s == StatusInterrupted
+}
+
+// IsWorking reports whether a task currently contributes to agent activity.
+// A paused task stays open for a later turn but does not keep its tab busy.
+func (s Status) IsWorking() bool {
+	return s == StatusPending || s == StatusRunning
 }
 
 // Item mirrors leapmuxv1.BackgroundTaskItem in a plain-Go shape so the
@@ -614,22 +617,15 @@ func ItemsToProto(items []Item) []*leapmuxv1.BackgroundTaskItem {
 	return out
 }
 
-// StatusWire returns the lowercase token the worker writes as the `status`
-// field of a subagent_ended notification, which the browser's
-// notificationRenderers reads to word the closing transcript divider.
-//
-// It is NOT the storage format: agent_background_tasks.status holds the ordinal
-// directly. This is a payload vocabulary with a reader in another language, and
-// the only caller is the divider that applyBackgroundTaskClose writes.
-//
-// StatusUnspecified yields "", not "pending". The browser renders an
-// unrecognized token as a plain "ended" divider, which is the honest line for a
-// status nobody set; wording it "pending" would state a live state on the row
-// that just closed.
+// StatusWire returns the status token that child reports carry to the browser.
+// Storage uses the proto ordinal instead of this token.
+// An unspecified status returns an empty token rather than an invented outcome.
 func StatusWire(s Status) string {
 	switch s {
 	case StatusRunning:
 		return "running"
+	case StatusPaused:
+		return "paused"
 	case StatusCompleted:
 		return "completed"
 	case StatusFailed:

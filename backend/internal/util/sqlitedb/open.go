@@ -72,8 +72,8 @@ func Open(path string, cfg Config) (*sql.DB, error) {
 const readOnlyBusyTimeoutMs = 2000
 
 // OpenReadOnly opens a SQLite database that this program does NOT own, for
-// reading only. The agent-session stores of Codex, OpenCode, Kilo, Goose,
-// ZCode and Cursor are read through it.
+// reading only. The agent-session stores of Codex, OpenCode, Kilo, MiMo Code,
+// Goose, ZCode and Cursor are read through it.
 //
 // Separate from Open because Open MUTATES the file it opens: it chmods the
 // file to 0600 and sets journal_mode(WAL). Applied to a user's own Codex

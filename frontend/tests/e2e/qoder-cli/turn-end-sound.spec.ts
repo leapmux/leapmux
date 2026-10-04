@@ -1,0 +1,36 @@
+import { nativeTextStep } from '../helpers/nativeScenario'
+import { exerciseTurnEndSound } from '../helpers/nativeTurnEndSound'
+import { bashToolCall } from '../helpers/providerToolCalls'
+import { qoderTest } from '../qoder-fixtures'
+import { nativeContext } from './scenarios'
+
+qoderTest('applies the completion sound policy to the native answer turn', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+  await exerciseTurnEndSound(context, { toolActivity: false })
+})
+
+qoderTest('plays one sound for a completed native tool turn', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+  await exerciseTurnEndSound(context, {
+    toolActivity: true,
+    sound: 'ding-dong',
+    steps: [
+      { toolCalls: [bashToolCall(context.provider, 'native-sound-tool', 'printf "SOUND%s\n" "$((40 + 2))"')] },
+      nativeTextStep(context, 'The native sound tool ended.'),
+    ],
+    approveTool: false,
+  })
+})
+
+qoderTest('keeps a completed native tool turn quiet when sound is disabled', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+  await exerciseTurnEndSound(context, {
+    toolActivity: true,
+    sound: 'none',
+    steps: [
+      { toolCalls: [bashToolCall(context.provider, 'native-sound-tool', 'printf "SOUND%s\n" "$((40 + 2))"')] },
+      nativeTextStep(context, 'The native sound tool ended.'),
+    ],
+    approveTool: false,
+  })
+})

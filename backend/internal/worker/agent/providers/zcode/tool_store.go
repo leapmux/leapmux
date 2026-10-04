@@ -21,9 +21,9 @@ import (
 )
 
 type zcodeToolStoreLocation struct {
-	databasePath string
-	artifactRoot string
-	sessionID    string
+	databasePath   string
+	outputFileRoot string
+	sessionID      string
 }
 
 type zcodeToolLookup struct {
@@ -34,19 +34,19 @@ type zcodeToolLookup struct {
 }
 
 type zcodeToolRecord struct {
-	native    contracts.ZCodeStoredTool
-	artifacts map[string]string
-	ready     bool
+	native      contracts.ZCodeStoredTool
+	outputFiles map[string]string
+	ready       bool
 }
 
-type zcodeArtifactReference struct {
+type zcodeOutputFileReference struct {
 	id   string
 	uri  string
 	mime string
 }
 
 // zcodeToolStore holds the reader's handle on ZCode's session database, and the
-// artifacts it already read from beside it.
+// output files it already read from beside it.
 //
 // The transcript reads that database once for each agent message while a tool
 // result waits for its record. A handle opened and closed for each of those
@@ -68,11 +68,11 @@ type zcodeToolStore struct {
 	db   *sql.DB
 }
 
-// zcodeArtifactCache maps an artifact URI to the data URI already built for it.
+// zcodeOutputFileCache maps an output file URI to the data URI already built for it.
 //
-// ZCode writes an artifact file once and never rewrites it, so a record that still
-// waits for a SECOND artifact no longer re-reads the first one, and a session whose
-// artifacts are all cached reads no directory.
+// ZCode writes each image file once and never rewrites it, so a record that still
+// waits for a SECOND output file no longer re-reads the first one, and a session whose
+// output files are all cached reads no directory.
 //
 // ONE TRANSCRIPT'S TURN owns it, and that is why it does not live on the store beside
 // the handle. The handle is per AGENT: the agent's transcript and every child
@@ -86,20 +86,20 @@ type zcodeToolStore struct {
 //
 // Sharing ONE cache across the parent and its children was the same mistake in the
 // other direction: a subagent reaches its turn end the instant its Agent result lands,
-// which is mid-turn for the parent, so one subagent finishing emptied every artifact
+// which is mid-turn for the parent, so one subagent finishing emptied every output file
 // the parent and every sibling had already decoded.
-type zcodeArtifactCache struct {
+type zcodeOutputFileCache struct {
 	mu      sync.Mutex
 	entries map[string]string
 }
 
-func (c *zcodeArtifactCache) lookup(uri string) string {
+func (c *zcodeOutputFileCache) lookup(uri string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.entries[uri]
 }
 
-func (c *zcodeArtifactCache) remember(uri, data string) {
+func (c *zcodeOutputFileCache) remember(uri, data string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.entries == nil {
@@ -110,7 +110,7 @@ func (c *zcodeArtifactCache) remember(uri, data string) {
 
 // drop empties the cache. It touches no database handle, so a turn end waits for no
 // read that another transcript runs.
-func (c *zcodeArtifactCache) drop() {
+func (c *zcodeOutputFileCache) drop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	clear(c.entries)
@@ -166,7 +166,7 @@ func (s *zcodeToolStore) closeLocked() {
 
 // The scheduled request supplies messageID, which selects an existing index in ZCode's database.
 // A missing request uses the session index and still requires an unambiguous tool-call ID.
-func readZCodeToolRecords(ctx context.Context, store *zcodeToolStore, artifacts *zcodeArtifactCache, location zcodeToolStoreLocation, requests map[string]zcodeToolLookup) (out map[string]zcodeToolRecord, resultErr error) {
+func readZCodeToolRecords(ctx context.Context, store *zcodeToolStore, outputFiles *zcodeOutputFileCache, location zcodeToolStoreLocation, requests map[string]zcodeToolLookup) (out map[string]zcodeToolRecord, resultErr error) {
 	if location.sessionID == "" || len(requests) == 0 {
 		return nil, nil
 	}
@@ -181,7 +181,7 @@ func readZCodeToolRecords(ctx context.Context, store *zcodeToolStore, artifacts 
 	}
 	maximum := agent.LiveMaxMessageSize()
 	out = make(map[string]zcodeToolRecord)
-	references := make(map[string][]zcodeArtifactReference)
+	references := make(map[string][]zcodeOutputFileReference)
 	sessions := map[string]bool{location.sessionID: true}
 	for id, request := range requests {
 		sessionID := request.sessionID
@@ -245,28 +245,29 @@ func readZCodeToolRecords(ctx context.Context, store *zcodeToolStore, artifacts 
 			if json.Unmarshal(rawAttachment, &attachment) != nil {
 				continue
 			}
-			if attachment.Type != contracts.ZCodeStoredAttachmentTypeFile || attachment.SessionID != native.SessionID || attachment.MessageID != native.MessageID {
+			if attachment.Type != contracts.ZCodeStoredAttachmentTypeFile || attachment.SessionID != native.SessionID || attachment.MessageID != native.MessageID ||
+				!strings.HasPrefix(attachment.Mime, "image/") {
 				continue
 			}
-			uri := attachment.Metadata.ArtifactURI
+			uri := attachment.Metadata.OutputFileURI
 			if uri == "" {
 				uri = attachment.URL
 			}
-			artifactID := zcodeArtifactID(uri, native.SessionID)
-			if artifactID != "" {
-				references[id] = append(references[id], zcodeArtifactReference{id: artifactID, uri: uri, mime: attachment.Mime})
+			outputFileID := zcodeOutputFileID(uri, native.SessionID)
+			if outputFileID != "" {
+				references[id] = append(references[id], zcodeOutputFileReference{id: outputFileID, uri: uri, mime: attachment.Mime})
 			}
 		}
-		out[id] = zcodeToolRecord{native: native, artifacts: make(map[string]string), ready: len(references[id]) == 0}
+		out[id] = zcodeToolRecord{native: native, outputFiles: make(map[string]string), ready: len(references[id]) == 0}
 	}
 	if len(references) == 0 {
 		return out, nil
 	}
-	groups := make(map[string]map[string][]zcodeArtifactReference)
+	groups := make(map[string]map[string][]zcodeOutputFileReference)
 	for id, refs := range references {
 		sessionID := out[id].native.SessionID
 		if groups[sessionID] == nil {
-			groups[sessionID] = make(map[string][]zcodeArtifactReference)
+			groups[sessionID] = make(map[string][]zcodeOutputFileReference)
 		}
 		groups[sessionID][id] = refs
 	}
@@ -274,7 +275,7 @@ func readZCodeToolRecords(ctx context.Context, store *zcodeToolStore, artifacts 
 	for sessionID, refs := range groups {
 		childLocation := location
 		childLocation.sessionID = sessionID
-		if err := readZCodeArtifacts(ctx, store, artifacts, childLocation, refs, out, maximum); err != nil {
+		if err := readZCodeOutputFiles(ctx, store, outputFiles, childLocation, refs, out, maximum); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -294,10 +295,10 @@ func zcodeSessionDescendsFrom(ctx context.Context, db *sql.DB, child, parent str
 	return err == nil, err
 }
 
-var zcodeArtifactIDPattern = regexp.MustCompile(`^tool-result-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-var zcodeArtifactFilePattern = regexp.MustCompile(`(?:^|-)(tool-result-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.[a-zA-Z0-9]+$`)
+var zcodeOutputFileIDPattern = regexp.MustCompile(`^tool-result-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+var zcodeOutputFileFilePattern = regexp.MustCompile(`(?:^|-)(tool-result-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.[a-zA-Z0-9]+$`)
 
-func zcodeArtifactID(rawURI, sessionID string) string {
+func zcodeOutputFileID(rawURI, sessionID string) string {
 	if sessionID == "" || sessionID == "." || sessionID == ".." {
 		return ""
 	}
@@ -307,14 +308,14 @@ func zcodeArtifactID(rawURI, sessionID string) string {
 		return ""
 	}
 	id := strings.TrimPrefix(parsed.Path, "/")
-	if parsed.Path != "/"+id || !zcodeArtifactIDPattern.MatchString(id) {
+	if parsed.Path != "/"+id || !zcodeOutputFileIDPattern.MatchString(id) {
 		return ""
 	}
 	return id
 }
 
 // ZCode replaces each non-ASCII UTF-16 code unit and caps the resulting segment at 120 characters.
-func zcodeArtifactSegment(value string) string {
+func zcodeOutputFileSegment(value string) string {
 	var out strings.Builder
 	for _, char := range value {
 		if out.Len() >= 120 {
@@ -335,22 +336,38 @@ func zcodeArtifactSegment(value string) string {
 	return out.String()
 }
 
-// readZCodeArtifacts fills each record with the artifact bodies its tool produced.
+// readZCodeOutputFiles fills each record with its native image attachments.
 //
 // It answers from the store's cache first. A record that still waits for one
-// artifact is re-read on every agent message until that artifact appears, and
+// output file is re-read on every agent message until that output file appears, and
 // without the cache each of those reads swept the whole session directory and
-// read every artifact the record already held.
-func readZCodeArtifacts(ctx context.Context, store *zcodeToolStore, artifacts *zcodeArtifactCache, location zcodeToolStoreLocation, references map[string][]zcodeArtifactReference, records map[string]zcodeToolRecord, maximum int) (resultErr error) {
-	if adoptCachedZCodeArtifacts(artifacts, references, records) {
+// read every output file the record already held.
+func readZCodeOutputFiles(ctx context.Context, store *zcodeToolStore, outputFiles *zcodeOutputFileCache, location zcodeToolStoreLocation, references map[string][]zcodeOutputFileReference, records map[string]zcodeToolRecord, maximum int) error {
+	if adoptCachedZCodeOutputFiles(outputFiles, references, records) {
 		return nil
 	}
-	root, err := os.OpenRoot(location.artifactRoot)
+	resultErr := readZCodeImageOutputFiles(ctx, store, outputFiles, location, references, records, maximum)
+	for id, refs := range references {
+		record := records[id]
+		record.ready = true
+		for _, ref := range refs {
+			if record.outputFiles[ref.uri] == "" {
+				record.ready = false
+				break
+			}
+		}
+		records[id] = record
+	}
+	return resultErr
+}
+
+func readZCodeImageOutputFiles(ctx context.Context, store *zcodeToolStore, outputFiles *zcodeOutputFileCache, location zcodeToolStoreLocation, references map[string][]zcodeOutputFileReference, records map[string]zcodeToolRecord, maximum int) (resultErr error) {
+	root, err := os.OpenRoot(location.outputFileRoot)
 	if err != nil {
 		return err
 	}
 	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
-	session, err := root.OpenRoot(zcodeArtifactSegment(location.sessionID))
+	session, err := root.OpenRoot(zcodeOutputFileSegment(location.sessionID))
 	if err != nil {
 		return err
 	}
@@ -360,11 +377,11 @@ func readZCodeArtifacts(ctx context.Context, store *zcodeToolStore, artifacts *z
 		return err
 	}
 	defer func() { resultErr = errors.Join(resultErr, directory.Close()) }()
-	// Only the artifacts no record holds yet. A cached one needs no directory entry.
+	// Only the output files no record holds yet. A cached one needs no directory entry.
 	wanted := make(map[string][]string)
 	for id, refs := range references {
 		for _, ref := range refs {
-			if records[id].artifacts[ref.uri] == "" {
+			if records[id].outputFiles[ref.uri] == "" {
 				wanted[ref.id] = nil
 			}
 		}
@@ -375,7 +392,7 @@ func readZCodeArtifacts(ctx context.Context, store *zcodeToolStore, artifacts *z
 		}
 		entries, err := directory.ReadDir(256)
 		for _, entry := range entries {
-			match := zcodeArtifactFilePattern.FindStringSubmatch(entry.Name())
+			match := zcodeOutputFileFilePattern.FindStringSubmatch(entry.Name())
 			if len(match) == 0 || !entry.Type().IsRegular() {
 				continue
 			}
@@ -394,8 +411,8 @@ func readZCodeArtifacts(ctx context.Context, store *zcodeToolStore, artifacts *z
 	for id, refs := range references {
 		record := records[id]
 		remaining := maximum - len(record.native.Data) - 1024
-		// The artifacts the cache already supplied count against the same budget.
-		for _, data := range record.artifacts {
+		// The output files the cache already supplied count against the same budget.
+		for _, data := range record.outputFiles {
 			remaining -= len(data)
 		}
 		for _, ref := range refs {
@@ -403,21 +420,21 @@ func readZCodeArtifacts(ctx context.Context, store *zcodeToolStore, artifacts *z
 				return errors.Join(append(failures, err)...)
 			}
 			files := wanted[ref.id]
-			if len(files) != 1 || remaining <= 0 || record.artifacts[ref.uri] != "" {
+			if len(files) != 1 || remaining <= 0 || record.outputFiles[ref.uri] != "" {
 				continue
 			}
-			data, err := readZCodeArtifact(session, files[0], ref.mime, remaining)
+			data, err := readZCodeOutputFile(session, files[0], ref.mime, remaining)
 			if err != nil {
 				failures = append(failures, err)
 				continue
 			}
-			record.artifacts[ref.uri] = data
-			artifacts.remember(ref.uri, data)
+			record.outputFiles[ref.uri] = data
+			outputFiles.remember(ref.uri, data)
 			remaining -= len(data)
 		}
 		record.ready = true
 		for _, ref := range refs {
-			if record.artifacts[ref.uri] == "" {
+			if record.outputFiles[ref.uri] == "" {
 				record.ready = false
 				break
 			}
@@ -427,19 +444,19 @@ func readZCodeArtifacts(ctx context.Context, store *zcodeToolStore, artifacts *z
 	return errors.Join(failures...)
 }
 
-// adoptCachedZCodeArtifacts copies what this transcript already read into each record,
+// adoptCachedZCodeOutputFiles copies what this transcript already read into each record,
 // and reports whether every reference is now answered.
-func adoptCachedZCodeArtifacts(artifacts *zcodeArtifactCache, references map[string][]zcodeArtifactReference, records map[string]zcodeToolRecord) bool {
+func adoptCachedZCodeOutputFiles(outputFiles *zcodeOutputFileCache, references map[string][]zcodeOutputFileReference, records map[string]zcodeToolRecord) bool {
 	complete := true
 	for id, refs := range references {
 		record := records[id]
 		record.ready = true
 		for _, ref := range refs {
-			if record.artifacts[ref.uri] != "" {
+			if record.outputFiles[ref.uri] != "" {
 				continue
 			}
-			if cached := artifacts.lookup(ref.uri); cached != "" {
-				record.artifacts[ref.uri] = cached
+			if cached := outputFiles.lookup(ref.uri); cached != "" {
+				record.outputFiles[ref.uri] = cached
 				continue
 			}
 			record.ready = false
@@ -450,7 +467,7 @@ func adoptCachedZCodeArtifacts(artifacts *zcodeArtifactCache, references map[str
 	return complete
 }
 
-func readZCodeArtifact(root *os.Root, name, mime string, maximum int) (value string, resultErr error) {
+func readZCodeOutputFile(root *os.Root, name, mime string, maximum int) (value string, resultErr error) {
 	file, err := root.Open(name)
 	if err != nil {
 		return "", err
@@ -461,22 +478,23 @@ func readZCodeArtifact(root *os.Root, name, mime string, maximum int) (value str
 		return "", err
 	}
 	if !info.Mode().IsRegular() || info.Size() > int64(maximum) {
-		return "", fmt.Errorf("ZCode artifact is not a regular file within the size limit")
+		return "", fmt.Errorf("ZCode output file is not a regular file within the size limit")
 	}
 	data, err := io.ReadAll(io.LimitReader(file, int64(maximum)+1))
 	if err != nil {
 		return "", err
 	}
 	if len(data) == 0 {
-		return "", fmt.Errorf("ZCode artifact is empty")
+		return "", fmt.Errorf("ZCode output file is empty")
 	}
+	// Native image files can hold a data URI.
 	if len(data) >= 5 && strings.EqualFold(string(data[:5]), "data:") {
 		value = string(data)
 	} else {
 		value = providerkit.EncodeDataURI(mime, data)
 	}
 	if len(value) > maximum {
-		return "", fmt.Errorf("ZCode artifact exceeds the size limit")
+		return "", fmt.Errorf("ZCode output file exceeds the size limit")
 	}
 	return value, nil
 }

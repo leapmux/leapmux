@@ -4,13 +4,10 @@ import { CollapsibleContent } from '../CollapsibleContent'
 import { useCollapsedLines } from '../useCollapsedLines'
 
 /**
- * The one fallback body: a plain, collapsible text block.
- *
- * It draws a `ToolFailureResult` and an `UnparsedToolResult`, so it is owned by the row
- * component and never by a kind -- a kind whose result arrived unreadable says
- * so in words the row spells, not in a body the kind pretends to understand.
+ * Render failure prose and unreadable result text as one collapsible plain-text body.
+ * The row owns this fallback because no typed kind can interpret that result.
  */
 export function PlainTextResult(props: { text: string, view: ToolRowView }): JSX.Element {
   const collapsed = useCollapsedLines({ text: () => props.text, expanded: () => props.view.expanded() })
-  return <CollapsibleContent kind="ansi-or-pre" text={props.text} display={collapsed.display()} isCollapsed={collapsed.isCollapsed()} {...(props.view.context !== undefined ? { context: props.view.context } : {})} />
+  return <CollapsibleContent outputPreview kind="ansi-or-pre" text={props.text} display={collapsed.display()} isCollapsed={collapsed.isCollapsed()} {...(props.view.context !== undefined ? { context: props.view.context } : {})} />
 }

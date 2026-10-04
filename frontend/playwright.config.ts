@@ -1,17 +1,38 @@
+import type { PlaywrightTestConfig } from '@playwright/test'
+import { isAbsolute, join } from 'node:path'
+import process from 'node:process'
 import { defineConfig, devices } from '@playwright/test'
 
+const outputFileDirectory = process.env.LEAPMUX_E2E_OUTPUT_FILE_DIR
+if (outputFileDirectory !== undefined && (!isAbsolute(outputFileDirectory) || outputFileDirectory.includes('\0')))
+  throw new Error('The E2E full tool output directory must be an absolute path without NUL characters.')
+
+// The launcher supplies a separate directory for each Playwright process.
+// Keep reports outside test-results because Playwright clears test-results before each run.
+const artifactConfig: Pick<PlaywrightTestConfig, 'outputDir' | 'reporter'> = outputFileDirectory === undefined
+  ? {}
+  : {
+      outputDir: join(outputFileDirectory, 'test-results'),
+      reporter: [
+        ['list'],
+        ['blob', { outputDir: join(outputFileDirectory, 'blob-report') }],
+        ['json', { outputFile: join(outputFileDirectory, 'report.json') }],
+      ],
+    }
+
 export default defineConfig({
+  ...artifactConfig,
   testDir: './tests/e2e',
   // Playwright runs browser specifications. Vitest runs co-located `.test.ts` helper tests.
   testMatch: '**/*.spec.ts',
   globalSetup: './tests/e2e/global-setup.ts',
   globalTeardown: './tests/e2e/global-teardown.ts',
-  // One worker preserves one shared LeapMux process, browser context, and tab.
+  // Each shard uses one worker with a shared LeapMux process and browser context.
+  // Tests in that worker share one tab.
   // A failed test restarts this worker. The new worker receives a new browser context.
   fullyParallel: false,
   workers: 1,
-  // A retry can hide a product defect, and every endpoint this suite reaches
-  // is deterministic, so a second attempt would only mask the first.
+  // Every endpoint in this suite is deterministic. A retry can hide a product defect.
   retries: 0,
   use: {
     trace: 'retain-on-failure',
@@ -19,28 +40,21 @@ export default defineConfig({
   },
   projects: [
     {
-      // ONE project, and every test in it reaches the mock model endpoint.
+      // Every test in this project reaches the mock model endpoint.
+      // Cursor reaches the mock through helpers/cursorSurface.ts also.
+      // No specification carries @real-provider, so a separate live-model project selects no test.
+      // A project that selects no test contains deadlines that no test measures.
+      // A new test would receive those deadlines without verification.
       //
-      // There was a second, `real-provider-chromium`, selected by a
-      // `@real-provider` tag and given deadlines sized for a live model. No
-      // specification carries that tag any more -- Cursor was the last holdout,
-      // and it reaches the mock through `helpers/cursorSurface.ts` now -- so the
-      // project matched nothing and never ran. A project that selects no test
-      // is untested configuration: it states timeouts nobody measured, and the
-      // first test to adopt the tag would inherit them unexamined.
+      // The mock answers in milliseconds. Native process startup requires more time.
+      // Some tests force a Worker restart also.
+      // The deadlines below allow those operations without a live-model delay for each failed assertion.
       //
-      // The deadlines below are sized for that one endpoint. It answers in
-      // milliseconds, so the slowest wait here is an agent process starting,
-      // plus a worker restart where a test forces one. A deadline sized for a
-      // real model would only make a FAILURE slow: every unanswered assertion
-      // would then cost two minutes.
-      //
-      // Bringing a real-model test back means adding the project back WITH it,
-      // in the same change, so its deadlines are chosen against something that
-      // runs. What this costs: nothing now detects the mock drifting from a
-      // real provider's wire format. That gap belongs in the
-      // `testdata/*_conformance.json` corpora, not in a Playwright project --
-      // https://github.com/leapmux/leapmux/issues/491.
+      // Add a live-model project together with its tests if live-model tests become necessary.
+      // Measure that project's deadlines against those tests.
+      // These mock tests do not detect differences from a real provider's wire format.
+      // Cover those differences in testdata/*_conformance.json.
+      // See https://github.com/leapmux/leapmux/issues/491.
       name: 'mock-chromium',
       timeout: 120_000,
       expect: { timeout: 30_000 },

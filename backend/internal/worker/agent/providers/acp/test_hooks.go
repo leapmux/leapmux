@@ -164,6 +164,11 @@ func (b *Base) SetSteerMethodForTest(v string) {
 	b.steerMethod = v
 }
 
+// SetClosesSessionsForTest sets whether the handshake advertised session/close.
+func (b *Base) SetClosesSessionsForTest(v bool) {
+	b.closesSessions = v
+}
+
 // SteerRunIDForTest returns the run id of the running prompt.
 func (b *Base) SteerRunIDForTest() string {
 	return b.steerRunID
@@ -230,11 +235,6 @@ func (b *Base) ApplyStartupOptionsForTest(opts agent.Options) {
 	b.applyStartupOptions(opts)
 }
 
-// ApplySubagentObservationForTest applies one subagent observation to the registry and the child transcripts.
-func (b *Base) ApplySubagentObservationForTest(obs *SubagentObservation) {
-	b.applySubagentObservation(obs)
-}
-
 // BeginSessionUpdatesForTest starts to buffer session updates, as the handshake does.
 func (b *Base) BeginSessionUpdatesForTest() {
 	b.beginSessionUpdates()
@@ -277,12 +277,12 @@ func (b *Base) HandleUpdateForTest(update json.RawMessage) {
 
 // HandleToolCallForTest handles a tool_call update, as the reader does.
 func (b *Base) HandleToolCallForTest(update json.RawMessage) {
-	b.handleToolCall(update)
+	b.main().handleToolCall(update)
 }
 
 // HandleToolCallUpdateForTest handles a tool_call_update, as the reader does.
 func (b *Base) HandleToolCallUpdateForTest(update json.RawMessage) {
-	b.handleToolCallUpdate(update)
+	b.main().handleToolCallUpdate(update)
 }
 
 // ReapplyModelAndSecondaryForTest applies the model and the secondary setting again, the default reapply step of ClearContext.
@@ -340,7 +340,7 @@ func BuildModelsForTest(models []ModelInfo, currentModelID string, normalize fun
 
 // BuildSessionRequestForTest builds the session/new or the resume request.
 func BuildSessionRequestForTest(resumeSessionID, workingDir, newMethod, resumeMethod string) (method string, params []byte) {
-	return buildACPSessionRequest(resumeSessionID, workingDir, newMethod, resumeMethod)
+	return buildACPSessionRequest(resumeSessionID, workingDir, newMethod, resumeMethod, nil)
 }
 
 // BuildConfigOptionSelectForTest builds the option list and the current value of

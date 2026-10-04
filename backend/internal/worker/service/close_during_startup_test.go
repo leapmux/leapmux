@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +20,157 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
+
+type closeAgentWriteFaultDB struct{ *sql.DB }
+
+func (d closeAgentWriteFaultDB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	if strings.Contains(query, "UPDATE agents SET closed_at") {
+		return nil, errors.New("the close write failed")
+	}
+	return d.DB.ExecContext(ctx, query, args...)
+}
+
+func TestCloseAgentBlocksNewStartBeforeTeardown(t *testing.T) {
+	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
+	svc, _, _ := setupTestService(t)
+	recorder := newStartRecorder()
+	recorder.install(svc)
+	const agentID = "agent-close-admission"
+	seedOpenAgent(t, svc, agentID, true)
+
+	closeBeforeTeardown := make(chan struct{})
+	releaseClose := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseClose) }) }
+	defer release()
+	svc.beforeAgentCloseTeardownFn = func(string) {
+		close(closeBeforeTeardown)
+		<-releaseClose
+	}
+	closed := make(chan struct{})
+	go func() {
+		svc.closeAgentTabCommon("", agentID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED, dropWorktreeLink)
+		close(closed)
+	}()
+	select {
+	case <-closeBeforeTeardown:
+	case <-ctx.Done():
+		t.Fatal("the close did not reach its held teardown")
+	}
+
+	err := svc.ensureAgentRunning(agentID, nil, interactiveStart)
+	assert.ErrorContains(t, err, "closing", "a close must refuse a new startup before teardown")
+	assert.Empty(t, recorder.ids(), "no new provider start can escape the earlier cancellation")
+	release()
+	select {
+	case <-closed:
+	case <-ctx.Done():
+		t.Fatal("the close did not finish after teardown was released")
+	}
+}
+
+func TestAgentResumeCloseBeforeRegistrationStopsLateProcess(t *testing.T) {
+	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
+	svc, dispatcher, _ := setupTestService(t)
+	const agentID = "agent-late-resume"
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
+	seedOpenAgent(t, svc, agentID, true)
+	watcher := newTestWriter()
+	dispatch(dispatcher, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{
+			AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST,
+			Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL,
+		}},
+	}, watcher)
+	waitAgentWatchLive(t, svc, agentID)
+
+	late := newNativeRestartProbeAgent(agentID)
+	startEntered := make(chan struct{})
+	releaseStart := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseStart) }) }
+	defer release()
+	svc.startBackgroundAgentFn = func(startCtx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
+		close(startEntered)
+		<-releaseStart
+		return svc.Agents.StartAgentWith(startCtx, opts, sink,
+			func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
+				return late, nil
+			})
+	}
+	resumer := svc.AgentResumer()
+	resumer.Start(ctx)
+	select {
+	case <-startEntered:
+	case <-ctx.Done():
+		t.Fatal("the resume did not enter the held provider start")
+	}
+	svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_AGENT, "", agentID)
+	row, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	require.True(t, row.ClosedAt.Valid, "close stamps the row before the provider registers")
+	release()
+	resumer.WaitForSweepForTest()
+	assert.True(t, late.IsStopped(), "a process that registers after close cannot survive")
+	assert.False(t, svc.Agents.HasAgent(agentID))
+	for _, payload := range watcher.streamsSnapshot() {
+		var event leapmuxv1.WatchEventsResponse
+		if proto.Unmarshal(payload.GetPayload(), &event) != nil {
+			continue
+		}
+		if status := event.GetAgentEvent().GetStatusChange(); status != nil {
+			assert.NotEqual(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, status.GetStatus(),
+				"a closed tab cannot publish ACTIVE after its late provider start")
+		}
+	}
+}
+
+func TestCloseAgentReleasesAdmissionAfterDatabaseFailure(t *testing.T) {
+	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
+	svc, _, _ := setupTestService(t)
+	const agentID = "agent-close-write-fault"
+	seedOpenAgent(t, svc, agentID, true)
+	original := svc.Queries
+	svc.Queries = db.New(closeAgentWriteFaultDB{DB: svc.DB})
+	result, _ := svc.closeAgentTabCommon("", agentID,
+		leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED, dropWorktreeLink)
+	svc.Queries = original
+	require.Contains(t, result.GetFailureDetail(), "the close write failed")
+	row, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	assert.False(t, row.ClosedAt.Valid, "the database failure leaves the tab open")
+
+	recorder := newStartRecorder()
+	recorder.install(svc)
+	require.NoError(t, svc.ensureAgentRunning(agentID, nil, interactiveStart))
+	assert.Equal(t, []string{agentID}, recorder.ids(),
+		"the failed close releases its admission guard for a later start")
+}
+
+func TestCloseAgentReleasesAdmissionAfterPanic(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	const agentID = "agent-close-panic"
+	seedOpenAgent(t, svc, agentID, true)
+	svc.beforeAgentCloseTeardownFn = func(string) {
+		panic("close teardown probe failed")
+	}
+	func() {
+		defer func() { assert.Equal(t, "close teardown probe failed", recover()) }()
+		svc.closeAgentTabCommon("", agentID,
+			leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED, dropWorktreeLink)
+	}()
+	svc.beforeAgentCloseTeardownFn = nil
+
+	recorder := newStartRecorder()
+	recorder.install(svc)
+	require.NoError(t, svc.ensureAgentRunning(agentID, nil, interactiveStart))
+	assert.Equal(t, []string{agentID}, recorder.ids(),
+		"a panic before the database close releases the admission guard")
+}
 
 // TestCloseAgent_DuringStartup_SuppressesActiveAndCleansUp pins the
 // post-spawn close-detection path at agent.go:1179-1193: the user

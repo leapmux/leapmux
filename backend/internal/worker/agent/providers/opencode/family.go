@@ -44,19 +44,12 @@ func StartFamily[T any](
 		BaseArgs:       ACPArgs(),
 		RCMarkerEnvKey: spec.RCMarkerEnvKey,
 		PinnedEnv:      []string{spec.QuestionToolEnv + "=1"},
-		SessionConfig:  acp.SessionConfig{NewMethod: acp.MethodSessionNew, ResumeMethod: MethodSessionResume},
+		SessionConfig:  acp.SessionConfig{NewMethod: acp.MethodSessionNew, ResumeMethod: acp.MethodSessionResume},
 		NewAgent:       newAgent,
 		Base:           func(a *T) *acp.Base { return &family(a).Base },
 		Configure: func(a *T, sink agent.ProviderServices) acp.Hooks {
 			family(a).Questions.Configure(sink)
-			return acp.Hooks{
-				ModeChannel:              acp.ModeChannelPrimaryAgent,
-				PrimaryAgentHiddenFilter: IsHiddenPrimaryAgent,
-				// The family omits child-session events from the root ACP stream. The
-				// prompt and the final task result still form an inspectable transcript.
-				SubagentFromToolCall:       SubagentFromToolCall,
-				SubagentFromToolCallUpdate: SubagentFromToolCallUpdate,
-			}
+			return FamilyHooks()
 		},
 		AfterHandshake: func(a *T, handshake *acp.SessionResult, opts agent.Options) error {
 			f := family(a)
@@ -66,4 +59,27 @@ func StartFamily[T any](
 			return f.ApplyPrimaryAgentStartup(handshake, opts, spec.DefaultPrimaryAgent)
 		},
 	})
+}
+
+// FamilyHooks returns what every member of the OpenCode family changes about the
+// ACP base. It holds no state, so the start and a test read the same hooks.
+func FamilyHooks() acp.Hooks {
+	return acp.Hooks{
+		ModeChannel:              acp.ModeChannelPrimaryAgent,
+		PrimaryAgentHiddenFilter: IsHiddenPrimaryAgent,
+		// This family steers with a plain second session/prompt on the SAME
+		// session, which is the Agent Client Protocol's own mechanism and not
+		// one provider's extension -- so it needs no advertised steer method.
+		// The hook sits on the FAMILY start, not on one member, so Kilo, which
+		// runs the same daemon, steers too. It is a hook rather than an override
+		// of SupportsSteering, because the base reads the same answer for the
+		// steerable flag of each turn, and an override reached only one of the
+		// two: a turn that the daemon started was published as not steerable,
+		// and the queue held a steer back behind it.
+		SteersByOwnRoute: true,
+		// The family omits child-session events from the root ACP stream. The
+		// prompt and the final task result still form an inspectable transcript.
+		SubagentFromToolCall:       SubagentFromToolCall,
+		SubagentFromToolCallUpdate: SubagentFromToolCallUpdate,
+	}
 }

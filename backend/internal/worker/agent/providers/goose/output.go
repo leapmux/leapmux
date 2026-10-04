@@ -62,7 +62,7 @@ const gooseLiveOutputLimit = 8192
 // READ so the update is claimed rather than falling through to be persisted as a row
 // the browser then hides, and so the next reader finds the shape recorded rather than
 // only the field name.
-func (a *Agent) captureSteerRunID(updateType string, metadata map[string]json.RawMessage) bool {
+func (a *Agent) captureSteerRunID(updateType string, metadata map[string]json.RawMessage, _ json.RawMessage) bool {
 	if updateType != "session_info_update" {
 		return false
 	}

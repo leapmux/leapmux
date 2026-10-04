@@ -4,18 +4,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createProcessStub } from '~/test-support/childProcess'
 import { startMultiWorkerHarness } from './multiWorker'
 import { spawnTestProcess } from './processRegistry'
-import { waitForServer } from './server'
+import { findFreePort, waitForHubReady, waitForHubStateFile, waitForServer } from './server'
 
 let root: string
 
 vi.mock('./processRegistry', () => ({ spawnTestProcess: vi.fn() }))
 vi.mock('./e2e-channel', () => ({ createTestChannelManager: vi.fn() }))
-vi.mock('./server', () => ({
+vi.mock('./server', async original => ({
+  ...await original<typeof import('./server')>(),
   getGlobalState: () => ({ binaryPath: 'leapmux', tmpDir: root }),
-  findFreePort: async () => 12345,
+  findFreePort: vi.fn(async () => 12345),
   hubSpawnEnv: () => ({}),
   waitForServer: vi.fn(),
+  waitForHubStateFile: vi.fn(),
+  waitForHubReady: vi.fn(),
 }))
+
+let requireBoundPort = false
+let hubCount = 0
+const states = new Map<number, string>()
+const nativeHubURLs = new Set<string>()
 
 let failure = ''
 let workerIDs: string[]
@@ -28,10 +36,27 @@ beforeEach(() => {
   children = []
   workerIDs = []
   failure = ''
+  requireBoundPort = false
+  hubCount = 0
+  states.clear()
+  nativeHubURLs.clear()
+  vi.mocked(findFreePort).mockReset().mockResolvedValue(12345)
+  vi.mocked(waitForHubReady).mockReset().mockResolvedValue(undefined)
+  vi.mocked(waitForHubStateFile).mockReset().mockImplementation(async (_path, proc) => {
+    const state = states.get(proc.pid ?? -1)
+    if (!state)
+      throw new Error('The Hub has no bound port or state file.')
+    return state
+  })
   vi.mocked(waitForServer).mockReset().mockResolvedValue(undefined)
-  vi.mocked(spawnTestProcess).mockImplementation((_command, args) => {
+  vi.mocked(spawnTestProcess).mockReset().mockImplementation((_command, args) => {
     const stub = createProcessStub({ pid: 100 + children.length })
     children.push(stub)
+    if (args[0] === 'hub' && args.includes('127.0.0.1:0')) {
+      const port = 24680 + hubCount++
+      nativeHubURLs.add(`http://localhost:${port}`)
+      states.set(stub.emitter.pid ?? -1, JSON.stringify({ listen: [`127.0.0.1:${port}`] }))
+    }
     if (args[0] === 'worker')
       workerIDs.push(`worker-${stub.emitter.pid}`)
     stub.emitter.kill.mockImplementation(() => {
@@ -43,6 +68,8 @@ beforeEach(() => {
     return stub.proc
   })
   vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+    if (requireBoundPort && !nativeHubURLs.has(new URL(String(input)).origin))
+      throw new Error('The provisional port belongs to another shard.')
     const method = String(input).split('/').at(-1)
     if (failure === method || (failure === 'registration' && method === 'ListWorkers' && workerIDs.length > 0))
       throw new Error(`${failure} failed`)
@@ -66,7 +93,7 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true })
 })
 
-/** The spawned child at `i`; every reader runs after the harness spawned it. */
+/** Read the child at index `i` after the harness starts it. */
 function childAt(i: number) {
   const child = children[i]
   if (!child)
@@ -77,8 +104,10 @@ function childAt(i: number) {
 describe('multi-worker lifetime', () => {
   it.each(['readiness', 'SignUp', 'GetCurrentUser', 'CreateRegistrationKey', 'registration'])('closes partial startup after %s fails', async (stage) => {
     failure = stage
-    if (stage === 'readiness')
+    if (stage === 'readiness') {
       vi.mocked(waitForServer).mockRejectedValueOnce(new Error('readiness failed'))
+      vi.mocked(waitForHubReady).mockRejectedValueOnce(new Error('readiness failed'))
+    }
     await expect(startMultiWorkerHarness(1)).rejects.toThrow(`${stage} failed`)
     expect(children.length).toBeGreaterThan(0)
     for (const child of children)
@@ -165,6 +194,55 @@ describe('multi-worker lifetime', () => {
   it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])('refuses an invalid worker count: %s', async (count) => {
     await expect(startMultiWorkerHarness(count)).rejects.toThrow(RangeError)
     expect(children).toEqual([])
+    expect(readdirSync(root)).toEqual([])
+  })
+})
+
+describe('multi-worker port ownership', () => {
+  it('uses the bound Hub port while the old provisional port belongs to another shard', async () => {
+    requireBoundPort = true
+    const harness = await startMultiWorkerHarness(1)
+    try {
+      expect(harness.hubUrl).toBe('http://localhost:24680')
+      expect(findFreePort).not.toHaveBeenCalled()
+      expect(spawnTestProcess).toHaveBeenNthCalledWith(1, 'leapmux', [
+        'hub',
+        '-listen',
+        '127.0.0.1:0',
+        '-data-dir',
+        harness.hubDataDir,
+      ], expect.any(Object))
+      expect(waitForHubStateFile).toHaveBeenCalledWith(join(harness.hubDataDir, 'state.json'), harness.hubProc)
+      expect(waitForHubReady).toHaveBeenCalledWith(harness.hubUrl, harness.hubProc)
+      expect(spawnTestProcess).toHaveBeenNthCalledWith(2, 'leapmux', expect.arrayContaining(['--hub', harness.hubUrl]), expect.any(Object))
+    }
+    finally {
+      await harness.stop()
+    }
+    expect(readdirSync(root)).toEqual([])
+  })
+
+  it('assigns distinct bound ports to concurrent harnesses', async () => {
+    requireBoundPort = true
+    const started = await Promise.allSettled([startMultiWorkerHarness(0), startMultiWorkerHarness(0)])
+    const harnesses = started.flatMap(result => result.status === 'fulfilled' ? [result.value] : [])
+    try {
+      expect(started.every(result => result.status === 'fulfilled')).toBe(true)
+      expect(harnesses.map(harness => harness.hubUrl).sort()).toEqual(['http://localhost:24680', 'http://localhost:24681'])
+      expect(harnesses[0]?.hubDataDir).not.toBe(harnesses[1]?.hubDataDir)
+    }
+    finally {
+      await Promise.all(harnesses.map(harness => harness.stop()))
+    }
+    expect(readdirSync(root)).toEqual([])
+  })
+
+  it('stops the spawned Hub and removes its directory when the state file fails', async () => {
+    const failed = new Error('The controlled Hub state file failed.')
+    vi.mocked(waitForHubStateFile).mockRejectedValueOnce(failed)
+    await expect(startMultiWorkerHarness(0)).rejects.toBe(failed)
+    expect(children).toHaveLength(1)
+    expect(childAt(0).emitter.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM')
     expect(readdirSync(root)).toEqual([])
   })
 })

@@ -1,0 +1,107 @@
+{
+  "_readme": "DeepSeek Harness owns these Web Remote event and tool values. The Worker preserves native Session events. The browser reads those same events. LeapMux owns the plan selector values because the native plan state is a boolean. LeapMux image receipts preserve native image identity and order without storing complete text or subprocess output.",
+  "events": {
+    "AssistantMessage": "assistant/message",
+    "UserMessage": "user/message",
+    "ToolCall": "tool/call",
+    "ToolResult": "tool/result",
+    "TurnStart": "turn/start",
+    "TurnEnd": "turn/end",
+    "AssistantAttempt": "assistant/attempt",
+    "RequestContext": "request/context",
+    "CompactionEnd": "compaction/end",
+    "TodoWrite": "todo/write",
+    "WorkflowStart": "tool-workflow/run-start",
+    "WorkflowEnd": "tool-workflow/run-end",
+    "GoalChange": "goal/change",
+    "PlanMode": "plan/mode",
+    "SubagentCatalog": "subagent/catalog",
+    "WorkflowAgentStart": "tool-workflow/agent-start",
+    "WorkflowAgentEnd": "tool-workflow/agent-end"
+  },
+  "tools": {
+    "Bash": "bash",
+    "Read": "read",
+    "ReadImage": "read_image",
+    "Write": "write",
+    "Edit": "edit",
+    "AskUserQuestion": "ask_user_question",
+    "ExitPlanMode": "exit_plan_mode",
+    "TodoWrite": "todo_write",
+    "Subagent": "subagent",
+    "SubagentFork": "subagent_fork",
+    "SendMessage": "send_message",
+    "ListAgents": "list_agents",
+    "Workflow": "workflow",
+    "RunCode": "run_code",
+    "InterruptAgent": "interrupt_agent"
+  },
+  "modes": {
+    "Act": "act",
+    "Plan": "plan"
+  },
+  "permissionPresets": {
+    "ReadOnly": "read-only",
+    "WorkspaceWrite": "workspace-write",
+    "DangerFullAccess": "danger-full-access"
+  },
+  "options": {
+    "Permissions": "permissions",
+    "ChildMode": "child-mode"
+  },
+  "controlEvents": {
+    "Approval": "approval/request",
+    "UserQuestions": "user-questions/request"
+  },
+  "contentTypes": {
+    "Text": "text",
+    "Reasoning": "reasoning",
+    "Image": "image",
+    "ToolCall": "tool-call"
+  },
+  "supplement": {
+    "BlockIndex": "blockIndex",
+    "ImageAttachments": "imageAttachments"
+  },
+  "fields": {
+    "Type": "type",
+    "Data": "data",
+    "Message": "message",
+    "Content": "content"
+  },
+  "_unread": {
+    "options": {
+      "ChildMode": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker reads stored native child modes. The browser reads the derived AgentInfo capability fields instead."
+      }
+    }
+  },
+  "imageReceiptFields": {
+    "SessionID": "sessionId",
+    "CallID": "callId",
+    "ToolCallID": "toolCallId",
+    "ToolName": "toolName",
+    "IsError": "isError",
+    "OriginalImages": "originalImages",
+    "RetainedImages": "retainedImages",
+    "Images": "images"
+  },
+  "imagePositionFields": {
+    "Position": "position",
+    "Attachment": "attachment"
+  },
+  "imageReferenceFields": {
+    "AttachmentID": "attachmentId",
+    "MediaType": "mediaType",
+    "Bytes": "bytes",
+    "Width": "width",
+    "Height": "height"
+  },
+  "imageValueFields": {
+    "Attachment": "attachment",
+    "Data": "data"
+  }
+}

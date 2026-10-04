@@ -87,6 +87,7 @@ func TestStatusFromProviderWord(t *testing.T) {
 		"inProgress":  StatusInProgress,
 		"completed":   StatusCompleted,
 		"deleted":     StatusDeleted,
+		"blocked":     StatusBlocked,
 	} {
 		assert.Equal(t, want, StatusFromProviderWord(word), "word %q", word)
 	}
@@ -124,6 +125,7 @@ func TestStatusOrdinalsMatchTheProtoEnum(t *testing.T) {
 func TestStatusIsFinished(t *testing.T) {
 	assert.False(t, StatusPending.IsFinished())
 	assert.False(t, StatusInProgress.IsFinished())
+	assert.False(t, StatusBlocked.IsFinished())
 	assert.True(t, StatusCompleted.IsFinished(), "a completed row is eligible for cap-eviction")
 	assert.True(t, StatusDeleted.IsFinished(), "so is a tombstone")
 }

@@ -68,7 +68,7 @@ leapmux solo [flags]
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-listen` | `127.0.0.1:4327` | TCP listen address. Additional addresses are a setting; see [Network access](/docs/admin/configuration/#network-access). |
+| `-listen` | `127.0.0.1:4327` plus the platform's local IPC URL | One listen address, repeatable: a TCP address or a local IPC URL (`unix:<path>`, `npipe:<name>`). The list is the bind set; the platform's local IPC URL is added when the list names none. Additional addresses are a setting; see [Network access](/docs/admin/configuration/#network-access). |
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/solo`) | Data directory (split into `<data-dir>/hub` and `<data-dir>/worker`) |
 | `-dev-frontend` | empty | Frontend dev-server URL for the local reverse proxy |
 | `-storage-sqlite-max-conns` | `4` | SQLite max open connections |
@@ -103,8 +103,7 @@ This table lists the most common flags. The full set — including all PostgreSQ
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-listen` | `:4327` | TCP listen address (e.g. `:4327` or `127.0.0.1:4327`) |
-| `-local-listen` | platform default | Local IPC URL (`unix:<path>` or `npipe:<name>`); default `unix:<data-dir>/hub.sock` on Unix |
+| `-listen` | platform default | One listen address, repeatable. A TCP address (`:4327`, `127.0.0.1:4327`) or a local IPC URL (`unix:<path>`, `npipe:<name>`). The list is the bind set, and at least one local IPC address is always bound: the platform's local IPC URL is added when the list names none. |
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/hub`) | Data directory |
 | `-dev-frontend` | empty | Frontend dev-server URL for the reverse proxy |
 | `-log-level` | `info` | `debug`, `info`, `warn`, `error` |
@@ -297,8 +296,7 @@ Hub-family modes (`hub`, `solo`, `dev`) read variables prefixed `LEAPMUX_HUB_`; 
 
 | Variable | Sets | Example |
 |----------|------|---------|
-| `LEAPMUX_HUB_LISTEN` | hub `listen` | `:4327` |
-| `LEAPMUX_HUB_LOCAL_LISTEN` | hub `local_listen` | `unix:/run/leapmux/hub.sock` |
+| `LEAPMUX_HUB_LISTEN` | hub `listen`, comma-delimited | `:4327,unix:/run/leapmux/hub.sock` |
 | `LEAPMUX_HUB_DATA_DIR` | hub `data_dir` | `/var/lib/leapmux/hub` |
 | `LEAPMUX_HUB_LOG_LEVEL` | hub `log_level` | `info` |
 | `LEAPMUX_HUB_ENCRYPTION_KEY_PATH` | hub `encryption_key_path` (no CLI flag) | `/etc/leapmux/encryption.key` |

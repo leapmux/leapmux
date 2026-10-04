@@ -447,7 +447,7 @@ func TestZCodeSubagent_AResumedSpawnResultStillClosesTheRow(t *testing.T) {
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
 	// The state a resume leaves behind: the durable row exists, the in-memory caches do
 	// not.
-	childID, err := sink.EnsureChildAgent("spawn-1", "spawn-1", "file census")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-1", ProviderChildKey: "spawn-1", Title: "file census"})
 	require.NoError(t, err)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "spawn-1", Kind: bgtask.KindSubagent, Title: "file census",

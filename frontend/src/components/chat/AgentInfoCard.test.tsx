@@ -8,7 +8,9 @@ import { formatAgentSessionIdForDisplay, useAgentInfoCard } from './AgentInfoCar
 
 // Side-effect imports: register the Claude and Pi plugins so the session-id
 // display/copy logic can resolve `sessionIdIsFilePath` through the registry.
+// The Kiro plugin states a provider that reserves no context headroom.
 import './providers/claude/plugin'
+import './providers/kiro/plugin'
 import './providers/pi/plugin'
 
 function InfoCardContent(props: { agent?: AgentInfo, agentSessionInfo?: AgentSessionInfo, branchName?: string, gitView?: RepoGitView, homeDir?: string }) {
@@ -325,7 +327,74 @@ describe('agent info card context row', () => {
         agentSessionInfo={{ contextUsage: usage }}
       />
     ))
-    expect(screen.getByText(/Context/)).toBeInTheDocument()
+    expect(screen.getByText('Context')).toBeInTheDocument()
+    // 1,000 tokens of the default 200,000 window, less Claude's 16.5% headroom, is ~0.6%.
+    expect(screen.getByText('1.0k / 200.0k (1% with 16.5% headroom)')).toBeInTheDocument()
+  })
+
+  it('states no headroom in the row of a token count for a provider that reserves none', () => {
+    render(() => (
+      <InfoCardContent
+        agent={agent(AgentProvider.KIRO, 'sid')}
+        agentSessionInfo={{ contextUsage: { ...usage, inputTokens: 50_000, contextWindow: 200_000 } }}
+      />
+    ))
+    expect(screen.getByText('50.0k / 200.0k (25%)')).toBeInTheDocument()
+  })
+
+  it('states the counts with no percentage for a reading of zero tokens', () => {
+    // A compaction to an empty context leaves a reading of zero tokens and no
+    // percentage. There is no share of the window to state, so the row states
+    // the counts alone rather than a 0% that no reading gave.
+    render(() => (
+      <InfoCardContent
+        agent={agent(AgentProvider.KIRO, 'sid')}
+        agentSessionInfo={{ contextUsage: { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, contextTokens: 0 } }}
+      />
+    ))
+    expect(screen.getByText('0 / 200.0k')).toBeInTheDocument()
+  })
+
+  it('states a stated zero percentage as an empty context', () => {
+    render(() => (
+      <InfoCardContent
+        agent={agent(AgentProvider.KIRO, 'sid')}
+        agentSessionInfo={{ contextUsage: { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 0 } }}
+      />
+    ))
+    expect(screen.getByText('0% of the context window')).toBeInTheDocument()
+  })
+
+  it('states the percentage alone for a reading with no token count', () => {
+    render(() => (
+      <InfoCardContent
+        agent={agent(AgentProvider.CLAUDE_CODE, 'sid')}
+        agentSessionInfo={{ contextUsage: { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 40 } }}
+      />
+    ))
+    // Claude reserves 16.5%, so 40% of the window is ~48% of what it can use. The row
+    // states the headroom, as the row of a token count does.
+    expect(screen.getByText('48% of the context window with 16.5% headroom')).toBeInTheDocument()
+  })
+
+  it('states the percentage with no headroom for a provider that reserves none', () => {
+    render(() => (
+      <InfoCardContent
+        agent={agent(AgentProvider.KIRO, 'sid')}
+        agentSessionInfo={{ contextUsage: { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 40 } }}
+      />
+    ))
+    expect(screen.getByText('40% of the context window')).toBeInTheDocument()
+  })
+
+  it('states the headroom in the row of a token count', () => {
+    render(() => (
+      <InfoCardContent
+        agent={agent(AgentProvider.CLAUDE_CODE, 'sid')}
+        agentSessionInfo={{ contextUsage: { ...usage, inputTokens: 83_500, contextWindow: 200_000 } }}
+      />
+    ))
+    expect(screen.getByText(/\(50% with 16\.5% headroom\)$/)).toBeInTheDocument()
   })
 
   it('renders nothing for the context row when no usage is reported', () => {

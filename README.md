@@ -11,23 +11,50 @@
 [![llms.txt](https://img.shields.io/badge/llms.txt-available-0d9488)](https://leapmux.dev/llms.txt)
 
 
-A terminal works fine for one or two coding agents side-by-side. At three or four — one refactoring, one on tests, one chasing a failing build — shell tabs stop helping: you lose track of which one owns which branch, the agents clobber each other's working tree, and a stray tmux crash or dev-box reboot means re-launching each agent with `--resume` and rebuilding the layout by hand.
+Shell tabs work well for one or two coding agents.
+With three or four agents, you can lose track of which agent owns each branch.
+Agents can overwrite each other's work in a shared working tree.
+A tmux crash or machine restart requires you to resume each agent and restore the layout manually.
 
-LeapMux is a workspace for running several coding agents and shell terminals at once, each in a git worktree and branch you pick, tiled or floating, on a local or remote machine. Sessions stay attached across restarts, and Frontend↔Worker traffic is end-to-end encrypted. Runs in the browser or as a native desktop app.
+LeapMux runs several coding agents and shell terminals in one workspace.
+Choose each agent's git worktree and branch.
+Arrange the views in tiles or floating windows on a local or remote machine.
+Sessions stay attached across restarts.
+LeapMux encrypts Frontend↔Worker traffic from end to end.
+Use LeapMux in a browser or as a native desktop app.
 
 ## Supported Agents
 
 <p>
-  <a href="https://claude.com/product/claude-code"><img src="icons/agents/claude-code.svg" width="64" height="64" title="Claude Code"></a>&nbsp;
-  <a href="https://openai.com/codex/"><img src="icons/agents/codex.svg" width="64" height="64" title="Codex"></a>&nbsp;
-  <a href="https://cursor.com/cli"><img src="icons/agents/cursor.svg" width="64" height="64" title="Cursor"></a>&nbsp;
-  <a href="https://github.com/features/copilot/cli"><img src="icons/agents/github-copilot.svg" width="64" height="64" title="GitHub Copilot"></a>&nbsp;
-  <a href="https://opencode.ai/"><img src="icons/agents/opencode.svg" width="64" height="64" title="OpenCode"></a>&nbsp;
-  <a href="https://pi.dev/"><img src="icons/agents/pi.svg" width="64" height="64" title="Pi"></a>&nbsp;
-  <a href="https://kilo.ai/cli"><img src="icons/agents/kilo.svg" width="64" height="64" title="Kilo"></a>&nbsp;
-  <a href="https://block.github.io/goose/"><img src="icons/agents/goose.svg" width="64" height="64" title="Goose"></a>&nbsp;
-  <a href="https://github.com/esengine/DeepSeek-Reasonix"><img src="icons/agents/reasonix.svg" width="64" height="64" title="Reasonix"></a>&nbsp;
-  <a href="https://zcode.z.ai/"><img src="icons/agents/zcode.svg" width="64" height="64" title="ZCode"></a>
+  <a href="https://claude.com/product/claude-code"><img src="icons/agents/claude-code.svg" width="64" height="64" alt="Claude Code" title="Claude Code"></a>&nbsp;
+  <a href="https://openai.com/codex/"><img src="icons/agents/codex.svg" width="64" height="64" alt="Codex" title="Codex"></a>&nbsp;
+  <a href="https://cursor.com/cli"><img src="icons/agents/cursor.svg" width="64" height="64" alt="Cursor" title="Cursor"></a>&nbsp;
+  <a href="https://github.com/features/copilot/cli"><img src="icons/agents/github-copilot.svg" width="64" height="64" alt="GitHub Copilot" title="GitHub Copilot"></a>&nbsp;
+  <a href="https://opencode.ai/"><img src="icons/agents/opencode.svg" width="64" height="64" alt="OpenCode" title="OpenCode"></a>&nbsp;
+  <a href="https://pi.dev/"><img src="icons/agents/pi.svg" width="64" height="64" alt="Pi" title="Pi"></a>&nbsp;
+  <a href="https://kilo.ai/cli"><img src="icons/agents/kilo.svg" width="64" height="64" alt="Kilo" title="Kilo"></a>&nbsp;
+  <a href="https://block.github.io/goose/"><img src="icons/agents/goose.svg" width="64" height="64" alt="Goose" title="Goose"></a>&nbsp;
+  <a href="https://github.com/esengine/DeepSeek-Reasonix"><img src="icons/agents/reasonix.svg" width="64" height="64" alt="Reasonix" title="Reasonix"></a>&nbsp;
+  <a href="https://zcode.z.ai/"><img src="icons/agents/zcode.svg" width="64" height="64" alt="ZCode" title="ZCode"></a>&nbsp;
+  <a href="https://codewhale.net/en/product"><img src="icons/agents/codewhale.svg" width="64" height="64" alt="Codewhale" title="Codewhale"></a>&nbsp;
+  <a href="https://moonshotai.github.io/kimi-code/en/"><img src="icons/agents/kimi-code.svg" width="64" height="64" alt="Kimi Code" title="Kimi Code"></a>&nbsp;
+  <a href="https://mimo.xiaomi.com/coder"><img src="icons/agents/mimo-code.svg" width="64" height="64" alt="MiMo Code" title="MiMo Code"></a>&nbsp;
+  <a href="https://qwenlm.github.io/qwen-code-docs/en/users/overview"><img src="icons/agents/qwen-code.svg" width="64" height="64" alt="Qwen Code" title="Qwen Code"></a>&nbsp;
+  <a href="https://omp.sh"><img src="icons/agents/oh-my-pi.svg" width="64" height="64" alt="Oh My Pi" title="Oh My Pi"></a>&nbsp;
+  <a href="https://x.ai/cli"><img src="icons/agents/grok-build.svg" width="64" height="64" alt="Grok Build" title="Grok Build"></a>&nbsp;
+  <a href="https://kiro.dev/cli/"><img src="icons/agents/kiro.svg" width="64" height="64" alt="Kiro" title="Kiro"></a>&nbsp;
+  <a href="https://ampcode.com/"><img src="icons/agents/amp.svg" width="64" height="64" alt="Amp" title="Amp"></a>&nbsp;
+  <a href="https://cline.bot/cli"><img src="icons/agents/cline.svg" width="64" height="64" alt="Cline" title="Cline"></a>&nbsp;
+  <a href="https://codebuddy.ai"><img src="icons/agents/codebuddy.svg" width="64" height="64" alt="CodeBuddy Code" title="CodeBuddy Code"></a>&nbsp;
+  <a href="https://www.jetbrains.com/junie/"><img src="icons/agents/junie.svg" width="64" height="64" alt="Junie" title="Junie"></a>&nbsp;
+  <a href="https://docs.letta.com/letta-code"><img src="icons/agents/letta.svg" width="64" height="64" alt="Letta Code" title="Letta Code"></a>&nbsp;
+  <a href="https://dirac.run"><img src="icons/agents/dirac.svg" width="64" height="64" alt="Dirac" title="Dirac"></a>&nbsp;
+  <a href="https://qoder.com"><img src="icons/agents/qoder.svg" width="64" height="64" alt="Qoder CLI" title="Qoder CLI"></a>&nbsp;
+  <a href="https://docs.factory.ai/"><img src="icons/agents/droid.svg" width="64" height="64" alt="Factory Droid" title="Factory Droid"></a>&nbsp;
+  <a href="https://fast-agent.ai"><img src="icons/agents/fast-agent.svg" width="64" height="64" alt="Fast Agent" title="Fast Agent"></a>&nbsp;
+  <a href="https://commandcode.ai/"><img src="icons/agents/command-code.svg" width="64" height="64" alt="Command Code" title="Command Code"></a>&nbsp;
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="icons/agents/deepseek-harness.svg" width="64" height="64" alt="DeepSeek Harness" title="DeepSeek Harness"></a>&nbsp;
+  <a href="https://geminicli.com/"><img src="icons/agents/gemini-cli.svg" width="64" height="64" alt="Gemini CLI" title="Gemini CLI"></a>
 </p>
 
 > **📖 Want to use LeapMux?**
@@ -48,11 +75,26 @@ LeapMux is a workspace for running several coding agents and shell terminals at 
 
 ## Architecture
 
-LeapMux is a single Go binary (`leapmux`) plus a SolidJS frontend and a Tauri desktop shell, organized into three components:
+LeapMux includes one Go binary (`leapmux`), a SolidJS frontend, and a Tauri desktop shell.
+These parts form three components:
 
-- **Frontend** — SolidJS web app that renders the workspace UI (tiling layout, agents, terminals, file browser); also embedded in the desktop app.
-- **Hub** — Go service for login, workspace management, and worker registration, and an authenticated **relay** for end-to-end-encrypted Frontend↔Worker traffic. Storage is pluggable: SQLite (default), PostgreSQL, MySQL, CockroachDB, YugabyteDB, or TiDB.
-- **Worker** — Go process that runs agents, PTYs, file browsing, and git operations; keeps its own SQLite and connects **outbound** to the Hub, so it can live behind a NAT.
+- **Frontend** — A SolidJS web app that renders the workspace UI. The desktop app embeds the same frontend. Its views include:
+  - A tiling layout.
+  - Agents.
+  - Terminals.
+  - A file browser.
+- **Hub** — A Go service that manages login and workspaces. It registers workers and supplies an authenticated **relay** for encrypted Frontend↔Worker traffic. Its storage supports:
+  - SQLite, the default.
+  - PostgreSQL.
+  - MySQL.
+  - CockroachDB.
+  - YugabyteDB.
+  - TiDB.
+- **Worker** — A Go process that keeps its own SQLite database. It connects **outbound** to the Hub, so it can operate behind a NAT. It runs:
+  - Agents.
+  - PTYs.
+  - File browsing.
+  - Git operations.
 
 The binary runs in several modes:
 
@@ -65,15 +107,30 @@ The binary runs in several modes:
 | `leapmux control admin` | Online, authenticated CLI for users, workers, OAuth, settings, and tokens |
 | `leapmux recover` | Offline break-glass CLI: first-admin bootstrap, password reset, encryption keys, database |
 
-Frontend↔Hub uses ConnectRPC; Frontend↔Worker uses hybrid post-quantum Noise_NK multiplexed over a single Hub-relayed WebSocket; Worker↔Hub uses gRPC. The Hub routes traffic but can't read Frontend↔Worker content. The wire format is Protocol Buffers in [`/proto/leapmux/v1/`](proto/leapmux/v1/); every constant shared across Go, TypeScript, and Rust is defined once in [`/contracts/`](contracts/) and generated into each language.
+The connections use these protocols:
 
-LeapMux supports exactly one active Hub process per database. The Hub holds a database-backed runtime lease and refuses to serve when another live Hub owns it; a replacement can take over after graceful release or lease expiry. Administrative CLI processes may still access the database while the Hub is running.
+- Frontend↔Hub uses ConnectRPC.
+- Frontend↔Worker uses hybrid post-quantum Noise_NK over one WebSocket that the Hub relays.
+- Worker↔Hub uses gRPC.
+
+The Hub routes traffic but cannot read Frontend↔Worker content.
+The wire format uses Protocol Buffers in [`/proto/leapmux/v1/`](proto/leapmux/v1/).
+Each constant that multiple languages share lives once in [`/contracts/`](contracts/).
+The generators produce that constant for Go, TypeScript, and Rust.
+
+LeapMux supports exactly one active Hub process per database.
+The Hub holds a runtime lease in the database.
+It refuses to serve when another live Hub owns that lease.
+A replacement can take over after the owner releases the lease or the lease expires.
+Administrative CLI processes can access the database while the Hub runs.
 
 For the full architecture, deployment modes, and threat model, see the **[Concepts](https://leapmux.dev/docs/getting-started/concepts/)** and **[Security & Threat Model](https://leapmux.dev/docs/admin/security/)** chapters at [leapmux.dev](https://leapmux.dev).
 
 ## Prerequisites
 
-The rest of this README is for people building LeapMux from source or hacking on it. To just run LeapMux, grab a desktop app or server build from the [releases page](https://github.com/leapmux/leapmux/releases), or read the docs at [leapmux.dev](https://leapmux.dev).
+This README describes how to build and develop LeapMux from source.
+To use LeapMux, download a desktop app or server build from the [releases page](https://github.com/leapmux/leapmux/releases).
+Read the user documentation at [leapmux.dev](https://leapmux.dev).
 
 Before you begin, ensure you have the following installed:
 
@@ -85,11 +142,20 @@ Before you begin, ensure you have the following installed:
 - **protobuf** (`protoc`) - Protocol Buffer compiler (required by Tauri's `prost-build`)
 - **SQLite** (usually pre-installed on most systems)
 - **Docker** - Required for building Docker images (on macOS, [Rancher Desktop](https://rancherdesktop.io/) is recommended)
-- **mprocs** - Multi-process runner (required for `task dev`, `task dev-solo`, and `task dev-desktop`)
+- **dekit** - Multi-process runner (required for `task dev`, `task dev-solo`, and `task dev-desktop`)
 - **Rust toolchain** - For the Tauri desktop app (built by `task build`)
 - **Tauri desktop prerequisites** - WebView/system packages required by Tauri on your platform
 
-Go-based build tools — `sqlc`, `golangci-lint`, and `gotestsum` — are declared as `tool` dependencies in `backend/go.mod` and invoked automatically via `go tool <name>`. You don't need to install them separately.
+The Go build tools live as `tool` dependencies in `backend/go.mod`:
+
+- `sqlc`
+- `golangci-lint`
+- `gotestsum`
+
+Task runs each tool through `go tool <name>`.
+You do not need to install these tools separately.
+
+Install dekit with its [official installation instructions](https://github.com/pvolok/dekit#install) for your operating system.
 
 ### macOS
 
@@ -98,10 +164,11 @@ Install [Bun](https://bun.sh/) by following the instructions at https://bun.sh/.
 Install the remaining dependencies with [Homebrew](https://brew.sh/):
 
 ```bash
-brew install buf go go-task mprocs node protobuf rust
+brew install buf go go-task node protobuf rust
 ```
 
-For building Docker images, install [Rancher Desktop](https://rancherdesktop.io/) (or any Docker-compatible runtime such as Docker Desktop or OrbStack) separately.
+To build Docker images, install [Rancher Desktop](https://rancherdesktop.io/) or another Docker-compatible runtime separately.
+Docker Desktop and OrbStack work also.
 
 ### Arch Linux
 
@@ -118,13 +185,11 @@ The Arch `go-task` package installs the binary as `go-task`. Add a shell alias s
 alias task=go-task
 ```
 
-Install the remaining dependencies from the [AUR](https://wiki.archlinux.org/title/Arch_User_Repository) (using [yay](https://github.com/Jguer/yay) or your preferred AUR helper):
+For desktop app builds, install these dependencies:
 
-```bash
-yay -S mprocs-bin
-```
-
-For desktop app builds, install the [Tauri prerequisites for Arch Linux](https://v2.tauri.app/start/prerequisites/#linux) plus GStreamer (bundled into the AppImage by `bundleMediaFramework`) and `dpkg` (its `dpkg-deb` builds the `.deb` bundle; not installed by default on Arch):
+- The [Tauri prerequisites for Arch Linux](https://v2.tauri.app/start/prerequisites/#linux).
+- GStreamer, which `bundleMediaFramework` includes in the AppImage.
+- `dpkg`, whose `dpkg-deb` command builds the `.deb` bundle. Arch does not install `dpkg` by default.
 
 ```bash
 sudo pacman -S webkit2gtk-4.1 libayatana-appindicator librsvg patchelf dpkg \
@@ -142,14 +207,15 @@ winget install --id OpenJS.NodeJS.LTS --source winget  # or OpenJS.NodeJS for th
 winget install --id Oven-sh.Bun --source winget
 winget install --id Task.Task --source winget
 winget install --id bufbuild.buf --source winget
-winget install --id pvolok.mprocs --source winget
 winget install --id SUSE.RancherDesktop --source winget  # or any other Docker-compatible runtime (e.g. Docker.DockerDesktop, Podman.Podman)
 winget install --id Rustlang.Rust.MSVC --source winget
 winget install --id Google.Protobuf --source winget
 winget install --id Microsoft.VisualStudio.BuildTools --source winget  # or Microsoft.VisualStudio.2022.Community if you prefer the full IDE
 ```
 
-After `Microsoft.VisualStudio.BuildTools` installs, open the Visual Studio Installer and modify the installation to enable the **"Desktop development with C++"** workload — winget installs the bootstrapper but does not select any workloads automatically.
+After `Microsoft.VisualStudio.BuildTools` installs, open the Visual Studio Installer.
+Enable the **"Desktop development with C++"** workload in the installation.
+Winget installs the bootstrapper but does not select a workload automatically.
 
 For the remaining Tauri Windows prerequisites (WebView2, etc.), see the [Tauri Windows prerequisites](https://v2.tauri.app/start/prerequisites/#windows).
 
@@ -165,16 +231,18 @@ cd leapmux
 # 2. Generate code and download assets (protobuf, contracts, sqlc, and spinner JSON — not checked into git)
 task generate
 
-# 3. Start all services (requires mprocs)
+# 3. Start all services (requires dekit)
 task dev
 ```
 
-Once all services are running, open your browser to:
+After all services start, open this URL in your browser:
+
 ```
 http://localhost:4327
 ```
 
-Each `dev` target generates code and builds prerequisites, then launches `mprocs` to run the processes concurrently:
+Each `dev` target generates code and builds its prerequisites.
+It then runs `dekit mprocs` to start the processes concurrently:
 
 | Command | Processes | Description |
 |---------|-----------|-------------|
@@ -198,11 +266,17 @@ task build-frontend   # Build frontend assets
 task build-desktop    # Build desktop app for current platform (Tauri v2 + Rust)
 ```
 
-The `leapmux` binary is output to the repository root. Tauri emits the desktop bundles under `desktop/rust/target/`, and the final artifacts (`.dmg` on macOS, `.AppImage`/`.deb` on Linux, `.msi`/`.exe` on Windows) are also copied to the repository root.
+The build writes the `leapmux` binary to the repository root.
+Tauri writes desktop bundles under `desktop/rust/target/`.
+The build copies these final artifacts to the repository root also:
+
+- macOS: `.dmg`
+- Linux: `.AppImage` and `.deb`
+- Windows: `.msi` and `.exe`
 
 ### Testing
 
-Run all tests (except E2E):
+Run all tests except end-to-end (E2E) tests:
 ```bash
 task test
 ```
@@ -225,8 +299,98 @@ task test-frontend -- src/lib/validate.test.ts
 
 # E2E tests: pass a file path or --grep <pattern> to Playwright
 task test-e2e -- tests/e2e/040-chat-message-rendering.spec.ts
-task test-e2e -- --grep "should persist theme"
+task test-e2e -- tests/e2e/pi/text-attachments.spec.ts
+task test-e2e -- --grep "repaints the app"
 ```
+
+### Coding agent coverage
+
+The source checklist lives beside the provider specs under `frontend/tests/e2e/feature-matrix/`.
+Two JSON files define the coverage:
+
+- [features.json](frontend/tests/e2e/feature-matrix/features.json) holds stable feature IDs and precise descriptions.
+  It holds display labels and website publication choices also.
+- [checklist.json](frontend/tests/e2e/feature-matrix/checklist.json) holds each provider and feature combination.
+  Each entry supplies its distinct spec path and support verdict.
+  It records source verification and browser results separately.
+  Notes explain conditions and evidence, including upstream issue links.
+
+Feature IDs use kebab-case and match the spec filenames.
+For example, Pi's `text-attachments` entry points to `frontend/tests/e2e/pi/text-attachments.spec.ts`.
+A pending browser result does not mean that the feature is unsupported.
+Mark a browser entry as passed only after its complete spec passes.
+Unsupported features need native refusal or limitation assertions also.
+
+Run the affected provider specs with the examples below.
+Run `task test-scripts` to check the source matrix and script behavior.
+Run `task site` to generate the published feature matrix from these same files.
+The site includes published features and their descriptions.
+The checklist includes additional provider tests that the site does not publish.
+
+### E2E execution
+
+The E2E launcher splits the selected files into isolated Playwright processes.
+The default process count is the smaller of four and the available CPU capacity.
+The selected file count limits the actual shard count also.
+Each process runs one Playwright worker and shares its fixtures across its own tests.
+Each process owns these resources:
+
+- A LeapMux server and a mock model server.
+- A browser context and a shared tab.
+- Private provider configuration and databases.
+- Private native process records and binary copies.
+- Private reports and test artifacts.
+
+The launcher builds the backend once before any shard starts.
+It uses the same binary for every shard.
+No E2E test sends a request to a real model.
+
+Use `--workers` to select the number of isolated processes:
+
+```bash
+task test-e2e -- --workers=2
+task test-e2e -- --workers=50% tests/e2e/pi/
+task test-e2e -- --workers=1 tests/e2e/pi/
+```
+
+The launcher consumes this option.
+Every child still uses `--workers=1` and zero retries.
+The launcher rejects `--fully-parallel` because tests within a shard share mutable fixtures.
+
+Interactive modes use serial execution.
+Custom configurations and manually selected shards use serial execution also.
+Invocation-wide deadlines and failure limits retain serial execution.
+Snapshot updates and source updates use serial execution also.
+
+Serial and parallel runs retain artifacts under `frontend/test-results/runs/<run-id>/`.
+An explicit `--output=<directory>` changes the root to `<directory>/runs/<run-id>/`.
+Each run retains its complete console log and test artifacts.
+The default configuration retains native reports also.
+Serial runs preserve the caller's reporter options and explicit report destinations.
+For parallel runs, the launcher merges native blob reports and verifies every selected test case.
+The parallel merge preserves each case's project and repeat count also.
+Use `--reporter` to select reporters for the combined parallel result.
+Each parallel shard retains its internal list, blob, and JSON reports.
+
+For parallel runs, the launcher prints the combined JSON report path.
+Set `PLAYWRIGHT_JSON_OUTPUT_FILE` to select that report's destination.
+Alternatively, set `PLAYWRIGHT_JSON_OUTPUT_DIR` and `PLAYWRIGHT_JSON_OUTPUT_NAME`.
+The explicit file value takes precedence.
+Failed runs retain reports and attachments after native process cleanup.
+Later serial or parallel runs preserve these artifacts.
+
+Use `--last-failed` to run the failed cases from the combined result:
+
+```bash
+task test-e2e -- --workers=2 tests/e2e/pi/
+task test-e2e -- --last-failed
+```
+
+The launcher stores the combined native selection at the output root's `.last-run.json`.
+A complete passing run clears the prior failed selection.
+The last-failed run uses serial execution.
+An explicit `--last-failed-file` or `PLAYWRIGHT_LAST_RUN_OUTPUT_FILE` uses serial execution also.
+If the preceding run used `--output=<directory>`, use the same option for its last-failed run.
 
 ### Linting
 
@@ -256,6 +420,7 @@ task lint-fix-desktop    # Fix desktop Go code + Tauri Rust code (clippy --fix)
 ### Desktop Prerequisites
 
 Desktop builds use [Tauri v2](https://v2.tauri.app/start/prerequisites/):
+
 - macOS: Xcode Command Line Tools, Rust, WebKit (system)
 - Linux: Rust plus the WebKitGTK/Tauri native dependencies for your distro (see [Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/#linux)) and GStreamer (see the Arch Linux section above)
 - Windows: Rust MSVC toolchain plus WebView2
@@ -275,11 +440,17 @@ task generate-sqlc       # Generate type-safe SQL code (hub and worker)
 task generate-spinners   # Download spinner verb JSON files from awesome-claude-spinners
 ```
 
-Task uses checksums to skip generation when source files haven't changed. To force regeneration, use `task --force generate`.
+Task uses checksums to skip generation when source files stay the same.
+Run `task --force generate` to force generation.
 
-Always run `task generate-proto` after modifying `.proto` files in `/proto/leapmux/v1/`.
-Always run `task generate-sqlc` after modifying `.sql` files in `/backend/internal/hub/store/*/db/queries/` or `/backend/internal/worker/db/queries/`.
-Always run `task generate-contracts` after modifying `contracts/*.json`. Adding a proto enum value (AgentProvider, Scope) fails generation until its contract entry exists.
+Run `task generate-proto` after you modify `.proto` files in `/proto/leapmux/v1/`.
+Run `task generate-sqlc` after you modify SQL queries in these directories:
+
+- `/backend/internal/hub/store/*/db/queries/`
+- `/backend/internal/worker/db/queries/`
+
+Run `task generate-contracts` after you modify `contracts/*.json`.
+A new proto enum value, such as AgentProvider or Scope, fails generation until its contract entry exists.
 
 ### Preparation
 
@@ -295,7 +466,8 @@ task prepare-backend    # Generate proto/contracts/sqlc, build the frontend, and
 task prepare-desktop    # Generate proto/contracts, build the frontend, prepare the backend, and generate desktop icons
 ```
 
-Note: Build targets automatically run their required preparation steps, so `task build` works without running `task prepare` first.
+Build targets run their required preparation steps automatically.
+You can run `task build` without a separate `task prepare` command.
 
 ### Third-Party License Notice
 
@@ -304,7 +476,10 @@ Generate `NOTICE.md` and `NOTICE.html` with all third-party dependency licenses:
 task generate-notice
 ```
 
-Run this manually after changing dependencies; regular build targets do not trigger it. The task fails if any dependency is missing a license file or if a vendored override's license identifier no longer matches the upstream package.
+Run this command after you change dependencies.
+Regular build targets do not run it.
+The task fails if a dependency lacks a license file.
+It fails also if a vendored override's license identifier differs from the upstream package.
 
 ### Cleaning
 
@@ -335,7 +510,8 @@ task docker-build-alpine
 task docker-build-ubuntu
 ```
 
-By default this builds for `linux/amd64` and `linux/arm64`. You can override the platform and tag:
+The default build targets `linux/amd64` and `linux/arm64`.
+You can override the platform and tag:
 
 ```bash
 task docker-build-alpine PLATFORM=linux/amd64 TAG=leapmux:dev
@@ -345,27 +521,33 @@ The image uses a multi-stage build (buf, Bun, Go). Tool and base image versions 
 
 ### Tool versions
 
-`versions.env` is the single source of truth for every toolchain and base-image
-version. `Taskfile.yaml` loads it via `dotenv:`, the CI workflows splat it into
-`$GITHUB_ENV`, and `docker/Dockerfile` takes it as build ARGs — those consumers
-read it directly and need nothing further.
+`versions.env` is the single source of truth for every toolchain and base-image version.
+These consumers read it directly:
 
-Prose (this README, the docs site) and the `go` directive in each `go.mod` have
-nowhere to put a variable, so they are generated from it instead:
+- `Taskfile.yaml` loads it through `dotenv:`.
+- The CI workflows write it to `$GITHUB_ENV`.
+- `docker/Dockerfile` reads it as build arguments.
+
+This README and the documentation site cannot use variables for tool versions.
+The `go` directive in each `go.mod` has the same restriction.
+Task generates these values from `versions.env`:
 
 ```bash
 task sync-versions   # rewrite those copies from versions.env
 task lint-versions   # fail if one has drifted (runs as part of task lint)
 ```
 
-After editing `versions.env`, run `task sync-versions`. Adding a new place that
-states a version means adding a claim to `CLAIMS` in
-`scripts/sync-versions.mjs`; a claim whose pattern stops matching is a hard
-error, so a reworded line fails the build rather than silently going stale.
+After you edit `versions.env`, run `task sync-versions`.
+Add a claim to `CLAIMS` in `scripts/sync-versions.mjs` when another location states a version.
+A claim whose pattern matches nothing fails the build.
+This check detects a changed sentence that no longer receives version updates.
 
 ### Documentation site
 
-The site at [leapmux.dev](https://leapmux.dev) is a [Hugo](https://gohugo.io/) + [Hextra](https://imfing.github.io/hextra/) project under `site/`. Hugo is declared as a `go tool` dependency (see `site/go.mod`), so there's nothing extra to install.
+The site at [leapmux.dev](https://leapmux.dev) uses [Hugo](https://gohugo.io/) and [Hextra](https://imfing.github.io/hextra/).
+Its source lives under `site/`.
+Hugo lives as a `go tool` dependency in `site/go.mod`.
+You do not need to install Hugo separately.
 
 ```bash
 task site        # Build the static site into site/public/
@@ -425,7 +607,7 @@ task dev-site    # Live-reload dev server at http://localhost:1313
 - **[buf](https://buf.build/)** - Protocol Buffer tooling
 - **[ESLint](https://eslint.org/)** - TypeScript/JavaScript linting
 - **[golangci-lint](https://golangci-lint.run/)** - Go linting
-- **[mprocs](https://github.com/pvolok/mprocs)** - Multi-process runner for development
+- **[dekit](https://github.com/pvolok/dekit)** - Multi-process runner for development
 - **[Task](https://taskfile.dev/)** - Build orchestration with checksum-based caching
 
 ## Project Structure
@@ -442,7 +624,7 @@ leapmux/
 ├── desktop/             # Tauri v2 desktop app (Rust shell + Go sidecar)
 ├── docker/              # Dockerfile and s6-overlay service definitions
 ├── frontend/            # SolidJS web app
-│   └── src/components/  # UI: chat (+ per-agent renderers), terminal, files, shell
+│   └── src/components/  # UI: chat (with provider plugins), terminal, files, shell
 ├── icons/               # App and agent-provider SVG icons
 ├── proto/leapmux/v1/    # Protocol Buffer service and message definitions
 ├── scripts/             # Build scripts: contracts/proto generation, JSON-schema validation, NOTICE, icons
@@ -456,15 +638,23 @@ leapmux/
 
 ## Contributing
 
-We don't accept code contributions yet. The reason is licensing: LeapMux is under FSL-1.1-ALv2, which automatically converts to Apache 2.0 over time, and that relicensing is only possible if we hold the rights to every line of code. Without a Contributor License Agreement (CLA) in place, accepting outside contributions now would make that switch extremely hard — we'd have to track down every past contributor for their consent. Once a CLA is ready, we expect to open up to external contributions.
+We do not accept code contributions yet because of the license requirements.
+LeapMux uses FSL-1.1-ALv2, which converts to Apache 2.0 over time.
+That conversion requires us to hold the rights to every line of code.
+Without a Contributor License Agreement (CLA), external contributions would require us to obtain each contributor's consent before the conversion.
+Obtaining consent from every past contributor would be very difficult.
+We expect to accept external contributions after we prepare a CLA.
 
-In the meantime, please feel free to create issues, preferably with a plan generated by a frontier model; we will follow them up.
+Create issues in the meantime.
+Include a plan from a frontier model if possible.
+We will review those issues.
 
 ## License
 
 LeapMux is licensed under the **Functional Source License, Version 1.1, Apache 2.0 Future License (FSL-1.1-ALv2)**.
 
 This means:
+
 - You can use, modify, and distribute the software
 - There are certain limitations on competitive use
 - The license automatically converts to Apache 2.0 two years after each release is first made available
@@ -473,4 +663,37 @@ See the [LICENSE](LICENSE.md) file for full details.
 
 ## Disclaimer
 
-All product names, logos, and trademarks are the property of their respective owners. LeapMux is not affiliated with, endorsed by, or sponsored by Anomaly, Anthropic, Anysphere, Apple, Block, Cognition, Don Ho, Earendil, GitHub, Google, JetBrains, Kilo Code, Microsoft, OpenAI, Sublime HQ, Z.ai, Zed Industries, or any other third party. Coding agent, editor, and IDE icons are used solely to indicate compatibility and are reproduced here for identification purposes only.
+All product names, logos, and trademarks belong to their respective owners.
+LeapMux has no affiliation, endorsement, or sponsorship from these companies or any other third party:
+
+- Alibaba Cloud
+- Amazon Web Services
+- Amp Frontier Corporation
+- Anomaly
+- Anthropic
+- Anysphere
+- Apple
+- Block
+- Cline Bot Inc.
+- Cognition
+- Don Ho
+- Earendil
+- Factory
+- GitHub
+- Google
+- JetBrains
+- Kilo Code
+- Letta, Inc.
+- Microsoft
+- Moonshot AI
+- OpenAI
+- Stencil Labs
+- Sublime HQ
+- xAI
+- Xiaomi
+- Z.ai
+- Zed Industries
+
+Coding agent icons indicate compatibility only.
+Editor and IDE icons serve the same purpose.
+LeapMux reproduces these icons for identification only.

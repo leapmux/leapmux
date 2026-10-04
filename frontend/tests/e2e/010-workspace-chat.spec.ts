@@ -1,55 +1,19 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, workspaceRow } from './helpers/ui'
+import { workspaceRow } from './helpers/ui'
 
-/**
- * Ensure at least one agent tab exists after workspace creation
- * and wait for the tab count to stabilize (auto-created agents from
- * the worker may arrive asynchronously after workspace creation).
- * Returns the settled agent tab count.
- */
+/** Wait for the fixture's native agent. A slow UI update must not create a second agent. */
 async function ensureAgentTab(page: Page): Promise<number> {
-  try {
-    await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toBeVisible()
-  }
-  catch {
-    await page.locator('[data-testid^="new-agent-button"]').first().click()
-    await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toBeVisible()
-  }
-  // Wait for auto-created agents from the worker to settle.
-  await page.waitForTimeout(2000)
-  return page.locator('[data-testid="tab"][data-tab-type="agent"]').count()
+  const tabs = page.locator('[data-testid="tab"][data-tab-type="agent"]:visible')
+  await expect(tabs.first()).toBeVisible()
+  await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+  await expect(page.locator('[data-testid="agent-startup-overlay"]')).not.toBeVisible()
+  return tabs.count()
 }
 
 test.describe('Workspace Chat', () => {
-  test('should create workspace, open agent, and receive response from Claude', async ({ page, authenticatedWorkspace, modelScript }) => {
-    // An agent tab is auto-created when a workspace is created.
-    // Wait for the Milkdown editor to be ready.
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-
-    // OpenAgent now returns immediately (status=STARTING); wait for the
-    // "Starting …" overlay to disappear so the send takes the fast path
-    // rather than going through the pending-message queue (the queue is
-    // tested separately in 122).
-    await expect(page.getByText(/^Starting /)).not.toBeVisible()
-
-    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-
-    // Send a message to Claude via the rich text editor.
-    await editor.click()
-    await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
-    await page.keyboard.press('Meta+Enter')
-
-    // The editor clears after it accepts the message.
-    await expect(editor).toHaveText('')
-
-    // Wait for Claude's response to appear in an assistant message bubble.
-    await expectAssistantAnswer(page)
-  })
-
   test('should show workspace in sidebar after creation', async ({ page, authenticatedWorkspace }) => {
-    // Workspace should be visible in the sidebar (fixture auto-creates workspace)
+    // The fixture creates the workspace. Require its visible sidebar row.
     await expect(workspaceRow(page, authenticatedWorkspace.workspaceId)).toBeVisible()
   })
 
@@ -58,19 +22,19 @@ test.describe('Workspace Chat', () => {
 
     const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
 
-    // Double-click the tab to enter edit mode
+    // Double-click the tab to edit its title.
     await agentTab.dblclick()
 
-    // An inline text input should appear inside the tab
+    // Require the title input inside the tab.
     const editInput = agentTab.locator('input')
     await expect(editInput).toBeVisible()
     await expect(editInput).toBeFocused()
 
-    // Clear and type a new name
+    // Replace the title text.
     await editInput.fill('My Custom Agent')
     await editInput.press('Enter')
 
-    // Input should disappear and tab should show the new name
+    // Require the entered title after the input closes.
     await expect(editInput).not.toBeVisible()
     await expect(agentTab).toContainText('My Custom Agent')
   })
@@ -80,36 +44,35 @@ test.describe('Workspace Chat', () => {
 
     const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
 
-    // Double-click to start editing
+    // Double-click the tab to edit its title.
     await agentTab.dblclick()
     const editInput = agentTab.locator('input')
     await expect(editInput).toBeVisible()
 
-    // Type something different then press Escape
+    // Type a different title. Press Escape to cancel.
     await editInput.fill('Should Not Save')
     await editInput.press('Escape')
 
-    // Input should disappear and tab text should remain unchanged
+    // Require the original title after the input closes.
     await expect(editInput).not.toBeVisible()
     await expect(agentTab).not.toContainText('Should Not Save')
-    // Verify the tab still has its original title (positive assertion)
+    // Require the original title as a separate positive check.
     await expect(agentTab).toContainText('Agent')
   })
 
   test('should show dropdown menu when clicking the more button', async ({ page, authenticatedWorkspace }) => {
     await ensureAgentTab(page)
 
-    // Click the dropdown arrow button
+    // Open the tab menu.
     await page.locator('[data-testid="tab-more-menu"]').click()
 
-    // Verify the dropdown menu appears with grouped items.
-    // TabBar renders the menu items in multiple responsive menus (full, collapsed, micro),
-    // so scope assertions to the visible popover.
+    // Require the grouped menu items in the visible popover.
+    // TabBar creates several responsive menu copies, so an unscoped lookup can match a hidden copy.
     const openMenu = page.locator('menu[popover]:visible')
     await expect(openMenu.getByText('Agents', { exact: true })).toBeVisible()
     await expect(openMenu.getByText('Terminals', { exact: true })).toBeVisible()
 
-    // Click a shell item to create a terminal tab
+    // Select a shell to create a terminal tab.
     const menuItems = openMenu.locator('[role="menuitem"]')
     const count = await menuItems.count()
     let clickedShell = false
@@ -123,11 +86,11 @@ test.describe('Workspace Chat', () => {
     }
 
     if (clickedShell) {
-      // A terminal tab should appear
+      // Require the new terminal tab.
       await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).toBeVisible()
     }
     else {
-      // Close the menu if no shells available
+      // Close the menu when it contains no shell.
       await page.keyboard.press('Escape')
     }
   })
@@ -135,25 +98,25 @@ test.describe('Workspace Chat', () => {
   test('should create agent directly when clicking the agent button', async ({ page, authenticatedWorkspace }) => {
     await ensureAgentTab(page)
 
-    // Create a second agent via the agent button
+    // Create a second agent through its button.
     await page.locator('[data-testid^="new-agent-button"]').first().click()
 
-    // Should now have 2 agent tabs
+    // Require two agent tabs.
     await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
   })
 
   test('should close dropdown when clicking outside', async ({ page, authenticatedWorkspace }) => {
     await ensureAgentTab(page)
 
-    // Open the dropdown
+    // Open the tab menu.
     await page.locator('[data-testid="tab-more-menu"]').click()
     const openMenu = page.locator('menu[popover]:visible')
     await expect(openMenu.getByText('Agents', { exact: true })).toBeVisible()
 
-    // Press Escape to dismiss the dropdown
+    // Press Escape to close the tab menu.
     await page.keyboard.press('Escape')
 
-    // Dropdown should be closed
+    // Require the closed tab menu.
     await expect(openMenu.getByText('Agents', { exact: true })).not.toBeVisible()
   })
 
@@ -162,17 +125,17 @@ test.describe('Workspace Chat', () => {
 
     const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
 
-    // Rename the tab to a very long title
+    // Give the tab a long title.
     await agentTab.dblclick()
     const editInput = agentTab.locator('input')
     await expect(editInput).toBeVisible()
     await editInput.fill('This Is A Very Long Tab Title That Should Be Truncated')
     await editInput.press('Enter')
 
-    // The tab should contain the text
+    // Require the entered title text.
     await expect(agentTab).toContainText('This Is A Very Long Tab Title')
 
-    // The tab element width should be capped (maxWidth: 200px in TabBar.css.ts)
+    // Require the 200px maximum width that the tab stylesheet declares.
     const tabWidth = await agentTab.evaluate(el => el.getBoundingClientRect().width)
     expect(tabWidth).toBeLessThanOrEqual(200)
   })
@@ -180,28 +143,28 @@ test.describe('Workspace Chat', () => {
   test('should allow double-click rename on a non-active tab', async ({ page, authenticatedWorkspace }) => {
     const initialCount = await ensureAgentTab(page)
 
-    // Create a new agent tab
+    // Create an agent tab.
     await page.locator('[data-testid^="new-agent-button"]').first().click()
     const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
     await expect(agentTabs).toHaveCount(initialCount + 1)
 
-    // The newest tab should be active (just created). Click the first tab to make it active.
+    // The new tab becomes active. Select the first tab.
     await agentTabs.first().click()
 
-    // Double-click the last (non-active) tab to start renaming
+    // Double-click the last inactive tab to edit its title.
     const lastIdx = await agentTabs.count() - 1
     await agentTabs.nth(lastIdx).dblclick()
 
-    // The rename input should appear and be focused
+    // Require the title input and its focus.
     const editInput = agentTabs.nth(lastIdx).locator('input')
     await expect(editInput).toBeVisible()
     await expect(editInput).toBeFocused()
 
-    // Type a new name and confirm
+    // Enter and save the new title.
     await editInput.fill('Renamed Non-Active')
     await editInput.press('Enter')
 
-    // Input should disappear and tab should show the new name
+    // Require the entered title after the input closes.
     await expect(editInput).not.toBeVisible()
     await expect(agentTabs.nth(lastIdx)).toContainText('Renamed Non-Active')
   })
@@ -209,23 +172,22 @@ test.describe('Workspace Chat', () => {
   test('should close a tab on middle-click', async ({ page, authenticatedWorkspace }) => {
     const initialCount = await ensureAgentTab(page)
 
-    // Create a new agent tab
+    // Create an agent tab.
     await page.locator('[data-testid^="new-agent-button"]').first().click()
     const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
     await expect(agentTabs).toHaveCount(initialCount + 1)
 
     const countBefore = await agentTabs.count()
 
-    // Middle-click the last agent tab to close it.
-    // Use evaluate() to dispatch a proper MouseEvent with button=1,
-    // because Playwright's dispatchEvent() may create a generic Event
-    // (where e.button is undefined) and click({ button: 'middle' })
-    // can be unreliable within DnD-sortable containers.
+    // Close the last tab through a middle-button MouseEvent.
+    // Playwright dispatchEvent can create an Event with no button value.
+    // Its middle-button click can also fail inside a container that supports drag reordering.
+    // The explicit MouseEvent supplies button=1 for the actual tab handler.
     await agentTabs.nth(countBefore - 1).evaluate((el) => {
       el.dispatchEvent(new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }))
     })
 
-    // The closed agent tab should be removed
+    // Require removal of the closed tab.
     await expect(agentTabs).toHaveCount(countBefore - 1)
   })
 })

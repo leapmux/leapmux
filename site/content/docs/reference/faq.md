@@ -11,7 +11,13 @@ Short answers to the questions people ask most often about LeapMux. Each one lin
 
 You can run everything locally. The `leapmux solo` command starts a Hub and a Worker on `127.0.0.1:4327`. A TCP browser sets the first `solo` password before it opens the app. The desktop app listens only on a local socket and needs no credential. Add another address under **Preferences → Administration → Network access** to reach the same Hub from another machine.
 
-You only need a separate Hub when you want multiple users, remote Workers, or sign-in. In that case run `leapmux hub` (central relay, real authentication) and connect one or more `leapmux worker` processes to it.
+Use a separate Hub for any of these requirements:
+
+- Multiple users.
+- Remote Workers.
+- Sign-in.
+
+Run `leapmux hub` for the central relay and authentication. Connect one or more `leapmux worker` processes to it.
 
 See [Running LeapMux](/docs/admin/running-leapmux/) for the run modes and [Concepts & Architecture](/docs/getting-started/concepts/) for solo vs. distributed.
 
@@ -27,7 +33,13 @@ For real multi-user setups see [Accounts & Authentication](/docs/using/accounts/
 
 ## Where is my data stored?
 
-Agent transcripts, terminal output, and file/git state live only in the **Worker's** local SQLite database — never on the Hub. The Hub stores accounts, workspace metadata (titles, tab positions, tiling geometry), and Worker public keys.
+The **Worker** stores work data in its local SQLite database:
+
+- Agent transcripts.
+- Terminal output.
+- File and git state.
+
+The Hub never stores these contents. It stores account records and Worker public keys. Its workspace metadata includes titles and tab positions. It includes tiling geometry also.
 
 Default locations:
 
@@ -43,9 +55,15 @@ See [Configuration](/docs/admin/configuration/) and [Encryption & Data](/docs/ad
 
 ## Can the Hub read my code, chats, or terminal output?
 
-No — all Frontend-to-Worker traffic is end-to-end encrypted, and the Hub is an **authenticated relay, not a trusted peer**: it forwards opaque ciphertext and never holds the session keys.
+No. LeapMux encrypts all Frontend-to-Worker traffic from end to end. The Hub authenticates connections and forwards opaque ciphertext. It never holds the session keys. The endpoints do not trust the Hub with plaintext.
 
-The Hub **can** see connection metadata — channel IDs, ciphertext sizes, and timing (traffic analysis is in scope) — plus account and workspace records and Worker public keys. Even the Worker's hostname and filesystem paths travel inside the encrypted application stream, so they are not exposed to the relay.
+The Hub can see connection metadata:
+
+- Channel IDs.
+- Ciphertext sizes.
+- Timing.
+
+Traffic analysis is part of the threat model. The Hub sees account and workspace records, plus Worker public keys also. The Worker's hostname and filesystem paths travel inside the encrypted application stream. The relay cannot read them.
 
 | The Hub can see | The Hub cannot see |
 |---|---|
@@ -54,20 +72,22 @@ The Hub **can** see connection metadata — channel IDs, ciphertext sizes, and t
 See [Security & Threat Model](/docs/admin/security/) for the authoritative scope of what the Hub does and does not see.
 
 {{< callout type="info" >}}
-In solo mode the Hub and Worker run in the same process, so the E2EE protocol is still in effect but provides no protection against a local attacker who can reach the loopback port. The threat model there reduces to local-host trust.
+In solo mode the Hub and Worker run in the same process. The end-to-end encryption protocol still applies. It does not protect against a local attacker who can reach the loopback port. Solo mode requires trust in the local host.
 {{< /callout >}}
 
 ## Which coding agents are supported?
 
-LeapMux supports ten agent providers: **Claude Code**, **Codex**, **Cursor**, **GitHub Copilot**, **Kilo**, **OpenCode**, **Goose**, **Pi**, **Reasonix**, and **ZCode**. All ten are first-class, and LeapMux gives each the same core surface where the underlying CLI supports it: chat, tool calls, permission prompts, plan tracking, and session resume.
+LeapMux supports {{< agent-provider-count >}} agent providers. Each provider uses the same chat interface. The available features depend on the provider's native command-line interface (CLI).
 
-A provider only appears in the picker when LeapMux detects its CLI binary on the Worker. If `claude` or `codex` is not installed on the machine that runs the Worker, that provider does not appear. ZCode is the exception to the binary rule: it ships no command, so LeapMux looks for its desktop installation instead.
+{{< agent-logos >}}
 
-For what each provider can do, see [Coding Agents](/docs/using/coding-agents/).
+A provider appears in the picker only when LeapMux detects its installation on the Worker. For example, the Worker needs `claude` to offer Claude Code. ZCode supplies no CLI executable, so LeapMux detects its desktop installation instead.
+
+See the [feature matrix](/docs/using/coding-agents/#feature-matrix) for each provider's exact support and limits.
 
 ## Can Workers run behind a NAT or firewall?
 
-Yes. The **Worker always initiates the connection to the Hub**, so it never needs an inbound port — it works behind NAT or a firewall with only outbound access. Set the Worker's `--hub` URL to your Hub (over `https://` for a TLS-fronted Hub) and it dials out and stays connected, auto-reconnecting on disconnection.
+Yes. The **Worker always initiates its connection to the Hub**. It needs outbound access only. It can run behind network address translation (NAT) or a firewall without an inbound port. Set its `--hub` URL to your Hub. Use `https://` when the Hub uses TLS. The Worker reconnects automatically after a disconnection.
 
 Local Workers can instead use a Unix domain socket (`unix:<path>`) or Windows named pipe (`npipe:<name>`).
 
@@ -75,7 +95,16 @@ See [Managing Workers](/docs/admin/managing-workers/) and [Configuration](/docs/
 
 ## Can I use PostgreSQL or MySQL instead of SQLite?
 
-Yes — for the **Hub**. The Hub supports six storage backends, selected with `storage.type`: `sqlite` (default), `postgres`, `mysql`, `cockroachdb`, `yugabytedb`, and `tidb`. The Postgres- and MySQL-compatible backends reuse their respective drivers — see [Configuration](/docs/admin/configuration/) for which driver each one uses. Each external backend needs a `dsn`:
+Yes, for the **Hub**. Select its storage backend with `storage.type`:
+
+- `sqlite`, the default.
+- `postgres`.
+- `mysql`.
+- `cockroachdb`.
+- `yugabytedb`.
+- `tidb`.
+
+The Postgres-compatible and MySQL-compatible backends reuse their respective drivers. See [Configuration](/docs/admin/configuration/) for each backend's driver. Each external backend needs a `dsn`:
 
 ```yaml
 storage:
@@ -84,13 +113,13 @@ storage:
     dsn: "postgres://user:password@db.example.com:5432/leapmux?sslmode=disable"
 ```
 
-Migrations run automatically when the store opens. **Workers always use SQLite locally** — that's not configurable. Note that storage settings are nested keys, so set them in the YAML config file (or via CLI flags), not via simple environment variables.
+Migrations run automatically when the store opens. **Workers always use SQLite locally**. You cannot change that database type. Storage settings use nested keys. Set them through the YAML configuration file or CLI flags. Simple environment variables cannot set these nested keys.
 
 See [Configuration](/docs/admin/configuration/) and [Encryption & Data](/docs/admin/encryption-and-data/).
 
 ## How do multiple agents avoid clobbering each other?
 
-Through **git worktrees**. When you open an agent or a terminal, you can have LeapMux create a dedicated worktree and branch for it. Agents in separate worktrees never touch the same working tree or branch. One agent can refactor, a second can write tests, and a third can fix a build failure, all fully isolated.
+Use **git worktrees**. When you open an agent or terminal, LeapMux can create a separate worktree and branch for it. Agents in separate worktrees use separate working trees and branches. For example, one agent can refactor while another writes tests. A third can fix a build failure in its own worktree.
 
 The sidebar groups tabs by repository and branch, so you know which agent owns which branch. When you close the last tab of a worktree that has uncommitted changes, LeapMux asks you to confirm.
 
@@ -98,9 +127,11 @@ See [Worktrees & Branches](/docs/using/worktrees-and-branches/).
 
 ## Do my sessions survive a restart or reboot?
 
-Agent sessions do. Agent state persists in the Worker's local SQLite database, so when the Worker process or the machine comes back and reconnects to the Hub, your agent sessions are still there — no need to relaunch each agent. You can also resume a prior agent session by picking it from the **Resume an existing session** menu in the **New agent** dialog, which lists what LeapMux and the agent CLI itself both recorded for that directory. LeapMux resumes the provider's own session — Claude Code's `--resume` flag, or the equivalent for other providers.
+Agent sessions do. The Worker's local SQLite database keeps agent state. Sessions return when the Worker or machine restarts and reconnects to the Hub. You do not need to relaunch each agent manually.
 
-Terminals are a partial exception: a shell process cannot outlive a Worker restart. LeapMux persists each terminal's last screen, so after the Worker comes back the terminal tab reappears exactly where it left off — but its shell has exited, and you press **Enter** to restart it in the same working directory. (A transient disconnect, where the Worker process itself never went down, keeps the live shell attached.)
+Open the **New agent** dialog and use **Resume an existing session** to reopen a prior session. The list combines LeapMux's records with the CLI's native records for that directory. LeapMux resumes the provider's native session. For example, Claude Code uses `--resume`.
+
+A shell process cannot survive a Worker restart. LeapMux keeps each terminal's last screen. Its tab returns at the same position after the Worker restarts. Press **Enter** to restart the shell in the same working directory. A temporary disconnection keeps the live shell attached if the Worker process continues to run.
 
 See [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/).
 
@@ -109,7 +140,9 @@ See [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/term
 They are the same SolidJS Frontend. The difference is packaging:
 
 - **Browser** — open `http://<host>:4327` against a running Hub, dev, or solo instance.
-- **Desktop app** — a native Tauri app with the Frontend in an embedded WebView. It can run solo mode entirely on your machine (listening only on a local socket, no TCP port) or connect to a remote Hub.
+- **Desktop app** — a native Tauri app with the Frontend in an embedded WebView.
+  Solo mode listens only on a local socket without a TCP port.
+  The app can connect to a remote Hub also.
 
 The same end-to-end encryption applies either way. Pick the desktop app for a self-contained local setup; use the browser when connecting to a shared Hub.
 

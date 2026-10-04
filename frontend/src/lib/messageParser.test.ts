@@ -38,6 +38,31 @@ function wrap(...messages: unknown[]): { type: typeof NOTIFICATION_THREAD_TYPE, 
 // ---------------------------------------------------------------------------
 
 describe('parseMessageContent', () => {
+  it('keeps native session identity in neutral metadata without changing provider bytes', () => {
+    const original = { type: 'native-result', output: 'native output' }
+    const message = makeMessage({ content: rawContent(original), agentSessionId: 'native-current-session' })
+    const result = parseMessageContent(message)
+    expect(result.agentSessionId).toBe('native-current-session')
+    expect(result.parentObject).toEqual(original)
+    expect(result.rawText).toBe(JSON.stringify(original))
+    expect(parseMessageContent(message)).toBe(result)
+  })
+
+  it('keeps the Worker session column separate from a foreign provider session field', () => {
+    const original = { type: 'native-result', agentSessionId: 'foreign-provider-session' }
+    const result = parseMessageContent(makeMessage({ content: rawContent(original), agentSessionId: 'native-current-session' }))
+    expect(result.agentSessionId).toBe('native-current-session')
+    expect(result.parentObject).toEqual(original)
+  })
+
+  it('keeps an empty or unreadable message session without inventing a provider identity', () => {
+    for (const content of [new TextEncoder().encode('{invalid'), new Uint8Array([0xFF, 0xFE])]) {
+      const result = parseMessageContent(makeMessage({ content, agentSessionId: '' }))
+      expect(result.agentSessionId).toBe('')
+      expect(result.parentObject).toBeUndefined()
+    }
+  })
+
   it('keeps typed completion when provider JSON is invalid', () => {
     const content = new TextEncoder().encode('{unfinished')
     const result = parseMessageContent(makeMessage({ content, completion: MessageCompletion.INTERRUPTED }))
@@ -324,6 +349,43 @@ describe('extractContextUsage', () => {
         contextWindow: 200000,
       },
     })
+  })
+
+  it('extracts a normalized reading that states the fill alone', () => {
+    const msg = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { usage_percent: 3.5 } })
+    expect(extractContextUsage(parseMessageContent(msg), noProviderUsage)).toEqual({
+      contextUsage: { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 3.5 },
+    })
+  })
+
+  it('keeps a stated zero percentage and drops a percentage that is no reading', () => {
+    const zero = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { usage_percent: 0 } })
+    expect(extractContextUsage(parseMessageContent(zero), noProviderUsage)?.contextUsage?.usagePercent).toBe(0)
+    for (const value of [-1, 'full', null]) {
+      const msg = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { usage_percent: value } })
+      expect(extractContextUsage(parseMessageContent(msg), noProviderUsage), String(value)).toBeNull()
+    }
+  })
+
+  it('keeps the percentage beside a token count', () => {
+    // The parser keeps both halves. The meter decides that the token count wins.
+    const msg = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { input_tokens: 10, context_window: 100, usage_percent: 40 } })
+    expect(extractContextUsage(parseMessageContent(msg), noProviderUsage)).toEqual({
+      contextUsage: { inputTokens: 10, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, contextWindow: 100, usagePercent: 40 },
+    })
+  })
+
+  it('drops a percentage that is no reading and keeps the token count beside it', () => {
+    const msg = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { input_tokens: 10, usage_percent: -1 } })
+    const usage = extractContextUsage(parseMessageContent(msg), noProviderUsage)?.contextUsage
+    expect(usage).toEqual({ inputTokens: 10, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 })
+    // Absent, not present and undefined: the store compares key counts.
+    expect(Object.keys(usage ?? {})).not.toContain('usagePercent')
+  })
+
+  it('keeps a percentage past the whole window for the meter to cap', () => {
+    const msg = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { usage_percent: 250 } })
+    expect(extractContextUsage(parseMessageContent(msg), noProviderUsage)?.contextUsage?.usagePercent).toBe(250)
   })
 
   it('skips the provider fallback when a backend-normalized context_usage is present', () => {

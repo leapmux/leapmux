@@ -65,7 +65,26 @@ async function expectMobileShellIdle(page: Page) {
   // neither its presence nor `toBeVisible` can tell the two states apart.
   // `pointer-events` is what actually differs.
   await expect(page.getByTestId('tab-sheet-overlay')).toHaveCSS('pointer-events', 'none')
+  await expectTabHydrated(page)
   await expectMainThreadIdle(page)
+}
+
+/**
+ * The agent tab shows the agent's own details, so the network has no more work
+ * for the main thread.
+ *
+ * The shell reveals the tab before the agent's details arrive. When they arrive,
+ * the app renders the tab chip again and adds the model chip under the composer,
+ * on the main thread. {@link expectMainThreadIdle} alone can take its grants in
+ * the quiet moment before that, and the swipe then runs while the main thread
+ * renders the details. That is the race that `~/src/lib/horizontalSwipe.ts`
+ * describes: the swipe is lost, and no drawer arrives.
+ *
+ * The model chip renders only when the agent states its model, so it marks the
+ * end of that work.
+ */
+async function expectTabHydrated(page: Page) {
+  await expect(page.getByTestId('composer-model-trigger')).toBeVisible()
 }
 
 /**
@@ -114,19 +133,25 @@ async function transcriptY(page: Page): Promise<number> {
 }
 
 /**
- * What is actually under the finger, as a short description.
+ * The region under the finger: `transcript`, the test id of the drawer, or a
+ * short description of anything else.
  *
  * A swipe that misses reports nothing, and "the drawer never opened" is the
  * same failure whether the recognizer declined or the finger simply landed on
- * the composer. Asserting the landing separates the two.
+ * something else. Asserting the landing separates the two.
  */
-async function elementUnder(page: Page, x: number, y: number): Promise<string> {
+async function regionUnder(page: Page, x: number, y: number): Promise<string> {
   return page.evaluate(([px, py]) => {
     const el = document.elementFromPoint(px, py)
     if (!el)
       return 'nothing'
-    const owner = el.closest('[data-chat-scroll-container], [data-testid]')
-    return `${el.tagName}|${owner?.getAttribute('data-testid') ?? (owner ? 'chat-scroll-container' : 'no-owner')}`
+    const drawer = el.closest('[data-testid="mobile-drawer-left"], [data-testid="mobile-drawer-right"]')
+    if (drawer)
+      return drawer.getAttribute('data-testid')!
+    if (el.closest('[data-chat-scroll-container="true"]'))
+      return 'transcript'
+    const owner = el.closest('[data-testid]')
+    return `${el.tagName}|${owner?.getAttribute('data-testid') ?? 'no-owner'}`
   }, [x, y] as const)
 }
 
@@ -154,12 +179,12 @@ async function swipeBand(page: Page, direction: 'left' | 'right') {
   const y = await transcriptY(page)
   const travel = width * SWIPE_TRAVEL_RATIO * (direction === 'right' ? 1 : -1)
   const fromX = direction === 'right' ? width * 0.25 : width * 0.75
-  // The finger must start on the transcript or on the drawer over it. A landing
-  // on the composer or the tab bar is a mis-aimed swipe, and it must fail as
-  // that rather than as "the drawer never opened".
-  const landing = await elementUnder(page, fromX, y)
+  // The finger must start on the transcript or on the drawer over it. Any other
+  // landing is a mis-aimed swipe, and it must fail as that rather than as "the
+  // drawer never opened".
+  const landing = await regionUnder(page, fromX, y)
   const where = `the swipe start at (${Math.round(fromX)}, ${Math.round(y)})`
-  expect(landing, where).not.toMatch(/composer-editor|tab-bar|nothing/)
+  expect(landing, where).toMatch(/^(?:transcript|mobile-drawer-left|mobile-drawer-right)$/)
   await touchSwipe(page, { from: { x: fromX, y }, to: { x: fromX + travel, y } })
 }
 

@@ -32,7 +32,11 @@ func startForTest(t *testing.T, localListen string, extraCfg solo.Config) *solo.
 	if localListen == "" {
 		localListen = uniqueListenURL(t)
 	}
-	t.Setenv(locallisten.EnvLocalListen, localListen)
+	// LEAPMUX_HUB_LISTEN is the comma-delimited form of the repeatable
+	// --listen flag. One local entry is the whole bind set here: NoTCP below
+	// drops the TCP half anyway, and the entry replaces the platform default
+	// socket with this test's unique one.
+	t.Setenv("LEAPMUX_HUB_LISTEN", localListen)
 
 	cfg := extraCfg
 	cfg.SkipBanner = true
@@ -54,7 +58,7 @@ func startForTest(t *testing.T, localListen string, extraCfg solo.Config) *solo.
 // noticing -- every other path reaches teardown through an explicit Stop.
 func TestSoloStart_CancellingTheParentShutsTheInstanceDown(t *testing.T) {
 	locallistentest.SandboxHome(t)
-	t.Setenv(locallisten.EnvLocalListen, uniqueListenURL(t))
+	t.Setenv("LEAPMUX_HUB_LISTEN", uniqueListenURL(t))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	inst, err := solo.Start(ctx, solo.Config{SkipBanner: true, NoTCP: true})
@@ -106,7 +110,7 @@ func TestSoloStart_RespectsExplicitLocalListen(t *testing.T) {
 // already covers the "binding actually works" path with a unique URL.
 func TestSoloStart_DefaultLocalListen(t *testing.T) {
 	locallistentest.SandboxHome(t)
-	t.Setenv(locallisten.EnvLocalListen, "")
+	t.Setenv("LEAPMUX_HUB_LISTEN", "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -175,7 +179,10 @@ func TestSoloStart_WarnsOnNonLoopbackListen(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			locallistentest.SandboxHome(t)
-			t.Setenv(locallisten.EnvLocalListen, uniqueListenURL(t))
+			// Both entries in the list: the TCP address under test and this
+			// test's unique local socket. The list is the bind set, so naming
+			// only the local entry would drop the TCP address entirely.
+			t.Setenv("LEAPMUX_HUB_LISTEN", tc.listen+","+uniqueListenURL(t))
 
 			var inst *solo.Instance
 			var startErr error
@@ -205,11 +212,11 @@ func TestSoloStart_WarnsOnNonLoopbackListen(t *testing.T) {
 	}
 }
 
-// TestSoloStart_InvalidLocalListenErrors confirms an unparseable URL surfaces
-// as a startup error without leaking resources.
-func TestSoloStart_InvalidLocalListenErrors(t *testing.T) {
+// TestSoloStart_InvalidListenEntryErrors confirms an unparseable bind-set
+// entry surfaces as a startup error without leaking resources.
+func TestSoloStart_InvalidListenEntryErrors(t *testing.T) {
 	locallistentest.SandboxHome(t)
-	t.Setenv(locallisten.EnvLocalListen, "gopher://example:70/bogus")
+	t.Setenv("LEAPMUX_HUB_LISTEN", "gopher://example:70/bogus")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -217,9 +224,9 @@ func TestSoloStart_InvalidLocalListenErrors(t *testing.T) {
 		SkipBanner: true,
 		NoTCP:      true,
 	})
-	require.Error(t, err, "solo.Start should reject an unparseable LocalListen")
-	assert.Contains(t, err.Error(), "local_listen",
-		"error should surface the offending flag name")
+	require.Error(t, err, "solo.Start should reject an unparseable listen entry")
+	assert.Contains(t, err.Error(), "invalid listen",
+		"error should surface the offending entry with its index")
 }
 
 // A local-listen URL whose parent directory does not exist fails at BIND time,
@@ -238,7 +245,7 @@ func TestSoloStart_SurfacesHubBindError(t *testing.T) {
 	locallistentest.SandboxHome(t)
 	// Well-formed URL, but the parent directory does not exist, so
 	// net.Listen("unix", ...) fails with ENOENT.
-	t.Setenv(locallisten.EnvLocalListen, "unix:/nonexistent-parent-dir-for-solo-test/hub.sock")
+	t.Setenv("LEAPMUX_HUB_LISTEN", "unix:/nonexistent-parent-dir-for-solo-test/hub.sock")
 
 	// Use a short deadline: if the fix regresses, we'd fall back to the
 	// 5s WaitReady timeout and this test would flake-fail, making the
@@ -284,7 +291,7 @@ func TestSoloStart_DoesNotAlsoLogANewServerFailure(t *testing.T) {
 		t.Skip("unix-socket-specific reproduction")
 	}
 	locallistentest.SandboxHome(t)
-	t.Setenv(locallisten.EnvLocalListen, "unix:/nonexistent-parent-dir-for-solo-test/hub.sock")
+	t.Setenv("LEAPMUX_HUB_LISTEN", "unix:/nonexistent-parent-dir-for-solo-test/hub.sock")
 
 	var startErr error
 	out := testutil.CaptureStderr(t, func() {

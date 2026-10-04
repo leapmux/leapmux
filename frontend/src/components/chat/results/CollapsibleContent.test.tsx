@@ -46,9 +46,8 @@ describe('CollapsibleContent', () => {
       <CollapsibleContent kind="pre" text="x" display="x" isCollapsed={true} />
     ))
     const div = container.firstElementChild as HTMLElement
-    // The collapsed style is composed from a vanilla-extract class; the
-    // suffix is appended after the base class. We assert the class list has
-    // more than one entry.
+    // The collapsed class follows the base display class.
+    // Require both classes on the same existing element.
     expect(div).not.toBeNull()
     expect(div!.className.split(/\s+/).length).toBeGreaterThan(1)
   })
@@ -155,5 +154,29 @@ describe('CollapsibleContent', () => {
       <CollapsibleContent kind="markdown-tool-result" text="**bold**" display="ignored" isCollapsed={false} />
     ))
     expect(container.querySelector('strong')).not.toBeNull()
+  })
+})
+
+describe('CollapsibleContent output ownership', () => {
+  it.each(['pre', 'ansi-or-pre', 'markdown', 'markdown-tool-result', 'json'] as const)('marks the existing output element for kind %s without adding a wrapper', (kind) => {
+    const text = kind === 'json' ? '{"count":0,"enabled":false}' : 'native output'
+    const { container } = render(() => <CollapsibleContent outputPreview kind={kind} text={text} display={text} isCollapsed={false} />)
+    expect(container.querySelectorAll('[data-tool-output-preview]')).toHaveLength(1)
+    expect(container.firstElementChild?.getAttribute('data-tool-output-preview')).toBe('')
+    expect(container.textContent).toContain(kind === 'json' ? '"count"' : 'native output')
+  })
+
+  it.each([false, true])('keeps output ownership on styled text when collapsed is %s', (isCollapsed) => {
+    const text = '\x1B[31mnative output\x1B[0m'
+    const { container } = render(() => <CollapsibleContent outputPreview kind="ansi-or-pre" text={text} display={text} isCollapsed={isCollapsed} />)
+    const output = container.querySelector('[data-tool-output-preview]')
+    expect(output?.textContent).toBe('native output')
+    expect(output?.querySelector('span')).not.toBeNull()
+  })
+
+  it.each([false, undefined])('does not mark request or metadata text for ownership %j', (outputPreview) => {
+    const { container } = render(() => <CollapsibleContent {...(outputPreview !== undefined ? { outputPreview } : {})} kind="pre" text="same marker" isCollapsed={false} />)
+    expect(container.textContent).toBe('same marker')
+    expect(container.querySelector('[data-tool-output-preview]')).toBeNull()
   })
 })

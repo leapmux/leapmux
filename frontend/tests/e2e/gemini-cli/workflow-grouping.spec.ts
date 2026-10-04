@@ -1,0 +1,11 @@
+import { GEMINI_E2E_SKIP_REASON, geminiTest } from '../gemini-fixtures'
+import { exerciseUngroupedNativeChildren } from '../helpers/ungroupedNativeChildren'
+import { openGeminiRunningChild } from './childScenarios'
+import { nativeContext } from './scenarios'
+
+geminiTest.skip(!!GEMINI_E2E_SKIP_REASON, GEMINI_E2E_SKIP_REASON || '')
+
+geminiTest('keeps two exact native child UUIDs distinct without an invented workflow group', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
+  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  await exerciseUngroupedNativeChildren(context, { openChild: index => openGeminiRunningChild(context, index) })
+})

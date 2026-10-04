@@ -76,10 +76,10 @@ func TestCursorToolTranscriptPreservesNativeContentFields(t *testing.T) {
 	}
 }
 
-// newCursorToolStoreForTest closes the store's database handle when the test ends, so
-// an open file cannot defeat the temporary directory's own cleanup. The ZCode store
-// has the same helper, and tooltranscripttest.ReleaseToolStoreAtTestEnd states why the close must be
-// synchronous.
+// newCursorToolStoreForTest closes the store's database handle when the test ends.
+// An open file can prevent temporary-directory cleanup.
+// The ZCode store uses the same helper.
+// tooltranscripttest.ReleaseToolStoreAtTestEnd explains why the close must be synchronous.
 func newCursorToolStoreForTest(t *testing.T) *cursorToolStore {
 	t.Helper()
 	store := &cursorToolStore{}
@@ -220,28 +220,59 @@ func TestCursorToolTranscriptPreservesResultsWithoutStoreData(t *testing.T) {
 	}
 }
 
-func TestCursorToolTranscriptEnrichesSessionReplay(t *testing.T) {
-	t.Parallel()
+// newCursorReplayTranscript hides the store path until the test releases it.
+func newCursorReplayTranscript(t *testing.T, sink *agenttest.Sink) (*tooltranscript.Transcript, func(), []byte) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "store.db")
 	db := agenttest.NewFixtureDB(t, path, cursorStoreDDL)
 	insertCursorBlob(t, db, "request", cursorStoredRequest)
 	insertCursorBlob(t, db, "result", cursorStoredResult)
 	var activePath string
-	sink := &agenttest.Sink{}
 	transcript := newCursorToolTranscript(t.Context(), agent.NewProviderServices(sink), func() string { return activePath })
 	tooltranscripttest.ReleaseToolStoreAtTestEnd(t, transcript)
 	original := []byte(`{"sessionUpdate":"tool_call_update","toolCallId":"search","status":"completed","rawOutput":{"totalMatches":1}}`)
+	return transcript, func() { activePath = path }, original
+}
+
+func TestCursorToolTranscriptEnrichesSessionReplay(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	// ACP startup binds the Worker sink before it dispatches buffered session updates.
+	sink.UpdateSessionID("resumed-session")
+	sessionUpdates := sink.SessionIDCount()
+	transcript, revealStore, original := newCursorReplayTranscript(t, sink)
 	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: original}, agent.SpanInfo{SpanID: "search", Closing: true}))
 	assert.Empty(t, sink.Messages()[0].SupplementalContent)
-	// Cursor replays messages before the session/load response supplies the session ID.
-	activePath = path
+	assert.Equal(t, "resumed-session", sink.Messages()[0].AgentSessionID)
+	// Delay the store path until the transcript receives its session identity.
+	revealStore()
 	transcript.UpdateSessionID("resumed-session")
-	// The session ID asks the supplement worker for a pass. The worker performs the
-	// read, so this test joins it before it reads the row that the pass enriched.
+	// The session update requests a supplement pass. Join the reader before inspecting its stored row.
 	transcript.WaitForSupplementsForTest()
-	assert.Equal(t, 1, sink.SessionIDCount())
+	assert.Equal(t, 1, sink.SessionIDCount()-sessionUpdates)
 	assert.Equal(t, original, sink.Messages()[0].Content)
+	assert.Equal(t, "resumed-session", sink.Messages()[0].AgentSessionID)
 	assert.NotEmpty(t, sink.Messages()[0].SupplementalContent)
+	assert.Empty(t, transcript.PendingSpanIDsForTest())
+}
+
+func TestCursorToolTranscriptDoesNotAdoptUnboundReplayRows(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	transcript, revealStore, original := newCursorReplayTranscript(t, sink)
+	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: original}, agent.SpanInfo{SpanID: "search", Closing: true}))
+	revealStore()
+	transcript.UpdateSessionID("resumed-session")
+	transcript.WaitForSupplementsForTest()
+	messages := sink.Messages()
+	require.Len(t, messages, 1)
+	assert.Equal(t, original, messages[0].Content)
+	assert.Empty(t, messages[0].AgentSessionID)
+	assert.Empty(t, messages[0].SupplementalContent)
+	assert.Equal(t, []string{"search"}, transcript.PendingSpanIDsForTest())
+	require.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"stopReason":"end_turn"}`)}, agent.SpanInfo{}))
+	assert.Empty(t, sink.Messages()[0].SupplementalContent)
 	assert.Empty(t, transcript.PendingSpanIDsForTest())
 }
 
@@ -265,9 +296,8 @@ func TestCursorToolTranscriptDiscardsPendingFromPreviousSession(t *testing.T) {
 	assert.Empty(t, transcript.PendingSpanIDsForTest())
 }
 
-// The home directory comes from the query, not from the process environment. A
-// resumed agent carries the home directory of the row it resumed, and the two
-// differ whenever the worker runs for a different user than the session did.
+// The query supplies the session's home directory.
+// It can differ from the process environment when the Worker runs as a different user.
 func TestCursorACPStorePathResolvesAgainstTheQueryHome(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
@@ -293,9 +323,8 @@ func TestCursorReleaseToolStoreAtTestEndClosesTheHandle(t *testing.T) {
 	})
 }
 
-// TestCursorTestsCloseTheToolStoreHandleTheyOpen runs agenttest.RequireToolStoreHandlesClosed
-// over this package. Three Cursor tests once left a store handle open, and only
-// Windows failed for it.
+// TestCursorTestsCloseTheToolStoreHandleTheyOpen checks every tool-store handle in this package.
+// Open database handles can prevent cleanup on Windows.
 func TestCursorTestsCloseTheToolStoreHandleTheyOpen(t *testing.T) {
 	t.Parallel()
 	agenttest.RequireToolStoreHandlesClosed(t, ".", agenttest.ToolStoreRule{

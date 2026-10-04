@@ -24,6 +24,7 @@ function end(toolName: string, result: Record<string, unknown>, args: Record<str
 const text = (value: string) => [{ type: 'text', text: value }]
 
 const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
+  [PI_TOOL.Codemode]: end(PI_TOOL.Codemode, { content: text('Script completed\nOutput:\ncomplete'), details: { calls: [] } }, { code: 'text("complete")' }),
   [PI_TOOL.Bash]: end(PI_TOOL.Bash, { content: text('ok') }, { command: 'ls' }),
   [PI_POWERSHELL_TOOL]: end(PI_POWERSHELL_TOOL, { content: text('ok') }, { command: 'Get-ChildItem' }),
   [PI_TOOL.Read]: end(PI_TOOL.Read, { content: text('file body') }, { path: '/p/a.ts' }),
@@ -43,27 +44,22 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
 }
 
 /**
- * The sentence every failed fixture carries.
+ * Use one synthetic error sentence for the shared failure checks.
  *
- * Synthetic on purpose. Pi's own error wording is not confirmable from this
- * repository, and the guard asks about the LADDER -- the outcome word, the brand, the
- * kind and the request -- rather than about any provider's choice of words.
+ * These checks compare the outcome and result brand. They also compare the kind and request.
+ * Exact native error text belongs to the captured-frame tests.
  */
 const ERROR_TEXT = 'The tool reported an error.'
 
 /**
- * The FAILED frame of the call one successful fixture already states.
+ * Build a failed completion for a call in the successful corpus.
  *
- * Pi flags a failure with `isError` on the `tool_execution_end` frame, and the result
- * then carries the reason in place of the payload.
- *
- * The request half comes from the successful fixture rather than from a second copy of
- * the `tool_execution_start`. The two frames then describe ONE call, which is what lets
- * the ladder assert that a failure keeps the kind, the tool and the request of its
- * success.
+ * Pi puts `isError` on tool_execution_end and the failure reason in its result.
+ * Reuse the successful fixture's start frame. Both completions then belong to one call.
+ * The failure checks require the same kind and tool. They require the same request also.
  */
 function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status'] = 'failed'): ToolFailureFixture {
-  // Every failure pairs by name with a fixture above, so the read is guarded for the type alone.
+  // Each failed call uses its matching successful fixture.
   const fixture = FIXTURES[name]
   return {
     payload: { type: 'tool_execution_end', toolCallId: 'call', toolName: name, result: { content: text(ERROR_TEXT) }, isError: true },
@@ -78,6 +74,7 @@ export const PI_TOOL_RESULTS: ToolResultCheck = {
   provider: AgentProvider.PI,
   fixtures: FIXTURES,
   failures: [
+    failed('mcp', PI_TOOL.Codemode),
     failed('execute', PI_TOOL.Bash),
     failed('read', PI_TOOL.Read),
     failed('write', PI_TOOL.Write),
@@ -91,11 +88,11 @@ export const PI_TOOL_RESULTS: ToolResultCheck = {
   ],
   noFailure: {},
   noResult: {
-    [PI_TOOL.SubagentWorkflow]: 'A workflow launch states itself on its request row; its result arrives as a notification.',
-    [PI_TOOL.PlanComplete]: 'A row with a plan draws through the shared plan card; only a plan-less result reaches the tool path.',
+    [PI_TOOL.SubagentWorkflow]: 'The request shows the workflow launch. A notification carries its result.',
+    [PI_TOOL.PlanComplete]: 'A plan uses the shared plan card. Only a result without a plan uses the tool path.',
   },
   unparsed: {
-    [PI_TOOL.Write]: 'A diff in a format this build cannot parse stays unparsed; the row draws the raw words.',
-    [PI_TOOL.Edit]: 'A diff in a format this build cannot parse stays unparsed; the row draws the raw words.',
+    [PI_TOOL.Write]: 'The row shows the original text when the parser cannot read the diff format.',
+    [PI_TOOL.Edit]: 'The row shows the original text when the parser cannot read the diff format.',
   },
 }

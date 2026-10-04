@@ -365,6 +365,7 @@ func TestCodexThreadParams(t *testing.T) {
 	// A non-default service tier is included.
 	fast := codexThreadParams("gpt-5.4", "/work", DefaultApprovalPolicy, contracts.CodexOptionDefaultSandboxPolicy, ServiceTierFast)
 	assert.Equal(t, map[string]interface{}{"model_reasoning_summary": "detailed"}, fast["config"])
+	assert.Equal(t, true, fast["experimentalRawEvents"], "spawn arguments must reach the live child transcript")
 	assert.Equal(t, "gpt-5.4", fast["model"])
 	assert.Equal(t, "/work", fast["cwd"])
 	assert.Equal(t, DefaultApprovalPolicy, fast["approvalPolicy"])
@@ -577,6 +578,69 @@ func TestCodexSendTurnStartOmitsAccountDefaultModel(t *testing.T) {
 			} else {
 				assert.Equal(t, test.model, sent[0].Params["model"])
 			}
+		})
+	}
+}
+
+func TestCodexSendTurnStartClearsFastServiceTier(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		tier string
+	}{
+		{name: "default tier", tier: contracts.CodexOptionDefaultServiceTier},
+		{name: "unset tier"},
+		{name: "unknown tier", tier: "unsupported"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			type nativeTierState struct {
+				present bool
+				value   interface{}
+				tier    string
+			}
+			observed := make(chan nativeTierState, 2)
+			nativeTier := ""
+			var a *Agent
+			var requests func() []codexRecordedRequest
+			a, _, requests = newCodexAgentForRPC(t, func(method string) agenttest.RPCReply {
+				if method == "turn/start" {
+					sent := requests()
+					value, present := sent[len(sent)-1].Params["serviceTier"]
+					// Codex keeps the thread's previous tier when this field is absent.
+					if present {
+						nativeTier, _ = value.(string)
+					}
+					observed <- nativeTierState{present: present, value: value, tier: nativeTier}
+					a.Mu.Lock()
+					ack := a.turnStartAck
+					a.turnStartAck = nil
+					a.Mu.Unlock()
+					if ack != nil {
+						close(ack)
+					}
+				}
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			})
+			a.threadID = "thread-1"
+
+			for _, tier := range []string{ServiceTierFast, test.tier} {
+				err := a.sendTurnStart("thread-1", []map[string]interface{}{{"type": "text", "text": "hi"}}, turnSettings{
+					model:       "gpt-5.6-luna",
+					serviceTier: tier,
+				})
+				require.NoError(t, err)
+			}
+
+			first, second := <-observed, <-observed
+			require.True(t, first.present, "Fast supplies a native tier override")
+			require.Equal(t, ServiceTierFast, first.value)
+			require.Equal(t, ServiceTierFast, first.tier)
+			assert.True(t, second.present, "Default must replace the previous native tier")
+			assert.Nil(t, second.value, "an explicit null clears the native tier override")
+			assert.Empty(t, second.tier, "the native thread no longer uses Fast")
 		})
 	}
 }

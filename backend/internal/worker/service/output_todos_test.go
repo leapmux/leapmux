@@ -26,6 +26,22 @@ func setupTodoTest(t *testing.T) (agent.ProviderServices, string, func() []db.Ag
 	return setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 }
 
+func TestOutputTodos_BlockedSnapshotPersistsAsUnfinishedWork(t *testing.T) {
+	t.Parallel()
+	svc, _, ownerID, _ := setupBgTaskTestWithService(t)
+	item := todoevents.Item{ID: "blocked", Content: "Request access", Status: todoevents.StatusBlocked}
+	require.NoError(t, svc.Output.persistMessageWithTodoEvent(ownerID,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: []byte(`{"type":"assistant"}`)}, agent.SpanInfo{}, svc.Output.rootTracker(ownerID),
+		todoevents.Event{Kind: todoevents.KindSnapshot, Snapshot: []todoevents.Item{item}}))
+	rows, err := svc.Queries.ListAgentTodosNewestFirst(context.Background(), db.ListAgentTodosNewestFirstParams{AgentID: ownerID, Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, leapmuxv1.TodoStatus_TODO_STATUS_BLOCKED, rows[0].Status)
+	assert.False(t, item.Status.IsFinished())
+}
+
 // setupTodoTestForProvider is setupTodoTest for an agent of a stated provider. The
 // provider decides which extractor reads the message, so a test that feeds one
 // provider's shape has to create an agent of THAT provider.
@@ -213,6 +229,31 @@ func TestOutputTodos_ZCodeToolUpdatedSnapshotPersists(t *testing.T) {
 	assert.Len(t, rows, 2)
 }
 
+// MiMo keeps its to-do items per session, and a subagent's calls reach the
+// subagent's own transcript, so a call can change an item that this transcript
+// never saw created. The tool row must still land, and the item joins the list.
+func TestOutputTodos_MiMoChangeOfAnUnseenTaskKeepsTheRow(t *testing.T) {
+	t.Parallel()
+	sink, _, listRows := setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE)
+	done := `{"type":"message.part.updated","properties":{"part":{"id":"p1","type":"tool","tool":"task","callID":"c1",` +
+		`"state":{"status":"completed","input":{"operation":{"action":"done","id":"T7"}},"output":"done → done","metadata":{"id":"T7","status":"done"}}}}}`
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: []byte(done)}, agent.SpanInfo{SpanID: "c1", SpanType: "task", Closing: true}))
+
+	rows := listRows()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "T7", rows[0].TaskID)
+	assert.Equal(t, leapmuxv1.TodoStatus_TODO_STATUS_COMPLETED, rows[0].Status)
+
+	list := `{"type":"message.part.updated","properties":{"part":{"id":"p2","type":"tool","tool":"task","callID":"c2",` +
+		`"state":{"status":"completed","input":{"operation":{"action":"list"}},"output":"T7 done — Ship the release","metadata":{"count":1,"ids":["T7"]}}}}}`
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: []byte(list)}, agent.SpanInfo{SpanID: "c2", SpanType: "task", Closing: true}))
+	rows = listRows()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "Ship the release", rows[0].Content, "a later list states the item's text")
+}
+
 // One provider's to-do shape must never populate another provider's list. The dispatch
 // through the plugin is the whole mechanism, and this is what proves it: before it, a
 // shared extractor tried every shape on every message, so the reader was decided by the
@@ -237,6 +278,9 @@ func TestOutputTodos_OneProvidersShapeNeverFeedsAnother(t *testing.T) {
 		"zcode tool.updated": {leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, "TodoWrite",
 			`{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"c1","toolName":"TodoWrite",
 			  "input":{"todos":[{"content":"A","status":"pending"}]}}}`},
+		"mimo task": {leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, "task",
+			`{"type":"message.part.updated","properties":{"part":{"id":"p1","type":"tool","tool":"task","callID":"c1",
+			  "state":{"status":"completed","input":{"operation":{"action":"create","summary":"A"}},"metadata":{"id":"T1","status":"open"}}}}}`},
 	}
 	readers := []leapmuxv1.AgentProvider{
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -244,6 +288,7 @@ func TestOutputTodos_OneProvidersShapeNeverFeedsAnother(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE,
 	}
 
 	for name, shape := range shapes {

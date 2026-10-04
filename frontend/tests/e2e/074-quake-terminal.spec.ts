@@ -10,6 +10,13 @@ import { getTerminalText, waitForTerminalReady } from './helpers/terminal'
 import { loginViaToken, openTerminalViaUI, openWorkspace, setInitialBrowserPref, waitForActiveTabContext } from './helpers/ui'
 import { withTestWorkspace } from './helpers/workspace'
 
+declare global {
+  interface Window {
+    __quakeStartupOverlayAlpha?: number | null
+    __getTerminalTextById?: (terminalId: string) => string
+  }
+}
+
 interface QuakeServer extends ServerInfo, WorkspaceFixture {}
 
 const test = base.extend<{ quakeServer: QuakeServer }>({
@@ -19,39 +26,38 @@ const test = base.extend<{ quakeServer: QuakeServer }>({
 })
 
 /**
- * The Quake terminal: a shell that slides over the centre area for one working
- * DIRECTORY on one worker.
+ * The quake terminal supplies one shell for a working directory on one Worker.
+ * Its panel slides over the centre area.
  *
- * The panel is always mounted once it exists and slides by transform, so it is
- * "visible" to Playwright whether it is up or down — `toBeInViewport` is the
- * oracle, the same one the mobile drawers document.
+ * After creation, the panel stays mounted and uses a transform to slide.
+ * Playwright considers the open and closed panel visible.
+ * Use `toBeInViewport` to check its position, as the mobile drawer tests do.
  */
 const PANEL = '[data-testid="quake-panel"]'
 
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
-// The quake chord is `Control` on EVERY platform, unlike `MOD` above: macOS
-// reserves Command+` for its window cycler, so the binding does not use it.
-// `Backquote` is the physical key Playwright presses, which is what the
-// binding's `grave` expands to -- see PHYSICAL_KEY_ALIASES in
-// `~/lib/shortcuts/keybindings`.
+// The quake shortcut uses Control on every platform.
+// macOS reserves Command+` to switch between application windows.
+// Playwright presses the physical Backquote key.
+// PHYSICAL_KEY_ALIASES expands `grave` to that key in `~/lib/shortcuts/keybindings`.
 
 async function toggleQuake(page: Page) {
-  // The chord addresses the ACTIVE TAB'S working directory, and a projected tab
-  // carries none until the worker's ListAgents / ListTerminals answer lands --
-  // `workingDir` comes from tab metadata, not from the CRDT. In that window
-  // `quakeKeyForTab` returns undefined, `withQuakeTarget` returns without
-  // acting, and the press is LOST: there is no retry and no message, so the
-  // panel simply never appears.
-  //
-  // Hydration takes ~300-400 ms and the press used to land ~45 ms after load,
-  // which is why the failing set moved between runs.
+  // The shortcut uses the active tab's working directory.
+  // A projected tab lacks that directory until the Worker returns its agent or terminal metadata.
+  // `workingDir` comes from tab metadata. The shared tab record does not carry it.
+  // Without that metadata, `quakeKeyForTab` returns undefined and the shortcut handler takes no action.
+  // The handler retries nothing and shows no message, so the panel does not appear.
+  // Wait for the metadata before pressing the shortcut.
   await waitForActiveTabContext(page)
   await page.keyboard.press('Control+Backquote')
 }
 
 const panel = (page: Page) => page.locator(PANEL)
 
-/** Resolve an element's CSS background to 8-bit red, green, blue, and alpha channels. */
+/**
+ * Resolve an element's CSS background to four 8-bit channels:
+ * red, green, blue, and alpha.
+ */
 async function backgroundPixel(locator: Locator): Promise<number[]> {
   return locator.evaluate((el) => {
     const canvas = document.createElement('canvas')
@@ -68,7 +74,8 @@ async function backgroundPixel(locator: Locator): Promise<number[]> {
 
 /**
  * Create a directory for this test only.
- * A quake terminal belongs to one worker and directory. The worker fixture serves multiple tests.
+ * A quake terminal belongs to one Worker and directory.
+ * The Worker fixture serves multiple tests.
  * Private directories keep file contents separate between tests.
  * Multiple directories in one test must receive separate quake terminals.
  */
@@ -76,7 +83,7 @@ function freshDir() {
   return createTestDirectory('leapmux-quake-')
 }
 
-/** Open an agent tab and land on it, which is the state every case starts in. */
+/** Open an agent tab and select it as the initial state for each case. */
 async function openAgentTab(page: Page, server: QuakeServer) {
   const workingDir = freshDir()
   const { workspaceId } = server
@@ -88,12 +95,11 @@ async function openAgentTab(page: Page, server: QuakeServer) {
 }
 
 /**
- * Seed one device-tier quake preference, then reload onto the workspace so the
- * app reads it at start-up.
+ * Set one quake preference in this account's browser overrides.
+ * Reload the workspace so the app reads that value during startup.
  *
- * The device tier is what a spec can set without a round trip: the account
- * value is the fallback, and an override beats it. See `setInitialBrowserPref`
- * for why the seed has to land before the reload rather than as an init script.
+ * The browser override takes precedence over the account setting from the Hub.
+ * `setInitialBrowserPref` writes the value before reload so IndexedDB holds it when the app reads it.
  */
 async function withQuakePref(page: Page, server: ServerInfo, field: string, value: unknown, workspaceId: string) {
   await setInitialBrowserPref(page, server.adminUserId, field, value)
@@ -102,21 +108,21 @@ async function withQuakePref(page: Page, server: ServerInfo, field: string, valu
   await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]:visible').first()).toBeVisible()
 }
 
-/** The CLI credential source for this fixture's hub. Mirrors 141's helper. */
+/** The command-line interface (CLI) credential source for this fixture's Hub. */
 function cliTokenSource(server: ServerInfo) {
   return { hubUrl: server.hubUrl, adminToken: server.adminToken, dataDir: hubDataDir(server.dataDir) }
 }
 
-/** The clip is the panel's parent: it holds the anchoring and the size. */
+/** The panel's parent clip determines its containing area and size. */
 const clipOf = (page: Page) => page.locator(PANEL).locator('xpath=..')
 
 /**
- * The box the panel is anchored to: the centre area.
+ * Read the centre area that contains the panel.
  *
- * Read as the clip's own `offsetParent`, which IS that element by definition --
- * the clip is absolutely positioned, and `center` is the nearest positioned
- * ancestor. A resize handle is not a substitute: it spans the band's height but
- * is a few pixels wide, so a width comparison against it always passes.
+ * The absolutely positioned clip uses the centre area as its `offsetParent`.
+ * The centre area is its nearest positioned ancestor.
+ * A resize handle cannot supply this measurement.
+ * That handle spans the area's height but measures only a few pixels wide, so a width comparison would always pass.
  */
 async function centreBox(page: Page) {
   return clipOf(page).evaluate((el) => {
@@ -129,21 +135,21 @@ async function centreBox(page: Page) {
 }
 
 /**
- * The xterm of the quake terminal that is VISIBLE.
+ * Select the visible quake terminal's xterm instance.
  *
- * Scoped by `data-active`, because the panel holds one container per DIRECTORY
- * this client has open and hides the rest with `visibility: hidden` -- so a
- * user with tabs in two directories has two `.xterm` nodes inside one panel.
+ * The panel holds one container for each directory that this client opens.
+ * It hides the other containers with `visibility: hidden`.
+ * Use `data-active` because tabs in two directories create two xterm nodes inside the same panel.
  */
 const quakeXterm = (page: Page) => page.locator(`${PANEL} [data-terminal-id][data-active="true"] .xterm`)
 
 /**
- * The text of the QUAKE panel's own shell.
+ * Read the quake panel's own shell text.
  *
- * Scoped to the panel, unlike `getTerminalText`, which resolves the module-wide
- * "last active terminal". With a terminal TAB open behind the panel two views
- * are mounted and either may have written that global last, so the unscoped
- * read answers about whichever mounted most recently.
+ * `getTerminalText` uses the module's last active terminal ID.
+ * A terminal tab behind the panel creates a second mounted view.
+ * Either view can update that ID, so an unscoped read can return the other view's text.
+ * The panel's active terminal ID selects the correct shell.
  */
 async function getQuakeTerminalText(page: Page): Promise<string> {
   const id = await page.locator(`${PANEL} [data-terminal-id][data-active="true"]`)
@@ -151,7 +157,11 @@ async function getQuakeTerminalText(page: Page): Promise<string> {
     .getAttribute('data-terminal-id')
   if (!id)
     return ''
-  return page.evaluate(terminalId => (window as any).__getTerminalTextById(terminalId) as string, id)
+  return page.evaluate((terminalId) => {
+    if (!window.__getTerminalTextById)
+      throw new Error('The terminal text test hook is not registered.')
+    return window.__getTerminalTextById(terminalId)
+  }, id)
 }
 
 /** Run one command in the quake shell and wait for its output. */
@@ -177,16 +187,15 @@ test.describe('Quake-mode terminal', () => {
 
   test('nothing exists until the shortcut is pressed', async ({ page, quakeServer }) => {
     await openAgentTab(page, quakeServer)
-    // The tab is fully hydrated, so the chord WOULD work from here. Without
-    // this the absence below is satisfied by a page that has not finished
-    // loading, which is true with the feature deleted.
+    // Wait until the tab metadata makes the shortcut usable.
+    // Without this wait, incomplete page setup can satisfy the absence check even if the feature is deleted.
     await waitForActiveTabContext(page)
 
-    // Lazy: no panel, no xterm, no RPC for a user who never opens it.
+    // The first open creates the panel, xterm instance, and remote procedure call (RPC).
     await expect(panel(page)).toHaveCount(0)
 
-    // And the same page DOES produce one on the chord, which is what makes the
-    // absence above a statement about laziness rather than about timing.
+    // Require the same page to open the panel from the shortcut.
+    // This proves that the first open creates it and that delayed page setup did not satisfy the absence check.
     await toggleQuake(page)
     await expect(panel(page)).toBeInViewport()
   })
@@ -201,8 +210,8 @@ test.describe('Quake-mode terminal', () => {
     await runInQuake(page, 'echo quake-hello', 'quake-hello')
   })
 
-  // The point of the feature: a toggle hides the panel, it does not end the
-  // shell. The scrollback proves the PTY and the xterm both survived.
+  // A toggle hides the panel and keeps its shell alive.
+  // Retained scrollback proves that the pseudo-terminal (PTY) and xterm instance survive.
   test('keeps the shell and its scrollback across a toggle', async ({ page, quakeServer }) => {
     await openAgentTab(page, quakeServer)
 
@@ -217,12 +226,12 @@ test.describe('Quake-mode terminal', () => {
     await expect(panel(page)).toBeInViewport()
     await expect.poll(async () => (await getTerminalText(page)).includes('before-toggle')).toBe(true)
 
-    // And it still answers, which a restored screenshot would not.
+    // Require new shell output. A restored screenshot cannot produce it.
     await runInQuake(page, 'echo after-toggle', 'after-toggle')
   })
 
-  // Exiting ENDS a quake terminal, unlike a terminal tab, which stays on screen
-  // offering Enter to restart. The next open gets a shell with no history.
+  // Exit ends the quake terminal. The next open creates a shell with no retained scrollback.
+  // An ordinary terminal tab stays visible and offers Enter to restart its shell.
   test('ends the shell on exit, and opens a fresh one next time', async ({ page, quakeServer }) => {
     await openAgentTab(page, quakeServer)
 
@@ -241,13 +250,11 @@ test.describe('Quake-mode terminal', () => {
     await expect.poll(async () => (await getTerminalText(page)).includes('before-exit')).toBe(false)
   })
 
-  // Closed while the panel is still OPEN, which is the interesting case: the
-  // LAST tab in a directory has to take its shell with it rather than leave one
-  // running that nothing can reach.
+  // Close the last tab while the panel is open.
+  // Its directory's quake shell must stop because no tab can reach it afterward.
   //
-  // Through the keyboard, not the tab strip's X. A top-anchored panel covers the
-  // strip while it is open -- it spans the whole centre area by design -- so the
-  // click would land on the terminal underneath instead.
+  // Use the keyboard to close the tab.
+  // The open panel at the top edge covers the tab strip, so a click on its close control would reach the panel instead.
   test('goes away with the last tab in its directory', async ({ page, quakeServer }) => {
     await openAgentTab(page, quakeServer)
 
@@ -257,8 +264,8 @@ test.describe('Quake-mode terminal', () => {
 
     await page.keyboard.press(`${MOD}+KeyW`)
 
-    // The agent runs, so the close asks first. Confirm through the
-    // two-click ConfirmButton the dialog uses.
+    // A running agent can require close confirmation.
+    // Use the dialog's two-click ConfirmButton when that dialog appears.
     const busy = page.locator('dialog[data-testid="busy-tab-close-dialog"]')
     if (await busy.isVisible()) {
       await page.getByTestId('busy-tab-close-confirm').click()
@@ -269,9 +276,8 @@ test.describe('Quake-mode terminal', () => {
     await expect(panel(page)).toHaveCount(0)
   })
 
-  // The shell lives on the Worker, so a reload re-attaches to it rather than
-  // starting another. The panel itself starts closed, because whether it shows
-  // is per-device UI state that nothing persists.
+  // The Worker owns the shell, so reload attaches to the same shell.
+  // The panel starts closed because its open state belongs to this client and is not persisted.
   test('re-attaches to the same shell after a reload', async ({ page, quakeServer }) => {
     const { workspaceId } = await openAgentTab(page, quakeServer)
 
@@ -294,17 +300,16 @@ test.describe('Quake-mode terminal', () => {
     await toggleQuake(page)
     await expect(panel(page)).toBeInViewport()
 
-    // The default: the top edge, covering 65% of the centre area.
+    // The default panel opens from the top edge and covers 65% of the centre area's height.
     await expect(panel(page)).toHaveAttribute('data-quake-orientation', 'top')
 
-    // RETRIED as a whole, because the panel slides by transform and
-    // `toBeInViewport` is satisfied by the first intersecting pixel. A single
-    // `boundingBox()` after it samples an arbitrary frame of the transition.
+    // Poll the complete geometry assertion while the panel's transform changes.
+    // `toBeInViewport` succeeds when the first pixel enters the viewport.
+    // One subsequent `boundingBox()` call can measure an arbitrary transition frame.
     await expect(async () => {
       const centre = await centreBox(page)
       const panelBox = (await panel(page).boundingBox())!
-      // Anchored to the top of the centre band, not to the window, and spanning
-      // it sideways.
+      // Require the panel at the centre area's top edge with the full width of that area.
       expect(Math.abs(panelBox.y - centre.y)).toBeLessThan(4)
       expect(Math.abs(panelBox.width - centre.width)).toBeLessThan(4)
       expect(Math.abs(panelBox.height - centre.height * 0.65)).toBeLessThan(4)
@@ -312,16 +317,14 @@ test.describe('Quake-mode terminal', () => {
   })
 
   /**
-   * The other three edges, and the axis each one drives.
+   * Check the other three edges and their size axes.
    *
-   * One attribute picks the anchoring AND the size axis, so the check that
-   * matters is that the panel is flush with the edge it gives and short (or
-   * narrow) on the axis that edge implies. A rule that anchored correctly but
-   * sized the wrong axis would still pass an attribute-only assertion.
+   * One attribute selects both the panel's edge and size axis.
+   * Require the panel at that edge and at the configured size on that axis.
+   * An attribute-only check would accept a rule that positions the panel correctly but sizes the wrong axis.
    *
-   * The PANEL is measured, not the clip: the clip spans the whole centre area
-   * whatever the orientation, because it is what has to be big enough to show
-   * the shadow the panel drops.
+   * Measure the panel itself.
+   * The clip spans the full centre area for every orientation so it can display the panel's shadow.
    */
   for (const [orientation, axis] of [['bottom', 'y'], ['left', 'x'], ['right', 'x']] as const) {
     test(`slides in from the ${orientation} edge`, async ({ page, quakeServer }) => {
@@ -333,20 +336,20 @@ test.describe('Quake-mode terminal', () => {
 
       await expect(panel(page)).toHaveAttribute('data-quake-orientation', orientation)
 
-      // Retried as a whole -- see the note on the default-edge case above.
+      // Poll the complete geometry assertion, as the default-edge case does.
       await expect(async () => {
         const centre = await centreBox(page)
         const panelBox = (await panel(page).boundingBox())!
         if (axis === 'y') {
-          // Bottom-anchored: flush with the bottom of the centre band, full
-          // width, and 65% of its height.
+          // Require the panel at the bottom edge of the centre area.
+          // Require full width and 65% of that area's height.
           expect(Math.abs((panelBox.y + panelBox.height) - (centre.y + centre.height))).toBeLessThan(4)
           expect(Math.abs(panelBox.width - centre.width)).toBeLessThan(4)
           expect(Math.abs(panelBox.height - centre.height * 0.65)).toBeLessThan(4)
         }
         else {
-          // Side-anchored: full height, 65% of the width, and flush with the edge
-          // it gives.
+          // Require the panel at the selected side edge of the centre area.
+          // Require full height and 65% of that area's width.
           expect(Math.abs(panelBox.height - centre.height)).toBeLessThan(4)
           expect(Math.abs(panelBox.width - centre.width * 0.65)).toBeLessThan(4)
           if (orientation === 'left')
@@ -359,13 +362,15 @@ test.describe('Quake-mode terminal', () => {
   }
 
   /**
-   * The background carries the opacity; the terminal text does not.
+   * The background applies the configured opacity. The terminal text stays opaque.
    *
-   * The assertion reads the ALPHA of the computed background rather than the
-   * declared `color-mix`, because that is the whole chain the setting has to
-   * survive: the preference parse, the custom property, the `color-mix`, and
-   * xterm leaving the surface alone. `color-mix` serializes differently across
-   * engines, so both spellings are accepted and only the alpha is asserted.
+   * Read the computed background's alpha to verify the complete preference path:
+   * - The app parses the preference.
+   * - The custom property supplies the percentage to `color-mix`.
+   * - The xterm instance leaves the panel's background visible.
+   *
+   * Browsers serialize `color-mix` differently.
+   * Accept both supported spellings and assert only alpha.
    */
   test('paints its background at the configured opacity', async ({ page, quakeServer }) => {
     const { workspaceId } = await openAgentTab(page, quakeServer)
@@ -414,11 +419,14 @@ test.describe('Quake-mode terminal', () => {
           throw new Error('The browser did not supply a 2D canvas context')
         context.fillStyle = getComputedStyle(overlay).backgroundColor
         context.fillRect(0, 0, 1, 1)
-        ;(window as any).__quakeStartupOverlayAlpha = context.getImageData(0, 0, 1, 1).data[3]
+        const alpha = context.getImageData(0, 0, 1, 1).data[3]
+        if (alpha === undefined)
+          throw new Error('The canvas returned no alpha byte.')
+        window.__quakeStartupOverlayAlpha = alpha
         return true
       }
 
-      ;(window as any).__quakeStartupOverlayAlpha = null
+      window.__quakeStartupOverlayAlpha = null
       const observer = new MutationObserver(() => {
         if (recordStartupAlpha())
           observer.disconnect()
@@ -429,7 +437,7 @@ test.describe('Quake-mode terminal', () => {
     await toggleQuake(page)
     await expect(panel(page)).toBeInViewport()
     await expect
-      .poll(() => page.evaluate(() => (window as any).__quakeStartupOverlayAlpha), { timeout: 5000 })
+      .poll(() => page.evaluate(() => window.__quakeStartupOverlayAlpha))
       .toBe(0)
   })
 
@@ -456,7 +464,8 @@ test.describe('Quake-mode terminal', () => {
   })
 
   // Keep the closed panel mounted so its shell survives a toggle.
-  // Exclude that panel from accessibility navigation and tab order, or keyboard focus can enter an off-screen terminal.
+  // Remove the closed panel from accessibility navigation and tab order.
+  // Otherwise, keyboard focus can enter a terminal outside the viewport.
   test('keeps a hidden panel out of the tab order', async ({ page, quakeServer }) => {
     await openAgentTab(page, quakeServer)
 
@@ -475,17 +484,16 @@ test.describe('Quake-mode terminal', () => {
 
     await toggleQuake(page)
 
-    // No animation to wait out: the panel is in place on the next frame.
+    // Reduced motion disables the transition, so the panel reaches its position on the next frame.
     await expect(panel(page)).toBeInViewport()
   })
 
   /**
-   * ONE shell per working DIRECTORY, so two agent tabs on the same checkout
-   * reach the same terminal -- including its scrollback, which is how a user
-   * sees the build they started from the tab next door.
+   * Two agent tabs in one directory share one shell and its scrollback.
+   * A build that a user starts from one tab remains visible from the other tab.
    *
-   * Tabs are switched from the keyboard, not the strip: a top-anchored panel
-   * covers the strip while it is open, by design.
+   * Switch tabs with the keyboard.
+   * The open panel at the top edge covers the tab strip.
    */
   test('shares one shell between two agent tabs in one directory', async ({ page, quakeServer }) => {
     const { hubUrl, adminToken, workerId } = quakeServer
@@ -502,14 +510,14 @@ test.describe('Quake-mode terminal', () => {
     await waitForTerminalReady(page)
     await runInQuake(page, 'echo from-tab-one', 'from-tab-one')
 
-    // The SECOND tab, and NO second toggle: the panel is already showing this
-    // directory's shell, so switching tabs leaves it exactly where it was.
+    // Select the second tab without another toggle.
+    // Both tabs use this directory's shell, so the panel must stay open in the same position.
     await page.keyboard.press('Alt+Digit2')
     await expect(panel(page)).toBeInViewport()
     await expect.poll(async () => (await getTerminalText(page)).includes('from-tab-one')).toBe(true)
 
-    // And it is one PTY: what the second tab types is there when the first
-    // comes back.
+    // Require output from the second tab after selecting the first tab again.
+    // That output proves that both tabs share one PTY.
     await runInQuake(page, 'echo from-tab-two', 'from-tab-two')
     await page.keyboard.press('Alt+Digit1')
     await expect(panel(page)).toBeInViewport()
@@ -517,8 +525,8 @@ test.describe('Quake-mode terminal', () => {
   })
 
   /**
-   * The other half of the rule: two DIRECTORIES are two shells, each with its
-   * own scrollback, and switching between them swaps the panel with no dispose.
+   * Two directories have separate shells and separate scrollback.
+   * Switching directories selects the corresponding terminal without disposing it.
    */
   test('keeps a separate shell for each directory', async ({ page, quakeServer }) => {
     const { hubUrl, adminToken, workerId } = quakeServer
@@ -542,8 +550,9 @@ test.describe('Quake-mode terminal', () => {
     await runInQuake(page, 'echo shell-two', 'shell-two')
     expect(await getTerminalText(page)).not.toContain('shell-one')
 
-    // Back to the first directory: its panel is still open and its scrollback
-    // intact, which a shared or re-created terminal could not manage.
+    // Select the first directory again.
+    // Its panel must stay open and retain its own scrollback.
+    // A shared or recreated terminal cannot preserve both directories' separate output.
     await page.keyboard.press('Alt+Digit1')
     await expect(panel(page)).toBeInViewport()
     await expect.poll(async () => (await getTerminalText(page)).includes('shell-one')).toBe(true)
@@ -551,9 +560,8 @@ test.describe('Quake-mode terminal', () => {
   })
 
   /**
-   * The panel is not an agent feature. A TERMINAL TAB in the same directory
-   * opens the very same shell, which is the invariant the chord's `when` clause
-   * stopped narrowing to `activeTabType == "agent"`.
+   * A terminal tab in the same directory opens the same quake shell as an agent tab.
+   * The shortcut's `when` condition must permit both tab types.
    */
   test('opens the same shell over a terminal tab', async ({ page, quakeServer }) => {
     await openAgentTab(page, quakeServer)
@@ -561,29 +569,27 @@ test.describe('Quake-mode terminal', () => {
     await toggleQuake(page)
     await waitForTerminalReady(page)
     await runInQuake(page, 'echo from-the-agent-tab', 'from-the-agent-tab')
-    // Hidden before the terminal tab is opened: the panel spans the whole
-    // centre area while it is up, so the new-terminal button is under it.
+    // Hide the panel before opening the terminal tab.
+    // The open panel covers the new-terminal button.
     await toggleQuake(page)
     await expect(panel(page)).not.toBeInViewport()
 
-    // A terminal TAB in the SAME directory -- the button inherits the active
-    // tab's working dir.
+    // The new-terminal button uses the active tab's working directory.
     await openTerminalViaUI(page)
     await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]:visible')).toHaveCount(1)
 
-    // The chord works here at all, which it would not while its `when` clause
-    // demanded an agent tab -- and the shell it shows is the agent tab's.
+    // Require the shortcut to work from the terminal tab.
+    // Require the same shell output that the agent tab produced.
     await toggleQuake(page)
     await expect(panel(page)).toBeInViewport()
     await expect.poll(async () => (await getQuakeTerminalText(page)).includes('from-the-agent-tab')).toBe(true)
   })
 
   /**
-   * The contract in one case: the SHELL is shared by every device, and whether
-   * the panel SHOWS is not.
+   * Devices share the shell and keep separate panel open states.
    *
-   * `is_quake` and its unique partial index over `working_dir` are what make the
-   * second browser adopt the first one's terminal instead of spawning a second.
+   * The Worker uses `is_quake` and a unique partial index over `working_dir` to reuse the directory's live quake terminal.
+   * The second browser attaches to that terminal instead of starting another shell.
    */
   test('shares one shell between two browsers on the same account', async ({ page, browser, quakeServer }) => {
     const { workspaceId } = await openAgentTab(page, quakeServer)
@@ -598,19 +604,19 @@ test.describe('Quake-mode terminal', () => {
       await openWorkspace(second, workspaceId)
       await expect(second.locator('[data-testid="tab"][data-tab-type="agent"]:visible').first()).toBeVisible()
 
-      // Nothing persisted the open state, so the second device starts closed.
+      // The open state is not persisted, so the second browser starts with no panel.
       await expect(second.locator(PANEL)).toHaveCount(0)
 
       await toggleQuake(second)
       await expect(second.locator(PANEL)).toBeInViewport()
-      // Adopted, not spawned: the first browser's output is already there.
+      // Retained output proves that this browser attaches to the first browser's shell.
       await expect.poll(async () => (await getTerminalText(second)).includes('from-browser-a')).toBe(true)
 
-      // And it is one PTY in both directions.
+      // Require output from the second browser in the first browser to verify shared PTY input.
       await runInQuake(second, 'echo from-browser-b', 'from-browser-b')
       await expect.poll(async () => (await getTerminalText(page)).includes('from-browser-b')).toBe(true)
 
-      // Closing on A is a per-device act: B keeps its panel and its shell.
+      // Hiding the panel in the first browser must keep the second browser's panel and shared shell available.
       await toggleQuake(page)
       await expect(panel(page)).not.toBeInViewport()
       await expect(second.locator(PANEL)).toBeInViewport()
@@ -622,15 +628,13 @@ test.describe('Quake-mode terminal', () => {
   })
 
   /**
-   * `leapmux control terminal quake ...` as a remote keystroke.
+   * `leapmux control terminal quake ...` sends a panel command to connected browsers.
    *
-   * It addresses a working DIRECTORY, not a tab, which is why it lives beside
-   * the terminal verbs: `--working-dir` defaults to $LEAPMUX_CONTROL_WORKING_DIR,
-   * so the bare command works from inside the panel it toggles.
+   * The command addresses a working directory.
+   * `--working-dir` defaults to $LEAPMUX_CONTROL_WORKING_DIR, so the bare command works inside the panel that it controls.
    *
-   * It stores nothing -- the worker relays it as a transient event -- which is
-   * what lets it move a panel while the active tab stays client-local. Both
-   * open browsers therefore act on it.
+   * The Worker sends a transient event and stores no panel state.
+   * Each browser keeps its own active tab and processes the event independently.
    */
   test('moves the panel from the Control CLI, in every open browser', async ({ page, browser, quakeServer }) => {
     const { workspaceId, workingDir } = await openAgentTab(page, quakeServer)
@@ -642,10 +646,10 @@ test.describe('Quake-mode terminal', () => {
       await loginViaToken(second, quakeServer.adminToken)
       await openWorkspace(second, workspaceId)
       await expect(second.locator('[data-testid="tab"][data-tab-type="agent"]:visible').first()).toBeVisible()
-      // The CLI addresses a DIRECTORY, and each browser maps it back through
-      // `findTabInWorkingDir`, which compares `tab.workingDir`. An unhydrated
-      // tab matches nothing, and the command is a transient event with no
-      // retry -- so both pages must have their directory before it is sent.
+      // Open and toggle commands use `findTabInWorkingDir` to locate a tab with the requested directory.
+      // A tab without hydrated metadata cannot match that directory.
+      // The event is transient and has no retry, so both pages need that metadata before these commands arrive.
+      // Close uses the directory key directly and does not require a matching tab.
       await waitForActiveTabContext(page)
       await waitForActiveTabContext(second)
 

@@ -405,7 +405,7 @@ For how agents work, see [Coding Agents](/docs/using/coding-agents/).
 The **Agent Provider** selector shows **"No agents available"**, or the provider you want (e.g. Codex, Cursor, Pi) is missing from the list.
 
 **Cause**
-A provider only appears if **its CLI binary is detected on the Worker**. The Worker probes the shell for each provider's binary (`claude`, `codex`, `cursor-agent`, `copilot`, `kilo`, `opencode`, `goose`, `pi`, `reasonix`) and lists only the ones it finds on `PATH`. ZCode is the exception: it ships no command, so the Worker looks for its desktop installation instead — see the next entry.
+A provider only appears if **its CLI binary is detected on the Worker**. The Worker probes the shell for each provider's binary (`claude`, `codex`, `cursor-agent`, `copilot`, `kilo`, `opencode`, `goose`, `pi`, `reasonix`, `codewhale`, `kimi`, `mimo`, `qwen`, `omp`, `grok`, `kiro-cli-chat`, `amp`, `cline`) and lists only the ones it finds on `PATH`. ZCode is the exception: it ships no command, so the Worker looks for its desktop installation instead — see the next entry.
 
 **Fix**
 Install the agent's own CLI on the **Worker** machine (not where the browser runs) and make sure it's on the Worker's `PATH`. Then click the refresh button (**"Refresh available providers"**) in the selector, or reopen the dialog.
@@ -442,6 +442,17 @@ The agent subprocess couldn't be launched or didn't complete its startup handsha
 - On the Worker, run the agent's CLI directly (e.g. `claude --version`) to confirm it works and is authenticated.
 - If startup is legitimately slow, raise the timeout: `leapmux worker --agent-startup-timeout 10m` (or the equivalent key in config). The flag exists on the Worker only; in solo/dev the embedded worker reads the timeout from the `timeouts` setting: `leapmux control admin settings set timeouts '{"agent_startup_seconds":600}'`. See [Configuration](/docs/admin/configuration/).
 - Reopen the agent once the underlying CLI issue is fixed.
+
+### The Cline agent does not start
+
+**Symptom**
+A Cline agent fails to start, and the error states that Cline's provider settings do not match Cline's format.
+
+**Cause**
+Cline ignores a `providers.json` that does not match its own format, and then uses the built-in endpoint of the provider, which you did not choose. LeapMux does not start the agent in that case.
+
+**Fix**
+On the Worker, run `cline auth` to write the file again. Then open the agent again.
 
 ### A setting change seems to "reset" the agent
 

@@ -2,6 +2,7 @@ import type { JSX } from 'solid-js'
 import type { ClassifiedEntry } from './chatEntryCache'
 import type { VirtualItem } from './useChatVirtualizer'
 import { batch, createEffect, createMemo, createSignal, For, on, onCleanup } from 'solid-js'
+import { emitDevEvent } from '~/lib/devInstrument'
 import { monotonicNow } from '~/lib/monotonicNow'
 import * as styles from './ChatView.css'
 import { messageRowChrome } from './messageRowLayout'
@@ -121,6 +122,7 @@ function PremeasureRow(props: {
   }
   const scheduleMeasure = (id: string, heightKey: string | undefined, onMeasure: typeof props.onMeasure): void => {
     const key = premeasureTaskKey(id, heightKey)
+    const seq = props.candidate.entry.message.seq?.toString() ?? null
     if (scheduledMeasureKey !== undefined && scheduledMeasureKey !== key)
       props.frame.cancel(scheduledMeasureKey)
     scheduledMeasureKey = key
@@ -131,6 +133,15 @@ function PremeasureRow(props: {
         const started = monotonicNow()
         const height = rowEl?.getBoundingClientRect().height ?? 0
         const settled = !hasPendingImages()
+        emitDevEvent('leapmux:chat-premeasure', () => ({
+          phase: 'read',
+          id,
+          seq,
+          height: Number.isFinite(height) ? height : String(height),
+          heightKey: heightKey ?? null,
+          connected: rowEl?.isConnected ?? false,
+          settled,
+        }))
         return { height, settled, measureDurationMs: monotonicNow() - started }
       },
       apply: ({ height, settled, measureDurationMs }) => {

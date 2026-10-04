@@ -1,6 +1,7 @@
 package service
 
 import (
+	"database/sql"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -9,6 +10,76 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestOptionGroupsViewDoesNotInventUnknownChildSettings(t *testing.T) {
+	t.Parallel()
+	m := agent.NewManager(testRegistry, nil)
+	child := &db.Agent{
+		ID: "unknown-child", ParentAgentID: sql.NullString{String: "parent", Valid: true},
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_COMMAND_CODE,
+		Options:       "{}", OptionGroups: "[]",
+	}
+	groups := optionGroupsView(m, child, nil)
+	require.NotEmpty(t, groups)
+	for _, group := range groups {
+		assert.Empty(t, group.GetCurrentValue(), "the native child did not report %s", group.GetId())
+	}
+}
+
+func TestOptionGroupsViewKeepsOnlyTheReportedChildSelections(t *testing.T) {
+	t.Parallel()
+	m := agent.NewManager(testRegistry, nil)
+	child := &db.Agent{
+		ID: "reported-child", ParentAgentID: sql.NullString{String: "parent", Valid: true},
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_COMMAND_CODE,
+		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "custom-native-model"}),
+		OptionGroups:  "[]",
+	}
+	groups := optionGroupsView(m, child, nil)
+	require.NotEmpty(t, groups)
+	var modelFound bool
+	for _, group := range groups {
+		if group.GetId() == agent.OptionIDModel {
+			modelFound = true
+			assert.Equal(t, "custom-native-model", group.GetCurrentValue())
+			var choices []string
+			for _, option := range group.GetOptions() {
+				choices = append(choices, option.GetId())
+			}
+			assert.Contains(t, choices, "custom-native-model", "the chip can display the reported model")
+		} else {
+			assert.Empty(t, group.GetCurrentValue(), "the native child did not report %s", group.GetId())
+		}
+	}
+	assert.True(t, modelFound)
+}
+
+func TestOptionGroupsViewUsesTheNativeChildCatalogAndExplicitOverrides(t *testing.T) {
+	t.Parallel()
+	manager := agent.NewManager(testRegistry, nil)
+	nativeGroups := []*leapmuxv1.AvailableOptionGroup{
+		{Id: agent.OptionIDModel, CurrentValue: "native-model", Options: []*leapmuxv1.AvailableOption{{Id: "native-model", Name: "Native Model"}}},
+		{Id: agent.OptionIDEffort, CurrentValue: "low", Options: []*leapmuxv1.AvailableOption{{Id: "low"}, {Id: "high"}}},
+	}
+	child := &db.Agent{
+		ID: "catalog-child", ParentAgentID: sql.NullString{String: "parent", Valid: true},
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_COMMAND_CODE,
+		Options:       "{}", OptionGroups: mustMarshalOptionGroups(t, nativeGroups),
+	}
+	groups := optionGroupsView(manager, child, map[string]string{agent.OptionIDEffort: "high"})
+	for _, group := range groups {
+		switch group.GetId() {
+		case agent.OptionIDModel:
+			assert.Equal(t, "native-model", group.GetCurrentValue())
+		case agent.OptionIDEffort:
+			assert.Equal(t, "high", group.GetCurrentValue())
+		default:
+			assert.Empty(t, group.GetCurrentValue())
+		}
+	}
+	assert.Equal(t, "low", nativeGroups[1].GetCurrentValue())
+	assert.Equal(t, mustMarshalOptionGroups(t, nativeGroups), child.OptionGroups)
+}
 
 // TestOverlayOptionGroupCurrents_SkipsOutOfListValue verifies the read model never
 // forces a persisted current that isn't one of the group's options (which would

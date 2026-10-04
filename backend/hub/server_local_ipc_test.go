@@ -20,13 +20,23 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/locallisten"
+	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
 
 // localIPCClient dials the hub's local IPC listener -- the unix socket on Unix,
 // the named pipe on Windows -- the way the desktop shell's sidecar does.
 func localIPCClient(t *testing.T, srv *Server) leapmuxv1connect.AdminSettingsServiceClient {
 	t.Helper()
-	dial, err := locallisten.Dialer(srv.listenURL)
+	return localIPCClientAt(t, srv, 0)
+}
+
+// localIPCClientAt dials one of the hub's local IPC listeners by position.
+// A hub binds one per `--listen` local entry, and each is served on its own
+// goroutine; a request on the second is what proves more than one runs.
+func localIPCClientAt(t *testing.T, srv *Server, i int) leapmuxv1connect.AdminSettingsServiceClient {
+	t.Helper()
+	require.Less(t, i, len(srv.localListenURLs), "no local listener at that index")
+	dial, err := locallisten.Dialer(srv.localListenURLs[i])
 	require.NoError(t, err)
 	httpClient := &http.Client{
 		Transport: &http.Transport{DialContext: locallisten.HTTPDialContext(dial)},
@@ -58,7 +68,7 @@ func listSettings(c leapmuxv1connect.AdminSettingsServiceClient) error {
 // RPC without first taking responsibility for the account.
 func TestServer_PasswordlessSoloTCPRejectsAdministratorRPC(t *testing.T) {
 	base := "127.0.0.1:" + strconv.Itoa(freePorts(t, 1)[0])
-	startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	startTestServer(t, &config.Config{Listen: []string{base}, SoloMode: true})
 	requireAnswers(t, base)
 
 	err := listSettings(tcpClient(base))
@@ -68,7 +78,7 @@ func TestServer_PasswordlessSoloTCPRejectsAdministratorRPC(t *testing.T) {
 
 func TestServer_TCPInitialSoloPasswordCreatesVerifiedSession(t *testing.T) {
 	base := "127.0.0.1:" + strconv.Itoa(freePorts(t, 1)[0])
-	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	srv := startTestServer(t, &config.Config{Listen: []string{base}, SoloMode: true})
 	requireAnswers(t, base)
 	require.NoError(t, srv.settings.Update(context.Background(), requestsource.KeyTrustedProxyRanges,
 		json.RawMessage(`["127.0.0.1"]`)))
@@ -128,7 +138,7 @@ func TestServer_TCPInitialSoloPasswordCreatesVerifiedSession(t *testing.T) {
 // admitted both would satisfy either case alone.
 func TestServer_TheLocalSocketStaysCredentialFreeWhenTCPStopsBeing(t *testing.T) {
 	base := "127.0.0.1:" + strconv.Itoa(freePorts(t, 1)[0])
-	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	srv := startTestServer(t, &config.Config{Listen: []string{base}, SoloMode: true})
 	requireAnswers(t, base)
 
 	// Local IPC receives the synthetic account before setup. TCP can call only
@@ -153,6 +163,69 @@ func TestServer_TheLocalSocketStaysCredentialFreeWhenTCPStopsBeing(t *testing.T)
 		"the local socket is the one exception, and the desktop app cannot present a password")
 }
 
+// Every local entry of `--listen` becomes its own listener, and Serve starts
+// one goroutine per listener. A regression that served only the first would
+// leave every later socket open and unanswered -- a client that dials it hangs
+// rather than failing loudly, and nothing else in the suite dials past index
+// zero. Two named sockets, a request on each.
+func TestServer_EveryLocalSocketAnswers(t *testing.T) {
+	base := "127.0.0.1:" + strconv.Itoa(freePorts(t, 1)[0])
+	first := locallistentest.UniqueListenURL(t, "lmx-hub-locals-a")
+	second := locallistentest.UniqueListenURL(t, "lmx-hub-locals-b")
+	srv := startTestServer(t, &config.Config{
+		Listen:   []string{base, first, second},
+		SoloMode: true,
+	})
+	requireAnswers(t, base)
+	// The helper adds a socket of its own, so the two named ones are what this
+	// asserts on rather than an exact count.
+	for _, url := range []string{first, second} {
+		i := indexOfLocal(srv.localListenURLs, url)
+		require.GreaterOrEqual(t, i, 0, "%s must be one of the bound local listeners", url)
+		require.NoError(t, listSettings(localIPCClientAt(t, srv, i)),
+			"the listener for %s must answer", url)
+	}
+}
+
+// The credential-free mark must cover EVERY local listener, not only the
+// first. `BaseContext` decides it from the accepting listener, so a request on
+// a second socket is what proves the set is built from all of them. A
+// regression that marked only the first locks the desktop out of the others;
+// the reverse regression -- marking a TCP listener -- is refused below.
+func TestServer_EveryLocalSocketStaysCredentialFree(t *testing.T) {
+	base := "127.0.0.1:" + strconv.Itoa(freePorts(t, 1)[0])
+	first := locallistentest.UniqueListenURL(t, "lmx-hub-free-a")
+	second := locallistentest.UniqueListenURL(t, "lmx-hub-free-b")
+	srv := startTestServer(t, &config.Config{
+		Listen:   []string{base, first, second},
+		SoloMode: true,
+	})
+	requireAnswers(t, base)
+	setSoloPasswordDirect(t, srv.store)
+
+	// The account holds a password now, so only the credential-free path is
+	// admitted. Each named local socket must take it.
+	for _, url := range []string{first, second} {
+		i := indexOfLocal(srv.localListenURLs, url)
+		require.GreaterOrEqual(t, i, 0, "%s must be one of the bound local listeners", url)
+		require.NoError(t, listSettings(localIPCClientAt(t, srv, i)),
+			"the listener for %s must stay credential-free", url)
+	}
+	err := listSettings(tcpClient(base))
+	require.Error(t, err, "TCP must ask for a sign-in once the account holds a password")
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+// indexOfLocal reports where a local URL sits in the bound list, or -1.
+func indexOfLocal(haystack []string, want string) int {
+	for i, s := range haystack {
+		if s == want {
+			return i
+		}
+	}
+	return -1
+}
+
 // The login budget is keyed by the CALLER'S ADDRESS, and that address reaches
 // the limiter only through the http.Server's ConnContext.
 //
@@ -168,7 +241,7 @@ func TestServer_TheLocalSocketStaysCredentialFreeWhenTCPStopsBeing(t *testing.T)
 // works and in the same one when it does not, which is the whole assertion.
 func TestServer_TheLoginBudgetIsKeyedByTheCallersAddress(t *testing.T) {
 	base := "127.0.0.1:" + strconv.Itoa(freePorts(t, 1)[0])
-	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	srv := startTestServer(t, &config.Config{Listen: []string{base}, SoloMode: true})
 	requireAnswers(t, base)
 
 	overTCP := tcpAuthClient(base)
@@ -216,7 +289,7 @@ func tcpAuthClient(addr string) leapmuxv1connect.AuthServiceClient {
 
 func localIPCAuthClient(t *testing.T, srv *Server) leapmuxv1connect.AuthServiceClient {
 	t.Helper()
-	dial, err := locallisten.Dialer(srv.listenURL)
+	dial, err := locallisten.Dialer(srv.localListenURLs[0])
 	require.NoError(t, err)
 	return leapmuxv1connect.NewAuthServiceClient(
 		&http.Client{

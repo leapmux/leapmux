@@ -1,11 +1,18 @@
 {
-  "_readme": "These ZCode app-server values are shared by the Go provider and the TypeScript renderer. The protocol uses line-delimited JSON without a jsonrpc field. Both implementations dispatch on the envelope type and the payload kind. Go-only methods and fields stay in Go. Frontend-only display kinds stay in TypeScript. Z.ai owns these values, so changes must follow the installed provider protocol. `toolKinds` holds `raw` because a retained closing row can BE a raw frame: the app server records it as the call's last frame, and a reader that did not know the word drew nothing for the row. `resultTypes` holds the four `error_*` variants beside success and cancelled, because the turn-end rule states a failure in the danger colour and a word it does not know read as a plain end. LeapMux owns the two `supplement` payload names: a retained tool row keeps its native record and the artifact bodies it refers to beside a `tool.updated` envelope, and the browser plugin reads both back out. `storedTool` and `storedPart` hold the fields of the record ZCode's own store keeps, which the worker copies whole and the browser plugin then reads field by field -- the same split Reasonix's `toolRecord` states. The envelope's own keys (`type`, `payload`, and `supplementPayload`'s `kind`, `toolCallId` and `input`) are ZCode's, and they are here because the worker WRITES that envelope and the browser matches it against the row's own frame before it reads either payload. `storedAttachment` covers one stored attachment at all three levels it appears: `attachments` is the list on the part's `state`, `artifactUri` sits inside the attachment's nested `metadata`, and the rest are the attachment record's own fields. One table, because the browser reads all three levels off one object graph and a rename anywhere in it must move both sides together. Its `sessionID` and `messageID` differ in CASE from `storedTool`'s `sessionId` and `messageId`; that is ZCode's own spelling, and holding both here is what stops one side correcting it and the other not. The worker keys the artifact bodies it stores by `artifactUri`, and the browser looks each one up by the same key.",
+  "_readme": "The Go provider and TypeScript plugin share these ZCode app-server values. The protocol uses line-delimited JSON without a `jsonrpc` field. Both readers dispatch on the envelope type and payload kind. A value that only one reader uses stays in that reader's code. Z.ai owns the native values. Follow the installed native protocol when you change them.\n\n`toolKinds.Raw` identifies a native raw frame that can close a tool call. The app server can store that frame as the call's last frame. Both readers must recognize it to preserve the closing row.\n\n`resultTypes` includes four native `error_*` variants. The turn divider uses those values to identify a failure. An unknown value can incorrectly show an ordinary completion.\n\nLeapMux owns `supplement`. A retained tool row carries the native stored record beside the `tool.updated` envelope. It can carry native image bytes also. The browser checks the envelope before it uses those bytes.\n\n`storedTool` and `storedPart` identify fields in ZCode's native store. The Worker copies the complete native record. The plugin reads its fields. Reasonix uses the same division of responsibility for its own `toolRecord`.\n\nThe Worker writes ZCode's native envelope fields. The browser matches them against the current row:\n\n- `type` and `payload`.\n- `supplementPayload.kind`.\n- `supplementPayload.toolCallId`.\n- `supplementPayload.input`.\n\n`storedAttachment` covers all three levels of one native attachment:\n\n- `attachments` belongs to the part's `state`.\n- `artifactUri` belongs to the attachment's nested `metadata`.\n- The other fields belong to the attachment record.\n\nBoth readers use one table for this object graph. A field change must reach both readers. Native attachment fields `sessionID` and `messageID` differ in case from `storedTool.sessionId` and `storedTool.messageId`. Preserve those native spellings. The Worker stores image bytes under `artifactUri`, and the browser uses that same key.\n\nThe browser owns native serialization fields and strategies in its provider protocol module. The stored tool and part fields preserve the native session and call identity. An explicit artifactPath supplies a filesystem path. An artifact URI alone supplies no filesystem path. The browser shows the path beside the original preview. LeapMux reads no serialized output file.",
   "toolPrefixes": {
     "Subagent": "tool_subagent_"
   },
   "methods": {
     "RequestUserInput": "interaction/requestUserInput",
-    "RequestPermission": "interaction/requestPermission"
+    "RequestPermission": "interaction/requestPermission",
+    "StateUpdated": "state.updated"
+  },
+  "stateReasons": {
+    "CompactStarted": "compact_started",
+    "SessionCompacted": "session_compacted",
+    "SessionCompactFailed": "session_compact_failed",
+    "SessionCompactCancelled": "session_compact_cancelled"
   },
   "actions": {
     "Accept": "accept",
@@ -131,7 +138,7 @@
     "Type": "type",
     "Payload": "payload",
     "NativeTool": "nativeTool",
-    "Artifacts": "artifacts"
+    "OutputFiles": "outputFiles"
   },
   "supplementPayload": {
     "Kind": "kind",
@@ -162,7 +169,7 @@
     "Mime": "mime",
     "URL": "url",
     "Metadata": "metadata",
-    "ArtifactURI": "artifactUri"
+    "OutputFileURI": "artifactUri"
   },
   "storedAttachmentTypes": {
     "File": "file"
@@ -175,13 +182,17 @@
   "_unread": {
     "storedTool": {
       "ID": {
-        "sides": ["ts"],
+        "sides": [
+          "ts"
+        ],
         "why": "the worker matches a stored record to a row by this id; the browser reads the record off the row that already matched, so it reads the session and message ids to check the owner and never the id itself"
       }
     },
     "resultTypes": {
       "Success": {
-        "sides": ["ts"],
+        "sides": [
+          "ts"
+        ],
         "why": "the browser words the turn-end row for the failures and for cancelled alone -- success is the row's default wording, so the browser matches no word for it, and the key is here because the table is the whole closed set"
       }
     }
@@ -240,6 +251,11 @@
           "key": "Attachments",
           "type": "[]json.RawMessage",
           "table": "storedAttachment"
+        },
+        {
+          "key": "Metadata",
+          "type": "json.RawMessage",
+          "table": "storedAttachment"
         }
       ]
     },
@@ -266,11 +282,11 @@
       ]
     },
     "ZCodeAttachmentMetadata": {
-      "doc": "ZCodeAttachmentMetadata points at the artifact body an attachment refers to.\n\nThe worker keys the artifact bodies it stores by this URI, and the browser looks\neach one up by the same key out of the same stored bytes.",
+      "doc": "ZCodeAttachmentMetadata points at the outputFile body an attachment refers to.\n\nThe worker keys the outputFile bodies it stores by this URI, and the browser looks\neach one up by the same key out of the same stored bytes.",
       "table": "storedAttachment",
       "fields": [
         {
-          "key": "ArtifactURI",
+          "key": "OutputFileURI",
           "type": "string"
         }
       ]
@@ -320,7 +336,7 @@
       ]
     },
     "ZCodeToolResultEnvelope": {
-      "doc": "ZCodeToolResultEnvelope is what a retained tool row keeps beside the agent's frame.\n\nSame envelope as the input one, two payloads: the native record LeapMux read out\nof ZCode's own store, and the artifact bodies it refers to.",
+      "doc": "ZCodeToolResultEnvelope is what a retained tool row keeps beside the agent's frame.\n\nSame envelope as the input one, two payloads: the native record LeapMux read out\nof ZCode's own store, and the outputFile bodies it refers to.",
       "table": "supplement",
       "fields": [
         {
@@ -336,7 +352,7 @@
           "type": "#ZCodeStoredTool"
         },
         {
-          "key": "Artifacts",
+          "key": "OutputFiles",
           "type": "map[string]string"
         }
       ]

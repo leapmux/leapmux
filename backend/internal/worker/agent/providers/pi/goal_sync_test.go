@@ -2,6 +2,7 @@ package pi
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -32,6 +33,21 @@ func piGoalSyncRig(t *testing.T) (*piTestRig, *agenttest.Sink, string) {
 	rig.agent.sessionID, rig.agent.sessionFile, rig.agent.workingDir = "session", path, directory
 	rig.agent.Mu.Unlock()
 	return rig, sink, goalPath
+}
+
+func holdPiGoalPromptReply(t *testing.T, rig *piTestRig) func() {
+	t.Helper()
+	releasePrompt := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(releasePrompt) }) }
+	t.Cleanup(release)
+	rig.holdResponse(CommandPrompt, releasePrompt)
+	return release
+}
+
+func writePiSessionWithoutFocus(t *testing.T, rig *piTestRig) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(rig.agent.sessionFile, []byte(`{"type":"session","id":"session","version":3}`+"\n"), 0o600))
 }
 
 func TestPiGoalCommandsUseOnlyInstalledExtensionCommands(t *testing.T) {
@@ -100,6 +116,190 @@ func TestPiGoalCommandRefreshesConfirmedState(t *testing.T) {
 	}, time.Second, time.Millisecond)
 }
 
+// A goal command can start a model turn before its prompt reply.
+// The first refresh can observe no focused goal.
+// A later goal file must reach the sidebar while that reply stays open.
+func TestPiGoalRefreshFindsGoalBeforeDetachedCommandReply(t *testing.T) {
+	t.Parallel()
+	rig, sink, goalPath := piGoalSyncRig(t)
+	a := rig.agent
+	writePiSessionWithoutFocus(t, rig)
+	require.NoError(t, os.Remove(goalPath))
+	a.Mu.Lock()
+	a.extensionCommands = map[string]bool{"goal-direct": true}
+	a.goal.retryDelay = time.Millisecond
+	a.goal.retryLimit = 5
+	a.Mu.Unlock()
+	focusReady := make(chan struct{})
+	var focusOnce sync.Once
+	release := holdPiGoalPromptReply(t, rig)
+	reveal := func() { focusOnce.Do(func() { close(focusReady) }) }
+	t.Cleanup(reveal)
+	var reads atomic.Int32
+	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+		switch request.Type {
+		case CommandPrompt:
+			return nil, true, ""
+		case CommandGetEntries:
+			if reads.Add(1) == 1 {
+				return json.RawMessage(`{"entries":[],"leafId":null}`), true, ""
+			}
+			<-focusReady
+			return json.RawMessage(`{"entries":[{"type":"custom","id":"focus","parentId":null,"customType":"pi-goal-focus","data":{"version":1,"focusedGoalId":"goal"}}],"leafId":"focus"}`), true, ""
+		default:
+			return nil, false, "Unexpected command"
+		}
+	})
+	_, err := a.PerformGoalAction(agent.GoalActionSet, "Objective")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return reads.Load() > 0 }, 2*time.Second, time.Millisecond)
+	require.NoError(t, os.WriteFile(goalPath, []byte(`{"version":3,"id":"goal","objective":"Objective","status":"active"}`), 0o600))
+	reveal()
+	require.Eventually(t, func() bool {
+		goal, ok := sink.LastGoal()
+		return ok && goal.Objective == "Objective" && goal.Status == agent.GoalStatusActive
+	}, 2*time.Second, time.Millisecond, "the focused goal must appear before the prompt reply")
+	release()
+}
+
+func TestPiGoalRefreshFindsCustomOnlyGoalBeforeDetachedCommandReply(t *testing.T) {
+	t.Parallel()
+	rig, sink, goalPath := piGoalSyncRig(t)
+	a := rig.agent
+	require.NoError(t, os.Remove(a.sessionFile))
+	require.NoError(t, os.WriteFile(goalPath, []byte(`{"version":3,"id":"goal","objective":"Fresh objective","status":"active"}`), 0o600))
+	a.Mu.Lock()
+	a.extensionCommands = map[string]bool{"goal-direct": true}
+	a.goal.retryDelay = time.Millisecond
+	a.goal.retryLimit = 1
+	a.Mu.Unlock()
+	release := holdPiGoalPromptReply(t, rig)
+	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+		switch request.Type {
+		case CommandPrompt:
+			return nil, true, ""
+		case CommandGetState:
+			return json.RawMessage(`{"sessionId":"session","messageCount":2}`), true, ""
+		case CommandGetSessionStats:
+			data, err := json.Marshal(map[string]any{"sessionId": "session", "sessionFile": a.sessionFile, "userMessages": 0, "assistantMessages": 0, "toolResults": 0, "totalMessages": 1})
+			require.NoError(t, err)
+			return data, true, ""
+		case CommandGetEntries:
+			return json.RawMessage(`{"entries":[{"type":"model_change","id":"42de25e8","parentId":null},{"type":"thinking_level_change","id":"3422c726","parentId":"42de25e8"},{"type":"custom","id":"951f641f","parentId":"3422c726","customType":"pi-goal-focus","data":{"version":1,"focusedGoalId":"goal","reason":"created"}},{"type":"message","id":"0b2fc47f","parentId":"951f641f","message":{"role":"system","content":"Private goal policy"}},{"type":"custom_message","id":"df6944e9","parentId":"0b2fc47f","customType":"pi-goal-event","content":"Private goal continuation"}],"leafId":"df6944e9"}`), true, ""
+		default:
+			return nil, false, "Unexpected command"
+		}
+	})
+	_, err := a.PerformGoalAction(agent.GoalActionSet, "Fresh objective")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		goal, ok := sink.LastGoal()
+		return ok && goal.Objective == "Fresh objective" && goal.Status == agent.GoalStatusActive
+	}, 2*time.Second, time.Millisecond, "publish the native goal while its first prompt reply stays held")
+	_, err = os.Stat(a.sessionFile)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	release()
+}
+
+func TestPiGoalRefreshStopsWhenPendingGoalNeverAppears(t *testing.T) {
+	t.Parallel()
+	rig, sink, _ := piGoalSyncRig(t)
+	a := rig.agent
+	writePiSessionWithoutFocus(t, rig)
+	a.Mu.Lock()
+	a.extensionCommands = map[string]bool{"goal-direct": true}
+	a.goal.retryDelay = time.Nanosecond
+	a.goal.retryLimit = 2
+	a.Mu.Unlock()
+	release := holdPiGoalPromptReply(t, rig)
+	var reads atomic.Int32
+	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+		switch request.Type {
+		case CommandPrompt:
+			return nil, true, ""
+		case CommandGetEntries:
+			reads.Add(1)
+			return json.RawMessage(`{"entries":[],"leafId":null}`), true, ""
+		default:
+			return nil, false, "Unexpected command"
+		}
+	})
+	_, err := a.PerformGoalAction(agent.GoalActionSet, "Objective")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		a.Mu.Lock()
+		defer a.Mu.Unlock()
+		return reads.Load() == 3 && !a.goal.running
+	}, 2*time.Second, time.Millisecond)
+	assert.Empty(t, sink.Goals(), "a missing focused goal must not create a sidebar entry")
+	assert.Equal(t, int32(3), reads.Load(), "the first read plus two bounded retries")
+	release()
+}
+
+func TestPiGoalClearDoesNotRetryAnEmptySnapshotWhileReplyIsPending(t *testing.T) {
+	t.Parallel()
+	rig, sink, _ := piGoalSyncRig(t)
+	a := rig.agent
+	writePiSessionWithoutFocus(t, rig)
+	a.Mu.Lock()
+	a.extensionCommands = map[string]bool{"goal-clear": true}
+	a.goal.retryDelay = time.Nanosecond
+	a.goal.retryLimit = 2
+	a.Mu.Unlock()
+	release := holdPiGoalPromptReply(t, rig)
+	var reads atomic.Int32
+	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+		switch request.Type {
+		case CommandPrompt:
+			return nil, true, ""
+		case CommandGetEntries:
+			reads.Add(1)
+			return json.RawMessage(`{"entries":[],"leafId":null}`), true, ""
+		default:
+			return nil, false, "Unexpected command"
+		}
+	})
+	_, err := a.PerformGoalAction(agent.GoalActionClear, "")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		a.Mu.Lock()
+		defer a.Mu.Unlock()
+		return reads.Load() >= 1 && !a.goal.running
+	}, 2*time.Second, time.Millisecond)
+	assert.Equal(t, int32(1), reads.Load(), "a Clear with no goal is already settled")
+	assert.Empty(t, sink.Goals())
+	release()
+}
+
+func TestPiGoalRefreshIgnoresAnotherSessionPendingActivation(t *testing.T) {
+	t.Parallel()
+	rig, sink, _ := piGoalSyncRig(t)
+	a := rig.agent
+	writePiSessionWithoutFocus(t, rig)
+	a.Mu.Lock()
+	a.extensionCommands = map[string]bool{"goal-direct": true}
+	a.goal.pendingActivations = map[string]int{"old-session": 1}
+	a.goal.retryDelay = time.Nanosecond
+	a.goal.retryLimit = 2
+	a.Mu.Unlock()
+	var reads atomic.Int32
+	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+		if request.Type != CommandGetEntries {
+			return nil, false, "Unexpected command"
+		}
+		reads.Add(1)
+		return json.RawMessage(`{"entries":[],"leafId":null}`), true, ""
+	})
+	a.schedulePiGoalRefresh(false)
+	require.Eventually(t, func() bool {
+		a.Mu.Lock()
+		defer a.Mu.Unlock()
+		return reads.Load() >= 1 && !a.goal.running
+	}, 2*time.Second, time.Millisecond)
+	assert.Equal(t, int32(1), reads.Load(), "an old session must not add retries")
+	assert.Empty(t, sink.Goals())
+}
+
 func TestPiGoalPublicationRejectsStaleReadsAndShutdown(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
@@ -144,6 +344,126 @@ func TestPiGoalSnapshotSupportsAnUnwrittenNewSession(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, record)
 	assert.Equal(t, "goal", record.ID)
+}
+
+func TestPiGoalSnapshotSupportsAnUnwrittenCustomOnlySession(t *testing.T) {
+	t.Parallel()
+	for _, count := range []int{2, 32} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			t.Parallel()
+			rig, _, _ := piGoalSyncRig(t)
+			require.NoError(t, os.Remove(rig.agent.sessionFile))
+			rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+				switch request.Type {
+				case CommandGetState:
+					return json.RawMessage(fmt.Sprintf(`{"sessionId":"session","messageCount":%d}`, count)), true, ""
+				case CommandGetSessionStats:
+					data, err := json.Marshal(map[string]any{"sessionId": "session", "sessionFile": rig.agent.sessionFile, "userMessages": 0, "assistantMessages": 0, "toolResults": 0, "totalMessages": count - 1})
+					require.NoError(t, err)
+					return data, true, ""
+				case CommandGetEntries:
+					return json.RawMessage(`{"entries":[{"type":"model_change","id":"42de25e8","parentId":null},{"type":"thinking_level_change","id":"3422c726","parentId":"42de25e8"},{"type":"custom","id":"951f641f","parentId":"3422c726","customType":"pi-goal-focus","data":{"version":1,"focusedGoalId":"goal","reason":"created"}},{"type":"message","id":"0b2fc47f","parentId":"951f641f","message":{"role":"system","content":"Private goal policy"}},{"type":"custom_message","id":"df6944e9","parentId":"0b2fc47f","customType":"pi-goal-event","content":"Private goal continuation"}],"leafId":"df6944e9"}`), true, ""
+				default:
+					return nil, false, "Unexpected command"
+				}
+			})
+			record, err := rig.agent.readPiGoalSnapshot(rig.agent.sessionFile, rig.agent.workingDir, rig.agent.sessionID)
+			require.NoError(t, err)
+			require.NotNil(t, record)
+			assert.Equal(t, "goal", record.ID)
+			assert.Equal(t, "paused", record.Status)
+			requests := rig.requests()
+			require.Len(t, requests, 3)
+			assert.Equal(t, CommandGetState, requests[0].Type)
+			assert.Equal(t, CommandGetSessionStats, requests[1].Type)
+			assert.Equal(t, CommandGetEntries, requests[2].Type)
+		})
+	}
+}
+
+func TestPiGoalSnapshotRefusesUnsafeUnwrittenHistory(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"large live count", "negative live count", "wrong state session", "absent live count", "fractional live count", "wrong session", "wrong file", "absent user count", "absent assistant count", "absent tool count", "absent total count", "negative count", "negative total count", "fractional count", "ordinary user", "ordinary assistant", "tool result", "large total count", "stats failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			rig, _, _ := piGoalSyncRig(t)
+			require.NoError(t, os.Remove(rig.agent.sessionFile))
+			liveCount := 2
+			switch scenario {
+			case "large live count":
+				liveCount = 33
+			case "negative live count":
+				liveCount = -1
+			}
+			stats := map[string]any{"sessionId": "session", "sessionFile": rig.agent.sessionFile, "userMessages": 0, "assistantMessages": 0, "toolResults": 0, "totalMessages": 2}
+			switch scenario {
+			case "wrong session":
+				stats["sessionId"] = "different"
+			case "wrong file":
+				stats["sessionFile"] = filepath.Join(t.TempDir(), "different.jsonl")
+			case "absent user count":
+				delete(stats, "userMessages")
+			case "absent assistant count":
+				delete(stats, "assistantMessages")
+			case "absent tool count":
+				delete(stats, "toolResults")
+			case "absent total count":
+				delete(stats, "totalMessages")
+			case "negative total count":
+				stats["totalMessages"] = -1
+			case "negative count":
+				stats["userMessages"] = -1
+			case "fractional count":
+				stats["totalMessages"] = 2.5
+			case "ordinary user":
+				stats["userMessages"] = 1
+			case "ordinary assistant":
+				stats["assistantMessages"] = 1
+			case "tool result":
+				stats["toolResults"] = 1
+			case "large total count":
+				stats["totalMessages"] = 33
+			}
+			rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+				switch request.Type {
+				case CommandGetState:
+					state := map[string]any{"sessionId": "session", "messageCount": liveCount}
+					switch scenario {
+					case "wrong state session":
+						state["sessionId"] = "different"
+					case "absent live count":
+						delete(state, "messageCount")
+					case "fractional live count":
+						state["messageCount"] = 2.5
+					}
+					data, err := json.Marshal(state)
+					require.NoError(t, err)
+					return data, true, ""
+				case CommandGetSessionStats:
+					if scenario == "stats failure" {
+						return nil, false, "Native statistics unavailable"
+					}
+					data, err := json.Marshal(stats)
+					require.NoError(t, err)
+					return data, true, ""
+				default:
+					return nil, false, "Unsafe history request"
+				}
+			})
+			_, err := rig.agent.readPiGoalSnapshot(rig.agent.sessionFile, rig.agent.workingDir, rig.agent.sessionID)
+			require.Error(t, err)
+			requests := rig.requests()
+			for _, request := range requests {
+				assert.NotEqual(t, CommandGetEntries, request.Type)
+			}
+			switch scenario {
+			case "large live count", "negative live count", "wrong state session", "absent live count", "fractional live count":
+				assert.Len(t, requests, 1)
+			default:
+				assert.Len(t, requests, 2, "inspect native role counts before refusing small memory history")
+			}
+		})
+	}
 }
 
 func TestPiGoalSnapshotDoesNotRequestMissingNonemptyHistory(t *testing.T) {
@@ -204,16 +524,17 @@ func TestPiGoalRefreshRepublishesASnapshotAfterAFailedRead(t *testing.T) {
 	require.Eventually(t, settled, time.Second, time.Millisecond)
 	require.Empty(t, sink.Goals(), "a failed read publishes nothing")
 
-	// The startup snapshot never reached the sink, so the intent must survive a later
-	// hint that carries none. Without it the browser prints "Goal set" for a goal the
-	// user set in an earlier process.
+	// The failed startup publication retains its snapshot intent.
+	// A later hint without that intent must still use the snapshot.
+	// Otherwise, the browser announces Goal set for a goal from an earlier process.
 	failing.Store(false)
 	a.schedulePiGoalRefresh(false)
 	require.Eventually(t, func() bool { _, ok := sink.LastGoal(); return ok }, time.Second, time.Millisecond)
 	goal, _ := sink.LastGoal()
 	assert.True(t, goal.Snapshot)
 
-	// The publication spent the intent, so the next hint announces a real change.
+	// Publication clears the snapshot intent.
+	// The next hint must announce a real change.
 	require.Eventually(t, func() bool {
 		a.Mu.Lock()
 		defer a.Mu.Unlock()
@@ -224,12 +545,10 @@ func TestPiGoalRefreshRepublishesASnapshotAfterAFailedRead(t *testing.T) {
 	assert.False(t, sink.Goals()[1].Snapshot)
 }
 
-// Pi delays the session file until an assistant message exists, and `get_state`
-// rescues the EMPTY session alone. A refresh that lands in the window between the
-// first message and the first flush reads nothing, and the intent it carried is
-// the only one the goal has: no hint follows a recovery pass. The refresh must
-// therefore read again rather than leave the panel on the state of an earlier
-// process.
+// Pi writes its first session file after a user or assistant message.
+// A missing ordinary-history file cannot use the small custom-only fallback.
+// No new hint follows a recovery pass.
+// Retry so the panel can observe the later file.
 func TestPiGoalRefreshWaitsForAnUnwrittenTranscript(t *testing.T) {
 	t.Parallel()
 	rig, sink, _ := piGoalSyncRig(t)
@@ -247,13 +566,13 @@ func TestPiGoalRefreshWaitsForAnUnwrittenTranscript(t *testing.T) {
 	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
 		switch request.Type {
 		case CommandGetState:
-			// The session holds messages, so the empty-session rescue does not apply.
-			// Pi flushes the transcript at this point, the way the real CLI does once
-			// its first assistant message lands.
+			// The ordinary-history count exceeds the in-memory limit.
+			// Simulate the first conversation flush during this read.
+			// The retry must then read the file.
 			if os.WriteFile(path, contents, 0o600) == nil {
 				restored.Store(true)
 			}
-			return json.RawMessage(`{"sessionId":"session","messageCount":4}`), true, ""
+			return json.RawMessage(`{"sessionId":"session","messageCount":10000}`), true, ""
 		case CommandGetEntries:
 			return json.RawMessage(`{"entries":[],"leafId":"focus"}`), true, ""
 		default:
@@ -270,8 +589,8 @@ func TestPiGoalRefreshWaitsForAnUnwrittenTranscript(t *testing.T) {
 	assert.True(t, goal.Snapshot, "the recovery pass still carries the snapshot intent")
 }
 
-// The wait is bounded: a transcript that never lands must not hold the refresh
-// goroutine open for the life of the session.
+// A session file that never appears must not keep the refresh goroutine alive.
+// Stop at the retry limit.
 func TestPiGoalRefreshStopsWaitingForATranscriptThatNeverLands(t *testing.T) {
 	t.Parallel()
 	rig, sink, _ := piGoalSyncRig(t)
@@ -285,7 +604,7 @@ func TestPiGoalRefreshStopsWaitingForATranscriptThatNeverLands(t *testing.T) {
 		if request.Type != CommandGetState {
 			return nil, false, "Unexpected command"
 		}
-		return json.RawMessage(`{"sessionId":"session","messageCount":4}`), true, ""
+		return json.RawMessage(`{"sessionId":"session","messageCount":10000}`), true, ""
 	})
 
 	a.schedulePiGoalRefresh(true)
@@ -298,8 +617,8 @@ func TestPiGoalRefreshStopsWaitingForATranscriptThatNeverLands(t *testing.T) {
 	assert.Len(t, rig.requests(), 3, "the first read plus the two the limit allows")
 }
 
-// A stop ends the wait. Without it the goroutine would read again on a session
-// that shuts down, and hold itself open for the rest of the delay.
+// A stop must end the retry wait.
+// It must prevent another read during shutdown.
 func TestPiGoalRefreshEndsTheWaitWhenTheAgentStops(t *testing.T) {
 	t.Parallel()
 	rig, sink, _ := piGoalSyncRig(t)
@@ -307,7 +626,7 @@ func TestPiGoalRefreshEndsTheWaitWhenTheAgentStops(t *testing.T) {
 	require.NoError(t, os.Remove(a.sessionFile))
 	a.Mu.Lock()
 	a.extensionCommands = map[string]bool{"goal-pause": true}
-	// Only a stop can end a wait this long, so the case states one thing.
+	// Only cancellation can end this long wait before its deadline.
 	a.goal.retryDelay = time.Minute
 	a.Mu.Unlock()
 	read := make(chan struct{}, 1)
@@ -316,7 +635,7 @@ func TestPiGoalRefreshEndsTheWaitWhenTheAgentStops(t *testing.T) {
 		case read <- struct{}{}:
 		default:
 		}
-		return json.RawMessage(`{"sessionId":"session","messageCount":4}`), true, ""
+		return json.RawMessage(`{"sessionId":"session","messageCount":10000}`), true, ""
 	})
 
 	a.schedulePiGoalRefresh(true)
@@ -360,7 +679,8 @@ func TestPiGoalActionReturnsBeforeTheConfirmationAnswer(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("PerformGoalAction waited for the dialog answer")
 	}
-	// A late failure still reaches the user, because nothing else reports it.
+	// A late command failure must reach the user.
+	// No other path reports it.
 	releaseOnce()
 	require.Eventually(t, func() bool { return len(sink.LeapMuxNotifications()) > 0 }, time.Second, time.Millisecond)
 	note := sink.LeapMuxNotifications()[0]

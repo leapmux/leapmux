@@ -15,6 +15,17 @@ import (
 
 // --- turn lifecycle ---
 
+func TestZCodeTurnActiveDoesNotOfferUnsupportedSteering(t *testing.T) {
+	t.Parallel()
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+	a.Mu.Lock()
+	a.turnActive = true
+	a.Mu.Unlock()
+	state := a.PublishTurnActive()
+	assert.True(t, state.Active)
+	assert.False(t, state.Steerable)
+}
+
 func TestHandleZCodeOutput_TurnStarted_ArmsTheUsersTurn(t *testing.T) {
 	t.Parallel()
 

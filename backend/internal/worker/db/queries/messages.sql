@@ -30,6 +30,42 @@ VALUES (
 ON CONFLICT(agent_id, agent_session_id, idempotency_key) WHERE idempotency_key <> '' DO NOTHING
 RETURNING seq;
 
+-- HasMessageByIdempotencyKey recognizes a stored immutable native record.
+-- Repeat the partial index predicate to exclude empty keys and use the index.
+-- name: HasMessageByIdempotencyKey :one
+SELECT EXISTS (
+  SELECT 1 FROM messages
+  WHERE agent_id = sqlc.arg(agent_id)
+    AND agent_session_id = sqlc.arg(agent_session_id)
+    AND idempotency_key = sqlc.arg(idempotency_key)
+    AND idempotency_key <> ''
+) AS present;
+
+-- CloneAgentMessagesForResume copies one closed Worker's transcript into the
+-- new agent before startup. A target id plus the source seq keeps the global
+-- primary key unique without making IDs grow on repeated resumes. The insert
+-- trigger raises the target's message sequence high-water.
+-- name: CloneAgentMessagesForResume :execrows
+INSERT INTO messages (
+  id, agent_id, seq, agent_session_id, source, content,
+  content_compression, supplemental_content,
+  supplemental_content_compression, supplemental_revision, idempotency_key,
+  depth, span_id, parent_span_id, span_type, span_lines, span_color,
+  agent_provider, mark_type, assembled_kind, completion, created_at
+)
+SELECT
+  CAST(sqlc.arg(target_agent_id) AS TEXT) || ':' || CAST(m.seq AS TEXT),
+  CAST(sqlc.arg(target_agent_id) AS TEXT),
+  m.seq, m.agent_session_id, m.source, m.content,
+  m.content_compression, m.supplemental_content,
+  m.supplemental_content_compression, m.supplemental_revision,
+  m.idempotency_key, m.depth, m.span_id, m.parent_span_id,
+  m.span_type, m.span_lines, m.span_color, m.agent_provider,
+  m.mark_type, m.assembled_kind, m.completion, m.created_at
+FROM messages AS m
+WHERE m.agent_id = sqlc.arg(source_agent_id)
+ORDER BY m.seq ASC;
+
 -- name: ListMessagesByAgentID :many
 SELECT * FROM messages
 WHERE agent_id = ? AND seq > ?

@@ -3,7 +3,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createControlAnswerState } from '../../controls/types'
 import { acpResultDivider } from '../acp/extractors/resultDivider'
 import { describeACPProviderBasics, renderACPRow } from '../acp/testUtils'
-import { sendOpenCodeQuestionResponse } from '../opencode/askUserQuestion'
+import { sendOpenCodeQuestionResponse } from '../openCodeQuestions'
 import { providerFor } from '../registry'
 
 import { input } from '../testUtils'
@@ -16,7 +16,7 @@ describe('kilo classify', () => {
   // Attachment caps, assembled-text handling, config_option_update hiding (empty
   // payload), and the ACP interrupt request are the standard stub behaviours. Kilo's POPULATED
   // config_option_update case below is the genuine divergence and stays inline.
-  describeACPProviderBasics(AgentProvider.KILO, { text: true, image: true, pdf: true, binary: true })
+  describeACPProviderBasics(AgentProvider.KILO, { text: true, image: true, pdf: true, binary: false })
 
   it('classifies tool_call as tool_use with kind', () => {
     const parent = {

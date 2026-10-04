@@ -6,7 +6,6 @@ import (
 	"log/slog"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 // acpToolRequestContent records the last published request for conditional updates.
@@ -16,31 +15,17 @@ type acpToolRequestContent struct {
 	revision     int64
 }
 
-func (b *Base) rememberACPToolRequest(toolID string, content []byte) {
-	b.turnMu.Lock()
-	defer b.turnMu.Unlock()
-	if b.toolRequestContents == nil {
-		b.toolRequestContents = make(map[string]*acpToolRequestContent)
-	}
-	b.toolRequestContents[toolID] = &acpToolRequestContent{original: append([]byte(nil), content...)}
-}
-
-// enrichACPToolRequest publishes late input fields while the tool still runs.
-// Output and completion remain on the result row.
-func (b *Base) enrichACPToolRequest(toolID string, fields map[string]json.RawMessage) {
-	b.turnMu.Lock()
-	previous := b.toolRequestContents[toolID]
-	b.turnMu.Unlock()
-	if previous == nil {
-		return
-	}
+// revisedToolRequestSupplement folds the request fields of one update into the
+// supplement of a published request row. It reports false when the update
+// revises no field, or when the stored row cannot be read.
+func revisedToolRequestSupplement(previous *acpToolRequestContent, fields map[string]json.RawMessage) ([]byte, bool) {
 	var original map[string]json.RawMessage
 	if err := json.Unmarshal(previous.original, &original); err != nil {
-		return
+		return nil, false
 	}
 	supplement := NewToolSupplement(original)
 	if len(previous.supplemental) > 0 && json.Unmarshal(previous.supplemental, &supplement) != nil {
-		return
+		return nil, false
 	}
 	changed := false
 	for _, key := range contracts.ACPSupplementRequestKeys {
@@ -56,27 +41,12 @@ func (b *Base) enrichACPToolRequest(toolID string, fields map[string]json.RawMes
 		changed = true
 	}
 	if !changed {
-		return
+		return nil, false
 	}
 	next, err := json.Marshal(supplement)
 	if err != nil {
 		slog.Warn("Encode updated ACP tool input", "error", err)
-		return
+		return nil, false
 	}
-	updated, err := b.sink.EnrichMessage(agent.MessageEnrichment{
-		SpanID: toolID, OriginalContent: previous.original,
-		PreviousRevision: previous.revision, SupplementalContent: next,
-	})
-	if err != nil {
-		slog.Warn("Publish updated ACP tool input", "error", err)
-		return
-	}
-	if !updated {
-		return
-	}
-	b.turnMu.Lock()
-	if b.toolRequestContents[toolID] == previous {
-		b.toolRequestContents[toolID] = &acpToolRequestContent{original: previous.original, supplemental: next, revision: previous.revision + 1}
-	}
-	b.turnMu.Unlock()
+	return next, true
 }

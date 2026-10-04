@@ -17,8 +17,8 @@ function frame(type: string, data: Record<string, unknown> = {}): Record<string,
 describe('copilot provider', () => {
   const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
 
-  it('accepts every attachment kind the runtime takes', () => {
-    expect(plugin?.configuration?.attachments).toEqual({ text: true, image: true, pdf: true, binary: true })
+  it('accepts text and image attachments', () => {
+    expect(plugin?.configuration?.attachments).toEqual({ text: true, image: true, pdf: false, binary: false })
   })
 
   // The runtime calls its own `task_complete` TOOL and then announces the same thing in

@@ -10,9 +10,9 @@ import (
 
 // Provider recognizes ACP's `session/cancel` notification (and the bare
 // `cancel` form retained for legacy producers) and answers ACP's MCP
-// elicitation. Every ACP provider (Cursor, Kilo, OpenCode, Goose, Reasonix)
-// embeds it in a plugin type of its own, and that type adds what only its
-// provider knows: where its session store lives, and any attachment policy.
+// elicitation. Every ACP provider embeds it in a plugin type of its own, and
+// that type adds what only its provider knows: where its session store lives,
+// and any attachment policy.
 // ACP doesn't consolidate notifications today, so Classify/Merge inherit the
 // no-op embedding, and so do ListStoredSessions and ValidateAttachment for a
 // provider that declares neither.

@@ -1,83 +1,84 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createProcessStub } from '~/test-support/childProcess'
-import { closeTestChannels, getUserId, getWorkerId, signUpViaAPI } from './api'
-import { startDevServer, startSoloServer, stopDevServer } from './devServer'
-import { spawnTestProcess } from './processRegistry'
-import { waitForServer } from './server'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { startSoloServer, startUnseededDevServer } from './devServer'
 
-let root: string
-
-vi.mock('./api', () => ({
-  closeTestChannels: vi.fn(async () => {}),
-  getUserId: vi.fn(),
-  getWorkerId: vi.fn(),
-  signUpViaAPI: vi.fn(),
-  TEST_ADMIN_DISPLAY_NAME: 'Admin',
-  TEST_ADMIN_PASSWORD: 'password',
-  TEST_ADMIN_USERNAME: 'admin',
-}))
-vi.mock('./processRegistry', () => ({ spawnTestProcess: vi.fn() }))
-vi.mock('./server', () => ({
-  getGlobalState: () => ({ binaryPath: 'leapmux', tmpDir: root }),
-  findFreePort: async () => 12345,
-  hubSpawnEnv: (env: unknown) => env,
-  waitForServer: vi.fn(),
+const state = vi.hoisted(() => ({
+  tmpDir: '',
+  args: [] as string[],
+  waitedURL: '',
 }))
 
-beforeEach(() => {
-  const scratch = resolve(import.meta.dirname, '../../../..', '.tmp')
-  mkdirSync(scratch, { recursive: true })
-  root = mkdtempSync(join(scratch, 'dev-server-test-'))
-  vi.mocked(waitForServer).mockReset().mockResolvedValue(undefined)
-  vi.mocked(signUpViaAPI).mockReset().mockResolvedValue('session')
-  vi.mocked(getUserId).mockReset().mockResolvedValue('user')
-  vi.mocked(getWorkerId).mockReset().mockResolvedValue('worker')
-  vi.mocked(closeTestChannels).mockClear()
+vi.mock('./server', async importOriginal => ({
+  ...await importOriginal<typeof import('./server')>(),
+  getGlobalState: () => ({ binaryPath: 'mock-leapmux', tmpDir: state.tmpDir }),
+  hubSpawnEnv: () => ({}),
+  findFreePort: () => { throw new Error('the hub must assign its own port') },
+  waitForHubReady: async (url: string) => { state.waitedURL = url },
+}))
+
+vi.mock('./processRegistry', async (importOriginal) => {
+  const { EventEmitter } = await import('node:events')
+  const { mkdirSync, writeFileSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  return {
+    ...await importOriginal<typeof import('./processRegistry')>(),
+    spawnTestProcess: (_binary: string, args: string[]) => {
+      state.args = args
+      const dataDir = args[args.indexOf('-data-dir') + 1]
+      if (!dataDir)
+        throw new Error('the hub needs its data directory')
+      const stateDir = join(dataDir, 'hub')
+      mkdirSync(stateDir, { recursive: true })
+      const requested = args[args.indexOf('-listen') + 1] ?? ''
+      const host = requested.slice(0, requested.lastIndexOf(':'))
+      writeFileSync(join(stateDir, 'state.json'), JSON.stringify({ listen: [`${host}:49123`] }))
+      return Object.assign(new EventEmitter(), {
+        stdout: { resume() {} },
+        stderr: { resume() {} },
+        exitCode: null,
+        signalCode: null,
+      })
+    },
+  }
 })
 
-afterEach(() => rmSync(root, { recursive: true, force: true }))
+const roots: string[] = []
 
-function child() {
-  const stub = createProcessStub()
-  stub.emitter.kill.mockImplementation(() => {
-    stub.emitter.exitCode = 0
-    stub.emitter.emit('exit', 0, null)
-    return true
-  })
-  vi.mocked(spawnTestProcess).mockReturnValue(stub.proc)
-  return stub
+function createScratchRoot(): void {
+  const scratch = resolve(import.meta.dirname, '../../../../.tmp')
+  mkdirSync(scratch, { recursive: true })
+  state.tmpDir = mkdtempSync(join(scratch, 'dev-server-test-'))
+  roots.push(state.tmpDir)
 }
 
-describe('private server lifetime', () => {
-  it.each(['readiness', 'signup', 'user', 'worker'])('cleans a dev process and its directory after a failed %s step', async (stage) => {
-    const stub = child()
-    const error = new Error(`${stage} failed`)
-    const operation = { readiness: waitForServer, signup: signUpViaAPI, user: getUserId, worker: getWorkerId }[stage]
-    vi.mocked(operation!).mockRejectedValueOnce(error)
-    await expect(startDevServer()).rejects.toBe(error)
-    expect(stub.emitter.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM')
-    expect(readdirSync(root)).toEqual([])
+afterEach(() => {
+  for (const root of roots.splice(0))
+    rmSync(root, { recursive: true, force: true })
+  state.tmpDir = ''
+  state.args = []
+  state.waitedURL = ''
+})
+
+describe('startUnseededDevServer', () => {
+  it('uses a kernel-assigned port and the resolved address from the hub state file', async () => {
+    createScratchRoot()
+
+    const server = await startUnseededDevServer()
+
+    expect(state.args.slice(0, 3)).toEqual(['dev', '-listen', '127.0.0.1:0'])
+    expect(server.hubUrl).toBe('http://localhost:49123')
+    expect(state.waitedURL).toBe(server.hubUrl)
   })
 
-  it('transfers a ready process to its caller and closes it on request', async () => {
-    const stub = child()
-    const handle = await startDevServer()
-    expect(stub.emitter.kill).not.toHaveBeenCalled()
-    expect(readdirSync(root)).toHaveLength(1)
-    await stopDevServer(handle)
-    expect(closeTestChannels).toHaveBeenCalledExactlyOnceWith(handle.hubUrl)
-    expect(stub.emitter.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM')
-    expect(readdirSync(root)).toEqual([])
-  })
+  it('uses the resolved Solo bind address while the browser stays on loopback', async () => {
+    createScratchRoot()
 
-  it('preserves cleanup after solo readiness fails', async () => {
-    const stub = child()
-    const error = new Error('solo not ready')
-    vi.mocked(waitForServer).mockRejectedValueOnce(error)
-    await expect(startSoloServer()).rejects.toBe(error)
-    expect(stub.emitter.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM')
-    expect(readdirSync(root)).toEqual([])
+    const server = await startSoloServer({ listenHost: '0.0.0.0' })
+
+    expect(state.args.slice(0, 3)).toEqual(['solo', '-listen', '0.0.0.0:0'])
+    expect(server.listen).toBe('0.0.0.0:49123')
+    expect(server.hubUrl).toBe('http://127.0.0.1:49123')
+    expect(state.waitedURL).toBe(server.hubUrl)
   })
 })

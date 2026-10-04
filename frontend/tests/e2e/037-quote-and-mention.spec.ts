@@ -228,7 +228,7 @@ test.describe('Quote and Mention', () => {
       // Open the menu and click "Mention in chat" as one retried unit: the
       // sidebar element is rebuilt when the active tab context changes, which
       // unmounts an already-open menu.
-      await clickTreeContextItem(page, row, 'tree-mention-button')
+      await clickTreeContextItem(row, 'tree-mention-button')
 
       // Verify the editor contains @package.json (the path is relative to cwd)
       await expect(editor).toContainText('@package.json')
@@ -357,14 +357,14 @@ test.describe('Quote and Mention', () => {
       await expect(row1).toBeVisible()
 
       // First mention: open the context menu and click mention for package.json
-      await clickTreeContextItem(page, row1, 'tree-mention-button')
+      await clickTreeContextItem(row1, 'tree-mention-button')
       await expect(editor).toContainText('@package.json')
 
       // Wait for the first context menu to fully close before interacting with the next node
       await expect(page.locator('[data-testid="tree-mention-button"]:visible')).toHaveCount(0)
 
       // Second mention: open the context menu and click mention for tsconfig.json
-      await clickTreeContextItem(page, treeRow(page, 'tsconfig.json'), 'tree-mention-button')
+      await clickTreeContextItem(treeRow(page, 'tsconfig.json'), 'tree-mention-button')
 
       // Both mentions should be present and space-separated (not double-newline separated)
       await expect(editor).toContainText('@package.json @tsconfig.json')

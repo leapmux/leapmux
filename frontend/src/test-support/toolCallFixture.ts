@@ -230,20 +230,25 @@ export function providerQuotableText(provider: AgentProvider, payload: Record<st
 }
 
 /**
- * One provider frame, read into the shared row model the way a mounted row reads it.
- *
- * The suite asks the same questions the app asks -- what does this row draw,
- * what can its toolbar do, which images does it carry -- and every one of them
- * is an answer about the ROW rather than a separate provider hook.
+ * Read a provider frame through the same shared model that a mounted row uses.
+ * Classification and extraction receive the stored row metadata.
+ * The resulting row supplies the toolbar and image behavior also.
  */
 export function providerRow(
   provider: AgentProvider,
   payload: Record<string, unknown>,
   options: ProviderRowOptions = {},
 ): ChatRow | null {
-  const plugin = providerFor(provider)!
-  const parsed = resolveMessageForRendering({ ...input(payload, undefined, provider), supplementalContent: options.supplementalContent }, provider)
-  const category = options.category ?? plugin?.transcript.classify(parsed)
+  const plugin = providerFor(provider)
+  if (!plugin)
+    throw new Error('The provider row fixture requires a registered plugin.')
+  const parsed = resolveMessageForRendering({
+    ...input(payload, undefined, provider),
+    supplementalContent: options.supplementalContent,
+    ...(options.agentSessionId === undefined ? {} : { agentSessionId: options.agentSessionId }),
+    ...(options.completion === undefined ? {} : { completion: options.completion }),
+  }, provider)
+  const category = options.category ?? plugin.transcript.classify(parsed)
   const span = options.span ?? {
     request: options.request === undefined ? undefined : resolveMessageForRendering(options.request, provider),
     result: options.result === undefined ? undefined : resolveMessageForRendering(options.result, provider),
@@ -262,6 +267,8 @@ export function providerRow(
  * four-field span shape by hand.
  */
 export interface ProviderRowOptions extends RowExtractionOptions {
+  /** The stored row's native session identity. An empty value remains empty. */
+  agentSessionId?: string
   category?: MessageCategory
   request?: ParsedMessageContent
   result?: ParsedMessageContent

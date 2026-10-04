@@ -65,8 +65,59 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 	for _, c := range []struct {
 		name  string
 		index string
+		seek  string
 		run   func(t *testing.T)
 	}{
+		{
+			name:  "HasMessageByIdempotencyKey",
+			index: "idx_messages_idempotency_key",
+			run: func(t *testing.T) {
+				present, err := q.HasMessageByIdempotencyKey(t.Context(), queries.HasMessageByIdempotencyKeyParams{
+					AgentID: "agent", AgentSessionID: "native-session", IdempotencyKey: "native-record",
+				})
+				require.NoError(t, err)
+				assert.False(t, present)
+			},
+		},
+		{
+			name:  "GetChildAgentByProviderKey",
+			index: "idx_agents_provider_child_key",
+			run: func(t *testing.T) {
+				_, err := q.GetChildAgentByProviderKey(t.Context(), queries.GetChildAgentByProviderKeyParams{
+					ParentAgentID: sql.NullString{String: "parent", Valid: true}, ProviderChildKey: "native-child",
+				})
+				require.ErrorIs(t, err, sql.ErrNoRows)
+			},
+		},
+		{
+			name:  "HasOpenAgentForNativeSession",
+			index: "idx_agents_open_native_owner",
+			seek:  "SEARCH a USING INDEX idx_agents_open_native_owner",
+			run: func(t *testing.T) {
+				open, err := q.HasOpenAgentForNativeSession(t.Context(),
+					queries.HasOpenAgentForNativeSessionParams{
+						AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC,
+						SessionID:     "native-session",
+						TargetAgentID: "target",
+					})
+				require.NoError(t, err)
+				assert.False(t, open)
+			},
+		},
+		{
+			name:  "FindClosedAgentWithTranscriptForNativeSession",
+			index: "idx_agents_closed_native_session",
+			seek:  "SEARCH a USING INDEX idx_agents_closed_native_session",
+			run: func(t *testing.T) {
+				_, err := q.FindClosedAgentWithTranscriptForNativeSession(t.Context(),
+					queries.FindClosedAgentWithTranscriptForNativeSessionParams{
+						AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC,
+						WorkingDir:     "/work/project",
+						AgentSessionID: "native-session",
+					})
+				require.ErrorIs(t, err, sql.ErrNoRows)
+			},
+		},
 		{
 			name:  "ListMessagesByAgentAndSpan",
 			index: "idx_messages_span_id",
@@ -149,6 +200,10 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 			plan := explainPlan(t, connection, recorder.query, recorder.args)
 			assert.Containsf(t, plan, c.index,
 				"%s must seek %s; plan:\n%s\nquery:\n%s", c.name, c.index, plan, recorder.query)
+			if c.seek != "" {
+				assert.Containsf(t, plan, c.seek,
+					"%s must use the index for the root agent row; plan:\n%s\nquery:\n%s", c.name, plan, recorder.query)
+			}
 		})
 		covered[c.index] = struct{}{}
 	}
@@ -169,7 +224,6 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 		"idx_agents_closed_at":            "no query filters on closed_at through this index",
 		"idx_agents_open_working_dir":     "no query filters on working_dir through this index",
 		"idx_agent_input_queue_one_edit":  "a uniqueness constraint, enforced on write rather than read",
-		"idx_messages_idempotency_key":    "a uniqueness constraint, enforced on write rather than read",
 		"idx_worktrees_path":              "a uniqueness constraint, enforced on write rather than read",
 		"idx_worktrees_deleted_at":        "no query filters on deleted_at through this index",
 		"idx_terminals_closed_at":         "no query filters on closed_at through this index",

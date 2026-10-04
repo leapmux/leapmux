@@ -1,3 +1,4 @@
+import type { ProviderPlugin } from './capabilities'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it } from 'vitest'
 import { ALL_PROVIDERS } from '~/generated/contracts/providers'
@@ -84,12 +85,12 @@ describe('resolveMessageForRendering', () => {
   })
 })
 
-/** A plugin shaped well enough to register, for the registration-refusal tests below. */
-function stubPlugin() {
+/** Supply every required transcript method for registration tests. */
+function stubPlugin(): ProviderPlugin {
   return {
     transcript: {
-      classify: () => ({ kind: 'hidden' } as never),
-      spanRole: () => 'other' as const,
+      classify: () => ({ kind: 'hidden' }),
+      spanRole: () => 'other',
       extractRow: () => null,
       extractDivider: () => null,
     },
@@ -101,12 +102,11 @@ describe('provider registration', () => {
     expect(pluginFor(provider)).toBeDefined()
   })
 
-  // The registry is populated by SIDE-EFFECT imports, so a provider nobody imported and
-  // a provider whose plugin failed to register read the same from `pluginFor`. The
-  // count is what separates the two: every supported provider holds exactly one
-  // entry, which the duplicate-refusal below keeps from ever becoming two.
+  // Every supported provider requires a plugin import and one registration.
+  // Duplicate registration must fail, so import order cannot replace a plugin.
   it('registers every supported provider exactly once', () => {
-    expect(ALL_PROVIDERS).toHaveLength(10)
+    expect(ALL_PROVIDERS).toHaveLength(29)
+    expect(new Set(ALL_PROVIDERS).size).toBe(ALL_PROVIDERS.length)
     for (const provider of ALL_PROVIDERS)
       expect(pluginFor(provider), AgentProvider[provider]).toBeDefined()
   })
@@ -123,8 +123,7 @@ describe('provider registration', () => {
     }
   })
 
-  // Last-write-wins silently left the registry holding whichever plugin imported
-  // later -- a bundling decision, not a program decision.
+  // A duplicate registration must fail. Import order must not choose the plugin.
   it('refuses a second registration of a provider already registered', () => {
     __resetProviderRegistryForTest()
     try {
@@ -164,9 +163,9 @@ describe('provider registration', () => {
   })
 })
 
-// A turn that ends while a tool call runs leaves no final frame, so the worker keeps the
-// agent's last frame and records the outcome in its completion column. The rule is
-// LeapMux's, and four renderers used to spell it separately with three different answers.
+// An interrupted tool can leave no final native frame.
+// The Worker keeps its last frame and records the outcome in the completion column.
+// Every provider uses the same completion rule.
 describe('retainedOutcome', () => {
   it.each([
     [MessageCompletion.COMPLETE, 'succeeded'],
@@ -176,15 +175,14 @@ describe('retainedOutcome', () => {
     expect(retainedOutcome(completion)).toBe(outcome)
   })
 
-  // Null says that LeapMux recorded nothing, so the provider's own bytes state the
-  // outcome and a caller keeps whatever they say.
+  // An unset completion keeps the native outcome.
   it('reports no outcome for an unset or unrecognized completion', () => {
     expect(retainedOutcome(undefined)).toBeNull()
     expect(retainedOutcome(MessageCompletion.UNSPECIFIED)).toBeNull()
     expect(retainedOutcome(99 as MessageCompletion)).toBeNull()
   })
 
-  // The two answer one question each, off ONE reading of the completion column.
+  // Both helpers read the same completion column.
   it('agrees with retainedRowIsFinal on every completion', () => {
     for (const completion of [undefined, MessageCompletion.UNSPECIFIED, MessageCompletion.COMPLETE, MessageCompletion.INTERRUPTED, MessageCompletion.ERROR]) {
       expect(retainedRowIsFinal(completion)).toBe(retainedOutcome(completion) !== null)

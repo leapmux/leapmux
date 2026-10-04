@@ -65,7 +65,7 @@ type acpTerminalIDParams struct {
 type acpTerminalSession struct {
 	id      string
 	command string
-	cmd     *exec.Cmd
+	owner   *procutil.ProcessOwner
 	cancel  context.CancelFunc
 
 	mu             sync.Mutex
@@ -81,8 +81,7 @@ type acpTerminalSession struct {
 	// killed is set when the host intentionally terminates the process
 	// (terminal/kill, release, Stop, ClearContext). Registry status then
 	// becomes StatusStopped rather than Failed.
-	killed    bool
-	jobObject *procutil.JobObject
+	killed bool
 
 	// done is closed once the process has exited and exit fields are set.
 	done chan struct{}
@@ -253,22 +252,17 @@ func (s *acpTerminalSession) kill() {
 		s.killed = true
 	}
 	cancel := s.cancel
-	job := s.jobObject
-	cmd := s.cmd
+	owner := s.owner
 	s.mu.Unlock()
 	if exited {
 		return
 	}
-	// Tree-kill first so grandchildren holding the pipes die before we
-	// wait on stdout/stderr readers.
-	if err := job.Terminate(); err != nil {
-		slog.Debug("acp terminal job terminate failed", "terminal_id", s.id, "error", err)
+	// Stop verified descendants before waiting for the stdout and stderr readers.
+	if err := owner.Terminate(); err != nil {
+		slog.Warn("terminate owned ACP terminal processes", "terminal_id", s.id, "error", err)
 	}
 	if cancel != nil {
 		cancel()
-	}
-	if job == nil && cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
 	}
 }
 
@@ -417,6 +411,7 @@ func (b *acpTerminalHost) terminalCreate(id json.RawMessage, rawParams json.RawM
 	configureACPTerminalCmd(cmd)
 	cmd.Dir = cwd
 	cmd.Env = mergeACPTerminalEnv(b.baseEnv(), params.Env)
+	owner := procutil.PrepareProcess(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -426,33 +421,27 @@ func (b *acpTerminalHost) terminalCreate(id json.RawMessage, rawParams json.RawM
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		_ = stdout.Close()
 		cancel()
 		b.sendError(id, -32603, "stderr pipe: "+err.Error())
 		return
 	}
 
-	if err := cmd.Start(); err != nil {
+	if err := owner.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stderr.Close()
 		cancel()
 		b.sendError(id, -32603, "start command: "+err.Error())
 		return
-	}
-
-	job, jobErr := procutil.AssignPID(cmd.Process.Pid)
-	if jobErr != nil {
-		slog.Warn("acp terminal attach job object failed",
-			"agent_id", b.ownerAgentID(),
-			"error", jobErr,
-		)
 	}
 
 	termID := "term_" + utilid.Generate()
 	sess := &acpTerminalSession{
 		id:        termID,
 		command:   params.Command,
-		cmd:       cmd,
+		owner:     owner,
 		cancel:    cancel,
 		byteLimit: limit,
-		jobObject: job,
 		done:      make(chan struct{}),
 	}
 
@@ -515,7 +504,11 @@ func (b *acpTerminalHost) terminalCreate(id json.RawMessage, rawParams json.RawM
 	}()
 	go func() {
 		wg.Wait()
-		sess.recordExit(processStateFromWait(cmd.Wait(), cmd.ProcessState))
+		waitErr := owner.Wait()
+		if closeErr := owner.Close(); closeErr != nil {
+			slog.Warn("close owned ACP terminal processes", "terminal_id", sess.id, "error", closeErr)
+		}
+		sess.recordExit(processStateFromWait(waitErr, owner.ProcessState()))
 		// The registry row reaches its final status BEFORE done closes.
 		// terminal/wait_for_exit replies off done, so the opposite order lets
 		// the client read its own terminal's row and still see RUNNING.
@@ -544,7 +537,11 @@ func (b *acpTerminalHost) discardUnregisteredTerminal(
 		b.copyTerminalOutput(sess, stderr)
 	}()
 	readers.Wait()
-	sess.recordExit(processStateFromWait(sess.cmd.Wait(), sess.cmd.ProcessState))
+	waitErr := sess.owner.Wait()
+	if closeErr := sess.owner.Close(); closeErr != nil {
+		slog.Warn("close unregistered ACP terminal processes", "terminal_id", sess.id, "error", closeErr)
+	}
+	sess.recordExit(processStateFromWait(waitErr, sess.owner.ProcessState()))
 	close(sess.done)
 }
 

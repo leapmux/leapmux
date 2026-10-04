@@ -31,9 +31,6 @@ var ErrUnsupportedScheme = errors.New("unsupported local-listen scheme")
 // trailing path/name is empty (e.g. "unix:", "npipe:").
 var ErrMissingTarget = errors.New("missing target after scheme")
 
-// EnvLocalListen is the env-var form of the hub's --local-listen flag.
-const EnvLocalListen = "LEAPMUX_HUB_LOCAL_LISTEN"
-
 // Parse splits a local-listen URL into its scheme and target components.
 // Accepted forms: "unix:<path>", "npipe:<name>", "npipe:<full-nt-path>".
 // The target is returned verbatim.

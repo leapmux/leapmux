@@ -1179,8 +1179,10 @@ func TestZCodeProvider_TheFalseCapabilitiesAreDeliberate(t *testing.T) {
 	provider := zcodeProvider{}
 	assert.False(t, provider.IsSelfDisplayingControlTool(contracts.ZCodeToolNameAskUserQuestion),
 		"the app-server echoes no control answer, so the synthetic row is the only record")
-	assert.False(t, provider.SupportsChildSteering(), "a ZCode subagent takes no further message")
-	assert.False(t, provider.EndsSubagentTranscript(nil))
+	assert.False(t, provider.ChildCapabilities(nil).AcceptsMessages, "a ZCode subagent takes no further message")
+	count, known := provider.TurnEndToolUses(nil)
+	assert.False(t, known)
+	assert.Zero(t, count)
 	assert.Empty(t, provider.PlanApprovalOptions(""))
 	assert.Empty(t, provider.SyntheticInterruptNotice())
 	_, ok := provider.PermissionModeFromRawInput(`{"mode":"yolo"}`)

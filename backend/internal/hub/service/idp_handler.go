@@ -964,7 +964,7 @@ func (h *IdPHandler) buildProvider(ctx context.Context, dbProvider *store.OAuthP
 	snap := h.set.Snapshot(ctx)
 	key := providerCacheKey{
 		providerID:  dbProvider.ID,
-		redirectURL: fmt.Sprintf("%s/auth/idp/%s/callback", settings.BaseURL(snap, h.cfg.Listen), dbProvider.ID),
+		redirectURL: fmt.Sprintf("%s/auth/idp/%s/callback", settings.BaseURL(snap, h.cfg.PrimaryTCPListen()), dbProvider.ID),
 	}
 
 	if cached, ok := h.cachedProvider(key); ok {

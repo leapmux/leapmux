@@ -4,8 +4,7 @@
  */
 import type { AgentProvider as AgentProviderEnum } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import type { WorkspaceFixture } from './helpers/workspace'
-import { execFileSync } from 'node:child_process'
-
+import { missingBinaryReason } from './helpers/binaryOnPath'
 import { loginViaToken, openWorkspace } from './helpers/ui'
 import { withAgentWorkspace } from './helpers/workspace'
 
@@ -24,18 +23,23 @@ export interface ACPFixtureConfig {
   skipMessage?: string
   /** Prefix for workspace names (e.g. 'copilot-e2e', 'cursor-e2e', 'opencode-e2e'). */
   workspacePrefix: string
+  /**
+   * Create the agent's working directory. Omit it for a fresh private directory
+   * of the run; see `withAgentWorkspace`.
+   */
+  workingDir?: () => string
 }
 
+/**
+ * The reason to skip the provider's specs, or null when its CLI is on PATH. The
+ * check runs nothing: `<cli> --version` would run in the developer's own HOME, and
+ * some agents write their configuration directory on every start (see
+ * `helpers/binaryOnPath.ts`).
+ */
 export function detectACPSkipReason(config: ACPFixtureConfig): string | null {
   if (!config.cliBinary)
     return null
-  try {
-    execFileSync(config.cliBinary, ['--version'], { encoding: 'utf-8' }).trim()
-  }
-  catch {
-    return config.skipMessage || `E2E requires ${config.cliBinary} CLI on PATH`
-  }
-  return null
+  return missingBinaryReason(config.cliBinary, config.skipMessage || `E2E requires ${config.cliBinary} CLI on PATH`)
 }
 
 export async function createACPWorkspace(
@@ -46,6 +50,7 @@ export async function createACPWorkspace(
   await withAgentWorkspace(leapmuxServer, {
     provider: config.agentProvider,
     prefix: config.workspacePrefix,
+    ...(config.workingDir ? { workingDir: config.workingDir } : {}),
   }, use)
 }
 

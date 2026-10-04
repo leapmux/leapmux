@@ -1,35 +1,42 @@
-// Tests for validate-json.mjs, run by `bun test` via `task test-scripts`.
-//
-// The discovery and resolution logic is what carries the risk: the
-// no-schemaless-JSON rule only holds while every in-scope file actually
-// resolves to a schema, and while a rule's include/exclude pair cannot
-// silently stop matching the files it was written for. These tests pin both
-// against the REAL repo tree (not a fixture copy), the same way
-// sync-versions.test.mjs pins its claim registry.
+// Test the JSON validator through `task test-scripts`.
+// Discovery must select every project-owned fixture that requires a schema.
+// Resolution must report a missing schema instead of silently excluding a file.
+// Tests inspect the real repository tree to catch changes to rule patterns.
 
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it } from 'bun:test'
 
 import { buildAjv, discoverJsonFiles, formatFailureLines, resolveSchemaPath, RULES, toPosixRel, validateAll, validateSchemalessDir } from './validate-json.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
+const SCRATCH_ROOT = join(ROOT, '.tmp')
+const scratchDirs = []
+
+function scratchDirectory(prefix) {
+  mkdirSync(SCRATCH_ROOT, { recursive: true })
+  const directory = mkdtempSync(join(SCRATCH_ROOT, prefix))
+  scratchDirs.push(directory)
+  return directory
+}
+
+afterEach(() => {
+  for (const directory of scratchDirs.splice(0))
+    rmSync(directory, { recursive: true, force: true })
+})
 
 describe('RULES', () => {
   it('keeps every schema file itself out of scope', () => {
-    // The sibling convention would otherwise pull *.schema.json files in as
-    // data files needing their own schemas, forever.
+    // Schema files must not require another sibling schema.
     const inScope = discoverJsonFiles(ROOT).map(e => e.file)
     for (const f of inScope)
       expect(f.endsWith('.schema.json')).toBe(false)
   })
 
   it('orders specific rules before the generic testdata glob', () => {
-    // The two CRDT corpora share one schema via a rule that must win over
-    // the generic sibling-resolution rule for testdata/*.json. If the generic
-    // rule ever moves up, those two files start demanding siblings that do
-    // not exist and the suite goes red for a routing reason, not a data one.
+    // The two CRDT corpora use one explicit shared schema.
+    // Their specific rule must precede the generic sibling rule.
+    // Otherwise validation requires absent sibling schemas for both corpora.
     const sharedIdx = RULES.findIndex(r => r.schema === 'testdata/crdt_projection.schema.json')
     const genericIdx = RULES.findIndex(r => r.include === 'testdata/*.json')
     expect(sharedIdx).toBeGreaterThanOrEqual(0)
@@ -46,6 +53,8 @@ describe('discoverJsonFiles', () => {
       'testdata/noise_rekey_vectors.json',
       'backend/internal/hub/usersettings/testdata/account_schema.json',
       'frontend/src/lib/syntaxThemes/nord-light.json',
+      'frontend/tests/e2e/feature-matrix/features.json',
+      'frontend/tests/e2e/feature-matrix/checklist.json',
       'scripts/license-overrides/extra/pi-mono/metadata.json',
       'scripts/license-overrides/go/github.com-bmizerany-assert/expected.json',
     ]) {
@@ -54,14 +63,13 @@ describe('discoverJsonFiles', () => {
     for (const f of files) {
       expect(f.includes('node_modules')).toBe(false)
       expect(f.includes('/generated/')).toBe(false)
-      // The gitignored spinner OUTPUT tree. The license metadata ABOUT the
-      // spinner assets (scripts/license-overrides/extra/awesome-claude-
-      // spinners/) is committed and must stay in scope.
+      // Exclude generated spinner output.
+      // Keep committed spinner license metadata inside the validation scope.
       expect(f.startsWith('frontend/src/spinners')).toBe(false)
     }
   })
 
-  it('dedupes a file matched by two rules, keeping the first rule', () => {
+  it('deduplicates a file matched by two rules and keeps the first rule', () => {
     const files = discoverJsonFiles(ROOT)
     const names = files.map(e => e.file)
     expect(new Set(names).size).toBe(names.length)
@@ -70,11 +78,10 @@ describe('discoverJsonFiles', () => {
   })
 
   it('normalizes the native separator scanSync emits on Windows', () => {
-    // Bun's scanSync joins results with the OS separator, so a Windows run
-    // hands back backslash-joined paths. Without normalization the exclude
-    // glob matches the WHOLE path instead of the basename and every
-    // *.schema.json enters scope as data. The separator is injectable so
-    // this pins the Windows behavior from any OS.
+    // Bun's scanSync uses the OS path separator.
+    // Normalize Windows paths before matching each schema basename.
+    // Otherwise schema files enter the data scope.
+    // The explicit separator tests Windows paths on every OS.
     expect(toPosixRel('contracts\\wire.schema.json', '\\')).toBe('contracts/wire.schema.json')
     expect(toPosixRel('contracts/wire.json', '/')).toBe('contracts/wire.json')
   })
@@ -109,16 +116,16 @@ describe('validateAll', () => {
   })
 
   it('ignores a JSON file no include pattern matches', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'validate-json-'))
-    // At the temp root, not under contracts/ or testdata/: out of scope by
-    // design, so it is neither validated nor reported as schemaless.
+    const dir = scratchDirectory('validate-json-')
+    // A JSON file at this isolated root matches neither contracts/ nor testdata/.
+    // The validator must exclude it.
     writeFileSync(join(dir, 'wire.json'), '{}')
     const { failures } = validateAll(dir, { ajv: buildAjv() })
     expect(failures).toEqual([])
   })
 
   it('reports invalid data and schemaless files separately', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'validate-json-'))
+    const dir = scratchDirectory('validate-json-')
     mkdirSync(join(dir, 'testdata'))
     mkdirSync(join(dir, 'contracts'))
     writeFileSync(join(dir, 'contracts', 'retry.json'), JSON.stringify({ nope: true }))
@@ -138,7 +145,7 @@ describe('validateAll', () => {
   })
 
   it('reports an unparseable data file and an unparseable schema as failures, not crashes', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'validate-json-'))
+    const dir = scratchDirectory('validate-json-')
     mkdirSync(join(dir, 'contracts'))
     writeFileSync(join(dir, 'contracts', 'broken.json'), '{not json')
     writeFileSync(join(dir, 'contracts', 'broken.schema.json'), '{also not json')
@@ -151,6 +158,32 @@ describe('validateAll', () => {
     const reasons = Object.fromEntries(failures.map(f => [f.file, f.reason]))
     expect(reasons['contracts/broken.json']).toBe('bad-schema')
     expect(reasons['contracts/fine.json']).toBe('invalid')
+  })
+
+  it.each([
+    ['unsupported draft', { $schema: 'http://json-schema.org/draft-07/schema#', type: 'object' }, 'draft-07'],
+    ['unknown keyword', { type: 'object', unsupportedKeyword: true }, 'unsupportedKeyword'],
+  ])('reports a schema compilation failure for %s and continues with later files', (_name, schema, detail) => {
+    const dir = scratchDirectory('validate-json-compile-')
+    mkdirSync(join(dir, 'contracts'))
+    writeFileSync(join(dir, 'contracts', 'a-broken.json'), '{}')
+    writeFileSync(join(dir, 'contracts', 'a-broken.schema.json'), JSON.stringify(schema))
+    writeFileSync(join(dir, 'contracts', 'z-valid.json'), '{"value":0}')
+    writeFileSync(join(dir, 'contracts', 'z-valid.schema.json'), JSON.stringify({
+      type: 'object',
+      additionalProperties: false,
+      required: ['value'],
+      properties: { value: { type: 'integer' } },
+    }))
+
+    const result = validateAll(dir)
+
+    expect(result.files).toBe(2)
+    expect(result.failures).toHaveLength(1)
+    expect(result.failures[0]?.file).toBe('contracts/a-broken.json')
+    expect(result.failures[0]?.reason).toBe('bad-schema')
+    expect(result.failures[0]?.reasonText).toContain(detail)
+    expect(formatFailureLines(result.failures)[0]).toContain('contracts/a-broken.json:')
   })
 })
 
@@ -168,8 +201,8 @@ describe('formatFailureLines', () => {
   })
 
   it('prefixes each file path so both CLIs report one failure identically', () => {
-    // generate-contracts reports contracts/<name>.json; the prefix must not
-    // leak into the message text or the reason ordering.
+    // The contracts generator adds contracts/ to each reported file path.
+    // Keep the message and reason order unchanged.
     const lines = formatFailureLines([{ file: 'wire.json', reason: 'no-schema', reasonText: 'x' }], 'contracts/')
     expect(lines).toEqual(['contracts/wire.json: x'])
   })
@@ -177,7 +210,7 @@ describe('formatFailureLines', () => {
 
 describe('validateSchemalessDir', () => {
   it('reports a schemaless and an invalid contract separately', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'validate-json-schemaless-'))
+    const dir = scratchDirectory('validate-json-schemaless-')
     writeFileSync(join(dir, 'schemaless.json'), '{}')
     writeFileSync(join(dir, 'invalid.json'), '{"nope":1}')
     writeFileSync(join(dir, 'invalid.schema.json'), JSON.stringify({
@@ -192,12 +225,11 @@ describe('validateSchemalessDir', () => {
   })
 
   it('keeps a digit in the file name intact', () => {
-    // `names.map(toPosixRel)` passes the array index as toPosixRel's
-    // `separator` parameter, and `split(0)` cuts the name at every "0": a
-    // contract named v0.json was reported against a bogus v/.json path
-    // while the real file silently never validated. The map call must pass
-    // the name alone.
-    const dir = mkdtempSync(join(tmpdir(), 'validate-json-digit-'))
+    // Passing toPosixRel directly to map supplies the index as its separator.
+    // split(0) then removes each zero from the file name.
+    // The validator must retain v0.json and validate that actual file.
+    // The map callback must pass only the file name.
+    const dir = scratchDirectory('validate-json-digit-')
     writeFileSync(join(dir, 'v0.json'), '{"ok":true}')
     writeFileSync(join(dir, 'v0.schema.json'), JSON.stringify({
       type: 'object',

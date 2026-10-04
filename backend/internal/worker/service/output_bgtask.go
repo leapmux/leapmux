@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
@@ -89,6 +88,9 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 		setKey: func(r *bgtask.Item, key string) { r.RowKey = key },
 		isFinished: func(r bgtask.Item) bool {
 			return r.Status.IsFinished()
+		},
+		isWorking: func(r bgtask.Item) bool {
+			return r.Status.IsWorking()
 		},
 		deleteByKey: func(ctx context.Context, q *db.Queries, ownerID, key string) error {
 			_, err := q.DeleteAgentBackgroundTaskByRowKey(ctx, db.DeleteAgentBackgroundTaskByRowKeyParams{
@@ -207,37 +209,11 @@ func (h *OutputHandler) LoadBackgroundTasks(ctx context.Context, rootAgentID str
 	return cache.snapshot(), nil
 }
 
-// registryChange reports what one registry mutation did.
-//
-// endedChildID is the whole reason this type exists. Three appliers can move a
-// row from active into a final status -- an upsert that carries a final status,
-// a status update, and a close -- and the provider that owns the row decides
-// which one it uses. Claude and Codex reach the final status through the first
-// two and only then call CloseBackgroundTask; Pi never closes at all. So the
-// close is NOT the moment a subagent is known to be over, and a divider written
-// only from there never fires for those providers. Each applier therefore
-// reports the child transcript that ITS OWN transition just ended, and
-// applyAndBroadcast writes the divider once, for whichever applier it was.
+// registryChange carries the snapshot and publication decision for one mutation.
 type registryChange struct {
 	rows []bgtask.Item
-	// changed is false for a no-op (absent row, byte-identical replay, or a
-	// non-final update against an already-final row).
+	// A replay or an absent row changes no stored or displayed state.
 	changed bool
-	// endedChildID is the child transcript this mutation ended, or "" when the
-	// row stayed active, was already final, carries no child (a shell task), or
-	// nothing changed.
-	endedChildID string
-	// endedStatus is the final status the row landed on, carried with the id so
-	// the divider reports what the applier actually wrote rather than what the
-	// caller asked for (an upsert can keep an existing final status instead).
-	endedStatus bgtask.Status
-	// revivedChildID is the child transcript this mutation REOPENED, or "" when
-	// the row stayed final, was already active, carries no child, or nothing
-	// changed. The mirror of endedChildID: a revive owes the transcript-close
-	// release exactly as an ending owes the divider, so both travel with the
-	// change and applyAndBroadcast performs both. A revive path cannot reach the
-	// registry and forget the release.
-	revivedChildID string
 }
 
 // applyBackgroundTaskUpsert is the persist-mutate-broadcast for an upsert. It
@@ -361,28 +337,10 @@ func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, st
 				cache.Rows[idx].EndedAt = now
 			}
 		}
-		// Read the row's PRIOR status before the write overwrites it: the divider is
-		// owed to the active -> final transition alone.
-		wasFinished := cache.Rows[idx].Status.IsFinished()
 		cache.Rows[idx].Status = status
 		cache.Rows[idx].ActiveForm = activeForm
 		cache.Rows[idx].UpdatedAt = now
-		// The guards above exclude an already-final row only when the incoming status
-		// is non-final, or when BOTH the status and the activeForm repeat. A second
-		// final update carrying the same status and a different activeForm reaches
-		// here -- Claude sends exactly that, a summary-bearing update followed by a
-		// bare one -- so the transition is tested against the prior status rather
-		// than assumed. Reporting the child twice writes the closing divider twice.
-		var endedChildID string
-		if !wasFinished && status.IsFinished() {
-			endedChildID = cache.Rows[idx].ChildAgentID
-		}
-		return registryChange{
-			rows:         cache.snapshot(),
-			changed:      true,
-			endedChildID: endedChildID,
-			endedStatus:  status,
-		}, nil
+		return registryChange{rows: cache.snapshot(), changed: true}, nil
 	})
 }
 
@@ -413,19 +371,13 @@ func (h *OutputHandler) applyBackgroundTaskClose(rootAgentID, rowKey string, sta
 		cache.Rows[idx].Status = status
 		cache.Rows[idx].EndedAt = now
 		cache.Rows[idx].UpdatedAt = now
-		return registryChange{
-			rows:         cache.snapshot(),
-			changed:      true,
-			endedChildID: cache.Rows[idx].ChildAgentID,
-			endedStatus:  status,
-		}, nil
+		return registryChange{rows: cache.snapshot(), changed: true}, nil
 	})
 }
 
 // applyBackgroundTaskRevive returns a FINISHED row to Running and clears its
 // ended_at and its descriptive state, for a subagent that its provider
-// restarted. The change carries the child transcript the revive reopened, so
-// applyAndBroadcast releases that transcript's close claim.
+// restarted. The registry status changes without adding transcript messages.
 //
 // This is the ONLY applier that undoes a final status, and it stays separate
 // from the upsert and the status update on purpose. Those two absorb a non-final
@@ -473,11 +425,7 @@ func (h *OutputHandler) applyBackgroundTaskRevive(rootAgentID, rowKey string) (r
 		cache.Rows[idx].Description = ""
 		cache.Rows[idx].EndedAt = time.Time{}
 		cache.Rows[idx].UpdatedAt = now
-		return registryChange{
-			rows:           cache.snapshot(),
-			changed:        true,
-			revivedChildID: cache.Rows[idx].ChildAgentID,
-		}, nil
+		return registryChange{rows: cache.snapshot(), changed: true}, nil
 	})
 }
 
@@ -491,19 +439,6 @@ func (h *OutputHandler) applyBackgroundTaskRevive(rootAgentID, rowKey string) (r
 // adopts every field rather than the two a hand-written repair remembered --
 // active_form and description describe the run that ENDED, and the SQL clears
 // them for exactly that reason.
-//
-// The re-read also decides the transcript-close claim, which the caller cannot.
-// A stored row that is ACTIVE and carries a child IS a reopened transcript, so
-// the restarted run owes a closing divider and the claim the first completion
-// took has to go back. Guessing the other way is the worse error, and this file
-// already says so where it fails the claim OPEN on a DB error: "a missing
-// divider leaves a transcript that never visibly ends, with a thinking indicator
-// that never resolves, which is worse than a duplicated rule."
-//
-// A stored row that is still FINISHED reopened nothing and releases nothing.
-// That combination needs a race to reach -- the UPDATE matched no final row, so
-// something closed it between the two statements -- but the test is on the row
-// rather than on the count, because the count alone cannot tell the two apart.
 //
 // The repair is for the DISPLAY list only. A retained row that left the list has
 // no cached copy to disagree with the store, so there is nothing to adopt and
@@ -538,15 +473,7 @@ func (h *OutputHandler) adoptStoredBgTaskRowLocked(
 	}
 	changed := cache.Rows[idx] != stored
 	cache.Rows[idx] = stored
-	revivedChildID := ""
-	if !stored.Status.IsFinished() {
-		revivedChildID = stored.ChildAgentID
-	}
-	return registryChange{
-		rows:           cache.snapshot(),
-		changed:        changed,
-		revivedChildID: revivedChildID,
-	}, nil
+	return registryChange{rows: cache.snapshot(), changed: changed}, nil
 }
 
 // MarkAgentBackgroundTasksExited gives every still-active row owned by
@@ -571,13 +498,8 @@ func (h *OutputHandler) MarkAgentBackgroundTasksExited(rootAgentID string, stopp
 		status = bgtask.StatusStopped
 	}
 	now := nowMillis()
-	// The children this sweep just ended come from the WRITE, not from a scan of
-	// the cache. The cache holds the capped display list, so a row past the cap
-	// or below the seed window is ended in the DB and absent here -- and a
-	// cache-derived list would leave that subagent's transcript with no closing
-	// divider, permanently. Without a divider a subagent whose owner process died
-	// keeps a transcript that simply stops.
-	endedChildIDs, err := h.queries.MarkAgentBackgroundTasksEnded(ctx, db.MarkAgentBackgroundTasksEndedParams{
+	// End every stored active task, including rows outside the display cap.
+	_, err := h.queries.MarkAgentBackgroundTasksEnded(ctx, db.MarkAgentBackgroundTasksEndedParams{
 		MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
 		Status:         leapmuxv1.BackgroundTaskStatus(status),
 		EndedAt:        sqltime.SQLiteNullTimeOf(now),
@@ -589,6 +511,9 @@ func (h *OutputHandler) MarkAgentBackgroundTasksExited(rootAgentID string, stopp
 		slog.Warn("mark background tasks ended failed", "agent_id", rootAgentID, "error", err)
 		return
 	}
+	// The SQL write also ends retained rows that the display cap hid. Their
+	// keys no longer count as working after this point.
+	cache.evictedActive = nil
 	// The cache catches up to the write it just made, so the broadcast below
 	// reports the display list the DB now holds. `changed` is the CACHE's answer
 	// on purpose: a row the display list never held moved nothing the client can
@@ -622,87 +547,75 @@ func (h *OutputHandler) MarkAgentBackgroundTasksExited(rootAgentID string, stopp
 	// does follow retires the entry. A watcher of a descendant transcript kept a
 	// spinner and an armed Interrupt button on work whose process was gone.
 	h.refreshActivityTree(rootAgentID, settleImmediate)
-	h.WriteSubagentEndDividers(endedChildIDs, status)
-}
-
-// WriteSubagentEndDividers closes each listed child transcript with the divider
-// carrying status. Exported for the boot sweep in RestoreState, which ends rows
-// straight in the DB across every owner (no caches exist yet at boot) and so
-// cannot go through a registry mutation.
-//
-// The caller must pass only the children whose rows IT just moved into a final
-// status, so each transcript is closed exactly once.
-func (h *OutputHandler) WriteSubagentEndDividers(childAgentIDs []string, status bgtask.Status) {
-	for _, childID := range childAgentIDs {
-		h.persistSubagentEndDivider(childID, status)
-	}
 }
 
 // --- agentOutputSink: ProviderServices registry + child-transcript methods ---
 
-// EnsureChildAgent resolves (and creates on first sight) the virtual child
-// agent spawned by the tool_use span spawnSpanID in THIS sink's transcript.
-// Idempotent across replays and worker restarts. See output.go's NewSink for
-// the rootAgentID semantics.
-//
-// spawnSpanID is persisted as agents.spawn_span_id and backed by the unique
-// index idx_agents_spawn_span (parent_agent_id, spawn_span_id). For Claude and
-// Codex this is the tool_use span. For ACP providers (Goose, Cursor, OpenCode)
-// it is the spawn toolCallId — in ACP the toolCallId serves as both the span
-// and the registry row key, so the two roles collapse to one string.
-func (s *agentOutputSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
+// EnsureChildAgent resolves the stored child under this sink's agent.
+// Replays and Worker restarts resolve the same native child or spawn span.
+// NewSink in output.go specifies the registry root owner.
+// SpawnSpanID uses agents.spawn_span_id and the unique parent/span index.
+// ProviderChildKey can identify the child before its native spawn span arrives.
+// A supplied native session must match the stored child before registry changes.
+func (s *agentOutputSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
+	if spec.SpawnSpanID == "" && spec.ProviderChildKey == "" {
+		return "", errors.New("a child requires a native key or a spawn span")
+	}
 	ctx := s.h.bgTaskCtx()
-	// Derived, never cut -- see bgtask.NormalizeRowKey. The key identifies the
-	// registry row this child links to, so a rule that maps two provider keys
-	// onto one string would link the child to a DIFFERENT provider's row.
-	providerChildKey = s.normalizeRowKey(providerChildKey, "child registry key")
-	// The MODEL supplies this title -- Claude's Task description, Codex's
-	// collab prompt line, an ACP spawn label, Pi's subagent title -- so it
-	// arrives with no length limit and no character rule. Clean it HERE
-	// because the `agents` row that CreateChildAgent inserts takes it
-	// directly, and because the blank test that picks that row's fallback has
-	// to judge the CLEANED title: a title of nothing but stripped characters
-	// is a blank tab label, not a name.
-	//
-	// The registry row that linkRegistryRow upserts, and the broadcast that
-	// follows it, meet the same rule again at applyBackgroundTaskUpsertLocked,
-	// which every registry title write passes through. CleanName is
-	// idempotent, so the title arrives there byte-identical.
-	//
-	// CleanName, not SanitizeName: the title is DERIVED, so there is no caller
-	// to report an error to. Refusing it would lose the child transcript over
-	// a title the user never typed. This is the rule OpenAgent, RenameAgent,
-	// UpdateTerminalTitle and the plan auto-rename apply.
-	//
-	// An empty result stays empty on the REGISTRY path: a blank title in a
-	// bgtask.Upsert means "keep the title the row already holds"
-	// (bgtask.Item.PreservingBlanksFrom), and substituting a fallback here
-	// would overwrite a real title with a placeholder. The `agents` row takes
-	// its own fallback instead -- see the CreateChildAgent call.
-	title = validate.CleanName(title)
-
-	// pendingBroadcast holds a post-mutation snapshot to fan out AFTER the
-	// cache lock is released. Broadcasting under cache.Mu can block on a slow
-	// gRPC stream consumer (BroadcastAgentEvent -> SendStream), serializing
-	// every registry op for this root behind the transport.
-	var pendingBroadcast []bgtask.Item
-	childID, err := s.ensureChildAgentLocked(ctx, spawnSpanID, providerChildKey, title, &pendingBroadcast)
+	// Keep native identity intact. The registry derives its separate display key without truncation.
+	rowKey := s.normalizeRowKey(spec.ProviderChildKey, "child registry key")
+	// Provider titles need cleaning. Keep a blank registry title so an existing title survives.
+	// The child insert supplies the same generated fallback that OpenAgent uses.
+	spec.Title = validate.CleanName(spec.Title)
+	childID, err := s.resolveStoredChildAgent(ctx, spec)
+	if err != nil {
+		return "", err
+	}
+	child, err := s.h.queries.GetAgentByID(ctx, childID)
+	if err != nil {
+		return "", err
+	}
+	if !child.ParentAgentID.Valid || child.ParentAgentID.String != s.agentID {
+		return "", fmt.Errorf("the native child belongs to another parent: %w", agent.ErrChildIdentityRefused)
+	}
+	if spec.AgentSessionID != "" && child.AgentSessionID != spec.AgentSessionID {
+		return "", fmt.Errorf("the child belongs to another native session: %w", agent.ErrChildIdentityRefused)
+	}
+	if spec.ProviderChildKey != "" {
+		if child.ProviderChildKey != "" && child.ProviderChildKey != spec.ProviderChildKey {
+			return "", fmt.Errorf("the child spawn span belongs to another native child: %w", agent.ErrChildIdentityRefused)
+		}
+		if child.ProviderChildKey == "" {
+			if _, err := s.h.queries.AdoptChildProviderKey(ctx, db.AdoptChildProviderKeyParams{
+				ID: childID, ParentAgentID: sqlString(s.agentID), ProviderChildKey: spec.ProviderChildKey,
+			}); err != nil {
+				return "", fmt.Errorf("record native child key: %w", err)
+			}
+			// A concurrent native key can claim the same old span. Re-read the exact committed identity before any registry write.
+			child, err = s.h.queries.GetAgentByID(ctx, childID)
+			if err != nil {
+				return "", err
+			}
+			if child.ProviderChildKey != spec.ProviderChildKey {
+				return "", fmt.Errorf("the child spawn span belongs to another native child: %w", agent.ErrChildIdentityRefused)
+			}
+		}
+	}
+	if spec.SpawnSpanID != "" && spec.ProviderChildKey != "" {
+		if _, err := s.h.queries.AttachChildSpawnSpan(ctx, db.AttachChildSpawnSpanParams{
+			ID: childID, ParentAgentID: sqlString(s.agentID), ProviderChildKey: spec.ProviderChildKey, SpawnSpanID: spec.SpawnSpanID,
+		}); err != nil {
+			return "", fmt.Errorf("attach native child spawn span: %w", err)
+		}
+	}
+	// Validate ownership before registry mutation. Broadcast only after the registry lock is released.
+	pendingBroadcast, err := s.linkRegistryRow(s.h.bgTaskCache(s.rootAgentID), rowKey, childID, spec.Title)
 	if err != nil {
 		return "", err
 	}
 	if pendingBroadcast != nil {
 		s.h.broadcastBackgroundTasks(s.rootAgentID, pendingBroadcast)
-		// Linking a row to a child is the moment that row starts standing for a
-		// subagent, so it changes that subagent's own answer -- the same reason
-		// applyAndBroadcast refreshes the tree for every other registry
-		// mutation. This site reached the cache through ensureRegistryRowLocked
-		// rather than applyAndBroadcast, so without this the freshly linked
-		// child got no AgentActivityChanged for its whole run: a refresh
-		// triggered by the preceding upsert saw the row while its
-		// child_agent_id was still empty, and skipped it.
-		//
-		// Safe here and not one line earlier: the lock is released above, and
-		// refreshing reads that same cache.
+		// Linking changes the child's activity. Refresh after the cache lock is released because refresh reads that cache.
 		s.h.refreshActivityTree(s.rootAgentID, settleHeld)
 	}
 	return childID, nil
@@ -738,21 +651,12 @@ func (s *agentOutputSink) ChildSpawnSpan(childAgentID string) (string, error) {
 	return span, nil
 }
 
-// ensureChildAgentLocked resolves (and creates on first sight) the virtual
-// child agent for a spawn. It keeps DB I/O OUTSIDE the per-root cache mutex so
-// a slow DB round-trip during one spawn does not serialize every other registry
-// op for the root. The flow:
-//
-//  1. Cache lookup under the lock (fast path); return on hit.
-//  2. DB work outside the lock: spawn-span fallback lookup, parent fetch, child
-//     row create (with UNIQUE-race re-read).
-//  3. Re-acquire the lock, re-check the cache (another goroutine may have
-//     inserted the same child while the lock was released), then link the
-//     registry row and snapshot the broadcast payload.
-//
-// *pendingBroadcast receives the post-mutation snapshot so the caller
-// broadcasts after the lock is released.
-func (s *agentOutputSink) ensureChildAgentLocked(ctx context.Context, spawnSpanID, providerChildKey, title string, pendingBroadcast *[]bgtask.Item) (string, error) {
+// resolveStoredChildAgent resolves the stored child without changing its registry linkage.
+// Native keys and spawn spans each survive a restart before registry publication.
+// Database reads stay outside the display cache lock. The caller validates ownership before linking.
+func (s *agentOutputSink) resolveStoredChildAgent(ctx context.Context, spec agent.ChildAgentSpec) (string, error) {
+	spawnSpanID, providerChildKey, title := spec.SpawnSpanID, spec.ProviderChildKey, spec.Title
+	rowKey := bgtask.NormalizeRowKey(providerChildKey)
 	cache := s.h.bgTaskCache(s.rootAgentID)
 
 	// 1. Fast path: cache hit under the lock. ensureSeededLocked runs once (the
@@ -764,7 +668,7 @@ func (s *agentOutputSink) ensureChildAgentLocked(ctx context.Context, spawnSpanI
 		return "", err
 	}
 	if providerChildKey != "" {
-		if idx := cache.indexOf(providerChildKey); idx >= 0 && cache.Rows[idx].ChildAgentID != "" {
+		if idx := cache.indexOf(rowKey); idx >= 0 && cache.Rows[idx].ChildAgentID != "" {
 			cid := cache.Rows[idx].ChildAgentID
 			cache.Mu.Unlock()
 			return cid, nil
@@ -786,12 +690,23 @@ func (s *agentOutputSink) ensureChildAgentLocked(ctx context.Context, spawnSpanI
 	// it, which is right -- a question is not the activity that earns a place in
 	// the sidebar.
 	if providerChildKey != "" {
-		row, found, err := s.h.loadStoredBgTask(ctx, s.h.queries, s.rootAgentID, providerChildKey)
+		row, found, err := s.h.loadStoredBgTask(ctx, s.h.queries, s.rootAgentID, rowKey)
 		if err != nil {
 			return "", err
 		}
 		if found && row.ChildAgentID != "" {
 			return row.ChildAgentID, nil
+		}
+	}
+	if providerChildKey != "" {
+		existing, err := s.h.queries.GetChildAgentByProviderKey(ctx, db.GetChildAgentByProviderKeyParams{
+			ParentAgentID: sqlString(s.agentID), ProviderChildKey: providerChildKey,
+		})
+		if err == nil {
+			return existing.ID, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return "", err
 		}
 	}
 	// Fallback: GetChildAgentBySpawnSpan covers a worker restart between the
@@ -802,7 +717,6 @@ func (s *agentOutputSink) ensureChildAgentLocked(ctx context.Context, spawnSpanI
 		ParentAgentID: sqlString(s.agentID),
 		SpawnSpanID:   spawnSpanID,
 	}); err == nil {
-		s.linkRegistryRow(cache, providerChildKey, existing.ID, title, pendingBroadcast)
 		return existing.ID, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
@@ -847,14 +761,28 @@ func (s *agentOutputSink) ensureChildAgentLocked(ctx context.Context, spawnSpanI
 		rowTitle = pickAgentTitle()
 	}
 	if err := s.h.queries.CreateChildAgent(ctx, db.CreateChildAgentParams{
-		ID:            childID,
-		ParentAgentID: sqlString(s.agentID),
-		SpawnSpanID:   spawnSpanID,
-		WorkingDir:    parent.WorkingDir,
-		HomeDir:       parent.HomeDir,
-		Title:         rowTitle,
-		AgentProvider: parent.AgentProvider,
+		ID:               childID,
+		ParentAgentID:    sqlString(s.agentID),
+		SpawnSpanID:      spawnSpanID,
+		ProviderChildKey: providerChildKey,
+		Options:          spec.Options.Marshal(),
+		WorkingDir:       parent.WorkingDir,
+		HomeDir:          parent.HomeDir,
+		Title:            rowTitle,
+		AgentProvider:    parent.AgentProvider,
+		AgentSessionID:   spec.AgentSessionID,
 	}); err != nil {
+		if providerChildKey != "" {
+			existing, readErr := s.h.queries.GetChildAgentByProviderKey(ctx, db.GetChildAgentByProviderKeyParams{
+				ParentAgentID: sqlString(s.agentID), ProviderChildKey: providerChildKey,
+			})
+			if readErr == nil {
+				return existing.ID, nil
+			}
+			if !errors.Is(readErr, sql.ErrNoRows) {
+				return "", fmt.Errorf("read native child after creation failed: %w", readErr)
+			}
+		}
 		// UNIQUE violation on idx_agents_spawn_span (race / replay): re-read.
 		if existing, rerr := s.h.queries.GetChildAgentBySpawnSpan(ctx, db.GetChildAgentBySpawnSpanParams{
 			ParentAgentID: sqlString(s.agentID),
@@ -865,62 +793,38 @@ func (s *agentOutputSink) ensureChildAgentLocked(ctx context.Context, spawnSpanI
 			return "", fmt.Errorf("create child agent: %w", err)
 		}
 	}
-	// 3. Re-acquire the lock to link the registry row (and re-check the cache
-	//    for a concurrent insert that won the race while the lock was released).
-	s.linkRegistryRow(cache, providerChildKey, childID, title, pendingBroadcast)
+	// The caller validates the resolved child before linking its registry row.
 	return childID, nil
 }
 
-// linkRegistryRow links the registry row for childID to providerChildKey under
-// the cache lock, handling the race where another goroutine already linked the
-// same child while EnsureChildAgent's DB work ran unlocked. If the cache already
-// carries a row for childKey with a non-empty ChildAgentID, that earlier writer
-// wins and this call is a no-op. Writes any post-mutation snapshot to
-// *pendingBroadcast so the caller broadcasts after releasing the lock.
-func (s *agentOutputSink) linkRegistryRow(cache *bgTaskCache, providerChildKey, childID, title string, pendingBroadcast *[]bgtask.Item) {
-	if providerChildKey == "" {
-		return
+// linkRegistryRow links a validated child under the cache lock.
+// A prior linkage remains intact. The caller publishes the returned snapshot after the lock is released.
+func (s *agentOutputSink) linkRegistryRow(cache *bgTaskCache, rowKey, childID, title string) ([]bgtask.Item, error) {
+	if rowKey == "" {
+		return nil, nil
 	}
-	// The store half of the re-check runs BEFORE the lock, for the reason
-	// ensureChildAgentLocked states: DB work stays off the per-root mutex. "First
-	// linker wins" is an invariant of the ROW, so a linked row past the display
-	// cap has to answer it too -- reading the display list alone made the guard
-	// fall through for exactly those rows and let this call re-point the durable
-	// child_agent_id at the losing child.
-	//
-	// A read failure keeps the guard: it cannot prove the row is unlinked, and
-	// overwriting a linkage that exists costs the transcript the subagent has,
-	// while skipping a link the row lacks costs one a later event repeats.
-	//
-	// The residual window is narrow and is the price of the lock discipline: a
-	// concurrent linker that commits between this read and the lock, for a row
-	// the display list does not hold, is invisible to both halves of the guard.
-	// The cache re-check below closes that window for every displayed row, which
-	// is every row of all but the largest sessions.
-	stored, storedFound, err := s.h.loadStoredBgTask(s.h.bgTaskCtx(), s.h.queries, s.rootAgentID, providerChildKey)
+	// Read retained rows before the display lock. A row can outlive the display cap.
+	// A failed read cannot establish that the row is unlinked.
+	stored, storedFound, err := s.h.loadStoredBgTask(s.h.bgTaskCtx(), s.h.queries, s.rootAgentID, rowKey)
 	if err != nil {
-		slog.Warn("link registry row: read failed", "row_key", providerChildKey, "error", err)
-		return
+		return nil, fmt.Errorf("read the child registry linkage: %w", err)
 	}
 	cache.Mu.Lock()
 	defer cache.Mu.Unlock()
-	// Re-check: a concurrent EnsureChildAgent for the same key may have committed
-	// while this caller's DB work ran unlocked. If so, do not overwrite.
-	if idx := cache.indexOf(providerChildKey); idx >= 0 {
+	// Another caller can link the same row while this caller reads the database.
+	if idx := cache.indexOf(rowKey); idx >= 0 {
 		if cache.Rows[idx].ChildAgentID != "" {
-			return
+			return nil, nil
 		}
 	} else if storedFound && stored.ChildAgentID != "" {
-		return
+		return nil, nil
 	}
-	*pendingBroadcast = s.ensureRegistryRowLocked(cache, providerChildKey, childID, title)
+	return s.ensureRegistryRowLocked(cache, rowKey, childID, title)
 }
 
-// ensureRegistryRowLocked upserts the registry row carrying child_agent_id,
-// returning the post-mutation snapshot when it changed (nil otherwise) so the
-// caller can broadcast AFTER releasing cache.Mu (broadcasting under the lock
-// can block on a slow gRPC stream consumer). Caller must hold cache.Mu.
-func (s *agentOutputSink) ensureRegistryRowLocked(cache *bgTaskCache, rowKey, childID, title string) []bgtask.Item {
+// ensureRegistryRowLocked stores the child's registry row and returns a changed snapshot.
+// The caller must hold cache.Mu and publish the snapshot after it releases that lock.
+func (s *agentOutputSink) ensureRegistryRowLocked(cache *bgTaskCache, rowKey, childID, title string) ([]bgtask.Item, error) {
 	task := bgtask.Upsert{
 		RowKey:        rowKey,
 		Kind:          bgtask.KindSubagent,
@@ -929,18 +833,15 @@ func (s *agentOutputSink) ensureRegistryRowLocked(cache *bgTaskCache, rowKey, ch
 		Title:         title,
 		Status:        bgtask.StatusRunning,
 	}
-	// The upsert always carries StatusRunning, so it can never be the active ->
-	// final transition and change.endedChildID is always empty here. Discarding
-	// it is safe for that reason, and for that reason only.
+	// This linkage preserves an existing final status.
 	change, err := s.h.applyBackgroundTaskUpsertLocked(cache, s.rootAgentID, task)
 	if err != nil {
-		slog.Warn("ensure registry row for child failed", "row_key", rowKey, "error", err)
-		return nil
+		return nil, fmt.Errorf("store the child registry linkage: %w", err)
 	}
 	if change.changed {
-		return change.rows
+		return change.rows, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // ChildSink returns a ProviderServices value for the child transcript. The
@@ -1058,123 +959,6 @@ func (s *agentOutputSink) PersistChildUserMessage(childAgentID, text string) err
 		agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE})
 }
 
-// claimSubagentTranscriptClose reports whether THIS caller owns the closing
-// divider for a subagent transcript.
-//
-// Exactly one divider closes each COMPLETION, and TWO independent writers can
-// end one: the registry (whichever applier moved the row into a final status)
-// and the child's own turn end (a provider that forwards its subagent's closing
-// envelope, like Claude's result). Either can arrive first.
-//
-// One completion, not one transcript: a subagent that its parent revives runs
-// again and ends again, so ReviveBackgroundTask releases the claim and the next
-// completion takes a fresh one. A transcript therefore holds as many dividers as
-// the subagent had runs.
-//
-// The key is the child id alone, and a run number cannot improve it. The second
-// writer is the child's own turn end (PersistTurnEnd), which holds s.agentID and
-// the envelope bytes and nothing else -- no run number rides on the wire. So a
-// generation-keyed claim would have to READ the current generation from the
-// registry, and a run-1 result that arrived after the revive would read run 2's
-// generation, take run 2's slot, and produce exactly what the plain key
-// produces: a divider in the middle of run 2 and none at its end. The ordered
-// stream is what keeps the two apart. One goroutine reads the CLI's stdout in
-// line order (Process.ReadOutput) and both writers run inside that call, so
-// run 1's result is processed before the task_started that revives the subagent.
-//
-// A durable INSERT decides it, rather than each side reading the transcript's
-// last message and inferring what the other did. Two reasons the probes could
-// not: both writers persist AFTER releasing the cache mutex, so two goroutines
-// could each read "not ended" and each write; and each probe cost a DB read
-// plus a zstd decompress, the turn-end one on EVERY child turn rather than only
-// the last. The claim also survives a worker restart, which is when a content
-// probe is least able to guess.
-//
-// Fails OPEN on a DB error: a missing divider leaves a transcript that never
-// visibly ends, with a thinking indicator that never resolves, which is worse
-// than a duplicated rule.
-func (h *OutputHandler) claimSubagentTranscriptClose(ctx context.Context, childAgentID string) bool {
-	rows, err := h.queries.ClaimSubagentTranscriptClose(ctx, childAgentID)
-	if err != nil {
-		slog.Warn("claim subagent transcript close", "child", childAgentID, "error", err)
-		return true
-	}
-	return rows > 0
-}
-
-// persistSubagentEndDivider writes the divider that closes a child transcript.
-//
-// Unexported and service-internal on purpose: no provider calls it. Every
-// caller reaches it through the ONE registry mutation that moved the row from
-// active into a final status -- an upsert carrying the final status, a status
-// update, or a close, whichever the provider uses -- plus the process-exit
-// sweep and the boot sweep, which end rows no provider will ever close.
-//
-// Called exactly once per active -> final transition: an applier reports
-// endedChildID only on that transition, and the DB's own status guard makes it
-// hold across a worker restart. A revived row transitions again, and writes
-// another divider then. A no-op for an empty id (a shell row, a re-close, or a
-// subagent whose provider never linked a transcript).
-//
-// The provider comes from the child's own agent row rather than from a caller:
-// createMessageRow refuses an UNSPECIFIED provider, and the sweeps have no sink
-// to borrow one from. A child row that no longer resolves is skipped -- there
-// is no transcript left to close.
-func (h *OutputHandler) persistSubagentEndDivider(childAgentID string, status bgtask.Status) {
-	if childAgentID == "" {
-		return
-	}
-	ctx := h.bgTaskCtx()
-	child, err := h.queries.GetAgentByID(ctx, childAgentID)
-	if err != nil {
-		slog.Warn("subagent end divider: child agent not found", "child", childAgentID, "error", err)
-		return
-	}
-	// Exactly ONE divider closes each RUN of a subagent. A provider that forwards
-	// its subagent's own closing envelope (Claude's result) draws a richer one --
-	// it carries the duration, and on failure the error label and detail -- so it
-	// claims first when it gets there first, and this neutral divider stands
-	// down. A subagent stopped before it could forward a result never claims, so
-	// it still gets this one.
-	if !h.claimSubagentTranscriptClose(ctx, childAgentID) {
-		return
-	}
-	content, err := json.Marshal(map[string]string{
-		contracts.NotificationFieldType:   contracts.NotificationTypeSubagentEnded,
-		contracts.NotificationFieldStatus: bgtask.StatusWire(status),
-	})
-	if err != nil {
-		slog.Warn("marshal subagent end divider", "child", childAgentID, "error", err)
-		return
-	}
-	if err := h.persistAndBroadcast(childAgentID, child.AgentProvider,
-		leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, agent.MessageContent{Original: content}, agent.SpanInfo{},
-		h.closingChildTracker(childAgentID)); err != nil {
-		slog.Warn("persist subagent end divider", "child", childAgentID, "error", err)
-	}
-}
-
-// closingChildTracker resolves the child's span tracker for the closing
-// divider WITHOUT registering one.
-//
-// childTracker (getOrCreate) is wrong here. The tab-close teardown runs
-// CleanupChildAgents -- which deletes every descendant's tracker entry -- and
-// only THEN MarkAgentBackgroundTasksExited, which writes a divider per still-
-// active child. A getOrCreate on that path registers a fresh entry for an
-// agent whose root is already gone, and nothing deletes it again, because this
-// root's cleanup pass already ran: it survives until the hourly orphan sweep.
-//
-// So look the entry up read-only. When it is present the divider renders
-// against whatever span rails were still open in that transcript; when the
-// teardown already pruned it, a transient zero tracker gives the same empty
-// rails the registered-but-blank entry would have given, and leaks nothing.
-func (h *OutputHandler) closingChildTracker(childAgentID string) *SpanTracker {
-	if t, _, ok := h.trackers.get(childAgentID); ok {
-		return t
-	}
-	return &SpanTracker{}
-}
-
 // CleanupChildAgent releases the per-child service state for a child that has
 // closed permanently. This sink is the child's DIRECT PARENT: the cached child
 // sink lives in s.childSinks, so prune it here in O(1) instead of scanning
@@ -1210,17 +994,6 @@ func (s *agentOutputSink) CleanupChildAgent(childAgentID string) {
 
 // --- Registry write primitives on the sink ---
 
-// applyAndBroadcast runs a registry mutation, broadcasts the post-mutation
-// snapshot when it changed, and writes the closing divider for a child
-// transcript the mutation ended. The validate+broadcast+close-the-transcript
-// contract is shared by every sink registry primitive; centralizing it here
-// means a future mutation can't forget to check its key, skip a broadcast,
-// or leave a subagent transcript that simply stops.
-//
-// The apply callback runs with the cache lock held internally (it acquires and
-// releases cache.Mu), so both the broadcast and the divider write run outside
-// the lock -- a slow gRPC consumer or a DB write cannot serialize every other
-// registry op for this root.
 // normalizeRowKey returns the row key to address the registry by, and says so
 // once when the provider's own key could not be used.
 //
@@ -1243,6 +1016,7 @@ func (s *agentOutputSink) normalizeRowKey(rowKey, what string) string {
 	return normalized
 }
 
+// applyAndBroadcast publishes committed registry changes after the cache lock is released.
 func (s *agentOutputSink) applyAndBroadcast(rowKey string, apply func(rootAgentID, key string) (registryChange, error)) error {
 	// THE CHOKEPOINT for every registry mutation, which is why the key is
 	// normalized here rather than at each caller: a key that normalizes on one
@@ -1263,22 +1037,6 @@ func (s *agentOutputSink) applyAndBroadcast(rowKey string, apply func(rootAgentI
 		// released the cache lock before returning, and refreshing reads that
 		// same cache.
 		s.h.refreshActivityTree(s.rootAgentID, settleHeld)
-	}
-	// After the broadcast, so a slow transport cannot delay the DB write. The
-	// applier sets endedChildID only on the active -> final transition, and the
-	// DB's own status guard makes that hold across a worker restart, so this
-	// runs exactly once per row and needs no emptiness check of its own.
-	s.h.persistSubagentEndDivider(change.endedChildID, change.endedStatus)
-	// The mirror write: a revive gives the transcript-close claim back, so the
-	// restarted run can take a fresh one and end with a divider of its own.
-	// Failing it is logged, never returned. The row is already committed and
-	// already broadcast by this point, so reporting an error here would tell the
-	// caller a revive that DID happen did not -- and Claude's caller answers that
-	// by dropping the message the parent just delivered.
-	if change.revivedChildID != "" {
-		if err := s.h.queries.ReleaseSubagentTranscriptClose(s.h.bgTaskCtx(), change.revivedChildID); err != nil {
-			slog.Warn("release subagent transcript close", "child", change.revivedChildID, "error", err)
-		}
 	}
 	return nil
 }
@@ -1321,18 +1079,12 @@ func (s *agentOutputSink) LookupBackgroundTask(rowKey string) (string, bgtask.St
 	// ok=false. Callers must still read ok: the two are different answers, and
 	// only ok tells "no such row" from "a row with no status".
 	var noStatus bgtask.Status
-	// Checked and passed through unchanged, never rewritten, exactly as the
-	// mutation path checks it: a rewrite is not injective, so two provider keys
-	// could map onto one string and this lookup would answer for the wrong row.
-	//
-	// A key that fails the check is a MISS, not an error. The error return of
-	// this method means "the registry could not be read", and a caller that gets
-	// it holds a live subagent it must not treat as new. A malformed key is the
-	// opposite: the registry is fine and no row can carry that key, which is
-	// what ok=false already says.
-	if err := bgtask.ValidateRowKey(rowKey); err != nil || rowKey == "" {
+	if rowKey == "" {
 		return "", noStatus, false, nil
 	}
+	// Apply the same complete-key derivation as every registry mutation.
+	// A long native key must find the row that its earlier upsert created.
+	rowKey = s.normalizeRowKey(rowKey, "child registry lookup key")
 	cache := s.h.bgTaskCache(s.rootAgentID)
 	cache.Mu.Lock()
 	// The seed failure is RETURNED, not folded into ok=false. It runs on the
@@ -1349,7 +1101,7 @@ func (s *agentOutputSink) LookupBackgroundTask(rowKey string) (string, bgtask.St
 		cache.Mu.Unlock()
 		return childID, status, true, nil
 	}
-	// The lock is released BEFORE the DB read, the way ensureChildAgentLocked
+	// The lock is released BEFORE the DB read, the way resolveStoredChildAgent
 	// releases it around its own: this miss path runs on every FIRST task_started
 	// too (no row exists yet), so holding the mutex across the round trip would
 	// serialize a burst of spawns behind one another. Nothing is mutated here,
@@ -1379,19 +1131,8 @@ func (s *agentOutputSink) LookupBackgroundTask(rowKey string) (string, bgtask.St
 	return row.ChildAgentID, row.Status, true, nil
 }
 
-// ReviveBackgroundTask returns a finished row to Running and lets the reopened
-// transcript be closed again.
-//
-// The claim release is the second half of the revive and cannot be skipped: the
-// first completion durably claimed this transcript's closing divider, so without
-// the release the revived run would end with no divider at all. The applier
-// reports the reopened child on the change, and applyAndBroadcast performs the
-// release beside the ending divider -- so the two halves cannot come apart, and
-// a revive that changed nothing releases nothing.
-//
-// The error this returns therefore covers the REGISTRY write alone. That is what
-// the caller needs to know: it holds a one-shot arm, and only a failure to
-// reopen the row means the restart went unrecorded.
+// ReviveBackgroundTask returns a finished row to running and clears the prior run's descriptive state.
+// A failed registry write returns an error so the provider can retain its pending restart.
 func (s *agentOutputSink) ReviveBackgroundTask(rowKey string) error {
 	return s.applyAndBroadcast(rowKey, s.h.applyBackgroundTaskRevive)
 }
@@ -1526,118 +1267,96 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 	return nil
 }
 
-// applyBackgroundTaskUpsertLocked is the cache.Mu-already-held variant of
-// applyBackgroundTaskUpsert, used by EnsureChildAgent's registry re-link path
-// (which already holds the cache lock). It bypasses re-locking to avoid a
-// self-deadlock.
+// applyBackgroundTaskUpsertLocked commits an upsert and its eviction together.
+// A failed write restores the database and the display cache when the handler owns a database handle.
+// A test handler without that handle restores its cache only.
+// The caller must hold cache.Mu.
 func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, rootAgentID string, task bgtask.Upsert) (registryChange, error) {
-	// Every write of agent_background_tasks.title passes through here: the
-	// sink's UpsertBackgroundTask, which every provider calls, and
-	// EnsureChildAgent's link upsert. The MODEL supplies these titles, so they
-	// arrive with no length limit and no character rule. This column carries
-	// the SAME name rule as every other title column in the worker -- one rule
-	// for every title, and no per-column exception. bgtask.Upsert.Clean holds
-	// the rule and what it costs a row whose title IS a shell command.
-	//
-	// The clean runs BEFORE the no-op guard below, and it has to. A provider
-	// that replays a raw title would otherwise differ from the stored cleaned
-	// one on every replay, and each replay would rewrite the row and broadcast
-	// again for the life of the agent.
-	task = task.Clean()
 	ctx := h.bgTaskCtx()
 	reg := cache.on(h.queries, rootAgentID)
+	var change registryChange
+	err := reg.inTransactionLocked(ctx, h.db, func(tx bgTaskView) error {
+		var err error
+		change, err = mutateBackgroundTaskUpsertLocked(ctx, tx, task)
+		return err
+	})
+	if err != nil {
+		return registryChange{}, err
+	}
+	return change, nil
+}
+
+// mutateBackgroundTaskUpsertLocked uses one transaction view for every registry read and write.
+// The caller owns the transaction, cache restoration, and cache.Mu.
+func mutateBackgroundTaskUpsertLocked(ctx context.Context, reg bgTaskView, task bgtask.Upsert) (registryChange, error) {
+	cache := reg.cache
+	rootAgentID := reg.ownerID
+	// Providers supply titles without length or character restrictions.
+	// Apply the Worker's common title rule to every upsert and child linkage.
+	// Upsert.Clean also preserves the distinct handling of command titles.
+	// Clean before replay comparison so an unchanged raw title does not cause repeated writes and broadcasts.
+	task = task.Clean()
 	if err := reg.ensureSeededLocked(ctx); err != nil {
 		return registryChange{}, err
 	}
-	// findRowLocked, not indexOf: a RETAINED row that left the display list is
-	// an existing row, and taking it for a new one would skip the merge below --
-	// so a resumed session's replayed Running upsert would resurrect a finished
-	// subagent, and its title and created_at would be rewritten from the replay.
-	// `found` and not `idx >= 0` decides that, which is why the cap branch below
-	// only ever runs for a genuinely new row.
+	// Retained rows remain existing rows after they leave the display list.
+	// Read them through the registry view so replay preserves their status, title, and creation time.
+	// Only an absent row requires space for a new row.
 	existing, idx, found, err := reg.findRowLocked(ctx, task.RowKey)
 	if err != nil {
 		return registryChange{}, err
 	}
-	// Set on the active -> final transition below, so an upsert that carries the
-	// final status writes the closing divider the same way a close does.
-	var endedChildID string
-	// One ms-floored instant for the DB write and the cache, so a warm-cache
-	// read matches a cold-start read (no Go-time.Now-vs-SQLite drift).
+	// Use one millisecond timestamp for the database and cache so warm and cold reads agree.
 	now := nowMillis()
 	merged := task.ToItem()
 	merged.UpdatedAt = now
 	if found {
 		merged.CreatedAt = existing.CreatedAt
 		merged.EndedAt = existing.EndedAt
-		// Preserve descriptive fields the incoming upsert left blank so a partial
-		// upsert cannot blank a previously-set row (a final-status output_file write
-		// would otherwise wipe the title). Status is exempt: callers set it
-		// deliberately, and an unset one is StatusUnspecified, which the column
-		// refuses rather than quietly inheriting the existing status.
+		// Preserve descriptive fields that a partial upsert leaves blank.
+		// Status remains explicit. The database rejects StatusUnspecified instead of inheriting an old status.
 		merged = merged.PreservingBlanksFrom(existing)
-		// A final status is monotonic and absorbing: a late or replayed
-		// non-final upsert (a duplicate task_started, a replayed running
-		// row after a worker restart) must not resurrect a row that reached a
-		// final state. Drop the non-final status and keep the row as-is
-		// so the active-form/title refresh still lands, but the row stays
-		// final with its ended_at stamp intact.
+		// A final status remains final after a late or replayed active update.
+		// Preserve its end time while allowing descriptive fields to change.
 		if existing.Status.IsFinished() && !merged.Status.IsFinished() {
 			merged.Status = existing.Status
 			merged.EndedAt = existing.EndedAt
 		} else if merged.Status.IsFinished() && !existing.Status.IsFinished() {
 			// A transition into a final status stamps ended_at.
 			merged.EndedAt = now
-			endedChildID = merged.ChildAgentID
 		}
-		// The no-op guard compares every field EXCEPT UpdatedAt (which is `now`
-		// on this call and will always differ from the existing stamp). Without
-		// that exclusion a byte-identical replay still rewrites + broadcasts on
-		// every clock tick.
+		// Exclude the current update time from replay comparison.
+		// Otherwise an unchanged row would cause another write and broadcast.
 		if existing.WithUpdatedAt(merged.UpdatedAt) == merged {
 			return registryChange{rows: cache.snapshot()}, nil
 		}
-		// The write is committed, so a retained row earns its place back in the
-		// display list. AFTER the no-op guard, never before: re-admitting evicts a
-		// displayed row, and a byte-identical replay would then churn the sidebar
-		// on the server while reporting changed=false, so no broadcast tells the
-		// client its list moved.
+		// Admit a retained row only after comparison confirms a change.
+		// Admission can evict a displayed row. An unchanged replay must not change the sidebar without a broadcast.
+		// The enclosing transaction restores admission if the write fails.
 		if idx < 0 {
 			if idx, err = reg.admitRowLocked(ctx, existing); err != nil {
 				return registryChange{}, err
 			}
 		}
 	} else {
-		// Room for the new row, scoped to its own KIND so making space for a
-		// shell never drops a subagent (and the reverse). Dropping the new row
-		// instead is not an option: it would orphan an already-created child
-		// agent row (EnsureChildAgent inserts the child before this upsert links
-		// it), leaving an unopenable transcript.
-		//
-		// A pool with no finished row gives up its oldest ACTIVE one. That needs
-		// no special case for the linkage, because retention keeps a linked row
-		// in the table -- the cap limits what the sidebar shows, not what the
-		// registry indexes. An unlinked active row (a running shell) does lose
-		// its persisted row, which is the honest cost of a pool that is full of
-		// running work, and is what the warning records.
+		// Each task kind owns its display pool, so shell tasks cannot evict subagent rows.
+		// A full pool evicts its oldest finished row, or its oldest active row when none finished.
+		// Keep linked rows in storage so the user can still open their child transcripts.
+		// Delete unlinked rows from storage with the same transaction as the new insert.
+		// Always admit a new child linkage. Refusing it at the cap leaves its already stored transcript unreachable from the sidebar.
 		bucket := int64(merged.Kind)
 		evictedRow, dropped, err := reg.makeRoomLocked(ctx, bucket)
 		if err != nil {
 			return registryChange{}, err
 		}
 		if dropped && !evictedRow.Status.IsFinished() {
-			slog.Warn("background task registry at cap with no finished row; dropping the oldest active row from the display list",
+			slog.Warn("The background task registry reached its display cap. It drops the oldest active display row because no row finished.",
 				"owner", rootAgentID, "row_key", task.RowKey, "kind", bucket, "cap", bgtask.MaxTasks,
 				"evicted_row_key", evictedRow.RowKey, "retained_in_store", evictedRow.ChildAgentID != "")
 		}
 	}
 	if !found {
 		merged.CreatedAt = now
-		// A row that is born final never had an active phase, so it ends its
-		// child transcript here -- the only transition it will ever have.
-		if merged.Status.IsFinished() {
-			endedChildID = merged.ChildAgentID
-		}
 	}
 	if merged.Status.IsFinished() && merged.EndedAt.IsZero() {
 		merged.EndedAt = now
@@ -1656,11 +1375,11 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 		Description:    merged.Description,
 		ActiveForm:     merged.ActiveForm,
 		Status:         leapmuxv1.BackgroundTaskStatus(merged.Status),
-		// created_at binds on INSERT only (the ON CONFLICT UPDATE does not touch
-		// it); updated_at binds on both. Both derive from the same `now` so the
-		// cache and the persisted row agree to the millisecond.
+		// INSERT sets creation time. Conflict updates preserve it.
+		// Both paths set update time from the same timestamp as the cache.
 		CreatedAt: sqltime.NewSQLiteTime(merged.CreatedAt),
 		UpdatedAt: sqltime.NewSQLiteTime(now),
+		EndedAt:   sqltime.SQLiteNullTimeOf(merged.EndedAt),
 	}); err != nil {
 		return registryChange{}, err
 	}
@@ -1670,12 +1389,7 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 	} else {
 		cache.Rows[idx] = merged
 	}
-	return registryChange{
-		rows:         cache.snapshot(),
-		changed:      true,
-		endedChildID: endedChildID,
-		endedStatus:  merged.Status,
-	}, nil
+	return registryChange{rows: cache.snapshot(), changed: true}, nil
 }
 
 // sqlString converts a Go string to a sql.NullString where "" is NULL and a

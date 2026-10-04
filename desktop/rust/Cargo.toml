@@ -31,6 +31,9 @@ tauri-plugin-autostart = "2"
 dirs = "6"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "net"] }
 
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+
 [target.'cfg(unix)'.dependencies]
 # For getuid(2): the dev-sidecar connect compares the socket peer's kernel-reported
 # uid against our own before adopting it (see require_same_user_peer). Already in the

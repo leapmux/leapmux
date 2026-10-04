@@ -1,53 +1,35 @@
-import type { PermissionOption } from '~/components/chat/model/controlPrompt'
-import type { PillOptions } from '~/components/common/PillGroup'
+import type { PermissionOption, PermissionScope } from '~/components/chat/model/controlPrompt'
+import type { PillOptions } from '~/components/common/pillOptions'
 import { CANONICAL_KINDS, KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ALWAYS, KIND_REJECT_ONCE } from '~/components/chat/model/controlPrompt'
-import { disambiguateLabels, isPillOptions, PILL_OPTION_LIMIT } from '~/components/common/PillGroup'
+import { disambiguateLabels, isPillOptions, PILL_OPTION_LIMIT } from '~/components/common/pillOptions'
 import { permissionOptionLabel } from './permissionOptionLabels'
 
 /**
- * How a permission request's options lay out as one decision row.
+ * Arrange a permission request's options by their canonical kinds.
+ * Native optionId values differ between providers, so their spelling cannot determine the kind.
  *
- * Agents emit their remember semantics as DISTINCT options (an `allow_always`
- * kind sits beside `allow_once`, not inside it), and the optionId vocabulary is
- * agent-specific (`allow_always`, `always`, `allow-always`,
- * `reasonix_write_session`, ...). The kinds are the only stable discriminator,
- * so this mapping classifies by kind:
+ * - Decision buttons show Allow or Deny. Scope choices show the duration of a once answer.
+ * - A single allow_once and available allow_always options form allowScope when the list fits the pill limit.
+ *   Put Once first and keep the native payload order for the remaining scopes.
+ * - A selected remembered scope can select its matching reject_always answer when the provider offers one.
+ * - The first option of each canonical kind fills its slot.
+ *   Keep every unused option in additional, including unknown kinds and duplicates, so no offered answer disappears.
  *
- * - the decision buttons carry the polarity alone (Deny / Allow) while a scope
- *   pill group states HOW LONG an allow lasts; a slot that holds a remember
- *   option with no scope group to qualify it states its own duration instead
- *   (see `decisionLabel`);
- * - one allow-once beside one or more allow-always options becomes the
- *   `allowScope` group — Once plus each always scope, once first then payload
- *   order — while the group fits the pill limit: two options draw
- *   [Once | Always] (or [Once | Session], per the agent's own option names), three
- *   draw Reasonix's [Once | Session | Project], a wider vocabulary degrades to
- *   no group and plain extra buttons;
- * - a scope beyond Once also upgrades Deny to the agent's reject_always when it
- *   offers one (goose is the one agent that does), so one control answers both
- *   polarities;
- * - the FIRST option of each canonical kind fills that kind's slot; every
- *   option no rendered slot or group consumed (invented kinds, duplicates
- *   beyond the first of a kind, and every option a degraded layout cannot
- *   place) stays in `additional`, payload order, so no answerable option is
- *   ever dropped.
- *
- * The BUTTON ORDER is this layout's own (negative first), not the payload's:
- * every agent emits allow-first, but the reply carries only an optionId, so
- * ordering is presentation-only — goose's own desktop client picks options by
- * kind, and goose's server parses the returned id string.
+ * A wider scope list uses separate additional buttons instead of a scope group.
+ * The layout puts negative actions first without changing the optionId that the native reply carries.
  */
 export interface PermissionOptionLayout {
   negative?: PermissionOption
   /** The option Allow sends while no scope control overrides it (the once slot, or the only allow). */
   positive?: PermissionOption
-  /** The reject_always slot, when the agent offers one beside a reject_once AND a scope group is drawn. */
-  rememberReject?: PermissionOption
   /**
-   * The allow options a scope pill group offers — one allow-once plus every
-   * allow-always, once first then payload order. Undefined when the agent
-   * offers no always scope at all, no single once slot to anchor the group, or
-   * a vocabulary too wide for the pill limit.
+   * These remembered refusal options are reachable through a displayed scope group beside reject_once.
+   * Omit this field when no scope choice can select a reject_always answer.
+   */
+  rememberRejects?: PermissionOption[]
+  /**
+   * The scope group contains one allow_once followed by the available allow_always options in payload order.
+   * Omit it without a single once choice, without a remembered scope, or when the list exceeds the pill limit.
    */
   allowScope?: PermissionOption[]
   additional: PermissionOption[]
@@ -64,13 +46,11 @@ export function layoutPermissionOptions(options: PermissionOption[]): Permission
   const rejectOnce = byKind.get(KIND_REJECT_ONCE)
   const rejectAlways = byKind.get(KIND_REJECT_ALWAYS)
 
-  // The scope group needs ONE once slot facing at least one always scope (a
-  // Once pill is ambiguous when two once answers exist — Cursor routes its
-  // ask-question options that way, and those are alternative answers, not
-  // durations), it must fit the pill limit (a group this layout reports is one
-  // the pills can draw, so a too-wide vocabulary degrades HERE and its options
-  // stay answerable as extra buttons), and its ids must be unique (the reply
-  // carries an id, so two options that share one are the same answer twice).
+  // Require one allow_once choice and at least one remembered scope.
+  // Two once choices are alternative replies and cannot define one Once duration.
+  // Require the group to fit the pill limit.
+  // Keep wider choices available as additional buttons.
+  // Require distinct option IDs because the native reply carries that ID.
   const allOnces = options.filter(option => option.kind === KIND_ALLOW_ONCE)
   const allAlways = options.filter(option => option.kind === KIND_ALLOW_ALWAYS)
   const once = allOnces.length === 1 ? allOnces[0] : undefined
@@ -85,22 +65,23 @@ export function layoutPermissionOptions(options: PermissionOption[]): Permission
     ? [once, ...scopeAlways]
     : undefined
 
-  // A slot or group is consumed only when the row actually renders it: with a
-  // scope group drawn, its members plus BOTH reject slots are consumed (Deny
-  // sends the once reject; a scope beyond Once upgrades Deny to reject_always).
-  // Without one there is no reject upgrade, so reject_always stays answerable
-  // as its own extra button.
+  // Remove an option from additional only when a rendered slot or scope group uses it.
+  // A displayed scope group uses its own options and the refusal choices that its scopes can select.
+  // Without a scope group, keep each remembered refusal available as an additional button.
+  // A refusal that no scope can select also stays additional.
   const positive = allowOnce ?? allowAlways
   const negative = rejectOnce ?? rejectAlways
+  const reachable = allowScope && rejectOnce ? reachableRejects(options, allowScope) : []
+  const rememberRejects = reachable.length > 0 ? reachable : undefined
   const consumed = new Set<PermissionOption | undefined>(allowScope ?? [positive, negative])
   if (allowScope) {
-    consumed.add(rejectOnce)
-    consumed.add(rejectAlways)
+    consumed.add(negative)
+    for (const option of reachable)
+      consumed.add(option)
   }
 
-  // The optional slots are set only when they hold an option: an explicit
-  // `undefined` is not assignable to an optional prop, and every reader treats
-  // absent the same.
+  // Set an optional slot only when it contains an option.
+  // The caller uses an absent field for an unavailable choice.
   const layout: PermissionOptionLayout = {
     additional: options.filter(option => !consumed.has(option)),
   }
@@ -108,40 +89,71 @@ export function layoutPermissionOptions(options: PermissionOption[]): Permission
     layout.positive = positive
   if (negative)
     layout.negative = negative
-  if (allowScope && rejectOnce && rejectAlways)
-    layout.rememberReject = rejectAlways
+  if (rememberRejects)
+    layout.rememberRejects = rememberRejects
   if (allowScope)
     layout.allowScope = allowScope
   return layout
 }
 
 /**
- * Whether the selected scope pill picks a scope BEYOND Once. This is what
- * upgrades a reject to the agent's reject_always, so the two polarities answer
- * through one control.
+ * Collect reachable remembered refusal options in payload order.
+ *
+ * - A refusal without a stated scope can answer each remembered scope.
+ * - A refusal with a matching scope answers that scope.
+ * - Keep the first refusal for each scope and the first refusal without a scope.
+ *
+ * Other refusal options remain available as additional buttons.
  */
-function scopeRemembers(
-  layout: PermissionOptionLayout,
-  selectedAllowScopeId?: string,
-): boolean {
-  const scope = layout.allowScope
-  if (!scope)
-    return false
-  const selected = scope.find(option => option.optionId === selectedAllowScopeId)
-  return selected !== undefined && selected.kind === KIND_ALLOW_ALWAYS
+function reachableRejects(options: readonly PermissionOption[], allowScope: readonly PermissionOption[]): PermissionOption[] {
+  const pillScopes = new Set<PermissionScope>()
+  for (const option of allowScope) {
+    if (option.kind === KIND_ALLOW_ALWAYS && option.scope !== undefined)
+      pillScopes.add(option.scope)
+  }
+  const seen = new Set<PermissionScope | undefined>()
+  const rejects: PermissionOption[] = []
+  for (const option of options) {
+    if (option.kind !== KIND_REJECT_ALWAYS || seen.has(option.scope))
+      continue
+    if (option.scope !== undefined && !pillScopes.has(option.scope))
+      continue
+    seen.add(option.scope)
+    rejects.push(option)
+  }
+  return rejects
 }
 
 /**
- * The option a decision button sends.
- *
- * For Allow, the SELECTED scope pill when a scope group is drawn (falling back
- * to its first option when nothing valid is stored), else the once slot the
- * button displays. For Reject, a scope beyond Once upgrades to the agent's
- * reject_always when it offers one.
- *
- * An option the agent did not offer is never sent: the reject upgrade is
- * skipped when its variant is absent, and an unknown optionId is parsed as
- * cancel (goose) or reject (OpenCode) on the agent side.
+ * Read the selected remembered scope beyond Once.
+ * Use it to select the matching remembered refusal through the same scope control.
+ */
+function rememberingScope(
+  layout: PermissionOptionLayout,
+  selectedAllowScopeId?: string,
+): PermissionOption | undefined {
+  const selected = layout.allowScope?.find(option => option.optionId === selectedAllowScopeId)
+  return selected?.kind === KIND_ALLOW_ALWAYS ? selected : undefined
+}
+
+/**
+ * Select the remembered refusal for one remembered scope.
+ * Use an exact scope match first, then a refusal that states no scope.
+ * Never select a refusal for a different scope.
+ * If neither matches, the decision button keeps its once refusal.
+ */
+function rememberRejectFor(rejects: readonly PermissionOption[], pill: PermissionOption): PermissionOption | undefined {
+  return (pill.scope !== undefined ? rejects.find(option => option.scope === pill.scope) : undefined)
+    ?? rejects.find(option => option.scope === undefined)
+}
+
+/**
+ * Select the native option for the requested decision.
+ * Allow uses the selected scope, or the first scope if the stored selection is invalid.
+ * Without a scope group, Allow uses its positive slot.
+ * Reject uses a remembered refusal only when the selected scope can reach that offered answer.
+ * Otherwise, Reject uses its negative slot.
+ * Never send an option that the provider did not offer.
  */
 export function resolvePermissionOption(
   layout: PermissionOptionLayout,
@@ -155,48 +167,62 @@ export function resolvePermissionOption(
     }
     return layout.positive
   }
-  return scopeRemembers(layout, selectedAllowScopeId) && layout.rememberReject ? layout.rememberReject : layout.negative
+  const pill = rememberingScope(layout, selectedAllowScopeId)
+  const remember = pill && layout.rememberRejects ? rememberRejectFor(layout.rememberRejects, pill) : undefined
+  return remember ?? layout.negative
 }
 
 /**
- * The label a decision button shows. With a scope pill group drawn the button
- * carries the polarity alone — the pills state how long an allow lasts. Without
- * one, a slot that holds a REMEMBER option states its own duration through the
- * agent's own option name (`permissionOptionLabel`): the agent offered no once
- * variant, so the button is the only place the duration can appear, and a plain
- * "Allow" would grant a permanent permission the user cannot see.
+ * A once decision uses the plain Allow or Deny label.
+ * The scope group supplies its duration when present.
+ * A remembered slot uses the native option's duration label because it can store a rule.
+ * That label must remain visible even when the group selects Once.
+ * A plain label on a remembered slot would conceal the lasting rule.
  */
 export function decisionLabel(layout: PermissionOptionLayout, polarity: 'allow' | 'reject'): string {
   const slot = polarity === 'allow' ? layout.positive : layout.negative
   const rememberKind = polarity === 'allow' ? KIND_ALLOW_ALWAYS : KIND_REJECT_ALWAYS
-  return !layout.allowScope && slot?.kind === rememberKind ? permissionOptionLabel(slot) : polarity === 'allow' ? 'Allow' : 'Deny'
+  return slot?.kind === rememberKind ? permissionOptionLabel(slot) : polarity === 'allow' ? 'Allow' : 'Deny'
+}
+
+/** The pill label of each scope that a plugin states. The widest scope reads Always. */
+const SCOPE_LABELS: Record<PermissionScope, string> = {
+  session: 'Session',
+  workspace: 'Workspace',
+  project: 'Project',
+  user: 'Always',
 }
 
 /**
- * One scope pill's label. The once slot is unambiguous; the always scopes read
- * their duration out of the agent's own option name ("...for this session",
- * "Add to project allow_write"), and a name that states no duration is simply
- * Always. Names are prose, so this is a keyword read, not a parse — a name with
- * neither keyword still gets a truthful label, just a generic one.
+ * Read the scope label from the option.
+ *
+ * - allow_once reads Once.
+ * - An explicit plugin scope uses its declared scope label.
+ * - Otherwise, inspect only the native name before its first colon for a project or session keyword.
+ * - Without a duration keyword, use Always.
+ *
+ * The text after the colon can contain the command and must not establish duration.
+ * A native prose label can still use an ambiguous keyword.
+ * An explicit plugin scope avoids that ambiguity.
  */
 export function allowScopeLabel(option: PermissionOption): string {
   if (option.kind === KIND_ALLOW_ONCE)
     return 'Once'
-  const name = (option.name ?? '').toLowerCase()
-  if (name.includes('project'))
+  if (option.scope)
+    return SCOPE_LABELS[option.scope]
+  const label = (option.name ?? '').split(':', 1)[0]!.toLowerCase()
+  if (label.includes('project'))
     return 'Project'
-  if (name.includes('session'))
+  if (label.includes('session'))
     return 'Session'
   return 'Always'
 }
 
 /**
- * The scope pill group's options, keyed by optionId so a selection maps
- * straight onto the wire reply. Undefined when the scope group cannot be drawn
- * (fewer than one pill, or more than the pill limit) — the caller then leaves
- * the scope to the plain Allow button. Two scopes the keyword read cannot tell
- * apart (both read "Always") show their own names instead, so no two pills of
- * one group share a label the user cannot distinguish.
+ * Use each native optionId as its scope selection key.
+ * Return undefined when the group falls outside the pill count limit.
+ * The caller then uses the ordinary Allow button.
+ * When scope labels collide, use the distinct native option labels so the user can tell the choices apart.
  */
 export function allowScopePillOptions(scope: readonly PermissionOption[]): PillOptions<string> | undefined {
   const labels = disambiguateLabels(scope, allowScopeLabel, permissionOptionLabel)

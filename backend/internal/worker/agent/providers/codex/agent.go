@@ -99,6 +99,9 @@ type Agent struct {
 	// codexSpawnPrompts holds Multi-Agent V2 spawn arguments until the matching
 	// subAgentActivity supplies the child thread ID.
 	codexSpawnPrompts map[string]string
+	// Raw exec identity survives duplicate notifications until its turn ends.
+	rawExecutionCalls map[codexRawExecutionKey]*codexRawExecutionCall
+	rawExecutionOrder uint64
 	// interruptCalls coalesces concurrent interrupts for one Codex turn. A
 	// successful call stays cached until the turn ends, so a late retry cannot
 	// send another request for an already interrupted turn. Guarded by Mu.
@@ -493,6 +496,8 @@ func (a *Agent) ClearContext() (string, error) {
 	clear(a.collabChildren)
 	clear(a.collabChildItems)
 	clear(a.codexSpawnPrompts)
+	clear(a.rawExecutionCalls)
+	a.rawExecutionOrder = 0
 	clear(a.incompleteTools)
 	a.incompleteToolOrder = 0
 	a.Mu.Unlock()
@@ -745,9 +750,9 @@ func (a *Agent) sendTurnStart(
 	if cm := codexCollaborationModeObject(s.collaborationMode, s.model, s.effort); cm != nil {
 		params["collaborationMode"] = cm
 	}
-	if st := codexServiceTierValue(s.serviceTier); st != nil {
-		params["serviceTier"] = *st
-	}
+	// Codex keeps the thread's previous tier when the override is absent.
+	// An explicit null clears Fast when the user selects Default.
+	params["serviceTier"] = codexServiceTierValue(s.serviceTier)
 	paramsJSON, err := json.Marshal(params)
 	if err != nil {
 		return fmt.Errorf("marshal turn/start params: %w", err)
@@ -905,9 +910,10 @@ func codexEffortValue(effort string) (string, bool) {
 // sets threadId: startOrResumeThread adds that for the resume case.
 func codexThreadParams(model, cwd, approvalPolicy, sandboxPolicy, serviceTier string) map[string]interface{} {
 	params := map[string]interface{}{
-		"cwd":            cwd,
-		"approvalPolicy": approvalPolicy,
-		"sandbox":        sandboxPolicy,
+		"cwd":                   cwd,
+		"approvalPolicy":        approvalPolicy,
+		"sandbox":               sandboxPolicy,
+		"experimentalRawEvents": true,
 		// Request detailed summaries so app-server emits reasoning summary items.
 		"config": map[string]interface{}{
 			"model_reasoning_summary": "detailed",
@@ -922,11 +928,11 @@ func codexThreadParams(model, cwd, approvalPolicy, sandboxPolicy, serviceTier st
 	return params
 }
 
-// codexServiceTierValue converts a stored service tier to the turn/thread
-// wire value. A nil return omits the field and keeps Codex's normal tier.
+// codexServiceTierValue converts a stored service tier to a native override.
+// A nil result uses the normal tier. The caller controls omission or explicit null.
 func codexServiceTierValue(tier string) *string {
-	// Only the explicit "fast" tier is sent on the wire; "", the default tier, and any unknown
-	// value all omit the field (nil) and keep Codex's normal tier.
+	// Fast supplies a tier override. Every other value uses the normal tier.
+	// A new thread omits nil; a later turn sends nil as an explicit null.
 	if tier == ServiceTierFast {
 		return &tier
 	}

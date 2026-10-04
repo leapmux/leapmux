@@ -1,5 +1,6 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TranscriptFrame } from '~/test-support/messageFactory'
+import { fireEvent, waitFor, within } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { renderKeyForEntry } from '~/components/chat/chatEntryCache'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -15,7 +16,7 @@ import { createTranscriptScenario } from '~/test-support/transcriptScenario'
 const SESSION = 'session-a'
 const CALL = 'call-1'
 
-function zcodeRequest(id: string, input: Record<string, unknown> | undefined, toolName = 'Bash'): TranscriptFrame {
+function zcodeRequest(id: string, input: Record<string, unknown> | undefined, toolName = 'Bash'): Extract<TranscriptFrame, { content: unknown }> {
   return {
     id,
     provider: AgentProvider.ZCODE,
@@ -26,7 +27,7 @@ function zcodeRequest(id: string, input: Record<string, unknown> | undefined, to
   }
 }
 
-function zcodeResult(id: string, content: string, toolName = 'Bash'): TranscriptFrame {
+function zcodeResult(id: string, content: string, toolName = 'Bash'): Extract<TranscriptFrame, { content: unknown }> {
   return {
     id,
     provider: AgentProvider.ZCODE,
@@ -42,6 +43,32 @@ function message(frame: TranscriptFrame, seq: bigint): AgentChatMessage {
 }
 
 describe('the transcript scenario harness', () => {
+  it('changes expanded output through the real bubble actions and isolates message state', async () => {
+    const firstOutput = 'first line\nsecond line\nthird line\nFIRST_EXPANDED_TAIL'
+    const secondOutput = 'first line\nsecond line\nthird line\nSECOND_EXPANDED_TAIL'
+    const secondCall = 'call-2'
+    const scenario = createTranscriptScenario({ archive: [
+      message(zcodeRequest('first-request', { command: 'printf first' }), 1n),
+      message(zcodeResult('first-result', firstOutput), 2n),
+      message({ ...zcodeRequest('second-request', { command: 'printf second' }), spanId: secondCall, content: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: secondCall, toolName: 'Bash', input: { command: 'printf second' } } } }, 3n),
+      message({ ...zcodeResult('second-result', secondOutput), spanId: secondCall, content: { type: 'tool.updated', payload: { kind: 'result', toolCallId: secondCall, result: { success: true, content: secondOutput } } } }, 4n),
+    ] })
+    const first = scenario.renderBubble('first-result')
+    const second = scenario.renderBubble('second-result')
+    expect(first.container.textContent).not.toContain('FIRST_EXPANDED_TAIL')
+    expect(second.container.textContent).not.toContain('SECOND_EXPANDED_TAIL')
+    fireEvent.click(within(first.container).getByRole('button', { name: /^Expand$/ }))
+    await waitFor(() => expect(first.container.textContent).toContain('FIRST_EXPANDED_TAIL'))
+    expect(within(first.container).getByRole('button', { name: /^Collapse$/ })).toBeInTheDocument()
+    expect(second.container.textContent).not.toContain('SECOND_EXPANDED_TAIL')
+    within(second.container).getByRole('button', { name: /^Expand$/ })
+    const remounted = scenario.renderBubble('first-result')
+    expect(remounted.container.textContent).toContain('FIRST_EXPANDED_TAIL')
+    fireEvent.click(within(first.container).getByRole('button', { name: /^Collapse$/ }))
+    await waitFor(() => expect(first.container.textContent).not.toContain('FIRST_EXPANDED_TAIL'))
+    expect(remounted.container.textContent).not.toContain('FIRST_EXPANDED_TAIL')
+  })
+
   it('resolves both sides of a request and result pair', () => {
     const scenario = createTranscriptScenario({
       archive: [

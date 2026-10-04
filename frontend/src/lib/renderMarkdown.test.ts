@@ -91,7 +91,7 @@ describe('renderMarkdown shared token-style classes', () => {
     expect(injectedRules()).toContain('--shiki-dark')
   })
 
-  it('serves a persisted {html, styles} artifact and injects its rules without dispatching the worker', async () => {
+  it('serves a persisted {html, styles} render artifact and injects its rules without dispatching the worker', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory())
     installCapturingWorker()
     const text = 'persisted warm start body'
@@ -112,7 +112,7 @@ describe('renderMarkdown shared token-style classes', () => {
     expect(dispatchesFor(text)).toHaveLength(0)
   })
 
-  it('rejects a legacy plain-string artifact and falls through to the worker', async () => {
+  it('rejects a legacy plain-string render artifact and falls through to the worker', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory())
     installCapturingWorker()
     const text = 'legacy artifact body'
@@ -136,7 +136,7 @@ describe('renderMarkdown shared token-style classes', () => {
     })
   })
 
-  it('rejects an oversized persisted html artifact and falls through to the worker', async () => {
+  it('rejects an oversized persisted html render artifact and falls through to the worker', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory())
     installCapturingWorker()
     const text = 'oversized artifact body'

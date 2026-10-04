@@ -124,6 +124,21 @@ export interface CopilotToolRow {
   raw: Record<string, unknown> | null
 }
 
+export interface CopilotToolRowContext {
+  spanType?: string | undefined
+  request?: ParsedMessageContent | undefined
+  completion?: MessageCompletion | undefined
+}
+
+/** Preserve the native freeform patch while keeping other tool arguments structured. */
+function copilotToolArguments(toolName: string, rawArguments: unknown): Record<string, unknown> {
+  if (isObject(rawArguments))
+    return rawArguments
+  if (toolName === COPILOT_TOOL.ApplyPatch && typeof rawArguments === 'string')
+    return { input: rawArguments }
+  return {}
+}
+
 /**
  * The FILE one grep match line identifies, for counting how many files matched.
  *
@@ -184,10 +199,9 @@ function copilotMcpIdentity(started: Record<string, unknown> | null | undefined)
  */
 export function copilotToolRow(
   parsed: unknown,
-  spanType?: string,
-  request?: ParsedMessageContent,
-  completion?: MessageCompletion,
+  context: CopilotToolRowContext = {},
 ): CopilotToolRow | null {
+  const { spanType, request, completion } = context
   const started = copilotEventData(parsed, COPILOT_EVENT.ToolStarted)
   const pairedStart = copilotEventData(request?.parentObject, COPILOT_EVENT.ToolStarted)
   if (started) {
@@ -208,7 +222,7 @@ export function copilotToolRow(
       toolName,
       kind: copilotToolKind(toolName),
       ...(identity ? { mcp: identity } : {}),
-      input: pickObject(started, 'arguments') ?? {},
+      input: copilotToolArguments(toolName, started.arguments),
       finished: outcome !== null,
       // A retained start frame lands NO result: the turn ending says nothing about
       // a call whose completion event the runtime never sent.
@@ -232,7 +246,7 @@ export function copilotToolRow(
     toolName,
     kind: copilotToolKind(toolName),
     ...(identity ? { mcp: identity } : {}),
-    input: pickObject(paired, 'arguments') ?? {},
+    input: copilotToolArguments(toolName, paired?.arguments),
     finished: true,
     lifecycle,
     // A FAILURE states its reason in `error`. Reading `result` first there would show
@@ -1037,8 +1051,8 @@ function copilotCommandParts(facts: CopilotToolFacts): {
   const reportedExit = pickNumber(exitBlock, 'exitCode', undefined)
   const knownExit = reportedExit !== undefined && Number.isSafeInteger(reportedExit) ? reportedExit : undefined
   const trailer = facts.output.match(SHELL_COMPLETION)
-  // The TRAILER states the code in decimal text of unbounded length, so it takes the
-  // same safe-integer gate as the structured block two lines above. Without it a
+  // The TRAILER states the code in decimal text of unlimited length, so it takes the
+  // same safe-integer check as the structured block two lines above. Without it a
   // trailer reading `exit code 99999999999999999999` headed the row
   // `Error (exit 100000000000000000000)`, a number no platform can report.
   const trailerExit = trailer ? Number(trailer[1]) : undefined
@@ -1058,7 +1072,7 @@ function copilotCommandParts(facts: CopilotToolFacts): {
   const extra = contents.filter(item => item !== exitBlock
     && (!isObject(item) || !(item.type === 'text' && shown.has(pickString(item, 'text')))))
   // Each entry is one LABEL/KEY pair, so the tuple states the shape the destructure reads.
-  const metadata = ([['Shell ID', 'shellId'], ['Directory', 'cwd'], ['Output file', 'outputFilePath']] as const)
+  const metadata = ([['Shell ID', 'shellId'], ['Directory', 'cwd']] as const)
     .flatMap(([label, key]) => {
       const value = pickString(exitBlock, key)
       return value ? [{ label, value }] : []

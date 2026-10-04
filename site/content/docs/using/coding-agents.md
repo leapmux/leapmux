@@ -5,48 +5,21 @@ type: docs
 weight: 3
 ---
 
-Coding agents are the core feature of LeapMux. Each agent is a real coding-assistant CLI (Claude Code, Codex, and others) running on a Worker, wrapped in a chat tab so you can talk to it, watch its tool calls, and approve its actions. This chapter covers which agents are supported and how to open, chat with, and configure one.
+Coding agents are the core feature of LeapMux. Each agent runs a native coding-assistant command-line interface (CLI) on a Worker. Claude Code and Codex are examples. Use its chat tab to send messages and read tool calls. Answer approval requests there also. This chapter covers supported agents and their controls.
 
-For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/tabs-and-layout/). For the git side of opening an agent in a branch or worktree, see [Worktrees & Branches](/docs/using/worktrees-and-branches/). To drive agents from a script instead of the browser, see [Control CLI](/docs/using/control-cli/).
+See these chapters for related controls:
 
-## Supported agents
+- [Tabs & Layout](/docs/using/tabs-and-layout/) explains the workspace layout.
+- [Worktrees & Branches](/docs/using/worktrees-and-branches/) explains agent branches and worktrees.
+- [Control CLI](/docs/using/control-cli/) explains how to control agents from a script.
 
-LeapMux integrates ten coding-agent providers:
+## Choosing a provider
 
-| Provider | CLI binary detected on the Worker |
-| --- | --- |
-| Claude Code | `claude` |
-| Codex | `codex` (or `codex-x86_64-pc-windows-msvc`) |
-| Cursor | `cursor-agent` |
-| GitHub Copilot | `copilot` |
-| Kilo | `kilo` |
-| OpenCode | `opencode` |
-| Goose | `goose` |
-| Pi | `pi` |
-| Reasonix | `reasonix` |
-| ZCode | `zcode`, or the desktop application (see [below](#zcode-is-found-through-its-desktop-application)) |
+LeapMux integrates {{< agent-provider-count >}} coding-agent providers. It detects the installed coding agents on the Worker and lists them in the New agent dialog.
 
-All ten are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. The Goals & To-dos sidebar appears for an agent that has a to-do list, and for an agent whose CLI has a session goal. The available models, settings, and prompt styles vary from provider to provider (each CLI exposes its own); the rest of this chapter covers those per-provider details.
+{{< agent-logos >}}
 
-### Which agents you can actually open
-
-A provider only appears in the picker if its CLI is installed on the selected Worker. When you choose a Worker, LeapMux probes its shell for each provider's binary (`command -v <binary>`) and shows only the providers it finds. ZCode is the exception: it ships no command, so LeapMux looks for its desktop installation instead (see [ZCode is found through its desktop application](#zcode-is-found-through-its-desktop-application)).
-
-While that probe is still loading, LeapMux shows a default list of all ten providers, sorted alphabetically by label; once the probe completes, the list narrows to the providers actually installed on the Worker.
-
-If no provider is detected, the picker shows a disabled **No agents available** button. Install the relevant CLI on the Worker and use the **Refresh available providers** button to re-probe.
-
-#### ZCode is found through its desktop application
-
-ZCode ships no command of its own, so LeapMux looks for it in three steps and takes the first that answers:
-
-1. The `LEAPMUX_ZCODE_SCRIPT` environment variable, which points straight at a `zcode.cjs`. Pair it with `LEAPMUX_ZCODE_NODE` to name the interpreter as well.
-2. A `zcode` command on the Worker's `PATH`. Your own wrapper script wins over the installed application.
-3. The `zcode.cjs` inside the ZCode desktop installation — under `ZCode.app` on macOS, `Programs\ZCode` or `Program Files\ZCode` on Windows, and `~/.local/share/ZCode`, `/opt/ZCode`, `/usr/share/zcode` or `/usr/lib/zcode` on Linux. LeapMux runs it with an interpreter that provides `node:sqlite`: a `node` on `PATH`, or the installation's own bundled runtime.
-
-The `node:sqlite` requirement is not cosmetic — ZCode keeps its session store in it. An interpreter without that module is rejected during the probe rather than failing on the first message.
-
-ZCode also reads its credentials and its model list from the desktop application's own configuration at `~/.zcode/v2/config.json`. Sign in to ZCode once and LeapMux picks the same providers and models up; LeapMux only reads that file and never writes it. Without it, the provider reports that ZCode is not configured instead of starting an agent that fails on every turn.
+All {{< agent-provider-count >}} providers support chat and streamed tool calls. The [feature matrix](#feature-matrix) shows approval requests and native model context on resume. The Goals & To-dos sidebar appears when an agent has a to-do list or a session goal. Each provider offers its own models and settings. Prompt style varies also.
 
 ## Opening a new agent
 
@@ -64,18 +37,42 @@ Open the **New agent** dialog from the workspace, then fill in the fields below 
 | **Git options** | Appears once a Worker is selected. Lets you start the agent on the current branch, switch branches, create a branch, or create/use a worktree. See [Worktrees & Branches](/docs/using/worktrees-and-branches/). |
 
 {{< callout type="info" >}}
-The dialog has **no model, effort, or permission-mode fields**. A new session uses the provider defaults and LeapMux's safe permission default. Claude Code requests Auto Mode and falls back to Default when Auto Mode is unavailable. Goose requests Smart Approve. GitHub Copilot requests Assisted Approval and disables Allow All. A resumed session keeps its stored settings. Change settings from the composer after the session starts (see [Changing settings mid-session](#changing-settings-mid-session)).
+The dialog has **no model, effort, or permission-mode fields**. A new session takes the models and effort that your provider configuration states, and starts with a permission mode that asks before risky actions.
+
+A resumed session keeps its stored settings. Change settings from the composer after the session starts (see [Changing settings mid-session](#changing-settings-mid-session)).
 {{< /callout >}}
 
-LeapMux remembers your most recently used provider and pre-selects it (when it is available on the chosen Worker), so you usually only have to pick a directory and click **Create**.
+LeapMux remembers your most recently used provider. It pre-selects that provider when the chosen Worker offers it. Then you can pick a directory and click **Create**.
 
 ### Quick-open (no dialog)
 
-If you trigger "new agent" from a tab that already has a Worker and working directory, LeapMux skips the dialog and opens an agent directly, reusing the active tab's provider (or your most-recent provider). It only falls back to the full dialog when the Worker, directory, or provider can't be inferred.
+If the active tab has a Worker and working directory, **New agent** opens an agent without a dialog. It uses that tab's provider or your most recent provider. LeapMux opens the full dialog when it cannot determine the Worker, directory, or provider.
 
 ### Where the new agent lands
 
 The Worker assigns a friendly title from a shared name pool (you'll see titles like "Agent <Name>"); you can rename the tab later. For how tabs are placed, split, and tiled, see [Tabs & Layout](/docs/using/tabs-and-layout/).
+
+### Resuming an existing session
+
+To reopen a native session, pick it from the **Resume an existing session** field in the New agent dialog. The field lists recent sessions for the selected provider. It filters by directory when the native store records one. Each entry shows a title and age. A filter box narrows the list, and the refresh button asks the Worker again.
+
+The list combines LeapMux's agent records with each CLI's session history on that machine. A session you started in a terminal can appear here too. Where both stores know a session, LeapMux's record wins.
+
+The list excludes a session that an open Worker tab owns. A second process can corrupt that native session, so close its tab first. A provider that records each session's directory also excludes sessions from another directory. Some native stores record no directory and cannot apply that filter. Changing the directory or provider clears a session you picked.
+
+Leave the field on **Start a new session** to begin fresh. It is a real entry in the menu, so it is also how you take back a session you picked.
+
+The last entry, **Enter a session ID…**, swaps the menu for a text box. Use it for a session from another machine or one older than the newest fifty. Manual entry also rejects a session that an open Worker tab owns.
+
+The field shows the box when the Worker finds no sessions. A directory with no history leaves the list empty. An absent native store or a failed Worker request can do the same. The box checks the ID and reports one it cannot use.
+
+The Worker asks the provider to reopen the native session after you submit. The new tab shows chat rows that an earlier LeapMux tab saved on this Worker. An external native session can resume without earlier Worker chat rows. Its provider can replay native history. The [matrix](#feature-matrix) states whether the provider restores prior model context.
+
+If native resume fails, the tab reports the cause and the agent does not start. Send `/clear` to start a fresh session.
+
+### Automatic resume
+
+Most session resumption occurs automatically. A Hub restart keeps the existing tab and Worker transcript. A Worker restart or client reconnect keeps them also. When LeapMux restarts an agent process, it asks the provider to reopen the native session. The matrix states whether that provider restores prior model context also. If native resume fails, LeapMux reports the failure and keeps the transcript.
 
 ## Chatting with an agent
 
@@ -85,11 +82,20 @@ The chat tab has the conversation transcript above and a Markdown editor at the 
 
 The editor is a full Markdown editor in a single input box. Type your message and send it with the **Send** button (the paper-plane icon) or with the keyboard. While the message is in flight, a spinner replaces the Send icon.
 
-The box starts one line tall, with the **[+]** menu at the left end and the send controls at the right. It expands into a taller layout, with those controls on their own row beneath the text, as soon as the message needs more than one line.
+The box starts one line tall, with the **[+]** menu on the left and send controls on the right. For longer messages, it grows and puts the controls below the text.
 
 Send is disabled when the editor is empty and there are no attachments.
 
-Markdown shortcuts apply as you type: `**bold**`, `` `code` ``, `# heading`, `- list`, ` ``` ` for a code block, and `[text](url)` for a link. Click a link to open a small editor for its URL, with **Save** and a remove button. Use it whenever a URL is wrong — editing the link's visible text does not change where it points.
+Use Markdown shortcuts as you type:
+
+- `**bold**` for bold text.
+- `` `code` `` for inline code.
+- `# heading` for a heading.
+- `- list` for a list.
+- ` ``` ` for a code block.
+- `[text](url)` for a link.
+
+Click a link to edit its URL. The editor supplies **Save** and a remove button. Changing the link's visible text does not change its URL.
 
 #### Enter-key send mode
 
@@ -100,41 +106,37 @@ An item in the composer's **[+]** menu controls what the **Enter** key does. The
 | **Enter sends** | Sends the message | (Shift+Enter for a new line) |
 | **Cmd/Ctrl+Enter sends** (default) | Inserts a new line | Cmd+Enter (macOS) / Ctrl+Enter (other platforms) sends |
 
-The default is **Cmd/Ctrl+Enter sends**, so plain Enter adds a newline. Open the **[+]** menu and click **Send with Cmd/Ctrl+Enter** to switch; the choice is saved as a [preference](/docs/using/settings/) and persists across sessions.
+The default is **Cmd/Ctrl+Enter sends**, so plain Enter adds a newline. Open **[+]** and choose **Send with Cmd/Ctrl+Enter** to switch. LeapMux saves the choice as a [preference](/docs/using/settings/) across sessions.
 
 ### Attachments
 
-You can attach files with **[+] > Attach file...**, or by pasting or dropping them into the editor. Pending attachments appear in a strip above the editor. What you can attach depends on the provider:
+You can attach files with **[+] > Attach file...**, or by pasting or dropping them into the editor. Pending attachments appear in a strip above the editor. What you can attach depends on the provider. See the [feature matrix](#feature-matrix).
 
-| Provider | Text | Image | PDF | Other binary |
-| --- | --- | --- | --- | --- |
-| Claude Code | yes | yes | yes | no |
-| Codex | yes | yes | no | no |
-| Pi | yes | yes | no | no |
-| ZCode | yes | model-dependent | no | no |
-| Reasonix | yes | no | no | no |
-| Cursor, GitHub Copilot, Goose, OpenCode, Kilo | yes | yes | yes | yes |
-
-ZCode accepts an image only on a model that declares image input — of the models Z.ai ships today that is GLM-5.3-Flash. Attaching one to a text-only model is refused with a message naming the model, because ZCode would otherwise accept the image and never show it to the model.
+ZCode accepts an image only when the selected model declares image input. LeapMux refuses an image on a text-only model and identifies that model. Without this check, ZCode accepts the image but does not send it to the model.
 
 ### Message persistence and offline behavior
 
-Your messages appear immediately (optimistically) and are reconciled when the server echoes them back. If you send while the agent subprocess is still starting, the message is queued and delivered once the agent is ready. Optimistic messages survive a page refresh; if delivery fails, you can retry or delete the message. Everything you send passes through [the input queue](#the-input-queue), which is what makes that durable.
+LeapMux shows your message immediately and confirms it when the server returns it. If the agent process is not ready, LeapMux queues the message until startup completes. These pending messages survive a page refresh. Retry or delete a message if delivery fails. [The input queue](#the-input-queue) keeps every submitted item until delivery.
 
 ### Interrupting a turn
 
-While the agent is actively working — and there is no pending permission prompt — an **Interrupt** button (a square icon) appears. Click it to stop the current turn. LeapMux asks the agent to stop via its native interrupt mechanism rather than killing the process.
+The **Interrupt** button appears while the agent works and no permission prompt waits for an answer. Click the square icon to stop the current turn. LeapMux uses the agent's native interrupt mechanism.
 
 {{< callout type="info" >}}
-The **Interrupt** button is hidden whenever the agent is waiting on you with a permission or question prompt — answer the prompt instead (see [Permission and approval prompts](#permission-and-approval-prompts)).
+The **Interrupt** button is hidden while the agent waits for your permission or answer. Answer that prompt instead (see [Permission and approval prompts](#permission-and-approval-prompts)).
 {{< /callout >}}
 
 ## The input queue
 
-Everything you send an agent goes into its input queue first: a message, an
-attachment, a `/clear`, a plan execution, an answer to a permission prompt. The
-queue lives on the Worker, so it survives a page refresh, a reconnect, and a
-Worker restart, and every device you are signed in on sees the same one.
+These submitted items enter the agent's input queue first:
+
+- A message.
+- An attachment.
+- A `/clear` command.
+- A plan execution.
+- An answer to a permission prompt.
+
+The Worker stores the queue. It survives a page refresh or reconnect. It survives a Worker restart also. Every device that uses your account sees the same queue.
 
 An item leaves the queue when the agent takes it. While the agent works,
 anything you send waits its turn, and the queue appears above the composer with
@@ -156,10 +158,13 @@ An item already on its way to the agent cannot be moved, reordered around, or de
 
 ### Pausing
 
-The queue pauses itself when something goes wrong — a delivery fails, delivery
-is uncertain, or the agent stopped — and a banner above the composer says which.
-Pause it yourself with **Pause Queue** to stack up several messages before
-letting the agent have them. **Resume** starts delivery again.
+The queue pauses after any of these conditions:
+
+- Delivery fails.
+- Delivery becomes uncertain.
+- The agent stops.
+
+A banner above the composer states the cause. Use **Pause Queue** to collect several messages before delivery. Use **Resume** to start delivery again.
 
 ### Steering
 
@@ -182,9 +187,11 @@ whatever the composer holds. Text, an attachment, or a permission prompt waiting
 for approval all count as something to send, so in each of those cases the chord
 sends as usual.
 
-## How tool calls and results render
+## The chat view
 
-As an agent works, the transcript shows its assistant text, its thinking (where the provider exposes it), and a row for every tool call it makes, followed by that tool's result. The exact set of tools depends on the provider, but you will commonly see:
+### Tool calls and results
+
+As an agent works, the transcript shows its text and any thinking the provider exposes. Visible tool calls and their results appear in rows. The available tools depend on the provider. Common tool rows include:
 
 - **File reads** — the file the agent opened.
 - **Edits and writes** — rendered with a diff. The result toolbar offers a **split / unified** diff toggle.
@@ -194,7 +201,13 @@ As an agent works, the transcript shows its assistant text, its thinking (where 
 - **Todo / plan updates** — feed a persistent todo sidebar (see below).
 - **MCP tool calls** — calls into Model Context Protocol servers the agent has access to, rendered like any other tool call.
 
-Long tool results are collapsible (an **Expand** button), and most rows have a **Copy** button. Where it makes sense, a row's header also offers a **Quote** button (tooltip "Quote", pulls the row's text into the editor as a quoted reply), a **Copy Markdown** button (tooltip "Copy Markdown"), and a **Copy Raw JSON** button for debugging. The permission-prompt banner (see [Permission and approval prompts](#permission-and-approval-prompts)) carries its own **Copy Raw JSON** action too.
+Use **Expand** to open a long tool result. Most rows have a **Copy** button. Some row headers also offer these controls:
+
+- **Quote** copies the row's text into the editor as a quoted reply.
+- **Copy Markdown** copies the row as Markdown.
+- **Copy Raw JSON** copies the native data for debugging.
+
+The permission banner also offers **Copy Raw JSON** (see [Permission and approval prompts](#permission-and-approval-prompts)).
 
 {{< callout >}}
 Some rows are intentionally hidden to keep the transcript readable — for example, Claude Code suppresses its internal todo-list and tool-search bookkeeping rows. The information still drives the UI (the todo sidebar), it just isn't repeated inline.
@@ -202,199 +215,159 @@ Some rows are intentionally hidden to keep the transcript readable — for examp
 
 ### Images in tool results
 
-When a tool returns an image — a screenshot from an MCP browser tool, a `Read` on a PNG, a generated picture — the row shows the picture itself, scaled to fit the transcript.
+When a tool returns an image, its row shows the picture scaled to fit the transcript.
 
-Click one to open it in its own tab, where you can zoom it (fit, 100%, or any step in between) and pan. When the agent said which file the image came from, LeapMux opens that file instead, so you see it at full resolution straight from the Worker.
+Click the picture to open it in its own tab. There you can zoom and pan. When the agent identifies its source file, LeapMux opens that file at full resolution from the Worker.
 
 Not every image renders inline:
 
 - **Images above about 5 MB** show a placeholder instead of the picture.
 - **An image the agent gives by URL** shows an **open ↗** link instead of the picture. Rendering it would fetch from that host, which the transcript never does on its own.
 
-Every provider except ZCode can return an image: Claude Code, Codex, Pi, and each Agent Client Protocol (ACP) provider (OpenCode, Cursor, GitHub Copilot, Kilo, Goose, Reasonix). ZCode's app server turns an image part into a placeholder string before it reaches LeapMux, so there is no picture left to draw.
+Tool-result content depends on the provider. See the [feature matrix](#feature-matrix).
+
+- ZCode sends a text result. LeapMux recovers images from ZCode's stored attachment records.
+- Codewhale publishes immutable native image records. LeapMux stores verified image bytes beside the native tool event.
+- Cline supplies text-only tool results.
+- Amp can display an image from a file that `Read` opens. Its MCP results supply text only.
+
+### Turn boundaries and notifications
+
+A divider marks the end of each turn. It can show a duration or an error. LeapMux also shows provider notifications. It combines repeated or empty notices so they do not fill the transcript.
 
 ### The Goals & To-dos sidebar
 
 This section holds two things an agent works toward: its session goal, and its to-do list.
 
-The **session goal** is a standing objective. The agent re-tests it at the end of every turn and keeps working while the condition does not hold. Claude Code, Codex, ZCode, GitHub Copilot, Goose, and Reasonix each have one, and the card shows the objective, its status, and the counters the CLI reports. Set a goal from the card, and change or clear it from the card's menu. Reasonix reports its goal and accepts no change, so its card is read-only. Codex and ZCode take the change through a side-band command; Claude Code, Goose, and GitHub Copilot take it as a message, which enters the agent's input queue and costs a turn.
+The **session goal** is a standing objective. The agent checks it at the end of every turn and continues while the condition does not hold. The card shows the objective and status. It shows the counters that the agent reports also.
 
-The **to-do list** shows each item's status (pending, in progress, completed). Codex turn plans, Claude Code's and ZCode's todo tracking, Claude Code's task tools, and other providers' plan updates all feed it. The list is server-authoritative, so it stays correct across reconnects.
+Set a goal from the card. Its menu supplies these controls where the provider supports them:
+
+- Change the goal.
+- Pause the goal.
+- Resume the goal.
+- Clear the goal.
+
+See the [feature matrix](#feature-matrix) for each provider's controls.
+
+Oh My Pi shows its goal. Start or change that goal from Oh My Pi itself. These providers receive goal changes as messages:
+
+- Claude Code.
+- Goose.
+- Kilo.
+- Qwen Code.
+- Grok Build.
+
+Kiro receives a new goal as a message. Each such message enters the agent's input queue and uses a turn.
+
+The **to-do list** shows each item's status (pending, in progress, completed). The agent's own to-do or plan tool feeds it. The list comes from the Worker, so it stays correct across reconnects.
 
 A chip on the thinking indicator shows the to-do count and opens the same section as a popover.
 
 ### Subagents and the Background tasks sidebar
 
-When an agent spawns a subagent (Claude Code's Task tool, ZCode's Agent tool) or runs a background shell, LeapMux tracks it in a **Background tasks** sidebar section. Each row shows the task's live status and, for subagents that own a transcript, is clickable to open the subagent in its own tab alongside its parent. A small chip on the thinking indicator shows the active count and opens the same list as a popover.
+LeapMux lists a subagent when its CLI reports the child. It lists a background shell when the CLI reports a stable process identity and status. Each row in the **Background tasks** sidebar shows the task's live status. A subagent row opens its transcript in a tab beside its parent. A chip on the thinking indicator shows the active count and opens the same list as a popover.
 
-Closing a subagent tab closes only the tab. The transcript and registry survive, and you can reopen the tab from the section later. Only providers whose CLIs expose subagent activity appear here; the registry lives in the worker's local database and never reaches the hub.
+A dynamic workflow runs many subagents for one job. LeapMux groups those subagents under the workflow row.
 
+Closing a subagent tab closes only the tab. LeapMux keeps its transcript and registry record. Reopen the tab from the sidebar. This section includes only providers whose CLIs report subagent activity. The Worker stores the registry in its local database. The Hub never receives it.
 
-### Turn boundaries and notifications
-
-The end of each turn is marked by a divider that may carry a label such as a duration ("Took 2.1s") or an error ("API Error: 529 …"). LeapMux also surfaces notifications for events like rate limits, context compaction, retries, and settings changes, collapsing repeated or no-op notifications so they don't flood the transcript.
 
 ## Permission and approval prompts
 
-When an agent needs your approval — to run a command, edit a file, or proceed with a plan — or wants to ask you a question, LeapMux shows a **control request** banner directly above the editor. The banner has its own action buttons, and the editor placeholder changes to hint at what to type:
+LeapMux shows a **control request** banner above the editor when the agent asks for approval or an answer. The agent waits until you answer it.
 
-- For a question: **"Type a custom answer..."**
-- For any other request: **"Type a rejection reason..."**
+### The banner
 
-If several prompts queue up, you answer them one at a time. LeapMux de-duplicates requests and remembers answered ones, so a reconnect never re-asks something you already handled.
+Every banner has the same shape:
 
-The exact buttons depend on the provider.
+- A title that states the request.
+- A request body that explains the action, often as collapsible JSON.
+- One button for each answer that the provider offers.
+- An editor for a custom answer or rejection reason.
+  Its placeholder reads **"Type a custom answer..."** for a question.
+  It reads **"Type a rejection reason..."** for other requests.
 
-### Claude Code
+The provider's protocol supplies the buttons and labels. Most providers ask about one call at a time. Some offer approval for the rest of the session. Others offer a rule that the CLI remembers. Check each button's scope before you allow a call. Text that you submit with a denial reaches the agent as its rejection reason.
 
-**Tool permission** — title **Permission Required: \<toolName\>**, with the tool input shown as collapsible JSON. Buttons:
+The banner shows a **Permissions** choice when the provider supplies permission shortcuts. See [Changing settings mid-session](#changing-settings-mid-session). It can offer these choices:
 
-- **Reject** — becomes **Send Feedback** if you've typed a reason.
-- **Allow** — approve this one request.
-- **& Bypass Permissions** — allow this request *and* switch the agent into its bypass mode (tooltip: "Allow this request and stop asking for permissions").
+- **Unchanged**.
+- **Smart**.
+- **Bypass**.
 
-**Plan review** — when Claude Code finishes planning, the banner is titled **Plan Ready for Review** and lists requested permissions grouped by tool. Buttons are **Reject** / **Send Feedback** and **Approve**. The Approve action includes checkboxes to clear context or switch the agent into its bypass mode.
+Only supported shortcuts appear. An approval applies the selected shortcut to the session also. The initial choice matches the session's current shortcut. A plan-approval banner starts with **Smart** when the provider offers it.
 
-**Questions** — when the agent asks you something, the banner is titled **Agent Question**. Single questions show options as radio buttons (single-select, auto-advancing) or checkboxes (multi-select); multi-question prompts show **Question N of M** with pagination dots. You can also type a custom answer. Footer buttons:
+### Questions
 
-- **Stop** — abandon the question (sends a "User stopped" denial).
-- **YOLO** — auto-fill every unanswered question with "Go with the recommended option." and submit (tooltip: "Auto-fill unanswered questions and submit").
-- **Submit** — disabled until every question is answered.
+A question uses radio buttons for one answer or checkboxes for several answers. You can type a custom answer also. A prompt with several questions shows **Question N of M**. One submission answers all its questions. LeapMux collects requested MCP input through a form or the provider's native questions. See the [feature matrix](#feature-matrix).
 
-### Codex
+### Plan approvals
 
-Codex approval banners are titled by the kind of request: **Command Execution**, **File Change**, **Permission Request**, or **Approval Required**, and show the reason, command (collapsible), and working directory. The decisions come from the request itself, so which ones you see depends on it.
+When an agent finishes planning, the banner shows the plan. **Approve** starts the work. **Reject** keeps plan mode and sends your feedback. **Clear Context** starts the work in a fresh session when the provider offers that choice. Some providers end plan mode without asking (see the [feature matrix](#feature-matrix)).
 
-One **Allow** button approves the request, and an **Allow as** control beside it chooses how long the approval lasts:
+### Several prompts at once
 
-- **Once** — this one request only.
-- **Session** — the same kind of request for the rest of the session.
-- **Command rule** — remember the amended execution policy for similar commands.
-- **Host rule** — apply the proposed network-access amendment.
+Answer queued prompts one at a time. LeapMux removes duplicate requests and remembers answers. A reconnect does not repeat a request that you already answered.
 
-**Once** is always selected first, so a wider grant is one you choose rather than one you inherit. When the request offers two rules of one kind, each option names the command or the host it covers. A request that offers more than four choices keeps the extra ones as their own buttons beside **Allow**.
-
-**Reject** denies the request and **Cancel** dismisses it without approving it. An **& Bypass Permissions** option is also available (it switches Codex to Full Auto). Codex's plan-mode prompt is titled **Implement the proposed plan?** with **Stay in Plan Mode** / **Send Feedback** and **Implement Plan**.
-
-### Pi
-
-Pi shows method-specific dialogs: **confirm** (Deny / Approve), **input** (an inline text field; Cancel / Send), **editor** (an inline textarea; Cancel / Send), and **select** (uses the shared question UI). Some Pi prompts show a timeout hint ("Auto-resolves in Ns if no response.").
-
-### ZCode
-
-ZCode's tool prompts carry the options the app-server offered, typically **Allow once**, **Always allow in this project** and **Deny**, together with the risk level and the reason it asked. Choosing an "always" option sends back ZCode's own permission rule, so the same command stops asking for the rest of the project.
-
-Its plan prompt is titled from the **ExitPlanMode** tool and shows the plan the agent wrote, with the shared plan-approval buttons. Questions use the shared question UI.
-
-### Other providers
-
-Cursor, GitHub Copilot, Goose, OpenCode, Kilo, and Reasonix render a permission banner. Its title comes from the tool call, and its default title is **Permission Request**. The buttons come from the options that the agent offered. Goose and GitHub Copilot also offer **& Bypass Permissions**. That button uses the same Bypass permissions preset as the composer menu. Cursor, OpenCode, Kilo, and Reasonix have no bypass preset. Cursor, OpenCode, and Kilo use their own question controls where available.
+The exact buttons and their names come from the provider's own protocol.
 
 ## Changing settings mid-session
 
-Beneath the editor box is a status bar with one chip per setting axis — the git branch, and the agent's current model, reasoning effort, and mode. Click a chip to change that axis.
+### The status bar and the [+] menu
 
-The **[+]** menu holds every axis, including provider-specific options that have no chip. Each axis has a submenu. The menu also holds **Agent info** for context usage, rate limits, and the session.
+The status bar below the editor shows chips for common settings:
 
-Providers can add two adjacent permission shortcuts. **Smart permissions** selects the provider's safety-assisted mode. **Bypass permissions** disables permission prompts. Smart permissions is always directly above Bypass permissions. A shortcut appears only when the session offers every setting and value that the preset needs.
+- Branch.
+- Model.
+- Reasoning effort.
+- Mode.
 
-Each safety-assisted mode approves the calls it judges safe and asks about the others. Claude Code Auto Mode uses a classifier for that decision. Goose Smart Approve and GitHub Copilot Assisted Approval do the same.
+Click a chip to change its setting.
+
+The **[+]** menu holds every settings axis, including options without a chip. Each axis has a submenu. Open **Agent info** for these details:
+
+- Context usage.
+- Rate limits.
+- Session information.
+
+LeapMux exposes the native settings that its provider adapter supports. These can include:
+
+- Model.
+- Reasoning effort.
+- Mode.
+- Permissions.
+- Other provider-specific settings.
+
+The available values come from the CLI's configuration. Choose a radio option in the interface. For `leapmux control agent set`, `--permission-mode` sets the permission axis. Use `--option` for another axis.
 
 You can hide the status bar with **[+] > Show status bar**. The **[+]** menu still gives access to all status bar settings.
 
 {{< callout type="info" >}}
-Most settings changes apply **live**. LeapMux restarts the provider when a launch flag must change. Examples include Copilot Assisted Approval, effort **Auto**, Claude Code **Default (recommended)**, and a Reasonix model change. The interface applies each change optimistically and restores the prior value after a failure.
+Most settings changes apply **live**. LeapMux restarts the provider when a launch flag must change. Examples include a permission-mode change, effort **Auto**, and a model change. The interface applies each change optimistically and restores the prior value after a failure.
 {{< /callout >}}
 
 A picker shows radio items for up to 7 options and switches to a searchable list above that.
 
+### Permission shortcuts
+
+Providers can add two adjacent permission shortcuts. **Smart permissions** selects the provider's safety-assisted mode. **Bypass permissions** disables permission prompts. Smart permissions is always directly above Bypass permissions. A shortcut appears only when the session offers every setting and value that the preset needs.
+
+Each safety-assisted mode approves the calls it judges safe and asks about the others.
+
+**Bypass** is a deliberate choice that stays set: it stops the agent from asking for approval. Use it only when you trust the working directory and the task.
+
 ### Reasoning effort and the "Auto" default
 
-For the providers whose effort LeapMux manages — Claude Code, Codex, and Pi — effort defaults to **Auto**, meaning "let the CLI pick." When effort is Auto, LeapMux omits the effort flag entirely, so older CLI versions that don't recognize newer effort names still work. You only need to set effort explicitly if you want to force a particular tier.
+**Auto** lets the CLI pick the tier. Set effort explicitly only when you want to force a particular tier.
 
 ### Plan mode shortcut
 
-For providers that support a plan mode, **Shift+Tab** in the editor toggles between plan mode and the previous mode. (Goose has no plan mode.)
-
-### Per-provider settings
-
-**Claude Code** — Extended Thinking, Effort, Model, Fast Mode, Output Style, Permission Mode.
-
-- Default model **Default (recommended)** (the CLI's own pick); also offered: Fable 5, Opus (1M context), Sonnet, Sonnet (1M context), Haiku.
-- Effort tiers depend on the model:
-  - **Fable 5**, **Opus (1M context)**, **Sonnet**, and **Sonnet (1M context)** offer the full set: Auto, Ultracode, Max, Extra High, High, Medium, Low.
-  - **Haiku** has no effort tiers at all — the effort selector is hidden entirely when Haiku is the model, and the Worker never sends an effort flag for Haiku.
-- Permission modes: **Default**, **Plan Mode**, **Accept Edits**, **Bypass Permissions**, **Don't Ask**, **Auto Mode**. A new session uses Auto Mode when the session offers it. Otherwise, it uses Default.
-- Permission shortcuts: Smart permissions selects **Auto Mode**. Bypass permissions selects **Bypass Permissions**.
-
-**Codex** — Fast Mode, Effort, Model, Workflow, Network Access, Sandbox Policy, Approval Policy, plus a **Bypass permissions** shortcut.
-
-- Default model **Default (recommended)** (your Codex account's own pick); also offered: GPT-5.6-Sol, GPT-5.6-Terra, GPT-5.6-Luna, GPT-5.5, GPT-5.4, GPT-5.4-Mini, GPT-5.3-Codex-Spark. A running agent lists whatever models your Codex account offers, so an account-specific model appears here too.
-- Effort tiers depend on the model:
-  - **GPT-5.6-Sol** and **GPT-5.6-Terra** offer the full set: Auto, Ultra, Max, Extra High, High, Medium, Low.
-  - **GPT-5.6-Luna** offers Auto, Max, Extra High, High, Medium, Low.
-  - The other models offer Auto, Extra High, High, Medium, Low.
-- Approval Policy: **Full Auto** (`never`), **Suggest & Approve** (`on-request`, the default), **Auto-edit** (`untrusted`).
-- Sandbox defaults to **Workspace Write** (also Full Access / Read Only); Network defaults to **Restricted** (also Enabled).
-- The **Bypass permissions** shortcut sets network to enabled, sandbox to full access, and approval to Full Auto in one change.
-
-**Pi** — **Thinking Level** (effort) and **Model**. Default model **glm-5.3**. Pi has no permission mode, no plan mode, and no bypass.
-
-**ZCode** — **Thought Level** (effort), **Model**, and **Mode**.
-
-- The models come from your own `~/.zcode/v2/config.json`, so the list is whatever that installation is signed in to. Each entry names its ZCode provider, which is what tells two rows apart when a plan and an API key both reach the same model. LeapMux orders them the way ZCode does and starts on the first — for the Z.ai plans that is **GLM-5.3**.
-- Thought levels are per model and also come from that configuration: **Low / High / Max** on GLM-5.3 and GLM-5.3-Flash, **Enabled / Off** on GLM-5-Turbo. **Auto** means the model's own default rather than no level at all.
-- Modes: **Plan**, **Build** (the default), **Edit**, **Yolo**. Shift+Tab toggles Plan, and Yolo is the bypass mode. ZCode's own `auto` mode is not offered: the shipped build denies every tool call under it.
-- Permission shortcuts: ZCode offers Bypass permissions for **Yolo**. It has no Smart permissions shortcut.
-
-**Other providers** — a single option group plus a model selector. Each axis gets its own chip, and each chip shows the current value.
-
-| Provider | Default model | Default mode | Notes |
-| --- | --- | --- | --- |
-| Cursor | `auto` | `agent` | Has plan mode. |
-| GitHub Copilot | (CLI default) | `agent` | A new session enables Assisted Approval when the installed CLI supports it with ACP. Bypass permissions enables Allow All. Autopilot stays a permission mode, and no shortcut selects it. |
-| Goose | (CLI default) | `smart_approve` | Smart permissions selects Smart Approve. Bypass permissions selects Auto. Goose has no plan mode. |
-| OpenCode | (CLI default) | Primary Agent `build` | Has plan mode. |
-| Kilo | (CLI default) | Primary Agent `code` | Has plan mode. |
-
-In the UI you pick these as named radio options (**Auto**, **Agent**, **Autopilot**, **Build**, **Code**, and so on); the literal mode IDs above are only typed directly when driving an agent with `leapmux control agent set --permission-mode`.
-
-GitHub Copilot also has **Assisted Approval** and **Allow All** option groups. Assisted Approval narrows what runs without a prompt, so turning it on turns Allow All off. The picker states that consequence on the option itself. Allow All is the broader permission and supersedes Assisted Approval, so turning Allow All on leaves Assisted Approval as it is. Assisted Approval launches Copilot with `--experimental` and `--assisted-approval`. Therefore, Assisted Approval also enables all Copilot experimental features, and a change to it restarts the CLI.
-
-Some Copilot CLI versions reject Assisted Approval with ACP mode. LeapMux retries a new session with Assisted Approval off when only the safe default caused this error. LeapMux then locks the option to Off for that session. An explicit Assisted Approval request still reports the error.
-
-**Reasonix** — a **Model** selector only; it has no permission mode, no plan mode, and no bypass. Default model **DeepSeek Flash** (`deepseek-flash`); also offered: DeepSeek Pro, MiMo Pro, MiMo Flash (the MiMo models need `MIMO_API_KEY`). Reasonix fixes its model at launch, so switching the model restarts the agent. It is text-only — image, PDF, and binary attachments aren't supported — and still shows per-request approval banners.
-
-## Resuming an existing session
-
-To continue a previous conversation, pick it from the **Resume an existing session** field in the New agent dialog. The field lists the sessions the Worker finds for the selected directory and provider, newest first, each labelled with its title and how long ago it ran. A filter box narrows the list, and the refresh button beside the label asks the Worker again.
-
-The list comes from two places at once: LeapMux's own record of the agents it ran, and the agent CLI's own session history on that machine. So a session you started by running Claude Code or Codex directly in a terminal appears here too. Where both know a session, LeapMux's record wins.
-
-Two kinds of session are left out. A session already open in a tab isn't offered, because two processes against one session store corrupt it — close the tab first. And a session belonging to another directory isn't offered, because the list follows the **Directory** field: change the directory or the provider and the list changes with it. Changing either also clears a session you had already picked, since a session ID means nothing in another directory.
-
-Leave the field on **Start a new session** to begin fresh. It is a real entry in the menu, so it is also how you take back a session you picked.
-
-The last entry, **Enter a session ID…**, swaps the menu for a text box. Use it for a session the list cannot hold — one from another machine, one a tab still holds open, or one older than the newest fifty. The field also falls back to that box on its own when the Worker finds no sessions at all. Three things cause that: a directory with no history, a provider whose store this machine doesn't have, and a Worker that can't answer. The box checks what you type and reports a session ID it cannot use.
-
-Once you submit, the Worker resumes the prior session using that provider's own resume mechanism, picking up where the earlier conversation left off. If a session can't be resumed, the agent doesn't start and the tab reports why. Send `/clear` in the chat to start a fresh session instead.
-
-### Resume across restarts and reconnects
-
-Picking a session is the manual path; most resumption happens automatically. Agent sessions are durable: they resume across Hub restarts, Worker restarts, and client reconnects without you doing anything. When an agent's process has to be respawned — for example after a Worker restarts or after a model/effort change — LeapMux reconnects it to the prior session using that provider's own resume mechanism, and the transcript continues where it left off. As with manual resume, an agent whose resume fails doesn't start, so an empty session never replaces the conversation.
-
-## Per-provider differences worth knowing
-
-- **Defaults vary by provider.** A new Claude Code session requests Auto Mode. A new Goose session uses Smart Approve. A new GitHub Copilot session uses Assisted Approval. Codex starts in Suggest & Approve. Resumed sessions keep their stored settings.
-- **Bypass is a deliberate, sticky choice.** The bypass controls stop the agent from asking for approval. Codex also opens the sandbox and network. Use bypass only when you trust the working directory and the task.
-- **Attachment support differs by provider** (see the [attachments table](#attachments)) — every provider takes text, but image, PDF and other-binary support varies. Reasonix takes text only, and ZCode takes an image only on a model that declares image input.
-- **Pi is minimal** — model and thinking level only, no permission/plan/bypass controls.
-- **ZCode borrows the desktop application's account.** Its models, credentials and thought levels all come from `~/.zcode/v2/config.json`, so what an agent can run matches what the ZCode application itself can run on that machine.
-- **Strict provider dispatch.** LeapMux never tries to render or encode one provider's messages with another provider's code. If a provider plugin is missing it surfaces a clear warning rather than guessing.
+For providers that have a plan-mode setting, **Shift+Tab** in the editor toggles between plan mode and the previous mode. The toggle works only for a provider that has a plan-mode setting (see the [feature matrix](#feature-matrix)).
 
 ## Driving agents from a script
 
-Everything in this chapter has a programmatic counterpart in the `leapmux control` CLI, which agents themselves can call (the Worker injects credentials into each spawned agent's environment). The most relevant commands:
+You can also use the `leapmux control` CLI for these actions. Agents can call it because the Worker gives each agent its credentials. Common commands include:
 
 ```bash
 # Send a message to an agent tab
@@ -415,3 +388,9 @@ leapmux control agent send-control-response --tab-id <id> --content '<raw JSON>'
 ```
 
 See [Control CLI](/docs/using/control-cli/) for the full command tree, entity-ID resolution, and the JSON output contract.
+
+## Feature matrix
+
+Every provider supports chat and streamed tool calls. Each matrix cell shows ✅ when LeapMux supports a feature and ❌ when it does not. Select a feature label for its exact definition. A note link explains a cell limit or condition.
+
+{{< matrix >}}

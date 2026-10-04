@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "codex-protocol.schema.json",
   "title": "Codex item wire vocabulary",
-  "description": "Every table is a map from the identifier both languages spell (PascalCase, so the Go constant and the TS key derive from one name) to the literal on the wire. A table may never be empty: an empty one would emit an enum no dispatch can match, and the generator's own coverage check would have nothing to compare.",
+  "description": "Each nonempty table maps a shared identifier to its native Codex value. Generated Go and TypeScript names derive from that identifier.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -13,7 +13,11 @@
     "itemTypes",
     "methods",
     "options",
-    "optionDefaults"
+    "optionDefaults",
+    "rawItems",
+    "rawTools",
+    "rawFields",
+    "rawNamespaces"
   ],
   "$defs": {
     "table": {
@@ -28,7 +32,7 @@
       }
     },
     "structs": {
-      "description": "Go structs generated from this domain. Each states its field list once and takes every json tag from a named table, so a rename in the table reaches the struct.",
+      "description": "Generated Go structs use table values for their JSON tags. Each struct defines its field list once.",
       "type": "object",
       "minProperties": 1,
       "propertyNames": {
@@ -83,7 +87,7 @@
       }
     },
     "unread": {
-      "description": "The per-key exemptions this domain states. `contractsAreConsumed.test.mjs` holds every KEY of a table to a reader on each side the table declares. A key one side genuinely never reads states that here: `_unread.<table>.<Key>.sides` lists the sides that skip it, and `.why` says what reads it instead. The key stays in the contract, because the other side still reads it and a rename must still reach that side. An exemption the code no longer needs fails the same test, so a stale one cannot survive.",
+      "description": "A key that one language does not read records that exception here. Each exception states the language and its reason. The contract-consumption test rejects stale exceptions.",
       "type": "object",
       "minProperties": 1,
       "additionalProperties": {
@@ -150,6 +154,18 @@
       "$ref": "#/$defs/table"
     },
     "optionDefaults": {
+      "$ref": "#/$defs/table"
+    },
+    "rawItems": {
+      "$ref": "#/$defs/table"
+    },
+    "rawTools": {
+      "$ref": "#/$defs/table"
+    },
+    "rawFields": {
+      "$ref": "#/$defs/table"
+    },
+    "rawNamespaces": {
       "$ref": "#/$defs/table"
     }
   }

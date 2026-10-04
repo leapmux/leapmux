@@ -37,7 +37,7 @@ export interface BackgroundTaskItem {
   titleIsCommand?: boolean
   description?: string
   activity: string
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped' | 'interrupted'
+  status: 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'stopped' | 'interrupted'
   createdAt?: string
   updatedAt?: string
   endedAt?: string
@@ -96,6 +96,8 @@ function normalizeBackgroundTaskStatus(s: BackgroundTaskStatus): BackgroundTaskI
   switch (s) {
     case BackgroundTaskStatus.RUNNING:
       return 'running'
+    case BackgroundTaskStatus.PAUSED:
+      return 'paused'
     case BackgroundTaskStatus.COMPLETED:
       return 'completed'
     case BackgroundTaskStatus.FAILED:
@@ -109,30 +111,12 @@ function normalizeBackgroundTaskStatus(s: BackgroundTaskStatus): BackgroundTaskI
   }
 }
 
-/**
- * Narrow a background-task status WIRE string to the union.
- *
- * The worker persists the subagent-end divider with the same four final wire
- * strings the registry uses (`bgtask.StatusWire`), so the divider's renderer
- * narrows through here rather than re-listing them. `normalizeBackgroundTaskStatus`
- * cannot serve: it maps the proto ENUM, not the JSON string.
- */
-export function backgroundTaskStatusFromWire(s: string): BackgroundTaskItem['status'] | undefined {
-  switch (s) {
-    case 'pending':
-    case 'running':
-    case 'completed':
-    case 'failed':
-    case 'stopped':
-    case 'interrupted':
-      return s
-    default:
-      return undefined
-  }
-}
-
 export function isActiveBackgroundTaskStatus(s: BackgroundTaskItem['status']): boolean {
   return s === 'pending' || s === 'running'
+}
+
+export function isOpenBackgroundTaskStatus(s: BackgroundTaskItem['status']): boolean {
+  return isActiveBackgroundTaskStatus(s) || s === 'paused'
 }
 
 /**
@@ -261,6 +245,8 @@ export function backgroundTaskStatusLabel(s: BackgroundTaskItem['status']): stri
       return 'Pending'
     case 'running':
       return 'Running'
+    case 'paused':
+      return 'Paused'
     default:
       return backgroundTaskEndLabel(s)
   }
@@ -292,24 +278,32 @@ export function backgroundTaskEndTooltip(s: BackgroundTaskItem['status']): strin
   return undefined
 }
 
-// sortBackgroundTasks returns a NEW array ordered active-first (running before
-// pending), then finished; stable within each half (input order preserved).
+// sortBackgroundTasks returns a new array ordered running, pending, paused,
+// then finished. It preserves input order within each status group.
 export function sortBackgroundTasks(items: BackgroundTaskItem[]): BackgroundTaskItem[] {
-  const active: BackgroundTaskItem[] = []
+  const open: BackgroundTaskItem[] = []
   const finished: BackgroundTaskItem[] = []
   for (const it of items) {
-    if (isActiveBackgroundTaskStatus(it.status))
-      active.push(it)
+    if (isOpenBackgroundTaskStatus(it.status))
+      open.push(it)
     else
       finished.push(it)
   }
-  // Running before pending, stable.
-  active.sort((a, b) => {
-    const ar = a.status === 'running' ? 0 : 1
-    const br = b.status === 'running' ? 0 : 1
+  const order: Record<BackgroundTaskItem['status'], number> = {
+    running: 0,
+    pending: 1,
+    paused: 2,
+    completed: 3,
+    failed: 3,
+    stopped: 3,
+    interrupted: 3,
+  }
+  open.sort((a, b) => {
+    const ar = order[a.status]
+    const br = order[b.status]
     return ar - br
   })
-  return [...active, ...finished]
+  return [...open, ...finished]
 }
 
 // groupBackgroundTasks splits sorted items into an ungrouped block first, then

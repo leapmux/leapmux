@@ -1,0 +1,323 @@
+{
+  "_readme": "Feature IDs match provider spec basenames. Every feature has an exact definition. showInMatrix selects the website comparison rows. Definitions for tests stay in the complete E2E checklist.",
+  "features": [
+    {
+      "id": "text-attachments",
+      "label": "Text attachments",
+      "description": "The agent can use the contents of an attached text file. A filename alone does not count.",
+      "showInMatrix": true
+    },
+    {
+      "id": "image-attachments",
+      "label": "Image attachments",
+      "description": "The agent can use the bytes of an attached image through its native input path.",
+      "showInMatrix": true
+    },
+    {
+      "id": "pdf-attachments",
+      "label": "PDF attachments",
+      "description": "The agent can use the bytes of an attached PDF. A filename or placeholder does not count.",
+      "showInMatrix": true
+    },
+    {
+      "id": "other-binary-attachments",
+      "label": "Other binary attachments",
+      "description": "The agent can use the bytes of an attached binary file other than an image or PDF. A filename or placeholder does not count.",
+      "showInMatrix": true
+    },
+    {
+      "id": "images-in-tool-results",
+      "label": "Images in tool results",
+      "description": "LeapMux shows an image in the tool result row from live result bytes or the provider's stored attachment record.",
+      "showInMatrix": true
+    },
+    {
+      "id": "thinking-in-the-transcript",
+      "label": "Thinking in the transcript",
+      "description": "LeapMux shows reasoning or thinking content from the provider's native output in the chat transcript.",
+      "showInMatrix": true
+    },
+    {
+      "id": "context-usage",
+      "label": "Context usage",
+      "description": "Agent info shows the provider's reported context use as token counts or an occupancy ratio.",
+      "showInMatrix": true
+    },
+    {
+      "id": "compaction-notice",
+      "label": "Compaction notice",
+      "description": "The chat transcript shows a completed native compaction boundary or status. A start notice or a smaller context without a completed notice does not count.",
+      "showInMatrix": true
+    },
+    {
+      "id": "manual-compaction",
+      "label": "Manual compaction",
+      "description": "A user command from LeapMux starts native context compaction, and the next model turn uses the compacted context.",
+      "showInMatrix": true
+    },
+    {
+      "id": "rate-limit-state",
+      "label": "Rate-limit state",
+      "description": "Agent info shows a provider-reported quota window, use, or reset time. A retry notice alone does not count.",
+      "showInMatrix": true
+    },
+    {
+      "id": "model-context-on-resume",
+      "label": "Model context on resume",
+      "description": "After LeapMux reopens a native session, the next model turn can use prior conversation context. Saved LeapMux chat rows alone do not count.",
+      "showInMatrix": true
+    },
+    {
+      "id": "permission-prompts",
+      "label": "Permission prompts",
+      "description": "LeapMux shows a tool approval question and sends the user's allow or deny decision through the provider's control path.",
+      "showInMatrix": true
+    },
+    {
+      "id": "plan-mode",
+      "label": "Plan mode",
+      "description": "The user can enter a provider mode that plans work before it makes changes.",
+      "showInMatrix": true
+    },
+    {
+      "id": "plan-approval-banner",
+      "label": "Plan approval banner",
+      "description": "LeapMux shows the provider's completed plan in a banner that accepts an approval or rejection.",
+      "showInMatrix": true
+    },
+    {
+      "id": "agent-questions",
+      "label": "Agent questions",
+      "description": "LeapMux shows a question from the agent and returns the user's selected or typed answer through the native question path.",
+      "showInMatrix": true
+    },
+    {
+      "id": "mcp-tool-execution",
+      "label": "MCP tool execution",
+      "description": "The agent calls a Model Context Protocol tool, receives its result, and can use that result in a subsequent model request.",
+      "showInMatrix": true
+    },
+    {
+      "id": "code-execution",
+      "label": "Code execution",
+      "description": "The model supplies source to a dedicated code executor or a native script-and-language interface. The native agent runs the source and returns output or errors. Ordinary shell commands and browser-only scripts do not count. Provider notes state whether scripts can call agent tools.",
+      "showInMatrix": true
+    },
+    {
+      "id": "output-file-paths",
+      "label": "Output file paths",
+      "description": "The agent reports a filesystem path for saved tool output. LeapMux stores that path with the native result. It shows the path and tool properties before the original output or inline preview. Copy keeps the original preview. LeapMux reads no output file. The provider controls file retention. An opaque ID or URI alone does not supply a filesystem path.",
+      "showInMatrix": true
+    },
+    {
+      "id": "mcp-input-request",
+      "label": "MCP input request",
+      "description": "LeapMux collects fields requested by a Model Context Protocol server through a form or native questions and returns the answers to the server.",
+      "showInMatrix": true
+    },
+    {
+      "id": "smart-permissions-shortcut",
+      "label": "Smart permissions shortcut",
+      "description": "A LeapMux shortcut selects the provider's safety-assisted permission preset. The preset can approve, block, or ask about a tool call.",
+      "showInMatrix": true
+    },
+    {
+      "id": "bypass-permissions-shortcut",
+      "label": "Bypass permissions shortcut",
+      "description": "A LeapMux shortcut selects the provider's own mode that runs tools without permission prompts.",
+      "showInMatrix": true
+    },
+    {
+      "id": "model",
+      "label": "Model",
+      "description": "The user can select a model in LeapMux, and the provider uses that selection in a native model request.",
+      "showInMatrix": true
+    },
+    {
+      "id": "reasoning-effort",
+      "label": "Reasoning effort",
+      "description": "The user can select a reasoning level in LeapMux, and the provider applies it to a native model request. A separate selector or a model variant can choose the level.",
+      "showInMatrix": true
+    },
+    {
+      "id": "mode",
+      "label": "Mode",
+      "description": "The user can select a provider mode in LeapMux, and the provider applies that mode to the session.",
+      "showInMatrix": true
+    },
+    {
+      "id": "session-goal-set-and-clear",
+      "label": "Session goal: set and clear",
+      "description": "The Goals sidebar lets the user set a standing objective and clear it through the provider's native goal path.",
+      "showInMatrix": true
+    },
+    {
+      "id": "session-goal-pause-and-resume",
+      "label": "Session goal: pause and resume",
+      "description": "The Goals sidebar lets the user pause an active objective and resume it through the provider's native goal path.",
+      "showInMatrix": true
+    },
+    {
+      "id": "to-do-sidebar",
+      "label": "To-do sidebar",
+      "description": "A native to-do or plan update appears with item statuses in LeapMux's Goals and To-dos sidebar.",
+      "showInMatrix": true
+    },
+    {
+      "id": "background-tasks-sidebar",
+      "label": "Background tasks sidebar",
+      "description": "A provider-reported subagent or background process appears with its status in the Background tasks sidebar.",
+      "showInMatrix": true
+    },
+    {
+      "id": "subagent-transcript-tab",
+      "label": "Subagent transcript tab",
+      "description": "A subagent has a separate tab that shows its messages. The messages do not stay only inside the parent's tool card.",
+      "showInMatrix": true
+    },
+    {
+      "id": "subagent-live-transcript",
+      "label": "Subagent live transcript",
+      "description": "The subagent tab receives transcript rows, including tool activity, while the child runs and before its final report arrives.",
+      "showInMatrix": true
+    },
+    {
+      "id": "send-to-a-subagent",
+      "label": "Send to a subagent",
+      "description": "A message typed in the subagent tab reaches that native child session instead of the parent session.",
+      "showInMatrix": true
+    },
+    {
+      "id": "interrupt-a-subagent",
+      "label": "Interrupt a subagent",
+      "description": "The subagent tab's Interrupt control stops the native child task without stopping its parent.",
+      "showInMatrix": true
+    },
+    {
+      "id": "steer-mid-turn",
+      "label": "Steer mid-turn",
+      "description": "New user input reaches the agent's current turn before it ends, instead of waiting in the next-turn queue.",
+      "showInMatrix": true
+    },
+    {
+      "id": "workflow-grouping",
+      "label": "Workflow grouping",
+      "description": "The Background tasks sidebar shows two or more native workflow work rows under one workflow heading.",
+      "showInMatrix": true
+    },
+    {
+      "id": "basic-chat",
+      "label": "Basic chat",
+      "description": "The provider receives a user prompt and returns an assistant answer in the same tab. LeapMux ends the turn and preserves the answer after reload.",
+      "showInMatrix": false
+    },
+    {
+      "id": "conversation-context",
+      "label": "Conversation context",
+      "description": "A later prompt in the same running session can use the earlier user prompt and assistant answer. A second displayed answer alone does not count.",
+      "showInMatrix": false
+    },
+    {
+      "id": "shell-tool-execution",
+      "label": "Shell tool execution",
+      "description": "The native shell tool runs a command. Its actual output and failed command result reach the transcript and the next model turn.",
+      "showInMatrix": false
+    },
+    {
+      "id": "file-tool-execution",
+      "label": "File tool execution",
+      "description": "Native file tools read and change a scratch file. Filesystem and native result checks prove the contents and changes. LeapMux shows the native change result, which can be a diff or an edited-region snippet.",
+      "showInMatrix": false
+    },
+    {
+      "id": "interrupt-a-turn",
+      "label": "Interrupt a turn",
+      "description": "The agent tab Interrupt control stops an active native model call or tool and pauses its input queue. The session accepts another prompt after the queue resumes.",
+      "showInMatrix": false
+    },
+    {
+      "id": "close-an-agent",
+      "label": "Close an agent",
+      "description": "Closing an agent tab stops the native provider process and its owned child processes. The Worker confirms the completed close.",
+      "showInMatrix": false
+    },
+    {
+      "id": "session-reset",
+      "label": "Session reset",
+      "description": "A user command starts a fresh native session or clears its context. The next model turn cannot use a unique marker from the previous conversation.",
+      "showInMatrix": false
+    },
+    {
+      "id": "session-resume",
+      "label": "Session resume",
+      "description": "LeapMux reopens a native session from its picker or after a Worker restart and restores its saved Worker transcript. An external session can reopen without old Worker messages.",
+      "showInMatrix": false
+    },
+    {
+      "id": "agent-startup",
+      "label": "Agent startup",
+      "description": "LeapMux starts the native provider process and delivers input submitted during startup. A startup failure shows an error. Before delivery, LeapMux retains the queued input. After delivery, LeapMux retains the submitted user message.",
+      "showInMatrix": false
+    },
+    {
+      "id": "turn-end-sound",
+      "label": "Turn end sound",
+      "description": "A completed native turn with tool activity plays the selected notification sound once. A text-only turn follows the configured quiet behavior.",
+      "showInMatrix": false
+    },
+    {
+      "id": "generation-progress",
+      "label": "Generation progress",
+      "description": "The generation indicator reports an advancing token or byte count while native model or tool output arrives. Completed content and results remain in the transcript.",
+      "showInMatrix": false
+    },
+    {
+      "id": "editor-requests",
+      "label": "Editor requests",
+      "description": "LeapMux shows a native multiline editor request and returns its exact text or cancellation. Empty text and whitespace remain distinct from cancellation.",
+      "showInMatrix": false
+    },
+    {
+      "id": "workspace-trust",
+      "label": "Workspace trust",
+      "description": "A native workspace trust request prevents project configuration from loading until the user allows it. Denial keeps the configuration unloaded.",
+      "showInMatrix": false
+    },
+    {
+      "id": "swarm-mode",
+      "label": "Swarm mode",
+      "description": "A LeapMux setting enables the provider's native swarm mode, and the next native turn uses that setting. The setting survives reload.",
+      "showInMatrix": false
+    },
+    {
+      "id": "model-error",
+      "label": "Model error",
+      "description": "The transcript shows a native model-service failure and its useful cause. LeapMux ends the failed turn and can run the next valid turn.",
+      "showInMatrix": false
+    },
+    {
+      "id": "credential-isolation",
+      "label": "Credential isolation",
+      "description": "The E2E fixture launches the provider with private configuration and mock model credentials. A native turn uses that configuration and the local mock service.",
+      "showInMatrix": false
+    },
+    {
+      "id": "extended-thinking",
+      "label": "Extended thinking",
+      "description": "A separate LeapMux setting enables or disables native model thinking independently of model and effort selection. The next native request proves the selected state.",
+      "showInMatrix": false
+    },
+    {
+      "id": "fast-mode",
+      "label": "Fast mode",
+      "description": "A separate LeapMux setting enables or disables the provider's native fast serving mode. Native applied settings or a model request prove the selected state.",
+      "showInMatrix": false
+    },
+    {
+      "id": "output-style",
+      "label": "Output style",
+      "description": "A LeapMux setting selects the provider's native response style. The next native model request carries the selected style instruction.",
+      "showInMatrix": false
+    }
+  ]
+}

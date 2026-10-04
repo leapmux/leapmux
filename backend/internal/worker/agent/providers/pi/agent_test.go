@@ -38,6 +38,8 @@ type piTestRig struct {
 	writePipe  *os.File
 	respondMu  sync.Mutex
 	responder  func(req piRecordedRequest) (data json.RawMessage, success bool, errMsg string)
+	holdMethod string
+	holdReply  <-chan struct{}
 	stdoutPipe *os.File
 }
 
@@ -82,6 +84,7 @@ func newPiTestRig(t *testing.T, sink agent.ProviderServices) *piTestRig {
 	var (
 		mu       sync.Mutex
 		captured []piRecordedRequest
+		stdoutMu sync.Mutex
 	)
 
 	go func() {
@@ -101,6 +104,8 @@ func newPiTestRig(t *testing.T, sink agent.ProviderServices) *piTestRig {
 
 			rig.respondMu.Lock()
 			responder := rig.responder
+			hold := rig.holdMethod == method && rig.holdReply != nil
+			release := rig.holdReply
 			rig.respondMu.Unlock()
 
 			data := json.RawMessage(`null`)
@@ -124,7 +129,23 @@ func newPiTestRig(t *testing.T, sink agent.ProviderServices) *piTestRig {
 			}
 			respBytes, _ := json.Marshal(resp)
 			respBytes = append(respBytes, '\n')
-			if _, err := stdoutWriter.Write(respBytes); err != nil {
+			writeResponse := func() error {
+				stdoutMu.Lock()
+				defer stdoutMu.Unlock()
+				_, err := stdoutWriter.Write(respBytes)
+				return err
+			}
+			if hold {
+				go func() {
+					select {
+					case <-release:
+						_ = writeResponse()
+					case <-ctx.Done():
+					}
+				}()
+				continue
+			}
+			if err := writeResponse(); err != nil {
 				return
 			}
 		}
@@ -174,6 +195,13 @@ func (r *piTestRig) setResponder(fn func(req piRecordedRequest) (json.RawMessage
 	r.respondMu.Lock()
 	defer r.respondMu.Unlock()
 	r.responder = fn
+}
+
+// holdResponse leaves one command reply pending while later commands still reach the fake peer.
+func (r *piTestRig) holdResponse(method string, release <-chan struct{}) {
+	r.respondMu.Lock()
+	defer r.respondMu.Unlock()
+	r.holdMethod, r.holdReply = method, release
 }
 
 func TestPi_SendPiCommand_RoundTripsResponse(t *testing.T) {
@@ -309,6 +337,100 @@ func TestPi_SendInput_FreshTurnOmitsSteer(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("prompt command never reached the fake peer")
 	}
+}
+
+func TestPiManualCompactUsesNativeRPCCommand(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		input        string
+		instructions string
+	}{
+		{name: "plain", input: "/compact"},
+		{name: "custom instructions", input: "/compact Keep the test findings.", instructions: "Keep the test findings."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPiTestRig(t, agenttest.Nop())
+			got := make(chan piRecordedRequest, 1)
+			rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+				got <- req
+				return nil, true, ""
+			})
+			require.NoError(t, rig.agent.SendInput(tc.input, nil))
+			select {
+			case request := <-got:
+				assert.Equal(t, "compact", request.Type)
+				if tc.instructions == "" {
+					assert.NotContains(t, request.Payload, "customInstructions")
+				} else {
+					assert.Equal(t, tc.instructions, request.Payload["customInstructions"])
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("the compact command never reached the fake peer")
+			}
+		})
+	}
+}
+
+func TestPiManualCompactRefusesAttachments(t *testing.T) {
+	t.Parallel()
+	rig := newPiTestRig(t, agenttest.Nop())
+	attachment := &leapmuxv1.Attachment{Filename: "note.txt", MimeType: "text/plain", Data: []byte("note")}
+	assert.ErrorContains(t, rig.agent.SendInput("/compact", []*leapmuxv1.Attachment{attachment}), "attachments")
+	assert.Empty(t, rig.requests())
+}
+
+func TestPiManualCompactLeavesSimilarPromptsAndSteeringAlone(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		input string
+		steer bool
+	}{
+		{name: "longer command", input: "/compaction"},
+		{name: "leading space", input: " /compact"},
+		{name: "steer text", input: "/compact", steer: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPiTestRig(t, agenttest.Nop())
+			if tc.steer {
+				rig.agent.Mu.Lock()
+				rig.agent.currentTurnActive = true
+				rig.agent.Mu.Unlock()
+			}
+			got := make(chan piRecordedRequest, 1)
+			rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+				got <- req
+				return nil, true, ""
+			})
+			var err error
+			if tc.steer {
+				err = rig.agent.SteerInput(tc.input, nil)
+			} else {
+				err = rig.agent.SendInput(tc.input, nil)
+			}
+			require.NoError(t, err)
+			select {
+			case request := <-got:
+				assert.Equal(t, CommandPrompt, request.Type)
+				assert.Equal(t, tc.input, request.Payload["message"])
+			case <-time.After(2 * time.Second):
+				t.Fatal("the prompt never reached the fake peer")
+			}
+		})
+	}
+}
+
+func TestPiManualCompactReturnsTheNativeError(t *testing.T) {
+	t.Parallel()
+	rig := newPiTestRig(t, agenttest.Nop())
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		if req.Type == CommandCompact {
+			return nil, false, "the session has no conversation to compact"
+		}
+		return nil, true, ""
+	})
+	assert.ErrorContains(t, rig.agent.SendInput("/compact", nil), "the session has no conversation to compact")
 }
 
 func TestPi_SteerInput_DuringTurnSetsSteer(t *testing.T) {

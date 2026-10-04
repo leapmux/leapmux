@@ -25,6 +25,8 @@ mod windows_impl;
 // `sidecar_ipc` (transport) and `frame` (codec).
 mod sidecar;
 
+mod shutdown;
+
 // Streaming file-save subsystem (file_save_open/write/commit/abort chain).
 mod file_save;
 
@@ -161,7 +163,8 @@ mod contracts_generated {
     include!("generated/contracts.rs");
 }
 pub(crate) use contracts_generated::{
-    DEV_FRONTEND_URL, ENV_BINARY_HASH, ENV_DEV_ENDPOINT, ENV_DEV_FRONTEND, MAX_FRAME_SIZE_BYTES,
+    DEV_FRONTEND_URL, ENV_AGENT_HELPER, ENV_BINARY_HASH, ENV_DEV_ENDPOINT, ENV_DEV_FRONTEND,
+    MAX_FRAME_SIZE_BYTES,
 };
 
 /// The shell's own record of the dev sidecar it last bootstrapped, written for
@@ -495,8 +498,9 @@ impl DesktopShell {
     async fn request_shutdown_async(&self) {
         let shutdown =
             self.send_request_async(proto::request::Method::Shutdown(proto::ShutdownRequest {}));
-        let _ = tokio::time::timeout(Duration::from_secs(5), shutdown).await;
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        if let Err(error) = shutdown::request_cleanup(shutdown).await {
+            crate::shell_log!("desktop shutdown cleanup warning: {error}");
+        }
     }
 
     async fn refresh_state_from_sidecar(&self) -> Result<(), String> {
@@ -1413,7 +1417,8 @@ async fn set_desktop_behavior(
     let mut record = |refusal: tray::BehaviorRefusal| {
         shell_log!(
             "the system refused {}: {}",
-            refusal.setting, refusal.message
+            refusal.setting,
+            refusal.message
         );
         refusals.push(refusal);
     };
@@ -1493,17 +1498,17 @@ fn apply_login_item(app: &AppHandle, start_on_login: bool) -> Result<(), String>
     }
     let manager = app.autolaunch();
     if start_on_login {
-        return manager.enable().map_err(|err| {
-            format!("LeapMux could not add itself to your login items: {err}")
-        });
+        return manager
+            .enable()
+            .map_err(|err| format!("LeapMux could not add itself to your login items: {err}"));
     }
     // `is_enabled` is only a guard against a spurious error when nothing is
     // registered. It must never block the ENABLE path: it compares the stored
     // path against the current one, which is exactly what goes stale.
     match manager.is_enabled() {
-        Ok(true) => manager.disable().map_err(|err| {
-            format!("LeapMux could not remove itself from your login items: {err}")
-        }),
+        Ok(true) => manager
+            .disable()
+            .map_err(|err| format!("LeapMux could not remove itself from your login items: {err}")),
         _ => Ok(()),
     }
 }
@@ -2537,7 +2542,11 @@ mod tests {
             contracts_generated::WINDOW_MODE_FULLSCREEN,
         ];
         let unique: std::collections::HashSet<_> = tokens.iter().collect();
-        assert_eq!(unique.len(), tokens.len(), "one setting, so all three differ");
+        assert_eq!(
+            unique.len(),
+            tokens.len(),
+            "one setting, so all three differ"
+        );
     }
 
     #[test]

@@ -25,6 +25,10 @@ CREATE TABLE agents (
     -- layers away.
     title_auto_generated INTEGER NOT NULL DEFAULT 1,
     agent_session_id TEXT NOT NULL DEFAULT '',
+    -- A selected native handle stays here during startup. It is not a
+    -- confirmed session ID, so the picker uses it only to exclude an open
+    -- handle. The provider's session update clears it atomically.
+    pending_resume_session_id TEXT NOT NULL DEFAULT '',
     resumed          INTEGER NOT NULL DEFAULT 0,
     -- options: chosen option values keyed by option-group id (model, effort,
     -- permissionMode, and provider-specific axes), as a JSON object.
@@ -38,13 +42,14 @@ CREATE TABLE agents (
     -- CreateAgent binds the column, so the DEFAULT below is unreachable and the
     -- CHECK is the only guard.
     agent_provider   INTEGER NOT NULL DEFAULT 1
-        CHECK (agent_provider BETWEEN 1 AND 10),
+        CHECK (agent_provider BETWEEN 1 AND 29),
     -- Subagent linkage. parent_agent_id is set ONLY for virtual child agents
     -- (subagent transcripts fed by the parent provider's process; they never
     -- own a process). spawn_span_id is the tool_use span in the PARENT
     -- transcript that spawned this child.
     parent_agent_id  TEXT REFERENCES agents(id) ON DELETE CASCADE,
     spawn_span_id    TEXT NOT NULL DEFAULT '',
+    provider_child_key TEXT NOT NULL DEFAULT '',
     session_start_seq INTEGER NOT NULL DEFAULT 0,
     -- Per-agent monotonic message-seq high-water mark. Message seqs are allocated as
     -- (message_seq_hwm + 1) rather than (MAX(live seq) + 1), so a deleted tail seq is
@@ -98,6 +103,18 @@ CREATE INDEX idx_agents_parent ON agents(parent_agent_id) WHERE parent_agent_id 
 -- (provider, working directory) pair, which no other index covers, and it runs
 -- on the path of a dialog that opens on every "New agent" click.
 CREATE INDEX idx_agents_provider_working_dir ON agents(agent_provider, working_dir);
+-- An open native session belongs to one tab. A pending claim uses a separate
+-- column so the unconfirmed handle never looks like provider history.
+CREATE UNIQUE INDEX idx_agents_open_native_owner
+    ON agents(agent_provider,
+      COALESCE(NULLIF(agent_session_id,''), NULLIF(pending_resume_session_id,'')))
+    WHERE closed_at IS NULL AND parent_agent_id IS NULL
+      AND (agent_session_id <> '' OR pending_resume_session_id <> '');
+-- Finds the newest closed Worker tree with retained messages for a native
+-- session before OpenAgent copies its transcripts into the new tree.
+CREATE INDEX idx_agents_closed_native_session
+    ON agents(agent_provider, working_dir, agent_session_id, closed_at DESC)
+    WHERE closed_at IS NOT NULL AND agent_session_id <> '' AND parent_agent_id IS NULL;
 -- Serves the agents leg of tab_locations, which the quake reference count
 -- reads on every agent close and every reconcile pass. The pair index above
 -- cannot: working_dir is not its leftmost column, so that lookup scanned the
@@ -108,6 +125,9 @@ CREATE INDEX idx_agents_open_working_dir ON agents(working_dir) WHERE closed_at 
 -- idempotency a constraint (worker restart mid-spawn), not a convention.
 CREATE UNIQUE INDEX idx_agents_spawn_span ON agents(parent_agent_id, spawn_span_id)
     WHERE parent_agent_id IS NOT NULL AND spawn_span_id <> '';
+-- Native keys preserve child identity when the provider omits a spawn span.
+CREATE UNIQUE INDEX idx_agents_provider_child_key ON agents(parent_agent_id, provider_child_key)
+    WHERE parent_agent_id IS NOT NULL AND provider_child_key <> '';
 
 -- Messages (verbatim storage, per agent)
 CREATE TABLE messages (
@@ -149,12 +169,11 @@ CREATE TABLE messages (
     span_color          INTEGER NOT NULL DEFAULT 0,
     -- An AgentProvider ordinal. UNSPECIFIED (0) is outside the CHECK, because
     -- every message comes from one provider's process, so a 0 here is an unset
-    -- field rather than a state. Ordinal 3 is a removed provider that the proto
-    -- RESERVES, so no row may carry it either;
-    -- TestAgentProviderReservesTheRemovedOrdinal fails the suite if a new
-    -- enumerator claims 3.
+    -- field rather than a state. The enum has no hole, so the CHECK states a
+    -- plain range; TestAgentProviderOrdinalsAreContiguous fails the suite if a
+    -- hole appears.
     agent_provider      INTEGER NOT NULL DEFAULT 1
-        CHECK (agent_provider BETWEEN 1 AND 10),
+        CHECK (agent_provider BETWEEN 1 AND 29),
     -- Scroll-rail jump-mark classifier (0=none, see proto MarkType). Set at write
     -- time so the rail can list marked seqs without decompressing content.
     mark_type           INTEGER NOT NULL DEFAULT 0,
@@ -175,6 +194,16 @@ CREATE INDEX idx_messages_span_id ON messages(agent_id, agent_session_id, span_i
 CREATE INDEX idx_messages_mark_type ON messages(agent_id, seq, mark_type) WHERE mark_type <> 0;
 CREATE UNIQUE INDEX idx_messages_idempotency_key
     ON messages(agent_id, agent_session_id, idempotency_key) WHERE idempotency_key <> '';
+
+-- Record processed native completions separately from stored messages.
+-- A failed completion claim can leave its message stored without its effects.
+-- Replay then publishes those effects once, after it claims this receipt.
+CREATE TABLE agent_turn_ends (
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    agent_session_id TEXT NOT NULL DEFAULT '',
+    idempotency_key TEXT NOT NULL CHECK (idempotency_key <> ''),
+    PRIMARY KEY (agent_id, agent_session_id, idempotency_key)
+) WITHOUT ROWID;
 
 -- Durable conversational input. The state row exists even when the queue is
 -- empty, which keeps a manual pause until the user resumes the queue.
@@ -307,28 +336,13 @@ CREATE TABLE control_response_answers (
     -- that recorded 0 for a forgotten write would match an agent whose provider
     -- field was also unset.
     agent_provider INTEGER NOT NULL
-        CHECK (agent_provider BETWEEN 1 AND 10),
+        CHECK (agent_provider BETWEEN 1 AND 29),
     input_id TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (agent_id, request_id, claim_token)
 );
 
 CREATE INDEX idx_control_response_input ON control_response_answers(agent_id, input_id)
 WHERE input_id <> '';
-
--- One row per subagent transcript whose closing divider has been written.
---
--- Two independent writers can end a subagent: the registry (whichever applier
--- moved its row into a final status) and the child's own turn end (a provider
--- that forwards its own closing envelope). Both must produce exactly ONE
--- divider, in either arrival order. Comparing the transcript's last message
--- cannot decide it -- both writers persist AFTER releasing the cache mutex, so
--- two goroutines can each read "not ended" and each write. This claim is the
--- decision: the INSERT picks a single winner, and being durable it also holds
--- across a worker restart, where a content probe would have to read and
--- decompress the last message to guess.
-CREATE TABLE subagent_transcript_closes (
-    child_agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE
-);
 
 -- Scheduled synthetic auto-continue messages
 CREATE TABLE auto_continue_schedules (
@@ -553,10 +567,10 @@ CREATE TABLE agent_todos (
     content     TEXT NOT NULL,
     active_form TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
-    -- A TodoStatus ordinal (PENDING..DELETED). UNSPECIFIED (0) is outside the
+    -- A TodoStatus ordinal (PENDING..BLOCKED). UNSPECIFIED (0) is outside the
     -- CHECK: every row a provider reports carries a real status, so a 0 here is
     -- an unset field rather than a state, and the CHECK refuses the write.
-    status      INTEGER NOT NULL CHECK (status BETWEEN 1 AND 4),
+    status      INTEGER NOT NULL CHECK (status BETWEEN 1 AND 5),
     updated_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (agent_id, row_key),
     -- Matches messages.UNIQUE(agent_id, seq) so a `nextSeq` collision
@@ -596,14 +610,14 @@ CREATE TABLE agent_background_tasks (
     -- an upsert that forgot to set the status fails the write rather than
     -- storing a row no reader can classify.
     --
-    -- The ordinals are ordered: PENDING (1) and RUNNING (2) are the ACTIVE
-    -- statuses and COMPLETED (3) through INTERRUPTED (6) the FINAL ones. The
-    -- queries bind that boundary as one parameter rather than listing four
+    -- The ordinals are ordered: PENDING (1) and RUNNING (2) are working,
+    -- PAUSED (3) is open but idle, and COMPLETED (4) through INTERRUPTED (7)
+    -- are final. The queries bind that boundary rather than listing four
     -- values, and TestBackgroundTaskFinalStatusesAreTheTopOfTheRange pins the
     -- split against bgtask.Status.IsFinished, so a new status added on the
     -- wrong side of it fails the suite instead of silently joining the other
     -- pool.
-    status          INTEGER NOT NULL CHECK (status BETWEEN 1 AND 6),
+    status          INTEGER NOT NULL CHECK (status BETWEEN 1 AND 7),
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     ended_at        DATETIME,

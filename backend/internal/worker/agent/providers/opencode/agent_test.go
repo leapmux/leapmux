@@ -56,7 +56,7 @@ func newOpenCodeAgentForRPCWithRequestResponder(t *testing.T, respond func(req a
 func TestBuildSessionRequest_NewSession(t *testing.T) {
 	t.Parallel()
 
-	method, params := acp.BuildSessionRequestForTest("", "/workspace", acp.MethodSessionNew, MethodSessionResume)
+	method, params := acp.BuildSessionRequestForTest("", "/workspace", acp.MethodSessionNew, acp.MethodSessionResume)
 	assert.Equal(t, acp.MethodSessionNew, method)
 
 	var parsed map[string]interface{}
@@ -68,8 +68,8 @@ func TestBuildSessionRequest_NewSession(t *testing.T) {
 func TestBuildSessionRequest_ResumeSession(t *testing.T) {
 	t.Parallel()
 
-	method, params := acp.BuildSessionRequestForTest("session-123", "/workspace", acp.MethodSessionNew, MethodSessionResume)
-	assert.Equal(t, MethodSessionResume, method)
+	method, params := acp.BuildSessionRequestForTest("session-123", "/workspace", acp.MethodSessionNew, acp.MethodSessionResume)
+	assert.Equal(t, acp.MethodSessionResume, method)
 
 	var parsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(params, &parsed))

@@ -1,6 +1,6 @@
 import type { NotificationEntry } from '../../../model/notification'
-import { ZCODE_DECISION, ZCODE_EVENT } from '~/generated/contracts/zcode-protocol'
-import { pickString } from '~/lib/jsonPick'
+import { ZCODE_DECISION, ZCODE_EVENT, ZCODE_METHOD, ZCODE_STATE_REASON } from '~/generated/contracts/zcode-protocol'
+import { pickObject, pickString } from '~/lib/jsonPick'
 import { zcodeEnvelope } from './toolCommon'
 
 /**
@@ -78,6 +78,21 @@ export function describeZCodeNotification(parsed: unknown): string | null {
  * first message.
  */
 export function zcodeNotificationEntry(msg: Record<string, unknown>): NotificationEntry[] {
+  if (pickString(msg, 'method') === ZCODE_METHOD.StateUpdated) {
+    const reason = pickString(pickObject(msg, 'params'), 'reason')
+    switch (reason) {
+      case ZCODE_STATE_REASON.CompactStarted:
+        return [{ kind: 'compaction', phase: 'start' }]
+      case ZCODE_STATE_REASON.SessionCompacted:
+        return [{ kind: 'compaction', phase: 'end', detail: {} }]
+      case ZCODE_STATE_REASON.SessionCompactFailed:
+        return [{ kind: 'compaction', phase: 'end', error: 'the provider reported a failure' }]
+      case ZCODE_STATE_REASON.SessionCompactCancelled:
+        return [{ kind: 'compaction', phase: 'end', error: 'cancelled' }]
+      default:
+        return []
+    }
+  }
   const text = describeZCodeNotification(msg)
   return text === null ? [] : [{ kind: 'text', text }]
 }

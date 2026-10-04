@@ -8,6 +8,7 @@ import { cursorControlActionsFor, cursorQuestionHandling } from './pluginControl
 registerACPProvider({
   provider: AgentProvider.CURSOR,
   toolCallAdapter: cursorToolCallAdapter,
+  attachments: { text: true, image: true, pdf: false, binary: false },
   defaultPermissionMode: 'agent',
   controlResponseDisplay: cursorControlResponseSummary,
   extractControl: cursorExtractControl,

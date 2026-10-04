@@ -1,8 +1,9 @@
 import type { Component } from 'solid-js'
-import type { PillOptions } from '~/components/common/PillGroup'
+import type { PillOptions } from '~/components/common/pillOptions'
 import { Show } from 'solid-js'
 import { LoadingMenu } from '~/components/common/LoadingMenu'
-import { isPillOptions, PillGroup } from '~/components/common/PillGroup'
+import { PillGroup } from '~/components/common/PillGroup'
+import { isPillOptions } from '~/components/common/pillOptions'
 import * as styles from '../SettingRow.css'
 
 export interface EnumOption {
@@ -26,22 +27,16 @@ function fixedPillOptions(options: readonly EnumOption[]): PillOptions<string> |
 }
 
 /**
- * One-of-N choice. A short list renders as PillGroup with radio semantics.
- * A longer list renders as `LoadingMenu`; see the dropdown rule in AGENTS.md.
- * The branch lives inside a `<Show>`, so a change in the option count renders
- * the branch again. Setup does not choose the branch once and keep it.
+ * Render a short option list as a PillGroup with radio semantics.
+ * Render a longer list through LoadingMenu, as the AGENTS.md dropdown rule requires.
+ * The Show expression selects its branch again when the option count changes.
  *
- * NEITHER BRANCH REPAIRS THE DOM AFTER A REFUSED WRITE. The `<select>` this
- * replaced had to: its selection lived in `selectedIndex`, so a rejected value
- * stayed on screen until the handler put the old one back by hand. Both
- * branches now re-derive every option from `props.value`, which a refused write
- * leaves untouched.
+ * Both branches derive selection from props.value.
+ * A refused write therefore retains the prior selected value without a separate DOM repair.
  *
- * The selected option's `help` renders beneath the control. The backend
- * schema declares one per enum value (each SMTP TLS mode, each captcha
- * provider) and carries it over the wire, but a pill and a menu item can
- * each show a label only, so without this line every declared explanation
- * was discarded. One line under the control serves both branches.
+ * Display the selected option's help beneath either control.
+ * The backend schema supplies that explanation for each enum value.
+ * The radio or menu label alone cannot display the full explanation.
  */
 export const EnumControl: Component<EnumControlProps> = (props) => {
   const selectedHelp = (): string | undefined =>
@@ -60,11 +55,9 @@ export const EnumControl: Component<EnumControlProps> = (props) => {
             value={props.value}
             onChange={props.onChange}
             emptyLabel="No options"
-            // The trigger's fourth state. Without this, a setting whose value
-            // is the empty string -- a fresh install before the first write,
-            // or an enum whose schema admits "unset" -- read "No options"
-            // above a menu the user can see is populated, because
-            // `LoadingMenu` falls back to `emptyLabel` for an empty value.
+            // Show a selection prompt when the value is empty but the menu has options.
+            // A fresh installation or an unset enum value can reach this state.
+            // The emptyLabel describes an absent option list and must not describe this populated menu.
             placeholder="Select an option..."
             options={props.options.map(o => ({ value: o.value, label: o.label }))}
             data-testid="enum-control-menu"

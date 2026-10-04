@@ -211,6 +211,7 @@ export function protoToAgentTabFields(
     agentProvider: agent.agentProvider,
     agentStatus: agent.status,
     acceptsMessages: agent.acceptsMessages,
+    acceptsInterrupt: agent.acceptsInterrupt,
     supportsSteering: agent.supportsSteering,
     supportsPreemption: agent.supportsPreemption,
     ...deriveOptionGroupTabFields(agent.optionGroups),
@@ -358,13 +359,20 @@ export function isSteerableAgentTab(tab: { type: TabType, parentAgentId?: string
   return pluginFor(tab.agentProvider)?.configuration?.supportsSubagentSend ?? false
 }
 
-/** Whether an agent tab can send a direct interrupt to its process owner. */
-export function agentTabSupportsInterrupt(tab: { type: TabType, parentAgentId?: string | undefined, agentProvider?: AgentProvider | undefined } | undefined): boolean {
+/**
+ * Whether an agent tab can send a direct interrupt to its process owner.
+ *
+ * A root always can. A child can when the worker states it
+ * (`AgentInfo.accepts_interrupt`), which it decides from the provider's own
+ * capability, so the answer cannot drift from the code that interrupts. Until
+ * the worker's answer arrives, a child tab offers no Interrupt control.
+ */
+export function agentTabSupportsInterrupt(tab: { type: TabType, parentAgentId?: string | undefined, acceptsInterrupt?: boolean | undefined } | undefined): boolean {
   if (tab?.type !== TabType.AGENT)
     return false
   if (!tab.parentAgentId)
     return true
-  return pluginFor(tab.agentProvider)?.configuration?.supportsSubagentInterrupt ?? false
+  return tab.acceptsInterrupt === true
 }
 
 /**
@@ -507,6 +515,7 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
     startupMessage: tab.startupMessage ?? '',
     parentAgentId: tab.parentAgentId ?? '',
     acceptsMessages: tab.acceptsMessages ?? false,
+    acceptsInterrupt: tab.acceptsInterrupt ?? false,
     supportsSteering: tab.supportsSteering ?? false,
     supportsPreemption: tab.supportsPreemption ?? false,
     rootAgentId: tab.rootAgentId ?? '',

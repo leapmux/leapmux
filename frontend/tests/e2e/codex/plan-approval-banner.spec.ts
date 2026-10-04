@@ -1,0 +1,103 @@
+import type { Page } from '@playwright/test'
+import { expect } from '@playwright/test'
+import { isResizeObserverLoopError } from '~/lib/ignorableErrorEvents'
+import { codexTest } from '../codex-fixtures'
+import { expectSettingsChip, openSettingsMenu, sendMessage, visibleOnly, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+
+const PLAN_BODY = 'This is a dummy plan for testing the coding agent plan mode UI. Never execute this plan.'
+
+const INITIAL_PLAN_PROMPT
+  = `I am testing the Codex plan mode UI. Stay in plan mode and reply with a concise markdown plan whose title is "# Dummy plan" and whose body includes "${PLAN_BODY}". Do not implement anything yet.`
+
+const REVISE_PLAN_PROMPT
+  = 'Please revise the plan. Keep the title "# Dummy plan revised" and include the exact sentence "Add tests before implementation." Do not implement anything yet.'
+
+/**
+ * Wrap a plan the way Codex's own plan-mode instructions require.
+ *
+ * Its developer message states it exactly: present the official plan wrapped in
+ * a `proposed_plan` block, with the content starting on the next line. Only a
+ * plan in those tags becomes the `plan` item that `providers/codex/output.go` turns into
+ * the approval request. Plain markdown arrives as an ordinary agent message and
+ * raises no banner at all.
+ */
+function proposedPlan(body: string): string {
+  return `<proposed_plan>\n${body}\n</proposed_plan>`
+}
+
+async function configureCodexPlanMode(page: Page) {
+  await openSettingsMenu(page, 'collaboration_mode')
+  await page.locator('[data-testid="collaboration_mode-plan"]').click()
+  await expectSettingsChip(page, 'GPT-5.6-Luna')
+  await expectSettingsChip(page, 'Plan Mode')
+}
+
+codexTest.describe('Codex Plan Mode Prompt', () => {
+  codexTest('feedback revises the plan and approval can clear context', async ({ authenticatedCodexWorkspace, page, modelScript }) => {
+    void authenticatedCodexWorkspace
+    const pageErrors: string[] = []
+    page.on('pageerror', error => pageErrors.push(error.message))
+
+    await configureCodexPlanMode(page)
+
+    // Codex raises its plan from the model's TEXT, not from a tool call, so the
+    // plan is simply what the script answers. The marker rides in the plan
+    // because an approved plan restarts the agent on a session seeded from it.
+    await modelScript.fallback({ text: 'Working through the approved plan.' })
+    await modelScript.queue({ text: proposedPlan(modelScript.prompt(`# Dummy plan\n\n${PLAN_BODY}`)) })
+    await sendMessage(page, modelScript.prompt(INITIAL_PLAN_PROMPT))
+    await modelScript.waitForSteps()
+    await waitForAgentIdle(page)
+
+    // Plan content is rendered with plan styling (ToolUseLayout with "Proposed Plan" title).
+    // Use .last() because getByText also matches the user prompt which contains PLAN_BODY.
+    await expect(page.getByRole('heading', { name: 'Dummy plan' })).toBeVisible()
+    await expect(page.getByText(PLAN_BODY).last()).toBeVisible()
+
+    const firstBanner = await waitForControlBanner(page)
+    await expect(firstBanner.getByText('Plan Ready for Review')).toBeVisible()
+    await expect(page.getByTestId('control-deny-btn')).toHaveText('Reject')
+    await expect(page.getByTestId('control-allow-btn')).toHaveText('Approve')
+    await expect(page.getByTestId('plan-clear-context-checkbox')).toBeVisible()
+    await expect(page.getByTestId('control-permissions-pill-group')).toBeVisible()
+
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+    await page.keyboard.type(REVISE_PLAN_PROMPT, { delay: 50 })
+    await expect(page.locator('[data-testid="control-deny-btn"]')).toHaveText('Send feedback')
+    await expect(page.locator('[data-testid="control-allow-btn"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="plan-clear-context-checkbox"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="control-permissions-pill-group"]')).not.toBeVisible()
+    await modelScript.queue({ text: proposedPlan(modelScript.prompt('# Dummy plan revised\n\nAdd tests before implementation.')) })
+    await page.locator('[data-testid="control-deny-btn"]').click()
+    await modelScript.waitForSteps()
+
+    await waitForAgentIdle(page)
+
+    // Revised plan content appears with plan styling.
+    // Use .last() because getByText also matches the revision prompt.
+    await expect(page.getByRole('heading', { name: 'Dummy plan revised' })).toBeVisible()
+    await expect(page.getByText('Add tests before implementation.').last()).toBeVisible()
+
+    const revisedBanner = await waitForControlBanner(page)
+    await expect(revisedBanner.getByText('Plan Ready for Review')).toBeVisible()
+
+    const clearContextSwitch = page.getByTestId('plan-clear-context-checkbox').locator('input[type="checkbox"]')
+    await expect(clearContextSwitch).not.toBeChecked()
+    await clearContextSwitch.check()
+    await page.getByTestId('control-allow-btn').click()
+    // Scoped to the prompt's own text, not to the banner slot. Executing the
+    // approved plan can raise the NEXT control request into that same slot,
+    // which says nothing about whether this approval cleared.
+    await expect(revisedBanner.getByText('Plan Ready for Review')).not.toBeVisible()
+    await expectSettingsChip(page, 'Default')
+    await expect(visibleOnly(page.getByText('Context cleared'))).toBeVisible()
+    await expect(visibleOnly(page.getByText('Execute plan'))).toBeVisible()
+    // Every uncaught page error, not one known message. A narrow regex passes
+    // for a crash whose wording changed, and for every unrelated crash in this
+    // flow. `ignorableErrorEvents` owns which messages are browser-inherent, so
+    // this asks it rather than spelling its regex a second time.
+    expect(pageErrors.filter(message => !isResizeObserverLoopError(message))).toEqual([])
+  })
+})

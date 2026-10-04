@@ -10,17 +10,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNormalizeAttachmentsForProvider_CopilotAcceptsACPAttachmentSet(t *testing.T) {
+func TestNormalizeAttachmentsForProvider_CopilotAcceptsTextAndImage(t *testing.T) {
 	t.Parallel()
 
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("hello")},
 		{Filename: "diagram.png", MimeType: "image/png", Data: []byte{0x89, 0x50}},
-		{Filename: "spec.pdf", MimeType: "application/pdf", Data: []byte("%PDF")},
-		{Filename: "archive.bin", MimeType: "application/octet-stream", Data: []byte{0xff, 0x00}},
 	}
 
 	normalized, err := agenttest.MustNewRegistry(Registration()).NormalizeAttachments(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, attachments)
 	require.NoError(t, err)
-	require.Len(t, normalized, 4)
+	require.Len(t, normalized, 2)
+}
+
+func TestNormalizeAttachmentsForProvider_CopilotRejectsBinary(t *testing.T) {
+	t.Parallel()
+
+	attachments := []*leapmuxv1.Attachment{{
+		Filename: "archive.bin", MimeType: "application/octet-stream", Data: []byte{0xff, 0x00},
+	}}
+	_, err := agenttest.MustNewRegistry(Registration()).NormalizeAttachments(
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, attachments)
+	require.ErrorContains(t, err, "binary")
+}
+
+func TestNormalizeAttachmentsForProvider_CopilotRejectsPDF(t *testing.T) {
+	t.Parallel()
+
+	attachments := []*leapmuxv1.Attachment{{
+		Filename: "report.pdf", MimeType: "application/pdf", Data: []byte("%PDF"),
+	}}
+	_, err := agenttest.MustNewRegistry(Registration()).NormalizeAttachments(
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, attachments)
+	require.ErrorContains(t, err, "pdf")
 }

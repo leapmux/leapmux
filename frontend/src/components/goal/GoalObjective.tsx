@@ -39,7 +39,7 @@ const OVERFLOW_TOLERANCE_PX = 1
  *
  * A PROVIDER can still send soft-wrapped plain text, and it reads as one
  * paragraph here. Claude folds an objective to a single line before it stores
- * one, but Codex, ZCode and Reasonix copy the raw string through. The case is
+ * one, but Codex, ZCode, Reasonix and MiMo Code copy the raw string through. The case is
  * known and accepted: one card cannot answer this input differently from every
  * other markdown surface without splitting the app's single parser config, and
  * `remark-breaks` is an app-wide decision rather than a goal-card one.

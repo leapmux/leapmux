@@ -3,20 +3,22 @@ package terminal
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/util/procutil"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // tree builds the walk's parent index from a list of pid -> ppid pairs, so each
 // case below states the shape it means and nothing else. It goes through the
-// same indexByParent the real scan uses, so a case cannot pin an index shape the
+// same process table that the real scan uses, so a case cannot pin an index shape the
 // production path never builds.
-func tree(pairs ...[2]int32) map[int32][]int32 {
-	out := make([]procSnapshot, 0, len(pairs))
+func tree(pairs ...[2]int32) *procutil.ProcessTable {
+	out := make([]procutil.ProcessRecord, 0, len(pairs))
 	for _, p := range pairs {
-		out = append(out, procSnapshot{pid: p[0], ppid: p[1]})
+		out = append(out, procutil.ProcessRecord{PID: int(p[0]), PPID: int(p[1])})
 	}
-	return indexByParent(out)
+	return procutil.NewProcessTable(out)
 }
 
 // reportAll is the predicate for a case about the SHAPE of the walk. The

@@ -2402,6 +2402,20 @@ describe('wireSessionInfoToUpdates', () => {
     // A non-number cost and a context_usage with no token data contribute nothing.
     expect(wireSessionInfoToUpdates({ total_cost_usd: 'free', context_usage: {} })).toEqual({})
   })
+
+  // Kiro states the fill of its context and no token count, and its live reading
+  // arrives on this path, not in a message.
+  it('maps a context_usage that states the fill alone', () => {
+    expect(wireSessionInfoToUpdates({ context_usage: { usage_percent: 42.5 } })).toEqual({
+      contextUsage: { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 42.5 },
+    })
+  })
+
+  it('maps a stated zero fill, and skips a fill that is no reading', () => {
+    expect(wireSessionInfoToUpdates({ context_usage: { usage_percent: 0 } }).contextUsage).toMatchObject({ usagePercent: 0 })
+    expect(wireSessionInfoToUpdates({ context_usage: { usage_percent: -3 } })).toEqual({})
+    expect(wireSessionInfoToUpdates({ context_usage: { usage_percent: '42' } })).toEqual({})
+  })
 })
 
 /**

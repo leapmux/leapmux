@@ -5,6 +5,7 @@
 import type { ChannelManager } from '../../../src/lib/channel'
 import { fromJson } from '@bufbuild/protobuf'
 import { CleanupWorkspaceRequestSchema, CleanupWorkspaceResponseSchema, DeleteWorkspaceResponseSchema, TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import { sleep } from '../../../src/lib/sleep'
 import { solveCaptchaViaAPI } from './altcha'
 import { finishCleanup } from './cleanup'
 import { createTestChannelManager } from './e2e-channel'
@@ -17,9 +18,8 @@ import { createTestChannelManager } from './e2e-channel'
  */
 export const API_POLL_INTERVAL_MS = 150
 
-// ---- E2EE channel cache ----
-// Keeps a ChannelManager per hubUrl+cookie pair to avoid re-handshaking
-// on every test API call.
+// ---- Encrypted channel cache ----
+// Keep one ChannelManager for each hubUrl and cookie pair. Reuse it instead of repeating the handshake for every API call.
 
 const channelManagers = new Map<string, Promise<ChannelManager>>()
 
@@ -46,8 +46,7 @@ export async function closeTestChannels(hubUrl: string): Promise<void> {
 }
 
 // ---- Test admin fixture credentials ----
-// The first-admin user seeded by e2e fixtures via /setup mode. Mirrors the
-// backend's testutil.TestAdminUsername / TestAdminPassword.
+// The E2E setup creates the first administrator. These credentials match testutil.TestAdminUsername and TestAdminPassword.
 
 export const TEST_ADMIN_USERNAME = 'admin'
 export const TEST_ADMIN_PASSWORD = 'admin123'
@@ -87,8 +86,7 @@ export function authedHeaders(cookie: string): Record<string, string> {
 // ---- Hub API helpers (Auth, Admin, Worker management) ----
 
 /**
- * Login via the Connect API. Returns the session cookie string
- * (e.g. "leapmux-session=abc123") for use in subsequent requests.
+ * Sign in through the Connect API. Return the session cookie for later requests, such as "leapmux-session=abc123".
  */
 export async function loginViaAPI(hubUrl: string, username: string, password: string): Promise<string> {
   const captcha = await solveCaptchaViaAPI(hubUrl)
@@ -178,7 +176,7 @@ export async function getWorkerId(hubUrl: string, cookie: string): Promise<strin
       throw new Error(`getWorkerId failed: ${res.status}`)
     }
     const data = await res.json() as { workers: Array<{ id: string, online: boolean }> }
-    // Wait until the worker is registered in the DB and its bidi-stream is connected.
+    // Wait until the database stores the Worker and its bidirectional stream connects.
     const firstWorker = data.workers?.[0]
     if (firstWorker?.online) {
       return firstWorker.id
@@ -210,7 +208,7 @@ export async function deregisterWorkerViaAPI(
 
 /**
  * Enable signup through an administrator session.
- * A standalone hub defaults to closed signup. Store signup_enabled before registering a second account, or signup returns failed_precondition.
+ * A standalone Hub disables signup by default. Store signup_enabled before a second account registers, or signup returns failed_precondition.
  * Dev mode defaults to open signup only while no explicit setting exists.
  * The first account is exempt. A hub without users accepts its signup and makes it an administrator.
  */
@@ -220,7 +218,7 @@ export async function enableSignupViaAPI(hubUrl: string, cookie: string): Promis
 
 /**
  * Write one hub setting through an elevated administrator session. Elevate the session before this call.
- * partialJson follows UpdateSetting: a scalar uses a JSON value, and a structured setting uses an object with only changed fields.
+ * partialJson follows UpdateSetting. A scalar uses a JSON value. A structured setting uses an object with only the changed fields.
  */
 export async function updateSettingViaAPI(
   hubUrl: string,
@@ -244,8 +242,8 @@ export interface SmtpCaptureTarget {
 }
 
 /**
- * Point the hub at a loopback capture SMTP relay. The hub requires email
- * verification as soon as host and from_address are both present.
+ * Point the Hub at a loopback relay for Simple Mail Transfer Protocol (SMTP).
+ * The Hub requires email verification when both host and from_address exist.
  */
 export async function configureCaptureSmtpViaAPI(
   hubUrl: string,
@@ -312,8 +310,7 @@ export async function listPasskeysViaAPI(hubUrl: string, cookie: string): Promis
 /**
  * Elevate a session with its account password.
  *
- * Every sensitive UserService call needs this first: the step-up is a
- * property of the SESSION now, not a secret carried on each request.
+ * Elevate the session before each sensitive UserService call. The session retains elevation. A separate secret does not travel with each request.
  */
 export async function elevateSessionViaAPI(
   hubUrl: string,
@@ -410,9 +407,8 @@ export async function listMyAPITokensViaAPI(hubUrl: string, cookie: string): Pro
 }
 
 /**
- * Backdate a user's pending-email row so the ResendVerificationEmail
- * cooldown already ended (signup issues a code immediately; the hub blocks a
- * resend for 60s).
+ * Backdate the pending-email row so the ResendVerificationEmail cooldown ends.
+ * Signup issues a code immediately. The Hub blocks another code for 60 seconds.
  */
 export async function expirePendingEmailCooldown(hubDataDir: string, username: string): Promise<void> {
   const { execFile } = await import('node:child_process')
@@ -474,10 +470,9 @@ export async function verifyEmailViaAPI(hubUrl: string, cookie: string, verifica
 }
 
 /**
- * Mint a registration key as an authenticated user. Mirrors the
- * production UI flow: an admin (or any authorized user) calls
- * `WorkerManagementService.CreateRegistrationKey` and hands the
- * resulting key to the worker process via `--registration-key`.
+ * Mint a registration key through an authenticated user session.
+ * The production UI calls WorkerManagementService.CreateRegistrationKey through an administrator or another authorized user.
+ * The Worker receives that key through --registration-key.
  */
 export async function mintRegistrationKeyViaAPI(
   hubUrl: string,
@@ -506,16 +501,21 @@ export async function waitForNewOnlineWorkerViaAPI(
   cookie: string,
   before: Set<string>,
   timeoutMs = 30_000,
+  signal?: AbortSignal,
 ): Promise<string> {
   const deadline = Date.now() + timeoutMs
   while (true) {
+    signal?.throwIfAborted()
     const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/ListWorkers`, {
       method: 'POST',
       headers: authedHeaders(cookie),
       body: '{}',
+      ...(signal ? { signal } : {}),
     })
+    signal?.throwIfAborted()
     if (res.ok) {
       const data = await res.json() as { workers?: Array<{ id: string, online: boolean }> }
+      signal?.throwIfAborted()
       const online = (data.workers ?? []).filter(w => w.online).map(w => w.id)
       const fresh = online.find(id => !before.has(id))
       if (fresh)
@@ -523,7 +523,7 @@ export async function waitForNewOnlineWorkerViaAPI(
     }
     if (Date.now() >= deadline)
       throw new Error(`waitForNewOnlineWorkerViaAPI: no new worker came online within ${timeoutMs}ms`)
-    await new Promise(r => setTimeout(r, API_POLL_INTERVAL_MS))
+    await sleep(API_POLL_INTERVAL_MS, signal)
   }
 }
 
@@ -545,11 +545,10 @@ export async function listOnlineWorkerIDsViaAPI(
   return (data.workers ?? []).filter(w => w.online).map(w => w.id)
 }
 
-// ---- Worker E2EE helpers (Agent) ----
+// ---- Encrypted Worker helpers (Agent) ----
 
 /**
- * Open an agent via E2EE channel to the Worker and register the tab on the hub.
- * Returns the agent ID.
+ * Open an agent through an encrypted channel to the Worker. Register its tab on the Hub and return the agent ID.
  */
 export async function openAgentViaAPI(
   hubUrl: string,
@@ -559,6 +558,8 @@ export async function openAgentViaAPI(
   workingDir?: string,
   options?: {
     model?: string
+    /** Reopen this exact native session rather than create a new session. */
+    agentSessionId?: string
     /** Initial values for any provider option group. */
     optionValues?: Record<string, string>
     createWorktree?: boolean
@@ -569,11 +570,13 @@ export async function openAgentViaAPI(
     agentProvider?: number
     /**
      * Optional initial tab title. Browser opens use pickAgentTitle. This API helper defaults to an empty title.
-     * Supply a title explicitly when a test requires visible text, such as a test that detects title loss during a workspace move.
+     * Supply a title when the test requires visible text. A workspace move test can then detect title loss.
      */
     title?: string
   },
 ): Promise<string> {
+  if (options?.agentSessionId !== undefined && options.agentSessionId.trim() === '')
+    throw new Error('The native session ID must be nonempty when a resume is requested.')
   const { OpenAgentRequestSchema, OpenAgentResponseSchema } = await import('../../../src/generated/proto/leapmux/v1/agent_pb')
   const channel = await getTestChannel(hubUrl, cookie)
   // The options map holds the model and every option-group value.
@@ -592,6 +595,7 @@ export async function openAgentViaAPI(
     {
       workerId,
       workingDir: workingDir ?? '',
+      ...(options?.agentSessionId !== undefined ? { agentSessionId: options.agentSessionId } : {}),
       ...(options?.title ? { title: options.title } : {}),
       ...(Object.keys(initialOptions).length > 0 ? { options: initialOptions } : {}),
       ...(options?.agentProvider ? { agentProvider: options.agentProvider } : {}),
@@ -627,7 +631,7 @@ export async function openAgentViaAPI(
 
 /**
  * Open an agent with permission mode default.
- * Without an explicit mode, Claude requests Auto Mode and the installed CLI decides whether it is available.
+ * Without an explicit mode, Claude requests Auto Mode. The installed command line interface decides whether Auto Mode is available.
  * Use this helper when a test requires an exact mode or a mode-change notification.
  * A test of the provider default must open the agent without this helper.
  * Read the offered modes to select expectations, as 044-agent-settings.spec.ts does.
@@ -692,10 +696,8 @@ export async function deleteWorkspaceViaAPI(
   // Tests can delete a fixture workspace before fixture cleanup runs.
   if (res.status === 404)
     return
-  // The BODY, not the status alone. This runs in fixture cleanup, where a bare
-  // "failed: 500" names neither the workspace nor the hub's reason -- and the
-  // one failure seen so far reproduced only under full-suite load, so the next
-  // occurrence has to carry its own diagnosis.
+  // Include the body in a cleanup failure. The status alone gives neither the workspace ID nor the Hub's reason.
+  // A failure that occurs only in the full suite must retain those diagnostics.
   if (!res.ok)
     throw new Error(`deleteWorkspaceViaAPI(${workspaceId}) failed: ${res.status} ${await res.text()}`)
 
@@ -765,18 +767,10 @@ export async function deleteAllWorkspacesViaAPI(
 }
 
 /**
- * Return every account setting the signed-in user customized to its default.
- *
- * The suite shares ONE account across every test, so a setting a test writes
- * outlives it. That leak is invisible until a later test asserts a default:
- * `196-pill-group` reads the terminal theme MODE control, which the product
- * disables while the terminal theme follows the app, and an earlier test that
- * gave the terminal a palette of its own left that control enabled. The test
- * passed alone and failed in the suite, which is the signature of shared state
- * rather than of a product defect.
- *
- * Only the CUSTOMIZED keys are reset -- `customized` states exactly that -- so a
- * clean account costs one request rather than one per declared key.
+ * Reset each customized account setting to its default.
+ * The suite shares one account across all tests. A setting survives its test and can change the next test's result.
+ * For example, a separate terminal palette enables the theme mode control that 196-pill-group expects to remain disabled.
+ * Reset only the keys that customized identifies. A clean account then needs one request instead of one request for each setting.
  */
 export async function resetAllUserSettingsViaAPI(
   hubUrl: string,

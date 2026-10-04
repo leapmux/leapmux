@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"fmt"
+	"errors"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -28,16 +28,15 @@ type ChildSubagentReportWrite struct {
 }
 
 // NotificationPayload returns the normalized LeapMux notification envelope.
-func (w SubagentReportWrite) NotificationPayload() (map[string]interface{}, error) {
+func (w SubagentReportWrite) NotificationPayload() (map[string]any, error) {
 	w.ReportID = strings.TrimSpace(w.ReportID)
-	w.Report.Text = strings.TrimSpace(w.Report.Text)
 	if w.ReportID == "" {
-		return nil, fmt.Errorf("subagent report has no identity")
+		return nil, errors.New("subagent report has no identity")
 	}
-	if w.Report.Text == "" {
+	if strings.TrimSpace(w.Report.Text) == "" {
 		return nil, nil
 	}
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		contracts.NotificationFieldType: contracts.NotificationTypeSubagentReport,
 		contracts.NotificationFieldText: w.Report.Text,
 	}

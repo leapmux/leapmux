@@ -1,15 +1,14 @@
 import type { Component } from 'solid-js'
 import type { ControlPermissionPill } from './permissionPresets'
 
-import type { PillOptions } from '~/components/common/PillGroup'
+import type { PillOptions } from '~/components/common/pillOptions'
 import { PillGroup } from '~/components/common/PillGroup'
 import * as styles from '../ControlRequestBanner.css'
 
 /**
- * The permission pill group a control request's decision row offers: Unchanged /
- * Smart / Bypass, one row segment shared by the decision footer and the
- * providers that lay out their own action row (ACP, OpenCode). The group's own
- * name supplies the noun each option drops.
+ * Display the permission preset choices in the request's decision row.
+ * The shared footer and provider control surfaces use this group.
+ * Its accessible Permissions name identifies the Unchanged, Smart, and Bypass choices.
  */
 export const ControlPermissionPillGroup: Component<{ pill: ControlPermissionPill }> = props => (
   <div class={styles.controlRequestPill} data-testid="control-permissions-pill-group">
@@ -25,17 +24,16 @@ export const ControlPermissionPillGroup: Component<{ pill: ControlPermissionPill
 )
 
 /**
- * One provider-derived choice for how the positive action grants access.
+ * The caller maps each selected key to its native positive reply.
+ * Treat the key as opaque in this group.
+ * Each native path supplies its own meaning:
  *
- * A `key` is OPAQUE to this group. The group reports the selected key back, and
- * the caller maps it to its own reply. Each caller picks a different vocabulary:
- * ACP and OpenCode use the wire `optionId`, so a key IS the reply; Codex's
- * decision pills use a synthetic `codex-allow-<n>` that must never reach the
- * wire; Codex's permission pills use `turn` and `session`, which are the reply's
- * `scope`. So never send a key onward without the caller's own lookup.
+ * - ACP and OpenCode keys contain the offered optionId.
+ * - Codex decision keys identify a local choice and must not reach the wire directly.
+ * - Codex permission keys contain the turn or session scope.
  *
- * The `label` is also the accessible name the tests and the E2E specs look the
- * group up by (`~/test-support/controlRequests`), and each caller owns it.
+ * Require the caller's lookup before sending a key.
+ * The caller also supplies the accessible group label that tests use for lookup.
  */
 export interface ControlAllowChoicePill {
   label: string

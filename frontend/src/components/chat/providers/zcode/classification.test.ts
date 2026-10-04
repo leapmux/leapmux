@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ZCODE_EVENT, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
+import { ZCODE_EVENT, ZCODE_METHOD, ZCODE_STATE_REASON, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { input } from '../testUtils'
 import { classifyZCodeMessage } from './classification'
@@ -15,6 +15,12 @@ function toolEvent(kind: string, payload: Record<string, unknown> = {}): Record<
 }
 
 describe('classifyZCodeMessage', () => {
+  it('classifies a native compaction state as a notice', () => {
+    const parent = { method: ZCODE_METHOD.StateUpdated, params: { reason: ZCODE_STATE_REASON.SessionCompacted } }
+    expect(classifyZCodeMessage(input(parent)))
+      .toEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'end', detail: {} }] })
+  })
+
   it('classifies a model-response session.updated with text as assistant_text', () => {
     const parent = event(ZCODE_EVENT.SessionUpdated, { content: 'hello', stopReason: 'stop' })
     expect(classifyZCodeMessage(input(parent))).toEqual({ kind: 'assistant_text' })

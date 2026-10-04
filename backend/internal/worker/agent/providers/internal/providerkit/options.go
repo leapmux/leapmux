@@ -6,17 +6,20 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-// LiveGroup overlays an agent's confirmed current value onto a provider's static
-// option-group template. Used by providers that define their option lists
-// statically (Codex) and supply the current value at read time. The id, label,
-// default, display order, option list, AND mutability are taken from the template
-// (shared, immutable data); an empty current falls back to the template's DefaultValue,
-// so a group the caller forgot to supply a current for still renders a valid (in-list)
-// selection rather than a blank one -- which holds because every selectable template a
-// provider registers sets a non-empty DefaultValue (a template with options but no default
-// would still render blank here; the fallback can only point at what the template names).
-// Honoring the template's Mutable lets a provider project an agent-controlled, read-only
-// axis through LiveGroup without it being shown as user-editable.
+// LiveGroup puts an agent's confirmed current value on a copy of a provider's static
+// option-group template. A provider that declares its option lists statically (Codex)
+// supplies the current value at read time through it.
+//
+// The copy takes every other field from the template, which is shared and immutable data:
+// the id, the label, the default, the display order, the option list, the mutability, and
+// the read-only reason. Because Mutable comes from the template, a provider can show an axis
+// that the agent controls through LiveGroup, and the UI does not offer that axis for edit.
+//
+// An empty current falls back to the template's DefaultValue. A group that the caller gave
+// no current value then still shows a valid selection from its list, not a blank one. This
+// holds because every selectable template that a provider registers sets a non-empty
+// DefaultValue. A template with options and no default still shows a blank selection here,
+// because the fallback can only point at a value that the template holds.
 func LiveGroup(static *leapmuxv1.AvailableOptionGroup, current string) *leapmuxv1.AvailableOptionGroup {
 	if static == nil {
 		return nil
@@ -29,30 +32,32 @@ func LiveGroup(static *leapmuxv1.AvailableOptionGroup, current string) *leapmuxv
 	return g
 }
 
-// cloneOptionGroupTemplate returns a shallow copy of a static option-group template,
-// SHARING its (immutable) Options slice. It copies every scalar field explicitly here, so a
-// field added to AvailableOptionGroup must be added in THIS one place -- but only here, not
-// at each projection site below (LiveGroup, which then overrides only CurrentValue, and
-// FilterGroupOptions, which overrides only Options). Centralizing the copy keeps the two
-// projections from drifting in which fields they carry.
+// cloneOptionGroupTemplate returns a shallow copy of a static option-group template. The
+// copy SHARES the immutable Options slice of the template. This function is the one place
+// that copies the fields of AvailableOptionGroup, so a new field needs one line here and no
+// change at the two projections: LiveGroup then replaces CurrentValue only, and
+// FilterGroupOptions then replaces Options only. The two projections thus cannot drift in
+// the fields that they carry. TestCloneOptionGroupTemplate_CopiesEveryField fails for a
+// field that this function does not copy.
 func cloneOptionGroupTemplate(static *leapmuxv1.AvailableOptionGroup) *leapmuxv1.AvailableOptionGroup {
 	return &leapmuxv1.AvailableOptionGroup{
-		Id:           static.GetId(),
-		Label:        static.GetLabel(),
-		Options:      static.GetOptions(),
-		CurrentValue: static.GetCurrentValue(),
-		DefaultValue: static.GetDefaultValue(),
-		Mutable:      static.GetMutable(),
-		Order:        static.GetOrder(),
+		Id:             static.GetId(),
+		Label:          static.GetLabel(),
+		Options:        static.GetOptions(),
+		CurrentValue:   static.GetCurrentValue(),
+		DefaultValue:   static.GetDefaultValue(),
+		Mutable:        static.GetMutable(),
+		Order:          static.GetOrder(),
+		ReadOnlyReason: static.GetReadOnlyReason(),
 	}
 }
 
-// FilterGroupOptions returns a shallow copy of static with its Options narrowed to those
-// satisfying keep, preserving id/label/default/mutability/order. Returns nil for a nil
-// input. It drops an option a provider can't currently offer (e.g. Claude hiding the "auto"
-// permission mode when the startup probe rejected it) WITHOUT mutating the shared static
-// template, so it composes with LiveGroup (which then overlays the live current value)
-// instead of each caller re-implementing the template copy.
+// FilterGroupOptions returns a shallow copy of static that keeps only the options that
+// satisfy keep. Every other field comes from the template. It returns nil for a nil input.
+// It drops an option that a provider cannot offer now. For example, Claude drops the "auto"
+// permission mode when the startup probe rejected it. It NEVER changes the shared static
+// template, so it composes with LiveGroup, which then puts the live current value on the
+// copy. No caller has to copy the template itself.
 func FilterGroupOptions(static *leapmuxv1.AvailableOptionGroup, keep func(*leapmuxv1.AvailableOption) bool) *leapmuxv1.AvailableOptionGroup {
 	if static == nil {
 		return nil
@@ -68,10 +73,10 @@ func FilterGroupOptions(static *leapmuxv1.AvailableOptionGroup, keep func(*leapm
 	return g
 }
 
-// modelThenEffort assembles the leading "model group, then effort group" slice, omitting either
-// when it is nil. The model-first/effort-second ordering and the omit-when-absent rule live here so
-// the mutable (ModelAndEffortGroups) and read-only (ReadOnlyModelAndEffortGroups) builders share one
-// definition and can't drift on them.
+// modelThenEffort returns the model group, then the effort group, and omits a group that is
+// nil. The mutable builder (ModelAndEffortGroups) and the read-only builder
+// (ReadOnlyModelAndEffortGroups) both call it, so they share one order and one omission rule
+// and cannot drift apart on them.
 func modelThenEffort(modelGroup, effortGroup *leapmuxv1.AvailableOptionGroup) []*leapmuxv1.AvailableOptionGroup {
 	var groups []*leapmuxv1.AvailableOptionGroup
 	if modelGroup != nil {
@@ -83,12 +88,12 @@ func modelThenEffort(modelGroup, effortGroup *leapmuxv1.AvailableOptionGroup) []
 	return groups
 }
 
-// ReadOnlyModelAndEffortGroups builds the read-only model group (with a humanized
-// display name) and, when effort is a concrete non-auto value, the read-only effort
-// group, for a session whose model/effort UI is hidden (a third-party Claude session or
-// can_change_model_and_effort=false). It mirrors ModelAndEffortGroups for the mutable
-// case so the EffortAuto-suppression rule lives here next to its sibling rather than
-// inline at the call site. modelName is the model's humanized display label.
+// ReadOnlyModelAndEffortGroups builds the read-only model group, with a display name for a
+// human reader. When effort is a concrete value other than auto, it also builds the
+// read-only effort group. A session that hides its model and effort controls uses it: a
+// third-party Claude session, or a session with can_change_model_and_effort=false. It is the
+// read-only sibling of ModelAndEffortGroups, so the rule that drops EffortAuto lives here
+// beside that sibling and not at the call site. modelName is the display label of the model.
 func ReadOnlyModelAndEffortGroups(model, modelName, effort string) []*leapmuxv1.AvailableOptionGroup {
 	var modelGroup, effortGroup *leapmuxv1.AvailableOptionGroup
 	if model != "" {
@@ -100,21 +105,22 @@ func ReadOnlyModelAndEffortGroups(model, modelName, effort string) []*leapmuxv1.
 	return modelThenEffort(modelGroup, effortGroup)
 }
 
-// ModelAndEffortGroups returns the model group followed by the current model's
-// effort group, omitting either when the catalog yields none. Shared by every
-// provider that exposes model and effort as its two leading top-level groups
-// (Codex, Pi, Claude). EffortLabel names the effort axis (EffortGroupLabel for Codex
-// and Claude, pi.ThinkingLevelLabel for Pi) and is applied to both the top-level group
-// and -- via the default modelSubGroups -- the per-model sub_groups, so a model switch
-// keeps the label consistent. modelSubGroups overrides the per-model sub_groups func: pass
-// nil for the default (effort sub_groups only), or claudeModelSubGroups to also carry the
-// model-dependent extended-thinking group Claude swaps in on a model switch.
+// ModelAndEffortGroups returns the model group, then the effort group of the current model.
+// It omits a group when the catalog gives none. Every provider that shows model and effort
+// as its first two top-level groups calls it: Codex, Pi, and Claude.
+//
+// effortLabel is the label of the effort axis: EffortGroupLabel for Codex and Claude, and
+// pi.ThinkingLevelLabel for Pi. The top-level group takes it. The default modelSubGroups
+// gives it to the sub_groups of each model also, so a model switch keeps the same label.
+// modelSubGroups replaces the function that builds the sub_groups of each model. Pass nil
+// for the default, which gives effort sub_groups only. Pass claudeModelSubGroups to add the
+// extended-thinking group that depends on the model, which Claude swaps in on a model switch.
 func ModelAndEffortGroups(models []*agent.ModelInfo, model, effort, effortLabel string, modelSubGroups agent.ModelSubGroupsFunc) []*leapmuxv1.AvailableOptionGroup {
 	if modelSubGroups == nil {
 		modelSubGroups = agent.EffortSubGroupsLabeled(effortLabel)
 	}
-	// agent.EffortGroupForModel resolves the current model in the catalog (FindAvailableModel) before
-	// building its effort group, so a model switch carries the new model's effort tiers.
+	// FindAvailableModel resolves the current model in the catalog before EffortGroupForModel
+	// builds its effort group, so a model switch carries the effort tiers of the new model.
 	return modelThenEffort(
 		agent.ModelOptionGroup(models, model, modelSubGroups),
 		agent.EffortGroupForModel(agent.FindAvailableModel(models, model), effort, effortLabel),

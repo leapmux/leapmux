@@ -28,7 +28,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 
 	// Codex doesn't have third-party provider detection or model/effort
 	// conditional args, so we pass empty modelEffortArgs for a simple command.
-	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, Registration())
+	registration := Registration()
+	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, registration)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -50,13 +51,14 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Env, opts)
 
-	stdin, stdout, stderrPipe, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
 	if err != nil {
 		return nil, err
 	}
+	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
 	a := &Agent{
-		JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcess(opts, "codex", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)},
+		JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "codex", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel)},
 		model:          opts.Model(),
 		effort:         opts.Effort(),
 		workingDir:     opts.WorkingDir,
@@ -64,7 +66,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	a.sink = agent.NewModelProgressResetSink(a.sink)
 
-	if err := a.StartCmd(cmd, cancel); err != nil {
+	if err := a.StartCmd(); err != nil {
 		return nil, err
 	}
 

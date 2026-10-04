@@ -42,9 +42,11 @@ func (s *enrichHookSink) EnrichMessage(change agent.MessageEnrichment) (bool, er
 func newHookedToolTranscript(t *testing.T, record []byte) (*Transcript, *enrichHookSink) {
 	t.Helper()
 	sink := &enrichHookSink{Sink: &agenttest.Sink{}}
+	// Bind stored rows before the test releases the native supplement reader.
+	sink.UpdateSessionID("session-1")
 	source := &testToolSource{
 		locateHook: func(sessionID string) Location {
-			return Location{SessionKey: sessionID, Ready: true}
+			return Location{SessionKey: sessionID, Ready: sessionID != ""}
 		},
 		readHook: func(_ context.Context, pending map[string]agent.MessageContent, _ bool) map[string][]byte {
 			if len(pending) == 0 {

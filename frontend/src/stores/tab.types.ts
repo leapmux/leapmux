@@ -94,6 +94,8 @@ export interface AgentTab extends BaseTab {
   parentAgentId?: string | undefined
   /** Whether this agent accepts a message sent directly to it (composer gate). */
   acceptsMessages?: boolean | undefined
+  /** Whether this agent's turn can be interrupted from its own tab (the worker's AgentInfo.accepts_interrupt). */
+  acceptsInterrupt?: boolean | undefined
   /** Whether the live provider accepts an explicit queue-head steer. */
   supportsSteering?: boolean | undefined
   /** Whether the live provider can only pre-empt: interrupt the turn, then send. */

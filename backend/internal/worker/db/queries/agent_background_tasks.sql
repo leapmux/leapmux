@@ -9,6 +9,36 @@
 -- name: ListAgentBackgroundTasksNewestFirst :many
 SELECT * FROM agent_background_tasks WHERE owner_agent_id = ? ORDER BY seq DESC LIMIT ?;
 
+-- ListAllAgentBackgroundTasksForResume includes rows past the display cap.
+-- A linked old child must survive even when the sidebar no longer shows it.
+-- name: ListAllAgentBackgroundTasksForResume :many
+SELECT * FROM agent_background_tasks WHERE owner_agent_id = ? ORDER BY seq ASC;
+
+-- CloneAgentBackgroundTaskForResume keeps the archived row under a new root.
+-- The caller remaps its child and immediate parent before this insert. A source
+-- row left active by an interrupted close becomes INTERRUPTED with an end time:
+-- the old process cannot still own work in the new root.
+-- name: CloneAgentBackgroundTaskForResume :execrows
+INSERT INTO agent_background_tasks (
+    owner_agent_id, row_key, seq, kind, child_agent_id, parent_agent_id,
+    group_key, group_label, title, title_is_command, description,
+    active_form, status, created_at, updated_at, ended_at
+)
+SELECT sqlc.arg(new_root_id), source.row_key, source.seq, source.kind,
+       sqlc.arg(new_child_id), sqlc.arg(new_parent_id),
+       source.group_key, source.group_label, source.title, source.title_is_command, source.description,
+       source.active_form,
+       CASE WHEN source.status < sqlc.arg(min_final_status)
+            THEN sqlc.arg(interrupted_status) ELSE source.status END AS status,
+       source.created_at,
+       CASE WHEN source.status < sqlc.arg(min_final_status)
+            THEN sqlc.arg(copy_time) ELSE source.updated_at END AS updated_at,
+       CASE WHEN source.status < sqlc.arg(min_final_status)
+            THEN sqlc.arg(copy_time) ELSE source.ended_at END AS ended_at
+FROM agent_background_tasks AS source
+WHERE source.owner_agent_id = sqlc.arg(old_root_id)
+  AND source.row_key = sqlc.arg(row_key);
+
 -- ListAgentBackgroundTasksByKindNewestFirst is the per-POOL seed. The registry
 -- caps each kind independently, so one global window is the wrong shape: an
 -- owner whose newest N rows are all shells seeds an EMPTY subagent pool, and the
@@ -58,9 +88,9 @@ WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND kind = sqlc.arg(kind) AND se
 -- name: UpsertAgentBackgroundTask :exec
 INSERT INTO agent_background_tasks (
     owner_agent_id, row_key, seq, kind, child_agent_id, parent_agent_id,
-    group_key, group_label, title, title_is_command, description, active_form, status, created_at, updated_at
+    group_key, group_label, title, title_is_command, description, active_form, status, created_at, updated_at, ended_at
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
 ON CONFLICT(owner_agent_id, row_key) DO UPDATE SET
     kind           = excluded.kind,
@@ -73,7 +103,8 @@ ON CONFLICT(owner_agent_id, row_key) DO UPDATE SET
     description    = excluded.description,
     active_form    = excluded.active_form,
     status         = excluded.status,
-    updated_at     = excluded.updated_at;
+    updated_at     = excluded.updated_at,
+    ended_at       = excluded.ended_at;
 
 -- name: UpdateAgentBackgroundTaskStatus :exec
 UPDATE agent_background_tasks SET
@@ -209,34 +240,19 @@ ORDER BY seq LIMIT 1;
 -- MarkAgentBackgroundTasksEnded gives every still-active row owned by an agent a
 -- final status (used on clean process exit).
 --
--- It RETURNS the child transcript of each row it ended, for the same reason the
--- boot sweep below does: the write is the single source for both facts. The
--- caller cannot read the set back afterwards (the rows are no longer active),
--- and its in-memory cache holds the DISPLAY list only -- so a row past the cap
--- or below the seed window would get a final status here and no closing
--- divider, permanently.
--- name: MarkAgentBackgroundTasksEnded :many
+-- End every stored active task, including rows outside the display cap.
+-- name: MarkAgentBackgroundTasksEnded :execrows
 UPDATE agent_background_tasks SET
     status     = sqlc.arg(status),
     ended_at   = sqlc.arg(ended_at),
     updated_at = sqlc.arg(updated_at)
-WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND status < sqlc.arg(min_final_status)
-RETURNING child_agent_id;
+WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND status < sqlc.arg(min_final_status);
 
--- MarkAllActiveAgentBackgroundTasksInterrupted runs at worker boot before any
--- caches exist: every active row left over from the previous process is
--- honestly labeled "interrupted" (the worker restarted and cut the task off).
---
--- It RETURNS the child transcript of each row it ended, so the boot sweep closes
--- exactly the transcripts it interrupted. The write is the single source for
--- both facts: a separate read before the UPDATE could not be repeated after it
--- (the rows are no longer active), so a failed read followed by a successful
--- UPDATE would strand every one of those transcripts with no closing divider,
--- permanently and with no way for a later boot to find them.
--- name: MarkAllActiveAgentBackgroundTasksInterrupted :many
+-- At Worker boot, mark every stored active task interrupted.
+-- Return the number of changed tasks for the startup log.
+-- name: MarkAllActiveAgentBackgroundTasksInterrupted :execrows
 UPDATE agent_background_tasks SET
     status     = sqlc.arg(status),
     ended_at   = sqlc.arg(ended_at),
     updated_at = sqlc.arg(updated_at)
-WHERE status < sqlc.arg(min_final_status)
-RETURNING child_agent_id;
+WHERE status < sqlc.arg(min_final_status);

@@ -1,0 +1,35 @@
+{
+  "_readme": "Qwen Code uses the Agent Client Protocol (ACP) and adds native messages. Qwen owns the native vocabulary in this contract. Each foreground child update carries the tool call ID that created that child. Tool-call `_meta` supplies the real tool name and interaction kind. Qwen sends questions and plan approvals as permission requests. Its own notification ends a turn that Qwen starts without a client prompt.\n\nThe Worker routes child updates and resolves plan approval. It reads native modes and turn completion. The browser plugin extracts provider-neutral tool rows and control requests. It reads the native turn completion into a divider. A value that only one reader uses stays in that reader's code. The question marker and answer field stay in the browser. The Worker forwards those question requests and replies unchanged.\n\n`configIds` identifies Qwen's reasoning axis. The Worker sends setting changes through that ID. The browser uses the same ID for the effort chip.\n\nQwen reports native shell_result outputFiles or a native truncation footer. The browser checks the tool call and its observed opener. It shows reported paths beside the original preview. LeapMux reads no native archive or output file for this feature.",
+  "methods": {
+    "EndTurn": "_qwencode/end_turn"
+  },
+  "meta": {
+    "ToolName": "toolName",
+    "ParentToolCallId": "parentToolCallId",
+    "InteractionKind": "qwenInteractionKind",
+    "Questions": "qwenQuestions"
+  },
+  "toolNames": {
+    "Agent": "agent",
+    "ExitPlanMode": "exit_plan_mode",
+    "AskUserQuestion": "ask_user_question",
+    "RunShellCommand": "run_shell_command",
+    "Workflow": "workflow",
+    "TodoWrite": "todo_write"
+  },
+  "modes": {
+    "Plan": "plan",
+    "Default": "default",
+    "AutoEdit": "auto-edit",
+    "Auto": "auto",
+    "Yolo": "yolo"
+  },
+  "permissionOptions": {
+    "ProceedAlways": "proceed_always",
+    "ProceedOnce": "proceed_once",
+    "Cancel": "cancel"
+  },
+  "configIds": {
+    "ReasoningEffort": "reasoning_effort"
+  }
+}

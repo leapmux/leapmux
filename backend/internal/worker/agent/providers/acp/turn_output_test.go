@@ -119,7 +119,7 @@ func TestACPSessionInfoUpdateKeepsOneAssembledMessage(t *testing.T) {
 	b.handleACPUpdate(json.RawMessage(`{"sessionUpdate":"session_info_update","info":{"title":"A title","modifiedAt":"now"}}`))
 	b.handleACPUpdate(json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"two"}}`))
 	assert.Empty(t, sink.Messages(), "session metadata writes no row and closes no segment")
-	b.flushAssistantBuffer()
+	b.main().flushAssistantBuffer()
 	messages := sink.Messages()
 	require.Len(t, messages, 1)
 	var assembled struct {
@@ -127,4 +127,143 @@ func TestACPSessionInfoUpdateKeepsOneAssembledMessage(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(messages[0].Content, &assembled))
 	assert.Equal(t, "one two", assembled.Text)
+}
+
+// chunkIDBase is a turn base whose provider states the message of each chunk in
+// `_meta.messageId`.
+func chunkIDBase(t *testing.T) (*Base, *agenttest.Sink) {
+	t.Helper()
+	var stdin bytes.Buffer
+	b, sink := newACPTurnBase(t, agenttest.NopStdin(&stdin))
+	b.hooks.ChunkMessageID = func(metadata map[string]json.RawMessage) string {
+		var id string
+		_ = json.Unmarshal(metadata["messageId"], &id)
+		return id
+	}
+	return b, sink
+}
+
+// chunkUpdate is one text or thought chunk, with the message id when id is not "".
+func chunkUpdate(updateType, text, id string) json.RawMessage {
+	update := map[string]any{"sessionUpdate": updateType, "content": map[string]any{"type": "text", "text": text}}
+	if id != "" {
+		update["_meta"] = map[string]any{"messageId": id}
+	}
+	encoded, _ := json.Marshal(update)
+	return encoded
+}
+
+func TestACPChunkMessageIDSplitsTwoMessages(t *testing.T) {
+	t.Parallel()
+	b, sink := chunkIDBase(t)
+
+	b.handleACPUpdate(chunkUpdate("agent_message_chunk", "First ", "m1"))
+	b.handleACPUpdate(chunkUpdate("agent_message_chunk", "answer.", "m1"))
+	b.handleACPUpdate(chunkUpdate("agent_message_chunk", "Second answer.", "m2"))
+	b.main().flushAssistantBuffer()
+
+	assert.Equal(t, []string{"text:First answer.", "text:Second answer."}, assembledTexts(t, sink.Messages()))
+}
+
+func TestACPChunkMessageIDSplitsTwoThoughts(t *testing.T) {
+	t.Parallel()
+	b, sink := chunkIDBase(t)
+
+	b.handleACPUpdate(chunkUpdate("agent_thought_chunk", "First thought.", "m1"))
+	b.handleACPUpdate(chunkUpdate("agent_thought_chunk", "Second thought.", "m2"))
+	b.main().flushThoughtBuffer()
+
+	assert.Equal(t, []string{"thought:First thought.", "thought:Second thought."}, assembledTexts(t, sink.Messages()))
+}
+
+// A chunk that states no id continues the buffered text, and so does a chunk
+// of the same message after one that stated none.
+func TestACPChunkWithNoMessageIDContinuesTheMessage(t *testing.T) {
+	t.Parallel()
+	b, sink := chunkIDBase(t)
+
+	b.handleACPUpdate(chunkUpdate("agent_message_chunk", "one ", "m1"))
+	b.handleACPUpdate(chunkUpdate("agent_message_chunk", "two ", ""))
+	b.handleACPUpdate(chunkUpdate("agent_message_chunk", "three", "m1"))
+	b.main().flushAssistantBuffer()
+
+	assert.Equal(t, []string{"text:one two three"}, assembledTexts(t, sink.Messages()))
+}
+
+// A message that another update already ended starts no empty row when the
+// next message arrives.
+func TestACPChunkMessageIDAfterAToolCallWritesNoEmptyRow(t *testing.T) {
+	t.Parallel()
+	b, sink := chunkIDBase(t)
+
+	b.handleACPUpdate(chunkUpdate("agent_message_chunk", "Before the call.", "m1"))
+	b.handleACPUpdate(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"Read","kind":"read","status":"completed"}`))
+	b.handleACPUpdate(chunkUpdate("agent_message_chunk", "After the call.", "m2"))
+	b.main().flushAssistantBuffer()
+
+	assert.Equal(t, []string{"text:Before the call.", "text:After the call."}, assembledTexts(t, sink.Messages()))
+}
+
+// Without the hook, the protocol states no message boundary, and a run of
+// chunks stays one message.
+func TestACPWithoutChunkMessageIDARunOfChunksIsOneMessage(t *testing.T) {
+	t.Parallel()
+	var stdin bytes.Buffer
+	b, sink := newACPTurnBase(t, agenttest.NopStdin(&stdin))
+
+	b.handleACPUpdate(chunkUpdate("agent_message_chunk", "one ", "m1"))
+	b.handleACPUpdate(chunkUpdate("agent_message_chunk", "two", "m2"))
+	b.main().flushAssistantBuffer()
+
+	assert.Equal(t, []string{"text:one two"}, assembledTexts(t, sink.Messages()))
+}
+
+// A drained turn forgets the message of its last chunk, so the first chunk of
+// the next turn stores nothing before it.
+func TestACPChunkMessageIDResetsWithTheTurn(t *testing.T) {
+	t.Parallel()
+
+	var output acpTurnOutput
+	assert.False(t, output.switchMessage(agent.AssembledMessageKindText, "m1"))
+	output.appendAssistant("text")
+	_ = output.drainTurn()
+	output.appendAssistant("carried")
+	assert.False(t, output.switchMessage(agent.AssembledMessageKindText, "m2"),
+		"the drain forgot m1, so m2 starts the buffer rather than a second message")
+}
+
+// The reader feeds chunks while the end of a prompt drains the turn on another
+// goroutine. The message ids live under turnMu with the text, so the race
+// detector finds nothing, and no chunk is lost or stored twice.
+func TestACPChunkMessageIDIsSafeAgainstATurnDrain(t *testing.T) {
+	t.Parallel()
+	b, sink := chunkIDBase(t)
+
+	const chunks = 300
+	var drained strings.Builder
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := range chunks {
+			b.handleACPUpdate(chunkUpdate("agent_message_chunk", "#", []string{"m1", "m2", "m3"}[i%3]))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range chunks {
+			turn := b.drainTurn()
+			mu.Lock()
+			drained.WriteString(turn.assistantText)
+			mu.Unlock()
+		}
+	}()
+	wg.Wait()
+	b.main().flushAssistantBuffer()
+
+	// "#" appears in no prefix that assembledTexts adds.
+	stored := strings.Join(assembledTexts(t, sink.Messages()), "")
+	total := strings.Count(stored, "#") + strings.Count(drained.String(), "#")
+	assert.Equal(t, chunks, total, "each chunk is stored once or drained once")
 }

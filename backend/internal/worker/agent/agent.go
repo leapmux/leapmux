@@ -52,6 +52,9 @@ type TurnState struct {
 // MessageContent keeps provider bytes and supplemental data separate during persistence and extraction.
 type MessageContent struct {
 	Original []byte
+	// IdempotencyKey identifies one immutable provider record within its native session.
+	// An empty key preserves ordinary transcript writes.
+	IdempotencyKey string
 	// AgentSessionID identifies the provider session that produced these bytes.
 	AgentSessionID string
 	// Supplemental holds recovered provider data. Metadata holds worker-calculated fields.
@@ -157,6 +160,16 @@ type TurnServices interface {
 	// kept the same turn running. The Worker restores the activity that the
 	// interrupt request hid, including the Interrupt button for a later attempt.
 	ReportInterruptIgnored()
+	// RequeueDroppedInput hands back input that the provider accepted into the
+	// running turn and that the agent dropped before the model read it. The
+	// Worker queues it as the reader's next message, under the queue's own rules,
+	// and states in the transcript why the message appears again. dropID
+	// identifies the drop within the agent, so a second call for the same drop
+	// queues nothing and writes nothing.
+	//
+	// An error means that the queue did not take the input, and the provider
+	// must then tell the reader that the model never read it.
+	RequeueDroppedInput(dropID, content string, attachments []*leapmuxv1.Attachment) error
 }
 
 // SpanServices owns transcript span state.
@@ -184,6 +197,10 @@ type ProgressServices interface {
 
 // ControlRequest keeps the native payload separate from its optional transcript source.
 type ControlRequest struct {
+	// AgentSessionID is the provider session that the request belongs to. The
+	// worker accepts an answer only while the agent is in that session. An empty
+	// value makes the sink store the session that it holds when it stores the
+	// request, and that session is empty until the first UpdateSessionID.
 	AgentSessionID string
 	RequestID      string
 	Payload        []byte
@@ -307,38 +324,39 @@ type AutoContinueServices interface {
 	CancelAutoContinue(reason AutoContinueReason)
 }
 
+// ChildAgentSpec supplies a native child identity and its initial stored options.
+// A child without a known spawn span must supply its exact provider key.
+type ChildAgentSpec struct {
+	SpawnSpanID      string
+	ProviderChildKey string
+	Title            string
+	Options          optionmap.Map
+	// AgentSessionID supplies the initial native session for a new child.
+	// A nonempty value must match an existing child's stored session.
+	AgentSessionID string
+}
+
 // ChildServices owns child transcripts and their in-memory state.
 type ChildServices interface {
 
 	// --- Subagent transcripts and the background-task registry ---
 
-	// EnsureChildAgent resolves (and creates on first sight) the virtual child
-	// agent spawned by the tool_use span spawnSpanID in THIS sink's transcript,
-	// linked to the provider's child key. Idempotent across replays and worker
-	// restarts. providerChildKey doubles as the registry row_key when non-empty.
+	// EnsureChildAgent resolves the virtual child that spec identifies in this sink's transcript.
+	// It creates an absent child and stores its initial options before publication.
+	// Replays and Worker restarts resolve the same stored child.
+	// A nonempty ProviderChildKey supplies the registry key also.
 	//
-	// title is the MODEL's, so the sink cleans it with validate.CleanName --
-	// the same rule every other writer of a title column applies, and the one
-	// place that documents its steps. A provider passes what it has, and does
-	// not cap or strip it first. Pass "" when the provider has no title: the
-	// sink keeps the registry row's current title and gives the agent row a
-	// pooled fallback name.
-	EnsureChildAgent(spawnSpanID, providerChildKey, title string) (childAgentID string, err error)
+	// The sink cleans the model's Title with the common validate.CleanName rule.
+	// The provider must supply its original title without a separate cap or character filter.
+	// An empty Title preserves the registry title and gives a new agent a pooled fallback title.
+	EnsureChildAgent(spec ChildAgentSpec) (childAgentID string, err error)
 
-	// ChildSpawnSpan returns the tool_use span in THIS sink's transcript that
-	// spawned childAgentID. It is the first argument EnsureChildAgent took, read
-	// back. The answer is "" for an id this sink spawned no child under.
-	//
-	// It exists because that span is the only DURABLE link between a provider's
-	// events and its forwarded output. A provider indexes the span in memory, and
-	// that index cannot survive a worker restart; the child row can.
-	//
-	// A provider needs it when its CLI restarts a finished subagent under an id
-	// that is not the original spawn. See the Claude implementation for the shape
-	// that motivated it.
-	//
-	// err is non-nil when the row could not be READ, which is a third answer and
-	// not a miss, for the reason LookupBackgroundTask states.
+	// ChildSpawnSpan returns the stored spawn span for childAgentID under this sink.
+	// It returns the SpawnSpanID that EnsureChildAgent received, or an empty string for an absent child.
+	// The stored child preserves this link after the provider's in-memory index disappears during a Worker restart.
+	// A provider uses the link when its CLI restarts a completed child under a different native ID.
+	// Claude uses this link to route resumed child output.
+	// A read failure returns an error. It differs from an absent row, as LookupBackgroundTask specifies.
 	ChildSpawnSpan(childAgentID string) (spawnSpanID string, err error)
 
 	// ChildSink returns a ProviderServices value for the child transcript.
@@ -640,6 +658,12 @@ type ContextCompactor interface {
 	CompactContext() error
 }
 
+// NativeTurnRestarter reports a launch-only change made by a native tool.
+// The Worker replaces the process with the same session before it sends queued input.
+type NativeTurnRestarter interface {
+	NativeTurnRestartRequired() bool
+}
+
 // InputSteerer adds input to an active turn. The queue calls it only for an
 // explicit Steer operation. Normal dispatch always starts a later turn.
 type InputSteerer interface {
@@ -745,3 +769,7 @@ var ErrChildOperationUnsupported = errors.New("agent provider does not support t
 // (SendChildInput) passes it to classifyQueueDeliveryError, which decides how
 // the queue records the failed delivery.
 var ErrChildRouteNotReady = errors.New("subagent route is not ready in the running owner process; retry")
+
+// ErrChildIdentityRefused reports a conflict with the child's stored identity.
+// A later successful identity check can authorize the route again.
+var ErrChildIdentityRefused = errors.New("subagent identity does not match the stored child")

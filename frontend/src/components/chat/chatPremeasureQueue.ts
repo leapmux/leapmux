@@ -3,6 +3,7 @@ import type { ClassifiedEntry } from './chatEntryCache'
 import type { ChatDomPremeasureCandidate } from './chatHiddenPremeasure'
 import type { UseChatVirtualizerResult, VirtualItem } from './useChatVirtualizer'
 import { createComputed, createMemo, createSignal, untrack } from 'solid-js'
+import { emitDevEvent } from '~/lib/devInstrument'
 import { mapWith, mapWithout, setWithout } from '~/lib/immutableCollections'
 import { shallowEqualSets } from '~/lib/shallowEqual'
 import { warnSlowScrollPhase } from './chatScrollGeometry'
@@ -152,6 +153,20 @@ export function createPremeasureQueue(deps: PremeasureQueueDeps) {
       // (the copy-on-write short-circuit skips the reference churn when the key is unchanged).
       setUnsettledPremeasureKeys(keys => mapWith(keys, id, heightKey))
     }
+    emitDevEvent('leapmux:chat-premeasure', () => ({
+      phase: 'commit',
+      id,
+      seq: deps.visibleEntryById().get(id)?.message.seq?.toString() ?? null,
+      height: Number.isFinite(height) ? height : String(height),
+      heightKey: heightKey ?? null,
+      currentHeightKey: deps.virtualItemById().get(id)?.heightKey ?? null,
+      accepted,
+      hasMeasured: deps.virt.hasMeasuredHeight(id),
+      pending: deps.virt.hasPendingPremeasuredHeight(id),
+      settled,
+      candidatePending: untrack(pendingPremeasureIds).has(id),
+      collapsed: untrack(collapsedPremeasureIds).has(id),
+    }))
     return hasCommittedOrPendingHeight
   }
 

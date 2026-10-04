@@ -1,7 +1,10 @@
 import type { TranscriptFrame } from '~/test-support/messageFactory'
 import { describe, expect, it } from 'vitest'
+import { MIMO_TOOL, MIMO_TOOL_STATUS } from '~/generated/contracts/mimo-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
 import { makeTranscriptMessage } from '~/test-support/messageFactory'
+import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
 import { createTranscriptScenario } from '~/test-support/transcriptScenario'
 
 // One request/result pair per protocol, through the whole scenario pipeline:
@@ -11,9 +14,10 @@ import { createTranscriptScenario } from '~/test-support/transcriptScenario'
 // protocol's own status words follow. The calls keep their TYPED kind, which a
 // degradation never does: the degrade always answers the generic row.
 //
-// The Agent Client Protocol's five speakers share one adapter; OpenCode stands
-// for the family here, and the ACP-family deviations (Cursor's names, Goose's
-// `_meta`, Reasonix's envelope) stay covered by their own extractor tests.
+// Every Agent Client Protocol speaker shares one adapter, so OpenCode stands for
+// the family here. The deviations of each family member (Cursor's names, Goose's
+// `_meta`, Reasonix's envelope, and the tool identities of Grok Build, Qwen Code
+// and Kiro) stay covered by that member's own extractor tests.
 
 const SESSION = 'pairing-session'
 
@@ -104,6 +108,43 @@ const CASES: PairCase[] = [
     status: 'failed',
   },
   {
+    label: 'Oh My Pi',
+    provider: AgentProvider.OH_MY_PI,
+    spanType: 'read',
+    // omp 18.2.11's own pair (probe), path shortened.
+    request: { type: 'tool_execution_start', toolCallId: 'omp-call', toolName: 'read', args: { path: 'notes.txt' } },
+    result: { type: 'tool_execution_end', toolCallId: 'omp-call', toolName: 'read', result: { content: [{ type: 'text', text: '[notes.txt#C789]\n1:alpha one' }], details: { displayContent: { text: 'alpha one', startLine: 1 } } }, isError: false },
+    kind: 'read',
+    status: 'completed',
+    // The start row reads the result the landed end frame states, so a running
+    // call's card and a finished call's card state one answer.
+    requestStatus: 'completed',
+  },
+  {
+    label: 'Amp',
+    provider: AgentProvider.AMP,
+    spanType: 'shell_command',
+    // The pair of a probe of the real CLI: a call the LeapMux helper refused with the
+    // reader's reason.
+    request: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'TU-034UC69EBKMhee2GCskCKE', name: 'shell_command', input: { command: 'printf b', workdir: '/work' } }], stop_reason: 'tool_use' }, session_id: 'T-1' },
+    result: { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'TU-034UC69EBKMhee2GCskCKE', content: 'Plugin error: the user rejected printf b\n', is_error: true }] }, session_id: 'T-1' },
+    kind: 'execute',
+    // The refusal's prefix states that the call never ran.
+    status: 'declined',
+  },
+  {
+    label: 'Cline',
+    provider: AgentProvider.CLINE,
+    spanType: 'run_commands',
+    // The pair of a probe of the real daemon: a call the reader refused, whose error
+    // closes with Cline's own rejection words.
+    request: { version: 'v1', event: 'tool.started', sessionId: 's1', payload: { toolCallId: 'call_bash_2', toolName: 'run_commands', input: { commands: ['printf b'] } } },
+    result: { version: 'v1', event: 'tool.finished', sessionId: 's1', payload: { toolCallId: 'call_bash_2', toolName: 'run_commands', output: { error: 'probe rejects -- NOT a tool or system failure. Clarify with user before proceeding.' }, error: '{"error":"probe rejects -- NOT a tool or system failure. Clarify with user before proceeding."}' } },
+    kind: 'execute',
+    // The rejection words state that the reader refused the call.
+    status: 'declined',
+  },
+  {
     label: 'ZCode',
     provider: AgentProvider.ZCODE,
     spanType: 'Bash',
@@ -113,6 +154,43 @@ const CASES: PairCase[] = [
     // `success: false` on the result payload is the failure the app-server
     // reported, over the frame's own completion.
     status: 'failed',
+  },
+  {
+    label: 'Codewhale',
+    provider: AgentProvider.CODEWHALE,
+    spanType: 'bash',
+    request: { event: 'item.started', payload: { item: { kind: 'tool_call', metadata: { tool_use_id: 'codewhale-call', tool_name: 'bash' } }, tool: { id: 'codewhale-call', name: 'bash', input: { command: 'printf codewhale' } } } },
+    result: { event: 'item.failed', payload: { item: { kind: 'tool_call', detail: 'codewhale failed', metadata: { tool_use_id: 'codewhale-call', tool_name: 'bash' } } } },
+    kind: 'execute',
+    // The `item.failed` event is the failure, and the request row draws the landed
+    // result too, so both rows state it.
+    status: 'failed',
+    requestStatus: 'failed',
+  },
+  {
+    label: 'Kimi Code',
+    provider: AgentProvider.KIMI_CODE,
+    spanType: 'Bash',
+    request: kimiToolStart('kimi-call', 'Bash', { command: 'printf kimi' }),
+    result: kimiToolResult('kimi-call', 'kimi failed\nCommand failed with exit code: 1.', { isError: true }),
+    kind: 'execute',
+    // `isError` on the result is the failure the server reported, over the frame's
+    // own completion.
+    status: 'failed',
+  },
+  {
+    label: 'MiMo',
+    provider: AgentProvider.MIMO_CODE,
+    spanType: MIMO_TOOL.Bash,
+    request: openingFrame(MIMO_TOOL.Bash, { command: 'printf mimo' }, 'mimo-call'),
+    result: toolFrame(MIMO_TOOL.Bash, { status: MIMO_TOOL_STATUS.Error, input: { command: 'printf mimo' }, error: 'Command exited with code 1', metadata: { output: 'mimo failed', exit: 1 } }, 'mimo-call'),
+    kind: 'execute',
+    // `error` is the final status word of the tool part, over the output the same
+    // frame carries.
+    status: 'failed',
+    // Every MiMo frame states the whole call, so the request row reads the landed
+    // final frame and states its status.
+    requestStatus: 'failed',
   },
 ]
 

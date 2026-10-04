@@ -20,6 +20,7 @@ import (
 // a default ZCode simply takes needs no method here.
 type zcodeProvider struct {
 	agent.ProviderDefaults
+	storageQuery zcodeStoragePathQuery
 }
 
 // Classify groups ZCode's consolidatable notifications.
@@ -28,6 +29,22 @@ type zcodeProvider struct {
 // a chat that shows each one separately is unreadable. The key includes the tool
 // name so two different tools' denials stay distinguishable.
 func (zcodeProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
+	var state struct {
+		Method string `json:"method"`
+		Params struct {
+			Reason string `json:"reason"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(raw, &state) == nil && state.Method == contracts.ZCodeMethodStateUpdated {
+		switch state.Params.Reason {
+		case contracts.ZCodeStateReasonCompactStarted:
+			return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "zcode:compaction"}
+		case contracts.ZCodeStateReasonSessionCompacted,
+			contracts.ZCodeStateReasonSessionCompactFailed,
+			contracts.ZCodeStateReasonSessionCompactCancelled:
+			return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "zcode:compaction"}
+		}
+	}
 	var env zcodeEventEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return agent.NotificationClassification{}
@@ -130,8 +147,8 @@ func (zcodeProvider) ResolveResumeHandle(handle, _ string) (string, error) {
 // ListStoredSessions reads ZCode's own CLI session database. See
 // sessions.go for the path, and opencode/sessions.go for the query --
 // ZCode's `session` table is OpenCode's.
-func (zcodeProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
-	return zcodeStoredSessions(ctx, q)
+func (p zcodeProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
+	return zcodeStoredSessions(ctx, q, p.storageQuery)
 }
 
 // TurnEndToolUses reads the tool-call count off ZCode's turn end, which states it
@@ -153,13 +170,8 @@ func (zcodeProvider) TurnEndToolUses(content []byte) (int32, bool) {
 	return *payload.ToolCallCount, true
 }
 
-// EndsSubagentTranscript is false: a ZCode subagent's child transcript simply stops,
-// so the worker's neutral subagent-end divider closes it.
-func (zcodeProvider) EndsSubagentTranscript([]byte) bool { return false }
-
-// SupportsChildSteering is false: a ZCode subagent runs to completion and takes no
+// ChildCapabilities.AcceptsMessages is false: a ZCode subagent runs to completion and takes no
 // further message.
-func (zcodeProvider) SupportsChildSteering() bool { return false }
 
 // ReportsDefaultModelSentinel is false: ZCode's catalog names every model
 // explicitly, so no entry stands for the account default.

@@ -11,23 +11,36 @@ import { PreferencesProvider, usePreferences } from '~/context/PreferencesContex
 import { AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { makeMessage, rawContent, wrapContent } from '~/test-support/messageFactory'
+import { toolFrame } from '~/test-support/mimoFixtures'
 
-// jsdom does not provide ResizeObserver or Worker
+// jsdom does not provide ResizeObserver or Worker.
 beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  } as unknown as typeof ResizeObserver
-  globalThis.Worker ??= class {
-    onmessage: ((e: MessageEvent) => void) | null = null
-    onerror: ((e: ErrorEvent) => void) | null = null
-    postMessage() {}
-    terminate() {}
-    addEventListener() {}
-    removeEventListener() {}
-    dispatchEvent() { return false }
-  } as unknown as typeof Worker
+  if (!globalThis.ResizeObserver) {
+    Object.defineProperty(globalThis, 'ResizeObserver', {
+      configurable: true,
+      writable: true,
+      value: class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    })
+  }
+  if (!globalThis.Worker) {
+    Object.defineProperty(globalThis, 'Worker', {
+      configurable: true,
+      writable: true,
+      value: class {
+        onmessage: ((e: MessageEvent) => void) | null = null
+        onerror: ((e: ErrorEvent) => void) | null = null
+        postMessage() {}
+        terminate() {}
+        addEventListener() {}
+        removeEventListener() {}
+        dispatchEvent() { return false }
+      },
+    })
+  }
 })
 
 // Track clipboard writes for assertions.
@@ -55,11 +68,66 @@ describe('standalone MCP result actions', () => {
     { provider: AgentProvider.ZCODE, content: { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', result: { success: true, content: output, display: { kind: 'mcp_tool', serverName: 'docs', toolName: 'lookup' } } } } },
     { provider: AgentProvider.CODEX, content: { item: { id: 'call', type: 'mcpToolCall', status: 'completed', server: 'docs', tool: 'lookup', arguments: {}, result: { content: [{ type: 'text', text: output }] } } } },
     { provider: AgentProvider.PI, content: { type: 'tool_execution_end', toolCallId: 'call', toolName: 'mcp', result: { content: [{ type: 'text', text: output }], details: { server: 'docs', tool: 'lookup' } } } },
+    { provider: AgentProvider.MIMO_CODE, content: toolFrame('docs_lookup', { input: {}, output }, 'call') },
   ])('renders one result toolbar for provider $provider', ({ provider, content }) => {
     render(() => <PreferencesProvider><MessageBubble message={makeMsg({ agentProvider: provider, source: MessageSource.AGENT, spanId: 'call', content: rawContent(content) })} /></PreferencesProvider>)
     expect(screen.getAllByTestId('message-toolbar')).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: 'Expand', hidden: true })).toHaveLength(1)
     expect(screen.getAllByTestId('message-copy-json')).toHaveLength(1)
+  })
+})
+
+describe('tool call bubble identity', () => {
+  it('keeps one call ID on its request and result without marking a text row', () => {
+    const request = makeMsg({
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      source: MessageSource.AGENT,
+      seq: 1n,
+      spanId: 'toolu_image',
+      spanType: 'Read',
+      content: rawContent({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: 'toolu_image', name: 'Read', input: { file_path: 'image.png' } }] },
+      }),
+    })
+    const result = makeMsg({
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      source: MessageSource.AGENT,
+      seq: 2n,
+      spanId: 'toolu_image',
+      spanType: 'Read',
+      content: rawContent({
+        type: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_image', content: 'Image opened.' }] },
+      }),
+    })
+    const text = makeMsg({
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      source: MessageSource.AGENT,
+      seq: 3n,
+      content: rawContent({ type: 'assistant', message: { content: [{ type: 'text', text: 'Done.' }] } }),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={request} />
+        <MessageBubble message={result} />
+        <MessageBubble message={text} />
+      </PreferencesProvider>
+    ))
+
+    const bubbles = screen.getAllByTestId('message-bubble')
+    expect(bubbles[0]).toHaveAttribute('data-tool-call-id', 'toolu_image')
+    expect(bubbles[0]).toHaveAttribute('data-tool-row-role', 'request')
+    expect(bubbles[0]).toHaveAttribute('data-tool-status')
+    expect(bubbles[0]).toHaveAttribute('data-message-seq', '1')
+    expect(bubbles[1]).toHaveAttribute('data-tool-call-id', 'toolu_image')
+    expect(bubbles[1]).toHaveAttribute('data-tool-row-role', 'result')
+    expect(bubbles[1]).toHaveAttribute('data-tool-status', 'completed')
+    expect(bubbles[1]).toHaveAttribute('data-message-seq', '2')
+    expect(bubbles[2]).not.toHaveAttribute('data-tool-call-id')
+    expect(bubbles[2]).not.toHaveAttribute('data-tool-status')
+    expect(bubbles[2]).not.toHaveAttribute('data-message-seq')
   })
 })
 

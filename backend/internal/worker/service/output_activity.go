@@ -920,7 +920,7 @@ func (h *OutputHandler) storedChildActiveTasks(childAgentID string) int32 {
 		}
 		return 0
 	}
-	if bgItemFromRow(row).Status.IsFinished() {
+	if !bgItemFromRow(row).Status.IsWorking() {
 		return 0
 	}
 	return 1
@@ -932,7 +932,7 @@ func (h *OutputHandler) storedChildActiveTasks(childAgentID string) int32 {
 func countActiveBackgroundTasks(rows []bgtask.Item, childAgentID string) int32 {
 	var n int32
 	for i := range rows {
-		if rows[i].Status.IsFinished() {
+		if !rows[i].Status.IsWorking() {
 			continue
 		}
 		if childAgentID == "" || rows[i].ChildAgentID == childAgentID {

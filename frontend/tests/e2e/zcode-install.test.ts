@@ -59,6 +59,7 @@ describe('computeZCodeE2ESkipReason', () => {
     home: '/Users/ada',
     env: {},
     scriptExists: () => false,
+    launcherUnusableReason: null,
     // Signed in, so the install half of the question is what each case below varies.
     readConfig: (path: string) => (path === CONFIG_PATH ? USABLE_CONFIG : null),
   }
@@ -94,6 +95,29 @@ describe('computeZCodeE2ESkipReason', () => {
       scriptOverride: undefined,
       launcherOnPath: false,
       scriptExists: path => path === '/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs',
+    })).toBeNull()
+  })
+
+  // The worker takes a launcher on PATH before the bundled script, so a launcher
+  // that the run cannot start (a mise shim) must skip, although a bundle exists.
+  it('skips for a launcher that the run cannot start, although a bundled script exists', () => {
+    expect(computeZCodeE2ESkipReason({
+      ...base,
+      scriptOverride: undefined,
+      launcherOnPath: true,
+      launcherUnusableReason: 'The zcode on PATH is a mise shim.',
+      scriptExists: path => path === '/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs',
+    })).toBe('ZCode E2E cannot start the zcode launcher on PATH. The zcode on PATH is a mise shim.')
+  })
+
+  // The override outranks the launcher in the worker too.
+  it('runs with an existing override, although the launcher on PATH cannot start', () => {
+    expect(computeZCodeE2ESkipReason({
+      ...base,
+      scriptOverride: '/tmp/zcode.cjs',
+      scriptExists: path => path === '/tmp/zcode.cjs',
+      launcherOnPath: true,
+      launcherUnusableReason: 'The zcode on PATH is a mise shim.',
     })).toBeNull()
   })
 

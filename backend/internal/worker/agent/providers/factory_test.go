@@ -20,7 +20,7 @@ func TestAvailableOptionGroups_DefaultOptionMetadata(t *testing.T) {
 	for _, provider := range agentlabels.AllProviders() {
 		t.Run(provider.String(), func(t *testing.T) {
 			groups := registry.StaticOptionGroups(provider)
-			if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_PI || provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX {
+			if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_PI || provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX || provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_FAST_AGENT {
 				assert.Empty(t, groups, "this provider discovers its groups at runtime")
 				return
 			}
@@ -51,16 +51,35 @@ func TestNormalizeModelIDRoutesEveryProvider(t *testing.T) {
 
 	registry := Registry()
 	cases := map[leapmuxv1.AgentProvider]struct{ input, want string }{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:    {"opus", "opus[1m]"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:          {"model/alpha", "model/alpha"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:         {"default[]", "auto"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT: {"model/alpha", "model/alpha"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO:           {"model/alpha", "model/alpha"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:       {"model/alpha", "model/alpha"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE:          {"model/alpha", "model/alpha"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:             {"model/alpha", "model/alpha"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX:       {"model/alpha", "model/alpha"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE:          {`p\m`, "p/m"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_COMMAND_CODE:     {"leapmux-e2e/command-code-e2e", "leapmux-e2e/command-code-e2e"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_DEEPSEEK_HARNESS: {"deepseek-official/deepseek-flash", "deepseek-official/deepseek-flash"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:       {"gemini-2.5-pro", "gemini-2.5-pro"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:      {"opus", "opus[1m]"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:            {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:           {"default[]", "auto"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT:   {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO:             {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:         {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE:            {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:               {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX:         {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE:            {`p\m`, "p/m"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE:        {"deepseek-ai/DeepSeek-V4-Pro", "deepseek-ai/DeepSeek-V4-Pro"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE:        {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE:        {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE:        {"mock-model(openai)", "mock-model(openai)"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OH_MY_PI:         {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD:       {"grok-4.6", "grok-4.6"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO:             {"claude-sonnet-4.5", "claude-sonnet-4.5"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP:              {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE:            {"anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.6"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY:        {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER:            {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_LETTA:            {"openai-compatible/mock-model", "openai-compatible/mock-model"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_DROID:            {"custom:Mock-0", "custom:Mock-0"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_JUNIE:            {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC:            {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_FAST_AGENT:       {"model/alpha", "model/alpha"},
 	}
 	providers := agentlabels.AllProviders()
 	require.Len(t, cases, len(providers), "each provider needs a normalization case")
@@ -89,6 +108,10 @@ func TestSafePermissionDefaultsAreNeverAProviderBypassMode(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE: contracts.ClaudeModeBypassPermissions,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE:       contracts.GooseModeAuto,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE:       contracts.ZCodeModeYolo,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE:   contracts.CodewhalePostureFullAccess,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE:   contracts.KimiModeAuto,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE:   contracts.QwenModeYolo,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OH_MY_PI:    contracts.OhMyPiApprovalModeYolo,
 	}
 	for provider, bypass := range bypassModes {
 		t.Run(provider.String(), func(t *testing.T) {
@@ -98,6 +121,30 @@ func TestSafePermissionDefaultsAreNeverAProviderBypassMode(t *testing.T) {
 			}
 			assert.NotEqual(t, bypass, registry.FallbackPermissionMode(provider),
 				"a session that stored no mode must not fall back to the bypass mode")
+		})
+	}
+}
+
+// Grok Build's and Kiro's bypass presets set a provider option rather than the
+// permission mode -- Grok's approval mode, Kiro's policy preset -- so the same
+// rule applies to the value of that option that every new agent takes.
+//
+// Go cannot import the frontend bypass presets. This table records their
+// current values. A change to a frontend preset must update this table.
+func TestProviderOptionDefaultsAreNeverABypassValue(t *testing.T) {
+	t.Parallel()
+
+	registry := Registry()
+	bypassValues := map[leapmuxv1.AgentProvider]struct{ option, bypass string }{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD: {contracts.GrokOptionApprovalMode, contracts.GrokApprovalModeAlwaysApprove},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO:       {contracts.KiroOptionPolicyPreset, contracts.KiroPolicyPresetAllowAll},
+	}
+	for provider, tc := range bypassValues {
+		t.Run(provider.String(), func(t *testing.T) {
+			defaults := registry.ProviderOptionDefaults(provider)
+			require.Contains(t, defaults, tc.option)
+			assert.NotEqual(t, tc.bypass, defaults[tc.option],
+				"a new agent must not open in the value the bypass shortcut selects")
 		})
 	}
 }

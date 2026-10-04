@@ -24,7 +24,8 @@ func TestACP_SubagentFromToolCall_OpenCodeSpawnShape(t *testing.T) {
 		assert.Equal(t, "tc-1", obs.RowKey)
 		assert.Equal(t, "build feature", obs.Title)
 		assert.Equal(t, bgtask.StatusRunning, obs.Status)
-		assert.Equal(t, "tc-1", obs.ChildAgentKey)
+		assert.Empty(t, obs.ChildAgentKey)
+		assert.Equal(t, "tc-1", obs.ChildSpawnSpanID)
 		assert.Equal(t, "do the thing", obs.Prompt)
 		assert.False(t, obs.CloseRow)
 	}
@@ -80,6 +81,7 @@ func TestACP_SubagentFromToolCallUpdate_RekeysToSessionID(t *testing.T) {
 		// the translator renames the single row before closing (one row, not two).
 		assert.Equal(t, "tc-1", obs.RenameFrom, "rename-from the spawn toolCallId")
 		assert.Equal(t, "child-sess-1", obs.ChildAgentKey)
+		assert.Equal(t, "tc-1", obs.ChildSpawnSpanID)
 		assert.True(t, obs.CloseRow)
 	}
 }
@@ -106,6 +108,13 @@ func TestACP_OpenCodeFamilyPersistsThePromptAndReportInTheChildTranscript(t *tes
 	b.SetSinkForTest(agent.NewProviderServices(sink))
 	*b.HooksForTest() = acp.Hooks{SubagentFromToolCall: SubagentFromToolCall, SubagentFromToolCallUpdate: SubagentFromToolCallUpdate}
 	b.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"task-call","title":"task","kind":"think","status":"pending","rawInput":{"description":"Inspect the code","prompt":"Read the entry points.","subagent_type":"explore"}}`))
+	initial, found := sink.BackgroundTask("task-call")
+	require.True(t, found)
+	require.NotEmpty(t, initial.ChildAgentID)
+	initialMessages := sink.Child(initial.ChildAgentID).Messages()
+	require.Len(t, initialMessages, 1)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, initialMessages[0].Source)
+	assert.JSONEq(t, `{"content":"Read the entry points."}`, string(initialMessages[0].Content))
 	completed := json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"task-call","status":"completed","rawOutput":{"metadata":{"sessionId":"child-session"}},"content":[{"type":"content","content":{"type":"text","text":"The parser is in parser.go."}}]}`)
 	b.HandleToolCallUpdateForTest(completed)
 	// session/load can replay the completed task. The final registry status is
@@ -116,6 +125,8 @@ func TestACP_OpenCodeFamilyPersistsThePromptAndReportInTheChildTranscript(t *tes
 	require.Len(t, rows, 1)
 	assert.Equal(t, "child-session", rows[0].RowKey)
 	require.NotEmpty(t, rows[0].ChildAgentID)
+	assert.Equal(t, initial.ChildAgentID, rows[0].ChildAgentID)
+	assert.Equal(t, []string{initial.ChildAgentID}, sink.ChildAgentIDs())
 	child := sink.Child(rows[0].ChildAgentID)
 	messages := child.Messages()
 	require.Len(t, messages, 1)
@@ -211,7 +222,8 @@ func TestACP_OpenCodeSpawnDetectedOnTheInProgressUpdate(t *testing.T) {
 	assert.Equal(t, "Run echo kilo-done", obs.Title)
 	assert.Equal(t, bgtask.StatusRunning, obs.Status)
 	assert.Equal(t, "Run it.", obs.Prompt)
-	assert.Equal(t, "call-1", obs.ChildAgentKey)
+	assert.Empty(t, obs.ChildAgentKey)
+	assert.Equal(t, "call-1", obs.ChildSpawnSpanID)
 	assert.False(t, obs.CloseRow)
 }
 
@@ -382,7 +394,175 @@ func TestOpenCodeSubagentDetectorCarriesThePrompt(t *testing.T) {
 	})
 	require.NotNil(t, oc)
 	assert.Equal(t, "Find the bug.", oc.Prompt)
-	assert.Equal(t, "tc-2", oc.ChildAgentKey)
+	assert.Empty(t, oc.ChildAgentKey)
+	assert.Equal(t, "tc-2", oc.ChildSpawnSpanID)
+}
+
+func newOpenCodeChildBase(t *testing.T) (*acp.Base, *agenttest.Sink) {
+	t.Helper()
+	sink := &agenttest.Sink{}
+	b := &acp.Base{}
+	b.SetSinkForTest(agent.NewProviderServices(sink))
+	*b.HooksForTest() = FamilyHooks()
+	return b, sink
+}
+
+func openCodeTaskRequest(t *testing.T, callID, taskID, prompt string) json.RawMessage {
+	t.Helper()
+	input := map[string]any{"description": "Inspect " + callID, "prompt": prompt, "subagent_type": "explore"}
+	if taskID != "" {
+		input["task_id"] = taskID
+	}
+	frame, err := json.Marshal(map[string]any{
+		"sessionUpdate": "tool_call", "toolCallId": callID, "title": "task", "kind": "think", "status": "pending", "rawInput": input,
+	})
+	require.NoError(t, err)
+	return frame
+}
+
+func openCodeTaskResult(t *testing.T, callID, nativeSession, report string) json.RawMessage {
+	t.Helper()
+	frame, err := json.Marshal(map[string]any{
+		"sessionUpdate": "tool_call_update", "toolCallId": callID, "status": "completed", "title": "Inspect " + callID,
+		"rawOutput": map[string]any{"output": report, "metadata": map[string]any{"sessionId": nativeSession}},
+		"content":   []map[string]any{{"type": "content", "content": map[string]any{"type": "text", "text": report}}},
+	})
+	require.NoError(t, err)
+	return frame
+}
+
+func TestOpenCodeTaskCreationRequiresParsedFreshArguments(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []struct {
+		name string
+		raw  json.RawMessage
+		span bool
+	}{
+		{name: "absent arguments"},
+		{name: "empty arguments", raw: json.RawMessage(`{}`)},
+		{name: "null arguments", raw: json.RawMessage(`null`)},
+		{name: "malformed json", raw: json.RawMessage(`{`)},
+		{name: "wrong prompt type", raw: json.RawMessage(`{"prompt":false,"subagent_type":"explore"}`)},
+		{name: "wrong subagent type", raw: json.RawMessage(`{"prompt":"Inspect.","subagent_type":0}`)},
+		{name: "wrong task id type", raw: json.RawMessage(`{"prompt":"Inspect.","subagent_type":"explore","task_id":false}`)},
+		{name: "nonempty task id", raw: json.RawMessage(`{"prompt":"Continue.","subagent_type":"explore","task_id":"ses-existing"}`)},
+		{name: "fresh task", raw: json.RawMessage(`{"prompt":"Inspect.","subagent_type":"explore"}`), span: true},
+		{name: "empty task id", raw: json.RawMessage(`{"prompt":"Inspect.","subagent_type":"explore","task_id":""}`), span: true},
+		{name: "valid empty prompt", raw: json.RawMessage(`{"prompt":"","subagent_type":"explore"}`), span: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
+			obs := SubagentFromToolCall(acp.ToolCallEnvelope{ToolCallID: "native-call", Title: "task", Kind: "think", RawInput: scenario.raw})
+			require.NotNil(t, obs)
+			assert.True(t, obs.Spawns)
+			assert.Equal(t, "native-call", obs.RowKey)
+			assert.Empty(t, obs.ChildAgentKey)
+			if scenario.span {
+				assert.Equal(t, "native-call", obs.ChildSpawnSpanID)
+			} else {
+				assert.Empty(t, obs.ChildSpawnSpanID)
+			}
+		})
+	}
+}
+
+func TestOpenCodeTaskReuseKeepsOneNativeChildAcrossCallIDs(t *testing.T) {
+	t.Parallel()
+	b, sink := newOpenCodeChildBase(t)
+	first := openCodeTaskRequest(t, "call-first", "", "Inspect the entry point.")
+	b.HandleToolCallForTest(first)
+	initial, found := sink.BackgroundTask("call-first")
+	require.True(t, found)
+	require.NotEmpty(t, initial.ChildAgentID)
+	child := sink.Child(initial.ChildAgentID)
+	before := child.Messages()
+	require.Len(t, before, 1)
+	b.HandleToolCallUpdateForTest(openCodeTaskResult(t, "call-first", "ses-native-child", "First native report."))
+	second := openCodeTaskRequest(t, "call-second", "ses-native-child", "Continue the same native task.")
+	b.HandleToolCallForTest(second)
+	pending, found := sink.BackgroundTask("call-second")
+	require.True(t, found)
+	assert.Empty(t, pending.ChildAgentID, "a reuse request must wait for the actual native session")
+	assert.Equal(t, []string{initial.ChildAgentID}, sink.ChildAgentIDs())
+	completed := openCodeTaskResult(t, "call-second", "ses-native-child", "Second native report.")
+	b.HandleToolCallUpdateForTest(completed)
+	b.HandleToolCallUpdateForTest(completed)
+	rows := sink.BackgroundTasks()
+	assert.Len(t, rows, 1)
+	row, found := sink.BackgroundTask("ses-native-child")
+	require.True(t, found)
+	assert.Equal(t, initial.ChildAgentID, row.ChildAgentID)
+	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, []string{initial.ChildAgentID}, sink.ChildAgentIDs())
+	assert.Equal(t, before, child.Messages())
+	reports := child.LeapMuxNotifications()
+	if assert.Len(t, reports, 2) {
+		assert.Equal(t, "First native report.", reports[0]["text"])
+		assert.Equal(t, "Second native report.", reports[1]["text"])
+	}
+	var originals []string
+	for _, message := range sink.Messages() {
+		if message.SpanID == "call-second" && !message.Closing {
+			originals = append(originals, string(message.Content))
+		}
+	}
+	require.Len(t, originals, 1)
+	assert.JSONEq(t, string(second), originals[0])
+}
+
+func TestOpenCodeTaskReuseUsesTheReturnedSessionAfterMissingTaskID(t *testing.T) {
+	t.Parallel()
+	b, sink := newOpenCodeChildBase(t)
+	b.HandleToolCallForTest(openCodeTaskRequest(t, "call-missing", "ses-missing", "Inspect the new task."))
+	assert.Empty(t, sink.ChildAgentIDs())
+	pending, found := sink.BackgroundTask("call-missing")
+	require.True(t, found)
+	assert.Empty(t, pending.ChildAgentID)
+	b.HandleToolCallUpdateForTest(openCodeTaskResult(t, "call-missing", "ses-returned", "Returned-session report."))
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "ses-returned", rows[0].RowKey)
+	require.NotEmpty(t, rows[0].ChildAgentID)
+	assert.Equal(t, []string{rows[0].ChildAgentID}, sink.ChildAgentIDs())
+	child := sink.Child(rows[0].ChildAgentID)
+	span, err := sink.ChildSpawnSpan(rows[0].ChildAgentID)
+	require.NoError(t, err)
+	assert.Equal(t, "call-missing", span)
+	messages := child.Messages()
+	require.Len(t, messages, 1)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, messages[0].Source)
+	assert.JSONEq(t, `{"content":"Inspect the new task."}`, string(messages[0].Content))
+	reports := child.LeapMuxNotifications()
+	if assert.Len(t, reports, 1) {
+		assert.Equal(t, "Returned-session report.", reports[0]["text"])
+	}
+}
+
+func TestOpenCodePlainFinalToolCreatesNoChild(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{"completed", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			t.Parallel()
+			b, sink := newOpenCodeChildBase(t)
+			b.HandleToolCallForTest(json.RawMessage(`{"toolCallId":"plain-shell","title":"bash","kind":"execute","status":"pending","rawInput":{"command":"echo native"}}`))
+			closing, err := json.Marshal(map[string]any{
+				"sessionUpdate": "tool_call_update", "toolCallId": "plain-shell", "status": status,
+				"content": []map[string]any{{"type": "content", "content": map[string]any{"type": "text", "text": "Native shell result."}}},
+			})
+			require.NoError(t, err)
+			b.HandleToolCallUpdateForTest(closing)
+			assert.Empty(t, sink.ChildAgentIDs())
+			assert.Empty(t, sink.BackgroundTasks())
+			var originals []string
+			for _, message := range sink.Messages() {
+				if message.SpanID == "plain-shell" && message.Closing {
+					originals = append(originals, string(message.Content))
+				}
+			}
+			require.Len(t, originals, 1)
+			assert.JSONEq(t, string(closing), originals[0])
+		})
+	}
 }
 
 // TestOpenCodeSubagentDetectorsClaimOnlyTheSpawn pins that the detector claims its own spawn payload, and no ordinary

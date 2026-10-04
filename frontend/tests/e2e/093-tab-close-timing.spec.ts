@@ -1,43 +1,18 @@
 /* eslint-disable no-console */
 /**
- * Measures the end-to-end latency of closing an agent tab and produces a
- * phase-by-phase timeline breakdown. Complements
- * `121-claude-agent-open-timing.spec.ts`.
- *
- * Instrumentation:
- *   - Browser: `leapmux:rpc-send` / `leapmux:rpc-recv` CustomEvents
- *     from `src/api/workerRpc.ts` (gated on `LEAPMUX_DEV`, enabled by
- *     the e2e runner) plus a MutationObserver for tab / dialog
- *     timestamps.
- *   - Worker: `LEAPMUX_TRACE_TAB_CLOSE=1` makes
- *     `backend/internal/worker/service/tabclosetrace.go` emit
- *     `marker=tab_close_timing` slog lines for the inspect RPC's inner
- *     phases (git_ctx_done, diff_and_push_done,
- *     worktree_count_done / branch_count_done, handler_end). We combine
- *     them with browser marks using a wall-clock anchor captured
- *     immediately before the click.
- *
- * Three scenarios:
- *   1. Two worktree tabs on the same worktree, close one. No prompt
- *      because `CountWorktreeTabs > 1`. This is the topology the user
- *      reported as "~1 second slow".
- *   2. Worktree last tab, dialog → Close anyway (KEEP).
- *   3. Worktree last tab, dialog → Delete (REMOVE).
- *
- * Point at a real repository by setting
- * `LEAPMUX_CLOSE_TIMING_REPO_DIR=/path/to/your/repo`. Without it, each
- * scenario creates a tiny synthetic repo under the test's dataDir.
+ * Measure tab close with browser events and a traced private Worker.
+ * The suite Hub serves all three cases. Each case uses a fresh workspace.
+ * LEAPMUX_CLOSE_TIMING_REPO_DIR selects a real repository instead of a private test repository.
  */
 import type { Page, TestInfo } from '@playwright/test'
-import type { ClockAnchor, LogLine, PhaseMark, RpcMark, TimingServer } from './helpers/timingFixture'
+import type { ClockAnchor, LogLine, PhaseMark, RpcMark, TimingWorker } from './helpers/timingFixture'
 import { existsSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
-import { expect, test } from '@playwright/test'
-import { agentDefaultsEnv } from './agentSettings'
+import { test as base, expect } from './fixtures'
 import { deleteWorkspaceViaAPI } from './helpers/api'
-import { stopDevServer } from './helpers/devServer'
-import { extractWorkerMarks, installRpcListeners, renderTimeline, startTimingServer } from './helpers/timingFixture'
+import { withCleanup } from './helpers/cleanup'
+import { extractWorkerMarks, installRpcListeners, renderTimeline, withTimingWorker } from './helpers/timingFixture'
 import { loginViaToken, openWorkspace } from './helpers/ui'
 import {
   createGitRepo,
@@ -46,6 +21,9 @@ import {
 } from './helpers/worktree'
 
 // ─── Browser instrumentation ──────────────────────────────────────────
+
+/** The RPC that closes a tab: CloseAgent for an agent tab, CloseTerminal for a terminal tab. */
+const CLOSE_RPC_METHOD = /^Close(?:Agent|Terminal)$/
 
 interface TimingWindow {
   __rpcMarks?: RpcMark[]
@@ -59,7 +37,7 @@ interface TimingWindow {
 async function installObservers(page: Page): Promise<void> {
   await installRpcListeners(page)
   await page.evaluate(() => {
-    const w = window as unknown as TimingWindow
+    const w: Window & TimingWindow = window
     w.__tabRemovedAt = null
     w.__dialogVisibleAt = null
     w.__dialogRemovedAt = null
@@ -73,9 +51,7 @@ async function installObservers(page: Page): Promise<void> {
       }
       if (w.__dialogVisibleAt == null) {
         const dialog = document.querySelector('dialog[open]')
-        // Case-insensitive: the dialog title is "Close last tab"
-        // (sentence case), but historic test code looked for "Close
-        // Last Tab" (title case) and silently missed every match.
+        // Compare the dialog text without case differences. Its heading uses sentence case.
         if (dialog && dialog.textContent?.toLowerCase().includes('close last tab'))
           w.__dialogVisibleAt = performance.now()
       }
@@ -98,7 +74,7 @@ interface RawMarks {
 
 async function snapshotMarks(page: Page): Promise<RawMarks> {
   return page.evaluate(() => {
-    const w = window as unknown as TimingWindow
+    const w: Window & TimingWindow = window
     return {
       rpcMarks: w.__rpcMarks ?? [],
       tabRemovedAt: w.__tabRemovedAt ?? null,
@@ -162,14 +138,11 @@ function findClosedTabID(logLines: LogLine[], logOffset: number): string | null 
   return null
 }
 
-// Await the close RPC round-trip and the backend handler_begin marker,
-// then assemble the browser+worker timeline, render it, log it, and
-// attach it to the Playwright report. Returns the snapshot of browser
-// marks so the caller can make scenario-specific assertions (e.g. on
-// dialogVisibleAt / tabRemovedAt).
+// Wait for the close RPC reply and the Worker's handler_begin marker.
+// Attach the combined timeline and return the browser marks for each case's assertions.
 async function captureCloseTimeline(
   page: Page,
-  srv: TimingServer,
+  srv: Pick<TimingWorker, 'logLines'>,
   logsBefore: number,
   anchor: ClockAnchor,
   testInfo: TestInfo,
@@ -177,10 +150,11 @@ async function captureCloseTimeline(
   attachName: string,
   extra: PhaseMark[] = [],
 ): Promise<RawMarks> {
-  await expect.poll(async () => {
-    const r = await snapshotMarks(page)
-    return r.rpcMarks.some(m => m.type === 'rpc-recv' && (m.method === 'CloseAgent' || m.method === 'CloseTerminal'))
-  }).toBeTruthy()
+  // Poll the marks themselves, so a timeout prints what the browser reported.
+  // An empty list means that the served frontend emits no RPC marks at all: it
+  // was built without LEAPMUX_DEV=1.
+  await expect.poll(async () => (await snapshotMarks(page)).rpcMarks)
+    .toContainEqual(expect.objectContaining({ type: 'rpc-recv', method: expect.stringMatching(CLOSE_RPC_METHOD) }))
   await expect.poll(() => findClosedTabID(srv.logLines, logsBefore) !== null).toBeTruthy()
   const closedTabID = findClosedTabID(srv.logLines, logsBefore)!
 
@@ -213,38 +187,23 @@ function getRepoCtx(dataDir: string, scenarioName: string): RepoCtx {
 
 // ─── Tests ────────────────────────────────────────────────────────────
 
+const test = base.extend<{ timingWorker: TimingWorker }>({
+  timingWorker: async ({ leapmuxServer }, use) => withTimingWorker(leapmuxServer, {
+    dataDirPrefix: 'leapmux-close-timing-e2e',
+    env: { LEAPMUX_TRACE_TAB_CLOSE: '1' },
+  }, use),
+})
+
 test.describe('Tab close timing', () => {
   test.describe.configure({ retries: 0 })
 
-  let srv: TimingServer
-
-  test.beforeAll(async () => {
-    srv = await startTimingServer({
-      dataDirPrefix: 'leapmux-close-timing-e2e',
-      env: {
-        ...agentDefaultsEnv(),
-        LEAPMUX_WORKER_NAME: 'Local',
-        LEAPMUX_TRACE_TAB_CLOSE: '1',
-      },
-    })
-  })
-
-  test.afterAll(async () => {
-    if (srv)
-      await stopDevServer(srv)
-  })
-
-  test('scenario 1 — two worktree tabs on the same worktree, close one', async ({ browser }, testInfo) => {
+  test('scenario 1 — two worktree tabs on the same worktree, close one', async ({ page, timingWorker }, testInfo) => {
+    const srv = { ...timingWorker.server, logLines: timingWorker.logLines, dataDir: timingWorker.dataDir }
     const { hubUrl, adminToken, workerId, dataDir } = srv
     const ctx = getRepoCtx(dataDir, 'close-timing-scn1')
 
-    // createWorkspaceWithWorktreeViaAPI opens agent 1 with createWorktree=true
-    // on branch "scn1-branch". After the page loads, clicking "+ New Agent"
-    // opens a second agent. The workspace's currentDir is the worktree, so
-    // the new agent reuses the same worktree — ensureTrackedWorktree finds
-    // the existing row and registers tab 2 against the same worktree_id.
-    // Closing either tab leaves tabCount=1 for the worktree, so inspect
-    // returns shouldPrompt=false.
+    // The first agent creates scn1-branch. The second agent reuses the active worktree.
+    // Closing one agent leaves another tab, so the Worker returns shouldPrompt=false.
     const workspaceId = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
@@ -254,9 +213,7 @@ test.describe('Tab close timing', () => {
       'scn1-branch',
     )
 
-    const context = await browser.newContext({ baseURL: hubUrl })
-    const page = await context.newPage()
-    try {
+    await withCleanup(async () => {
       await loginViaToken(page, adminToken)
       await openWorkspace(page, workspaceId)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
@@ -283,14 +240,11 @@ test.describe('Tab close timing', () => {
       expect(raw.dialogVisibleAt, 'no dialog expected when worktree has >1 tab').toBeNull()
       expect(raw.tabRemovedAt, 'tab DOM should have been removed').not.toBeNull()
       expect(raw.tabRemovedAt! - anchor.perf).toBeLessThan(3000)
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-      await context.close()
-    }
+    }, () => deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId))
   })
 
-  test('scenario 2 — worktree close with "Close anyway" (KEEP)', async ({ browser }, testInfo) => {
+  test('scenario 2 — worktree close with "Close anyway" (KEEP)', async ({ page, timingWorker }, testInfo) => {
+    const srv = { ...timingWorker.server, logLines: timingWorker.logLines, dataDir: timingWorker.dataDir }
     const { hubUrl, adminToken, workerId, dataDir } = srv
     const ctx = getRepoCtx(dataDir, 'close-timing-scn2')
 
@@ -303,9 +257,7 @@ test.describe('Tab close timing', () => {
       'scn2-branch',
     )
 
-    const context = await browser.newContext({ baseURL: hubUrl })
-    const page = await context.newPage()
-    try {
+    await withCleanup(async () => {
       await loginViaToken(page, adminToken)
       await openWorkspace(page, workspaceId)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
@@ -337,14 +289,11 @@ test.describe('Tab close timing', () => {
 
       expect(raw.dialogVisibleAt).not.toBeNull()
       expect(raw.tabRemovedAt).not.toBeNull()
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-      await context.close()
-    }
+    }, () => deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId))
   })
 
-  test('scenario 3 — worktree close with "Delete" (REMOVE)', async ({ browser }, testInfo) => {
+  test('scenario 3 — worktree close with "Delete" (REMOVE)', async ({ page, timingWorker }, testInfo) => {
+    const srv = { ...timingWorker.server, logLines: timingWorker.logLines, dataDir: timingWorker.dataDir }
     const { hubUrl, adminToken, workerId, dataDir } = srv
     const ctx = getRepoCtx(dataDir, 'close-timing-scn3')
     const worktreeDir = ctx.synthetic
@@ -359,13 +308,9 @@ test.describe('Tab close timing', () => {
       ctx.repoDir,
       'scn3-branch',
     )
-    if (worktreeDir) {
-      await expect.poll(() => existsSync(worktreeDir), { intervals: [100] }).toBe(true)
-    }
-
-    const context = await browser.newContext({ baseURL: hubUrl })
-    const page = await context.newPage()
-    try {
+    await withCleanup(async () => {
+      if (worktreeDir)
+        await expect.poll(() => existsSync(worktreeDir), { intervals: [100] }).toBe(true)
       await loginViaToken(page, adminToken)
       await openWorkspace(page, workspaceId)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
@@ -399,10 +344,6 @@ test.describe('Tab close timing', () => {
       expect(raw.tabRemovedAt).not.toBeNull()
       if (worktreeDir)
         await waitForPathDeleted(worktreeDir)
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-      await context.close()
-    }
+    }, () => deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId))
   })
 })

@@ -81,17 +81,20 @@ func TestIsTestSupport(t *testing.T) {
 	t.Parallel()
 
 	for pkgPath, want := range map[string]bool{
-		"testing":                                             true,
-		"testing/fstest":                                      true,
-		"github.com/stretchr/testify/assert":                  true,
-		thisModule + "internal/util/testutil":                 true,
-		thisModule + "internal/worker/agent/agenttest":        true,
-		thisModule + "internal/hub/store/storetest":           true,
-		thisModule + "internal/worker/agent":                  false,
-		thisModule + "internal/worker/agent/providers/claude": false,
-		"internal/synctest":                                   false,
-		"github.com/other/pkgtest":                            false,
-		"testingx":                                            false,
+		"testing":                                                      true,
+		"testing/fstest":                                               true,
+		"github.com/stretchr/testify/assert":                           true,
+		thisModule + "internal/util/testutil":                          true,
+		thisModule + "internal/worker/agent/agenttest":                 true,
+		thisModule + "internal/worker/agent/providers/amp/amptest":     true,
+		thisModule + "internal/worker/agent/providers/cline/clinetest": true,
+		thisModule + "internal/worker/agent/providers/zcode/zcodetest": true,
+		thisModule + "internal/hub/store/storetest":                    true,
+		thisModule + "internal/worker/agent":                           false,
+		thisModule + "internal/worker/agent/providers/claude":          false,
+		"internal/synctest":                                            false,
+		"github.com/other/pkgtest":                                     false,
+		"testingx":                                                     false,
 	} {
 		assert.Equalf(t, want, isTestSupport(pkgPath), "%s", pkgPath)
 	}

@@ -1,41 +1,33 @@
 /**
- * Unit tests for the background-task / session-goal E2E helper.
+ * The unit tests check the source rules for shared registry locators.
+ * claude-code/background-tasks-sidebar.spec.ts checks actual Worker state before hydration.
+ * Goal transition tests exercise the separate pure parser.
  *
- * A `.test.ts` under `tests/e2e/` runs under vitest, not Playwright: it needs
- * no browser and no hub, so it costs milliseconds and belongs to
- * `task test-frontend`. Both runner configs are pinned to that rule, and
- * `src/test-support/testFileNaming.test.ts` fails the suite if this file is
- * ever renamed to `.spec.ts`.
- *
- * It asserts over the helper's SOURCE and imports nothing from it, which is not
- * a shortcut: `./subagentRegistry.ts` imports the Playwright fixtures, so a
- * unit test that imported it would drag a browser-only module graph into
- * vitest and fail to load. The logic that CAN be imported lives in
- * `./goalTransitions.ts` and is tested beside itself.
+ * The .test.ts extension selects Vitest. The .spec.ts extension selects Playwright.
+ * Both runner configurations and testFileNaming.test.ts enforce that distinction.
  */
+import type { Locator, Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { openChildTabFromRow } from './subagentRegistry'
 
 const source = readFileSync(join(import.meta.dirname, 'subagentRegistry.ts'), 'utf-8')
 
-// The body excludes only the DELIMITER, via a lookahead, rather than every
-// quote character: a selector is `'[data-testid="x"]'`, so a class that banned
-// all three quotes stopped at the first inner `"` and matched nothing at all --
-// which would have made these assertions vacuous.
+// Exclude only the enclosing quote through the lookahead.
+// A selector can contain a different quote, such as '[data-testid="x"]'.
+// Excluding every quote stops that match at the inner quote and finds no complete selector.
 const LOCATOR = /page\.locator\(\s*(['"`])((?:(?!\1).)*)\1/g
 
-// `getByTestId` is the SECOND way this file names an element, and the rule
-// covers it too. A helper written entirely in that form escaped the scan
-// completely, while `locators.length > 5` still passed on the older calls --
-// so the guard reported green over a locator family nobody checked. The
-// captured id is normalized to the selector spelling, so one predicate below
-// judges both forms.
+// The helper can select an element through getByTestId also.
+// Check both forms so a new helper cannot escape the source guard.
+// A minimum total count cannot detect an unexamined locator family.
+// Convert the captured test ID to its selector form so one predicate checks both forms.
 const TEST_ID = /page\.getByTestId\(\s*(['"`])((?:(?!\1).)*)\1/g
 
 function selectorsIn(text: string): string[] {
-  // Group 2 always participates (a starred group matches empty rather than
-  // abstaining), so the fallback is type-level only.
+  // Group 2 always matches, including an empty value.
+  // The fallback satisfies the type checker.
   return [
     ...[...text.matchAll(LOCATOR)].map(match => match[2] ?? ''),
     ...[...text.matchAll(TEST_ID)].map(match => `[data-testid="${match[2]}"]`),
@@ -44,7 +36,8 @@ function selectorsIn(text: string): string[] {
 
 /** The source of one exported helper, from its signature to its closing brace. */
 function bodyOf(name: string): string {
-  const start = source.indexOf(`export async function ${name}(`)
+  const asyncStart = source.indexOf(`export async function ${name}(`)
+  const start = asyncStart < 0 ? source.indexOf(`export function ${name}(`) : asyncStart
   const end = start < 0 ? -1 : source.indexOf('\n}\n', start)
   if (end < 0)
     throw new Error(`${name} is no longer an exported function of subagentRegistry.ts`)
@@ -52,33 +45,30 @@ function bodyOf(name: string): string {
 }
 
 /**
- * Which locators of this helper carry `:visible`, and which must not.
+ * Check the visible scope for shared locators.
+ * ChatView can render a hidden premeasure copy of an unmeasured row.
+ * The sidebar also has desktop and mobile mounts.
+ * A bare test ID can match both copies and fail strict mode.
+ * An unscoped first() can select a hidden copy and inspect state that the user cannot see.
  *
- * The sidebar is mounted twice (the desktop tree and the mobile one both
- * render) and ChatView renders each unmeasured row twice, so a bare test id
- * matches two elements. Playwright's strict mode then throws on every call --
- * or, worse, `.first()` silently picks the off-screen copy and the assertion
- * reads state nobody can see. So a locator that must MATCH an element is
- * `:visible`-scoped.
- *
- * A locator that asserts an ABSENCE is the opposite case, and the rule inverts
- * for it. See `ABSENCE_HELPERS` below.
- *
- * Asserted over the SOURCE rather than a rendered page, because that is what
- * makes it cheap enough to run on every commit; the alternative is discovering
- * it from a spec timeout.
+ * Present-element locators require :visible.
+ * Sidebar section locators select the first visible mount that receives Worker metadata.
+ * Absence locators require every copy to be absent, including hidden rows.
+ * ABSENCE_HELPERS identifies that separate rule.
+ * Source checks detect these defects before a slow browser spec times out.
  */
 describe('registry locators', () => {
-  /** Test ids that name a surface the app mounts more than once. */
+  it.each(['backgroundTasksSection', 'goalsAndTodosSection'])('selects the first visible sidebar mount in %s', (name) => {
+    const body = bodyOf(name)
+    expect(selectorsIn(body)).toHaveLength(1)
+    expect(body).toMatch(/return page\.locator\([^\n]*:visible[^\n]*\)\.first\(\)/)
+  })
+  /** Test IDs for surfaces that the app mounts more than once. */
   const DUPLICATED = ['bg-task-', 'goal-', 'section-header-']
 
   /**
-   * The helpers that assert a count of ZERO, where `:visible` is wrong.
-   *
-   * Two reasons, and the second is the one that bites. A count of zero is
-   * already immune to the double mount, because neither copy may exist. And
-   * `:visible` matches nothing while the section is COLLAPSED, so the rows are
-   * present, hidden, and the assertion reads zero and passes.
+   * A zero-count assertion requires both mounts to contain no rows.
+   * A :visible scope could hide rows in a collapsed section and falsely report zero.
    */
   const ABSENCE_HELPERS = ['expectNoRegistryRows']
 
@@ -86,9 +76,7 @@ describe('registry locators', () => {
     const locators = selectorsIn(
       ABSENCE_HELPERS.reduce((rest, name) => rest.replace(bodyOf(name), ''), source),
     )
-    // The scan has to find something, or a rewrite of the helper -- or a
-    // pattern that silently stops matching -- would make this pass by finding
-    // nothing to check.
+    // Require selectors so a parser or helper change cannot pass through an empty scan.
     expect(locators.length).toBeGreaterThan(5)
 
     const offenders = locators.filter(selector =>
@@ -98,15 +86,10 @@ describe('registry locators', () => {
   })
 
   /**
-   * The scan reads BOTH ways this file can name an element.
-   *
-   * The rule is about the element a locator resolves to, not about the call
-   * that builds it, so a helper written in `getByTestId` form must not escape
-   * it. It did: the scan matched `page.locator` alone, and the count assertion
-   * above stayed healthy on the older calls while a whole locator family went
-   * unchecked. Asserted here against a FIXTURE rather than against the source,
-   * because the helper is free to use one form only -- and it does today, so a
-   * source-based liveness check would fail for the right code.
+   * Check both locator syntax forms.
+   * A helper that uses getByTestId must obey the same element-scope rule as page.locator.
+   * Use a fixture to test both parser paths because the production helper can use only one syntax form.
+   * A minimum total selector count cannot prove that the parser supports both forms.
    */
   it('reads a getByTestId locator, not only a page.locator one', () => {
     const sample = `
@@ -125,5 +108,129 @@ describe('registry locators', () => {
       expect(locators.length, `${name} should build at least one locator`).toBeGreaterThan(0)
       expect(locators.filter(selector => selector.includes(':visible'))).toEqual([])
     }
+  })
+})
+
+interface NavigationState {
+  ids: string[]
+  selectedId: string
+  childId: string | null
+}
+
+/**
+ * Narrow adapters test the real navigation helper without a browser-install dependency.
+ * The adapters provide only the methods that the helper calls.
+ * Any new unsupported method fails the test rather than supplying a default result.
+ */
+function navigation(state: NavigationState, change: () => void) {
+  const locator = (selector: string): Locator => {
+    const selected = /\[data-tab-id="([^"\]]+)"\]/.exec(selector)?.[1]
+    const ids = () => selected === undefined ? state.ids : state.ids.filter(id => id === selected)
+    const attributes = (name: string) => name === 'data-tab-id'
+      ? selected ?? ids()[0] ?? null
+      : name === 'aria-selected' ? String(state.selectedId === (selected ?? ids()[0])) : null
+    const probe = Object.assign({} as Locator, {
+      readCount: () => ids().length,
+      readAttribute: attributes,
+      count: async () => ids().length,
+      getAttribute: async (name: string) => attributes(name),
+      evaluateAll: async (read: (elements: Element[]) => unknown) => read(ids().map((id) => {
+        return Object.assign({} as Element, { getAttribute: (name: string) => name === 'data-tab-id' ? id : null })
+      })),
+      filter: () => probe,
+      first: () => probe,
+      isVisible: async () => ids().length > 0,
+    })
+    return probe
+  }
+  const page = Object.assign({} as Page, { locator })
+  const click = vi.fn(async () => change())
+  const row = Object.assign({} as Locator, { getAttribute: async () => state.childId, click })
+  return { page, row, click }
+}
+
+vi.mock('@playwright/test', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@playwright/test')>()
+  const check = (value: unknown, message?: string) => {
+    if (typeof value === 'object' && value !== null && 'readCount' in value && typeof value.readCount === 'function'
+      && 'readAttribute' in value && typeof value.readAttribute === 'function') {
+      const count = value.readCount
+      const attribute = value.readAttribute
+      return {
+        toHaveCount: async (expected: number) => expect(count(), message).toBe(expected),
+        toBeVisible: async () => expect(count(), message).toBeGreaterThan(0),
+        toHaveAttribute: async (key: string, expected: string) => expect(attribute(key), message).toBe(expected),
+      }
+    }
+    return expect(value, message)
+  }
+  return { ...actual, expect: Object.assign(check, {
+    poll: (read: () => Promise<unknown>) => ({
+      toBe: async (expected: unknown) => expect(await read()).toBe(expected),
+      toMatch: async (expected: RegExp) => expect(await read()).toMatch(expected),
+      not: { toBe: async (expected: unknown) => expect(await read()).not.toBe(expected) },
+    }),
+  }) }
+})
+
+describe('openChildTabFromRow', () => {
+  it('opens the exact absent child and preserves the added-tab check', async () => {
+    const state: NavigationState = { ids: ['parent'], selectedId: 'parent', childId: 'actual-child' }
+    const view = navigation(state, () => {
+      state.ids.push('actual-child')
+      state.selectedId = 'actual-child'
+    })
+    expect(await openChildTabFromRow(view.page, view.row)).toBe('actual-child')
+    expect(view.click).toHaveBeenCalledTimes(1)
+    expect(state.ids).toEqual(['parent', 'actual-child'])
+    expect(state.selectedId).toBe('actual-child')
+  })
+
+  it('selects the existing native child without requiring another tab', async () => {
+    const state: NavigationState = { ids: ['parent', 'actual-child'], selectedId: 'parent', childId: 'actual-child' }
+    const view = navigation(state, () => state.selectedId = 'actual-child')
+    expect(await openChildTabFromRow(view.page, view.row)).toBe('actual-child')
+    expect(state.ids).toEqual(['parent', 'actual-child'])
+    expect(state.selectedId).toBe('actual-child')
+  })
+
+  it('keeps an already selected child on a repeated row click', async () => {
+    const state: NavigationState = { ids: ['parent', 'actual-child'], selectedId: 'actual-child', childId: 'actual-child' }
+    const view = navigation(state, () => {})
+    expect(await openChildTabFromRow(view.page, view.row)).toBe('actual-child')
+    expect(view.click).toHaveBeenCalledTimes(1)
+    expect(state.ids).toEqual(['parent', 'actual-child'])
+  })
+
+  it.each([null, '', '   '])('refuses an absent native child ID before clicking: %j', async (childId) => {
+    const state: NavigationState = { ids: ['parent'], selectedId: 'parent', childId }
+    const view = navigation(state, () => {
+      state.ids.push('unrelated-child')
+      state.selectedId = 'unrelated-child'
+    })
+    await expect(openChildTabFromRow(view.page, view.row)).rejects.toThrow()
+    expect(view.click).not.toHaveBeenCalled()
+  })
+
+  it('refuses an unrelated new tab even when the count increases correctly', async () => {
+    const state: NavigationState = { ids: ['parent'], selectedId: 'parent', childId: 'actual-child' }
+    const view = navigation(state, () => {
+      state.ids.push('other-child')
+      state.selectedId = 'other-child'
+    })
+    await expect(openChildTabFromRow(view.page, view.row)).rejects.toThrow()
+  })
+
+  it('requires the exact opened child to become selected', async () => {
+    const state: NavigationState = { ids: ['parent'], selectedId: 'parent', childId: 'actual-child' }
+    const view = navigation(state, () => state.ids.push('actual-child'))
+    await expect(openChildTabFromRow(view.page, view.row)).rejects.toThrow()
+  })
+
+  it('refuses duplicate rendered tab IDs before clicking', async () => {
+    const state: NavigationState = { ids: ['parent', 'parent'], selectedId: 'parent', childId: 'actual-child' }
+    const view = navigation(state, () => state.ids.push('actual-child'))
+    await expect(openChildTabFromRow(view.page, view.row)).rejects.toThrow()
+    expect(view.click).not.toHaveBeenCalled()
   })
 })

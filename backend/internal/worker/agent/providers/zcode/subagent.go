@@ -420,7 +420,7 @@ func (a *Agent) ensureZCodeSubagentTranscript(rowKey, spawnSpanID, fallbackTitle
 	if childID, found := a.children.child(rowKey); found {
 		return childID, title, true
 	}
-	childID, err := a.sink.EnsureChildAgent(spawnSpanID, rowKey, title)
+	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: spawnSpanID, ProviderChildKey: rowKey, Title: title})
 	if err != nil {
 		slog.Warn("zcode subagent ensure child failed", "agent_id", a.AgentID(), "row_key", rowKey, "error", err)
 		return "", "", false

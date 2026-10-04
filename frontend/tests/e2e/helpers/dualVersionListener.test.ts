@@ -1,4 +1,4 @@
-import type { AddressInfo, Socket } from 'node:net'
+import type { Socket } from 'node:net'
 import { Buffer } from 'node:buffer'
 import { createServer } from 'node:http'
 import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2'
@@ -14,22 +14,22 @@ afterEach(async () => {
 })
 
 /** A listener whose handler remembers every path it served, in order. */
-async function listen(): Promise<{ url: string, seen: string[] }> {
+async function listen(): Promise<{ url: string, seen: string[], stop: () => Promise<void> }> {
   const seen: string[] = []
-  const handle = (request: { url?: string }, response: { end: (body: string) => void }): void => {
+  const handle = (request: { url?: string | undefined }, response: { end: (body: string) => void }): void => {
     seen.push(request.url ?? '')
     response.end(JSON.stringify({ path: request.url, count: seen.length }))
   }
-  const http1 = createServer(handle as never)
-  const http2 = createHttp2Server(handle as never)
-  const { server } = createDualVersionListener(http1, http2)
+  const http1 = createServer(handle)
+  const http2 = createHttp2Server(handle)
+  const listener = createDualVersionListener(http1, http2)
+  const { server } = listener
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()))
-  const { port } = server.address() as AddressInfo
-  close.push(() => new Promise<void>((resolve) => {
-    server.close(() => resolve())
-    http1.closeAllConnections()
-  }))
-  return { url: `http://127.0.0.1:${port}`, seen }
+  const address = server.address()
+  if (!address || typeof address === 'string')
+    throw new Error('The listener did not bind a TCP port')
+  close.push(listener.close)
+  return { url: `http://127.0.0.1:${address.port}`, seen, stop: listener.close }
 }
 
 describe('createDualVersionListener', () => {
@@ -39,10 +39,7 @@ describe('createDualVersionListener', () => {
     expect(body.path).toBe('/first')
   })
 
-  // The mock endpoint registers a scenario, then reads it back, then serves a
-  // provider's turns -- all on one listener. A router that only survives its
-  // FIRST connection loses the registration, and the read answers 404 for a
-  // scenario that was created successfully moments earlier.
+  // Scenario registration and model requests must survive separate connections.
   it('serves request after request, across separate connections', async () => {
     const { url, seen } = await listen()
     for (const path of ['/one', '/two', '/three'])
@@ -63,14 +60,25 @@ describe('createDualVersionListener', () => {
     const body = await (await fetch(`${url}/with-body`, { method: 'POST', body: 'x'.repeat(50_000) })).json() as { path: string }
     expect(body.path).toBe('/with-body')
   })
+
+  it('shares one close operation across concurrent and repeated callers', async () => {
+    const { url, stop } = await listen()
+    const socket = netConnect(Number(new URL(url).port), '127.0.0.1')
+    await new Promise<void>((resolve, reject) => {
+      socket.once('connect', resolve)
+      socket.once('error', reject)
+    })
+    const first = stop()
+    expect(stop()).toBe(first)
+    await first
+    expect(stop()).toBe(first)
+    await expect.poll(() => socket.destroyed).toBe(true)
+  })
 })
 
 /**
- * A socket that writes its FIRST write one byte at a time, over several ticks.
- *
- * The HTTP/2 preface usually arrives whole, so a listener that compares only
- * the first chunk passes by luck. This forces the split the network is free to
- * produce at any time.
+ * Split the first socket write into single bytes across separate ticks.
+ * This forces the partial preface that a real connection can deliver.
  */
 function splittingConnection(port: number): Socket {
   const socket = netConnect(port, '127.0.0.1')
@@ -118,10 +126,7 @@ async function requestOverHttp2(url: string, path: string, createConnection?: ()
 }
 
 describe('createDualVersionListener over HTTP/2', () => {
-  // The whole reason this listener exists. Until this case was covered, the
-  // socket reached the HTTP/2 server with its preface already drained, and the
-  // session failed with `Received bad client magic byte string` -- which an
-  // agent reports only as "Session closed with error code 2".
+  // The target server must receive the complete preface after the socket handoff.
   it('serves an HTTP/2 request on the same port', async () => {
     const { url, seen } = await listen()
     const body = await requestOverHttp2(url, '/h2')

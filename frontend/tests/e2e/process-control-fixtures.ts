@@ -23,13 +23,13 @@ import {
   TEST_ADMIN_USERNAME,
   waitForNewOnlineWorkerViaAPI,
 } from './helpers/api'
-import { cleanupOnFailure, finishCleanup } from './helpers/cleanup'
+import { cleanupOnFailure, finishCleanup, withCleanup } from './helpers/cleanup'
 import { closeAllUserEventsSubscriptions } from './helpers/crdt'
 import { runModelScriptFixture } from './helpers/modelScriptFixture'
 import { stopProcess, stopProcesses } from './helpers/process'
 import { spawnTestProcess } from './helpers/processRegistry'
 import { createTestDirectory } from './helpers/runDirectory'
-import { findFreePort, getGlobalState, hubSpawnEnv, waitForServer } from './helpers/server'
+import { getGlobalState, hubSpawnEnv, hubUrlFromStateJson, waitForHubReady, waitForHubStateFile, waitForServer } from './helpers/server'
 import { createServerOutput, reportStartupFailure } from './helpers/serverOutput'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
@@ -46,8 +46,8 @@ export interface SeparateServerInfo {
   binaryPath: string
   hubPort: number
   /**
-   * Captured stdout+stderr from BOTH processes, labelled per process and
-   * spanning every restart. See {@link createServerOutput}.
+   * The captured Hub and Worker output includes every restart.
+   * Each line identifies its process. See {@link createServerOutput}.
    */
   output: ServerOutput
 }
@@ -74,8 +74,8 @@ export async function waitForWorkerOffline(serverInfo: SeparateServerInfo, timeo
 }
 
 /**
- * Ensure the worker is online, restarting it if needed.
- * Lightweight when the worker is already online (single HTTP request).
+ * Confirm the Worker connection with one HTTP request.
+ * Restart the Worker if that request does not confirm its connection.
  */
 export async function ensureWorkerOnline(serverInfo: SeparateServerInfo) {
   try {
@@ -91,7 +91,7 @@ export async function ensureWorkerOnline(serverInfo: SeparateServerInfo) {
     }
   }
   catch {
-    // Hub might be unresponsive; fall through to restart
+    // The status request failed. Restart the Worker after this failure.
   }
   await restartWorker(serverInfo)
 }
@@ -152,6 +152,7 @@ export async function restartHub(serverInfo: SeparateServerInfo): Promise<void> 
 
 export const processTest = base.extend<
   {
+    testStartedAt: number
     modelScript: ModelScript
     toastRecorder: void
     workspace: WorkspaceFixture
@@ -161,53 +162,59 @@ export const processTest = base.extend<
     separateHubWorker: SeparateServerInfo
   }
 >({
-  // The agents of a hub this file starts reach the SAME mock endpoint, because
-  // `hubSpawnEnv` gives that hub the run's agent configuration. One script for
-  // each test, verified at teardown, exactly as the shared base does it.
+  // This automatic fixture has no dependencies. Read the test start before other fixtures run.
+  // Playwright counts fixture setup in each test's deadline.
+  // The model script uses this time to fail a stalled wait before that deadline.
   // eslint-disable-next-line no-empty-pattern
-  modelScript: async ({}, use, testInfo) => runModelScriptFixture(use, testInfo),
+  testStartedAt: [async ({}, use) => {
+    await use(Date.now())
+  }, { auto: true }],
 
-  // Worker-scoped fixture: spawns separate hub + worker per test file
+  // hubSpawnEnv supplies this run's isolated agent configuration to each Hub.
+  // Every agent reaches the run's mock endpoint. Teardown verifies each test's model script.
+  modelScript: async ({ testStartedAt }, use, testInfo) => runModelScriptFixture(use, testInfo, testStartedAt),
+
+  // One Playwright worker owns this separate Hub and Worker.
   // eslint-disable-next-line no-empty-pattern
   separateHubWorker: [async ({}, use) => {
     const globalState = getGlobalState()
     const dataDir = createTestDirectory('leapmux-e2e-separate-')
     const hubDataDir = join(dataDir, 'hub')
     const workerDataDir = join(dataDir, 'worker')
-    const hubPort = await findFreePort()
-    const hubUrl = `http://localhost:${hubPort}`
+    let hubUrl = ''
 
-    console.log(`[e2e] Starting separate hub on port ${hubPort}...`)
-
-    // ONE buffer for the hub AND the worker, labelled per process: their lines
-    // interleave in real time, and a reader chasing a worker-side failure needs
-    // the hub's answer to the same request beside it.
+    // Keep the Hub and Worker output together. Each line identifies its process.
     const output = createServerOutput()
-
-    // Start hub in its own process group so stray signals from the test
-    // runner's process group don't kill it prematurely.
-    const hubProc = spawnTestProcess(globalState.binaryPath, [
-      'hub',
-      '-listen',
-      `:${hubPort}`,
-      '-data-dir',
-      hubDataDir,
-    ], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: true,
-      env: hubSpawnEnv(agentDefaultsEnv()),
-    })
-    hubProc.unref()
-    output.capture(hubProc, 'hub')
-
-    const started = [hubProc]
+    const started: ChildProcess[] = []
     let serverInfo: SeparateServerInfo | undefined
-    try {
-      await waitForServer(hubUrl).catch(err => reportStartupFailure(output, `hub on port ${hubPort}`, err))
-      console.log(`[e2e] Hub ready on port ${hubPort}`)
+    await withCleanup(async () => {
+      console.log('[e2e] Start the separate Hub on an assigned port.')
+      // A separate process group protects the Hub from signals to the test runner.
+      const hubProc = spawnTestProcess(globalState.binaryPath, [
+        'hub',
+        '-listen',
+        '127.0.0.1:0',
+        '-data-dir',
+        hubDataDir,
+      ], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
+        env: hubSpawnEnv(agentDefaultsEnv()),
+      })
+      started.push(hubProc)
+      hubProc.unref()
+      output.capture(hubProc, 'hub')
 
-      // Create the admin. A hub with no users at all accepts one sign-up and
-      // makes it an administrator, so this account needs no open-signup setting.
+      const state = await waitForHubStateFile(join(hubDataDir, 'state.json'), hubProc)
+        .catch(error => reportStartupFailure(output, 'Hub state file', error))
+      hubUrl = hubUrlFromStateJson(state)
+      const hubPort = Number(new URL(hubUrl).port)
+      await waitForHubReady(hubUrl, hubProc)
+        .catch(error => reportStartupFailure(output, `Hub on port ${hubPort}`, error))
+      console.log(`[e2e] The separate Hub is ready on port ${hubPort}.`)
+
+      // A Hub with no users makes its first registered user an administrator.
+      // This first signup does not require the open-signup setting.
       const adminToken = await signUpViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
 
       // Elevate the session before changing hub settings. Signup alone does not grant session elevation.
@@ -220,13 +227,11 @@ export const processTest = base.extend<
       // PR #216 removed the previous worker-token approval flow.
       const registrationKey = await mintRegistrationKeyViaAPI(hubUrl, adminToken)
 
-      // Snapshot online workers BEFORE spawning so we can identify the
-      // new worker by diffing.
+      // Read the online Worker IDs before startup. Identify the new Worker from the added ID.
       const beforeIds = new Set(await listOnlineWorkerIDsViaAPI(hubUrl, adminToken))
 
-      // Start worker in its own process group so stray signals from the test
-      // runner's process group don't kill it prematurely.
-      console.log('[e2e] Starting separate worker...')
+      // A separate process group protects the Worker from signals to the test runner.
+      console.log('[e2e] Start the separate Worker.')
       const workerProc = spawnTestProcess(globalState.binaryPath, [
         'worker',
         '--hub',
@@ -247,9 +252,9 @@ export const processTest = base.extend<
       // Startup waits run outside a test. Print recent server output on failure because no test attachment exists yet.
       const workerId = await waitForNewOnlineWorkerViaAPI(hubUrl, adminToken, beforeIds)
         .catch(err => reportStartupFailure(output, 'worker registration', err))
-      console.log(`[e2e] Worker connected: ${workerId}`)
+      console.log(`[e2e] The separate Worker is connected: ${workerId}.`)
 
-      // Create newuser
+      // Register the second test user.
       const newuserToken = await signUpViaAPI(hubUrl, 'newuser', 'password123', 'New User', 'new@test.com')
 
       serverInfo = {
@@ -266,24 +271,23 @@ export const processTest = base.extend<
       }
 
       await use(serverInfo)
-    }
-    finally {
+    }, async () => {
       const active = serverInfo ? [serverInfo.workerProc, serverInfo.hubProc] : started
       // Close subscriptions even when setup or a restart fails.
       await finishCleanup([
         closeAllUserEventsSubscriptions(),
-        closeTestChannels(hubUrl),
+        hubUrl ? closeTestChannels(hubUrl) : Promise.resolve(),
         stopProcesses(active),
       ])
       rmSync(dataDir, { recursive: true, force: true })
-    }
+    })
   }, { scope: 'worker' }],
 
   baseURL: async ({ separateHubWorker }, use) => {
     await use(separateHubWorker.hubUrl)
   },
 
-  // Toast recorder: auto-use so it runs for every test
+  // Record toasts for every test.
   toastRecorder: [async ({ page, separateHubWorker }, use, testInfo) => {
     await installToastRecorder(page)
     const serverMark = separateHubWorker.output.mark()
@@ -300,15 +304,10 @@ export const processTest = base.extend<
       })
     }
 
-    // A failing test gets the hub's and the worker's recent output, exactly as
-    // the dev-instance fixture does (see fixtures.ts). Both run out of process,
-    // so their errors are otherwise invisible and a worker-side failure
-    // surfaces only as a timeout on an unrelated locator.
-    //
-    // The fixture attaches it as a FILE, not as a body: the list reporter
-    // truncates an inline attachment to its first line, which is the startup
-    // banner and nothing else. A path puts the whole tail under test-results/,
-    // where a reader can actually open it.
+    // Attach recent Hub and Worker output after a failure, as ./fixtures.ts does.
+    // Both processes can fail without a browser error. Their logs explain a timeout on a browser locator.
+    // Use a file attachment. The list reporter shows only the first line of an inline attachment.
+    // The test output directory keeps the complete file.
     if (testInfo.status !== testInfo.expectedStatus) {
       const logPath = testInfo.outputPath('server-log.txt')
       writeFileSync(logPath, separateHubWorker.output.since(serverMark))
@@ -316,7 +315,7 @@ export const processTest = base.extend<
     }
   }, { auto: true }],
 
-  // Workspace fixture — ensure worker is online before creating workspace + initial agent
+  // Confirm the Worker connection before creating the workspace and its initial agent.
   workspace: async ({ separateHubWorker }, use) => {
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId } = separateHubWorker
@@ -326,7 +325,7 @@ export const processTest = base.extend<
     })
   },
 
-  // Authenticated workspace
+  // Sign in and open the test workspace.
   authenticatedWorkspace: async ({ page, workspace, separateHubWorker }, use) => {
     await loginViaToken(page, separateHubWorker.adminToken)
     await openWorkspace(page, workspace.workspaceId)

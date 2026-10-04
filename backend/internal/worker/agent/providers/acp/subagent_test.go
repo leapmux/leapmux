@@ -13,6 +13,221 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestACPSpanOnlyChildObservationCreatesThePromptBeforeItsNativeKey(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	b := &Base{sink: agent.NewProviderServices(sink)}
+	b.hooks.SubagentFromToolCall = func(tc ToolCallEnvelope) *SubagentObservation {
+		return &SubagentObservation{
+			RowKey: "registry-launch", ChildSpawnSpanID: tc.ToolCallID,
+			Title: "Native helper", Prompt: "Inspect the entry point.", Status: bgtask.StatusRunning, Spawns: true,
+		}
+	}
+	b.hooks.SubagentFromToolCallUpdate = func(tc ToolCallUpdateEnvelope) *SubagentObservation {
+		return &SubagentObservation{
+			RowKey: "native-child", RenameFrom: "registry-launch", ChildSpawnSpanID: tc.ToolCallID,
+			ChildAgentKey: "native-child", Status: bgtask.StatusCompleted, CloseRow: true, Mode: ModeCloseOnly,
+			ReportID: tc.ToolCallID, Report: agent.SubagentReport{Text: ToolCallText(tc.Content)},
+		}
+	}
+	b.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"native-spawn","title":"Task","status":"pending"}`))
+	initial, found := sink.BackgroundTask("registry-launch")
+	require.True(t, found)
+	require.NotEmpty(t, initial.ChildAgentID)
+	child := sink.Child(initial.ChildAgentID)
+	before := child.Messages()
+	require.Len(t, before, 1)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, before[0].Source)
+	assert.JSONEq(t, `{"content":"Inspect the entry point."}`, string(before[0].Content))
+	const completed = `{"sessionUpdate":"tool_call_update","toolCallId":"native-spawn","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Native final report."}}]}`
+	b.HandleToolCallUpdateForTest(json.RawMessage(completed))
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "native-child", rows[0].RowKey)
+	assert.Equal(t, initial.ChildAgentID, rows[0].ChildAgentID)
+	assert.Equal(t, []string{initial.ChildAgentID}, sink.ChildAgentIDs())
+	assert.Equal(t, before, child.Messages())
+	span, err := sink.ChildSpawnSpan(initial.ChildAgentID)
+	require.NoError(t, err)
+	assert.Equal(t, "native-spawn", span)
+	reports := child.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "Native final report.", reports[0]["text"])
+	var originals []string
+	for _, message := range sink.Messages() {
+		if message.Closing && message.SpanID == "native-spawn" {
+			originals = append(originals, string(message.Content))
+		}
+	}
+	require.Len(t, originals, 1)
+	assert.JSONEq(t, completed, originals[0])
+}
+
+func TestACPSpanOnlyObservationCannotRestoreAnIdentityRefusedChild(t *testing.T) {
+	t.Parallel()
+	b, sink, child, services := newChildRefusalBase(t, "native-old")
+	validateRefusalChild(b, "call-spawn", "native-new")
+	before := child.Messages()
+	validations := services.validationCount()
+	services.resetWrites()
+	b.ApplySubagentObservation(&SubagentObservation{
+		RowKey: "call-spawn", ChildSpawnSpanID: "call-spawn", Prompt: "Unproved replacement prompt.",
+		Status: bgtask.StatusRunning,
+	})
+	assert.Equal(t, validations, services.validationCount())
+	assert.Empty(t, services.recordedWrites())
+	assert.False(t, b.FeedChildUpdate("call-spawn", childRefusalPlan(t, "Unproved step.")))
+	assert.Equal(t, before, child.Messages())
+	row, found := sink.BackgroundTask("call-spawn")
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	validateRefusalChild(b, "call-spawn", "native-old")
+	require.True(t, b.FeedChildUpdate("call-spawn", childRefusalPlan(t, "Validated step.")))
+	assert.Len(t, child.Messages(), len(before)+1)
+}
+
+func TestACPChildIdentityRefusalStopsObservationWrites(t *testing.T) {
+	t.Parallel()
+	b, sink, child, services := newChildRefusalBase(t, "native-old")
+	before := child.Messages()
+	row, found := sink.BackgroundTask("call-spawn")
+	require.True(t, found)
+	b.ApplySubagentObservation(&SubagentObservation{
+		RowKey: "call-spawn", ChildAgentKey: "call-spawn", ChildAgentSessionID: "native-new",
+		Title: "Rejected replacement", Prompt: "Rejected prompt.", Status: bgtask.StatusCompleted,
+		ChildTranscriptPayload: []byte(`{"content":"Rejected payload."}`),
+		ReportID:               "rejected-report", Report: agent.SubagentReport{Text: "Rejected report."}, CloseRow: true,
+	})
+	assert.Empty(t, services.recordedWrites())
+	assert.Equal(t, before, child.Messages())
+	after, found := sink.BackgroundTask("call-spawn")
+	require.True(t, found)
+	assert.Equal(t, row, after)
+}
+
+func TestACPChildIdentityRefusalStopsRegistryReportAndCloseRecovery(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"report", "close"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			b, sink, child, services := newChildRefusalBase(t, "native-old")
+			validateRefusalChild(b, "call-spawn", "native-new")
+			before := child.Messages()
+			row, found := sink.BackgroundTask("call-spawn")
+			require.True(t, found)
+			services.resetWrites()
+			obs := &SubagentObservation{RowKey: "call-spawn", Status: bgtask.StatusCompleted, Mode: ModeCloseOnly}
+			if operation == "report" {
+				obs.ReportID, obs.Report = "late-report", agent.SubagentReport{Text: "Rejected report."}
+			} else {
+				obs.CloseRow = true
+			}
+			b.ApplySubagentObservation(obs)
+			assert.Empty(t, services.recordedWrites())
+			assert.Equal(t, before, child.Messages())
+			after, found := sink.BackgroundTask("call-spawn")
+			require.True(t, found)
+			assert.Equal(t, row, after)
+		})
+	}
+}
+
+func TestACPChildIdentityRefusalPreservesTheNativeParentClosingFrame(t *testing.T) {
+	t.Parallel()
+	b, sink, child, services := newChildRefusalBase(t, "native-old")
+	b.hooks.SubagentFromToolCall = func(tc ToolCallEnvelope) *SubagentObservation {
+		return &SubagentObservation{
+			RowKey: tc.ToolCallID, ChildAgentKey: tc.ToolCallID, ChildAgentSessionID: "native-new",
+			Status: bgtask.StatusRunning, Spawns: true,
+		}
+	}
+	before := child.Messages()
+	b.HandleSessionUpdateForTest(sessionUpdate(t, "session-1", `{"sessionUpdate":"tool_call","toolCallId":"call-spawn","title":"spawn","status":"pending"}`))
+	services.resetWrites()
+	const closing = `{"sessionUpdate":"tool_call_update","toolCallId":"call-spawn","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Native parent result."}}]}`
+	b.HandleSessionUpdateForTest(sessionUpdate(t, "session-1", closing))
+	assert.Equal(t, []agent.MessageCompletion{""}, closingRows(sink, "call-spawn"))
+	var originals []string
+	for _, message := range sink.Messages() {
+		if message.SpanID == "call-spawn" && message.Closing {
+			originals = append(originals, string(message.Content))
+		}
+	}
+	require.Len(t, originals, 1)
+	assert.JSONEq(t, closing, originals[0])
+	assert.Empty(t, services.recordedWrites())
+	assert.Equal(t, before, child.Messages())
+	row, found := sink.BackgroundTask("call-spawn")
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+}
+
+func TestACPChildIdentityValidationKeepsOrdinaryClosingWrites(t *testing.T) {
+	t.Parallel()
+	b, sink, child, services := newChildRefusalBase(t, "native-old")
+	validateRefusalChild(b, "call-spawn", "native-old")
+	require.True(t, b.FeedChildUpdate("call-spawn", json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Accepted answer."}}`)))
+	b.ApplySubagentObservation(&SubagentObservation{
+		RowKey: "call-spawn", Status: bgtask.StatusCompleted, CloseRow: true, Mode: ModeCloseOnly,
+		ReportID: "accepted-report", Report: agent.SubagentReport{Text: "Accepted report."},
+	})
+	assert.Equal(t, []string{"text:Accepted answer."}, assembledTexts(t, child.Messages()))
+	assert.Equal(t, []string{"report", "close", "cleanup"}, services.recordedWrites())
+	row, found := sink.BackgroundTask("call-spawn")
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.False(t, b.FeedChildUpdate("call-spawn", childRefusalPlan(t, "Late step.")))
+}
+
+func TestACPChildIdentityRefusalSurvivesRenameWithoutRegistryMutation(t *testing.T) {
+	t.Parallel()
+	b, sink, child, services := newChildRefusalBase(t, "native-old")
+	validateRefusalChild(b, "call-spawn", "native-new")
+	before := child.Messages()
+	services.resetWrites()
+	b.ApplySubagentObservation(&SubagentObservation{
+		RowKey: "renamed-spawn", RenameFrom: "call-spawn", Status: bgtask.StatusRunning,
+	})
+	assert.Empty(t, services.recordedWrites())
+	_, found := sink.BackgroundTask("call-spawn")
+	assert.True(t, found)
+	_, renamed := sink.BackgroundTask("renamed-spawn")
+	assert.False(t, renamed)
+	assert.False(t, b.FeedChildUpdate("call-spawn", childRefusalPlan(t, "Old key step.")))
+	assert.False(t, b.FeedChildUpdate("renamed-spawn", childRefusalPlan(t, "New key step.")))
+	assert.Equal(t, before, child.Messages())
+	for _, update := range []string{
+		`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Rejected renamed text."},"_meta":{"parentToolCallId":"renamed-spawn"}}`,
+		`{"sessionUpdate":"plan","entries":[{"content":"Rejected renamed step.","status":"pending"}],"_meta":{"parentToolCallId":"renamed-spawn"}}`,
+	} {
+		b.HandleSessionUpdateForTest(sessionUpdate(t, "session-1", update))
+	}
+	b.FinishChildTurn("renamed-spawn")
+	assert.Empty(t, b.TurnAssistantTextForTest().String())
+	assert.Empty(t, sink.Messages())
+	assert.Equal(t, before, child.Messages())
+}
+
+func TestACPChildIdentityRestorationUsesTheDirectNestedDelegate(t *testing.T) {
+	t.Parallel()
+	b, root := newChildRouteBase(t)
+	b.ApplySubagentObservation(&SubagentObservation{
+		RowKey: "parent-child", ChildAgentKey: "parent-child", ChildAgentSessionID: "native-parent", Status: bgtask.StatusRunning,
+	})
+	b.AttachChildSession("native-parent", "parent-child")
+	parent := root.Child("child-of-parent-child")
+	grandchild := seedRefusalChild(t, parent, "reused-spawn", "native-grandchild")
+	rootChild := seedRefusalChild(t, root, "reused-spawn", "native-root-child")
+	rootBefore := rootChild.Messages()
+	require.True(t, b.ApplySubagentObservationForSession("native-parent", &SubagentObservation{
+		RowKey: "reused-spawn", ChildAgentKey: "reused-spawn", ChildAgentSessionID: "native-grandchild", Status: bgtask.StatusRunning,
+	}))
+	require.True(t, b.FeedChildUpdate("reused-spawn", childRefusalPlan(t, "Nested restored step.")))
+	assert.Len(t, grandchild.Messages(), 2)
+	assert.Contains(t, string(grandchild.Messages()[1].Content), "Nested restored step.")
+	assert.Equal(t, rootBefore, rootChild.Messages())
+}
+
 func TestACP_FinalStatusMap(t *testing.T) {
 	assert.Equal(t, bgtask.StatusCompleted, FinalStatus("completed"))
 	assert.Equal(t, bgtask.StatusFailed, FinalStatus("failed"))
@@ -62,7 +277,7 @@ func TestACP_ApplySubagentObservation_RenameFromCollapsesToOneFinalRow(t *testin
 	b := &Base{sink: agent.NewProviderServices(sink)}
 
 	// Spawn opens a row under the toolCallId.
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "call-123",
 		Title:  "spawn",
 		Status: bgtask.StatusRunning,
@@ -71,7 +286,7 @@ func TestACP_ApplySubagentObservation_RenameFromCollapsesToOneFinalRow(t *testin
 	assert.Equal(t, bgtask.StatusRunning, sink.BackgroundTasks()[0].Status)
 
 	// Final update renames call-123 -> sess-abc, then closes sess-abc.
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey:     "sess-abc",
 		RenameFrom: "call-123",
 		Status:     bgtask.StatusCompleted,
@@ -94,14 +309,14 @@ func TestACP_ApplySubagentObservation_CloseOnlyModeSkipsUpsert(t *testing.T) {
 	b := &Base{sink: agent.NewProviderServices(sink)}
 
 	// Open a row.
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "call-1",
 		Title:  "spawn",
 		Status: bgtask.StatusRunning,
 	})
 
 	// Close-only: closes the existing row, does NOT upsert.
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey:   "call-1",
 		Status:   bgtask.StatusCompleted,
 		CloseRow: true,
@@ -120,7 +335,7 @@ func TestACP_ApplySubagentObservation_UpsertModeWithCloseDoesBoth(t *testing.T) 
 	sink := &agenttest.Sink{}
 	b := &Base{sink: agent.NewProviderServices(sink)}
 
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey:   "call-bg",
 		Title:    "bg task",
 		Activity: "background task",
@@ -145,7 +360,7 @@ func TestACPSubagentPrompt_HeldFromSpawnUntilTheChildExists(t *testing.T) {
 	b := &Base{sink: agent.NewProviderServices(sink)}
 
 	// 1. Spawn: prompt recorded, no child yet.
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "tc-1",
 		Title:  "Goose subagent",
 		Status: bgtask.StatusRunning,
@@ -154,7 +369,7 @@ func TestACPSubagentPrompt_HeldFromSpawnUntilTheChildExists(t *testing.T) {
 	assert.Equal(t, "Review the diff.", b.subagentPrompts.PeekForTest("tc-1"))
 
 	// 2. The observation that links the child spends it.
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey:        "tc-1",
 		ChildAgentKey: "tc-1",
 		Status:        bgtask.StatusRunning,
@@ -174,12 +389,12 @@ func TestACPSubagentPrompt_DroppedWhenTheRowClosesWithNoChild(t *testing.T) {
 
 	sink := &agenttest.Sink{}
 	b := &Base{sink: agent.NewProviderServices(sink)}
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "tc-1", Title: "task", Status: bgtask.StatusRunning, Prompt: "Do it.",
 	})
 	require.Equal(t, 1, b.subagentPrompts.CountForTest())
 
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "tc-1", Status: bgtask.StatusCompleted, CloseRow: true, Mode: ModeCloseOnly,
 	})
 	assert.Zero(t, b.subagentPrompts.CountForTest())
@@ -195,12 +410,12 @@ func TestACPSubagentPrompt_DroppedUnderTheSpawnKeyAfterARename(t *testing.T) {
 	t.Parallel()
 
 	b := &Base{sink: agent.NewProviderServices(&agenttest.Sink{})}
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "call-1", Title: "task", Status: bgtask.StatusRunning, Prompt: "Do it.",
 	})
 	require.Equal(t, 1, b.subagentPrompts.CountForTest())
 
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey:     "ses-child",
 		RenameFrom: "call-1",
 		Status:     bgtask.StatusCompleted,
@@ -217,7 +432,7 @@ func TestACPSubagentPrompt_ClearedWhenTheSessionIsReplaced(t *testing.T) {
 	t.Parallel()
 
 	b := &Base{sink: agent.NewProviderServices(&agenttest.Sink{})}
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "tc-1", Title: "task", Status: bgtask.StatusRunning, Prompt: "Do it.",
 	})
 	require.Equal(t, 1, b.subagentPrompts.CountForTest())
@@ -232,8 +447,8 @@ func TestACPSubagentPrompt_FirstWriteWins(t *testing.T) {
 	t.Parallel()
 
 	b := &Base{sink: agent.NewProviderServices(&agenttest.Sink{})}
-	b.applySubagentObservation(&SubagentObservation{RowKey: "tc-1", Prompt: "first", Status: bgtask.StatusRunning})
-	b.applySubagentObservation(&SubagentObservation{RowKey: "tc-1", Prompt: "second", Status: bgtask.StatusRunning})
+	b.ApplySubagentObservation(&SubagentObservation{RowKey: "tc-1", Prompt: "first", Status: bgtask.StatusRunning})
+	b.ApplySubagentObservation(&SubagentObservation{RowKey: "tc-1", Prompt: "second", Status: bgtask.StatusRunning})
 	assert.Equal(t, "first", b.subagentPrompts.PeekForTest("tc-1"))
 }
 
@@ -242,7 +457,7 @@ func TestACP_SubagentReportLookupFailureWritesNoUnverifiedReport(t *testing.T) {
 
 	sink := &agenttest.Sink{}
 	b := &Base{sink: agent.NewProviderServices(sink)}
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "task-call", Title: "Inspect", Status: bgtask.StatusRunning,
 		ChildAgentKey: "task-call", Prompt: "Inspect it.",
 	})
@@ -251,7 +466,7 @@ func TestACP_SubagentReportLookupFailureWritesNoUnverifiedReport(t *testing.T) {
 	child := sink.Child(rows[0].ChildAgentID)
 
 	sink.LookupErr = errors.New("registry read failed")
-	b.applySubagentObservation(&SubagentObservation{
+	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "task-call", Status: bgtask.StatusCompleted, CloseRow: true,
 		Mode: ModeCloseOnly, ReportID: "call-1", Report: agent.SubagentReport{Text: "Unverified report"},
 	})
@@ -298,13 +513,13 @@ func TestACP_SpawnToolCallOpensNoSpan(t *testing.T) {
 	}
 	b := &Base{sink: agent.NewProviderServices(sink), hooks: Hooks{SubagentFromToolCall: detector}}
 
-	b.handleToolCall(json.RawMessage(`{"toolCallId":"call-spawn","kind":"other","title":"explore","rawInput":{"prompt":"go"}}`))
+	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-spawn","kind":"other","title":"explore","rawInput":{"prompt":"go"}}`))
 	assert.Empty(t, sink.OpenSpans(), "a spawn opens no span")
 	assert.Empty(t, sink.ReservedColorSpans(), "and reserves no color")
 	assert.Equal(t, "other", sink.GetSpanType("call-spawn"),
 		"the span type is still recorded for the closing update")
 
-	b.handleToolCall(json.RawMessage(`{"toolCallId":"call-plain","kind":"read","title":"Read","rawInput":{"path":"/tmp/a"}}`))
+	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-plain","kind":"read","title":"Read","rawInput":{"path":"/tmp/a"}}`))
 	open := sink.OpenSpans()
 	require.Len(t, open, 1, "an ordinary tool call still opens a span")
 	assert.Equal(t, "call-plain", open[0].SpanID)

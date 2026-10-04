@@ -17,9 +17,9 @@ func TestZCodeGoal_StatePatchReportsAChange(t *testing.T) {
 	sink := &agenttest.Sink{}
 	ag := newZCodeTestAgent(t, agent.NewProviderServices(sink))
 
-	ag.handleZCodeStateUpdated(json.RawMessage(`{"scope":"session","sessionId":"sess-1",` +
-		`"revision":12,"patch":{"goal":{"targetId":"t-1","objective":"green build",` +
-		`"status":"verifying","timeUsedSeconds":90,"iteration":4}}}`))
+	ag.handleZCodeStateUpdated(json.RawMessage(`{"scope":"session","sessionId":"sess-1",`+
+		`"revision":12,"patch":{"goal":{"targetId":"t-1","objective":"green build",`+
+		`"status":"verifying","timeUsedSeconds":90,"iteration":4}}}`), nil)
 
 	got, ok := sink.LastGoal()
 	require.True(t, ok)
@@ -54,7 +54,7 @@ func TestZCodeGoal_PatchWithoutAGoalKeyLeavesItAlone(t *testing.T) {
 	agent := newZCodeTestAgent(t, agent.NewProviderServices(sink))
 
 	agent.handleZCodeStateUpdated(json.RawMessage(
-		`{"scope":"session","sessionId":"sess-1","revision":13,"patch":{"status":"prompt_started"}}`))
+		`{"scope":"session","sessionId":"sess-1","revision":13,"patch":{"status":"prompt_started"}}`), nil)
 
 	assert.Empty(t, sink.Goals())
 	assert.Equal(t, 0, sink.GoalClears())
@@ -67,7 +67,7 @@ func TestZCodeGoal_NullGoalClears(t *testing.T) {
 	agent := newZCodeTestAgent(t, agent.NewProviderServices(sink))
 
 	agent.handleZCodeStateUpdated(json.RawMessage(
-		`{"scope":"session","sessionId":"sess-1","revision":14,"patch":{"goal":null}}`))
+		`{"scope":"session","sessionId":"sess-1","revision":14,"patch":{"goal":null}}`), nil)
 
 	assert.Equal(t, 1, sink.GoalClears())
 }
@@ -193,7 +193,7 @@ func TestZCodeGoal_WorkspaceScopePatchNeverTouchesTheGoal(t *testing.T) {
 	require.Equal(t, 1, len(sink.Goals()))
 
 	agent.handleZCodeStateUpdated(json.RawMessage(
-		`{"scope":"workspace","patch":{"goal":null}}`))
+		`{"scope":"workspace","patch":{"goal":null}}`), nil)
 
 	assert.Equal(t, 0, sink.GoalClears(), "a workspace patch must not clear the session goal")
 }
@@ -285,7 +285,7 @@ func TestZCodeGoal_IgnoresAPatchForAReplacedSession(t *testing.T) {
 	agent.Mu.Unlock()
 
 	agent.handleZCodeStateUpdated(json.RawMessage(
-		`{"scope":"session","sessionId":"sess-old","patch":{"goal":{"objective":"stale goal","status":"active"}}}`))
+		`{"scope":"session","sessionId":"sess-old","patch":{"goal":{"objective":"stale goal","status":"active"}}}`), nil)
 
 	assert.Empty(t, sink.Goals(), "a patch for the replaced session is not this session's goal")
 }

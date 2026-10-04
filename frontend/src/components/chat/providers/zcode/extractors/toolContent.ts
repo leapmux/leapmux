@@ -32,10 +32,10 @@ export function zcodeMcpContent(row: ZCodeRow): McpContentItem[] | null {
       return null
     }
     const mimeType = pickString(attachment, ZCODE_STORED_ATTACHMENT.Mime).trim().toLowerCase()
-    const uri = pickString(pickObject(attachment, ZCODE_STORED_ATTACHMENT.Metadata), ZCODE_STORED_ATTACHMENT.ArtifactURI) || pickString(attachment, ZCODE_STORED_ATTACHMENT.URL)
+    const uri = pickString(pickObject(attachment, ZCODE_STORED_ATTACHMENT.Metadata), ZCODE_STORED_ATTACHMENT.OutputFileURI) || pickString(attachment, ZCODE_STORED_ATTACHMENT.URL)
     const description = pickString(attachment, 'filename', undefined)
     if (mimeType.startsWith('image/')) {
-      const url = pickString(native.artifacts, uri, undefined)
+      const url = pickString(native.outputFiles, uri, undefined)
       // 'MCP image' is ZCode's own label for the attachment, not a description of the picture.
       const imageDescription = description !== undefined && description !== 'MCP image' ? description : undefined
       content.push({
@@ -50,7 +50,7 @@ export function zcodeMcpContent(row: ZCodeRow): McpContentItem[] | null {
   return content
 }
 
-/** Native display hints can carry images without a separate artifact record. */
+/** Native display hints can carry images without a separate output file record. */
 export function zcodeDisplayImages(display: Record<string, unknown> | null | undefined): ImageResultSource[] {
   if (!display)
     return []
@@ -65,7 +65,7 @@ export function zcodeDisplayImages(display: Record<string, unknown> | null | und
       type: 'image',
       mimeType: pickString(entry, 'mimeType', undefined),
       data: pickString(entry, nodeImages ? 'base64' : 'data', undefined),
-      url: pickString(entry, ZCODE_STORED_ATTACHMENT.ArtifactURI, undefined),
+      url: pickString(entry, ZCODE_STORED_ATTACHMENT.OutputFileURI, undefined),
     })
     return source ? [source] : []
   })

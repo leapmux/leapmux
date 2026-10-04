@@ -1,8 +1,10 @@
 package providerkit
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
@@ -90,7 +92,9 @@ func TestFinalizeAgentEnv_ScrubsAgentIdentity(t *testing.T) {
 		"CLAUDECODE", "CODEX_CI", "OPENCODE_CLIENT", "KILO_CLIENT", "CLAUDE_CODE_ENTRYPOINT",
 		"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS",
 		"CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY",
-		"CLAUDE_CODE_USE_BEDROCK", "CODEX_HOME", "GOOSE_MODEL", "PI_CODING_AGENT_DIR", "PATH",
+		"CLAUDE_CODE_USE_BEDROCK", "CODEX_HOME", "GOOSE_MODEL", "PI_CODING_AGENT_DIR", "GROK_HOME",
+		"QWEN_HOME", "MIMOCODE_HOME", "CODEWHALE_HOME", "KIRO_HOME", "AMP_API_KEY", "AMP_URL",
+		"CLINE_DIR", "CLINE_DATA_DIR", "CLINE_PROVIDER_SETTINGS_PATH", "PATH",
 	}
 
 	buildEnv := func() []string {
@@ -103,7 +107,11 @@ func TestFinalizeAgentEnv_ScrubsAgentIdentity(t *testing.T) {
 			"CLAUDE_CODE_ENTRYPOINT=cli", "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1",
 			"CLAUDE_CODE_OAUTH_TOKEN=tok", "OPENAI_API_KEY=sk-test", "CODEX_API_KEY=sk-codex",
 			"CLAUDE_CODE_USE_BEDROCK=1", "CODEX_HOME=/home/u/.codex", "GOOSE_MODEL=gpt-x",
-			"PI_CODING_AGENT_DIR=/home/u/.pi", "PATH=/usr/bin:/bin",
+			"PI_CODING_AGENT_DIR=/home/u/.pi", "GROK_HOME=/home/u/.grok", "QWEN_HOME=/home/u/.qwen",
+			"MIMOCODE_HOME=/home/u/.mimo", "CODEWHALE_HOME=/home/u/.codewhale", "KIRO_HOME=/home/u/.kiro",
+			"AMP_API_KEY=sgamp-test", "AMP_URL=https://amp.example.com",
+			"CLINE_DIR=/home/u/.cline", "CLINE_DATA_DIR=/home/u/.cline/data",
+			"CLINE_PROVIDER_SETTINGS_PATH=/home/u/.cline/data/settings/providers.json", "PATH=/usr/bin:/bin",
 		)
 		return env
 	}
@@ -153,4 +161,131 @@ func TestFinalizeAgentEnv_ScrubsAgentIdentity(t *testing.T) {
 			assert.Truef(t, envutil.HasKey(out, k), "var %q must survive the scrub", k)
 		}
 	})
+}
+
+// Qwen Code states its session to each shell command that it runs
+// (getShellContextEnvVars in qwen-code 0.24), and a Qwen started from such a
+// command reads the session id, the project directory and the model back from
+// its own environment. Each name is listed here on its own, because the test
+// above reads the scrub list and so cannot fail for a name that it lacks.
+func TestFinalizeAgentEnvScrubsTheQwenShellContext(t *testing.T) {
+	t.Parallel()
+	qwenShellContext := []string{
+		"QWEN_CODE", "QWEN_CODE_SESSION_ID", "QWEN_CODE_PROJECT_DIR", "QWEN_CODE_CLI",
+		"QWEN_CODE_MODEL", "QWEN_CODE_MODEL_IDENTITY", "QWEN_CODE_AGENT_ID", "QWEN_CODE_PROMPT_ID",
+	}
+	var env []string
+	for _, key := range qwenShellContext {
+		env = append(env, key+"=parent")
+	}
+
+	out := FinalizeAgentEnv(env, agent.Options{})
+
+	for _, key := range qwenShellContext {
+		assert.Falsef(t, envutil.HasKey(out, key), "%s of the parent Qwen session must not reach the agent", key)
+	}
+}
+
+// Each harness below marks the commands that it runs with its own session, and
+// a CLI that a worker starts from such a command reads that session back. The
+// names are stated here for each harness, for the reason that the Qwen test
+// above gives: a test that reads the scrub list cannot fail for a name that the
+// list lost.
+func TestFinalizeAgentEnvScrubsTheSessionOfEachHarness(t *testing.T) {
+	t.Parallel()
+	for harness, keys := range map[string][]string{
+		"Grok Build": {"GROK_SESSION_ID"},
+		"Kiro":       {"KIRO_SESSION_ID"},
+		"Oh My Pi":   {"AGENT", "PI_SESSION_FILE"},
+		"MiMo Code":  {"MIMOCODE", "MIMOCODE_PID", "MIMOCODE_RUN_ID", "MIMOCODE_PROCESS_ROLE"},
+		"Codewhale":  {"CODEWHALE_SANDBOX", "DEEPSEEK_SANDBOX", "CODEWHALE_SESSION_ID"},
+		"Amp":        {"AMP_THREAD_ID", "AMP_CURRENT_THREAD_ID", "AGENT_THREAD_ID", "AI_AGENT"},
+		"Cline": {
+			"CLINE_RUN_AS_HUB_DAEMON", "CLINE_NO_INTERACTIVE", "CLINE_WRAPPER_PATH",
+			"CLINE_CONNECTOR_CLI_LAUNCH", "CLINE_CONNECTOR_STARTING_INSTANCE", "CLINE_CONNECTOR_SUPERVISED",
+			"CLINE_HOOK_AGENT_RESUME", "CLINE_SANDBOX", "CLINE_SANDBOX_DATA_DIR",
+		},
+	} {
+		t.Run(harness, func(t *testing.T) {
+			t.Parallel()
+			env := []string{"PATH=/usr/bin"}
+			for _, key := range keys {
+				env = append(env, key+"=parent")
+			}
+
+			out := FinalizeAgentEnv(env, agent.Options{})
+
+			for _, key := range keys {
+				assert.Falsef(t, envutil.HasKey(out, key), "%s of the parent %s session must not reach the agent", key, harness)
+			}
+			assert.Contains(t, out, "PATH=/usr/bin")
+		})
+	}
+}
+
+// TestFinalizeAgentEnv_StripsAnInheritedHelperVariable pins that the
+// provider-helper variable never passes from the worker's own environment into
+// an agent. An inherited value points at another agent's helper spec: a worker
+// started from a shell of an Amp agent carries that agent's value, and a CLI of
+// this worker that inherited it would run the OTHER agent's helper.
+func TestFinalizeAgentEnv_StripsAnInheritedHelperVariable(t *testing.T) {
+	t.Parallel()
+
+	out := FinalizeAgentEnv([]string{
+		"PATH=/usr/bin",
+		contracts.EnvAgentHelper + "=/elsewhere/helper.json",
+	}, agent.Options{})
+	assert.False(t, envutil.HasKey(out, contracts.EnvAgentHelper))
+	assert.Contains(t, out, "PATH=/usr/bin")
+}
+
+// `cline --data-dir` and an inherited CLINE_SANDBOX=1 put Cline in a sandbox.
+// Cline then sets the sandbox marker and the data variables below on itself
+// (configureSandboxEnvironment in Cline 3.0.64), so each command that it runs
+// inherits them. A worker started from such a command must not drive the
+// sandbox's data, so the scrub drops these variables together with the marker.
+// Without the marker, the same variables are the user's own configuration, and
+// they stay.
+func TestFinalizeAgentEnvDropsTheDataOfAClineSandbox(t *testing.T) {
+	t.Parallel()
+	sandboxData := []string{
+		"CLINE_DATA_DIR=/work/sandbox",
+		"CLINE_DB_DATA_DIR=/work/sandbox/db",
+		"CLINE_SESSION_DATA_DIR=/work/sandbox/sessions",
+		"CLINE_TEAM_DATA_DIR=/work/sandbox/teams",
+		"CLINE_PROVIDER_SETTINGS_PATH=/work/sandbox/settings/providers.json",
+		"CLINE_HOOKS_LOG_PATH=/work/sandbox/logs/hooks.jsonl",
+	}
+	sandboxDataKeys := make([]string, 0, len(sandboxData))
+	for _, entry := range sandboxData {
+		key, _, _ := strings.Cut(entry, "=")
+		sandboxDataKeys = append(sandboxDataKeys, key)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		marker []string
+		drops  bool
+	}{
+		{name: "the sandbox marker", marker: []string{"CLINE_SANDBOX=1"}, drops: true},
+		{name: "the sandbox marker with spaces", marker: []string{"CLINE_SANDBOX= 1 "}, drops: true},
+		{name: "no sandbox marker", marker: nil, drops: false},
+		{name: "an empty sandbox marker", marker: []string{"CLINE_SANDBOX="}, drops: false},
+		{name: "a sandbox marker that Cline ignores", marker: []string{"CLINE_SANDBOX=0"}, drops: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env := append([]string{"PATH=/usr/bin", "CLINE_DIR=/home/u/.cline"}, tc.marker...)
+			env = append(env, sandboxData...)
+
+			out := FinalizeAgentEnv(env, agent.Options{})
+
+			for _, key := range sandboxDataKeys {
+				assert.Equalf(t, !tc.drops, envutil.HasKey(out, key), "%s after %s", key, tc.name)
+			}
+			assert.False(t, envutil.HasKey(out, "CLINE_SANDBOX"), "the sandbox marker never reaches an agent")
+			assert.Contains(t, out, "CLINE_DIR=/home/u/.cline", "the sandbox does not set CLINE_DIR, so it stays")
+			assert.Contains(t, out, "PATH=/usr/bin")
+		})
+	}
 }

@@ -1,19 +1,10 @@
-/**
- * Shared infrastructure for perf-timing e2e specs (e.g.
- * 121-claude-agent-open-timing, 122-tab-close-timing). Each spec uses
- * its own dev-server fixture so it can pass `LEAPMUX_TRACE_*` env vars
- * and capture backend stderr for slog phase markers. This module
- * consolidates the log-line buffer, JSON-line parsing, browser-side
- * RPC mark wiring, and the ASCII-table timeline renderer.
- *
- * The spec-specific bits (which phase names to expect, which markers
- * to filter, what DOM events to observe with MutationObserver) stay in
- * each spec file.
- */
+/** Capture backend timing lines and browser RPC marks, then render their timelines. */
 import type { Page } from '@playwright/test'
 import type { Buffer } from 'node:buffer'
-import type { DevServerHandle } from './devServer'
-import { startDevServer } from './devServer'
+import type { ServerInfo } from '../fixtures'
+import { isObject } from '../../../src/lib/jsonPick'
+import { withNativeWorker } from './nativeWorker'
+import { createProcessOutputLineDecoder } from './processOutputLines'
 
 // ──────────────────────────────────────────────
 // Types
@@ -37,64 +28,81 @@ export interface RpcMark {
   ok?: boolean
 }
 
-export interface TimingServer extends DevServerHandle {
-  /** All backend log lines emitted since server start, parsed if JSON. */
-  logLines: LogLine[]
-}
-
 // ──────────────────────────────────────────────
-// Dev server with stderr capture
+// Process stream capture
 // ──────────────────────────────────────────────
 
-/**
- * Parse a single JSON log line. Returns null on non-JSON or parse error.
- * slog's JSONHandler emits one JSON object per line on stderr when not
- * attached to a TTY (which is how child_process pipes work).
- */
+/** Read one JSON object from a complete log line. Return null for other output. */
 function parseJsonLine(line: string): Record<string, unknown> | null {
   const trimmed = line.trim()
   if (!trimmed.startsWith('{'))
     return null
   try {
-    return JSON.parse(trimmed) as Record<string, unknown>
+    const value: unknown = JSON.parse(trimmed)
+    return isObject(value) ? value : null
   }
   catch {
     return null
   }
 }
 
-export interface TimingServerOptions {
-  /** Prefix for the mkdtemp name (helps when debugging leftover dirs). */
-  dataDirPrefix: string
-  /**
-   * Extra env vars layered on top of process.env. Pass the
-   * spec-specific LEAPMUX_TRACE_* gate here.
-   */
-  env: Record<string, string>
-}
-
-/**
- * Spin up `leapmux dev` with stderr captured into `logLines`. Each log
- * line is parsed as JSON when possible; the raw text is preserved for
- * grep-style lookups.
- */
-export async function startTimingServer(opts: TimingServerOptions): Promise<TimingServer> {
+/** Keep independent UTF-8 and line state for stdout and stderr. */
+export function createTimingLogReceiver(clock: () => number = () => performance.now()): {
+  logLines: LogLine[]
+  receive: (chunk: Buffer, stream?: 'stdout' | 'stderr') => void
+  end: (stream?: 'stdout' | 'stderr') => void
+} {
   const logLines: LogLine[] = []
-  const handleChunk = (chunk: Buffer) => {
-    const text = chunk.toString('utf8')
-    const now = performance.now()
-    for (const line of text.split(/\r?\n/)) {
-      if (!line)
-        continue
-      logLines.push({ raw: line, json: parseJsonLine(line), rxAt: now })
+  const streamReceiver = () => {
+    let receivedAt = 0
+    const decoder = createProcessOutputLineDecoder((line) => {
+      if (line)
+        logLines.push({ raw: line, json: parseJsonLine(line), rxAt: receivedAt })
+    })
+    return {
+      receive: (chunk: Buffer) => {
+        receivedAt = clock()
+        decoder.write(chunk)
+      },
+      end: decoder.end,
     }
   }
-  const handle = await startDevServer({
-    dataDirPrefix: opts.dataDirPrefix,
-    env: opts.env,
-    onStdio: handleChunk,
-  })
-  return { ...handle, logLines }
+  const streams = { stdout: streamReceiver(), stderr: streamReceiver() }
+  return {
+    logLines,
+    receive: (chunk, stream = 'stderr') => streams[stream].receive(chunk),
+    end: (stream) => {
+      if (stream) {
+        streams[stream].end()
+      }
+      else {
+        streams.stdout.end()
+        streams.stderr.end()
+      }
+    },
+  }
+}
+
+export interface TimingWorker {
+  server: ServerInfo
+  logLines: LogLine[]
+  dataDir: string
+}
+
+/** Capture one traced private Worker without starting another Hub. */
+export async function withTimingWorker(
+  server: ServerInfo,
+  options: { dataDirPrefix: string, env?: NodeJS.ProcessEnv },
+  use: (worker: TimingWorker) => Promise<void>,
+): Promise<void> {
+  const receiver = createTimingLogReceiver()
+  await withNativeWorker(server, {
+    dataDirPrefix: options.dataDirPrefix,
+    workerName: 'Timing Worker',
+    ...(options.env ? { env: options.env } : {}),
+    onStdio: receiver.receive,
+    onStdioEnd: receiver.end,
+  }, worker => use({ server: worker.server, logLines: receiver.logLines, dataDir: worker.dataDir }))
 }
 
 // ──────────────────────────────────────────────
@@ -102,15 +110,9 @@ export async function startTimingServer(opts: TimingServerOptions): Promise<Timi
 // ──────────────────────────────────────────────
 
 /**
- * Install leapmux:rpc-send / leapmux:rpc-recv listeners and initialize
- * `window.__rpcMarks` as an empty array. The listeners are only added
- * once per page — calling this helper again resets the array but does
- * not re-register, so iteration loops can zero the buffer between
- * samples without piling up duplicate listeners.
- *
- * Callers read `window.__rpcMarks` directly (keeps the read pattern
- * obvious at the call site; there's no single shared "snapshot" shape
- * since each spec combines marks with its own DOM state).
+ * Install the leapmux:rpc-send and leapmux:rpc-recv listeners once in each document.
+ * Reset window.__rpcMarks on each call. Iterations then reuse the listeners without duplicate entries.
+ * Callers read the marks directly and combine them with their own DOM state.
  */
 export async function installRpcListeners(page: Page): Promise<void> {
   await page.evaluate(() => {
@@ -118,7 +120,7 @@ export async function installRpcListeners(page: Page): Promise<void> {
       __rpcMarks?: Array<{ type: 'rpc-send' | 'rpc-recv', method: string, at: number, ok?: boolean }>
       __rpcListenersInstalled?: boolean
     }
-    const w = window as unknown as RpcWindow
+    const w: Window & RpcWindow = window
     w.__rpcMarks = []
     if (w.__rpcListenersInstalled)
       return
@@ -157,10 +159,9 @@ export interface ExtractWorkerMarksOptions {
 }
 
 /**
- * Scan stderr log lines for backend phase markers and convert their
- * wall-clock timestamps into the browser's performance.now clock via
- * the given anchor. Shared by perf specs so they need only specify
- * their marker + id field.
+ * Read backend phase markers from the captured process streams.
+ * Convert each wall timestamp to the browser performance.now clock through the supplied anchor.
+ * Each timing test supplies its marker and ID field.
  */
 export function extractWorkerMarks(
   logLines: LogLine[],
@@ -190,8 +191,7 @@ export function extractWorkerMarks(
 // ──────────────────────────────────────────────
 
 /**
- * Render a sorted mark list as an ASCII table with absolute and delta
- * milliseconds per phase. Input must already be sorted by tMs.
+ * Render absolute and delta milliseconds for each phase in an ASCII table. Sort the input by tMs before this call.
  */
 export function renderTimeline(marks: PhaseMark[]): string {
   if (marks.length === 0)

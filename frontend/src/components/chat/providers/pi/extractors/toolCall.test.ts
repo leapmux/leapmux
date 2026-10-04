@@ -3,15 +3,18 @@ import type { ToolCall } from '../../../model/toolCall'
 import type { PiToolRow } from './toolCall'
 import { describe, expect, it } from 'vitest'
 import { PI_TOOL } from '~/generated/contracts/pi-protocol'
-import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { providerRow } from '~/test-support/toolCallFixture'
 import { toolCallRow } from '../../../model/row'
 import { isToolFailureResult } from '../../../model/toolCall'
 import { TOOL_KINDS } from '../../../model/toolKind'
+import { toolCallDisplayName } from '../../../results/tools/header'
 import { toolCallMeta } from '../../../results/tools/meta'
 import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
 import { input } from '../../testUtils'
 import { PI_POWERSHELL_TOOL, PI_SEARCH_TOOL } from '../protocol'
 import { PI_TOOL_READERS, PI_TOOL_REQUEST_OVERRIDES, piReclassify, piToolCall, piToolFacts, piToolRow, piToolSpanRowRole } from './toolCall'
+import '../plugin'
 
 const text = (value: string) => [{ type: 'text', text: value }]
 
@@ -463,19 +466,24 @@ describe('PI_TOOL_REQUEST_OVERRIDES', () => {
     expect(DEFAULT_TOOL_REQUESTS.agent({ prompt: 'Do it' })).toEqual({ description: '', prompt: 'Do it' })
   })
 
-  // The namespace proxy states its server in its own NAME and its tool in the
-  // arguments. The shared entry reads a `server` argument Pi never sends.
-  it('reads the MCP server from the `mcp__` name and the tool from the `tool` argument', () => {
+  // Native names can contain sanitized text and hashes. Only result details state the original identity.
+  it('keeps an opaque native MCP name until the result states its identity', () => {
     const args = { tool: 'create_issue', title: 'A defect' }
-    const call = piToolCall(requestRow('mcp__github', args))
-    expect(call.kind === 'mcp' && call.request).toEqual({ server: 'github', tool: 'create_issue', args })
+    const call = piToolCall(requestRow('mcp__github__create_issue', args))
+    expect(call.kind === 'mcp' && call.request).toEqual({ server: '', tool: 'mcp__github__create_issue', args })
     expect(DEFAULT_TOOL_REQUESTS.mcp(args)).toEqual({ server: '', tool: 'create_issue', args })
   })
 
-  // pi-mcp-adapter states the pair in the RESULT, which no argument carries.
+  // Native result details state the original server and tool.
   it('reads the MCP server and tool from the result details', () => {
-    const call = piToolCall(resultRow('sample_lookup', { query: 'marker' }, { content: text('Found it'), details: { server: 'sample', tool: 'lookup' } }))
+    const call = piToolCall(resultRow('mcp__sample__lookup', { query: 'marker' }, { content: text('Found it'), details: { server: 'sample', tool: 'lookup' } }))
     expect(call.kind === 'mcp' && call.request).toEqual({ server: 'sample', tool: 'lookup', args: { query: 'marker' } })
+    expect(toolCallDisplayName(call)).toBe('sample / lookup')
+  })
+
+  it('uses the original MCP identity for a shortened native tool display name', () => {
+    const call = piToolCall(resultRow('mcp__sample_with_long_name__lookup_a1234567', {}, { content: text('Found it'), details: { server: 'sample.with.long.name', tool: 'lookup/a' } }))
+    expect(toolCallDisplayName(call)).toBe('sample.with.long.name / lookup/a')
   })
 
   // An extension that identifies no server states its own wire name as the tool.
@@ -836,5 +844,34 @@ describe('piToolCall on a call that has not returned', () => {
   it('states no result on the opening frame of any kind', () => {
     for (const toolName of [PI_TOOL.Bash, PI_TOOL.Read, PI_TOOL.Write, PI_TOOL.Edit, PI_TOOL.Agent, PI_SEARCH_TOOL.Grep, PI_SEARCH_TOOL.Find, PI_SEARCH_TOOL.List, 'an_extension_no_table_holds'])
       expect(piToolCall(minimalRequestRow(toolName)).result, toolName).toBeUndefined()
+  })
+})
+
+describe('registered Pi structured output ownership', () => {
+  it('carries codemode execution metadata through the real registered extraction', () => {
+    const payload = end(PI_TOOL.Codemode, { content: text('returned code output'), details: { calls: [] } })
+    const before = JSON.stringify(payload)
+    const row = providerRow(AgentProvider.PI, payload, { request: input(start(PI_TOOL.Codemode, { code: 'text("returned code output")' })) })
+    if (row?.kind !== 'tool')
+      throw new Error('The registered Pi codemode fixture produced no tool row.')
+    expect(row.call.kind).toBe('mcp')
+    expect(row.call.result).toMatchObject({ content: [{ type: 'text', text: 'returned code output' }], structuredJsonRole: 'metadata' })
+    expect(toolCallMeta(row).copyableContent()).toBe('returned code output\n\n{\n  "calls": []\n}')
+    expect(JSON.stringify(payload)).toBe(before)
+  })
+
+  it('keeps real MCP structured results and arbitrary extension details as output', () => {
+    const cases = [
+      { toolName: 'mcp__sample__lookup', result: { content: [], details: { server: 'sample', tool: 'lookup' }, structuredContent: { content: [], structuredContent: { count: 0, enabled: false, nullable: null } } } },
+      { toolName: 'custom', result: { content: [], details: { count: 0, enabled: false, nullable: null } } },
+    ]
+    for (const sample of cases) {
+      const row = providerRow(AgentProvider.PI, end(sample.toolName, sample.result), { request: input(start(sample.toolName)) })
+      if (row?.kind !== 'tool' || row.call.kind !== 'mcp')
+        throw new Error('The registered Pi structured fixture produced no MCP row.')
+      expect(row.call.result).toMatchObject({ structuredJson: '{\n  "count": 0,\n  "enabled": false,\n  "nullable": null\n}' })
+      expect(row.call.result).not.toHaveProperty('structuredJsonRole')
+      expect(toolCallMeta(row).copyableContent()).toBe('{\n  "count": 0,\n  "enabled": false,\n  "nullable": null\n}')
+    }
   })
 })

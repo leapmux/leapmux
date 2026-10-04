@@ -98,10 +98,10 @@ func TestIsBenignSessionReadError(t *testing.T) {
 }
 
 func TestTerminalSessionError(t *testing.T) {
-	require.NoError(t, terminalSessionError(io.EOF))
-	require.NoError(t, terminalSessionError(context.Canceled))
+	require.NoError(t, completedSessionError(io.EOF))
+	require.NoError(t, completedSessionError(context.Canceled))
 	protocolErr := errors.New("malformed protobuf")
-	require.ErrorIs(t, terminalSessionError(protocolErr), protocolErr)
+	require.ErrorIs(t, completedSessionError(protocolErr), protocolErr)
 }
 
 func TestHandleCreateTunnelRejectsMissingConfig(t *testing.T) {
@@ -116,7 +116,7 @@ func TestHandleCreateTunnelRejectsMissingConfig(t *testing.T) {
 			Method: &desktoppb.Request_CreateTunnel{
 				CreateTunnel: &desktoppb.CreateTunnelRequest{},
 			},
-		})
+		}, nil)
 	})
 	response, err := ReadFrame(&output)
 	require.NoError(t, err)
@@ -136,7 +136,7 @@ func TestHandleResetTunnelsAcksOK(t *testing.T) {
 		Method: &desktoppb.Request_ResetTunnels{
 			ResetTunnels: &desktoppb.ResetTunnelsRequest{},
 		},
-	})
+	}, nil)
 	frame, err := ReadFrame(&output)
 	require.NoError(t, err)
 	response := frame.GetResponse()
@@ -173,7 +173,7 @@ func TestHandleListTunnelsMapsTunnelInfos(t *testing.T) {
 	session.handleRequest(context.Background(), &desktoppb.Request{
 		Id:     7,
 		Method: &desktoppb.Request_ListTunnels{ListTunnels: &desktoppb.ListTunnelsRequest{}},
-	})
+	}, nil)
 
 	frame, err := ReadFrame(&output)
 	require.NoError(t, err)
@@ -205,7 +205,7 @@ func TestHandleListExternalAppsMapsTheListing(t *testing.T) {
 	session.handleRequest(context.Background(), &desktoppb.Request{
 		Id:     8,
 		Method: &desktoppb.Request_ListExternalApps{ListExternalApps: &desktoppb.ListExternalAppsRequest{Refresh: false}},
-	})
+	}, nil)
 
 	frame, err := ReadFrame(&output)
 	require.NoError(t, err)
@@ -233,7 +233,7 @@ func TestSwitchModeResponseCarriesLauncherStateWithCleanupError(t *testing.T) {
 		Method: &desktoppb.Request_SwitchMode{
 			SwitchMode: &desktoppb.SwitchModeRequest{},
 		},
-	})
+	}, nil)
 	frame, err := ReadFrame(&output)
 	require.NoError(t, err)
 	response := frame.GetResponse()
@@ -257,7 +257,7 @@ func TestSwitchModePersistenceFailureReturnsOnlyTopLevelError(t *testing.T) {
 		Method: &desktoppb.Request_SwitchMode{
 			SwitchMode: &desktoppb.SwitchModeRequest{},
 		},
-	})
+	}, nil)
 	frame, err := ReadFrame(&output)
 	require.NoError(t, err)
 	response := frame.GetResponse()
@@ -280,7 +280,7 @@ func TestShutdownResponseReportsCleanupError(t *testing.T) {
 		Method: &desktoppb.Request_Shutdown{
 			Shutdown: &desktoppb.ShutdownRequest{},
 		},
-	})
+	}, nil)
 	frame, err := ReadFrame(&output)
 	require.NoError(t, err)
 	response := frame.GetResponse()
@@ -289,47 +289,36 @@ func TestShutdownResponseReportsCleanupError(t *testing.T) {
 	require.ErrorContains(t, errors.New(response.GetLifecycle().GetCleanupErrors()[0]), wantErr.Error())
 }
 
-// slowFailingSoloInstance stands in for a real solo teardown, which routinely
-// takes over a second (operation drain, then the hub's server/registry/watcher
-// shutdown) and reports a cleanup error.
-type slowFailingSoloInstance struct {
-	delay time.Duration
-	err   error
-}
-
-func (slowFailingSoloInstance) LocalListenURL() string { return "" }
-func (slowFailingSoloInstance) Wait() error            { return nil }
-func (s slowFailingSoloInstance) Stop() error {
-	time.Sleep(s.delay)
-	return s.err
-}
-
-// The Shutdown RPC must deliver its LifecycleResult through a live Run loop, not
-// just when handleRequest is called directly.
-//
-// App.Shutdown's first act is cancelling app.ctx, which is exactly what makes
-// Run return -- so the session tears itself down while its own Shutdown handler
-// is still inside the hub teardown. With a writer grace shorter than that
-// teardown, drainHandlers interrupted the writer first and writeLifecycleResult
-// hit a closed pipe: the cleanup_errors this RPC exists to report were dropped
-// and the shell burned its full 5s timeout on every quit waiting for a reply that
-// never came. TestShutdownResponseReportsCleanupError calls handleRequest
-// directly, so it never exercised this.
+// The Shutdown handler must deliver its LifecycleResult through the Run loop.
+// App.Shutdown cancels app.ctx before native cleanup ends, so Run starts its drain during cleanup.
+// The controlled deadline expires before cleanup ends and must not discard its response.
 func TestShutdownResponseSurvivesSlowTeardownThroughRunLoop(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	wantErr := errors.New("lease release failed")
 	app := NewApp("")
-	// Longer than the old one-second writer grace: a real solo teardown budgets
-	// ~10s each for the hub server, CRDT registry, and revocation watcher, so
-	// exceeding a second is the norm, not the edge case.
-	installTestConnection(app, mustNewProxy(t, "http://localhost"), slowFailingSoloInstance{
-		delay: 1500 * time.Millisecond,
-		err:   wantErr,
-	}, "")
+	cleanup := controlledWorkerCleanup{
+		blockingSoloInstance: blockingSoloInstance{entered: make(chan struct{}), release: make(chan struct{})},
+		finished:             make(chan struct{}),
+		err:                  wantErr,
+	}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(cleanup.release) }) }
+	t.Cleanup(release)
+	installTestConnection(app, mustNewProxy(t, "http://localhost"), cleanup, "")
 
 	clientConn, sidecarConn := net.Pipe()
-	t.Cleanup(func() { _ = clientConn.Close() })
+	t.Cleanup(func() {
+		release()
+		_ = clientConn.Close()
+		_ = sidecarConn.Close()
+		require.ErrorIs(t, app.Shutdown(), wantErr)
+	})
 
 	session := NewRPCSession(app, sidecarConn, sidecarConn, nil)
+	control := newControlledHandlerDrain()
+	session.handlerDrain = control.policy()
 	runDone := make(chan error, 1)
 	go func() { runDone <- session.Run() }()
 
@@ -339,6 +328,14 @@ func TestShutdownResponseSurvivesSlowTeardownThroughRunLoop(t *testing.T) {
 			Method: &desktoppb.Request_Shutdown{Shutdown: &desktoppb.ShutdownRequest{}},
 		}},
 	}))
+	select {
+	case <-cleanup.entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the desktop did not start native cleanup")
+	}
+	first := control.next(t)
+	close(first.expire)
+	control.nextCleanup(t)
 
 	frameCh := make(chan *desktoppb.Frame, 1)
 	errCh := make(chan error, 1)
@@ -350,6 +347,7 @@ func TestShutdownResponseSurvivesSlowTeardownThroughRunLoop(t *testing.T) {
 		}
 		frameCh <- frame
 	}()
+	release()
 
 	select {
 	case frame := <-frameCh:
@@ -361,42 +359,30 @@ func TestShutdownResponseSurvivesSlowTeardownThroughRunLoop(t *testing.T) {
 		require.Contains(t, response.GetLifecycle().GetCleanupErrors()[0], wantErr.Error())
 	case err := <-errCh:
 		t.Fatalf("shutdown reply lost -- the writer was interrupted under its own handler: %v", err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for the shutdown reply")
 	}
 
 	select {
-	case <-runDone:
-	case <-time.After(5 * time.Second):
+	case err := <-runDone:
+		require.NoError(t, err)
+	case <-time.After(30 * time.Second):
 		t.Fatal("Run did not return after shutdown")
 	}
 }
 
-// The two drain phases must SHARE handlerDrainTimeout, not each get it.
-//
-// They run in sequence, so a per-phase budget lets teardown reach 2x the timeout --
-// and the timeout is chosen to match the shell's own patience (request_shutdown_async
-// waits handlerDrainTimeout for the Shutdown reply). A straggling handler would
-// therefore make the shell give up and exit while the sidecar was still draining,
-// leaving the process alive past the window it was sized to fit in.
+// Ordinary handlers share one handlerDrainTimeout across both drain phases.
+// Separate deadlines would double the wait before the sidecar accepts another connection.
 func TestDrainHandlersSharesOneBudgetAcrossBothPhases(t *testing.T) {
-	original := handlerDrainTimeout
-	handlerDrainTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { handlerDrainTimeout = original })
-	// interruptGrace is the post-interrupt phase's floor, not a second copy of the
-	// budget: shortened here so what the bound below measures is the SHARED budget
-	// rather than the grace on top of it.
-	originalGrace := interruptGrace
-	interruptGrace = 20 * time.Millisecond
-	t.Cleanup(func() { interruptGrace = originalGrace })
-
 	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 	clientConn, sidecarConn := net.Pipe()
-	t.Cleanup(func() { _ = clientConn.Close() })
+	t.Cleanup(func() { _ = clientConn.Close(); _ = sidecarConn.Close() })
 	session := NewRPCSession(app, sidecarConn, sidecarConn, nil)
+	control := newControlledHandlerDrain()
+	session.handlerDrain = control.policy()
 
-	// A handler that ignores sessionCtx entirely: it outlives any budget, so the
-	// drain must be bounded by the budget rather than by the handler.
+	// The handler ignores sessionCtx and remains active through both wait limits.
 	var handlers drain.Counter
 	handlers.Add()
 	release := make(chan struct{})
@@ -406,13 +392,28 @@ func TestDrainHandlersSharesOneBudgetAcrossBothPhases(t *testing.T) {
 		<-release
 	}()
 
-	start := time.Now()
-	session.drainHandlers(&handlers, nil) // nil cause: takes the flush phase, then interrupts
-	elapsed := time.Since(start)
+	start := control.now()
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		session.drainHandlers(&handlers, nil)
+	}()
+	first := control.next(t)
+	require.Equal(t, handlerDrainTimeout, first.timeout)
+	close(first.expire)
+	second := control.next(t)
+	require.Equal(t, handlerInterruptGrace, second.timeout)
+	close(second.expire)
+	select {
+	case <-finished:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the drain did not abandon the stuck ordinary handler")
+	}
+	elapsed := control.now().Sub(start)
 
-	assert.Less(t, elapsed, 2*handlerDrainTimeout,
+	assert.Less(t, elapsed, 2*session.handlerDrain.timeout,
 		"both phases must come out of one budget, not one each")
-	assert.GreaterOrEqual(t, elapsed, handlerDrainTimeout,
+	assert.GreaterOrEqual(t, elapsed, session.handlerDrain.timeout,
 		"the drain must still spend its budget waiting for the straggler")
 }
 
@@ -424,16 +425,11 @@ func TestDrainHandlersSharesOneBudgetAcrossBothPhases(t *testing.T) {
 // test catches a future divergence that reintroduces a spawn-waiter on one
 // side alone.
 func TestDrainHandlersDoesNotLeakWaiterOnAbandonedStraggler(t *testing.T) {
-	original := handlerDrainTimeout
-	handlerDrainTimeout = time.Millisecond
-	t.Cleanup(func() { handlerDrainTimeout = original })
-	originalGrace := interruptGrace
-	interruptGrace = time.Millisecond
-	t.Cleanup(func() { interruptGrace = originalGrace })
-
 	app := NewApp("")
 	var output bytes.Buffer
 	session := NewRPCSession(app, bytes.NewReader(nil), &output, nil)
+	session.handlerDrain.timeout = time.Millisecond
+	session.handlerDrain.interruptGrace = time.Millisecond
 
 	// A handler that never returns until Cleanup: every drain against it times
 	// out and abandons it, exactly the straggler that leaked one parked waiter
@@ -994,9 +990,6 @@ func TestRPCSessionAdmitsEveryRequestWithoutExhaustion(t *testing.T) {
 // returns within the cap instead of waiting forever for the wedged handler.
 func TestRPCSessionDrainAbandonsHandlerIgnoringSessionContext(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	original := handlerDrainTimeout
-	handlerDrainTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { handlerDrainTimeout = original })
 
 	blocking := blockingSoloInstance{entered: make(chan struct{}), release: make(chan struct{})}
 	t.Cleanup(func() { close(blocking.release) }) // let the abandoned handler exit
@@ -1005,7 +998,9 @@ func TestRPCSessionDrainAbandonsHandlerIgnoringSessionContext(t *testing.T) {
 	app.config.Mode = "solo"
 	serverConn, clientConn := net.Pipe()
 	runDone := make(chan error, 1)
-	go func() { runDone <- NewRPCSession(app, serverConn, serverConn, nil).Run() }()
+	session := NewRPCSession(app, serverConn, serverConn, nil)
+	session.handlerDrain.timeout = 50 * time.Millisecond
+	go func() { runDone <- session.Run() }()
 	require.NoError(t, WriteFrame(clientConn, &desktoppb.Frame{
 		Message: &desktoppb.Frame_Request{Request: &desktoppb.Request{
 			Id:     1,
@@ -1024,40 +1019,51 @@ func TestRPCSessionDrainAbandonsHandlerIgnoringSessionContext(t *testing.T) {
 	}
 }
 
-// The post-interrupt drain phase must actually WAIT on the interrupt it just issued.
-//
-// drain.WaitBounded only returns false once its timer has fired, so reaching the interrupt
-// on the clean path means the shared budget is spent by construction. Without
-// interruptGrace phase 2 is one non-blocking look at `done` -- which a handler the
-// interrupt just unblocked cannot win in the microseconds it needs to unwind -- so
-// every clean drain past the flush window warned and abandoned handlers mid-write
-// while socket.go closed the conn and looped to accept a new session.
+// The second drain phase must wait for the handler that writer interruption releases.
+// A poll after interruption can abandon the handler before its deferred cleanup ends.
 func TestDrainHandlersJoinsHandlerReleasedByTheInterrupt(t *testing.T) {
-	originalDrain := handlerDrainTimeout
-	handlerDrainTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { handlerDrainTimeout = originalDrain })
-
 	app := NewApp("")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 	writer := newBlockingWriteCloser()
+	t.Cleanup(func() { require.NoError(t, writer.Close()) })
 	session := NewRPCSession(app, bytes.NewReader(nil), writer, nil)
+	control := newControlledHandlerDrain()
+	session.handlerDrain = control.policy()
+	release := make(chan struct{})
+	finishHandler := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(finishHandler)
 
 	var handlers drain.Counter
 	handlers.Add()
 	var finished atomic.Bool
 	go func() {
 		defer handlers.Done()
-		// Blocked writing its response to a peer that stopped reading: exactly the
-		// handler interruptWriter exists to release.
+		// The response stays blocked until writer interruption.
 		session.writeOK(1)
-		// Unwinding after the pipe is closed is not instantaneous (deferred cleanup,
-		// the operation gate), so phase 2 has to be a real wait rather than a poll.
-		time.Sleep(20 * time.Millisecond)
+		// The test releases deferred cleanup after the second drain phase starts.
+		<-release
 		finished.Store(true)
 	}()
-	<-writer.started
-
-	session.drainHandlers(&handlers, nil) // nil cause: flush phase, then interrupt
+	select {
+	case <-writer.started:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the handler did not start its response")
+	}
+	drainFinished := make(chan struct{})
+	go func() {
+		defer close(drainFinished)
+		session.drainHandlers(&handlers, nil)
+	}()
+	first := control.next(t)
+	close(first.expire)
+	second := control.next(t)
+	require.Equal(t, handlerInterruptGrace, second.timeout)
+	finishHandler()
+	select {
+	case <-drainFinished:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the drain did not join the interrupted handler")
+	}
 	assert.True(t, finished.Load(),
 		"a handler the interrupt released must be joined, not abandoned mid-write")
 }
@@ -1081,7 +1087,7 @@ func TestDispatchAnswersRequestDequeuedUnderCancelledSession(t *testing.T) {
 	session.dispatch(sessionCtx, &desktoppb.Request{
 		Id:     7,
 		Method: &desktoppb.Request_GetConfig{GetConfig: &desktoppb.GetConfigRequest{}},
-	})
+	}, nil)
 
 	frame, err := ReadFrame(&output)
 	require.NoError(t, err, "the request must be answered, not dropped in silence")

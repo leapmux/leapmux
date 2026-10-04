@@ -1,20 +1,21 @@
 package claude
 
-// Claude Code NDJSON message types.
-// The worker does NOT parse message content — it forwards verbatim bytes.
-// Only the `type` field is used for lifecycle management.
+import "github.com/leapmux/leapmux/generated/contracts"
+
+// Claude Code sends newline-delimited JSON (NDJSON) frames.
+// The worker reads native fields and preserves the original bytes.
 
 // MessageType represents the type field in an NDJSON line from Claude Code.
 type MessageType string
 
 const (
 	// Input messages (written to stdin).
-	MessageTypeUser MessageType = "user"
+	MessageTypeUser MessageType = contracts.ClaudeFrameKindUser
 
 	// Output messages (read from stdout).
-	MessageTypeSystem    MessageType = "system"
-	MessageTypeAssistant MessageType = "assistant"
-	MessageTypeResult    MessageType = "result"
+	MessageTypeSystem    MessageType = contracts.ClaudeFrameKindSystem
+	MessageTypeAssistant MessageType = contracts.ClaudeFrameKindAssistant
+	MessageTypeResult    MessageType = contracts.ClaudeFrameKindResult
 )
 
 // MessageEnvelope is used only to extract the `type` field for lifecycle

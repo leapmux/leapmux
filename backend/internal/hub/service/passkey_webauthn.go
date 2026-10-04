@@ -36,7 +36,7 @@ func passkeyRPConfig(ctx context.Context, set *settings.Manager, cfg *config.Con
 	if ks == nil {
 		return hubwebauthn.RPConfig{}, fmt.Errorf("%w: passkey support is not configured", ErrPasskeysUnavailable)
 	}
-	rp, err := hubwebauthn.RPConfigFromSettings(set.Snapshot(ctx), cfg.Listen)
+	rp, err := hubwebauthn.RPConfigFromSettings(set.Snapshot(ctx), cfg.PrimaryTCPListen())
 	if err != nil {
 		return hubwebauthn.RPConfig{}, fmt.Errorf("%w: %s", ErrPasskeysUnavailable, err.Error())
 	}

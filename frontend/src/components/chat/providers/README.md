@@ -84,24 +84,55 @@ follow from that.
 
 ## The families
 
-Five providers speak the Agent Client Protocol, and each registers through a shared
-entry rather than calling `registerProvider` itself.
+Each provider that speaks the Agent Client Protocol registers through a shared entry
+rather than calling `registerProvider` itself.
 
-- `acp/registerACPProvider.ts` — Cursor, Goose and Reasonix.
+- `acp/registerACPProvider.ts` — Cursor, Goose, Reasonix, Qwen Code, Grok Build and
+  Kiro.
 - `registerOpenCodeProtocolProvider.ts` — OpenCode and Kilo, which store the plan-mode
   axis in an option group instead of `permissionMode`.
 
-The other five call `registerProvider` in their own `plugin.ts`: Claude, Codex,
-Copilot, Pi and ZCode. **Copilot is not an Agent Client Protocol provider**, although
+The other providers call `registerProvider` in their own `plugin.ts`:
+
+- Claude.
+- Codex.
+- Copilot.
+- Pi.
+- ZCode.
+- Codewhale.
+- Kimi Code.
+- MiMo Code.
+- Oh My Pi.
+- Amp.
+- Cline.
+
+**Amp is not a member of the Claude family**, although its stream-JSON lines resemble
+Claude Code's. The `result` line ends a PROCESS rather than a turn, a tool result is a
+string, and the permission banner reads an envelope that LeapMux writes, so `amp/`
+shares no reader with `claude/`.
+
+**Copilot is not an Agent Client Protocol provider**, although
 its adapter shape resembles one. It reaches the browser as native session events
 rather than as the session updates `acp/` reads, `copilot/protocol.ts` unwraps them,
 and the worker asserts its arguments hold no `--acp`.
+
+**MiMo Code is not a member of the OpenCode family**, although MiMo is a fork of
+OpenCode. The worker drives MiMo's own HTTP server and persists its native events, so
+`mimo/` reads MiMo's message parts and not session updates. Two tool names also mean
+something different than in OpenCode: `task` is the to-do tool, and `actor` starts a
+subagent.
+The plugin shares one thing with OpenCode, the question vocabulary in
+`~/generated/contracts/opencode-protocol`, because MiMo kept OpenCode's question tool.
+
+**Oh My Pi shares no code with Pi**, although omp began as a fork of Pi. Its RPC
+events, commands and session files differ from Pi's, so `ohmypi/` reads omp's own
+frames, and the worker drives omp through a package of its own.
 
 A family member reads its own calls through an `ACPToolCallAdapter`. The shared build
 in `acp/extractors/toolCall.ts` answers everything that adapter does not. Three shapes
 carry it.
 
-- **Its own module.** Cursor, Goose and Reasonix each export
+- **Its own module.** Cursor, Goose, Reasonix, Qwen Code and Grok Build each export
   `<provider>ToolCallAdapter` from `extractors/toolCall.ts`.
 - **A factory.** OpenCode exports `openCodeToolCallAdapterFor`. It takes an extra
   `ToolKind` lookup and returns the adapter.
@@ -111,19 +142,19 @@ carry it.
 
 ### The adapter contract
 
-`ACPToolCallAdapter` is `(facts, base) => ToolCallSpec`. The five members follow
-rules that the signature does not state, and these are those rules.
+`ACPToolCallAdapter` is `(facts, base) => ToolCallSpec`. The members follow rules
+that the signature does not state, and these are those rules.
 
 **`base()` is OPTIONAL, and so is the parameter.** `base()` answers the shared build at
 the kind the WIRE stated, with the generic trio folded to `mcp`. A member that wants
-that build calls it. A member that answers from its own frame does not, and two of the
-five never do. Reasonix declares the parameter as `_base` to say so. OpenCode's factory
+that build calls it. A member that answers from its own frame does not, and two members
+never do. Reasonix declares the parameter as `_base` to say so. OpenCode's factory
 returns an adapter of one parameter, which says the same thing. Cursor declares one
 parameter and rebuilds the base itself. It replaces the frame's text with the saved
 record's output first, so the supplied closure holds facts that Cursor already left
 behind.
 
-**Each member hooks a different fact, and that is why the five differ.** The list is
+**Each member hooks a different fact, and that is why the members differ.** The list is
 short on purpose: a reading that the frame supplies in a provider-NEUTRAL way belongs in
 the shared build, where every member reads it.
 
@@ -133,6 +164,12 @@ the shared build, where every member reads it.
 - Goose hooks the `_meta.goose.toolCall` record. Its platform extensions send no
   prefix, so that record is the only statement of the tool name.
 - Reasonix hooks the `use_capability` envelope, and unwraps the call inside it.
+- Qwen Code hooks `_meta.toolName`, and Grok Build hooks `_meta["x.ai/tool"]`. Each
+  titles its calls in prose, so the tool name is only in that record.
+- Kiro hooks the call TITLE, which identifies each built-in tool, and `_meta.kiro`,
+  which identifies a subagent, a question and an MCP call. A shell call takes the
+  model's description as its title, so Kiro reads every `execute` call as a command.
+  The one exception is a `Control Process` call, which states an action.
 - Kilo hooks nothing of its own. It supplies a table and reuses OpenCode's adapter.
 
 **A member that repairs the KIND does it before the build, from its own table or its

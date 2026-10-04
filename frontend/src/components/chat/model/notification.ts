@@ -1,17 +1,5 @@
 import type { RateLimitInfo } from '~/models/agentSession'
 
-/**
- * The glyph a notification divider asks for, stated as what it MEANS.
- *
- * A closed set, so the renderer's map over it is exhaustive and a new outcome
- * cannot reach the screen with no glyph. The model names the outcome rather than
- * the icon component: the icon set is a rendering decision, and a swap of one
- * glyph for another must not edit the layer that reads the provider's bytes.
- *
- * A divider that asks for none takes the renderer's default.
- */
-export type NotificationIconHint = 'succeeded' | 'failed' | 'stopped' | 'interrupted'
-
 /** One settings axis that changed, already resolved to display words. */
 export interface SettingChange {
   label: string
@@ -48,10 +36,9 @@ export type NotificationEntry
     | { kind: 'group', groupKey: string, prefix: string, entry: string }
     /**
      * A full-width labelled rule, drawn in the same style as a turn-end divider.
-     * `loading` swaps the glyph for a spinner; `icon` overrides the default
-     * compaction arrow (a subagent-end divider states one outcome per glyph).
+     * A loading divider uses a spinner. A completed divider uses the compaction arrow.
      */
-    | { kind: 'divider', text: string, loading?: boolean, icon?: NotificationIconHint }
+    | { kind: 'divider', text: string, loading?: boolean }
     /**
      * One entry per rate-limit window the provider reported.
      *

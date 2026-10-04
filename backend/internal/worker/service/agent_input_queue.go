@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -48,6 +50,17 @@ func queueAttachments(attachments []*leapmuxv1.Attachment) []inputqueue.Attachme
 		}
 	}
 	return result
+}
+
+// droppedInputID is the queue item id of the input that a provider dropped. It
+// derives from the drop, so a repeat of one drop gives the same item and the
+// queue adds nothing. The id also becomes the transcript message id, which is
+// unique across the Worker, so the agent id is part of the hash. The length
+// prefix keeps each pair of ids apart: no separator is safe, because a drop id
+// is the provider's own text.
+func droppedInputID(agentID, dropID string) string {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%d:%s%s", len(agentID), agentID, dropID))
+	return "dropped-" + hex.EncodeToString(sum[:16])
 }
 
 func providerAttachments(attachments []inputqueue.Attachment) []*leapmuxv1.Attachment {
@@ -162,7 +175,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 			// closed pipe. Return the input to the queue instead.
 			return &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
 		}
-		resumeID := svc.resolveResumeSessionID(item.AgentID, dbAgent.AgentSessionID, dbAgent.Resumed)
+		resumeID := svc.resolveResumeSessionIDForAgent(item.AgentID, dbAgent)
 		return svc.ensureAgentRunning(item.AgentID, &resumeID, queuedStart)
 	}
 
@@ -316,11 +329,11 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 	}, classifyQueueSteerError(err)
 }
 
-// AcceptsKind answers whether this agent can ever take the kind. A subagent
-// runs inside its owner's process, so it takes a message or control feedback
-// only: a slash command that the classifier rewrote to a clear or a compact
-// has no path to it. Enqueue refuses it here, where the user sees an invalid
-// argument, instead of storing it and pausing the whole queue at dispatch.
+// AcceptsKind reports whether this agent can receive the input kind.
+// A child receives user messages only when its provider supports that route.
+// Native control feedback stays independent of user message support.
+// A child cannot execute root slash commands such as clear or compact.
+// Enqueue refuses unsupported input before it changes the durable queue.
 func (a *agentInputQueueAdapter) AcceptsKind(agentID string, kind leapmuxv1.AgentInputKind) bool {
 	dbAgent, err := a.svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
@@ -331,8 +344,10 @@ func (a *agentInputQueueAdapter) AcceptsKind(agentID string, kind leapmuxv1.Agen
 	if !dbAgent.ParentAgentID.Valid {
 		return true
 	}
-	return kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE ||
-		kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
+	if kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE {
+		return a.svc.Agents.Registry().Plugin(dbAgent.AgentProvider).ChildCapabilities(parseOptions(dbAgent.Options)).AcceptsMessages
+	}
+	return kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
 }
 
 func (a *agentInputQueueAdapter) SupportsSteering(agentID string) bool {
@@ -372,7 +387,7 @@ func (a *agentInputQueueAdapter) SupportsPreemption(agentID string) bool {
 // a `SELECT *` on the agents row once per agent.
 func (svc *Service) agentSupportsSteering(dbAgent *db.Agent) bool {
 	if dbAgent.ParentAgentID.Valid {
-		if !svc.Agents.Registry().Plugin(dbAgent.AgentProvider).SupportsChildSteering() {
+		if !svc.Agents.Registry().Plugin(dbAgent.AgentProvider).ChildCapabilities(parseOptions(dbAgent.Options)).AcceptsMessages {
 			return false
 		}
 		row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(bgCtx(), dbAgent.ID)

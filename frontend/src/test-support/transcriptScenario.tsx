@@ -1,11 +1,12 @@
 import type { ClassifiedEntry } from '~/components/chat/chatEntryCache'
 import type { MessageContextResolver, MessageContextSources } from '~/components/chat/messageContextResolver'
+import type { MessageUiKey } from '~/components/chat/messageUiKeys'
 import type { ToolCallRow } from '~/components/chat/model/row'
 import type { ChatRowExtraction } from '~/components/chat/rowExtraction'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TranscriptFrame } from '~/test-support/messageFactory'
 import { render } from '@solidjs/testing-library'
-import { createRoot } from 'solid-js'
+import { createRoot, createSignal } from 'solid-js'
 import { createClassifiedEntryCache, renderKeyForEntry } from '~/components/chat/chatEntryCache'
 import { MessageBubble } from '~/components/chat/MessageBubble'
 import { createMessageRenderSources } from '~/components/chat/messageContextResolver'
@@ -86,6 +87,7 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
     transcript.replaceWindow(options.windowIds)
 
   const renderCacheStore = createMessageRenderCacheStore()
+  const [messageUiState, setMessageUiState] = createSignal<ReadonlyMap<string, Partial<Record<MessageUiKey, boolean>>>>(new Map())
   const entries = createClassifiedEntryCache({
     messages: () => transcript.sources.messages(),
     requestRevision: identity => resolver.request(identity)?.revision,
@@ -145,6 +147,12 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
           prepared={prepared}
           host={{
             messages: resolver,
+            getMessageUiState: key => messageUiState().get(id)?.[key],
+            setMessageUiState: (key, value) => setMessageUiState((previous) => {
+              const next = new Map(previous)
+              next.set(id, { ...previous.get(id), [key]: value })
+              return next
+            }),
             get renderCache() {
               return renderCacheStore.forRow(renderKeyForEntry(prepared))
             },

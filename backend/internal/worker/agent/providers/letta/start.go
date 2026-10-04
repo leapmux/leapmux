@@ -1,0 +1,200 @@
+package letta
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+)
+
+var _ agent.StartFunc = Start
+
+// Start launches `letta server --listen`, waits for the WebSocket ready line,
+// and opens the agent's conversation.
+func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+	registration := Registration()
+	spec, err := providerkit.ResolveLaunch(ctx, opts, registration)
+	if err != nil {
+		return nil, err
+	}
+	return startServer(ctx, opts, sink, spec, registration.ShutdownGrace)
+}
+
+// startServer runs the App Server and completes the protocol_v2 handshake.
+func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderServices, spec launch.Spec, shutdownGrace time.Duration) (agent.Agent, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
+		Shell:      opts.Shell,
+		LoginShell: opts.LoginShell,
+		Launch:     spec,
+		BaseArgs:   lettaServerArgs,
+		WorkingDir: opts.WorkingDir,
+	})
+	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
+	taskLogRoot, taskLogDirect := lettaTaskLogRoot(cmd.Env)
+	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
+
+	a := &Agent{
+		Process:       providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "letta", ShutdownGrace: shutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
+		sink:          agent.NewModelProgressResetSink(sink),
+		workingDir:    opts.WorkingDir,
+		taskLogRoot:   taskLogRoot,
+		taskLogDirect: taskLogDirect,
+		clock:         quartz.NewReal(),
+	}
+	if err := a.StartCmd(); err != nil {
+		cancel()
+		return nil, err
+	}
+	a.DrainStderr(stderrPipe)
+
+	ready := newLettaReadyReader()
+	go a.ReadLines(agent.NewStdoutScanner(stdout), func(line []byte) {
+		if ready.observe(line) {
+			return
+		}
+		a.handleFrame(line)
+	})
+
+	cleanup := func() {
+		a.Stop()
+		_ = a.Wait()
+	}
+	timeout := opts.EffectiveStartupTimeout()
+	url, err := ready.waiter.Wait(ctx, a.ProcessDone(), timeout)
+	if err != nil {
+		cleanup()
+		if err == providerkit.ErrServerExited {
+			return nil, a.FormatStartupError("server start", fmt.Errorf("%w; the program named `letta` must be Letta Code 0.33 or later", err))
+		}
+		return nil, a.FormatStartupError("server start", err)
+	}
+	a.wsURL = url
+
+	conn, err := dial(ctx, url)
+	if err != nil {
+		cleanup()
+		return nil, a.FormatStartupError("websocket connect", err)
+	}
+	a.ws = conn
+	go a.readLoop(ctx, conn)
+
+	if err := a.openConversation(opts); err != nil {
+		cleanup()
+		return nil, a.FormatStartupError("session setup", err)
+	}
+	return a, nil
+}
+
+// lettaReadyReader observes the WebSocket ready line.
+type lettaReadyReader struct {
+	waiter *providerkit.ListenWaiter
+}
+
+// newLettaReadyReader builds the ready-line reader.
+func newLettaReadyReader() *lettaReadyReader {
+	return &lettaReadyReader{
+		waiter: providerkit.NewListenWaiter(lettaWebSocketLine),
+	}
+}
+
+// observe feeds one stdout line to the waiter.
+func (r *lettaReadyReader) observe(line []byte) bool {
+	return r.waiter.Observe(line)
+}
+
+// openConversation waits for the runtime identity and model catalog before
+// the worker sends user input or reads settings.
+//
+// The wait is load-bearing. An `input` frame sent before the identity exists
+// carries an empty runtime scope, and the App Server drops that input without
+// an error: no `input_accepted`, no `loop_error`, nothing. Start must not
+// return an agent before then, because the worker dispatches queued user input
+// the moment it does -- 98ms in the E2E, 365ms before the response arrived.
+func (a *Agent) openConversation(opts agent.Options) error {
+	mode := lettaModeFor(opts.PermissionMode())
+	// runtime_start puts its fields at the top level, not under a payload, and
+	// the discriminator is `type`, not `kind`. A fresh agent is created through
+	// `create_agent`; `agent_id` alone fails with 401 because the agent does not
+	// exist yet. A resume names an existing pair instead. The response carries
+	// the real agent and conversation ids either way.
+	// Install the waiter BEFORE the command leaves: adoptRuntime runs on the
+	// readLoop goroutine and can settle the moment the response arrives.
+	waiter := newRuntimeWaiter()
+	a.Mu.Lock()
+	a.runtimeReady = waiter
+	a.settings.permissionMode = mode
+	a.settings.model = opts.Model()
+	a.settings.reasoningLevel = opts.Effort()
+	a.Mu.Unlock()
+
+	cmd := newLettaCommand("runtime_start", "rs-1")
+	if resume := strings.TrimSpace(opts.ResumeSessionID); resume != "" {
+		// A resume names an EXISTING conversation. runtime_start takes
+		// `conversation_id` + `agent_id` in place of the create_* fields: each
+		// pair is mutually exclusive on the wire. The agent id comes from the
+		// conversation record, because the runtime scope needs both.
+		agentID, err := lettaResumeAgentID(opts, resume)
+		if err != nil {
+			return err
+		}
+		cmd.AgentID = agentID
+		cmd.ConversationID = resume
+	} else {
+		model := opts.Model()
+		if model == "" {
+			model = defaultModels[0].Id
+		}
+		// `create_agent` alone produces the conversation too: the live
+		// runtime_start response reports both ids. An explicit
+		// `create_conversation` is for an agent-free conversation or a custom
+		// conversation body, neither of which LeapMux sends.
+		cmd.CreateAgent = map[string]any{
+			"body": map[string]any{
+				"name":   "leapmux-agent",
+				"model":  model,
+				"system": "You are a helpful assistant.",
+			},
+		}
+	}
+	cmd.Mode = mode
+	if err := a.sendCommand(cmd); err != nil {
+		return err
+	}
+	if err := waiter.wait(a.Context(), a.ProcessDone(), opts.EffectiveStartupTimeout()); err != nil {
+		return err
+	}
+	a.Mu.Lock()
+	agentID := a.agentID
+	conversationID := a.conversationID
+	a.Mu.Unlock()
+	if agentID == "" || conversationID == "" {
+		return errors.New("runtime_start named no agent and conversation")
+	}
+	return a.loadModelCatalog(opts.EffectiveStartupTimeout())
+}
+
+// lettaModeFor maps LeapMux's permission mode onto runtime_start.mode.
+func lettaModeFor(mode string) string {
+	switch mode {
+	case "acceptEdits":
+		return "acceptEdits"
+	case "unrestricted":
+		return "unrestricted"
+	case "strict":
+		return "strict"
+	default:
+		return "standard"
+	}
+}

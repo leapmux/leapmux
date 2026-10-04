@@ -1,19 +1,10 @@
-// Validates every project-written JSON file against a JSON Schema
-// (draft 2020-12). Run via `task validate-json`.
-//
-// The rule is NO SCHEMALESS JSON: any file an include pattern below matches
-// must resolve to a schema, either an explicit `schema` on the rule or a
-// sibling `<name>.schema.json`, or this script fails. That is what keeps the
-// "any other JSONs" promise honest -- a new fixture cannot appear without a
-// schema saying what shape it is.
-//
-// Tool-owned JSON (package.json, tsconfig*, tauri*.conf.json, lockfiles,
-// .webmanifest, .jsonc) is deliberately out of scope: another tool owns its
-// shape, and a schema here would be a second authority that drifts. Gitignored
-// build output (spinners, desktop/rust/gen) never enters an include pattern.
-//
-// ajv is resolved from frontend/node_modules via createRequire because the
-// repo has no root package.json on purpose (see eslint.config.mjs).
+// Validate project-written JSON against JSON Schema draft 2020-12.
+// Run this script through `task validate-json`.
+// Each selected file requires the rule's schema or a sibling <name>.schema.json.
+// A selected file without a schema fails validation.
+// External tools define their own package, configuration, and lock-file formats.
+// RULES excludes those formats and gitignored build output.
+// createRequire resolves Ajv from frontend/node_modules because the repository has no root package.json.
 
 import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -22,25 +13,26 @@ import { argv, exit } from 'node:process'
 
 /** One scope of JSON files plus how its schema is found. */
 export const RULES = [
-  // The single sources of truth for cross-language constants. A sibling
-  // <name>.schema.json is required for each.
+  // Each cross-language contract requires a sibling schema.
   { include: 'contracts/*.json' },
-  // Cross-language conformance fixtures, asserted by both language's suites.
-  // The two CRDT corpora share one schema (identical shape; one is
-  // hand-curated, the other generated).
+  // Both language suites use these conformance fixtures.
+  // The two CRDT corpora share one schema because they have the same shape.
+  // One corpus is maintained manually. A generator writes the other.
   {
     include: 'testdata/crdt_projection_{conformance,corpus}.json',
     schema: 'testdata/crdt_projection.schema.json',
   },
   { include: 'testdata/*.json' },
-  // Package-local test fixtures (e.g. the usersettings account schema).
+  // Backend packages keep their local test fixtures beside their tests.
   { include: 'backend/**/testdata/*.json' },
-  // Vendored shiki/VS Code themes: one shared schema for the family.
+  // The published provider matrix and its feature definitions are E2E data.
+  { include: 'frontend/tests/e2e/feature-matrix/*.json' },
+  // Vendored Shiki and VS Code themes share one schema.
   {
     include: 'frontend/src/lib/syntaxThemes/*.json',
     schema: 'frontend/src/lib/syntaxThemes/syntax-theme.schema.json',
   },
-  // NOTICE-generation metadata: one shared schema per file name.
+  // NOTICE metadata uses one shared schema for each file name.
   {
     include: 'scripts/license-overrides/extra/*/metadata.json',
     schema: 'scripts/license-overrides/metadata.schema.json',
@@ -54,31 +46,28 @@ export const RULES = [
 const require = createRequire(new URL('../frontend/package.json', import.meta.url))
 const { default: Ajv2020 } = require('ajv/dist/2020')
 
-/** An ajv instance configured the way every schema in this repo is written. */
+/**
+ * Create a strict validator for the repository's schema draft.
+ */
 export function buildAjv() {
   return new Ajv2020({ strict: true, allErrors: true })
 }
 
 /**
- * Bun's Glob.scanSync joins its results with the NATIVE path separator
- * (verified against Bun 1.3.14 source), so on Windows every returned path
- * is backslash-joined. RULES, exclude basenames, and the report are all
- * posix-relative, so normalize at the discovery boundary before anything
- * matches against a path.
+ * Bun's Glob.scanSync uses the native path separator, as Bun 1.3.14 source confirms.
+ * Windows paths therefore contain backslashes.
+ * RULES and report paths use POSIX separators.
+ * Normalize each discovered path before matching it.
  */
 export function toPosixRel(raw, separator = sep) {
   return raw.split(separator).join('/')
 }
 
 /**
- * Expands RULES against `root` into one entry per in-scope JSON file.
- * Order is deterministic (include order, then path) so reports and tests
- * are stable. A file matched by two rules keeps the FIRST rule -- the
- * earlier rule is the more specific scope by convention.
- *
- * `*.schema.json` files are schema, never data: the exclusion is applied
- * here once, not per rule, so a new rule cannot forget it and report the
- * directory's own schemas as schemaless data.
+ * Expand RULES into one entry for each selected JSON file under root.
+ * The first matching rule supplies the schema. Put more specific rules first.
+ * Sort file paths to keep reports and tests deterministic.
+ * Exclude schema files here so every rule treats them as schemas instead of data.
  */
 const SCHEMA_FILE = new Bun.Glob('*.schema.json')
 
@@ -104,9 +93,8 @@ export function discoverJsonFiles(root) {
 }
 
 /**
- * The schema path for `entry`, root-joined, or null when neither the rule
- * nor a sibling names one that exists. A null here is a failure the caller
- * reports -- never a skip.
+ * Resolve the rule's schema or the sibling schema under root.
+ * Return null when neither schema exists. The caller must report that failure.
  */
 export function resolveSchemaPath(entry, root = '.') {
   if (entry.rule.schema) {
@@ -118,11 +106,10 @@ export function resolveSchemaPath(entry, root = '.') {
 }
 
 /**
- * Validates the data file at `dataPath` against the schema file at
- * `schemaPath`, reusing `compiled` as the compile cache. Returns a failure
- * record, or null when the data conforms. Never throws: unreadable or
- * unparseable files on either side of the check are failures, not crashes.
- * `reason` is 'invalid' (with `errors`) or 'bad-schema' (with `reasonText`).
+ * Validate dataPath against schemaPath and reuse successfully compiled schemas.
+ * Return null when the data conforms. Return a failure record otherwise.
+ * File read, JSON parse, and schema compilation failures return records instead of exceptions.
+ * Invalid data uses reason 'invalid' with errors. Schema failures use 'bad-schema' with reasonText.
  */
 export function validateAgainstSchema(ajv, compiled, dataPath, schemaPath) {
   let validate
@@ -137,7 +124,13 @@ export function validateAgainstSchema(ajv, compiled, dataPath, schemaPath) {
     catch (err) {
       return { reason: 'bad-schema', reasonText: `schema is not valid JSON: ${err.message}` }
     }
-    validate = ajv.compile(schema)
+    try {
+      validate = ajv.compile(schema)
+    }
+    catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      return { reason: 'bad-schema', reasonText: `schema cannot compile: ${detail}` }
+    }
     compiled.set(schemaPath, validate)
   }
   let data
@@ -160,10 +153,10 @@ export function validateAgainstSchema(ajv, compiled, dataPath, schemaPath) {
 }
 
 /**
- * Validates every discovered file. Returns a report:
- *   { files: n, failures: [{ file, reason, errors?/reasonText? }] }
- * `reason` is 'no-schema', 'bad-schema', or 'invalid'. Never throws for bad
- * data or a bad schema.
+ * Validate every discovered file. Return this report:
+ * { files: n, failures: [{ file, reason, errors?/reasonText? }] }
+ * Each failure uses reason 'no-schema', 'bad-schema', or 'invalid'.
+ * Bad data and bad schemas return failure records instead of exceptions.
  */
 export function validateAll(root, { ajv = buildAjv() } = {}) {
   const failures = []
@@ -187,10 +180,10 @@ export function validateAll(root, { ajv = buildAjv() } = {}) {
 }
 
 /**
- * Validates every `*.json` (except `*.schema.json`) directly under `dir`
- * against its sibling schema. Returns the same failure shape as validateAll.
- * This is the entry point the contracts generator uses: generation must fail
- * on an invalid contract BEFORE any output is written, not at lint time.
+ * Validate each JSON data file directly under dir against its sibling schema.
+ * Exclude schema files. Return the same failure shape as validateAll.
+ * The contracts generator calls this function before writing output.
+ * An invalid contract must stop generation at that point.
  */
 export function validateSchemalessDir(dir, { ajv = buildAjv() } = {}) {
   const failures = []
@@ -213,11 +206,9 @@ export function validateSchemalessDir(dir, { ajv = buildAjv() } = {}) {
 }
 
 /**
- * Renders a failures report (from validateAll/validateSchemalessDir) as one
- * line per error. Shared by this script's CLI and generate-contracts, so a
- * failed contract reads identically from `task validate-json` and `task
- * generate-contracts`. `filePrefix` rewrites each file path (the generator
- * reports `contracts/<name>.json`).
+ * Render one line for each failure from validateAll or validateSchemalessDir.
+ * The CLI and contracts generator share this function to report the same errors.
+ * filePrefix adds the generator's contracts/ prefix to each file path.
  */
 export function formatFailureLines(failures, filePrefix = '') {
   const lines = []
@@ -233,8 +224,8 @@ export function formatFailureLines(failures, filePrefix = '') {
   return lines
 }
 
-// `root` is the working directory for discovery; paths inside the report are
-// repo-relative so CI output reads the same locally and on a runner.
+// root supplies the discovery directory.
+// Report paths stay relative to the repository for consistent local and CI output.
 if (import.meta.main) {
   const root = argv[2] ?? '.'
   const { files, failures } = validateAll(root)
@@ -242,7 +233,9 @@ if (import.meta.main) {
     console.error(`validate-json: ${failures.length} of ${files} files failed`)
     for (const line of formatFailureLines(failures))
       console.error(`  ${line}`)
-    console.error(`Add a sibling <name>.schema.json (or extend RULES in scripts/validate-json.mjs), fix the file, then re-run \`task validate-json\`.`)
+    console.error('Add a sibling <name>.schema.json or extend RULES in scripts/validate-json.mjs.')
+    console.error('Correct the reported file.')
+    console.error('Run task validate-json again.')
     exit(1)
   }
   console.log(`validate-json: ${files} files valid against their schemas`)

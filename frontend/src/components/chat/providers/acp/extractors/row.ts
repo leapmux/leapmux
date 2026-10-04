@@ -29,6 +29,8 @@ export function acpExtractRow(input: RowExtractionInput, callAdapter?: ACPToolCa
       return null
     if (payload.sessionUpdate === ACP_SESSION_UPDATE.PLAN)
       return acpPlanRow(payload)
+    if (span.role === 'none')
+      return null
     return acpToolCallSpanRow(parsedACPToolCall(payload) ?? payload, parsed, span, callAdapter)
   }
   if (category.kind === 'user_content')
@@ -91,7 +93,11 @@ function acpToolCallSpanRow(tool: Record<string, unknown>, current: ParsedMessag
   const resolved = !finished && resultFrame
     ? resolveACPToolCall(resultFrame, tool)
     : resolveACPToolCall(tool, requestFrame)
-  const call: ToolCall = acpToolCall(resolved, callAdapter, (resultSide ?? own).supplementalContent, own.completion, { role: span.role, hasResult: !!resultSide })
+  const call: ToolCall = acpToolCall(resolved, callAdapter, (resultSide ?? own).supplementalContent, own.completion, {
+    role: span.role,
+    hasResult: !!resultSide,
+    ...(own.agentSessionId === undefined ? {} : { agentSessionId: own.agentSessionId }),
+  })
   const role: ToolSpanRowRole = finished ? 'result' : pickString(tool, ACP_SUPPLEMENT_IDENTITY.SessionUpdate) === ACP_SESSION_UPDATE.TOOL_CALL ? 'request' : 'update'
   return toolCallRow(call, role, span.visibleRows)
 }

@@ -10,33 +10,19 @@ import { classifyMessage, toClassificationInput } from './messageClassifier'
 import { resolvedSpanRole, resolveMessageForRendering } from './providers/registry'
 import { extractChatRow } from './rowExtraction'
 
-// ---------------------------------------------------------------------------
-// Message preparation -- the one route from an AgentChatMessage to its row
-//
-// Reading a row takes three steps, in this order: parse the stored bytes, merge the
-// provider's supplemental content into them, then classify the MERGED payload. Every
-// reader of a row needs all three, and each of the four used to assemble its own
-// subset:
-//
-//   - the transcript resolved the payload and classified the RAW bytes;
-//   - the scroll rail did neither, so a row whose body LeapMux recovered previewed
-//     as nothing;
-//   - the image tab resolved the payload and classified the raw bytes, so a wrapped
-//     ACP result extracted as a row its own category contradicted;
-//   - the toolbar read the transcript's row, and so inherited its mismatch.
-//
-// A merged payload can classify DIFFERENTLY from the raw one -- that is the whole
-// reason the merge runs before the classifier -- so the order is not a preference. A
-// reader that classifies the raw bytes and extracts the merged ones asks two
-// questions about two different messages and gets an answer that fits neither.
-// ---------------------------------------------------------------------------
+// Message preparation supplies one route from stored bytes to the row model.
+// Every reader follows the same order:
+// 1. Parse the stored bytes.
+// 2. Resolve the provider supplement.
+// 3. Classify the resolved payload.
+// Classification can change after resolution. Classifying raw bytes and extracting
+// resolved bytes can give the transcript and its toolbar different row kinds.
+// The scroll rail and image tab require the same resolved payload also.
 
 /**
- * One chat message, read into everything a row needs and nothing more.
- *
- * `original` and `resolved` are BOTH kept, and the difference is load-bearing: the
- * Raw JSON view must show the bytes the worker stored, and every display must read
- * the merge. A single field served one of the two and silently broke the other.
+ * Keep both the original parse and the resolved payload.
+ * The Raw JSON view requires the stored bytes. Every display reads the resolved payload.
+ * One field cannot satisfy both requirements.
  */
 export interface PreparedMessage {
   message: AgentChatMessage
@@ -51,16 +37,14 @@ export interface PreparedMessage {
 /** What a caller already holds, so preparation repeats none of it. */
 export interface PrepareMessageOptions extends ClassificationContext {
   /**
-   * The parse of the stored bytes, when the caller has one. `parseMessageContent` is
-   * itself cached on the message reference, so passing it saves a hash lookup rather
-   * than a parse -- but a caller that holds the SHARED resolver's parse must pass it,
-   * so every reader of the row holds one object.
+   * Reuse the caller's original parse.
+   * The parser caches by message reference, so this avoids a cache lookup.
+   * A caller that holds the shared resolver's parse must pass that same object.
    */
   original?: ParsedMessageContent
   /**
-   * The merged payload, when the caller has one. The shared resolver holds it per
-   * message and per supplemental revision, and passing it is what keeps the
-   * transcript, the toolbar and the image tab on one object.
+   * Reuse the caller's resolved payload for this message and supplemental revision.
+   * The transcript and its toolbar must read the same object. The image tab uses that object also.
    */
   resolved?: ResolvedMessageContent
 }
@@ -95,10 +79,9 @@ function soleSpan(prepared: PreparedMessage): ToolSpanContext {
 /**
  * Prepare one message for every reader of its row.
  *
- * Cheap to call repeatedly: `parseMessageContent` is cached on the message
- * reference, and a caller that holds the resolver's parse passes it in. The
- * classification is NOT cached on the message reference -- it depends on the merged
- * payload, which moves when supplemental content arrives.
+ * The parser caches the original parse by message reference.
+ * A caller can supply its existing resolved payload also.
+ * Classification runs again because a new supplement can change the resolved payload.
  */
 export function prepareMessage(message: AgentChatMessage, options: PrepareMessageOptions = {}): PreparedMessage {
   const original = options.original ?? parseMessageContent(message)
@@ -113,13 +96,13 @@ export function prepareMessage(message: AgentChatMessage, options: PrepareMessag
 /**
  * Read a prepared message into the row model.
  *
- * The span type and the completion come from the PREPARED MESSAGE and cannot be
- * overridden. They are columns of the row the caller asked about, so a caller that
- * supplied its own could describe a different row than the one it prepared.
+ * The prepared message supplies the span ID and span type. It supplies completion also.
+ * Callers cannot override these stored values with metadata from another row.
  */
 export function extractPreparedRow(prepared: PreparedMessage, options: PreparedRowOptions = {}): ChatRowExtraction {
   return extractChatRow(prepared.message.agentProvider, prepared.resolved, prepared.category, {
     span: options.span ?? soleSpan(prepared),
+    spanId: prepared.message.spanId,
     spanType: prepared.message.spanType,
     completion: prepared.message.completion,
   })
@@ -128,9 +111,9 @@ export function extractPreparedRow(prepared: PreparedMessage, options: PreparedR
 /**
  * Prepare a message and read its row in one call.
  *
- * For the readers OUTSIDE the transcript -- the scroll-rail preview and the image
- * tab -- which hold a message and want its row. The transcript prepares once per row
- * and extracts under its own cache key, so it calls the two halves separately.
+ * The scroll rail and image tab use this combined operation.
+ * The transcript prepares each message once and caches extraction separately.
+ * It calls the two operations separately.
  */
 export function prepareChatRow(
   message: AgentChatMessage,

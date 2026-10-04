@@ -18,6 +18,75 @@ function delegate(rawInput: Record<string, unknown>, tool: Record<string, unknow
   }, gooseToolCallAdapter, undefined)
 }
 
+const scriptSource = 'async function run() { throw new Error("NATIVE_SCRIPT" + (70 + 7)); }'
+const scriptReport = (success: boolean, value = 'null', stdout = '', stderr = '') => `Code Executed Successfully: ${success}\n\n# Return Value\n\`\`\`json\n${value}\n\`\`\`\n\n# STDOUT\n${stdout}\n\n# STDERR\n${stderr}\n`
+
+function codeExecution(report: string, options: { completion?: MessageCompletion, extension?: string, name?: string, status?: string } = {}): ToolCall {
+  return acpToolCall({
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'native-code-1',
+    status: options.status ?? 'completed',
+    kind: 'other',
+    title: 'execute typescript',
+    rawInput: { code: scriptSource },
+    _meta: { goose: { toolCall: { toolName: options.name ?? 'execute_typescript', extensionName: options.extension ?? 'code_execution' } } },
+    content: [{ type: 'content', content: { type: 'text', text: report } }],
+  }, gooseToolCallAdapter, undefined, options.completion)
+}
+
+describe('goose native script outcome', () => {
+  it('reports a failed native script despite completed ACP transport', () => {
+    const report = scriptReport(false, 'null', '', 'Error: NATIVE_SCRIPT77\n    at run (file:///execute.js:2:9)')
+    const call = codeExecution(report)
+    expect(call).toMatchObject({ id: 'native-code-1', kind: 'execute', status: 'failed', request: { command: scriptSource, language: 'javascript' }, result: { commands: [{ output: expect.stringContaining('NATIVE_SCRIPT77'), failed: true }] } })
+  })
+
+  it('keeps actual successful return values and empty output', () => {
+    expect(codeExecution(scriptReport(true, '"NATIVE_SCRIPT42"'))).toMatchObject({ kind: 'execute', status: 'completed', result: { commands: [{ output: expect.stringContaining('NATIVE_SCRIPT42') }] } })
+    expect(codeExecution(scriptReport(true))).toMatchObject({ kind: 'execute', status: 'completed' })
+  })
+
+  it('keeps large output without shortening its last lines', () => {
+    const text = `first\n${'native line\n'.repeat(2000)}last`
+    const call = codeExecution(scriptReport(true, 'null', text))
+    expect(call.kind).toBe('execute')
+    const result = call.kind === 'execute' ? typedResult(call) : undefined
+    expect(result?.commands[0]?.output).toContain(text)
+  })
+
+  it('does not infer a false script outcome from printed body text', () => {
+    const call = codeExecution(scriptReport(true, 'null', 'Code Executed Successfully: false'))
+    expect(call).toMatchObject({ kind: 'execute', status: 'completed' })
+  })
+
+  it('preserves native section markers that the script prints inside its output', () => {
+    const stdout = 'first\n\n# STDERR\nprinted section marker\nlast'
+    const stderr = 'actual error stream\n\n# STDERR\nsecond printed marker'
+    const report = scriptReport(true, 'null', stdout, stderr)
+    const call = codeExecution(report)
+    expect(call).toMatchObject({ kind: 'execute', status: 'completed' })
+    const result = call.kind === 'execute' ? typedResult(call) : undefined
+    expect(result?.commands[0]?.output).toContain(stdout)
+    expect(result?.commands[0]?.output).toContain(stderr)
+  })
+
+  it('keeps retained interruption over the script report', () => {
+    expect(codeExecution(scriptReport(false, 'null', '', 'Error: interrupted'), { completion: MessageCompletion.INTERRUPTED })).toMatchObject({ kind: 'execute', status: 'cancelled' })
+  })
+
+  it('keeps unrelated MCP text and identity unchanged', () => {
+    expect(codeExecution(scriptReport(false), { extension: 'other', name: 'report' })).toMatchObject({ kind: 'mcp', status: 'completed' })
+  })
+
+  it.each([
+    'Code Executed Successfully: false\nA partial report',
+    scriptReport(false).replace('# STDOUT', '# Different output'),
+    `A printed preface\n${scriptReport(false)}`,
+  ])('does not infer failure from an incomplete native report: %j', (report) => {
+    expect(codeExecution(report).status).toBe('completed')
+  })
+})
+
 describe('goose delegate launches', () => {
   it('asks with the instructions the launch carried', () => {
     const call = delegate({ instructions: 'Inspect project structure', source: 'explore' })

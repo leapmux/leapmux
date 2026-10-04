@@ -15,6 +15,7 @@ type copilotSessionConfig struct {
 	WorkingDirectory               string `json:"workingDirectory"`
 	Model                          string `json:"model,omitempty"`
 	ReasoningEffort                string `json:"reasoningEffort,omitempty"`
+	ReasoningSummary               string `json:"reasoningSummary"`
 	EnableConfigDiscovery          bool   `json:"enableConfigDiscovery"`
 	EnableSkills                   bool   `json:"enableSkills"`
 	EnableSessionStore             bool   `json:"enableSessionStore"`
@@ -42,7 +43,7 @@ type copilotSessionInfo struct {
 func newCopilotSessionConfig(opts agent.Options, sessionID string, resume bool) copilotSessionConfig {
 	config := copilotSessionConfig{
 		SessionID: sessionID, ClientName: "leapmux", WorkingDirectory: opts.WorkingDir,
-		Model: opts.Model(), ReasoningEffort: opts.Effort(),
+		Model: opts.Model(), ReasoningEffort: opts.Effort(), ReasoningSummary: "detailed",
 		EnableConfigDiscovery: true, EnableSkills: true, EnableSessionStore: true, RequestExtensions: true,
 		RequestPermission: true, RequestElicitation: true,
 		Streaming: true, IncludeSubAgentStreamingEvents: true,
@@ -99,6 +100,9 @@ func (c *copilotConnection) sendNativeSessionConfig(method string, config copilo
 	}
 	if session.SessionID != config.SessionID {
 		return copilotSessionInfo{}, fmt.Errorf("the Copilot response has a different session ID: expected %q, received %q", config.SessionID, session.SessionID)
+	}
+	if _, err := c.requestSession(config.SessionID, "options.update", map[string]any{"enableReasoningSummaries": true}, timeout); err != nil {
+		return copilotSessionInfo{}, fmt.Errorf("enable Copilot reasoning summaries: %w", err)
 	}
 	return session, nil
 }

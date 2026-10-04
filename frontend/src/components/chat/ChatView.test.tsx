@@ -258,16 +258,29 @@ vi.mock('./useChatVirtualizer', async () => {
 // jsdom does not provide ResizeObserver or Worker
 beforeAll(() => {
   installControllableResizeObserver()
-  globalThis.Worker ??= class {
-    onmessage: ((e: MessageEvent) => void) | null = null
-    onerror: ((e: ErrorEvent) => void) | null = null
-    postMessage() {}
-    terminate() {}
-    addEventListener() {}
-    removeEventListener() {}
-    dispatchEvent() { return false }
-  } as unknown as typeof Worker
+  if (!globalThis.Worker) {
+    Object.defineProperty(globalThis, 'Worker', {
+      configurable: true,
+      writable: true,
+      value: class {
+        onmessage: ((e: MessageEvent) => void) | null = null
+        onerror: ((e: ErrorEvent) => void) | null = null
+        postMessage() {}
+        terminate() {}
+        addEventListener() {}
+        removeEventListener() {}
+        dispatchEvent() { return false }
+      },
+    })
+  }
 })
+
+function requiredPremeasureCallback(): HiddenPremeasureOnMeasure {
+  const callback = hiddenPremeasureState.onMeasure
+  if (!callback)
+    throw new Error('ChatView did not provide a premeasure callback')
+  return callback
+}
 
 // Real modules by default; the stubbed-deps suite flips this to true.
 beforeEach(() => {
@@ -584,6 +597,28 @@ describe('sameVirtualItems', () => {
 })
 
 describe('ChatView', () => {
+  it('keeps each chat instance ID stable and distinct', () => {
+    const [messages, setMessages] = createSignal<AgentChatMessage[]>([])
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages()} />
+        <ChatView messages={[]} />
+      </PreferencesProvider>
+    ))
+    const chats = view.container.querySelectorAll('[data-testid="chat-container"]')
+    expect(chats).toHaveLength(2)
+    const firstID = chats[0]?.getAttribute('data-chat-instance-id')
+    const secondID = chats[1]?.getAttribute('data-chat-instance-id')
+    expect(firstID).toBeTruthy()
+    expect(secondID).toBeTruthy()
+    expect(firstID).not.toBe(secondID)
+
+    setMessages([message('new-row', 1)])
+    const updatedChats = view.container.querySelectorAll('[data-testid="chat-container"]')
+    expect(updatedChats[0]?.getAttribute('data-chat-instance-id')).toBe(firstID)
+    expect(updatedChats[1]?.getAttribute('data-chat-instance-id')).toBe(secondID)
+  })
+
   it('renders an edit request recovered from the matching provider session', async () => {
     const spanId = 'reused-edit'
     const agentSessionId = 'new-session'
@@ -2293,7 +2328,7 @@ describe('chat view virtualized with stubbed deps', () => {
 
       // The wait above proved the candidate list; `?.` is the type-level guard alone.
       const heightKey = hiddenPremeasureState.candidates[0]?.item.heightKey
-      const onMeasure = hiddenPremeasureState.onMeasure as unknown as HiddenPremeasureOnMeasure
+      const onMeasure = requiredPremeasureCallback()
       onMeasure('m0', 20, heightKey, 0, false)
       await waitFor(() => {
         expect(hiddenPremeasureState.candidates.map(candidate => candidate.item.id)).toEqual(['m0'])
@@ -2327,7 +2362,7 @@ describe('chat view virtualized with stubbed deps', () => {
       // The wait above proved the candidate list; `?.` is the type-level guard alone.
       const heightKey = hiddenPremeasureState.candidates[0]?.item.heightKey
       const staleHeightKey = `${heightKey ?? 'missing'}:stale`
-      const onMeasure = hiddenPremeasureState.onMeasure as unknown as HiddenPremeasureOnMeasure
+      const onMeasure = requiredPremeasureCallback()
       onMeasure('m0', 20, staleHeightKey, 0, true)
 
       expect(virtualizerState.measuredIds.has('m0')).toBe(false)

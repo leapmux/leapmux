@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -54,9 +55,9 @@ func TestPiMCPPermissionLinksItsToolRequest(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.ControlSink{}
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
-	tool := []byte(`{"type":"tool_execution_start","toolCallId":"mcp-call","toolName":"mcp","args":{"tool":"probe_write","args":{"path":"sample.py","content":"complete arguments"}}}`)
+	tool := []byte(`{"type":"tool_execution_start","toolCallId":"mcp-call","toolName":"mcp__probe__write","args":{"path":"sample.py","content":"complete arguments"}}`)
 	handlePiOutput(a, providerkit.ParseLine(tool))
-	dialog := []byte(`{"type":"extension_ui_request","id":"permission","method":"select","title":"MCP: probe wants to run write\n\nArguments:\n{ \"path\": \"sample.py\", \"content\": \"complete arguments\" }","options":["Allow once","Allow for session","Deny"]}`)
+	dialog := []byte(`{"type":"extension_ui_request","id":"permission","method":"confirm","title":"Allow mcp__probe__write?","message":"Run the native MCP tool?"}`)
 	handlePiOutput(a, providerkit.ParseLine(dialog))
 	require.Len(t, sink.PublishedControls(), 1)
 	assert.Equal(t, int64(1), sink.LastPublishedControl().SourceSeq)
@@ -69,7 +70,7 @@ func newPiAgentWithSink(sink agent.ProviderServices) *Agent {
 		sink:        sink,
 		sessionFile: "/tmp/pi-session.jsonl",
 	}
-	a.sink = agent.NewModelProgressResetSink(newPiToolTranscript(context.Background(), a.sink))
+	a.sink = agent.NewModelProgressResetSink(a.sink)
 	return a
 }
 
@@ -112,17 +113,16 @@ func TestHandlePiOutput_AgentEnd_PersistsResultDividerAndResets(t *testing.T) {
 	assert.True(t, msg.TurnEnd, "agent_end must route through PersistTurnEnd")
 
 	assert.Equal(t, 1, sink.ResetSpanCount(), "agent_end should reset spans")
-	// agent_end broadcasts no session info of its own. The usage snapshot is
-	// empty here and the get_session_stats refresh needs a live stdin, so a
-	// count above zero would mean a key came back.
+	// agent_end broadcasts no session information.
+	// The usage snapshot is empty, and get_session_stats requires live stdin.
+	// Any broadcast here reports an unexpected key.
 	assert.Equal(t, 0, sink.SessionInfoCount())
 }
 
-// piFakeClock pins the agent's clock at start and returns the function that
-// moves it. The caller advances between events, so a test reads as the timeline
-// it means and stays correct however many times a handler reads the clock --
-// a step-per-read clock silently re-times every case the moment a handler
-// gains or loses one call.
+// piFakeClock returns a clock and a function that advances it.
+// The caller advances the clock between events.
+// Handler reads must not advance it.
+// Otherwise, added or removed reads change the expected durations.
 func piFakeClock(a *Agent, start time.Time) (advance func(time.Duration)) {
 	now := start
 	a.nowFn = func() time.Time { return now }
@@ -144,9 +144,9 @@ func piPersistedAgentEnd(t *testing.T, sink *agenttest.ControlSink, index int) m
 	return persisted
 }
 
-// agent_settled reports only that Pi will not continue on its own after the
-// agent_end that already drew the divider. It must leave no trace at all,
-// because the dispatch's default case would persist it as a raw-JSON row.
+// agent_settled states that Pi will not continue after agent_end.
+// agent_end already drew the divider.
+// The handler must drop agent_settled so the default case cannot persist a raw JSON row.
 func TestHandlePiOutput_AgentSettled_PersistsNothing(t *testing.T) {
 	t.Parallel()
 
@@ -195,9 +195,9 @@ func TestHandlePiOutput_AgentEnd_ReportsTurnDuration(t *testing.T) {
 	assert.Equal(t, float64(2500), piPersistedAgentEnd(t, sink, 0)["duration_ms"])
 }
 
-// A zero-length turn is a real measurement, so it persists 0 rather than
-// dropping the field: the frontend draws "(0ms)" for it and nothing at all for
-// an absent field.
+// A zero-duration turn records zero.
+// The frontend displays (0ms) for that value.
+// An absent duration displays no time.
 func TestHandlePiOutput_AgentEnd_ZeroLengthTurnReportsZero(t *testing.T) {
 	t.Parallel()
 
@@ -214,8 +214,9 @@ func TestHandlePiOutput_AgentEnd_ZeroLengthTurnReportsZero(t *testing.T) {
 	assert.Equal(t, float64(0), persisted["duration_ms"])
 }
 
-// An agent_end this worker did not see start (a process it adopted mid-turn)
-// has nothing to measure from, so it must omit the field rather than claim 0.
+// The worker cannot measure a turn whose start it did not observe.
+// This includes a process adopted during a turn.
+// Omit the duration field.
 func TestHandlePiOutput_AgentEnd_WithoutStartOmitsDuration(t *testing.T) {
 	t.Parallel()
 
@@ -227,8 +228,8 @@ func TestHandlePiOutput_AgentEnd_WithoutStartOmitsDuration(t *testing.T) {
 	assert.NotContains(t, piPersistedAgentEnd(t, sink, 0), "duration_ms")
 }
 
-// The mark is consumed by the agent_end that ends the turn, so a stray second
-// agent_end reports no duration instead of the time since the turn began.
+// agent_end clears the start time when the turn ends.
+// A second agent_end must omit the duration.
 func TestHandlePiOutput_AgentEnd_SecondEndOmitsDuration(t *testing.T) {
 	t.Parallel()
 
@@ -246,8 +247,8 @@ func TestHandlePiOutput_AgentEnd_SecondEndOmitsDuration(t *testing.T) {
 	assert.NotContains(t, piPersistedAgentEnd(t, sink, 1), "duration_ms")
 }
 
-// A retried run continues the same turn, so the final divider reports the whole
-// elapsed time rather than the last attempt alone.
+// A retry continues the same turn.
+// The final divider must report the complete duration, including earlier attempts.
 func TestHandlePiOutput_AgentEnd_RetryKeepsTurnStartMark(t *testing.T) {
 	t.Parallel()
 
@@ -255,7 +256,9 @@ func TestHandlePiOutput_AgentEnd_RetryKeepsTurnStartMark(t *testing.T) {
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 	advance := piFakeClock(a, piEpoch)
 
-	// One turn, two runs: the attempt takes 1s, the backoff 1s, the retry 1s.
+	// The turn contains two runs.
+	// The first attempt takes one second.
+	// The backoff and retry each take one second.
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_start"}`)))
 	advance(time.Second)
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[],"willRetry":true}`)))
@@ -270,8 +273,9 @@ func TestHandlePiOutput_AgentEnd_RetryKeepsTurnStartMark(t *testing.T) {
 		"the final divider spans from the FIRST agent_start")
 }
 
-// A run Pi restarts itself is not a turn end: it must not fire the turn-end
-// event, which drives the completion sound and the off-screen tab's dot.
+// Pi's own retry keeps the turn open.
+// The handler must not emit the turn-end event.
+// That event controls the completion sound and the inactive tab's dot.
 func TestHandlePiOutput_AgentEnd_WillRetryDoesNotEndTurn(t *testing.T) {
 	t.Parallel()
 
@@ -335,9 +339,9 @@ func TestHandlePiOutput_AgentEnd_PersistsIncompleteToolOutput(t *testing.T) {
 	require.GreaterOrEqual(t, sink.MessageCount(), 3)
 	result := sink.Messages()[1]
 	assert.True(t, result.Closing)
-	// The row is the agent's own tool_execution_start frame, byte for byte. An
-	// earlier build wrote a tool_execution_end event Pi never sent, and declared
-	// `isError: true` although no failure was reported.
+	// Keep Pi's original tool_execution_start bytes.
+	// A previous implementation wrote an end frame that Pi did not send.
+	// It also marked an error that Pi did not report.
 	assert.JSONEq(t,
 		`{"type":"tool_execution_start","toolCallId":"tool-1","toolName":"bash","args":{"command":"printf partial"}}`,
 		string(result.Content))
@@ -348,7 +352,8 @@ func TestHandlePiOutput_AgentEnd_PersistsIncompleteToolOutput(t *testing.T) {
 	}`, string(result.SupplementalContent))
 	assert.Equal(t, agent.MessageCompletionError, result.Completion)
 
-	// Both halves read back as one finished call, so every extractor sees the output.
+	// The start frame and supplement resolve to one completed call.
+	// Every extractor must receive its output.
 	assert.JSONEq(t, `{
 		"type":"tool_execution_start",
 		"toolCallId":"tool-1",
@@ -491,11 +496,11 @@ func TestPiPromptFailureSuppressesIntentionalStopError(t *testing.T) {
 	assert.Empty(t, sink.Notifications())
 }
 
-// Pi retries the WebSocket failure itself when it says willRetry, so LeapMux
-// must not schedule a second continuation for the same failure. willRetry is
-// the ONLY difference between these two envelopes: Pi reports false once its
-// own retry budget is spent, and that is where LeapMux's auto-continue takes
-// over as the last resort.
+// Pi retries the WebSocket failure when willRetry is true.
+// LeapMux must not schedule another continuation for that failure.
+// These envelopes differ only in willRetry.
+// Pi reports false after it exhausts its retry budget.
+// LeapMux may then continue the session.
 func TestHandlePiOutput_AgentEnd_WillRetryDecidesAutoContinue(t *testing.T) {
 	t.Parallel()
 
@@ -572,6 +577,99 @@ func TestHandlePiOutput_MessageEnd_PersistsAssistantMessage(t *testing.T) {
 	msg := sink.Messages()[0]
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msg.Source)
 	assert.JSONEq(t, string(raw), string(msg.Content))
+}
+
+// piReasoningRow is the assembled-message envelope of one completed thinking row.
+func piReasoningRow(text string) map[string]string {
+	return map[string]string{
+		contracts.AssembledMessageFieldType:       contracts.AssembledMessageType,
+		contracts.AssembledMessageFieldKind:       contracts.AssembledMessageKindReasoning,
+		contracts.AssembledMessageFieldText:       text,
+		contracts.AssembledMessageFieldCompletion: contracts.AssembledMessageCompletionComplete,
+	}
+}
+
+// piAssembledRow decodes a persisted assembled-message envelope.
+func piAssembledRow(t *testing.T, message agenttest.Message) map[string]string {
+	t.Helper()
+	var row map[string]string
+	require.NoError(t, json.Unmarshal(message.Content, &row))
+	return row
+}
+
+// Pi stores reasoning, text, and tool calls in one assistant message.
+// Each transcript row displays one text kind.
+// The worker must persist reasoning separately before the assistant reply.
+func TestHandlePiOutput_MessageEnd_PersistsThinkingAsARowOfItsOwn(t *testing.T) {
+	t.Parallel()
+
+	run := func(t *testing.T, frame string) []agenttest.Message {
+		t.Helper()
+		sink := &agenttest.ControlSink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		a.model = "gpt-5.5"
+		a.availableModels = []*agent.ModelInfo{{Id: "gpt-5.5", ContextWindow: 200000}}
+		handlePiOutput(a, providerkit.ParseLine([]byte(frame)))
+		return sink.Messages()
+	}
+
+	t.Run("the thinking row comes before the reply, which keeps the usage", func(t *testing.T) {
+		t.Parallel()
+		frame := `{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"The user wants a greeting.","thinkingSignature":"sig"},{"type":"text","text":"Hello"}],"usage":{"input":100,"output":10,"cacheRead":0,"cacheWrite":0,"totalTokens":110,"cost":{"total":0.0001}}}}`
+		messages := run(t, frame)
+		require.Len(t, messages, 2)
+		assert.Equal(t, piReasoningRow("The user wants a greeting."), piAssembledRow(t, messages[0]))
+		assert.Empty(t, messages[0].Metadata, "the usage rides on the reply's own row")
+		assert.JSONEq(t, frame, string(messages[1].Content), "Pi's own frame is still the reply's row")
+		assert.NotEmpty(t, messages[1].Metadata)
+	})
+
+	t.Run("several thinking blocks join into one row", func(t *testing.T) {
+		t.Parallel()
+		messages := run(t, `{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"First."},{"type":"text","text":"Hi."},{"type":"thinking","thinking":"Second."}]}}`)
+		require.Len(t, messages, 2)
+		assert.Equal(t, piReasoningRow("First.\n\nSecond."), piAssembledRow(t, messages[0]))
+	})
+
+	t.Run("thinking beside a tool call is a row of its own too", func(t *testing.T) {
+		t.Parallel()
+		messages := run(t, `{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Run it."},{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"ls"}}],"stopReason":"toolUse"}}`)
+		require.Len(t, messages, 2)
+		assert.Equal(t, piReasoningRow("Run it."), piAssembledRow(t, messages[0]))
+	})
+
+	// Pi supplies a placeholder for redacted reasoning.
+	// The reasoning row must display that placeholder.
+	t.Run("a redacted block shows Pi's placeholder", func(t *testing.T) {
+		t.Parallel()
+		messages := run(t, `{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"[Reasoning redacted]","thinkingSignature":"opaque","redacted":true},{"type":"text","text":"Hi."}]}}`)
+		require.Len(t, messages, 2)
+		assert.Equal(t, piReasoningRow("[Reasoning redacted]"), piAssembledRow(t, messages[0]))
+	})
+
+	t.Run("a thinking block with no visible text adds no row", func(t *testing.T) {
+		t.Parallel()
+		frame := `{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"  ","thinkingSignature":"sig"},{"type":"text","text":"Hi."}]}}`
+		messages := run(t, frame)
+		require.Len(t, messages, 1)
+		assert.JSONEq(t, frame, string(messages[0].Content))
+	})
+
+	t.Run("a message of another role adds no row", func(t *testing.T) {
+		t.Parallel()
+		frame := `{"type":"message_end","message":{"role":"user","content":[{"type":"thinking","thinking":"Not the model's."},{"type":"text","text":"Hi."}]}}`
+		messages := run(t, frame)
+		require.Len(t, messages, 1)
+		assert.JSONEq(t, frame, string(messages[0].Content))
+	})
+
+	t.Run("a message whose content is a string adds no row", func(t *testing.T) {
+		t.Parallel()
+		frame := `{"type":"message_end","message":{"role":"assistant","content":"Hi."}}`
+		messages := run(t, frame)
+		require.Len(t, messages, 1)
+		assert.JSONEq(t, frame, string(messages[0].Content))
+	})
 }
 
 func TestHandlePiOutput_MessageEnd_PreservesContentAndStoresUsageMetadata(t *testing.T) {
@@ -696,9 +794,9 @@ func TestHandlePiOutput_AgentEnd_UnexpectedMessagesShapeCancelsAutoContinue(t *t
 
 	sink := &agenttest.ControlSink{}
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
-	// messages is a string instead of an array — the envelope unmarshal in
-	// handlePiAgentEnd fails, so isRetryableFailure sees no messages and we
-	// fall through to cancel.
+	// messages contains a string instead of an array.
+	// handlePiAgentEnd cannot decode the envelope.
+	// The retry check sees no messages and must cancel continuation.
 	raw := []byte(`{"type":"agent_end","messages":"unexpected"}`)
 
 	handlePiOutput(a, providerkit.ParseLine(raw))
@@ -719,15 +817,14 @@ func TestHandlePiOutput_ToolExecutionLifecycle(t *testing.T) {
 	endRaw := []byte(`{"type":"tool_execution_end","toolCallId":"call-1","toolName":"bash","result":{"content":[{"type":"text","text":"file1\nfile2\n"}],"details":{"exitCode":0}},"isError":false}`)
 
 	handlePiOutput(a, providerkit.ParseLine(startRaw))
-	// SetSpanType is recorded at the start, and asserted here rather than at the
-	// end of the test: the close below ends the span, and an ended span forgets
-	// its type.
+	// Check the span type before closing the span.
+	// Closing removes the stored type.
 	assert.Equal(t, "bash", sink.GetSpanType("call-1"))
 
 	handlePiOutput(a, providerkit.ParseLine(updateRaw))
 	handlePiOutput(a, providerkit.ParseLine(endRaw))
 
-	// Two persisted messages: start (open) and end (closing).
+	// Persist the start frame and the closing result.
 	msgs := sink.Messages()
 	require.Equal(t, 2, len(msgs), "tool_execution start/end should persist two messages")
 	assert.Equal(t, "call-1", msgs[0].SpanID)
@@ -736,7 +833,7 @@ func TestHandlePiOutput_ToolExecutionLifecycle(t *testing.T) {
 	assert.Equal(t, "call-1", msgs[1].SpanID)
 	assert.True(t, msgs[1].Closing, "end should be marked closing")
 
-	// Span lifecycle: open then close.
+	// Open the span, then close it.
 	assert.Equal(t, []agenttest.SpanOpen{{SpanID: "call-1", ParentSpanID: ""}}, sink.OpenSpans())
 	assert.Equal(t, []string{"call-1"}, sink.ClosedSpans())
 
@@ -744,7 +841,7 @@ func TestHandlePiOutput_ToolExecutionLifecycle(t *testing.T) {
 	assert.Contains(t, updates, agent.OutputTotalProgress("call-1", 6, false))
 	assert.Contains(t, updates, agent.CompleteOutputProgress("call-1"))
 
-	// Tool count incremented.
+	// The handler increments the tool count.
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	assert.Equal(t, 1, a.TurnToolUses)
@@ -767,10 +864,10 @@ func TestHandlePiOutput_NativeTruncationTotalIsExact(t *testing.T) {
 	assert.Contains(t, sink.ProgressUpdates(), agent.OutputExactTotalProgress("call-1", 164440))
 }
 
-// Pi's tool_execution_update events carry the *cumulative* partialResult.
-// Verify that successive updates only broadcast the new delta, and that the
-// per-span tracking is reset when the tool ends so a fresh tool with the same
-// id starts from empty.
+// Pi sends a cumulative partialResult on each tool_execution_update.
+// Broadcast only the new delta.
+// Clear the span's counter when the tool ends.
+// A later call with the same ID must start at zero.
 func TestHandlePiOutput_ToolExecutionUpdate_BroadcastsDeltaOnly(t *testing.T) {
 	t.Parallel()
 
@@ -799,8 +896,8 @@ func TestHandlePiOutput_ToolExecutionUpdate_BroadcastsDeltaOnly(t *testing.T) {
 	assert.Equal(t, []int64{6, 12, 12}, totals)
 	assert.Contains(t, updates, agent.CompleteOutputProgress("call-1"))
 
-	// After tool_execution_end, per-span state should be cleared so that a new
-	// tool reusing the same id starts fresh.
+	// tool_execution_end clears the span's counter.
+	// A new call with the same ID must start at zero.
 	present := a.HasCumulativeOutputForTest("call-1")
 	assert.False(t, present, "tool_execution_end should clear cumulativeBroadcast entry")
 }
@@ -923,10 +1020,10 @@ func TestHandlePiOutput_ExtensionUIRequest_DialogPersistsControlRequest(t *testi
 			persisted := sink.PublishedControls()
 			require.Equal(t, 1, len(persisted), "should persist one control request")
 			assert.Equal(t, tc.id, persisted[0].RequestID)
-			// Payload must round-trip the raw line verbatim.
+			// Keep the raw line unchanged in the payload.
 			assert.JSONEq(t, tc.raw, string(persisted[0].Payload))
 
-			// Should NOT be persisted as a regular message or notification.
+			// Do not persist the dialog as a message or notification.
 			assert.Equal(t, 0, sink.MessageCount())
 			assert.Equal(t, 0, sink.NotificationCount())
 		})
@@ -955,7 +1052,7 @@ func TestHandlePiOutput_ExtensionUIRequest_NotifyPersistsRawAsAgent(t *testing.T
 	rawLine := `{"type":"extension_ui_request","id":"x","method":"notify","message":"Hello","notifyType":"warning"}`
 	handlePiOutput(a, providerkit.ParseLine([]byte(rawLine)))
 
-	// Single raw passthrough — no synthesized agent_notify wrapper.
+	// Persist the raw frame without an agent_notify wrapper.
 	require.Equal(t, 1, sink.NotificationCount(), "single raw extension_ui_request notification persisted")
 	last := sink.LastNotification()
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
@@ -963,11 +1060,11 @@ func TestHandlePiOutput_ExtensionUIRequest_NotifyPersistsRawAsAgent(t *testing.T
 	assert.JSONEq(t, rawLine, string(last.Content),
 		"raw envelope must be preserved verbatim so renderers can read every method-specific field")
 
-	// Synthesis dropped — the frontend renderer derives level/message from the raw envelope.
+	// The frontend reads the notification level and message from the raw envelope.
 	assert.Empty(t, sink.Notifications(),
 		"synthesized agent_notify must no longer be emitted; raw passthrough alone carries the same info")
 
-	// Should NOT be a control request.
+	// The notification must not create a control request.
 	assert.Empty(t, sink.PublishedControls())
 }
 
@@ -984,7 +1081,8 @@ func TestHandlePiOutput_ExtensionUIRequest_NotifyMissingNotifyTypePreservesRaw(t
 	require.Equal(t, 1, sink.NotificationCount())
 	last := sink.LastNotification()
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source)
-	// notifyType absent in the raw — renderer is responsible for defaulting to "info".
+	// The frame omits notifyType.
+	// The renderer must use info as the default.
 	assert.NotContains(t, string(last.Content), `"notifyType"`)
 	assert.Empty(t, sink.Notifications(), "no synthesized agent_notify on the side channel")
 }
@@ -1020,7 +1118,8 @@ func TestHandlePiOutput_ExtensionUIRequest_SetStatus_NilClearsKey(t *testing.T) 
 	sink := &agenttest.ControlSink{}
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 
-	// statusText omitted → broadcast a nil value so the frontend clears the key.
+	// The frame omits statusText.
+	// Broadcast nil so the frontend clears the key.
 	handlePiOutput(a, providerkit.ParseLine([]byte(
 		`{"type":"extension_ui_request","id":"x","method":"setStatus","statusKey":"my-ext"}`,
 	)))
@@ -1100,8 +1199,9 @@ func TestHandlePiOutput_ResponseLineWithoutPendingID_LoggedNotPersisted(t *testi
 	sink := &agenttest.ControlSink{}
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 
-	// A response that wasn't intercepted (no pending caller). Should be
-	// logged and dropped, not persisted.
+	// No pending caller accepts this response.
+	// Log it and drop it.
+	// Do not persist it.
 	handlePiOutput(a, providerkit.ParseLine([]byte(
 		`{"type":"response","id":"orphan","command":"prompt","success":true}`,
 	)))
@@ -1130,7 +1230,8 @@ func TestHandlePiOutput_TextAndThinkingDeltasAccumulateThinkingTokens(t *testing
 			sink := &agenttest.ControlSink{}
 			a := newPiAgentWithSink(agent.NewProviderServices(sink))
 
-			// 8-char delta -> 2 tokens; a second 8-char delta accumulates to 4.
+			// The first eight-character delta adds two tokens.
+			// A second delta of the same length raises the total to four.
 			handlePiOutput(a, providerkit.ParseLine([]byte(
 				`{"type":"message_update","assistantMessageEvent":{"type":"`+deltaType+`","delta":"abcdefgh"}}`)))
 			assert.Equal(t, int64(2), sink.LastThinkingTokens())
@@ -1149,11 +1250,11 @@ func TestHandlePiOutput_ThinkingThenTextInOneMessageSharePhase(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 
-	// Pi streams thinking then the visible answer within a single message and
-	// persists both as one message_end -- there is no per-phase split or AGENT
-	// commit between them (unlike ACP, which hands off and resets). So a
-	// thinking->text transition inside one message must keep accumulating into one
-	// thinking-token phase rather than restarting at the text delta.
+	// Pi streams reasoning and text within one message.
+	// One message_end persists both.
+	// No phase split or assistant commit separates them.
+	// ACP resets at that separation.
+	// Pi must keep one reasoning-token phase across its transition to text.
 	handlePiOutput(a, providerkit.ParseLine([]byte(
 		`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"abcdefghijklmnop"}}`)))
 	require.Equal(t, int64(4), sink.LastThinkingTokens())
@@ -1185,7 +1286,8 @@ func TestHandlePiOutput_MessageEndResetsThinkingTokens(t *testing.T) {
 		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"abcdefghijklmnop"}}`)))
 	require.Equal(t, int64(4), sink.LastThinkingTokens())
 
-	// Committing the assistant message is a phase boundary; the estimate resets.
+	// Persisting the assistant message ends the phase.
+	// Reset the estimate.
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"x"}]}}`)))
 
 	handlePiOutput(a, providerkit.ParseLine([]byte(
@@ -1203,8 +1305,9 @@ func TestHandlePiOutput_DialogRequestResetsThinkingTokens(t *testing.T) {
 		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"abcdefghijklmnop"}}`)))
 	require.Equal(t, int64(4), sink.LastThinkingTokens())
 
-	// A blocking dialog (confirm) is a live control request the frontend clears
-	// its counter on, so the backend resets to mirror it.
+	// A blocking confirm dialog creates a live control request.
+	// The frontend clears its counter for that request.
+	// The backend must also reset its counter.
 	handlePiOutput(a, providerkit.ParseLine([]byte(
 		`{"type":"extension_ui_request","id":"d1","method":"confirm","title":"Clear?","message":"all gone"}`)))
 
@@ -1242,23 +1345,21 @@ func TestHandlePiOutput_TurnAndToolBoundariesResetThinkingTokens(t *testing.T) {
 	}
 }
 
-// TestHandlePiOutput_ToolUpdateDetailsUpsertsSubagentActivity verifies that a
-// tool_execution_update whose partialResult.details carries the pi-subagents
-// shape {status, activity} upserts a Running Subagent registry row keyed by
-// details.agentId (falling back to the toolCallId) with the activity as
-// ActiveForm.
+// TestHandlePiOutput_ToolUpdateDetailsUpsertsSubagentActivity checks the pi-subagents update shape.
+// partialResult.details contains status and activity.
+// Upsert a running registry row with activity as ActiveForm.
+// Use details.agentId as its key, or toolCallId when agentId is absent.
 func TestHandlePiOutput_ToolUpdateDetailsUpsertsSubagentActivity(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 
-	// A tool_execution_start records the spawn prompt as the title (read from
-	// the `input` field) so the subagent row has a label.
+	// tool_execution_start reads the spawn prompt from input and uses it as the child title.
 	handlePiOutput(a, providerkit.ParseLine([]byte(
 		`{"type":"tool_execution_start","toolCallId":"call-sub-1","toolName":"Agent","input":{"description":"build the feature","prompt":"build it"}}`)))
 
-	// An update whose partialResult.details carries the subagent shape.
+	// The update carries the subagent fields in partialResult.details.
 	handlePiOutput(a, providerkit.ParseLine([]byte(
 		`{"type":"tool_execution_update","toolCallId":"call-sub-1","partialResult":{"content":[{"type":"text","text":"working\n"}],"details":{"status":"running","activity":"running tests","agentId":"agent-xyz"}}}`)))
 
@@ -1272,8 +1373,8 @@ func TestHandlePiOutput_ToolUpdateDetailsUpsertsSubagentActivity(t *testing.T) {
 	assert.Equal(t, "build the feature", row.Title, "Title comes from tool_execution_start input.description")
 }
 
-// TestHandlePiOutput_ToolUpdateDetails_FallsBackToToolCallID verifies that when
-// details has the subagent shape but no agentId, the row is keyed by toolCallId.
+// TestHandlePiOutput_ToolUpdateDetails_FallsBackToToolCallID checks an update without agentId.
+// Use toolCallId as the registry key when the remaining subagent fields match.
 func TestHandlePiOutput_ToolUpdateDetails_FallsBackToToolCallID(t *testing.T) {
 	t.Parallel()
 
@@ -1291,17 +1392,16 @@ func TestHandlePiOutput_ToolUpdateDetails_FallsBackToToolCallID(t *testing.T) {
 	assert.Equal(t, "call-no-id", tasks[0].RowKey, "row keys by toolCallId when details.agentId is absent")
 }
 
-// TestHandlePiOutput_ToolEndBackgroundRekeysToAgentID verifies that a
-// tool_execution_end whose result carries status:"background" and an agentId
-// re-keys the registry row from toolCallId to details.agentId and leaves it
-// running. The registry rename removes the provisional key.
+// TestHandlePiOutput_ToolEndBackgroundRekeysToAgentID checks a background result with agentId.
+// Replace the provisional toolCallId key with details.agentId.
+// Keep the row running and remove the provisional key.
 func TestHandlePiOutput_ToolEndBackgroundRekeysToAgentID(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 
-	// Seed a running row keyed by toolCallId.
+	// Create a running registry row with toolCallId as its key.
 	handlePiOutput(a, providerkit.ParseLine([]byte(
 		`{"type":"tool_execution_start","toolCallId":"call-bg","toolName":"Agent","input":{"description":"bg work"}}`)))
 	handlePiOutput(a, providerkit.ParseLine([]byte(
@@ -1320,10 +1420,9 @@ func TestHandlePiOutput_ToolEndBackgroundRekeysToAgentID(t *testing.T) {
 
 }
 
-// TestHandlePiOutput_SubagentNotificationMessageClosesRegistryEntry verifies
-// that a message_end with customType:"subagent-notification" closes the registry
-// row from its details AND still persists to the parent transcript (it is real
-// conversational context).
+// TestHandlePiOutput_SubagentNotificationMessageClosesRegistryEntry checks the native completion notification.
+// Read the final status from its details and close the registry row.
+// Also persist the message in the parent transcript because it supplies conversation context.
 func TestHandlePiOutput_SubagentNotificationMessageClosesRegistryEntry(t *testing.T) {
 	t.Parallel()
 
@@ -1341,29 +1440,24 @@ func TestHandlePiOutput_SubagentNotificationMessageClosesRegistryEntry(t *testin
 	msgEnd := []byte(`{"type":"message_end","message":{"role":"custom","customType":"subagent-notification","content":"subagent finished","details":{"status":"completed","id":"agent-notif-1"}}}`)
 	handlePiOutput(a, providerkit.ParseLine(msgEnd))
 
-	// Registry row closed.
+	// The registry row must close.
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
 	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status,
 		"subagent-notification with a final status must close the registry row")
 	assert.True(t, tasks[0].Status.IsFinished())
 
-	// The message STILL persisted to the parent transcript (alongside the
-	// tool_execution_start message). The notification must be the final
-	// persisted message.
+	// Keep the notification after the tool_execution_start row in the parent transcript.
+	// It must be the last persisted message.
 	require.GreaterOrEqual(t, sink.MessageCount(), 1, "subagent-notification must still persist to the parent transcript")
 	last := sink.Messages()[len(sink.Messages())-1]
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source)
 	assert.Contains(t, string(last.Content), "subagent-notification")
 }
 
-// A description that holds nothing a reader can SEE must fall through, not
-// swallow both fallbacks.
-//
-// The emptiness test used to run on the RAW field, so a run of zero-width
-// spaces entered the description branch, cleaned to "", and returned it -- the
-// prompt fallback and the tool-name fallback were both skipped, and the Pi
-// subagent's row reached the sidebar with no label at all.
+// A description with no visible characters must use the prompt or tool-name fallback.
+// Clean the description before checking whether it is empty.
+// Otherwise, zero-width spaces select an empty description and leave the sidebar row without a label.
 func TestPiExtractDescriptionFallsThroughAnInvisibleDescription(t *testing.T) {
 	t.Parallel()
 
@@ -1384,11 +1478,11 @@ func TestPiExtractDescriptionFallsThroughAnInvisibleDescription(t *testing.T) {
 	}
 }
 
-// piInterruptedAgentEnd is the frame Pi sends when the user stops a turn whose
-// tool was still running. It is the SAME shape as a genuine failure: the stop
-// reason is `error` and the message is prose. A turn Pi aborts cleanly carries
-// `stopReason:"aborted"` instead, so the frame alone cannot tell the two apart.
-// Captured from `.tmp/provider-parity/interrupt5` (RL-015).
+// piInterruptedAgentEnd records Pi's response when the user stops a turn with a running tool.
+// Its error stop reason and prose also match a real failure.
+// A clean abort uses stopReason aborted.
+// The frame alone cannot distinguish an interruption from a failure.
+// Capture: .tmp/provider-parity/interrupt5 (RL-015).
 const piInterruptedAgentEnd = `{"type":"agent_end","messages":[{"role":"assistant","content":[],` +
 	`"stopReason":"error","errorMessage":"This operation was aborted"}]}`
 
@@ -1424,8 +1518,9 @@ func TestHandlePiOutput_AgentEnd_WithoutInterrupt_KeepsTheError(t *testing.T) {
 		"a genuine failure carries no worker outcome, so the reader sees the frame own stop reason")
 }
 
-// The note belongs to ONE turn. A stop that Pi never ended -- the process died,
-// the session was replaced -- must not label the next turn's divider.
+// The interruption note belongs to one turn.
+// If the process dies or the session changes before Pi ends that turn, clear the note.
+// It must not label the next divider.
 func TestHandlePiOutput_AgentStart_DropsAStaleInterruptNote(t *testing.T) {
 	t.Parallel()
 
@@ -1442,8 +1537,8 @@ func TestHandlePiOutput_AgentStart_DropsAStaleInterruptNote(t *testing.T) {
 	assert.Empty(t, sink.Messages()[0].Completion)
 }
 
-// A run Pi retries itself keeps the turn open, so the note must survive to the
-// agent_end that really ends it.
+// Pi's retry keeps the turn open.
+// Retain the interruption note until the final agent_end.
 func TestHandlePiOutput_AgentEnd_RetryKeepsTheInterruptNote(t *testing.T) {
 	t.Parallel()
 
@@ -1464,8 +1559,9 @@ func TestPiIncompleteToolsReleaseOutputForACallWithNoStartFrame(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := &Agent{sink: agent.NewProviderServices(sink)}
-	// A partial result can arrive for a call whose start frame this worker never saw.
-	// The call opens no row, and the counter still holds its whole text.
+	// A partial result can arrive without an observed start frame.
+	// The call opens no row.
+	// Its counter must still include the complete text.
 	a.HandleOutput([]byte(`{"type":"tool_execution_update","toolCallId":"orphan","toolName":"bash","partialResult":{"content":[{"type":"text","text":"a long line of output"}]}}`))
 	observed := a.HasCumulativeOutputForTest("orphan")
 	require.True(t, observed, "the partial result must reach the output counter")
@@ -1489,16 +1585,17 @@ func TestPiAgentStartProbesTheSessionOnlyOnTheFirstAttempt(t *testing.T) {
 	rig.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
 	require.Eventually(t, func() bool { return len(rig.requests()) == 1 }, time.Second, time.Millisecond)
 	assert.Equal(t, CommandGetSessionStats, rig.requests()[0].Type)
-	// Pi restarts a failed run itself. A retry continues the SAME turn, so it cannot
-	// have replaced the session, and a retry storm must not repeat the probe.
+	// Pi restarts a failed run within the same turn.
+	// A retry cannot replace the session.
+	// Repeated retries must not repeat the session probe.
 	rig.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
 	rig.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
 	assert.Never(t, func() bool { return len(rig.requests()) > 1 }, 100*time.Millisecond, 5*time.Millisecond)
 }
 
-// TestHandlePiOutput_BashExecutionUpdate_PersistsNothing pins the drop that keeps a
-// single shell command from writing one transcript row per output chunk. Pi emits the
-// event once per chunk, and the dispatch's `default` branch persisted every one.
+// TestHandlePiOutput_BashExecutionUpdate_PersistsNothing checks that shell output chunks create no transcript rows.
+// Pi emits one event per chunk.
+// The default case must not persist those events.
 func TestHandlePiOutput_BashExecutionUpdate_PersistsNothing(t *testing.T) {
 	t.Parallel()
 
@@ -1514,8 +1611,8 @@ func TestHandlePiOutput_BashExecutionUpdate_PersistsNothing(t *testing.T) {
 	assert.Empty(t, sink.PersistedNotifications())
 }
 
-// TestHandlePiOutput_SessionInfoChanged_PersistsNothing pins the drop for Pi's own
-// session name, which LeapMux never shows.
+// TestHandlePiOutput_SessionInfoChanged_PersistsNothing checks that Pi's session-name event creates no row.
+// LeapMux does not display that session name.
 func TestHandlePiOutput_SessionInfoChanged_PersistsNothing(t *testing.T) {
 	t.Parallel()
 
@@ -1527,10 +1624,9 @@ func TestHandlePiOutput_SessionInfoChanged_PersistsNothing(t *testing.T) {
 	assert.Empty(t, sink.PersistedNotifications())
 }
 
-// TestHandlePiOutput_ThinkingLevelChanged_RefreshesTheEffortSetting covers the clamp
-// Pi applies on a model switch: it lowers the level the new model cannot serve and
-// announces the one it settled on. LeapMux must adopt that value, because its own
-// field is what the effort segment reads.
+// TestHandlePiOutput_ThinkingLevelChanged_RefreshesTheEffortSetting checks a model's lower effort limit.
+// Pi reduces an unsupported level and reports the selected level.
+// LeapMux must adopt that value because the effort control reads its stored field.
 func TestHandlePiOutput_ThinkingLevelChanged_RefreshesTheEffortSetting(t *testing.T) {
 	t.Parallel()
 
@@ -1554,9 +1650,9 @@ func TestHandlePiOutput_ThinkingLevelChanged_RefreshesTheEffortSetting(t *testin
 	assert.Empty(t, sink.Messages(), "the settings notification states the change; a raw row would repeat it")
 }
 
-// TestHandlePiOutput_ThinkingLevelChanged_IgnoresTheEchoOfItsOwnRequest keeps the
-// transcript quiet for the level LeapMux itself asked for: `applyThinkingLevel` already
-// stored it, so Pi's announcement states nothing new.
+// TestHandlePiOutput_ThinkingLevelChanged_IgnoresTheEchoOfItsOwnRequest checks Pi's reply to a selected effort.
+// applyThinkingLevel already stores that level.
+// The repeated announcement must create no transcript row.
 func TestHandlePiOutput_ThinkingLevelChanged_IgnoresTheEchoOfItsOwnRequest(t *testing.T) {
 	t.Parallel()
 
@@ -1570,8 +1666,8 @@ func TestHandlePiOutput_ThinkingLevelChanged_IgnoresTheEchoOfItsOwnRequest(t *te
 	assert.Empty(t, sink.Messages())
 }
 
-// TestHandlePiOutput_ThinkingLevelChanged_IgnoresAFrameWithNoLevel refuses to store an
-// empty level, which would blank the effort segment.
+// TestHandlePiOutput_ThinkingLevelChanged_IgnoresAFrameWithNoLevel rejects an empty level.
+// Storing it would clear the effort control.
 func TestHandlePiOutput_ThinkingLevelChanged_IgnoresAFrameWithNoLevel(t *testing.T) {
 	t.Parallel()
 
@@ -1589,9 +1685,9 @@ func TestHandlePiOutput_ThinkingLevelChanged_IgnoresAFrameWithNoLevel(t *testing
 	assert.Zero(t, sink.SettingsRefreshCount())
 }
 
-// TestHandlePiOutput_SummarizationRetries_PersistAsNotifications pins the three retry
-// events onto the notification channel, beside the compaction and auto-retry events
-// they belong with. Each one used to draw a raw JSON row.
+// TestHandlePiOutput_SummarizationRetries_PersistAsNotifications checks all three summarization retry events.
+// Send them through the notification channel with compaction and automatic retries.
+// They must not create raw JSON rows.
 func TestHandlePiOutput_SummarizationRetries_PersistAsNotifications(t *testing.T) {
 	t.Parallel()
 
@@ -1614,9 +1710,9 @@ func TestHandlePiOutput_SummarizationRetries_PersistAsNotifications(t *testing.T
 	}
 }
 
-// Pi sends the partial result WHOLE on every update, so the tail the running row
-// draws is that text. The truncation flag travels beside it, because the row must
-// say when the bytes it shows are a window on more.
+// Pi sends the complete partial result on each update.
+// The running row displays its final bytes.
+// Include the truncation flag so the row can identify an incomplete output view.
 func TestHandlePiOutput_ToolExecutionUpdateReportsTheOutputTail(t *testing.T) {
 	t.Parallel()
 
@@ -1631,12 +1727,10 @@ func TestHandlePiOutput_ToolExecutionUpdateReportsTheOutputTail(t *testing.T) {
 	assert.Contains(t, sink.ProgressUpdates(), agent.OutputTailProgress("call-1", "file1\nfile2\n", true))
 }
 
-// A goal marker refreshes the goal panel whatever entry type carries it.
-//
-// Pi states the marker in `customType`, which is a field of EVERY entry, so the check
-// sits ABOVE the switch on the entry type. Under that switch, a marker written on an
-// entry type this worker does not know left the panel showing a goal the session had
-// already moved past.
+// A goal marker must refresh the panel for every entry type.
+// Pi can place customType on any entry.
+// Check the marker before dispatching by entry type.
+// Otherwise, an unknown entry type can leave an obsolete goal in the panel.
 func TestHandlePiOutput_EntryAppendedGoalMarkerReachesThePanel(t *testing.T) {
 	t.Parallel()
 
@@ -1648,8 +1742,8 @@ func TestHandlePiOutput_EntryAppendedGoalMarkerReachesThePanel(t *testing.T) {
 			a.Mu.Lock()
 			a.sessionID = "session"
 			a.extensionCommands = map[string]bool{piGoalCommands[agent.GoalActionSet]: true}
-			// A refresh that already runs absorbs this one, so the hint lands on the
-			// revision and no refresh goroutine starts.
+			// If a refresh already runs, update its revision hint.
+			// Do not start another refresh goroutine.
 			a.goal.running = true
 			a.Mu.Unlock()
 
@@ -1689,9 +1783,9 @@ func piToolUpdateLine(t *testing.T, text, details string) []byte {
 	return []byte(line + `}}`)
 }
 
-// Only the last bytes of a running tool reach a reader, so the tail is capped here.
-// The cap is what keeps the join off the accumulated output, which Pi re-sends whole
-// on every update -- and the cap drops head bytes, which the report must state.
+// The running row receives only the output's final bytes.
+// Cap that tail without joining the complete text that Pi repeats on every update.
+// Report any removed bytes.
 func TestHandlePiOutput_ToolExecutionUpdateCapsTheOutputTail(t *testing.T) {
 	t.Parallel()
 
@@ -1709,8 +1803,8 @@ func TestHandlePiOutput_ToolExecutionUpdateCapsTheOutputTail(t *testing.T) {
 	assert.Contains(t, sink.ProgressUpdates(), agent.OutputTotalProgress("call-1", int64(len(long)), false))
 }
 
-// The cap cuts at a byte offset, and that offset can land inside a rune. A cut that
-// split one would send a replacement character to the browser.
+// The byte limit can divide a rune.
+// Keep complete runes so the browser receives no replacement character.
 func TestHandlePiOutput_ToolExecutionUpdateCutsTheTailAtARuneBoundary(t *testing.T) {
 	t.Parallel()
 
@@ -1726,10 +1820,10 @@ func TestHandlePiOutput_ToolExecutionUpdateCutsTheTailAtARuneBoundary(t *testing
 	assert.True(t, strings.HasSuffix(long, tail.Text))
 }
 
-// A snapshot Pi TRUNCATED is not append-only: its head is gone, so its length is not
-// the total. The counter measures growth by the overlap of two snapshots, and the
-// counter must be told -- the flag used to be a hard-coded false, so a window that
-// had lost its head reported its own length as the exact byte total.
+// A truncated snapshot lacks its initial bytes, so its length is not the complete output size.
+// The counter measures growth through overlapping snapshots.
+// Pass the truncation flag to that counter.
+// Otherwise, it reports the clipped length as the exact total.
 func TestHandlePiOutput_ToolExecutionUpdateCountsATruncatedSnapshotByItsGrowth(t *testing.T) {
 	t.Parallel()
 
@@ -1740,14 +1834,15 @@ func TestHandlePiOutput_ToolExecutionUpdateCountsATruncatedSnapshotByItsGrowth(t
 	handlePiOutput(a, providerkit.ParseLine(piToolUpdateLine(t, "abcdef", truncated)))
 	handlePiOutput(a, providerkit.ParseLine(piToolUpdateLine(t, "cdefgh", truncated)))
 
-	// Six bytes, then two more that the overlap of the two windows shows. A counter
-	// that read the second window as an append-only snapshot answered six again.
+	// The first snapshot contains six bytes.
+	// The second reveals two more through overlap.
+	// An append-only count would incorrectly report six again.
 	assert.Contains(t, sink.ProgressUpdates(), agent.OutputTotalProgress("call-1", 8, true))
 }
 
-// Pi appends one session-file entry for every step of its own bookkeeping. Most
-// of them repeat a fact the event stream already stated, and each used to reach
-// the transcript as an unrecognized row that drew raw JSON.
+// Pi appends session entries for its internal operations.
+// Most repeat facts that the event stream already reported.
+// Those entries must not create duplicate raw JSON rows.
 func TestHandlePiOutput_EntryAppendedDrawsOnlyWhatTheStreamDoesNotState(t *testing.T) {
 	t.Parallel()
 
@@ -1771,9 +1866,9 @@ func TestHandlePiOutput_EntryAppendedDrawsOnlyWhatTheStreamDoesNotState(t *testi
 		})
 	}
 
-	// An entry type this worker does not know still reaches the transcript. A drop
-	// left the reader nothing and the worker a log line the reader never sees, which
-	// is the same case the unmarshal path already answers with the raw frame.
+	// Keep an unknown entry type in the transcript.
+	// A log alone gives the reader no message.
+	// The decode-failure path also preserves the raw frame.
 	t.Run("keeps an entry type it does not know", func(t *testing.T) {
 		t.Parallel()
 		sink := &agenttest.ControlSink{}
@@ -1784,9 +1879,8 @@ func TestHandlePiOutput_EntryAppendedDrawsOnlyWhatTheStreamDoesNotState(t *testi
 		assert.Equal(t, raw, sink.Messages()[0].Content)
 	})
 
-	// A model change is a SETTINGS fact, and it goes through the same pipeline
-	// every other axis uses -- a transcript row beside that notification would
-	// state it twice.
+	// A model change follows the shared settings pipeline.
+	// An additional transcript row would repeat the notification.
 	t.Run("announces a model change through the settings pipeline", func(t *testing.T) {
 		t.Parallel()
 		sink := &agenttest.ControlSink{}

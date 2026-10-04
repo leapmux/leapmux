@@ -1,0 +1,30 @@
+{
+  "_readme": "Junie owns the native mode and terminal metadata values. LeapMux reads native session metadata to retain an output file path beside the original preview. LeapMux reads no terminal log body.",
+  "modes": {
+    "Default": "default",
+    "Plan": "plan"
+  },
+  "defaultMode": "Default",
+  "supplement": {
+    "OutputFilePath": "outputFilePath"
+  },
+  "terminalMeta": {
+    "Exit": "terminal_exit",
+    "TerminalID": "terminal_id",
+    "ExitCode": "exit_code",
+    "Signal": "signal"
+  },
+  "outputReference": {
+    "TaskIDPattern": "^task-[0-9]{6}-[0-9]{6}-[a-z0-9]+$",
+    "FileNamePattern": "^terminal-output-[0-9]+\\.txt$"
+  },
+  "outputFilePath": {
+    "SessionID": "sessionId",
+    "ToolCallID": "toolCallId",
+    "TaskID": "taskId",
+    "Command": "command",
+    "WorkingDirectory": "cwd",
+    "Path": "path",
+    "ExitCode": "exitCode"
+  }
+}

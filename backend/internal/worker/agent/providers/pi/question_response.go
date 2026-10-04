@@ -93,6 +93,8 @@ func (a *Agent) SendRawInput(data []byte) error {
 	if json.Unmarshal(data, &response) != nil || response.Type != contracts.PiEventExtensionUIResponse {
 		return a.Process.SendRawInput(data)
 	}
+	// The reader answered, so the dialog's deadline withdraws nothing.
+	a.dialogDeadlines.Disarm(response.ID)
 	// Both forwarding paths below carry the value unchanged, and only a plan
 	// menu ever offers it, so the mark is set before the dialog lookup rather
 	// than duplicated in each branch.

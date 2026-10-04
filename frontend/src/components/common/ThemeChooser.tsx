@@ -1,4 +1,4 @@
-import type { PillOptions } from '~/components/common/PillGroup'
+import type { PillOptions } from '~/components/common/pillOptions'
 import type { ResolvedThemeMode, TerminalThemeValue, ThemeMode, ThemeSurface, ThemeValue, ThemeVariant, ThemeVariantChoice } from '~/styles/themes'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import { createMemo, createSignal, For, on, Show } from 'solid-js'
@@ -11,15 +11,11 @@ import { errorText } from '~/styles/shared.css'
 import { DEFAULT_THEME_ID, isThemeId, MATCH_UI, resolveVariant, themeById, themeLabel, THEMES, variantsFor } from '~/styles/themes'
 import * as styles from './ThemeChooser.css'
 
-// Typed with the DOMAIN type, not `string`. `PillGroup` is generic in its
-// option key, so a `string`-typed list here was the only reason the pill
-// handler had to cast on the way back into a `ThemeValue` -- a cast that would
-// have gone on compiling if a mode were renamed or dropped.
-//
-// `MODES` in `~/lib/themeStore` stays the authority on WHICH modes exist, and
-// `isThemeMode` below is how this file asks. Deriving MODES from this list
-// instead would point the dependency the wrong way: the theme library would
-// then need a component's option list to say what a mode is.
+// Use ThemeMode for each option key so the selection handler needs no unchecked string conversion.
+// A renamed or removed mode must fail type checking.
+// The MODES declaration in ~/lib/themeStore defines the supported modes.
+// Use isThemeMode to validate a selected mode.
+// The theme library must not depend on this component's option list.
 const MODE_OPTIONS = [
   { key: 'system', label: 'System' },
   { key: 'light', label: 'Light' },
@@ -33,45 +29,29 @@ export interface ThemeChooserProps<T extends ThemeValue | TerminalThemeValue> {
   /** Render the leading label. Off inside the Preferences dialog, whose row already has one. */
   showLabel?: boolean
   /**
-   * The UI theme this control may follow, which adds "Match UI" to the palette
-   * list.
-   *
-   * Present for the terminal and syntax rows, absent for the UI theme itself,
-   * which has nothing to match. Its value is what "Match UI" MEANS: it fills the
-   * governed mode pills and variant menu so they report what the app resolved
-   * to, and it seeds every half when the user picks a palette of their own.
+   * Supply the UI theme that this control can follow through Match UI.
+   * The terminal and syntax theme rows can follow it; the UI theme row cannot follow itself.
+   * This value supplies the displayed mode and variants while matching.
+   * When the user selects an independent palette, use the current mode and clear its prior variant choice.
    */
   matchUi?: ThemeValue
   /**
-   * The OS's own light/dark answer, for resolving a `system` mode to the
-   * polarity now showing.
-   *
-   * Passed in rather than read here so a caller in a reactive context can wire
-   * it to a signal; reading `matchMedia` inside would bypass Solid's tracking
-   * and freeze the variant menu on whichever polarity happened to be first.
-   *
-   * REQUIRED. It was optional with a `?? 'light'` fallback, and every one of
-   * the callers passes `themeStore.systemMode()` -- so the fallback answered
-   * for nobody and would have answered WRONGLY for the first caller to forget:
-   * a user on a dark OS with mode `system` would edit the light variant while
-   * looking at the dark one, and nothing on screen would say so. A missing
-   * prop is a compile error now.
+   * Supply the operating system's resolved light or dark mode.
+   * Use it to resolve the system setting.
+   * The caller supplies a reactive signal because an internal matchMedia read would bypass Solid tracking.
+   * This required property prevents a dark system from accidentally editing a light variant through a fallback.
    */
   systemMode: ResolvedThemeMode
   /**
-   * Which of the three appearance settings this picker chooses for, which
-   * decides the NAME each palette goes by.
-   *
-   * The list is the same eleven either way. Only Default reads differently: its
-   * terminal palette is Dimidium's and its highlighting is GitHub's, and a
-   * picker that hid that would leave a user unable to find a palette they are
-   * already looking at.
+   * The appearance surface determines each palette's display name.
+   * Each surface uses the same theme catalog.
+   * Default uses Dimidium for terminals and GitHub for syntax highlighting.
+   * Display those names so the user can identify the current palette.
    */
   surface?: ThemeSurface
   /**
-   * How the row sits in its container. `center` for the no-workspace empty
-   * state, whose layout is a centred column; `start` inside the Preferences
-   * dialog, where every other row's control begins at the left edge.
+   * Use center for the empty workspace view's centered column.
+   * Use start in Preferences to align the control with the other rows.
    */
   align?: 'start' | 'center'
   /** Accessible name for the controls. Defaults to the UI theme's wording. */
@@ -79,27 +59,20 @@ export interface ThemeChooserProps<T extends ThemeValue | TerminalThemeValue> {
 }
 
 /**
- * The one theme control: a palette menu, an optional variant menu, and a
- * system/light/dark tri-switch, on one line.
+ * This control displays the palette menu and mode choices on one row.
+ * It displays a variant menu when a palette offers variant choices.
+ * It reads no preference and writes no preference directly.
+ * useThemeChooser supplies the same preference behavior to Preferences and the empty workspace view.
+ * Theme preferences belong to the account, so views before account resolution offer no theme control.
  *
- * Purely presentational -- it neither reads nor writes a preference. Every
- * surface binds it through `useThemeChooser`, so the Preferences dialog and the
- * no-workspace empty state cannot drift into writing different things. Those
- * are the only two: a theme is stored per account, so the screens that render
- * before an identity resolves carry no theme control at all.
+ * Match UI is one palette choice.
+ * Selecting it disables the other choices because the row follows the complete UI theme.
+ * Do not offer Match UI again as a separate mode choice.
  *
- * "FOLLOW THE APP" IS A PALETTE, AND IT GOVERNS THE ROW. `match-ui` used to be
- * offered twice -- as the first palette AND as the first mode pill -- which read
- * as two settings for one idea and spelled two combinations nobody can describe.
- * It is now one entry in one list, and choosing it disables the rest of the row,
- * because following the app means following all of it.
- *
- * THE VARIANT MENU LISTS BOTH SIDES, under a named `role="group"` each, and it
- * appears when EITHER side offers a choice. Showing only the polarity on screen
- * kept the row to one line but made a lopsided theme unreachable: Catppuccin
- * has three dark flavours and one light, so a user on Light saw no menu at all.
- * A pick is written under the chosen variant's OWN polarity, and a variant
- * whose label matches one on the other side moves both.
+ * The variant menu includes separate Light and Dark groups when either side offers more than one variant.
+ * This keeps dark variants reachable when the current view uses the palette's single light variant.
+ * Store each selection under its own polarity.
+ * When another polarity has a variant with the same label, update both.
  */
 export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
   props: ThemeChooserProps<T>,
@@ -126,7 +99,9 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
     return isThemeMode(mode) ? mode : MODE_OPTIONS[0].key
   }
 
-  /** The polarity on screen, which is the one the variant menu edits. */
+  /**
+   * Resolve the current display polarity for the selected swatch.
+   */
   const polarity = (): ResolvedThemeMode => {
     const mode = selectedMode()
     if (mode === 'light' || mode === 'dark')
@@ -137,21 +112,14 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
   const theme = () => themeById(matching() ? props.matchUi!.name : props.value.name)
 
   /**
-   * The variants split by side, so each half can be a named `role="group"`.
+   * Group variants by their Light or Dark side and give each group an accessible name.
+   * Include both sides even when the current view displays only one.
+   * A palette can offer several dark variants and only one light variant.
    *
-   * BOTH SIDES, always -- not just the polarity on screen. Listing only that
-   * one reads well until a theme is lopsided: Catppuccin has three dark
-   * flavours and a single light one, so a user on Light saw no menu at all and
-   * Macchiato was unreachable rather than one click further away.
-   *
-   * MEMOIZED, and that is load-bearing rather than an optimisation. `<For>`
-   * diffs by strict identity, so a plain function handing back fresh group
-   * objects disposes and rebuilds both halves on every commit -- and `commit`
-   * replaces `props.value` on every pick, so every pick rebuilt them. The rebuilt
-   * button carries DOM focus away with it, so a keyboard user is dropped back to
-   * the document on every choice, and the whole list re-renders where one item's
-   * checked state changed. Keyed on the theme id, because that is the only input
-   * the groups actually depend on.
+   * Memoize the groups by theme ID.
+   * Solid For tracks strict object identity.
+   * Recreating group objects after each selection would replace their buttons and lose keyboard focus.
+   * Only the theme ID determines this grouping.
    */
   const variantGroups = createMemo(
     on(() => theme().id, () => ([
@@ -164,12 +132,9 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
   const currentFor = (p: ResolvedThemeMode) =>
     resolveVariant(theme(), effective().variant?.[p], p)
   /**
-   * Whether the theme offers a real choice ON SOME SIDE.
-   *
-   * Not `variants.length > 1`: every theme has at least one light and one dark
-   * variant, so that would put a two-item menu on all eleven and offer Nord a
-   * pick between its only light palette and its only dark one -- which the
-   * mode pills already make.
+   * Show the variant menu when either side offers more than one variant.
+   * Counting all variants together would show a menu even for a palette with only one variant on each side.
+   * The mode choices already select between those two sides.
    */
   const hasVariants = () =>
     variantsFor(theme(), 'light').length > 1 || variantsFor(theme(), 'dark').length > 1
@@ -177,21 +142,14 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
   const variantLabel = () => `${label()} ${theme().variantLabel?.toLowerCase() ?? 'variant'}`
 
   /**
-   * Commit a patch and state a refusal inline.
-   *
-   * `setAccount` REJECTS when the hub refuses the write, after restoring the
-   * pre-write value -- so this must catch it, or the palette snaps back with no
-   * reason on screen and the rejection reaches the global sink, which reports a
-   * generic "Something went wrong" and loses what the hub actually said. Every
-   * enum row gets this from `SettingRow.commit`; the three theme rows are
-   * `custom` editors, which `SettingRow` renders bare with no binding wrapper,
-   * so they do their own -- as `KeybindingsControl` already does.
+   * Write the preference change and display any refusal beside the control.
+   * setAccount restores the prior value when the Hub refuses the write.
+   * Display that refusal so a restored palette does not appear without an explanation.
+   * The custom theme editors do not use SettingRow's ordinary commit wrapper, so this component handles their rejected promises.
    */
-  // `variant: undefined` in a patch is a distinct instruction, not a skipped
-  // one: the merge below lets it CLEAR the variant, while an absent key keeps
-  // the stored choice. `selectName` relies on exactly that when the palette
-  // changes, so the parameter spells the difference out rather than leaving
-  // `Partial<ThemeValue>` to forbid the explicit clear.
+  // An explicit variant:undefined clears the stored variant choice.
+  // An absent variant key preserves that choice.
+  // The merge and its parameter type must preserve this distinction when selectName changes the palette.
   const commit = (patch: Omit<Partial<ThemeValue>, 'variant'> & { variant?: ThemeVariantChoice | undefined }) => {
     setWriteError(null)
     void Promise.resolve(props.onChange({ ...props.value, ...patch } as T))
@@ -201,12 +159,9 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
   }
 
   /**
-   * Commit a palette choice, and the halves that have to come with it.
-   *
-   * Leaving "Match UI" seeds the mode from the app, so detaching changes nothing
-   * on screen and the user adjusts from what they can already see. The variant
-   * is NOT carried over: it names a variant of the app's theme, which the newly
-   * chosen theme does not have.
+   * Write the selected palette and its required mode value.
+   * When leaving Match UI, keep the current UI mode so the visible mode stays stable.
+   * Clear the old variant choice because it identifies the previous palette's variant.
    */
   const selectName = (name: string) => {
     if (name === MATCH_UI) {
@@ -217,18 +172,15 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
   }
 
   /**
-   * Commit a variant, and the other polarity's when it answers to the same name.
-   *
-   * ONE GENERAL RULE, not a Gruvbox carve-out. Gruvbox offers Hard/Medium/Soft
-   * on both sides, so picking "Soft" once means it in both -- which is what a
-   * contrast level is for. Catppuccin, Ayu and Rosé Pine share no label across
-   * polarities, so nothing links and the rule costs them nothing. Without it the
-   * hidden polarity could only be reached by pinning the mode.
+   * Write the selected variant under its own polarity.
+   * If the other polarity offers the same label, select that variant also.
+   * This general rule connects Gruvbox contrast levels across both sides.
+   * Palettes without a shared variant label keep their two selections independent.
+   * Both variant groups remain available regardless of the current display mode.
    */
   const selectVariant = (chosen: ThemeVariant) => {
-    // Written under the CHOSEN variant's own polarity, not the one on screen: a
-    // user on Light picking Macchiato means their dark half, and there is no
-    // other reading of it.
+    // Write the variant under its own polarity even when the current view displays the other side.
+    // A light view can therefore select the dark Macchiato variant.
     const other: ResolvedThemeMode = chosen.polarity === 'light' ? 'dark' : 'light'
     const twin = variantsFor(theme(), other).find(v => v.label === chosen.label)
     commit({
@@ -310,11 +262,9 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
         >
           <For each={variantGroups()}>
             {group => (
-              // A real `role="group"` with a name, not a heading div. Gruvbox
-              // offers "Soft" on BOTH sides, so the two items carry identical
-              // labels; without the group a screen reader announces "Soft"
-              // twice with nothing to tell them apart. The heading is the
-              // group's own name, so it is read once on entry.
+              // Use a named group to distinguish identical labels on the Light and Dark sides.
+              // For example, Gruvbox offers Soft in both groups.
+              // The group name lets a screen reader identify the intended side.
               <div role="group" aria-label={group.label} data-testid={`variant-group-${group.polarity}`}>
                 <Show when={variantGroups().length > 1}>
                   <div class={styles.variantGroup}>{group.label}</div>

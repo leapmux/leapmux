@@ -1,9 +1,10 @@
 import { render } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ALL_PROVIDERS } from '~/generated/contracts/providers'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
-import { elementText, renderThreadElement, renderThreadGlyph, renderThreadHasIcon, renderThreadText } from '~/test-support/messageRenderProbes'
+import { elementText, renderDivider, renderThreadElement, renderThreadGlyph, renderThreadHasIcon, renderThreadText } from '~/test-support/messageRenderProbes'
+import { renderNotificationBlocks } from './notificationRenderers'
 
 // Side-effect-register the Claude and Codex plugins so the provider extractor
 // (plugin?.transcript.notificationEntry) actually runs in the tests that pass an agentProvider
@@ -63,6 +64,14 @@ describe('the notification thread: compaction and context_cleared rendering', ()
     const messages = [compactBoundaryMsg]
     expect(renderedContains(messages, 'Context compacted')).toBe(true)
     expect(renderedContains(messages, 'Context cleared')).toBe(false)
+  })
+
+  it('marks a completed compaction divider but not plain notification text', () => {
+    const boundary = render(() => renderThreadElement([compactBoundaryMsg], AgentProvider.CLAUDE_CODE))
+    expect(boundary.container.querySelector('[data-testid="notification-divider"]')?.textContent).toContain('Context compacted')
+
+    const plain = render(() => renderNotificationBlocks([{ kind: 'text', text: 'Context compacted' }]))
+    expect(plain.container.querySelector('[data-testid="notification-divider"]')).toBeNull()
   })
 
   it('compacting spinner: shows spinner', () => {
@@ -456,6 +465,10 @@ describe('single-message notification labels', () => {
     expect(renderText([{ type: 'stop_ignored' }])).toBe('Interrupt ignored — press Interrupt again to force it')
   })
 
+  it('renders input_requeued with the reason the message appears again', () => {
+    expect(renderText([{ type: 'input_requeued' }])).toBe('Message queued again — the agent dropped it before the model read it')
+  })
+
   it('renders context_cleared', () => {
     expect(renderText([{ type: 'context_cleared' }])).toBe('Context cleared')
   })
@@ -713,67 +726,73 @@ describe('renderNotificationBlocks: the blocks a thread lays out', () => {
   })
 })
 
-// The worker closes a subagent transcript with one subagent_ended notification.
-// It renders as a labelled rule in the turn-end divider style, with the same
-// status glyph the Background tasks list uses for that final status.
-describe('the notification thread: subagent_ended', () => {
-  it('labels a completed subagent', () => {
-    expect(renderText([{ type: 'subagent_ended', status: 'completed' }]))
-      .toContain('Subagent completed')
+// Native child results retain the same rendering as root results.
+describe('native child completion', () => {
+  const nativeResult = (overrides: Record<string, unknown> = {}) => ({
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    duration_ms: 12,
+    ...overrides,
   })
 
-  it('labels a failed subagent', () => {
-    expect(renderText([{ type: 'subagent_ended', status: 'failed' }]))
-      .toContain('Subagent failed')
+  it('shows the native completion duration', () => {
+    expect(renderDivider(nativeResult(), AgentProvider.CLAUDE_CODE))
+      .toEqual({ text: 'Turn ended (12ms)', isError: false })
   })
 
-  it('labels a stopped subagent', () => {
-    expect(renderText([{ type: 'subagent_ended', status: 'stopped' }]))
-      .toContain('Subagent stopped')
+  it('shows native failure details and duration', () => {
+    const rendered = renderDivider(nativeResult({
+      subtype: 'error_during_execution',
+      is_error: true,
+      errors: ['The child could not read its assigned file.'],
+    }), AgentProvider.CLAUDE_CODE)
+    expect(rendered.isError).toBe(true)
+    expect(rendered.text).toContain('Turn failed (12ms)')
+    expect(rendered.text).toContain('The child could not read its assigned file.')
   })
 
-  it('labels an interrupted subagent', () => {
-    expect(renderText([{ type: 'subagent_ended', status: 'interrupted' }]))
-      .toContain('Subagent interrupted')
+  it('states an explicit interruption without inventing a native failure', () => {
+    const rendered = renderDivider(nativeResult({ subtype: 'error_during_execution', is_error: true }), AgentProvider.CLAUDE_CODE, MessageCompletion.INTERRUPTED)
+    expect(rendered).toEqual({ text: 'Turn interrupted (12ms)', isError: false })
   })
 
-  // An unrecognized status still ends the transcript; the label must not invent
-  // an outcome it cannot know.
-  it('falls back to a neutral label for an unknown status', () => {
-    const text = renderText([{ type: 'subagent_ended', status: 'who-knows' }])
-    expect(text).toContain('Subagent ended')
-    expect(text).not.toContain('completed')
+  it('preserves a native cancellation result', () => {
+    expect(renderDivider(nativeResult({ subtype: 'cancelled', is_error: true }), AgentProvider.CLAUDE_CODE))
+      .toEqual({ text: 'Turn interrupted (12ms)', isError: false })
   })
 
-  it('renders as a divider row with a glyph, not plain text', () => {
-    expect(renderHasIcon([{ type: 'subagent_ended', status: 'completed' }])).toBe(true)
+  it('does not invent a missing native duration', () => {
+    expect(renderDivider({ type: 'result', subtype: 'success' }, AgentProvider.CLAUDE_CODE))
+      .toEqual({ text: 'Turn ended', isError: false })
   })
 
-  // The model states the OUTCOME and `notificationRenderers` picks the glyph, so a
-  // map that answered two outcomes with one glyph would still pass every test
-  // above. Four outcomes a reader must tell apart draw four distinct glyphs.
-  it('draws a distinct glyph for each outcome it can name', () => {
-    const glyph = (status: string) => renderThreadGlyph([{ type: 'subagent_ended', status }])
-    const drawn = ['completed', 'failed', 'stopped', 'interrupted'].map(glyph)
-    expect(drawn.every(svg => svg !== null && svg !== '')).toBe(true)
-    expect(new Set(drawn).size).toBe(4)
+  it('retains a zero native duration', () => {
+    expect(renderDivider(nativeResult({ duration_ms: 0 }), AgentProvider.CLAUDE_CODE))
+      .toEqual({ text: 'Turn ended (0ms)', isError: false })
   })
 
-  // An unknown status states no outcome, so it shares the `stopped` glyph rather
-  // than claiming one of the other three.
-  it('draws the stopped glyph for a status it cannot name', () => {
-    expect(renderThreadGlyph([{ type: 'subagent_ended', status: 'who-knows' }]))
-      .toBe(renderThreadGlyph([{ type: 'subagent_ended', status: 'stopped' }]))
+  it('retains each native error detail', () => {
+    const rendered = renderDivider(nativeResult({
+      subtype: 'error_during_execution',
+      is_error: true,
+      errors: ['The assigned file does not exist.', 'The native child stopped.'],
+    }), AgentProvider.CLAUDE_CODE)
+    expect(rendered.text).toContain('The assigned file does not exist.')
+    expect(rendered.text).toContain('The native child stopped.')
   })
 
-  // The default is the compaction arrow, which every subagent outcome overrides.
-  it('overrides the default divider glyph', () => {
-    // A compact boundary arrives in Claude Code's own system shape, so this one
-    // fixture needs the provider the rest of the group can leave to the default.
+  it('retains failure text when the subtype is absent', () => {
+    const rendered = renderDivider({ type: 'result', is_error: true, result: 'The native child could not finish.' }, AgentProvider.CLAUDE_CODE)
+    expect(rendered.isError).toBe(true)
+    expect(rendered.text).toContain('The native child could not finish.')
+  })
+
+  it('keeps the compaction divider independent from native completion', () => {
     const boundary = { type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto' } }
-    const compaction = renderThreadGlyph([boundary], AgentProvider.CLAUDE_CODE)
-    expect(compaction).not.toBeNull()
-    expect(renderThreadGlyph([{ type: 'subagent_ended', status: 'completed' }])).not.toBe(compaction)
+    expect(renderThreadGlyph([boundary], AgentProvider.CLAUDE_CODE)).not.toBeNull()
+    expect(renderDivider(nativeResult(), AgentProvider.CLAUDE_CODE).text).toBe('Turn ended (12ms)')
+    expect(renderText([boundary], AgentProvider.CLAUDE_CODE)).toContain('Context compacted')
   })
 })
 

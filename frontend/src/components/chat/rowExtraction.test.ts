@@ -1,10 +1,13 @@
 import type { ChatRow } from './model/row'
+import type { ToolCall } from './model/toolCall'
+import type { ProviderTranscriptCapability } from './providers/capabilities'
 import type { ChatRowExtraction } from './rowExtraction'
-import type { ResolvedMessageContent } from './rowExtractionTypes'
-import { describe, expect, it } from 'vitest'
+import type { ResolvedMessageContent, RowExtractionInput } from './rowExtractionTypes'
+import { describe, expect, it, vi } from 'vitest'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { resolveMessageForRendering } from './providers/registry'
+import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
+import { pluginFor, resolveMessageForRendering } from './providers/registry'
 import { extractChatRow, extractedRow } from './rowExtraction'
 // Side-effect import: the three branches below dispatch through the registry.
 import './providers'
@@ -29,19 +32,111 @@ function rowOf(extraction: ChatRowExtraction): ChatRow | null {
 }
 
 /**
- * A frame whose first property read throws, for the two guards that must survive one.
- *
- * A getter rather than a malformed value: every reader here is built from the tolerant
- * `pick*`/`isObject` helpers, so a plain bad value degrades instead of throwing and
- * would exercise neither guard.
+ * Force a property read to throw so the control-response guard cannot read the original frame.
+ * Ordinary malformed values use the readers' safe defaults and cannot prove that guard.
  */
 function exploding(): Record<string, unknown> {
   return {
     get type(): string {
       throw new Error('unreadable')
     },
-  } as unknown as Record<string, unknown>
+  }
 }
+
+/** Exercise the shared entrypoint with a controlled neutral row and path capability. */
+function withOutputPaths(
+  paths: ProviderTranscriptCapability['outputFilePaths'],
+  run: (call: ToolCall, input: () => RowExtractionInput | undefined) => void,
+  result?: ChatRow | null,
+) {
+  const plugin = pluginFor(AgentProvider.CLAUDE_CODE)
+  if (!plugin)
+    throw new Error('The registered fixture provider is absent.')
+  const previous = Object.getOwnPropertyDescriptor(plugin.transcript, 'outputFilePaths')
+  const call = toolCallFixture('execute', { result: { commands: [{ output: 'The native preview.' }], unresolvedTerminals: [] } })
+  const extracted = vi.spyOn(plugin.transcript, 'extractRow').mockReturnValue(result === undefined ? toolRow(call) : result)
+  Object.defineProperty(plugin.transcript, 'outputFilePaths', { configurable: true, writable: true, value: paths })
+  try {
+    run(call, () => extracted.mock.calls[0]?.[0])
+  }
+  finally {
+    extracted.mockRestore()
+    if (previous)
+      Object.defineProperty(plugin.transcript, 'outputFilePaths', previous)
+    else
+      Reflect.deleteProperty(plugin.transcript, 'outputFilePaths')
+  }
+}
+
+describe('extractChatRow output paths', () => {
+  it('keeps the call unchanged when the provider supplies no path capability', () => {
+    withOutputPaths(undefined, (call) => {
+      const row = rowOf(extractChatRow(AgentProvider.CLAUDE_CODE, parsed({ content: 'neutral fixture' }), { kind: 'tool_result' }))
+      expect(row?.kind).toBe('tool')
+      if (row?.kind !== 'tool')
+        throw new Error('The controlled tool row is absent.')
+      expect(row.call).toBe(call)
+    })
+  })
+
+  it('passes the same extraction input and selected call to the provider and preserves preview data', () => {
+    const paths = ['/native/first.log', ' /native/with spaces.log ', '/native/first.log']
+    const hook = vi.fn(() => paths)
+    withOutputPaths(hook, (call, input) => {
+      const resolved = parsed({ content: 'neutral fixture' })
+      const row = rowOf(extractChatRow(AgentProvider.CLAUDE_CODE, resolved, { kind: 'tool_result' }, { spanId: 'selected-span' }))
+      expect(hook).toHaveBeenCalledWith(input(), call)
+      expect(hook).toHaveBeenCalledOnce()
+      if (row?.kind !== 'tool')
+        throw new Error('The path capability did not retain its tool row.')
+      expect(row.call.outputFilePaths).toEqual(paths.slice(0, 2))
+      expect(row.call.result).toBe(call.result)
+      expect(row.call.request).toBe(call.request)
+      paths[0] = '/changed-after-extraction'
+      expect(row.call.outputFilePaths?.[0]).toBe('/native/first.log')
+    })
+  })
+
+  it('keeps the original call when the path capability returns an empty list', () => {
+    withOutputPaths(() => [], (call) => {
+      const row = rowOf(extractChatRow(AgentProvider.CLAUDE_CODE, parsed({ content: 'neutral fixture' }), { kind: 'tool_result' }))
+      if (row?.kind !== 'tool')
+        throw new Error('The controlled tool row is absent.')
+      expect(row.call).toBe(call)
+    })
+  })
+
+  it('does not call the path capability for a non-tool row or an unsupported frame', () => {
+    const hook = vi.fn(() => ['/native/ignored.log'])
+    for (const result of [{ kind: 'assistant-text', text: 'The native answer.' } as const, null]) {
+      withOutputPaths(hook, () => {
+        extractChatRow(AgentProvider.CLAUDE_CODE, parsed({ content: 'neutral fixture' }), { kind: 'assistant_text' })
+      }, result)
+    }
+    expect(hook).not.toHaveBeenCalled()
+  })
+
+  it('retains the original payload when the path capability fails', () => {
+    const failure = new Error('The controlled path extractor fails.')
+    withOutputPaths(() => {
+      throw failure
+    }, () => {
+      const frame = { content: 'neutral fixture' }
+      const extraction = extractChatRow(AgentProvider.CLAUDE_CODE, parsed(frame), { kind: 'tool_result' })
+      expect(extraction.kind).toBe('failed')
+      if (extraction.kind !== 'failed')
+        throw new Error('The path failure did not produce an extraction failure.')
+      expect(extraction.payload).toBe(frame)
+      expect(extraction.error).toBe(failure)
+    })
+  })
+
+  it('refuses an invalid neutral path without reading its contents', () => {
+    withOutputPaths(() => ['/native/\0invalid'], () => {
+      expect(extractChatRow(AgentProvider.CLAUDE_CODE, parsed({ content: 'neutral fixture' }), { kind: 'tool_result' }).kind).toBe('failed')
+    })
+  })
+})
 
 describe('extractChatRow turn end', () => {
   const claudeResult = { type: 'result', subtype: 'success', duration_ms: 1200, num_tool_uses: 3, total_cost_usd: 0.25 }
@@ -236,13 +331,27 @@ describe('extractChatRow failure', () => {
   // It degrades to `failed`, NOT to `unsupported`: the two draw different cards, and
   // only one of them blames LeapMux for a defect that is LeapMux's.
   it('reports a failed extraction rather than throwing', () => {
-    const frame = exploding()
-    const extraction = extractChatRow(AgentProvider.CLAUDE_CODE, parsed(frame), { kind: 'result_divider' })
-    expect(extraction.kind).toBe('failed')
-    if (extraction.kind !== 'failed')
-      return
-    expect(extraction.payload).toBe(frame)
-    expect(extraction.error).toBeInstanceOf(Error)
+    const frame = { type: 'result' }
+    const resolved = parsed(frame)
+    const plugin = pluginFor(AgentProvider.CLAUDE_CODE)
+    if (!plugin?.transcript.extractDivider)
+      throw new Error('The registered Claude plugin has no divider extractor.')
+    const failure = new Error('The controlled divider extractor fails.')
+    const extractor = vi.spyOn(plugin.transcript, 'extractDivider').mockImplementation(() => {
+      throw failure
+    })
+    try {
+      const extraction = extractChatRow(AgentProvider.CLAUDE_CODE, resolved, { kind: 'result_divider' })
+      expect(extraction.kind).toBe('failed')
+      if (extraction.kind !== 'failed')
+        throw new Error('The throwing extractor did not produce a failure record.')
+      expect(extraction.payload).toBe(frame)
+      expect(extraction.error).toBe(failure)
+      expect(extractor).toHaveBeenCalledOnce()
+    }
+    finally {
+      extractor.mockRestore()
+    }
   })
 
   // The distinction the two outcomes exist for, asserted as a pair so neither can

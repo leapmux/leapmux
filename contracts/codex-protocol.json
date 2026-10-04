@@ -1,5 +1,5 @@
 {
-  "_readme": "Codex's item wire vocabulary, for the keys BOTH the Go provider and the TS renderer plugin spell. Codex streams a command's output as a run of `outputDelta` events and fills `aggregatedOutput` only on the COMPLETED item, so a turn that ends first leaves an item with no output at all. LeapMux joins the deltas and stores the join beside the frame; `supplement` lists the keys of that envelope and `item` lists the fields of the frame it joins onto. Both sides run the same resolve -- the worker for its semantic extractors, the browser for the row it draws -- so a drift between two hand copies puts a retained command row on screen with its output missing and nothing to say so. `collabItem` lists the two fields of a collab tool call that both sides read to list the subagents one launch created. OpenAI owns the `item` and `collabItem` field names; LeapMux owns the supplement keys. `options` and `optionDefaults` hold the four Codex option axes LeapMux surfaces -- the option-group id of each, and the value an agent starts at when the row stores none. The worker builds the option groups from them and applies the default at launch; the browser seeds a new agent with the collaboration mode and reads the same id for its plan mode and its trigger. A default that differed between the two started an agent at one value and drew another. LeapMux chose the option ids; OpenAI owns the values.",
+  "_readme": "Codex typed items and raw model items use separate vocabulary tables. Both the Go provider and TypeScript plugin read these tables. Native exec has raw request and output items without a typed command mirror. Exact thread, turn, and call identity pairs those rows.\n\nCodex streams command output through outputDelta events and fills aggregatedOutput on the completed typed item. LeapMux stores retained deltas beside an incomplete item. The supplement keys belong to LeapMux. Native item keys belong to OpenAI.\n\nThe options and optionDefaults tables keep shared option IDs and launch values consistent. The worker builds its option groups from them. The browser uses the same values for agent configuration.",
   "supplement": {
     "ItemID": "itemId",
     "ItemType": "itemType",
@@ -72,7 +72,7 @@
   },
   "structs": {
     "CodexToolSupplement": {
-      "doc": "CodexToolSupplement is the output LeapMux joined for a tool call that reported\nno completed item of its own.\n\nCodex streams a command's output as a run of `outputDelta` events and puts the\nwhole text in `aggregatedOutput` only on the COMPLETED item. A turn that ends\nfirst leaves the started item, which has no output at all, so the join is the\nonly copy. It identifies the item it belongs to, so a row cannot take another call's\noutput.",
+      "doc": "CodexToolSupplement stores the output that LeapMux joined for an incomplete typed tool call. The item identity keeps the supplement on its original row.",
       "table": "supplement",
       "fields": [
         {
@@ -88,6 +88,75 @@
           "type": "string"
         }
       ]
+    },
+    "CodexRawExecutionItem": {
+      "doc": "CodexRawExecutionItem reads native exec identity and payload fields. A nullable input distinguishes an empty script from missing source.",
+      "table": "rawFields",
+      "fields": [
+        {
+          "key": "Type",
+          "type": "string"
+        },
+        {
+          "key": "CallID",
+          "type": "string"
+        },
+        {
+          "key": "Name",
+          "type": "string"
+        },
+        {
+          "key": "Namespace",
+          "type": "string"
+        },
+        {
+          "key": "Input",
+          "type": "*string"
+        },
+        {
+          "key": "Output",
+          "type": "json.RawMessage"
+        }
+      ]
+    },
+    "CodexRawExecutionParams": {
+      "doc": "CodexRawExecutionParams identifies the native thread and turn of one raw response item. The item remains raw until its type is known.",
+      "table": "rawFields",
+      "fields": [
+        {
+          "key": "ThreadID",
+          "type": "string"
+        },
+        {
+          "key": "TurnID",
+          "type": "string"
+        },
+        {
+          "key": "Item",
+          "type": "json.RawMessage"
+        }
+      ]
     }
+  },
+  "rawItems": {
+    "CustomToolCall": "custom_tool_call",
+    "CustomToolCallOutput": "custom_tool_call_output"
+  },
+  "rawTools": {
+    "Exec": "exec"
+  },
+  "rawFields": {
+    "Type": "type",
+    "CallID": "call_id",
+    "Name": "name",
+    "Namespace": "namespace",
+    "Input": "input",
+    "Output": "output",
+    "ThreadID": "threadId",
+    "TurnID": "turnId",
+    "Item": "item"
+  },
+  "rawNamespaces": {
+    "Functions": "functions"
   }
 }

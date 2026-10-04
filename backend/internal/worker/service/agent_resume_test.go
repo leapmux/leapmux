@@ -159,6 +159,23 @@ func TestAgentResume_RestoresUsedAgents(t *testing.T) {
 	assert.Equal(t, []string{"agent-resumed"}, rec.ids())
 }
 
+func TestAgentResume_RetriesAnUnconfirmedManualSession(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	recorder := newStartRecorder()
+	recorder.install(svc)
+	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
+		ID: "agent-pending", WorkingDir: t.TempDir(), HomeDir: svc.HomeDir,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC,
+		Resumed:       1, PendingResumeSessionID: "session-a1",
+	}))
+
+	runSweep(t, svc)
+
+	assert.Equal(t, []string{"agent-pending"}, recorder.ids())
+	assert.Equal(t, "session-a1", recorder.resumeFor("agent-pending"))
+}
+
 func TestAgentResume_SkipsArchivedAgents(t *testing.T) {
 	t.Parallel()
 
@@ -1026,12 +1043,17 @@ func TestAgentResume_SweepDoesNotReturnWhileAResumeIsInFlight(t *testing.T) {
 		seedOpenAgent(t, svc, id, true)
 	}
 
-	entered := make(chan string, 2)
+	entered := make(chan string, 1)
 	release := make(chan struct{})
 	fetch := svc.getAgentByIDFn
+	var firstRead sync.Once
 	svc.getAgentByIDFn = func(ctx context.Context, agentID string) (db.Agent, error) {
-		entered <- agentID
-		<-release
+		if agentID == "agent-a" {
+			firstRead.Do(func() {
+				entered <- agentID
+				<-release
+			})
+		}
 		return fetch(ctx, agentID)
 	}
 

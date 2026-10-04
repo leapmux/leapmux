@@ -8,6 +8,19 @@ function protoTodo(id: string, content: string, status = TodoStatus.PENDING) {
   return create(TodoItemSchema, { id, content, status, activeForm: '', description: '' })
 }
 
+describe('blocked to-do hydration', () => {
+  it('keeps the row identity when a blocked task resumes', () => createRoot((dispose) => {
+    const store = createTodoStore()
+    store.replace('agent', [protoTodo('task', 'Request access', TodoStatus.BLOCKED)])
+    const blocked = store.get('agent')[0]
+    expect(blocked?.status).toBe('blocked')
+    store.replace('agent', [protoTodo('task', 'Request access', TodoStatus.IN_PROGRESS)])
+    expect(store.get('agent')[0]).toBe(blocked)
+    expect(blocked?.status).toBe('in_progress')
+    dispose()
+  }))
+})
+
 describe('chatTodoStore', () => {
   it('returns the shared empty list for an agent with no todos', () =>
     createRoot((dispose) => {

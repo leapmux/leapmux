@@ -3,6 +3,7 @@ import process from 'node:process'
 import { defineConfig } from '@solidjs/start/config'
 import { vanillaExtractPlugin } from '@vanilla-extract/vite-plugin'
 import MagicString from 'magic-string'
+import { VITE_SOURCE_DIRECTORIES } from './viteAssetAccess.ts'
 
 const require = createRequire(import.meta.url)
 
@@ -200,6 +201,7 @@ export default defineConfig({
       ],
     },
     server: {
+      fs: { allow: VITE_SOURCE_DIRECTORIES },
       proxy: {
         '/leapmux.v1': {
           target: process.env.LEAPMUX_HUB_URL || 'http://localhost:4327',

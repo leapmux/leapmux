@@ -28,6 +28,9 @@ type Agent struct {
 	// state that saw both can publish a report. Guarded by Base.Mu and capped
 	// in tool_transcript.go.
 	taskReports map[string]cursorTaskReportState
+	// nativeTasks keeps each native session link and its authoritative finished outcome.
+	// Base.Mu protects this map. ClearContext removes the old session's task identities.
+	nativeTasks map[string]cursorNativeTask
 
 	// transcript is the sink that configure installed, held under its own type so
 	// the extension handler can reach EnrichToolSpan. The transcript is the single

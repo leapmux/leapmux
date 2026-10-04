@@ -22,3 +22,16 @@ export const ZCODE_DISPLAY = {
   NodeImages: 'node_repl_images',
   McpTool: 'mcp_tool',
 } as const
+
+/** Native fields for tool result pointers. */
+export const ZCODE_STORED_SERIALIZATION = {
+  Serialization: 'serialization',
+  BudgetStrategy: 'budgetStrategy',
+  OutputFilePath: 'artifactPath',
+  OriginalBytes: 'originalBytes',
+} as const
+
+/** Native fields for tool result pointers. */
+export const ZCODE_SERIALIZATION_STRATEGY = {
+  OutputFile: 'artifact',
+} as const

@@ -55,6 +55,8 @@ const FILE_TARGET_KINDS = new Set<ToolKind>(['read', 'edit', 'write', 'delete'])
  * stored `sessionUpdate` separates them by the time an adapter runs.
  */
 export interface ACPToolRow {
+  /** The native session stored on this row. Provider payloads do not supply this value. */
+  agentSessionId?: string
   /** Where the row sits in its span. `createMessageRenderSources` decides it by message id. */
   role?: ToolSpanRole
   /** True when a completing row is resolved beside this one. */
@@ -63,6 +65,8 @@ export interface ACPToolRow {
 
 /** Everything the shared ACP build knows before a provider adapter runs. */
 export interface ACPToolFacts {
+  /** The native session stored on this row, passed to the provider adapter. */
+  agentSessionId?: string
   /** After resolveACPToolCall, the retained-outcome status override, and the rawInput repair. */
   tool: Record<string, unknown>
   extra: ACPToolSupplement | undefined
@@ -208,13 +212,22 @@ function acpFileChangeParts(kind: 'edit' | 'write', facts: ACPToolFacts): { requ
   // word "Edit" and no file.
   const changes = acpFileEditsFromToolCallRawInput(kind === 'write' ? 'write' : 'edit', args)
     .map(source => ({ ...source, showLineNumbers: false }))
-  const request: FileChangeRequest = { changes }
   const sources = Array.isArray(facts.tool.content)
     ? facts.tool.content.flatMap((entry) => {
         const source = acpFileEditFromToolCallContent([entry])
         return fileEditHasDiff(source) ? [source] : []
       })
     : []
+  // A call may state its change as a CONTENT diff rather than input fields:
+  // Junie's `search_replace` reports `{type:'diff', path, oldText, newText}` and a
+  // `locations` path, with no rawInput at all. The row composes its header from
+  // the REQUEST at every state, so the content diff fills the request when the
+  // input states none -- a request with no change degrades the row and the
+  // renderer loses the diff.
+  const requestChanges = changes.length > 0
+    ? changes
+    : sources.map(source => ({ ...source, showLineNumbers: false }))
+  const request: FileChangeRequest = { changes: requestChanges }
   return sources.length > 0 ? { request, result: { changes: sources } } : { request }
 }
 
@@ -448,8 +461,14 @@ export function acpSpecFor<K extends ToolKind>(facts: ACPToolFacts, kind: K): { 
   return withoutResult(spec)
 }
 
-/** Whether this frame supplied result data, including a retained one-row body. */
-function acpResultAvailable(facts: ACPToolFacts): boolean {
+/**
+ * Whether this frame supplied result data, including a retained one-row body.
+ *
+ * A row that a turn end closed is finished with no result frame when the agent never
+ * answered the call, and it holds no answer then. An adapter that builds a result of
+ * its own asks this first, as {@link acpSpecFor} does.
+ */
+export function acpResultAvailable(facts: ACPToolFacts): boolean {
   return facts.lifecycle.resultFrameLanded
     || (facts.finished && (
       facts.content.length > 0
@@ -619,8 +638,12 @@ export function acpToolFacts(rawTool: Record<string, unknown>, supplemental?: un
   // frame before the payload readers see it.
   const outcome = retainedOutcome(completion)
   let tool: Record<string, unknown> = rawTool
+  // An absent or empty kind states no kind at all, so it reads as `unspecified`.
+  // `toolKind('')` answers `other`, which means "a kind word LeapMux does not know",
+  // and each reader of that answer then drew the empty word as the header and as the
+  // card's tool name.
   const rawKind = pickString(tool, 'kind')
-  const wireKind = toolKind(rawKind)
+  const wireKind = toolKind(rawKind || undefined)
   // Read BEFORE the kind is chosen, because the kind now depends on it: a known kind
   // whose input is a scalar cannot fill its typed request. The test itself needs no
   // kind, so there is no cycle.
@@ -657,6 +680,7 @@ export function acpToolFacts(rawTool: Record<string, unknown>, supplemental?: un
   return {
     tool,
     extra,
+    ...(place?.agentSessionId === undefined ? {} : { agentSessionId: place.agentSessionId }),
     wireKind,
     args,
     ...(argsText !== undefined ? { argsText } : {}),

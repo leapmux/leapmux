@@ -51,8 +51,10 @@ func TestOnlyCodexSynthesizesAnInterruptNotice(t *testing.T) {
 // Shared service code consumes only these provider-neutral classifications, so
 // provider wire names do not leak back into service-level plan-mode policy.
 //
-// Claude, Codex and ZCode each pin their own reading in their own package. ZCode
-// is here although its tools are its own: its names equal Claude's.
+// Claude, Codex, ZCode, Kimi Code, MiMo Code, CodeBuddy Code and Qoder CLI each
+// pin their own reading in their own package. ZCode, Kimi Code, CodeBuddy and Qoder
+// are here although their tools are their own: their names equal Claude's. MiMo
+// reads its own `plan_exit` approval.
 func TestOnlyThePlanModeProvidersReadAPlanModeTool(t *testing.T) {
 	t.Parallel()
 
@@ -60,6 +62,10 @@ func TestOnlyThePlanModeProvidersReadAPlanModeTool(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE: true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:       true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE:       true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE:   true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE:   true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY:   true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER:       true,
 	}
 	registry := Registry()
 	tools := []string{claude.ToolNameEnterPlanMode, claude.ToolNameExitPlanMode, codex.ToolNamePlanModePrompt}
@@ -89,6 +95,9 @@ func TestOnlyCursorTransformsACreatePlanAnswer(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO,
 	} {
 		t.Run(provider.String(), func(t *testing.T) {
 			t.Parallel()
@@ -104,15 +113,15 @@ func TestOnlyCursorTransformsACreatePlanAnswer(t *testing.T) {
 	assert.NotEqual(t, response, res.Content, "Cursor answers create_plan with its own outcome")
 }
 
-// TestOnlyCodexHasLocalPlanApprovalSettings pins that no provider but Codex
-// states local settings for a plan approval. Codex's own settings are pinned by
-// TestPlanApprovalOptions_PerProvider in its package.
-func TestOnlyCodexHasLocalPlanApprovalSettings(t *testing.T) {
+// TestProvidersWithLocalPlanApprovalSettings checks the providers that
+// supply local settings for a plan approval. Their packages test the settings.
+func TestProvidersWithLocalPlanApprovalSettings(t *testing.T) {
 	t.Parallel()
 
 	registry := Registry()
 	for _, provider := range append(agentlabels.AllProviders(), leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED) {
-		if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
+		if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX ||
+			provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER || provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_DEEPSEEK_HARNESS {
 			continue
 		}
 		assert.Empty(t, registry.Plugin(provider).PlanApprovalOptions(""), "provider %v has no local plan approval settings", provider)

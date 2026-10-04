@@ -1,10 +1,29 @@
 import type { Component } from 'solid-js'
 import type { DialogPrompt } from '../model/controlPrompt'
-import type { ContentProps } from './types'
-import { Show, untrack } from 'solid-js'
+import type { ActionsProps, ContentProps } from './types'
+import { createMemo, Show, untrack } from 'solid-js'
 import * as styles from '../ControlRequestBanner.css'
 import { formatShortWait } from '../rendererUtils'
-import { createControlChoice } from './types'
+import { ControlDecisionFooter } from './ControlDecisionFooter'
+import { invokeControlAction } from './controlResponseError'
+import { createControlChoice, sendResponse } from './types'
+
+/**
+ * How a provider answers an extension dialog. Each builder returns the provider's
+ * own envelope for one answer, and the shared dialog actions send it.
+ *
+ * A provider whose `extractControl` returns a `dialog` states this beside it. A
+ * dialog of a provider that states none reaches the banner's generic Allow/Deny
+ * pair, which is a way out of the request rather than the right words for it.
+ */
+export interface DialogResponder {
+  /** The answer to a `confirm`: the reader approved or denied. */
+  confirm: (requestId: string, confirmed: boolean) => unknown
+  /** The text that the reader sent for an `input` or an `editor`, the empty text included. */
+  value: (requestId: string, value: string) => unknown
+  /** The reader dismissed the dialog. */
+  cancel: (requestId: string) => unknown
+}
 
 /** The answer state key the editor and the input share, so an edit survives a remount. */
 export const DIALOG_TEXT_CHOICE_ID = 'dialog-text'
@@ -60,7 +79,7 @@ export const DialogRequestContent: Component<ContentProps & { dialog: DialogProm
           value={text.choice() ?? ''}
           disabled={props.optionsDisabled}
           onInput={event => text.setChoice(event.currentTarget.value)}
-          data-testid="pi-editor"
+          data-testid="dialog-editor"
           rows={6}
           wrap="off"
           style={{ 'width': '100%', 'min-width': '0', 'max-width': '100%', 'max-height': '24rem', 'resize': 'vertical', 'font-family': 'var(--font-mono)' }}
@@ -70,5 +89,73 @@ export const DialogRequestContent: Component<ContentProps & { dialog: DialogProm
         {hint => <div class={styles.bannerHint}>{hint()}</div>}
       </Show>
     </>
+  )
+}
+
+/** The two buttons of one dialog variant, and what each one sends. */
+interface DialogButtons {
+  negativeLabel: string
+  negative: () => unknown
+  positiveLabel: string
+  positive: () => unknown
+}
+
+/**
+ * The decision row of one extension dialog.
+ *
+ * A `confirm` offers Deny and Approve. An `input` and an `editor` offer Cancel and
+ * Send, and Send submits the text as it stands, the empty text included: a runtime
+ * tells an empty answer apart from a cancellation. The `input` field sits in this
+ * row beside the buttons; the `editor` draws in the content half
+ * (`DialogRequestContent`). Both halves read the text through the SAME answer-state
+ * key, so what the reader typed reaches the send.
+ */
+export const DialogRequestActions: Component<ActionsProps & { dialog: DialogPrompt, responder: DialogResponder }> = (props) => {
+  const requestId = () => props.request.requestId
+  const text = createDialogText(props, () => props.dialog.prefill)
+  const value = () => text.choice() ?? ''
+  const send = (response: unknown) => sendResponse(props.onRespond, response)
+  const sendValue = () => send(props.responder.value(requestId(), value()))
+
+  const buttons = createMemo<DialogButtons>(() => props.dialog.variant === 'confirm'
+    ? {
+        negativeLabel: 'Deny',
+        negative: () => props.responder.confirm(requestId(), false),
+        positiveLabel: 'Approve',
+        positive: () => props.responder.confirm(requestId(), true),
+      }
+    : {
+        negativeLabel: 'Cancel',
+        negative: () => props.responder.cancel(requestId()),
+        positiveLabel: 'Send',
+        positive: () => props.responder.value(requestId(), value()),
+      })
+
+  return (
+    <ControlDecisionFooter
+      hasEditorContent={false}
+      onSendFeedback={props.onTriggerSend}
+      negativeAction={{ label: buttons().negativeLabel, testId: 'control-deny-btn', onSelect: () => send(buttons().negative()) }}
+      positiveAction={{ label: buttons().positiveLabel, testId: 'control-allow-btn', onSelect: () => send(buttons().positive()) }}
+      leading={(
+        <Show when={props.dialog.variant === 'input'}>
+          <input
+            type="text"
+            aria-label={props.dialog.title}
+            placeholder={props.dialog.placeholder}
+            value={value()}
+            onInput={event => text.setChoice(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                invokeControlAction(sendValue)
+              }
+            }}
+            data-testid="dialog-input"
+            style={{ 'flex': '1 1 200px', 'min-width': '0', 'max-width': '100%' }}
+          />
+        </Show>
+      )}
+    />
   )
 }

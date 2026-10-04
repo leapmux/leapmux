@@ -1,0 +1,24 @@
+import { expect } from '@playwright/test'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { backgroundTasksSection, expectRowBecomesFinal, expectSectionPersists, HELD_CHILD_TASK, openHeldChildTab } from '../helpers/subagentRegistry'
+import { applyPermissionPreset, tabById } from '../helpers/ui'
+import { KIRO_E2E_SKIP_REASON, kiroTest } from '../kiro-fixtures'
+
+kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+
+kiroTest('keeps the actual native background task row through completion and reload', async ({ page, modelScript, leapmuxServer, authenticatedKiroWorkspace }) => {
+  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedKiroWorkspace.workspaceId, provider: AgentProvider.KIRO }
+  await applyPermissionPreset(page, 'bypass')
+  const child = await openHeldChildTab(page, modelScript, { provider: context.provider, childTurn: { user: HELD_CHILD_TASK }, rootTurnsAfterSpawn: [{ text: 'The actual native child completed.' }] })
+  try {
+    await tabById(page, child.rootTabId).click()
+    await expect(backgroundTasksSection(page)).toBeVisible()
+    await expect(child.row).toHaveAttribute('data-status', 'running')
+    await expect(child.row).toContainText('Count to one hundred')
+  }
+  finally {
+    await child.finish()
+  }
+  await expectRowBecomesFinal(page, child.row)
+  await expectSectionPersists(page)
+})

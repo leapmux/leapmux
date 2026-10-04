@@ -1,36 +1,45 @@
-/**
- * Unit tests for the E2E fixtures' server-output ring buffer.
- *
- * A `.test.ts` under `tests/e2e/` runs under vitest, not Playwright: it needs
- * no browser and no hub, so it costs milliseconds here and belongs to
- * `task test-frontend`. Both runner configs are pinned to that rule, and
- * `src/test-support/testFileNaming.test.ts` fails the suite if this file is
- * ever renamed to `.spec.ts`.
- */
-import type { ChildProcess } from 'node:child_process'
+/** Test process output, partial lines, and absolute log marks without a Hub. */
 import { Buffer } from 'node:buffer'
-import { EventEmitter } from 'node:events'
+import { ChildProcess } from 'node:child_process'
+import { PassThrough } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 import { createServerOutput } from './serverOutput'
 
-/** A child process with just the surface `capture` touches. */
+/** Supply controlled streams on a real ChildProcess instance. */
 function fakeProc(): ChildProcess & { write: (s: string) => void, close: () => void } {
-  const stdout = new EventEmitter()
-  const stderr = new EventEmitter()
-  const proc = new EventEmitter() as unknown as ChildProcess & {
-    write: (s: string) => void
-    close: () => void
-  }
-  Object.assign(proc, {
+  const stdout = new PassThrough()
+  const stderr = new PassThrough()
+  const proc = new ChildProcess()
+  return Object.assign(proc, {
     stdout,
     stderr,
     write: (s: string) => stderr.emit('data', Buffer.from(s)),
-    close: () => (proc as unknown as EventEmitter).emit('close'),
+    close: () => { proc.emit('close', 0, null) },
   })
-  return proc
 }
 
 describe('createServerOutput', () => {
+  it('keeps stdout and stderr fragments from one process separate', () => {
+    const output = createServerOutput()
+    const proc = fakeProc()
+    output.capture(proc, 'worker')
+    proc.stdout?.emit('data', Buffer.from('stdout-'))
+    proc.write('stderr-')
+    proc.stdout?.emit('data', Buffer.from('complete\n'))
+    proc.write('complete\n')
+    expect(output.since(0)).toBe('[worker] stdout-complete\n[worker] stderr-complete')
+  })
+
+  it('keeps a UTF-8 character split across output chunks intact', () => {
+    const output = createServerOutput()
+    const proc = fakeProc()
+    output.capture(proc, 'worker')
+    const line = Buffer.from('start \u{1F6A7} end\n')
+    proc.stdout?.emit('data', line.subarray(0, 7))
+    proc.stdout?.emit('data', line.subarray(7))
+    expect(output.since(0)).toBe('[worker] start \u{1F6A7} end')
+  })
+
   it('labels each line and joins chunks that split one', () => {
     const out = createServerOutput()
     const proc = fakeProc()
@@ -70,8 +79,7 @@ describe('createServerOutput', () => {
     const proc = fakeProc()
     out.capture(proc, 'hub')
 
-    // A panic that stopped the process mid-write is exactly the line worth
-    // reading, and it arrives with no trailing newline.
+    // A process can stop during a panic without writing a newline. Keep that partial line for diagnostics.
     proc.write('panic: nil map')
 
     expect(out.since(0)).toBe('[hub] panic: nil map')
@@ -84,8 +92,7 @@ describe('createServerOutput', () => {
     out.capture(hub, 'hub')
     out.capture(worker, 'worker')
 
-    // Interleaved mid-line. One shared carry would splice "hub-" onto
-    // "worker-half" and lose both lines.
+    // The two processes write interleaved fragments. A shared partial line would combine those fragments and corrupt both lines.
     hub.write('hub-')
     worker.write('worker-')
     hub.write('half\n')
@@ -109,8 +116,7 @@ describe('createServerOutput', () => {
 
     const expected = '[worker] serving\n[worker] shutting down\n[worker] connected to hub'
     expect(out.since(0)).toBe(expected)
-    // Read twice: a carry the close did not reap would be appended to every
-    // later slice, so the dying fragment would repeat after every restart.
+    // Read twice. If close leaves the partial line, each later read repeats that line.
     expect(out.since(0)).toBe(expected)
   })
 
@@ -119,17 +125,16 @@ describe('createServerOutput', () => {
     const proc = fakeProc()
     out.capture(proc, 'worker')
 
-    // Comfortably past the ring's capacity.
+    // Write more lines than the buffer can retain.
     for (let i = 0; i < 5000; i++)
       proc.write(`line-${i}\n`)
 
     const kept = out.since(0).split('\n')
-    expect(kept.length, 'the ring is bounded').toBeLessThan(5000)
+    expect(kept.length, 'the ring has a maximum size').toBeLessThan(5000)
     expect(kept.at(-1), 'the newest line survives').toBe('[worker] line-4999')
     expect(kept[0], 'the oldest lines were evicted').not.toBe('[worker] line-0')
 
-    // A mark taken now must still slice exactly, although the ring has already
-    // evicted lines: `mark` is an absolute index, not an offset into the array.
+    // Removed lines do not change the absolute mark. Read the lines after that mark.
     const mark = out.mark()
     proc.write('after-the-mark\n')
     expect(out.since(mark)).toBe('[worker] after-the-mark')
@@ -144,8 +149,7 @@ describe('createServerOutput', () => {
     for (let i = 0; i < 5000; i++)
       proc.write(`line-${i}\n`)
 
-    // The mark predates lines the ring has since dropped. It must answer with
-    // what remains rather than throw or answer empty.
+    // The mark precedes the retained lines. Return the retained lines without throwing or returning an empty string.
     const slice = out.since(mark).split('\n')
     expect(slice.at(-1)).toBe('[worker] line-4999')
     expect(slice.length).toBeGreaterThan(100)

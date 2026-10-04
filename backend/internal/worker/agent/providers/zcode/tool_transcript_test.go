@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -20,6 +21,53 @@ import (
 
 const zcodeStoredImageRequest = `{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"call","assistantMessageId":"message","toolName":"mcp__docs__read"}}`
 const zcodeStoredImageResult = `{"type":"tool.updated","payload":{"kind":"result","toolCallId":"call","result":{"success":true,"content":"[Attached image/png: MCP image]"}},"_leapmux":"provider value"}`
+
+func TestZCodeToolTranscriptPreservesSerializationWithIndependentNativeStorageSettings(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	storage := filepath.Join(home, "native-output-storage")
+	nativeDatabase := filepath.Join(home, ".zcode", "cli", "db", "db.sqlite")
+	outputFilePath := filepath.Join(storage, "cli", "artifacts", "session", "call-"+zcodeOutputFileFixtureID+".txt")
+	body := "native head42\n文 complete middle77\nnative tail66\n"
+	require.NoError(t, os.MkdirAll(filepath.Dir(outputFilePath), 0o700))
+	require.NoError(t, os.WriteFile(outputFilePath, []byte(body), 0o600))
+	db := agenttest.NewFixtureDB(t, nativeDatabase, zcodeToolStoreDDL)
+	part := map[string]any{
+		"type": "tool", "callID": "call", "tool": "GetWorkflowRun",
+		"state": map[string]any{
+			"status": "completed", "output": "native preview",
+			"metadata": map[string]any{"serialization": map[string]any{
+				"budgetStrategy": "artifact", "artifactPath": outputFilePath,
+				"truncated": true, "originalBytes": len([]byte(body)), "returnedBytes": len("native preview"),
+			}},
+		},
+	}
+	encoded, err := json.Marshal(part)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO part VALUES ('part', 'session', 'message', ?)`, string(encoded))
+	require.NoError(t, err)
+	location := zcodeTestStorePaths(t, agent.StoredSessionQuery{
+		HomeDir: home, Getenv: agenttest.FixtureEnv(map[string]string{"ZCODE_STORAGE_DIR": storage}),
+	}, nativeDatabase)
+	location.sessionID = "session"
+	sink := &agenttest.Sink{}
+	transcript := newZCodeToolTranscript(t.Context(), agent.NewProviderServices(sink), func() zcodeToolStoreLocation { return location })
+	tooltranscripttest.ReleaseToolStoreAtTestEnd(t, transcript)
+	request := `{"type":"tool.updated","sessionId":"session","payload":{"kind":"scheduled","toolCallId":"call","assistantMessageId":"message","toolName":"GetWorkflowRun"}}`
+	result := `{"type":"tool.updated","sessionId":"session","payload":{"kind":"result","toolCallId":"call","result":{"success":true,"content":"native preview"}}}`
+	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(request)}, agent.SpanInfo{SpanID: "call"}))
+	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(result)}, agent.SpanInfo{SpanID: "call", Closing: true}))
+	require.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
+	stored := sink.Messages()[1]
+	assert.Equal(t, result, string(stored.Content), "keep the native preview unchanged")
+	var supplement contracts.ZCodeToolResultEnvelope
+	require.NotEmpty(t, stored.SupplementalContent, "read the native database independently of the output directory")
+	require.NoError(t, json.Unmarshal(stored.SupplementalContent, &supplement))
+	assert.Equal(t, "session", supplement.NativeTool.SessionID)
+	assert.Equal(t, "message", supplement.NativeTool.MessageID)
+	assert.JSONEq(t, string(encoded), string(supplement.NativeTool.Data))
+	assert.Empty(t, supplement.OutputFiles, "native serialization metadata must not cause an external text read")
+}
 
 // CloseToolStoreForTest releases the store's database handle at once.
 func (z *zcodeToolSource) CloseToolStoreForTest() { z.store.close() }
@@ -40,11 +88,11 @@ func TestZCodeToolTranscriptRecoversCompletedImagesAfterProcessCancellation(t *t
 	tooltranscripttest.ReleaseToolStoreAtTestEnd(t, f.transcript)
 	_, err := f.db.Exec(`INSERT INTO part VALUES ('part', 'session', 'message', ?)`, zcodeNativeToolFixture("completed"))
 	require.NoError(t, err)
-	f.writeArtifact(t, "session")
+	f.writeOutputFile(t, "session")
 	f.persistPair(t)
 	cancel()
 	require.NoError(t, f.transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
-	assert.Contains(t, string(f.sink.Messages()[1].SupplementalContent), zcodeArtifactFixtureData)
+	assert.Contains(t, string(f.sink.Messages()[1].SupplementalContent), zcodeOutputFileFixtureData)
 }
 
 type zcodeTranscriptFixture struct {
@@ -60,7 +108,7 @@ func newZCodeTranscriptFixture(t *testing.T, createDatabase bool) *zcodeTranscri
 	f := &zcodeTranscriptFixture{
 		sink: &agenttest.Sink{},
 		location: zcodeToolStoreLocation{
-			databasePath: filepath.Join(directory, "store.db"), artifactRoot: filepath.Join(directory, "artifacts"), sessionID: "session",
+			databasePath: filepath.Join(directory, "store.db"), outputFileRoot: filepath.Join(directory, "artifacts"), sessionID: "session",
 		},
 	}
 	if createDatabase {
@@ -86,14 +134,14 @@ func (f *zcodeTranscriptFixture) boundary(t *testing.T) {
 	f.transcript.WaitForSupplementsForTest()
 }
 
-func (f *zcodeTranscriptFixture) writeArtifact(t *testing.T, sessionID string) {
+func (f *zcodeTranscriptFixture) writeOutputFile(t *testing.T, sessionID string) {
 	t.Helper()
-	directory := filepath.Join(f.location.artifactRoot, zcodeArtifactSegment(sessionID))
+	directory := filepath.Join(f.location.outputFileRoot, zcodeOutputFileSegment(sessionID))
 	require.NoError(t, os.MkdirAll(directory, 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(directory, "call-media-1-"+zcodeArtifactFixtureID+".txt"), []byte(zcodeArtifactFixtureData), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(directory, "call-media-1-"+zcodeOutputFileFixtureID+".txt"), []byte(zcodeOutputFileFixtureData), 0o600))
 }
 
-func TestZCodeToolTranscriptRetriesLateRecordsAndArtifacts(t *testing.T) {
+func TestZCodeToolTranscriptRetriesLateRecordsAndOutputFiles(t *testing.T) {
 	t.Parallel()
 	f := newZCodeTranscriptFixture(t, true)
 	_, err := f.db.Exec(`INSERT INTO part VALUES ('part', 'session', 'message', ?)`, zcodeNativeToolFixture("running"))
@@ -105,11 +153,11 @@ func TestZCodeToolTranscriptRetriesLateRecordsAndArtifacts(t *testing.T) {
 	require.NoError(t, err)
 	f.boundary(t)
 	assert.Empty(t, f.sink.Messages()[1].SupplementalContent)
-	f.writeArtifact(t, "session")
+	f.writeOutputFile(t, "session")
 	f.boundary(t)
 	result := f.sink.Messages()[1]
 	assert.Equal(t, zcodeStoredImageResult, string(result.Content))
-	assert.Contains(t, string(result.SupplementalContent), zcodeArtifactFixtureData)
+	assert.Contains(t, string(result.SupplementalContent), zcodeOutputFileFixtureData)
 	assert.Contains(t, string(result.SupplementalContent), `"futureCounter":9007199254740993`)
 	assert.Empty(t, f.transcript.PendingSpanIDsForTest())
 }
@@ -124,7 +172,7 @@ func TestZCodeToolTranscriptKeepsUnavailableImageMetadataAtTurnEnd(t *testing.T)
 	var extra map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(f.sink.Messages()[1].SupplementalContent, &extra))
 	assert.NotEmpty(t, extra["nativeTool"])
-	assert.JSONEq(t, `{}`, string(extra["artifacts"]))
+	assert.JSONEq(t, `{}`, string(extra[contracts.ZCodeSupplementOutputFiles]))
 	assert.Equal(t, zcodeStoredImageResult, string(f.sink.Messages()[1].Content))
 }
 
@@ -136,7 +184,7 @@ func TestZCodeToolTranscriptClearsRequestBindingsWhenTheDatabaseIsAbsent(t *test
 	f.db = agenttest.NewFixtureDB(t, f.location.databasePath, zcodeToolStoreDDL)
 	_, err := f.db.Exec(`INSERT INTO part VALUES ('old', 'session', 'message', ?), ('new', 'session', 'other-message', ?)`, zcodeNativeToolFixture("completed"), zcodeNativeToolFixture("completed"))
 	require.NoError(t, err)
-	f.writeArtifact(t, "session")
+	f.writeOutputFile(t, "session")
 	require.NoError(t, f.transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(zcodeStoredImageResult)}, agent.SpanInfo{SpanID: "call", Closing: true}))
 	require.NoError(t, f.transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
 	assert.Empty(t, f.sink.Messages()[3].SupplementalContent, "the old request must not disambiguate a later call")
@@ -151,8 +199,8 @@ func TestZCodeToolTranscriptEnrichesChildCallsInTheChildTranscript(t *testing.T)
 	native = strings.ReplaceAll(native, "zcode-artifact://session/", "zcode-artifact://child-session/")
 	_, err = f.db.Exec(`INSERT INTO part VALUES ('part', 'child-session', 'message', ?)`, native)
 	require.NoError(t, err)
-	f.writeArtifact(t, "child-session")
-	childID, err := f.transcript.EnsureChildAgent("spawn", "child-key", "Child")
+	f.writeOutputFile(t, "child-session")
+	childID, err := f.transcript.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "child-key", Title: "Child"})
 	require.NoError(t, err)
 	child := f.transcript.ChildSink(childID)
 	require.Same(t, child, f.transcript.ChildSink(childID))
@@ -164,7 +212,7 @@ func TestZCodeToolTranscriptEnrichesChildCallsInTheChildTranscript(t *testing.T)
 	childSink := f.sink.Child(childID)
 	stored := childSink.Messages()[1]
 	assert.Equal(t, result, string(stored.Content))
-	assert.Contains(t, string(stored.SupplementalContent), zcodeArtifactFixtureData)
+	assert.Contains(t, string(stored.SupplementalContent), zcodeOutputFileFixtureData)
 	assert.Contains(t, string(stored.SupplementalContent), `"callID":"call"`)
 	assert.Len(t, f.sink.Messages(), 1, "the parent stores only its turn end")
 }

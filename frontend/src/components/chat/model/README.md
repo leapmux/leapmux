@@ -44,5 +44,5 @@ or an icon library in no form. This restriction includes type imports. The
   makes a render-layer decision part of what a row MEANS. `ReadReminder` carried
   the `Alert` component's `AlertVariant`, and a tool call carried a `LucideIcon`.
   Each is now a closed model-owned union that `results/` maps onto the component --
-  `ReminderSeverity`, `ToolIconHint`, `NotificationIconHint`. A neutral model both
+  `ReminderSeverity`, `ToolIconHint`. A neutral model both
   layers share lives in `~/models/` instead, which is where `TodoItem` went.

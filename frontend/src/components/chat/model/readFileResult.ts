@@ -13,7 +13,11 @@ export type ReminderSeverity = 'success' | 'warning' | 'danger' | 'error'
 
 /** A single parsed line from Read tool output. */
 export interface NumberedFileLine {
-  num: number
+  /**
+   * The line number, or null for an elision row: a row that stands for lines the
+   * provider left out of the read, such as omp's `…` in a summarized file.
+   */
+  num: number | null
   text: string
 }
 
@@ -202,7 +206,7 @@ function parseCatLines(lines: string[], lo: number, hi: number): NumberedFileLin
  * peel that left no cat-n body read the FILE rather than a wrapper: a plain
  * `index.html` ends in `</html>`, the tail matcher scans back to the file's own
  * `<html>`, and the whole document became one alert beside a `fallbackContent` that
- * already drew it -- the reader saw the file twice. The six Agent Client Protocol
+ * already drew it -- the reader saw the file twice. The Agent Client Protocol
  * providers feed raw file text through here, so this is the common case rather than
  * a rare one.
  *

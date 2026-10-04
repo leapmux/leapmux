@@ -42,15 +42,10 @@ function protoTask(id: string, title: string, activeForm: string): ProtoBackgrou
 }
 
 /**
- * Render the rows through the PANEL that hosts them.
- *
- * The panel owns the root, the tab bar and the `role=tabpanel` region these
- * cases select on, so going through it keeps the DOM contract identical to what
- * the component used to render alone -- which is what lets the E2E specs and
- * every test id survive the split.
- *
- * The sidebar variant, because the popover one differs only in sizing classes
- * that jsdom cannot see.
+ * Render rows through their actual panel host.
+ * The panel owns the root, tabs, and tabpanel region that these tests inspect.
+ * Preserve that DOM structure and its test IDs.
+ * The sidebar and popover variants differ only in sizing classes that jsdom cannot measure.
  */
 function renderList(props: {
   tasks: BackgroundTaskItem[]
@@ -88,6 +83,23 @@ function secondaries(container: HTMLElement): HTMLElement[] {
 }
 
 describe('BackgroundTaskList', () => {
+  it.each([
+    ['completed', 'Completed'],
+    ['failed', 'Failed'],
+    ['stopped', 'Stopped'],
+    ['interrupted', 'Interrupted'],
+  ] as const)('shows the final %s outcome without a transcript divider', (status, label) => {
+    const { container } = renderList({
+      tasks: [row({ rowKey: 'native-child', title: 'Native child', status, childAgentId: 'child-1' })],
+      onOpenSubagent: vi.fn(),
+    })
+    const child = container.querySelector('[data-testid="bg-task-row"]')
+    expect(child?.getAttribute('data-status')).toBe(status)
+    expect(child?.getAttribute('data-child-agent-id')).toBe('child-1')
+    expect(child?.querySelector(`[aria-label="${label}"]`)).not.toBeNull()
+    expect(child?.textContent).toContain('Native child')
+  })
+
   it('renders a status glyph + title + activity for a running subagent', () => {
     const { container } = renderList({
       tasks: [row({ rowKey: 't1', title: 'Spawned agent', status: 'running', activity: 'running Bash', childAgentId: 'c1' })],
@@ -101,9 +113,8 @@ describe('BackgroundTaskList', () => {
     expect(container.textContent).toContain('running Bash')
   })
 
-  // The dot is a SIBLING of the title on the title line, not a child of it. A
-  // child would count toward the title's own overflow, and the title is the
-  // element whose clipping decides whether its tooltip appears at all.
+  // The status dot sits beside the title.
+  // A dot inside the title would affect its overflow and therefore its clipping tooltip.
   it('puts the status dot beside the title, on the title line', () => {
     const { container } = renderList({
       tasks: [row({ rowKey: 't1', title: 'Spawned agent', activity: 'running Bash' })],
@@ -111,19 +122,18 @@ describe('BackgroundTaskList', () => {
     const dot = container.querySelector('[data-testid="bg-task-status-dot"]')!
     const title = titles(container)[0]!
     expect(title.contains(dot)).toBe(false)
-    // Both sit on the title line...
+    // Both elements share the title line.
     const titleRow = container.querySelector(classSelector(styles.titleRow))!
     expect(titleRow.contains(title)).toBe(true)
     expect(titleRow.contains(dot)).toBe(true)
-    // ...and the dot follows the title, so it lands at the row's right end.
+    // The dot follows the title at the row's right edge.
     expect(title.compareDocumentPosition(dot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     // The secondary line is a separate block and never holds the dot.
     expect(secondaries(container)[0]?.contains(dot)).toBe(false)
   })
 
-  // Code type follows the PROVIDER's claim, not the row's kind. A shell row
-  // whose title is the model's prose -- Claude sends `description || command`,
-  // so most of them are -- must not be set in the monospace face.
+  // Provider metadata alone selects monospace titles.
+  // Claude can supply a prose description for a shell row, so shell kind cannot decide.
   it('sets a title in the monospace face only when it is a real command', () => {
     const { container } = renderList({
       tasks: [
@@ -139,14 +149,12 @@ describe('BackgroundTaskList', () => {
     expect(titleOf('Review').className).not.toContain(styles.taskTitleCommand)
   })
 
-  // The worker keeps a row key VERBATIM, because the key is the row's identity
-  // and a rewrite merges two providers' rows into one. So the reader is where
-  // an unreadable key is cleaned, and this block is the guard on that split.
+  // The Worker preserves usable native row keys exactly.
+  // The browser cleans their display labels without merging distinct provider identities.
   describe('the label falls back to a CLEANED row key', () => {
     const labelOf = (container: HTMLElement) => titles(container)[0]?.textContent
 
-    // Cursor's observed toolCallId shape. It reaches the browser with the
-    // newline in it, and the label must not carry one.
+    // Cursor's native toolCallId can contain a newline. The display label must remove it.
     it('folds a newline the provider put in the key', () => {
       const { container } = renderList({
         tasks: [row({ rowKey: 'call-abc\nfc-def', title: '' })],
@@ -166,9 +174,8 @@ describe('BackgroundTaskList', () => {
       expect(labelOf(container)).toBe('toolu_01A2b3')
     })
 
-    // Each candidate is cleaned and the FALLBACK reads the cleaned text, so a
-    // description of nothing but invisible characters falls through to the key
-    // instead of rendering the row as a blank line.
+    // Clean each candidate before the fallback reads it.
+    // An invisible description must select the key instead of creating a blank label.
     it('falls through a candidate that cleans to nothing', () => {
       const { container } = renderList({
         tasks: [row({ rowKey: 'call-abc', title: '', description: '​​' })],
@@ -176,12 +183,8 @@ describe('BackgroundTaskList', () => {
       expect(labelOf(container)).toBe('call-abc')
     })
 
-    // The LAST candidate can clean to nothing as readily as the first two. The worker
-    // refuses an unusable row key rather than rewriting it, and a key of
-    // nothing but bidirectional overrides is usable as an identity, so it
-    // reaches the reader as a non-empty string that `cleanName` empties. Every
-    // candidate then falls through and the row drew a blank first line with a status
-    // dot beside it.
+    // A valid identity can contain only invisible bidirectional characters.
+    // When cleanName empties every candidate, the fallback must still supply a visible title.
     it('names the row Untitled when every candidate cleans to nothing', () => {
       const { container } = renderList({
         tasks: [row({ rowKey: '\u202E\u202E', title: '', description: '\u200B' })],
@@ -189,8 +192,7 @@ describe('BackgroundTaskList', () => {
       expect(labelOf(container)).toBe('Untitled')
     })
 
-    // The worker already cleaned the title, and the rule is idempotent, so the
-    // reader's clean must be a no-op on it.
+    // The Worker already cleans the title. The browser cleaner must preserve that value.
     it('passes a worker-cleaned title through unchanged', () => {
       const { container } = renderList({
         tasks: [row({ rowKey: 'k', title: 'npm test --grep "$FOO"' })],
@@ -198,13 +200,8 @@ describe('BackgroundTaskList', () => {
       expect(labelOf(container)).toBe('npm test --grep "$FOO"')
     })
 
-    // The echo guard compares the second line against the first, so BOTH sides
-    // have to be cleaned. The title candidate is cleaned and the description one was
-    // not, so the comparison stopped matching for every string the fold
-    // rewrites -- and the row printed the same command twice, once folded and
-    // once raw. Claude's local_bash sends the command as both title and
-    // description, and a command carrying a double space is ordinary, so this
-    // is the exact case the guard exists for.
+    // Compare cleaned text on both lines before suppressing a repeated command.
+    // Claude can supply the same command as title and description, including repeated spaces.
     it('suppresses a description that differs from the title only by a whitespace run', () => {
       const { container } = renderList({
         tasks: [row({
@@ -217,8 +214,7 @@ describe('BackgroundTaskList', () => {
       expect(secondaries(container)).toHaveLength(0)
     })
 
-    // A newline is the other shape the fold rewrites, and it reaches the row
-    // from a provider that wraps its copy.
+    // Providers can also include a newline in the repeated description.
     it('suppresses a description that differs from the title only by a newline', () => {
       const { container } = renderList({
         tasks: [row({ rowKey: 'k', title: 'build\nand test', description: 'build\nand test' })],
@@ -226,7 +222,7 @@ describe('BackgroundTaskList', () => {
       expect(secondaries(container)).toHaveLength(0)
     })
 
-    // The guard must not swallow a genuinely different second line.
+    // Keep a second line that differs from the title.
     it('still shows a description that differs from the title', () => {
       const { container } = renderList({
         tasks: [row({ rowKey: 'k', title: 'Run the suite', description: 'npm test' })],
@@ -234,9 +230,8 @@ describe('BackgroundTaskList', () => {
       expect(secondaries(container).map(el => el.textContent)).toEqual(['npm test'])
     })
 
-    // The second line is cleaned as well as compared: `activity` and
-    // `description` arrive from the provider UNCLEANED (the worker cleans
-    // `title` alone), so a bidirectional override in one would reorder the line.
+    // Raw activity and description text can contain bidirectional controls.
+    // Clean them before display and comparison.
     it('cleans the second line it does show', () => {
       const { container } = renderList({
         tasks: [row({ rowKey: 'k', title: 'Run the suite', activity: 'step\u202Eone' })],
@@ -290,8 +285,7 @@ describe('BackgroundTaskList', () => {
     expect(el.tagName).toBe('DIV')
   })
 
-  // The clickable and static rows are built from one shared attribute bag, so
-  // the registry attributes the E2E specs select on cannot drift between them.
+  // Static and clickable rows share the same registry attributes for browser selection.
   it('puts the same registry attributes on the clickable and the static row', () => {
     const { container } = renderList({
       tasks: [
@@ -304,16 +298,13 @@ describe('BackgroundTaskList', () => {
     expect(rows.map(el => el.tagName)).toEqual(['BUTTON', 'DIV'])
     expect(rows.map(el => el.getAttribute('data-status'))).toEqual(['running', 'running'])
     expect(rows.map(el => el.getAttribute('data-kind'))).toEqual(['subagent', 'shell'])
-    // Present on BOTH, empty when there is no child to open.
+    // Both rows carry this attribute. A row without a child uses an empty value.
     expect(rows.map(el => el.getAttribute('data-child-agent-id'))).toEqual(['c1', ''])
   })
 
-  // Oat's base button rule renders a <button> at var(--font-medium), and the
-  // clickable row IS a button while the static row is a div. Both must carry
-  // taskRow, which declares the normal weight, or an open subagent reads as
-  // emphasized against the shell rows. jsdom loads no stylesheet, so the shared
-  // class is the only part a unit test can see; E2E 170 asserts the weight that
-  // the browser resolves.
+  // Oat gives buttons medium font weight. taskRow restores the normal weight for clickable and static rows.
+  // jsdom cannot measure stylesheets, so this test checks the shared class.
+  // The browser component test checks the resolved font weight.
   it('gives the clickable and the static row the same style classes', () => {
     const { container } = renderList({
       tasks: [
@@ -327,15 +318,14 @@ describe('BackgroundTaskList', () => {
     const clickable = classesOf(rows[0]!)
     const staticRow = classesOf(rows[1]!)
     expect(clickable.size).toBeGreaterThan(0)
-    // The static row carries every class the clickable one does...
+    // The static row preserves every shared class.
     expect([...clickable].filter(c => !staticRow.has(c))).toEqual([])
-    // ...plus exactly one more, the cursor override.
+    // Its one additional class overrides the cursor.
     expect(staticRow.size).toBe(clickable.size + 1)
   })
 
-  // The registry is already scoped to one root agent, so a parent label on
-  // every row was noise. Removed -- and a row that still carries a
-  // parentAgentId must not resurrect it.
+  // The registry already belongs to one root agent.
+  // A retained parentAgentId must not add a redundant parent label to each row.
   it('never renders a "via <parent>" chip', () => {
     const { container } = renderList({
       tasks: [row({ rowKey: 'agent', status: 'running', childAgentId: 'c1', parentAgentId: 'root-1' })],
@@ -344,8 +334,7 @@ describe('BackgroundTaskList', () => {
     expect(container.textContent).not.toContain('via')
   })
 
-  // Status is a COLOR on one constant dot, not a different glyph per state, so
-  // the column reads as a status light instead of a set of shapes to learn.
+  // One retained dot exposes each status through its color, shape, and accessible label.
   it('colors one status dot per state rather than swapping the glyph', () => {
     const statuses: BackgroundTaskItem['status'][] = [
       'pending',
@@ -358,10 +347,8 @@ describe('BackgroundTaskList', () => {
     const { container } = renderList({ tasks: statuses.map(status => row({ rowKey: status, status })) })
     const dots = [...container.querySelectorAll('[data-testid="bg-task-status-dot"]')]
     expect(dots).toHaveLength(statuses.length)
-    // Queued, running, succeeded, and failed are DISTINCT; a crash is colored
-    // like a failure. Queued differs from running because running's only extra
-    // signal is the pulse, which is suppressed under reduced motion -- so
-    // sharing one dot made the two identical for the readers who cannot see it.
+    // Each status remains distinct. An interrupted task uses the failure color.
+    // Reduced motion removes the active pulse, so the pending ring must still differ from the active dot.
     const cls = (i: number) => dots[i]?.className ?? ''
     expect(cls(0)).not.toBe(cls(1)) // pending differs from running
     expect(cls(2)).not.toBe(cls(0)) // completed differs from in-progress
@@ -372,14 +359,13 @@ describe('BackgroundTaskList', () => {
     expect(cls(0)).not.toBe(cls(2)) // queued differs from completed
   })
 
-  // Color alone cannot tell failed from interrupted, so the dot states its status.
+  // The accessible label distinguishes failed and interrupted states that share a color.
   it('states the status on the dot for anyone who cannot use the color', () => {
     const { container } = renderList({ tasks: [row({ rowKey: 'a', status: 'interrupted' })] })
     expect(container.querySelector('[aria-label="Interrupted"]')).not.toBeNull()
   })
 
-  // Claude sends a background shell's command as its `description`, which is
-  // already the row's title, so echoing it below said the same thing twice.
+  // Claude can repeat a background shell command in its description. Show that text once.
   it('drops a secondary line that just repeats the title', () => {
     const { container } = renderList({
       tasks: [row({ rowKey: 'sh', kind: 'shell', status: 'running', title: 'npm test', description: 'npm test' })],
@@ -397,9 +383,8 @@ describe('BackgroundTaskList', () => {
 })
 
 /**
- * The kind tabs. A mixed registry reads as one undifferentiated list without
- * them. A subagent opens a transcript, a shell row reports a command, and a
- * workflow row reports a multi-agent run.
+ * Kind tabs separate a mixed registry into its native task categories.
+ * Subagents open transcripts. Shell rows report commands. Workflow rows report workflow runs.
  */
 describe('BackgroundTaskList kind tabs', () => {
   const mixed = [
@@ -450,8 +435,7 @@ describe('BackgroundTaskList kind tabs', () => {
     expect(queryByTestId('bg-task-filter-unknown')).toBeNull()
   })
 
-  // An empty tab must say so. Rendering nothing leaves a blank box that reads
-  // as a rendering fault rather than as "there are none of these".
+  // An empty tab must state that it contains no rows. A blank region would look like a rendering failure.
   it('states that a tab with no rows is empty, per kind', () => {
     const { container, getByTestId } = renderList({ tasks: [row({ rowKey: 'agent', kind: 'subagent' })] })
     fireEvent.click(getByTestId('bg-task-filter-shell'))
@@ -471,8 +455,7 @@ describe('BackgroundTaskList kind tabs', () => {
     expect(rowsText(container)).toBe('No background tasks')
   })
 
-  // The tabs swap the region below them, so each one must point at the region
-  // it actually swaps -- and two mounts on screen at once may not share an id.
+  // Each tab must identify its own tabpanel. Two simultaneous mounts must not share that ID.
   it('gives each mount its own panel id, and points its tabs at it', () => {
     const { getByTestId, container } = renderList({ tasks: mixed })
     const panelId = container.querySelector('[role="tabpanel"]')!.id
@@ -483,8 +466,7 @@ describe('BackgroundTaskList kind tabs', () => {
     expect(second.container.querySelector('[role="tabpanel"]')!.id).not.toBe(panelId)
   })
 
-  // A group header belongs to the rows under it. Filtering to a kind whose rows
-  // are all in one group must not leave the OTHER group's header behind.
+  // A kind filter must remove group headers whose rows it removes.
   it('drops a group whose rows the filter removed', () => {
     const { container, getByTestId } = renderList({
       tasks: [
@@ -499,10 +481,8 @@ describe('BackgroundTaskList kind tabs', () => {
 })
 
 /**
- * Every line of a row is held to ONE line and clipped, and gives its full text
- * back on hover. Wrapping made the sidebar section scroll sideways, because a
- * label with no break opportunity escaped the box and `rows` computes its
- * horizontal overflow to `auto`.
+ * Clip each row line and expose its complete text on hover.
+ * An unbroken wrapped label can exceed the sidebar width and create horizontal scrolling.
  */
 describe('BackgroundTaskList clipping', () => {
   beforeEach(() => {
@@ -520,13 +500,12 @@ describe('BackgroundTaskList clipping', () => {
     const { container } = renderList({
       tasks: [row({ rowKey: 't1', title: 'Spawned agent', activity: 'running Bash' })],
     })
-    // Token membership, not a substring: a future class whose own name merely
-    // CONTAINS "clippedText" would satisfy a regex and prove nothing.
+    // Require the exact class token. A longer class containing that text cannot satisfy the assertion.
     expect(classes(titles(container)[0]!)).toContain(clippedText)
     expect(classes(secondaries(container)[0]!)).toContain(clippedText)
   })
 
-  it('clips a group header, which had no wrapping rule at all', () => {
+  it('clips a group header without wrapping its label', () => {
     const { container } = renderList({
       tasks: [row({ rowKey: 'g1', groupKey: 'wf:x', groupLabel: 'find-flaky-tests-and-fix-them' })],
     })
@@ -535,8 +514,7 @@ describe('BackgroundTaskList clipping', () => {
     expect(classes(header)).toContain(clippedText)
   })
 
-  // The header had no tooltip at all before it was clipped, so the hover route
-  // is the whole of what replaced a label the reader could simply see.
+  // A clipped header needs a hover tooltip that exposes its complete label.
   it('gives the full group label on hover once the header is clipped', () => {
     const label = 'find-flaky-tests-and-fix-them-across-every-package'
     const { container } = renderList({
@@ -574,11 +552,9 @@ describe('BackgroundTaskList clipping', () => {
     expect(hover(secondary)).toBe(activity)
   })
 
-  // A finished status carries an explanation the label cannot: "Interrupted"
-  // does not say that a worker restart cut the task off. The explanation is
-  // ADDED to the label, never put in its place, so a label that clips keeps its
-  // own route back. It shows while the label fits too, because it carries what
-  // the label cannot.
+  // An Interrupted label omits the process restart cause.
+  // Add that explanation below the label without replacing the complete clipped text.
+  // Keep the explanation available when the label fits too.
   it('adds an explanation to a finished status without losing its label', () => {
     const { container } = renderList({ tasks: [row({ rowKey: 't1', status: 'interrupted' })] })
     const secondary = secondaries(container)[0]!
@@ -588,8 +564,7 @@ describe('BackgroundTaskList clipping', () => {
     expect(tip).toContain('stopped by a worker restart')
   })
 
-  // The label stays reachable even when the row carries an explanation AND the
-  // label is too long for its box -- the case the previous shape lost.
+  // Preserve the complete clipped label when its tooltip also carries an explanation.
   it('keeps a clipped label reachable beside its explanation', () => {
     const { container } = renderList({ tasks: [row({ rowKey: 't1', status: 'interrupted' })] })
     const secondary = secondaries(container)[0]!
@@ -599,8 +574,7 @@ describe('BackgroundTaskList clipping', () => {
     expect(tip).toContain('stopped by a worker restart')
   })
 
-  // ...and a finished status with no explanation falls back to the clipped
-  // behaviour, rather than losing its tooltip entirely.
+  // A final status without an explanation still exposes its complete clipped label.
   it('falls back to the label for a finished status with no explanation', () => {
     const { container } = renderList({ tasks: [row({ rowKey: 't1', status: 'failed' })] })
     const secondary = secondaries(container)[0]!
@@ -613,11 +587,9 @@ describe('BackgroundTaskList clipping', () => {
 })
 
 /**
- * A registry that could not be LOADED must not read as an empty one.
- *
- * The sidebar section is hidden when the registry is empty, so "no answer"
- * rendering as "no tasks" removed the whole section from the screen. A worker
- * database missing a column did exactly that: the only trace was a warn log.
+ * A failed registry read must not appear as an authoritative empty list.
+ * Empty registries hide the section, so that mistake would also hide the failure.
+ * A missing Worker database column can produce this state.
  */
 describe('BackgroundTaskList load failure', () => {
   function renderFailed(tasks: BackgroundTaskItem[]) {
@@ -640,8 +612,7 @@ describe('BackgroundTaskList load failure', () => {
     expect(queryByTestId('bg-task-load-failed')).toBeNull()
   })
 
-  // A failure that still has rows to show (a stale registry the client kept)
-  // renders the rows: the message stands in for MISSING content, never over it.
+  // A failed refresh preserves retained rows. The failure message replaces missing content only.
   it('still renders the rows it has', () => {
     const { container, queryByTestId } = renderFailed([
       row({ rowKey: 'a', title: 'Review the diff' }),
@@ -650,8 +621,7 @@ describe('BackgroundTaskList load failure', () => {
     expect(queryByTestId('bg-task-load-failed')).toBeNull()
   })
 
-  // With NOTHING to show, the failure is the right answer on every tab: the
-  // registry could not be read, so no kind of row can be claimed to be absent.
+  // When no rows remain, every kind must report the read failure instead of claiming absence.
   it('overrides the per-kind empty message on every tab when it has no rows', () => {
     const { container, getByTestId } = renderFailed([])
     fireEvent.click(getByTestId('bg-task-filter-shell'))
@@ -659,13 +629,9 @@ describe('BackgroundTaskList load failure', () => {
   })
 
   /**
-   * ...but a failure that still HAS rows must not claim the registry is
-   * unreadable on a tab that is merely empty of its own kind.
-   *
-   * A failed load leaves the rows it already had (`applyLatestPage` records the
-   * failure without wiping them), so this state is reachable: the user sees two
-   * subagents on All, clicks Shell, and would be told the worker could not be
-   * read -- about a registry the same mount is showing two clicks away.
+   * An empty selected kind must not call a retained registry unreadable.
+   * applyLatestPage records refresh failure without removing earlier rows.
+   * The All tab can retain subagents while the Shell tab contains none.
    */
   it('keeps the per-kind empty message on a tab whose kind has no rows', () => {
     const { container, queryByTestId, getByTestId } = renderFailed([
@@ -681,17 +647,10 @@ describe('BackgroundTaskList load failure', () => {
 })
 
 /**
- * What a row must NOT rebuild when one of its fields changes.
- *
- * The registry arrives whole on every broadcast, so a subagent that reports
- * progress every few seconds redraws the section that often. A row rebuilt from
- * scratch takes its tooltip and its animations with it: the full-title tooltip
- * under the pointer closed and reopened, and the status dot restarted its pulse
- * -- both under a cursor that never moved.
- *
- * The store half is `setReconciled` in `~/stores/chatPerAgentStore`, which is
- * what keeps a row's identity across the broadcast. These cases hold the
- * component half: one field changing must update ONE binding.
+ * Field updates must preserve the row element and its dependent elements.
+ * Each broadcast supplies the whole registry, even when one activity field changes.
+ * Replacing the row would close its tooltip and restart its status animation under a stationary pointer.
+ * The store's setReconciled preserves item identity. These tests require individual component bindings to update in place.
  */
 describe('BackgroundTaskList in-place updates', () => {
   /** A store-backed list, which is the shape the sidebar actually renders. */
@@ -729,10 +688,19 @@ describe('BackgroundTaskList in-place updates', () => {
     expect(titleBefore.textContent).toBe('Review the diff')
   })
 
-  // `data-status` is what the E2E suite selects a finished row by, and the
-  // strike-through class is how a finished row reads. Both were correct only
-  // because the row used to be rebuilt; a row that survives has to carry them
-  // reactively.
+  it('keeps exact task identity available when titles match and the row identity changes', () => {
+    const { container, setTasks } = renderLiveList([
+      row({ rowKey: 'workflow-first', title: 'Compute one local value.', kind: 'workflow' }),
+      row({ rowKey: 'workflow-second', title: 'Compute one local value.', kind: 'workflow' }),
+    ])
+    const rows = [...container.querySelectorAll<HTMLElement>('[data-testid="bg-task-row"]')]
+    expect(rows.map(element => element.dataset.taskId)).toEqual(['workflow-first', 'workflow-second'])
+    setTasks(0, 'rowKey', 'workflow-replacement')
+    expect([...container.querySelectorAll<HTMLElement>('[data-testid="bg-task-row"]')].map(element => element.dataset.taskId)).toEqual(['workflow-replacement', 'workflow-second'])
+    expect(container.querySelector('[data-task-id="workflow-first"]')).toBeNull()
+  })
+
+  // A retained row must update data-status and its strike-through class reactively.
   it('follows a status change on the row and its dot without rebuilding either', () => {
     const { container, setTasks } = renderLiveList([
       row({ rowKey: 't1', title: 'Review the diff', status: 'running', activity: 'reading' }),
@@ -749,12 +717,32 @@ describe('BackgroundTaskList in-place updates', () => {
     expect(classes(dotBefore)).toContain(statusDotStyles.statusDotSuccess)
   })
 
-  // The row becomes clickable only once the worker reports the child agent id,
-  // which arrives in a later broadcast than the row itself -- so the TAG cannot
-  // depend on it. A `Show` keyed on the id swapped a <div> for a <button> and
-  // rebuilt the whole row body at exactly the moment the user is watching that
-  // row spawn: the title tooltip closed and the status dot's pulse restarted,
-  // which is the flicker every other case here exists to prevent.
+  it('keeps a paused child open and updates its activity without rebuilding', () => {
+    const { container, setTasks } = renderLiveList([
+      row({ rowKey: 'child', title: 'Review the diff', status: 'running', activity: 'reading' }),
+    ])
+    const taskRow = container.querySelector<HTMLElement>('[data-testid="bg-task-row"]')!
+    const dot = container.querySelector<HTMLElement>('[data-testid="bg-task-status-dot"]')!
+
+    setTasks(0, 'status', 'paused')
+    setTasks(0, 'activity', 'paused')
+
+    expect(taskRow.dataset.status).toBe('paused')
+    expect(secondaries(container)[0]?.textContent).toBe('paused')
+    expect(classes(taskRow)).not.toContain(styles.taskStruck)
+    expect(classes(dot)).toContain(statusDotStyles.statusDotMuted)
+
+    setTasks(0, 'status', 'running')
+    setTasks(0, 'activity', 'reading again')
+
+    expect(container.querySelector('[data-testid="bg-task-row"]')).toBe(taskRow)
+    expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toBe(dot)
+    expect(secondaries(container)[0]?.textContent).toBe('reading again')
+    expect(classes(taskRow)).not.toContain(styles.taskStruck)
+  })
+
+  // A child ID can arrive after its row. That update must change clickability without changing the element tag.
+  // Replacing a div with a button would close its tooltip and restart the status pulse.
   it('becomes clickable without rebuilding the row when the child agent id arrives', () => {
     const [tasks, setTasks] = createStore<BackgroundTaskItem[]>([
       row({ rowKey: 't1', title: 'Review the diff', status: 'running' }),
@@ -765,9 +753,9 @@ describe('BackgroundTaskList in-place updates', () => {
     ))
     const rowBefore = container.querySelector<HTMLElement>('[data-testid="bg-task-row"]')!
     const dotBefore = container.querySelector('[data-testid="bg-task-status-dot"]')!
-    // Always a button, so nothing about the id can change the element.
+    // The row remains a button before and after the child ID arrives.
     expect(rowBefore.tagName).toBe('BUTTON')
-    // ...but not yet an ENABLED one: there is no transcript to open.
+    // It cannot activate before a transcript exists.
     expect(rowBefore.getAttribute('aria-disabled')).toBe('true')
     expect(classes(rowBefore)).toContain(styles.taskRowStatic)
     fireEvent.click(rowBefore)
@@ -784,10 +772,8 @@ describe('BackgroundTaskList in-place updates', () => {
     expect(onOpenSubagent).toHaveBeenCalledTimes(1)
   })
 
-  // `aria-disabled`, never the `disabled` attribute. A disabled control
-  // dispatches no pointer event of its own OR to its descendants, so the row's
-  // own title tooltip would be unreachable for as long as the subagent spawns --
-  // and that tooltip is the only route to a clipped title.
+  // aria-disabled preserves pointer events while the subagent starts.
+  // A native disabled attribute would block the clipped title's hover tooltip.
   it('leaves a not-yet-openable row able to show its own title tooltip', () => {
     vi.useFakeTimers()
     try {
@@ -811,8 +797,7 @@ describe('BackgroundTaskList in-place updates', () => {
     }
   })
 
-  // A shell row can never open a transcript, so it is not a button at all --
-  // the tag still follows the one field that cannot change over a row's life.
+  // A shell row cannot open a transcript. Its stable kind therefore selects a static element.
   it('draws a shell row as a plain element', () => {
     const [tasks] = createStore<BackgroundTaskItem[]>([
       row({ rowKey: 't1', title: 'npm test', kind: 'shell', status: 'running' }),
@@ -824,16 +809,10 @@ describe('BackgroundTaskList in-place updates', () => {
   })
 
   /**
-   * The same guarantee for a GROUPED row, which is where a real Claude workflow
-   * puts every subagent it spawns.
-   *
-   * `groupBackgroundTasks` builds fresh group objects on every run, and the
-   * memo it feeds re-runs on any status change, because the sort reads
-   * `status`. Iterating those objects with `For` -- which reconciles by
-   * reference -- therefore tore down and rebuilt every row of the section
-   * whenever ANY row in the list changed status, however well the store
-   * reconciled the items underneath. Every other case in this describe uses an
-   * ungrouped fixture and passes either way.
+   * Grouped rows require the same stable-element behavior as ungrouped rows.
+   * groupBackgroundTasks creates new group objects after status changes.
+   * For compares object references, so iterating those objects would rebuild each grouped row.
+   * Primitive group keys must preserve the rows even when another row changes status.
    */
   it('keeps a grouped row and its dot across a status change elsewhere in the group', () => {
     const { container, setTasks } = renderLiveList([
@@ -844,7 +823,7 @@ describe('BackgroundTaskList in-place updates', () => {
     const dotsBefore = [...container.querySelectorAll('[data-testid="bg-task-status-dot"]')]
     expect(rowsBefore).toHaveLength(2)
 
-    // The SECOND row finishes. The first one did not change at all.
+    // Finish the second row. The first row remains unchanged.
     setTasks(1, 'status', 'completed')
 
     const rowsAfter = [...container.querySelectorAll('[data-testid="bg-task-row"]')]
@@ -876,13 +855,9 @@ describe('BackgroundTaskList in-place updates', () => {
   })
 
   /**
-   * The reported bug, end to end, through the real store.
-   *
-   * The worker rebroadcasts the WHOLE registry whenever one row changes, so this
-   * is the path the sidebar actually takes -- and the one the two halves of the
-   * fix have to survive together. The tooltip is what made it visible: a
-   * tooltip closes with the element it is attached to, so a row rebuilt under a
-   * stationary pointer blinks.
+   * Exercise the actual store and component together.
+   * The Worker rebroadcasts the whole registry after one row changes.
+   * Preserve a tooltip under a stationary pointer instead of closing it with a replaced element.
    */
   it('keeps a hovered title tooltip open across a whole-registry rebroadcast', () => {
     vi.useFakeTimers()
@@ -909,9 +884,7 @@ describe('BackgroundTaskList in-place updates', () => {
     }
   })
 
-  // The other half of the same rebroadcast: a dot that is rebuilt restarts its
-  // pulse from the top, which reads as a blink on a row that only reported new
-  // activity.
+  // The same registry update must preserve the status dot and its pulse after an activity change.
   it('keeps the status dot across a whole-registry rebroadcast', () => {
     const store = createBackgroundTaskStore()
     store.replace('a1', [protoTask('t1', 'Review the diff', 'reading')])

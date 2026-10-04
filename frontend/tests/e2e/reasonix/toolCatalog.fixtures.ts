@@ -1,0 +1,594 @@
+// Native core descriptors from the installed v1.38.7 model request.
+export const reasonixCoreTools: readonly Record<string, unknown>[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'ask',
+      description: 'Ask the user one or more multiple-choice questions when you hit a decision that is genuinely theirs to make — one you can\'t resolve from the request, the code, or sensible defaults. The frontend shows the options for the user to pick; their choices are returned to you. Prefer this over asking in prose for any real fork (which approach, which library, scope). Don\'t use it for decisions with an obvious default — pick the sensible option and proceed. Tool-approval modes such as YOLO do not answer these questions for the user. Each question has a short `header` (a tab label), the `question` text, 2-4 `options` (each a `label` and optional `description`; put any recommended option first), and `multiSelect` when more than one may apply.',
+      parameters: {
+        properties: {
+          decision_id: {
+            description: 'Required when reopening a previously accepted decision; cite the original decision_id.',
+            type: 'string',
+          },
+          new_evidence: {
+            description: 'Required with decision_id when asking again after the user already accepted a consequence.',
+            type: 'string',
+          },
+          questions: {
+            description: '1-3 related questions to ask together. Same ambiguity is asked only once.',
+            items: {
+              properties: {
+                header: {
+                  description: 'Very short label for the question (a tab title), e.g. "Library".',
+                  type: 'string',
+                },
+                multiSelect: {
+                  description: 'Allow selecting more than one option.',
+                  type: 'boolean',
+                },
+                options: {
+                  description: 'The choices. Put any recommended option first.',
+                  items: {
+                    properties: {
+                      description: {
+                        description: 'Optional one-line explanation of the choice.',
+                        type: 'string',
+                      },
+                      label: {
+                        description: 'The choice text (concise).',
+                        type: 'string',
+                      },
+                    },
+                    required: [
+                      'label',
+                    ],
+                    type: 'object',
+                  },
+                  maxItems: 4,
+                  minItems: 2,
+                  type: 'array',
+                },
+                question: {
+                  description: 'The full question to ask.',
+                  type: 'string',
+                },
+              },
+              required: [
+                'header',
+                'options',
+                'question',
+              ],
+              type: 'object',
+            },
+            maxItems: 3,
+            minItems: 1,
+            type: 'array',
+          },
+        },
+        required: [
+          'questions',
+        ],
+        type: 'object',
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'bash',
+      description: `Execute a command in the shell and return combined stdout/stderr. To write outside the workspace, pass additional_write_dirs with the smallest concrete directories (no globs; absolute, workspace-relative, ~, or \${HOME}) and a justification. The host will not infer write paths from the command text. Use for builds, tests, git, package managers, etc. To search/read/list/edit/move files, prefer the dedicated tools (grep, read_file, ls, glob, edit_file, move_file) over shell grep/cat/ls/find/sed/mv/Move-Item — they behave identically on every OS. For symbol search or architecture questions, prefer LSP/read tools and targeted grep before shell commands.`,
+      parameters: {
+        properties: {
+          additional_write_dirs: {
+            description: `Directories this command must write outside the workspace. Directories only, no globs. Accepts absolute paths, workspace-relative paths, ~, and \${HOME}. Request the smallest set needed; the host will not infer paths from the command text.`,
+            items: {
+              type: 'string',
+            },
+            type: 'array',
+          },
+          command: {
+            description: 'Shell command to execute',
+            type: 'string',
+          },
+          justification: {
+            description: 'Required when additional_write_dirs is non-empty. Explain why those directories must be writable.',
+            type: 'string',
+          },
+          preserve_background_processes: {
+            description: 'After the shell command exits normally, keep any process-group members it intentionally left behind. Use only for deliberate daemonization, browser/GUI/session launchers such as playwright-cli open, or nohup/disown/setsid; cancellation and timeouts still kill the process group.',
+            type: 'boolean',
+          },
+          run_in_background: {
+            description: 'Run detached: returns a job id immediately and keeps running across turns (no foreground timeout). Read new output with bash_output, wait with wait, stop it with kill_shell. Use for long-running commands like servers, watchers, or builds you don\'t need to block on.',
+            type: 'boolean',
+          },
+        },
+        required: [
+          'command',
+        ],
+        type: 'object',
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'bash_output',
+      description: 'Read new output from a background job started with bash(run_in_background=true) or task(run_in_background=true). Returns the output produced since the last bash_output call for that job, plus its status (running/done/failed/killed). Does not block.',
+      parameters: {
+        properties: {
+          filter: {
+            description: 'Optional regular expression; only matching lines of the new output are returned.',
+            type: 'string',
+          },
+          job_id: {
+            description: 'The background job id (e.g. "bash-1") returned when it was started.',
+            type: 'string',
+          },
+        },
+        required: [
+          'job_id',
+        ],
+        type: 'object',
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'complete_step',
+      description: 'Record the completion of ONE step of an approved plan. Call it as you finish each step so the task list advances and the user sees what changed. Cite proof by RECEIPT ID: every tool result ends with the host\'s own id (`[receipt r_1a2b3c4d]`), and listing those ids in `receipt_ids` is exact — retyping a command instead makes the host match your text, which fails over a `cd` prefix, quoting, or argument order. For ordinary work the host has already recorded what your tools did, so anything it cannot confirm is reported alongside the sign-off rather than rejected; under a delivery floor the proof is still required. Fields: `step_id` or `step` (which task-list item), `result` (what is now true/changed), `receipt_ids` (preferred proof), `evidence` (optional items, each with `kind` = verification|review|diff|files|manual and a `summary`, plus optional `command`/`paths`, and `criterion_id` naming the acceptance criterion the proof satisfies), and optional `notes`.',
+      parameters: {
+        properties: {
+          evidence: {
+            description: 'Proof the step is done. Optional for ordinary work — the host already recorded what your tools did; required when the run is under a delivery floor.',
+            items: {
+              properties: {
+                command: {
+                  description: 'REQUIRED for verification evidence: the command as it actually ran (e.g. "go test ./...") — it is checked against this session\'s real command history.',
+                  type: 'string',
+                },
+                criterion_id: {
+                  description: 'The acceptance criterion this proof satisfies, as the plan renders it (e.g. "c2" from "accept [c2]: ..."). Cite it whenever the step has criteria: a command succeeding is not the same as a criterion being met, and the host records the proof against the criterion you name.',
+                  type: 'string',
+                },
+                kind: {
+                  description: 'verification = a command/test was run (command REQUIRED); review = a built-in review run completed and, after changes, inspected the latest changed result (the verdict/findings still apply separately); diff = a concrete code change (paths REQUIRED); files = files created/edited/inspected (paths REQUIRED); manual = a manual check.',
+                  enum: [
+                    'verification',
+                    'review',
+                    'diff',
+                    'files',
+                    'manual',
+                  ],
+                  type: 'string',
+                },
+                paths: {
+                  description: 'REQUIRED for diff/files evidence: the files this evidence refers to, as the paths were passed to the tools that touched them.',
+                  items: {
+                    type: 'string',
+                  },
+                  type: 'array',
+                },
+                summary: {
+                  description: 'The evidence itself: the test result, what the diff does, or what was confirmed.',
+                  type: 'string',
+                },
+              },
+              required: [
+                'kind',
+                'summary',
+              ],
+              type: 'object',
+            },
+            type: 'array',
+          },
+          notes: {
+            description: 'Optional caveats, follow-ups, or anything deferred.',
+            type: 'string',
+          },
+          operation_id: {
+            description: 'The host operation whose receipts are being cited. Required when citing runtime-issued receipts so evidence from another change cannot satisfy this step.',
+            type: 'string',
+          },
+          receipt_ids: {
+            description: 'PREFERRED proof: the host receipt ids printed after the tool calls that did the work (e.g. "r_1a2b3c4d"). Citing an id is exact — the host issued it — so shell prefixes, quoting, argument order, and working directory never matter. Use these instead of retyping a command.',
+            items: {
+              type: 'string',
+            },
+            type: 'array',
+          },
+          result: {
+            description: 'What is now true or changed as a result of finishing this step.',
+            type: 'string',
+          },
+          step: {
+            description: 'Which plan step this completes — its title or number, matching the task list. Use only when the item has no step_id.',
+            type: 'string',
+          },
+          step_id: {
+            description: 'PREFERRED: the stable step_id of the task-list item this completes, e.g. "plan_step_02". Unlike a title or a number it survives retitles, insertions, and reordering, so cite it whenever the item has one.',
+            type: 'string',
+          },
+          step_index: {
+            description: 'Optional 1-based task-list item number. Use only when the item has no step_id; an index goes stale the moment a step is inserted above it.',
+            minimum: 1,
+            type: 'integer',
+          },
+        },
+        required: [
+          'result',
+        ],
+        type: 'object',
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'compress',
+      description: 'Compress a selected part of the current model-visible conversation without deleting visible history. Use only when the user explicitly asks for context compression. Choose `before` to summarize everything before the uniquely matched user turn while keeping that turn and later context, or `after` to summarize from that turn through the last completed turn while keeping the active turn. The anchor must be an exact, unique excerpt from a real user message; use a longer excerpt if the tool reports multiple matches.',
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          anchor: {
+            description: 'An exact, unique excerpt from one real user message in the current model-visible conversation.',
+            maxLength: 512,
+            minLength: 1,
+            type: 'string',
+          },
+          direction: {
+            description: 'Which side of the anchor user turn to compress.',
+            enum: [
+              'before',
+              'after',
+            ],
+            type: 'string',
+          },
+          focus: {
+            description: 'Optional guidance about facts or decisions the summary must preserve.',
+            maxLength: 2000,
+            type: 'string',
+          },
+        },
+        required: [
+          'anchor',
+          'direction',
+        ],
+        type: 'object',
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_file',
+      description: 'Replace an exact string in a file with another. old_string must occur exactly once; add surrounding context to disambiguate. Use for targeted edits instead of rewriting the whole file.',
+      parameters: {
+        properties: {
+          new_string: {
+            description: 'Replacement text (may be empty to delete)',
+            type: 'string',
+          },
+          old_string: {
+            description: 'Exact text to replace (must be unique in the file)',
+            type: 'string',
+          },
+          path: {
+            description: 'File path',
+            type: 'string',
+          },
+          source_token: {
+            description: 'Optional: the source_token printed by the read_file that showed you this file. Citing it names the exact version you are editing, so a change made outside this session is caught instead of silently overwritten.',
+            type: 'string',
+          },
+        },
+        required: [
+          'new_string',
+          'old_string',
+          'path',
+        ],
+        type: 'object',
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'kill_shell',
+      description: 'Terminate a running background job (bash or task) started with run_in_background. A no-op if the job has already finished or the id is unknown.',
+      parameters: {
+        properties: {
+          job_id: {
+            description: 'The background job id to terminate (e.g. "bash-1").',
+            type: 'string',
+          },
+        },
+        required: [
+          'job_id',
+        ],
+        type: 'object',
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_file',
+      description: 'Read a text file with optional line offset/limit. Output prefixes each line with its 1-based number (e.g. `   42→...`) so subsequent edit_file calls can target exact lines. Use `offset` and `limit` to page through large files; the tool reports total length and pagination hints in a trailer. Set `intent` to state why you are reading: inspect (default, a bounded preview), range (an explicit window), or full (scan the whole file). Independent reads with no data dependency should be issued in the same round.',
+      parameters: {
+        properties: {
+          cursor: {
+            description: 'Continuation cursor returned by a previous read_file result. It names the exact next position; pass it back unchanged instead of computing an offset.',
+            type: 'string',
+          },
+          intent: {
+            description: 'Why you are reading. inspect (default): a bounded preview; one page is a complete answer. range (default when offset or limit is given): an explicit window. full: scan the whole file, paging until every line has been delivered.',
+            enum: [
+              'inspect',
+              'range',
+              'full',
+            ],
+            type: 'string',
+          },
+          limit: {
+            description: 'Maximum lines to return (default 2000)',
+            minimum: 1,
+            type: 'integer',
+          },
+          offset: {
+            description: '0-based line offset to start reading from (default 0)',
+            minimum: 0,
+            type: 'integer',
+          },
+          path: {
+            description: 'File path',
+            type: 'string',
+          },
+        },
+        required: [
+          'path',
+        ],
+        type: 'object',
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'todo_write',
+      description: 'Record and update a structured task list for the current work. Send the COMPLETE list every call — it replaces the previous one. Use it to plan multi-step work and show progress: keep exactly one item in_progress at a time, and flip an item to completed the moment it\'s done (don\'t batch completions). Skip it for trivial single-step tasks. The list is two-level: a `level` 0 item is a PHASE (a milestone) and the `level` 1 items after it are its concrete sub-steps; omit `level` (0) for a flat list. Each item has `content` (imperative, e.g. "Add the parser"), `status` (pending|in_progress|completed), `activeForm` (present-continuous shown while in progress, e.g. "Adding the parser"), optional `level` (0 phase | 1 sub-step), and `step_id` — an item\'s stable identity. COPY `step_id` VERBATIM for every item that already has one: it is how a completion stays attached to its step when you retitle it, insert a step above it, or reorder the list. Give a new item a fresh unique id (e.g. "plan_step_07"); never reuse or renumber an existing one.',
+      parameters: {
+        properties: {
+          todos: {
+            description: 'The complete task list, in order. Replaces any previous list.',
+            items: {
+              properties: {
+                activeForm: {
+                  description: 'Present-continuous form shown while the task is in progress (e.g. "Running tests").',
+                  type: 'string',
+                },
+                content: {
+                  description: 'Imperative description of the task.',
+                  type: 'string',
+                },
+                level: {
+                  description: 'Nesting level: 0 = phase/milestone, 1 = a sub-step of the phase above it. Omit for a flat list.',
+                  enum: [
+                    0,
+                    1,
+                  ],
+                  type: 'integer',
+                },
+                status: {
+                  description: 'Task state. Keep at most one in_progress.',
+                  enum: [
+                    'pending',
+                    'in_progress',
+                    'completed',
+                  ],
+                  type: 'string',
+                },
+                step_id: {
+                  description: 'Stable identity for this item, e.g. "plan_step_02". Copy it verbatim from the item\'s previous entry so completions stay attached across retitles, insertions, and reordering; use a fresh unique id for a genuinely new item.',
+                  type: 'string',
+                },
+              },
+              required: [
+                'content',
+                'status',
+              ],
+              type: 'object',
+            },
+            type: 'array',
+          },
+        },
+        required: [
+          'todos',
+        ],
+        type: 'object',
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_goal',
+      description: 'Report this turn\'s disposition for the active goal. Call it at the end of every goal turn instead of using prose markers: `continue` (work is ongoing — give a concrete next_action), `complete` (the request is fully done, output format and constraints satisfied, and verification was attempted or reported unavailable), or `blocked` (only the user can unblock: missing user-only information, an irreversible/externally visible operation, or changed scope). The host validates your claim against Delivery acceptance criteria and decides whether to continue automatically. Fields: `status` (required, one of continue|complete|blocked), `reason` (required for continue and blocked, optional for complete), `next_action` (optional concrete next step; recommended for continue), `completion` (recommended with complete: `verified` is checked against real receipts, while `unverified` and `risks` are yours to declare and never count against you).',
+      parameters: {
+        properties: {
+          completion: {
+            description: 'Your own account of the finished work.',
+            properties: {
+              risks: {
+                description: 'Known risks to carry forward.',
+                items: {
+                  type: 'string',
+                },
+                type: 'array',
+              },
+              unverified: {
+                description: 'What you did NOT verify. The host cannot infer what you skipped, so stating it is the only way it is known — and it never blocks completion.',
+                items: {
+                  type: 'string',
+                },
+                type: 'array',
+              },
+              verified: {
+                description: 'Commands you ran as proof, as they actually ran. One that never ran, failed, or predates your latest change is recorded as an unbacked claim.',
+                items: {
+                  type: 'string',
+                },
+                type: 'array',
+              },
+            },
+            type: 'object',
+          },
+          next_action: {
+            description: 'Optional concrete next step. Recommended for continue so the host can guide the next turn.',
+            type: 'string',
+          },
+          reason: {
+            description: 'Short explanation. REQUIRED for continue and blocked; optional for complete.',
+            type: 'string',
+          },
+          status: {
+            description: 'continue = keep working autonomously; complete = the goal is fully done and verified; blocked = only the user can unblock.',
+            enum: [
+              'continue',
+              'complete',
+              'blocked',
+            ],
+            type: 'string',
+          },
+        },
+        required: [
+          'status',
+        ],
+        type: 'object',
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'use_capability',
+      description: 'Fixed-schema capability proxy. Prefer search(query, limit<=8), then inspect one exact capability, then call it. list is a compact diagnostic inventory only. Supports stable ids such as tool:grep, skill:review, mcp-tool:server/tool, task:subagent, workflow:name, and web:/lsp:/session:/memory: namespaces. memory:remember saves facts (description+body required; activation="relevant" on create; omit activation on update; "pinned" only if user asks); memory:forget(name); tool:memory(operation=search|read|list). decline records a reason for a prefer capability. Independent list/search/inspect calls are read-only and may be issued together. Calls keep the provider-visible schema fixed; real writers still pass permission, plan mode, sandbox, write-path, and workspace-lease checks.',
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          action: {
+            description: 'Use search for discovery, inspect one exact result, then call. list is diagnostic only.',
+            enum: [
+              'list',
+              'search',
+              'inspect',
+              'call',
+              'decline',
+            ],
+            type: 'string',
+          },
+          arguments: {
+            description: 'Raw MCP tool arguments for action=call',
+            type: 'object',
+          },
+          capability_id: {
+            description: 'Capability id such as skill:review, mcp-server:github, or mcp-tool:github/search_issues. Not required for action=list.',
+            type: 'string',
+          },
+          limit: {
+            default: 5,
+            description: 'Maximum search results; defaults to 5.',
+            maximum: 8,
+            minimum: 1,
+            type: 'integer',
+          },
+          query: {
+            description: 'Local catalog query required for action=search. No process or network is started.',
+            type: 'string',
+          },
+          reason: {
+            description: 'Required non-empty reason when action=decline',
+            type: 'string',
+          },
+        },
+        required: [
+          'action',
+        ],
+        type: 'object',
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'view_image',
+      description: 'Read a local PNG, JPEG, GIF, or WebP image by path and return visual content through native vision or the configured image-understanding model. Use this for image paths instead of read_file. Maximum file size: 3 MiB; maximum dimensions: 40 million pixels.',
+      parameters: {
+        properties: {
+          path: {
+            description: 'Image file path',
+            type: 'string',
+          },
+        },
+        required: [
+          'path',
+        ],
+        type: 'object',
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wait',
+      description: 'Block until background jobs finish, then return each job\'s status and final output/answer. Use to collect the result of a task(run_in_background) or bash(run_in_background) before continuing. Omit job_ids to wait for every running job.',
+      parameters: {
+        properties: {
+          job_ids: {
+            description: 'Background job ids to wait for. Omit to wait for every currently-running job.',
+            items: {
+              type: 'string',
+            },
+            type: 'array',
+          },
+          timeout_seconds: {
+            description: 'Optional maximum seconds to block before returning current progress. Omit to wait until the jobs finish.',
+            minimum: 1,
+            type: 'integer',
+          },
+        },
+        type: 'object',
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'write_file',
+      description: 'Write content to a file at the given path (overwriting existing content). Creates parent directories as needed.',
+      parameters: {
+        properties: {
+          content: {
+            description: 'Full content to write',
+            type: 'string',
+          },
+          path: {
+            description: 'File path',
+            type: 'string',
+          },
+          source_token: {
+            description: 'Optional: the source_token printed by the read_file that showed you this file. Citing it names the exact version you are editing, so a change made outside this session is caught instead of silently overwritten.',
+            type: 'string',
+          },
+        },
+        required: [
+          'content',
+          'path',
+        ],
+        type: 'object',
+      },
+    },
+  },
+]

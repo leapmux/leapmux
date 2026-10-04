@@ -238,17 +238,36 @@ func (m *Manager) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) 
 	return m.EnqueueWithMutation(ctx, input, nil)
 }
 
+// EnqueueReportingAdded is Enqueue that also reports whether this call added the
+// item. A repeat of an item that the queue holds, or that it already delivered,
+// adds nothing and reports false. A caller that must act once for each item acts
+// only on true.
+func (m *Manager) EnqueueReportingAdded(ctx context.Context, input NewItem) (Snapshot, bool, error) {
+	return m.enqueue(ctx, input, nil)
+}
+
 // EnqueueWithMutation commits the queued input and related database changes together.
 // The callback must not commit the transaction or perform provider I/O.
 func (m *Manager) EnqueueWithMutation(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, error) {
+	snapshot, _, err := m.enqueue(ctx, input, apply)
+	return snapshot, err
+}
+
+func (m *Manager) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, bool, error) {
 	// The classifier rewrites a slash command into its own kind, so the test
 	// must see the kind the store will store, not the one the client sent.
 	if err := m.refuseUnacceptedKind(input.AgentID, m.store.Classify(input.Kind, input.Text)); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, false, err
 	}
-	return m.mutateAndDrain(input.AgentID, alwaysChanged(func() (Snapshot, error) {
-		return m.store.enqueue(ctx, input, apply)
+	// mutateAndDrain can refuse before it calls the store, and then nothing was
+	// added.
+	added := false
+	snapshot, err := m.mutateAndDrain(input.AgentID, alwaysChanged(func() (Snapshot, error) {
+		inner, innerAdded, innerErr := m.store.enqueue(ctx, input, apply)
+		added = innerAdded
+		return inner, innerErr
 	}))
+	return snapshot, added && err == nil, err
 }
 
 func (m *Manager) Snapshot(ctx context.Context, agentID string) (Snapshot, error) {
@@ -614,10 +633,10 @@ func (m *Manager) BeginPlannedRestart(ctx context.Context, agentID string) (*Pla
 	}, nil
 }
 
-// Finish records that the replaced process cannot finish its old turn. A
-// successful replacement restores only the temporary pause that this guard
-// created. A failed launch keeps that pause for an explicit retry.
-func (r *PlannedRestart) Finish(ctx context.Context, processReplaced, restartSucceeded bool) error {
+// Finish clears an old turn that cannot send another end signal. A process
+// replacement or an already observed native turn end makes oldTurnEnded true.
+// A successful replacement restores only this guard's temporary pause.
+func (r *PlannedRestart) Finish(ctx context.Context, oldTurnEnded, restartSucceeded bool) error {
 	if r == nil {
 		return nil
 	}
@@ -627,8 +646,8 @@ func (r *PlannedRestart) Finish(ctx context.Context, processReplaced, restartSuc
 		// Only the last restart in flight resumes. An overlapping restart keeps
 		// its own process stop ahead of the queue.
 		last := r.coordinator.plannedRestarts == 0
-		resumeQueue := last && r.resumeQueue && (!processReplaced || restartSucceeded)
-		snapshot, changed, err := r.manager.store.finishPlannedRestart(ctx, r.agentID, processReplaced, resumeQueue)
+		resumeQueue := last && r.resumeQueue && (!oldTurnEnded || restartSucceeded)
+		snapshot, changed, err := r.manager.store.finishPlannedRestart(ctx, r.agentID, oldTurnEnded, resumeQueue)
 		if err == nil && changed {
 			r.manager.observer.QueueChanged(snapshot)
 		}

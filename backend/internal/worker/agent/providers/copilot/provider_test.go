@@ -8,6 +8,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -196,4 +197,11 @@ func TestCopilotControlIDSeparatesKindsAndSessions(t *testing.T) {
 	}
 	assert.Equal(t, copilotControlID("session-1", "permission", "1"), copilotControlID("session-1", "permission", "1"),
 		"the same request keeps one identity across announcements")
+}
+
+// The plugin states the child capabilities that the agent type implements. A
+// subagent tab reads them before its root runs.
+func TestPluginStatesTheChildCapabilitiesOfTheAgent(t *testing.T) {
+	t.Parallel()
+	agenttest.AssertChildCapabilities(t, Registration().Plugin, (*Agent)(nil))
 }

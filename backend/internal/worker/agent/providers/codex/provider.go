@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"slices"
 
+	"github.com/leapmux/leapmux/internal/util/optionmap"
+
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -163,7 +165,9 @@ func (codexProvider) SyntheticInterruptNotice() string { return "[Request interr
 func (codexProvider) PermissionModeFromRawInput(string) (string, bool) { return "", false }
 
 // Multi-Agent V2 rejects direct app-server input for spawned child threads.
-func (codexProvider) SupportsChildSteering() bool { return false }
+
+// ChildCapabilities.AcceptsInterrupt is true: Multi-Agent V2 interrupts a spawned child
+// thread directly. See InterruptChild in subagent.go.
 
 // ReportsDefaultModelSentinel is false: Codex stores the sentinel until the
 // thread/start lifecycle response reports a concrete model, and model/list never
@@ -195,4 +199,9 @@ func codexMCPElicitationMeta(requestPayload json.RawMessage, persist string) boo
 		return false
 	}
 	return slices.Contains(meta.Persist, persist)
+}
+
+// ChildCapabilities states the native child operations that this provider supports.
+func (codexProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
+	return agent.ChildCapabilities{AcceptsMessages: false, AcceptsInterrupt: true}
 }

@@ -7,18 +7,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// overlayOptionGroupCurrents returns the groups with each group's CurrentValue
-// replaced by the persisted/overridden selection (when present), so the read
-// model reflects the agent's chosen values rather than just the catalog. Groups
-// whose current value is unchanged pass through by reference; only the patched
-// ones are cloned, keeping the shared cached catalog untouched.
-//
-// A persisted value is only overlaid when it is one of the group's options (or
-// the group enumerates none): if a stale catalog built for a different model is
-// being served, its option list and the persisted selection can disagree, and
-// forcing an out-of-list value as CurrentValue would render an invalid selection.
-// In that case the catalog's own (valid) current is kept until the live catalog
-// for the persisted model arrives.
+// overlayOptionGroupCurrents applies persisted selections to the catalog.
+// Clone only changed groups, so the shared catalog stays unchanged.
+// Keep the catalog selection when a persisted value is absent from its choices.
+// A stale catalog can list choices for a different model.
+// Its live replacement will resolve that difference.
 func overlayOptionGroupCurrents(groups []*leapmuxv1.AvailableOptionGroup, current map[string]string) []*leapmuxv1.AvailableOptionGroup {
 	if len(groups) == 0 {
 		return groups
@@ -36,8 +29,7 @@ func overlayOptionGroupCurrents(groups []*leapmuxv1.AvailableOptionGroup, curren
 	return out
 }
 
-// optionValueInGroup reports whether v is selectable in g: either g enumerates no
-// options (free-form / not-yet-populated) or one of its options has id == v.
+// optionValueInGroup accepts a listed choice or a value in an empty catalog.
 func optionValueInGroup(g *leapmuxv1.AvailableOptionGroup, v string) bool {
 	opts := g.GetOptions()
 	if len(opts) == 0 {
@@ -51,29 +43,56 @@ func optionValueInGroup(g *leapmuxv1.AvailableOptionGroup, v string) bool {
 	return false
 }
 
-// optionGroupsView returns an agent's configuration axes as config option
-// groups: the manager's catalog (running provider, cached, or static fallback)
-// overlaid with the agent's persisted current selections plus any additional
-// overrides (e.g. a permission-mode change being broadcast before it is re-read
-// from the DB). Package-level so both *Service and *OutputHandler can use it.
+// optionGroupsView combines the catalog with this row's stored selections.
+// A root fills absent selections from provider defaults.
+// A child keeps absent selections unknown because its native configuration can differ.
 func optionGroupsView(agents *agent.Manager, a *db.Agent, overrides map[string]string) []*leapmuxv1.AvailableOptionGroup {
-	current := loadOptions(agents.Registry(), a.Options, a.AgentProvider)
-	for k, v := range overrides {
-		if v != "" {
-			current[k] = v
+	persisted := parseOptionGroups(a.OptionGroups)
+	current := parseOptions(a.Options)
+	if a.ParentAgentID.Valid {
+		for _, group := range persisted {
+			if _, present := current[group.GetId()]; !present && group.GetCurrentValue() != "" {
+				current[group.GetId()] = group.GetCurrentValue()
+			}
+		}
+	} else {
+		current = resolveProviderDefaults(agents.Registry(), current, a.AgentProvider)
+	}
+	for key, value := range overrides {
+		if value != "" {
+			current[key] = value
 		}
 	}
-	// Build the not-running catalog from THIS row's persisted option_groups -- the last live
-	// group set, carrying the dynamically discovered model list, the live-filtered groups (e.g.
-	// Fast Mode / Output Style / a permission mode with 'auto' removed) and the provider's display
-	// order, none of which the static registry reconstruction can reproduce. Passing the snapshot
-	// to OptionGroupsForRow (rather than seeding the shared cache and reading it back) keeps this
-	// read self-consistent with the row it loaded: a concurrent reader's older snapshot can't be
-	// served here via the shared cache. The agent's current model lets the static fallback (used
-	// only when the row has no persisted catalog either) build the effort group for THAT model. A
-	// running agent's live catalog still takes precedence inside OptionGroupsForRow.
-	groups := agents.OptionGroupsForRow(a.ID, a.AgentProvider, current[agent.OptionIDModel], parseOptionGroups(a.OptionGroups))
-	return overlayOptionGroupCurrents(groups, current)
+	// The row's last live catalog preserves dynamic choices and display order.
+	// A running provider still supplies its current catalog through the manager.
+	groups := agents.OptionGroupsForRow(a.ID, a.AgentProvider, current[agent.OptionIDModel], persisted)
+	if !a.ParentAgentID.Valid {
+		return overlayOptionGroupCurrents(groups, current)
+	}
+	// A child reports its actual selections. Catalog defaults cannot replace them.
+	// A custom native model can be absent from the parent's selectable choices.
+	out := make([]*leapmuxv1.AvailableOptionGroup, len(groups))
+	for index, group := range groups {
+		if group == nil {
+			continue
+		}
+		out[index] = proto.Clone(group).(*leapmuxv1.AvailableOptionGroup)
+		value := current[group.GetId()]
+		out[index].CurrentValue = value
+		if value != "" {
+			listed := false
+			for _, option := range group.GetOptions() {
+				if option.GetId() == value {
+					listed = true
+					break
+				}
+			}
+			if !listed {
+				out[index].Options = append(out[index].Options, &leapmuxv1.AvailableOption{Id: value, Name: value})
+			}
+		}
+	}
+	return out
 }
 
 // optionGroupsForAgent returns the agent's option groups overlaid with its

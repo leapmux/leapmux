@@ -1,0 +1,11 @@
+{{- $checklist := index hugo.Data "feature_matrix" "checklist" -}}
+<div class="provider-logos">
+  {{- range $group := $checklist.providerGroups -}}
+    {{- range $provider := $group -}}
+      <a class="provider-link" href="{{ $provider.url }}">
+        <img src="{{ $provider.icon }}" width="64" height="64" alt="{{ $provider.label }}">
+        <span class="provider-hover-label" aria-hidden="true">{{ $provider.label }}</span>
+      </a>
+    {{- end -}}
+  {{- end -}}
+</div>

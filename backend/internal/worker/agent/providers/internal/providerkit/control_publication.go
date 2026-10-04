@@ -22,7 +22,15 @@ type outstandingControlRequest struct {
 	cancelAnswer any
 }
 
-// PublishControlRequest registers one control request and publishes it to the reader.
+// PublishControlRequest registers one control request and publishes it to the reader,
+// as PublishControlRequestInSession does, for a request that belongs to the provider
+// session that the sink holds now.
+func (b *JSONRPCProcess) PublishControlRequest(sink agent.ControlServices, content []byte, cancelAnswer any) {
+	b.PublishControlRequestInSession(sink, "", content, cancelAnswer)
+}
+
+// PublishControlRequestInSession registers one control request and publishes it to the
+// reader.
 //
 // This is the single registrar for an inbound JSON-RPC control REQUEST: one the
 // provider raised with a JSON-RPC id, which LeapMux answers with a JSON-RPC response.
@@ -31,13 +39,19 @@ type outstandingControlRequest struct {
 // both. A storage failure registers nothing, publishes nothing, and answers the
 // provider with a JSON-RPC error.
 //
+// agentSessionID is the provider session that the request belongs to. The sink stores
+// it with the request, and the worker accepts an answer only while the agent is in
+// that session. An empty agentSessionID makes the sink store the session that it holds
+// now. A caller states the session when the request can arrive before the sink learns
+// it, as a request that an agent raises while it opens its session does.
+//
 // A provider whose control requests are NOT JSON-RPC requests keeps its own registry
 // and its own withdrawal path, because there is no id here to key them by and no
 // JSON-RPC response shape to answer them with. Claude sends a `control_request`
 // envelope, Pi an extension_ui_response, ZCode re-announces with a fresh wire id per
 // announcement, Copilot raises native events keyed by session and request id, and the
 // Codex plan prompt is LeapMux's own and carries no id at all.
-func (b *JSONRPCProcess) PublishControlRequest(sink agent.ControlServices, content []byte, cancelAnswer any) {
+func (b *JSONRPCProcess) PublishControlRequestInSession(sink agent.ControlServices, agentSessionID string, content []byte, cancelAnswer any) {
 	wireID, _, found := agent.ExtractJSONRPCID(content)
 	identity, valid := agent.NewControlRequestIdentity(wireID)
 	if !found || !valid {
@@ -53,7 +67,7 @@ func (b *JSONRPCProcess) PublishControlRequest(sink agent.ControlServices, conte
 	// below compares against the state this registration saw.
 	generation := b.withdrawGeneration
 	b.outstandingMu.Unlock()
-	if err := sink.PublishControlRequest(agent.ControlRequest{RequestID: identity.Key, Payload: content}); err != nil {
+	if err := sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: agentSessionID, RequestID: identity.Key, Payload: content}); err != nil {
 		slog.Error("publish control request", "agent_id", b.agentID, "request_id", identity.Key, "error", err)
 		b.outstandingMu.Lock()
 		delete(b.outstandingControls, identity.Key)
@@ -107,6 +121,28 @@ func (b *JSONRPCProcess) WithdrawControlRequest(sink agent.ControlServices, requ
 	b.withdrawGeneration++
 	b.outstandingMu.Unlock()
 	sink.CancelControlRequest(requestID)
+}
+
+// WithdrawOutstandingControlRequest retires one control request that the provider
+// withdrew by an event of its own, and reports whether the request was still open.
+//
+// It differs from WithdrawControlRequest in one precondition: the request must
+// still be REGISTERED. A provider that learns of a withdrawal from a broad event --
+// Grok Build states that an interaction resolved, whoever resolved it -- cannot
+// tell that event from the echo of an answer the reader already sent. That answer
+// removed the record in SendRawInput, so a withdrawal keyed on the record alone
+// never cancels a card the reader just decided.
+func (b *JSONRPCProcess) WithdrawOutstandingControlRequest(sink agent.ControlServices, requestID string) bool {
+	b.outstandingMu.Lock()
+	if _, open := b.outstandingControls[requestID]; !open {
+		b.outstandingMu.Unlock()
+		return false
+	}
+	delete(b.outstandingControls, requestID)
+	b.withdrawGeneration++
+	b.outstandingMu.Unlock()
+	sink.CancelControlRequest(requestID)
+	return true
 }
 
 // WithdrawAllControlRequests answers and retires every control request still open.
@@ -165,23 +201,51 @@ func (b *JSONRPCProcess) answerWithdrawnControl(requestID string, record outstan
 	}
 }
 
-// forgetOutstandingControl drops the record that one outgoing frame answers.
+// takeOutstandingControl removes the record that one outgoing frame answers, and
+// returns the function that puts it back.
 //
 // Every control response reaches the provider through SendRawInput, so reading the id
 // there is what keeps the registry to the requests that are still open. A frame that
 // answers nothing (a notification, a prompt) carries no id and changes nothing.
-func (b *JSONRPCProcess) forgetOutstandingControl(raw []byte) {
+//
+// It runs BEFORE the write, because a withdrawal can run during the write -- a
+// provider that reports an interaction resolved, whoever resolved it -- and a record
+// still present then cancels the card that the reader just answered.
+//
+// restore puts the record back for a write that certainly delivered nothing, so a
+// later withdrawal still reaches the request. It does nothing when any withdrawal
+// ran in between: a withdrawal of every request (Stop) must not see a request that it
+// retired come back.
+func (b *JSONRPCProcess) takeOutstandingControl(raw []byte) (restore func()) {
+	nothing := func() {}
 	wireID, _, found := agent.ExtractJSONRPCID(raw)
 	if !found {
-		return
+		return nothing
 	}
 	identity, valid := agent.NewControlRequestIdentity(wireID)
 	if !valid {
-		return
+		return nothing
 	}
 	b.outstandingMu.Lock()
+	record, open := b.outstandingControls[identity.Key]
+	if !open {
+		b.outstandingMu.Unlock()
+		return nothing
+	}
 	delete(b.outstandingControls, identity.Key)
+	generation := b.withdrawGeneration
 	b.outstandingMu.Unlock()
+	return func() {
+		b.outstandingMu.Lock()
+		defer b.outstandingMu.Unlock()
+		if b.withdrawGeneration != generation {
+			return
+		}
+		if b.outstandingControls == nil {
+			b.outstandingControls = make(map[string]outstandingControlRequest)
+		}
+		b.outstandingControls[identity.Key] = record
+	}
 }
 
 // MCPElicitationCancelAnswer is the action the Model Context Protocol defines for an

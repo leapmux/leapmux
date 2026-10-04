@@ -1,5 +1,6 @@
 import type { ChildProcess } from 'node:child_process'
 import { rmSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   closeTestChannels,
   getUserId,
@@ -15,7 +16,7 @@ import { cleanupOnFailure, finishCleanup } from './cleanup'
 import { stopProcess, stopProcesses } from './process'
 import { spawnTestProcess } from './processRegistry'
 import { createTestDirectory } from './runDirectory'
-import { findFreePort, getGlobalState, hubSpawnEnv, waitForServer } from './server'
+import { getGlobalState, hubSpawnEnv, hubUrlFromStateJson, waitForHubReady, waitForHubStateFile } from './server'
 
 /** A registered worker with its own process and database directory. */
 export interface HarnessWorker {
@@ -67,17 +68,17 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
   }
 
   return cleanupOnFailure(async () => {
-    const port = await findFreePort()
-    // The hostname must match the localhost cookies that loginViaToken installs.
-    hubUrl = `http://localhost:${port}`
-    const hubProc = spawnTestProcess(binaryPath, ['hub', '-listen', `:${port}`, '-data-dir', hubDataDir], {
+    const hubProc = spawnTestProcess(binaryPath, ['hub', '-listen', '127.0.0.1:0', '-data-dir', hubDataDir], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: hubSpawnEnv(),
     })
     processes.add(hubProc)
     hubProc.stdout?.resume()
     hubProc.stderr?.resume()
-    await waitForServer(hubUrl)
+    const state = await waitForHubStateFile(join(hubDataDir, 'state.json'), hubProc)
+    // The localhost URL matches the cookies that loginViaToken installs.
+    hubUrl = hubUrlFromStateJson(state)
+    await waitForHubReady(hubUrl, hubProc)
     const adminToken = await signUpViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
     const adminUserId = await getUserId(hubUrl, adminToken)
     const workers: HarnessWorker[] = []

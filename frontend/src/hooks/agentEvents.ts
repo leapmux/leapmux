@@ -8,6 +8,7 @@
  */
 import type { AgentActivityState, AgentChatMessage, AgentControlCancelRequest, AgentControlRequest, AgentStatusChange, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
+import type { AgentSettledEventDetail } from '~/lib/agentSettledEvent'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { RateLimitInfo, RateLimitUpdate } from '~/models/agentSession'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
@@ -30,6 +31,7 @@ import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentStatus, ControlResponseState, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { isTabOnScreen } from '~/hooks/watchPlan'
+import { AGENT_SETTLED_EVENT } from '~/lib/agentSettledEvent'
 import { assignDefined, isObject, pickBoolean, pickCounter, pickNumber, pickString } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
 import { extractContextUsage, extractPlanFilePath, extractPlanUpdated, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
@@ -792,20 +794,12 @@ export function isAgentTabOnScreen(
 }
 
 /**
- * The AgentActivityChanged branch: store the Worker's answer, and alert on the
- * edge.
- *
- * One function so the store write and the alert cannot separate. The store
- * answers whether this write was the busy -> idle EDGE, which is not the same
- * as an idle report arriving: the same value reaches a client twice when a
- * catch-up replay lands beside a live event, and an idle report can arrive for
- * an agent this client never saw working. See AgentActivityStore.apply.
- *
- * Every AgentActivityChanged is a TRANSITION, so this runs in every catch-up
- * phase. A settle that lands while the tab replays is a live settle -- the agent
- * finished while the burst drained -- and it must ring. The catch-up BASELINE is
- * a level and arrives on CatchUpStart instead; AgentActivityStore.seedPublished
- * takes it.
+ * Apply the Worker's activity state and notify on its settled transition.
+ * The store detects the transition before the sound callback runs.
+ * Initial and repeated idle reports create no notification.
+ * A live transition still notifies during replay.
+ * CatchUpStart supplies the replay baseline through AgentActivityStore.seedPublished.
+ * Report the browser receipt after the synchronous sound callback returns.
  */
 export function handleActivityChanged(
   agentId: string,
@@ -816,8 +810,15 @@ export function handleActivityChanged(
     onAgentSettled?: (agentId: string, numToolUses?: number) => void
   },
 ): void {
-  if (stores.agentActivityStore.apply(agentId, value.state))
-    handleAgentSettled(agentId, value.numToolUses, stores)
+  if (!stores.agentActivityStore.apply(agentId, value.state))
+    return
+  handleAgentSettled(agentId, value.numToolUses, stores)
+  const detail: AgentSettledEventDetail = {
+    agentId,
+    state: value.state,
+    ...(value.numToolUses === undefined ? {} : { numToolUses: value.numToolUses }),
+  }
+  window.dispatchEvent(new CustomEvent(AGENT_SETTLED_EVENT, { detail }))
 }
 
 /**

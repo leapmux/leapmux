@@ -148,7 +148,7 @@ func zcodeEventLine(t *testing.T, seq int64, eventType string, payload string) [
 func zcodeStateLine(t *testing.T, scope, reason, patch string) []byte {
 	t.Helper()
 	line, err := json.Marshal(map[string]any{
-		"method": NotifyStateUpdated,
+		"method": contracts.ZCodeMethodStateUpdated,
 		"params": map[string]any{
 			"scope":     scope,
 			"sessionId": "sess-1",

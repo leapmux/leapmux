@@ -269,6 +269,66 @@ func TestCopilotNativeSessionRejectsAnEmptyIdentity(t *testing.T) {
 	require.ErrorContains(t, err, "session ID is empty")
 }
 
+func TestCopilotNativeSessionReportsReasoningSummaryOptionFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		resume bool
+	}{{name: "create"}, {name: "resume", resume: true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
+				Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
+				WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
+				Env:     []string{"LEAPMUX_TEST_COPILOT_REJECT_REASONING_SUMMARIES=1"},
+			})
+			opts := agent.Options{AgentID: "native-summary", WorkingDir: t.TempDir(), Shell: testutil.TestShell()}
+			connection, err := startCopilotConnectionForTest(t, opts, func(*providerkit.ParsedLine) {})
+			require.NoError(t, err)
+			t.Cleanup(func() { connection.Stop(); _ = connection.Wait() })
+			_, err = connection.openSession(opts, "expected-session", tc.resume, time.Second)
+			require.ErrorContains(t, err, "enable Copilot reasoning summaries")
+			var nativeError *providerkit.JSONRPCResponseError
+			require.ErrorAs(t, err, &nativeError)
+			require.ErrorContains(t, nativeError, "Reasoning summaries refused")
+		})
+	}
+}
+
+func TestCopilotNativeSessionRequestsReasoningSummaryOnCreateAndResume(t *testing.T) {
+	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
+	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
+		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
+		Env:     []string{"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath},
+	})
+	opts := agent.Options{AgentID: "native-summary", WorkingDir: t.TempDir(), Shell: testutil.TestShell()}
+	connection, err := startCopilotConnectionForTest(t, opts, func(*providerkit.ParsedLine) {})
+	require.NoError(t, err)
+	t.Cleanup(func() { connection.Stop(); _ = connection.Wait() })
+	for _, resume := range []bool{false, true} {
+		_, err := connection.openSession(opts, "native-summary-session", resume, time.Second)
+		require.NoError(t, err)
+	}
+
+	file, err := os.Open(requestsPath)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, file.Close()) }()
+	decoder := json.NewDecoder(file)
+	openCalls := 0
+	for decoder.More() {
+		var request struct {
+			Method string         `json:"method"`
+			Params map[string]any `json:"params"`
+		}
+		require.NoError(t, decoder.Decode(&request))
+		if request.Method != "session.create" && request.Method != "session.resume" {
+			continue
+		}
+		openCalls++
+		require.Equal(t, "detailed", request.Params["reasoningSummary"], request.Method)
+	}
+	require.Equal(t, 2, openCalls)
+}
+
 func TestCopilotUsesNativeSessionProtocol(t *testing.T) {
 	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
 	argsPath := filepath.Join(t.TempDir(), "args")
@@ -296,6 +356,9 @@ func TestCopilotUsesNativeSessionProtocol(t *testing.T) {
 	defer func() { require.NoError(t, file.Close()) }()
 	decoder := json.NewDecoder(file)
 	var created map[string]any
+	var summaryOptions map[string]any
+	createdIndex, summaryIndex := -1, -1
+	requestIndex := 0
 	for decoder.More() {
 		var request struct {
 			Method string         `json:"method"`
@@ -304,9 +367,18 @@ func TestCopilotUsesNativeSessionProtocol(t *testing.T) {
 		require.NoError(t, decoder.Decode(&request))
 		if request.Method == "session.create" {
 			created = request.Params
+			createdIndex = requestIndex
 		}
+		if request.Method == "session.options.update" && request.Params["enableReasoningSummaries"] == true {
+			summaryOptions = request.Params
+			summaryIndex = requestIndex
+		}
+		requestIndex++
 	}
 	require.NotNil(t, created)
+	require.NotNil(t, summaryOptions, "the runtime must surface reasoning summary events")
+	require.Greater(t, summaryIndex, createdIndex, "the summary option needs an open session")
+	require.Equal(t, created["sessionId"], summaryOptions["sessionId"])
 	require.Equal(t, workingDir, created["workingDirectory"])
 	require.Equal(t, "probe-model", created["model"])
 	require.Equal(t, "high", created["reasoningEffort"])

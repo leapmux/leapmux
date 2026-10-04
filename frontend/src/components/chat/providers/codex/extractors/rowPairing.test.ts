@@ -4,6 +4,38 @@ import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/a
 import { makeTranscriptMessage } from '~/test-support/messageFactory'
 import { createTranscriptScenario } from '~/test-support/transcriptScenario'
 
+function nativeExecFrame(id: string, result: boolean, completion?: MessageCompletion): TranscriptFrame {
+  return {
+    id,
+    provider: AgentProvider.CODEX,
+    spanId: 'native-exec-call',
+    spanType: 'exec',
+    agentSessionId: 'native-exec-session',
+    content: { threadId: 'native-thread', turnId: 'native-turn', item: result
+      ? { type: 'custom_tool_call_output', call_id: 'native-exec-call', output: [{ type: 'input_text', text: 'Script completed\nWall time 0.0 seconds\nOutput:\n' }, { type: 'input_text', text: 'Native computed: 42' }] }
+      : { type: 'custom_tool_call', call_id: 'native-exec-call', name: 'exec', input: 'text("Native computed: " + (40 + 2));', status: 'completed' } },
+    ...(completion !== undefined ? { completion } : {}),
+  }
+}
+
+describe('codex native exec pairing', () => {
+  it('keeps a generated custom request in progress until its output arrives', () => {
+    const scenario = createTranscriptScenario({ archive: [makeTranscriptMessage(nativeExecFrame('native-request', false), 1n)] })
+    expect(scenario.toolRow('native-request')).toMatchObject({ role: 'request', call: { id: 'native-exec-call', kind: 'execute', status: 'in_progress', request: { command: 'text("Native computed: " + (40 + 2));', language: 'javascript' } } })
+  })
+
+  it('joins one raw request and one raw output through the exact call ID', () => {
+    const scenario = createTranscriptScenario({ archive: [makeTranscriptMessage(nativeExecFrame('native-request', false), 1n), makeTranscriptMessage(nativeExecFrame('native-result', true), 2n)] })
+    expect(scenario.toolRow('native-request')).toMatchObject({ role: 'request', hasResultRow: true, call: { id: 'native-exec-call', kind: 'execute', status: 'completed' } })
+    expect(scenario.toolRow('native-result')).toMatchObject({ role: 'result', hasRequestRow: true, call: { id: 'native-exec-call', kind: 'execute', status: 'completed', request: { command: 'text("Native computed: " + (40 + 2));' }, result: { commands: [{ output: expect.stringContaining('Native computed: 42') }] } } })
+  })
+
+  it('keeps retained interruption over the model generation status', () => {
+    const scenario = createTranscriptScenario({ archive: [makeTranscriptMessage(nativeExecFrame('native-request', false, MessageCompletion.INTERRUPTED), 1n)] })
+    expect(scenario.toolRow('native-request').call).toMatchObject({ kind: 'execute', status: 'cancelled' })
+  })
+})
+
 function collabFrame(id: string, item: Record<string, unknown>, completion?: MessageCompletion): TranscriptFrame {
   return {
     id,

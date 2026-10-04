@@ -16,6 +16,10 @@ theme. The LeapMux user manual is served from `/docs/`.
 - This module is intentionally **kept out of the root `go.work`** so its large
   dependency graph does not leak into the backend/desktop workspace. All
   commands run with `GOWORK=off`.
+- The coding-agent matrix reads `frontend/tests/e2e/feature-matrix/features.json`
+  and `checklist.json` through a Hugo data mount. The checklist also records
+  each provider-feature browser spec. `task validate-json` checks both files
+  before the site builds.
 
 ## Building
 
@@ -25,7 +29,7 @@ From the repository root:
 task site            # builds the site into site/public/
 ```
 
-That runs `cd site && GOWORK=off go tool hugo --gc --minify`. The first run
+That validates the matrix and runs `cd site && GOWORK=off go tool hugo --gc --minify`. The first run
 compiles Hugo from source (cached afterwards) and downloads the Hextra module,
 so it needs network access.
 

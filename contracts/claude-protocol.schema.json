@@ -1,46 +1,143 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "claude-protocol.schema.json",
-  "title": "Claude Code permission mode vocabulary",
-  "description": "Every table is a map from the identifier both languages spell (PascalCase, so the Go constant and the TS key derive from one name) to the literal Claude Code sends. A table may never be empty: an empty one would emit an enum no dispatch can match, and the generator's own coverage check would have nothing to compare.",
+  "title": "Claude Code wire vocabulary",
+  "description": "Each table maps PascalCase identifiers to protocol values. Go constants and TypeScript keys derive from those identifiers. Every table requires at least one value. An empty table supplies no dispatch case and prevents the generator from checking coverage.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["_readme", "modes", "defaultMode"],
+  "required": [
+    "_readme",
+    "modes",
+    "systemSubtypes",
+    "defaultMode",
+    "frameKinds"
+  ],
   "$defs": {
     "table": {
       "type": "object",
       "minProperties": 1,
-      "propertyNames": { "pattern": "^[A-Z][A-Za-z0-9]*$" },
-      "additionalProperties": { "type": "string", "minLength": 1 }
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "unread": {
-      "description": "The per-key exemptions this domain states. `contractsAreConsumed.test.mjs` holds every KEY of a table to a reader on each side the table declares. A key one side genuinely never reads states that here: `_unread.<table>.<Key>.sides` lists the sides that skip it, and `.why` says what reads it instead. The key stays in the contract, because the other side still reads it and a rename must still reach that side. An exemption the code no longer needs fails the same test, so a stale one cannot survive.",
+      "description": "This map states per-key reader exemptions. contractsAreConsumed.test.mjs checks each key on every declared reader side. A key that one side does not consume must state its reason here.",
       "type": "object",
       "minProperties": 1,
       "additionalProperties": {
         "type": "object",
         "minProperties": 1,
-        "propertyNames": { "pattern": "^[A-Z][A-Za-z0-9]*$" },
+        "propertyNames": {
+          "pattern": "^[A-Z][A-Za-z0-9]*$"
+        },
         "additionalProperties": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["sides", "why"],
+          "required": [
+            "sides",
+            "why"
+          ],
           "properties": {
-            "sides": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["go", "ts"] } },
-            "why": { "type": "string", "minLength": 31 }
+            "sides": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "go",
+                  "ts"
+                ]
+              }
+            },
+            "why": {
+              "type": "string",
+              "minLength": 31
+            }
+          }
+        }
+      }
+    },
+    "structs": {
+      "description": "Generated Go structs use table values for their JSON tags. Each struct defines its field list once.",
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "table",
+          "fields"
+        ],
+        "properties": {
+          "doc": {
+            "type": "string",
+            "minLength": 1
+          },
+          "table": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fields": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "key",
+                "type"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Za-z0-9]*$"
+                },
+                "type": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "omitempty": {
+                  "type": "boolean"
+                },
+                "table": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
           }
         }
       }
     }
   },
   "properties": {
-    "_readme": { "type": "string", "minLength": 1 },
-    "_unread": { "$ref": "#/$defs/unread" },
-    "modes": { "$ref": "#/$defs/table" },
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "_unread": {
+      "$ref": "#/$defs/unread"
+    },
+    "modes": {
+      "$ref": "#/$defs/table"
+    },
+    "systemSubtypes": {
+      "$ref": "#/$defs/table"
+    },
     "defaultMode": {
       "description": "The key in `modes` a fresh Claude Code session falls back to. A key, not a literal, so it cannot name a mode the table does not carry -- the generator checks the membership.",
       "type": "string",
       "pattern": "^[A-Z][A-Za-z0-9]*$"
+    },
+    "frameKinds": {
+      "$ref": "#/$defs/table"
     }
   }
 }

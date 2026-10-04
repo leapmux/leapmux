@@ -21,7 +21,7 @@ var zcodeLocator = launch.Custom(resolveZCodeLaunch)
 func Registration() agent.Registration {
 	return agent.Registration{
 		Provider:      leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
-		Plugin:        zcodeProvider{},
+		Plugin:        zcodeProvider{storageQuery: newZCodeStorageQuery(nil)},
 		Start:         Start,
 		Locator:       zcodeLocator,
 		DefaultModels: zcodeFallbackModels,

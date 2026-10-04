@@ -257,7 +257,7 @@ describe('cursor stored tool records', () => {
   // Cursor answers in `rawOutput` and sends no Agent Client Protocol content block,
   // so the frame's own text is empty for most rows: a record this build does not
   // recognize had nothing at all to state.
-  it('states the saved output of a record it does not recognize', () => {
+  it('states the full tool output of a record it does not recognize', () => {
     const unknown = call({ kind: 'other', rawInput: {} }, saved('SomethingNew', 'the tool said this'))
     expect(unknown.result).toMatchObject({ content: [{ type: 'text', text: 'the tool said this' }] })
   })

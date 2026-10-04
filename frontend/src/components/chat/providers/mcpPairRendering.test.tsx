@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolComplete, copilotToolStart } from '~/test-support/copilotFixtures'
 import { testMessageSources } from '~/test-support/messageRenderSources'
+import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
 import { renderMessageContent } from '../messageContentRenderer'
 import { toolOutcomeLabel } from '../results/toolOutcomeLabel'
 import { toolUseHeader } from '../toolStyles.css'
@@ -41,6 +42,15 @@ function mcpMessages(provider: AgentProvider) {
       result: { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', result: { success: true, content: firstText, display: { kind: 'mcp_tool', serverName: 'Docs', toolName: 'lookup' } } } },
     }
   }
+  if (provider === AgentProvider.MIMO_CODE) {
+    // MiMo gives a Model Context Protocol tool the name `<server>_<tool>` and states nothing
+    // else about it, so the generic card draws the call.
+    return {
+      spanType: 'Docs_lookup',
+      request: openingFrame('Docs_lookup', args, 'call'),
+      result: toolFrame('Docs_lookup', { input: args, output: firstText }, 'call'),
+    }
+  }
   if (provider === AgentProvider.GITHUB_COPILOT) {
     return {
       spanType: 'Docs__lookup',
@@ -55,9 +65,13 @@ function mcpMessages(provider: AgentProvider) {
       toolCallId: 'call',
       kind: 'other',
       status: 'pending',
-      title: provider === AgentProvider.REASONIX ? 'mcp__Docs__lookup' : 'lookup',
+      title: provider === AgentProvider.REASONIX ? 'mcp__Docs__lookup' : provider === AgentProvider.KIRO ? '@Docs/lookup' : 'lookup',
       rawInput: args,
       ...(provider === AgentProvider.GOOSE ? { _meta: { goose: { toolCall: { toolName: 'Docs__lookup', extensionName: 'Docs' } } } } : {}),
+      // Grok states an MCP tool as `server__tool` in its identity, and Qwen as
+      // `mcp__server__tool` in its own `_meta`.
+      ...(provider === AgentProvider.GROK_BUILD ? { _meta: { 'x.ai/tool': { version: 1, name: 'Docs__lookup', namespace: 'mcp' } } } : {}),
+      ...(provider === AgentProvider.QWEN_CODE ? { _meta: { toolName: 'mcp__Docs__lookup' } } : {}),
     },
     result: { sessionUpdate: 'tool_call_update', toolCallId: 'call', status: 'completed', content: content.map(content => ({ type: 'content', content })) },
   }
@@ -74,6 +88,10 @@ describe.each([
   AgentProvider.GITHUB_COPILOT,
   AgentProvider.PI,
   AgentProvider.ZCODE,
+  AgentProvider.MIMO_CODE,
+  AgentProvider.QWEN_CODE,
+  AgentProvider.GROK_BUILD,
+  AgentProvider.KIRO,
 ])('paired MCP requests and results (%s)', (provider) => {
   it('renders one header and one argument section for the pair', () => {
     const { request, result, spanType } = mcpMessages(provider)
@@ -144,7 +162,7 @@ it.each([AgentProvider.PI, AgentProvider.ZCODE])('does not repeat a synthetic fa
 })
 
 describe('retained MCP completion', () => {
-  it.each([AgentProvider.CODEX, AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.GOOSE, AgentProvider.REASONIX, AgentProvider.CURSOR, AgentProvider.GITHUB_COPILOT, AgentProvider.PI, AgentProvider.ZCODE])('renders one interruption header for provider %s', (provider) => {
+  it.each([AgentProvider.CODEX, AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.GOOSE, AgentProvider.REASONIX, AgentProvider.CURSOR, AgentProvider.GITHUB_COPILOT, AgentProvider.PI, AgentProvider.ZCODE, AgentProvider.GROK_BUILD, AgentProvider.KIRO, AgentProvider.QWEN_CODE, AgentProvider.MIMO_CODE])('renders one interruption header for provider %s', (provider) => {
     const { request, result, spanType } = mcpMessages(provider)
     const original = JSON.stringify(result)
     const parsed = { ...input(result, null, provider), completion: MessageCompletion.INTERRUPTED }

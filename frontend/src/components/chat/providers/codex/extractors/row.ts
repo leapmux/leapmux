@@ -31,7 +31,7 @@ import { retainedOutcome } from '../../registry'
 import { CODEX_INTERNAL_TOOL, CODEX_STATUS } from '../itemVocabulary'
 import { isCodexFinishedStatus } from '../status'
 import { codexAgentCounterpart, codexAgentRequest, codexAgentResults, resolveCodexAgentItem } from './agent'
-import { codexCommandActionsFromItem, codexCommandFromItem, codexUnwrapCommand } from './execute'
+import { codexCommandActionsFromItem, codexCommandFromItem, codexRawExecCall, codexUnwrapCommand } from './execute'
 import { codexChangeKind } from './fileChange'
 import { codexGeneratedImage, codexItemPath, codexViewedImage } from './image'
 import { extractItem } from './item'
@@ -42,9 +42,8 @@ import { codexWebSearchActionFromItem } from './webSearch'
 /**
  * Read one Codex row into the shared row model.
  *
- * Codex sends one ITEM per tool call, and the item's `type` is the whole dispatch --
- * so the table below is the provider's vocabulary in one place, where it used to be a
- * registry of twelve JSX renderers.
+ * Typed app-server items use the per-kind reader table.
+ * Native code execution uses a raw request and its matching raw output.
  */
 export function codexExtractRow(input: RowExtractionInput): ChatRow | null {
   const { category, resolved: parsed, span } = input
@@ -240,14 +239,12 @@ function codexChangeEntries(item: Record<string, unknown>): FileChangeEntry[] {
 }
 
 /**
- * The changes one item ASKED for: one for each file its entries name.
+ * Read one requested change for every file entry.
  *
- * `fileEditDiffsFromChanges` DROPS an update whose body this build cannot read as a
- * diff. That is the right answer for the half that states what LANDED, and the wrong
- * one for the half that states what the call asked for: the request is what heads the
- * row at EVERY state, and `declined` is a state Codex reports on a file change. A
- * declined update whose entry carried no readable body drew the word "Edit" and named
- * no file, so the reader could not tell which file the refusal was about.
+ * fileEditDiffsFromChanges omits an update whose body cannot be parsed as a diff.
+ * A result can omit that update, but the request must retain its file.
+ * A declined update still needs the file path in its header, even when no readable diff exists.
+ * Otherwise, the reader cannot identify the file that the agent refused to change.
  */
 function codexRequestedChanges(entries: FileChangeEntry[]): FileEditDiff[] {
   return entries.map((entry) => {
@@ -311,42 +308,45 @@ function codexItemImages(item: Record<string, unknown>): ImageResultSource[] {
 }
 
 /**
- * Everything one Codex item states, read once before a specification reader runs.
+ * Resolve the facts that typed item readers need before a specification reader runs.
  *
- * Each entry of {@link CODEX_TOOL_READERS} takes this and nothing else. The
- * membership is what the payload decisions read, and no more: the item itself, its
- * two discriminators, how the call ended, the span it sits in, and the four facts
- * that more than one reader shares.
+ * Each CODEX_TOOL_READERS entry reads these facts only:
+ * - The complete item and its discriminators.
+ * - The call lifecycle and span.
+ * - The shared title and detail.
+ * - The images and normalized file changes.
+ * - The complete output stream.
  */
 export interface CodexToolFacts {
   /**
-   * The whole item, which is also Codex's ARGUMENT record.
+   * The complete argument record of a typed app-server item.
    *
-   * Codex states a call's fields at the top level of its item rather than under an
-   * `arguments` object, so a kind that takes the shared declared request reads its
-   * keys straight from here.
+   * These items keep call fields at their top level, outside an arguments object.
+   * Shared request readers therefore use the item's keys directly.
+   * Native execution uses raw request input and dispatches before this table.
    */
   item: Record<string, unknown>
-  /** The item's `type`, which is Codex's whole tool identity: it sends no tool name. */
+  /** A typed app-server item's type identifies its tool. Native execution dispatches before this table. */
   type: string
   /**
-   * The item's own status WORD, raw.
+   * The item's original status word.
    *
-   * Raw rather than through `parseCodexStatus`, because two readers test a word that
-   * function folds away. `completed` decides whether a file change landed, and
-   * `interrupted` is no finished status at all -- the parse answers `inProgress` for
-   * it, so an agent card read through the parse would lose its cancelled state.
+   * parseCodexStatus normalizes words that two readers must retain.
+   * A file change uses completed to determine whether its changes applied.
+   * An agent uses interrupted to retain cancellation. The status parser would normalize that word to inProgress.
    */
   status: string
   /** The kind the item takes. This is the key the reader table is read under. */
   kind: ToolKind
   /**
-   * Whether the call ENDED, by LeapMux's reading and not by the item's word alone.
+   * True when any of these conditions ends the call:
+   * - The row closes its span.
+   * - The item reports a finished status.
+   * - The Worker stores a completion value.
+   * - The resolver supplies the result side.
    *
-   * True when the row closes its span, when the item states a finished status, when
-   * the worker recorded a completion, or when the result side is resolved beside this
-   * row. A retained row leaves the last `inProgress` frame stored, so a reader that
-   * asked the item alone dropped the output of every call the reader stopped.
+   * A retained row can still contain inProgress after the reader stops the call.
+   * Checking only that word would discard its partial output.
    */
   finished: boolean
   /** The row's span context. An agent call reads its counterpart from here. */
@@ -355,9 +355,9 @@ export interface CodexToolFacts {
   statusTitle: string | undefined
   /** The note a status-shaped item carries under its header. */
   detail: string
-  /** The pictures the item carries: the one it generated, the one it viewed, or none. */
+  /** The item's generated or viewed images. An item without images keeps an empty list. */
   images: ImageResultSource[]
-  /** File changes normalized once for kind, request, and result projections. */
+  /** Normalize file changes once. The kind and request use this list. The result uses it also. */
   fileChanges: FileChangeEntry[]
   /** Everything Codex aggregated from the call's own output stream, untrimmed. */
   aggregatedOutput: string
@@ -407,31 +407,21 @@ function codexDeclaredOnly<P extends ToolKind>(kind: P): ToolCallSpecReader<Code
 }
 
 /**
- * One reader for each kind, each checked against its OWN kind's request and result.
+ * Check every reader against its declared kind's request and result.
  *
- * The table is what makes a named kind with an unfilled request impossible. The code
- * before it decided a kind and then filled the payload inline in the same `switch`, so
- * a kind could reach a branch that stated no request at all -- and TypeScript could
- * not see it, because a `switch` narrows the VALUE it tests and never the type
- * parameter. Every branch had to be asserted back, and a branch that answered another
- * kind's shape compiled.
+ * A switch narrows a value without narrowing its generic type parameter.
+ * A union-returning branch could therefore omit the required request or return another kind's shape.
+ * This mapped table rejects both mistakes. A missing kind is a compile error.
  *
- * Here each entry's value type mentions its own `P`. An entry cannot answer for
- * another kind, no assertion is available to hide it, and the mapped type makes a
- * missing kind a compile error rather than a row that draws a wrench.
+ * Each kind retains its own lifecycle decisions.
+ * Commands carry output streams. File changes report whether their changes applied.
+ * Review markers complete when their items arrive.
  *
- * The LIFECYCLE stays with each reader, because Codex states it differently for each
- * kind: a command has an output stream, a file change has a wire word for whether it
- * landed, and a review marker answers the moment it arrives.
- *
- * EVERY entry annotates its own return type, and that annotation is load-bearing. The
- * table's own type is not enough: TypeScript infers an unannotated arrow's return type
- * from the literals it returns, and the object then loses its freshness before the
- * property is checked -- so the excess-property check never runs, and a request may
- * carry a key no renderer reads. The annotation puts each literal back in a
- * contextually typed position, where a stray key is a compile error.
- * For the same reason, no entry may return an intermediate `const` that carries no
- * type annotation of its own.
+ * Every entry must declare its return type.
+ * An inferred arrow return loses object-literal freshness before the contextual signature checks it.
+ * Its excess properties can then escape validation and reach fields that no renderer reads.
+ * An explicit return type keeps each literal in a checked position.
+ * For the same reason, do not return an intermediate variable without its own type annotation.
  */
 export const CODEX_TOOL_READERS: ToolCallSpecReaderTable<CodexToolFacts> = {
   execute: (facts): ToolCallSpecVariant<'execute'> => {
@@ -540,13 +530,10 @@ export const CODEX_TOOL_READERS: ToolCallSpecReaderTable<CodexToolFacts> = {
   }),
   skill: codexHookPromptSpec,
   /*
-   * Every OTHER item type: a call that states what happened.
-   *
-   * Codex keeps adding item kinds, and the worker's `default` branch persists each
-   * one. They used to reach the reader as raw JSON, and then -- once the classifier
-   * named them -- as an EMPTY row with no title and no body. Each named type now
-   * states its own sentence, and a type from a later release states its own wire word
-   * instead of drawing nothing at all.
+   * Typed status items keep their own title and detail.
+   * The Worker also persists item types from later releases.
+   * Each becomes a neutral other-kind call with its own sentence or wire type.
+   * Classification and extraction must agree so the measured row contains visible content.
    */
   other: (facts): ToolCallSpecVariant<'other'> => {
     const title = facts.statusTitle ?? (facts.type ? humanizeWireWord(facts.type) : undefined)
@@ -630,7 +617,12 @@ function codexFileChangeParts(facts: CodexToolFacts): { request: FileChangeReque
   return failure ? { request, ...headed, result: failedResult(failure) } : { request, ...headed }
 }
 
-/** The Model Context Protocol pair of a server call, a dynamic call, or an output. */
+/**
+ * Read a Model Context Protocol request and result from these item variants:
+ * - A server call.
+ * - A dynamic call.
+ * - An output item.
+ */
 function codexMcpSpec(facts: CodexToolFacts): ToolCallSpecVariant<'mcp'> {
   if (facts.type === CODEX_ITEM.FunctionCallOutput) {
     const namespace = pickString(facts.item, 'namespace')
@@ -671,11 +663,11 @@ function safeJson(text: string): Record<string, unknown> {
 }
 
 /**
- * The instruction one hook injected into the turn.
+ * Read one hook's instructions from its native fragments.
  *
- * Codex sends `{id, fragments: [{hookRunId, text}]}`. The fragments are the hook's
- * own words, so they draw as Markdown -- the row used to show an empty body under an
- * empty header, because nothing here read `fragments` at all.
+ * Codex sends {id, fragments: [{hookRunId, text}]}.
+ * Read the fragments in wire order. Join their text and render it as Markdown.
+ * This gives the row a body and a title instead of an empty measured row.
  */
 function codexHookPromptSpec(facts: CodexToolFacts): ToolCallSpecVariant<'skill'> {
   const raw: unknown[] = Array.isArray(facts.item.fragments) ? facts.item.fragments : []
@@ -741,6 +733,11 @@ function codexItemLabel(facts: CodexToolFacts): string | undefined {
  */
 function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInput['span'], completion?: MessageCompletion): ChatRow | null {
   const payload = parsed.parentObject
+  if (payload) {
+    const execution = codexRawExecCall(payload, sides, completion)
+    if (execution)
+      return toolCallRow(execution.call, execution.role, sides.visibleRows)
+  }
   // `turnPlan` dispatches off the notification METHOD rather than an item type, so it
   // answers before the item table.
   if (payload && pickString(payload, 'method') === CODEX_METHOD.TurnPlanUpdated)
@@ -779,15 +776,16 @@ function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInpu
   // change list and states which changes landed. Other Codex item kinds keep their
   // existing per-frame projections even though the lifecycle sees their result.
   const projectedResultItem = item.type === CODEX_ITEM.FileChange ? matchingResultItem : null
-  // The call reads EVERY side the store resolved: a request row whose result has
-  // landed carries it, so its prompt stays compact behind the same expand control.
+  // Read every resolved span side.
+  // A request row includes its landed result, so its prompt uses the same compact expansion control.
   const answered = atomicResult || sides.role === 'result' || isCodexFinishedStatus(statusWord) || !!matchingResultItem
-  // A row that carries the landed result is a row of a FINISHED call, whatever its
-  // own frame still says: the validating builder refuses an in-progress envelope
-  // over a result, and the degrade it answers would trade the typed card for the
-  // generic one. The lifecycle facts below hand that rule to the shared derivation,
-  // which owns the precedence between the item's word, the provider's own
-  // interruption, the retained outcome, and the landed result.
+  // A landed result finishes the call even when the request frame still says inProgress.
+  // A finished result must not use an in-progress envelope. The validating builder would discard its typed card.
+  // The shared lifecycle derivation decides the precedence of these facts:
+  // - The item status.
+  // - The provider's interruption.
+  // - The retained outcome.
+  // - The landed result.
   const lifecycle: ToolCallLifecycleFacts = {
     frameStatus: codexFrameStatus(statusWord),
     providerOutcome: statusWord === 'interrupted' ? 'interrupted' : null,

@@ -51,7 +51,7 @@ A few useful flags (full reference in [Configuration](/docs/admin/configuration/
 
 | Flag | Purpose | Default |
 | --- | --- | --- |
-| `-listen` | TCP listen address | `127.0.0.1:4327` |
+| `-listen` | Listen address, repeatable: a TCP address or a local IPC URL (`unix:`, `npipe:`) | `127.0.0.1:4327` plus the platform's local IPC socket |
 | `-data-dir` | Data directory | `.` (resolves to `~/.config/leapmux/solo`) |
 | `-log-level` | `debug`, `info`, `warn`, `error` | `info` |
 | `-config` | Path to the config file | `~/.config/leapmux/solo/solo.yaml` |

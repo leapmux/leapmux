@@ -34,7 +34,8 @@ type copilotConnection struct {
 // verifyNativeProtocol completes the startup. Keep the three calls in that order.
 func startCopilotConnection(parent context.Context, opts agent.Options) (*copilotConnection, error) {
 	ctx, cancel := context.WithCancel(parent)
-	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, Registration())
+	registration := Registration()
+	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, registration)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -44,16 +45,17 @@ func startCopilotConnection(parent context.Context, opts agent.Options) (*copilo
 		BaseArgs: []string{"--server", "--stdio", "--no-remote", "--no-remote-export"},
 	})
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
-	stdin, stdout, stderr, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
 	if err != nil {
 		return nil, err
 	}
+	stdout, stderr := pipes.Stdout(), pipes.Stderr()
 	connection := &copilotConnection{JSONRPCProcess: providerkit.JSONRPCProcess{
-		Process:      providerkit.NewProcess(opts, "copilot", cmd, stdin, ctx, cancel, delimiter, prefix),
+		Process:      providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "copilot", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: delimiter, PreambleMetaPrefix: prefix}, pipes, ctx, cancel),
 		FrameMessage: frameCopilotJSON,
 	}}
-	if err := connection.StartCmd(cmd, cancel); err != nil {
-		_ = stdin.Close()
+	if err := connection.StartCmd(); err != nil {
+		_ = pipes.Stdin().Close()
 		_ = stdout.Close()
 		_ = stderr.Close()
 		return nil, err

@@ -58,12 +58,12 @@ func TestEnsureChildAgent_CreatesOnce(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-1")
 
 	// First call creates the child agent row.
-	id1, err := sink.EnsureChildAgent("span-1", "task-1", "build feature")
+	id1, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "build feature"})
 	require.NoError(t, err)
 	assert.NotEmpty(t, id1)
 
 	// Second call is idempotent: same child key resolves to the same agent id.
-	id2, err := sink.EnsureChildAgent("span-1", "task-1", "build feature")
+	id2, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "build feature"})
 	require.NoError(t, err)
 	assert.Equal(t, id1, id2, "EnsureChildAgent is idempotent")
 
@@ -82,7 +82,7 @@ func TestEnsureChildAgent_RegistryRowLinksChild(t *testing.T) {
 	ctx := context.Background()
 	svc, sink := setupRootSink(t, "root-1")
 
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "build feature")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "build feature"})
 	require.NoError(t, err)
 
 	// The registry row under the root owner links to the child.
@@ -100,7 +100,7 @@ func TestPersistSubagentReportResolvesTheChildAndDeduplicatesDurably(t *testing.
 
 	ctx := context.Background()
 	svc, sink := setupRootSink(t, "root-report")
-	childID, err := sink.EnsureChildAgent("spawn-1", "row-1", "Reviewer")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-1", ProviderChildKey: "row-1", Title: "Reviewer"})
 	require.NoError(t, err)
 	write := agent.ChildSubagentReportWrite{
 		RowKey: "row-1",
@@ -179,7 +179,7 @@ func TestPersistSubagentReportDeduplicatesConcurrentWriters(t *testing.T) {
 
 	ctx := context.Background()
 	svc, sink := setupRootSink(t, "root-concurrent-report")
-	childID, err := sink.EnsureChildAgent("spawn-1", "row-1", "Reviewer")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-1", ProviderChildKey: "row-1", Title: "Reviewer"})
 	require.NoError(t, err)
 	write := agent.ChildSubagentReportWrite{
 		RowKey: "row-1",
@@ -250,7 +250,7 @@ func TestCleanupChildAgent_ReclaimsPerChildState(t *testing.T) {
 	ctx := context.Background()
 	svc, sink := setupRootSink(t, "root-1")
 
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "build feature")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "build feature"})
 	require.NoError(t, err)
 	// Touch the child sink + a span so the per-child caches are populated.
 	childSink := sink.ChildSink(childID)
@@ -288,7 +288,7 @@ func TestEnsureChildAgent_SpawnSpanFallbackAfterRegistryLoss(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-1")
 
 	// First spawn: creates the child.
-	id1, err := sink.EnsureChildAgent("span-1", "task-1", "first")
+	id1, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "first"})
 	require.NoError(t, err)
 
 	// Simulate a worker restart between the agent-row insert and the registry
@@ -298,7 +298,7 @@ func TestEnsureChildAgent_SpawnSpanFallbackAfterRegistryLoss(t *testing.T) {
 	sink2 := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	// The spawn-span fallback reattaches the same child row.
-	id2, err := sink2.EnsureChildAgent("span-1", "task-1", "first")
+	id2, err := sink2.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "first"})
 	require.NoError(t, err)
 	assert.Equal(t, id1, id2, "spawn-span fallback reattaches the existing child")
 }
@@ -311,7 +311,7 @@ func TestChildSpawnSpan_AnswersFromTheChildRow(t *testing.T) {
 
 	svc, sink := setupRootSink(t, "root-1")
 
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "build feature")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "build feature"})
 	require.NoError(t, err)
 
 	span, err := sink.ChildSpawnSpan(childID)
@@ -344,7 +344,7 @@ func TestChildSpawnSpan_DoesNotAnswerForAnotherRootsChild(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "build feature")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "build feature"})
 	require.NoError(t, err)
 
 	other := newRootAgent(t, svc, "root-2")
@@ -388,7 +388,7 @@ func TestChildSink_PersistsIntoChildSeqSpace(t *testing.T) {
 	ctx := context.Background()
 	svc, sink := setupRootSink(t, "root-1")
 
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "child")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
 
 	// Persist into the child transcript via ChildSink.
@@ -421,7 +421,7 @@ func TestChildSink_SpanTrackerIndependentOfParent(t *testing.T) {
 	ctx := context.Background()
 	svc, sink := setupRootSink(t, "root-1")
 
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "child")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
 
 	// Open a span on the root and the child with the SAME id. Each transcript
@@ -455,13 +455,13 @@ func TestNestedChild_RegistersUnderRoot(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-1")
 
 	// First-level child.
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "child")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
 	childSink := sink.ChildSink(childID)
 
 	// Grandchild: spawned from the child's transcript. Its registry row lives
 	// under the ROOT owner, but parent_agent_id is the child.
-	grandchildID, err := childSink.EnsureChildAgent("span-2", "task-2", "grandchild")
+	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-2", ProviderChildKey: "task-2", Title: "grandchild"})
 	require.NoError(t, err)
 	assert.NotEmpty(t, grandchildID)
 	assert.NotEqual(t, childID, grandchildID)
@@ -502,7 +502,7 @@ func TestChildSink_TrackerRegisteredAsChildKind(t *testing.T) {
 	require.True(t, ok, "root tracker seeded by NewSink")
 	assert.Equal(t, spanTrackerRoot, rootKind, "NewSink registers the root kind")
 
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "child")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
 	_ = sink.ChildSink(childID) // drive child-tracker creation
 
@@ -530,7 +530,7 @@ func TestCleanupChildAgent_OrphanedTrackerPointerIsBenign(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-1")
 	rootSink := requireRootOutputSink(t, svc.Output, "root-1")
 
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "child")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
 	retainedChildSink := requireChildOutputSink(t, rootSink, childID)
 	retainedChildSink.OpenSpan("item-1", "span-1")
@@ -574,9 +574,9 @@ func TestCleanupChildAgent_PrunesChildSinkFromDirectParent(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-1")
 	rootSink := requireRootOutputSink(t, svc.Output, "root-1")
 
-	closedID, err := sink.EnsureChildAgent("span-1", "task-1", "closed-child")
+	closedID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "closed-child"})
 	require.NoError(t, err)
-	survivingID, err := sink.EnsureChildAgent("span-2", "task-2", "surviving-child")
+	survivingID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-2", ProviderChildKey: "task-2", Title: "surviving-child"})
 	require.NoError(t, err)
 
 	// Drive ChildSink for both so both are cached on the root sink.
@@ -623,11 +623,11 @@ func TestCleanupChildAgent_PrunesGrandchildFromIntermediateParent(t *testing.T) 
 
 	// child -> grandchild (depth 2). The grandchild's cached sink lives on the
 	// child's childSinks, not the root's.
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "child")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
 	childSink := requireChildOutputSink(t, rootSink, childID)
 
-	grandchildID, err := childSink.EnsureChildAgent("span-2", "task-2", "grandchild")
+	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-2", ProviderChildKey: "task-2", Title: "grandchild"})
 	require.NoError(t, err)
 	grandchildSink := requireChildOutputSink(t, childSink, grandchildID)
 	_ = grandchildSink
@@ -695,7 +695,7 @@ func TestCleanupChildAgent_ReChildSinkGetsFreshTracker(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-1")
 	rootSink := requireRootOutputSink(t, svc.Output, "root-1")
 
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "child")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
 	first := requireChildOutputSink(t, rootSink, childID)
 	firstTracker := first.tracker
@@ -745,7 +745,7 @@ func TestPersistChildPrompt_IsTheFirstMessage(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	require.NoError(t, sink.PersistChildPrompt(childID, "Review the diff."))
@@ -760,7 +760,7 @@ func TestPersistChildPrompt_SkipsABlankPrompt(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	require.NoError(t, sink.PersistChildPrompt(childID, ""))
@@ -775,7 +775,7 @@ func TestPersistChildPrompt_DoesNotAppendOnceTheChildHasSpoken(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	require.NoError(t, sink.PersistChildPrompt(childID, "Review the diff."))
@@ -792,27 +792,22 @@ func TestPersistChildPrompt_DoesNotAppendOnceTheChildHasSpoken(t *testing.T) {
 	assert.Equal(t, "Review the diff.", msgs[0]["content"])
 }
 
-// Closing a subagent's registry row is the one provider-neutral moment the
-// subagent is known to be over, so that is where the child transcript gets its
-// closing divider -- otherwise the tab shows a thinking indicator forever.
-func TestCloseBackgroundTask_WritesTheSubagentEndDivider(t *testing.T) {
+// Registry completion records the outcome without adding a transcript message.
+func TestCloseBackgroundTask_LeavesTheNativeTranscriptUnchanged(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 
 	msgs := transcriptMessages(t, svc, childID)
-	require.Len(t, msgs, 1)
-	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
-	assert.Equal(t, "completed", msgs[0]["status"])
-	assert.Equal(t, float64(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX), msgs[0]["__source"])
+	require.Empty(t, msgs)
+	assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusCompleted)
 }
 
-// Every final status is carried through, so the divider can say WHY the
-// subagent stopped rather than just that it did.
+// Each final status remains available through the registry.
 func TestCloseBackgroundTask_CarriesTheFinalStatus(t *testing.T) {
 	t.Parallel()
 
@@ -822,29 +817,19 @@ func TestCloseBackgroundTask_CarriesTheFinalStatus(t *testing.T) {
 		t.Run(bgtask.StatusWire(status), func(t *testing.T) {
 			t.Parallel()
 			svc, sink := setupRootSink(t, "root-1")
-			childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+			childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 			require.NoError(t, err)
 			require.NoError(t, sink.CloseBackgroundTask("task-1", status))
 
 			msgs := transcriptMessages(t, svc, childID)
-			require.Len(t, msgs, 1)
-			assert.Equal(t, bgtask.StatusWire(status), msgs[0]["status"])
+			require.Empty(t, msgs)
+			assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, status)
 		})
 	}
 }
 
-// The divider follows the mutation that actually moved the row into a final
-// status, NOT CloseBackgroundTask specifically. Every real provider reaches the
-// final status through a different applier first and only then closes:
-//
-//   - Claude: UpdateBackgroundTaskStatus(final) then CloseBackgroundTask
-//   - Codex:  UpsertBackgroundTask(final) then CloseBackgroundTask
-//   - Pi:     UpsertBackgroundTask(final) and never closes at all
-//
-// A close-driven divider fires for none of these, because the close early-
-// returns on an already-final row. Each sequence below is one provider's real
-// order, and each must produce exactly one divider.
-func TestSubagentEndDivider_FollowsWhicheverMutationEndsTheRow(t *testing.T) {
+// Every provider completion order updates status without changing the transcript.
+func TestSubagentCompletion_FollowsWhicheverMutationEndsTheRow(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -889,28 +874,20 @@ func TestSubagentEndDivider_FollowsWhicheverMutationEndsTheRow(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			svc, sink := setupRootSink(t, "root-1")
-			childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+			childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 			require.NoError(t, err)
 
 			tc.end(t, sink)
 
 			msgs := transcriptMessages(t, svc, childID)
-			require.Len(t, msgs, 1, "exactly one closing divider, whichever applier ended the row")
-			assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
-			assert.Equal(t, "stopped", msgs[0]["status"])
+			require.Empty(t, msgs)
+			assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusStopped)
 		})
 	}
 }
 
-// Exactly one divider closes the transcript in EITHER arrival order.
-//
-// A provider that forwards its subagent's own closing envelope (Claude's
-// result) writes it through the child sink's PersistTurnEnd, while the registry
-// row goes final on a separate event (task_notification). Nothing serializes
-// the two, and the file's own pendingTaskEnd machinery exists because Claude's
-// stream reorders -- so both orders are reachable and neither may stack two
-// rules saying the same thing.
-func TestSubagentEndDivider_ExactlyOneInEitherArrivalOrder(t *testing.T) {
+// Native results retain their details in either registry completion order.
+func TestSubagentCompletion_PreservesTheNativeResultInEitherArrivalOrder(t *testing.T) {
 	t.Parallel()
 
 	result := []byte(`{"type":"result","duration_ms":12}`)
@@ -918,40 +895,39 @@ func TestSubagentEndDivider_ExactlyOneInEitherArrivalOrder(t *testing.T) {
 	t.Run("registry closes first, then the forwarded result", func(t *testing.T) {
 		t.Parallel()
 		svc, sink := setupRootSink(t, "root-1")
-		childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+		childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 		require.NoError(t, err)
 
 		require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 		require.NoError(t, sink.ChildSink(childID).PersistTurnEnd(agent.MessageContent{Original: result}, agent.SpanInfo{}))
 
 		msgs := transcriptMessages(t, svc, childID)
-		require.Len(t, msgs, 1, "the forwarded result must stand down, not stack")
-		assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
+		require.Len(t, msgs, 1)
+		assert.Equal(t, "result", msgs[0]["type"])
+		assert.Equal(t, float64(12), msgs[0]["duration_ms"])
 	})
 
 	t.Run("forwarded result first, then the registry close", func(t *testing.T) {
 		t.Parallel()
 		svc, sink := setupRootSink(t, "root-1")
-		childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+		childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 		require.NoError(t, err)
 
 		require.NoError(t, sink.ChildSink(childID).PersistTurnEnd(agent.MessageContent{Original: result}, agent.SpanInfo{}))
 		require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 
 		msgs := transcriptMessages(t, svc, childID)
-		require.Len(t, msgs, 1, "the neutral divider must yield to the richer result")
+		require.Len(t, msgs, 1)
 		assert.Equal(t, "result", msgs[0]["type"])
 	})
 }
 
-// The claim is what makes "exactly one divider" hold, so it must hold when both
-// writers run CONCURRENTLY -- the case the old last-message probes could not
-// cover, because each side read before either wrote.
-func TestSubagentEndDivider_ConcurrentWritersProduceOne(t *testing.T) {
+// Concurrent native completion and registry completion retain the native result.
+func TestSubagentCompletion_ConcurrentWritersRetainTheNativeResult(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	result := []byte(`{"type":"result","duration_ms":12}`)
@@ -968,31 +944,28 @@ func TestSubagentEndDivider_ConcurrentWritersProduceOne(t *testing.T) {
 	wg.Wait()
 
 	msgs := transcriptMessages(t, svc, childID)
-	require.Len(t, msgs, 1, "the claim admits exactly one writer, whichever won the race")
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "result", msgs[0]["type"])
+	assert.Equal(t, float64(12), msgs[0]["duration_ms"])
 }
 
-// A REPEATED final status update must not write a second divider. The two
-// guards in applyBackgroundTaskStatus exclude an already-final row only when the
-// incoming status is non-final, or when BOTH the status and the activeForm
-// repeat -- and Claude sends exactly the case that slips through: a
-// summary-bearing final update followed by a bare one.
-func TestSubagentEndDivider_RepeatedFinalStatusWritesOnlyOne(t *testing.T) {
+// Repeated status updates leave the transcript unchanged.
+func TestSubagentCompletion_RepeatedFinalStatusLeavesTheTranscriptUnchanged(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusCompleted, "wrote the summary"))
 	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusCompleted, ""))
 
 	msgs := transcriptMessages(t, svc, childID)
-	require.Len(t, msgs, 1, "only the active -> final transition owes a divider")
-	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
+	require.Empty(t, msgs)
+	assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusCompleted)
 }
 
-// A ROOT turn end is not a subagent boundary: it must never be suppressed, and
-// it must not pay the child-transcript read that the suppression needs.
+// Each unkeyed native root completion remains a distinct transcript record.
 func TestPersistTurnEnd_RootTurnEndIsNeverSuppressed(t *testing.T) {
 	t.Parallel()
 
@@ -1004,21 +977,20 @@ func TestPersistTurnEnd_RootTurnEndIsNeverSuppressed(t *testing.T) {
 	assert.Len(t, transcriptMessages(t, svc, "root-1"), 2, "every root turn end persists")
 }
 
-// applyBackgroundTaskClose reports changed=true only on the first
-// pending/running -> final transition, and the DB's own status guard makes
-// that hold across a restart -- so a re-close cannot stack a second divider.
-func TestCloseBackgroundTask_DividerIsWrittenOnce(t *testing.T) {
+// Repeated closes preserve the first registry outcome and append no message.
+func TestCloseBackgroundTask_RepeatedClosePreservesTheFirstOutcome(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusFailed))
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 
-	assert.Len(t, transcriptMessages(t, svc, childID), 1)
+	assert.Empty(t, transcriptMessages(t, svc, childID))
+	assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusCompleted)
 }
 
 // A shell row has no transcript to close; the divider must not be written into
@@ -1035,35 +1007,28 @@ func TestCloseBackgroundTask_ShellRowWritesNoDivider(t *testing.T) {
 	assert.Empty(t, transcriptMessages(t, svc, "root-1"))
 }
 
-// The owner process dying is the other way a subagent ends. The exit sweep
-// gives it a final status every still-active row in bulk, so it must close those
-// transcripts too -- otherwise a subagent whose owner crashed keeps a
-// transcript that simply stops.
-func TestMarkBackgroundTasksExited_WritesTheSubagentEndDivider(t *testing.T) {
+// A process crash records an interrupted status without adding transcript output.
+func TestMarkBackgroundTasksExited_RecordsTheOutcomeWithoutChangingTheTranscript(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	// stopped=false is the crash path, which labels the row 'interrupted'.
 	svc.Output.MarkAgentBackgroundTasksExited("root-1", false)
 
 	msgs := transcriptMessages(t, svc, childID)
-	require.Len(t, msgs, 1)
-	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
-	assert.Equal(t, "interrupted", msgs[0]["status"])
+	require.Empty(t, msgs)
+	assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusInterrupted)
 }
 
-// The sweep ends every active row in the TABLE, and its divider list has to
-// match. A row past the display cap is not in the cache, so a cache-derived list
-// left that subagent's transcript with no closing divider -- permanently, since
-// the sweep cannot repeat itself (the rows are no longer active).
+// Process exit also records the outcome of retained rows outside the display cap.
 func TestMarkBackgroundTasksExited_ClosesASubagentPastTheDisplayCap(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 
@@ -1076,52 +1041,50 @@ func TestMarkBackgroundTasksExited_ClosesASubagentPastTheDisplayCap(t *testing.T
 	svc.Output.MarkAgentBackgroundTasksExited("root-1", false)
 
 	msgs := transcriptMessages(t, svc, childID)
-	require.Len(t, msgs, 1, "the retained row's transcript is closed too")
-	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
-	assert.Equal(t, "interrupted", msgs[0]["status"])
+	require.Empty(t, msgs)
+	stored, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(t.Context(), childID)
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusInterrupted), stored.Status)
+	assert.True(t, stored.EndedAt.Valid)
 }
 
+// An explicit process stop retains its distinct registry outcome.
 func TestMarkBackgroundTasksExited_LabelsAnExplicitStopAsStopped(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	svc.Output.MarkAgentBackgroundTasksExited("root-1", true)
 
 	msgs := transcriptMessages(t, svc, childID)
-	require.Len(t, msgs, 1)
-	assert.Equal(t, "stopped", msgs[0]["status"])
+	require.Empty(t, msgs)
+	assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusStopped)
 }
 
-// The sweep skips rows that already reached a final status, so a subagent
-// that finished before its owner exited keeps its original divider and does not
-// get a second one.
+// Process exit preserves an already completed child outcome.
 func TestMarkBackgroundTasksExited_SkipsAnAlreadyClosedSubagent(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 
 	svc.Output.MarkAgentBackgroundTasksExited("root-1", false)
 
 	msgs := transcriptMessages(t, svc, childID)
-	require.Len(t, msgs, 1)
-	assert.Equal(t, "completed", msgs[0]["status"], "the original outcome survives the sweep")
+	require.Empty(t, msgs)
+	assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusCompleted)
 }
 
-// Exactly one divider closes a subagent transcript. Claude forwards the
-// subagent's own `result`, which the frontend already draws as a turn-end
-// divider (and which carries the duration, plus the error label and detail on
-// failure), so the neutral divider must not stack a second rule under it.
-func TestCloseBackgroundTask_SkipsTheDividerWhenTheProviderAlreadyEndedIt(t *testing.T) {
+// Registry completion preserves an earlier native completion result.
+func TestCloseBackgroundTask_PreservesAnEarlierNativeResult(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	// The forwarded subagent result, persisted as the child's turn end.
@@ -1133,14 +1096,12 @@ func TestCloseBackgroundTask_SkipsTheDividerWhenTheProviderAlreadyEndedIt(t *tes
 	assert.Equal(t, "result", msgs[0]["type"])
 }
 
-// The same subagent stopped mid-flight forwards no result, so its transcript
-// does NOT close itself and still needs the neutral divider. This is why the
-// check is content-based rather than a static per-provider capability.
-func TestCloseBackgroundTask_WritesTheDividerWhenTheSubagentStoppedMidFlight(t *testing.T) {
+// Stopping a child preserves its last native output without inventing a completion.
+func TestCloseBackgroundTask_PreservesTheLastNativeMessageWhenStoppedMidFlight(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	// Work, but no closing envelope.
@@ -1149,21 +1110,19 @@ func TestCloseBackgroundTask_WritesTheDividerWhenTheSubagentStoppedMidFlight(t *
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusStopped))
 
 	msgs := transcriptMessages(t, svc, childID)
-	require.Len(t, msgs, 2)
-	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[1]["type"])
-	assert.Equal(t, "stopped", msgs[1]["status"])
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "working", msgs[0]["text"])
+	assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusStopped)
 }
 
-// The divider is written by the HANDLER, which has no sink to borrow a
-// provider from, so it resolves one from the child's own agent row. Getting
-// this wrong is silent-ish: createMessageRow refuses an UNSPECIFIED provider,
-// so the divider is simply dropped and the transcript never closes.
-func TestCloseBackgroundTask_DividerCarriesTheChildsProvider(t *testing.T) {
+// A stored native result retains the child provider after registry completion.
+func TestCloseBackgroundTask_PreservesTheNativeMessagesProvider(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
+	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":0}`)}, agent.SpanInfo{}))
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 
 	rows, err := svc.Queries.ListAllMessagesByAgentID(context.Background(),
@@ -1171,27 +1130,28 @@ func TestCloseBackgroundTask_DividerCarriesTheChildsProvider(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, rows[0].AgentProvider,
-		"the divider inherits the child agent's provider, not UNSPECIFIED")
+		"the native result retains the child provider")
 }
 
-// The exit sweep gives it a final status EVERY still-active row in one pass, so every
-// child transcript it ends must get its own divider -- not just the first.
-func TestMarkBackgroundTasksExited_ClosesEveryChildTranscript(t *testing.T) {
+// Process exit records every child outcome without adding transcript messages.
+func TestMarkBackgroundTasksExited_RecordsEveryChildOutcome(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childA, err := sink.EnsureChildAgent("span-a", "task-a", "A")
+	childA, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-a", ProviderChildKey: "task-a", Title: "A"})
 	require.NoError(t, err)
-	childB, err := sink.EnsureChildAgent("span-b", "task-b", "B")
+	childB, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-b", ProviderChildKey: "task-b", Title: "B"})
 	require.NoError(t, err)
 
 	svc.Output.MarkAgentBackgroundTasksExited("root-1", false)
 
 	for _, childID := range []string{childA, childB} {
 		msgs := transcriptMessages(t, svc, childID)
-		require.Len(t, msgs, 1, "child %s", childID)
-		assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
-		assert.Equal(t, "interrupted", msgs[0]["status"])
+		require.Empty(t, msgs, "child %s", childID)
+		stored, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(t.Context(), childID)
+		require.NoError(t, err)
+		assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusInterrupted), stored.Status)
+		assert.True(t, stored.EndedAt.Valid)
 	}
 }
 
@@ -1201,7 +1161,7 @@ func TestMarkBackgroundTasksExited_SkipsATranscriptThatAlreadyEnded(t *testing.T
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":5100}`)}, agent.SpanInfo{}))
 
@@ -1212,12 +1172,7 @@ func TestMarkBackgroundTasksExited_SkipsATranscriptThatAlreadyEnded(t *testing.T
 	assert.Equal(t, "result", msgs[0]["type"])
 }
 
-// --- Revive ---
-//
-// Claude restarts a finished subagent when the parent messages it. The registry
-// row has to reopen, and the transcript has to become closeable again -- the
-// first completion durably claimed its closing divider, so without a release the
-// second run would end with no divider at all.
+// A revived child reuses its stored transcript and receives a running registry status.
 
 // registrySnapshotRow reads one row back through the snapshot clients receive,
 // which is the cache. Distinct from registryRow in title_cleaning_test.go, which
@@ -1240,7 +1195,7 @@ func TestReviveBackgroundTask_ReturnsAFinishedRowToRunning(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	// A finished Claude subagent carries its output file in Description, written
 	// by the same task_notification that ended it.
@@ -1280,7 +1235,7 @@ func TestReviveBackgroundTask_IsANoOpForAnActiveOrAbsentRow(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	// Still running: nothing to reopen, and the row must not be disturbed.
@@ -1294,53 +1249,54 @@ func TestReviveBackgroundTask_IsANoOpForAnActiveOrAbsentRow(t *testing.T) {
 	assert.NoError(t, sink.ReviveBackgroundTask("task-nope"))
 }
 
-// The claim release is the half that is easy to forget, and forgetting it costs
-// the second run its closing divider entirely.
-func TestReviveBackgroundTask_ReleasesTheTranscriptCloseClaim(t *testing.T) {
+// A revived child retains both native completion messages without a close claim.
+func TestReviveBackgroundTask_PreservesNativeResultsAcrossRuns(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
-	require.False(t, svc.Output.claimSubagentTranscriptClose(context.Background(), childID),
-		"the first completion holds the claim")
+	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":12}`)}, agent.SpanInfo{}))
 
 	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
 
-	assert.True(t, svc.Output.claimSubagentTranscriptClose(context.Background(), childID),
-		"the revive gives the claim back so the next completion can take it")
+	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":34}`)}, agent.SpanInfo{}))
+	msgs := transcriptMessages(t, svc, childID)
+	require.Len(t, msgs, 2)
+	assert.Equal(t, float64(12), msgs[0]["duration_ms"])
+	assert.Equal(t, float64(34), msgs[1]["duration_ms"])
 }
 
-// End to end: a transcript holds one divider per completion, not one for its
-// whole life.
-func TestSubagentEndDivider_WrittenAgainAfterARevive(t *testing.T) {
+// Each native run retains its completion details after revival.
+func TestSubagentCompletion_PreservesEachNativeRunAfterARevive(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
+	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":12}`)}, agent.SpanInfo{}))
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
+	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":34,"is_error":true}`)}, agent.SpanInfo{}))
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusFailed))
 
 	msgs := transcriptMessages(t, svc, childID)
-	require.Len(t, msgs, 2, "one divider for each run")
-	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
-	assert.Equal(t, "completed", msgs[0]["status"])
-	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[1]["type"])
-	assert.Equal(t, "failed", msgs[1]["status"], "the second divider reports the SECOND run's outcome")
+	require.Len(t, msgs, 2)
+	assert.Equal(t, "result", msgs[0]["type"])
+	assert.Equal(t, float64(12), msgs[0]["duration_ms"])
+	assert.Equal(t, "result", msgs[1]["type"])
+	assert.Equal(t, true, msgs[1]["is_error"])
+	assert.Equal(t, float64(34), msgs[1]["duration_ms"])
+	assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusFailed)
 }
 
-// Regression lock. Nothing seals a child transcript: a divider is a message, not
-// a terminator, and a revived subagent's output has to keep landing below it. A
-// future "stop persisting once it ended" shortcut would break the revive
-// silently, so the behavior is pinned here rather than left implicit.
-func TestChildTranscript_AppendsBelowTheEndDivider(t *testing.T) {
+// Registry completion does not prevent later native transcript messages.
+func TestChildTranscript_AppendsAfterRegistryCompletion(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 
@@ -1349,16 +1305,15 @@ func TestChildTranscript_AppendsBelowTheEndDivider(t *testing.T) {
 		[]byte(`{"content":"keep going"}`), agent.SpanInfo{}))
 
 	msgs := transcriptMessages(t, svc, childID)
-	require.Len(t, msgs, 2)
-	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
-	assert.Equal(t, "keep going", msgs[1]["content"], "the later message sits below the divider")
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "keep going", msgs[0]["content"])
 }
 
 func TestLookupBackgroundTask_ResolvesTheChildAndStatus(t *testing.T) {
 	t.Parallel()
 
 	_, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	gotChild, status, ok, _ := sink.LookupBackgroundTask("task-1")
@@ -1379,7 +1334,7 @@ func TestLookupBackgroundTask_ResolvesTheChildAndStatus(t *testing.T) {
 func fillSubagentDisplayCap(t *testing.T, sink agent.ProviderServices, extra int) {
 	t.Helper()
 	for i := range extra {
-		_, err := sink.EnsureChildAgent(fmt.Sprintf("filler-span-%d", i), fmt.Sprintf("filler-%d", i), "filler")
+		_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: fmt.Sprintf("filler-span-%d", i), ProviderChildKey: fmt.Sprintf("filler-%d", i), Title: "filler"})
 		require.NoError(t, err)
 	}
 }
@@ -1392,7 +1347,7 @@ func TestLookupBackgroundTask_ResolvesARowThatLeftTheDisplayCache(t *testing.T) 
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 
@@ -1421,7 +1376,7 @@ func TestGetAgentBackgroundTaskByChildAgentID_ResolvesPastTheDisplayCap(t *testi
 
 	ctx := context.Background()
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 
@@ -1439,7 +1394,7 @@ func TestLookupBackgroundTask_ReportsAMissForAnUnknownKey(t *testing.T) {
 	t.Parallel()
 
 	_, sink := setupRootSink(t, "root-1")
-	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	for _, key := range []string{"", "task-nope", "bridge:another-machine"} {
@@ -1449,9 +1404,7 @@ func TestLookupBackgroundTask_ReportsAMissForAnUnknownKey(t *testing.T) {
 	}
 }
 
-// A shell row owns no transcript, so there is no close claim to give back. The
-// revive still reopens the row, and the release must not run against an empty
-// child id.
+// A shell task can resume without owning a child transcript.
 func TestReviveBackgroundTask_RowWithNoTranscript(t *testing.T) {
 	t.Parallel()
 
@@ -1468,25 +1421,16 @@ func TestReviveBackgroundTask_RowWithNoTranscript(t *testing.T) {
 	assert.Equal(t, bgtask.StatusRunning, registrySnapshotRow(t, svc, "root-1", "shell-1").Status)
 }
 
-// The cache and the durable row are two sources, and the row is the one that
-// decides. When the row is already ACTIVE the UPDATE matches nothing, and the
-// applier re-reads rather than guessing -- so the cache adopts the row, and the
-// transcript-close claim goes back, because a row that is active and carries a
-// child IS a reopened transcript that owes a closing divider.
-//
-// The claim, not the UPDATE, is what makes this the right way round. Holding it
-// leaves the restarted run with no divider at all and a thinking indicator that
-// never resolves, which this file calls the worse error where it fails the claim
-// open on a DB error.
+// A revive adopts the stored running state when its cache holds a final status.
 func TestReviveBackgroundTask_TrustsTheDatabaseOverAStaleCache(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
-	require.False(t, svc.Output.claimSubagentTranscriptClose(ctx, childID))
+	require.True(t, registrySnapshotRow(t, svc, "root-1", "task-1").Status.IsFinished())
 
 	// Put the DB back to running behind the cache's back, so the two disagree
 	// exactly as a concurrent revive would leave them.
@@ -1499,8 +1443,8 @@ func TestReviveBackgroundTask_TrustsTheDatabaseOverAStaleCache(t *testing.T) {
 
 	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
 
-	assert.True(t, svc.Output.claimSubagentTranscriptClose(ctx, childID),
-		"the row is active and linked, so the reopened transcript gets its claim back")
+	assert.Equal(t, bgtask.StatusRunning, registrySnapshotRow(t, svc, "root-1", "task-1").Status)
+	assert.Empty(t, transcriptMessages(t, svc, childID))
 }
 
 // PersistChildUserMessage is the write a revive makes, and its three properties
@@ -1513,7 +1457,7 @@ func TestPersistChildUserMessage_AppendsWithTheScrollRailMark(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.PersistChildPrompt(childID, "Find every caller."))
 
@@ -1541,11 +1485,262 @@ func TestPersistChildUserMessage_IsANoOpForBlankInput(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	require.NoError(t, sink.PersistChildUserMessage(childID, "   \n\t "))
 	require.NoError(t, sink.PersistChildUserMessage("", "a real message"))
 
 	assert.Empty(t, transcriptMessages(t, svc, childID), "neither call writes a message")
+}
+
+func TestEnsureChildAgentStoresItsInitialNativeSessionBeforeItsPrompt(t *testing.T) {
+	t.Parallel()
+	svc, parent := setupRootSink(t, "initial-session-root")
+	const nativeSession = "97d857a0-9cd7-4bbf-987b-a6ab094a074b"
+	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "initial-session-spawn", ProviderChildKey: "initial-session-child", AgentSessionID: nativeSession})
+	require.NoError(t, err)
+	child, err := svc.Queries.GetAgentByID(t.Context(), childID)
+	require.NoError(t, err)
+	assert.Equal(t, nativeSession, child.AgentSessionID, "the insert must set the session before any child sink opens")
+	require.NoError(t, parent.PersistChildPrompt(childID, "Read the native source."))
+	rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: childID})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, nativeSession, rows[0].AgentSessionID)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
+}
+
+func TestEnsureChildAgentPreservesAnExistingNativeSession(t *testing.T) {
+	t.Parallel()
+	const oldSession = "97d857a0-9cd7-4bbf-987b-a6ab094a074b"
+	const otherSession = "97d857a0-9cd7-4bbf-987b-a6ab094a074c"
+	for _, scenario := range []struct {
+		name       string
+		stored     string
+		requested  string
+		wantRefuse bool
+	}{
+		{name: "exact existing session", stored: oldSession, requested: oldSession},
+		{name: "empty request keeps existing session", stored: oldSession},
+		{name: "different existing session refuses", stored: oldSession, requested: otherSession, wantRefuse: true},
+		{name: "existing empty session refuses adoption", requested: otherSession, wantRefuse: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
+			svc, parent := setupRootSink(t, "existing-session-root")
+			base := agent.ChildAgentSpec{SpawnSpanID: "existing-spawn", ProviderChildKey: "existing-child"}
+			childID, err := parent.EnsureChildAgent(base)
+			require.NoError(t, err)
+			if scenario.stored != "" {
+				require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{ID: childID, AgentSessionID: scenario.stored}))
+			}
+			childSink := parent.ChildSink(childID)
+			require.NoError(t, childSink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"content":"Older native child message."}`)}, agent.SpanInfo{}))
+			before, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: childID})
+			require.NoError(t, err)
+			require.Len(t, before, 1)
+			spec := base
+			spec.AgentSessionID = scenario.requested
+			resolved, err := parent.EnsureChildAgent(spec)
+			if scenario.wantRefuse {
+				assert.Error(t, err)
+				assert.ErrorIs(t, err, agent.ErrChildIdentityRefused)
+				assert.Empty(t, resolved)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, childID, resolved)
+			}
+			stored, err := svc.Queries.GetAgentByID(t.Context(), childID)
+			require.NoError(t, err)
+			assert.Equal(t, scenario.stored, stored.AgentSessionID)
+			after, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: childID})
+			require.NoError(t, err)
+			assert.Equal(t, before, after, "child resolution must not rewrite older native messages")
+		})
+	}
+}
+
+func TestEnsureChildAgentConcurrentInitialSessionsKeepOneIdentity(t *testing.T) {
+	t.Parallel()
+	svc, parent := setupRootSink(t, "concurrent-initial-session-root")
+	start := make(chan struct{})
+	type childResult struct {
+		id, session string
+		err         error
+	}
+	results := make(chan childResult, 2)
+	for _, session := range []string{"native-a", "native-b"} {
+		go func() {
+			<-start
+			id, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "shared-spawn", ProviderChildKey: "shared-child", AgentSessionID: session})
+			results <- childResult{id: id, session: session, err: err}
+		}()
+	}
+	close(start)
+	first, second := <-results, <-results
+	if first.err != nil {
+		first, second = second, first
+	}
+	require.NoError(t, first.err)
+	assert.ErrorContains(t, second.err, "native session")
+	assert.ErrorIs(t, second.err, agent.ErrChildIdentityRefused)
+	assert.Empty(t, second.id)
+	child, err := svc.Queries.GetAgentByID(t.Context(), first.id)
+	require.NoError(t, err)
+	assert.Equal(t, first.session, child.AgentSessionID)
+	children, err := svc.Queries.ListAgentDescendantsForResume(t.Context(), sqlString("concurrent-initial-session-root"))
+	require.NoError(t, err)
+	assert.Len(t, children, 1)
+}
+
+func TestEnsureChildAgentReportsTypedDirectParentRefusal(t *testing.T) {
+	t.Parallel()
+	svc, root := setupRootSink(t, "typed-parent-root")
+	parentID, err := root.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "parent-spawn", ProviderChildKey: "parent-child"})
+	require.NoError(t, err)
+	parent := root.ChildSink(parentID)
+	spec := agent.ChildAgentSpec{SpawnSpanID: "nested-spawn", ProviderChildKey: "nested-native", AgentSessionID: "nested-session"}
+	childID, err := parent.EnsureChildAgent(spec)
+	require.NoError(t, err)
+	before, err := svc.Queries.GetAgentByID(t.Context(), childID)
+	require.NoError(t, err)
+	resolved, err := root.EnsureChildAgent(spec)
+	assert.ErrorIs(t, err, agent.ErrChildIdentityRefused)
+	assert.Empty(t, resolved)
+	after, err := svc.Queries.GetAgentByID(t.Context(), childID)
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+	exact, err := parent.EnsureChildAgent(spec)
+	require.NoError(t, err)
+	assert.Equal(t, childID, exact)
+}
+
+func TestEnsureChildAgentReportsTypedNativeKeyRefusal(t *testing.T) {
+	t.Parallel()
+	svc, parent := setupRootSink(t, "typed-key-root")
+	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "shared-spawn", ProviderChildKey: "native-first"})
+	require.NoError(t, err)
+	before, err := svc.Queries.GetAgentByID(t.Context(), childID)
+	require.NoError(t, err)
+	resolved, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "shared-spawn", ProviderChildKey: "native-second"})
+	assert.ErrorIs(t, err, agent.ErrChildIdentityRefused)
+	assert.Empty(t, resolved)
+	after, err := svc.Queries.GetAgentByID(t.Context(), childID)
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+}
+
+func TestEnsureChildAgentKeepsReadFailureDistinctFromIdentityRefusal(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupRootSink(t, "read-failure-root")
+	missingParent := svc.Output.NewSink("absent-parent", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	id, err := missingParent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "missing-parent-spawn", ProviderChildKey: "missing-parent-child"})
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, agent.ErrChildIdentityRefused)
+	assert.Empty(t, id)
+}
+
+func TestEnsureChildAgentSpanOnlyCreationStaysUnlinked(t *testing.T) {
+	t.Parallel()
+	svc, parent := setupRootSink(t, "span-only-root")
+	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "native-spawn-only", Title: "Native child"})
+	require.NoError(t, err)
+	require.NotEmpty(t, childID)
+	child, err := svc.Queries.GetAgentByID(t.Context(), childID)
+	require.NoError(t, err)
+	assert.Empty(t, child.ProviderChildKey)
+	assert.Equal(t, "native-spawn-only", child.SpawnSpanID)
+	require.True(t, child.ParentAgentID.Valid)
+	assert.Equal(t, "span-only-root", child.ParentAgentID.String)
+	rows, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(t.Context(), db.ListAgentBackgroundTasksNewestFirstParams{
+		OwnerAgentID: "span-only-root", Limit: 100,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, rows, "a missing native key must not create a registry identity")
+}
+
+func TestEnsureChildAgentSpanOnlyChildrenKeepSeparateSpans(t *testing.T) {
+	t.Parallel()
+	svc, parent := setupRootSink(t, "separate-span-root")
+	first, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "first-native-span"})
+	require.NoError(t, err)
+	second, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "second-native-span"})
+	require.NoError(t, err)
+	assert.NotEqual(t, first, second)
+	replayed, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "first-native-span"})
+	require.NoError(t, err)
+	assert.Equal(t, first, replayed)
+	children, err := svc.Queries.ListAgentDescendantsForResume(t.Context(), sqlString("separate-span-root"))
+	require.NoError(t, err)
+	require.Len(t, children, 2)
+	for _, child := range children {
+		stored, err := svc.Queries.GetAgentByID(t.Context(), child.ID)
+		require.NoError(t, err)
+		assert.Empty(t, stored.ProviderChildKey)
+	}
+	rows, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(t.Context(), db.ListAgentBackgroundTasksNewestFirstParams{
+		OwnerAgentID: "separate-span-root", Limit: 100,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, rows, "separate native spans must not share an invented empty-key row")
+}
+
+func TestEnsureChildAgentAdoptsTheRealKeyAfterSpanOnlyCreation(t *testing.T) {
+	t.Parallel()
+	svc, parent := setupRootSink(t, "native-adoption-root")
+	spec := agent.ChildAgentSpec{SpawnSpanID: "native-adoption-span", Title: "Native task"}
+	childID, err := parent.EnsureChildAgent(spec)
+	require.NoError(t, err)
+	require.NoError(t, parent.PersistChildPrompt(childID, "Inspect the native task."))
+	before, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: childID})
+	require.NoError(t, err)
+	require.Len(t, before, 1)
+	spec.ProviderChildKey = "ses-real-native-child"
+	adopted, err := parent.EnsureChildAgent(spec)
+	require.NoError(t, err)
+	assert.Equal(t, childID, adopted)
+	child, err := svc.Queries.GetAgentByID(t.Context(), childID)
+	require.NoError(t, err)
+	assert.Equal(t, spec.ProviderChildKey, child.ProviderChildKey)
+	assert.Equal(t, spec.SpawnSpanID, child.SpawnSpanID)
+	after, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: childID})
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+	rows, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(t.Context(), db.ListAgentBackgroundTasksNewestFirstParams{
+		OwnerAgentID: "native-adoption-root", Limit: 100,
+	})
+	require.NoError(t, err)
+	if assert.Len(t, rows, 1) {
+		assert.Equal(t, spec.ProviderChildKey, rows[0].RowKey)
+		assert.Equal(t, childID, rows[0].ChildAgentID)
+	}
+	continued := spec
+	continued.SpawnSpanID = "second-native-invocation"
+	reused, err := parent.EnsureChildAgent(continued)
+	require.NoError(t, err)
+	assert.Equal(t, childID, reused)
+	continuedChild, err := svc.Queries.GetAgentByID(t.Context(), childID)
+	require.NoError(t, err)
+	assert.Equal(t, spec.SpawnSpanID, continuedChild.SpawnSpanID)
+	assert.Equal(t, spec.ProviderChildKey, continuedChild.ProviderChildKey)
+	continuedMessages, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: childID})
+	require.NoError(t, err)
+	assert.Equal(t, before, continuedMessages)
+	wrong := spec
+	wrong.ProviderChildKey = "ses-different-native-child"
+	rejected, err := parent.EnsureChildAgent(wrong)
+	assert.ErrorIs(t, err, agent.ErrChildIdentityRefused)
+	assert.Empty(t, rejected)
+	otherParentID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "other-parent-span", ProviderChildKey: "other-parent-key"})
+	require.NoError(t, err)
+	otherParent := parent.ChildSink(otherParentID)
+	beforeRefusal, err := svc.Queries.GetAgentByID(t.Context(), childID)
+	require.NoError(t, err)
+	rejected, err = otherParent.EnsureChildAgent(spec)
+	assert.ErrorIs(t, err, agent.ErrChildIdentityRefused)
+	assert.Empty(t, rejected)
+	final, err := svc.Queries.GetAgentByID(t.Context(), childID)
+	require.NoError(t, err)
+	assert.Equal(t, beforeRefusal, final)
 }

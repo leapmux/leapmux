@@ -1,0 +1,27 @@
+import { DROID_E2E_SKIP_REASON, DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { assistantBubbles, messageBubbles, openAgentInfoCard, sendMessage, waitForAgentIdle } from '../helpers/ui'
+
+droidTest.describe('Factory Droid context usage', () => {
+  droidTest.skip(!!DROID_E2E_SKIP_REASON, DROID_E2E_SKIP_REASON || '')
+
+  droidTest('shows the native context window after a turn and after reload', async ({ authenticatedDroidWorkspace, page, modelScript }) => {
+    void authenticatedDroidWorkspace
+    await modelScript.rule(DROID_TITLE_RULE)
+    await modelScript.queue({ text: 'Context measured.' })
+    await sendMessage(page, modelScript.prompt('Reply once so I can inspect context usage.'))
+    await modelScript.waitForSteps()
+    await waitForAgentIdle(page)
+    await expect(assistantBubbles(page).filter({ hasText: 'Context measured.' }).first()).toBeVisible()
+    await expect(messageBubbles(page).filter({ hasText: 'session_token_usage_changed' })).toHaveCount(0)
+
+    const info = await openAgentInfoCard(page)
+    const context = info.getByText('Context', { exact: true }).locator('..')
+    await expect(context).toContainText('250.0k')
+    await expect(context).toContainText(/[1-9]\d?%/)
+
+    await page.reload()
+    const reopened = await openAgentInfoCard(page)
+    await expect(reopened.getByText('Context', { exact: true }).locator('..')).toContainText('250.0k')
+    await expect(messageBubbles(page).filter({ hasText: 'session_token_usage_changed' })).toHaveCount(0)
+  })
+})

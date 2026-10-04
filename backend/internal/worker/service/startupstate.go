@@ -142,7 +142,10 @@ type startupCore struct {
 	mu       sync.Mutex
 	entries  map[string]*startupEntry
 	inflight map[string]*startupEntry
-	wg       sync.WaitGroup
+	// closeInProgress prevents a new start after close cancels the old one
+	// but before close stamps the row under the lifecycle lock.
+	closeInProgress map[string]int
+	wg              sync.WaitGroup
 	// clock supplies all startup timers. newStartupCore requires a non-nil clock
 	// and sets it once, and nothing replaces it after construction, so
 	// awaitInFlight, fail and waitForPendingResize read it without r.mu. A test
@@ -156,10 +159,38 @@ func newStartupCore(clock quartz.Clock) startupCore {
 		panic("service: startup clock must not be nil")
 	}
 	return startupCore{
-		entries:  make(map[string]*startupEntry),
-		inflight: make(map[string]*startupEntry),
-		clock:    clock,
+		entries:         make(map[string]*startupEntry),
+		inflight:        make(map[string]*startupEntry),
+		closeInProgress: make(map[string]int),
+		clock:           clock,
 	}
+}
+
+// holdCloseAdmission refuses starts until the caller finishes its close.
+// Each concurrent close releases only its own hold. The caller sets this hold
+// before it cancels a startup and releases it after the database close.
+func (r *startupCore) holdCloseAdmission(id string) func() {
+	r.mu.Lock()
+	r.closeInProgress[id]++
+	r.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			if r.closeInProgress[id] <= 1 {
+				delete(r.closeInProgress, id)
+			} else {
+				r.closeInProgress[id]--
+			}
+			r.mu.Unlock()
+		})
+	}
+}
+
+func (r *startupCore) closing(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.closeInProgress[id] > 0
 }
 
 // begin records an entry in STARTING state, adds one to the in-flight counter,
@@ -171,8 +202,8 @@ func newStartupCore(clock quartz.Clock) startupCore {
 // removed the entry from the map: the goroutine reads its own object, not an
 // id-keyed lookup that a later fail() may have replaced.
 //
-// It CLAIMS the id, and returns nil when a startup already holds it. A caller
-// that gets nil started nothing and must not call finish(). The claim is what
+// It claims the id, and returns nil when another startup or a close holds it.
+// A caller that gets nil started nothing and must not call finish(). The claim
 // keeps two startups for one tab from sharing one map slot: the second used to
 // overwrite the first, which stranded the first goroutine's handle -- a later
 // cancelAndClear then cancelled the wrong context and stamped its close
@@ -182,15 +213,26 @@ func newStartupCore(clock quartz.Clock) startupCore {
 // gate refuses only a permanent startup failure, and the manager holds no entry
 // yet, so HasAgent is false.
 func (r *startupCore) begin(id string, cancel context.CancelFunc) *startupEntry {
+	entry, _ := r.beginWithCloseState(id, cancel)
+	return entry
+}
+
+// beginWithCloseState distinguishes a close from an existing startup.
+// An auto-start uses this result to report that a tab is closing.
+func (r *startupCore) beginWithCloseState(id string, cancel context.CancelFunc) (*startupEntry, bool) {
 	r.mu.Lock()
-	// Refuse only an IN-FLIGHT startup. A failed entry is a finished one that
+	if r.closeInProgress[id] > 0 {
+		r.mu.Unlock()
+		return nil, true
+	}
+	// Besides a close hold, refuse only an in-flight startup. A failed entry is a finished one that
 	// lingers for failedEntryTTL so a status query can still read the error;
 	// refusing on it would lock a tab out of every retry for those five minutes.
 	var replaced *startupEntry
 	if existing, claimed := r.entries[id]; claimed {
 		if !existing.failed {
 			r.mu.Unlock()
-			return nil
+			return nil, false
 		}
 		// A failed entry this startup replaces leaves the map below, so its
 		// pending eviction has nothing left to evict. Stopping it after the
@@ -209,7 +251,7 @@ func (r *startupCore) begin(id string, cancel context.CancelFunc) *startupEntry 
 	r.wg.Add(1)
 	r.mu.Unlock()
 	replaced.stopEviction()
-	return entry
+	return entry, false
 }
 
 // startupWait is what awaitInFlight learned about the startup it waited for.

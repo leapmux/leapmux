@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/coder/quartz"
+
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/util/procutil"
 )
@@ -30,11 +32,20 @@ type Process struct {
 	providerName string // e.g. "claude", "codex", "copilot" — used in log and error messages
 	stdin        io.WriteCloser
 
-	cmd         *exec.Cmd
-	ctx         context.Context
-	cancel      func()
-	processDone chan struct{}
-	waitErr     error
+	cmd           *exec.Cmd
+	owner         *procutil.ProcessOwner
+	pipes         *ProcessPipes
+	shutdownGrace time.Duration
+	stopDone      chan struct{}
+	ctx           context.Context
+	cancel        func()
+	processDone   chan struct{}
+	waitErr       error
+	// One Process permits one start attempt. A repeated call must keep the original child intact.
+	startMu        sync.Mutex
+	startAttempted bool
+	// clock times the waits of the process (AwaitResponse). See Clock.
+	clock quartz.Clock
 
 	stderrBuf  bytes.Buffer
 	stderrMu   sync.Mutex
@@ -42,7 +53,7 @@ type Process struct {
 
 	Mu      sync.Mutex
 	stopped bool
-	// processExited freezes exitCompletion at the instant cmd.Wait returns.
+	// processExited freezes exitCompletion when the native wait returns.
 	// A later cleanup call must not reclassify a natural failure as a stop.
 	processExited  bool
 	exitCompletion agent.MessageCompletion
@@ -51,8 +62,8 @@ type Process struct {
 	intentionalStop atomic.Bool
 
 	// TurnSeq issues the ordering token that rides every publish of this
-	// provider's turn flag. It lives here so all five providers get it from one
-	// embed and a sixth cannot forget it, and because Mu -- the lock that makes
+	// provider's turn flag. It lives here so every provider gets it from one
+	// embed and a new one cannot forget it, and because Mu -- the lock that makes
 	// the token atomic with the flag read -- lives here too.
 	TurnSeq
 
@@ -84,12 +95,6 @@ type Process struct {
 	// and on a `closed` arm that could never fire -- a permanent hang, not an error.
 	stdinClosed     chan struct{}
 	stdinClosedOnce bool
-
-	// jobObject, when non-nil, is the Windows kill-on-close job group that
-	// holds the shell wrapper and every descendant it spawns. Terminating or
-	// closing it reaps the whole tree — the Windows analogue of Unix's
-	// process-group signalling.
-	jobObject *procutil.JobObject
 
 	discardOutput atomic.Bool
 
@@ -328,16 +333,29 @@ func (p *Process) Stop() {
 	p.NoteIntentionalStop()
 	p.Mu.Lock()
 	if p.stopped {
+		done := p.stopDone
 		p.Mu.Unlock()
+		if done != nil {
+			<-done
+		}
 		return
 	}
 	p.stopped = true
+	p.stopDone = make(chan struct{})
+	done := p.stopDone
 	p.Mu.Unlock()
+	defer close(done)
 
-	_ = p.stdin.Close()
-	// The writer goes last. Closing stdin first makes every queued frame fail
-	// rather than hang, and the writer then answers each waiting caller with that
-	// failure instead of leaving it on a `done` nobody sends to.
+	ctx, cancelCapture := context.WithTimeout(context.Background(), 2*time.Second)
+	if err := p.owner.Capture(ctx); err != nil {
+		slog.Warn("capture agent process ownership", "agent_id", p.agentID, "error", err)
+	}
+	cancelCapture()
+	if p.stdin != nil {
+		if err := p.stdin.Close(); err != nil {
+			slog.Debug("close agent stdin", "agent_id", p.agentID, "error", err)
+		}
+	}
 	p.stdinMu.Lock()
 	if p.stdinClosed == nil {
 		p.stdinClosed = make(chan struct{})
@@ -348,16 +366,23 @@ func (p *Process) Stop() {
 	}
 	p.stdinMu.Unlock()
 
+	grace := p.shutdownGrace
+	if grace <= 0 {
+		grace = 3 * time.Second
+	}
+	timer := p.Clock().NewTimer(grace, "process-stop-grace")
+	defer timer.Stop("process-stop-grace")
 	select {
 	case <-p.processDone:
 		return
-	case <-time.After(3 * time.Second):
-		if err := p.jobObject.Terminate(); err != nil {
-			slog.Debug("job object terminate failed", "agent_id", p.agentID, "error", err)
+	case <-timer.C:
+		if err := p.owner.Terminate(); err != nil {
+			slog.Warn("stop owned agent processes", "agent_id", p.agentID, "error", err)
 		}
-		p.cancel()
+		if p.cancel != nil {
+			p.cancel()
+		}
 	}
-
 	<-p.processDone
 }
 
@@ -424,7 +449,7 @@ func (p *Process) IsDiscardingOutput() bool {
 // Wait blocks until the process exits and returns its exit error.
 func (p *Process) Wait() error {
 	<-p.processDone
-	return p.waitErr
+	return errors.Join(p.waitErr, p.owner.Err())
 }
 
 // AgentID returns the unique identifier for this agent.
@@ -447,6 +472,14 @@ func (p *Process) Context() context.Context {
 // environment or its process id.
 func (p *Process) Cmd() *exec.Cmd {
 	return p.cmd
+}
+
+// BindDescendants records observed process ownership before startup returns.
+func (p *Process) BindDescendants(ctx context.Context) error {
+	if p.owner == nil {
+		return errors.New("the process has no prepared owner")
+	}
+	return p.owner.BindDescendants(ctx)
 }
 
 // ProcessDone returns a channel that closes when the process exits.
@@ -596,47 +629,31 @@ func (p *Process) PreambleOutput() string {
 	return strings.Join(p.preambleOutput, "\n")
 }
 
-// attachJobObject assigns a freshly-started command to a kill group so
-// later force-kills reap the whole process tree (Windows job object;
-// Unix process group after Setsid/Setpgid). Must be called immediately
-// after cmd.Start. A job creation failure is logged but not fatal — the
-// agent still works, we just lose the tree-kill guarantee for that
-// session.
-func (p *Process) attachJobObject(cmd *exec.Cmd) {
-	job, err := procutil.AssignCmd(cmd)
-	if err != nil {
-		slog.Warn("attach job object failed", "agent_id", p.agentID, "error", err)
-		return
-	}
-	p.jobObject = job
+// ProcessLaunch supplies only the metadata that the generic process needs.
+type ProcessLaunch struct {
+	ProviderName       string
+	ShutdownGrace      time.Duration
+	PreambleDelimiter  string
+	PreambleMetaPrefix string
 }
 
-// NewProcess builds the embedded Process every agent shares, from the
-// launch options and the process the provider started.
-func NewProcess(opts agent.Options, providerName string, cmd *exec.Cmd, stdin io.WriteCloser, ctx context.Context, cancel func(), preambleDelimiter, preambleMetaPrefix string) Process {
-	return NewProcessFrom(ProcessConfig{
-		AgentID:            opts.AgentID,
-		ProviderName:       providerName,
-		Cmd:                cmd,
-		Stdin:              stdin,
-		Ctx:                ctx,
-		Cancel:             cancel,
-		APITimeout:         opts.EffectiveAPITimeout(),
-		PreambleDelimiter:  preambleDelimiter,
-		PreambleMetaPrefix: preambleMetaPrefix,
-	})
+// NewProcess consumes the command and owner that SetupProcessPipes created together.
+func NewProcess(opts agent.Options, launch ProcessLaunch, pipes *ProcessPipes, ctx context.Context, cancel func()) Process {
+	return NewProcessFrom(ProcessConfig{AgentID: opts.AgentID, ProviderName: launch.ProviderName, Ctx: ctx, Cancel: cancel, APITimeout: opts.EffectiveAPITimeout(), PreambleDelimiter: launch.PreambleDelimiter, PreambleMetaPrefix: launch.PreambleMetaPrefix, pipes: pipes, shutdownGrace: launch.ShutdownGrace})
 }
 
 // ProcessConfig states everything a Process starts with. Every field is
 // optional: a zero field leaves that part of the process unset, which a test
 // that stands a fake process in relies on.
 type ProcessConfig struct {
-	AgentID      string
-	ProviderName string // e.g. "claude"; used in log and error messages
-	Cmd          *exec.Cmd
-	Stdin        io.WriteCloser
-	Ctx          context.Context
-	Cancel       func()
+	pipes         *ProcessPipes
+	shutdownGrace time.Duration
+	AgentID       string
+	ProviderName  string // e.g. "claude"; used in log and error messages
+	Cmd           *exec.Cmd
+	Stdin         io.WriteCloser
+	Ctx           context.Context
+	Cancel        func()
 	// APITimeout is the timeout for JSON-RPC requests. Zero leaves the process
 	// on DefaultAPITimeout.
 	APITimeout time.Duration
@@ -650,6 +667,9 @@ type ProcessConfig struct {
 	// PreambleMeta seeds the preamble metadata the shell wrapper would report.
 	// nil starts it empty.
 	PreambleMeta map[string]string
+	// Clock times the waits of the process (AwaitResponse), and a provider reads
+	// its own timers from it (Process.Clock). nil selects the real clock.
+	Clock quartz.Clock
 }
 
 // NewProcessFrom builds a Process from c. It returns a fresh value,
@@ -667,11 +687,19 @@ func NewProcessFrom(c ProcessConfig) Process {
 	if meta == nil {
 		meta = make(map[string]string)
 	}
+	cmd, stdin := c.Cmd, c.Stdin
+	var owner *procutil.ProcessOwner
+	if c.pipes != nil {
+		cmd, stdin, owner = c.pipes.cmd, c.pipes.stdin, c.pipes.owner
+	}
 	return Process{
+		owner:              owner,
+		pipes:              c.pipes,
+		shutdownGrace:      c.shutdownGrace,
 		agentID:            c.AgentID,
 		providerName:       c.ProviderName,
-		cmd:                c.Cmd,
-		stdin:              c.Stdin,
+		cmd:                cmd,
+		stdin:              stdin,
 		ctx:                c.Ctx,
 		cancel:             c.Cancel,
 		stderrDone:         stderrDone,
@@ -680,46 +708,51 @@ func NewProcessFrom(c ProcessConfig) Process {
 		preambleMetaPrefix: c.PreambleMetaPrefix,
 		preambleMeta:       meta,
 		apiTimeout:         c.APITimeout,
+		clock:              c.Clock,
 	}
 }
 
-// StartCmd runs cmd.Start and, on success, attaches the process to a Windows
-// kill-on-close job object so later force-kills reap the whole tree.
-// On failure, cancel is invoked and the error is wrapped as "start <providerName>".
-// Callers must populate p.agentID and p.providerName before calling.
-func (p *Process) StartCmd(cmd *exec.Cmd, cancel func()) error {
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return fmt.Errorf("start %s: %w", p.providerName, err)
+// realClock is the clock of a process that states none.
+var realClock = quartz.NewReal()
+
+// Clock returns the clock of the process: the one that its config stated, or
+// the real clock. A provider takes its own timers from it, so one clock drives
+// every wait of the agent, and a test that states a mock controls all of them.
+func (p *Process) Clock() quartz.Clock {
+	if p.clock == nil {
+		return realClock
 	}
-	p.attachJobObject(cmd)
-	return nil
+	return p.clock
 }
 
-// SetupProcessPipes configures the command's cancel/wait behavior and opens
-// stdin, stdout, and stderr pipes. On error it calls cancel() and returns.
-func SetupProcessPipes(cmd *exec.Cmd, cancel func()) (stdin io.WriteCloser, stdout, stderr io.ReadCloser, err error) {
-	procutil.GracefulGroupCancel(cmd)
-
-	stdin, err = cmd.StdinPipe()
-	if err != nil {
-		cancel()
-		return nil, nil, nil, fmt.Errorf("stdin pipe: %w", err)
+// StartCmd starts the command through its prepared owner.
+func (p *Process) StartCmd() error {
+	p.startMu.Lock()
+	defer p.startMu.Unlock()
+	if p.startAttempted {
+		return errors.New("the process start was already attempted")
 	}
-
-	stdout, err = cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, nil, nil, fmt.Errorf("stdout pipe: %w", err)
+	p.startAttempted = true
+	if p.processDone == nil {
+		p.processDone = make(chan struct{})
 	}
-
-	stderr, err = cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return nil, nil, nil, fmt.Errorf("stderr pipe: %w", err)
+	var startErr error
+	if p.owner == nil {
+		startErr = errors.New("the process has no prepared owner")
+	} else {
+		startErr = p.owner.Start()
 	}
-
-	return stdin, stdout, stderr, nil
+	if startErr == nil {
+		return nil
+	}
+	startErr = fmt.Errorf("start %s: %w", p.providerName, errors.Join(startErr, p.pipes.Close()))
+	// No output reader starts after this failure. Finish the lifecycle here so cleanup can wait safely.
+	p.recordProcessExit(startErr)
+	close(p.processDone)
+	if p.cancel != nil {
+		p.cancel()
+	}
+	return startErr
 }
 
 // ParsedLine holds the JSON-parsed superset of all agent output envelope
@@ -801,6 +834,32 @@ type LineHandler func(line *ParsedLine)
 // ParsedLine, optionally intercepts responses, then forwards remaining lines
 // to the output handler.
 func (p *Process) ReadOutput(scanner *bufio.Scanner, intercept outputInterceptor, handle LineHandler) {
+	p.ReadLines(scanner, func(line []byte) {
+		parsed := &ParsedLine{Raw: line}
+		if err := json.Unmarshal(line, parsed); err != nil {
+			slog.Warn("invalid agent output JSON", "agent_id", p.agentID, "error", err)
+			return
+		}
+		if intercept(parsed) {
+			return
+		}
+		handle(parsed)
+	})
+}
+
+// ReadLines reads the process's stdout as plain text lines and hands each
+// non-empty line to handle, until stdout closes. It then records the process
+// exit. ReadOutput reads its JSON lines through it, so both keep one loop: the
+// preamble skip, the first-line trace, the discard check and the exit record.
+//
+// It is for a provider whose CLI runs a local server and prints plain text on
+// stdout -- the address it listens on, and log lines -- while the protocol
+// itself runs over HTTP. ReadOutput would drop every such line as invalid JSON,
+// and with it the address the provider waits for.
+//
+// handle runs on the reader goroutine and must not block: the child writes to
+// a pipe that this loop drains, and a child with a full pipe stops.
+func (p *Process) ReadLines(scanner *bufio.Scanner, handle func(line []byte)) {
 	p.skipPreamble(scanner)
 
 	firstLineTraced := false
@@ -813,27 +872,21 @@ func (p *Process) ReadOutput(scanner *bufio.Scanner, intercept outputInterceptor
 			agent.TraceStartupPhase(p.agentID, "first_agent_line")
 			firstLineTraced = true
 		}
-
 		if p.IsDiscardingOutput() {
 			continue
 		}
-
 		lineCopy := make([]byte, len(line))
 		copy(lineCopy, line)
-
-		parsed := &ParsedLine{Raw: lineCopy}
-		if err := json.Unmarshal(lineCopy, parsed); err != nil {
-			slog.Warn("invalid agent output JSON", "agent_id", p.agentID, "error", err)
-			continue
-		}
-
-		if intercept(parsed) {
-			continue
-		}
-
-		handle(parsed)
+		handle(lineCopy)
 	}
 
+	p.finishOutput(scanner)
+}
+
+// finishOutput runs after stdout closes. It records a framing failure, waits for
+// the process, and closes processDone, which is what Wait and every stop path
+// block on.
+func (p *Process) finishOutput(scanner *bufio.Scanner) {
 	if err := scanner.Err(); err != nil {
 		slog.Warn("agent stdout read error",
 			"agent_id", p.agentID,
@@ -843,11 +896,26 @@ func (p *Process) ReadOutput(scanner *bufio.Scanner, intercept outputInterceptor
 		p.cancel()
 	}
 
-	p.recordProcessExit(p.cmd.Wait())
-	if err := p.jobObject.Close(); err != nil {
-		slog.Debug("job object close failed", "agent_id", p.agentID, "error", err)
+	var waitErr error
+	if p.owner != nil {
+		waitErr = p.owner.Wait()
+	} else {
+		// ProcessConfig permits a test to supply its own started command.
+		waitErr = p.cmd.Wait()
+	}
+	p.recordProcessExit(waitErr)
+	if err := p.owner.Close(); err != nil {
+		slog.Warn("close owned agent processes", "agent_id", p.agentID, "error", err)
 	}
 	close(p.processDone)
+	// Work that a provider binds to the process context -- an event stream, a
+	// reconnect loop, a poller -- ends with the process, whether it exited by
+	// itself or crashed. Stop cancels earlier only when the process outlives its
+	// grace. The cancel comes after processDone closes, so a wait that sees both
+	// can report the exit (see AwaitResponse).
+	if p.cancel != nil {
+		p.cancel()
+	}
 }
 
 // MessageWithToolUses captures the completed tool count as separate worker metadata.

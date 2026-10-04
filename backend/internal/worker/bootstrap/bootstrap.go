@@ -155,6 +155,16 @@ func Wire(p Params) *Wiring {
 	// reach, and before anything can start an agent.
 	agents := agent.NewManager(providers.Registry(), nil)
 
+	// Each agent that keeps private files gets a directory of its own. The
+	// sweep of the directories that ended workers left starts here, in the
+	// background, for every provider that states them. It ends what their
+	// agents left running, such as an orphaned Cline hub. A new directory waits
+	// for the sweep of its parent, so no agent starts beside those leftovers.
+	// The call fails only for a wiring mistake that NewRegistry already refuses.
+	if err := agents.PrepareAgentDirs(p.Ctx, p.DataDir); err != nil {
+		panic(fmt.Sprintf("bootstrap: %v", err))
+	}
+
 	svc := service.New(service.Config{
 		Channels:            channelMgr,
 		Send:                p.Client.Send,

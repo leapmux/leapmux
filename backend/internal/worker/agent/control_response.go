@@ -84,8 +84,56 @@ type ControlBehaviorEnvelope struct {
 		Response  struct {
 			Behavior string `json:"behavior"`
 			Message  string `json:"message"`
+			// Choice is the id of one of the choices a control request offered
+			// beside its plain approve and reject: a plan's own approach, a
+			// refusal that also ends plan mode. Empty for a plain decision. The
+			// browser's plan control writes it (withControlChoice in
+			// frontend/src/utils/controlResponse.ts), and each provider maps the
+			// id onto its own wire answer.
+			Choice string `json:"choice"`
 		} `json:"response"`
 	} `json:"response"`
+}
+
+// DecodeControlChoice returns the trimmed choice a control response carries
+// beside its behavior, or "" for a plain decision and for bytes that are not
+// JSON. See ControlBehaviorEnvelope.
+func DecodeControlChoice(content []byte) string {
+	var cr ControlBehaviorEnvelope
+	if err := json.Unmarshal(content, &cr); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cr.Response.Response.Choice)
+}
+
+// DecodeControlUpdatedInput returns the modified tool input a control response
+// carries beside its behavior, or nil when it carries none.
+//
+// It is the reader for `buildAllowResponse`'s `updatedInput`
+// (frontend/src/utils/controlResponse.ts): the browser sends the whole tool
+// input back with the answer it changed -- an AskUserQuestion reply folds its
+// answers into that input -- and a provider that forwards a modified input to
+// its own CLI reads it here. DecodeControlBehavior leaves it alone, so its
+// callers keep the shape they had.
+//
+// A present but non-object value reads as absent, because a tool input is an
+// object and anything else is a payload this reader must not hand on as one.
+func DecodeControlUpdatedInput(content []byte) map[string]any {
+	var cr struct {
+		Response struct {
+			Response struct {
+				UpdatedInput json.RawMessage `json:"updatedInput"`
+			} `json:"response"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(content, &cr); err != nil {
+		return nil
+	}
+	var updated map[string]any
+	if err := json.Unmarshal(cr.Response.Response.UpdatedInput, &updated); err != nil {
+		return nil
+	}
+	return updated
 }
 
 // DecodeControlBehavior decodes the frontend's neutral approve/reject control-response envelope

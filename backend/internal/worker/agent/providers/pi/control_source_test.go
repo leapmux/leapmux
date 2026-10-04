@@ -6,6 +6,9 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -60,4 +63,22 @@ func TestPiQuestionIndexMatchesMultiSelectAndCustomInput(t *testing.T) {
 	index, matches = piQuestionIndex(piQuestionDialog{Method: "input", Title: "Explain\n\nLocalized custom answer prompt"}, args)
 	assert.True(t, matches)
 	assert.Equal(t, 1, index)
+}
+
+func TestPiControlSourceRejectsAmbiguousAndChangedTools(t *testing.T) {
+	for _, change := range []string{"second tool", "completed", "changed arguments"} {
+		t.Run(change, func(t *testing.T) {
+			a := newPiAgentWithSink(agent.NewProviderServices(&agenttest.ControlSink{}))
+			handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"tool_execution_start","toolCallId":"mcp","toolName":"mcp__probe__read","args":{}}`)))
+			switch change {
+			case "second tool":
+				handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"tool_execution_start","toolCallId":"other","toolName":"read","args":{"path":"sample.py"}}`)))
+			case "completed":
+				handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"tool_execution_end","toolCallId":"mcp","toolName":"mcp__probe__read","result":{"content":[]}}`)))
+			case "changed arguments":
+				a.toolStates["mcp"].Args = json.RawMessage(`{"different":true}`)
+			}
+			assert.Zero(t, a.piControlSourceSeq(nil))
+		})
+	}
 }

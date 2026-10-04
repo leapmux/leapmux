@@ -7,6 +7,7 @@ package acp
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -270,6 +271,84 @@ func TestACPClearContextKeepsNonHighEffortOverModelRaise(t *testing.T) {
 		"the running session ends on the stored effort, not the model-raise default")
 }
 
+// An agent can report an option only after a write. Kiro's session/new response
+// omits the effort axis, and the model write of the reapply brings it back. The
+// refresh reads the session/new response, which predates that write, so it must
+// not drop the axis that the newer payload reports.
+func TestACPClearContextKeepsAnOptionThatTheReapplyRevealed(t *testing.T) {
+	t.Parallel()
+
+	const model = `{"id":"model","category":"model","currentValue":"gpt-5.4","options":[{"value":"gpt-5.4"}]}`
+	effort := func(current string) string {
+		return `{"id":"thinking_effort","category":"thought_level","currentValue":"` + current + `","options":[{"value":"low"},{"value":"medium"},{"value":"high"}]}`
+	}
+	ag, requests := acptest.NewAgentForRPCWithRequestResponder(t, newTestAgent,
+		func(a *testAgent) *Base { return &a.Base },
+		func(req agenttest.RecordedRequest) agenttest.RPCReply {
+			switch req.Method {
+			case MethodSessionNew:
+				return agenttest.RPCReply{Result: json.RawMessage(`{"sessionId":"session-2","modes":{"currentModeId":"agent"},"configOptions":[` + model + `]}`)}
+			case MethodSessionSetConfigOption:
+				// The model write reveals the axis at its default, and an effort write
+				// echoes the value that it set.
+				current := "high"
+				if req.Params["configId"] == testThinkingEffort {
+					current, _ = req.Params["value"].(string)
+				}
+				return agenttest.RPCReply{Result: json.RawMessage(`{"configOptions":[` + model + `,` + effort(current) + `]}`)}
+			}
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		})
+	ag.model = "gpt-5.4"
+	ag.permissionMode = "agent"
+	sink := &agenttest.Sink{}
+	ag.sink = agent.NewProviderServices(sink)
+	ag.reapplySettings = ag.reapplyModelAndSecondary
+	ag.refreshFromSession = ag.applySessionRefresh
+	seedThinkingEffort(ag, "low")
+
+	_, clearErr := ag.ClearContext()
+	require.NoError(t, clearErr)
+
+	var writes []string
+	for _, r := range requests() {
+		if r.Method == MethodSessionSetConfigOption {
+			writes = append(writes, fmt.Sprintf("%v=%v", r.Params["configId"], r.Params["value"]))
+		}
+	}
+	assert.Equal(t, []string{"model=gpt-5.4", testThinkingEffort + "=low"}, writes)
+	g := optionids.GroupByID(ag.OptionGroups(), testThinkingEffort)
+	require.NotNil(t, g, "the refresh keeps the axis that the model write revealed")
+	assert.Equal(t, "low", g.GetCurrentValue())
+	assert.Equal(t, "low", sink.LastSettingsRefresh().Options[testThinkingEffort])
+}
+
+// A new session that drops an option, with a reapply whose writes return no
+// options, still drops the option: no payload newer than the session response
+// exists, so that response decides.
+func TestACPClearContextDropsAnOptionThatTheNewSessionOmits(t *testing.T) {
+	t.Parallel()
+
+	ag, _ := newTestAgentForRPCWithResponder(t, func(method string) agenttest.RPCReply {
+		if method == MethodSessionNew {
+			return agenttest.RPCReply{Result: json.RawMessage(`{"sessionId":"session-2","modes":{"currentModeId":"agent"},"configOptions":[{"id":"model","category":"model","currentValue":"gpt-5.4","options":[{"value":"gpt-5.4"}]}]}`)}
+		}
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	ag.model = "gpt-5.4"
+	ag.permissionMode = "agent"
+	ag.sink = agent.NewProviderServices(&agenttest.Sink{})
+	ag.reapplySettings = ag.reapplyModelAndSecondary
+	ag.refreshFromSession = ag.applySessionRefresh
+	seedThinkingEffort(ag, "low")
+
+	_, clearErr := ag.ClearContext()
+	require.NoError(t, clearErr)
+
+	assert.Nil(t, optionids.GroupByID(ag.OptionGroups(), testThinkingEffort),
+		"the session response is the newest payload, and it omits the axis")
+}
+
 // TestACPClearContextListOnlyChangeBroadcastsStatus is the regression guard for [C13]:
 // a ClearContext session refresh that changes only the option-group LIST (the new session
 // offers an option with a different set of available values, but the current selection is
@@ -286,9 +365,11 @@ func TestACPClearContextListOnlyChangeBroadcastsStatus(t *testing.T) {
 			// no longer offered -- a list-only change (value kept, available set shrinks).
 			return agenttest.RPCReply{Result: json.RawMessage(`{"sessionId":"session-2","models":{"currentModelId":"gpt-5.4"},"modes":{"currentModeId":"agent"},"configOptions":[{"id":"thinking_effort","category":"thought_level","currentValue":"high","options":[{"value":"low"},{"value":"high"}]}]}`)}
 		case MethodSessionSetConfigOption:
-			// The re-push confirms "high" against the prior (full) list, so the list only
-			// changes when applySessionRefresh folds the narrower session/new payload above.
-			return agenttest.RPCReply{Result: json.RawMessage(`{"configOptions":[{"id":"thinking_effort","category":"thought_level","currentValue":"high","options":[{"value":"low"},{"value":"medium"},{"value":"high"}]}]}`)}
+			// The re-push confirms "high" against the new session's narrower list, as a
+			// write in that session does. Its payload folds before the refresh, and the
+			// writes of the reapply broadcast nothing, so the refresh must report the
+			// change from the groups that the reader saw before the clear.
+			return agenttest.RPCReply{Result: json.RawMessage(`{"configOptions":[{"id":"thinking_effort","category":"thought_level","currentValue":"high","options":[{"value":"low"},{"value":"high"}]}]}`)}
 		}
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
@@ -312,6 +393,36 @@ func TestACPClearContextListOnlyChangeBroadcastsStatus(t *testing.T) {
 	assert.Len(t, g.GetOptions(), 2, "the new session's narrower option list is applied")
 	// ...and that list-only change is broadcast as a status refresh so the frontend's option
 	// groups don't go stale (PersistSettingsRefresh would no-op since the value didn't change).
+	assert.Equal(t, 1, sink.StatusActiveCount(), "a list-only ClearContext change pushes a status refresh")
+}
+
+// The same list-only change, when the writes of the reapply return no options:
+// the session response is then the newest payload, and its fold both narrows
+// the list and reports the change.
+func TestACPClearContextListOnlyChangeFromTheSessionResponseBroadcastsStatus(t *testing.T) {
+	t.Parallel()
+
+	ag, _ := newTestAgentForRPCWithResponder(t, func(method string) agenttest.RPCReply {
+		if method == MethodSessionNew {
+			return agenttest.RPCReply{Result: json.RawMessage(`{"sessionId":"session-2","models":{"currentModelId":"gpt-5.4"},"modes":{"currentModeId":"agent"},"configOptions":[{"id":"thinking_effort","category":"thought_level","currentValue":"high","options":[{"value":"low"},{"value":"high"}]}]}`)}
+		}
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	ag.model = "gpt-5.4"
+	ag.permissionMode = "agent"
+	sink := &agenttest.Sink{}
+	ag.sink = agent.NewProviderServices(sink)
+	ag.reapplySettings = ag.reapplyModelAndSecondary
+	ag.refreshFromSession = ag.applySessionRefresh
+	seedThinkingEffort(ag, "high")
+
+	_, clearErr := ag.ClearContext()
+	require.NoError(t, clearErr)
+
+	g := optionids.GroupByID(ag.OptionGroups(), "thinking_effort")
+	require.NotNil(t, g)
+	assert.Equal(t, "high", g.GetCurrentValue())
+	assert.Len(t, g.GetOptions(), 2, "the session response narrows the list")
 	assert.Equal(t, 1, sink.StatusActiveCount(), "a list-only ClearContext change pushes a status refresh")
 }
 

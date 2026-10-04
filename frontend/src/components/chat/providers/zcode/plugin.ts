@@ -3,6 +3,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerProvider } from '../registry'
 import { classifyZCodeMessage } from './classification'
 import { zcodeNotificationEntry } from './extractors/notification'
+import { zcodeOutputFilePaths } from './extractors/outputFilePaths'
 import { zcodeResultDivider } from './extractors/resultDivider'
 import { zcodeExtractRow } from './extractors/row'
 import { zcodeConfiguration } from './pluginConfiguration'
@@ -13,6 +14,7 @@ import { zcodeRelatedMessages, zcodeSpanRole } from './spanRole'
 
 const zcodePlugin: ProviderPlugin = {
   transcript: {
+    outputFilePaths: zcodeOutputFilePaths,
     resolveMessage: resolveZCodeMessage,
     spanRole: zcodeSpanRole,
     relatedMessages: zcodeRelatedMessages,

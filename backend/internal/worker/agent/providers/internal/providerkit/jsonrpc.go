@@ -24,27 +24,19 @@ type JSONRPCProcess struct {
 
 	// outstandingMu guards outstandingControls and withdrawGeneration.
 	outstandingMu sync.Mutex
-	// outstandingControls holds every control request the provider still waits on,
-	// keyed by the LeapMux request id. PublishControlRequest is the one writer that
-	// adds an entry, and WithdrawControlRequest the one that removes it, so the
-	// provider-side record and the browser-side card cannot move apart.
+	// outstandingControls holds unanswered control requests by LeapMux request ID.
+	// Publication adds an entry. An answer or withdrawal removes it.
+	// A failed write restores the entry only when no bytes reached the provider.
+	// These rules keep native requests and browser controls consistent.
 	outstandingControls map[string]outstandingControlRequest
-	// withdrawGeneration counts the WITHDRAWALS, so an absent record tells
-	// PublishControlRequest which of the two removers took it.
-	//
-	// The ANSWER path removes a record too: every control response reaches the
-	// provider through SendRawInput, which calls forgetOutstandingControl. A bare
-	// presence test therefore reads "the reader answered while I published" and "a
-	// stop stole this record" as the same state, and the publisher then cancelled a
-	// card the reader had just decided. Only a withdrawal raises this.
+	// withdrawGeneration distinguishes withdrawal from an answer during publication.
+	// Both paths remove a request. Only withdrawal increments this counter.
+	// A presence check alone can cancel a control that the reader already answered.
 	withdrawGeneration uint64
 }
 
-// frameJSONRPCMessage wraps one message in the transport's frame.
-//
-// ONE framing, shared by the waiting write and the detached one. Spelled twice, the
-// detached copy omitted the newline that a line transport needs, and every reply it
-// sent sat in the pipe as an unterminated line the peer's scanner never returned.
+// frameJSONRPCMessage supplies the same framing for waiting and detached writes.
+// A newline transport needs a final newline, or its scanner waits indefinitely.
 func (b *JSONRPCProcess) frameJSONRPCMessage(data []byte) []byte {
 	if b.FrameMessage != nil {
 		return b.FrameMessage(data)
@@ -59,17 +51,16 @@ func (b *JSONRPCProcess) writeJSONRPCMessage(data []byte) error {
 	return b.WriteStdin(b.frameJSONRPCMessage(data))
 }
 
-// SendRawInput keeps provider JSON unchanged inside the selected transport frame, then
-// drops the control request that the frame answers.
-//
-// The drop follows the write. A write that fails leaves the request waiting, so the
-// reader can answer it again. ErrDeliveryUncertain drops it: the bytes may have reached
-// the provider, and a second answer to a request the provider already retired is the
-// worse outcome.
+// SendRawInput preserves provider JSON inside the selected frame and removes its answered control.
+// Remove the control before the write because withdrawal can occur during that write.
+// A write that delivers no bytes restores the control for another answer.
+// ErrDeliveryUncertain leaves it removed because the provider can already hold the answer.
+// Restoring it in that case can send a second answer to a retired request.
 func (b *JSONRPCProcess) SendRawInput(data []byte) error {
+	restore := b.takeOutstandingControl(data)
 	err := b.writeRawFrame(data)
-	if err == nil || errors.Is(err, agent.ErrDeliveryUncertain) {
-		b.forgetOutstandingControl(data)
+	if err != nil && !errors.Is(err, agent.ErrDeliveryUncertain) {
+		restore()
 	}
 	return err
 }
@@ -114,10 +105,9 @@ func decodeJSONRPCResponse(raw json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("decode json-rpc response: %w", err)
 	}
 	if !isJSONNull(response.Error) {
-		// A provider that reports an error can still spell the unused result member as
-		// an explicit null. That states no result, so the response does not carry both.
-		// Rejecting it hid the error code from every caller that classifies one, and the
-		// caller reported an unconfirmed delivery in place of the provider's own reason.
+		// A native error can include an unused result member with an explicit null.
+		// Null states no result, so preserve the native error code in this case.
+		// Rejecting it would report uncertain delivery instead of the provider's refusal.
 		if !isJSONNull(response.Result) {
 			return nil, errors.New("json-rpc response contains both a result and an error")
 		}
@@ -134,9 +124,23 @@ func decodeJSONRPCResponse(raw json.RawMessage) (json.RawMessage, error) {
 }
 
 func (b *JSONRPCProcess) SendRequest(method string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
+	return b.SendRequestObserved(method, params, timeout, nil)
+}
+
+// SendRequestObserved observes a decoded reply before the waiting caller resumes.
+// The observer runs on the reader. It must not wait for another request.
+// Write failures, cancellation, and timeouts do not produce a reply observation.
+func (b *JSONRPCProcess) SendRequestObserved(method string, params json.RawMessage, timeout time.Duration, observe func(json.RawMessage, error)) (json.RawMessage, error) {
 	reqID := b.nextReqID.Add(1)
 
-	ch, release := b.Register(reqID)
+	var rawObserver func(json.RawMessage)
+	if observe != nil {
+		rawObserver = func(raw json.RawMessage) {
+			result, err := decodeJSONRPCResponse(raw)
+			observe(result, err)
+		}
+	}
+	ch, release := b.RegisterObserved(reqID, rawObserver)
 	defer release()
 
 	data, err := json.Marshal(jsonrpcMessage{
@@ -219,36 +223,21 @@ func (b *JSONRPCProcess) SendErrorResponse(id json.RawMessage, code int, message
 	})
 }
 
-// jsonrpcErrMethodNotFound is the JSON-RPC code for a method the receiver
-// implements no handler for.
+// jsonrpcErrMethodNotFound identifies a JSON-RPC method with no receiver handler.
 const jsonrpcErrMethodNotFound = -32601
 
-// RefuseUnsupportedRequest answers an inbound REQUEST this worker implements no
-// handler for, with -32601.
+// RefuseUnsupportedRequest replies with -32601 for an unsupported inbound request.
+// A notification has no ID and requires no reply.
+// An unanswered request leaves the native turn waiting until its own timeout.
 //
-// A notification carries no id and needs no answer, so this returns for one. A
-// request does: the runtime waits for a response, and without one it waits for its
-// own timeout while the turn appears to hang. Every JSON-RPC dispatcher's default
-// branch owes that answer, and each one spelled it again -- with two constants for
-// the same code and two message strings -- until Codex, the fourth, never spelled
-// it at all.
+// The stdout reader must not wait for a stdin write.
+// If the child stops reading stdin, that write blocks and stdout stops draining.
+// Both processes then deadlock. Holding the output mutex also prevents Stop from closing stdin.
+// The ZCode interceptResponse handler follows the same rule.
 //
-// It does NOT wait for the write, and that is the load-bearing part. Every caller
-// runs inside the read loop, so the reply's stdin write happens while nothing
-// drains the child's stdout. A child that is not reading its stdin then blocks the
-// write, the unread stdout backs up against it, and neither side moves again. One
-// caller made it worse still by holding its own output mutex across the write,
-// which left Stop unable to take the lock it needs to close stdin and end the
-// stall. `interceptResponse` in zcode/rpc.go states the same rule for the same
-// reason.
-//
-// One QUEUE behind one writer, not a goroutine for each reply. A goroutine each
-// made the cost of an unresponsive child unlimited -- one 8 KiB stack per
-// unanswered frame -- and left the replies in no particular order relative to each
-// other.
-//
-// The raw identifier travels back unchanged, so an id above 2^53 keeps its exact
-// value rather than rounding through a float.
+// One writer drains one queue. A goroutine per reply consumes an 8 KiB stack per unanswered frame.
+// A single writer also preserves reply order.
+// Preserve the raw request ID, including an integer above 2^53.
 func (b *JSONRPCProcess) RefuseUnsupportedRequest(line *ParsedLine) {
 	if line.Method == "" || !line.HasID() {
 		return
@@ -257,19 +246,11 @@ func (b *JSONRPCProcess) RefuseUnsupportedRequest(line *ParsedLine) {
 		"Method not supported: "+line.Method, "refuse "+line.Method)
 }
 
-// SendResponseDetached queues a reply WITHOUT waiting for its write, for a caller
-// on the goroutine that drains the child's stdout.
-//
-// That goroutine must not wait for a stdin write. A child that is not reading its
-// stdin blocks the write, the unread stdout backs up against it, and neither side
-// moves again -- which is the deadlock the reply exists to prevent. The frames stay
-// in ORDER behind one writer, so a reply sent this way still reaches the child
-// before anything queued after it: the "answers go FIRST, then the cancel"
-// invariant that Base.Interrupt and codex.Agent.Interrupt both rely on holds
-// whether the sender waits or not.
-//
-// `describe` labels the frame in the writer's failure log, because no caller is
-// left to report the error.
+// SendResponseDetached queues a reply without waiting for its stdin write.
+// The stdout reader uses this method because a waiting stdin write can deadlock both processes.
+// One writer preserves queue order for waiting and detached writes.
+// Base.Interrupt and Codex.Interrupt require a control answer before its following cancel.
+// The describe argument identifies a frame in failure logs when no caller waits for its write.
 func (b *JSONRPCProcess) SendResponseDetached(id json.RawMessage, result any, describe string) {
 	b.writeDetachedJSONRPCResponse(jsonrpcResponseMessage{JSONRPC: "2.0", ID: id, Result: result}, describe)
 }
@@ -322,14 +303,13 @@ func (b *JSONRPCProcess) ReadOutputLoop(scanner *bufio.Scanner, handle LineHandl
 	b.ReadOutput(scanner, b.handleJSONRPCResponse, handle)
 }
 
-// isJSONNull reports an explicit JSON null, which states the same thing as an absent
-// member. An absent member reports true also.
+// isJSONNull treats an explicit JSON null and an absent member as empty.
 func isJSONNull(raw json.RawMessage) bool {
 	return len(raw) == 0 || string(raw) == "null"
 }
 
-// parseJSONRPCError extracts the code and message from a JSON-RPC error
-// response. Returns ok=false if resp is empty, null, or not an error object.
+// parseJSONRPCError reads a native protocol error's code and message.
+// It rejects an absent value, JSON null, and a value without both required fields.
 func parseJSONRPCError(resp json.RawMessage) (code int, message string, ok bool) {
 	if isJSONNull(resp) {
 		return 0, "", false

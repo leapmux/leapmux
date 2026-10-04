@@ -2,8 +2,9 @@ import type { ClassifiedEntry } from './chatEntryCache'
 import type { ChatDomPremeasureCandidate } from './chatHiddenPremeasure'
 import type { VirtualItem } from './useChatVirtualizer'
 import { createRoot, createSignal } from 'solid-js'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createPremeasureQueue } from './chatPremeasureQueue'
+import { setup } from './useChatVirtualizer.testkit'
 
 describe('chatPremeasureQueue', () => {
   function makeHarness(ids: string[]) {
@@ -99,5 +100,74 @@ describe('chatPremeasureQueue', () => {
       expect(h.queue.premeasureCandidates()).toEqual([])
       dispose()
     })
+  })
+
+  it('records actual virtualizer acceptance and stale-key refusal only in development', () => {
+    const events: unknown[] = []
+    const record = (event: Event) => {
+      if (event instanceof CustomEvent)
+        events.push(event.detail)
+    }
+    window.addEventListener('leapmux:chat-premeasure', record)
+    vi.stubEnv('LEAPMUX_DEV', '1')
+    try {
+      createRoot((dispose) => {
+        try {
+          const h = makeHarness(['a'])
+          const candidate = h.candidate('a')
+          candidate.entry.message.seq = 6n
+          const { virt } = setup([candidate.item])
+          const queue = createPremeasureQueue({
+            virt,
+            visibleEntryById: () => new Map([['a', candidate.entry]]),
+            virtualItemById: () => new Map([['a', candidate.item]]),
+            virtualItems: () => [candidate.item],
+            rangedCandidates: () => [candidate],
+            lookAheadCandidates: () => [],
+          })
+          expect(queue.onMeasure('a', 88, 'old-key', 0, true)).toBe(false)
+          expect(events).toContainEqual({
+            phase: 'commit',
+            id: 'a',
+            seq: '6',
+            height: 88,
+            heightKey: 'old-key',
+            currentHeightKey: 'k-a',
+            accepted: false,
+            hasMeasured: false,
+            pending: false,
+            settled: true,
+            candidatePending: true,
+            collapsed: true,
+          })
+          expect(queue.onMeasure('a', 88, 'k-a', 0, true)).toBe(true)
+          expect(events).toContainEqual({
+            phase: 'commit',
+            id: 'a',
+            seq: '6',
+            height: 88,
+            heightKey: 'k-a',
+            currentHeightKey: 'k-a',
+            accepted: true,
+            hasMeasured: true,
+            pending: false,
+            settled: true,
+            candidatePending: false,
+            collapsed: false,
+          })
+          const count = events.length
+          vi.stubEnv('LEAPMUX_DEV', undefined)
+          queue.onMeasure('a', 101, 'k-a', 0, true)
+          expect(events).toHaveLength(count)
+        }
+        finally {
+          dispose()
+        }
+      })
+    }
+    finally {
+      window.removeEventListener('leapmux:chat-premeasure', record)
+      vi.unstubAllEnvs()
+    }
   })
 })

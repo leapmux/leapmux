@@ -869,6 +869,7 @@ func TestCountActiveBackgroundTasks(t *testing.T) {
 		{RowKey: "a", ChildAgentID: "child-1", Status: bgtask.StatusCompleted},
 		{RowKey: "b", ChildAgentID: "child-2", Status: bgtask.StatusRunning},
 		{RowKey: "c", Status: bgtask.StatusPending},
+		{RowKey: "d", ChildAgentID: "child-3", Status: bgtask.StatusPaused},
 	}
 
 	// A ROOT counts every descendant's row; that roll-up is what the root tab has
@@ -878,6 +879,7 @@ func TestCountActiveBackgroundTasks(t *testing.T) {
 	// finished subagent spinning for as long as any SIBLING ran.
 	assert.Equal(t, int32(0), countActiveBackgroundTasks(rows, "child-1"), "its row finished")
 	assert.Equal(t, int32(1), countActiveBackgroundTasks(rows, "child-2"))
+	assert.Equal(t, int32(0), countActiveBackgroundTasks(rows, "child-3"), "its row is paused")
 	assert.Equal(t, int32(0), countActiveBackgroundTasks(rows, "child-unknown"), "no row means no run")
 	assert.Equal(t, int32(0), countActiveBackgroundTasks(nil, ""))
 }
@@ -932,6 +934,31 @@ func TestActivity_ARootCountsTheRunningRowsTheCapHid(t *testing.T) {
 	assert.True(t, got.Working(), "the evicted subagent is still running")
 	assert.Equal(t, int32(bgtask.MaxTasks+1), got.ActiveTasks,
 		"the count adds back what the cap hid, so the root does not settle early")
+
+	svc.Output.MarkAgentBackgroundTasksExited("root-1", false)
+	assert.Equal(t, int32(0), svc.Output.AgentActivitySnapshot("root-1", "root-1").ActiveTasks,
+		"the process exit closes hidden rows, so their cached active count must clear")
+}
+
+func TestActivity_APausedRowHiddenByTheCapStaysIdle(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	svc.Output.processRunning = func(string) bool { return true }
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-paused", ProviderChildKey: "task-paused", Title: "Paused child"})
+	require.NoError(t, err)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-paused", Kind: bgtask.KindSubagent, ChildAgentID: childID,
+		Title: "Paused child", Status: bgtask.StatusPaused,
+	}))
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+
+	displayed, err := svc.Output.LoadBackgroundTasks(context.Background(), "root-1")
+	require.NoError(t, err)
+	require.False(t, hasRegistryRowFor(displayed, childID))
+	assert.Equal(t, int32(0), svc.Output.hiddenActiveTasks("root-1"))
+	assert.Equal(t, int32(bgtask.MaxTasks), svc.Output.AgentActivitySnapshot("root-1", "root-1").ActiveTasks)
+	assert.Equal(t, int32(0), svc.Output.AgentActivitySnapshot(childID, "root-1").ActiveTasks)
 }
 
 func TestActivity_AReadmittedRowStopsBeingCountedTwice(t *testing.T) {
@@ -947,7 +974,7 @@ func TestActivity_AReadmittedRowStopsBeingCountedTwice(t *testing.T) {
 	// running does not.
 	svc, sink := setupRootSink(t, "root-1")
 	svc.Output.processRunning = func(string) bool { return true }
-	childID, err := sink.EnsureChildAgent("spawn-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	// A CHANGED title each time, so the upsert is a real mutation. An identical
 	// one is a no-op the registry never re-admits.
@@ -1092,7 +1119,7 @@ func setupRunningSubagent(
 	t.Helper()
 	svc, sink := setupRootSink(t, rootID)
 	svc.Output.processRunning = func(string) bool { return true }
-	childID, err := sink.EnsureChildAgent("spawn-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "task-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
@@ -1243,7 +1270,7 @@ func TestActivity_AFinishedChildIsIdleWhileASiblingKeepsRunning(t *testing.T) {
 		RowKey: "row-key-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
 		Title: "child task", Status: bgtask.StatusRunning,
 	}))
-	siblingID, err := sink.EnsureChildAgent("spawn-span-2", "row-key-2", "sibling task")
+	siblingID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span-2", ProviderChildKey: "row-key-2", Title: "sibling task"})
 	require.NoError(t, err)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "row-key-2", Kind: bgtask.KindSubagent, ChildAgentID: siblingID,
@@ -1388,7 +1415,7 @@ func TestActivity_AFinishedChildStaysIdlePastTheCap(t *testing.T) {
 
 	svc, sink := setupRootSink(t, "root-1")
 	svc.Output.processRunning = func(string) bool { return true }
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 

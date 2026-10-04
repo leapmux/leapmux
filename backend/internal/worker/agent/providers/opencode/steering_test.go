@@ -15,22 +15,44 @@ import (
 func TestOpenCodeSteerUsesConcurrentACPPrompt(t *testing.T) {
 	t.Parallel()
 
-	agent, requests := acptest.NewAgentForRPC(t,
+	ag, requests := acptest.NewAgentForRPC(t,
 		func() *Agent { return &Agent{} },
 		func(agent *Agent) *acp.Base { return &agent.Base },
 	)
-	agent.SetPromptActiveForTest(true)
-	require.NoError(t, agent.SteerInput("guide the turn", nil))
+	ag.SetSinkForTest(agent.NewProviderServices(&agenttest.Sink{}))
+	ag.SetPromptActiveForTest(true)
+	require.NoError(t, ag.SteerInput("guide the turn", nil))
 	require.Eventually(t, func() bool { return len(requests()) == 1 }, time.Second, time.Millisecond)
 	assert.Equal(t, acp.MethodSessionPrompt, requests()[0].Method)
 	assert.Equal(t, "session-1", requests()[0].Params["sessionId"])
+	require.Eventually(t, func() bool { return !ag.IsPendingForTest(1) }, 30*time.Second, 5*time.Millisecond,
+		"the detached callback must finish before the fixture closes its peer")
 }
 
 // OpenCode steers with a second session/prompt, so it steers although it
 // advertises no steer method.
 func TestOpenCodeSupportsSteeringWithoutAnAdvertisedMethod(t *testing.T) {
 	t.Parallel()
-	assert.True(t, (&Agent{}).SupportsSteering())
+	ag := &Agent{}
+	*ag.HooksForTest() = FamilyHooks()
+	assert.True(t, ag.SupportsSteering())
+}
+
+// The steerable flag of a published turn reads the same answer as
+// SupportsSteering. A turn is steerable without an advertised steer method, so
+// the queue steers a message into it rather than holding it back.
+func TestOpenCodePublishesItsTurnAsSteerable(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	ag := &Agent{}
+	*ag.HooksForTest() = FamilyHooks()
+	ag.SetSinkForTest(agent.NewProviderServices(sink))
+	ag.WireTurnActiveForTest()
+	ag.SetPromptActiveForTest(true)
+
+	state := ag.PublishTurnActive()
+	assert.True(t, state.Active)
+	assert.True(t, state.Steerable, "a family turn accepts a steer")
 }
 
 func TestOpenCodeSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {

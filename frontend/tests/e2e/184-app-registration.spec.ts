@@ -350,7 +350,7 @@ test.describe('open registration', () => {
 
     const meta = await page.request.get(`${hubUrl}/.well-known/oauth-authorization-server`)
     const doc = await meta.json() as Record<string, unknown>
-    expect(doc.registration_endpoint).toBe(`${hubUrl}/oauth/register`)
+    expect(doc.registration_endpoint).toBe(`${leapmuxServer.boundHubUrl}/oauth/register`)
 
     // The registered app is authorizable, and the consent screen labels it
     // UNVERIFIED -- nobody vouched for something that registered itself.

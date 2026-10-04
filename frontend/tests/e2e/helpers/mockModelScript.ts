@@ -1,3 +1,6 @@
+import type { CursorRunRequestWitness } from './cursorRequestWire'
+import { googleLastUserText, googlePartsText } from './googleModelContent'
+
 /**
  * The vocabulary a test injects into the mock model server.
  *
@@ -8,13 +11,21 @@
  * server accepts cannot drift.
  */
 
-/** The three request shapes the installed coding agents send. */
-export type MockModelProtocol = 'openai-chat-completions' | 'openai-responses' | 'anthropic-messages'
+/**
+ * The request shapes the installed coding agents send.
+ *
+ * `aws-event-stream` is the one vendor service among them: Kiro's own service, which
+ * takes AWS JSON 1.0 and answers a turn with an AWS event stream. See
+ * `./kiroSurface`.
+ */
+export type MockModelProtocol = 'openai-chat-completions' | 'openai-responses' | 'anthropic-messages' | 'aws-event-stream' | 'google-generative-language'
 
 export const MOCK_MODEL_PROTOCOLS: readonly MockModelProtocol[] = [
   'openai-chat-completions',
   'openai-responses',
   'anthropic-messages',
+  'aws-event-stream',
+  'google-generative-language',
 ]
 
 /** The reserved scenario that answers a request carrying no marker. */
@@ -43,7 +54,7 @@ export interface MockModelToolCall {
   id: string
   name: string
   arguments?: Record<string, unknown>
-  /** Raw text input. The OpenAI Responses protocol is the only one that carries it. */
+  /** Raw text input for a custom tool in either OpenAI model API. */
   input?: string
   /**
    * The tool NAMESPACE, for a provider that groups its tools into several.
@@ -57,12 +68,23 @@ export interface MockModelToolCall {
    * The OpenAI Responses protocol is the only one that carries it.
    */
   namespace?: string
+  /** Hold a provider-service tool after its native started event. Never send this field as a tool argument. */
+  completionGate?: string
+  /** Native child text sent by a provider service before the task completes. */
+  taskProgress?: string
+  /** Request actual native client execution. The client supplies the child identity and report. */
+  nativeExecution?: { modelId: string }
 }
 
 export interface MockModelError {
   status: number
   message: string
   code?: string
+}
+
+export interface MockModelDeliveredError {
+  code: string
+  message: string
 }
 
 /**
@@ -74,14 +96,53 @@ export interface MockModelError {
  * piece, so a progress indicator driven by token counts never moves and an
  * interrupt finds nothing to truncate.
  *
- * Only `text` is chunked. Reasoning and a tool call are single decisions, and a
- * client reassembles either one before it shows anything.
+ * Reasoning chunks precede text chunks. Tool calls keep their native complete arguments.
  */
 export interface MockModelTextStream {
-  /** Characters per piece. At least 1. */
+  /** Unicode code points per piece. At least 1. */
   chunkChars: number
   /** Pause between pieces, under the same cap as `delayMs`. */
   delayMs: number
+  /** Hold after each stated chunk until the test releases its gate. */
+  gates?: readonly { afterChunk: number, name: string }[]
+}
+
+/**
+ * Token counts a step reports in its usage block.
+ *
+ * Every field is optional. An absent field keeps the mock's default of 1, so a
+ * step that only needs a bigger `inputTokens` need not state the rest.
+ */
+export interface MockModelUsage {
+  inputTokens?: number
+  outputTokens?: number
+  /**
+   * Context-window size the client may pair with `inputTokens`.
+   *
+   * Some CLIs surface context usage only when the response or their own catalog
+   * states a window. The mock cannot change a catalog; this field feeds the
+   * response shapes that carry a window alongside usage.
+   */
+  contextWindow?: number
+}
+
+/**
+ * Rate-limit surface on one answer.
+ *
+ * The mock writes the standard provider response headers, so a CLI that parses
+ * them can emit its own rate-limit state. A step that wants the request refused
+ * states `error` with status 429 instead; that path is separate because an
+ * error answer carries no output.
+ */
+export interface MockModelRateLimits {
+  /** `five_hour`, `weekly`, `primary`, `secondary`, … The provider's own vocabulary. */
+  type: string
+  /** `allowed`, `exceeded`, `rate_limited`, `rejected`, … */
+  status: string
+  /** Fraction of the window used, from 0 to 1. */
+  utilization?: number
+  /** Unix seconds when the window resets. */
+  resetsAt?: number
 }
 
 /** One model answer. A step carries output or an error, never both. */
@@ -93,9 +154,33 @@ export interface MockModelStep {
   error?: MockModelError
   /** Hold the answer open for this long. An interrupt test cancels inside that window. */
   delayMs?: number
-  /** Deliver `text` progressively. See `MockModelTextStream`. */
+  /** Hold the answer until this test releases the gate. */
+  gate?: string
+  /** Deliver reasoning and text progressively. See `MockModelTextStream`. */
   stream?: MockModelTextStream
+  /** Token counts on the usage block. Defaults to 1 input and 1 output. */
+  usage?: MockModelUsage
+  /** Rate-limit headers and body fields on the answer. */
+  rateLimits?: MockModelRateLimits
+  /**
+   * Values that the answer copies from the request, keyed by placeholder name.
+   *
+   * Each value is a regular-expression source with one capture group. The
+   * server tests it against every string of the request body, and the LAST
+   * match supplies the value. The server then replaces each `{{name}}` in
+   * `text`, `reasoning`, and every tool-call string with that value.
+   *
+   * This exists for a value that the agent chooses at run time and the test
+   * cannot know. Kimi Code is the case: it gives each plan a random file path
+   * and states it only in its system reminder, and the model must write the
+   * plan to that exact path. A capture that matches nothing makes the request
+   * unexpected, so the turn fails with its body recorded.
+   */
+  captures?: Record<string, string>
 }
+
+/** `{{name}}`, where the name follows the rules of a JavaScript identifier. */
+const CAPTURE_PLACEHOLDER = /\{\{([a-z_]\w*)\}\}/gi
 
 /**
  * `text` split the way `stream` asks, or the whole of it as one piece.
@@ -110,8 +195,19 @@ export function textChunks(step: MockModelStep): string[] {
   if (!size || step.text.length <= size)
     return [step.text]
   const chunks: string[] = []
-  for (let at = 0; at < step.text.length; at += size)
-    chunks.push(step.text.slice(at, at + size))
+  let chunk = ''
+  let characters = 0
+  for (const character of step.text) {
+    chunk += character
+    characters++
+    if (characters === size) {
+      chunks.push(chunk)
+      chunk = ''
+      characters = 0
+    }
+  }
+  if (chunk !== '')
+    chunks.push(chunk)
   return chunks
 }
 
@@ -138,6 +234,11 @@ export interface MockModelMatcher {
   user?: MockModelPattern
   /** Tested against the complete request body as JSON. */
   body?: MockModelPattern
+  /** Match only the final message of the active generic model API. */
+  lastMessage?: {
+    role?: 'system' | 'developer' | 'user' | 'assistant' | 'tool'
+    text?: MockModelPattern
+  }
 }
 
 /**
@@ -149,6 +250,8 @@ export interface MockModelMatcher {
  */
 export interface MockModelRule {
   name: string
+  /** High-priority rules precede normal rules. Declaration order stays stable within each priority. */
+  priority?: 'high' | 'normal'
   when: MockModelMatcher
   respond: MockModelStep
   /** Answer at most once. A rule repeats by default. */
@@ -169,6 +272,16 @@ export interface MockModelScenarioSpec {
   fallback?: MockModelStep
 }
 
+export interface MockModelServerContext {
+  conversationId: string
+  messages: { role: 'user' | 'assistant', content: string }[]
+}
+
+export interface MockModelCredential {
+  kind: 'bearer' | 'api-key' | 'service' | 'none'
+  accepted: boolean
+}
+
 export interface MockModelRequestRecord {
   protocol: MockModelProtocol
   path: string
@@ -179,6 +292,17 @@ export interface MockModelRequestRecord {
   /** Set when the queue was exhausted and the fallback answered. */
   fallback?: true
   body: unknown
+  /** Completed native service history before this request. The native body stays unchanged. */
+  serverContext?: MockModelServerContext
+  /** The actual decoded native Run fields beside the unchanged request body. */
+  nativeRequest?: CursorRunRequestWitness
+  /** Actual credential validation without the credential value. */
+  mockCredential?: MockModelCredential
+  /** The actual allowlisted beta header. Never retain arbitrary headers or credentials. */
+  requestHeaders?: { 'anthropic-beta': string }
+  /** The actual completed response. Cancelled responses produce no receipt. */
+  response?: { status: number, headers: Record<string, string>, serviceError?: { code: string, message: string } }
+  serviceResponse?: { kind: 'amp-error-set', code: string, message: string }
 }
 
 export interface MockModelUnexpectedRequest {
@@ -194,6 +318,8 @@ export interface MockModelScenarioStatus {
   stepCount: number
   /** How many requests each rule answered, keyed by rule name. */
   ruleMatches: Record<string, number>
+  /** Gates that currently hold one or more model requests. */
+  pendingGates: string[]
   requests: MockModelRequestRecord[]
   unexpectedRequests: MockModelUnexpectedRequest[]
 }
@@ -240,10 +366,13 @@ function parseRule(value: unknown, index: number): MockModelRule {
     throw new Error(`Model rule ${index} needs a name`)
   if (value.once !== undefined && typeof value.once !== 'boolean')
     throw new Error(`Model rule ${value.name} once must be a boolean`)
+  if (value.priority !== undefined && value.priority !== 'high' && value.priority !== 'normal')
+    throw new Error(`Model rule ${value.name} priority must be high or normal`)
   return {
     name: value.name,
     when: parseMatcher(value.when, value.name),
     respond: parseStep(value.respond, `rule ${value.name}`),
+    ...(value.priority === undefined ? {} : { priority: value.priority }),
     ...(value.once === true ? { once: true } : {}),
   }
 }
@@ -263,24 +392,41 @@ function parseMatcher(value: unknown, ruleName: string): MockModelMatcher {
     const declared = value[field]
     if (declared === undefined)
       continue
-    const declaredList: unknown[] = Array.isArray(declared) ? declared : [declared]
-    if (declaredList.length === 0)
-      throw new Error(`Model rule ${ruleName} ${field} must state at least one pattern`)
-    const patterns: string[] = []
-    for (const pattern of declaredList) {
-      if (typeof pattern !== 'string' || !pattern)
-        throw new Error(`Model rule ${ruleName} ${field} must be a non-empty pattern`)
-      try {
-        void new RegExp(pattern, 'i')
-      }
-      catch (error) {
-        throw new Error(`Model rule ${ruleName} ${field} is not a valid regular expression`, { cause: error })
-      }
-      patterns.push(pattern)
+    matcher[field] = parseModelPattern(declared, `Model rule ${ruleName} ${field}`)
+  }
+  if (value.lastMessage !== undefined) {
+    const message = value.lastMessage
+    if (!isRecord(message) || Object.keys(message).length === 0 || Object.keys(message).some(key => key !== 'role' && key !== 'text'))
+      throw new Error(`Model rule ${ruleName} lastMessage must contain role or text criteria only`)
+    const role = (['system', 'developer', 'user', 'assistant', 'tool'] as const).find(candidate => candidate === message.role)
+    if (message.role !== undefined && role === undefined)
+      throw new Error(`Model rule ${ruleName} lastMessage role is invalid`)
+    if (role === undefined && message.text === undefined)
+      throw new Error(`Model rule ${ruleName} lastMessage needs role or text`)
+    matcher.lastMessage = {
+      ...(role === undefined ? {} : { role }),
+      ...(message.text === undefined ? {} : { text: parseModelPattern(message.text, `Model rule ${ruleName} lastMessage text`) }),
     }
-    matcher[field] = Array.isArray(declared) ? patterns : patterns[0]!
   }
   return matcher
+}
+
+function parseModelPattern(value: unknown, label: string): MockModelPattern {
+  const declared: unknown[] = Array.isArray(value) ? value : [value]
+  if (declared.length === 0)
+    throw new Error(`${label} must state at least one pattern`)
+  const patterns = declared.map((pattern) => {
+    if (typeof pattern !== 'string' || !pattern)
+      throw new Error(`${label} must be a non-empty pattern`)
+    try {
+      void new RegExp(pattern, 'i')
+    }
+    catch (error) {
+      throw new Error(`${label} is not a valid regular expression`, { cause: error })
+    }
+    return pattern
+  })
+  return Array.isArray(value) ? patterns : patterns[0]!
 }
 
 function parseStep(value: unknown, label: string): MockModelStep {
@@ -297,22 +443,165 @@ function parseStep(value: unknown, label: string): MockModelStep {
     ? toolCallsValue.map((tool, toolIndex) => parseToolCall(tool, label, toolIndex))
     : undefined
   const error = value.error === undefined ? undefined : parseModelError(value.error, label)
-  if (value.text === undefined && toolCalls === undefined && error === undefined)
-    throw new Error(`Model ${label} needs text, toolCalls, or error`)
+  if (value.text === undefined && value.reasoning === undefined && toolCalls === undefined && error === undefined)
+    throw new Error(`Model ${label} needs text, reasoning, toolCalls, or error`)
   if (error && (value.text !== undefined || toolCalls !== undefined || value.reasoning !== undefined))
     throw new Error(`Model ${label} cannot combine an error with output`)
   const delayMs = parseDelay(value.delayMs, label)
+  const gate = parseGate(value.gate, label)
+  if (gate !== undefined && delayMs !== undefined)
+    throw new Error(`Model ${label} cannot combine gate with delayMs`)
   const stream = parseTextStream(value.stream, label)
-  if (stream && value.text === undefined)
+  if (stream && value.text === undefined && value.reasoning === undefined)
     throw new Error(`Model ${label} states stream but no text to deliver`)
-  return {
+  const captures = parseCaptures(value.captures, label)
+  if (captures && error)
+    throw new Error(`Model ${label} cannot combine captures with an error`)
+  const usage = parseUsage(value.usage, label)
+  if (usage && error)
+    throw new Error(`Model ${label} cannot combine usage with an error`)
+  const rateLimits = parseRateLimits(value.rateLimits, label)
+  if (rateLimits && error)
+    throw new Error(`Model ${label} cannot combine rateLimits with an error`)
+  const step: MockModelStep = {
     ...(typeof value.reasoning === 'string' ? { reasoning: value.reasoning } : {}),
     ...(typeof value.text === 'string' ? { text: value.text } : {}),
     ...(toolCalls ? { toolCalls } : {}),
     ...(error ? { error } : {}),
     ...(delayMs === undefined ? {} : { delayMs }),
+    ...(gate === undefined ? {} : { gate }),
     ...(stream === undefined ? {} : { stream }),
+    ...(usage === undefined ? {} : { usage }),
+    ...(rateLimits === undefined ? {} : { rateLimits }),
+    ...(captures === undefined ? {} : { captures }),
   }
+  if (!captures)
+    validateStreamGatePositions(step, label)
+  if (captures) {
+    // A placeholder with no capture would reach the agent as literal braces,
+    // and a capture that no placeholder uses states a match that nothing reads.
+    const used = new Set(stepPlaceholders(step))
+    for (const name of used) {
+      if (!Object.hasOwn(captures, name))
+        throw new Error(`Model ${label} uses {{${name}}} but declares no capture for it`)
+    }
+    for (const name of Object.keys(captures)) {
+      if (!used.has(name))
+        throw new Error(`Model ${label} declares capture ${name} but no {{${name}}} placeholder uses it`)
+    }
+  }
+  return step
+}
+
+function parseGate(value: unknown, label: string): string | undefined {
+  if (value === undefined)
+    return undefined
+  validateGateName(value, `Model ${label} gate`)
+  return value
+}
+
+export function validateGateName(value: unknown, label = 'Model gate'): asserts value is string {
+  if (typeof value !== 'string' || !/^[a-z][\w-]{0,63}$/i.test(value))
+    throw new Error(`${label} must use 1 to 64 ASCII letters, digits, underscores, or hyphens and start with a letter`)
+}
+
+function parseCaptures(value: unknown, label: string): Record<string, string> | undefined {
+  if (value === undefined)
+    return undefined
+  if (!isRecord(value) || Object.keys(value).length === 0)
+    throw new Error(`Model ${label} captures must be an object with at least one entry`)
+  const captures: Record<string, string> = {}
+  for (const [name, source] of Object.entries(value)) {
+    if (!/^[a-z_]\w*$/i.test(name))
+      throw new Error(`Model ${label} capture name ${name} must be an identifier`)
+    if (typeof source !== 'string' || !source)
+      throw new Error(`Model ${label} capture ${name} must be a non-empty pattern`)
+    let pattern: RegExp
+    try {
+      pattern = new RegExp(source)
+    }
+    catch (error) {
+      throw new Error(`Model ${label} capture ${name} is not a valid regular expression`, { cause: error })
+    }
+    // An alternation with the empty string always matches, so the match array
+    // states how many groups the pattern declares.
+    const groups = new RegExp(`${pattern.source}|`).exec('')!.length - 1
+    if (groups !== 1)
+      throw new Error(`Model ${label} capture ${name} must declare exactly one capture group, not ${groups}`)
+    captures[name] = source
+  }
+  return captures
+}
+
+/** Every placeholder name that the step's strings use, with repeats. */
+function stepPlaceholders(step: MockModelStep): string[] {
+  const names: string[] = []
+  visitStrings([step.text, step.reasoning, step.toolCalls], (text) => {
+    for (const match of text.matchAll(CAPTURE_PLACEHOLDER))
+      names.push(match[1]!)
+  })
+  return names
+}
+
+/** The step with each placeholder resolved, or the name of the capture that found no match. */
+export type ResolvedStep = { step: MockModelStep } | { unmatchedCapture: string }
+
+/**
+ * Resolve a step's captures against one request body.
+ *
+ * A step without captures returns unchanged, so a script that states literal
+ * braces in its text keeps them.
+ */
+export function resolveStepCaptures(step: MockModelStep, body: unknown): ResolvedStep {
+  if (!step.captures)
+    return { step }
+  const values = new Map<string, string>()
+  for (const [name, source] of Object.entries(step.captures)) {
+    const pattern = new RegExp(source, 'g')
+    let last: string | undefined
+    visitStrings(body, (text) => {
+      for (const match of text.matchAll(pattern)) {
+        if (match[1] !== undefined)
+          last = match[1]
+      }
+    })
+    if (last === undefined)
+      return { unmatchedCapture: name }
+    values.set(name, last)
+  }
+  const fill = (text: string): string => text.replace(CAPTURE_PLACEHOLDER, (whole, name: string) => values.get(name) ?? whole)
+  const resolved: MockModelStep = {
+    ...step,
+    ...(step.text === undefined ? {} : { text: fill(step.text) }),
+    ...(step.reasoning === undefined ? {} : { reasoning: fill(step.reasoning) }),
+    ...(step.toolCalls === undefined ? {} : { toolCalls: step.toolCalls.map(call => fillToolCall(call, fill)) }),
+  }
+  // The resolved step states literal values. Keeping the captures would let a
+  // second resolution match the filled text against the patterns again.
+  delete resolved.captures
+  validateStreamGatePositions(resolved, 'resolved step')
+  return { step: resolved }
+}
+
+/**
+ * The call with each placeholder filled, in every string that it holds.
+ *
+ * `stepPlaceholders` accepts a placeholder in any string of a call, the id, the
+ * name and the namespace included. The fill therefore walks the same strings, so
+ * no placeholder that the parser accepts reaches the agent as literal braces.
+ */
+function fillToolCall(call: MockModelToolCall, fill: (text: string) => string): MockModelToolCall {
+  return fillValue(call, fill) as MockModelToolCall
+}
+
+function fillValue(value: unknown, fill: (text: string) => string): unknown {
+  if (typeof value === 'string')
+    return fill(value)
+  if (Array.isArray(value))
+    return value.map(item => fillValue(item, fill))
+  if (isRecord(value))
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, fillValue(item, fill)]))
+  return value
 }
 
 function parseTextStream(value: unknown, label: string): MockModelTextStream | undefined {
@@ -325,7 +614,32 @@ function parseTextStream(value: unknown, label: string): MockModelTextStream | u
   const delayMs = parseDelay(value.delayMs, `${label} stream`)
   if (delayMs === undefined)
     throw new Error(`Model ${label} stream needs delayMs`)
-  return { chunkChars: Number(value.chunkChars), delayMs }
+  if (value.gates === undefined)
+    return { chunkChars: Number(value.chunkChars), delayMs }
+  if (!Array.isArray(value.gates))
+    throw new Error(`Model ${label} stream gates must be an array`)
+  const names = new Set<string>()
+  let previous = 0
+  const gates = value.gates.map((gate: unknown) => {
+    if (!isRecord(gate) || !Number.isSafeInteger(gate.afterChunk) || Number(gate.afterChunk) <= previous)
+      throw new Error(`Model ${label} stream gate positions must be positive, strictly increasing safe integers`)
+    validateGateName(gate.name, `Model ${label} stream gate`)
+    if (names.has(gate.name))
+      throw new Error(`Model ${label} stream gate ${gate.name} is declared twice`)
+    names.add(gate.name)
+    previous = Number(gate.afterChunk)
+    return { afterChunk: previous, name: gate.name }
+  })
+  return { chunkChars: Number(value.chunkChars), delayMs, gates }
+}
+
+function validateStreamGatePositions(step: MockModelStep, label: string): void {
+  const last = step.stream?.gates?.at(-1)
+  if (!last)
+    return
+  const count = textChunks(step).length + textChunks({ ...(step.reasoning === undefined ? {} : { text: step.reasoning }), stream: step.stream! }).length
+  if (last.afterChunk > count)
+    throw new Error(`Model ${label} stream gate ${last.name} exceeds the emitted chunk count ${count}`)
 }
 
 function parseDelay(value: unknown, label: string): number | undefined {
@@ -334,6 +648,50 @@ function parseDelay(value: unknown, label: string): number | undefined {
   if (!Number.isInteger(value) || Number(value) < 0 || Number(value) > MAX_STEP_DELAY_MS)
     throw new Error(`Model ${label} delayMs must be an integer from 0 to ${MAX_STEP_DELAY_MS}`)
   return Number(value)
+}
+
+function parseUsage(value: unknown, label: string): MockModelUsage | undefined {
+  if (value === undefined)
+    return undefined
+  if (!isRecord(value))
+    throw new Error(`Model ${label} usage must be an object`)
+  const usage: MockModelUsage = {}
+  for (const key of ['inputTokens', 'outputTokens', 'contextWindow'] as const) {
+    const raw = value[key]
+    if (raw === undefined)
+      continue
+    if (!Number.isInteger(raw) || Number(raw) < 0)
+      throw new Error(`Model ${label} usage ${key} must be a non-negative integer`)
+    usage[key] = Number(raw)
+  }
+  return usage
+}
+
+function parseRateLimits(value: unknown, label: string): MockModelRateLimits | undefined {
+  if (value === undefined)
+    return undefined
+  if (!isRecord(value))
+    throw new Error(`Model ${label} rateLimits must be an object`)
+  const type = value.type
+  const status = value.status
+  if (typeof type !== 'string' || !type)
+    throw new Error(`Model ${label} rateLimits type must be a non-empty string`)
+  if (typeof status !== 'string' || !status)
+    throw new Error(`Model ${label} rateLimits status must be a non-empty string`)
+  const rateLimits: MockModelRateLimits = { type, status }
+  if (value.utilization !== undefined) {
+    if (typeof value.utilization !== 'number' || !Number.isFinite(value.utilization) || value.utilization < 0 || value.utilization > 1)
+      throw new Error(`Model ${label} rateLimits utilization must be a number from 0 to 1`)
+    rateLimits.utilization = value.utilization
+  }
+  if (value.resetsAt !== undefined) {
+    if (!Number.isSafeInteger(value.resetsAt) || Number(value.resetsAt) < 0)
+      throw new Error(`Model ${label} rateLimits resetsAt must be a non-negative integer`)
+    if (Number(value.resetsAt) > 253_402_300_799)
+      throw new Error(`Model ${label} rateLimits resetsAt must fit a UTC date through the year 9999`)
+    rateLimits.resetsAt = Number(value.resetsAt)
+  }
+  return rateLimits
 }
 
 function parseToolCall(value: unknown, label: string, toolIndex: number): MockModelToolCall {
@@ -345,12 +703,20 @@ function parseToolCall(value: unknown, label: string, toolIndex: number): MockMo
   const hasInput = typeof value.input === 'string'
   if (hasArguments === hasInput)
     throw new Error(`Model ${label} tool call ${toolIndex} needs either object arguments or raw text input, not both`)
+  const completionGate = parseGate(value.completionGate, `${label} tool call ${toolIndex} completion`)
+  if (value.taskProgress !== undefined && (typeof value.taskProgress !== 'string' || value.taskProgress.length === 0))
+    throw new Error(`Model ${label} tool call ${toolIndex} taskProgress must be a non-empty string`)
+  if (value.nativeExecution !== undefined && (!isRecord(value.nativeExecution) || typeof value.nativeExecution.modelId !== 'string' || value.nativeExecution.modelId.length === 0 || Object.keys(value.nativeExecution).some(key => key !== 'modelId')))
+    throw new Error(`Model ${label} tool call ${toolIndex} nativeExecution requires only a non-empty modelId`)
   return {
     id: value.id,
     name: value.name,
     ...(hasArguments ? { arguments: value.arguments as Record<string, unknown> } : {}),
     ...(hasInput ? { input: value.input as string } : {}),
     ...(typeof value.namespace === 'string' ? { namespace: value.namespace } : {}),
+    ...(completionGate === undefined ? {} : { completionGate }),
+    ...(typeof value.taskProgress === 'string' ? { taskProgress: value.taskProgress } : {}),
+    ...(isRecord(value.nativeExecution) && typeof value.nativeExecution.modelId === 'string' ? { nativeExecution: { modelId: value.nativeExecution.modelId } } : {}),
   }
 }
 
@@ -369,26 +735,54 @@ function parseModelError(value: unknown, label: string): MockModelError {
 /**
  * The scenario the request selects.
  *
- * The newest marker wins. A provider replays the complete conversation, so a
- * chat that ran two scenarios in sequence carries both markers; the last one
- * belongs to the turn the agent is answering now.
+ * The newest marker in actual user text wins.
+ * Replayed conversations can contain several prompt markers.
+ * Native session metadata and tool replies cannot select the scenario.
  */
 export function selectScenarioID(body: unknown): string {
   const markers = collectScenarioIDs(body)
   return markers.at(-1) ?? AMBIENT_SCENARIO_ID
 }
 
-/** Every marker in the request body, in the order the body states them. */
+/** Read markers from user prompts in their conversation order. */
 export function collectScenarioIDs(value: unknown): string[] {
   const found: string[] = []
-  visitStrings(value, (text) => {
+  for (const text of scenarioUserTexts(value)) {
     const pattern = new RegExp(`${SCENARIO_MARKER}([\\w-]{1,128})`, 'g')
     for (const match of text.matchAll(pattern)) {
       if (match[1])
         found.push(match[1])
     }
-  })
+  }
   return found
+}
+
+function scenarioUserTexts(body: unknown): string[] {
+  if (typeof body === 'string')
+    return [body]
+  if (!isRecord(body))
+    return []
+  if (typeof body.input === 'string')
+    return [body.input]
+  if (Array.isArray(body.contents)) {
+    return body.contents.filter(isRecord).filter(message => message.role === 'user').map(message => googlePartsText(message.parts))
+  }
+  const rows = Array.isArray(body.messages) ? body.messages : Array.isArray(body.input) ? body.input : []
+  const prompts: string[] = []
+  for (const message of rows) {
+    if (!isRecord(message) || message.role !== 'user')
+      continue
+    if (typeof message.content === 'string') {
+      prompts.push(message.content)
+    }
+    else if (Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (isRecord(block) && (block.type === 'text' || block.type === 'input_text') && typeof block.text === 'string')
+          prompts.push(block.text)
+      }
+    }
+  }
+  return prompts
 }
 
 /** Decide whether one request satisfies a matcher. */
@@ -405,6 +799,16 @@ export function matchesRequest(
   // Serialize lazily. The body can be large, and most matchers never read it.
   if (matcher.body !== undefined && !matchesPattern(matcher.body, JSON.stringify(request.body ?? null)))
     return false
+  if (matcher.lastMessage !== undefined) {
+    if (request.protocol === 'aws-event-stream' || !isRecord(request.body))
+      return false
+    const rows = request.protocol === 'google-generative-language' ? request.body.contents : request.protocol === 'openai-responses' ? request.body.input : request.body.messages
+    const message: unknown = Array.isArray(rows) ? rows.at(-1) : undefined
+    if (!isRecord(message) || (matcher.lastMessage.role !== undefined && matcher.lastMessage.role !== message.role))
+      return false
+    if (!matchesPattern(matcher.lastMessage.text, request.protocol === 'google-generative-language' ? googlePartsText(message.parts) : contentText(message.content)))
+      return false
+  }
   return true
 }
 
@@ -427,6 +831,8 @@ export function systemText(body: unknown): string {
   if (!isRecord(body))
     return ''
   const parts: string[] = []
+  if (isRecord(body.systemInstruction))
+    parts.push(googlePartsText(body.systemInstruction.parts))
   if (body.system !== undefined)
     parts.push(contentText(body.system))
   if (typeof body.instructions === 'string')
@@ -443,10 +849,12 @@ export function systemText(body: unknown): string {
   return parts.filter(Boolean).join('\n')
 }
 
-/** The text of the last user turn, across the three protocols. */
+/** Read the last user prompt across the supported model APIs. */
 export function lastUserText(body: unknown): string {
   if (!isRecord(body))
     return ''
+  if (Array.isArray(body.contents))
+    return googleLastUserText(body.contents)
   for (const key of ['messages', 'input'] as const) {
     const items = body[key]
     if (!Array.isArray(items))
@@ -473,6 +881,7 @@ export function contentText(value: unknown): string {
   return Object.values(value).map(contentText).join('\n')
 }
 
+/** Visit strings for explicit body matchers and capture substitutions. */
 function visitStrings(value: unknown, visit: (text: string) => void): void {
   if (typeof value === 'string') {
     visit(value)

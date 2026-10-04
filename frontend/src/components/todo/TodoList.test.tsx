@@ -9,6 +9,14 @@ import { hoverForTooltip, stubClipped, stubFitting, unhoverTooltip } from '~/tes
 import { classSelector } from '~/test-support/composedClass'
 
 describe('TodoList', () => {
+  it('keeps blocked work unfinished and shows its stable label', () => {
+    const { container, getByRole } = render(() => <TodoList todos={[{ rowKey: 'blocked', content: 'Request access', activeForm: 'Requesting access', status: 'blocked' }]} />)
+    expect(getByRole('img', { name: 'Blocked' })).toBeVisible()
+    expect(container.textContent).toBe('Request access')
+    const row = container.querySelector('[data-task-checkbox="blocked"]')?.closest('div')?.parentElement
+    expect(row?.className).not.toMatch(/todoStruck/)
+  })
+
   it('renders the deleted checkbox + strike-through for a deleted row', () => {
     const { container } = render(() => (
       <TodoList todos={[{ id: '1', rowKey: '1', content: 'gone task', status: 'deleted', activeForm: '' }]} />

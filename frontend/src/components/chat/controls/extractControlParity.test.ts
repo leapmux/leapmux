@@ -1,7 +1,9 @@
 import type { ControlPrompt } from '../model/controlPrompt'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { clineApprovalRequest } from '~/test-support/clineFixtures'
 import { copilotPermissionRequest } from '~/test-support/copilotFixtures'
+import { kimiApprovalRequest } from '~/test-support/kimiFixtures'
 import { pluginFor } from '../providers/registry'
 import { controlSurface } from './controlSurface'
 import '../providers'
@@ -29,7 +31,17 @@ describe('every provider reads a shell permission the same way', () => {
     [AgentProvider.CODEX, { method: 'item/commandExecution/requestApproval', params: { command: COMMAND } }],
     [AgentProvider.OPENCODE, { params: { toolCall: { toolCallId: 'c', kind: 'execute', title: 'Run', rawInput: { command: COMMAND } } } }],
     [AgentProvider.GOOSE, { params: { toolCall: { toolCallId: 'c', kind: 'execute', title: 'Run', rawInput: { command: COMMAND } } } }],
+    // Grok presents the normalized input with a `variant` tag, beside the name in `_meta`.
+    [AgentProvider.GROK_BUILD, { method: 'session/request_permission', params: { toolCall: { toolCallId: 'c', kind: 'execute', title: 'Execute', rawInput: { variant: 'Bash', command: COMMAND }, _meta: { 'x.ai/tool': { name: 'run_terminal_command' } } } } }],
+    [AgentProvider.QWEN_CODE, { method: 'session/request_permission', params: { toolCall: { toolCallId: 'c', kind: 'execute', title: 'Shell', rawInput: { command: COMMAND }, _meta: { toolName: 'run_shell_command' } } } }],
+    // Kiro's request states the call as its title alone, and the command in its own metadata.
+    [AgentProvider.KIRO, { method: 'session/request_permission', params: { toolCall: { toolCallId: 'run_command_c', status: 'pending', title: COMMAND }, _meta: { kiro: { toolId: 'run_command', command: COMMAND } } } }],
     [AgentProvider.GITHUB_COPILOT, copilotPermissionRequest({ kind: 'shell', intention: 'Run', fullCommandText: COMMAND, commands: [], canOfferSessionApproval: true })],
+    [AgentProvider.KIMI_CODE, kimiApprovalRequest('Bash', { kind: 'command', command: COMMAND, cwd: '/work', language: 'bash' })],
+    [AgentProvider.OH_MY_PI, { type: 'extension_ui_request', id: 'r', method: 'select', title: `Allow tool: bash\nCommand: ${COMMAND}`, options: ['Approve', 'Deny'] }],
+    [AgentProvider.MIMO_CODE, { type: 'permission.asked', properties: { id: 'per_1', sessionID: 's', permission: 'bash', patterns: [COMMAND], metadata: {} }, request: { tool_name: 'bash' } }],
+    [AgentProvider.AMP, { type: 'leapmux_amp_permission', tool_name: 'shell_command', tool_use_id: 'TU-1', input: { command: COMMAND, workdir: '/work' } }],
+    [AgentProvider.CLINE, clineApprovalRequest('run_commands', { commands: [COMMAND] })],
   ]
 
   it.each(cases)('provider %s states the command it wants to run', (provider, payload) => {
@@ -55,6 +67,12 @@ describe('every provider reads its own plan approval', () => {
     [AgentProvider.CLAUDE_CODE, { request: { tool_name: 'ExitPlanMode', input: {} } }],
     [AgentProvider.ZCODE, { request: { tool_name: 'ExitPlanMode', input: {} } }],
     [AgentProvider.CODEX, { request: { tool_name: 'CodexPlanModePrompt', input: {} } }],
+    [AgentProvider.KIMI_CODE, kimiApprovalRequest('ExitPlanMode', { kind: 'plan_review', plan: '# Plan' })],
+    // Grok sends `null` for an empty plan file.
+    [AgentProvider.GROK_BUILD, { method: '_x.ai/exit_plan_mode', params: { toolCallId: 'c', planContent: null } }],
+    [AgentProvider.MIMO_CODE, { type: 'question.asked', properties: { id: 'que_1', sessionID: 's', questions: [{ key: 'plan_exit', params: { plan: 'plan.md' } }] }, request: { tool_name: 'plan_exit' } }],
+    // Cline's plan tool asks for approval before it runs; the plan is the answer above it.
+    [AgentProvider.CLINE, clineApprovalRequest('switch_to_act_mode', {})],
   ])('provider %s reads a plan', (provider, payload) => {
     expect(surfaceOf(provider, payload)?.kind).toBe('plan')
   })
@@ -67,6 +85,14 @@ describe('every provider reads its own plan approval', () => {
       { method: 'session.event', params: { sessionId: 's', event: { id: 'e', type: 'exit_plan_mode.requested', agentId: '', data: { planContent: '# Ship it' } } } },
     )
     expect(surface).toEqual({ kind: 'plan', text: '# Ship it' })
+  })
+
+  // Grok's own request and Qwen's permission request both carry the plan as well.
+  it.each([
+    [AgentProvider.GROK_BUILD, { method: '_x.ai/exit_plan_mode', params: { toolCallId: 'c', planContent: '# Ship it' } }],
+    [AgentProvider.QWEN_CODE, { method: 'session/request_permission', params: { options: [], toolCall: { toolCallId: 'c', kind: 'switch_mode', rawInput: { plan: '# Ship it' }, _meta: { toolName: 'exit_plan_mode' } } } }],
+  ])('carries the plan text of provider %s', (provider, payload) => {
+    expect(surfaceOf(provider, payload)).toEqual({ kind: 'plan', text: '# Ship it' })
   })
 })
 
@@ -178,11 +204,20 @@ describe('who answers a permission', () => {
     [AgentProvider.GOOSE, { params: { toolCall, options: wireOptions } }],
     [AgentProvider.REASONIX, { params: { toolCall, options: wireOptions } }],
     [AgentProvider.CURSOR, { params: { toolCall, options: wireOptions } }],
+    [AgentProvider.GROK_BUILD, { params: { toolCall, options: wireOptions } }],
+    [AgentProvider.QWEN_CODE, { params: { toolCall, options: wireOptions } }],
+    [AgentProvider.KIRO, { params: { toolCall, options: wireOptions } }],
     // OpenCode and Kilo answer with their own two ids even when the request states none.
     [AgentProvider.OPENCODE, { params: { toolCall } }],
     [AgentProvider.KILO, { params: { toolCall } }],
     // Copilot states no list, so LeapMux states the decisions the runtime accepts.
     [AgentProvider.GITHUB_COPILOT, copilotPermissionRequest({ kind: 'read', canOfferSessionApproval: true })],
+    // Kimi Code states no list either: every approval takes the same three answers.
+    [AgentProvider.KIMI_CODE, kimiApprovalRequest('Write', { kind: 'file_io', operation: 'write', path: '/a.ts' })],
+    // omp states its two answers as the dialog's own options.
+    [AgentProvider.OH_MY_PI, { type: 'extension_ui_request', id: 'r', method: 'select', title: 'Allow tool: write\nPath: a.ts', options: ['Approve', 'Deny'] }],
+    // MiMo states no list either, and always takes one of its own three reply words.
+    [AgentProvider.MIMO_CODE, { type: 'permission.asked', properties: { id: 'per_1', sessionID: 's', permission: 'read', patterns: ['/a.ts'], metadata: {} }, request: { tool_name: 'read' } }],
   ])('provider %s states its own answers and how to send one', (provider, payload) => {
     const surface = surfaceOf(provider, payload)
     if (surface?.kind !== 'permission')
@@ -195,6 +230,8 @@ describe('who answers a permission', () => {
     [AgentProvider.CLAUDE_CODE, { request: { tool_name: 'Read', input: { file_path: '/a.ts' } } }],
     [AgentProvider.ZCODE, { request: { tool_name: 'Read', input: { file_path: '/a.ts' } } }],
     [AgentProvider.CODEX, { method: 'item/commandExecution/requestApproval', params: { command: 'pwd' } }],
+    [AgentProvider.AMP, { type: 'leapmux_amp_permission', tool_name: 'apply_patch', input: { patchText: '*** Begin Patch\n*** End Patch' } }],
+    [AgentProvider.CLINE, clineApprovalRequest('editor', { path: '/a.ts', old_text: 'a', new_text: 'b' })],
   ])('provider %s leaves the shared Allow / Deny pair to answer', (provider, payload) => {
     const surface = surfaceOf(provider, payload)
     if (surface?.kind !== 'permission')

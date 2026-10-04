@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -47,6 +48,80 @@ func TestTrySetStartupModel_NoopWhenMatchesCurrent(t *testing.T) {
 	}
 	base.trySetStartupModel("anthropic/claude-sonnet-4")
 	assert.False(t, called, "no setModel when the request already matches the server's current")
+}
+
+// An agent that reports some options only after a model write (Kiro's effort
+// axis) gets the write for the model that the session already runs.
+func TestTrySetStartupModel_ModelWriteRevealsOptionsWritesTheSessionModel(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		requested string
+	}{
+		{name: "the session model requested", requested: "kiro/current"},
+		{name: "no model requested", requested: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			base := Base{}
+			base.model = "kiro/current"
+			base.hooks.ModelWriteRevealsOptions = true
+			var written []string
+			base.hooks.ModelSetter = func(m string) error {
+				written = append(written, m)
+				return nil
+			}
+			base.trySetStartupModel(tc.requested)
+			assert.Equal(t, []string{"kiro/current"}, written)
+		})
+	}
+}
+
+func TestTrySetStartupModel_ModelWriteRevealsOptionsWritesADifferentModelOnce(t *testing.T) {
+	t.Parallel()
+
+	base := Base{}
+	base.model = "kiro/current"
+	base.hooks.ModelWriteRevealsOptions = true
+	var written []string
+	base.hooks.ModelSetter = func(m string) error {
+		written = append(written, m)
+		base.model = m
+		return nil
+	}
+	base.trySetStartupModel("kiro/other")
+	assert.Equal(t, []string{"kiro/other"}, written)
+	assert.Equal(t, "kiro/other", base.model)
+}
+
+func TestTrySetStartupModel_ModelWriteRevealsOptionsNeedsAModel(t *testing.T) {
+	t.Parallel()
+
+	base := Base{}
+	base.hooks.ModelWriteRevealsOptions = true
+	called := false
+	base.hooks.ModelSetter = func(string) error {
+		called = true
+		return nil
+	}
+	base.trySetStartupModel("")
+	assert.False(t, called, "a session that reports no model and a launch that requests none give nothing to write")
+}
+
+func TestTrySetStartupModel_NoopWhenNothingIsRequested(t *testing.T) {
+	t.Parallel()
+
+	base := Base{}
+	base.model = "server/current"
+	called := false
+	base.hooks.ModelSetter = func(string) error {
+		called = true
+		return nil
+	}
+	base.trySetStartupModel("")
+	assert.False(t, called, "without the hook, an empty request keeps the session model without a write")
 }
 
 func TestTrySetStartupModel_NonFatalOnRejection(t *testing.T) {
@@ -128,6 +203,24 @@ func TestACPHandshakeModelInfos_NoModels(t *testing.T) {
 
 	require.Empty(t, models)
 	require.Equal(t, "", current)
+}
+
+func TestACPHandshakeModelInfos_FlattensGroupedConfigOptions(t *testing.T) {
+	t.Parallel()
+
+	// Junie groups custom profiles in the model select. The group itself has no
+	// value; its children hold the model IDs that the picker must show.
+	handshake, err := parseACPSessionResult(json.RawMessage(`{"sessionId":"junie-session","configOptions":[{"type":"select","id":"model","category":"model","currentValue":"v1:6:custom:custom:mock-model","options":[{"group":"custom","name":"Custom","options":[{"value":"v1:6:custom:custom:mock-model","name":"Mock Model","_meta":{"contextLimit":200000}},{"value":"v1:6:custom:custom:mock-responses","name":"Mock Responses"}]},{"value":"account-model","name":"Account Model"}]}]}`))
+	require.NoError(t, err)
+
+	models, current := acpHandshakeModelInfos(handshake)
+	assert.Equal(t, "v1:6:custom:custom:mock-model", current)
+	require.Len(t, models, 3)
+	assert.Equal(t, "v1:6:custom:custom:mock-model", models[0].ModelID)
+	assert.Equal(t, "Mock Model", models[0].Name)
+	assert.JSONEq(t, `{"contextLimit":200000}`, string(models[0].Meta))
+	assert.Equal(t, "v1:6:custom:custom:mock-responses", models[1].ModelID)
+	assert.Equal(t, "account-model", models[2].ModelID)
 }
 
 // A server that repeats a model id within a single channel yields one entry.
@@ -252,6 +345,28 @@ func TestUnmappedProvider_HandshakeConfigMode_SurfacedGenericNotDoubleApplied(t 
 	assert.Equal(t, "plan", base.options.values[ConfigOptionIDMode])
 }
 
+// TestOptionGroups_UnmappedChannelSurfacesItsNativeModes guards the fast-agent
+// shape: the unmapped channel tracks its permission mode on the native modes
+// channel, so the catalog must carry a permission-mode group built from those
+// modes. Suppressing the group would leave the session's reported mode invisible
+// in the settings panel.
+func TestOptionGroups_UnmappedChannelSurfacesItsNativeModes(t *testing.T) {
+	t.Parallel()
+
+	var base Base // ModeChannelUnmapped
+	base.applyHandshakeMode(&SessionResult{
+		CurrentModeID: "agent",
+		Modes:         []ModeInfo{{ID: "agent", Name: "Agent"}},
+	}, "agent")
+
+	groups := base.OptionGroups()
+	require.Len(t, groups, 1)
+	assert.Equal(t, agent.OptionIDPermissionMode, groups[0].GetId())
+	require.Len(t, groups[0].GetOptions(), 1)
+	assert.Equal(t, "agent", groups[0].GetOptions()[0].GetId())
+	assert.Equal(t, "agent", groups[0].GetCurrentValue())
+}
+
 // The base dispatcher handles a config_option_update model change for ANY ACP
 // provider with no per-provider wiring. OpenCode and Kilo register no config
 // option handler at all, yet their model list and current model stay in sync --
@@ -371,19 +486,58 @@ func TestDefaultOrFirstOption(t *testing.T) {
 
 // --- Config-option dispatch by spec `category` (with id fallback) ---
 
-// acpConfigOptionByCategory prefers the spec's `category` signal; the well-known id
-// is only a back-compat fallback for the providers we ship today, which omit it.
+// acpConfigOptionByCategory prefers the exact well-known id, then the spec's
+// `category`. The id is the protocol's own name for the select; the category is
+// the signal for a server that uses opaque ids -- and it can over-apply (Junie
+// tags its Brave Mode setting `category: "mode"` beside the real `mode` select).
 
-func TestACPConfigOptionByCategory_PrefersCategoryOverID(t *testing.T) {
+func TestACPConfigOptionByCategory_PrefersWellKnownIDOverCategoryTag(t *testing.T) {
 	t.Parallel()
 
+	// The Junie shape: the real mode select carries the well-known id and NO
+	// category, while a sibling setting claims the reserved category. Dispatching
+	// on the tag loses the session mode entirely.
 	options := []ConfigOption{
-		{ID: "opaque", Category: acpConfigOptionCategoryModel, CurrentValue: "a"},
-		{ID: ConfigOptionIDModel, CurrentValue: "b"}, // a coincidental id match
+		{ID: "brave_mode", Category: acpConfigOptionCategoryMode, CurrentValue: "brave-auto"},
+		{ID: ConfigOptionIDMode, CurrentValue: "default"},
 	}
+	got1, ok1 := acpConfigOptionByCategory([]ConfigOption{options[0], options[1]}, acpConfigOptionCategoryMode, ConfigOptionIDMode)
+	got2, ok2 := acpConfigOptionByCategory([]ConfigOption{options[1], options[0]}, acpConfigOptionCategoryMode, ConfigOptionIDMode)
+	require.True(t, ok1)
+	require.True(t, ok2)
+	assert.Equal(t, ConfigOptionIDMode, got1.ID, "the well-known id wins over a category tag on a sibling")
+	assert.Equal(t, got1.ID, got2.ID, "the winner does not depend on server-reported slice order")
+}
+
+func TestACPConfigOptionByCategory_FallsBackToCategoryWhenTheIDIsOpaque(t *testing.T) {
+	t.Parallel()
+
+	// A server that names its select opaquely is the case `category` exists for.
+	options := []ConfigOption{{ID: "opaque", Category: acpConfigOptionCategoryModel, CurrentValue: "a"}}
 	option, ok := acpConfigOptionByCategory(options, acpConfigOptionCategoryModel, ConfigOptionIDModel)
 	require.True(t, ok)
-	assert.Equal(t, "opaque", option.ID, "the category match wins over the id fallback")
+	assert.Equal(t, "opaque", option.ID)
+}
+
+// TestACPConfigOptionByCategory_PrefersWellKnownIDWithinCategory guards the Junie shape: a
+// daemon that tags TWO options with the reserved `mode` category, where only one IS the
+// well-known `mode` select (Junie's `brave_mode` sits beside it under the same category).
+// The well-known id must win over a lexicographically lower sibling id, or the mode channel
+// claims the wrong option and the safe-default mode is "unknown".
+func TestACPConfigOptionByCategory_PrefersWellKnownIDWithinCategory(t *testing.T) {
+	t.Parallel()
+
+	mode := ConfigOption{ID: ConfigOptionIDMode, Category: acpConfigOptionCategoryMode, CurrentValue: "default",
+		Options: []ConfigOptionValue{{Value: "default"}, {Value: "plan"}}}
+	brave := ConfigOption{ID: "brave_mode", Category: acpConfigOptionCategoryMode, CurrentValue: "brave-auto",
+		Options: []ConfigOptionValue{{Value: "brave-auto"}, {Value: "on"}, {Value: "off"}}}
+
+	got1, ok1 := acpConfigOptionByCategory([]ConfigOption{mode, brave}, acpConfigOptionCategoryMode, ConfigOptionIDMode)
+	got2, ok2 := acpConfigOptionByCategory([]ConfigOption{brave, mode}, acpConfigOptionCategoryMode, ConfigOptionIDMode)
+	require.True(t, ok1)
+	require.True(t, ok2)
+	assert.Equal(t, ConfigOptionIDMode, got1.ID, "the well-known id wins among category matches")
+	assert.Equal(t, got1.ID, got2.ID, "the winner does not depend on server-reported slice order")
 }
 
 func TestACPConfigOptionByCategory_FallsBackToIDWhenNoCategory(t *testing.T) {
@@ -1077,4 +1231,115 @@ func TestEffectiveSetModel_FallsBackToBaseSetter(t *testing.T) {
 	b.hooks.ModelSetter = func(string) error { called = true; return nil }
 	_ = b.effectiveSetModel()("x")
 	assert.True(t, called, "a set modelSetter override is used")
+}
+
+func TestEffectiveSetMode_FallsBackToBaseSetter(t *testing.T) {
+	t.Parallel()
+
+	var b Base
+	assert.NotNil(t, b.effectiveSetMode(), "a nil modeSetter falls back to the base set_mode write")
+
+	called := false
+	b.hooks.ModeSetter = func(_ string, acknowledge func(string)) error { called = true; acknowledge("x"); return nil }
+	_ = b.effectiveSetMode()("x", func(string) {})
+	assert.True(t, called, "a set modeSetter override is used")
+}
+
+func TestModelDecorator_ReadsTheMetadataOfEachModel(t *testing.T) {
+	t.Parallel()
+	b := &Base{}
+	seen := map[string]string{}
+	b.hooks.ModelDecorator = func(m *agent.ModelInfo, meta json.RawMessage) {
+		seen[m.Id] = string(meta)
+		var window struct {
+			Tokens int64 `json:"windowTokens"`
+		}
+		if json.Unmarshal(meta, &window) == nil {
+			m.ContextWindow = window.Tokens
+		}
+	}
+	models, current := b.buildModels([]ModelInfo{
+		{ModelID: "alpha", Name: "Alpha", Meta: json.RawMessage(`{"windowTokens":128000}`)},
+		{ModelID: "alpha", Name: "Alpha again", Meta: json.RawMessage(`{"windowTokens":1}`)},
+		{ModelID: "beta", Name: "Beta"},
+	}, "beta")
+
+	require.Len(t, models, 2)
+	assert.Equal(t, "beta", current)
+	assert.Equal(t, int64(128000), models[0].ContextWindow, "the metadata of the kept duplicate")
+	assert.Equal(t, int64(0), models[1].ContextWindow, "a model with no metadata")
+	assert.Equal(t, map[string]string{"alpha": `{"windowTokens":128000}`, "beta": ""}, seen)
+}
+
+// A normalizer can map two raw ids to one model. The build keeps the first raw
+// info of that model, and the decorator reads the metadata of that same info,
+// not of the duplicate that the build dropped.
+func TestModelDecorator_ReadsTheMetadataOfTheInfoThatTheBuildKept(t *testing.T) {
+	t.Parallel()
+	b := &Base{}
+	b.hooks.ModelIDNormalizer = func(id string) string {
+		if id == "default[]" {
+			return "auto"
+		}
+		return id
+	}
+	seen := map[string]string{}
+	b.hooks.ModelDecorator = func(m *agent.ModelInfo, meta json.RawMessage) {
+		seen[m.Id] = string(meta)
+	}
+
+	models, current := b.buildModels([]ModelInfo{
+		{ModelID: "default[]", Name: "Auto", Meta: json.RawMessage(`{"rank":1}`)},
+		{ModelID: "auto", Name: "Auto again", Meta: json.RawMessage(`{"rank":2}`)},
+	}, "default[]")
+
+	require.Len(t, models, 1)
+	assert.Equal(t, "auto", models[0].Id)
+	assert.Equal(t, "Auto", models[0].DisplayName)
+	assert.Equal(t, "auto", current)
+	assert.Equal(t, map[string]string{"auto": `{"rank":1}`}, seen)
+}
+
+func TestModelInfo_AConfigOptionModelCarriesItsMetadata(t *testing.T) {
+	t.Parallel()
+	session, err := parseACPSessionResult(json.RawMessage(`{"sessionId":"s","configOptions":[{"type":"select","id":"model","name":"Model","category":"model","currentValue":"m","options":[` +
+		`{"value":"m","name":"M","_meta":{"vendor":{"rate":1.3}}},{"value":"n","name":"N"}]}]}`))
+	require.NoError(t, err)
+	infos, current := acpHandshakeModelInfos(session)
+
+	assert.Equal(t, "m", current)
+	require.Len(t, infos, 2)
+	assert.JSONEq(t, `{"vendor":{"rate":1.3}}`, string(infos[0].Meta), "the decorator reads a config option's model as it reads a models-field model")
+	assert.Empty(t, infos[1].Meta)
+}
+
+func TestModelInfo_DecodesItsMetadata(t *testing.T) {
+	t.Parallel()
+	session, err := parseACPSessionResult(json.RawMessage(`{"sessionId":"s","models":{"currentModelId":"m","availableModels":[{"modelId":"m","name":"M","_meta":{"contextLimit":200000}}]}}`))
+	require.NoError(t, err)
+	require.Len(t, session.Models, 1)
+	assert.JSONEq(t, `{"contextLimit":200000}`, string(session.Models[0].Meta))
+}
+
+// TestParseACPSessionResult_ToleratesNonStringCurrentValue guards the Dirac shape: a
+// config option of a non-select widget type sends its current value as that widget's
+// own JSON type (`type: "boolean"` auto_approve/yolo arrive as JSON bools). The
+// session parse must survive -- isSelectableConfigOption drops those widgets from the
+// option machinery, so nobody surfaces the value -- instead of aborting startup over
+// it. Strings and null keep their old readings.
+func TestParseACPSessionResult_ToleratesNonStringCurrentValue(t *testing.T) {
+	t.Parallel()
+	session, err := parseACPSessionResult(json.RawMessage(`{"sessionId":"s","configOptions":[` +
+		`{"id":"mode","type":"select","category":"mode","currentValue":"act","options":[{"value":"plan"},{"value":"act"}]},` +
+		`{"id":"auto_approve","type":"boolean","category":"mode","currentValue":false},` +
+		`{"id":"yolo","type":"boolean","category":"mode","currentValue":true},` +
+		`{"id":"threshold","type":"number","currentValue":3},` +
+		`{"id":"note","type":"string","currentValue":null}]}`))
+	require.NoError(t, err)
+	require.Len(t, session.ConfigOptions, 5)
+	assert.Equal(t, "act", session.ConfigOptions[0].CurrentValue, "a string value parses unchanged")
+	assert.Equal(t, "false", session.ConfigOptions[1].CurrentValue, "a bool keeps its JSON literal")
+	assert.Equal(t, "true", session.ConfigOptions[2].CurrentValue)
+	assert.Equal(t, "3", session.ConfigOptions[3].CurrentValue, "a number keeps its JSON literal")
+	assert.Equal(t, "", session.ConfigOptions[4].CurrentValue, "null reads as the empty value it always did")
 }

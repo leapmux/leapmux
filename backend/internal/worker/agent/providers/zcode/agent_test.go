@@ -540,6 +540,7 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
 	a.Mu.Lock()
 	a.turnActive = true
+	a.compactionSessionID = "sess-1"
 	a.backgroundTurn = true
 	a.lastSeq = 99
 	a.toolCalls["call-1"] = &zcodeToolCall{name: "Bash", input: json.RawMessage(`{"command":"ls"}`), final: true}
@@ -571,6 +572,7 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	assert.False(t, a.turnActive)
+	assert.Empty(t, a.compactionSessionID)
 	assert.False(t, a.backgroundTurn)
 	assert.Empty(t, a.toolCalls, "one record per call, so a session replace drops every fact about it")
 	assert.Empty(t, a.pendingControls)

@@ -1,0 +1,12 @@
+<svg width="64" height="64" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <title>Dirac</title>
+  <!-- Dirac's own mark (assets/icons/icon-light.svg): delta, underline, agent tick, agent dot. -->
+  <text x="12" y="15" text-anchor="middle" font-size="16"
+        font-family="Georgia, 'Times New Roman', serif"
+        font-style="italic" fill="#24292e">δ</text>
+  <line x1="2" y1="21" x2="22" y2="21" stroke="#24292e" stroke-opacity="0.4"
+        stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="12" y1="21" x2="12" y2="18" stroke="#24292e"
+        stroke-width="1.5" stroke-linecap="round"/>
+  <circle cx="12" cy="17.5" r="1" fill="#24292e"/>
+</svg>

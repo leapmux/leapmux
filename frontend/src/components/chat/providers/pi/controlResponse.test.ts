@@ -115,6 +115,11 @@ describe('piControlResponseSummary', () => {
     expect(piControlResponseSummary(cr('editor', { value: 'body' }))).toEqual({ kind: 'label', text: 'body' })
   })
 
+  it('preserves a select value that resembles an obsolete MCP approval choice', () => {
+    const request = { type: 'extension_ui_request', method: 'select', title: 'MCP: probe wants to run lookup\n\nArguments:\n{}', options: ['Allow once', 'Allow for session', 'Deny'] }
+    expect(piControlResponseSummary({ claimToken: 'claim-1', requestId: 'r', request, response: { value: 'Allow once' } })).toEqual({ kind: 'label', text: 'Allow once' })
+  })
+
   it('preserves whitespace and leaves unknown methods unresolved', () => {
     expect(piControlResponseSummary(cr('select', { value: '   ' }))).toEqual({ kind: 'label', text: '   ' })
     expect(piControlResponseSummary(cr('mystery', { value: 'x' }))).toBeNull()

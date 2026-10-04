@@ -2,6 +2,7 @@ package tooltranscript
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -127,7 +128,7 @@ func TestToolTranscriptCleanupDropsTheChildTranscript(t *testing.T) {
 	var childPasses atomic.Int64
 	transcript, source := newTestToolTranscript(t, agent.NewProviderServices(sink), func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
 	parentLocate := source.locateHook
-	source.childHook = func() Source {
+	source.childHook = func(_ string, _ agent.ProviderServices) Source {
 		child := &testToolSource{readHook: source.readHook}
 		child.locateHook = func(sessionID string) Location {
 			childPasses.Add(1)
@@ -170,7 +171,7 @@ func TestToolTranscriptCleanupFlushesWhatTheChildStillHolds(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	transcript, source := newTestToolTranscript(t, agent.NewProviderServices(sink), func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
-	source.childHook = func() Source {
+	source.childHook = func(_ string, _ agent.ProviderServices) Source {
 		child := &testToolSource{}
 		child.locateHook = source.locateHook
 		child.readHook = func(_ context.Context, pending map[string]agent.MessageContent, _ bool) map[string][]byte {
@@ -227,7 +228,7 @@ func TestToolTranscriptDroppingAChildDrainsAndClosesItOnEveryPath(t *testing.T) 
 			t.Parallel()
 			sink := &agenttest.Sink{}
 			transcript, source := newTestToolTranscript(t, agent.NewProviderServices(sink), func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
-			source.childHook = func() Source {
+			source.childHook = func(_ string, _ agent.ProviderServices) Source {
 				child := &testToolSource{}
 				child.locateHook = source.locateHook
 				child.readHook = func(_ context.Context, pending map[string]agent.MessageContent, _ bool) map[string][]byte {
@@ -493,7 +494,7 @@ func TestToolTranscriptChildUserWritesAreUnaffectedByTheDecorator(t *testing.T) 
 
 	decorated := &agenttest.Sink{}
 	transcript, source := newTestToolTranscript(t, agent.NewProviderServices(decorated), func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
-	source.childHook = func() Source { return &testToolSource{locateHook: source.locateHook} }
+	source.childHook = func(_ string, _ agent.ProviderServices) Source { return &testToolSource{locateHook: source.locateHook} }
 	require.NotNil(t, transcript.ChildSink("child-1"))
 
 	bare := &agenttest.Sink{}
@@ -531,7 +532,7 @@ type testToolSource struct {
 	locateHook func(sessionID string) Location
 	readHook   func(ctx context.Context, pending map[string]agent.MessageContent, final bool) map[string][]byte
 	callIDHook func(original []byte) string
-	childHook  func() Source
+	childHook  func(string, agent.ProviderServices) Source
 }
 
 func (t *testToolSource) ProviderName() string { return "Test" }
@@ -551,9 +552,57 @@ func (t *testToolSource) ReadSupplements(ctx context.Context, _ string, pending 
 	return t.readHook(ctx, pending, final), nil
 }
 
-func (t *testToolSource) NewChild() Source {
+func (t *testToolSource) NewChild(childID string, services agent.ProviderServices) Source {
 	if t.childHook == nil {
 		return nil
 	}
-	return t.childHook()
+	return t.childHook(childID, services)
+}
+
+func TestToolTranscriptChildSourceReadsItsOwnDelegateForAReusedSpan(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	parentServices := agent.NewProviderServices(sink)
+	transcript, source := newTestToolTranscript(t, parentServices, func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
+	source.childHook = func(childID string, delegate agent.ProviderServices) Source {
+		assert.Equal(t, "child-1", childID, "the source factory receives the existing Worker child identity")
+		return &testToolSource{
+			locateHook: func(string) Location { return Location{SessionKey: "native-parent", Ready: true} },
+			readHook: func(_ context.Context, pending map[string]agent.MessageContent, _ bool) map[string][]byte {
+				if delegate == nil {
+					return nil
+				}
+				result := make(map[string][]byte)
+				for spanID := range pending {
+					request, err := delegate.ReadToolRequest(spanID)
+					if !assert.NoError(t, err) || !assert.NotNil(t, request) {
+						return nil
+					}
+					var original map[string]any
+					if !assert.NoError(t, json.Unmarshal(request.Content.Original, &original)) {
+						return nil
+					}
+					encoded, err := json.Marshal(map[string]any{"lookupOwner": original["owner"]})
+					if !assert.NoError(t, err) {
+						return nil
+					}
+					result[spanID] = encoded
+				}
+				return result
+			},
+		}
+	}
+	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"toolCallId":"call","owner":"root"}`)}, agent.SpanInfo{SpanID: "call"}))
+	child := transcript.ChildSink("child-1")
+	require.NotNil(t, child)
+	require.NoError(t, child.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"toolCallId":"call","owner":"child"}`)}, agent.SpanInfo{SpanID: "call"}))
+	require.NoError(t, child.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"toolCallId":"call","status":"completed"}`)}, agent.SpanInfo{SpanID: "call", Closing: true}))
+	require.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{}`)}, agent.SpanInfo{}))
+	rows := sink.Child("child-1").Messages()
+	require.Len(t, rows, 2)
+	require.True(t, len(rows[1].SupplementalContent) > 0, "the child delegate must supply its actual stored opener")
+	var extra map[string]any
+	require.NoError(t, json.Unmarshal(rows[1].SupplementalContent, &extra))
+	assert.Equal(t, "child", extra["lookupOwner"], "the child source must read the child span when the root holds the same native call ID")
+	assert.Empty(t, sink.Messages()[0].SupplementalContent, "the child pass must not enrich the root row")
 }

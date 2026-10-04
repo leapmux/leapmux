@@ -30,7 +30,7 @@ func StartEcho(ctx context.Context, opts agent.Options, sink agent.ProviderServi
 // frame the worker writes, so the worker's own interrupt control_request comes
 // back as a control_request FROM the agent and lands as a pending permission
 // prompt. A test that observes the derived activity state then reads
-// WAITING_FOR_USER for a prompt no agent ever asked -- an artifact of the
+// WAITING_FOR_USER for a prompt no agent ever asked -- an output file of the
 // harness, and one that arrives asynchronously, so it cannot even be waited out.
 //
 // Use this one to observe state, and StartEcho to observe what the

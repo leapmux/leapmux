@@ -1,6 +1,7 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import { create } from '@bufbuild/protobuf'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
@@ -8,12 +9,35 @@ import { createSpanIndex } from '~/stores/chatSpanIndex'
 // reads Anthropic tool_use/tool_result blocks, Pi routes by envelope type).
 import '~/components/chat/providers'
 
+// Supply an explicit no-side role without a provider wire format.
+// All other records use the actual registry and provider plugins.
+vi.mock('~/components/chat/providers/registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/components/chat/providers/registry')>()
+  return {
+    ...actual,
+    resolvedSpanRole: (parsed: ParsedMessageContent, provider: AgentProvider) =>
+      parsed.parentObject?.noSpanSideForTest === true ? 'none' : actual.resolvedSpanRole(parsed, provider),
+  }
+})
+
 function parsed(message: AgentChatMessage | undefined) {
   return message ? parseMessageContent(message) : undefined
 }
 
 function encode(raw: unknown): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(raw))
+}
+
+function noSideSpan(id: string, spanId = 's1', seq = 3n, agentSessionId = ''): AgentChatMessage {
+  return create(AgentChatMessageSchema, {
+    id,
+    seq,
+    spanId,
+    agentSessionId,
+    source: MessageSource.AGENT,
+    content: encode({ noSpanSideForTest: true }),
+    contentCompression: ContentCompression.NONE,
+  })
 }
 
 /** A Claude tool_use request (an assistant message that carries a tool_use block). */
@@ -115,6 +139,9 @@ describe('createSpanIndex', () => {
     AgentProvider.KILO,
     AgentProvider.CURSOR,
     AgentProvider.GOOSE,
+    AgentProvider.GROK_BUILD,
+    AgentProvider.KIRO,
+    AgentProvider.QWEN_CODE,
     AgentProvider.REASONIX,
   ])('pairs ACP provider %s by role when its result arrives first', (agentProvider) => {
     const idx = createSpanIndex()
@@ -350,5 +377,77 @@ describe('createSpanIndex', () => {
     const second = idx.getRequestMessage('a1', { spanId: 's1', agentSessionId: '' })
     expect(first).toBeDefined()
     expect(second).toBe(first)
+  })
+})
+
+describe('explicit no-side span records', () => {
+  const identity = { spanId: 's1', agentSessionId: '' }
+
+  it('keeps an isolated no-side record out of both pair maps', () => {
+    const index = createSpanIndex()
+    expect(index.index('agent', noSideSpan('window'))).toBe(false)
+    expect(index.getRequestMessage('agent', identity)).toBeUndefined()
+    expect(index.getResultMessage('agent', identity)).toBeUndefined()
+  })
+
+  it.each([false, true])('keeps a request intact when no-side progress arrives first: %s', (progressFirst) => {
+    const index = createSpanIndex()
+    const request = toolUse('request', 's1')
+    const progress = noSideSpan('window')
+    const messages = progressFirst ? [progress, request] : [request, progress]
+    expect(index.index('agent', ...messages)).toBe(false)
+    expect(index.getRequestMessage('agent', identity)).toBe(request)
+    expect(index.getResultMessage('agent', identity)).toBeUndefined()
+  })
+
+  it('retains a genuine result beside repeated no-side records', () => {
+    const index = createSpanIndex()
+    const request = toolUse('request', 's1')
+    const result = toolResult('result', 's1')
+    expect(index.index('agent', request, noSideSpan('window'))).toBe(false)
+    expect(index.index('agent', result)).toBe(false)
+    expect(index.index('agent', noSideSpan('window'), noSideSpan('lifecycle', 's1', 4n))).toBe(false)
+    expect(index.getRequestMessage('agent', identity)).toBe(request)
+    expect(index.getResultMessage('agent', identity)).toBe(result)
+  })
+
+  it.each(['request', 'result'] as const)('removes an indexed %s that changes to a no-side record', (side) => {
+    const index = createSpanIndex()
+    const changing = side === 'request' ? toolUse('changing', 's1') : toolResult('changing', 's1')
+    const sibling = side === 'request' ? toolResult('sibling', 's1') : toolUse('sibling', 's1')
+    const replacement = noSideSpan(changing.id, changing.spanId, changing.seq)
+    index.reindex('agent', [changing, sibling])
+    expect(index.index('agent', replacement)).toBe(true)
+    expect(side === 'request' ? index.getRequestMessage('agent', identity) : index.getResultMessage('agent', identity)).toBeUndefined()
+    expect(side === 'request' ? index.getResultMessage('agent', identity) : index.getRequestMessage('agent', identity)).toBe(sibling)
+    index.reindex('agent', [replacement, sibling])
+    expect(side === 'request' ? index.getRequestMessage('agent', identity) : index.getResultMessage('agent', identity)).toBeUndefined()
+    expect(side === 'request' ? index.getResultMessage('agent', identity) : index.getRequestMessage('agent', identity)).toBe(sibling)
+  })
+
+  it.each(['request', 'result'] as const)('accepts a genuine %s under an earlier no-side record ID', (side) => {
+    const index = createSpanIndex()
+    const replacement = side === 'request' ? toolUse('changing', 's1') : toolResult('changing', 's1')
+    expect(index.index('agent', noSideSpan(replacement.id))).toBe(false)
+    expect(index.getRequestMessage('agent', identity)).toBeUndefined()
+    expect(index.getResultMessage('agent', identity)).toBeUndefined()
+    expect(index.index('agent', replacement)).toBe(false)
+    expect(side === 'request' ? index.getRequestMessage('agent', identity) : index.getResultMessage('agent', identity)).toBe(replacement)
+    expect(side === 'request' ? index.getResultMessage('agent', identity) : index.getRequestMessage('agent', identity)).toBeUndefined()
+  })
+
+  it('keeps reused spans separate across agents and provider sessions', () => {
+    const index = createSpanIndex()
+    const first = { ...toolUse('first', 's1'), agentSessionId: 'first-session' }
+    const second = { ...toolUse('second', 's1'), agentSessionId: 'second-session' }
+    const otherAgent = { ...toolResult('other-agent', 's1'), agentSessionId: 'first-session' }
+    index.reindex('agent', [first, second])
+    index.reindex('other-agent', [otherAgent])
+    expect(index.index('agent', noSideSpan('first-window', 's1', 3n, 'first-session'), noSideSpan('second-window', 's1', 4n, 'second-session'))).toBe(false)
+    expect(index.getRequestMessage('agent', { spanId: 's1', agentSessionId: 'first-session' })).toBe(first)
+    expect(index.getRequestMessage('agent', { spanId: 's1', agentSessionId: 'second-session' })).toBe(second)
+    expect(index.getResultMessage('agent', { spanId: 's1', agentSessionId: 'first-session' })).toBeUndefined()
+    expect(index.getResultMessage('agent', { spanId: 's1', agentSessionId: 'second-session' })).toBeUndefined()
+    expect(index.getResultMessage('other-agent', { spanId: 's1', agentSessionId: 'first-session' })).toBe(otherAgent)
   })
 })

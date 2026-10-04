@@ -14,6 +14,44 @@ describe('ReadResultView', () => {
     vi.clearAllMocks()
   })
 
+  // A provider that leaves lines out of a read states the gap as a row with no number.
+  it('draws an elision row with no number and sizes the gutter from the largest number', () => {
+    const { container } = render(() => (
+      <ReadResultView
+        lines={[{ num: 9, text: 'function f() {' }, { num: null, text: '…' }, { num: 120, text: '}' }, { num: null, text: '…' }]}
+        premeasureMode
+      />
+    ))
+    // One child of the view for each line.
+    const rows = [...container.firstElementChild!.children] as HTMLElement[]
+    expect(rows.map(row => row.textContent)).toEqual(['9function f() {', '…', '120}', '…'])
+    // A gap row carries no number, so a quote that starts on it states no line.
+    expect(rows.map(row => row.dataset.lineNum ?? null)).toEqual(['9', null, '120', null])
+    // The largest number sizes the gutter, not the last row, which is a gap here.
+    const gutters = rows.map(row => (row.firstElementChild as HTMLElement).style.width)
+    expect(gutters).toEqual(['3ch', '3ch', '3ch', '3ch'])
+  })
+
+  it('sizes the gutter to one column when no row has a number', () => {
+    const { container } = render(() => (
+      <ReadResultView lines={[{ num: null, text: '…' }, { num: null, text: '…' }]} premeasureMode />
+    ))
+    const rows = [...container.firstElementChild!.children] as HTMLElement[]
+    expect(rows.map(row => row.dataset.lineNum ?? null)).toEqual([null, null])
+    expect(rows.map(row => (row.firstElementChild as HTMLElement).style.width)).toEqual(['1ch', '1ch'])
+  })
+
+  it('keeps a line numbered zero, which is not an elision row', () => {
+    // Zero is falsy, so a truthiness test in place of the null test would take the
+    // number off the row and off the quote that starts on it.
+    const { container } = render(() => (
+      <ReadResultView lines={[{ num: 0, text: 'first' }, { num: null, text: '…' }]} premeasureMode />
+    ))
+    const rows = [...container.firstElementChild!.children] as HTMLElement[]
+    expect(rows.map(row => row.dataset.lineNum ?? null)).toEqual(['0', null])
+    expect(rows.map(row => row.textContent)).toEqual(['0first', '…'])
+  })
+
   it('does not enqueue tokenization while visible scrolling has syntax highlighting paused', async () => {
     const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
 

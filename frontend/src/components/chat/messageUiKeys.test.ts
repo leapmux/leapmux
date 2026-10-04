@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { ALL_PROVIDERS, PROVIDER_DISPLAY_NAME } from '~/generated/contracts/providers'
 import { expandedUiKeyFor, MESSAGE_UI_DEFAULTS, MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 
 describe('MESSAGE_UI_DEFAULTS', () => {
@@ -32,11 +33,33 @@ describe('MESSAGE_UI_DEFAULTS', () => {
   // Every key is kind-scoped and provider-neutral. Three keys used to belong to Codex
   // alone, because it drew its own reasoning, command and web-search bubbles; those
   // rows draw through the shared components now.
+  //
+  // The prefixes come from the provider contract, so a new provider is covered with
+  // no edit here. A hand-written list already missed one provider.
   it('registers no provider-scoped key', () => {
-    for (const key of Object.values(MESSAGE_UI_KEY))
-      expect(key, `${key} identifies a provider`).not.toMatch(/^(?:codex|claude|pi|zcode|copilot|cursor|goose|kilo|opencode|reasonix)-/)
+    const prefixes = providerKeyPrefixes()
+    expect(prefixes).toContain('cline')
+    for (const key of Object.values(MESSAGE_UI_KEY)) {
+      for (const prefix of prefixes)
+        expect(key.startsWith(`${prefix}-`), `${key} identifies the provider ${prefix}`).toBe(false)
+    }
   })
 })
+
+/**
+ * Every spelling that a provider-scoped key could start with: the display name's first
+ * word, the whole display name with no spaces, and the short names that the code uses
+ * for two providers.
+ */
+function providerKeyPrefixes(): string[] {
+  const prefixes = new Set(['copilot', 'omp'])
+  for (const provider of ALL_PROVIDERS) {
+    const words = (PROVIDER_DISPLAY_NAME[provider] ?? '').toLowerCase().split(/\s+/)
+    prefixes.add(words[0]!)
+    prefixes.add(words.join(''))
+  }
+  return [...prefixes]
+}
 
 describe('expandedUiKeyFor', () => {
   it('maps plan_execution and agent_prompt by kind', () => {

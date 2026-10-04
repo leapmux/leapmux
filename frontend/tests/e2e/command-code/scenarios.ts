@@ -1,0 +1,36 @@
+import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import { randomUUID } from 'node:crypto'
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { currentNativeAgent } from '../helpers/nativeScenario'
+import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
+import { openRunningNativeChild } from '../helpers/runningChildProof'
+
+export function nativeContext(context: Omit<ManagedNativeScenarioContext, 'provider'>): ManagedNativeScenarioContext {
+  return { ...context, provider: AgentProvider.COMMAND_CODE }
+}
+
+export function nativeLaunch(context: ManagedNativeScenarioContext) {
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'command-code', holdWhen: ['--rpc'] })
+}
+
+/** Hold the native final reply after an actual child file read. */
+export async function runningChild(context: ManagedNativeScenarioContext, options: { allowExistingRows?: boolean } = {}) {
+  const parent = await currentNativeAgent(context)
+  const marker = randomUUID().replaceAll('-', '')
+  const task = `COMMANDCODECHILD${marker} read the supplied file and report one word.`
+  const path = join(parent.workingDir, `native-child-${marker}.txt`)
+  writeFileSync(path, `NATIVE_CHILD_FILE${marker}\n`)
+  const spawn = spawnSubagentToolCall(context.provider, `spawn-${marker}`, { description: 'Native held child', prompt: context.modelScript.prompt(task) })
+  return openRunningNativeChild(context, {
+    gate: `native-child-${marker}`,
+    childMatcher: { user: task },
+    childTool: readToolCall(context.provider, `child-read-${marker}`, path),
+    childFinalStep: { text: `NATIVE_CHILD_REPORT${marker}` },
+    spawn,
+    parentSteps: [{ toolCalls: [spawn] }, { text: 'The native parent completed.' }],
+    ...(options.allowExistingRows === undefined ? {} : { allowExistingRows: options.allowExistingRows }),
+  })
+}
