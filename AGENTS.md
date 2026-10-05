@@ -360,6 +360,27 @@ Thus each process retains `workers: 1` and `fullyParallel: false`.
 Every test uses the mock model server.
 The launcher builds once and gives each process a private copy of that binary.
 
+Rerun selection and shard balancing:
+
+- **`--last-failed` runs in parallel.** Each shard reads a private copy of the
+  last-run state through `--last-failed-file`, so the shards share the parent's
+  `.last-run.json` without writing it; only the merge replaces the caller's
+  state. The launcher refuses an absent or malformed state, because a rerun of
+  the failures must never become a complete run.
+- **`--failed-files` reruns every file that holds a test without a complete
+  clean result** in the last combined report (`.last-run-report.json` under the
+  output root, or an explicit report from `--failed-files-from=<report.json>`).
+  Use it for complete-file acceptance of a matrix cell. It selects its own
+  files, so it excludes `--last-failed`, `--test-list`, `--only-changed` and
+  positional file filters.
+- **The duration history balances the shards.** Each parallel run records the
+  measured duration of every file in `.file-durations.json` under the output
+  root, and the next run assigns files to shards longest-first from that
+  history. Without a usable history the launcher keeps the native
+  `--shard=i/N` split, as `--balance=off` does by choice.
+- **`--pass-with-no-tests` accepts an empty selection.** Without it, a rerun
+  whose state lists no failure fails before the build starts.
+
 Prefer `task test-e2e -- <files>` during development.
 **CI does not run E2E**: neither `task test` nor `task test-no-docker` reaches `test-e2e`.
 Run E2E tests locally before claiming that an E2E change works.

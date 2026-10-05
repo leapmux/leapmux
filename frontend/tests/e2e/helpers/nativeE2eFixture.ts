@@ -185,7 +185,7 @@ export async function runCase(label, testInfo, page) {
   writeFileSync(attachment, 'native-case-' + label);
   await testInfo.attach('isolation-receipt', { path: attachment, contentType: 'text/plain' });
   writeRecord(join(records, 'exit-' + label + '.json'), { label, finished: process.hrtime.bigint().toString() });
-  expect(label === policy.failCase, 'intentional fixture failure').toBe(false);
+  expect((policy.failCases ?? []).includes(label), 'intentional fixture failure').toBe(false);
 }
 `
 
@@ -280,7 +280,8 @@ export function nativeFixtureCases(report: NativeRecord): NativeCase[] {
 }
 
 export interface FixturePolicy {
-  failCase?: string
+  /** The fixture cases that fail on purpose: `alpha`, `beta`, or both. */
+  failCases?: readonly string[]
   cancellation?: boolean
   holdBuild?: boolean
   browserTrace?: boolean
@@ -412,25 +413,31 @@ finally {
 
 export interface NativeFixtureRunOptions {
   workers: 1 | 2
-  failCase?: string
+  failCases?: readonly string[]
   args?: string[]
   reportPath?: string
   browserTrace?: boolean
+  /**
+   * The cases that the run selects. A rerun of the failures selects a subset.
+   * The release wait ends when every expected case entered, so an unselected case cannot hold the run.
+   */
+  expectedCases?: readonly string[]
 }
 
 /** Run two controlled native cases and preserve their report after transient cleanup. */
 export async function executeNativeE2eFixture(root: string, options: NativeFixtureRunOptions): Promise<FixtureRun> {
-  const { workers, failCase } = options
+  const { workers, failCases } = options
   const records = join(root, 'records')
   for (const label of ['alpha', 'beta']) {
     for (const prefix of ['entry-', 'exit-', 'release-'])
       rmSync(join(records, `${prefix}${label}${prefix === 'release-' ? '' : '.json'}`), { force: true })
   }
   const policy = {
-    ...(failCase === undefined ? {} : { failCase }),
+    ...(failCases === undefined ? {} : { failCases }),
     ...(options.browserTrace ? { browserTrace: true } : {}),
   }
   writeFileSync(join(records, 'policy.json'), JSON.stringify(policy))
+  const expectedCases = options.expectedCases ?? ['alpha', 'beta']
   const output = join(root, 'retained-artifacts')
   const reportPath = options.reportPath ?? join(output, 'combined.json')
   mkdirSync(output, { recursive: true })
@@ -449,10 +456,10 @@ export async function executeNativeE2eFixture(root: string, options: NativeFixtu
     try {
       if (parallelRelease)
         return
-      const entries = readdirSync(records).filter(file => /^entry-(?:alpha|beta)\.json$/u.test(file))
-      if (workers === 2 && entries.length !== 2)
+      const entries = readdirSync(records).filter(file => expectedCases.some(label => file === `entry-${label}.json`))
+      if (workers === 2 && entries.length !== expectedCases.length)
         return
-      if (workers === 2) {
+      if (workers === 2 && expectedCases.length > 1) {
         assert.deepEqual(readdirSync(records).filter(file => file.startsWith('exit-')), [])
         parallelRelease = true
       }

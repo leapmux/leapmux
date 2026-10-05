@@ -1,8 +1,8 @@
 import type { NativeLastRunState } from './e2eLastRunReporter'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import E2ELastRunReporter, { writeNativeLastRunState } from './e2eLastRunReporter'
+import E2ELastRunReporter, { lastRunStatePath, readLastFailedState, writeNativeLastRunState } from './e2eLastRunReporter'
 
 const roots: string[] = []
 afterEach(() => {
@@ -143,120 +143,14 @@ describe('E2ELastRunReporter', () => {
 })
 
 describe('writeNativeLastRunState', () => {
-  it('keeps the preceding state complete until the draft is renamed', () => {
+  it('replaces the state with formatted native JSON and leaves no draft', () => {
     const path = destination()
-    const prior: NativeLastRunState = { status: 'failed', failedTests: ['previous-native-id'] }
-    const next: NativeLastRunState = { status: 'passed', failedTests: [] }
-    writeNativeLastRunState(path, prior)
-    const observed: string[] = []
+    writeNativeLastRunState(path, { status: 'failed', failedTests: ['previous-native-id'] })
 
-    writeNativeLastRunState(path, next, {
-      mkdirSync,
-      writeFileSync: (draft, content, options) => {
-        expect(typeof draft).toBe('string')
-        if (typeof draft !== 'string')
-          throw new Error('The native state draft is not a file path.')
-        observed.push(draft)
-        expect(dirname(draft)).toBe(dirname(path))
-        expect(basename(draft)).toMatch(/^\.leapmux-last-run-[0-9a-f-]+\.writing$/u)
-        expect(options).toEqual({ encoding: 'utf8', flag: 'wx', mode: 0o600 })
-        expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(prior)
-        writeFileSync(draft, content, options)
-      },
-      renameSync: (draft, target) => {
-        expect(target).toBe(path)
-        expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(prior)
-        expect(JSON.parse(readFileSync(draft, 'utf8'))).toEqual(next)
-        renameSync(draft, target)
-      },
-      rmSync,
-    })
+    writeNativeLastRunState(path, { status: 'passed', failedTests: [] })
 
-    expect(observed).toHaveLength(1)
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(next)
+    expect(readFileSync(path, 'utf8')).toBe(JSON.stringify({ status: 'passed', failedTests: [] }, null, 2))
     expect(readdirSync(dirname(path))).toEqual(['.last-run.json'])
-  })
-
-  it('removes a partial draft after a write failure and preserves the preceding state', () => {
-    const path = destination()
-    const prior: NativeLastRunState = { status: 'failed', failedTests: ['previous-native-id'] }
-    writeNativeLastRunState(path, prior)
-    const failure = new Error('The native state write failed.')
-
-    expect(() => writeNativeLastRunState(path, { status: 'passed', failedTests: [] }, {
-      mkdirSync,
-      writeFileSync: (draft) => {
-        writeFileSync(draft, '{partial')
-        throw failure
-      },
-      renameSync,
-      rmSync,
-    })).toThrow(failure)
-
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(prior)
-    expect(readdirSync(dirname(path))).toEqual(['.last-run.json'])
-  })
-
-  it('removes the complete draft after a rename failure and preserves the preceding state', () => {
-    const path = destination()
-    const prior: NativeLastRunState = { status: 'failed', failedTests: ['previous-native-id'] }
-    writeNativeLastRunState(path, prior)
-    const failure = new Error('The native state rename failed.')
-
-    expect(() => writeNativeLastRunState(path, { status: 'passed', failedTests: [] }, {
-      mkdirSync,
-      writeFileSync,
-      renameSync: () => {
-        throw failure
-      },
-      rmSync,
-    })).toThrow(failure)
-
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(prior)
-    expect(readdirSync(dirname(path))).toEqual(['.last-run.json'])
-  })
-
-  it('reports both write and draft-cleanup failures', () => {
-    const path = destination()
-    const writeFailure = new Error('The native state write failed.')
-    const cleanupFailure = new Error('The native state draft cleanup failed.')
-    let observed: unknown
-    try {
-      writeNativeLastRunState(path, { status: 'passed', failedTests: [] }, {
-        mkdirSync,
-        writeFileSync: () => {
-          throw writeFailure
-        },
-        renameSync,
-        rmSync: () => {
-          throw cleanupFailure
-        },
-      })
-    }
-    catch (error) {
-      observed = error
-    }
-
-    expect(observed).toBeInstanceOf(AggregateError)
-    if (!(observed instanceof AggregateError))
-      throw new Error('The native state writer discarded one of its failures.')
-    expect(observed.errors).toEqual([writeFailure, cleanupFailure])
-  })
-
-  it('propagates a directory failure before creating a draft', () => {
-    const path = destination()
-    const failure = new Error('The native state directory cannot be created.')
-    const write = vi.fn<typeof writeFileSync>()
-
-    expect(() => writeNativeLastRunState(path, { status: 'passed', failedTests: [] }, {
-      mkdirSync: () => {
-        throw failure
-      },
-      writeFileSync: write,
-      renameSync,
-      rmSync,
-    })).toThrow(failure)
-    expect(write).not.toHaveBeenCalled()
   })
 
   it('rejects a relative destination before accessing the filesystem', () => {
@@ -267,7 +161,87 @@ describe('writeNativeLastRunState', () => {
       writeFileSync,
       renameSync,
       rmSync,
-    })).toThrow('absolute path without NUL')
+    })).toThrow('native last-run destination must be an absolute path without NUL')
     expect(mkdir).not.toHaveBeenCalled()
+  })
+})
+
+describe('lastRunStatePath', () => {
+  const cwd = resolve('frontend-root')
+  const parent = resolve('frontend-root', 'test-results', '.last-run.json')
+
+  it('uses the parent output root without an explicit destination', () => {
+    expect(lastRunStatePath(undefined, {}, cwd, parent)).toBe(parent)
+  })
+
+  it('treats an empty environment value as absent, as native Playwright does', () => {
+    expect(lastRunStatePath(undefined, { PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: '' }, cwd, parent)).toBe(parent)
+  })
+
+  it('resolves a relative environment destination against the native working directory', () => {
+    expect(lastRunStatePath(undefined, { PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: 'state/last.json' }, cwd, parent)).toBe(join(cwd, 'state', 'last.json'))
+  })
+
+  it('gives --last-failed-file precedence over the environment destination', () => {
+    const explicit = resolve('elsewhere', 'last.json')
+    expect(lastRunStatePath(explicit, { PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: 'ignored.json' }, cwd, parent)).toBe(explicit)
+    expect(lastRunStatePath('relative.json', { PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: 'ignored.json' }, cwd, parent)).toBe(join(cwd, 'relative.json'))
+  })
+})
+
+describe('readLastFailedState', () => {
+  it('returns the failed IDs and the exact bytes of the state file', () => {
+    const path = destination()
+    const content = '{\n  "status": "failed",\n  "failedTests": ["one", "two", "one"]\n}'
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, content)
+
+    expect(readLastFailedState(path)).toEqual({ failedTests: ['one', 'two', 'one'], content })
+  })
+
+  it('accepts a state that lists no failed test', () => {
+    const path = destination()
+    writeNativeLastRunState(path, { status: 'passed', failedTests: [] })
+
+    expect(readLastFailedState(path).failedTests).toEqual([])
+  })
+
+  it('refuses an absent state instead of selecting every test', () => {
+    const path = destination()
+
+    expect(() => readLastFailedState(path)).toThrow(`reads the last-run state at ${path}, but that file does not exist`)
+  })
+
+  it('refuses an unreadable state and keeps the read error as its cause', () => {
+    const path = destination()
+    mkdirSync(path, { recursive: true })
+
+    expect(() => readLastFailedState(path)).toThrow(expect.objectContaining({
+      message: `The --last-failed option cannot read the last-run state at ${path}.`,
+      cause: expect.objectContaining({ code: 'EISDIR' }),
+    }))
+  })
+
+  it('refuses invalid JSON and keeps the parse error as its cause', () => {
+    const path = destination()
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, '{"failedTests": [')
+
+    expect(() => readLastFailedState(path)).toThrow(expect.objectContaining({ message: expect.stringContaining('is not valid JSON'), cause: expect.any(SyntaxError) }))
+  })
+
+  it.each([
+    { label: 'an array', value: [] },
+    { label: 'null', value: null },
+    { label: 'an absent ID list', value: { status: 'failed' } },
+    { label: 'a string ID list', value: { failedTests: 'one' } },
+    { label: 'a numeric ID', value: { failedTests: ['one', 2] } },
+    { label: 'an empty ID', value: { failedTests: [''] } },
+  ])('refuses a state with $label', ({ value }) => {
+    const path = destination()
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, JSON.stringify(value))
+
+    expect(() => readLastFailedState(path)).toThrow('has no failedTests array of test IDs')
   })
 })

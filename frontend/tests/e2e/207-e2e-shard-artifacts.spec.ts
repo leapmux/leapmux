@@ -56,7 +56,7 @@ test.describe('isolated browser shard full tool output', () => {
     const root = createNativeE2eFixture({ browserTrace: true })
     const callerState = { nonce: process.env.LEAPMUX_E2E_NONCE, statePath: process.env.E2E_STATE_PATH, outputFileDir: process.env.LEAPMUX_E2E_OUTPUT_FILE_DIR }
     try {
-      const run = await executeNativeE2eFixture(root, { workers: 2, failCase: 'beta', browserTrace: true })
+      const run = await executeNativeE2eFixture(root, { workers: 2, failCases: ['beta'], browserTrace: true })
       await testInfo.attach('native-browser-shard-report', { body: JSON.stringify(run.report, null, 2), contentType: 'application/json' })
       expect(run.code).not.toBe(0)
       expect(run.parallelRelease).toBe(true)

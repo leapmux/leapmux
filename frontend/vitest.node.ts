@@ -15,6 +15,8 @@ export const NODE_TEST_FILES = [
   'scripts/e2eLastRunReporter.test.ts',
   'scripts/e2eOptions.test.ts',
   'scripts/e2eReports.test.ts',
+  'scripts/e2eShardPlan.test.ts',
+  'scripts/e2eStateFiles.test.ts',
   'scripts/resolve-task-bin.test.ts',
   'scripts/run-e2e.integration.test.ts',
   'scripts/run-e2e.test.ts',

@@ -1,6 +1,10 @@
 import { constants, copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { isObject } from '../src/lib/jsonPick'
+import { readOptionalStateFile } from './e2eStateFiles'
+
+/** The output root keeps a copy of the combined JSON report of the last parallel run under this name. */
+export const LAST_RUN_REPORT_FILE = '.last-run-report.json'
 
 const REPORTER_DESTINATIONS = [
   'PLAYWRIGHT_BLOB_OUTPUT_FILE',
@@ -50,9 +54,12 @@ interface NativeReportSpec {
   ancestors: Record<string, unknown>[]
 }
 
-/** Visit native specifications while preserving their complete suite ancestry. */
-function visitReportSpecs(report: unknown, visitSpec: (spec: NativeReportSpec) => void): void {
-  if (!isObject(report) || !Array.isArray(report.suites) || !Array.isArray(report.errors) || report.errors.length !== 0)
+/**
+ * Visit native specifications while preserving their complete suite ancestry.
+ * Coverage requires a report without a global error. A failed or stopped run still reports each test outcome.
+ */
+function visitReportSpecs(report: unknown, visitSpec: (spec: NativeReportSpec) => void, globalErrors: 'reject' | 'accept' = 'reject'): void {
+  if (!isObject(report) || !Array.isArray(report.suites) || !Array.isArray(report.errors) || (globalErrors === 'reject' && report.errors.length !== 0))
     throw new Error('The Playwright report is absent, malformed, or contains a global error.')
   const visit = (suite: unknown, ancestors: Record<string, unknown>[]): void => {
     if (!isObject(suite) || !Array.isArray(suite.specs) || (suite.suites !== undefined && !Array.isArray(suite.suites)))
@@ -148,11 +155,101 @@ export function collectShardBlobs(artifactDirs: readonly string[], destination: 
   }
 }
 
-/** Require exact selected case coverage before a complete run can succeed. */
-export function assertMergedTestCoverage(path: string, expectedCases: readonly E2ECaseIdentity[]): void {
+/** Require exact selected case coverage in the parsed merged report before a complete run can succeed. */
+export function assertMergedTestCoverage(report: unknown, expectedCases: readonly E2ECaseIdentity[]): void {
   const identities = (cases: readonly E2ECaseIdentity[]): string[] => cases.map(({ file, titlePath, line, column, projectId, projectName, repeatIndex }) =>
     JSON.stringify([file, titlePath, line, column, projectId, projectName, repeatIndex])).sort()
-  const actual = identities(readDiscoveredTestCoverage(path).cases)
+  const actual = identities(discoveredTestCoverage(report).cases)
   if (JSON.stringify(actual) !== JSON.stringify(identities(expectedCases)))
     throw new Error('The merged E2E report does not contain every selected test case exactly once.')
+}
+
+export interface FileDuration {
+  /** The sum of the measured result durations of the file's cases, in milliseconds. */
+  readonly durationMs: number
+  /** The number of cases that the sum includes. */
+  readonly cases: number
+}
+
+/**
+ * Sum the native result durations of each file.
+ * A case without a result, or with an unfinished result (native duration -1), adds nothing.
+ */
+export function reportedFileDurations(report: unknown): Map<string, FileDuration> {
+  const totals = new Map<string, FileDuration>()
+  visitReportSpecs(report, (spec) => {
+    for (const test of spec.tests) {
+      if (!isObject(test) || !Array.isArray(test.results))
+        throw new Error('The Playwright report contains a test without a result array.')
+      let durationMs = 0
+      let finished = test.results.length > 0
+      for (const result of test.results) {
+        if (!isObject(result) || typeof result.duration !== 'number' || !Number.isFinite(result.duration))
+          throw new Error('The Playwright report contains an invalid result duration.')
+        if (result.duration < 0)
+          finished = false
+        durationMs += result.duration
+      }
+      if (!finished)
+        continue
+      const total = totals.get(spec.file) ?? { durationMs: 0, cases: 0 }
+      totals.set(spec.file, { durationMs: total.durationMs + durationMs, cases: total.cases + 1 })
+    }
+  }, 'accept')
+  return totals
+}
+
+const TEST_OUTCOMES = new Set(['expected', 'unexpected', 'flaky', 'skipped'])
+const TEST_STATUSES = new Set(['passed', 'failed', 'timedOut', 'skipped', 'interrupted'])
+
+/**
+ * Decide whether one native test leaves its file without a complete clean result.
+ * - `unexpected` covers a failure and a timeout. A `test.fail()` case that fails is `expected`.
+ * - `flaky` passed only on a retry. A complete-file result requires zero retries.
+ * - A `skipped` outcome for a test that does not skip on purpose shows an interruption, a run deadline,
+ *   a failure limit, or a crash that left the test without a result.
+ */
+function testNeedsRerun(test: unknown): boolean {
+  if (!isObject(test) || typeof test.status !== 'string' || !TEST_OUTCOMES.has(test.status)
+    || typeof test.expectedStatus !== 'string' || !TEST_STATUSES.has(test.expectedStatus) || !Array.isArray(test.results)) {
+    throw new Error('The Playwright report contains an incomplete test outcome.')
+  }
+  if (!test.results.every(result => isObject(result) && typeof result.status === 'string' && TEST_STATUSES.has(result.status)))
+    throw new Error('The Playwright report contains an incomplete test result.')
+  if (test.status === 'unexpected' || test.status === 'flaky')
+    return true
+  if (test.status === 'skipped' && test.expectedStatus !== 'skipped')
+    return true
+  return test.results.some(result => isObject(result) && result.status === 'interrupted')
+}
+
+/** List each file that holds at least one test without a complete clean result. */
+export function failedReportFiles(report: unknown): string[] {
+  const files = new Set<string>()
+  visitReportSpecs(report, (spec) => {
+    // Validate every test, so a malformed report fails even when an earlier test already selects the file.
+    const rerun = spec.tests.map(testNeedsRerun)
+    if (rerun.includes(true))
+      files.add(spec.file)
+  }, 'accept')
+  return [...files].sort()
+}
+
+/** Read the files that --failed-files reruns. Refuse an absent, unreadable, or malformed report. */
+export function readFailedReportFiles(path: string): string[] {
+  let content: string | undefined
+  try {
+    content = readOptionalStateFile(path)
+  }
+  catch (error) {
+    throw new Error(`The --failed-files option cannot read the combined report at ${path}.`, { cause: error })
+  }
+  if (content === undefined)
+    throw new Error(`The --failed-files option reads the combined report at ${path}, but that file does not exist. Run the E2E tests once in parallel, or give an existing report with --failed-files-from=<report.json>.`)
+  try {
+    return failedReportFiles(JSON.parse(content))
+  }
+  catch (error) {
+    throw new Error(`The combined report at ${path} is not a valid Playwright JSON report.`, { cause: error })
+  }
 }

@@ -45,11 +45,11 @@ interface RepeatedFixture {
   reportPath: string
 }
 
-function executeFixture(workers: 1 | 2, failCase?: string, repeated?: RepeatedFixture): Promise<FixtureRun> {
-  const root = repeated?.root ?? createFixture(failCase === undefined ? {} : { failCase })
+function executeFixture(workers: 1 | 2, failCases?: readonly string[], repeated?: RepeatedFixture): Promise<FixtureRun> {
+  const root = repeated?.root ?? createFixture(failCases === undefined ? {} : { failCases })
   return executeNativeE2eFixture(root, {
     workers,
-    ...(failCase === undefined ? {} : { failCase }),
+    ...(failCases === undefined ? {} : { failCases }),
     ...(repeated?.args === undefined ? {} : { args: repeated.args }),
     ...(repeated?.reportPath === undefined ? {} : { reportPath: repeated.reportPath }),
   })
@@ -324,7 +324,7 @@ describe('runE2E native integration', () => {
 
   it('selects only the failed parallel case when a serial run uses last-failed', async () => {
     const root = createFixture()
-    const failed = await executeFixture(2, 'beta', { root, reportPath: join(root, 'first-report.json') })
+    const failed = await executeFixture(2, ['beta'], { root, reportPath: join(root, 'first-report.json') })
     expect(failed.code).not.toBe(0)
     expect(failed.cases.map(test => test.status), nativeFixtureDiagnostics(failed)).toEqual(['expected', 'unexpected'])
     requireNativeCleanupAndArtifacts(failed, 2)
@@ -351,7 +351,7 @@ describe('runE2E native integration', () => {
 
   it('clears prior parallel failures after a complete passing parallel run', async () => {
     const root = createFixture()
-    const failed = await executeFixture(2, 'beta', { root, reportPath: join(root, 'first-report.json') })
+    const failed = await executeFixture(2, ['beta'], { root, reportPath: join(root, 'first-report.json') })
     expect(failed.code).not.toBe(0)
     const beta = failed.cases.find(test => test.title === 'executes beta')
     expect(beta?.status).toBe('unexpected')
@@ -398,7 +398,7 @@ describe('runE2E native integration', () => {
   }, INTEGRATION_DEADLINE_MS)
 
   it('retains a failed native case and cleans both shards before returning failure', async () => {
-    const run = await executeFixture(2, 'beta')
+    const run = await executeFixture(2, ['beta'])
     expect(run.code).not.toBe(0)
     expect(run.parallelRelease).toBe(true)
     expect(run.report.stats).toMatchObject({ expected: 1, unexpected: 1, flaky: 0, skipped: 0 })
@@ -407,5 +407,61 @@ describe('runE2E native integration', () => {
     const failed = run.cases.find(test => test.status === 'unexpected')
     expect(failed?.title).toBe('executes beta')
     expect(failed?.results[0]).toMatchObject({ status: 'failed', error: { message: expect.stringContaining('intentional fixture failure') } })
+  }, INTEGRATION_DEADLINE_MS)
+
+  it('balances parallel shards from the recorded duration history', async () => {
+    const root = createFixture()
+    const first = await executeFixture(2, undefined, { root, reportPath: join(root, 'first-report.json') })
+    expect(first.code, nativeFixtureDiagnostics(first)).toBe(0)
+    const history = readNativeFixtureRecord(join(root, 'retained-artifacts', '.file-durations.json'))
+    expect(history.version).toBe(1)
+    if (!isObject(history.files))
+      throw new Error('The native duration history has no file map.')
+    expect(Object.keys(history.files).sort()).toEqual(['alpha.spec.ts', 'beta.spec.ts'])
+
+    const balanced = await executeFixture(2, undefined, { root, reportPath: join(root, 'second-report.json') })
+    expect(balanced.code, nativeFixtureDiagnostics(balanced)).toBe(0)
+    expect(balanced.cases.map(test => test.status)).toEqual(['expected', 'expected'])
+    const log = readFileSync(balanced.consolePath, 'utf8')
+    expect(log).toContain('E2E shard plan: 2 shards, balanced by the duration history')
+    expect(log).toContain('    alpha.spec.ts:')
+    expect(log).toContain('    beta.spec.ts:')
+
+    const native = await executeFixture(2, undefined, { root, args: ['--balance=off'], reportPath: join(root, 'third-report.json') })
+    expect(native.code, nativeFixtureDiagnostics(native)).toBe(0)
+    expect(readFileSync(native.consolePath, 'utf8')).toContain('the native --shard=i/2 split. Reason: --balance=off selects it')
+    expect(readFileSync(join(root, 'build-count'), 'utf8')).toBe('3')
+    requireAllNativeRootsRemoved(root)
+  }, INTEGRATION_DEADLINE_MS)
+
+  it('reruns the failed tests of the last parallel run in parallel shards', async () => {
+    const root = createFixture()
+    const failed = await executeFixture(2, ['beta'], { root, reportPath: join(root, 'first-report.json') })
+    expect(failed.code, nativeFixtureDiagnostics(failed)).not.toBe(0)
+
+    const rerun = await executeNativeE2eFixture(root, { workers: 2, args: ['--last-failed'], expectedCases: ['beta'], reportPath: join(root, 'second-report.json') })
+    expect(rerun.code, nativeFixtureDiagnostics(rerun)).toBe(0)
+    expect(rerun.cases.map(test => test.title)).toEqual(['executes beta'])
+    expect(rerun.report.stats).toMatchObject({ expected: 1, unexpected: 0, skipped: 0, flaky: 0 })
+    expect(existsSync(join(root, 'records', 'entry-alpha.json'))).toBe(false)
+    expect(existsSync(join(root, 'records', 'entry-beta.json'))).toBe(true)
+    // The merged shards replace the caller's last-run state.
+    expect(readNativeFixtureRecord(join(root, 'retained-artifacts', '.last-run.json'))).toEqual({ status: 'passed', failedTests: [] })
+    requireAllNativeRootsRemoved(root)
+  }, INTEGRATION_DEADLINE_MS)
+
+  it('reruns the complete failed files of the last parallel run', async () => {
+    const root = createFixture()
+    const failed = await executeFixture(2, ['beta'], { root, reportPath: join(root, 'first-report.json') })
+    expect(failed.code, nativeFixtureDiagnostics(failed)).not.toBe(0)
+    expect(existsSync(join(root, 'retained-artifacts', '.last-run-report.json'))).toBe(true)
+
+    const rerun = await executeNativeE2eFixture(root, { workers: 2, args: ['--failed-files'], expectedCases: ['beta'], reportPath: join(root, 'second-report.json') })
+    expect(rerun.code, nativeFixtureDiagnostics(rerun)).toBe(0)
+    expect(rerun.cases.map(test => test.title)).toEqual(['executes beta'])
+    expect(readFileSync(rerun.consolePath, 'utf8')).toContain('E2E --failed-files: 1 file from')
+    expect(existsSync(join(root, 'records', 'entry-alpha.json'))).toBe(false)
+    expect(existsSync(join(root, 'records', 'entry-beta.json'))).toBe(true)
+    requireAllNativeRootsRemoved(root)
   }, INTEGRATION_DEADLINE_MS)
 })

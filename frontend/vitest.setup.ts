@@ -9,7 +9,13 @@ import {
 } from './src/lib/browserStorage'
 import { setCRDTBridge } from './src/lib/crdt'
 import { installTestBridge, TEST_USER_ID } from './src/test-support/crdtBridge'
+import { installNetworkGuard } from './src/test-support/networkGuard'
 import '@testing-library/jest-dom/vitest'
+
+// Refuse every request to the jsdom document host (`http://localhost:3000`).
+// Any process on this machine can listen there, and a 401 from it signs the
+// test's user out. `installNetworkGuard` states the full rule.
+installNetworkGuard()
 
 // Install a default CRDT bridge before every test so the projection-
 // driven layout / tab / floating-window stores have a workspace +

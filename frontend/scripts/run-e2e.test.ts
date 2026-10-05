@@ -104,7 +104,7 @@ function selectedReport() {
         file,
         line: 1,
         column: 1,
-        tests: [{ projectId: 'mock-chromium', projectName: 'mock-chromium' }],
+        tests: [{ projectId: 'mock-chromium', projectName: 'mock-chromium', results: [{ status: 'passed', duration: 125 }] }],
       }],
     })),
     errors: [],
@@ -118,9 +118,10 @@ function processes(exitCodes = [0, 0], inspect?: (env: NodeJS.ProcessEnv) => voi
     if (args.includes('--list') && env.PLAYWRIGHT_JSON_OUTPUT_FILE) {
       writeFileSync(env.PLAYWRIGHT_JSON_OUTPUT_FILE, JSON.stringify(selectedReport()))
     }
-    if (args.some(argument => argument.startsWith('--shard=')) && env.PLAYWRIGHT_BLOB_OUTPUT_DIR) {
+    if (args.includes('--reporter=list,blob,json') && env.PLAYWRIGHT_BLOB_OUTPUT_DIR && env.LEAPMUX_E2E_OUTPUT_FILE_DIR) {
+      const shard = args.find(argument => argument.startsWith('--shard='))?.replaceAll('/', '-') ?? basename(env.LEAPMUX_E2E_OUTPUT_FILE_DIR)
       mkdirSync(env.PLAYWRIGHT_BLOB_OUTPUT_DIR, { recursive: true })
-      writeFileSync(join(env.PLAYWRIGHT_BLOB_OUTPUT_DIR, `report-${args.find(argument => argument.startsWith('--shard='))!.replaceAll('/', '-')}.zip`), 'native blob fixture')
+      writeFileSync(join(env.PLAYWRIGHT_BLOB_OUTPUT_DIR, `report-${shard}.zip`), 'native blob fixture')
     }
     const noncePath = env.LEAPMUX_E2E_NONCE_PATH
     if (noncePath && command !== 'task') {
@@ -345,6 +346,9 @@ describe('end-to-end launcher', () => {
 
   it.each(['', 'caller-last-run.json'])('preserves native last-failed environment precedence: %j', async (destination) => {
     vi.stubEnv('PLAYWRIGHT_LAST_RUN_OUTPUT_FILE', destination)
+    const state = join(projectRoot, 'frontend', destination || join('public-output', '.last-run.json'))
+    mkdirSync(dirname(state), { recursive: true })
+    writeFileSync(state, JSON.stringify({ status: 'failed', failedTests: ['native-id'] }))
     processes()
     expect(await runE2E(['--workers=1', '--last-failed', '--output=public-output'], projectRoot)).toBe(0)
     const child = calls.find(call => call.args.includes('test'))
@@ -436,6 +440,157 @@ describe('end-to-end launcher', () => {
     expect(children.every(call => call.args.includes('--workers=1') && !call.args.includes('--workers=2'))).toBe(true)
     expect(new Set(children.map(call => call.env.LEAPMUX_E2E_NONCE_PATH)).size).toBe(2)
     expect(new Set(children.map(call => call.env.LEAPMUX_E2E_OUTPUT_FILE_DIR)).size).toBe(2)
+  })
+
+  function shardChildren() {
+    return calls.filter(call => call.args.includes('--reporter=list,blob,json'))
+  }
+
+  function writeLastRunState(state: unknown) {
+    const path = join(projectRoot, 'frontend/test-results/.last-run.json')
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, JSON.stringify(state))
+  }
+
+  function writeDurationHistory(files: Record<string, { durationMs: number, cases: number }>) {
+    const path = join(projectRoot, 'frontend/test-results/.file-durations.json')
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, JSON.stringify({ version: 1, files }))
+  }
+
+  function combinedReport(failedFiles: readonly string[]) {
+    return {
+      errors: [],
+      suites: ['first.spec.ts', 'second.spec.ts'].map(file => ({
+        title: file,
+        file,
+        specs: [{
+          id: file,
+          title: 'a selected test',
+          file,
+          line: 1,
+          column: 1,
+          tests: [{
+            projectId: 'mock-chromium',
+            projectName: 'mock-chromium',
+            ...(failedFiles.includes(file)
+              ? { status: 'unexpected', expectedStatus: 'passed', results: [{ status: 'failed', duration: 5 }] }
+              : { status: 'expected', expectedStatus: 'passed', results: [{ status: 'passed', duration: 5 }] }),
+          }],
+        }],
+      })),
+    }
+  }
+
+  function writeCombinedReport(failedFiles: readonly string[]) {
+    const path = join(projectRoot, 'frontend/test-results/.last-run-report.json')
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, JSON.stringify(combinedReport(failedFiles)))
+  }
+
+  it('shares the last-failed state with every parallel shard through private copies', async () => {
+    const content = JSON.stringify({ status: 'failed', failedTests: ['native-id'] })
+    writeLastRunState(JSON.parse(content))
+    processes()
+    expect(await runE2E(['--workers=2', '--last-failed'], projectRoot)).toBe(0)
+    const discovery = calls.find(call => call.args.includes('--list'))
+    if (!discovery)
+      throw new Error('The controlled discovery run is absent.')
+    const discoveryState = discovery.args.find(argument => argument.startsWith('--last-failed-file='))?.slice('--last-failed-file='.length)
+    if (!discoveryState)
+      throw new Error('The discovery run did not read a last-failed snapshot.')
+    expect(discovery.args).toContain('--last-failed')
+    expect(readFileSync(discoveryState, 'utf8')).toBe(content)
+    const children = shardChildren()
+    expect(children).toHaveLength(2)
+    for (const child of children) {
+      expect(child.args).toContain('--last-failed')
+      const shardState = child.args.find(argument => argument.startsWith('--last-failed-file='))?.slice('--last-failed-file='.length)
+      if (!shardState)
+        throw new Error('The shard did not read a private last-failed copy.')
+      expect(shardState).not.toBe(discoveryState)
+      expect(shardState).toContain(join('test-results', 'runs'))
+      expect(readFileSync(shardState, 'utf8')).toBe(content)
+    }
+    // No child wrote the caller's state: only the merge replaces it.
+    expect(readFileSync(join(projectRoot, 'frontend/test-results/.last-run.json'), 'utf8')).toBe(content)
+  })
+
+  it.each([
+    { args: ['--last-failed'], code: 1 },
+    { args: ['--last-failed', '--pass-with-no-tests'], code: 0 },
+  ])('settles a parallel last-failed run without failed tests before any build starts: %j', async ({ args, code }) => {
+    writeLastRunState({ status: 'passed', failedTests: [] })
+    processes()
+    expect(await runE2E(['--workers=2', ...args], projectRoot)).toBe(code)
+    expect(calls).toEqual([])
+  })
+
+  it('refuses a parallel last-failed run without a last-run state before any build starts', async () => {
+    processes()
+    await expect(runE2E(['--workers=2', '--last-failed'], projectRoot)).rejects.toThrow('that file does not exist')
+    expect(calls).toEqual([])
+  })
+
+  it('assigns the selected files to balanced shards from the recorded duration history', async () => {
+    writeDurationHistory({ 'first.spec.ts': { durationMs: 10, cases: 1 }, 'second.spec.ts': { durationMs: 5000, cases: 1 } })
+    processes()
+    expect(await runE2E(['--workers=2'], projectRoot)).toBe(0)
+    const children = shardChildren()
+    expect(children).toHaveLength(2)
+    expect(children.every(call => !call.args.some(argument => argument.startsWith('--shard=')))).toBe(true)
+    const lists = children.map((call) => {
+      const list = call.args.find(argument => argument.startsWith('--test-list='))?.slice('--test-list='.length)
+      if (!list)
+        throw new Error('The balanced shard did not receive its exact test list.')
+      return readFileSync(list, 'utf8')
+    })
+    expect(lists).toEqual(['second.spec.ts\n', 'first.spec.ts\n'])
+    // The merged run replaces the estimates of the measured files for the next plan.
+    const history: unknown = JSON.parse(readFileSync(join(projectRoot, 'frontend/test-results/.file-durations.json'), 'utf8'))
+    expect(history).toEqual({ version: 1, files: { 'first.spec.ts': { durationMs: 125, cases: 1 }, 'second.spec.ts': { durationMs: 125, cases: 1 } } })
+  })
+
+  it('keeps the native shard split when the caller turns balancing off', async () => {
+    writeDurationHistory({ 'first.spec.ts': { durationMs: 10, cases: 1 }, 'second.spec.ts': { durationMs: 5000, cases: 1 } })
+    processes()
+    expect(await runE2E(['--workers=2', '--balance=off'], projectRoot)).toBe(0)
+    const children = shardChildren()
+    expect(children).toHaveLength(2)
+    expect(children.map(call => call.args.find(argument => argument.startsWith('--shard=')))).toEqual(['--shard=1/2', '--shard=2/2'])
+    expect(children.every(call => !call.args.some(argument => argument.startsWith('--test-list=')))).toBe(true)
+  })
+
+  it('reruns the complete failed files of the last combined report', async () => {
+    writeCombinedReport(['second.spec.ts'])
+    processes()
+    expect(await runE2E(['--workers=2', '--failed-files'], projectRoot)).toBe(0)
+    const discovery = calls.find(call => call.args.includes('--list'))
+    if (!discovery)
+      throw new Error('The controlled discovery run is absent.')
+    const list = discovery.args.find(argument => argument.startsWith('--test-list='))?.slice('--test-list='.length)
+    if (!list)
+      throw new Error('The discovery run did not receive the failed-file list.')
+    expect(readFileSync(list, 'utf8')).toBe('second.spec.ts\n')
+    const children = shardChildren()
+    expect(children).toHaveLength(2)
+    for (const child of children) {
+      expect(child.args).toContain(`--test-list=${list}`)
+      expect(child.args.some(argument => argument.startsWith('--shard='))).toBe(true)
+    }
+  })
+
+  it('accepts a combined report without failed files before any build starts', async () => {
+    writeCombinedReport([])
+    processes()
+    expect(await runE2E(['--workers=2', '--failed-files'], projectRoot)).toBe(0)
+    expect(calls).toEqual([])
+  })
+
+  it('refuses a failed-file rerun without a combined report before any build starts', async () => {
+    processes()
+    await expect(runE2E(['--workers=2', '--failed-files'], projectRoot)).rejects.toThrow('that file does not exist')
+    expect(calls).toEqual([])
   })
 
   it('retains separate reports for two runs with the same explicit output directory', async () => {

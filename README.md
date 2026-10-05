@@ -388,9 +388,36 @@ task test-e2e -- --last-failed
 
 The launcher stores the combined native selection at the output root's `.last-run.json`.
 A complete passing run clears the prior failed selection.
-The last-failed run uses serial execution.
-An explicit `--last-failed-file` or `PLAYWRIGHT_LAST_RUN_OUTPUT_FILE` uses serial execution also.
+The last-failed run uses parallel execution.
+Each shard reads a private copy of the selection through `--last-failed-file`.
+Only the merged result replaces the caller's `.last-run.json`.
+The launcher refuses an absent or malformed selection, because a rerun of the failures must never become a complete run.
+An explicit `--last-failed-file` or `PLAYWRIGHT_LAST_RUN_OUTPUT_FILE` selects another state file.
 If the preceding run used `--output=<directory>`, use the same option for its last-failed run.
+
+Use `--failed-files` to run every file that holds a test without a complete clean result:
+
+```bash
+task test-e2e -- --failed-files
+task test-e2e -- --failed-files-from=frontend/test-results/runs/<run-id>/report.json
+```
+
+This option reruns complete files, not single cases.
+A complete file is the unit of acceptance for a matrix cell.
+The launcher reads the last combined report, `.last-run-report.json` under the output root.
+`--failed-files-from` reads an explicit combined report instead.
+The option selects its own files.
+Do not combine it with `--last-failed`, `--test-list`, `--only-changed`, or file arguments.
+The launcher refuses an absent or malformed report.
+
+The launcher balances the shards by the measured duration of each file.
+Each parallel run records the duration of every file in `.file-durations.json` under the output root.
+The next run assigns the files to the shards longest first, from that history.
+Without a usable history, the launcher uses the native `--shard=i/N` split.
+Use `--balance=off` to select the native split.
+
+Use `--pass-with-no-tests` to accept an empty selection.
+Without it, a rerun fails before the build when the failed selection lists no test.
 
 ### Linting
 

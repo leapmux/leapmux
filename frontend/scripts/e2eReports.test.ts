@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { assertMergedTestCoverage, collectShardBlobs, discoveredTestCoverage, mergedJsonDestination, readDiscoveredTestCoverage, shardReporterEnvironment } from './e2eReports'
+import { assertMergedTestCoverage, collectShardBlobs, discoveredTestCoverage, failedReportFiles, mergedJsonDestination, readDiscoveredTestCoverage, readFailedReportFiles, reportedFileDurations, shardReporterEnvironment } from './e2eReports'
 
 const roots: string[] = []
 afterEach(() => {
@@ -171,10 +171,7 @@ describe('assertMergedTestCoverage', () => {
       merged: nativeReport([nativeSpec('first', { line: 20 })]),
     },
   ])('rejects a $label even when the file set matches', ({ discovery, merged }) => {
-    const path = join(directory(), 'merged.json')
-    writeFileSync(path, JSON.stringify(merged))
-
-    expect(() => assertMergedTestCoverage(path, discoveredTestCoverage(discovery).cases)).toThrow('selected test')
+    expect(() => assertMergedTestCoverage(merged, discoveredTestCoverage(discovery).cases)).toThrow('selected test')
   })
 
   it('accepts every selected project and repeat despite a different native record order', () => {
@@ -184,17 +181,12 @@ describe('assertMergedTestCoverage', () => {
     const discovery = nativeReport([first, second])
     const mergedFirst = structuredClone(first)
     mergedFirst.tests.reverse()
-    const path = join(directory(), 'merged.json')
-    writeFileSync(path, JSON.stringify(nativeReport([second, mergedFirst])))
 
-    expect(() => assertMergedTestCoverage(path, discoveredTestCoverage(discovery).cases)).not.toThrow()
+    expect(() => assertMergedTestCoverage(nativeReport([second, mergedFirst]), discoveredTestCoverage(discovery).cases)).not.toThrow()
   })
 
   it('accepts an empty native selection without inventing a case', () => {
-    const path = join(directory(), 'merged.json')
-    writeFileSync(path, JSON.stringify({ errors: [], suites: [] }))
-
-    expect(() => assertMergedTestCoverage(path, [])).not.toThrow()
+    expect(() => assertMergedTestCoverage({ errors: [], suites: [] }, [])).not.toThrow()
   })
 
   it('accepts native merged projects without IDs while preserving each project and repeat', () => {
@@ -206,10 +198,8 @@ describe('assertMergedTestCoverage', () => {
       nativeSpec('selected', { projectId: 'two', repeats: 3, omitProjectId: true }),
       nativeSpec('selected', { projectId: 'one', repeats: 2, omitProjectId: true }),
     ])
-    const path = join(directory(), 'merged.json')
-    writeFileSync(path, JSON.stringify(merged))
 
-    expect(() => assertMergedTestCoverage(path, discoveredTestCoverage(discovery).cases)).not.toThrow()
+    expect(() => assertMergedTestCoverage(merged, discoveredTestCoverage(discovery).cases)).not.toThrow()
   })
 
   it('rejects ambiguous merged names for different selected project IDs', () => {
@@ -220,10 +210,8 @@ describe('assertMergedTestCoverage', () => {
     const merged = nativeReport([
       nativeSpec('selected', { projectName: 'shared', repeats: 2, omitProjectId: true }),
     ])
-    const path = join(directory(), 'merged.json')
-    writeFileSync(path, JSON.stringify(merged))
 
-    expect(() => assertMergedTestCoverage(path, discoveredTestCoverage(discovery).cases)).toThrow('selected test')
+    expect(() => assertMergedTestCoverage(merged, discoveredTestCoverage(discovery).cases)).toThrow('selected test')
   })
 })
 
@@ -343,5 +331,158 @@ describe('collectShardBlobs', () => {
     mkdirSync(join(root, 'target'))
     symlinkSync(join(root, 'target'), join(root, 'blob-report/report.zip'), 'junction')
     expect(() => collectShardBlobs([root], join(root, 'combined'))).toThrow('no unique')
+  })
+})
+
+/** Build one native specification whose single test carries the given outcome and results. */
+function outcomeSpec(file: string, outcome: { status: string, expectedStatus: string }, results: unknown[]): Record<string, unknown> {
+  return {
+    id: `native-${file}`,
+    title: 'a case',
+    file,
+    line: 1,
+    column: 1,
+    tests: [{ projectId: 'mock-chromium', projectName: 'mock-chromium', ...outcome, results }],
+  }
+}
+
+/** Wrap specifications in one native report. Global errors keep a stopped run readable. */
+function outcomeReport(specs: Record<string, unknown>[], errors: unknown[] = []): Record<string, unknown> {
+  return { errors, suites: [{ title: 'root', file: 'root', specs, suites: [] }] }
+}
+
+describe('reportedFileDurations', () => {
+  it('sums the result durations of each file and counts its cases', () => {
+    const value = reportedFileDurations(outcomeReport([
+      outcomeSpec('one.spec.ts', { status: 'expected', expectedStatus: 'passed' }, [{ duration: 100 }, { duration: 50 }]),
+      outcomeSpec('one.spec.ts', { status: 'flaky', expectedStatus: 'passed' }, [{ duration: 25 }]),
+      outcomeSpec('two.spec.ts', { status: 'unexpected', expectedStatus: 'passed' }, [{ duration: 0 }]),
+    ]))
+
+    expect(value).toEqual(new Map([
+      ['one.spec.ts', { durationMs: 175, cases: 2 }],
+      ['two.spec.ts', { durationMs: 0, cases: 1 }],
+    ]))
+  })
+
+  it('reads the durations of a run that ended with a global error', () => {
+    const value = reportedFileDurations(outcomeReport([
+      outcomeSpec('one.spec.ts', { status: 'expected', expectedStatus: 'passed' }, [{ duration: 10 }]),
+    ], ['The run stopped before global teardown.']))
+
+    expect(value).toEqual(new Map([['one.spec.ts', { durationMs: 10, cases: 1 }]]))
+  })
+
+  it.each([
+    { label: 'no result', results: [] },
+    { label: 'an unfinished result', results: [{ duration: 100 }, { duration: -1 }] },
+  ])('skips a case with $label instead of measuring a partial duration', ({ results }) => {
+    expect(reportedFileDurations(outcomeReport([
+      outcomeSpec('one.spec.ts', { status: 'expected', expectedStatus: 'passed' }, results),
+    ]))).toEqual(new Map())
+  })
+
+  it.each([
+    { label: 'a test without a result array', test: { projectId: 'one', projectName: 'one' }, message: 'without a result array' },
+    { label: 'a test with a non-array result', test: { projectId: 'one', projectName: 'one', results: {} }, message: 'without a result array' },
+    { label: 'a non-numeric duration', test: { projectId: 'one', projectName: 'one', results: [{ duration: '100' }] }, message: 'invalid result duration' },
+    { label: 'an infinite duration', test: { projectId: 'one', projectName: 'one', results: [{ duration: Number.POSITIVE_INFINITY }] }, message: 'invalid result duration' },
+  ])('rejects a report with $label', ({ test, message }) => {
+    const spec = { ...outcomeSpec('one.spec.ts', { status: 'expected', expectedStatus: 'passed' }, []), tests: [test] }
+
+    expect(() => reportedFileDurations(outcomeReport([spec]))).toThrow(message)
+  })
+})
+
+describe('failedReportFiles', () => {
+  it('lists each file with an unexpected or flaky test, sorted and without duplicates', () => {
+    const value = failedReportFiles(outcomeReport([
+      outcomeSpec('b.spec.ts', { status: 'unexpected', expectedStatus: 'passed' }, [{ status: 'failed' }]),
+      outcomeSpec('a.spec.ts', { status: 'flaky', expectedStatus: 'passed' }, [{ status: 'failed' }, { status: 'passed' }]),
+      outcomeSpec('b.spec.ts', { status: 'unexpected', expectedStatus: 'passed' }, [{ status: 'timedOut' }]),
+      outcomeSpec('c.spec.ts', { status: 'expected', expectedStatus: 'passed' }, [{ status: 'passed' }]),
+    ]))
+
+    expect(value).toEqual(['a.spec.ts', 'b.spec.ts'])
+  })
+
+  it('selects the file of a test that skips without an expected skip status', () => {
+    expect(failedReportFiles(outcomeReport([
+      outcomeSpec('interrupted.spec.ts', { status: 'skipped', expectedStatus: 'passed' }, []),
+    ]))).toEqual(['interrupted.spec.ts'])
+    expect(failedReportFiles(outcomeReport([
+      outcomeSpec('deliberate.spec.ts', { status: 'skipped', expectedStatus: 'skipped' }, [{ status: 'skipped' }]),
+    ]))).toEqual([])
+  })
+
+  it('accepts an expected failure and selects the file of an interrupted result', () => {
+    expect(failedReportFiles(outcomeReport([
+      outcomeSpec('deliberate.spec.ts', { status: 'expected', expectedStatus: 'failed' }, [{ status: 'failed' }]),
+    ]))).toEqual([])
+    expect(failedReportFiles(outcomeReport([
+      outcomeSpec('stopped.spec.ts', { status: 'skipped', expectedStatus: 'skipped' }, [{ status: 'interrupted' }]),
+    ]))).toEqual(['stopped.spec.ts'])
+  })
+
+  it('reads the outcomes of a run that ended with a global error', () => {
+    const value = failedReportFiles(outcomeReport([
+      outcomeSpec('one.spec.ts', { status: 'unexpected', expectedStatus: 'passed' }, [{ status: 'failed' }]),
+    ], ['The run reached its time limit.']))
+
+    expect(value).toEqual(['one.spec.ts'])
+  })
+
+  it.each([
+    { label: 'an unknown test outcome', outcome: { status: 'unknown', expectedStatus: 'passed' }, results: [], message: 'incomplete test outcome' },
+    { label: 'an unknown expected status', outcome: { status: 'expected', expectedStatus: 'unknown' }, results: [], message: 'incomplete test outcome' },
+    { label: 'an unknown result status', outcome: { status: 'expected', expectedStatus: 'passed' }, results: [{ status: 'unknown' }], message: 'incomplete test result' },
+  ])('rejects a report with $label even when an earlier file already needs a rerun', ({ outcome, results, message }) => {
+    const report = outcomeReport([
+      outcomeSpec('first.spec.ts', { status: 'unexpected', expectedStatus: 'passed' }, [{ status: 'failed' }]),
+      outcomeSpec('second.spec.ts', outcome, results),
+    ])
+
+    expect(() => failedReportFiles(report)).toThrow(message)
+  })
+})
+
+describe('readFailedReportFiles', () => {
+  it('reads the sorted failed files of a combined report on disk', () => {
+    const path = join(directory(), 'combined.json')
+    writeFileSync(path, JSON.stringify(outcomeReport([
+      outcomeSpec('b.spec.ts', { status: 'unexpected', expectedStatus: 'passed' }, [{ status: 'failed' }]),
+      outcomeSpec('a.spec.ts', { status: 'flaky', expectedStatus: 'passed' }, [{ status: 'failed' }, { status: 'passed' }]),
+    ])))
+
+    expect(readFailedReportFiles(path)).toEqual(['a.spec.ts', 'b.spec.ts'])
+  })
+
+  it('refuses an absent report with the --failed-files guidance', () => {
+    const path = join(directory(), 'absent.json')
+
+    expect(() => readFailedReportFiles(path)).toThrow(`the combined report at ${path}, but that file does not exist`)
+  })
+
+  it('refuses an unreadable report and keeps the read error as its cause', () => {
+    const path = join(directory(), 'unreadable.json')
+    mkdirSync(path)
+
+    expect(() => readFailedReportFiles(path)).toThrow(expect.objectContaining({
+      message: `The --failed-files option cannot read the combined report at ${path}.`,
+      cause: expect.objectContaining({ code: 'EISDIR' }),
+    }))
+  })
+
+  it.each([
+    { label: 'invalid JSON', content: '{"suites": [', message: 'is not a valid Playwright JSON report' },
+    { label: 'a report without the native shape', content: '{"suites": "none", "errors": []}', message: 'is not a valid Playwright JSON report' },
+  ])('refuses $label and keeps the cause', ({ content, message }) => {
+    const path = join(directory(), 'combined.json')
+    writeFileSync(path, content)
+
+    expect(() => readFailedReportFiles(path)).toThrow(expect.objectContaining({
+      message: expect.stringContaining(message),
+      cause: expect.anything(),
+    }))
   })
 })

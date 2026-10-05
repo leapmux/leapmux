@@ -1,16 +1,21 @@
 import type { CommandProcess } from './e2eCommandProcess'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import type { ChildSelection } from './e2eOptions'
+import type { DurationHistoryRead } from './e2eShardPlan'
+import { constants, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
+import { inspect } from 'node:util'
 import { finishCleanup } from '../tests/e2e/helpers/cleanup'
 import { stopTrackedProcesses } from '../tests/e2e/helpers/processRegistry'
 import { copyRunBinary, LEAPMUX_BINARY_NAME } from '../tests/e2e/helpers/runBinary'
 import { runCommand } from './e2eCommand'
-import { writeNativeLastRunState } from './e2eLastRunReporter'
-import { parseE2EOptions, serialRunArgs, shardSelectionArgs } from './e2eOptions'
-import { assertMergedTestCoverage, collectShardBlobs, mergedJsonDestination, readDiscoveredTestCoverage, shardReporterEnvironment } from './e2eReports'
+import { lastRunStatePath, readLastFailedState, writeNativeLastRunState } from './e2eLastRunReporter'
+import { discoveryRunArgs, parseE2EOptions, serialRunArgs, shardRunArgs, shardSelectionArgs } from './e2eOptions'
+import { assertMergedTestCoverage, collectShardBlobs, LAST_RUN_REPORT_FILE, mergedJsonDestination, readDiscoveredTestCoverage, readFailedReportFiles, reportedFileDurations, shardReporterEnvironment } from './e2eReports'
+import { DURATION_HISTORY_FILE, formatShardPlan, mergeDurationHistory, planShards, readDurationHistory, testListContent, writeDurationHistory } from './e2eShardPlan'
+import { writeFileAtomically } from './e2eStateFiles'
 import { resolveTaskBin } from './resolve-task-bin'
 
 const require = createRequire(import.meta.url)
@@ -62,12 +67,57 @@ function distinctFailures(errors: readonly unknown[]): unknown[] {
   return errors.flatMap(visit)
 }
 
+/** Finish a run that selects no test. Native Playwright records the same empty state and exit status. */
+function finishWithoutTests(lastRunState: string, passWithNoTests: boolean, reason: string): number {
+  writeNativeLastRunState(lastRunState, { status: passWithNoTests ? 'passed' : 'failed', failedTests: [] })
+  if (passWithNoTests) {
+    process.stdout.write(`${reason}\n`)
+    return 0
+  }
+  process.stderr.write(`${reason} Add --pass-with-no-tests to accept an empty selection.\n`)
+  return 1
+}
+
+/**
+ * Save the measured file durations for the next shard plan.
+ * The history only balances later runs. A failure to save it does not change this run's result, so report it as a warning.
+ */
+function recordDurationHistory(path: string, previous: DurationHistoryRead, report: unknown): void {
+  try {
+    writeDurationHistory(path, mergeDurationHistory(previous, reportedFileDurations(report)))
+  }
+  catch (error) {
+    process.stderr.write(`Warning: the E2E duration history at ${path} was not saved. A later run can use the native shard split.\n${inspect(error)}\n`)
+  }
+}
+
 /**
  * Build once. Each shard owns its servers and its browser.
  * A unit test supplies its own projectRoot so it cannot replace the real binary.
  */
 export async function runE2E(args: string[], projectRoot: string = root): Promise<number> {
   const options = parseE2EOptions(args)
+  const cwd = join(projectRoot, 'frontend')
+  const outputRoot = resolve(cwd, options.outputDir ?? 'test-results')
+  const parentLastRun = join(outputRoot, '.last-run.json')
+  const lastRunState = lastRunStatePath(options.lastFailedFile, process.env, cwd, parentLastRun)
+  const lastRunReport = join(outputRoot, LAST_RUN_REPORT_FILE)
+  const historyPath = join(outputRoot, DURATION_HISTORY_FILE)
+  // Read each saved selection before the build, so an absent, malformed, or empty selection costs no build.
+  const lastFailed = options.lastFailed ? readLastFailedState(lastRunState) : undefined
+  // A serial run keeps the native result for an empty selection: native Playwright writes its own reports.
+  if (lastFailed?.failedTests.length === 0 && !options.serial)
+    return finishWithoutTests(lastRunState, options.passWithNoTests, `The last-run state at ${lastRunState} lists no failed tests.`)
+  let failedFiles: { report: string, files: string[], testList: string } | undefined
+  if (options.failedFiles) {
+    const report = options.failedFilesFrom === undefined ? lastRunReport : resolve(cwd, options.failedFilesFrom)
+    const files = readFailedReportFiles(report)
+    if (files.length === 0) {
+      process.stdout.write(`No failed E2E test files exist in ${report}.\n`)
+      return 0
+    }
+    failedFiles = { report, files, testList: testListContent(files) }
+  }
   const owned = new Set<CommandProcess>()
   const directories = new Map<CommandProcess, string>()
   const pending = new Map<Promise<number>, CommandProcess | undefined>()
@@ -132,11 +182,14 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
     runDir = mkdtempSync(join(scratch, 'e-'))
     // Copy the binary before another Task pipeline can replace the root build.
     const binary = copyRunBinary(join(projectRoot, LEAPMUX_BINARY_NAME), runDir)
-    const cwd = join(projectRoot, 'frontend')
-    const outputRoot = resolve(cwd, options.outputDir ?? 'test-results')
-    const parentLastRun = join(outputRoot, '.last-run.json')
     const outputFileDir = join(outputRoot, 'runs', `e2e-${basename(runDir).slice('e-'.length)}`)
     mkdirSync(outputFileDir, { recursive: true })
+    let failedFilesList: string | undefined
+    if (failedFiles) {
+      failedFilesList = join(outputFileDir, 'failed-files.txt')
+      writeFileSync(failedFilesList, failedFiles.testList, { flag: 'wx' })
+      process.stdout.write(`E2E --failed-files: ${failedFiles.files.length} ${failedFiles.files.length === 1 ? 'file' : 'files'} from ${failedFiles.report}\n`)
+    }
     if (options.serial) {
       runDirs.push(runDir)
       const serialEnv: NodeJS.ProcessEnv = {
@@ -145,26 +198,42 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
         // The native CLI gives --last-failed-file precedence over this environment value.
         PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: env.PLAYWRIGHT_LAST_RUN_OUTPUT_FILE || parentLastRun,
       }
-      const code = await command('node', [playwrightCli, 'test', '--workers=1', '--retries=0', ...serialRunArgs(options.playwrightArgs, join(outputFileDir, 'test-results'))], { cwd, env: serialEnv }, { logPath: join(outputFileDir, 'console.log') })
+      const code = await command('node', [playwrightCli, 'test', '--workers=1', '--retries=0', ...serialRunArgs(options.playwrightArgs, join(outputFileDir, 'test-results'), failedFilesList)], { cwd, env: serialEnv }, { logPath: join(outputFileDir, 'console.log') })
       process.stdout.write(`E2E artifacts: ${outputFileDir}\n`)
       return interrupted || code
     }
-    const selection = shardSelectionArgs(options.playwrightArgs)
+    // Native Playwright writes its last-run result back to the file that it reads.
+    // Each child therefore reads a private copy of one snapshot, and only the merge writes the caller's state.
+    let lastFailedSnapshot: string | undefined
+    if (lastFailed) {
+      lastFailedSnapshot = join(outputFileDir, 'last-failed.json')
+      writeFileSync(lastFailedSnapshot, lastFailed.content, { flag: 'wx' })
+    }
+    const filters = shardSelectionArgs(options.playwrightArgs)
+    const selection: ChildSelection = {
+      filters,
+      ...(lastFailedSnapshot === undefined ? {} : { lastFailedFile: lastFailedSnapshot }),
+      ...(failedFilesList === undefined ? {} : { testList: failedFilesList }),
+    }
     const discoveryDir = join(outputFileDir, 'discovery')
     mkdirSync(discoveryDir)
     const discoveryEnv = shardReporterEnvironment(env, discoveryDir)
-    const discoveryCode = await command('node', [playwrightCli, 'test', '--list', '--reporter=json', '--pass-with-no-tests', '--workers=1', '--retries=0', ...selection], { cwd, env: discoveryEnv }, { logPath: join(discoveryDir, 'console.log'), label: 'discovery' })
+    const discoveryCode = await command('node', [playwrightCli, 'test', ...discoveryRunArgs(selection)], { cwd, env: discoveryEnv }, { logPath: join(discoveryDir, 'console.log'), label: 'discovery' })
     if (discoveryCode !== 0 || interrupted)
       return interrupted || discoveryCode
-    const { files, cases } = readDiscoveredTestCoverage(discoveryEnv.PLAYWRIGHT_JSON_OUTPUT_FILE!)
-    if (files.length === 0) {
-      const passWithNoTests = selection.includes('--pass-with-no-tests')
-      writeNativeLastRunState(parentLastRun, { status: passWithNoTests ? 'passed' : 'failed', failedTests: [] })
-      if (!passWithNoTests)
-        process.stderr.write('No selected E2E test files exist.\n')
-      return passWithNoTests ? 0 : 1
+    const coverage = readDiscoveredTestCoverage(discoveryEnv.PLAYWRIGHT_JSON_OUTPUT_FILE!)
+    if (failedFiles) {
+      const discovered = new Set(coverage.files)
+      const absent = failedFiles.files.filter(file => !discovered.has(file))
+      if (absent.length)
+        process.stderr.write(`Warning: these failed files from ${failedFiles.report} select no test now: ${absent.join(', ')}\n`)
     }
-    const total = Math.min(options.workers, files.length)
+    if (coverage.files.length === 0)
+      return finishWithoutTests(lastRunState, options.passWithNoTests, lastFailed ? `No selected E2E test matches a failed test in ${lastRunState}.` : 'No selected E2E test files exist.')
+    const history = readDurationHistory(historyPath)
+    const plan = planShards({ coverage, workers: options.workers, balance: options.balance, history, callerTestList: options.testList })
+    process.stdout.write(formatShardPlan(plan, historyPath))
+    const total = plan.kind === 'static' ? plan.total : plan.shards.length
     const artifacts: string[] = []
     const commands: Promise<number>[] = []
     for (let index = 1; index <= total; index++) {
@@ -177,8 +246,22 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
       mkdirSync(shardArtifacts)
       copyRunBinary(binary, shardDir)
       artifacts.push(shardArtifacts)
+      let shardSelection: ChildSelection = { filters, ...(failedFilesList === undefined ? {} : { testList: failedFilesList }) }
+      if (plan.kind === 'balanced') {
+        // The shard's own list replaces the failed-file list: native Playwright accepts one test list, and the shard's files are a subset.
+        const testList = join(shardArtifacts, 'test-list.txt')
+        writeFileSync(testList, testListContent(plan.shards[index - 1]!.files.map(file => file.file)), { flag: 'wx' })
+        shardSelection = { filters, testList }
+      }
+      if (lastFailedSnapshot !== undefined) {
+        // Native Playwright replaces this copy with the shard's own result when the shard ends.
+        const lastFailedFile = join(shardArtifacts, 'last-run.json')
+        copyFileSync(lastFailedSnapshot, lastFailedFile, constants.COPYFILE_EXCL)
+        shardSelection = { ...shardSelection, lastFailedFile }
+      }
       const testEnv = shardReporterEnvironment(nativeRunEnvironment(env, shardDir), shardArtifacts)
-      commands.push(command('node', [playwrightCli, 'test', `--shard=${index}/${total}`, '--workers=1', '--retries=0', '--reporter=list,blob,json', '--pass-with-no-tests', ...selection], { cwd, env: testEnv }, { logPath: join(shardArtifacts, 'console.log'), label: `shard ${index}/${total}` }))
+      const shardArgs = shardRunArgs(shardSelection, plan.kind === 'static' ? { index, total } : undefined)
+      commands.push(command('node', [playwrightCli, 'test', ...shardArgs], { cwd, env: testEnv }, { logPath: join(shardArtifacts, 'console.log'), label: `shard ${index}/${total}` }))
     }
     const results = await Promise.allSettled(commands)
     await stopping
@@ -193,16 +276,22 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
     const mergedEnv = shardReporterEnvironment(env, outputFileDir)
     mergedEnv.PLAYWRIGHT_JSON_OUTPUT_FILE = mergedJsonDestination(process.env, cwd, outputFileDir)
     mergedEnv.PLAYWRIGHT_BLOB_OUTPUT_DIR = join(outputFileDir, 'merged-blob-report')
-    mergedEnv.PLAYWRIGHT_LAST_RUN_OUTPUT_FILE = parentLastRun
+    mergedEnv.PLAYWRIGHT_LAST_RUN_OUTPUT_FILE = lastRunState
     const reporters = [...new Set([...(options.reporters ?? 'list').split(','), 'json', lastRunReporter])].join(',')
     const mergeCode = await command('node', [playwrightCli, 'merge-reports', `--reporter=${reporters}`, reports], { cwd, env: mergedEnv })
     if (interrupted || mergeCode !== 0)
       return interrupted || mergeCode
-    assertMergedTestCoverage(mergedEnv.PLAYWRIGHT_JSON_OUTPUT_FILE, cases)
+    const mergedReportPath = mergedEnv.PLAYWRIGHT_JSON_OUTPUT_FILE
+    const mergedText = readFileSync(mergedReportPath, 'utf8')
+    // Keep the last combined report at a fixed path for --failed-files, as the merge keeps the last-run state.
+    writeFileAtomically(lastRunReport, mergedText)
+    const merged: unknown = JSON.parse(mergedText)
+    recordDurationHistory(historyPath, history, merged)
+    assertMergedTestCoverage(merged, coverage.cases)
     process.stdout.write(`E2E artifacts: ${outputFileDir}\n`)
-    process.stdout.write(`E2E combined JSON report: ${mergedEnv.PLAYWRIGHT_JSON_OUTPUT_FILE}\n`)
+    process.stdout.write(`E2E combined JSON report: ${mergedReportPath}\n`)
     if (options.reporters?.split(',').includes('json') && !process.env.PLAYWRIGHT_JSON_OUTPUT_FILE && !process.env.PLAYWRIGHT_JSON_OUTPUT_NAME)
-      process.stdout.write(`${readFileSync(mergedEnv.PLAYWRIGHT_JSON_OUTPUT_FILE, 'utf8')}\n`)
+      process.stdout.write(`${mergedText}\n`)
     return code?.status === 'fulfilled' ? code.value : 0
   }
 
