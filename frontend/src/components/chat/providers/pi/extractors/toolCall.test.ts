@@ -856,7 +856,8 @@ describe('registered Pi structured output ownership', () => {
       throw new Error('The registered Pi codemode fixture produced no tool row.')
     expect(row.call.kind).toBe('mcp')
     expect(row.call.result).toMatchObject({ content: [{ type: 'text', text: 'returned code output' }], structuredJsonRole: 'metadata' })
-    expect(toolCallMeta(row).copyableContent()).toBe('returned code output\n\n{\n  "calls": []\n}')
+    // The shared FracturedJson formatter keeps a short value on one line and ends it with a newline.
+    expect(toolCallMeta(row).copyableContent()).toBe('returned code output\n\n{"calls": []}\n')
     expect(JSON.stringify(payload)).toBe(before)
   })
 
@@ -869,9 +870,9 @@ describe('registered Pi structured output ownership', () => {
       const row = providerRow(AgentProvider.PI, end(sample.toolName, sample.result), { request: input(start(sample.toolName)) })
       if (row?.kind !== 'tool' || row.call.kind !== 'mcp')
         throw new Error('The registered Pi structured fixture produced no MCP row.')
-      expect(row.call.result).toMatchObject({ structuredJson: '{\n  "count": 0,\n  "enabled": false,\n  "nullable": null\n}' })
+      expect(row.call.result).toMatchObject({ structuredJson: '{"count": 0, "enabled": false, "nullable": null}\n' })
       expect(row.call.result).not.toHaveProperty('structuredJsonRole')
-      expect(toolCallMeta(row).copyableContent()).toBe('{\n  "count": 0,\n  "enabled": false,\n  "nullable": null\n}')
+      expect(toolCallMeta(row).copyableContent()).toBe('{"count": 0, "enabled": false, "nullable": null}\n')
     }
   })
 })
