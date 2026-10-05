@@ -2431,6 +2431,11 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'decisions', goTable: 'Decision', tsTable: 'DECISION', tsType: 'CopilotDecision', doc: 'the words a permission answer carries to the runtime' },
       { key: 'permissionOutcomes', goTable: 'PermissionOutcome', tsTable: 'PERMISSION_OUTCOME', tsType: 'CopilotPermissionOutcome', readers: ['ts'], readersWhy: 'the worker persists permission.completed whole; the browser words the refusal, which is the only place a self-refused permission is ever stated', doc: 'how one permission ended, which `permission.completed` states' },
       { key: 'permissionDecisionSources', goTable: 'PermissionDecisionSource', tsTable: 'PERMISSION_DECISION_SOURCE', tsType: 'CopilotPermissionDecisionSource', readers: ['ts'], readersWhy: 'the worker persists the completion whole; the browser is what must tell an approval a PERSON gave from one a judge, a policy or a replayed record produced, because all of them carry the same result', doc: 'who decided one permission, which `permission.completed` states beside the outcome' },
+      // Both sides, because the worker stores a completion column for each tool result
+      // and the browser reads the call's outcome from the same code. A worker that read
+      // `success` alone stored an error completion for a REFUSED call, and the browser
+      // headed the declined row with that error.
+      { key: 'toolErrorCodes', goTable: 'ToolErrorCode', tsTable: 'TOOL_ERROR_CODE', tsType: 'CopilotToolErrorCode', doc: '`error.code` values of a failed `tool.execution_complete` that both sides read' },
     ],
   },
   {

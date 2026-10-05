@@ -1174,3 +1174,99 @@ describe('a cancelled Copilot call', () => {
     expect(call.result).toStrictEqual({ failure: true, text: 'permission denied' })
   })
 })
+
+/**
+ * A call that a permission decision REFUSED never ran.
+ *
+ * The runtime states the refusal as a structured `error.code` on the completion:
+ * `rejected` for the user's own refusal, and `denied` for a refusal of the permission
+ * service, which is also how a Deny answer with feedback arrives. Each `error` below is
+ * copied from a native `tool.execution_complete` event. The row reads `declined`, and
+ * the refusal is its whole body: nothing ran, so no output, no match list and no diff
+ * exist to draw.
+ */
+describe('a refused Copilot call', () => {
+  const REJECTED = { code: 'rejected', message: 'The user rejected this tool call.' }
+
+  const refusedCall = (toolName: string, args: Record<string, unknown>, error: Record<string, unknown> = REJECTED) =>
+    copilotToolCall(resultRow(toolName, args, { success: false, error }))
+
+  it.each([
+    ['rejected', 'The user rejected this tool call.'],
+    ['denied', 'The user rejected this tool call. User feedback: Keep the file.'],
+    ['denied', 'Permission denied and could not request permission from user'],
+  ])('reads the %s code as declined, with the refusal as the result', (code, message) => {
+    const row = resultRow(COPILOT_TOOL.Bash, { command: 'rm -f doomed.txt' }, { success: false, error: { code, message } })
+    expect(deriveToolCallStatus(row.lifecycle, row.lifecycle.resultFrameLanded)).toBe('declined')
+    expect(row.raw).toStrictEqual({ code, message })
+    const call = copilotToolCall(row)
+    expect(call.kind).toBe('execute')
+    expect(call.status).toBe('declined')
+    expect(call.result).toStrictEqual({ failure: true, text: message })
+    expect(call.degradation).toBeUndefined()
+  })
+
+  // The refusal is prose, but it is not a report the view printed: the call stays the
+  // read it asked for, under the file it identifies.
+  it('keeps a refused view on the read kind', () => {
+    const call = refusedCall(COPILOT_TOOL.View, { path: '/p/a.ts' })
+    expect(call.kind).toBe('read')
+    expect(call.kind === 'read' ? call.request.path : undefined).toBe('/p/a.ts')
+    expect(call.status).toBe('declined')
+  })
+
+  // A file-list grep reads each output line as a file. The refusal is not one.
+  it('keeps a refused file-list grep on the grep kind', () => {
+    const call = refusedCall(COPILOT_TOOL.Grep, { pattern: 'needle', output_mode: 'files_with_matches' })
+    expect(call.kind).toBe('grep')
+    expect(call.status).toBe('declined')
+    expect(call.result).toStrictEqual({ failure: true, text: REJECTED.message })
+  })
+
+  // A refusal carries no content block of a result the tool never produced, even when
+  // the completion holds one.
+  it('drops the content blocks of a refused completion', () => {
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.Bash, { command: 'ls' }, {
+      success: false,
+      result: { content: 'stale', contents: [{ type: 'text', text: 'stale block' }] },
+      error: REJECTED,
+    }))
+    expect(call.status).toBe('declined')
+    expect(call.extraContent).toBeUndefined()
+    expect(call.result).toStrictEqual({ failure: true, text: REJECTED.message })
+  })
+
+  // The CODE decides, never the words.
+  it('keeps the generic failure code a failure, whatever its words', () => {
+    const call = refusedCall(COPILOT_TOOL.Bash, { command: 'ls' }, { code: 'failure', message: REJECTED.message })
+    expect(call.status).toBe('failed')
+  })
+
+  it('keeps an error with no code a failure, whatever its words', () => {
+    const call = refusedCall(COPILOT_TOOL.Bash, { command: 'ls' }, { message: REJECTED.message })
+    expect(call.status).toBe('failed')
+  })
+
+  it('keeps an approved call completed', () => {
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.Bash, { command: 'ls' }, { success: true, result: { content: 'a.ts' } }))
+    expect(call.status).toBe('completed')
+  })
+
+  // The runtime's own success flag outranks a code beside it: a call that succeeded ran.
+  it('keeps a completion that states success completed, whatever its code', () => {
+    const call = copilotToolCall(resultRow(COPILOT_TOOL.Bash, { command: 'ls' }, { success: true, result: { content: 'a.ts' }, error: REJECTED }))
+    expect(call.status).toBe('completed')
+  })
+
+  // A turn the reader stopped outranks a refusal the runtime reported for the same
+  // call, exactly as it outranks a failure: the row reads as interrupted.
+  it('reads a refused call in a turn the reader stopped as cancelled', () => {
+    const row = copilotToolRow(copilotToolComplete(CALL, { success: false, error: REJECTED }), {
+      spanType: COPILOT_TOOL.Bash,
+      request: parsed(copilotToolStart(CALL, COPILOT_TOOL.Bash, { command: 'ls' })),
+      completion: MessageCompletion.INTERRUPTED,
+    })
+    expect(row).not.toBeNull()
+    expect(copilotToolCall(row!).status).toBe('cancelled')
+  })
+})

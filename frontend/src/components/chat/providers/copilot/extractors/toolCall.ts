@@ -6,6 +6,7 @@ import type { FileChangeKind, ProseResult, ToolCall, ToolCallLifecycleFacts, Too
 import type { ToolCallStatus } from '../../../model/toolCallStatus'
 import type { ToolKind } from '../../../model/toolKind'
 import type { ToolMetadataEntry } from '../../../model/toolMetadata'
+import type { ProviderToolOutcome } from '../../../model/toolOutcome'
 import type { ToolRequestByKind } from '../../../model/tools'
 import type { CommandLanguage } from '../../../model/tools/execute'
 import type { FileChangeRequest } from '../../../model/tools/fileChange'
@@ -14,7 +15,7 @@ import type { SearchRequest } from '../../../model/tools/search'
 import type { ToolRequestOverrides } from '../../defaultToolRequests'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { COPILOT_EVENT, COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
+import { COPILOT_EVENT, COPILOT_TOOL, COPILOT_TOOL_ERROR_CODE } from '~/generated/contracts/copilot-protocol'
 import { withFallbackFilePath } from '~/lib/imageBlocks'
 import { prettifyStructuredJson } from '~/lib/jsonFormat'
 import { isObject, pickFirstString, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
@@ -24,6 +25,7 @@ import { parseMcpContentItem } from '../../../model/mcpToolCall'
 import { searchOutputMode } from '../../../model/searchOutputMode'
 import { failedResult, isFileChangeKind, proseResult, readToolCallSpec, unparsedResult } from '../../../model/toolCall'
 import { deriveToolCallStatus } from '../../../model/toolCallLifecycle'
+import { declinedToolCallSpec } from '../../declinedToolCall'
 import { toolRequestFor } from '../../defaultToolRequests'
 import { retainedOutcome } from '../../registry'
 import { TOOL_FILE_PATH_KEYS, toolInputPaths } from '../../toolInputKeys'
@@ -159,21 +161,37 @@ function grepMatchFile(line: string): string {
 
 /**
  * The lifecycle facts a completion event states: the runtime's own fault flag and
- * interruption code are the provider's conclusion, the completion column carries
+ * error code are the provider's conclusion, the completion column carries
  * what LeapMux retained, and the completion event itself is the one thing that
  * lands a result.
  */
 function copilotCompletionLifecycle(data: Record<string, unknown>, completion?: MessageCompletion): ToolCallLifecycleFacts {
-  // The runtime reports an aborted turn's tool as a failure with this code, which is
-  // an interruption rather than a fault the user should read as an error.
-  const interrupted = pickString(pickObject(data, 'error'), 'code') === 'interrupted'
   return {
     frameStatus: 'unstated',
-    providerOutcome: interrupted ? 'interrupted' : data.success !== true ? 'failed' : null,
+    providerOutcome: copilotCompletionOutcome(data),
     retainedOutcome: retainedOutcome(completion),
     rowFinal: true,
     resultFrameLanded: true,
   }
+}
+
+/**
+ * How the runtime says one call ended, from its completion event.
+ *
+ * The runtime reports an aborted turn's tool as a failure with the `interrupted` code,
+ * which is an interruption rather than a fault the user should read as an error. A
+ * refusal code states that the tool never ran, which `failed` would misreport as a tool
+ * that tried. The `toolErrorCodes` table of `contracts/copilot-protocol.json` states
+ * each code. The worker reads the same table to write the completion column, so a
+ * renamed code moves both sides at once.
+ */
+function copilotCompletionOutcome(data: Record<string, unknown>): ProviderToolOutcome | null {
+  const code = pickString(pickObject(data, 'error'), 'code')
+  if (code === COPILOT_TOOL_ERROR_CODE.Interrupted)
+    return 'interrupted'
+  if (data.success === true)
+    return null
+  return code === COPILOT_TOOL_ERROR_CODE.Rejected || code === COPILOT_TOOL_ERROR_CODE.Denied ? 'declined' : 'failed'
 }
 
 /**
@@ -249,11 +267,12 @@ export function copilotToolRow(
     input: copilotToolArguments(toolName, paired?.arguments),
     finished: true,
     lifecycle,
-    // A FAILURE states its reason in `error`. Reading `result` first there would show
-    // whatever partial output the call produced and hide why it stopped. A cancelled
-    // call is not a fault: the turn stopped around it, and its `result` holds the
-    // output it produced before that, so the result comes first there.
-    raw: status === 'failed'
+    // A FAILURE states its reason in `error`, and so does a REFUSAL. Reading `result`
+    // first there would show whatever partial output the call produced and hide why it
+    // stopped. A cancelled call is not a fault: the turn stopped around it, and its
+    // `result` holds the output it produced before that, so the result comes first
+    // there.
+    raw: status === 'failed' || status === 'declined'
       ? pickObject(completed, 'error') ?? pickObject(completed, 'result')
       : pickObject(completed, 'result') ?? pickObject(completed, 'error'),
   }
@@ -321,6 +340,15 @@ export interface CopilotToolFacts {
    * from {@link status} and never from the result.
    */
   failed: boolean
+  /**
+   * True once the call finished with an answer to read: it neither failed nor was
+   * refused.
+   *
+   * A REFUSED call is not one of these. Its only text is the refusal, so a reader that
+   * took that text as the call's answer read it as a report the view printed, or as a
+   * match list of one file.
+   */
+  answered: boolean
   /** The MCP server and tool the start event stated, for a dash-namespaced call. */
   mcp: { server: string, tool: string } | undefined
   /** The content blocks the result carries, unparsed; null when it states none at all. */
@@ -336,10 +364,10 @@ export interface CopilotToolFacts {
   /**
    * The matches a search answered with.
    *
-   * Filled for a `glob`, `grep` or `search` row that FINISHED without a fault, which
-   * is the one state that has matches to state, and undefined everywhere else. Its
-   * presence is therefore the same question as "did this search answer", which is what
-   * both {@link copilotReclassify} and {@link copilotSearchParts} ask it.
+   * Filled for a `glob`, `grep` or `search` row that {@link answered}, which is the
+   * one state that has matches to state, and undefined everywhere else. Its presence is
+   * therefore the same question as "did this search answer", which is what both
+   * {@link copilotReclassify} and {@link copilotSearchParts} ask it.
    */
   search: SearchResult | undefined
   /** The row's header word. Never empty: it falls back to the tool name and then to `Tool`. */
@@ -406,7 +434,7 @@ export function copilotToolFacts(row: CopilotToolRow): CopilotToolFacts {
   const failed = status === 'failed'
   const contents = Array.isArray(row.raw?.contents) ? row.raw.contents : null
   const structuredJson = prettifyStructuredJson(row.raw?.structuredContent)
-  const answered = row.finished && !failed
+  const answered = row.finished && !failed && status !== 'declined'
   return {
     rawArgs: row.input,
     args,
@@ -417,6 +445,7 @@ export function copilotToolFacts(row: CopilotToolRow): CopilotToolFacts {
     status,
     finished: row.finished,
     failed,
+    answered,
     mcp: row.mcp,
     contents,
     structuredJson,
@@ -453,7 +482,7 @@ export function copilotReclassify(facts: CopilotToolFacts): ToolKind {
   // A `view` that answered PROSE rather than a file body is a report: the call
   // finished well and printed words, and either the result carries no `content` string
   // or the arguments identify no file for those lines to belong to.
-  if (facts.wireKind === 'read' && facts.finished && !facts.failed && facts.output
+  if (facts.wireKind === 'read' && facts.answered && facts.output
     && !(typeof facts.raw?.content === 'string' && pickFirstString(facts.args, TOOL_FILE_PATH_KEYS))) {
     return 'report'
   }
@@ -757,9 +786,10 @@ function copilotFileChangeParts(facts: CopilotToolFacts, kind: 'edit' | 'write' 
  * The two halves of a search card, for the three kinds that declare one request and one
  * result.
  *
- * `search` is filled exactly when the call finished without a fault, so its absence is
- * the two states above that one: a running call states its pattern alone, and a failed
- * one states the reason it printed.
+ * `search` is filled exactly when the call answered, so its absence is one of the three
+ * states above that one: a running call states its pattern alone, and a failed one
+ * states the reason it printed. A refused call states its refusal, which
+ * {@link copilotToolCall} puts in place of whatever this answers.
  */
 function copilotSearchParts(facts: CopilotToolFacts): Omit<ToolCallSpecVariant<'search'>, 'kind'> {
   const request = copilotSearchRequest(facts.args)
@@ -1026,12 +1056,17 @@ function copilotSpecFor<K extends ToolKind>(facts: CopilotToolFacts, kind: K): {
  *
  * Three steps, each with a name of its own: collect the facts, decide the kind, fill
  * that kind's declared specification.
+ *
+ * A REFUSED call then takes the refusal as its whole body. That rule holds for every
+ * kind, and several readers above build a body from the completion whatever its status,
+ * so the rule applies once here, around the table, rather than in each reader.
  */
 export function copilotToolCall(row: CopilotToolRow): ToolCall {
   const facts = copilotToolFacts(row)
+  const spec = copilotSpecFor(facts, copilotReclassify(facts))
   return createToolCall(
     { id: row.toolCallId, name: row.toolName, lifecycle: row.lifecycle },
-    copilotSpecFor(facts, copilotReclassify(facts)),
+    facts.status === 'declined' ? declinedToolCallSpec(spec, facts.output) : spec,
   )
 }
 

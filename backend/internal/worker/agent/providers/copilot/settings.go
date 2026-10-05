@@ -117,10 +117,59 @@ func (a *Agent) refreshNativeSettingsInBackground() {
 	})
 }
 
+// UpdateSettings applies a settings change that the user asked for. The user chose each
+// value, so a refusal is never replaced with another value. See applyOpeningSettings.
 func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResult {
 	a.sessionMu.Lock()
 	defer a.sessionMu.Unlock()
 	return a.applyNativeSettings(requested)
+}
+
+// applyOpeningSettings applies the settings that a session opens with.
+//
+// Three paths use it: startup, the context clear, and the goal clear. It differs from
+// applyNativeSettings in one rule. LeapMux can choose the permission mode for the user,
+// and `defaulted` holds the ids that it chose (agent.Options.NewSessionDefaultOptionIDs).
+// When the runtime refuses such a mode, the agent falls back to Manual, the safe mode.
+//
+// The user did not cause that refusal and cannot see its reason. A policy that blocks
+// auto-approval refuses Assisted although the session sends AUTO_APPROVAL. The runtime's
+// own `defaultPermissionMode` setting says that Assisted is "ignored when it is off or
+// policy blocks auto-approval". A user who never chose Assisted must still get an agent
+// that runs.
+//
+// The fallback sends its own request for Manual, and the runtime must confirm it. The
+// agent does not keep the mode that the runtime reports after the refusal, because the
+// `defaultPermissionMode` setting can start a session in a mode that is wider than
+// Manual. The permission mode in the result then carries the settlement of that request.
+//
+// In these cases the result of the first request stays as it is, and the caller fails:
+//   - The user chose the mode. Manual would ignore that choice.
+//   - The refused mode is Manual already.
+//   - The read after the request failed. No answer shows a refusal then.
+//   - The runtime does not report Manual after the request for Manual.
+//
+// The caller holds sessionMu or owns startup before the agent becomes available to other callers.
+func (a *Agent) applyOpeningSettings(requested optionmap.Map, defaulted map[string]bool) agent.SettingsApplyResult {
+	applied := a.applyNativeSettings(requested)
+	const key = agent.OptionIDPermissionMode
+	mode := requested[key]
+	if mode == "" || mode == copilotSafePermissionMode || !defaulted[key] {
+		return applied
+	}
+	if applied.SurfacedOptions == nil || applied.Settlements[key].State == agent.OptionSettlementConfirmed {
+		return applied
+	}
+	slog.Warn("The Copilot runtime refused the default permission mode. The agent asks for the safe mode.",
+		"agent_id", a.AgentID(), "requested", mode, "reported", applied.SurfacedOptions[key],
+		"fallback", copilotSafePermissionMode)
+	fallback := a.applyNativeSettings(optionmap.Map{key: copilotSafePermissionMode})
+	if fallback.Settlements[key].State != agent.OptionSettlementConfirmed {
+		return applied
+	}
+	applied.Settlements[key] = fallback.Settlements[key]
+	applied.SurfacedOptions = fallback.SurfacedOptions
+	return applied
 }
 
 func (a *Agent) applyNativeSettings(requested optionmap.Map) agent.SettingsApplyResult {

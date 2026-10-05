@@ -182,6 +182,32 @@ describe('copilot native tool rendering', () => {
     expect(container.textContent).toContain('Error')
   })
 
+  // The runtime's `rejected` code states a refusal, so the command never ran. The row
+  // says so, and it does not head the refusal as an error the command produced.
+  it('heads a refused shell call as declined rather than as an error', () => {
+    const { container } = renderResult({ command: 'rm -f doomed.txt' }, COPILOT_TOOL.Bash, {
+      success: false,
+      error: { code: 'rejected', message: 'The user rejected this tool call.' },
+    })
+    expect(container.textContent).toContain('Declined')
+    expect(container.textContent).toContain('The user rejected this tool call.')
+    expect(container.textContent).not.toContain('Error')
+  })
+
+  // The layout the transcript draws: the request card stands above, so the result row
+  // states the outcome and the refusal alone. The worker stores a refused completion
+  // with NO completion column (`copilotToolCompletion` in the Go provider), so nothing
+  // draws a LeapMux error header over the row's own outcome.
+  it('heads a refused shell call under its request card as declined', () => {
+    const { container } = renderResult({ command: 'rm -f doomed.txt' }, COPILOT_TOOL.Bash, {
+      success: false,
+      error: { code: 'rejected', message: 'The user rejected this tool call.' },
+    }, true)
+    expect([...container.querySelectorAll(`.${toolUseHeader}`)].map(node => node.textContent)).toEqual(['Declined'])
+    expect(container.textContent).toContain('The user rejected this tool call.')
+    expect(container.textContent).not.toContain('Error')
+  })
+
   // A failed call states its reason in `error`. Reading the partial `result` there
   // would show whatever output it managed and hide why it stopped.
   it('prefers the error reason over a partial result on a failure', () => {

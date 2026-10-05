@@ -109,6 +109,75 @@ func TestNativeCopilotFailedToolResultCarriesTheErrorCompletion(t *testing.T) {
 	assert.Equal(t, agent.MessageCompletionError, messages[1].Completion)
 }
 
+// A REFUSED call never ran, and the runtime states that with a structured error code:
+// `rejected` for the user's own refusal, and `denied` for a refusal of the permission
+// service, which is also how a Deny answer with feedback arrives. Each error object
+// below is copied from a native `tool.execution_complete` event.
+//
+// The completion column is LeapMux's own statement about the row, and the browser
+// draws an `Error` header from it in place of the row's own outcome. An error
+// completion on a refused call therefore heads the declined row as an error.
+func TestNativeCopilotRefusedToolResultCarriesNoErrorCompletion(t *testing.T) {
+	t.Parallel()
+	for _, refusal := range []struct{ code, message string }{
+		{code: "rejected", message: "The user rejected this tool call."},
+		{code: "denied", message: "The user rejected this tool call. User feedback: Keep the file."},
+		{code: "denied", message: "Permission denied and could not request permission from user"},
+	} {
+		t.Run(refusal.message, func(t *testing.T) {
+			t.Parallel()
+			a, sink := newNativeCopilotForEvents(t)
+			a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolStarted, map[string]any{
+				"toolCallId": "tool-1", "toolName": contracts.CopilotToolBash, "arguments": map[string]any{"command": "rm -f doomed.txt"},
+			}))
+			a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolCompleted, map[string]any{
+				"toolCallId": "tool-1", "success": false,
+				"error": map[string]any{"code": refusal.code, "message": refusal.message},
+			}))
+			messages := sink.Messages()
+			require.Len(t, messages, 2)
+			assert.True(t, messages[1].Closing, "the refusal still closes the call")
+			assert.Empty(t, messages[1].Completion, "a refused call is not an error")
+			assert.Contains(t, sink.ClosedSpans(), "tool-1")
+		})
+	}
+}
+
+// The runtime reports a tool that an aborted turn cut short as a failure with the
+// `interrupted` code. The row reads as interrupted, so its completion says so.
+func TestNativeCopilotInterruptedToolResultCarriesTheInterruptedCompletion(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolStarted, map[string]any{
+		"toolCallId": "tool-1", "toolName": contracts.CopilotToolBash, "arguments": map[string]any{"command": "sleep 60"},
+	}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolCompleted, map[string]any{
+		"toolCallId": "tool-1", "success": false,
+		"error": map[string]any{"code": "interrupted", "message": "The execution of this tool, or a previous tool was interrupted."},
+	}))
+	messages := sink.Messages()
+	require.Len(t, messages, 2)
+	assert.Equal(t, agent.MessageCompletionInterrupted, messages[1].Completion)
+}
+
+// The runtime's generic `failure` code is a failure, whatever words it carries.
+func TestNativeCopilotFailureCodeCarriesTheErrorCompletion(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolStarted, map[string]any{
+		"toolCallId": "tool-1", "toolName": contracts.CopilotToolView, "arguments": map[string]any{"path": "/missing.txt"},
+	}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolCompleted, map[string]any{
+		"toolCallId": "tool-1", "success": false,
+		"error": map[string]any{"code": "failure", "message": "Path does not exist"},
+	}))
+	messages := sink.Messages()
+	require.Len(t, messages, 2)
+	assert.Equal(t, agent.MessageCompletionError, messages[1].Completion)
+}
+
 // A completion whose start this process never saw still reaches the transcript. A
 // resumed session replays no earlier event, so the result is all there is.
 func TestNativeCopilotUnmatchedToolResultStillReachesTheTranscript(t *testing.T) {
@@ -203,6 +272,88 @@ func TestNativeCopilotTurnEndClosesAToolThatNeverCompleted(t *testing.T) {
 	// so LeapMux states the outcome in its completion column and invents nothing.
 	assert.JSONEq(t, string(start), string(closing.Content))
 	assert.Contains(t, sink.ClosedSpans(), "tool-1")
+}
+
+// copilotTurnEndToolUses reads the tool count that the Worker stores beside the
+// turn-end row. The completion sound reads the same number: a turn that states no
+// count plays the sound although it used no tool.
+func copilotTurnEndToolUses(t *testing.T, sink *agenttest.Sink) (int, bool) {
+	t.Helper()
+	var ends []agenttest.Message
+	for _, message := range sink.Messages() {
+		if message.TurnEnd {
+			ends = append(ends, message)
+		}
+	}
+	require.NotEmpty(t, ends, "the turn must end")
+	var fields map[string]json.RawMessage
+	if len(ends[len(ends)-1].Metadata) == 0 || json.Unmarshal(ends[len(ends)-1].Metadata, &fields) != nil {
+		return 0, false
+	}
+	raw, ok := fields[contracts.MessageMetadataFieldToolUses]
+	if !ok {
+		return 0, false
+	}
+	var count int
+	require.NoError(t, json.Unmarshal(raw, &count))
+	return count, true
+}
+
+func nativeCopilotToolStart(t *testing.T, agentID, id, name string) []byte {
+	t.Helper()
+	return nativeCopilotEvent(t, agentID, contracts.CopilotEventToolStarted, map[string]any{
+		"toolCallId": id, "toolName": name, "arguments": map[string]any{"command": "true"},
+	})
+}
+
+func TestNativeCopilotTurnEndStatesZeroToolUsesForATextOnlyTurn(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantTurnStart, map[string]any{}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{}))
+
+	count, ok := copilotTurnEndToolUses(t, sink)
+	require.True(t, ok, "a turn without tools must state an explicit zero")
+	assert.Zero(t, count)
+}
+
+func TestNativeCopilotTurnEndCountsTheToolCallsOfTheTurnItself(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantTurnStart, map[string]any{}))
+	a.HandleOutput(nativeCopilotToolStart(t, "", "bash-1", contracts.CopilotToolBash))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolStarted, map[string]any{
+		"toolCallId": "task-1", "toolName": contracts.CopilotToolTask,
+		"arguments": map[string]any{"name": "Reviewer", "prompt": "Review."},
+	}))
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentStarted, map[string]any{
+		"toolCallId": "task-1", "agentName": "reviewer", "agentDisplayName": "Reviewer",
+	}))
+	// The subagent's own calls belong to its transcript and never to the parent turn.
+	a.HandleOutput(nativeCopilotToolStart(t, "agent-1", "child-bash-1", contracts.CopilotToolBash))
+	a.HandleOutput(nativeCopilotToolStart(t, "agent-1", "child-bash-2", contracts.CopilotToolBash))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{}))
+
+	count, ok := copilotTurnEndToolUses(t, sink)
+	require.True(t, ok)
+	assert.Equal(t, 2, count, "the parent turn ran the shell call and the Task call")
+}
+
+func TestNativeCopilotToolCountRestartsForTheNextTurn(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantTurnStart, map[string]any{}))
+	a.HandleOutput(nativeCopilotToolStart(t, "", "bash-1", contracts.CopilotToolBash))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{}))
+	count, ok := copilotTurnEndToolUses(t, sink)
+	require.True(t, ok)
+	require.Equal(t, 1, count)
+
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantTurnStart, map[string]any{}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{}))
+	count, ok = copilotTurnEndToolUses(t, sink)
+	require.True(t, ok)
+	assert.Zero(t, count, "the second turn used no tool")
 }
 
 // A stop reaches the same sweep, so a card does not survive the process that drew it.

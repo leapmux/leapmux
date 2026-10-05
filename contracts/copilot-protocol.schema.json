@@ -16,7 +16,8 @@
     "approvalScopes",
     "decisions",
     "permissionOutcomes",
-    "permissionDecisionSources"
+    "permissionDecisionSources",
+    "toolErrorCodes"
   ],
   "$defs": {
     "table": {
@@ -162,6 +163,9 @@
       "$ref": "#/$defs/table"
     },
     "permissionDecisionSources": {
+      "$ref": "#/$defs/table"
+    },
+    "toolErrorCodes": {
       "$ref": "#/$defs/table"
     }
   }

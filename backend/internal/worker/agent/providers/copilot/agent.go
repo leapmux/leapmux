@@ -44,6 +44,9 @@ type Agent struct {
 	// nextNativeToolOrder numbers the open calls, so a turn that ends with several
 	// of them closes each one in the order the runtime opened it.
 	nextNativeToolOrder uint64
+	// turnToolUses counts the tool calls that the current turn started in the
+	// root transcript. The turn end states it and restarts it. outputMu guards it.
+	turnToolUses int
 	// nativeText accumulates the assistant text the runtime STREAMS.
 	//
 	// The runtime marks every delta ephemeral and sends the assistant message only

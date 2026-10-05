@@ -99,6 +99,36 @@ function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status
   }
 }
 
+/**
+ * The `error` objects Copilot writes for a call that did not run because permission was
+ * refused, copied from the runtime's own `tool.execution_complete` events.
+ *
+ * The `code` is the structured fact. Copilot's own autopilot reads the same two words to
+ * tell a refusal from a failure, and `CompletionReceiptToolStatus` in the SDK documents
+ * them: `rejected` is the user's refusal, and `denied` is the refusal of the permission
+ * service. A Deny answer with feedback reaches the runtime as `denied`.
+ */
+const REFUSALS = {
+  rejected: { code: 'rejected', message: 'The user rejected this tool call.' },
+  rejectedWithFeedback: { code: 'denied', message: 'The user rejected this tool call. User feedback: Keep the file.' },
+  noResponder: { code: 'denied', message: 'Permission denied and could not request permission from user' },
+  planSentBack: { code: 'rejected', message: 'Plan not approved. User feedback:\n\nSplit the migration first.' },
+} as const
+
+/** A completion that ends with one `error` object, and the outcome word the row must read. */
+function ended(kind: ToolKind, name: string, status: ToolFailureFixture['status'], error: { code: string, message: string }): ToolFailureFixture {
+  const paired = FIXTURES[name]
+  if (paired === undefined)
+    throw new Error(`No successful fixture pairs with the failed frame for ${name}`)
+  return {
+    payload: copilotToolComplete(CALL, { success: false, error: { ...error } }),
+    ...(paired.options !== undefined ? { options: paired.options } : {}),
+    kind,
+    name,
+    status,
+  }
+}
+
 export const COPILOT_TOOL_RESULTS: ToolResultCheck = {
   provider: AgentProvider.GITHUB_COPILOT,
   fixtures: FIXTURES,
@@ -124,6 +154,34 @@ export const COPILOT_TOOL_RESULTS: ToolResultCheck = {
     failed('report', COPILOT_TOOL.TaskComplete),
     failed('memory', COPILOT_TOOL.ContextBoard),
     failed('agents', COPILOT_TOOL.ListAgents),
+    // A REFUSED call of every kind above. Each kind takes its own reader, and several
+    // readers draw no failure state of their own, so the ladder pins the declined state
+    // once for each kind.
+    ended('message', COPILOT_TOOL.WriteAgent, 'declined', REFUSALS.rejected),
+    ended('edit', COPILOT_TOOL.Edit, 'declined', REFUSALS.rejected),
+    ended('skill', COPILOT_TOOL.ExtensionsManage, 'declined', REFUSALS.rejected),
+    ended('switch_mode', COPILOT_TOOL.ExitPlanMode, 'declined', REFUSALS.planSentBack),
+    ended('search', COPILOT_TOOL.ToolSearch, 'declined', REFUSALS.rejected),
+    ended('delete', COPILOT_TOOL.Delete, 'declined', REFUSALS.rejected),
+    ended('move', COPILOT_TOOL.Move, 'declined', REFUSALS.rejected),
+    ended('execute', COPILOT_TOOL.Bash, 'declined', REFUSALS.rejected),
+    ended('fetch', COPILOT_TOOL.WebFetch, 'declined', REFUSALS.rejected),
+    ended('read', COPILOT_TOOL.View, 'declined', REFUSALS.rejected),
+    ended('write', COPILOT_TOOL.Create, 'declined', REFUSALS.rejectedWithFeedback),
+    ended('grep', COPILOT_TOOL.Grep, 'declined', REFUSALS.rejected),
+    ended('glob', COPILOT_TOOL.Glob, 'declined', REFUSALS.rejected),
+    ended('web_search', COPILOT_TOOL.WebSearch, 'declined', REFUSALS.rejected),
+    ended('agent', COPILOT_TOOL.Task, 'declined', REFUSALS.rejected),
+    ended('todo', COPILOT_TOOL.UpdateTodo, 'declined', REFUSALS.rejected),
+    ended('question', COPILOT_TOOL.AskUser, 'declined', REFUSALS.rejected),
+    ended('task', COPILOT_TOOL.ReadBash, 'declined', REFUSALS.rejected),
+    ended('report', COPILOT_TOOL.TaskComplete, 'declined', REFUSALS.rejected),
+    ended('memory', COPILOT_TOOL.ContextBoard, 'declined', REFUSALS.rejected),
+    ended('agents', COPILOT_TOOL.ListAgents, 'declined', REFUSALS.rejected),
+    ended('execute', COPILOT_TOOL.Bash, 'declined', REFUSALS.noResponder),
+    // The CODE decides, never the words: the same sentence under the runtime's generic
+    // `failure` code is a failure.
+    ended('execute', COPILOT_TOOL.Bash, 'failed', { code: 'failure', message: REFUSALS.rejected.message }),
   ],
   noFailure: {},
   noResult: {},

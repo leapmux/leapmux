@@ -10,6 +10,7 @@ import (
 	"net/textproto"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -107,6 +108,58 @@ func TestHelperCopilotNativeConnection(t *testing.T) {
 	createCount := 0
 	replacementFailure := os.Getenv("LEAPMUX_TEST_COPILOT_REPLACEMENT_FAILURE")
 	mode, permissionMode := "interactive", "manual"
+	// Copilot 1.0.87 refuses `assisted` at session.permissions.setMode, with
+	// `{"success":false}`, unless the session was created or resumed with the
+	// AUTO_APPROVAL feature flag on. This switch models that gate.
+	requireApprovalFlag := os.Getenv("LEAPMUX_TEST_COPILOT_REQUIRE_APPROVAL_FLAG") == "1"
+	approvalFlag := false
+	// A runtime can refuse a permission mode although the session sent the flag. The
+	// runtime's own `defaultPermissionMode` setting says that `assisted` is "ignored when
+	// it is off or policy blocks auto-approval", so a policy refuses it for every flag.
+	//
+	//   - LEAPMUX_TEST_COPILOT_REFUSE_MODE lists the refused permission modes, separated
+	//     by commas.
+	//   - LEAPMUX_TEST_COPILOT_REFUSE_FROM_OPEN gives the first opened session that
+	//     refuses it. A session.create or session.resume opens a session, and the first
+	//     one is 1. The default is 1.
+	//   - LEAPMUX_TEST_COPILOT_REFUSAL=error refuses with a JSON-RPC error, the frame that
+	//     the runtime sends for a word that it does not know. Any other value refuses with
+	//     `{"success":false}`, the frame of Copilot 1.0.87.
+	var refusedModes []string
+	if value := os.Getenv("LEAPMUX_TEST_COPILOT_REFUSE_MODE"); value != "" {
+		refusedModes = strings.Split(value, ",")
+	}
+	refuseFromOpen := 1
+	if value := os.Getenv("LEAPMUX_TEST_COPILOT_REFUSE_FROM_OPEN"); value != "" {
+		parsed, parseErr := strconv.Atoi(value)
+		require.NoError(t, parseErr)
+		refuseFromOpen = parsed
+	}
+	refusalAsError := os.Getenv("LEAPMUX_TEST_COPILOT_REFUSAL") == "error"
+	openedSessions := 0
+	// LEAPMUX_TEST_COPILOT_FAIL_PERMISSION_READS_AFTER=<n> makes every read of the
+	// permission mode after the first n reads fail with a JSON-RPC error.
+	failPermissionReadsAfter := 0
+	if value := os.Getenv("LEAPMUX_TEST_COPILOT_FAIL_PERMISSION_READS_AFTER"); value != "" {
+		parsed, parseErr := strconv.Atoi(value)
+		require.NoError(t, parseErr)
+		failPermissionReadsAfter = parsed
+	}
+	permissionReads := 0
+	// LEAPMUX_TEST_COPILOT_INITIAL_PERMISSION_MODE gives the mode that each opened session
+	// starts in. The default is `manual`, the mode that Copilot 1.0.87 starts in. The
+	// runtime setting `defaultPermissionMode` can start a session in another mode.
+	initialPermissionMode := "manual"
+	if value := os.Getenv("LEAPMUX_TEST_COPILOT_INITIAL_PERMISSION_MODE"); value != "" {
+		initialPermissionMode = value
+	}
+	sendError := func(id json.RawMessage, message string) {
+		frame, marshalErr := json.Marshal(map[string]any{
+			"jsonrpc": "2.0", "id": id, "error": map[string]any{"code": -32603, "message": message},
+		})
+		require.NoError(t, marshalErr)
+		send(frame)
+	}
 	// The fake runtime's autopilot objective. An empty objective means none, which
 	// getState reports as a null state.
 	goal := fakeCopilotObjective{}
@@ -173,14 +226,17 @@ func TestHelperCopilotNativeConnection(t *testing.T) {
 				continue
 			}
 			var params struct {
-				SessionID       string `json:"sessionId"`
-				Model           string `json:"model"`
-				ReasoningEffort string `json:"reasoningEffort"`
+				SessionID       string          `json:"sessionId"`
+				Model           string          `json:"model"`
+				ReasoningEffort string          `json:"reasoningEffort"`
+				FeatureFlags    map[string]bool `json:"featureFlags"`
 			}
 			require.NoError(t, json.Unmarshal(request.Params, &params))
 			require.NotEmpty(t, params.SessionID)
+			openedSessions++
 			sessionID, model, effort = params.SessionID, params.Model, params.ReasoningEffort
-			mode, permissionMode = "interactive", "manual"
+			approvalFlag = params.FeatureFlags["AUTO_APPROVAL"]
+			mode, permissionMode = "interactive", initialPermissionMode
 			if replacement := os.Getenv("LEAPMUX_TEST_COPILOT_SESSION_RETURN_ID"); replacement != "" {
 				params.SessionID = replacement
 			}
@@ -240,8 +296,22 @@ func TestHelperCopilotNativeConnection(t *testing.T) {
 				mode = params.Mode
 				value = map[string]any{"status": "unchanged", "modelChanged": false}
 			case "session.permissions.getMode":
+				permissionReads++
+				if failPermissionReadsAfter > 0 && permissionReads > failPermissionReadsAfter {
+					sendError(request.ID, "Request session.permissions.getMode failed with message: The mode is unavailable.")
+					continue
+				}
 				value = map[string]any{"mode": permissionMode}
 			case "session.permissions.setMode":
+				policyRefusal := slices.Contains(refusedModes, params.Mode) && openedSessions >= refuseFromOpen
+				if policyRefusal && refusalAsError {
+					sendError(request.ID, fmt.Sprintf("Request session.permissions.setMode failed with message: Unsupported permission mode `%s`.", params.Mode))
+					continue
+				}
+				if policyRefusal || requireApprovalFlag && params.Mode == "assisted" && !approvalFlag {
+					value = map[string]any{"success": false, "mode": permissionMode}
+					break
+				}
 				permissionMode = params.Mode
 				value = map[string]any{"success": true, "mode": permissionMode}
 			case "session.send":

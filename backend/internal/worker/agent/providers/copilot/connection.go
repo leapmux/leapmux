@@ -23,6 +23,19 @@ type copilotConnection struct {
 	pendingScanner *bufio.Scanner
 }
 
+// copilotAutoUpdateEnv turns off the updater of Copilot CLI. The updater starts one
+// second after every start that is not a subcommand, `--server --stdio` included.
+// It downloads the newest package into the cache, and then downloads the release
+// executable and renames it over process.execPath: the install of the operator.
+// A later start runs the newest cached package, so the version that a test run
+// uses can change between two runs.
+//
+// Only the value `false` (in any case) counts: `0` and `off` do not. Both the
+// loader in the executable and the app read it, and it wins over the `autoUpdate`
+// key of the user's settings. `--no-auto-update` stops the same updater, but a child
+// inherits no flag, and a `copilot` that a child starts runs the updater too.
+const copilotAutoUpdateEnv = "COPILOT_AUTO_UPDATE=false"
+
 // startCopilotConnection launches the CLI and returns BEFORE the reader goroutine
 // starts.
 //
@@ -43,6 +56,7 @@ func startCopilotConnection(parent context.Context, opts agent.Options) (*copilo
 	cmd, delimiter, prefix := launch.Wrap(ctx, launch.WrapSpec{
 		Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: launchSpec, WorkingDir: opts.WorkingDir,
 		BaseArgs: []string{"--server", "--stdio", "--no-remote", "--no-remote-export"},
+		SetEnv:   []string{copilotAutoUpdateEnv},
 	})
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
 	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)

@@ -254,7 +254,13 @@ func (a *Agent) endNativeTurn(raw []byte, aborted bool) {
 	a.closeStreamedNativeText(completion)
 	a.closeOpenNativeTools()
 	a.sink.ReportProgress(agent.ResetProgress())
-	if err := a.sink.PersistTurnEnd(agent.MessageContent{Original: raw, AgentSessionID: a.currentNativeSessionID()}, agent.SpanInfo{}); err != nil {
+	// The runtime states no count, so the Worker states its own, zero included. The
+	// browser rings the completion sound for a turn that states no count, and an
+	// explicit zero keeps a turn without tools quiet.
+	content := agent.MessageContent{Original: raw, AgentSessionID: a.currentNativeSessionID()}
+	uses := a.turnToolUses
+	a.turnToolUses = 0
+	if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, uses), agent.SpanInfo{}); err != nil {
 		slog.Error("Persist Copilot turn end", "agent_id", a.AgentID(), "error", err)
 	}
 }
@@ -317,6 +323,11 @@ func (a *Agent) startNativeTool(raw []byte, event copilotEvent) {
 		a.openTools = make(map[string]*copilotOpenTool)
 	}
 	a.openTools[start.ToolCallID] = tool
+	// A subagent's calls belong to its own transcript. The Task call that started the
+	// subagent is one call of this turn.
+	if child == nil {
+		a.turnToolUses++
+	}
 	content := agent.MessageContent{Original: raw, AgentSessionID: a.currentNativeSessionID()}
 	if err := providerkit.OpenToolSpan(a.sinkFor(child), content, start.ToolCallID, start.ToolName, tool.spawns); err != nil {
 		slog.Error("Persist Copilot tool call", "agent_id", a.AgentID(), "tool_call_id", start.ToolCallID, "error", err)
@@ -329,10 +340,7 @@ func (a *Agent) startNativeTool(raw []byte, event copilotEvent) {
 // the span type is absent, so the row carries the tool-call ID alone and the
 // renderer shows the result without a request.
 func (a *Agent) completeNativeTool(raw []byte, event copilotEvent) {
-	var complete struct {
-		ToolCallID string `json:"toolCallId"`
-		Success    *bool  `json:"success"`
-	}
+	var complete copilotToolCompletionData
 	if err := json.Unmarshal(event.Data, &complete); err != nil || complete.ToolCallID == "" {
 		slog.Warn("Read Copilot tool completion", "agent_id", a.AgentID(), "error", err)
 		a.persistNativeFrameTo(a.sinkFor(a.childForEvent(event)), raw, agent.SpanInfo{})
@@ -347,10 +355,7 @@ func (a *Agent) completeNativeTool(raw []byte, event copilotEvent) {
 		child, spanType, spawns = tool.child, tool.name, tool.spawns
 	}
 	sink := a.sinkFor(child)
-	content := agent.MessageContent{Original: raw, AgentSessionID: a.currentNativeSessionID()}
-	if complete.Success != nil && !*complete.Success {
-		content.Completion = agent.MessageCompletionError
-	}
+	content := agent.MessageContent{Original: raw, AgentSessionID: a.currentNativeSessionID(), Completion: complete.completion()}
 	if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{
 		SpanID: complete.ToolCallID, SpanType: spanType, Closing: true,
 	}); err != nil {
@@ -358,6 +363,48 @@ func (a *Agent) completeNativeTool(raw []byte, event copilotEvent) {
 	}
 	if !spawns {
 		sink.CloseSpan(complete.ToolCallID)
+	}
+}
+
+// copilotToolCompletionData holds the fields of a `tool.execution_complete` that the
+// worker reads.
+type copilotToolCompletionData struct {
+	ToolCallID string `json:"toolCallId"`
+	Success    *bool  `json:"success"`
+	Error      *struct {
+		Code string `json:"code"`
+	} `json:"error"`
+}
+
+// completion is LeapMux's own statement about how the call ended, for the completion
+// column of its result row.
+//
+// The browser draws that statement as the row's header, in place of the outcome the
+// call states itself. So the statement must agree with the runtime's structured
+// `error.code`, never with the `success` flag alone:
+//
+//   - A call that succeeded, or that states no success value, takes no completion.
+//   - An `interrupted` call takes the interrupted completion: an aborted turn cut it
+//     short.
+//   - A `rejected` or `denied` call takes no completion. A permission decision refused
+//     it, so it never ran, and an error completion headed the declined row with
+//     `Error`. The browser reads the refusal from the frame itself.
+//   - Every other failure takes the error completion.
+func (c copilotToolCompletionData) completion() agent.MessageCompletion {
+	if c.Success == nil || *c.Success {
+		return ""
+	}
+	code := ""
+	if c.Error != nil {
+		code = c.Error.Code
+	}
+	switch code {
+	case contracts.CopilotToolErrorCodeInterrupted:
+		return agent.MessageCompletionInterrupted
+	case contracts.CopilotToolErrorCodeRejected, contracts.CopilotToolErrorCodeDenied:
+		return ""
+	default:
+		return agent.MessageCompletionError
 	}
 }
 

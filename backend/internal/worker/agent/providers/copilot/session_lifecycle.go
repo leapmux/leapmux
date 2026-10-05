@@ -42,7 +42,7 @@ func (a *Agent) ClearContext() (string, error) {
 		a.stateMu.Lock()
 		a.options = make(optionmap.Map)
 		a.stateMu.Unlock()
-		err = a.prepareNativeSession(opts.Options)
+		err = a.prepareNativeSession(opts)
 	}
 	if err != nil {
 		// Stop the replacement before restoring the previous session.
@@ -52,7 +52,7 @@ func (a *Agent) ClearContext() (string, error) {
 		a.forgetNativeSessionState(oldID)
 		restoreErr := a.resumeNativeSessionWithoutPendingWork(opts, oldID)
 		if restoreErr == nil {
-			restoreErr = a.prepareNativeSession(opts.Options)
+			restoreErr = a.prepareNativeSession(opts)
 		}
 		if restoreErr != nil {
 			a.stopNativeConnection()
@@ -74,7 +74,10 @@ func (a *Agent) ClearContext() (string, error) {
 //
 // An axis that changes what the session DOES is fatal: a model the replacement
 // refused, or a permission mode it refused, must not survive as the previous
-// session's answer -- that is the whole reason this check is strict.
+// session's answer -- that is the whole reason this check is strict. The one exception
+// is a permission mode that LeapMux chose for the user (opts.NewSessionDefaultOptionIDs).
+// That mode falls back to Manual, as it does at startup, so the settings state Manual
+// and the previous session's answer does not survive. See applyOpeningSettings.
 //
 // EFFORT is not such an axis. It is a quality dial, the runtime reports it only
 // through `model.getCurrent`, and an empty `reasoningEffort` there deletes the
@@ -82,9 +85,9 @@ func (a *Agent) ClearContext() (string, error) {
 // re-applied it yet reads back as "". Failing the whole operation for that
 // aborted the thing the USER asked for -- clearing a goal -- over a tier nobody
 // chose in that moment. It is reported and carried on from instead.
-func (a *Agent) restoreNativeSettings(options optionmap.Map) error {
-	applied := a.applyNativeSettings(options)
-	for key, value := range options {
+func (a *Agent) restoreNativeSettings(opts agent.Options) error {
+	applied := a.applyOpeningSettings(opts.Options, opts.NewSessionDefaultOptionIDs)
+	for key, value := range opts.Options {
 		if value == "" || applied.Settlements[key].State == agent.OptionSettlementConfirmed {
 			continue
 		}
@@ -152,17 +155,17 @@ func (a *Agent) forgetNativeSessionState(nextSessionID string) {
 }
 
 // prepareNativeSession subscribes an open session to the control events and restores
-// the settings the previous session carried.
+// the settings the previous session carried. opts comes from sessionLaunchOptions.
 //
 // Every path that opens a session again needs both, in this order: the context clear,
 // its own rollback, and the goal clear. The subscription comes first because a setting
 // change can raise a control request, and a request that arrives before the
 // subscription exists reaches no reader.
-func (a *Agent) prepareNativeSession(options optionmap.Map) error {
+func (a *Agent) prepareNativeSession(opts agent.Options) error {
 	if err := a.registerNativeControlEvents(); err != nil {
 		return err
 	}
-	return a.restoreNativeSettings(options)
+	return a.restoreNativeSettings(opts)
 }
 
 func (a *Agent) currentNativeSessionID() string {
@@ -174,4 +177,53 @@ func (a *Agent) currentNativeSessionID() string {
 // requestNativeSession runs while the caller holds sessionMu.
 func (a *Agent) requestNativeSession(method string, values map[string]any) (json.RawMessage, error) {
 	return a.requestSession(a.currentNativeSessionID(), method, values, a.APITimeout())
+}
+
+// sessionLaunchOptions snapshots the launch options with the CONFIRMED option set
+// the running session reported.
+//
+// It takes stateMu itself, and no caller holds it here. Both session-replacement
+// paths need the same four lines, and they must agree exactly: the reopened session
+// is configured from this snapshot, so a divergence would open it with settings
+// nobody chose.
+//
+// NewSessionDefaultOptionIDs keeps the ids whose confirmed value is still the one that
+// LeapMux chose at launch. A value that differs now is the user's choice, or the safe
+// mode that replaced a refused default, and neither one may fall back again.
+func (a *Agent) sessionLaunchOptions() agent.Options {
+	opts := a.opts
+	a.stateMu.Lock()
+	opts.Options = a.options.Clone()
+	a.stateMu.Unlock()
+	opts.NewSessionDefaultOptionIDs = unchangedDefaultOptionIDs(a.opts, opts.Options)
+	return opts
+}
+
+// unchangedDefaultOptionIDs returns the ids that LeapMux chose for the user at launch
+// and whose value in `current` is still the value that it chose.
+func unchangedDefaultOptionIDs(launch agent.Options, current optionmap.Map) map[string]bool {
+	unchanged := make(map[string]bool, len(launch.NewSessionDefaultOptionIDs))
+	for id, defaulted := range launch.NewSessionDefaultOptionIDs {
+		if defaulted && current[id] == launch.Options[id] {
+			unchanged[id] = true
+		}
+	}
+	return unchanged
+}
+
+// resumeNativeSessionWithoutPendingWork restores a session's conversation and tells
+// the runtime NOT to continue the work the session had in flight.
+//
+// The pending work belongs to the turn that the clear or the context reset ended, so
+// continuing it would resume work the reader already discarded.
+//
+// It returns the transport error UNWRAPPED, because reopenNativeSessionAfterClear
+// tests it with errors.As for a providerkit.JSONRPCResponseError: only the runtime's own refusal
+// permits the create that follows, and a wrapped error would hide that distinction.
+func (a *Agent) resumeNativeSessionWithoutPendingWork(opts agent.Options, sessionID string) error {
+	config := newCopilotSessionConfig(opts, sessionID, true)
+	continueWork := false
+	config.ContinuePendingWork = &continueWork
+	_, err := a.sendNativeSessionConfig("session.resume", config, a.APITimeout())
+	return err
 }
