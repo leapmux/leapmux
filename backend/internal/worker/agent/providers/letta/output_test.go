@@ -182,22 +182,21 @@ func TestSubagentStateStoresAReadableNotification(t *testing.T) {
 // since Letta Code 0.34: the tool no longer waits for an answer.
 func TestControlRequestBodyLivesInTheRequestField(t *testing.T) {
 	t.Parallel()
-	sink := &agenttest.Sink{}
+	sink := &agenttest.ControlSink{}
 	a := &Agent{sink: agent.NewProviderServices(sink)}
 	a.Mu.Lock()
 	a.conversationID = "local-conv-1"
 	a.Mu.Unlock()
 	a.HandleOutput([]byte(lettaLiveControlRequest))
 
-	a.Mu.Lock()
-	pending := len(a.controls)
-	kind := lettaControlKind("")
-	for _, c := range a.controls {
-		kind = c.kind
+	published := sink.PublishedControls()
+	require.Len(t, published, 1, "the request is published once")
+	assert.Equal(t, "perm-call_ask_1", published[0].RequestID, "the id sits at the frame root")
+	var payload struct {
+		Type string `json:"type"`
 	}
-	a.Mu.Unlock()
-	assert.Equal(t, 1, pending, "the request is held as pending")
-	assert.Equal(t, lettaControlPermission, kind, "a request for the question tool asks whether the tool may run")
+	require.NoError(t, json.Unmarshal(published[0].Payload, &payload))
+	assert.Equal(t, string(lettaControlPermission), payload.Type, "a request for the question tool asks whether the tool may run")
 }
 
 // The control payload uses the contract's tool fields that the browser reads.
@@ -513,7 +512,7 @@ func TestEchoOfAQueuedMessageTheReaderSentIsNotARow(t *testing.T) {
 
 // A user message that LeapMux did not send keeps its row: Letta Code gives its
 // own messages a random `otid` (the verbatim frame of
-// TestQueuedQuestionAnswerEchoIsNotARow), and a frame may state none.
+// TestEchoOfAnAnswerFromAnotherSenderStaysARow), and a frame may state none.
 func TestUserMessageThatLeapMuxDidNotSendStaysARow(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}

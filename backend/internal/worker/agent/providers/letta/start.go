@@ -26,7 +26,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	return startServer(ctx, opts, sink, spec, registration.ShutdownGrace)
 }
 
-// startServer runs the App Server and completes the protocol_v2 handshake.
 // lettaDisableAutoUpdaterEnv turns off the update that Letta Code starts from its
 // startup path: `npm install -g @letta-ai/letta-code`, which replaces the files of
 // the running CLI and the operator's global install (letta.js
@@ -38,6 +37,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 // shell wrapper states the pin after the user's profile.
 const lettaDisableAutoUpdaterEnv = "DISABLE_AUTOUPDATER=1"
 
+// startServer runs the App Server and completes the protocol_v2 handshake.
 func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderServices, spec launch.Spec, shutdownGrace time.Duration) (agent.Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{

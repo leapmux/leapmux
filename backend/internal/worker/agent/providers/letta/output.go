@@ -91,20 +91,19 @@ func (a *Agent) onStreamDelta(payload []byte, subagentID string) {
 	case contracts.LettaDeltaKindClientToolEnd:
 		a.onClientToolEnd(payload, &delta, target, subagentID)
 	case contracts.LettaDeltaKindUserMessage:
-		// Letta Code echoes a message that it queued when the message starts.
-		// LeapMux stored each message that it sent: the reader's text as a user
-		// row, and the answer to a question as a control response. An echo that
-		// states a LeapMux id therefore draws no second row. It is also no
-		// notification of a child, because the message is the reader's own text.
+		// Letta Code echoes a message that it queued when the message starts, and it
+		// gives the echo the id of that message. LeapMux stored each message that it
+		// sent: the reader's text as a user row, and the answer to a question as a
+		// control response. An echo that states a LeapMux id therefore draws no second
+		// row. It is also no notification of a child, because the message is the
+		// reader's own text. An answer that another sender wrote states another id and
+		// stays a row.
 		if isLeapMuxClientMessageID(delta.OTID) {
 			return
 		}
 		text := deltaText(delta.Content)
 		if subagentID == "" {
 			a.observeChildTaskNotifications(text)
-			if isLettaQuestionNotification(text) {
-				return
-			}
 		}
 		if subagentID == "" || text != a.children[subagentID].prompt {
 			a.persistRowTo(target, payload, agent.SpanInfo{})

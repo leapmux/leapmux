@@ -48,7 +48,6 @@ type Agent struct {
 	tools           map[string]*lettaTool
 	turnToolCallIDs map[string]struct{}
 	children        map[string]*lettaChild
-	controls        map[string]*lettaPendingControl
 	generation      providerkit.GenerationBuffer
 	// runtimeReady holds the open runtime_start handshake, until the response
 	// settles it. Start waits on it before it returns the agent.
@@ -104,14 +103,8 @@ type lettaTool struct {
 	executionEnded bool
 }
 
-// lettaPendingControl is one published control request awaiting an answer.
-type lettaPendingControl struct {
-	requestID  string
-	kind       lettaControlKind
-	toolCallID string
-}
-
-// lettaControlKind distinguishes a permission request from a question.
+// lettaControlKind is the `type` of a published control request. It tells a
+// permission request from a question.
 type lettaControlKind string
 
 const (

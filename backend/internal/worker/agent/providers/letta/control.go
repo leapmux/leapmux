@@ -99,16 +99,6 @@ func (a *Agent) onControlRequest(line []byte, body []byte, requestID string) {
 	kind := lettaControlPermission
 	slog.Info("letta: control request",
 		"agent_id", a.AgentID(), "request_id", requestID, "kind", kind, "tool", req.ToolName)
-	a.Mu.Lock()
-	if a.controls == nil {
-		a.controls = make(map[string]*lettaPendingControl)
-	}
-	a.controls[requestID] = &lettaPendingControl{
-		requestID:  requestID,
-		kind:       kind,
-		toolCallID: req.ToolCallID,
-	}
-	a.Mu.Unlock()
 
 	// The tool fields take the CONTRACT names (`tool_name`, `tool_call_id`,
 	// `tool_input`): the browser plugin reads them under those names, the same
@@ -324,11 +314,17 @@ func lettaResolveQuestion(ctx agent.ControlResponseContext, toolCallID string, q
 	return agent.ControlResponseResolution{Content: raw, Feedback: feedback}
 }
 
+// lettaEnvelopeAnswersField is the member of `updatedInput` in which the browser
+// folds the answers of a question form. It belongs to the neutral control response
+// that every provider receives (AskUserQuestionControl). It is not a field of the
+// Letta response, so the `question` table of the contract does not state it.
+const lettaEnvelopeAnswersField = "answers"
+
 // lettaAnswersFor reads the answers that the browser folded into the input of the
 // question call. It reports false unless the answers hold exactly one nonempty
 // text for each question.
 func lettaAnswersFor(texts []string, content []byte) (map[string]string, bool) {
-	given, _ := agent.DecodeControlUpdatedInput(content)[contracts.LettaQuestionFieldAnswers].(map[string]any)
+	given, _ := agent.DecodeControlUpdatedInput(content)[lettaEnvelopeAnswersField].(map[string]any)
 	if len(given) != len(texts) {
 		return nil, false
 	}
@@ -406,14 +402,6 @@ const (
 	lettaNotificationOpen     = "<task-notification>"
 	lettaQuestionResponseOpen = "<ask-user-question-response>"
 )
-
-// isLettaQuestionNotification reports whether text is the task notification that
-// carries the answer to a posted question. Letta Code echoes a message that it
-// queued behind a running turn as a `user_message` when the message starts, and
-// the control response row already shows this answer.
-func isLettaQuestionNotification(text string) bool {
-	return strings.HasPrefix(strings.TrimSpace(text), lettaNotificationOpen) && strings.Contains(text, lettaQuestionResponseOpen)
-}
 
 // lettaSession reads the provider session id, which the control request must
 // stamp so the service's delivery check matches it.

@@ -3,6 +3,7 @@ package letta
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -386,20 +387,117 @@ func TestQuestionToolPermissionIsAPermission(t *testing.T) {
 }
 
 // A running turn queues the answer, and Letta Code echoes the queued message as a
-// `user_message` when it starts. This is a verbatim frame of Letta Code 0.34.2. The
-// control response row already shows the answer, so the echo draws no second row.
+// `user_message` when it starts. This is a verbatim frame of Letta Code 0.34.2 from
+// before the worker stated a message id, so its `otid` is random: it stands for
+// an answer that another sender wrote. TestQueuedQuestionAnswerEchoIsNotARow sets
+// the `otid` to the id of an answer that LeapMux sent.
 const lettaLiveQueuedAnswerEcho = `{"type":"stream_delta","delta":{"type":"message","id":"user-msg-672d25e1-1deb-4e8e-808d-962d54007e3f","date":"2026-10-04T21:59:12.431Z","message_type":"user_message","content":[{"type":"text","text":"<task-notification>\n<task-id>ask-1</task-id>\n<summary>User answered your questions.</summary>\n<ask-user-question-response>{\"type\":\"ask_user_question_response\",\"version\":2,\"toolCallId\":\"ask-1\",\"questions\":[{\"question\":\"Which color do you prefer?\",\"header\":\"Color\",\"options\":[{\"label\":\"Blue\",\"description\":\"The color blue\"},{\"label\":\"Red\",\"description\":\"The color red\"}]}],\"status\":\"answered\",\"answers\":{\"Which color do you prefer?\":\"Red\"}}</ask-user-question-response>\n</task-notification>"}],"otid":"aa72b91d-0de8-4bde-bada-4d070e2a13f1"},"runtime":{"agent_id":"agent-local-1","conversation_id":"local-conv-1"},"event_seq":35,"emitted_at":"2026-10-04T21:59:12.431Z","idempotency_key":"stream_delta:35:308b7153-f5ea-4bb8-b211-4e7f61cf96c4"}`
 
+// lettaLiveQueuedAnswerEchoOtid is the random `otid` of lettaLiveQueuedAnswerEcho.
+const lettaLiveQueuedAnswerEchoOtid = "aa72b91d-0de8-4bde-bada-4d070e2a13f1"
+
+// sentMessageText returns the text of the one message that an input payload carries.
+func sentMessageText(t *testing.T, payload map[string]any) string {
+	t.Helper()
+	messages, ok := payload["messages"].([]any)
+	require.True(t, ok)
+	require.Len(t, messages, 1)
+	content, ok := messages[0].(map[string]any)["content"].([]any)
+	require.True(t, ok)
+	require.Len(t, content, 1)
+	text, _ := content[0].(map[string]any)["text"].(string)
+	return text
+}
+
+// queuedEchoFrame returns the `user_message` echo that Letta Code writes when it
+// dequeues a message of this text and this client message id.
+func queuedEchoFrame(t *testing.T, text, otid string) []byte {
+	t.Helper()
+	frame, err := json.Marshal(map[string]any{
+		"type": "stream_delta",
+		"delta": map[string]any{
+			"type": "message", "id": "user-msg-1", "message_type": "user_message",
+			"content": []any{map[string]any{"type": "text", "text": text}},
+			"otid":    otid,
+		},
+		"runtime": map[string]any{"agent_id": "agent-local-1", "conversation_id": "local-conv-1"},
+	})
+	require.NoError(t, err)
+	return frame
+}
+
+// The echo of the answer that LeapMux sent is no row: the answer is already a
+// control response row. The echo states the id of the answer, so the echo of the
+// verbatim frame is skipped by that id and by nothing else.
 func TestQueuedQuestionAnswerEchoIsNotARow(t *testing.T) {
 	t.Parallel()
-	sink := &agenttest.ControlSink{}
-	a := &Agent{sink: agent.NewProviderServices(sink)}
+	sink := &agenttest.Sink{}
+	fake, a := openedAgentWithSink(t, sink)
 
-	a.HandleOutput([]byte(lettaLiveQueuedAnswerEcho))
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"ask_user_question_response","version":2,"toolCallId":"ask-1","questions":`+lettaColorQuestions+`,"status":"answered","answers":{"Which color do you prefer?":"Red"}}`)))
+	payload := inputPayload(t, fake)
+	id := sentClientMessageID(t, payload)
+	require.True(t, isLeapMuxClientMessageID(id), "the answer states a LeapMux id: %q", id)
+
+	// The verbatim frame holds the very text that LeapMux sent, with the id of the answer.
+	echo := strings.Replace(lettaLiveQueuedAnswerEcho, lettaLiveQueuedAnswerEchoOtid, id, 1)
+	require.Contains(t, echo, id)
+	var frame struct {
+		Delta struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"delta"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(echo), &frame))
+	require.Equal(t, sentMessageText(t, payload), frame.Delta.Content[0].Text, "the verbatim echo repeats the text that LeapMux sent")
+
+	a.HandleOutput([]byte(echo))
 	assert.Empty(t, sink.Messages(), "the echo of a question answer is not a transcript row")
 
 	a.HandleOutput([]byte(`{"type":"stream_delta","delta":{"message_type":"user_message","content":[{"type":"text","text":"Please continue."}]}}`))
 	assert.Len(t, sink.Messages(), 1, "a user message of any other text stays a row")
+}
+
+// Letta Code echoes each message of a queued batch with the `otid` of that message
+// (emitDequeuedUserMessage runs for each message of the merged turn), so the id
+// of the message is the only thing that the worker needs. This test sends each
+// kind of answer that LeapMux writes and echoes it with the text that was sent.
+func TestEchoOfEveryAnswerLeapMuxSendsIsNoRow(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"answered":  `{"type":"ask_user_question_response","version":2,"toolCallId":"ask-1","questions":` + lettaColorQuestions + `,"status":"answered","answers":{"Which color do you prefer?":"Red"}}`,
+		"dismissed": `{"type":"ask_user_question_response","version":2,"toolCallId":"ask-2","questions":` + lettaColorQuestions + `,"status":"dismissed"}`,
+	}
+	for name, response := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			fake, a := openedAgentWithSink(t, sink)
+
+			require.NoError(t, a.SendRawInput([]byte(response)))
+			payload := inputPayload(t, fake)
+			id := sentClientMessageID(t, payload)
+			text := sentMessageText(t, payload)
+			require.True(t, strings.HasPrefix(text, lettaNotificationOpen), "the answer travels as a task notification")
+
+			a.HandleOutput(queuedEchoFrame(t, text, id))
+
+			assert.Empty(t, sink.Messages(), "the echo of the answer is no row")
+		})
+	}
+}
+
+// An answer that another sender wrote is not an answer that LeapMux stored. Its
+// echo states an id of Letta Code's own, so the reader sees it as a message.
+func TestEchoOfAnAnswerFromAnotherSenderStaysARow(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	_, a := openedAgentWithSink(t, sink)
+
+	a.HandleOutput([]byte(lettaLiveQueuedAnswerEcho))
+
+	assert.Len(t, sink.Messages(), 1, "an answer that LeapMux did not send is a row")
 }
 
 // The answer to a question is a message too. Its echo names the id of the
