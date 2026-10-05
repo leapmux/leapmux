@@ -1,6 +1,6 @@
 import type { RepoGitStore, UpsertRepoGitFromProtoOpts } from './repoGit'
 import type { AgentTab, Tab, TerminalTab } from './tab.types'
-import type { TerminalMeta } from './tabMetadata.store'
+import type { TabMetadata, TerminalMeta } from './tabMetadata.store'
 import type { listTerminals } from '~/api/workerRpc'
 import type { AgentInfo, AgentProvider, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pluginFor } from '~/components/chat/providers/registry'
@@ -876,6 +876,56 @@ export function terminalMetadata(workerId: string, term: ProtoTerminal) {
   const fields = protoToTerminalTabFields(workerId, term)
   const { status, ...rest } = fields
   return { ...rest, terminalStatus: status }
+}
+
+/**
+ * The metadata fields that a live terminal status event writes beside the
+ * status itself. Each one states the lifecycle of the terminal at the moment of
+ * the event. `applyTerminalStatusChange` and `markTerminalExited` write them
+ * through `TabMetadataStore.patchLiveStatus`, and `useWorkspaceConnection.test.ts`
+ * fails when the two lists differ.
+ *
+ * Those two writers also set `contentReady`, and this list leaves it out on
+ * purpose. Nothing writes `contentReady` to false, so an older reply cannot move
+ * it back.
+ */
+export const TERMINAL_LIVE_STATUS_FIELDS = [
+  'terminalStatus',
+  'startupError',
+  'startupMessage',
+] as const satisfies readonly (keyof TabMetadata)[]
+
+type TerminalLifecycleField = typeof TERMINAL_LIVE_STATUS_FIELDS[number]
+
+/**
+ * The part of a `ListTerminals` reply that still applies after a live status
+ * event landed while the reply was in flight (see
+ * `TabMetadataStore.liveStatusEpoch`).
+ *
+ * The reply states the lifecycle as the worker read it, and the event is
+ * newer than that reading. So the reply gives up the lifecycle fields and
+ * keeps the rest: the title, the directories, the size, and the screen.
+ *
+ * One answer outlasts the event: a shell that exited. The catch-up marker that
+ * a watch sends on subscribe reads READY for a shell that exited before the
+ * subscription, because the marker has no field for the exit. Only the reply
+ * carries it. A dead shell stays dead until a restart, and a restart needs a
+ * user who presses Enter on an EXITED tab that is hydrated. A reply that says
+ * EXITED therefore applies in full.
+ *
+ * Another client can restart the shell while the reply is in flight. The
+ * restart then lands between the moment when the worker reads the state and the
+ * moment when the reply arrives. This guard does not cover that case.
+ */
+export function keepLiveTerminalStatus<T extends Partial<Record<TerminalLifecycleField, unknown>>>(
+  fields: T,
+): Omit<T, TerminalLifecycleField> {
+  if (fields.terminalStatus === TerminalStatus.EXITED)
+    return fields
+  const kept = { ...fields }
+  for (const key of TERMINAL_LIVE_STATUS_FIELDS)
+    delete kept[key]
+  return kept
 }
 
 /**

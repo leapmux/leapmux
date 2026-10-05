@@ -31,9 +31,13 @@ import { tabKey } from '~/stores/tab.helpers'
  * its phase label and never set `contentReady`, and the restart rendered the
  * spinner labelled with the previous attempt's text. A fourth field added to
  * this transition should not have to be found twice.
+ *
+ * It is a live status write, so it goes through `patchLiveStatus`: a
+ * `ListTerminals` reply that was in flight holds an older answer and must not
+ * replace it. See `TabMetadataStore.liveStatusEpoch`.
  */
 export function markTerminalExited(metadata: TabMetadataStore, terminalId: string): void {
-  metadata.patch(terminalId, {
+  metadata.patchLiveStatus(terminalId, {
     terminalStatus: TerminalStatus.EXITED,
     startupMessage: '',
     contentReady: true,
@@ -54,6 +58,12 @@ export function markTerminalExited(metadata: TabMetadataStore, terminalId: strin
  * startup spinner until the user switched in and the resubscribe's catch-up
  * marker repaired it. `useTabHydrators` could not re-arm it either: `hydrated`
  * is write-once and the tab was not DISCONNECTED.
+ *
+ * Each write of the lifecycle goes through `patchLiveStatus`, so a
+ * `ListTerminals` reply that was in flight holds an older answer and must not
+ * replace it. See `TabMetadataStore.liveStatusEpoch`. An event that the guards
+ * below refuse writes nothing and counts for nothing: the reply of a re-ask is
+ * what heals a DISCONNECTED tab, and a count would hold that reply back.
  */
 export function applyTerminalStatusChange(
   metadata: TabMetadataStore,
@@ -76,7 +86,7 @@ export function applyTerminalStatusChange(
   switch (sc.status) {
     case TerminalStatus.STARTING:
       if (existingTab && existingTab.status !== TerminalStatus.READY && existingTab.status !== TerminalStatus.STARTING) {
-        metadata.patch(terminalId, {
+        metadata.patchLiveStatus(terminalId, {
           terminalStatus: TerminalStatus.STARTING,
           // `''`, not `undefined`: `patch` SKIPS undefined by design, so
           // `|| undefined` was a no-op that let the PREVIOUS attempt's
@@ -89,7 +99,7 @@ export function applyTerminalStatusChange(
         // Same-status STARTING event with an updated phase label —
         // refresh the overlay text without re-triggering the
         // status-change observers.
-        metadata.patch(terminalId, { startupMessage: sc.startupMessage })
+        metadata.patchLiveStatus(terminalId, { startupMessage: sc.startupMessage })
       }
       break
     case TerminalStatus.READY:
@@ -100,7 +110,7 @@ export function applyTerminalStatusChange(
         // send a partial row without blanking fields another source owns.
         // Clearing therefore has to be an explicit empty value — the same
         // idiom `buildAgentStatusTabUpdate` uses for these two fields.
-        metadata.patch(terminalId, {
+        metadata.patchLiveStatus(terminalId, {
           terminalStatus: TerminalStatus.READY,
           startupError: '',
           startupMessage: '',
@@ -108,7 +118,7 @@ export function applyTerminalStatusChange(
       }
       break
     case TerminalStatus.STARTUP_FAILED:
-      metadata.patch(terminalId, {
+      metadata.patchLiveStatus(terminalId, {
         terminalStatus: TerminalStatus.STARTUP_FAILED,
         startupError: sc.startupError ?? '',
         startupMessage: '',

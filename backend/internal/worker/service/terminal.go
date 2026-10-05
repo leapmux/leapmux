@@ -695,13 +695,31 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			}
 		}
 
-		// Collect from the in-memory manager and DB-only rows, recording
-		// each terminal's resolved git directory (see gitutil.ResolveGitDir)
-		// so BatchGetGitStatus can dedupe across terminals that share a repo.
+		// Run git FIRST. It is the one slow step of this call: a large working
+		// tree takes seconds. The reply leaves the Worker after the last step, and
+		// the client takes it as the state of each terminal. A state that the call
+		// read before git is older than every event that the Worker broadcast
+		// while git ran. A client that applied such an event, such as the READY at
+		// the end of a startup or the close of a shell, then takes the older reply
+		// over it, and nothing sends the event again. The call therefore reads the
+		// registry and the Manager after git, with no slow step between the read
+		// and the reply.
+		//
+		// The row of a terminal holds the directory that the terminal finally runs
+		// in (see gitModePlan.PlannedWorkingDir), and the Manager takes the same
+		// directory. Git therefore needs no state that the call reads later.
+		gitStatuses := svc.terminalGitStatuses(ctx, tabIDs, dbTerminals)
+
+		// Collect from the in-memory manager and DB-only rows. This is the read of
+		// the runtime state: see the note above the call to git.
+		//
+		// A terminal can register in the Manager after the read of ListByIDs. The
+		// DB-only pass below therefore reads the registry first and the Manager
+		// last. A startup that ends in between then reads READY and running, and
+		// never READY and exited.
 		entries := svc.Terminals.ListByIDs(tabIDs)
 		seen := make(map[string]bool, len(entries))
 		var terminals []*leapmuxv1.TerminalInfo
-		var gitDirs []string
 		for _, e := range entries {
 			seen[e.ID] = true
 			ti := &leapmuxv1.TerminalInfo{
@@ -716,6 +734,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				Title:           e.Meta.Title,
 				Status:          leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
 				Quake:           quakeByTerminalID[e.ID],
+				GitStatus:       gitStatuses[e.ID],
 			}
 			if sup, errStr, msg, ok := svc.TerminalStartup.status(e.ID); ok {
 				ti.Status = sup
@@ -723,7 +742,6 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				ti.StartupMessage = msg
 			}
 			terminals = append(terminals, ti)
-			gitDirs = append(gitDirs, gitutil.ResolveGitDir(e.Meta.ShellStartDir, e.Meta.WorkingDir))
 		}
 
 		for _, ts := range dbTerminals {
@@ -752,15 +770,9 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				StartupError:    startupError,
 				StartupMessage:  startupMessage,
 				Quake:           quakeByTerminalID[ts.ID],
+				GitStatus:       gitStatuses[ts.ID],
 			}
 			terminals = append(terminals, ti)
-			gitDirs = append(gitDirs, gitutil.ResolveGitDir(ts.ShellStartDir, ts.WorkingDir))
-		}
-		gitStatuses := gitutil.BatchGetGitStatus(ctx, gitDirs)
-		for i, gs := range gitStatuses {
-			if gs != nil {
-				terminals[i].GitStatus = gs
-			}
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListTerminalsResponse{
@@ -1190,6 +1202,44 @@ func buildTerminalReadyStatus(terminalID string) *leapmuxv1.TerminalStatusChange
 		TerminalId: terminalID,
 		Status:     leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
 	}
+}
+
+// terminalGitStatuses runs git for the terminals in ids and returns the status
+// of each terminal by its id. A terminal in a directory that is no repository
+// has no entry in the result.
+//
+// A terminal gives its git directory through the Manager when its shell is
+// registered there, and through its row otherwise. The Manager wins when both
+// exist, because the shell started in the directory that its metadata states.
+// ResolveGitDir states which of the start directory and the working directory
+// counts. One call to BatchGetGitStatus runs git once for each distinct
+// directory, so terminals that share a repository share one git process.
+func (svc *Service) terminalGitStatuses(ctx context.Context, ids []string, rows []db.Terminal) map[string]*leapmuxv1.GitRepoStatus {
+	dirByID := make(map[string]string, len(rows))
+	for i := range rows {
+		dirByID[rows[i].ID] = gitutil.ResolveGitDir(rows[i].ShellStartDir, rows[i].WorkingDir)
+	}
+	for _, id := range ids {
+		if meta, ok := svc.Terminals.GetMeta(id); ok {
+			dirByID[id] = gitutil.ResolveGitDir(meta.ShellStartDir, meta.WorkingDir)
+		}
+	}
+
+	terminalIDs := make([]string, 0, len(dirByID))
+	dirs := make([]string, 0, len(dirByID))
+	for id, dir := range dirByID {
+		terminalIDs = append(terminalIDs, id)
+		dirs = append(dirs, dir)
+	}
+	statuses := gitutil.BatchGetGitStatus(ctx, dirs)
+
+	byID := make(map[string]*leapmuxv1.GitRepoStatus, len(statuses))
+	for i, gs := range statuses {
+		if gs != nil {
+			byID[terminalIDs[i]] = gs
+		}
+	}
+	return byID
 }
 
 // deriveTerminalStatus computes (status, startupError, startupMessage)

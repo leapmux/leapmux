@@ -12,7 +12,7 @@ import { createExponentialBackoff } from '~/lib/retry'
 import { sameKeys } from '~/lib/sameKeys'
 import { tabPayloadView } from '~/lib/tabPayload'
 import { migrateErrorHintFromForResolvedRepo, upsertRepoGitFromProtoStatus } from '~/stores/repoGit'
-import { protoToAgentTabFields, tabKey, terminalMetadata, withoutLiveStatusFields } from '~/stores/tab.helpers'
+import { keepLiveTerminalStatus, protoToAgentTabFields, tabKey, terminalMetadata, withoutLiveStatusFields } from '~/stores/tab.helpers'
 import { isPayloadBackedTabType } from '~/stores/tab.types'
 import { tabPayloadMetadata } from '~/stores/tabMetadata.store'
 
@@ -32,6 +32,22 @@ const EMPTY_PENDING_AXES: ReadonlySet<string> = new Set()
  */
 function hydratableTabsOf(view: TabView) {
   return [...view.all(), ...view.detachedTerminalTabs()]
+}
+
+/**
+ * Read the live status count of each tab in `tabIds`. Call it before a snapshot
+ * request leaves, and call the function that it returns when the reply lands. That
+ * function says whether the live stream wrote a status to a tab meanwhile.
+ *
+ * The worker builds the reply after the request leaves, and the live stream can
+ * write a status to a tab while the reply is in flight. Such a status can be
+ * newer than the state that the reply holds, and nothing sends it again. The
+ * caller then keeps what the live stream wrote. See
+ * `TabMetadataStore.liveStatusEpoch`.
+ */
+function watchLiveStatus(metadata: TabMetadataStore, tabIds: readonly string[]): (tabId: string) => boolean {
+  const before = new Map(tabIds.map(tabId => [tabId, metadata.liveStatusEpoch(tabId)]))
+  return tabId => metadata.liveStatusEpoch(tabId) !== before.get(tabId)
 }
 
 /**
@@ -555,10 +571,7 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
       && Boolean(tab.workerId)
       && (!isHydrated(tab.id) || reaskAgentTabIds().has(tab.id)),
     fetchBatch: async (workerId, tabs) => {
-      // Read before the request leaves. The worker builds the reply after that, and
-      // the live stream can write a status to a tab while the reply is in flight.
-      // See `TabMetadataStore.liveStatusEpoch`.
-      const epochBefore = new Map(tabs.map(t => [t.id, opts.metadata.liveStatusEpoch(t.id)]))
+      const liveStatusLanded = watchLiveStatus(opts.metadata, tabs.map(t => t.id))
       const resp = await listAgents(workerId, { tabIds: tabs.map(t => t.id) })
       const byId = new Map(resp.agents.map(a => [a.id, a]))
       const resolved = new Set<string>()
@@ -602,8 +615,7 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
         // The reply holds the lifecycle as the worker read it before the reply left. A
         // status event that landed since is newer, and nothing sends it again, so
         // the reply keeps what the live stream wrote and gives only the rest.
-        const liveStatusLanded = opts.metadata.liveStatusEpoch(tab.id) !== epochBefore.get(tab.id)
-        opts.metadata.patch(tab.id, { ...(liveStatusLanded ? withoutLiveStatusFields(fields) : fields), ...settingsFields })
+        opts.metadata.patch(tab.id, { ...(liveStatusLanded(tab.id) ? withoutLiveStatusFields(fields) : fields), ...settingsFields })
         // Hydration, not a transition, so it seeds and raises nothing. This
         // batch runs when a tab first appears and on an explicit re-ask, never
         // as a poll, so an agent that settled between the two is not news the
@@ -659,13 +671,20 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
       && Boolean(tab.workerId)
       && (!isHydrated(tab.id) || tab.status === TerminalStatus.DISCONNECTED),
     fetchBatch: async (workerId, tabs) => {
+      const liveStatusLanded = watchLiveStatus(opts.metadata, tabs.map(t => t.id))
       const resp = await listTerminals(workerId, { tabIds: tabs.map(t => t.id) })
       const byId = new Map(resp.terminals.map(t => [t.terminalId, t]))
       const resolved = new Set<string>()
       for (const tab of tabs) {
         const term = byId.get(tab.id)
         if (term) {
-          opts.metadata.patch(tab.id, terminalMetadata(workerId, term))
+          // The reply holds the lifecycle as the worker read it before the reply
+          // left. A status event that landed since is newer, and nothing sends it
+          // again, so the reply keeps what the live stream wrote and gives only
+          // the rest. A reply that says the shell exited still applies in full:
+          // see `keepLiveTerminalStatus`.
+          const fields = terminalMetadata(workerId, term)
+          opts.metadata.patch(tab.id, liveStatusLanded(tab.id) ? keepLiveTerminalStatus(fields) : fields)
           // Hoisted so the spread narrows: the option takes no explicit undefined.
           const migrateFrom = migrateErrorHintFromForResolvedRepo(workerId, tab, term.gitStatus)
           upsertRepoGitFromProtoStatus(opts.repoGitStore, workerId, term.gitStatus, {

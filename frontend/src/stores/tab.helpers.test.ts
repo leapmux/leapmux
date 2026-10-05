@@ -1,3 +1,4 @@
+import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { AgentTab, Tab } from './tab.types'
 import type { AgentInfo, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { GitRepoStatus } from '~/generated/proto/leapmux/v1/common_pb'
@@ -15,7 +16,7 @@ import { repoKey } from './repoGit'
 // failed a 5s test on a cold Vite cache. `./tab.helpers` already pulls
 // `./repoGit` into the static graph, so nothing here forces the dynamic form.
 import { createRepoGitStore } from './repoGit.store'
-import { agentTabSupportsInterrupt, agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, LIVE_STATUS_FIELDS, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps, withoutLiveStatusFields } from './tab.helpers'
+import { agentTabSupportsInterrupt, agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, keepLiveTerminalStatus, LIVE_STATUS_FIELDS, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, TERMINAL_LIVE_STATUS_FIELDS, terminalMetadata, terminalProgressBarProps, withoutLiveStatusFields } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -1208,5 +1209,68 @@ describe('withoutLiveStatusFields', () => {
     for (const key of LIVE_STATUS_FIELDS)
       expect(key in kept, `${key} stays out`).toBe(false)
     expect(kept.title).toBe('Agent Liz')
+  })
+})
+
+describe('keepLiveTerminalStatus', () => {
+  const reply = (over: MessageInitShape<typeof TerminalInfoSchema> = {}) =>
+    terminalMetadata('w1', create(TerminalInfoSchema, {
+      terminalId: 't1',
+      status: TerminalStatus.STARTING,
+      startupMessage: 'Starting zsh…',
+      title: 'zsh',
+      workingDir: '/repo',
+      shellStartDir: '/repo',
+      cols: 132,
+      rows: 40,
+      screen: new Uint8Array([104, 105]),
+      screenEndOffset: 2n,
+      gitStatus: create(GitRepoStatusSchema, { toplevel: '/repo', branch: 'main' }),
+      ...over,
+    }))
+
+  it('removes every lifecycle field that a live status event owns', () => {
+    const kept = keepLiveTerminalStatus(reply())
+    for (const key of TERMINAL_LIVE_STATUS_FIELDS)
+      expect(key in kept, `${key} stays out`).toBe(false)
+  })
+
+  it('keeps what a live status event does not own', () => {
+    const kept = keepLiveTerminalStatus(reply())
+    expect(kept).toEqual({
+      workerId: 'w1',
+      title: 'zsh',
+      workingDir: '/repo',
+      shellStartDir: '/repo',
+      cols: 132,
+      rows: 40,
+      screen: new Uint8Array([104, 105]),
+      lastOffset: 2,
+      contentReady: true,
+      gitToplevel: '/repo',
+    })
+  })
+
+  it('removes the lifecycle fields of a STARTUP_FAILED reply too', () => {
+    const kept = keepLiveTerminalStatus(reply({ status: TerminalStatus.STARTUP_FAILED, startupError: 'no such shell', startupMessage: '' }))
+    for (const key of TERMINAL_LIVE_STATUS_FIELDS)
+      expect(key in kept, `${key} stays out`).toBe(false)
+  })
+
+  // A live event cannot say that a shell is gone: the catch-up marker reads READY
+  // for a shell that exited before the subscription, and only the reply carries
+  // the exit. A dead shell stays dead until a restart.
+  it('keeps the whole reply when it says that the shell exited', () => {
+    const fields = reply({ status: TerminalStatus.READY, exited: true, startupMessage: '' })
+    expect(fields.terminalStatus).toBe(TerminalStatus.EXITED)
+
+    expect(keepLiveTerminalStatus(fields)).toEqual(fields)
+  })
+
+  it('does not change its argument', () => {
+    const fields = reply()
+    const before = { ...fields }
+    keepLiveTerminalStatus(fields)
+    expect(fields).toEqual(before)
   })
 })

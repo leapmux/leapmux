@@ -12,7 +12,7 @@ import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, handleActivityChanged, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlCancellation, handleControlRequest, handleResultDivider, resolveSettingsTabFields, wireRateLimitUpdateFromSessionInfo, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import { applyTerminalStatusChange, handleTerminalBell, handleTerminalNotification, handleTerminalProgress, handleTerminalTitleChanged } from '~/hooks/terminalEvents'
+import { applyTerminalStatusChange, handleTerminalBell, handleTerminalNotification, handleTerminalProgress, handleTerminalTitleChanged, markTerminalExited } from '~/hooks/terminalEvents'
 import { clearOfflineAgentState, collectWorkerOfflineTargets, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails, useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { ChannelError, channelNotOpenError } from '~/lib/channelError'
 import { parseMessageContent } from '~/lib/messageParser'
@@ -23,7 +23,7 @@ import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.sto
 import { createControlStore } from '~/stores/control.store'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
-import { LIVE_STATUS_FIELDS } from '~/stores/tab.helpers'
+import { LIVE_STATUS_FIELDS, TERMINAL_LIVE_STATUS_FIELDS } from '~/stores/tab.helpers'
 import { createTabMetadataStore } from '~/stores/tabMetadata.store'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
@@ -1317,6 +1317,188 @@ describe('applyTerminalStatusChange', () => {
 
       expect(tabs.view.getTerminalTab('term-1')?.status).toBe(TerminalStatus.DISCONNECTED)
       dispose()
+    })
+  })
+
+  // A ListTerminals reply that is in flight compares this count across the call
+  // (see TabMetadataStore.liveStatusEpoch). Only an event that WROTE the lifecycle
+  // counts. The handler refuses some events, and the reply of a re-ask is what
+  // heals a tab that refused one: a count for an event that wrote nothing would
+  // hold that reply back.
+  describe('liveStatusEpoch', () => {
+    function applyEvent(tabs: ReturnType<typeof makeTabStores>, fields: Partial<TerminalStatusChange>) {
+      applyTerminalStatusChange(
+        tabs.metadata,
+        createRepoGitStore(),
+        tabs.view.getTerminalTab('term-1'),
+        'term-1',
+        statusChange(fields),
+      )
+    }
+
+    it('counts the STARTING event that moves a tab to STARTING', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addTerminal('term-1')
+
+        applyEvent(tabs, { status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
+
+        expect(tabs.view.getTerminalTab('term-1')?.status).toBe(TerminalStatus.STARTING)
+        expect(tabs.metadata.liveStatusEpoch('term-1')).toBe(1)
+        dispose()
+      })
+    })
+
+    it('counts the READY event that ends a startup', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.STARTING })
+
+        applyEvent(tabs, { status: TerminalStatus.READY })
+
+        expect(tabs.metadata.liveStatusEpoch('term-1')).toBe(1)
+        dispose()
+      })
+    })
+
+    it('counts the READY event that reaches a tab with no status yet', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addTerminal('term-1')
+
+        applyEvent(tabs, { status: TerminalStatus.READY })
+
+        expect(tabs.view.getTerminalTab('term-1')?.status).toBe(TerminalStatus.READY)
+        expect(tabs.metadata.liveStatusEpoch('term-1')).toBe(1)
+        dispose()
+      })
+    })
+
+    it('counts a STARTUP_FAILED event', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.STARTING })
+
+        applyEvent(tabs, { status: TerminalStatus.STARTUP_FAILED, startupError: 'no such shell' })
+
+        expect(tabs.metadata.liveStatusEpoch('term-1')).toBe(1)
+        dispose()
+      })
+    })
+
+    it('counts a new phase label of a startup', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.STARTING, startupMessage: 'Creating worktree…' })
+
+        applyEvent(tabs, { status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
+
+        expect(tabs.view.getTerminalTab('term-1')?.startupMessage).toBe('Starting zsh…')
+        expect(tabs.metadata.liveStatusEpoch('term-1')).toBe(1)
+        dispose()
+      })
+    })
+
+    it('does not count a READY event that a DISCONNECTED tab refuses', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.DISCONNECTED })
+
+        applyEvent(tabs, { status: TerminalStatus.READY })
+
+        expect(tabs.view.getTerminalTab('term-1')?.status).toBe(TerminalStatus.DISCONNECTED)
+        expect(tabs.metadata.liveStatusEpoch('term-1')).toBe(0)
+        dispose()
+      })
+    })
+
+    it('does not count a STARTING event that a READY tab refuses', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.READY })
+
+        applyEvent(tabs, { status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
+
+        expect(tabs.view.getTerminalTab('term-1')?.status).toBe(TerminalStatus.READY)
+        expect(tabs.metadata.liveStatusEpoch('term-1')).toBe(0)
+        dispose()
+      })
+    })
+
+    it('does not count a STARTING event that repeats the label of the tab', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
+
+        applyEvent(tabs, { status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
+
+        expect(tabs.metadata.liveStatusEpoch('term-1')).toBe(0)
+        dispose()
+      })
+    })
+
+    it('does not count an event that carries a git status and no lifecycle', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.STARTING })
+
+        applyEvent(tabs, {
+          status: TerminalStatus.UNSPECIFIED,
+          gitStatus: { branch: 'main', toplevel: '/repo', originUrl: '', isWorktree: false } as never,
+        })
+
+        expect(tabs.metadata.get('term-1')?.gitToplevel).toBe('/repo')
+        expect(tabs.metadata.liveStatusEpoch('term-1')).toBe(0)
+        dispose()
+      })
+    })
+
+    it('counts the exit of a shell', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.READY })
+
+        markTerminalExited(tabs.metadata, 'term-1')
+
+        expect(tabs.view.getTerminalTab('term-1')?.status).toBe(TerminalStatus.EXITED)
+        expect(tabs.metadata.liveStatusEpoch('term-1')).toBe(1)
+        dispose()
+      })
+    })
+
+    // `keepLiveTerminalStatus` strips TERMINAL_LIVE_STATUS_FIELDS from a ListTerminals
+    // reply that a live event overtook. A field that a live status event writes beside
+    // the status and that the list misses would let the older reply overwrite it.
+    // `contentReady` is the one field outside the list on purpose: nothing ever writes
+    // it to false, so an older reply cannot move it back.
+    it('writes exactly the fields in TERMINAL_LIVE_STATUS_FIELDS, and contentReady, through patchLiveStatus', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        const written = new Set<string>()
+        const original = tabs.metadata.patchLiveStatus
+        tabs.metadata.patchLiveStatus = (tabId, fields) => {
+          for (const key of Object.keys(fields))
+            written.add(key)
+          original(tabId, fields)
+        }
+
+        tabs.addTerminal('term-1')
+        applyEvent(tabs, { status: TerminalStatus.STARTING, startupMessage: 'Creating worktree…' })
+        applyEvent(tabs, { status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
+        applyEvent(tabs, { status: TerminalStatus.READY })
+        markTerminalExited(tabs.metadata, 'term-1')
+        tabs.addTerminal('term-2', { terminalStatus: TerminalStatus.STARTING })
+        applyTerminalStatusChange(
+          tabs.metadata,
+          createRepoGitStore(),
+          tabs.view.getTerminalTab('term-2'),
+          'term-2',
+          statusChange({ status: TerminalStatus.STARTUP_FAILED, startupError: 'no such shell' }),
+        )
+
+        expect([...written].sort()).toEqual([...TERMINAL_LIVE_STATUS_FIELDS, 'contentReady'].sort())
+        dispose()
+      })
     })
   })
 

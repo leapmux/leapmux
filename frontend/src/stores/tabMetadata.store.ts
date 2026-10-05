@@ -467,12 +467,13 @@ export function createTabMetadataStore() {
     patch,
 
     /**
-     * `patch` for a status event that the worker pushed on the live stream. It is
-     * the only writer that advances {@link liveStatusEpoch}.
+     * `patch` for a status that the worker pushed on the live stream and that the
+     * tab applied. It is the only writer that advances {@link liveStatusEpoch}.
      *
-     * Call it for an event that carries a status. An event with no status (a
-     * git-only update) goes through `patch`: it does not answer the question that
-     * a snapshot answers.
+     * Call it when the event writes the lifecycle of the tab: the status of an
+     * agent, or the status of a terminal. Two kinds of event go through `patch`
+     * instead: an event with no status (a git-only update), and an event that a
+     * guard refused. Neither one answers the question that a snapshot answers.
      */
     patchLiveStatus(tabId: string, fields: TabMetadata) {
       patch(tabId, fields)
@@ -483,12 +484,13 @@ export function createTabMetadataStore() {
      * How many live status events this tab has applied. The value changes when one
      * more event lands, and for no other reason.
      *
-     * A reader that fetches a snapshot of the worker's state (`ListAgents`) reads
-     * it before it sends the request, and again when the reply lands. A different
-     * value means the live stream wrote a status while the reply was in flight.
-     * The worker read the snapshot before it sent those events, so the reply holds
-     * the older answer and must not replace the status. Nothing sends the status
-     * again, so the tab would keep the older one for as long as the page lives.
+     * A reader that fetches a snapshot of the worker's state (`ListAgents`,
+     * `ListTerminals`) reads it before it sends the request, and again when the
+     * reply lands. A different value means the live stream wrote a status while
+     * the reply was in flight. The worker can read the snapshot before it sends
+     * those events, so the reply can hold the older answer, and it must not
+     * replace the status. Nothing sends the status again, so the tab would keep
+     * the older one for as long as the page lives.
      *
      * Zero for a tab that applied no event, and for a tab that was removed.
      */

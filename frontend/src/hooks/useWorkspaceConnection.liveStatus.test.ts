@@ -1,9 +1,12 @@
-import type { WatchEventsResponse } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type { MessageInitShape } from '@bufbuild/protobuf'
+import type { TerminalEventSchema, WatchEventsResponse } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { UseWatchEventsStreamsOpts } from '~/hooks/useWatchEventsStreams'
+import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
+import { TabType, WatchEventsResponseSchema } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
@@ -152,6 +155,101 @@ describe('useWorkspaceConnection live status writers', () => {
     streamOpts().onEvent(WORKER, agentEvent(controlRequest(), true))
 
     expect(status()).toBe(AgentStatus.INACTIVE)
+    expect(epoch()).toBe(0)
+    dispose()
+  })
+})
+
+function mountTerminalConnection(initial: TerminalStatus | undefined) {
+  const harness = installTestBridge({ workspaceId: WS })
+  const { view, metadata, selection } = createTestTabStores(WS)
+  emitAddTab({ type: TabType.TERMINAL, id: 't1', tileId: harness.rootTileId, position: 'p1', workerId: WORKER })
+  if (initial !== undefined)
+    metadata.patch('t1', { terminalStatus: initial })
+
+  let dispose!: () => void
+  createRoot((d) => {
+    dispose = d
+    useWorkspaceConnection({
+      chatStore: createChatStore(),
+      agentInputQueueStore: createAgentInputQueueStore(),
+      view,
+      metadata,
+      selection,
+      controlStore: createControlStore(),
+      agentSessionStore: createAgentSessionStore(),
+      agentActivityStore: createAgentActivityStore(),
+      repoGitStore: createRepoGitStore(),
+      quakeStore: createTestQuakeStore(),
+      getActiveQuakeKeyId: () => null,
+      settingsLoading: createLoadingSignal(),
+      getActiveWorkspaceId: () => WS,
+    })
+  })
+  return {
+    dispose,
+    status: () => view.getTerminalTab('t1')?.status,
+    epoch: () => metadata.liveStatusEpoch('t1'),
+  }
+}
+
+function terminalEvent(event: NonNullable<MessageInitShape<typeof TerminalEventSchema>['event']>): WatchEventsResponse {
+  return create(WatchEventsResponseSchema, {
+    event: { case: 'terminalEvent', value: { terminalId: 't1', event } },
+  })
+}
+
+/**
+ * The live writers of a terminal's status, through the real hook.
+ *
+ * A `ListTerminals` reply that is in flight holds an older answer than every
+ * status that the live stream writes meanwhile, and it compares
+ * `TabMetadataStore.liveStatusEpoch` across the call to learn whether one landed
+ * (see `useTabHydrators`). A writer that bypasses the count lets the older reply
+ * replace its status.
+ */
+describe('useWorkspaceConnection live terminal status writers', () => {
+  it('counts a statusChange event', () => {
+    const { dispose, status, epoch } = mountTerminalConnection(TerminalStatus.STARTING)
+
+    streamOpts().onEvent(WORKER, terminalEvent({
+      case: 'statusChange',
+      value: { terminalId: 't1', status: TerminalStatus.READY },
+    }))
+
+    expect(status()).toBe(TerminalStatus.READY)
+    expect(epoch()).toBe(1)
+    dispose()
+  })
+
+  it('counts the close of a shell', () => {
+    const { dispose, status, epoch } = mountTerminalConnection(TerminalStatus.READY)
+
+    streamOpts().onEvent(WORKER, terminalEvent({ case: 'closed', value: { exitCode: 0 } }))
+
+    expect(status()).toBe(TerminalStatus.EXITED)
+    expect(epoch()).toBe(1)
+    dispose()
+  })
+
+  it('does not count a statusChange event that the tab refuses', () => {
+    const { dispose, status, epoch } = mountTerminalConnection(TerminalStatus.DISCONNECTED)
+
+    streamOpts().onEvent(WORKER, terminalEvent({
+      case: 'statusChange',
+      value: { terminalId: 't1', status: TerminalStatus.READY },
+    }))
+
+    expect(status()).toBe(TerminalStatus.DISCONNECTED)
+    expect(epoch()).toBe(0)
+    dispose()
+  })
+
+  it('does not count a bell', () => {
+    const { dispose, epoch } = mountTerminalConnection(TerminalStatus.READY)
+
+    streamOpts().onEvent(WORKER, terminalEvent({ case: 'bell', value: {} }))
+
     expect(epoch()).toBe(0)
     dispose()
   })
