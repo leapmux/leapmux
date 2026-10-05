@@ -166,6 +166,20 @@ func (svc *Service) recordControlResponsePlanMode(agentID string, provider leapm
 			_, err := svc.applyPlanOptionsLocked(current, options)
 			return err
 		}
+		svc.handPlanExitModeToRunningProvider(agentID, mode)
 	}
 	return svc.applyControlResponsePlanModeMutations(current, plan)
+}
+
+// handPlanExitModeToRunningProvider gives the approved plan exit's mode to a
+// running provider that defers it (see agent.PlanExitModeDeferrer). A provider
+// that does not defer keeps the persist-only path. The caller holds the
+// lifecycle lock, so this reads the agent without locking it again.
+func (svc *Service) handPlanExitModeToRunningProvider(agentID, mode string) {
+	if mode == "" {
+		return
+	}
+	if deferrer, ok := svc.Agents.RunningAgent(agentID).(agent.PlanExitModeDeferrer); ok {
+		deferrer.DeferPlanExitMode(mode)
+	}
 }

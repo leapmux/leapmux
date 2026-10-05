@@ -198,7 +198,7 @@ func (svc *Service) processControlResponse(dbAgent db.Agent, request *leapmuxv1.
 		return errors.New("the plan approval has no valid decision")
 	}
 	if plan.resolution.Withhold {
-		return errors.New("the agent provider could not read this control response")
+		return plan.resolution.Refusal()
 	}
 	if plan.settings != nil && (!plan.hasDecision || plan.behavior() != agent.ControlBehaviorAllow ||
 		!plan.isPlanPrompt() && plan.resolution.PlanModeControl != agent.PlanModeControlExit) {

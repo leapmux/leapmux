@@ -339,7 +339,7 @@ func TestEnsureAgentRunning_UsesTheInteractiveStartPath(t *testing.T) {
 		return map[string]string{}, nil
 	}
 
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
 
 	assert.Equal(t, 1, interactive, "a start the user waits on must bypass the permit pool")
 	assert.Zero(t, background, "it would otherwise queue behind the boot sweep and fail the send on the client timeout")
@@ -512,6 +512,50 @@ func TestAgentResume_ResumesTheSessionTheRowPointsAt(t *testing.T) {
 		"the sweep started a BLANK session; the handshake's new session id would overwrite the only pointer to this conversation")
 }
 
+// TestAgentResume_ResumesTheSessionThatTheRowHoldsAtTheStart pins that the
+// sweep resumes the session that the row holds when the start begins, and not
+// the session that the sweep read for its skip decision.
+//
+// The sweep reaches a candidate long after it listed it, and the row can move
+// between the skip decision and the start. A message can cold-start the agent,
+// the provider can report a new session, and the process can exit again. A
+// sweep that resumed the session from its own earlier read would bring back the
+// conversation as it was before that turn.
+//
+// The row moves through the fetch seam, because the window under test is
+// exactly "the sweep read one session, the start reads another".
+func TestAgentResume_ResumesTheSessionThatTheRowHoldsAtTheStart(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	rec := newStartRecorder()
+	rec.install(svc)
+	seedOpenAgent(t, svc, "agent-1", true)
+
+	const moved = "session-after-the-sweep-read"
+	fetch := svc.getAgentByIDFn
+	var moveOnce sync.Once
+	var moveErr error
+	svc.getAgentByIDFn = func(ctx context.Context, agentID string) (db.Agent, error) {
+		row, err := fetch(ctx, agentID)
+		// The first read is the skip decision of the sweep. The row moves
+		// after it, before the start reads it again.
+		moveOnce.Do(func() {
+			moveErr = svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
+				ID: agentID, AgentSessionID: moved,
+			})
+		})
+		return row, err
+	}
+
+	runSweep(t, svc)
+
+	require.NoError(t, moveErr)
+	require.Equal(t, []string{"agent-1"}, rec.ids())
+	assert.Equal(t, moved, rec.resumeFor("agent-1"),
+		"the sweep resumed the session from its skip decision, not the one that the row holds at the start")
+}
+
 // TestAgentResume_KeepsTheRowsSessionIDSoThePickerStillExcludesIt ties the
 // resume sweep to the session picker's central rule.
 //
@@ -581,9 +625,8 @@ func TestAgentResume_ResumesNothingForAnAgentWithNoSession(t *testing.T) {
 //
 // fail() reports STARTUP_FAILED, and queue dispatch refuses an agent in that
 // state for the whole failed-entry TTL. One CLI that is slow to hand-shake at
-// boot would then answer the user's next message with "agent failed to start;
-// open a new agent", and every later sweep would pass the agent over as a
-// permanent failure.
+// boot would then answer the user's next message with errAgentStartupFailed,
+// and every later sweep would pass the agent over as a permanent failure.
 func TestAgentResume_AFailedResumeStaysRetryable(t *testing.T) {
 	t.Parallel()
 
@@ -663,7 +706,7 @@ func TestEnsureAgentRunning_ReadsTheRowThroughTheFetchSeam(t *testing.T) {
 		return row, err
 	}
 
-	require.Error(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart),
+	require.Error(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart),
 		"ensureAgentRunning read the raw query rather than the seam: it gave a process to a row the seam reports closed")
 	assert.Empty(t, rec.ids())
 }
@@ -784,6 +827,31 @@ func TestAgentResume_SkipsAgentsThatFailedToStart(t *testing.T) {
 	assert.Empty(t, rec.ids())
 }
 
+// TestAgentResume_SkipsAnAgentWhoseFailureIsHeldInMemory pins the other record
+// of a startup failure. persistAgentStartupError only logs when its write
+// fails, so the registry can hold STARTUP_FAILED over an empty column. An
+// unarchive schedules a resume while the Worker runs, so the sweep can meet
+// that record. It must report the agent as skipped, the way queue dispatch
+// refuses it, and not as a start that failed.
+func TestAgentResume_SkipsAnAgentWhoseFailureIsHeldInMemory(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	rec := newStartRecorder()
+	rec.install(svc)
+	seedOpenAgent(t, svc, "agent-broken", true)
+	handle := svc.AgentStartup.begin("agent-broken", func() {})
+	require.NotNil(t, handle)
+	svc.AgentStartup.fail(handle, "claude: command not found")
+	svc.AgentStartup.finishEntry(handle)
+	require.Empty(t, requireAgentRow(t, svc, "agent-broken").StartupError,
+		"fixture check: only the registry holds the failure")
+
+	r := svc.AgentResumer()
+	assert.Equal(t, outcomeSkipped, r.resumeOne(t.Context(), "agent-broken"))
+	assert.Empty(t, rec.ids())
+}
+
 // TestAgentResume_OneFailureDoesNotAbandonTheRest pins that the sweep is not an
 // errgroup that cancels its siblings: one agent whose CLI is missing must not
 // leave every other agent on the machine cold.
@@ -857,7 +925,7 @@ func TestAgentResume_DrainsRecoveredInputOnlyAfterWorkerOwner(t *testing.T) {
 	svc.SetRegisteredBy(owner)
 	r.Start(t.Context())
 	r.WaitForSweepForTest()
-	require.Eventually(t, func() bool { return len(rec.ids()) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(rec.ids()) == 1 }, inputQueueWait, 10*time.Millisecond)
 	assert.Equal(t, []string{"agent-queue"}, rec.ids())
 }
 

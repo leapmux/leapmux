@@ -74,7 +74,7 @@ func TestProviderReportedTurnHoldsQueuedInputUntilItEnds(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 		return err == nil && snapshot.ActiveTurn
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 	providerTurn, err := svc.InputQueue.Snapshot(ctx, agentID)
 	require.NoError(t, err)
 	assert.False(t, providerTurn.ActiveTurnSteerable,
@@ -94,7 +94,7 @@ func TestProviderReportedTurnHoldsQueuedInputUntilItEnds(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, agentID)
 		return snapshotErr == nil && len(snapshot.Items) == 0
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 }
 
 func TestClassifiedProviderTurnMarksAQueuedInputSteerable(t *testing.T) {
@@ -110,7 +110,7 @@ func TestClassifiedProviderTurnMarksAQueuedInputSteerable(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 		return err == nil && snapshot.ActiveTurn && snapshot.ActiveTurnSteerable
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 
 	_, err := svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
 		ID: newTestAgentInputID(), AgentID: agentID, Text: "steer this turn",
@@ -143,7 +143,7 @@ func TestProviderCapabilityDoesNotOverrideReportedTurnState(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, agentID)
 		return snapshotErr == nil && snapshot.ActiveTurn
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 	snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 	require.NoError(t, err)
 	assert.False(t, snapshot.ActiveTurnSteerable,
@@ -193,7 +193,7 @@ func TestProviderReportedTurnRepeatsWithoutChurningTheQueueRevision(t *testing.T
 		}
 		active = snapshot
 		return true
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 
 	sink.publish(true)
 	sink.publish(true)
@@ -211,7 +211,7 @@ func TestProviderReportedTurnRepeatsWithoutChurningTheQueueRevision(t *testing.T
 		}
 		cleared = snapshot
 		return true
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 	assert.Greater(t, cleared.Revision, active.Revision, "the real transition does move it")
 
 	sink.publish(false)
@@ -238,7 +238,7 @@ func TestProcessExitReleasesATurnTheProviderNeverEnded(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 		return err == nil && snapshot.ActiveTurn
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 
 	_, err := svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
 		ID: newTestAgentInputID(), AgentID: agentID, Text: "hello",
@@ -258,7 +258,7 @@ func TestProcessExitReleasesATurnTheProviderNeverEnded(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, agentID)
 		return snapshotErr == nil && len(snapshot.Items) == 0
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 	snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 	require.NoError(t, err)
 	assert.False(t, snapshot.Paused, "an explicit stop still does not pause the queue")
@@ -311,7 +311,7 @@ func TestAStalePublishFromTheSameProcessLosesToTheOneItOvertook(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 		return err == nil && !snapshot.ActiveTurn
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 
 	// The refusal read its flag BEFORE the clear did, so its token is lower.
 	sink.sink.SetTurnState(agent.TurnState{Active: true}, 1)
@@ -341,7 +341,7 @@ func TestAPublishFromAReplacedProcessCannotReopenATurn(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 		return err == nil && !snapshot.ActiveTurn
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 
 	// The dead process reports a turn, with a token far above the new one's.
 	old.publish(true)
@@ -356,5 +356,5 @@ func TestAPublishFromAReplacedProcessCannotReopenATurn(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 		return err == nil && snapshot.ActiveTurn
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 }

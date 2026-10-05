@@ -11,8 +11,8 @@ import (
 // startup-phase orchestration (`runStartupPhase0`, `failStartup`) drives.
 // Agent and terminal startup differ only in which registry / broadcast
 // / persistence functions are wired in; the orchestration around them
-// (label broadcast, git-mode rollback, error persistence, fail
-// broadcast, registry transition) is identical.
+// (label broadcast, git-mode rollback, error persistence, registry
+// transition, fail broadcast) is identical.
 type startupCallbacks struct {
 	setMessage        func(label string)
 	broadcastStarting func(label string)
@@ -76,9 +76,18 @@ func (svc *Service) runStartupPhase0(ctx context.Context, plan gitModePlan, cb s
 
 // failStartup is the common tail for every failure after the sync
 // prologue: optionally show a rollback label, roll back any partial
-// git-mode mutation, persist the error, broadcast STARTUP_FAILED, and
-// mark the registry failed last so observers see a durable terminal
-// state.
+// git-mode mutation, persist the error, mark the registry failed, and
+// broadcast STARTUP_FAILED last.
+//
+// The order of the last three steps is a contract, and
+// TestFailStartup_OrdersPersistRegistryBroadcast pins it:
+//   - The column comes before the registry. fail() wakes a caller that
+//     joined this startup, and the row that the caller then re-reads holds
+//     the error, so its refusal does not depend on the registry record alone.
+//   - The registry comes before the broadcast. ListAgents, ListTerminals
+//     and the WatchEvents catch-up read the registry. A client that
+//     receives STARTUP_FAILED and then reads a registry that still says
+//     STARTING keeps STARTING, because no later event corrects it.
 //
 // "Failure" here includes a startup that was CANCELLED by a close, which is
 // the common shape rather than the rare one: closeTabCommon calls stopProcess
@@ -104,8 +113,8 @@ func (svc *Service) failStartup(gm gitModeResult, cause error, cb startupCallbac
 	}
 	errMsg := cause.Error()
 	cb.persistError(errMsg)
-	cb.broadcastFailed(errMsg)
 	cb.registryFail(errMsg)
+	cb.broadcastFailed(errMsg)
 }
 
 // linkWorktreeAfterPhase0 performs the phase-0 worktree link for a tab whose

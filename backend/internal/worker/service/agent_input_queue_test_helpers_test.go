@@ -30,6 +30,6 @@ func waitForMessageCount(t *testing.T, svc *Service, agentID string, count int) 
 			AgentID: agentID, Seq: 0, Limit: int64(count + 1),
 		})
 		return err == nil && len(rows) == count
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 	return rows
 }

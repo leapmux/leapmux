@@ -1324,13 +1324,13 @@ func TestAgentToProto_CarriesTheDerivedActivity(t *testing.T) {
 	// close guards start from a list read.
 	rootRow, err := svc.Queries.GetAgentByID(ctx, rootID)
 	require.NoError(t, err)
-	rootInfo := svc.agentToProto(&rootRow, true, nil)
+	rootInfo := svc.agentToProto(&rootRow, agentLiveness{running: true}, nil)
 	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, rootInfo.GetActivityState())
 	assert.Equal(t, int32(1), rootInfo.GetActiveBackgroundTasks())
 
 	childRow, err := svc.Queries.GetAgentByID(ctx, childID)
 	require.NoError(t, err)
-	childInfo := svc.agentToProto(&childRow, false, nil)
+	childInfo := svc.agentToProto(&childRow, agentLiveness{}, nil)
 	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, childInfo.GetActivityState(),
 		"a child is working while its own row runs")
 	assert.Equal(t, int32(1), childInfo.GetActiveBackgroundTasks())
@@ -1339,7 +1339,7 @@ func TestAgentToProto_CarriesTheDerivedActivity(t *testing.T) {
 	childRow, err = svc.Queries.GetAgentByID(ctx, childID)
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
-		svc.agentToProto(&childRow, false, nil).GetActivityState())
+		svc.agentToProto(&childRow, agentLiveness{}, nil).GetActivityState())
 
 	// The third state reaches the wire too. It is the one a close guard reading
 	// a single "is it working" boolean could not see, so a list read that
@@ -1349,7 +1349,7 @@ func TestAgentToProto_CarriesTheDerivedActivity(t *testing.T) {
 	rootRow, err = svc.Queries.GetAgentByID(ctx, rootID)
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER,
-		svc.agentToProto(&rootRow, true, nil).GetActivityState())
+		svc.agentToProto(&rootRow, agentLiveness{running: true}, nil).GetActivityState())
 }
 
 // --- The terminal half of the close guard ----------------------------------

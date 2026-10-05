@@ -279,6 +279,45 @@ func TestBgTask_PartialUpsertPreservesExistingFields(t *testing.T) {
 	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), rows[0].Status)
 }
 
+// A provider can learn a better description for a running subagent after the
+// start, as a provider whose agent labels a task in the background does. It
+// rewrites the whole row with the new description. The row keeps its title, its
+// child transcript, its activity, and its running status, and the new
+// description survives a reload of the registry from the database, which is
+// what a worker restart and a fresh browser read.
+func TestBgTask_ARunningRowsRefreshedDescriptionSurvivesAColdSeed(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "count_to_one_hundred"})
+	require.NoError(t, err)
+	row := bgtask.Upsert{
+		RowKey:       "task-1",
+		Kind:         bgtask.KindSubagent,
+		ChildAgentID: childID,
+		Title:        "count_to_one_hundred",
+		Description:  "Count slowly to one hundred.",
+		Status:       bgtask.StatusRunning,
+	}
+	require.NoError(t, sink.UpsertBackgroundTask(row))
+	require.NoError(t, sink.UpdateBackgroundTaskStatus(row.RowKey, bgtask.StatusRunning, "read notes.txt"))
+	row.Description = "Count to one hundred"
+	row.ActiveForm = "read notes.txt"
+	require.NoError(t, sink.UpsertBackgroundTask(row))
+
+	// Drop the cache, the way a worker restart does, and seed again from the DB.
+	svc.Output.bgtasks.Delete(ownerID)
+	items, err := svc.Output.LoadBackgroundTasks(context.Background(), ownerID)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "Count to one hundred", items[0].Description)
+	assert.Equal(t, "count_to_one_hundred", items[0].Title)
+	assert.Equal(t, childID, items[0].ChildAgentID)
+	assert.Equal(t, "read notes.txt", items[0].ActiveForm)
+	assert.Equal(t, bgtask.StatusRunning, items[0].Status)
+	assert.True(t, items[0].EndedAt.IsZero(), "the refresh does not end the row")
+}
+
 // TestBgTask_ParentAgentIDAutoPopulated verifies the neutral sink layer fills in
 // parent_agent_id from the sink's own agent identity when the provider omits it.
 // Without this, the registry's parent_agent_id was always NULL.

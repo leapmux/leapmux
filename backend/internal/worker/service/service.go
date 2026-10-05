@@ -663,9 +663,15 @@ func New(cfg Config) *Service {
 	})
 	// Let PersistSettingsRefresh detect the startup window so it doesn't
 	// clobber a settings change made mid-startup (see SetAgentStartingFunc).
+	// Read through svc, as the closure below does.
 	svc.Output.SetAgentStartingFunc(func(agentID string) bool {
-		_, _, _, ok := svc.AgentStartup.status(agentID)
-		return ok
+		return svc.AgentStartup.startupWindowOpen(agentID)
+	})
+	// Keep a late provider push from reporting ACTIVE while a close of its tab
+	// is in progress (see SetAgentClosingFunc). Read through svc, as above, so
+	// a test that replaces the registry is still the one consulted.
+	svc.Output.SetAgentClosingFunc(func(agentID string) bool {
+		return svc.AgentStartup.closing(agentID)
 	})
 
 	return svc
@@ -769,15 +775,21 @@ func validateAgentRecordProvider(params db.CreateAgentParams) error {
 //
 // Every relaunch failure path calls it: a relaunch that could not start left
 // the row pointing at a session the previous process owned, and the next
-// message would relaunch with --resume against it. The write is best-effort --
-// the relaunch already failed, and the caller is reporting that failure to the
-// user -- so the error is logged rather than returned.
+// message would relaunch with --resume against it. A context clear calls it
+// also, before its launch, because that launch never resumes the cleared
+// session (see prepareClearContext).
+//
+// The write is best-effort, so the error is logged rather than returned. On a
+// failure path, the relaunch already failed, and the caller reports that
+// failure to the user. In a context clear, the old process already stopped, and
+// the launch that follows still replaces the session for each provider that
+// states its new session at the launch.
 func (svc *Service) clearAgentSessionID(agentID string) {
 	if err := svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
 		AgentSessionID: "",
 		ID:             agentID,
 	}); err != nil {
-		slog.Warn("failed to clear the agent session id after a failed relaunch",
+		slog.Warn("failed to clear the stored agent session id",
 			"agent_id", agentID, "error", err)
 	}
 }

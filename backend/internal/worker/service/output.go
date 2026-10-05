@@ -304,6 +304,13 @@ type OutputHandler struct {
 	// PersistSettingsRefresh consults it to avoid clobbering a settings change
 	// that landed mid-startup with the agent's confirmed launch settings.
 	agentStarting func(agentID string) bool
+	// agentClosing reports whether a close of the agent's tab is in progress
+	// (the close admission in the AgentStartup registry). Set via
+	// SetAgentClosingFunc in service.New; nil in tests that build an
+	// OutputHandler directly, where no close is in progress. buildStatusChange
+	// consults it, because a close stamps closed_at only after it stopped the
+	// process, and a late process can push ACTIVE inside that window.
+	agentClosing func(agentID string) bool
 	// turnActive carries the provider's turn state to the input queue. It takes
 	// the flag and the provider's optional kind, not one callback for each edge.
 	// The queue's dispatch guard must follow the SAME signal that SendInput
@@ -416,6 +423,13 @@ func (h *OutputHandler) SetSupportsPreemptionFunc(fn func(agentID string) bool) 
 // is processed.
 func (h *OutputHandler) SetAgentStartingFunc(fn func(agentID string) bool) {
 	h.agentStarting = fn
+}
+
+// SetAgentClosingFunc wires the predicate buildStatusChange uses to detect a
+// close in progress (see the agentClosing field). Call before any agent output
+// is processed.
+func (h *OutputHandler) SetAgentClosingFunc(fn func(agentID string) bool) {
+	h.agentClosing = fn
 }
 
 // SetTurnStateFunc wires the input queue's turn state to the turn flag every
@@ -1098,8 +1112,14 @@ func (s *agentOutputSink) buildStatusChange(
 	status leapmuxv1.AgentStatus,
 	sessionID string,
 ) *leapmuxv1.AgentStatusChange {
-	// Late settings and handshake replies cannot make a closed tab active.
-	if dbAgent.ClosedAt.Valid && status == leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE {
+	// Late settings and handshake replies cannot make a closed tab active. The
+	// row answers for a close that finished. The close admission answers for a
+	// close in progress: that close stamps closed_at only after it stopped the
+	// process, so the row of a late process that pushes ACTIVE inside that
+	// window still reads open. The admission belongs to the root, which owns
+	// the process.
+	if status == leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE &&
+		(dbAgent.ClosedAt.Valid || (s.h.agentClosing != nil && s.h.agentClosing(s.rootAgentID))) {
 		status = leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE
 	}
 	supportsSteering := false

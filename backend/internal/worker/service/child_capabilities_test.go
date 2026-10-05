@@ -48,7 +48,7 @@ func TestChildCapabilitiesUseTheStoredOptions(t *testing.T) {
 			require.NoError(t, err)
 			child, err := svc.Queries.GetAgentByID(ctx, childID)
 			require.NoError(t, err)
-			info := svc.agentToProto(&child, false, nil)
+			info := svc.agentToProto(&child, agentLiveness{}, nil)
 			assert.Equal(t, testCase.accepts, info.AcceptsMessages)
 			assert.Equal(t, testCase.accepts, info.AcceptsInterrupt)
 			queue := agentInputQueueAdapter{svc: svc}

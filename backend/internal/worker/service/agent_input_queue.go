@@ -126,16 +126,17 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 	}
 	text := resolvedInput.text
-	// Two checks, because either one alone can miss. The registry holds the
-	// live outcome, and persistAgentStartupError only logs when its write
-	// fails, so a failed write leaves the column empty while the registry says
-	// STARTUP_FAILED.
-	if status, _, _, ok := svc.AgentStartup.status(item.AgentID); ok &&
-		status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
-		return inputqueue.DispatchResult{}, fmt.Errorf("agent failed to start; open a new agent")
-	}
-	if dbAgent.StartupError != "" && !svc.Agents.HasAgent(item.AgentID) {
-		return inputqueue.DispatchResult{}, fmt.Errorf("agent failed to start; open a new agent")
+	// An agent whose last startup failed takes no input, except an explicit
+	// /clear: the clear starts a fresh session and recovers the agent (see
+	// clearRecovery), and the refusal of a native resume tells the user to send
+	// it. Every other kind reaches ensureAgentRunning, which refuses the agent
+	// too.
+	//
+	// This check runs before the in-flight join in ensureAgentRunning, so it
+	// cannot see a startup that fails during that join. ensureAgentRunning
+	// asks the same predicate again after the join.
+	if item.Kind != leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT && svc.agentStartupFailed(&dbAgent) {
+		return inputqueue.DispatchResult{}, errAgentStartupFailed
 	}
 	attachments, err := a.svc.Agents.Registry().NormalizeAttachments(dbAgent.AgentProvider, providerAttachments(item.Attachments))
 	if err != nil {
@@ -175,8 +176,11 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 			// closed pipe. Return the input to the queue instead.
 			return &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
 		}
-		resumeID := svc.resolveResumeSessionIDForAgent(item.AgentID, dbAgent)
-		return svc.ensureAgentRunning(item.AgentID, &resumeID, queuedStart)
+		// ensureAgentRunning resolves the resumed session itself, from the row
+		// that it reads after the join. dbAgent was read before the join and
+		// before a plan context replaced the session, so a session resolved
+		// from it can be one that the provider already moved away from.
+		return svc.ensureAgentRunning(item.AgentID, resumeIfConversation, queuedStart)
 	}
 
 	switch item.Kind {

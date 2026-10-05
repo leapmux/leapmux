@@ -86,7 +86,7 @@ func TestEnqueueAgentInputToChildOwnerNotRunningStaysInQueue(t *testing.T) {
 		return err == nil && len(snapshot.Items) == 1 &&
 			snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED &&
 			snapshot.Paused
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 	msgs, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{
 		AgentID: childID, Seq: 0,
 	})
@@ -168,7 +168,7 @@ func TestQueuedChildInputWaitsAsFailedWhenRegistryIsMissing(t *testing.T) {
 		snapshot, err := svc.InputQueue.Snapshot(ctx, "orphan-child")
 		return err == nil && len(snapshot.Items) == 1 &&
 			snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 }
 
 // TestCloseAgentOnChildKeepsRowAndTranscript verifies closing a child tab is
@@ -423,12 +423,12 @@ func TestAgentToProto_RootAgentIdResolved(t *testing.T) {
 
 	rootRow, err := svc.Queries.GetAgentByID(ctx, rootID)
 	require.NoError(t, err)
-	rootInfo := svc.agentToProto(&rootRow, false, nil)
+	rootInfo := svc.agentToProto(&rootRow, agentLiveness{}, nil)
 	assert.Equal(t, rootID, rootInfo.GetRootAgentId(), "a root's root_agent_id is its own id")
 
 	childRow, err := svc.Queries.GetAgentByID(ctx, childID)
 	require.NoError(t, err)
-	childInfo := svc.agentToProto(&childRow, false, nil)
+	childInfo := svc.agentToProto(&childRow, agentLiveness{}, nil)
 	assert.Equal(t, rootID, childInfo.GetRootAgentId(),
 		"a child's root_agent_id resolves up the parent chain to the root owner")
 }
@@ -465,13 +465,13 @@ func TestAgentToProto_ChildCapabilitiesFollowTheProvider(t *testing.T) {
 
 			rootRow, err := svc.Queries.GetAgentByID(ctx, rootID)
 			require.NoError(t, err)
-			rootInfo := svc.agentToProto(&rootRow, false, nil)
+			rootInfo := svc.agentToProto(&rootRow, agentLiveness{}, nil)
 			assert.True(t, rootInfo.GetAcceptsMessages(), "a root accepts a message")
 			assert.True(t, rootInfo.GetAcceptsInterrupt(), "a root accepts an interrupt")
 
 			childRow, err := svc.Queries.GetAgentByID(ctx, childID)
 			require.NoError(t, err)
-			childInfo := svc.agentToProto(&childRow, false, nil)
+			childInfo := svc.agentToProto(&childRow, agentLiveness{}, nil)
 			assert.Equal(t, tc.acceptsMessages, childInfo.GetAcceptsMessages(), "accepts_messages of a child")
 			assert.Equal(t, tc.acceptsChildInterrupt, childInfo.GetAcceptsInterrupt(), "accepts_interrupt of a child")
 		})

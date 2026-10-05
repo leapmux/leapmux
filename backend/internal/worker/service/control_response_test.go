@@ -16,6 +16,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/codex"
@@ -1867,10 +1868,11 @@ func TestProcessControlResponse(t *testing.T) {
 		assert.Nil(t, bytes)
 	})
 
-	// A provider that cannot build a frame its agent can parse sets resolution.Withhold.
-	// An empty Content cannot carry that meaning: resolveControlResponsePlan backfills the
-	// raw frontend bytes over it, so clearing Content forwards the exact envelope the
-	// provider refused to send -- a frame the app-server cannot parse, on its stdin.
+	// A provider that cannot build a frame its agent can parse refuses the
+	// resolution, and the refusal states why. An empty Content cannot carry that
+	// meaning: resolveControlResponsePlan backfills the raw frontend bytes over
+	// it, so clearing Content forwards the exact envelope the provider refused
+	// to send -- a frame the app-server cannot parse, on its stdin.
 	t.Run("a provider's withheld resolution is not forwarded", func(t *testing.T) {
 		svc, _, _ := setupTestService(t)
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -1886,7 +1888,7 @@ func TestProcessControlResponse(t *testing.T) {
 		content := []byte(`{"type":"control_response","response":{"request_id":"req-gone","response":{"behavior":"allow"}}}`)
 
 		bytes, forward, responseErr := processControlResponseForTest(svc, "agent-1", dbAgent, content, "tok-1")
-		require.ErrorContains(t, responseErr, "could not read")
+		require.EqualError(t, responseErr, agent.RefusalUnreadableRequest)
 		assert.False(t, forward, "no frame may reach the app-server's stdin")
 		assert.Nil(t, bytes)
 	})
@@ -2145,4 +2147,87 @@ func TestSendControlResponse_QoderPlanExitAppliesSelectedMode(t *testing.T) {
 			assert.Equal(t, tc.wantStoredMode, loadOptions(testRegistry, row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
 		})
 	}
+}
+
+// planExitDeferrerStub records the modes the service hands to a running provider
+// that defers an approved plan exit's mode. IdleAgent carries the rest of the
+// agent interface, except Wait: it must block until Stop, or the manager's exit
+// watcher retires the agent the moment StartAgentWith returns.
+type planExitDeferrerStub struct {
+	agenttest.IdleAgent
+	done  chan struct{}
+	modes []string
+}
+
+func newPlanExitDeferrerStub() *planExitDeferrerStub {
+	return &planExitDeferrerStub{done: make(chan struct{})}
+}
+
+func (stub *planExitDeferrerStub) DeferPlanExitMode(mode string) {
+	stub.modes = append(stub.modes, mode)
+}
+
+func (stub *planExitDeferrerStub) Stop() {
+	select {
+	case <-stub.done:
+	default:
+		close(stub.done)
+	}
+}
+
+func (stub *planExitDeferrerStub) Wait() error {
+	<-stub.done
+	return nil
+}
+
+// TestRecordControlResponsePlanModeHandsTheExitModeToARunningDeferrer pins the
+// hand-off for a provider whose native plan exit must complete before its mode
+// can change. ZCode is the case: session/setMode turns the plan flag off, so a
+// mode sent while its ExitPlanMode still runs fails the exit ("You are not in
+// plan mode"). The service persists the chosen mode and hands the SAME value to
+// the running provider, which applies it once its own event reports the exit
+// finished. Without the hand-off, the saved mode never reached the session.
+func TestRecordControlResponsePlanModeHandsTheExitModeToARunningDeferrer(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+	}))
+	deferrer := newPlanExitDeferrerStub()
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
+		AgentID: "agent-1", WorkingDir: t.TempDir(),
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE),
+		func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+			return deferrer, nil
+		})
+	require.NoError(t, err)
+	defer svc.Agents.StopAgent("agent-1")
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
+		ID: "agent-1", AgentSessionID: "zcode-session-1",
+	}))
+
+	plan := controlResponsePlan{
+		requestMeta: controlResponseRequestMetadata{
+			RequestID: "req-1", AgentSessionID: "zcode-session-1", Loaded: true,
+		},
+		resolution:  agent.ControlResponseResolution{PlanModeControl: agent.PlanModeControlExit},
+		settings:    &leapmuxv1.PlanApprovalSettings{PermissionMode: contracts.ZCodeModeYolo},
+		hasDecision: true,
+	}
+	plan.decision.Response.RequestID = "req-1"
+	plan.decision.Response.Response.Behavior = agent.ControlBehaviorAllow
+
+	require.NoError(t, svc.recordControlResponsePlanMode("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, plan))
+	assert.Equal(t, []string{contracts.ZCodeModeYolo}, deferrer.modes,
+		"an approved exit hands its chosen mode to the running provider that defers it")
+
+	// The denial path hands nothing: a rejected exit keeps the session's mode.
+	deferrer.modes = nil
+	plan.decision.Response.Response.Behavior = agent.ControlBehaviorDeny
+	plan.resolution.PlanModeControl = agent.PlanModeControlNone
+	require.NoError(t, svc.recordControlResponsePlanMode("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, plan))
+	assert.Empty(t, deferrer.modes, "no approval means no deferred mode")
 }

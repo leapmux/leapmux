@@ -157,6 +157,27 @@ func registerAgentHandlers(d registrar, svc *Service) {
 
 			agent.TraceStartupPhase(agentID, "gitmode_validated")
 
+			// Register the startup BEFORE the row becomes visible. The startup
+			// registry is the only source of STARTING: a reader that finds the row
+			// of an agent that has no entry and no process reads INACTIVE. A
+			// cold start in ensureAgentRunning registers before it launches for
+			// the same reason, and OpenTerminal does the same for its row.
+			//
+			// From here, every return that does not hand the claim to
+			// runAgentStartup must release it with abandon. A claim that nobody
+			// releases reports STARTING for ever and blocks Shutdown's
+			// WaitForInFlight.
+			startupCtx, cancel := context.WithCancel(context.Background())
+			startupHandle := svc.AgentStartup.begin(agentID, cancel)
+			if startupHandle == nil {
+				// Unreachable in practice -- agentID was minted a few lines above
+				// -- but the claim is the authority, so honour it rather than run
+				// a startup that owns no registry entry.
+				cancel()
+				sendFailedPrecondition(sender, "a startup for this agent is already in progress")
+				return
+			}
+
 			// Persist the agent row and any prior Worker transcript under a fresh
 			// background context: the DB write must survive a mid-RPC disconnect so a
 			// retry from the same client doesn't observe a half-created agent
@@ -173,6 +194,8 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				AgentProvider:      agentProvider,
 				Resumed:            resumed,
 			}, resumeSessionID); err != nil {
+				// The row does not exist, so no startup will ever run for it.
+				svc.AgentStartup.abandon(startupHandle)
 				if errors.Is(err, errNativeSessionAlreadyOpen) {
 					sendFailedPrecondition(sender, err.Error())
 					return
@@ -192,19 +215,8 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			if err != nil {
 				slog.Error("failed to fetch created agent", "error", err)
 				svc.agentCleanups.abandonClaim(agentID)
+				svc.AgentStartup.abandon(startupHandle)
 				sendInternalError(sender, "failed to fetch created agent")
-				return
-			}
-
-			startupCtx, cancel := context.WithCancel(context.Background())
-			startupHandle := svc.AgentStartup.begin(agentID, cancel)
-			if startupHandle == nil {
-				// Unreachable in practice -- agentID was minted a few lines above
-				// -- but the claim is the authority, so honour it rather than run
-				// a startup that owns no registry entry.
-				cancel()
-				svc.agentCleanups.abandonClaim(agentID)
-				sendFailedPrecondition(sender, "a startup for this agent is already in progress")
 				return
 			}
 
@@ -276,7 +288,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 
 			agent.TraceStartupPhase(agentID, "before_response")
 			sendProtoResponse(sender, &leapmuxv1.OpenAgentResponse{
-				Agent: svc.agentToProto(&dbAgent, false, nil),
+				Agent: svc.agentToProto(&dbAgent, svc.agentLivenessOf(&dbAgent), nil),
 			})
 			agent.TraceStartupPhase(agentID, "response_sent")
 
@@ -368,6 +380,32 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			found[agents[i].ID] = true
 		}
 
+		// A child tab derives ACTIVE from its feeding (root) process; a root tab
+		// from its own. ListAgentsByIDs returns only closed_at IS NULL rows, so a
+		// child here is an open transcript whose status tracks its owner process.
+		//
+		// Read the runtime state of every agent FIRST, and keep it until the
+		// status is built. The registry comes before the process inside each
+		// sample, for the reason that agentLiveness states. A status that read the
+		// registry after git ran reported INACTIVE for a startup that ended while
+		// git ran.
+		live := make([]agentLiveness, len(agents))
+		running := make([]bool, len(agents))
+		for i := range agents {
+			live[i] = svc.agentLivenessOf(&agents[i])
+			running[i] = live[i].running
+		}
+		// Read the rows of the running agents AFTER the sample.
+		// A startup stores its session ID, and registers its process only after
+		// that, so a row read after the sample states the ID that the process owns.
+		// The rows above predate the sample, and a startup that completed in
+		// between left an ACTIVE agent with no session ID.
+		if err := svc.refreshRunningAgentRows(ctx, agents, running); err != nil {
+			slog.Error("failed to refresh running agents", "tab_ids", tabIDs, "error", err)
+			sendInternalError(sender, "failed to list agents")
+			return
+		}
+
 		workingDirs := make([]string, len(agents))
 		for i := range agents {
 			workingDirs[i] = agents[i].WorkingDir
@@ -376,16 +414,11 @@ func registerAgentHandlers(d registrar, svc *Service) {
 
 		protoAgents := make([]*leapmuxv1.AgentInfo, 0, len(agents))
 		for i := range agents {
-			// A child tab derives ACTIVE from its feeding (root) process; a
-			// root tab from its own. ListAgentsByIDs returns only closed_at IS
-			// NULL rows, so a child here is an open transcript whose status
-			// tracks its owner process.
-			hasAgent := svc.agentProcessRunning(&agents[i])
 			// agentToProto -> optionGroupsForAgent -> optionGroupsView already preloads the
 			// cached option-group catalog from the DB for an inactive agent (and decodes
 			// option_groups exactly once), so no separate PreloadCache is needed here -- a
 			// second one would decode and re-seed every closed agent's catalog redundantly.
-			protoAgents = append(protoAgents, svc.agentToProto(&agents[i], hasAgent, gitStatuses[i]))
+			protoAgents = append(protoAgents, svc.agentToProto(&agents[i], live[i], gitStatuses[i]))
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListAgentsResponse{
@@ -1470,12 +1503,21 @@ func (svc *Service) replayAgentCatchUp(
 	// its own (a virtual child never owns a process). Reuse the root resolved
 	// above for the registry stage so a child does not run the recursive root
 	// CTE a second time inside agentProcessRunning.
-	hasAgent := svc.agentsHasAgentFor(&dbAgent, rootID)
+	//
+	// dbAgent is the row that the watch resolved, and a close can land after
+	// that read. A process that registers after the close stays in the manager
+	// until its launch validation stops it, so the process alone would report
+	// ACTIVE for a closed tab. The close state is asked after the process, and
+	// the owner of the process is the root.
+	live := svc.sampleAgentLiveness(agentID, func() bool {
+		return svc.agentsHasAgentFor(&dbAgent, rootID) && svc.agentMayReportActive(rootID)
+	})
 	// Preload the cached option-group catalog from DB for inactive agents.
-	if !hasAgent {
+	// PreloadCache leaves the catalog of a running agent alone.
+	if !live.running {
 		svc.Agents.PreloadCache(agentID, parseOptionGroups(dbAgent.OptionGroups))
 	}
-	status, startupError, startupMessage := svc.deriveAgentStatus(&dbAgent, hasAgent)
+	status, startupError, startupMessage := deriveAgentStatus(&dbAgent, live)
 	var statusChange *leapmuxv1.AgentStatusChange
 	switch status {
 	case leapmuxv1.AgentStatus_AGENT_STATUS_STARTING:
@@ -1571,6 +1613,49 @@ func (svc *Service) replayAgentCatchUp(
 	})
 }
 
+// agentStartupSnapshot is one read of the startup registry entry of an agent: a
+// startup in flight (STARTING), or a startup that failed (STARTUP_FAILED).
+type agentStartupSnapshot struct {
+	status         leapmuxv1.AgentStatus
+	startupError   string
+	startupMessage string
+}
+
+// agentLiveness is what the Worker's runtime says about one agent: a snapshot of
+// its startup registry entry, if the registry holds one, and whether its process
+// runs. It is the whole runtime input of deriveAgentStatus.
+//
+// Build it with sampleAgentLiveness. The ORDER of the two reads decides whether
+// the pair can contradict itself. A startup ends in this order: the Manager
+// registers the process, then the registry drops the entry. Read the registry
+// first and the process second. The sample then holds the entry, or the process,
+// or both. Read them in the other order and the sample can hold neither: the
+// process is absent at the early read, and the entry is gone at the late read.
+// The agent then reads INACTIVE although its startup ended with a running
+// process.
+type agentLiveness struct {
+	// startup is nil when the registry holds no entry.
+	startup *agentStartupSnapshot
+	running bool
+}
+
+// sampleAgentLiveness reads the startup registry for agentID, then calls
+// processRuns. It calls processRuns exactly once, and after the registry read.
+// See agentLiveness for why the order is fixed.
+func (svc *Service) sampleAgentLiveness(agentID string, processRuns func() bool) agentLiveness {
+	var startup *agentStartupSnapshot
+	if status, startupError, startupMessage, tracked := svc.AgentStartup.status(agentID); tracked {
+		startup = &agentStartupSnapshot{status: status, startupError: startupError, startupMessage: startupMessage}
+	}
+	return agentLiveness{startup: startup, running: processRuns()}
+}
+
+// agentLivenessOf is sampleAgentLiveness for the process that feeds the agent in
+// a: its own process for a root, the process of its root for a child.
+func (svc *Service) agentLivenessOf(a *db.Agent) agentLiveness {
+	return svc.sampleAgentLiveness(a.ID, func() bool { return svc.agentProcessRunning(a) })
+}
+
 // deriveAgentStatus computes (status, startupError, startupMessage) for
 // an agent, in priority order:
 //  1. runtime Manager — if the agent is currently running, ACTIVE wins.
@@ -1581,12 +1666,15 @@ func (svc *Service) replayAgentCatchUp(
 //  3. persisted startup_error column — surfaces a prior failure across
 //     worker restarts (the in-memory registry is wiped on restart).
 //  4. INACTIVE otherwise.
-func (svc *Service) deriveAgentStatus(a *db.Agent, isRunning bool) (status leapmuxv1.AgentStatus, startupError, startupMessage string) {
-	if isRunning {
+//
+// It reads nothing from the runtime itself. live holds both runtime reads, so
+// the two cannot come from different moments in the wrong order.
+func deriveAgentStatus(a *db.Agent, live agentLiveness) (status leapmuxv1.AgentStatus, startupError, startupMessage string) {
+	if live.running {
 		return leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, "", ""
 	}
-	if sup, errStr, msg, ok := svc.AgentStartup.status(a.ID); ok {
-		return sup, errStr, msg
+	if startup := live.startup; startup != nil {
+		return startup.status, startup.startupError, startup.startupMessage
 	}
 	if a.StartupError != "" {
 		return leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, a.StartupError, ""
@@ -1594,10 +1682,39 @@ func (svc *Service) deriveAgentStatus(a *db.Agent, isRunning bool) (status leapm
 	return leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE, "", ""
 }
 
+// errAgentStartupFailed refuses work for an agent whose last startup failed.
+// The user reads it on the refused input, so it states both ways forward: a
+// /clear recovers the agent in a fresh session (see clearRecovery), and a new
+// agent starts over.
+var errAgentStartupFailed = errors.New("agent failed to start; send /clear to start a fresh session, or open a new agent")
+
+// agentStartupFailed reports whether the last startup of an agent failed and
+// no process runs for it. Two paths record such a failure: the open path
+// (failStartup) and a context clear whose restart failed (prepareClearContext).
+// A cold start that fails records none, so the next input retries it. A clear
+// that starts a process removes the record (see clearRecovery).
+//
+// It reads both records of the failure, because either one alone can miss.
+// persistAgentStartupError only logs when its write fails, so the registry can
+// hold STARTUP_FAILED over an empty column. A Worker restart clears the
+// registry, so the column can be the only record.
+//
+// Queue dispatch and ensureAgentRunning both refuse through this one
+// predicate, so the gate before the in-flight join and the gate after it
+// cannot disagree.
+func (svc *Service) agentStartupFailed(a *db.Agent) bool {
+	if status, _, _, ok := svc.AgentStartup.status(a.ID); ok &&
+		status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
+		return true
+	}
+	return a.StartupError != "" && !svc.Agents.HasAgent(a.ID)
+}
+
 // agentToProto converts a DB Agent to a proto AgentInfo. Status,
 // startup_error, and startup_message are derived via deriveAgentStatus.
-func (svc *Service) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.GitRepoStatus) *leapmuxv1.AgentInfo {
-	status, startupError, startupMessage := svc.deriveAgentStatus(a, isRunning)
+func (svc *Service) agentToProto(a *db.Agent, live agentLiveness, gs *leapmuxv1.GitRepoStatus) *leapmuxv1.AgentInfo {
+	isRunning := live.running
+	status, startupError, startupMessage := deriveAgentStatus(a, live)
 	info := &leapmuxv1.AgentInfo{
 		Id:                 a.ID,
 		Title:              a.Title,
@@ -1692,6 +1809,40 @@ func (svc *Service) agentProcessRunning(agentRow *db.Agent) bool {
 		return svc.Agents.HasAgent(agentRow.ParentAgentID.String)
 	}
 	return svc.Agents.HasAgent(rootID)
+}
+
+// refreshRunningAgentRows replaces the row of each agent whose process runs with a
+// row that it reads now, and leaves every other row as it is. running[i] states the
+// process of agents[i], sampled before this call.
+//
+// A row that predates the sample can lack what the startup of the process stored:
+// the process registers after the startup stored its session ID, so a row read
+// after the sample holds that ID. A row that a close removed since the first read
+// stays as the first read returned it.
+func (svc *Service) refreshRunningAgentRows(ctx context.Context, agents []db.Agent, running []bool) error {
+	var ids []string
+	for i := range agents {
+		if running[i] {
+			ids = append(ids, agents[i].ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	fresh, err := svc.Queries.ListAgentsByIDs(ctx, ids)
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]db.Agent, len(fresh))
+	for _, row := range fresh {
+		byID[row.ID] = row
+	}
+	for i := range agents {
+		if row, ok := byID[agents[i].ID]; ok && running[i] {
+			agents[i] = row
+		}
+	}
+	return nil
 }
 
 // agentsHasAgentFor reports whether the feeding process for agentRow is
@@ -1955,6 +2106,8 @@ func (svc *Service) relaunchForStartupSettingsChange(agentID string, provider le
 	confirmed, launched, err := func() (map[string]string, bool, error) {
 		unlock := svc.Agents.LockAgent(agentID)
 		defer unlock()
+		// Hold the startup before the stop. The caller announces the outcome.
+		defer svc.holdRelaunch(agentID, provider).release()
 		return svc.mintAndLaunchReportingStep(bgCtx(), "restart", opts, sink, svc.restartAgentLocked)
 	}()
 	if finishErr := queueRestart.Finish(bgCtx(), launched, err == nil); finishErr != nil {
@@ -1995,8 +2148,8 @@ func (svc *Service) relaunchForStartupSettingsChange(agentID string, provider le
 // Every relaunch -- a settings restart, a clear-context, a cold start, a plan-execution
 // relaunch -- funnels through here, so this is also where the defaulted-id set is
 // rebuilt: it is derived from the OpenAgent request, which no relaunch has, and a stale
-// or absent set silently disables a provider's launch fallback (Copilot then fails every
-// restart on a CLI that rejects --assisted-approval).
+// or absent set silently disables a provider's launch fallback (an Agent Client Protocol
+// provider then fails every restart on a CLI that refuses its default permission mode).
 func applyDBSettingsToAgentOptions(registry *agent.Registry, opts agent.Options, dbAgent *db.Agent) agent.Options {
 	o := loadOptions(registry, dbAgent.Options, dbAgent.AgentProvider)
 	if o[agent.OptionIDPermissionMode] == "" {
@@ -2125,8 +2278,14 @@ func (svc *Service) broadcastAgentFailed(dbAgent *db.Agent, errMsg string, gitSt
 	svc.broadcastStatusChange(dbAgent.ID, buildAgentFailedStatus(dbAgent, errMsg, gitStatus))
 }
 
-// broadcastAgentActive fans out an ACTIVE AgentStatusChange.
+// broadcastAgentActive fans out an ACTIVE AgentStatusChange, unless the tab
+// may not report ACTIVE now (see agentMayReportActive). Each caller validated
+// the row before it got here, and a close can still land between that check
+// and this broadcast. The close then owns what the client sees next.
 func (svc *Service) broadcastAgentActive(dbAgent *db.Agent, gitStatus *leapmuxv1.GitRepoStatus) {
+	if !svc.agentMayReportActive(dbAgent.ID) {
+		return
+	}
 	svc.broadcastStatusChange(dbAgent.ID, svc.buildAgentActiveStatus(dbAgent, gitStatus))
 }
 
@@ -2658,6 +2817,25 @@ func (svc *Service) readOpenAgentForLaunch(agentID string) (db.Agent, error) {
 	return row, nil
 }
 
+// agentMayReportActive reports whether an agent may report ACTIVE now. It
+// refuses a tab that a close holds or closed, and a tab whose workspace is
+// archived. readOpenAgentForLaunch states that decision, and the launch paths
+// stop a process for the same answer.
+//
+// A caller that saw a process in the manager must ask AFTER it saw the
+// process. A close holds its admission before it stops a process, and it
+// stamps closed_at before it releases that admission, so a process that
+// registered after a close began always meets that close here. A row that the
+// caller read earlier cannot answer for it: the close can land between that
+// read and the registration.
+//
+// A store fault does not refuse. It says nothing about a close, and the
+// in-memory close admission still answers for a close in progress.
+func (svc *Service) agentMayReportActive(agentID string) bool {
+	_, err := svc.readOpenAgentForLaunch(agentID)
+	return !errors.Is(err, errAgentClosedDuringLaunch) && !errors.Is(err, errAgentArchivedDuringLaunch)
+}
+
 // validateLaunchedAgent stops a process if close reached its tab while the
 // provider started. Manager.StartAgent registers the process before it returns.
 func (svc *Service) validateLaunchedAgent(agentID string) (db.Agent, error) {
@@ -2720,6 +2898,9 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor f
 			rowReadFailed = !rowUnavailable
 			return nil, false, readErr
 		}
+		// Hold the startup before the stop, and announce the outcome after the
+		// entry is back. The hold ends before the lifecycle lock does.
+		defer svc.holdRelaunch(agentID, current.AgentProvider).settle()
 		resumeSessionID = svc.resolveResumeSessionIDForAgent(agentID, current)
 		options := optionsFor(current)
 		agentOpts := svc.baseAgentOptions(agentID, current.WorkingDir, current.AgentProvider)
@@ -3016,8 +3197,180 @@ func (svc *Service) persistConfirmedAgentSettingsPreservingStartedSettings(agent
 	})
 }
 
+// clearRecovery is the startup claim of a clear that recovers an agent whose
+// last startup failed (see agentStartupFailed).
+//
+// A clear is the one input that may start such an agent. It is an explicit
+// action of the user, and the refusal of a native resume tells the user to send
+// it. No automatic path may do the same: queue dispatch of any other input, a
+// control request and the resume sweep all refuse the agent.
+//
+// The recovery goes through the protocol of a start that a user asks for. begin
+// replaces the record of the failure with a claim, so a client that connects
+// replays STARTING, a close cancels the launch through the claim, and Shutdown
+// drains it. succeed or fail then ends the claim with the outcome, so the
+// registry states the outcome that the startup_error column states. Only a
+// failed column write, which persistAgentStartupError logs, separates them.
+//
+// The zero value serves an ordinary clear, which claims nothing.
+type clearRecovery struct {
+	handle *startupEntry
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// beginClearRecovery claims the startup of dbAgent when its last startup
+// failed, and returns the zero value otherwise. The failure that this reads
+// cannot change before the claim. The caller holds the lifecycle lock, which
+// every cold start takes before it refuses the failed agent, and the open path
+// that recorded the failure has ended: it runs once for each agent.
+func (svc *Service) beginClearRecovery(dbAgent *db.Agent, label string) (clearRecovery, error) {
+	if !svc.agentStartupFailed(dbAgent) {
+		return clearRecovery{}, nil
+	}
+	ctx, cancel := context.WithCancel(bgCtx())
+	handle := svc.AgentStartup.begin(dbAgent.ID, cancel)
+	if handle == nil {
+		cancel()
+		if svc.AgentStartup.closing(dbAgent.ID) {
+			return clearRecovery{}, errAgentClosedDuringLaunch
+		}
+		return clearRecovery{}, fmt.Errorf("agent %s already has a startup in progress", dbAgent.ID)
+	}
+	svc.AgentStartup.setMessage(dbAgent.ID, label)
+	return clearRecovery{handle: handle, ctx: ctx, cancel: cancel}, nil
+}
+
+// launchContext is the context of the process that the clear starts. A
+// recovery publishes its cancel through the claim, so a close reaches the
+// launch. An ordinary clear keeps the context of every relaunch.
+func (r clearRecovery) launchContext() context.Context {
+	if r.handle == nil {
+		return bgCtx()
+	}
+	return r.ctx
+}
+
+// closeRaced reports whether a close ended the claim of this recovery. Such a
+// launch failed because of the close, not on its own, so it records no startup
+// failure.
+func (r clearRecovery) closeRaced(svc *Service) bool {
+	if r.handle == nil {
+		return false
+	}
+	_, raced := svc.AgentStartup.dispositionOf(r.handle)
+	return raced
+}
+
+// end retires the claim after a launch that produced a running process. The
+// launch context stays alive, because it is the lifetime of that process.
+// succeed is identity-guarded, so a claim that a close already retired leaves
+// the registry alone.
+func (r clearRecovery) end(svc *Service) {
+	if r.handle == nil {
+		return
+	}
+	svc.AgentStartup.succeed(r.handle.id, r.handle)
+}
+
+// abandon retires the claim without a failure, after a close or an archive
+// ended the launch, and releases the launch context, which owns no process
+// now.
+func (r clearRecovery) abandon(svc *Service) {
+	if r.handle == nil {
+		return
+	}
+	r.cancel()
+	r.end(svc)
+}
+
+// fail records the failure of the launch in the registry and releases the
+// launch context, which owns no process now.
+func (r clearRecovery) fail(svc *Service, errMsg string) {
+	if r.handle == nil {
+		return
+	}
+	r.cancel()
+	svc.AgentStartup.fail(r.handle, errMsg)
+}
+
+// finish marks the claim's goroutine as returned. See startupCore.finishEntry.
+func (r clearRecovery) finish(svc *Service) {
+	if r.handle == nil {
+		return
+	}
+	svc.AgentStartup.finishEntry(r.handle)
+}
+
+// relaunchHold is the startup registry entry that a process replacement holds,
+// from before it stops the old process until the new process runs or the
+// replacement gives up. The zero value holds nothing.
+//
+// Without it the agent reads INACTIVE for the whole gap: the old process is gone,
+// the new one is not registered, and the registry is the only source of STARTING.
+// The hold starts while the old process still runs, and a running process reads
+// ACTIVE before the registry, so the status never leaves ACTIVE except for
+// STARTING. It follows the order of OpenAgent, which registers before it writes
+// the row.
+//
+// A hold changes the status that a reader derives, and nothing else. It cancels
+// nothing: the launch of a replacement keeps its own context, and
+// validateLaunchedAgent stops a process that a close or an archive outlived. It
+// is not a startup window either (see startupEntry.replacement), so a refresh
+// that the new process reports persists as it did before the hold existed.
+type relaunchHold struct {
+	svc    *Service
+	handle *startupEntry
+}
+
+// holdRelaunch claims the startup of a process replacement for agentID. It claims
+// nothing when another startup, a failed startup, or a close already holds the
+// id. In those cases the holder's own state already keeps the agent from reading
+// INACTIVE, or the tab is going away.
+func (svc *Service) holdRelaunch(agentID string, provider leapmuxv1.AgentProvider) relaunchHold {
+	handle := svc.AgentStartup.beginReplacement(agentID)
+	if handle == nil {
+		return relaunchHold{}
+	}
+	svc.AgentStartup.setMessage(agentID, agentStartupLabel("Restarting", provider))
+	return relaunchHold{svc: svc, handle: handle}
+}
+
+// release gives the entry back. It is identity-guarded, so a close that already
+// retired the entry leaves the registry alone.
+func (h relaunchHold) release() {
+	if h.handle == nil {
+		return
+	}
+	h.svc.AgentStartup.abandon(h.handle)
+}
+
+// settle gives the entry back, and then tells the watchers where the replacement
+// ended. A watcher that connected during the hold replayed STARTING from the
+// registry, and no other event clears it when the provider's own ACTIVE came
+// before the connection. The status follows the process: ACTIVE while one runs,
+// INACTIVE after a launch that left none.
+func (h relaunchHold) settle() {
+	if h.handle == nil {
+		return
+	}
+	h.release()
+	row, err := h.svc.getAgentByID(bgCtx(), h.handle.id)
+	if err != nil {
+		slog.Warn("could not read the agent to announce the end of its relaunch", "agent_id", h.handle.id, "error", err)
+		return
+	}
+	if h.svc.Agents.HasAgent(row.ID) {
+		h.svc.broadcastAgentActive(&row, nil)
+		return
+	}
+	h.svc.broadcastAgentInactive(&row)
+}
+
 // prepareClearContext restarts the agent without resuming its prior session.
 // The returned function publishes the boundary after queue acceptance.
+//
+// It also recovers an agent whose last startup failed. See clearRecovery.
 func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	unlock := svc.Agents.LockAgent(agentID)
 	defer unlock()
@@ -3045,6 +3398,20 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	// affordance until context_cleared lands — by which point the indicator
 	// is suppressed again because the chat history ends in a turn boundary.
 	startingMsg := agentStartupLabel("Restarting", dbAgent.AgentProvider)
+	// Claim before the broadcast, so a client that connects after it replays
+	// the same STARTING from the registry.
+	recovery, err := svc.beginClearRecovery(&dbAgent, startingMsg)
+	if err != nil {
+		return nil, err
+	}
+	defer recovery.finish(svc)
+	// An ordinary clear claims the startup too, before it stops the process. A
+	// recovery already holds the claim.
+	var hold relaunchHold
+	if recovery.handle == nil {
+		hold = svc.holdRelaunch(agentID, dbAgent.AgentProvider)
+	}
+	defer hold.release()
 	svc.broadcastAgentStarting(&dbAgent, startingMsg, nil)
 
 	// Stop the running agent and wait for it to fully exit so that
@@ -3056,25 +3423,46 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	// Clear span tracking state from the previous session.
 	svc.Output.ResetSpanTracker(agentID)
 
+	// Forget the cleared session before the launch, because the launch never
+	// resumes it. A provider can state its new session only after the launch:
+	// Amp states a new thread on the init line of the thread's first message.
+	// If the row kept the cleared session until then, the agent would report
+	// it, and a cold start in that window would resume it and bring back the
+	// context that the user cleared. The write also comes before NewSink,
+	// which reads the stored session as the scope of the new transcript rows.
+	svc.clearAgentSessionID(agentID)
+
 	// Restart the agent with a fresh context.
-	// Don't clear agentSessionId before starting — the frontend uses it for
-	// isWatchable. On success, handleSystemInit will overwrite it with the
-	// new session ID. On failure, clear it so ensureAgentRunning won't try
-	// to resume a stale session.
 	// A fresh process needs a fresh control socket -- see remintAgentControlIPC.
 	// mintAndLaunch keeps the mint failure and the start failure on one exit, so
 	// the STARTING state this function entered is cleared by one piece of code.
+	//
+	// The launch never resumes: launchOptions carries no ResumeSessionID. That
+	// is what makes a clear the recovery from a refused native resume, which a
+	// repeated resume could damage further.
 	launchOptions := applyDBSettingsToAgentOptions(svc.Agents.Registry(), svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-	confirmedSettings, err := svc.mintAndLaunch(bgCtx(), "clear", launchOptions, sink, svc.startAgent)
+	confirmedSettings, err := svc.mintAndLaunch(recovery.launchContext(), "clear", launchOptions, sink, svc.startAgent)
 	if err != nil {
 		slog.Error("clear context: failed to restart agent", "agent_id", agentID, "error", err)
+		if recovery.closeRaced(svc) {
+			// The close cancelled the launch. The tab is going away, so this
+			// is not a startup failure to record.
+			recovery.abandon(svc)
+			return nil, errAgentClosedDuringLaunch
+		}
+		// A launch can state its new session and then fail. Forget that
+		// session also, so that no cold start resumes a session that no
+		// process holds.
 		svc.clearAgentSessionID(agentID)
 		// Persist the error and broadcast STARTUP_FAILED so the frontend
 		// transitions out of the STARTING state we entered above; otherwise
-		// the startup panel would stay stuck on the "Restarting…" label.
+		// the startup panel would stay stuck on the "Restarting…" label. The
+		// registry write sits between the two, for the reason failStartup
+		// states.
 		errMsg := err.Error()
 		svc.persistAgentStartupError(agentID, errMsg)
+		recovery.fail(svc, errMsg)
 		svc.broadcastAgentFailed(&dbAgent, errMsg, nil)
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
@@ -3083,7 +3471,17 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 		return nil, err
 	}
 	if _, err := svc.validateLaunchedAgent(agentID); err != nil {
+		// validateLaunchedAgent stopped the process of a closed or archived
+		// tab, or a store fault left its row unreadable.
+		recovery.abandon(svc)
 		return nil, err
+	}
+	// The process runs, so the agent has no failed startup any more. Both
+	// records go: the claim, which replaced the registry record, and the
+	// column, which agentStartupFailed reads once the process exits.
+	recovery.end(svc)
+	if dbAgent.StartupError != "" {
+		svc.persistAgentStartupError(agentID, "")
 	}
 	activeDbAgent, err := svc.persistConfirmedStartupSettings(agentID, dbAgent.AgentProvider, launchOptions.Options, confirmedSettings)
 	if err != nil {
@@ -3154,26 +3552,65 @@ func storedSessionID(row db.Agent) string {
 	return row.PendingResumeSessionID
 }
 
+// resumePolicy states which native session a cold start resumes.
+//
+// It is a rule, not a session ID, because ensureAgentRunning applies it to the
+// row that it reads under the lifecycle lock. A caller that read the row
+// earlier can hold a session that is no longer the stored one: a startup that
+// the caller joined, or one that ran between its read and the start, can report
+// a new session and still leave no process. The resumed session is therefore
+// the one that the row holds at the launch, and no caller can supply an older
+// one.
+type resumePolicy int
+
+const (
+	// resumeIfConversation resumes the stored session only when a conversation
+	// exists in it. See resolveResumeSessionID. HasUserMessages must not count
+	// the message that the start serves, and no caller persists that message
+	// first: the input queue writes the transcript row after the dispatch
+	// returns.
+	resumeIfConversation resumePolicy = iota
+	// resumeStoredSession resumes the stored session whenever the row holds
+	// one. The resume sweep uses it; AgentResumer.resumeOne states why it
+	// skips the conversation check.
+	resumeStoredSession
+)
+
+// sessionID returns the session that this policy resumes for row, or "" for
+// a fresh session.
+func (p resumePolicy) sessionID(svc *Service, row db.Agent) string {
+	if p == resumeStoredSession {
+		return storedSessionID(row)
+	}
+	return svc.resolveResumeSessionIDForAgent(row.ID, row)
+}
+
 // ensureAgentRunning starts the agent process if it is not already running.
 // It fetches the agent configuration from the DB and resumes the session
-// if a session ID is stored (e.g. after worker restart).
+// that resume selects from the row (e.g. after worker restart).
 //
-// When the caller has already resolved the resume session ID (e.g. before
-// persisting a user message that would skew the HasUserMessages check),
-// pass it via preResolvedResumeSessionID. Pass nil to let this function
-// resolve it from the DB.
+// It resolves the resumed session from the row that it reads under the
+// lifecycle lock, after any join of a startup in flight. See resumePolicy.
 //
 // It owns the AgentStartup protocol for every cold start, which is what gives
-// all four callers the same three properties: a client that connects mid-start
-// replays STARTING, a CloseAgent cancels the start through cancelAndClear, and
-// Shutdown's WaitForInFlight drains it. Registering at one call site left the
-// three message-driven callers without any of them.
+// all three callers -- queue dispatch, a raw control request, and the resume
+// sweep -- the same three properties: a client that connects mid-start replays
+// STARTING, a CloseAgent cancels the start through cancelAndClear, and
+// Shutdown's WaitForInFlight drains it. A registration at one call site would
+// leave the other callers without any of them.
 //
 // A request or queue drain does not race a startup that is already in flight
 // for the same tab. It waits for that startup and reports its outcome. The wait
 // keeps a message sent inside the open path's startup window. A request uses
 // the API budget. A queue drain uses the process startup budget because its
 // enqueue response already returned.
+//
+// It never starts an agent whose last startup failed (see agentStartupFailed).
+// That failure is an outcome to report, not a startup to repeat: the provider
+// already refused the launch, and the queue refuses input to the tab. Only a
+// cold start that fails leaves the agent retryable, because it records no
+// startup failure. The one way back is an explicit /clear, which
+// prepareClearContext serves and never routes through here.
 //
 // It takes no context. The startup context is rooted at bgCtx() and created
 // here, because it is the agent PROCESS's lifetime -- the provider builds its
@@ -3182,7 +3619,7 @@ func storedSessionID(row db.Agent) string {
 // resume must outlive the sweep. begin publishes the cancel, so a close still
 // reaches a start that is in its handshake; that is the one route that should
 // end this process early, and it is the same route an open uses.
-func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionID *string, priority startPriority) error {
+func (svc *Service) ensureAgentRunning(agentID string, resume resumePolicy, priority startPriority) error {
 	if svc.Agents.HasAgent(agentID) {
 		return nil
 	}
@@ -3212,6 +3649,11 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	// steps before the close stamps closed_at -- so the closed-tab guard below
 	// would still read an open row and this would spawn a process for a tab the
 	// user just closed, which nothing would ever stop.
+	//
+	// A wait that a FAILURE ended is not one either. fail() wakes this waiter
+	// after failStartup persisted the error, so the startup-failure refusal
+	// under the lock below reports it. Without that refusal, this caller would
+	// launch a second time the startup that the provider had just refused.
 	//
 	// The claim below still stands on its own. A startup that begins between
 	// this wait and that claim is refused as before -- a window of microseconds
@@ -3263,7 +3705,7 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	// A closed tab never gets a process either, and this is the only place that
 	// can refuse one safely. GetAgentByID carries no closed_at predicate, so
 	// every caller reads a row that a CloseAgent can invalidate before the spawn
-	// -- the resume sweep from its own listing, and the three request-driven
+	// -- the resume sweep from its own listing, and the two message-driven
 	// callers from their own earlier read. A process started here is one nothing
 	// will ever stop: the tab's teardown already ran, so it holds a CLI and a
 	// control socket for the life of the worker under a tab no client can see.
@@ -3275,13 +3717,20 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	if dbAgent.WorkspaceArchived {
 		return fmt.Errorf("agent %s belongs to an archived workspace; it takes no new process", agentID)
 	}
-
-	var resumeSessionID string
-	if preResolvedResumeSessionID != nil {
-		resumeSessionID = *preResolvedResumeSessionID
-	} else {
-		resumeSessionID = svc.resolveResumeSessionIDForAgent(agentID, dbAgent)
+	// An agent whose last startup failed never gets a process from here. Every
+	// caller can arrive after that failure: queue dispatch and a control request
+	// through the in-flight join above, and the resume sweep from a row that it
+	// read before the failure. failStartup persists the error before it wakes
+	// the join, so the re-read above holds the column. beginColdStart below
+	// refuses the registry record under its own lock, for a failure that lands
+	// after this check.
+	if svc.agentStartupFailed(&dbAgent) {
+		return errAgentStartupFailed
 	}
+
+	// From the row read above, under the lock and after the join: a session ID
+	// that a caller resolved earlier can predate a startup that moved it.
+	resumeSessionID := resume.sessionID(svc, dbAgent)
 	// Register the start before anything can observe it. The registry is what
 	// makes this cold start reachable: a client that connects mid-start replays
 	// STARTING from it, a CloseAgent cancels through it, and Shutdown drains it.
@@ -3290,15 +3739,20 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	// lock cannot give. An OpenAgent startup holds no manager entry until its
 	// final handoff, so HasAgent above is false while one is in flight, and a
 	// message that lands in that window used to spawn a second process for the
-	// same tab.
+	// same tab. The claim refuses a failed startup too; see beginColdStart.
 	startupCtx, cancel := context.WithCancel(bgCtx())
-	handle, closing := svc.AgentStartup.beginWithCloseState(agentID, cancel)
-	if handle == nil {
+	handle, outcome := svc.AgentStartup.beginColdStart(agentID, cancel)
+	switch outcome {
+	case claimAdmitted:
+	case claimRefusedClosing:
 		cancel()
-		if closing {
-			return fmt.Errorf("agent %s is closing; it takes no new process", agentID)
-		}
+		return fmt.Errorf("agent %s is closing; it takes no new process", agentID)
+	case claimRefusedInFlight:
+		cancel()
 		return fmt.Errorf("agent %s already has a startup in progress", agentID)
+	case claimRefusedFailed:
+		cancel()
+		return errAgentStartupFailed
 	}
 	defer svc.AgentStartup.finishEntry(handle)
 	// succeed() on BOTH outcomes, because it only means "drop the override and
@@ -3409,7 +3863,7 @@ func (svc *Service) handleControlRequestMessage(agentID string, provider leapmux
 			return true
 		}
 		// Other control requests need the agent running.
-		if err := svc.ensureAgentRunning(agentID, nil, interactiveStart); err != nil {
+		if err := svc.ensureAgentRunning(agentID, resumeIfConversation, interactiveStart); err != nil {
 			slog.Error("failed to start agent for control request", "agent_id", agentID, "error", err)
 			return false
 		}
@@ -3642,6 +4096,9 @@ func (svc *Service) restartPlanContextLocked(agentID, targetMode string, dbAgent
 	if _, err := svc.readOpenAgentForLaunch(agentID); err != nil {
 		return "", err
 	}
+	// Hold the startup before the stop, and announce the outcome after the entry
+	// is back.
+	defer svc.holdRelaunch(agentID, dbAgent.AgentProvider).settle()
 	// DiscardOutput before stop so shutdown noise ("stream closed") does not
 	// land in the persisted chat history.
 	svc.Agents.DiscardOutputAndStopAgent(agentID)

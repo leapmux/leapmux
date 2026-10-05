@@ -59,7 +59,7 @@ func TestCloseAgentBlocksNewStartBeforeTeardown(t *testing.T) {
 		t.Fatal("the close did not reach its held teardown")
 	}
 
-	err := svc.ensureAgentRunning(agentID, nil, interactiveStart)
+	err := svc.ensureAgentRunning(agentID, resumeIfConversation, interactiveStart)
 	assert.ErrorContains(t, err, "closing", "a close must refuse a new startup before teardown")
 	assert.Empty(t, recorder.ids(), "no new provider start can escape the earlier cancellation")
 	release()
@@ -115,15 +115,282 @@ func TestAgentResumeCloseBeforeRegistrationStopsLateProcess(t *testing.T) {
 	resumer.WaitForSweepForTest()
 	assert.True(t, late.IsStopped(), "a process that registers after close cannot survive")
 	assert.False(t, svc.Agents.HasAgent(agentID))
-	for _, payload := range watcher.streamsSnapshot() {
+	// The catch-up replays on the session goroutine after the watch registers,
+	// so it can still run here. Wait for its end, so the assertion below covers
+	// its status marker on every run and the replay does not outlive the test.
+	require.Eventually(t, func() bool {
+		for _, event := range watchedAgentEvents(watcher) {
+			if event.GetCatchUpComplete() != nil {
+				return true
+			}
+		}
+		return false
+	}, inputQueueWait, 10*time.Millisecond, "the catch-up never completed")
+	for _, event := range watchedAgentEvents(watcher) {
+		if status := event.GetStatusChange(); status != nil {
+			assert.NotEqual(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, status.GetStatus(),
+				"a closed tab cannot publish ACTIVE after its late provider start")
+		}
+	}
+}
+
+// stopGatedAgent is a probe agent whose Stop waits for the test. It keeps a
+// late process registered in the manager for as long as the test needs it.
+type stopGatedAgent struct {
+	*nativeRestartProbeAgent
+	stopEntered chan struct{}
+	releaseStop chan struct{}
+	enterOnce   sync.Once
+}
+
+func (a *stopGatedAgent) Stop() {
+	a.enterOnce.Do(func() { close(a.stopEntered) })
+	<-a.releaseStop
+	a.nativeRestartProbeAgent.Stop()
+}
+
+// watchedAgentEvents decodes every agent event that w received.
+func watchedAgentEvents(w *testResponseWriter) []*leapmuxv1.AgentEvent {
+	var events []*leapmuxv1.AgentEvent
+	for _, payload := range w.streamsSnapshot() {
 		var event leapmuxv1.WatchEventsResponse
 		if proto.Unmarshal(payload.GetPayload(), &event) != nil {
 			continue
 		}
-		if status := event.GetAgentEvent().GetStatusChange(); status != nil {
-			assert.NotEqual(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, status.GetStatus(),
-				"a closed tab cannot publish ACTIVE after its late provider start")
+		if agentEvent := event.GetAgentEvent(); agentEvent != nil {
+			events = append(events, agentEvent)
 		}
+	}
+	return events
+}
+
+// TestCatchUpReplayDoesNotReportALateProcessOfAClosedTab reproduces, with
+// gates instead of timing, the interleaving that
+// TestAgentResumeCloseBeforeRegistrationStopsLateProcess hits under load.
+//
+// The WatchEvents catch-up registers the watch first and replays after it, on
+// the session goroutine. It reads the agent row when it resolves the watch,
+// and it asks the manager whether a process runs only at its closing status
+// marker. Between the two reads, the resume sweep's provider start ends after
+// a close: the late process registers, and it stays registered until the
+// launch validation stops it. A marker that combined the row from before the
+// close with the process from after it reported ACTIVE for a closed tab.
+func TestCatchUpReplayDoesNotReportALateProcessOfAClosedTab(t *testing.T) {
+	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
+	svc, dispatcher, _ := setupTestService(t)
+	const agentID = "agent-late-replay"
+	seedOpenAgent(t, svc, agentID, true)
+
+	// Gate 1: the catch-up waits in its git-status batch, after it read the
+	// agent row and before its status marker.
+	replayHeld := make(chan struct{})
+	releaseReplay := make(chan struct{})
+	var heldOnce, releaseReplayOnce sync.Once
+	letReplayGo := func() { releaseReplayOnce.Do(func() { close(releaseReplay) }) }
+	defer letReplayGo()
+	svc.batchGitStatusFn = func(_ context.Context, dirs []string) []*leapmuxv1.GitRepoStatus {
+		heldOnce.Do(func() { close(replayHeld) })
+		<-releaseReplay
+		return make([]*leapmuxv1.GitRepoStatus, len(dirs))
+	}
+	watcher := newTestWriter()
+	dispatch(dispatcher, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{
+			AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST,
+			Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL,
+		}},
+	}, watcher)
+	select {
+	case <-replayHeld:
+	case <-ctx.Done():
+		require.FailNow(t, "the catch-up never reached its git-status batch")
+	}
+
+	// Gate 2: the resume sweep's provider start waits until after the close.
+	// Gate 3: the late process stays registered until the test lets the launch
+	// validation stop it.
+	late := &stopGatedAgent{
+		nativeRestartProbeAgent: newNativeRestartProbeAgent(agentID),
+		stopEntered:             make(chan struct{}),
+		releaseStop:             make(chan struct{}),
+	}
+	var releaseStopOnce sync.Once
+	letStopGo := func() { releaseStopOnce.Do(func() { close(late.releaseStop) }) }
+	defer letStopGo()
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
+	startEntered := make(chan struct{})
+	releaseStart := make(chan struct{})
+	svc.startBackgroundAgentFn = func(startCtx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
+		close(startEntered)
+		<-releaseStart
+		return svc.Agents.StartAgentWith(startCtx, opts, sink,
+			func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
+				return late, nil
+			})
+	}
+	resumer := svc.AgentResumer()
+	resumer.Start(ctx)
+	select {
+	case <-startEntered:
+	case <-ctx.Done():
+		require.FailNow(t, "the resume never entered its provider start")
+	}
+	svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_AGENT, "", agentID)
+	require.True(t, requireAgentRow(t, svc, agentID).ClosedAt.Valid, "fixture check: the close stamped the row")
+	close(releaseStart)
+	select {
+	case <-late.stopEntered:
+	case <-ctx.Done():
+		require.FailNow(t, "the launch validation never stopped the late process")
+	}
+	require.True(t, svc.Agents.HasAgent(agentID), "fixture check: the late process is registered")
+
+	// The catch-up reaches its status marker while the late process of the
+	// closed tab is registered.
+	letReplayGo()
+	require.Eventually(t, func() bool {
+		for _, event := range watchedAgentEvents(watcher) {
+			if event.GetCatchUpComplete() != nil {
+				return true
+			}
+		}
+		return false
+	}, inputQueueWait, 10*time.Millisecond, "the catch-up never completed")
+	letStopGo()
+	resumer.WaitForSweepForTest()
+
+	for _, event := range watchedAgentEvents(watcher) {
+		if status := event.GetStatusChange(); status != nil {
+			assert.NotEqual(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE.String(), status.GetStatus().String(),
+				"the catch-up reported ACTIVE for a closed tab, from the row it read before the close")
+		}
+	}
+	assert.True(t, late.IsStopped(), "the late process of a closed tab must not survive")
+}
+
+// holdCloseBeforeTeardown starts a close of agentID and holds it after its
+// admission, before it stops the process and stamps closed_at. The returned
+// function lets the close finish and waits for it.
+func holdCloseBeforeTeardown(t *testing.T, svc *Service, agentID string) func() {
+	t.Helper()
+	ctx := testutil.DeadlineContext(t)
+	held := make(chan struct{})
+	releaseClose := make(chan struct{})
+	svc.beforeAgentCloseTeardownFn = func(string) {
+		close(held)
+		<-releaseClose
+	}
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		svc.closeAgentTabCommon("", agentID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED, dropWorktreeLink)
+	}()
+	select {
+	case <-held:
+	case <-ctx.Done():
+		require.FailNow(t, "the close never reached its held teardown")
+	}
+	var once sync.Once
+	finish := func() {
+		once.Do(func() {
+			close(releaseClose)
+			// Not ctx: finish also runs as a cleanup, and the test context ends
+			// before the cleanups run. The limit is a deadlock guard only.
+			select {
+			case <-closed:
+			case <-time.After(inputQueueWait):
+				require.FailNow(t, "the close never finished after its teardown was released")
+			}
+		})
+	}
+	t.Cleanup(finish)
+	return finish
+}
+
+// TestSinkStatusIsNotActiveWhileACloseIsInProgress pins the guard on the
+// status that a provider pushes through its sink. A close stamps closed_at only
+// after it stopped the process, so the row that a late provider push reads
+// still says open inside that window. The close admission must answer for it.
+func TestSinkStatusIsNotActiveWhileACloseIsInProgress(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	const agentID = "agent-sink-close"
+	seedOpenAgent(t, svc, agentID, true)
+	svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := requireRootOutputSink(t, svc.Output, agentID)
+
+	row := requireAgentRow(t, svc, agentID)
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE.String(),
+		sink.buildStatusChange(row, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, "").GetStatus().String(),
+		"fixture check: an open tab with no close reports ACTIVE")
+
+	finish := holdCloseBeforeTeardown(t, svc, agentID)
+	row = requireAgentRow(t, svc, agentID)
+	require.False(t, row.ClosedAt.Valid, "fixture check: the held close did not stamp the row yet")
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE.String(),
+		sink.buildStatusChange(row, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, "").GetStatus().String(),
+		"a provider push reported ACTIVE while a close of its tab was in progress")
+
+	finish()
+	row = requireAgentRow(t, svc, agentID)
+	require.True(t, row.ClosedAt.Valid)
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE.String(),
+		sink.buildStatusChange(row, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, "").GetStatus().String(),
+		"a provider push reported ACTIVE for a closed tab")
+}
+
+// TestBroadcastAgentActiveSkipsATabThatMayNotReportActive pins the guard on the
+// service's own ACTIVE broadcast. Its callers validate the row first, and a
+// close or an archive can land between that check and the broadcast.
+func TestBroadcastAgentActiveSkipsATabThatMayNotReportActive(t *testing.T) {
+	t.Parallel()
+
+	activeCount := func(w *testResponseWriter) int {
+		count := 0
+		for _, event := range watchedAgentEvents(w) {
+			if event.GetStatusChange().GetStatus() == leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE {
+				count++
+			}
+		}
+		return count
+	}
+	for _, tc := range []struct {
+		name      string
+		end       func(t *testing.T, svc *Service, agentID string)
+		broadcast bool
+	}{
+		{name: "open tab", end: func(*testing.T, *Service, string) {}, broadcast: true},
+		{name: "close in progress", end: func(t *testing.T, svc *Service, agentID string) {
+			holdCloseBeforeTeardown(t, svc, agentID)
+		}},
+		{name: "closed tab", end: func(t *testing.T, svc *Service, agentID string) {
+			holdCloseBeforeTeardown(t, svc, agentID)()
+		}},
+		{name: "archived workspace", end: func(t *testing.T, svc *Service, agentID string) {
+			_, err := svc.Queries.SetAgentWorkspaceArchived(t.Context(), db.SetAgentWorkspaceArchivedParams{
+				WorkspaceArchived: true, ID: agentID,
+			})
+			require.NoError(t, err)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			svc, _, w := setupTestService(t)
+			const agentID = "agent-active-guard"
+			seedOpenAgent(t, svc, agentID, true)
+			registerAgentWatch(svc, w.channelID, agentID, leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
+			// The row as a caller read it before the close or the archive.
+			row := requireAgentRow(t, svc, agentID)
+			tc.end(t, svc, agentID)
+
+			svc.broadcastAgentActive(&row, nil)
+			if tc.broadcast {
+				assert.Equal(t, 1, activeCount(w))
+				return
+			}
+			assert.Zero(t, activeCount(w), "the tab may not report ACTIVE, and the broadcast reported it")
+		})
 	}
 }
 
@@ -145,7 +412,7 @@ func TestCloseAgentReleasesAdmissionAfterDatabaseFailure(t *testing.T) {
 
 	recorder := newStartRecorder()
 	recorder.install(svc)
-	require.NoError(t, svc.ensureAgentRunning(agentID, nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning(agentID, resumeIfConversation, interactiveStart))
 	assert.Equal(t, []string{agentID}, recorder.ids(),
 		"the failed close releases its admission guard for a later start")
 }
@@ -167,7 +434,7 @@ func TestCloseAgentReleasesAdmissionAfterPanic(t *testing.T) {
 
 	recorder := newStartRecorder()
 	recorder.install(svc)
-	require.NoError(t, svc.ensureAgentRunning(agentID, nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning(agentID, resumeIfConversation, interactiveStart))
 	assert.Equal(t, []string{agentID}, recorder.ids(),
 		"a panic before the database close releases the admission guard")
 }

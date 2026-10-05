@@ -203,10 +203,11 @@ func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) 
 		ID:             "agent-idle",
 	}))
 
-	// Resolve BEFORE the user message is persisted — this is the fix.
-	// Without the fix, the caller would persist the message first, and
-	// resolveResumeSessionID would see the just-created message and
-	// incorrectly return the session ID.
+	// The resolution must run BEFORE the user message is persisted. A message
+	// persisted first would count as a prior conversation, and the resolution
+	// would return the session ID. The input queue keeps that order: it writes
+	// the transcript row after the dispatch, whose cold start resolves the
+	// session (TestQueuedFirstMessageToAnIdleAgentStartsAFreshSession).
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-idle")
 	require.NoError(t, err)
 	result := svc.resolveResumeSessionID("agent-idle", dbAgent.AgentSessionID, dbAgent.Resumed)
@@ -224,9 +225,8 @@ func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) 
 	})
 	require.NoError(t, err)
 
-	// After the message is persisted, resolveResumeSessionID would
-	// now find it — but the caller already has the pre-resolved value,
-	// so the agent starts without --resume.
+	// After the message is persisted, resolveResumeSessionID finds it. This
+	// is why the resolution must not run after the persist.
 	postResult := svc.resolveResumeSessionID("agent-idle", dbAgent.AgentSessionID, dbAgent.Resumed)
 	assert.Equal(t, "session-idle", postResult,
 		"after the message is in the DB, HasUserMessages returns true (demonstrates the ordering bug)")
@@ -1111,7 +1111,7 @@ func TestApplySettingsViaRestartDrainsInputAfterTheReplacedTurn(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, agentID)
 		return snapshotErr == nil && len(snapshot.Items) == 0
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 }
 
 func mockAgentStarter(t *testing.T, svc *Service, onStart func(agent.Options)) func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
