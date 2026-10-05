@@ -450,13 +450,17 @@ func (r *Registry) EffortEnvOverride(provider leapmuxv1.AgentProvider) string {
 
 // ManagesEffort reports whether leapmux owns a model-dependent effort
 // default for this provider -- i.e. its effort tiers belong to the model. A provider
-// with a STATIC catalog states them in DefaultModels (Claude, Codex, Pi). Native
-// Copilot reads its catalog from the open session, Codewhale reads it from the model
-// provider that the user configured, and Kimi Code and MiMo Code read each model's
-// thinking levels or reasoning variants from their servers. None of the four has a
-// static entry to state them in, so each sets Registration.ManagesEffort instead. For all of them,
+// with a STATIC catalog states them in DefaultModels (Claude, Codex, Pi). Seven
+// providers have no static entry that states them, so each sets Registration.ManagesEffort
+// instead. Native Copilot reads its catalog from the open session, Codewhale reads it from
+// the model provider that the user configured, Kimi Code and MiMo Code read each model's
+// thinking levels or reasoning variants from their servers, Cline reads a native table for
+// each provider, DeepSeek Harness reads the native model catalog, and Command Code reads a
+// gateway catalog that its local-only mode empties. For all of them,
 // resolveProviderDefaults stamps an effort default into the launch options, and
-// providerHasModelDependentGroups rebuilds the effort tiers on a model change.
+// providerHasModelDependentGroups rebuilds the effort tiers on a model change. A model
+// switch that sends no effort keeps the stored tier when the catalog offers it for the
+// new model (resetEffortToAutoIfUnsupported).
 //
 // An ACP provider's reasoning axis, where it has one (OpenCode's and Kilo's reasoning
 // effort, Goose's thinking effort), is a server-driven config option that does NOT
