@@ -39,10 +39,14 @@ kimiTest.describe('Kimi Code session goal', () => {
       // turn, which the replacement fallback holds at its own gate.
       await modelScript.waitForGate(second)
       expect((await modelScript.status()).requests.length).toBeGreaterThan(1)
-      await modelScript.releaseGate(second)
+      // Clear the goal while the resumed turn is still held. A released gate stays open, and the
+      // goal loop of Kimi then asks the model again at once. That loop answered 200 requests, the
+      // limit of the fallback, before the click that clears the goal arrived.
       await openGoalMenu(page)
       await goalAction(page, 'clear').click()
       await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+      // Kimi may abort the held turn when the goal clears, as it does when the goal pauses.
+      await modelScript.releaseGateIfHeld(second)
       await waitForAgentIdle(page)
     }
     finally {
