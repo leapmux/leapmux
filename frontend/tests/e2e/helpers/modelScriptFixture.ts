@@ -32,6 +32,11 @@ export interface ModelScriptOptions {
    * Each wait reads the current value, so a timeout increase before that wait extends its deadline.
    */
   testDeadline?: () => number | undefined
+  /**
+   * Keep the whole status of a script that ends incomplete. The failure message holds a summary only.
+   * A failure in this hook never replaces the incomplete-script failure.
+   */
+  attachStatus?: (status: MockModelScenarioStatus) => Promise<void>
 }
 
 /**
@@ -147,7 +152,8 @@ export async function startModelScript(serverURL: string, options: ModelScriptOp
           cleanupNeeded = false
           return
         }
-        throw new Error(`The model script of this test is incomplete: ${describe(status)}\n${JSON.stringify(status, null, 2)}`)
+        await options.attachStatus?.(status).catch(() => {})
+        throw new Error(`The model script of this test is incomplete: ${describe(status)}\n${JSON.stringify(summarize(status), null, 2)}`)
       }, async () => {
         if (cleanupNeeded)
           await removeMockModelScenario(serverURL, id, { force: true })
@@ -216,6 +222,31 @@ function describe(status: MockModelScenarioStatus): string {
     + `${unexpected} request${unexpected === 1 ? '' : 's'} the script did not answer`
 }
 
+/** The most entries of one list that a failure message shows. */
+const SUMMARY_LIST_LIMIT = 20
+
+/**
+ * Reduce a status to what a failure message needs: the counts, the rule matches, and the route of each request.
+ * A request body holds the whole conversation and every tool schema, and a long goal loop grows it with each turn.
+ * A message that held 200 bodies reached 169 MB. Playwright copies a failure message into each report,
+ * and the copies exhausted the 4 GB heap of the shard process. The full status goes to an attachment.
+ */
+function summarize(status: MockModelScenarioStatus): Record<string, unknown> {
+  const limit = <T, U>(list: T[], pick: (item: T) => U): { count: number, shown: U[] } => ({
+    count: list.length,
+    shown: list.slice(0, SUMMARY_LIST_LIMIT).map(pick),
+  })
+  return {
+    complete: status.complete,
+    nextStep: status.nextStep,
+    stepCount: status.stepCount,
+    ruleMatches: status.ruleMatches,
+    pendingGates: status.pendingGates,
+    requests: limit(status.requests, ({ protocol, path, stepIndex, rule, fallback }) => ({ protocol, path, stepIndex, rule, fallback })),
+    unexpectedRequests: limit(status.unexpectedRequests, ({ protocol, path, reason }) => ({ protocol, path, reason })),
+  }
+}
+
 /**
  * Both Playwright test bases use this fixture implementation:
  *
@@ -242,6 +273,8 @@ export async function runModelScriptFixture(
     testDeadline: () => testStartedAt !== undefined && testInfo.timeout !== undefined && testInfo.timeout > 0
       ? testStartedAt + testInfo.timeout
       : undefined,
+    // A failed test attaches the live status above. A passed test reaches this hook when its script ends incomplete.
+    attachStatus: status => attachStatusFile(status, testInfo),
   })
   try {
     await use(lifecycle.script)
@@ -265,14 +298,25 @@ async function attachScriptStatus(
     attach?: (name: string, options: { path: string, contentType: string }) => Promise<void>
   },
 ): Promise<void> {
-  if (!testInfo.outputPath || !testInfo.attach)
-    return
   try {
-    const path = testInfo.outputPath('model-script.json')
-    writeFileSync(path, JSON.stringify(await script.status(), null, 2))
-    await testInfo.attach('model-script', { path, contentType: 'application/json' })
+    await attachStatusFile(await script.status(), testInfo)
   }
   catch {
     // A diagnostic that fails must not replace the failure it documents.
   }
+}
+
+/** Write the whole status beside the test report. The file is compact, because a status can hold megabytes. */
+async function attachStatusFile(
+  status: MockModelScenarioStatus,
+  testInfo: {
+    outputPath?: (name: string) => string
+    attach?: (name: string, options: { path: string, contentType: string }) => Promise<void>
+  },
+): Promise<void> {
+  if (!testInfo.outputPath || !testInfo.attach)
+    return
+  const path = testInfo.outputPath('model-script.json')
+  writeFileSync(path, JSON.stringify(status))
+  await testInfo.attach('model-script', { path, contentType: 'application/json' })
 }

@@ -1,3 +1,4 @@
+import type { MockModelScenarioStatus } from './mockModelScript'
 import type { MockModelServer } from './mockModelServer'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
@@ -359,5 +360,63 @@ describe('startModelScript', () => {
     await script.queue({ text: 'Never asked for' })
     await expect(script.waitForSteps(1, 200)).rejects.toThrow(/reached 0 of 1 answers/)
     await finish(false)
+  })
+
+  // The conversation of a long goal loop grows with each turn, so one fallback request can hold
+  // megabytes. A message with the whole status once reached 169 MB. Playwright copies a failure
+  // message into several reports, and the copies exhausted the 4 GB heap of the shard process.
+  it('keeps the request bodies out of the incomplete-script message', async () => {
+    const server = await startServer()
+    const attached: MockModelScenarioStatus[] = []
+    const { script, finish } = await startModelScript(server.url, {
+      attachStatus: async (status) => {
+        attached.push(status)
+      },
+    })
+    await script.queue({ text: 'The scripted answer.' })
+    expect(await answer(server, script.prompt('One scripted turn.'))).toBe('The scripted answer.')
+    const marker = `BODY_MARKER_${'x'.repeat(200_000)}`
+    for (const index of [1, 2, 3]) {
+      const unexpected = await complete(server, [{ role: 'user', content: script.prompt(`Unscripted request ${index} ${marker}`) }])
+      expect(unexpected.status).toBe(409)
+      await unexpected.arrayBuffer()
+    }
+
+    const failure = await finish(true).then(() => undefined, (error: unknown) => error as Error)
+
+    expect(failure?.message).toMatch(/incomplete:.*3 requests the script did not answer/)
+    expect(failure?.message).not.toContain('BODY_MARKER_')
+    expect(failure?.message.length).toBeLessThan(20_000)
+    expect(failure?.message).toContain('/v1/chat/completions')
+    expect(attached).toHaveLength(1)
+    expect(JSON.stringify(attached[0])).toContain('BODY_MARKER_')
+  })
+
+  it('attaches nothing when the script is complete', async () => {
+    const server = await startServer()
+    const attached: MockModelScenarioStatus[] = []
+    const { script, finish } = await startModelScript(server.url, {
+      attachStatus: async (status) => {
+        attached.push(status)
+      },
+    })
+    await script.queue({ text: 'The scripted answer.' })
+    expect(await answer(server, script.prompt('One scripted turn.'))).toBe('The scripted answer.')
+    await finish(true)
+    expect(attached).toEqual([])
+  })
+
+  it('keeps the failure when the attachment fails', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url, {
+      attachStatus: async () => {
+        throw new Error('The disk is full.')
+      },
+    })
+    const unexpected = await complete(server, [{ role: 'user', content: script.prompt('An unscripted turn.') }])
+    expect(unexpected.status).toBe(409)
+    await unexpected.arrayBuffer()
+
+    await expect(finish(true)).rejects.toThrow(/incomplete:.*1 request the script did not answer/)
   })
 })
