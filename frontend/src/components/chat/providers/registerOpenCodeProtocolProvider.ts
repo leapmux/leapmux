@@ -1,5 +1,5 @@
 import type { ProviderTranscriptCapability } from './capabilities'
-import type { OpenCodeFamilyToolKinds } from './opencode/extractors/toolCall'
+import type { OpenCodeFamilyVocabulary } from './opencode/extractors/toolCall'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
 import { registerACPProvider } from './acp/registerACPProvider'
@@ -8,16 +8,14 @@ import { openCodeExtractControl } from './opencode/extractControl'
 import { openCodeToolCallAdapterFor } from './opencode/extractors/toolCall'
 import { extractOpenCodeQuestions, sendOpenCodeQuestionRejectResponse, sendOpenCodeQuestionResponse } from './openCodeQuestions'
 
-interface OpenCodeProtocolOptions {
+/**
+ * What one provider of the family supplies: its identity, and the vocabulary the shared
+ * tool-call adapter reads (`OpenCodeFamilyVocabulary`).
+ */
+interface OpenCodeProtocolOptions extends OpenCodeFamilyVocabulary {
   provider: AgentProvider
   /** Default primary agent: `'build'` for OpenCode or `'code'` for Kilo. */
   defaultPrimaryAgent: string
-  /**
-   * The provider's tool kinds that the shared protocol does not state.
-   * The daemons share a wire format, but their tool sets differ.
-   * Each provider supplies its own identity table to the family adapter.
-   */
-  toolKinds?: OpenCodeFamilyToolKinds
   /** The provider's pure reader of reported output file paths. */
   outputFilePaths?: ProviderTranscriptCapability['outputFilePaths']
 }
@@ -27,14 +25,19 @@ const PLAN_PRIMARY_AGENT = 'plan'
 
 /**
  * Register a provider that speaks the OpenCode question and control protocol.
- * Each provider supplies its enum and default primary agent.
+ *
+ * Each provider supplies these values:
+ *   - Its enum.
+ *   - Its default primary agent.
+ *   - Its refusal errors.
+ *
  * Kilo also supplies its additional tool kinds.
  */
 export function registerOpenCodeProtocolProvider(opts: OpenCodeProtocolOptions): void {
   registerACPProvider({
     provider: opts.provider,
     ...(opts.outputFilePaths ? { outputFilePaths: opts.outputFilePaths } : {}),
-    toolCallAdapter: openCodeToolCallAdapterFor(opts.toolKinds),
+    toolCallAdapter: openCodeToolCallAdapterFor(opts),
     settingsConfig: {
       kind: 'optionGroup',
       optionGroupKey: PRIMARY_AGENT_KEY,

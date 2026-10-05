@@ -12,6 +12,8 @@ opencodeTest('accepts a PDF attachment and carries it through the turn', async (
   const sourcePath = await expectAttachmentOutcome(page, 'pdf', { supported: true, fileName: 'opencode-doc.pdf' })
   await sendWithAttachment(page, modelScript.prompt('Read the attached PDF.'))
   const status = await modelScript.waitForSteps()
+  // OpenCode keeps the ACP blob as a data URL file part, and its Chat Completions
+  // serializer sends it unchanged as a `file` part with a PDF data URI.
   await expectNativeAttachmentProof(page, status, 'pdf', sourcePath, 'openai-chat-completions')
   await waitForAgentIdle(page)
 

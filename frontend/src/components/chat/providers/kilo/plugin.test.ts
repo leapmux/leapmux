@@ -1,8 +1,10 @@
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { providerToolCall } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
 import { acpResultDivider } from '../acp/extractors/resultDivider'
-import { describeACPProviderBasics, renderACPRow } from '../acp/testUtils'
+import { acpTextContent, describeACPProviderBasics, renderACPRow, renderACPToolPair } from '../acp/testUtils'
 import { sendOpenCodeQuestionResponse } from '../openCodeQuestions'
 import { providerFor } from '../registry'
 
@@ -339,6 +341,58 @@ describe('kilo tool_call_update renderer', () => {
     }
     const category = plugin?.transcript.classify(input(toolUse))
     expect(category.kind).toBe('tool_use')
+  })
+})
+
+/**
+ * A call the reader refused never ran.
+ *
+ * Kilo's Agent Client Protocol layer sends no refusal field. Its failed update carries
+ * the error's message alone, in a content block and in `rawOutput.error`
+ * (`errorToolUpdate`, `packages/opencode/src/acp/tool.ts`), so the exact message of each
+ * refusal error is the one native signal. Each message below is copied from Kilo's own
+ * error classes (`packages/core/src/v1/permission.ts`).
+ */
+describe('kilo refused tool calls', () => {
+  const REJECTED = 'The user rejected permission to use this specific tool call.'
+  const RAW_INPUT = { command: 'printf provider-steer-ready', description: 'Print the marker' }
+  const opening = { sessionUpdate: 'tool_call', toolCallId: 'refused-call', status: 'pending', kind: 'execute', title: 'bash', rawInput: RAW_INPUT }
+
+  const callOf = (error: string) => providerToolCall(
+    AgentProvider.KILO,
+    { sessionUpdate: 'tool_call_update', toolCallId: 'refused-call', status: 'failed', kind: 'execute', title: 'bash', rawInput: RAW_INPUT, content: acpTextContent(error), rawOutput: { error } },
+    { request: input(opening, null, AgentProvider.KILO) as ParsedMessageContent, spanType: 'tool_call_update' },
+  )
+
+  it.each([
+    ['the Deny answer', REJECTED],
+    ['a Deny answer with feedback', 'The user rejected permission to use this specific tool call with the following feedback: Print nothing.'],
+    ['a deny rule', 'The user has specified a rule which prevents you from using this specific tool call. Here are some of the relevant rules [{"permission":"bash","pattern":"*","action":"deny"}]'],
+  ])('reads %s as declined, with the refusal as the result', (_case, error) => {
+    const call = callOf(error)
+    expect(call?.kind).toBe('execute')
+    expect(call?.status).toBe('declined')
+    expect(call?.result).toStrictEqual({ failure: true, text: error })
+    expect(call?.degradation).toBeUndefined()
+  })
+
+  it('heads a refused command as declined rather than as an error', () => {
+    const { container } = renderACPToolPair(
+      AgentProvider.KILO,
+      { kind: 'execute', title: 'bash', rawInput: RAW_INPUT },
+      { kind: 'execute', title: 'bash', rawInput: RAW_INPUT, status: 'failed', content: acpTextContent(REJECTED), rawOutput: { error: REJECTED } },
+    )
+    expect(container.textContent).toContain('Declined')
+    expect(container.textContent).not.toContain('Error')
+  })
+
+  it('keeps an ordinary tool error a failure', () => {
+    expect(callOf('bash: printf: write error')?.status).toBe('failed')
+  })
+
+  // A refusal is the WHOLE error. The same words inside a longer one are the tool's own.
+  it('keeps the refusal words inside a longer error a failure', () => {
+    expect(callOf(`bash: ${REJECTED}`)?.status).toBe('failed')
   })
 })
 

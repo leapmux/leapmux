@@ -6,8 +6,18 @@ import { currentNativeAgent, nativeModelContextText, nativeModelToolNames } from
 import { chooseSettingsOption, expectSettingsChip, waitForSettingsIdle } from '../helpers/ui'
 import { kiloTest } from '../kilo-fixtures'
 
+/**
+ * Kilo's default primary agent. Kilo renames OpenCode's `build` agent to `code`
+ * and deletes `build` (`patchAgents` in Kilo's
+ * `packages/opencode/src/kilocode/agent/index.ts`), so the catalog offers no
+ * `build`. The Worker's fallback states the same name (`kilo.PrimaryAgentCode`).
+ */
+const KILO_DEFAULT_PRIMARY_AGENT = 'code'
+
 kiloTest('completes a native read-only plan without a dedicated approval banner', async ({ authenticatedKiloWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedKiloWorkspace.workspaceId, provider: AgentProvider.KILO }
+  const primaryAgent = async () => (await currentNativeAgent(context)).optionGroups.find(group => group.id === 'primaryAgent')?.currentValue
+  await expect.poll(primaryAgent).toBe(KILO_DEFAULT_PRIMARY_AGENT)
   await expectNoNativeControl(context, {
     testId: 'plan-approve-btn',
     relatedControl: () => exerciseNativeReadOnlyPlan(context, {
@@ -23,11 +33,11 @@ kiloTest('completes a native read-only plan without a dedicated approval banner'
       },
     }),
   })
-  expect((await currentNativeAgent(context)).optionGroups.find(group => group.id === 'primaryAgent')?.currentValue).toBe('plan')
+  expect(await primaryAgent()).toBe('plan')
   await page.reload()
   await expectSettingsChip(page, 'Plan')
   await expect(page.locator('[data-testid="plan-approve-btn"]:visible')).toHaveCount(0)
-  await chooseSettingsOption(page, 'primaryAgent-build')
+  await chooseSettingsOption(page, `primaryAgent-${KILO_DEFAULT_PRIMARY_AGENT}`)
   await waitForSettingsIdle(page)
-  expect((await currentNativeAgent(context)).optionGroups.find(group => group.id === 'primaryAgent')?.currentValue).toBe('build')
+  expect(await primaryAgent()).toBe(KILO_DEFAULT_PRIMARY_AGENT)
 })

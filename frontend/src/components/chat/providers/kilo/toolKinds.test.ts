@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { isToolFailureResult, typedResult } from '../../model/toolCall'
 import { acpToolCall } from '../acp/extractors/toolCall'
 import { openCodeToolCallAdapterFor } from '../opencode/extractors/toolCall'
+import { OPENCODE_REFUSED_TOOL_ERRORS } from '../opencode/protocol'
+import { KILO_REFUSED_TOOL_ERRORS } from './protocol'
 import { kiloToolKind } from './toolKinds'
 
 /**
@@ -18,11 +20,14 @@ const MINIMAL_INPUT: Readonly<Record<string, Record<string, unknown>>> = {
   notebook_edit: { path: '/project/notes.ipynb', old_string: 'before', new_string: 'after' },
 }
 
+/** The vocabulary Kilo's plugin supplies to the family adapter. */
+const KILO_FAMILY = { refusals: KILO_REFUSED_TOOL_ERRORS, toolKinds: kiloToolKind }
+
 /** One Kilo tool call, with the kind Kilo's own protocol layer answers for it. */
 function kiloCall(title: string, kind = 'other', tool: Record<string, unknown> = {}): ToolCall {
   return acpToolCall(
     { sessionUpdate: 'tool_call', toolCallId: 'kilo-tool', status: 'pending', kind, title, rawInput: MINIMAL_INPUT[title], ...tool },
-    openCodeToolCallAdapterFor(kiloToolKind),
+    openCodeToolCallAdapterFor(KILO_FAMILY),
     undefined,
   )
 }
@@ -81,7 +86,7 @@ describe('kiloToolKind', () => {
   it('leaves an OpenCode row alone', () => {
     const call = acpToolCall(
       { sessionUpdate: 'tool_call', toolCallId: 'oc-tool', status: 'pending', kind: 'other', title: 'semantic_search' },
-      openCodeToolCallAdapterFor(),
+      openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS }),
       undefined,
     )
     // The shared build narrows the protocol's own `other` to the kind of the card it
@@ -106,7 +111,7 @@ describe('the kilo chart tool', () => {
       rawInput: { title: 'Weekly hits', spec: JSON.stringify(CONFIG) },
       rawOutput: metadata ? { metadata } : undefined,
       content: [{ type: 'content', content: { type: 'text', text: output } }],
-    }, openCodeToolCallAdapterFor(kiloToolKind), undefined)
+    }, openCodeToolCallAdapterFor(KILO_FAMILY), undefined)
   }
 
   it('reads the returned configuration into a chart result', () => {
@@ -133,7 +138,7 @@ describe('the kilo chart tool', () => {
       title: 'chart',
       rawInput: { spec: '{' },
       content: [{ type: 'content', content: { type: 'text', text: 'The chart tool is not installed' } }],
-    }, openCodeToolCallAdapterFor(kiloToolKind), undefined)
+    }, openCodeToolCallAdapterFor(KILO_FAMILY), undefined)
     expect(call.kind).toBe('chart')
     expect(isToolFailureResult(call.result) && call.result.text).toBe('The chart tool is not installed')
   })
@@ -164,7 +169,7 @@ describe('the kilo chart tool', () => {
       kind: 'other',
       title: 'chart',
       rawInput: { title: 'Weekly hits', spec: JSON.stringify(CONFIG) },
-    }, openCodeToolCallAdapterFor(kiloToolKind), undefined)
+    }, openCodeToolCallAdapterFor(KILO_FAMILY), undefined)
     expect(call.kind).toBe('chart')
     expect(call.kind === 'chart' && call.request.spec).toBe(JSON.stringify(CONFIG))
     expect(call.kind === 'chart' && call.request.title).toBe('Weekly hits')

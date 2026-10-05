@@ -14,7 +14,9 @@ async function proveAttachment(page: Page, modelScript: ModelScript, kind: Attac
   const sourcePath = await expectAttachmentOutcome(page, kind, { supported: true, fileName: filename })
   await sendWithAttachment(page, modelScript.prompt('Read the attached file.'))
   const status = await modelScript.waitForSteps()
-  await expectNativeAttachmentProof(page, status, kind, sourcePath)
+  // Kilo keeps the ACP blob as a data URL file part, and its Chat Completions
+  // serializer sends it unchanged as a `file` part with a PDF data URI.
+  await expectNativeAttachmentProof(page, status, kind, sourcePath, 'openai-chat-completions')
   await waitForAgentIdle(page)
   await expectUserMessage(page, filename)
   await expect(assistantBubbles(page).filter({ hasText: 'Attachment received.' }).first()).toBeVisible()

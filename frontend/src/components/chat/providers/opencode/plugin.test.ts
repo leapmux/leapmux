@@ -1,11 +1,12 @@
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it, vi } from 'vitest'
 import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { assembledMessageRow } from '~/test-support/assembledMessages'
-import { providerQuotableText } from '~/test-support/toolCallFixture'
+import { providerQuotableText, providerToolCall } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
 import { acpResultDivider } from '../acp/extractors/resultDivider'
-import { describeACPProviderBasics, renderACPRow } from '../acp/testUtils'
+import { acpTextContent, describeACPProviderBasics, renderACPRow, renderACPToolPair } from '../acp/testUtils'
 import { sendOpenCodeQuestionResponse } from '../openCodeQuestions'
 import { providerFor } from '../registry'
 
@@ -496,6 +497,90 @@ describe('opencode tool_call_update renderer', () => {
     }
     const { container } = renderACPRow(AgentProvider.OPENCODE, toolUse)
     expect(container.textContent).toContain('check status')
+  })
+})
+
+/**
+ * A call the reader refused never ran.
+ *
+ * OpenCode's Agent Client Protocol layer sends no refusal field. Its failed update
+ * carries the error's message alone, in a content block and in `rawOutput.error`
+ * (`errorToolUpdate`, `packages/opencode/src/acp/tool.ts`), so the exact message of each
+ * refusal error is the one native signal. Each message below is copied from OpenCode's
+ * own error classes.
+ */
+describe('opencode refused tool calls', () => {
+  const REJECTED = 'The user rejected permission to use this specific tool call.'
+  const COMMAND = 'rm ../opencode-permission-probe.txt'
+  const RAW_INPUT = { command: COMMAND, description: 'Remove the probe file' }
+  const opening = { sessionUpdate: 'tool_call', toolCallId: 'refused-call', status: 'pending', kind: 'execute', title: 'bash', rawInput: RAW_INPUT }
+
+  /** The final update of the call, in the daemon's own shape. */
+  const ending = (status: 'failed' | 'completed', text: string) => ({
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'refused-call',
+    status,
+    kind: 'execute',
+    title: 'bash',
+    rawInput: RAW_INPUT,
+    content: acpTextContent(text),
+    rawOutput: status === 'failed' ? { error: text } : { output: text, metadata: { exit: 0 } },
+  })
+
+  const callOf = (frame: Record<string, unknown>, request: Record<string, unknown> = opening) =>
+    providerToolCall(AgentProvider.OPENCODE, frame, { request: input(request, null, AgentProvider.OPENCODE) as ParsedMessageContent, spanType: 'tool_call_update' })
+
+  it('reads the Deny answer as declined, with the refusal as the result', () => {
+    const call = callOf(ending('failed', REJECTED))
+    expect(call?.kind).toBe('execute')
+    expect(call?.status).toBe('declined')
+    expect(call?.kind === 'execute' ? call.request.command : undefined).toBe(COMMAND)
+    expect(call?.result).toStrictEqual({ failure: true, text: REJECTED })
+    expect(call?.images).toStrictEqual([])
+    expect(call?.degradation).toBeUndefined()
+  })
+
+  it.each([
+    ['a Deny answer with feedback', 'The user rejected permission to use this specific tool call with the following feedback: Keep the file.'],
+    ['a deny rule', 'The user has specified a rule which prevents you from using this specific tool call. Here are some of the relevant rules [{"permission":"bash","pattern":"rm *","action":"deny"}]'],
+  ])('reads %s as declined', (_case, error) => {
+    const call = callOf(ending('failed', error))
+    expect(call?.status).toBe('declined')
+    expect(call?.result).toStrictEqual({ failure: true, text: error })
+  })
+
+  it('reads a dismissed question as declined', () => {
+    const question = { sessionUpdate: 'tool_call', toolCallId: 'refused-call', status: 'pending', kind: 'other', title: 'question', rawInput: { questions: [{ header: 'Scope', question: 'Which package?', options: [{ label: 'frontend' }] }] } }
+    const error = 'The user dismissed this question'
+    const call = callOf({ sessionUpdate: 'tool_call_update', toolCallId: 'refused-call', status: 'failed', kind: 'other', title: 'question', content: acpTextContent(error), rawOutput: { error } }, question)
+    expect(call?.kind).toBe('question')
+    expect(call?.status).toBe('declined')
+    expect(call?.result).toStrictEqual({ failure: true, text: error })
+  })
+
+  it('heads a refused command as declined rather than as an error', () => {
+    const { container } = renderACPToolPair(
+      AgentProvider.OPENCODE,
+      { kind: 'execute', title: 'bash', rawInput: RAW_INPUT },
+      { kind: 'execute', title: 'bash', rawInput: RAW_INPUT, status: 'failed', content: acpTextContent(REJECTED), rawOutput: { error: REJECTED } },
+    )
+    expect(container.textContent).toContain('Declined')
+    expect(container.textContent).toContain(REJECTED)
+    expect(container.textContent).not.toContain('Error')
+  })
+
+  it('keeps an ordinary tool error a failure', () => {
+    expect(callOf(ending('failed', 'rm: ../opencode-permission-probe.txt: Permission denied'))?.status).toBe('failed')
+  })
+
+  // A refusal is the WHOLE error. The same words inside a longer one are the tool's own.
+  it('keeps the refusal words inside a longer error a failure', () => {
+    expect(callOf(ending('failed', `bash: ${REJECTED}`))?.status).toBe('failed')
+  })
+
+  // A call that ran and PRINTED the words is a call that completed.
+  it('keeps a completed call that printed the refusal words completed', () => {
+    expect(callOf(ending('completed', REJECTED))?.status).toBe('completed')
   })
 })
 

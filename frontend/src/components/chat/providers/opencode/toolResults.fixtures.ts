@@ -45,12 +45,31 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
 const ERROR_TEXT = 'The tool reported an error.'
 
 /**
+ * The errors OpenCode writes for a call that never ran because the reader refused it.
+ *
+ * Each one is the `message` of an error class in OpenCode's own source, copied byte for
+ * byte. The daemon puts that message in both halves of the failed update, as
+ * {@link nativeFailure} shows.
+ */
+const REFUSALS = {
+  /** `PermissionV1.RejectedError` (`packages/core/src/v1/permission.ts`): the Deny answer. */
+  rejected: 'The user rejected permission to use this specific tool call.',
+  /** `PermissionV1.CorrectedError`: a Deny answer that carried the reader's words. */
+  corrected: 'The user rejected permission to use this specific tool call with the following feedback: Keep the file.',
+  /** `PermissionV1.DeniedError`: a deny rule in the reader's configuration. */
+  ruled: 'The user has specified a rule which prevents you from using this specific tool call. Here are some of the relevant rules [{"permission":"bash","pattern":"rm *","action":"deny"}]',
+  /** `Question.RejectedError` (`packages/opencode/src/question/index.ts`): a dismissed question. */
+  dismissed: 'The user dismissed this question',
+} as const
+
+/**
  * The FAILED frame of the call one successful fixture already states.
  *
  * It keeps the frame's identity -- the call id and the wire kind, which describe the TOOL and never
  * the outcome -- and replaces the answer with the reason. Everything a successful call
- * left behind is gone: a call that failed computed no `rawOutput`, no diff and no
- * display record.
+ * left behind is gone: no diff and no display record. The reason rides a content block
+ * alone here. The daemon also copies it into `rawOutput.error`, which
+ * {@link nativeFailure} reproduces.
  *
  * The request half comes from the successful fixture rather than from a second copy of
  * the request. The two frames then describe ONE call, which is what lets the ladder
@@ -61,6 +80,24 @@ function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status
   const fixture = FIXTURES[name]
   return {
     payload: { sessionUpdate: 'tool_call_update', toolCallId: CALL, kind: fixture?.payload.kind, status: 'failed', content: text(ERROR_TEXT) },
+    ...(fixture?.options !== undefined ? { options: fixture.options } : {}),
+    kind,
+    name,
+    status,
+  }
+}
+
+/**
+ * The failed frame in the daemon's own shape, with the error OpenCode wrote.
+ *
+ * `errorToolUpdate` (`packages/opencode/src/acp/tool.ts`) puts the error in a content
+ * block and again in `rawOutput.error`. `status` is the outcome word the row must read:
+ * `declined` for a refusal, and `failed` for every other error.
+ */
+function nativeFailure(kind: ToolKind, name: string, status: ToolFailureFixture['status'], error: string): ToolFailureFixture {
+  const fixture = FIXTURES[name]
+  return {
+    payload: { sessionUpdate: 'tool_call_update', toolCallId: CALL, kind: fixture?.payload.kind, status: 'failed', content: text(error), rawOutput: { error } },
     ...(fixture?.options !== undefined ? { options: fixture.options } : {}),
     kind,
     name,
@@ -90,6 +127,26 @@ export const OPENCODE_TOOL_RESULTS: ToolResultCheck = {
     failed('question', 'question'),
     failed('fetch', 'webfetch'),
     failed('mcp', 'probe_echo'),
+    // A REFUSED call of every kind above. Each kind takes its own builder, so the
+    // ladder pins the declined state once for each of them.
+    nativeFailure('execute', 'bash', 'declined', REFUSALS.rejected),
+    nativeFailure('read', 'read_file', 'declined', REFUSALS.rejected),
+    nativeFailure('read', 'list', 'declined', REFUSALS.rejected),
+    nativeFailure('edit', 'edit', 'declined', REFUSALS.rejected),
+    nativeFailure('write', 'write', 'declined', REFUSALS.rejected),
+    nativeFailure('glob', 'glob', 'declined', REFUSALS.rejected),
+    nativeFailure('grep', 'grep', 'declined', REFUSALS.rejected),
+    nativeFailure('agent', 'task', 'declined', REFUSALS.rejected),
+    nativeFailure('todo', 'todowrite', 'declined', REFUSALS.rejected),
+    nativeFailure('fetch', 'webfetch', 'declined', REFUSALS.rejected),
+    nativeFailure('mcp', 'probe_echo', 'declined', REFUSALS.rejected),
+    nativeFailure('execute', 'bash', 'declined', REFUSALS.corrected),
+    nativeFailure('execute', 'bash', 'declined', REFUSALS.ruled),
+    nativeFailure('question', 'question', 'declined', REFUSALS.dismissed),
+    // The same words inside a longer error are the tool's own failure. A refusal is the
+    // whole error, so neither of these reads as one.
+    nativeFailure('execute', 'bash', 'failed', `bash: ${REFUSALS.rejected}`),
+    nativeFailure('question', 'question', 'failed', `${REFUSALS.dismissed}.`),
   ],
   noFailure: {
     // The one kind the answer decides. OpenCode's `read` runs two operations behind one

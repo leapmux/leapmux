@@ -21,6 +21,11 @@ type FamilySpec struct {
 	// the question tool of the daemon, which the question bridge answers. The
 	// start pins it to 1.
 	QuestionToolEnv string
+	// DisableAutoUpdateEnv is the spelling of the member for the flag that turns
+	// OFF the upgrade of the member's own install. The start pins it to 1, so an
+	// `opencode` that the agent's own tool starts does not upgrade the install
+	// either: the variable reaches each child, and an inline config key does not.
+	DisableAutoUpdateEnv string
 	// DefaultPrimaryAgent is the primary agent that a session uses when the
 	// launch options state none.
 	DefaultPrimaryAgent string
@@ -43,7 +48,7 @@ func StartFamily[T any](
 		ProviderName:   spec.ProviderName,
 		BaseArgs:       ACPArgs(),
 		RCMarkerEnvKey: spec.RCMarkerEnvKey,
-		PinnedEnv:      []string{spec.QuestionToolEnv + "=1"},
+		PinnedEnv:      []string{spec.QuestionToolEnv + "=1", spec.DisableAutoUpdateEnv + "=1"},
 		SessionConfig:  acp.SessionConfig{NewMethod: acp.MethodSessionNew, ResumeMethod: acp.MethodSessionResume},
 		NewAgent:       newAgent,
 		Base:           func(a *T) *acp.Base { return &family(a).Base },

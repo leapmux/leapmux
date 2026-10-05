@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { documentedNamesThatReachAKind, staleGenericNames, undocumentedFallbacks } from '~/test-support/toolVocabulary'
 import { acpToolCall } from '../acp/extractors/toolCall'
 import { openCodeToolCallAdapterFor } from './extractors/toolCall'
+import { OPENCODE_REFUSED_TOOL_ERRORS } from './protocol'
 import { OPENCODE_TOOL_NAMES } from './toolNames'
 
 /**
@@ -21,7 +22,7 @@ const WIRE_KIND: Readonly<Record<string, string>> = {
 function kindOf(name: string): ToolKind {
   return acpToolCall(
     { sessionUpdate: 'tool_call', toolCallId: 'vocab-1', status: 'pending', kind: WIRE_KIND[name] ?? 'other', title: name, rawInput: {} },
-    openCodeToolCallAdapterFor(),
+    openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS }),
     undefined,
   ).kind
 }

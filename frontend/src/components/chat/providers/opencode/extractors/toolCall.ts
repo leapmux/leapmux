@@ -13,6 +13,7 @@ import { failedResult, unparsedResult } from '../../../model/toolCall'
 import { acpFileEditFromToolCallContent } from '../../acp/extractors/fileEdit'
 import { acpReadFromToolCall } from '../../acp/extractors/read'
 import { acpSpecFor } from '../../acp/extractors/toolCall'
+import { declinedToolCallSpec } from '../../declinedToolCall'
 import { questionsFromRecords } from '../../questionRecords'
 import { TOOL_FILE_PATH_KEYS, TOOL_NEW_TEXT_KEYS, TOOL_OLD_TEXT_KEYS, toolInputPaths } from '../../toolInputKeys'
 import { openCodeTaskResult } from '../extractors/agent'
@@ -29,14 +30,74 @@ import { OPENCODE_TOOL_NAMES } from '../toolNames'
 export type OpenCodeFamilyToolKinds = (toolName: string) => ToolKind | undefined
 
 /**
- * OpenCode and Kilo preserve display metadata alongside model-facing output.
+ * The errors one daemon of this family writes for a call that never ran because the
+ * reader or a rule refused it.
+ *
+ * The family's Agent Client Protocol layer sends no refusal field. Its failed update
+ * carries the error's message alone, in a content block and in `rawOutput.error`, and
+ * drops the error's class (`errorToolUpdate`, `packages/opencode/src/acp/tool.ts`). The
+ * exact message is therefore the one native signal. A refusal is the WHOLE error: a
+ * tool's own error that quotes the same words inside a longer message is a failure.
+ */
+export interface OpenCodeFamilyRefusals {
+  /** The errors that hold no variable part. A refusal equals one of them. */
+  messages: readonly string[]
+  /**
+   * The fixed start of each error that ends with variable words: the reader's feedback,
+   * or the list of rules that refused the call. A refusal starts with one of them.
+   */
+  messagePrefixes: readonly string[]
+}
+
+/**
+ * What one daemon of this family supplies to the shared adapter.
+ *
+ * The daemons share a wire format, but their tool sets and their error sets differ, so
+ * each daemon supplies its own tables. Each table lives in that daemon's own package.
+ */
+export interface OpenCodeFamilyVocabulary {
+  /** The daemon's refusal errors, from its own `protocol.ts`. */
+  refusals: OpenCodeFamilyRefusals
+  /**
+   * The daemon's tool kinds that the shared protocol does not state. Kilo supplies
+   * its own table. OpenCode supplies none.
+   */
+  toolKinds?: OpenCodeFamilyToolKinds
+}
+
+/**
+ * OpenCode and Kilo hook the registry id that the daemon sends as the call title, and
+ * the display metadata that it keeps beside the model-facing output.
  *
  * A FACTORY rather than one shared value, because the two daemons run different tool
- * sets behind the same wire format. `extraKinds` is the only difference, and it applies
- * where the frame states nothing useful.
+ * sets and write different refusal errors behind the same wire format. The vocabulary
+ * is the only difference. The extra kinds apply where the frame states nothing useful.
+ *
+ * The refusal is a post-condition around the WHOLE build, for the reason
+ * `providers/README.md` gives: the build has a dozen returns, and a refused call of
+ * every kind must read `declined` with the refusal as its body.
  */
-export function openCodeToolCallAdapterFor(extraKinds?: OpenCodeFamilyToolKinds): ACPToolCallAdapter {
-  return facts => openCodeToolCall(facts, extraKinds)
+export function openCodeToolCallAdapterFor(family: OpenCodeFamilyVocabulary): ACPToolCallAdapter {
+  return (facts) => {
+    const spec = openCodeToolCall(facts, family.toolKinds)
+    const refusal = openCodeRefusal(facts, family.refusals)
+    return refusal === null ? spec : declinedToolCallSpec(spec, refusal)
+  }
+}
+
+/**
+ * The refusal error of one failed call, or null for any other call.
+ *
+ * The frame's OWN status decides: only a failed update carries an error, and a call
+ * that completed and printed the same words ran.
+ */
+function openCodeRefusal(facts: ACPToolFacts, refusals: OpenCodeFamilyRefusals): string | null {
+  if (facts.lifecycle.frameStatus !== 'failed')
+    return null
+  const error = pickString(pickObject(facts.tool, ACP_SUPPLEMENT.RawOutput), 'error')
+  if (!error)
+    return null
+  return refusals.messages.includes(error) || refusals.messagePrefixes.some(prefix => error.startsWith(prefix)) ? error : null
 }
 
 /** A registry id the daemons send as the call title: one lowercase word. */

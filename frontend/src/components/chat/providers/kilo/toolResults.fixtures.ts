@@ -55,12 +55,29 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
 const ERROR_TEXT = 'The tool reported an error.'
 
 /**
+ * The errors Kilo writes for a call that never ran because the reader refused it.
+ *
+ * Each one is the `message` of an error class in Kilo's own source
+ * (`packages/core/src/v1/permission.ts`), copied byte for byte. The daemon puts that
+ * message in both halves of the failed update, as {@link nativeFailure} shows.
+ */
+const REFUSALS = {
+  /** `PermissionV1.RejectedError`: the Deny answer. */
+  rejected: 'The user rejected permission to use this specific tool call.',
+  /** `PermissionV1.CorrectedError`: a Deny answer that carried the reader's words. */
+  corrected: 'The user rejected permission to use this specific tool call with the following feedback: Keep the board as it is.',
+  /** `PermissionV1.DeniedError`: a deny rule in the reader's configuration. */
+  ruled: 'The user has specified a rule which prevents you from using this specific tool call. Here are some of the relevant rules [{"permission":"bash","pattern":"*","action":"deny"}]',
+} as const
+
+/**
  * The FAILED frame of the call one successful fixture already states.
  *
  * It keeps the frame's identity -- the call id and the wire kind, which describe the TOOL and never
  * the outcome -- and replaces the answer with the reason. Everything a successful call
- * left behind is gone: a call that failed computed no `rawOutput`, no diff and no
- * display record.
+ * left behind is gone: no diff and no display record. The reason rides a content block
+ * alone here. The daemon also copies it into `rawOutput.error`, which
+ * {@link nativeFailure} reproduces.
  *
  * The request half comes from the successful fixture rather than from a second copy of
  * the request. The two frames then describe ONE call, which is what lets the ladder
@@ -71,6 +88,24 @@ function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status
   const fixture = FIXTURES[name]
   return {
     payload: { sessionUpdate: 'tool_call_update', toolCallId: CALL, kind: fixture?.payload.kind, status: 'failed', content: text(ERROR_TEXT) },
+    ...(fixture?.options !== undefined ? { options: fixture.options } : {}),
+    kind,
+    name,
+    status,
+  }
+}
+
+/**
+ * The failed frame in the daemon's own shape, with the error Kilo wrote.
+ *
+ * `errorToolUpdate` (`packages/opencode/src/acp/tool.ts`) puts the error in a content
+ * block and again in `rawOutput.error`. `status` is the outcome word the row must read:
+ * `declined` for a refusal, and `failed` for every other error.
+ */
+function nativeFailure(kind: ToolKind, name: string, status: ToolFailureFixture['status'], error: string): ToolFailureFixture {
+  const fixture = FIXTURES[name]
+  return {
+    payload: { sessionUpdate: 'tool_call_update', toolCallId: CALL, kind: fixture?.payload.kind, status: 'failed', content: text(error), rawOutput: { error } },
     ...(fixture?.options !== undefined ? { options: fixture.options } : {}),
     kind,
     name,
@@ -95,6 +130,30 @@ export const KILO_TOOL_RESULTS: ToolResultCheck = {
     failed('chart', 'chart'),
     failed('image', 'generate_image'),
     failed('report', 'goal_report'),
+    // A REFUSED call of every kind above. Each kind takes its own builder, so the
+    // ladder pins the declined state once for each of them.
+    nativeFailure('agents', 'agent_manager_models', 'declined', REFUSALS.rejected),
+    nativeFailure('execute', 'background_process', 'declined', REFUSALS.rejected),
+    nativeFailure('memory', 'board_post', 'declined', REFUSALS.rejected),
+    nativeFailure('fetch', 'browser_open', 'declined', REFUSALS.rejected),
+    nativeFailure('edit', 'notebook_edit', 'declined', REFUSALS.rejected),
+    nativeFailure('read', 'notebook_read', 'declined', REFUSALS.rejected),
+    nativeFailure('switch_mode', 'plan_exit', 'declined', REFUSALS.rejected),
+    nativeFailure('list', 'repo_overview', 'declined', REFUSALS.rejected),
+    nativeFailure('search', 'semantic_search', 'declined', REFUSALS.rejected),
+    nativeFailure('message', 'notify_user', 'declined', REFUSALS.rejected),
+    nativeFailure('chart', 'chart', 'declined', REFUSALS.rejected),
+    nativeFailure('image', 'generate_image', 'declined', REFUSALS.rejected),
+    nativeFailure('report', 'goal_report', 'declined', REFUSALS.rejected),
+    nativeFailure('memory', 'board_post', 'declined', REFUSALS.corrected),
+    nativeFailure('execute', 'background_process', 'declined', REFUSALS.ruled),
+    // The same words inside a longer error are the tool's own failure. A refusal is the
+    // whole error, so this does not read as one.
+    nativeFailure('execute', 'background_process', 'failed', `background_process: ${REFUSALS.rejected}`),
+    // Kilo's question tool answers a dismissed question as a COMPLETED call
+    // (`KiloQuestionTool.dismissedResult`), so the error words OpenCode reads as a
+    // refusal are only the tool's own failure here.
+    nativeFailure('execute', 'background_process', 'failed', 'The user dismissed this question'),
   ],
   noFailure: {},
   noResult: {},
