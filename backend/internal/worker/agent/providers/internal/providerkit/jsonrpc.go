@@ -2,11 +2,13 @@ package providerkit
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -111,11 +113,11 @@ func decodeJSONRPCResponse(raw json.RawMessage) (json.RawMessage, error) {
 		if !isJSONNull(response.Result) {
 			return nil, errors.New("json-rpc response contains both a result and an error")
 		}
-		code, message, ok := parseJSONRPCError(response.Error)
+		responseErr, ok := parseJSONRPCError(response.Error)
 		if !ok {
 			return nil, errors.New("json-rpc response contains an invalid error")
 		}
-		return nil, &JSONRPCResponseError{Code: code, Message: message}
+		return nil, responseErr
 	}
 	if len(response.Result) == 0 {
 		return nil, errors.New("json-rpc response has no result")
@@ -308,35 +310,71 @@ func isJSONNull(raw json.RawMessage) bool {
 	return len(raw) == 0 || string(raw) == "null"
 }
 
-// parseJSONRPCError reads a native protocol error's code and message.
+// parseJSONRPCError reads a native protocol error's code, message and data.
 // It rejects an absent value, JSON null, and a value without both required fields.
-func parseJSONRPCError(resp json.RawMessage) (code int, message string, ok bool) {
+func parseJSONRPCError(resp json.RawMessage) (*JSONRPCResponseError, bool) {
 	if isJSONNull(resp) {
-		return 0, "", false
+		return nil, false
 	}
 	var rpcErr struct {
-		Code    *int    `json:"code"`
-		Message *string `json:"message"`
+		Code    *int            `json:"code"`
+		Message *string         `json:"message"`
+		Data    json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(resp, &rpcErr); err != nil {
-		return 0, "", false
+		return nil, false
 	}
 	if rpcErr.Code == nil || rpcErr.Message == nil {
-		return 0, "", false
+		return nil, false
 	}
-	return *rpcErr.Code, *rpcErr.Message, true
+	responseErr := &JSONRPCResponseError{Code: *rpcErr.Code, Message: *rpcErr.Message}
+	if !isJSONNull(rpcErr.Data) {
+		responseErr.Data = rpcErr.Data
+	}
+	return responseErr, true
 }
 
+// JSONRPCResponseError is the error member of a JSON-RPC 2.0 response.
+//
+// Data is the optional `data` member, as the agent sent it. An agent can state
+// the cause of a failure only there: the ACP TypeScript SDK answers an
+// unexpected failure with message "Internal error" and the cause in
+// `{"details": ...}` (Qwen Code), and Grok Build states its model failure in
+// `{"message": ..., "http_status": ...}`. Error states Data too, so a failure
+// note shows the cause.
 type JSONRPCResponseError struct {
 	Code    int
 	Message string
+	Data    json.RawMessage
 }
 
 func (e *JSONRPCResponseError) Error() string {
-	if e.Message == "" {
-		return fmt.Sprintf("json-rpc error %d", e.Code)
+	text := fmt.Sprintf("json-rpc error %d", e.Code)
+	if e.Message != "" {
+		text += ": " + e.Message
 	}
-	return fmt.Sprintf("json-rpc error %d: %s", e.Code, e.Message)
+	if data := e.dataText(); data != "" {
+		text += ": " + data
+	}
+	return text
+}
+
+// dataText states Data as text: a JSON string as its trimmed value, and any
+// other JSON value in its compact form, with its members in the agent's order.
+// It is empty for an absent or null member and for a blank string.
+func (e *JSONRPCResponseError) dataText() string {
+	if isJSONNull(e.Data) {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(e.Data, &text) == nil {
+		return strings.TrimSpace(text)
+	}
+	var compact bytes.Buffer
+	if json.Compact(&compact, e.Data) != nil {
+		return string(e.Data)
+	}
+	return compact.String()
 }
 
 func HasJSONRPCErrorCode(err error, codes ...int) bool {

@@ -15,6 +15,8 @@ import (
 // both negotiated filesystem capabilities. LeapMux has no editor buffers,
 // so these handlers read and write the working tree directly.
 // The same agent can run arbitrary commands through terminal/create.
+// A provider whose agent must use its own filesystem withholds the capability
+// (Hooks.DisableHostFileSystem).
 
 type acpFSReadTextFileParams struct {
 	SessionID string `json:"sessionId"`

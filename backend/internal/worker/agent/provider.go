@@ -235,6 +235,26 @@ type Provider interface {
 	ExtractTodoEvent(spanType string, content []byte, pairedToolUse func() []byte) (todoevents.Event, bool)
 }
 
+// PlanExitModeDeferrer is a RUNNING provider that cannot apply the permission
+// mode of an approved plan exit itself, because the exit must complete first.
+//
+// ZCode is the case: session/setMode turns the plan flag off, so a mode sent
+// while its ExitPlanMode request still runs makes the exit fail with "You are
+// not in plan mode". The provider holds the mode and sends it once its own
+// event reports the exit turned the flag off.
+//
+// The service type-asserts this on the agent it has running, because only the
+// instance knows its session's native state; the static Provider interface
+// carries no part of it. A provider that needs nothing here simply does not
+// implement it.
+type PlanExitModeDeferrer interface {
+	// DeferPlanExitMode hands the provider the permission mode an approved plan
+	// exit chose. The mode is a value of the provider's permission-mode axis
+	// other than the plan value, and the provider owns applying it at its own
+	// moment.
+	DeferPlanExitMode(mode string)
+}
+
 type ProviderDefaults struct{}
 
 func (ProviderDefaults) ResolveProviderData(content MessageContent) []byte {

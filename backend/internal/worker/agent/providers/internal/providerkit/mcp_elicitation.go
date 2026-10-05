@@ -30,7 +30,15 @@ func ResolveMCPElicitationResponse(ctx agent.ControlResponseContext, method stri
 	result.Withhold = true
 	var response MCPElicitationControlResponse
 	id, requestID, ok := agent.ExtractJSONRPCID(ctx.RequestPayload)
-	if !ok || json.Unmarshal(ctx.ResponseContent, &response) != nil || response.Response.RequestID != agent.StoredControlRequestID(ctx, requestID) {
+	switch {
+	case !ok:
+		result.Refuse(agent.RefusalUnreadableRequest)
+		return result, true
+	case json.Unmarshal(ctx.ResponseContent, &response) != nil:
+		result.Refuse(agent.RefusalUnreadableAnswer)
+		return result, true
+	case response.Response.RequestID != agent.StoredControlRequestID(ctx, requestID):
+		result.Refuse(agent.RefusalOtherRequest)
 		return result, true
 	}
 	answer := response.Response.Response
@@ -39,6 +47,7 @@ func ResolveMCPElicitationResponse(ctx agent.ControlResponseContext, method stri
 		if len(answer.Meta) > 0 {
 			persist := answer.Meta["persist"]
 			if acceptMeta == nil || !acceptMeta(ctx.RequestPayload, persist) {
+				result.Refuse("the answer persists a choice the request did not offer")
 				return result, true
 			}
 			answer.Meta = map[string]string{"persist": persist}
@@ -47,6 +56,7 @@ func ResolveMCPElicitationResponse(ctx agent.ControlResponseContext, method stri
 		answer.Content = nil
 		answer.Meta = nil
 	default:
+		result.Refuse(agent.RefusalUnreadableAnswer)
 		return result, true
 	}
 	content, err := json.Marshal(struct {
@@ -55,6 +65,7 @@ func ResolveMCPElicitationResponse(ctx agent.ControlResponseContext, method stri
 		Result  any             `json:"result"`
 	}{JSONRPC: "2.0", ID: id, Result: answer})
 	if err != nil {
+		result.Refuse(agent.RefusalUnencodableReply)
 		return result, true
 	}
 	result.Content = content

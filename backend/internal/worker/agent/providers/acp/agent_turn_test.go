@@ -74,6 +74,63 @@ func TestAgentTurn_AdmitRefusesWhileAPromptRuns(t *testing.T) {
 	assert.True(t, b.AdmitAgentTurn())
 }
 
+// A turn that the agent starts by itself starts a new chronology too, as a
+// prompt does: text that the base buffered while no turn ran is a segment of
+// its own, and a tool call that completed meanwhile is no tool of the turn.
+func TestAgentTurn_DoesNotInheritOutputBufferedBeforeItStarted(t *testing.T) {
+	t.Parallel()
+	for name, begin := range map[string]func(*Base) bool{
+		"a turn that the agent states": (*Base).BeginAgentTurn,
+		"a turn that the agent asks":   (*Base).AdmitAgentTurn,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			out := &agenttest.Stdin{}
+			b, sink := newACPTurnBase(t, out)
+			b.HandleOutput(toolCallFrame(`{"sessionUpdate":"tool_call","toolCallId":"idle-tool","title":"Read","kind":"read","status":"completed"}`))
+			b.HandleOutput(acptest.Chunk("session-1", "agent_message_chunk", "OLD"))
+
+			require.True(t, begin(b))
+			b.HandleOutput(acptest.Chunk("session-1", "agent_message_chunk", "NEW"))
+			b.EndAgentTurn(json.RawMessage(agentTurnEndFrame))
+
+			messages := sink.Messages()
+			assert.Equal(t, []string{"text:OLD", "text:NEW"}, assembledTexts(t, messages))
+			require.NotEmpty(t, messages)
+			end := messages[len(messages)-1]
+			require.True(t, end.TurnEnd)
+			assert.JSONEq(t, `{"`+contracts.MessageMetadataFieldToolUses+`":0}`, string(end.Metadata), "the idle tool call is no tool of the turn")
+		})
+	}
+}
+
+// A follow-up prompt keeps the turn state active, but the turn before it
+// drained its output at its end. A chunk that arrives after that drain and
+// before the follow-up prompt belongs to neither turn, so it is a segment of
+// its own.
+func TestAgentTurn_AFollowUpPromptDoesNotInheritOutputAfterTheDrain(t *testing.T) {
+	t.Parallel()
+	out := &agenttest.Stdin{}
+	b, sink := newACPTurnBase(t, out)
+	require.NoError(t, b.SendInput("first", nil))
+	b.HandleOutput(acptest.Chunk("session-1", "agent_message_chunk", "FIRST"))
+	b.HandleJSONRPCResponseForTest(promptResponse(1))
+	testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
+	// endTurn keeps the turn state active when it sends a follow-up prompt.
+	b.Mu.Lock()
+	b.promptActive = true
+	b.Mu.Unlock()
+
+	b.HandleOutput(acptest.Chunk("session-1", "agent_message_chunk", "TRAIL"))
+	require.NoError(t, b.continueWithPrompt("session-1", "also check the tests", nil))
+	b.HandleOutput(acptest.Chunk("session-1", "agent_message_chunk", "NEXT"))
+	b.HandleJSONRPCResponseForTest(promptResponse(2))
+	testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
+
+	assert.Equal(t, []string{"text:FIRST", "text:TRAIL", "text:NEXT"}, assembledTexts(t, sink.Messages()))
+	assert.Len(t, turnEndContents(sink), 2, "each prompt writes its divider")
+}
+
 // turnEndContents returns the content of each turn-end row, in order.
 func turnEndContents(sink *agenttest.Sink) []string {
 	var ends []string

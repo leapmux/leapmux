@@ -28,8 +28,17 @@ func restoreControlResponseID(ctx ControlResponseContext) ControlResponseResolut
 	}
 	nativeID, requestID, validRequest := ExtractJSONRPCID(ctx.RequestPayload)
 	_, responseID, validResponse := ExtractJSONRPCID(ctx.ResponseContent)
-	if !validRequest || !validResponse || StoredControlRequestID(ctx, requestID) != responseID {
-		resolution.Withhold = true
+	// The refusal states which half failed, so the reader learns whether the
+	// stored request or the answer is the part nobody can read.
+	switch {
+	case !validRequest:
+		resolution.Refuse(RefusalUnreadableRequest)
+		return resolution
+	case !validResponse:
+		resolution.Refuse(RefusalUnreadableAnswer)
+		return resolution
+	case StoredControlRequestID(ctx, requestID) != responseID:
+		resolution.Refuse(RefusalOtherRequest)
 		return resolution
 	}
 	if bytes.Equal(nativeID, response["id"]) {
@@ -37,7 +46,7 @@ func restoreControlResponseID(ctx ControlResponseContext) ControlResponseResolut
 	}
 	content, err := jsonfield.Set(ctx.ResponseContent, nativeID, "id")
 	if err != nil {
-		resolution.Withhold = true
+		resolution.Refuse(RefusalUnencodableReply)
 		return resolution
 	}
 	resolution.Content = content

@@ -158,9 +158,11 @@ through to a default turned the drift into a plausible wrong value.
 Each provider is a Go package under `backend/internal/worker/agent/providers/`,
 as each frontend plugin is a folder under `frontend/src/components/chat/providers/`.
 These providers read their own native protocol: `claude`, `codex`, `copilot`,
-`pi`, `zcode`, `codewhale`, `kimi`, `mimo`, `ohmypi`, `amp`, `cline`. These speak the
+`pi`, `zcode`, `codewhale`, `kimi`, `mimo`, `ohmypi`, `amp`, `cline`, `codebuddy`,
+`commandcode`, `deepseekharness`, `droid`, `letta`, `qoder`. These speak the
 Agent Client Protocol on the shared base in `providers/acp` (`acp.Start`):
-`opencode`, `cursor`, `kilo`, `goose`, `reasonix`, `qwen`, `grok`, `kiro`.
+`opencode`, `cursor`, `kilo`, `goose`, `reasonix`, `qwen`, `grok`, `kiro`, `dirac`,
+`fastagent`, `gemini`, `junie`.
 Copilot is NOT ACP — `providers/copilot/connection_test.go` and
 `session_lifecycle_test.go` assert its arguments hold no `--acp`. MiMo Code is
 a fork of OpenCode and is NOT ACP either: `mimo` drives MiMo's own HTTP server,

@@ -261,6 +261,12 @@ type Hooks struct {
 	// Grok Build then loses its own background commands and their completion
 	// events.
 	DisableHostTerminal bool
+	// DisableHostFileSystem withholds the host filesystem capability (fs.go)
+	// from the initialize request. A provider whose agent cannot use the host
+	// filesystem correctly, and that reads and writes the working tree itself
+	// when the host offers none, sets it: Gemini CLI then creates a new file,
+	// which it cannot do through the host.
+	DisableHostFileSystem bool
 	// PromptParams adjusts the params of each session/prompt before the base
 	// sends it, the follow-up prompt included. Grok Build states the prompt id
 	// there, so it can tell its own prompts from the turns the agent starts.

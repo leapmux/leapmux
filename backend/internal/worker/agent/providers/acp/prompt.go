@@ -26,26 +26,20 @@ func (b *Base) SendPreparedPrompt(content string, attachments []*leapmuxv1.Attac
 func (b *Base) sendPreparedPromptForSession(expected *string, content string, attachments []*leapmuxv1.Attachment, prepare func(string) error) error {
 	b.sessionMu.Lock()
 	defer b.sessionMu.Unlock()
+	// turnMu comes before b.Mu, as in BeginAgentTurn. The prompt becomes active
+	// while turnMu holds the buffer, so a chunk that the reader adds goes either
+	// to the output before the prompt or to the prompt, never to both.
+	b.turnMu.Lock()
 	b.Mu.Lock()
-	if err := providerkit.CheckInputSession(expected, b.sessionID); err != nil {
-		b.Mu.Unlock()
+	sessionID, err := b.claimPromptLocked(expected)
+	b.Mu.Unlock()
+	if err != nil {
+		b.turnMu.Unlock()
 		return err
 	}
-	if b.sessionID == "" {
-		b.Mu.Unlock()
-		return fmt.Errorf("agent has no active session")
-	}
-	if b.StoppedLocked() {
-		b.Mu.Unlock()
-		return fmt.Errorf("agent is stopped")
-	}
-	if b.promptActive {
-		b.Mu.Unlock()
-		return agent.ErrAgentBusy
-	}
-	sessionID := b.sessionID
-	b.promptActive = true
-	b.Mu.Unlock()
+	assistantText, thoughtText := b.takeUnownedOutputLocked()
+	b.turnMu.Unlock()
+	b.persistUnownedText(assistantText, thoughtText)
 	b.notePromptActive()
 	if prepare != nil {
 		if err := prepare(sessionID); err != nil {
@@ -53,13 +47,33 @@ func (b *Base) sendPreparedPromptForSession(expected *string, content string, at
 			return err
 		}
 	}
-	err := b.SendPromptDetached(content, attachments, func(response json.RawMessage, err error) {
+	err = b.SendPromptDetached(content, attachments, func(response json.RawMessage, err error) {
 		b.finishPromptRequest(sessionID, response, err)
 	})
 	if err != nil {
 		b.clearActivePrompt()
 	}
 	return err
+}
+
+// claimPromptLocked checks that a prompt can start in the current session, and
+// marks the prompt active. expected, when set, is the session that the input
+// was written for. It returns the session of the prompt. The caller holds b.Mu.
+func (b *Base) claimPromptLocked(expected *string) (string, error) {
+	if err := providerkit.CheckInputSession(expected, b.sessionID); err != nil {
+		return "", err
+	}
+	if b.sessionID == "" {
+		return "", fmt.Errorf("agent has no active session")
+	}
+	if b.StoppedLocked() {
+		return "", fmt.Errorf("agent is stopped")
+	}
+	if b.promptActive {
+		return "", agent.ErrAgentBusy
+	}
+	b.promptActive = true
+	return b.sessionID, nil
 }
 
 func (b *Base) finishPromptRequest(sessionID string, response json.RawMessage, err error) {
@@ -84,24 +98,29 @@ func (b *Base) finishPromptRequest(sessionID string, response json.RawMessage, e
 	}
 	if err == nil {
 		b.handleACPPromptResponse(response)
-		b.endTurn(sessionID)
-		return
+	} else {
+		completion := agent.MessageCompletionError
+		if stopped {
+			completion = agent.MessageCompletionInterrupted
+		}
+		b.finishIncompleteACPPrompt(completion)
+		if !stopped {
+			slog.Error("acp prompt failed", "agent_id", b.AgentID(), "error", err)
+			b.sink.PersistLeapMuxNotification(map[string]interface{}{
+				contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+				contracts.NotificationFieldError: fmt.Sprintf("prompt failed: %v", err),
+			})
+		}
 	}
-	// A failed turn ends like any other: an agent turn queued behind it still
-	// takes over, and input that it never read still reaches the agent.
-	defer b.endTurn(sessionID)
-	completion := agent.MessageCompletionError
+	// A stop ends the command that the cut tool still awaits. This runs after
+	// the rows above, which read a running terminal where it stands, and
+	// before the turn ends, so the stopped command does not outlive its turn.
 	if stopped {
-		completion = agent.MessageCompletionInterrupted
+		b.releaseAwaitedTerminals()
 	}
-	b.finishIncompleteACPPrompt(completion)
-	if !stopped {
-		slog.Error("acp prompt failed", "agent_id", b.AgentID(), "error", err)
-		b.sink.PersistLeapMuxNotification(map[string]interface{}{
-			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
-			contracts.NotificationFieldError: fmt.Sprintf("prompt failed: %v", err),
-		})
-	}
+	// Every turn ends here, a failed one included: an agent turn queued behind
+	// it still takes over, and input that it never read still reaches the agent.
+	b.endTurn(sessionID)
 }
 
 func (b *Base) SendPromptDetached(content string, attachments []*leapmuxv1.Attachment, handle func(json.RawMessage, error)) error {

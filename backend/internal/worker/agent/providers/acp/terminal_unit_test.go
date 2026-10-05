@@ -16,7 +16,7 @@ import (
 
 // Init / buffer helpers run on all platforms (no process spawn).
 func TestAcpStandardInitParams_ClientCapabilitiesTerminal_AllGOOS(t *testing.T) {
-	raw, err := acpStandardInitParams(nil, true, nil)
+	raw, err := acpStandardInitParams(&Hooks{})
 	require.NoError(t, err)
 
 	var params map[string]interface{}
@@ -42,7 +42,11 @@ func TestAcpStandardInitParams_ClientCapabilitiesTerminal_AllGOOS(t *testing.T) 
 // and the rest of the capabilities stay as the protocol default states them. The
 // metadata of the request itself is separate from that of the capabilities.
 func TestAcpStandardInitParams_WithholdsTheHostTerminal(t *testing.T) {
-	raw, err := acpStandardInitParams(map[string]any{"vendor": map[string]any{"flag": true}}, false, map[string]any{"clientType": "leapmux"})
+	raw, err := acpStandardInitParams(&Hooks{
+		ClientCapabilityMeta: map[string]any{"vendor": map[string]any{"flag": true}},
+		DisableHostTerminal:  true,
+		InitializeMeta:       map[string]any{"clientType": "leapmux"},
+	})
 	require.NoError(t, err)
 
 	var params struct {
@@ -54,6 +58,23 @@ func TestAcpStandardInitParams_WithholdsTheHostTerminal(t *testing.T) {
 	assert.JSONEq(t, `false`, string(params.ClientCapabilities["terminal"]))
 	assert.JSONEq(t, `{"vendor":{"flag":true}}`, string(params.ClientCapabilities["_meta"]))
 	assert.JSONEq(t, `{"readTextFile":true,"writeTextFile":true}`, string(params.ClientCapabilities["fs"]))
+}
+
+// A provider that must use its own filesystem withholds both host filesystem
+// methods, and the rest of the capabilities stay as they were. The protocol
+// default of an absent capability is false too, but an explicit false states
+// the decision in the request itself.
+func TestAcpStandardInitParams_WithholdsTheHostFileSystem(t *testing.T) {
+	raw, err := acpStandardInitParams(&Hooks{DisableHostFileSystem: true})
+	require.NoError(t, err)
+
+	var params struct {
+		ClientCapabilities map[string]json.RawMessage `json:"clientCapabilities"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &params))
+	assert.JSONEq(t, `{"readTextFile":false,"writeTextFile":false}`, string(params.ClientCapabilities["fs"]))
+	assert.JSONEq(t, `true`, string(params.ClientCapabilities["terminal"]), "the host terminal is a separate decision")
+	assert.JSONEq(t, `{"form":{},"url":{}}`, string(params.ClientCapabilities["elicitation"]))
 }
 
 func TestExpandACPTerminalResultPersistsReleasedOutput(t *testing.T) {

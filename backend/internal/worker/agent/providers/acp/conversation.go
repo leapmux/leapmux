@@ -706,6 +706,32 @@ func (c *conversation) noteToolRequestFields(fields map[string]json.RawMessage) 
 	c.enrichToolRequest(toolID, fields)
 }
 
+// notePermissionToolCall folds the input that a permission request states into
+// the request row of the call that the request asks about. It folds each input
+// field (rawInput and locations, see acpLateInputKeys) that the call never
+// stated.
+//
+// The Agent Client Protocol types the toolCall of session/request_permission as
+// a ToolCallUpdate. So the request can state input that the call did not. For a
+// call that the reader refuses, the request can be the last frame that states
+// the input: the agent never runs the tool, so no later update and no fs/*
+// request states the arguments.
+//
+// Fast Agent is an example. It opens a streamed write_text_file with no input.
+// It states the path only in a content diff and in the permission request. The
+// refusal replaces the diff. Without this fold, no row of the refused call
+// states the file.
+//
+// A field that the call stated keeps its value. The request row describes the
+// call, and the permission request describes the dialog. In OpenCode 1.18, the
+// rawInput of a permission request for an edit is the permission metadata
+// (`{filepath, diff}`), not the arguments of the tool.
+func (c *conversation) notePermissionToolCall(toolCallID string, toolCall map[string]json.RawMessage) {
+	if fields := c.out.unstatedInputFields(toolCallID, toolCall); len(fields) > 0 {
+		c.enrichToolRequest(toolCallID, fields)
+	}
+}
+
 // enrichToolRequest publishes late input fields while the tool still runs.
 // Output and completion remain on the result row.
 func (c *conversation) enrichToolRequest(toolID string, fields map[string]json.RawMessage) {

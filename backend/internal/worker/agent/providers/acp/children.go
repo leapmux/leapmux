@@ -409,6 +409,39 @@ func (b *Base) OpenToolSink(sessionID, toolCallID string) (agent.ProviderService
 	return child.childSink, child.out.holdsOpenTool(toolCallID)
 }
 
+// withOpenToolConversation runs fn on the conversation that holds the tool call
+// toolCallID open in the session sessionID. The conversation is one of two:
+//
+//   - The main conversation, for the current session. A request that states no
+//     session also uses it, as ServesSession admits such a request.
+//   - The conversation of a child, for a subagent session that a registry row
+//     routes. Then fn runs under the feedMu of the child, as every write to a
+//     child does.
+//
+// fn does not run when no such conversation holds the call open.
+func (b *Base) withOpenToolConversation(sessionID, toolCallID string, fn func(*conversation)) {
+	if toolCallID == "" {
+		return
+	}
+	if sessionID == "" || b.IsCurrentSession(sessionID) {
+		if b.holdsOpenTool(toolCallID) {
+			fn(b.main())
+		}
+		return
+	}
+	rowKey := b.childSessionRow(sessionID)
+	child := b.childFor(rowKey)
+	if child == nil {
+		return
+	}
+	child.feedMu.Lock()
+	defer child.feedMu.Unlock()
+	if !b.childRouteCurrent(rowKey, child) || !child.out.holdsOpenTool(toolCallID) {
+		return
+	}
+	fn(&child.conversation)
+}
+
 // childSessionRow returns the registry row key of the subagent that runs in
 // sessionID, or "" for a session that no subagent owns.
 func (b *Base) childSessionRow(sessionID string) string {

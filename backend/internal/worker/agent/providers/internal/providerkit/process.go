@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/coder/quartz"
@@ -41,6 +42,9 @@ type Process struct {
 	cancel        func()
 	processDone   chan struct{}
 	waitErr       error
+	// stopSignal is the signal that Stop sends to the process group, after it
+	// captures the process tree. Zero sends none. See ProcessLaunch.StopSignal.
+	stopSignal syscall.Signal
 	// One Process permits one start attempt. A repeated call must keep the original child intact.
 	startMu        sync.Mutex
 	startAttempted bool
@@ -324,7 +328,8 @@ func (p *Process) SendRawInput(data []byte) error {
 	return nil
 }
 
-// Stop terminates the process gracefully. It closes stdin and gives the
+// Stop terminates the process gracefully. It captures the process tree, sends
+// the stop signal of the provider when it has one, closes stdin, and gives the
 // process a short grace period to exit on its own. If the grace period
 // elapses, the process tree is torn down: on Windows via the job object
 // (kills orphaned grandchildren too), then via context cancellation as a
@@ -351,6 +356,7 @@ func (p *Process) Stop() {
 		slog.Warn("capture agent process ownership", "agent_id", p.agentID, "error", err)
 	}
 	cancelCapture()
+	p.sendStopSignal()
 	if p.stdin != nil {
 		if err := p.stdin.Close(); err != nil {
 			slog.Debug("close agent stdin", "agent_id", p.agentID, "error", err)
@@ -384,6 +390,21 @@ func (p *Process) Stop() {
 		}
 	}
 	<-p.processDone
+}
+
+// sendStopSignal sends the stop signal of the provider to the process group.
+//
+// It must run after the capture in Stop. A command that a provider starts in a
+// session of its own is outside the group, so the signal does not reach it, and
+// the process that the signal ends no longer holds it in the tree. Only a
+// capture that ran before the signal can then find it and end it.
+func (p *Process) sendStopSignal() {
+	if p.stopSignal == 0 {
+		return
+	}
+	if err := procutil.SignalProcessGroup(p.cmd, p.stopSignal); err != nil {
+		slog.Debug("signal the agent process group", "agent_id", p.agentID, "signal", p.stopSignal, "error", err)
+	}
 }
 
 // IsStopped returns true if the process was intentionally stopped via Stop().
@@ -635,11 +656,15 @@ type ProcessLaunch struct {
 	ShutdownGrace      time.Duration
 	PreambleDelimiter  string
 	PreambleMetaPrefix string
+	// StopSignal is the signal that ends the process when it does not end on
+	// the close of its stdin. Stop sends it to the process group after it
+	// captures the process tree and before it closes stdin. Zero sends none.
+	StopSignal syscall.Signal
 }
 
 // NewProcess consumes the command and owner that SetupProcessPipes created together.
 func NewProcess(opts agent.Options, launch ProcessLaunch, pipes *ProcessPipes, ctx context.Context, cancel func()) Process {
-	return NewProcessFrom(ProcessConfig{AgentID: opts.AgentID, ProviderName: launch.ProviderName, Ctx: ctx, Cancel: cancel, APITimeout: opts.EffectiveAPITimeout(), PreambleDelimiter: launch.PreambleDelimiter, PreambleMetaPrefix: launch.PreambleMetaPrefix, pipes: pipes, shutdownGrace: launch.ShutdownGrace})
+	return NewProcessFrom(ProcessConfig{AgentID: opts.AgentID, ProviderName: launch.ProviderName, Ctx: ctx, Cancel: cancel, APITimeout: opts.EffectiveAPITimeout(), PreambleDelimiter: launch.PreambleDelimiter, PreambleMetaPrefix: launch.PreambleMetaPrefix, pipes: pipes, shutdownGrace: launch.ShutdownGrace, stopSignal: launch.StopSignal})
 }
 
 // ProcessConfig states everything a Process starts with. Every field is
@@ -648,6 +673,7 @@ func NewProcess(opts agent.Options, launch ProcessLaunch, pipes *ProcessPipes, c
 type ProcessConfig struct {
 	pipes         *ProcessPipes
 	shutdownGrace time.Duration
+	stopSignal    syscall.Signal
 	AgentID       string
 	ProviderName  string // e.g. "claude"; used in log and error messages
 	Cmd           *exec.Cmd
@@ -696,6 +722,7 @@ func NewProcessFrom(c ProcessConfig) Process {
 		owner:              owner,
 		pipes:              c.pipes,
 		shutdownGrace:      c.shutdownGrace,
+		stopSignal:         c.stopSignal,
 		agentID:            c.AgentID,
 		providerName:       c.ProviderName,
 		cmd:                cmd,

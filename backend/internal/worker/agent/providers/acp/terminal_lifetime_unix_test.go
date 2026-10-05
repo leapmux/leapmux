@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/testutil/processtest"
@@ -62,7 +61,7 @@ func startACPHostTree(t *testing.T, base *Base, recorder *responseRecorder, home
 		variables = append(variables, acpTerminalEnvVar{Name: name, Value: text})
 	}
 	dispatchTerminal(base, acpMethodTerminalCreate, requestID, acpTerminalCreateParams{SessionID: "sess-1", Command: os.Args[0], Args: processtest.Arguments(), Cwd: base.workingDir, Env: variables})
-	responses := recorder.wait(t, requestID, 30*time.Second)
+	responses := recorder.wait(t, requestID)
 	response := responses[requestID-1]
 	require.Nil(t, response["error"])
 	result, valid := response["result"].(map[string]any)
@@ -86,7 +85,7 @@ func TestACPTerminalKillEndsOnlyItsDetachedChild(t *testing.T) {
 	firstTree.RequirePong(t)
 	secondTree.RequirePong(t)
 	dispatchTerminal(base, acpMethodTerminalKill, 3, acpTerminalIDParams{SessionID: "sess-1", TerminalID: first.id})
-	responses := recorder.wait(t, 3, 30*time.Second)
+	responses := recorder.wait(t, 3)
 	require.Nil(t, responses[2]["error"])
 	select {
 	case <-first.done:

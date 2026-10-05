@@ -236,6 +236,20 @@ func (m *Manager) PutAgentForTest(agentID string, a Agent) {
 	m.agents[agentID] = a
 }
 
+// LifecycleLockCallersForTest reports how many callers hold or wait for the
+// lifecycle lock of agentID. LockAgent counts a caller before it blocks on the
+// lock, so a count of two while one caller holds the lock proves that a second
+// caller waits on it. A test reads that instead of a sleep that guesses how
+// long the second caller takes to arrive.
+func (m *Manager) LifecycleLockCallersForTest(agentID string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if entry, ok := m.lifecycleLocks[agentID]; ok {
+		return entry.refcount
+	}
+	return 0
+}
+
 // LockAgent acquires a per-agent mutex that serializes multi-step lifecycle
 // operations (typically stop-then-start) against concurrent callers. Without
 // this, a second restart can slip in between the first's stop and start and
@@ -1342,6 +1356,18 @@ func (m *Manager) HasAgent(agentID string) bool {
 	defer m.mu.RUnlock()
 	_, ok := m.agents[agentID]
 	return ok
+}
+
+// RunningAgent returns the live provider of an agent, or nil when none runs.
+//
+// It takes NO lifecycle lock, so a caller that already holds LockAgent can use
+// it where LockProvider would deadlock on the non-reentrant mutex. The agent
+// may stop right after the read; a caller that needs it to stay must hold the
+// lifecycle lock itself.
+func (m *Manager) RunningAgent(agentID string) Agent {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.agents[agentID]
 }
 
 // AgentAlive reports whether a LIVE process serves the agent.

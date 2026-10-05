@@ -101,7 +101,7 @@ type detachedLifetimeFixture struct {
 	reader  *json.Decoder
 }
 
-func startDetachedLifetimeFixture(t *testing.T, home string) *detachedLifetimeFixture {
+func startDetachedLifetimeFixture(t *testing.T, home string, stopSignal syscall.Signal) *detachedLifetimeFixture {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -113,7 +113,7 @@ func startDetachedLifetimeFixture(t *testing.T, home string) *detachedLifetimeFi
 	pipes, err := SetupProcessPipes(cmd, cancel)
 	require.NoError(t, err)
 	stdout, stderr := pipes.Stdout(), pipes.Stderr()
-	process := NewProcess(agent.Options{AgentID: "detached-lifetime"}, ProcessLaunch{ProviderName: "kiro-fixture", ShutdownGrace: 0, PreambleDelimiter: "", PreambleMetaPrefix: ""}, pipes, ctx, cancel)
+	process := NewProcess(agent.Options{AgentID: "detached-lifetime"}, ProcessLaunch{ProviderName: "kiro-fixture", ShutdownGrace: 0, PreambleDelimiter: "", PreambleMetaPrefix: "", StopSignal: stopSignal}, pipes, ctx, cancel)
 	require.NoError(t, process.StartCmd())
 	process.DrainStderr(stderr)
 	type readyEngine struct {
@@ -213,8 +213,8 @@ func (f *detachedLifetimeFixture) requireClosed(t *testing.T) {
 
 func TestContextCancellationEndsOnlyItsDetachedEngine(t *testing.T) {
 	home := t.TempDir()
-	first := startDetachedLifetimeFixture(t, home)
-	second := startDetachedLifetimeFixture(t, home)
+	first := startDetachedLifetimeFixture(t, home, 0)
+	second := startDetachedLifetimeFixture(t, home, 0)
 	first.requirePong(t)
 	second.requirePong(t)
 	first.cancel()
@@ -229,8 +229,8 @@ func TestContextCancellationEndsOnlyItsDetachedEngine(t *testing.T) {
 
 func TestProcessStopEndsOnlyItsDetachedEngineAfterEOF(t *testing.T) {
 	home := t.TempDir()
-	first := startDetachedLifetimeFixture(t, home)
-	second := startDetachedLifetimeFixture(t, home)
+	first := startDetachedLifetimeFixture(t, home, 0)
+	second := startDetachedLifetimeFixture(t, home, 0)
 	first.requirePong(t)
 	second.requirePong(t)
 	finished := make(chan struct{})
@@ -245,6 +245,31 @@ func TestProcessStopEndsOnlyItsDetachedEngineAfterEOF(t *testing.T) {
 	case <-finished:
 	case <-testutil.DeadlineContext(t).Done():
 		t.Fatal("the stopped relay did not exit")
+	}
+	first.requireClosed(t)
+	second.requirePong(t)
+}
+
+// A stop signal ends the relay at once, and the relay never closes the engine's
+// stdin or waits for it. The engine leads a session of its own, so the signal
+// to the relay's group does not reach it, and after the relay exits nothing in
+// the tree points at it. Stop must capture the tree before it sends the signal,
+// so that the owner still ends the engine.
+func TestProcessStopSignalEndsTheDetachedEngineThatItsRelayLeaves(t *testing.T) {
+	home := t.TempDir()
+	first := startDetachedLifetimeFixture(t, home, syscall.SIGTERM)
+	second := startDetachedLifetimeFixture(t, home, 0)
+	first.requirePong(t)
+	second.requirePong(t)
+	finished := make(chan struct{})
+	go func() {
+		first.process.Stop()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the signalled relay did not exit")
 	}
 	first.requireClosed(t)
 	second.requirePong(t)

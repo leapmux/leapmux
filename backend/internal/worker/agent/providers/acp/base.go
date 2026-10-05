@@ -1113,29 +1113,37 @@ func acpApplySetting(providerName, agentID, name, value string, apply func(strin
 // every ACP provider: protocol version 1, the LeapMux clientInfo, and
 // clientCapabilities.
 //
-// clientCapabilities.terminal is true so agents that honor the ACP host
-// terminal capability (Goose, Reasonix) route shells through terminal/*;
-// handlers live in terminal.go and surface KindShell background-task
-// rows. hostTerminal is false for a provider that runs its shell commands
-// itself (Hooks.DisableHostTerminal). fs.* is true so an agent that edits
-// through the client (Dirac's `edit_file`) reads and writes the same file
-// state the host sees; handlers live in fs.go (issue #370).
-func acpStandardInitParams(meta map[string]any, hostTerminal bool, requestMeta map[string]any) (json.RawMessage, error) {
+// The hooks supply the provider's part:
+//
+//   - clientCapabilities.terminal is true, so an agent that honors the ACP host
+//     terminal capability (Goose, Reasonix) routes its shells through
+//     terminal/*. The handlers live in terminal.go and surface KindShell
+//     background-task rows. It is false for a provider that runs its shell
+//     commands itself (Hooks.DisableHostTerminal).
+//   - clientCapabilities.fs.* is true, so an agent that edits through the
+//     client (Dirac's `edit_file`) reads and writes the same file state that
+//     the host sees. The handlers live in fs.go (issue #370). Both are false
+//     for a provider that must use its own filesystem
+//     (Hooks.DisableHostFileSystem).
+//   - Hooks.ClientCapabilityMeta and Hooks.InitializeMeta supply the two
+//     `_meta` objects.
+func acpStandardInitParams(hooks *Hooks) (json.RawMessage, error) {
+	hostFileSystem := !hooks.DisableHostFileSystem
 	capabilities := map[string]any{
-		"fs":          map[string]bool{"readTextFile": true, "writeTextFile": true},
-		"terminal":    hostTerminal,
+		"fs":          map[string]bool{"readTextFile": hostFileSystem, "writeTextFile": hostFileSystem},
+		"terminal":    !hooks.DisableHostTerminal,
 		"elicitation": map[string]any{"form": map[string]any{}, "url": map[string]any{}},
 	}
-	if len(meta) > 0 {
-		capabilities["_meta"] = meta
+	if len(hooks.ClientCapabilityMeta) > 0 {
+		capabilities["_meta"] = hooks.ClientCapabilityMeta
 	}
 	params := map[string]any{
 		"protocolVersion":    1,
 		"clientInfo":         map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
 		"clientCapabilities": capabilities,
 	}
-	if len(requestMeta) > 0 {
-		params["_meta"] = requestMeta
+	if len(hooks.InitializeMeta) > 0 {
+		params["_meta"] = hooks.InitializeMeta
 	}
 	encoded, err := json.Marshal(params)
 	if err != nil {
@@ -1707,6 +1715,12 @@ func (b *Base) startACPHandshake(
 		}
 		return nil, b.FormatStartupError(sessionMethod, err)
 	}
+	// The reply of a resume separates its replay from live output: the history a
+	// peer sends before this reply is conversation the Worker already stores, so
+	// the drain at the end of startup drops it (see acpSessionUpdates).
+	if opts.ResumeSessionID != "" && sessionMethod == sessionCfg.ResumeMethod {
+		b.markSessionReplayCutoff()
+	}
 
 	// 3. Parse the common session fields.
 	session, err := parseACPSessionResult(sessionResp)
@@ -1764,7 +1778,7 @@ type StartSpec[T any] struct {
 	ProviderName   string                                        // process/log name, e.g. "cursor"
 	BaseArgs       []string                                      // args after the binary, e.g. {"acp"}; a provider whose args depend on the launch options builds them at the call site (see reasonix.Start)
 	RCMarkerEnvKey string                                        // provider rc marker stripped + re-added on a login shell (e.g. "KILO_CLIENT"); "" if none
-	PinnedEnv      []string                                      // "KEY=value" assignments that REPLACE any inherited value (see PinEnv); nil for none
+	PinnedEnv      []string                                      // "KEY=value" assignments that REPLACE any inherited value and any value that the user's profile exports (see PinEnv and launch.WrapSpec.SetEnv); nil for none
 	SessionConfig  SessionConfig                                 // zero value -> acpDefaultSessionConfig
 	NewAgent       func() *T                                     // construct a zero-value concrete agent
 	Base           func(*T) *Base                                // accessor for the agent's embedded Base
@@ -1795,6 +1809,10 @@ func Start[T any](ctx context.Context, opts agent.Options, sink agent.ProviderSe
 		Launch:     launchSpec,
 		BaseArgs:   spec.BaseArgs,
 		WorkingDir: opts.WorkingDir,
+		// The login shell runs the profile after the worker hands it cmd.Env, so a
+		// pin on cmd.Env alone loses to an `export` in the profile. The shell
+		// wrapper states the pins again after the profile.
+		SetEnv: spec.PinnedEnv,
 	}
 	if spec.RCMarkerEnvKey != "" {
 		wrap.StripEnvKeys = []string{spec.RCMarkerEnvKey}
@@ -1815,7 +1833,8 @@ func Start[T any](ctx context.Context, opts agent.Options, sink agent.ProviderSe
 	// A pinned value REPLACES whatever the environment already holds, because the
 	// reason to pin one is that LeapMux needs that exact value: an inherited
 	// `OPENCODE_ENABLE_QUESTION_TOOL=0` would otherwise turn off the tool the
-	// question bridge exists to answer.
+	// question bridge exists to answer. The same pins ride on the shell wrapper's
+	// SetEnv (see above), so the user's profile cannot replace them either.
 	if len(spec.PinnedEnv) > 0 {
 		env = envutil.PinEnv(env, spec.PinnedEnv...)
 	}
@@ -1864,7 +1883,7 @@ func Start[T any](ctx context.Context, opts agent.Options, sink agent.ProviderSe
 		}
 	}()
 
-	initParams, err := acpStandardInitParams(b.hooks.ClientCapabilityMeta, !b.hooks.DisableHostTerminal, b.hooks.InitializeMeta)
+	initParams, err := acpStandardInitParams(&b.hooks)
 	if err != nil {
 		return nil, err
 	}
@@ -3325,6 +3344,7 @@ func (b *Base) handleACPOutput(line *providerkit.ParsedLine) {
 	case contracts.MCPElicitationMethodACP:
 		b.PublishSessionControlRequest(line, providerkit.MCPElicitationCancelAnswer())
 	case acpMethodSessionRequestPermission:
+		b.notePermissionToolCall(line.Params)
 		b.PublishSessionControlRequest(line, acpPermissionCancelAnswer())
 	case acpMethodCancelRequestSnake, acpMethodCancelRequestCamel:
 		b.handleACPCancelRequest(line.Params)

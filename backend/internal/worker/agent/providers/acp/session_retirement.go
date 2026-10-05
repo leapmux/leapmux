@@ -115,6 +115,10 @@ func (b *Base) ServesSession(sessionID string) bool {
 // agentSessionOfControlRequest), because the worker accepts an answer only
 // while the agent is in that session.
 //
+// The text that the session streamed before a request that passes is stored
+// first (see storeTextBeforeControlRequest), so the reader sees it while the
+// agent waits on the answer.
+//
 // The provider's ControlRequestObserver reads each request that passes, BEFORE
 // the publication, so a withdrawal that the provider reads right after the
 // publication finds the request recorded.
@@ -124,10 +128,35 @@ func (b *Base) PublishSessionControlRequest(line *providerkit.ParsedLine, cancel
 		b.refuseControlRequest(line, sessionID, cancelAnswer)
 		return
 	}
+	b.storeTextBeforeControlRequest(sessionID)
 	if b.hooks.ControlRequestObserver != nil {
 		b.hooks.ControlRequestObserver(line)
 	}
 	b.PublishControlRequestInSession(b.sink, b.agentSessionOfControlRequest(sessionID), line.Raw, cancelAnswer)
+}
+
+// storeTextBeforeControlRequest stores the text that the session sessionID
+// assembled before one of its control requests. The main conversation owns a
+// request of the current session and a request that states no session. The
+// child conversation that a registry row routes owns a request of a subagent
+// session.
+//
+// A control request is a chronology boundary, as a tool call is. The agent
+// waits on the answer, and a segment that no update ends stays in the buffer
+// until the turn ends, which is after the answer. Reasonix streams the plan of
+// Plan mode as the answer and then asks to leave Plan mode with a permission
+// request that no tool call precedes. Without the store, the reader must
+// approve or reject a plan that no row shows.
+func (b *Base) storeTextBeforeControlRequest(sessionID string) {
+	if sessionID == "" || b.IsCurrentSession(sessionID) {
+		main := b.main()
+		main.flushThoughtBuffer()
+		main.flushAssistantBuffer()
+		return
+	}
+	if rowKey := b.childSessionRow(sessionID); rowKey != "" {
+		b.FinishChildTurn(rowKey)
+	}
 }
 
 // agentSessionOfControlRequest returns the provider session to store with a

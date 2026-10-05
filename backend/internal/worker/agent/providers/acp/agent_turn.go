@@ -41,7 +41,8 @@ import (
 // prompt response, which is short.
 //
 // It returns false when an agent turn already runs or waits: the output then
-// joins that turn.
+// joins that turn. A turn that starts while no turn runs first stores the
+// output that no turn owns, as a prompt does (see takeUnownedOutputLocked).
 //
 // The queue flag and the boundary change in one step under turnMu, so a
 // reader of the two (EndAgentTurnWithoutRow) never finds a queued turn with
@@ -65,7 +66,9 @@ func (b *Base) BeginAgentTurn() bool {
 	b.promptActive = true
 	b.agentTurnActive = true
 	b.Mu.Unlock()
+	assistantText, thoughtText := b.takeUnownedOutputLocked()
 	b.turnMu.Unlock()
+	b.persistUnownedText(assistantText, thoughtText)
 	b.notePromptActive()
 	return true
 }
@@ -84,14 +87,19 @@ func (b *Base) BeginAgentTurn() bool {
 // agent turn's. The check and the record share one critical section, so a
 // prompt cannot start between them.
 func (b *Base) AdmitAgentTurn() bool {
+	b.turnMu.Lock()
 	b.Mu.Lock()
 	if b.promptActive {
 		b.Mu.Unlock()
+		b.turnMu.Unlock()
 		return false
 	}
 	b.promptActive = true
 	b.agentTurnActive = true
 	b.Mu.Unlock()
+	assistantText, thoughtText := b.takeUnownedOutputLocked()
+	b.turnMu.Unlock()
+	b.persistUnownedText(assistantText, thoughtText)
 	b.notePromptActive()
 	return true
 }
@@ -102,6 +110,27 @@ func (b *Base) endPromptOutput(assistantText, thoughtText string) {
 	main := b.main()
 	main.persistCompletedText(agent.AssembledMessageKindReasoning, thoughtText)
 	main.persistCompletedText(agent.AssembledMessageKindText, assistantText)
+}
+
+// persistUnownedText stores the text that takeUnownedOutputLocked took when a
+// turn started. Each kind that holds text is a completed segment of its own,
+// stored before the turn writes anything. A kind with no text stores nothing
+// and reports nothing, because no live counter opened for it.
+//
+// The base cannot tell a replay from content, so it keeps the text. A dropped
+// segment would lose content that an idle agent sends: Reasonix sends the
+// warning of a background job as text, and OpenCode and Kilo forward the
+// output of each client of a session. A kept replay is a visible copy. A
+// provider can consume it at its hook, as Gemini does, or avoid it with a
+// resume that sends no replay.
+func (b *Base) persistUnownedText(assistantText, thoughtText string) {
+	main := b.main()
+	if thoughtText != "" {
+		main.persistCompletedText(agent.AssembledMessageKindReasoning, thoughtText)
+	}
+	if assistantText != "" {
+		main.persistCompletedText(agent.AssembledMessageKindText, assistantText)
+	}
 }
 
 // AgentTurnActive reports whether the running turn is one that the agent
@@ -279,15 +308,22 @@ func (b *Base) sendFollowUpPrompt(sessionID, content string, attachments []*leap
 // attachments, while the turn state stays active. The fields of the turn that
 // ended go, as they go at any turn end, because they describe that turn alone.
 func (b *Base) continueWithPrompt(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+	b.turnMu.Lock()
 	b.Mu.Lock()
 	if b.sessionID != sessionID || b.StoppedLocked() {
 		b.Mu.Unlock()
+		b.turnMu.Unlock()
 		return fmt.Errorf("the session of the turn is no longer active")
 	}
 	b.steerRunID = ""
 	b.interruptRequested = false
 	b.agentTurnActive = false
 	b.Mu.Unlock()
+	// The turn that ended drained its output, so what the buffer holds now came
+	// after that turn and before this prompt.
+	assistantText, thoughtText := b.takeUnownedOutputLocked()
+	b.turnMu.Unlock()
+	b.persistUnownedText(assistantText, thoughtText)
 	return b.SendPromptDetached(content, attachments, func(response json.RawMessage, err error) {
 		b.finishPromptRequest(sessionID, response, err)
 	})

@@ -15,6 +15,27 @@ type acpToolRequestContent struct {
 	revision     int64
 }
 
+// notePermissionToolCall reads the tool call of one session/request_permission
+// and folds it into the request row of that call. The row is in the
+// conversation that holds the call open (see conversation.notePermissionToolCall).
+// A request that states no tool call id changes no row.
+func (b *Base) notePermissionToolCall(params json.RawMessage) {
+	var request struct {
+		SessionID string                     `json:"sessionId"`
+		ToolCall  map[string]json.RawMessage `json:"toolCall"`
+	}
+	if json.Unmarshal(params, &request) != nil || len(request.ToolCall) == 0 {
+		return
+	}
+	var toolCallID string
+	if json.Unmarshal(request.ToolCall[contracts.ACPSupplementIdentityToolCallID], &toolCallID) != nil || toolCallID == "" {
+		return
+	}
+	b.withOpenToolConversation(request.SessionID, toolCallID, func(c *conversation) {
+		c.notePermissionToolCall(toolCallID, request.ToolCall)
+	})
+}
+
 // revisedToolRequestSupplement folds the request fields of one update into the
 // supplement of a published request row. It reports false when the update
 // revises no field, or when the stored row cannot be read.

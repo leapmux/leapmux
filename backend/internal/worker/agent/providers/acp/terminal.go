@@ -79,9 +79,13 @@ type acpTerminalSession struct {
 	signal         *string
 	registryClosed bool
 	// killed is set when the host intentionally terminates the process
-	// (terminal/kill, release, Stop, ClearContext). Registry status then
-	// becomes StatusStopped rather than Failed.
+	// (terminal/kill, release, Stop, ClearContext, a stopped prompt). Registry
+	// status then becomes StatusStopped rather than Failed.
 	killed bool
+	// awaited counts the terminal/wait_for_exit requests that have no reply
+	// yet. A pending wait marks the command as the foreground work of a tool
+	// call, which a stopped prompt ends (see releaseAwaitedTerminals).
+	awaited int
 
 	// done is closed once the process has exited and exit fields are set.
 	done chan struct{}
@@ -264,6 +268,28 @@ func (s *acpTerminalSession) kill() {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+// beginAwait records one terminal/wait_for_exit request that waits for the exit.
+func (s *acpTerminalSession) beginAwait() {
+	s.mu.Lock()
+	s.awaited++
+	s.mu.Unlock()
+}
+
+// endAwait records the reply to one terminal/wait_for_exit request.
+func (s *acpTerminalSession) endAwait() {
+	s.mu.Lock()
+	s.awaited--
+	s.mu.Unlock()
+}
+
+// awaitedWhileRunning reports whether the command still runs while the agent
+// waits for its exit.
+func (s *acpTerminalSession) awaitedWhileRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.awaited > 0 && !s.exited
 }
 
 func (s *acpTerminalSession) waitDone(timeout time.Duration) {
@@ -697,11 +723,15 @@ func (b *acpTerminalHost) terminalWaitForExit(id json.RawMessage, rawParams json
 		return
 	}
 
+	// Count the wait here, on the read loop, so a prompt response that the
+	// agent sends after this request already sees it.
+	sess.beginAwait()
 	// Reply on a goroutine: the caller runs on the agent stdout read loop and
 	// must not block waiting for the child process.
 	go func() {
 		<-sess.done
 		_, _, exitCode, signal, _ := sess.snapshot()
+		sess.endAwait()
 		b.sendOK(id, map[string]interface{}{
 			"exitCode": exitCode,
 			"signal":   signal,
@@ -756,6 +786,42 @@ func (b *acpTerminalHost) releaseTerminal(sess *acpTerminalSession) {
 	sess.waitDone(acpTerminalReleaseWait)
 	b.closeTerminalRegistry(sess)
 	b.services().ReportProgress(agent.CompleteOutputProgress("terminal:" + sess.id))
+}
+
+// releaseAwaitedTerminals kills and forgets each terminal whose command still
+// runs while the agent waits for its exit. finishPromptRequest calls it for a
+// prompt that the reader stopped.
+//
+// ACP asks the agent to abort each tool call before it answers a cancel, and to
+// release each terminal that it no longer needs. fast-agent 0.10.42 does
+// neither: its terminal runtime catches only Exception, and the
+// asyncio.CancelledError of a cancel is a BaseException. Its
+// terminal/wait_for_exit then outlives the `cancelled` reply, nothing releases
+// the terminal, and the Running row keeps the agent working after the stop.
+//
+// A pending wait marks the command as the foreground work of a cut tool call.
+// A terminal with no pending wait can be background work that the agent reads
+// later, so it stays. The pending wait still gets its reply, which states the
+// kill.
+//
+// It does not take lifecycleMu, because a release can wait for the kill, and
+// each terminal request on the read loop takes that lock. terminalsMu alone
+// makes the removal exclusive: terminal/release and the session release take
+// a terminal out of the same map under it, and only the one that takes it out
+// releases it.
+func (b *acpTerminalHost) releaseAwaitedTerminals() {
+	var awaited []*acpTerminalSession
+	b.terminalsMu.Lock()
+	for id, s := range b.terminals {
+		if s.awaitedWhileRunning() {
+			awaited = append(awaited, s)
+			delete(b.terminals, id)
+		}
+	}
+	b.terminalsMu.Unlock()
+	for _, s := range awaited {
+		b.releaseTerminal(s)
+	}
 }
 
 // releaseAllTerminals kills and forgets every host terminal and latches the

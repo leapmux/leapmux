@@ -106,7 +106,7 @@ func runHandshakeForTest(t *testing.T, peer *handshakePeer, hooks Hooks, opts ag
 		}
 	})
 
-	initParams, err := acpStandardInitParams(hooks.ClientCapabilityMeta, !hooks.DisableHostTerminal, hooks.InitializeMeta)
+	initParams, err := acpStandardInitParams(&hooks)
 	require.NoError(t, err)
 	session, err := b.startACPHandshake(stdoutReader, io.NopCloser(strings.NewReader("")), opts, initParams, sessionConfig)
 	require.NoError(t, err)

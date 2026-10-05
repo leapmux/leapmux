@@ -1,11 +1,13 @@
 package acp
 
 import (
+	"bytes"
 	"encoding/json"
 	"sort"
 	"strings"
 	"sync"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -161,17 +163,81 @@ func (o *acpTurnOutput) latestOpenToolWithoutInput() string {
 }
 
 // toolRequestStatesInput reports whether a stored request carries a raw input
-// with content. An empty object states no field a reader can use.
+// that states something (see requestFieldStates).
 func toolRequestStatesInput(state *acpToolUpdateState) bool {
-	raw := state.fields["rawInput"]
-	if len(raw) == 0 {
+	return requestFieldStates(state.fields[contracts.ACPSupplementRequestRawInput])
+}
+
+// acpLateInputKeys are the request fields that a frame other than the call's
+// own can state late: the input of the call. The title and the kind identify
+// the call, and the frames of the call state them. The schema requires a title
+// in a tool_call (ToolCall.title). A permission request words the title for its
+// dialog, and it can state another kind: Goose 1.53 opens a write with no kind
+// and asks for it with `kind: "other"`. So a permission request never fills
+// the title or the kind.
+var acpLateInputKeys = []string{contracts.ACPSupplementRequestRawInput, contracts.ACPSupplementRequestLocations}
+
+// unstatedInputFields returns the input fields of offered (see acpLateInputKeys)
+// that the open call toolCallID never stated in a frame of its own. It returns
+// only a field that states something (see requestFieldStates). It returns nil
+// when the call is not open, and when the call stated each field that offered
+// states.
+//
+// The function reads the fields that the frames of the call merged
+// (acpToolUpdateState), never the supplement of the request row. The caller
+// folds the returned fields into that supplement only. So the call still
+// states no input to latestOpenToolWithoutInput, and a later fs/* request of
+// the host still folds the complete arguments into the row.
+func (o *acpTurnOutput) unstatedInputFields(toolCallID string, offered map[string]json.RawMessage) map[string]json.RawMessage {
+	o.turnMu.Lock()
+	defer o.turnMu.Unlock()
+	state := o.toolUpdateState[toolCallID]
+	if state == nil {
+		return nil
+	}
+	var unstated map[string]json.RawMessage
+	for _, key := range acpLateInputKeys {
+		value := offered[key]
+		if !requestFieldStates(value) || requestFieldStates(state.fields[key]) {
+			continue
+		}
+		if unstated == nil {
+			unstated = make(map[string]json.RawMessage, len(acpLateInputKeys))
+		}
+		unstated[key] = value
+	}
+	return unstated
+}
+
+// requestFieldStates reports whether one request field of a frame states
+// something that a reader can use. These values state nothing:
+//
+//   - An absent field.
+//   - null.
+//   - An empty string.
+//   - An empty object. OpenCode sends it as the rawInput of a call that it
+//     fills later.
+//   - An empty array.
+//
+// Every other value states something, a scalar input included. raw holds one
+// JSON value, as json.Unmarshal leaves each field of a map of json.RawMessage.
+// The function reads the bytes at the two ends of the value and decodes
+// nothing, because a rawInput can hold the whole text of a file.
+func requestFieldStates(raw json.RawMessage) bool {
+	value := bytes.TrimSpace(raw)
+	if len(value) == 0 {
 		return false
 	}
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &object); err != nil {
-		return true // a scalar input is still an input
+	switch value[0] {
+	case 'n':
+		return false
+	case '"':
+		return len(value) > len(`""`)
+	case '{', '[':
+		return len(value) > 2 && len(bytes.TrimSpace(value[1:len(value)-1])) > 0
+	default:
+		return true
 	}
-	return len(object) > 0
 }
 
 // markPromptBoundaryLocked records the end of the prompt's output, because an
@@ -197,6 +263,30 @@ func (o *acpTurnOutput) markPromptBoundaryLocked() (assistantText, thoughtText s
 	assistantText, thoughtText = o.turnAssistantText.String(), o.turnThoughtText.String()
 	o.turnAssistantText.Reset()
 	o.turnThoughtText.Reset()
+	return assistantText, thoughtText
+}
+
+// takeUnownedOutputLocked ends the output that no turn owns, because a turn
+// starts now. That output is what the base recorded after the last turn
+// drained and before this turn started. Several sources reach it:
+//
+//   - The replay of a session/load. The agent sends it before its reply, and
+//     the base dispatches it after the startup, while no prompt runs.
+//   - A chunk that trails the end of a turn.
+//   - Content that an agent sends while it is idle.
+//
+// It returns the buffered text, which the caller persists as segments of their
+// own before the turn writes anything. Without this, the first segment of the
+// turn started with that text, and one row held both. It also drops the count
+// of the tool calls that completed meanwhile: each of them already has its row,
+// and the turn-end row counts the tools of its own turn only. A tool call that
+// is still open stays open, because only its own update can end it. The caller
+// holds turnMu.
+func (o *acpTurnOutput) takeUnownedOutputLocked() (assistantText, thoughtText string) {
+	assistantText, thoughtText = o.turnAssistantText.String(), o.turnThoughtText.String()
+	o.turnAssistantText.Reset()
+	o.turnThoughtText.Reset()
+	o.turnToolUses = 0
 	return assistantText, thoughtText
 }
 

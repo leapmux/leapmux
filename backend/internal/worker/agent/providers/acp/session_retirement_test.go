@@ -721,6 +721,46 @@ func TestACPControlRequestObserverReadsEachPublishedRequestFirst(t *testing.T) {
 	assert.Len(t, sink.PublishedControls(), 3)
 }
 
+// A control request is a chronology boundary, as a tool call is. The agent
+// waits on the answer, so the text that a session streamed before its request
+// is in the transcript of that session before the card reaches the reader: the
+// observer, which runs before the publication, already finds it. A request of a
+// session that the agent does not serve stores nothing, so the segment that it
+// interrupts stays open.
+func TestACPStoresTheTextBeforeAControlRequest(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newRetiringTestAgent(t)
+	a.ApplySubagentObservation(&SubagentObservation{RowKey: "call-spawn", ChildAgentKey: "call-spawn", Title: "helper", Status: bgtask.StatusRunning, Spawns: true})
+	a.AttachChildSession("child-session", "call-spawn")
+	var mainAtObserve, childAtObserve [][]string
+	a.hooks.ControlRequestObserver = func(*providerkit.ParsedLine) {
+		mainAtObserve = append(mainAtObserve, assembledTexts(t, sink.Messages()))
+		childAtObserve = append(childAtObserve, assembledTexts(t, sink.Child("child-of-call-spawn").Messages()))
+	}
+	chunk := func(sessionID, updateType, text string) {
+		a.HandleSessionUpdateForTest(sessionUpdate(t, sessionID, string(chunkUpdate(updateType, text, ""))))
+	}
+
+	chunk("session-1", "agent_thought_chunk", "Think first.")
+	chunk("session-1", "agent_message_chunk", "Ask the main question.")
+	a.HandleOutput(permissionRequest(t, 90, "session-1"))
+	chunk("session-1", "agent_message_chunk", "Ask with no session.")
+	a.HandleOutput(elicitationRequest(t, 91, ""))
+	chunk("child-session", "agent_message_chunk", "Ask the child question.")
+	a.HandleOutput(permissionRequest(t, 92, "child-session"))
+	chunk("session-1", "agent_message_chunk", "Keep streaming.")
+	a.HandleOutput(permissionRequest(t, 93, "unknown-session"))
+	syncTestPeer(t, a)
+
+	stored := []string{"thought:Think first.", "text:Ask the main question.", "text:Ask with no session."}
+	assert.Equal(t, [][]string{stored[:2], stored, stored}, mainAtObserve)
+	assert.Equal(t, [][]string{nil, nil, {"text:Ask the child question."}}, childAtObserve)
+	assert.Len(t, sink.PublishedControls(), 3, "the request of a session that the agent does not serve reaches no reader")
+	assert.Equal(t, stored, assembledTexts(t, sink.Messages()), "the refused request stores no text")
+	a.main().flushAssistantBuffer()
+	assert.Equal(t, append(stored, "text:Keep streaming."), assembledTexts(t, sink.Messages()))
+}
+
 // A frame of a retired session that carries no id asks for no answer, so the
 // refusal writes nothing, and the reader sees no card.
 func TestACPRefusesANotificationOfARetiredSessionWithoutAnAnswer(t *testing.T) {

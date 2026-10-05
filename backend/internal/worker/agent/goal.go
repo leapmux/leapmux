@@ -301,9 +301,13 @@ type GoalOutcome struct {
 //   - Claude Code, Goose, and Kilo have only a user-message command. They
 //     return it as QueuedInput, and observe it after the queue delivers it.
 //     GoalTextCommander is how they build and observe that text.
-//   - Qwen Code and Grok Build also have only a user-message command, returned
-//     as QueuedInput. They do not observe it: their own goal report states
-//     what the command did.
+//   - Qwen Code changes its goal through its side-band goal control
+//     (qwen/control/session/goal/control), which takes effect at once, also
+//     while a goal round runs. Its own goal report states what the request did.
+//   - Grok Build has only a user-message command. It goes to Grok's own prompt
+//     queue at once, not as QueuedInput, because Grok runs the whole goal loop
+//     inside one turn and yields to a queued prompt before the next round. Its
+//     own goal report states what the command did.
 //   - Pi writes the command of its goal extension to the process directly.
 //   - Reasonix sets its mode and submits the objective under one session lock.
 //     Normal mode clears its goal. ACP provides no Pause or Resume operation.

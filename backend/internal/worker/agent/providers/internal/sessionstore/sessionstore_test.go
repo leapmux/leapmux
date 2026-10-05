@@ -78,6 +78,44 @@ func TestContentBlockText(t *testing.T) {
 	assert.Empty(t, ContentBlockText([]byte(`[{"type":"tool_result","content":"out"}]`)))
 	assert.Empty(t, ContentBlockText(nil))
 	assert.Empty(t, ContentBlockText([]byte(`{"unexpected":"shape"}`)))
+	assert.Equal(t, "kept", ContentBlockText([]byte(`["stray", {"type":"text","text":"kept"}]`)),
+		"an item that is not a block does not hide the blocks after it")
+}
+
+func TestContentBlocks(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    []ContentBlock
+	}{
+		{name: "a plain string is one text block", content: `"hello"`, want: []ContentBlock{{Type: "text", Text: "hello"}}},
+		{name: "an empty string is one empty text block", content: `""`, want: []ContentBlock{{Type: "text"}}},
+		{
+			name:    "an array keeps its blocks in order",
+			content: `[{"type":"image","source":{}},{"type":"text","text":"a"},{"type":"tool_result","content":"out"}]`,
+			want:    []ContentBlock{{Type: "image"}, {Type: "text", Text: "a"}, {Type: "tool_result"}},
+		},
+		{
+			name:    "an item that is not a block object is skipped",
+			content: `["stray", 7, {"type":"text","text":"a"}]`,
+			want:    []ContentBlock{{Type: "text", Text: "a"}},
+		},
+		{
+			name:    "a block whose text is not a string is skipped",
+			content: `[{"type":"text","text":{"nested":true}},{"type":"text","text":"a"}]`,
+			want:    []ContentBlock{{Type: "text", Text: "a"}},
+		},
+		{name: "an empty array has no blocks", content: `[]`, want: []ContentBlock{}},
+		{name: "an object is no content", content: `{"type":"text","text":"a"}`},
+		{name: "a number is no content", content: `7`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, ContentBlocks([]byte(tc.content)))
+		})
+	}
+	assert.Nil(t, ContentBlocks(nil), "absent content has no blocks")
 }
 
 func TestJSONLHeadAndTail(t *testing.T) {

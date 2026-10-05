@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -54,9 +55,16 @@ func (r *responseRecorder) Write(p []byte) (int, error) {
 
 func (r *responseRecorder) Close() error { return nil }
 
-func (r *responseRecorder) wait(t *testing.T, n int, timeout time.Duration) []map[string]interface{} {
+// responseWaitDeadline limits a wait for replies that must arrive. A wait
+// returns as soon as the replies arrive, so the generous limit costs a passing
+// test nothing. A short limit fails a correct run on a loaded machine.
+const responseWaitDeadline = 30 * time.Second
+
+// wait returns the first n replies, and fails the test when they do not arrive
+// within responseWaitDeadline.
+func (r *responseRecorder) wait(t *testing.T, n int) []map[string]interface{} {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(responseWaitDeadline)
 	for {
 		r.mu.Lock()
 		got := len(r.bufs)
@@ -122,7 +130,7 @@ func TestACPTerminal_CreateWaitOutputRelease(t *testing.T) {
 		"command":   "printf 'hello-acp'",
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	require.Nil(t, resps[0]["error"])
 	result := resps[0]["result"].(map[string]interface{})
 	termID, _ := result["terminalId"].(string)
@@ -148,7 +156,7 @@ func TestACPTerminal_CreateWaitOutputRelease(t *testing.T) {
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	resps = rec.wait(t, 2, 5*time.Second)
+	resps = rec.wait(t, 2)
 	waitResult := resps[1]["result"].(map[string]interface{})
 	assert.EqualValues(t, 0, waitResult["exitCode"])
 
@@ -156,7 +164,7 @@ func TestACPTerminal_CreateWaitOutputRelease(t *testing.T) {
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	resps = rec.wait(t, 3, 3*time.Second)
+	resps = rec.wait(t, 3)
 	outResult := resps[2]["result"].(map[string]interface{})
 	assert.Contains(t, outResult["output"], "hello-acp")
 	assert.Equal(t, false, outResult["truncated"])
@@ -168,7 +176,7 @@ func TestACPTerminal_CreateWaitOutputRelease(t *testing.T) {
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 4, 3*time.Second)
+	_ = rec.wait(t, 4)
 
 	row, _ = sink.BackgroundTask(termID)
 	statusLog = sink.BackgroundTaskStatuses(termID)
@@ -190,20 +198,20 @@ func TestACPTerminal_KillThenWait(t *testing.T) {
 		"command":   "sleep 30",
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
 
 	dispatchTerminal(b, acpMethodTerminalKill, 2, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 2, 3*time.Second)
+	_ = rec.wait(t, 2)
 
 	dispatchTerminal(b, acpMethodTerminalWaitForExit, 3, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	resps = rec.wait(t, 3, 5*time.Second)
+	resps = rec.wait(t, 3)
 	waitResult := resps[2]["result"].(map[string]interface{})
 	// Killed process reports a signal (or non-zero) rather than success.
 	if waitResult["exitCode"] != nil {
@@ -216,7 +224,7 @@ func TestACPTerminal_KillThenWait(t *testing.T) {
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 4, 3*time.Second)
+	_ = rec.wait(t, 4)
 
 	row, _ := sink.BackgroundTask(termID)
 	assert.Equal(t, bgtask.StatusStopped, row.Status, "host kill must map to StatusStopped")
@@ -233,21 +241,21 @@ func TestACPTerminal_OutputByteLimitTruncates(t *testing.T) {
 		"cwd":             b.workingDir,
 		"outputByteLimit": limit,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
 
 	dispatchTerminal(b, acpMethodTerminalWaitForExit, 2, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 2, 5*time.Second)
+	_ = rec.wait(t, 2)
 	assert.Contains(t, sink.ProgressUpdates(), agent.CompleteOutputProgress("terminal:"+termID))
 
 	dispatchTerminal(b, acpMethodTerminalOutput, 3, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	resps = rec.wait(t, 3, 3*time.Second)
+	resps = rec.wait(t, 3)
 	outResult := resps[2]["result"].(map[string]interface{})
 	assert.Equal(t, true, outResult["truncated"])
 	out := outResult["output"].(string)
@@ -258,7 +266,7 @@ func TestACPTerminal_OutputByteLimitTruncates(t *testing.T) {
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 4, 3*time.Second)
+	_ = rec.wait(t, 4)
 }
 
 func TestACPTerminal_ClampsRequestedOutputLimit(t *testing.T) {
@@ -271,7 +279,7 @@ func TestACPTerminal_ClampsRequestedOutputLimit(t *testing.T) {
 		"cwd":             b.workingDir,
 		"outputByteLimit": hugeLimit,
 	})
-	responses := rec.wait(t, 1, 3*time.Second)
+	responses := rec.wait(t, 1)
 	termID := responses[0]["result"].(map[string]interface{})["terminalId"].(string)
 	session, ok := b.getTerminal(termID)
 	require.True(t, ok)
@@ -287,7 +295,7 @@ func TestACPTerminal_UnknownTerminalID(t *testing.T) {
 		"sessionId":  "sess-1",
 		"terminalId": "term_missing",
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	errObj := resps[0]["error"].(map[string]interface{})
 	assert.EqualValues(t, -32602, errObj["code"])
 }
@@ -303,7 +311,7 @@ func TestACPTerminal_EmptyCommandTitleIsNotACommand(t *testing.T) {
 		"command":   "",
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	result, ok := resps[0]["result"].(map[string]interface{})
 	if !ok {
 		t.Skip("the agent rejects an empty command outright; there is no row to inspect")
@@ -331,7 +339,7 @@ func TestACPTerminal_CommandOfStrippedCharactersFallsBackToShell(t *testing.T) {
 		"command":   "\u200b\ufeff",
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	result, ok := resps[0]["result"].(map[string]interface{})
 	require.True(t, ok, "terminal/create must accept the command, or there is no row to inspect")
 	termID, _ := result["terminalId"].(string)
@@ -356,7 +364,7 @@ func TestACPTerminal_CommandReachesTheRowWhole(t *testing.T) {
 		"command":   `printf '%s' "$HOME"`,
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	result, ok := resps[0]["result"].(map[string]interface{})
 	require.True(t, ok)
 	termID, _ := result["terminalId"].(string)
@@ -378,7 +386,7 @@ func TestACPTerminal_RelativeCwdRejected(t *testing.T) {
 		"command":   "echo hi",
 		"cwd":       "relative/path",
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	errObj := resps[0]["error"].(map[string]interface{})
 	assert.EqualValues(t, -32602, errObj["code"])
 }
@@ -401,7 +409,7 @@ func TestACPTerminal_ReleaseAllOnStop(t *testing.T) {
 		"command":   "sleep 30",
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
 
 	b.Stop()
@@ -412,6 +420,225 @@ func TestACPTerminal_ReleaseAllOnStop(t *testing.T) {
 
 	row, _ := sink.BackgroundTask(termID)
 	assert.True(t, row.Status.IsFinished())
+}
+
+// A stop must end the command that the stopped tool still waits on.
+//
+// fast-agent 0.10.42 answers session/cancel with the `cancelled` stop reason, but
+// it never kills or releases the terminal of its cancelled tool: its terminal
+// runtime catches only Exception, and asyncio.CancelledError is a BaseException.
+// The command ran on, its row stayed Running, the Worker kept the agent working,
+// and the thinking indicator never cleared after the reader pressed Stop.
+func TestACPTerminal_StoppedPromptReleasesTheTerminalItAwaits(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response json.RawMessage
+		err      error
+	}{
+		{name: "cancelled response", response: json.RawMessage(`{"stopReason":"cancelled"}`)},
+		{name: "failed prompt", err: errors.New("context canceled")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &agenttest.Sink{}
+			b, rec := newTerminalTestBase(t, sink)
+			t.Cleanup(b.releaseAllTerminals)
+
+			dispatchTerminal(b, acpMethodTerminalCreate, 1, map[string]interface{}{
+				"sessionId": "sess-1",
+				"command":   "sleep 30",
+				"cwd":       b.workingDir,
+			})
+			resps := rec.wait(t, 1)
+			termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
+			dispatchTerminal(b, acpMethodTerminalWaitForExit, 2, map[string]interface{}{
+				"sessionId":  "sess-1",
+				"terminalId": termID,
+			})
+			b.Mu.Lock()
+			b.promptActive = true
+			b.Mu.Unlock()
+			b.noteACPInterruptRequested()
+
+			b.finishPromptRequest("sess-1", tc.response, tc.err)
+
+			row, _ := sink.BackgroundTask(termID)
+			assert.Equal(t, bgtask.StatusStopped, row.Status,
+				"the reader stopped the turn, so the command that its tool awaited must stop too")
+			b.terminalsMu.Lock()
+			_, still := b.terminals[termID]
+			b.terminalsMu.Unlock()
+			assert.False(t, still, "nothing will release a terminal of a cancelled tool, so the host forgets it")
+			resps = rec.wait(t, 2)
+			waitResult := resps[1]["result"].(map[string]interface{})
+			if waitResult["exitCode"] != nil {
+				assert.NotEqualValues(t, 0, waitResult["exitCode"])
+			} else {
+				assert.NotNil(t, waitResult["signal"], "the pending wait still gets its answer: the kill")
+			}
+		})
+	}
+}
+
+// createTerminalForTest starts command on b and returns its terminal ID. rpcID
+// is the JSON-RPC ID of the create request, and the reply is the response at
+// position replies-1 of rec.
+func createTerminalForTest(t *testing.T, b *Base, rec *responseRecorder, rpcID, replies int, command string) string {
+	t.Helper()
+	dispatchTerminal(b, acpMethodTerminalCreate, rpcID, map[string]interface{}{
+		"sessionId": "sess-1",
+		"command":   command,
+		"cwd":       b.workingDir,
+	})
+	resps := rec.wait(t, replies)
+	require.Nil(t, resps[replies-1]["error"])
+	termID, _ := resps[replies-1]["result"].(map[string]interface{})["terminalId"].(string)
+	require.NotEmpty(t, termID)
+	return termID
+}
+
+// startStoppedPromptForTest marks a prompt active on b and records the reader's
+// stop, as Interrupt does.
+func startStoppedPromptForTest(b *Base) {
+	b.Mu.Lock()
+	b.promptActive = true
+	b.Mu.Unlock()
+	b.noteACPInterruptRequested()
+}
+
+func terminalHeldForTest(b *Base, termID string) bool {
+	b.terminalsMu.Lock()
+	defer b.terminalsMu.Unlock()
+	_, held := b.terminals[termID]
+	return held
+}
+
+// A terminal that the agent does not wait on can be background work that it
+// reads in a later turn, so a stop leaves it alone.
+func TestACPTerminal_StoppedPromptKeepsATerminalThatNothingAwaits(t *testing.T) {
+	sink := &agenttest.Sink{}
+	b, rec := newTerminalTestBase(t, sink)
+	t.Cleanup(b.releaseAllTerminals)
+	termID := createTerminalForTest(t, b, rec, 1, 1, "sleep 30")
+	startStoppedPromptForTest(b)
+
+	b.finishPromptRequest("sess-1", json.RawMessage(`{"stopReason":"cancelled"}`), nil)
+
+	assert.True(t, terminalHeldForTest(b, termID))
+	row, _ := sink.BackgroundTask(termID)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+}
+
+// Without a stop, a pending wait is the agent's own business: the turn ended,
+// and the agent can still read the exit later.
+func TestACPTerminal_PromptWithoutAStopKeepsTheTerminalItAwaits(t *testing.T) {
+	sink := &agenttest.Sink{}
+	b, rec := newTerminalTestBase(t, sink)
+	t.Cleanup(b.releaseAllTerminals)
+	termID := createTerminalForTest(t, b, rec, 1, 1, "sleep 30")
+	dispatchTerminal(b, acpMethodTerminalWaitForExit, 2, map[string]interface{}{
+		"sessionId":  "sess-1",
+		"terminalId": termID,
+	})
+	b.Mu.Lock()
+	b.promptActive = true
+	b.Mu.Unlock()
+
+	b.finishPromptRequest("sess-1", json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+
+	assert.True(t, terminalHeldForTest(b, termID))
+	row, _ := sink.BackgroundTask(termID)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+}
+
+// A wait that already got its reply no longer counts. The command exited, so a
+// stop has nothing to end, and the agent can still read the output and release
+// the terminal.
+func TestACPTerminal_StoppedPromptKeepsAnExitedTerminal(t *testing.T) {
+	sink := &agenttest.Sink{}
+	b, rec := newTerminalTestBase(t, sink)
+	t.Cleanup(b.releaseAllTerminals)
+	termID := createTerminalForTest(t, b, rec, 1, 1, "printf done")
+	dispatchTerminal(b, acpMethodTerminalWaitForExit, 2, map[string]interface{}{
+		"sessionId":  "sess-1",
+		"terminalId": termID,
+	})
+	resps := rec.wait(t, 2)
+	assert.EqualValues(t, 0, resps[1]["result"].(map[string]interface{})["exitCode"])
+	startStoppedPromptForTest(b)
+
+	b.finishPromptRequest("sess-1", json.RawMessage(`{"stopReason":"cancelled"}`), nil)
+
+	assert.True(t, terminalHeldForTest(b, termID))
+	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusCompleted}, sink.BackgroundTaskStatuses(termID),
+		"an exited command keeps its own outcome rather than a stop")
+}
+
+// Each pending wait gets its reply when the stop ends the command.
+func TestACPTerminal_StoppedPromptAnswersEveryPendingWait(t *testing.T) {
+	sink := &agenttest.Sink{}
+	b, rec := newTerminalTestBase(t, sink)
+	t.Cleanup(b.releaseAllTerminals)
+	first := createTerminalForTest(t, b, rec, 1, 1, "sleep 30")
+	second := createTerminalForTest(t, b, rec, 2, 2, "sleep 30")
+	for rpcID, termID := range map[int]string{3: first, 4: first, 5: second} {
+		dispatchTerminal(b, acpMethodTerminalWaitForExit, rpcID, map[string]interface{}{
+			"sessionId":  "sess-1",
+			"terminalId": termID,
+		})
+	}
+	startStoppedPromptForTest(b)
+
+	b.finishPromptRequest("sess-1", json.RawMessage(`{"stopReason":"cancelled"}`), nil)
+
+	resps := rec.wait(t, 5)
+	answered := map[float64]bool{}
+	for _, resp := range resps[2:] {
+		id, _ := resp["id"].(float64)
+		answered[id] = true
+		result := resp["result"].(map[string]interface{})
+		assert.True(t, result["signal"] != nil || (result["exitCode"] != nil && result["exitCode"] != float64(0)),
+			"wait %v must report the kill, got %v", id, result)
+	}
+	assert.Equal(t, map[float64]bool{3: true, 4: true, 5: true}, answered)
+	for _, termID := range []string{first, second} {
+		assert.False(t, terminalHeldForTest(b, termID))
+		assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusStopped}, sink.BackgroundTaskStatuses(termID))
+	}
+}
+
+// The agent can release the same terminal while the stop releases it. Only one
+// of the two may end it, so the row closes once.
+func TestACPTerminal_StoppedPromptReleaseRacesTheAgentRelease(t *testing.T) {
+	sink := &agenttest.Sink{}
+	b, rec := newTerminalTestBase(t, sink)
+	t.Cleanup(b.releaseAllTerminals)
+	termID := createTerminalForTest(t, b, rec, 1, 1, "sleep 30")
+	dispatchTerminal(b, acpMethodTerminalWaitForExit, 2, map[string]interface{}{
+		"sessionId":  "sess-1",
+		"terminalId": termID,
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		b.releaseAwaitedTerminals()
+	}()
+	go func() {
+		defer wg.Done()
+		dispatchTerminal(b, acpMethodTerminalRelease, 3, map[string]interface{}{
+			"sessionId":  "sess-1",
+			"terminalId": termID,
+		})
+	}()
+	wg.Wait()
+
+	// The create reply, the wait reply, and the release reply: success when the
+	// agent took the terminal first, "unknown terminalId" when the stop did.
+	resps := rec.wait(t, 3)
+	assert.Len(t, resps, 3)
+	assert.False(t, terminalHeldForTest(b, termID))
+	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusStopped}, sink.BackgroundTaskStatuses(termID))
 }
 
 func TestACPTerminal_DefaultCwdFromWorkingDir(t *testing.T) {
@@ -425,28 +652,28 @@ func TestACPTerminal_DefaultCwdFromWorkingDir(t *testing.T) {
 		"command":   "test -f marker.txt && echo found",
 		// cwd omitted — must use workingDir
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
 
 	dispatchTerminal(b, acpMethodTerminalWaitForExit, 2, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	resps = rec.wait(t, 2, 5*time.Second)
+	resps = rec.wait(t, 2)
 	assert.EqualValues(t, 0, resps[1]["result"].(map[string]interface{})["exitCode"])
 
 	dispatchTerminal(b, acpMethodTerminalOutput, 3, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	resps = rec.wait(t, 3, 3*time.Second)
+	resps = rec.wait(t, 3)
 	assert.Contains(t, resps[2]["result"].(map[string]interface{})["output"], "found")
 
 	dispatchTerminal(b, acpMethodTerminalRelease, 4, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 4, 3*time.Second)
+	_ = rec.wait(t, 4)
 }
 
 func TestACPTerminal_EmptyCommandRejected(t *testing.T) {
@@ -458,7 +685,7 @@ func TestACPTerminal_EmptyCommandRejected(t *testing.T) {
 		"command":   "",
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	errObj := resps[0]["error"].(map[string]interface{})
 	assert.EqualValues(t, -32602, errObj["code"])
 	assert.Contains(t, errObj["message"], "command is required")
@@ -473,7 +700,7 @@ func TestACPTerminal_SessionIDMismatch(t *testing.T) {
 		"command":   "echo hi",
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	errObj := resps[0]["error"].(map[string]interface{})
 	assert.EqualValues(t, -32602, errObj["code"])
 	assert.Contains(t, errObj["message"], "sessionId mismatch")
@@ -489,7 +716,7 @@ func TestACPTerminal_NoActiveSession(t *testing.T) {
 		"command":   "echo hi",
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	errObj := resps[0]["error"].(map[string]interface{})
 	assert.EqualValues(t, -32602, errObj["code"])
 	assert.Contains(t, errObj["message"], "no active session")
@@ -505,7 +732,7 @@ func TestACPTerminal_NegativeOutputByteLimitRejected(t *testing.T) {
 		"cwd":             b.workingDir,
 		"outputByteLimit": -1,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	errObj := resps[0]["error"].(map[string]interface{})
 	assert.EqualValues(t, -32602, errObj["code"])
 	assert.Contains(t, errObj["message"], "outputByteLimit")
@@ -522,20 +749,20 @@ func TestACPTerminal_ZeroOutputByteLimitRetainsNothing(t *testing.T) {
 		"cwd":             b.workingDir,
 		"outputByteLimit": limit,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
 
 	dispatchTerminal(b, acpMethodTerminalWaitForExit, 2, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 2, 5*time.Second)
+	_ = rec.wait(t, 2)
 
 	dispatchTerminal(b, acpMethodTerminalOutput, 3, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	resps = rec.wait(t, 3, 3*time.Second)
+	resps = rec.wait(t, 3)
 	outResult := resps[2]["result"].(map[string]interface{})
 	assert.Equal(t, true, outResult["truncated"])
 	assert.Equal(t, "", outResult["output"])
@@ -544,7 +771,7 @@ func TestACPTerminal_ZeroOutputByteLimitRetainsNothing(t *testing.T) {
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 4, 3*time.Second)
+	_ = rec.wait(t, 4)
 }
 
 func TestACPTerminal_ArgvStyleCommand(t *testing.T) {
@@ -557,7 +784,7 @@ func TestACPTerminal_ArgvStyleCommand(t *testing.T) {
 		"args":      []string{"argv-ok"},
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	require.Nil(t, resps[0]["error"])
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
 
@@ -565,20 +792,20 @@ func TestACPTerminal_ArgvStyleCommand(t *testing.T) {
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 2, 5*time.Second)
+	_ = rec.wait(t, 2)
 
 	dispatchTerminal(b, acpMethodTerminalOutput, 3, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	resps = rec.wait(t, 3, 3*time.Second)
+	resps = rec.wait(t, 3)
 	assert.Contains(t, resps[2]["result"].(map[string]interface{})["output"], "argv-ok")
 
 	dispatchTerminal(b, acpMethodTerminalRelease, 4, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 4, 3*time.Second)
+	_ = rec.wait(t, 4)
 }
 
 func TestACPTerminal_EnvOverridesApplied(t *testing.T) {
@@ -593,27 +820,27 @@ func TestACPTerminal_EnvOverridesApplied(t *testing.T) {
 			{"name": "LEAPMUX_ACP_TERM_TEST", "value": "from-host"},
 		},
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
 
 	dispatchTerminal(b, acpMethodTerminalWaitForExit, 2, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 2, 5*time.Second)
+	_ = rec.wait(t, 2)
 
 	dispatchTerminal(b, acpMethodTerminalOutput, 3, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	resps = rec.wait(t, 3, 3*time.Second)
+	resps = rec.wait(t, 3)
 	assert.Contains(t, resps[2]["result"].(map[string]interface{})["output"], "from-host")
 
 	dispatchTerminal(b, acpMethodTerminalRelease, 4, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 4, 3*time.Second)
+	_ = rec.wait(t, 4)
 }
 
 func TestACPTerminal_NonZeroExitMarksFailed(t *testing.T) {
@@ -625,14 +852,14 @@ func TestACPTerminal_NonZeroExitMarksFailed(t *testing.T) {
 		"command":   "exit 7",
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
 
 	dispatchTerminal(b, acpMethodTerminalWaitForExit, 2, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	resps = rec.wait(t, 2, 5*time.Second)
+	resps = rec.wait(t, 2)
 	assert.EqualValues(t, 7, resps[1]["result"].(map[string]interface{})["exitCode"])
 
 	row, _ := sink.BackgroundTask(termID)
@@ -642,7 +869,7 @@ func TestACPTerminal_NonZeroExitMarksFailed(t *testing.T) {
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 3, 3*time.Second)
+	_ = rec.wait(t, 3)
 }
 
 // The registry row must reach its final status BEFORE anything can observe the
@@ -672,14 +899,14 @@ func TestACPTerminal_ClosesTheRegistryRowBeforeTheExitIsObservable(t *testing.T)
 		"command":   "exit 7",
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
 
 	dispatchTerminal(b, acpMethodTerminalWaitForExit, 2, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	resps = rec.wait(t, 2, 5*time.Second)
+	resps = rec.wait(t, 2)
 	require.EqualValues(t, 7, resps[1]["result"].(map[string]interface{})["exitCode"])
 
 	assert.False(t, exitWasObservable.Load(),
@@ -692,7 +919,7 @@ func TestACPTerminal_ClosesTheRegistryRowBeforeTheExitIsObservable(t *testing.T)
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 3, 3*time.Second)
+	_ = rec.wait(t, 3)
 }
 
 func TestACPTerminal_OutputBeforeExitOmitsExitStatus(t *testing.T) {
@@ -704,7 +931,7 @@ func TestACPTerminal_OutputBeforeExitOmitsExitStatus(t *testing.T) {
 		"command":   "sleep 30",
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
 
 	row, ok := sink.BackgroundTask(termID)
@@ -715,7 +942,7 @@ func TestACPTerminal_OutputBeforeExitOmitsExitStatus(t *testing.T) {
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	resps = rec.wait(t, 2, 3*time.Second)
+	resps = rec.wait(t, 2)
 	outResult := resps[1]["result"].(map[string]interface{})
 	_, hasExit := outResult["exitStatus"]
 	assert.False(t, hasExit, "in-flight terminals must omit exitStatus")
@@ -724,7 +951,7 @@ func TestACPTerminal_OutputBeforeExitOmitsExitStatus(t *testing.T) {
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 3, 5*time.Second)
+	_ = rec.wait(t, 3)
 }
 
 func TestACPTerminal_WaitForExitDoesNotBlockCaller(t *testing.T) {
@@ -736,7 +963,7 @@ func TestACPTerminal_WaitForExitDoesNotBlockCaller(t *testing.T) {
 		"command":   "sleep 1",
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
 
 	// Dispatch kill immediately after wait_for_exit to prove the read-loop
@@ -749,7 +976,7 @@ func TestACPTerminal_WaitForExitDoesNotBlockCaller(t *testing.T) {
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	resps = rec.wait(t, 3, 5*time.Second)
+	resps = rec.wait(t, 3)
 	ids := make([]float64, 0, 2)
 	for _, r := range resps[1:] {
 		ids = append(ids, r["id"].(float64))
@@ -760,7 +987,7 @@ func TestACPTerminal_WaitForExitDoesNotBlockCaller(t *testing.T) {
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 4, 5*time.Second)
+	_ = rec.wait(t, 4)
 }
 
 func TestACPTerminal_KillAndReleaseUnknownID(t *testing.T) {
@@ -775,7 +1002,7 @@ func TestACPTerminal_KillAndReleaseUnknownID(t *testing.T) {
 		"sessionId":  "sess-1",
 		"terminalId": "term_gone",
 	})
-	resps := rec.wait(t, 2, 3*time.Second)
+	resps := rec.wait(t, 2)
 	assert.EqualValues(t, -32602, resps[0]["error"].(map[string]interface{})["code"])
 	assert.EqualValues(t, -32602, resps[1]["error"].(map[string]interface{})["code"])
 }
@@ -791,7 +1018,7 @@ func TestACPTerminal_MalformedParams(t *testing.T) {
 		"params":  "not-an-object",
 	})
 	b.handleACPOutput(providerkit.ParseLine(line))
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	assert.EqualValues(t, -32602, resps[0]["error"].(map[string]interface{})["code"])
 }
 
@@ -839,7 +1066,7 @@ func TestACPTerminal_StopReapsLongLivedChild(t *testing.T) {
 		"command": "sleep 60",
 		"cwd":     b.workingDir,
 	})
-	_ = rec.wait(t, 1, 3*time.Second)
+	_ = rec.wait(t, 1)
 
 	done := make(chan struct{})
 	go func() {
@@ -877,7 +1104,7 @@ func TestACPTerminal_CreateRejectedAfterStop(t *testing.T) {
 		"command":   "echo hi",
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	errObj := resps[0]["error"].(map[string]interface{})
 	assert.EqualValues(t, -32603, errObj["code"])
 	assert.Contains(t, errObj["message"], "stopped")
@@ -898,7 +1125,7 @@ func TestACPTerminal_ReleaseSessionOnClearContext(t *testing.T) {
 		"command":   "sleep 30",
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
 
 	_, clearErr := b.ClearContext()
@@ -926,20 +1153,20 @@ func TestACPTerminal_BaseEnvPinsWorkerMarker(t *testing.T) {
 		"command":   `printf '%s|%s' "$LEAPMUX_WORKER" "${GOOSE_TERMINAL-}"`,
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
 
 	dispatchTerminal(b, acpMethodTerminalWaitForExit, 2, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 2, 5*time.Second)
+	_ = rec.wait(t, 2)
 
 	dispatchTerminal(b, acpMethodTerminalOutput, 3, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	resps = rec.wait(t, 3, 3*time.Second)
+	resps = rec.wait(t, 3)
 	out := resps[2]["result"].(map[string]interface{})["output"].(string)
 	assert.Equal(t, "1|", out, "FinalizeAgentEnv must pin LEAPMUX_WORKER and scrub GOOSE_TERMINAL")
 
@@ -947,7 +1174,7 @@ func TestACPTerminal_BaseEnvPinsWorkerMarker(t *testing.T) {
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 4, 3*time.Second)
+	_ = rec.wait(t, 4)
 }
 
 func TestACPTerminal_KillReportsSignalName(t *testing.T) {
@@ -959,20 +1186,20 @@ func TestACPTerminal_KillReportsSignalName(t *testing.T) {
 		"command":   "sleep 30",
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1, 3*time.Second)
+	resps := rec.wait(t, 1)
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
 
 	dispatchTerminal(b, acpMethodTerminalKill, 2, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 2, 3*time.Second)
+	_ = rec.wait(t, 2)
 
 	dispatchTerminal(b, acpMethodTerminalWaitForExit, 3, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	resps = rec.wait(t, 3, 5*time.Second)
+	resps = rec.wait(t, 3)
 	waitResult := resps[2]["result"].(map[string]interface{})
 	if waitResult["exitCode"] != nil {
 		t.Logf("got exitCode=%v (acceptable if shell reports numeric)", waitResult["exitCode"])
@@ -986,5 +1213,5 @@ func TestACPTerminal_KillReportsSignalName(t *testing.T) {
 		"sessionId":  "sess-1",
 		"terminalId": termID,
 	})
-	_ = rec.wait(t, 4, 3*time.Second)
+	_ = rec.wait(t, 4)
 }
