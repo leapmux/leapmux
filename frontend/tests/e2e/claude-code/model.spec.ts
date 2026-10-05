@@ -124,8 +124,9 @@ fixturesTest.describe('1m-context model', () => {
     await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
     await expectSettingsChip(page, OPUS_1M_LABEL)
 
-    // Keep the actual model-change notification.
-    await expect(page.getByText(MODEL_CHANGE_PATTERN)).toBeVisible()
+    // Keep the actual model-change notification. ChatView keeps a hidden premeasure copy of each
+    // unmeasured row, so the text query needs the visible filter or it can match both copies.
+    await expect(visibleOnly(page.getByText(MODEL_CHANGE_PATTERN))).toBeVisible()
 
     // Wait for agent restart to complete
     await waitForSettingsIdle(page)
