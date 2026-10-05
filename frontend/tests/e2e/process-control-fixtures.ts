@@ -1,6 +1,6 @@
 import type { ChildProcess } from 'node:child_process'
 /* eslint-disable no-console */
-import type { ModelScript } from './helpers/modelScriptFixture'
+import type { ModelScriptFixtures } from './helpers/modelScriptFixture'
 import type { ServerOutput } from './helpers/serverOutput'
 import type { WorkspaceFixture } from './helpers/workspace'
 import { rmSync, writeFileSync } from 'node:fs'
@@ -25,7 +25,7 @@ import {
 } from './helpers/api'
 import { cleanupOnFailure, finishCleanup, withCleanup } from './helpers/cleanup'
 import { closeAllUserEventsSubscriptions } from './helpers/crdt'
-import { runModelScriptFixture } from './helpers/modelScriptFixture'
+import { modelScriptFixtures } from './helpers/modelScriptFixture'
 import { stopProcess, stopProcesses } from './helpers/process'
 import { spawnTestProcess } from './helpers/processRegistry'
 import { createTestDirectory } from './helpers/runDirectory'
@@ -151,9 +151,7 @@ export async function restartHub(serverInfo: SeparateServerInfo): Promise<void> 
 }
 
 export const processTest = base.extend<
-  {
-    testStartedAt: number
-    modelScript: ModelScript
+  ModelScriptFixtures & {
     toastRecorder: void
     workspace: WorkspaceFixture
     authenticatedWorkspace: WorkspaceFixture
@@ -162,17 +160,9 @@ export const processTest = base.extend<
     separateHubWorker: SeparateServerInfo
   }
 >({
-  // This automatic fixture has no dependencies. Read the test start before other fixtures run.
-  // Playwright counts fixture setup in each test's deadline.
-  // The model script uses this time to fail a stalled wait before that deadline.
-  // eslint-disable-next-line no-empty-pattern
-  testStartedAt: [async ({}, use) => {
-    await use(Date.now())
-  }, { auto: true }],
-
   // hubSpawnEnv supplies this run's isolated agent configuration to each Hub.
   // Every agent reaches the run's mock endpoint. Teardown verifies each test's model script.
-  modelScript: async ({ testStartedAt }, use, testInfo) => runModelScriptFixture(use, testInfo, testStartedAt),
+  ...modelScriptFixtures,
 
   // One Playwright worker owns this separate Hub and Worker.
   // eslint-disable-next-line no-empty-pattern

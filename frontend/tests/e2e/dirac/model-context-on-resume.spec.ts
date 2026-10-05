@@ -71,7 +71,7 @@ test.describe('Dirac session resume', () => {
     await modelScript.queue({ toolCalls: [diracRespondToolCall('dirac-resume-second', 'complete', 'I remember HALIBUT.')] })
     await sendMessage(page, modelScript.prompt('What was the word from the prior turn?'))
     const status = await modelScript.waitForSteps(3)
-    await waitForAgentIdle(page, 180000)
+    await waitForAgentIdle(page)
     const resumed = status.requests.find(request => request.stepIndex === (2))
     const resumedBody = JSON.stringify(resumed?.body)
     expect(resumedBody.includes(firstAnswer)).toBe(false)

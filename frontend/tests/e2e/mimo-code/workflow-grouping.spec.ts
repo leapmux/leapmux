@@ -85,7 +85,7 @@ mimoTest.describe('MiMo Code workflow', () => {
     expect(parentTabId).not.toBe('')
     await sendMessage(page, modelScript.prompt('Run the one-word workflow and report what it returned.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     // The end of the run: the parent answered after the workflow returned, and the
     // workflow call closed with MiMo's own title for a completed run.

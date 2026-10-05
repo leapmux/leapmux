@@ -31,7 +31,7 @@ qoderTest.describe('Qoder CLI control answers', () => {
     await page.getByTestId('control-submit-btn').filter({ visible: true }).click()
 
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     const followUp = status.requests.find(request => request.stepIndex === 1)
     const answer = nativeToolResult(followUp, 'qoder-question')
     expect(answer).toContain('Red')

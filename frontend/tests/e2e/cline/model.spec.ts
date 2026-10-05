@@ -35,7 +35,7 @@ clineTest.describe('Cline settings', () => {
     await modelScript.queue({ text: 'The selected model answered.' })
     await sendMessage(page, modelScript.prompt('Reply once with the selected model.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     const body = status.requests.find(request => request.stepIndex === 0)?.body
     if (!body || typeof body !== 'object' || !('model' in body))
       throw new Error('the Cline model request must state its model')
@@ -64,7 +64,7 @@ clineTest.describe('Cline settings', () => {
     await modelScript.queue({ text: 'The configured model answered.' })
     await sendMessage(page, modelScript.prompt('Reply once with the configured model.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     const body = status.requests.find(request => request.stepIndex === 0)?.body
     if (!body || typeof body !== 'object' || !('model' in body))
       throw new Error('the Cline model request must state its model')

@@ -25,7 +25,7 @@ clineTest.describe('Cline tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Read the notes back.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect.poll(() => chatText(page)).toContain('cline-read-3')
     // Cline numbers each line `<n> | `. The row draws the file's own lines.
@@ -41,7 +41,7 @@ clineTest.describe('Cline tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Change parity.ts.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     expect(readFileSync(path, 'utf8')).toBe('const parityAfter = 2\n')
     const diff = page.locator('[data-file-diff]:visible')
@@ -58,7 +58,7 @@ clineTest.describe('Cline tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Write the note.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     expect(readFileSync(path, 'utf8')).toContain('cline was here')
     await expect.poll(() => chatText(page)).toContain('note.txt')

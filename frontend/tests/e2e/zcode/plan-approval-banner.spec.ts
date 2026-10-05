@@ -51,7 +51,7 @@ test('rejects a native ZCode plan and delivers approval-shaped feedback as feedb
   await reject.click()
   await expect(banner).toHaveCount(0)
   await expect(assistantBubbles(page).filter({ hasText: 'FEEDBACK_RECEIVED' }).last()).toBeVisible()
-  await waitForAgentIdle(page, 120_000)
+  await waitForAgentIdle(page)
   // The FEEDBACK, not the bare label. `feedbackOrLabel` renders the reason when
   // a deny carries one and falls back to "Rejected" only when it does not, so a
   // deny WITH feedback shows the feedback -- which is this test's whole name.

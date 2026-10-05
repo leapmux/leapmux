@@ -43,7 +43,7 @@ test('shows a native Claude Workflow run without a grouped child row', async ({ 
   await expect(permission).toContainText(WORKFLOW_NAME)
   await page.getByTestId('control-actions').getByRole('button', { name: 'Allow', exact: true }).click()
   await modelScript.waitForSteps(2)
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
 
   await expect(assistantBubbles(page).filter({ hasText: 'The workflow finished.' }).first()).toBeVisible()
   await expandBackgroundTasksSection(page)

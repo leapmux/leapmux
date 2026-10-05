@@ -211,7 +211,6 @@ interface FileToolOptions extends ToolPreparation {
 interface FileSequenceOptions {
   workingDir: string
   fileName: string
-  idleTimeoutMs?: number
 }
 
 export interface NativeFileSequence {
@@ -269,7 +268,7 @@ export async function exerciseFileEditSequence(
   await sendMessage(context.page, context.modelScript.prompt(sequence.prompt))
   await options.approveSeed?.(start + 1)
   await context.modelScript.waitForSteps(start + sequence.steps.length)
-  await waitForAgentIdle(context.page, options.idleTimeoutMs)
+  await waitForAgentIdle(context.page)
   const diff = context.page.locator('[data-file-diff]:visible')
   await expect(diff.filter({ hasText: 'const parityAfter = 2' }).first()).toBeVisible()
   await expect(diff.filter({ hasText: 'const parityBefore = 1' }).first()).toBeVisible()
@@ -284,7 +283,7 @@ export async function exerciseFileWriteSequence(context: NativeScenarioContext, 
   const start = await context.modelScript.queue(...sequence.steps)
   await sendMessage(context.page, context.modelScript.prompt(sequence.prompt))
   await context.modelScript.waitForSteps(start + sequence.steps.length)
-  await waitForAgentIdle(context.page, options.idleTimeoutMs)
+  await waitForAgentIdle(context.page)
   expect(readFileSync(sequence.filePath, 'utf8'), 'the write changed the file on disk').toContain('written-42')
 }
 

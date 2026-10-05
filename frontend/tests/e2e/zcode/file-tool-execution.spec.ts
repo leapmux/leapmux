@@ -22,7 +22,7 @@ zcodeTest('renders an applied file edit', async ({ page, authenticatedZCodeWorks
   )
   await sendMessage(page, modelScript.prompt('Change parity.ts.'))
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
 
   const content = page.locator('[data-file-diff]:visible')
   await expect(content.filter({ hasText: 'const parityAfter = 2' }).first()).toBeVisible()

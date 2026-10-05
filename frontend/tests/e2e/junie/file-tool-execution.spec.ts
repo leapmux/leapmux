@@ -30,7 +30,7 @@ junieTest.describe('Junie tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Run the three scripted tools, then answer.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     const tools = page.locator('[data-tool-message]:visible')
     await expect(tools.filter({ hasText: 'junie-42' }).first()).toBeVisible()

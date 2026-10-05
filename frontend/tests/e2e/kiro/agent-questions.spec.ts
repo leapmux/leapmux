@@ -41,7 +41,7 @@ kiroTest.describe('Kiro control requests', () => {
     await submit.click()
     await expect(banner).toHaveCount(0)
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     // The call after the question carries the answer as the result of the question
     // tool. The history of the call also lists both options, so the test reads the

@@ -103,6 +103,6 @@ export async function exerciseContextUsage(page: Page, modelScript: ModelScript)
   await modelScript.queue({ text: 'Usage recorded.', usage })
   await sendMessage(page, modelScript.prompt('Reply once.'))
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 120_000)
+  await waitForAgentIdle(page)
   await expectContextUsage(page, usage)
 }

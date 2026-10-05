@@ -19,7 +19,7 @@ lettaTest.describe('tracks the Letta Code to-do list', () => {
     )
     await sendMessage(page, modelScript.prompt('Write a three-step to-do list.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect(goalsAndTodosSection(page)).toBeVisible()
     await expandGoalsAndTodosSection(page)
@@ -35,7 +35,7 @@ lettaTest.describe('tracks the Letta Code to-do list', () => {
     )
     await sendMessage(page, modelScript.prompt('Mark every step done.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expect(list.locator('[data-task-checkbox="completed"]')).toHaveCount(2)
 
     await page.reload()

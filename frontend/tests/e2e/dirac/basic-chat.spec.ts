@@ -11,7 +11,7 @@ diracTest.describe('Dirac Basic Chat', () => {
     void authenticatedDiracWorkspace
     await modelScript.queue({ toolCalls: [diracRespondToolCall('dirac-respond', 'complete', 'Hello from the mock model.')] })
     await sendMessage(page, modelScript.prompt('Say hello.'))
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'Hello from the mock model.' }).first()).toBeVisible()
   })
 })
@@ -25,7 +25,7 @@ diracTest.describe('Dirac settings', () => {
 
     await modelScript.queue({ toolCalls: [diracRespondToolCall('dirac-respond', 'complete', 'Turn complete.')] })
     await sendMessage(page, modelScript.prompt('Finish the turn.'))
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect(page.getByText('Turn complete.').first()).toBeVisible()
   })
 })

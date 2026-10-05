@@ -27,7 +27,7 @@ mimoTest.describe('MiMo Code tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Change parity.ts.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     const diff = page.locator('[data-file-diff]:visible')
     await expect(diff.filter({ hasText: 'const parityAfter = 2' }).first()).toBeVisible()

@@ -35,7 +35,7 @@ qoderTest.describe('Qoder CLI subagent registry', () => {
     await sendMessage(page, modelScript.prompt('Delegate one word to a subagent.'))
 
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await attachQoderWorkerFrames(testInfo, leapmuxServer, rootAgentId)
 
     const row = await requireRegistryRow(page)

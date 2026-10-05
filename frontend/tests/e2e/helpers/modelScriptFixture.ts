@@ -1,3 +1,4 @@
+import type { Fixtures } from '@playwright/test'
 import type { MockModelRequestRecord, MockModelRule, MockModelScenarioStatus, MockModelStep } from './mockModelScript'
 import { randomUUID } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
@@ -13,16 +14,10 @@ import {
 } from './mockModelScenario'
 import { describeScenarioStatus, stepRequest, validateGateName, validateStepIndex } from './mockModelScript'
 import { getGlobalState } from './server'
+import { currentTestDeadline, startTestDeadline, WAIT_REPORT_MARGIN_MS } from './testDeadline'
 
 /** Long enough for an agent process to start and run a turn on a loaded machine. */
 const STEP_WAIT_TIMEOUT_MS = 180_000
-
-/**
- * Leave this interval before the whole-test deadline for the wait error and fixture teardown.
- * The wait error reports script progress and unanswered requests.
- * The Playwright timeout reports only that the test ran out of time.
- */
-export const STEP_WAIT_REPORT_MARGIN_MS = 5_000
 
 /** Options of `startModelScript`. */
 export interface ModelScriptOptions {
@@ -191,7 +186,7 @@ export async function startModelScript(serverURL: string, options: ModelScriptOp
 
 /**
  * Poll the scenario until it consumes count ordered steps.
- * Stop at the earlier of the caller limit and the whole-test deadline minus STEP_WAIT_REPORT_MARGIN_MS.
+ * Stop at the earlier of the caller limit and the whole-test deadline minus WAIT_REPORT_MARGIN_MS.
  */
 async function waitForSteps(
   serverURL: string,
@@ -234,7 +229,7 @@ async function waitForGate(
 /** Apply the test deadline to a model-script wait. */
 function waitDeadline(timeoutMs: number, testDeadline: number | undefined): { deadline: number, limit: string } {
   const started = Date.now()
-  const beforeTestEnds = testDeadline === undefined ? Infinity : testDeadline - STEP_WAIT_REPORT_MARGIN_MS
+  const beforeTestEnds = testDeadline === undefined ? Infinity : testDeadline - WAIT_REPORT_MARGIN_MS
   const deadline = Math.min(started + timeoutMs, beforeTestEnds)
   // Keep the limit in the error so it states which deadline ended the wait.
   const limit = deadline === beforeTestEnds
@@ -268,12 +263,45 @@ function summarize(status: MockModelScenarioStatus): Record<string, unknown> {
   }
 }
 
+/** The fixtures of {@link modelScriptFixtures}. */
+export interface ModelScriptFixtures {
+  /** When the test's timer started, in epoch milliseconds. */
+  testStartedAt: number
+  modelScript: ModelScript
+}
+
 /**
- * Both Playwright test bases use this fixture implementation:
+ * The model script and the test deadline. Both Playwright test bases spread this object into their `extend` call:
  *
  * - ../fixtures.ts uses the shared suite Hub.
  * - ../process-control-fixtures.ts extends @playwright/test and owns its process-control Hub.
  *
+ * Playwright starts a test's timer before fixture setup. `testStartedAt` is automatic and has no dependencies, so it
+ * records that start before every other fixture runs. A wait that must end before the test's own timeout reads the
+ * deadline through `./testDeadline`: the model-script waits, and `waitForAgentIdle`.
+ */
+export const modelScriptFixtures: Fixtures<ModelScriptFixtures> = {
+  // eslint-disable-next-line no-empty-pattern
+  testStartedAt: [async ({}, use, testInfo) => {
+    const startedAt = Date.now()
+    const end = startTestDeadline(startedAt, () => testInfo.timeout)
+    try {
+      await use(startedAt)
+    }
+    finally {
+      end()
+    }
+  }, { auto: true }],
+
+  // Give each test one model script. A marked prompt belongs to that script.
+  // An unscripted turn fails its test. An unmarked prompt reaches the ambient
+  // scenario, which answers native title turns and refuses other content turns.
+  // eslint-disable-next-line no-empty-pattern
+  modelScript: async ({}, use, testInfo) => runModelScriptFixture(use, testInfo),
+}
+
+/**
+ * Run one test's model script.
  * Both Hubs use hubSpawnEnv to send agents to the same isolated mock server.
  * Read that endpoint from the run state for both test bases.
  */
@@ -282,18 +310,12 @@ export async function runModelScriptFixture(
   testInfo: {
     status?: string
     expectedStatus?: string
-    /** The test's timeout in milliseconds; 0 when it has none. */
-    timeout?: number
     outputPath?: (name: string) => string
     attach?: (name: string, options: { path: string, contentType: string }) => Promise<void>
   },
-  /** When the test's timer started (the `testStartedAt` fixture). */
-  testStartedAt?: number,
 ): Promise<void> {
   const lifecycle = await startModelScript(getGlobalState().mockModelUrl, {
-    testDeadline: () => testStartedAt !== undefined && testInfo.timeout !== undefined && testInfo.timeout > 0
-      ? testStartedAt + testInfo.timeout
-      : undefined,
+    testDeadline: currentTestDeadline,
     // A failed test attaches the live status above. A passed test reaches this hook when its script ends incomplete.
     attachStatus: status => attachStatusFile(status, testInfo),
   })

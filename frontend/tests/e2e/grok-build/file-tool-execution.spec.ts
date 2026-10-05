@@ -41,7 +41,7 @@ grokTest.describe('Grok Build tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Run the four scripted tools, then report.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     const tools = page.locator('[data-tool-message]:visible')
     // The command text states no `grok-42`, so only the command's own output can

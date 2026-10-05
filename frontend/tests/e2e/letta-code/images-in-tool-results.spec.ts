@@ -50,7 +50,7 @@ lettaTest.describe('Letta Code images in tool results', () => {
       )
       await sendMessage(page, modelScript.prompt(`Open ${imageName} with ViewImage.`))
       const status = await modelScript.waitForSteps()
-      await waitForAgentIdle(page, 180_000)
+      await waitForAgentIdle(page)
       lettaExpect(JSON.stringify(status.requests.find(record => record.stepIndex === 1)?.body)).toContain('iVBORw0KGgo')
 
       const transcript = await channel.callWorker(leapmuxServer.workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, { agentId, limit: 200 })

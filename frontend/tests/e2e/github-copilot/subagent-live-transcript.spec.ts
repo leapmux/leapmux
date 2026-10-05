@@ -48,7 +48,7 @@ copilotTest('shows a child tool before the child finishes', async ({ authenticat
     await modelScript.releaseGateIfHeld('copilot-child-final')
   })
   await modelScript.waitForSteps(2)
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
   await expectRowBecomesFinal(page, row)
   await expect(assistantBubbles(page).filter({ hasText: 'COPILOT_CHILD_LIVE_DONE' }).first()).toBeVisible()
 })

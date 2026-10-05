@@ -37,7 +37,7 @@ codebuddyTest.describe('CodeBuddy Code MCP input form', () => {
       )
       await sendMessage(page, modelScript.prompt('Wait for form_probe, then call its echo tool.'))
       const status = await modelScript.waitForSteps()
-      await waitForAgentIdle(page, 180_000)
+      await waitForAgentIdle(page)
       expect(JSON.stringify(status.requests.find(request => request.stepIndex === 2)?.body)).toContain('PERMISSION_ACCEPTED')
       await expect(messageBubbles(page).filter({ hasText: 'The MCP echo completed.' }).first()).toBeVisible()
     }

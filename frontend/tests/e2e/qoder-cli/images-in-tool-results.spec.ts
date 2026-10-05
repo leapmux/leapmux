@@ -16,7 +16,7 @@ qoderTest.describe('Qoder CLI images in tool results', () => {
     )
     await sendMessage(page, modelScript.prompt('Read the local image file.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     const followUp = status.requests.find(request => request.stepIndex === 1)
     expect(JSON.stringify(followUp?.body ?? {}).includes('iVBORw0KGgo')).toBe(true)

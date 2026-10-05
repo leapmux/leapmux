@@ -84,7 +84,7 @@ export default function (pi) {
         // https://github.com/leapmux/leapmux/issues/489.
         await action.click()
         await expect(banner).toHaveCount(0)
-        await waitForAgentIdle(page, 120_000)
+        await waitForAgentIdle(page)
         await expect(page.getByTestId('composer-editor')).toBeVisible()
         await expect(page.getByTestId('composer-editor').locator('.ProseMirror')).toHaveAttribute('contenteditable', 'true')
         await expect(messageBubbles(page).filter({ hasText: 'EDITOR_RESPONSE_RECEIVED' }).first()).toBeVisible()

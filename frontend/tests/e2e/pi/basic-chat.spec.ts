@@ -10,7 +10,7 @@ piTest('renders an assistant answer and clears the thinking indicator', async ({
   void authenticatedPiWorkspace
   await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
   await expectAssistantAnswer(page)
   await expect(page.getByTestId('thinking-indicator')).not.toBeVisible()
 })
@@ -26,7 +26,7 @@ piTest('turn-end divider reports the duration, and agent_settled stays hidden', 
   await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
 
   // Pi's agent_end carries no duration; the worker measures the turn and
   // injects duration_ms, so the divider always names a time.

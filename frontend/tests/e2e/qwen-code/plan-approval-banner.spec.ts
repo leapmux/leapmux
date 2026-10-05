@@ -38,7 +38,7 @@ qwenTest.describe('Qwen Code control requests', () => {
     await page.getByTestId('plan-approve-btn').filter({ visible: true }).click()
     await expect(banner).toHaveCount(0)
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'Plan approved; starting.' })).toBeVisible()
     // Qwen reports the mode it left plan mode for, and the chip follows it.
     await expectSettingsChip(page, 'Default')
@@ -80,7 +80,7 @@ qwenTest.describe('Qwen Code control requests', () => {
 
     await expect(visibleOnly(page.getByText('Context cleared'))).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'Running the approved plan in a fresh context.' })).toBeVisible()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect(banner).toHaveCount(0)
     await expect(assistantBubbles(page).filter({ hasText: 'Still planning in the old session.' })).toHaveCount(0)
   })

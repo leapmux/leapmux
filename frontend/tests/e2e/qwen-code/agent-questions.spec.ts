@@ -35,7 +35,7 @@ qwenTest.describe('Qwen Code control requests', () => {
     await submit.click()
     await expect(banner).toHaveCount(0)
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     // Qwen's native reply field carries the answer. Its tool result states that answer.
     // The saved answer appears under the question header.

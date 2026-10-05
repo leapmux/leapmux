@@ -75,7 +75,7 @@ lettaTest.describe('Letta Code subagents', () => {
       }
       await modelScript.waitForSteps()
       await expect.poll(async () => (await modelScript.status()).ruleMatches['the Letta root handles the marker child completion notice'] ?? 0).toBe(1)
-      await waitForAgentIdle(page, 180_000)
+      await waitForAgentIdle(page)
       await expect(assistantBubbles(page).filter({ hasText: 'LETTA_CHILD_FINAL' })).toHaveCount(1)
       const rows = await messageContents(page).allTextContents()
       const promptIndex = rows.findIndex(text => text.includes(CHILD_READ_TASK))

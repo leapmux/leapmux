@@ -30,7 +30,7 @@ diracTest.describe('Dirac plan mode', () => {
         )
         await sendMessage(page, modelScript.prompt('Plan the work.'))
         await modelScript.waitForSteps(1)
-        await waitForAgentIdle(page, 120_000)
+        await waitForAgentIdle(page)
 
         await expect(messageBubbles(page).filter({ hasText: 'Write the parser.' }).first()).toBeVisible()
         // The deferred native plan creates no approval request or Approve button.
@@ -41,7 +41,7 @@ diracTest.describe('Dirac plan mode', () => {
 
         await sendMessage(page, modelScript.prompt('Proceed with the plan.'))
         const status = await modelScript.waitForSteps()
-        await waitForAgentIdle(page, 120_000)
+        await waitForAgentIdle(page)
         const nextRequest = status.requests.find(request => request.stepIndex === 1)
         expect(JSON.stringify(nextRequest?.body)).toContain('Proceed with the plan.')
         expect(nativeToolResult(nextRequest, 'dirac-plan')).toContain('Proceed with the plan.')

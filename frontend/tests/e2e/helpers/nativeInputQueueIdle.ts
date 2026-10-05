@@ -6,7 +6,7 @@ import { WatchReplayMode } from '../../../src/generated/proto/leapmux/v1/agent_p
 import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { getTestChannel } from './api'
 import { withCleanup } from './cleanup'
-import { STEP_WAIT_REPORT_MARGIN_MS } from './modelScriptFixture'
+import { WAIT_REPORT_MARGIN_MS } from './testDeadline'
 
 const WATCH_UPDATE_ID = 1n
 const MAX_TIMER_DELAY_MS = 2_147_483_647
@@ -65,7 +65,7 @@ export async function waitForNativeInputQueueIdle(
   const deadline = testDeadline()
   if (deadline === undefined || !Number.isSafeInteger(deadline))
     throw new Error('The input queue wait requires the current whole-test deadline.')
-  const failureDeadline = deadline - STEP_WAIT_REPORT_MARGIN_MS
+  const failureDeadline = deadline - WAIT_REPORT_MARGIN_MS
   if (failureDeadline <= Date.now())
     throw new Error('The whole-test deadline leaves no time for the input queue wait.')
 

@@ -15,7 +15,7 @@ lettaTest.describe('Letta Code attachments and context usage', () => {
     })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expectContextUsage(page, usage)
   })

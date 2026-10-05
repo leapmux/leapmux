@@ -36,7 +36,7 @@ junieTest.describe('junie unsupported controls', () => {
     }
 
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     const first = status.requests.find(request => request.stepIndex === 0)
     const second = status.requests.find(request => request.stepIndex === 1)
     expect(JSON.stringify(first?.body ?? {}).includes('Answer the second request')).toBe(false)

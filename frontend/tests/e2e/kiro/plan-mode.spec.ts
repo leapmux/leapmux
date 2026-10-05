@@ -22,7 +22,7 @@ kiroTest.describe('Kiro settings', () => {
     )
     await sendMessage(page, modelScript.prompt('Finish planning and start.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expectSettingsChip(page, 'Default')
     const requests = (await modelScript.status()).requests

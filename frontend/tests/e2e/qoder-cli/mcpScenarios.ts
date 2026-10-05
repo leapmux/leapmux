@@ -30,7 +30,7 @@ export async function exerciseNativeMcpForm(context: NativeScenarioContext): Pro
   await page.getByTestId('control-actions').getByRole('button', { name: 'Approve', exact: true }).click()
 
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
   await expect(visibleOnly(page.getByText('FORM_ROUND_TRIP_OK', { exact: false })).first()).toBeVisible()
   await expect(form).toHaveCount(0)
 

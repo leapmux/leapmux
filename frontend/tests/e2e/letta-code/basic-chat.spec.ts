@@ -12,7 +12,7 @@ lettaTest.describe('Letta Code basic chat', () => {
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expectAssistantAnswer(page)
     await expect(userBubbles(page).filter({ hasText: '1234 + 5678' }).first()).toBeVisible()

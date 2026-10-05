@@ -26,7 +26,7 @@ ohMyPiTest.describe('Oh My Pi to-do list', () => {
     )
     await sendMessage(page, modelScript.prompt('Plan the inspection of this repository.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect(goalsAndTodosSection(page)).toBeVisible()
     await expandGoalsAndTodosSection(page)

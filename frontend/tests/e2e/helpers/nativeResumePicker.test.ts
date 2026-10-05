@@ -461,11 +461,6 @@ describe('resumePickerScenario', () => {
       await run()
       expect(picker.idleTimeouts).toEqual([undefined, undefined])
     })
-
-    it('gives its value to both turns', async () => {
-      await run({ idleTimeoutMs: 240_000 })
-      expect(picker.idleTimeouts).toEqual([240_000, 240_000])
-    })
   })
 
   describe('answers and rules', () => {

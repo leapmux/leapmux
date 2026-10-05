@@ -18,6 +18,7 @@ import { solveCaptchaViaUI } from './captcha'
 import { nativeAgentById } from './nativeScenario'
 import { E2E_BROWSER_HOST } from './server'
 import { readEntry, storageKeys, writeEntry } from './storage'
+import { waitTimeoutBeforeTestDeadline } from './testDeadline'
 
 /** Read immediate locator visibility. Return false when the read fails. */
 export async function isMaybeVisible(locator: Locator): Promise<boolean> {
@@ -491,8 +492,14 @@ export async function expectUserMessage(page: Page, text: string) {
  */
 const APPEARANCE_PROBE_MS = 2000
 
-/** Wait for the agent to finish its current turn (thinking indicator gone). */
-export async function waitForAgentIdle(page: Page, timeoutMs = 120_000) {
+/**
+ * Wait for the agent to finish its current turn (thinking indicator gone).
+ *
+ * The helper takes no limit. It waits until `WAIT_REPORT_MARGIN_MS` (`./testDeadline`) before the test's own
+ * deadline, as the model-script waits do. A turn that never ends then fails here, at the idle step, and the margin
+ * leaves time for the fixtures to attach the model script. A test that needs more time raises its own timeout.
+ */
+export async function waitForAgentIdle(page: Page) {
   // Each tab in a tile mounts its own ChatView. Hidden panes keep their thinking indicator.
   // Scope the indicator to the visible pane. Otherwise a second tab creates two matches and a strict-mode failure.
   const thinking = page.locator('[data-testid="thinking-indicator"]:visible')
@@ -502,7 +509,7 @@ export async function waitForAgentIdle(page: Page, timeoutMs = 120_000) {
   // This helper alone cannot distinguish a completed turn from one that starts after the observation interval.
   // Callers must also check the expected response or operation result.
   await thinking.waitFor({ state: 'visible', timeout: APPEARANCE_PROBE_MS }).catch(() => {})
-  await expect(thinking).not.toBeVisible({ timeout: timeoutMs })
+  await expect(thinking).not.toBeVisible({ timeout: waitTimeoutBeforeTestDeadline() })
 }
 
 // ──────────────────────────────────────────────

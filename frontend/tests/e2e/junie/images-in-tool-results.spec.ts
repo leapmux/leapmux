@@ -27,7 +27,7 @@ junieTest.describe('Junie images in tool results', () => {
     )
     await sendMessage(page, modelScript.prompt('Call the image_probe show tool once.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     junieExpect(JSON.stringify(status.requests.find(request => request.stepIndex === 1)?.body)).toContain('iVBORw0KGgo')
     const agentId = await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().getAttribute('data-tab-id') ?? ''
     const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)

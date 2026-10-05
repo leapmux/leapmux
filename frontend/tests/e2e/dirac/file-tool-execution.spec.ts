@@ -29,7 +29,7 @@ diracTest.describe('Dirac tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Run the scripted tools, then complete.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect(page.getByTestId('control-banner').filter({ visible: true })).toHaveCount(0)
 
     const tools = page.locator('[data-tool-message]:visible')

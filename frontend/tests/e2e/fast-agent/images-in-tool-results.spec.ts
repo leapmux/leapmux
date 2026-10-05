@@ -16,7 +16,7 @@ fastAgentTest.describe('Fast Agent images in tool results', () => {
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
     await sendMessage(page, `/mcp connect --name image_probe ${JSON.stringify(server.command)} ${JSON.stringify(server.script)}`)
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect.poll(() => existsSync(server.ready)).toBe(true)
 
     const callID = 'show-fastagent-image'
@@ -36,7 +36,7 @@ fastAgentTest.describe('Fast Agent images in tool results', () => {
     expect(acpCallID).not.toBe(callID)
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     expect(JSON.stringify(status.requests.find(request => request.stepIndex === 1)?.body)).toContain(`MCP image ${imageName}`)
     await expectMcpToolImage(page, imageName, acpCallID)

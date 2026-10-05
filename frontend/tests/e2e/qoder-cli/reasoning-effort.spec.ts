@@ -14,7 +14,7 @@ qoderTest.describe('Qoder CLI effort and session goal', () => {
     await modelScript.queue({ text: 'PRIOR_QODER_EFFORT_CONTEXT' })
     await sendMessage(page, modelScript.prompt('Remember the effort context marker.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await chooseSettingsOption(page, 'effort-low')
     await waitForSettingsIdle(page)
@@ -23,7 +23,7 @@ qoderTest.describe('Qoder CLI effort and session goal', () => {
     await modelScript.queue({ text: 'LOW_EFFORT_APPLIED' })
     await sendMessage(page, modelScript.prompt('Reply once using the selected effort.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     const request = status.requests.find(item => item.stepIndex === 1)
     expect(request).toBeDefined()
     const body = JSON.stringify(request?.body)

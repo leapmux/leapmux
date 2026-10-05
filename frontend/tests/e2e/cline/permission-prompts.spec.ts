@@ -35,7 +35,7 @@ clineTest.describe('Cline control requests', () => {
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expect(visibleControlBanner(page)).toHaveCount(0)
     await expect.poll(() => chatText(page)).toContain('cline-42')
   })
@@ -57,7 +57,7 @@ clineTest.describe('Cline control requests', () => {
     await deny.click()
 
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expect(visibleControlBanner(page)).toHaveCount(0)
     // Cline hands the reason to the model as the call's error. The command never ran.
     const followUp = status.requests.find(request => request.stepIndex === 1)
@@ -75,7 +75,7 @@ clineTest.describe('Cline control requests', () => {
     )
     await sendMessage(page, modelScript.prompt('Read the notes.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect(visibleControlBanner(page)).toHaveCount(0)
     await expect.poll(() => chatText(page)).toContain('cline-safe-read')
@@ -99,7 +99,7 @@ clineTest.describe('Cline control requests', () => {
     await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
 
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expect(visibleControlBanner(page)).toHaveCount(0)
     // A refusal with no words of the reader's gives the model LeapMux's own reason.
     const followUp = status.requests.find(request => request.stepIndex === 1)

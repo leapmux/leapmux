@@ -13,7 +13,7 @@ codexTest('renders an assistant answer and clears the thinking indicator', async
   try {
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expectAssistantAnswer(page)
     await expect(page.getByTestId('thinking-indicator')).not.toBeVisible()
   }

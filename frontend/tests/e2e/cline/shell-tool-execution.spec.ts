@@ -38,7 +38,7 @@ clineTest.describe('Cline tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Run the arithmetic command.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect.poll(() => chatText(page)).toContain('cline-42')
     // Cline states the result as a list of records. The row draws the output, not the
@@ -60,7 +60,7 @@ clineTest.describe('Cline tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Run the failing command.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     // A collapsed row shows the stderr text, so the reader sees why with no expansion.
     const tools = page.locator('[data-tool-message]:visible')

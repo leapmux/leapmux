@@ -33,7 +33,7 @@ diracTest.describe('Dirac control requests', () => {
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect(banner(page)).toHaveCount(0)
     // The command computes the marker, so only a run prints it.
     await expect.poll(() => chatText(page)).toContain('dirac-allow-42')
@@ -53,7 +53,7 @@ diracTest.describe('Dirac control requests', () => {
     await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect(banner(page)).toHaveCount(0)
     // A denied call reaches no shell, so its output marker is nowhere on the
     // page. The command text itself never states the number below.

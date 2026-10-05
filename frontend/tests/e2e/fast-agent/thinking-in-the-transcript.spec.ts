@@ -13,7 +13,7 @@ fastAgentTest.describe('Fast Agent thinking and context usage', () => {
     await modelScript.queue({ reasoning: REASONING, text: '6912' })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     expect(status.requests.find(request => request.stepIndex === 0)?.body).toMatchObject({ model: MOCK_MODELS.zai })
     await expect(bandRows(page, 'thought').filter({ hasText: REASONING }).first()).toBeVisible()

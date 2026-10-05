@@ -43,7 +43,7 @@ lettaTest.describe('Letta Code subagents', () => {
       await modelScript.releaseGate(gate)
       await modelScript.waitForSteps()
       await expect.poll(async () => (await modelScript.status()).ruleMatches['the Letta root handles the child completion notice'] ?? 0).toBe(1)
-      await waitForAgentIdle(page, 180_000)
+      await waitForAgentIdle(page)
 
       await expect(assistantBubbles(page).filter({ hasText: 'LETTA_ROOT_DONE' })).not.toHaveCount(0)
 

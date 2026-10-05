@@ -21,7 +21,7 @@ qoderTest.describe('qoder CLI tool execution', () => {
     await modelScript.queue({ text: 'The command ran.' })
     await sendMessage(page, modelScript.prompt('Run echo hi.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect(assistantBubbles(page).filter({ hasText: 'The command ran.' }).first()).toBeVisible()
     await expect(page.getByTestId('thinking-indicator')).not.toBeVisible()

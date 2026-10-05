@@ -50,7 +50,7 @@ mimoTest.describe('MiMo Code plan approval', () => {
     await page.getByTestId('plan-approve-btn').click()
     await expect(banner).toHaveCount(0)
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expect(messageContents(page).filter({ hasText: 'PLAN_EXECUTION_STARTED' }).first()).toBeVisible()
     await expectSettingsChip(page, 'Build')
@@ -75,7 +75,7 @@ mimoTest.describe('MiMo Code plan approval', () => {
     await reject.click()
     await expect(banner).toHaveCount(0)
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expect(messageContents(page).filter({ hasText: 'PLAN_KEPT' }).first()).toBeVisible()
     await expect(messageContents(page).filter({ hasText: 'Plan sent back' }).first()).toBeVisible()
@@ -106,7 +106,7 @@ mimoTest.describe('MiMo Code plan approval', () => {
     await reject.click()
     await expect(banner).toHaveCount(0)
     await expect(messageContents(page).filter({ hasText: 'PLAN_FEEDBACK_RECEIVED' }).first()).toBeVisible()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expectSettingsChip(page, 'Plan')
   })
 })

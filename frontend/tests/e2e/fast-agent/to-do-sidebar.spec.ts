@@ -10,18 +10,18 @@ fastAgentTest.describe('Fast Agent to-do support', () => {
     // Fast Agent's /commands route reads the same available-command catalogue
     // that its ACP session publishes. An unknown /todo route must refuse.
     await sendMessage(page, '/commands --json')
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     const commands = messageBubbles(page).filter({ hasText: 'command_index' }).first()
     await fastExpect(commands).toBeVisible()
     fastExpect(await commands.textContent()).not.toMatch(/"name"\s*:\s*"(?:todo|todowrite|update_plan|plan_update|task_list)"/i)
     await sendMessage(page, '/todo')
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await fastExpect(messageBubbles(page).filter({ hasText: 'Unknown command: /todo' }).first()).toBeVisible()
 
     await modelScript.queue({ text: 'The coding turn answered without a plan update.' })
     await sendMessage(page, modelScript.prompt('Create a native to-do list if a tool supports it.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     const request = status.requests.find(record => record.stepIndex === 0)
     fastExpect(request).toBeDefined()
     const tools = JSON.stringify(request?.body)

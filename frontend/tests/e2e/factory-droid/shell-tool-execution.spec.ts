@@ -25,7 +25,7 @@ droidTest.describe('Factory Droid tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Run the arithmetic command.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect.poll(() => chatText(page)).toContain('droid-42')
     // The executor ran the call: its result reached the next model call.

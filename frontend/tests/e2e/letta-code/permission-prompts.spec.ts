@@ -32,7 +32,7 @@ lettaTest.describe('Letta Code control requests', () => {
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expect(banner(page)).toHaveCount(0)
     // The saved row reads Letta's own approval_response decision, not a generic answer word.
     await expect(savedControlAnswer(page)).toHaveText('Allow')
@@ -55,7 +55,7 @@ lettaTest.describe('Letta Code control requests', () => {
 
     await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     // The command never reached the shell, so its output is nowhere on the page.
     await expect.poll(() => chatText(page)).not.toContain('letta-should-not-run')

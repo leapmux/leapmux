@@ -18,7 +18,7 @@ codexTest.describe('codex tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Run this exact command and report its result.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     const toolMessages = page.locator('[data-tool-message]:visible')
     await expect(toolMessages.filter({ hasText: 'codex-hello-42' }).first()).toBeVisible()

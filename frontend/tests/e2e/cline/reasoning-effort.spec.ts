@@ -23,7 +23,7 @@ clineTest.describe('Cline settings', () => {
     await modelScript.queue({ text: 'Default effort answered.' })
     await sendMessage(page, modelScript.prompt('Reply once at default effort.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await chooseSettingsOption(page, 'effort-high')
     await waitForSettingsIdle(page)
@@ -32,7 +32,7 @@ clineTest.describe('Cline settings', () => {
     await modelScript.queue({ text: 'High effort answered.' })
     await sendMessage(page, modelScript.prompt('Reply once at high effort.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     const first = status.requests.find(request => request.stepIndex === 0)?.body
     const second = status.requests.find(request => request.stepIndex === 1)?.body
     if (!first || typeof first !== 'object' || !second || typeof second !== 'object')

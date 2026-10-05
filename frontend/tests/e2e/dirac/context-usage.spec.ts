@@ -14,7 +14,7 @@ diracTest.describe('Dirac thinking and context usage', () => {
       toolCalls: [diracRespondToolCall('dirac-usage', 'complete', 'The turn is complete.')],
     })
     await sendMessage(page, modelScript.prompt('Finish the turn.'))
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
     await expect(infoTrigger.getByTestId('context-usage-grid')).toBeVisible()

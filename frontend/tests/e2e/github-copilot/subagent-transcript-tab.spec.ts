@@ -39,7 +39,7 @@ copilotTest('routes the prompt, response, and completion into the child tab', as
   await modelScript.queue({ text: 'COPILOT_ROOT_DONE' })
   await sendMessage(page, modelScript.prompt('Spawn one subagent, wait for it, then report what it said.'))
   await modelScript.waitForSteps(2)
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
 
   // The spawn is scripted, so a missing row is a failure rather than the
   // model's discretion.

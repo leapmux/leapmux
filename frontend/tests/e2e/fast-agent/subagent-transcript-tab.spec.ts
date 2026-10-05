@@ -45,7 +45,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
       )
       await sendMessage(page, modelScript.prompt(`Delegate ${run.description}.`))
       await modelScript.waitForSteps()
-      await waitForAgentIdle(page, 180_000)
+      await waitForAgentIdle(page)
       await expect(assistantBubbles(page).filter({ hasText: run.root }).first()).toBeVisible()
 
       await expandBackgroundTasksSection(page)
@@ -88,7 +88,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
     )
     await sendMessage(page, modelScript.prompt('Delegate the first count.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expandBackgroundTasksSection(page)
     const firstRow = rows.first()
     await expect(firstRow).toHaveAttribute('data-status', 'completed')
@@ -112,7 +112,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
     )
     await sendMessage(page, modelScript.prompt('Delegate the second count with the same task.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     let secondIndex = -1
     await expect.poll(async () => {
@@ -188,7 +188,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
       await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
     }
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect(assistantBubbles(page).filter({ hasText: 'FAST_AGENT_CHILD_DONE' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'FAST_CHILD_EARLY_TEXT' }).first()).toBeVisible()
@@ -266,7 +266,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
       await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
     }
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'FAST_CHILD_RESUME_FINAL' })).toHaveCount(1)
     await expect(messageContents(page).filter({ hasText: 'FAST_CHILD_RESUME_TOOL_MARKER' }).first()).toBeVisible()
 

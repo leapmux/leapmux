@@ -10,6 +10,7 @@ import { permissionPresetAvailable } from '../../../src/components/chat/provider
 import { AMP_PERMISSION_MODE } from '../../../src/generated/contracts/amp-protocol'
 import { MIMO_OPTION, MIMO_PERMISSION_POLICY } from '../../../src/generated/contracts/mimo-protocol'
 import { AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { startTestDeadline, WAIT_REPORT_MARGIN_MS } from './testDeadline'
 import {
   applyPermissionPreset,
   ARITHMETIC_ANSWER,
@@ -22,6 +23,7 @@ import {
   SECOND_ARITHMETIC_ANSWER,
   SECOND_ARITHMETIC_ANSWER_TEXT,
   SECOND_ARITHMETIC_PROMPT,
+  waitForAgentIdle,
   waitForLayoutSave,
   waitForNativeSettingsHydrated,
 } from './ui'
@@ -485,6 +487,72 @@ describe('waitForNativeSettingsHydrated', () => {
       .mockResolvedValue(create(AgentInfoSchema, { ...fastAgentCatalog([agentMode]), status: AgentStatus.INACTIVE }))
     await expect(waitForNativeSettingsHydrated(page)).rejects.toThrow('The native settings agent is not active on its owning Worker (INACTIVE).')
     expect(read).toEqual([])
+  })
+})
+
+describe('waitForAgentIdle', () => {
+  const ends: Array<() => void> = []
+  afterEach(() => {
+    for (const end of ends.splice(0))
+      end()
+  })
+
+  /** A page whose thinking indicator is never shown. It records the timeout of each assertion on the indicator. */
+  function idlePage(): { page: Page, timeouts: number[], selectors: string[] } {
+    const timeouts: number[] = []
+    const selectors: string[] = []
+    class Locator {
+      readonly _apiName = 'Locator'
+      async waitFor() {
+        throw new Error('The thinking indicator never appeared.')
+      }
+
+      async _expect(_expression: string, options: { timeout: number }) {
+        timeouts.push(options.timeout)
+        return { matches: false, received: false, log: [], timedOut: false }
+      }
+    }
+    const page = opaqueHandle<Page>({
+      locator: (selector: string) => {
+        selectors.push(selector)
+        return new Locator() as unknown as PlaywrightLocator
+      },
+    })
+    return { page, timeouts, selectors }
+  }
+
+  it('waits on the visible indicator until the report margin before the test deadline', async () => {
+    ends.push(startTestDeadline(1_000_000, () => 120_000))
+    vi.spyOn(Date, 'now').mockReturnValue(1_010_000)
+    const { page, timeouts, selectors } = idlePage()
+    await waitForAgentIdle(page)
+    expect(selectors).toEqual(['[data-testid="thinking-indicator"]:visible'])
+    expect(timeouts).toEqual([120_000 - 10_000 - WAIT_REPORT_MARGIN_MS])
+  })
+
+  it('follows a timeout that the test raised, as the Kilo goal specs do', async () => {
+    let timeout = 120_000
+    ends.push(startTestDeadline(1_000_000, () => timeout))
+    timeout = 240_000
+    vi.spyOn(Date, 'now').mockReturnValue(1_010_000)
+    const { page, timeouts } = idlePage()
+    await waitForAgentIdle(page)
+    expect(timeouts).toEqual([240_000 - 10_000 - WAIT_REPORT_MARGIN_MS])
+  })
+
+  it('waits without a limit when the test has no timeout', async () => {
+    ends.push(startTestDeadline(1_000_000, () => 0))
+    const { page, timeouts } = idlePage()
+    await waitForAgentIdle(page)
+    expect(timeouts).toEqual([0])
+  })
+
+  it('fails at once instead of removing the limit when the deadline is inside the margin', async () => {
+    ends.push(startTestDeadline(1_000_000, () => 120_000))
+    vi.spyOn(Date, 'now').mockReturnValue(1_119_000)
+    const { page, timeouts } = idlePage()
+    await waitForAgentIdle(page)
+    expect(timeouts).toEqual([1])
   })
 })
 

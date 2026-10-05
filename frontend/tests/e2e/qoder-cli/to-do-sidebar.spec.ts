@@ -19,7 +19,7 @@ qoderTest.describe('qoder CLI to-do sidebar', () => {
     )
     await sendMessage(page, modelScript.prompt('Write a three-step to-do list.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect(goalsAndTodosSection(page)).toBeVisible()
     await expandGoalsAndTodosSection(page)
@@ -40,7 +40,7 @@ qoderTest.describe('qoder CLI to-do sidebar', () => {
     )
     await sendMessage(page, modelScript.prompt('Mark every step done.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expect(list.locator('[data-task-checkbox="completed"]')).toHaveCount(3)
 
     await page.reload()

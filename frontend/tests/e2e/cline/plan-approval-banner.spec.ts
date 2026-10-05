@@ -28,7 +28,7 @@ clineTest.describe('Cline control requests', () => {
     await modelScript.queue({ text: 'Plan:\n1. Create note.txt.\n2. Verify it.' })
     await sendMessage(page, modelScript.prompt('Plan how to write the note.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await modelScript.queue(
       { toolCalls: [exitPlanModeToolCall(PROVIDER, 'cline-plan', '')] },
@@ -42,7 +42,7 @@ clineTest.describe('Cline control requests', () => {
     await expect(visibleControlBanner(page)).toHaveCount(0)
 
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expectSettingsChip(page, 'Act')
     await expect(assistantBubbles(page).filter({ hasText: 'Starting the approved plan.' })).toBeVisible()
 
@@ -73,7 +73,7 @@ clineTest.describe('Cline control requests', () => {
     await expect(visibleControlBanner(page)).toHaveCount(0)
 
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expectSettingsChip(page, 'Plan')
     // The refusal reached the model as the plan tool's error, and the session still
     // offers the plan tool.

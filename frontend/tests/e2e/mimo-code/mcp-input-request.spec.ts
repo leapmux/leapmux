@@ -22,7 +22,7 @@ mimoTest.describe('MiMo Code MCP confirmation', () => {
     )
     await sendMessage(page, modelScript.prompt('Call form_probe ask once.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     const second = (await modelScript.status()).requests.find(request => request.stepIndex === 1)
     expect(second?.protocol).toBeTruthy()
     expect(nativeToolResult(second, 'mimo-confirm')).toContain('FORM_ROUND_TRIP_REFUSED: -32601 Method not found')

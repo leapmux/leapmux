@@ -18,7 +18,7 @@ opencodeTest('tool call renders with span', async ({ authenticatedOpencodeWorksp
   )
   await sendMessage(page, modelScript.prompt('Use your shell tool to run `ls` in the current directory and report the output.'))
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
 
   // The native call must render a row with at least one span rail.
   // data-span-columns supplies that count. A row without a rail reports zero.

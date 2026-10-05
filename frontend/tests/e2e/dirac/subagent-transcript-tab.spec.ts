@@ -48,7 +48,7 @@ diracTest.describe('Dirac subagent transcript', () => {
 
     await modelScript.releaseGate('dirac-child-reply')
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'DIRAC_CHILD_DONE' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'DIRAC_CHILD_ARCHIVE_ONLY' }).first()).toBeVisible()
     await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'DIRAC_CHILD_DONE' }).first()).toBeVisible()
@@ -97,7 +97,7 @@ diracTest.describe('Dirac subagent transcript', () => {
       })
       await sendMessage(page, modelScript.prompt(`Delegate ${run.description}.`))
       await modelScript.waitForSteps()
-      await waitForAgentIdle(page, 180_000)
+      await waitForAgentIdle(page)
 
       await expandBackgroundTasksSection(page)
       const row = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: run.description }).first()

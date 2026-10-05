@@ -32,7 +32,7 @@ junieTest.describe('Junie questions', () => {
       { toolCalls: [junieAnswerToolCall('junie-answer', 'You picked.')] },
     )
     await sendMessage(page, modelScript.prompt('Ask me which one.'))
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     // The native question creates a control request.
     // Open its choice menu to read the available answers.
@@ -46,7 +46,7 @@ junieTest.describe('Junie questions', () => {
     await page.getByText('Second').filter({ visible: true }).first().click()
     await page.getByRole('button', { name: 'Approve' }).click()
     const status = await modelScript.waitForSteps(2)
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     const answer = nativeToolResult(status.requests.find(request => request.stepIndex === 1), 'junie-question')
     expect(answer).toContain('Second')
     expect(answer).not.toContain('First')

@@ -31,7 +31,7 @@ mimoTest.describe('MiMo Code tool execution', () => {
       { gate, shown: () => expect(outputRow(), 'the running row shows the output of the held command').toBeVisible() },
       async () => {
         await modelScript.waitForSteps()
-        await waitForAgentIdle(page, 120_000)
+        await waitForAgentIdle(page)
       },
     )
 
@@ -57,7 +57,7 @@ mimoTest.describe('MiMo Code interactive commands', () => {
     )
     await sendMessage(page, modelScript.prompt('Ask for my name in the shell.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expect(page.locator('[data-testid="control-banner"]')).toHaveCount(0)
     await expect(messageContents(page).filter({ hasText: 'LeapMux cannot run an interactive command' }).first()).toBeVisible()

@@ -21,7 +21,7 @@ opencodeTest('a Read of a PNG draws the picture in the tool row', async ({ authe
   )
   await sendMessage(page, modelScript.prompt(`Read the file ${name} and describe it.`))
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
 
   await expectToolRowImage(page, 'tool-image-opencode-33')
 })

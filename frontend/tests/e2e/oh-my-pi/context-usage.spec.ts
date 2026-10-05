@@ -15,7 +15,7 @@ ohMyPiTest.describe('Oh My Pi basic chat', () => {
     await modelScript.queue({ text: 'Usage recorded.', usage: { inputTokens: 12_000, outputTokens: 40, contextWindow: 128_000 } })
     await sendMessage(page, modelScript.prompt('Reply once.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     // OMP adds its own token estimate for the post-answer context tail.
     const popover = await openAgentInfoCard(page)
     await expect(popover).toContainText(/Context\s*12\.\dk\s*\/\s*128\.0k/)

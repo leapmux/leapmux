@@ -7,7 +7,7 @@ export async function exerciseCompactPreviewRefusal(context: NativeScenarioConte
   const { page } = context
 
   await sendMessage(page, '/compact preview')
-  await waitForAgentIdle(page, 120_000)
+  await waitForAgentIdle(page)
   await expect(messageBubbles(page).filter({ hasText: 'Unknown command: /compact' }).first()).toBeVisible()
 }
 
@@ -16,7 +16,7 @@ export async function exerciseCompactRefusal(context: NativeScenarioContext): Pr
   const { page } = context
 
   await sendMessage(page, '/compact')
-  await waitForAgentIdle(page, 120_000)
+  await waitForAgentIdle(page)
   await expect(messageBubbles(page).filter({ hasText: 'Unknown command: /compact' }).first()).toBeVisible()
   await expect(compactionNoticeRow(page)).toHaveCount(0)
 }

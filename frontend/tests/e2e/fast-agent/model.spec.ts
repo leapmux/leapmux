@@ -21,7 +21,7 @@ fastAgentTest.describe('Fast Agent settings apply', () => {
         await modelScript.queue({ text: 'The launch model answered.' })
         await sendMessage(page, modelScript.prompt('Reply once with the launch model.'))
         const status = await modelScript.waitForSteps()
-        await waitForAgentIdle(page, 120_000)
+        await waitForAgentIdle(page)
         expect(status.requests.filter(request => request.stepIndex === 0)).toHaveLength(1)
         expect(status.requests.find(request => request.stepIndex === 0)?.body).toMatchObject({ model: FAST_AGENT_MOCK_MODEL })
       },

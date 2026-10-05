@@ -59,7 +59,7 @@ mimoTest.describe('MiMo Code permission requests', () => {
     await page.getByTestId('control-allow-btn').click()
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     expect(existsSync(file)).toBe(false)
     await expect(messageContents(page).filter({ hasText: 'DELETED_AFTER_APPROVAL' }).first()).toBeVisible()
@@ -77,7 +77,7 @@ mimoTest.describe('MiMo Code permission requests', () => {
     await waitForControlBanner(page)
     await page.getByTestId('control-deny-btn').click()
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     expect(existsSync(file)).toBe(true)
     await expect(messageContents(page).filter({ hasText: 'Declined' }).first()).toBeVisible()
@@ -106,7 +106,7 @@ mimoTest.describe('MiMo Code permission requests', () => {
     await reject.click()
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
     await expect(messageContents(page).filter({ hasText: 'FEEDBACK_RECEIVED' }).first()).toBeVisible()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     expect(existsSync(file)).toBe(true)
   })
 
@@ -153,7 +153,7 @@ mimoTest.describe('MiMo Code permission requests', () => {
       await page.getByTestId('control-allow-btn').click()
       await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
       await modelScript.waitForSteps()
-      await waitForAgentIdle(page, 120_000)
+      await waitForAgentIdle(page)
 
       await expect(page.locator('[data-testid="control-banner"]')).toHaveCount(0)
       await expect(savedControlAnswer(page)).toHaveCount(1)

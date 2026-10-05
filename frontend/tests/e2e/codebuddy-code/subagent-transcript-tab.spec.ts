@@ -32,7 +32,7 @@ codebuddyTest.describe('CodeBuddy Code subagent registry', () => {
     const row = await requireRegistryRow(page)
     await expect(row).toContainText('Ask for one word')
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expectRowBecomesFinal(page, row)
     await expect(row).toHaveAttribute('data-status', 'completed')

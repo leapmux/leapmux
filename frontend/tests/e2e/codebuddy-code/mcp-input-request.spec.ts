@@ -46,7 +46,7 @@ codebuddyTest.describe('CodeBuddy Code MCP input form', () => {
       )
       await sendMessage(page, modelScript.prompt('Wait for form_probe, then call its ask tool.'))
       const status = await modelScript.waitForSteps(step + 3)
-      await waitForAgentIdle(page, 180_000)
+      await waitForAgentIdle(page)
 
       const second = status.requests.find(request => request.stepIndex === step + 1)?.body
       if (!second || typeof second !== 'object' || !('tools' in second))

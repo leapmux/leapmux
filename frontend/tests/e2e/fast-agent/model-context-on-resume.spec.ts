@@ -9,6 +9,6 @@ test.describe('Fast Agent session resume', () => {
   const skip = FAST_AGENT_E2E_SKIP_REASON
   test.skip(!!skip, skip ?? '')
   test('continues a closed session chosen from the native picker', async ({ page, leapmuxServer, modelScript }) => {
-    await resumePickerScenario({ page, leapmuxServer, modelScript }, { provider, label, idleTimeoutMs: 180000 })
+    await resumePickerScenario({ page, leapmuxServer, modelScript }, { provider, label })
   })
 })

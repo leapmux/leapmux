@@ -52,8 +52,6 @@ export interface ResumePickerOptions {
    * already cover the reopened transcript.
    */
   readonly assertConversationBubbles?: boolean
-  /** The `waitForAgentIdle` timeout of both turns. The helper default is `waitForAgentIdle`'s own. */
-  readonly idleTimeoutMs?: number
   /** Inspect the recorded requests of the original turn right after its model answer, before the turn ends. */
   readonly onFirstTurn?: (status: MockModelScenarioStatus) => void | Promise<void>
   /** Assert provider-specific facts about the request that consumed the resumed prompt. */
@@ -109,7 +107,7 @@ export async function resumePickerScenario(
   await sendMessage(page, modelScript.prompt(texts.originalPrompt))
   const firstStatus = await modelScript.waitForSteps(originalStep + 1)
   await options.onFirstTurn?.(firstStatus)
-  await waitForAgentIdle(page, options.idleTimeoutMs)
+  await waitForAgentIdle(page)
   if (options.assertConversationBubbles) {
     await expect(userBubbles(page).filter({ hasText: texts.originalPrompt })).toHaveCount(1)
     await expect(assistantBubbles(page).filter({ hasText: texts.originalAnswer })).toHaveCount(1)
@@ -155,7 +153,7 @@ export async function resumePickerScenario(
   const resumedStep = await modelScript.queue(answerStep('resumed'))
   await sendMessage(page, modelScript.prompt(texts.resumedPrompt))
   await modelScript.waitForSteps(resumedStep + 1)
-  await waitForAgentIdle(page, options.idleTimeoutMs)
+  await waitForAgentIdle(page)
   // Read the record after the turn. The mock counts a step when its request arrives, and a native client
   // states more of that request later, such as the rules of a context query.
   const resumed = await modelScript.requestAt(resumedStep)

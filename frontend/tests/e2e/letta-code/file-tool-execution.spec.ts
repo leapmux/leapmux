@@ -26,7 +26,7 @@ lettaTest.describe('Letta Code tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Write the notes and read them back.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect.poll(() => chatText(page)).toContain('letta-write-1')
     // The native tool writes the file in the agent's working directory.

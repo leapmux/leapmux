@@ -22,7 +22,7 @@ opencodeTest('agent starts and shows ready state', async ({ authenticatedOpencod
   await modelScript.queue({ text: 'ready' })
   await sendMessage(page, modelScript.prompt('Reply with just the word: ready'))
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 120_000)
+  await waitForAgentIdle(page)
   await expectAssistantAnswer(page, { answer: /ready/i })
 })
 
@@ -37,7 +37,7 @@ opencodeTest('agent reconnects after page reload', async ({ authenticatedOpencod
   await modelScript.queue({ text: 'hello' })
   await sendMessage(page, modelScript.prompt('Reply with just the word: hello'))
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 120_000)
+  await waitForAgentIdle(page)
   await expectAssistantAnswer(page, { answer: /hello/i })
 })
 
@@ -45,7 +45,7 @@ opencodeTest('renders an assistant answer and clears the thinking indicator', as
   void authenticatedOpencodeWorkspace
   await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-  await waitForAgentIdle(page, 120_000)
+  await waitForAgentIdle(page)
   await expectAssistantAnswer(page)
   await expect(page.getByTestId('thinking-indicator')).not.toBeVisible()
 })

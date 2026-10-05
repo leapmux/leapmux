@@ -102,7 +102,7 @@ clineTest('offers a Cline session of the working directory and resumes the one p
   await modelScript.queue({ text: `${ARITHMETIC_ANSWER_TEXT} ${texts.resumedAnswer}` })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
   const status = await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
   await expectAssistantAnswer(page)
   // The two CLI runs consumed steps 0 and 1.
   const resumedRequest = status.requests.find(request => request.stepIndex === 2)

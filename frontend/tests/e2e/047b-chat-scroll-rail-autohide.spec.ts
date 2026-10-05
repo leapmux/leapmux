@@ -16,8 +16,9 @@ import { readAttached, sendMessage, userBubbles, waitForAgentIdle } from './help
 
 /**
  * Byte-for-byte 047's filler, deliberately. These specs drive a REAL agent, so the prompt
- * is the test's runtime: a 2.5x longer filler pushed the turn past waitForAgentIdle's
- * 120s bound under parallel load. Keep this string in step with 047's; make the VIEWPORT
+ * is the test's runtime: a 2.5x longer filler pushed the turn past the limit of
+ * waitForAgentIdle under parallel load. That limit ends a few seconds before the test's
+ * own deadline. Keep this string in step with 047's; make the VIEWPORT
  * shorter, never the message longer, when a test needs more overflow.
  *
  * One message per test, not 047's two: 047 needs two jump dots and nothing here does, and

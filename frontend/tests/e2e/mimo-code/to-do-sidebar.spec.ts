@@ -21,7 +21,7 @@ mimoTest.describe('MiMo Code to-do list', () => {
     )
     await sendMessage(page, modelScript.prompt('Track two tasks and finish the first one.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expandGoalsAndTodosSection(page)
     const list = page.locator('[data-testid="goals-and-todos"]:visible')

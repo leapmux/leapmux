@@ -14,7 +14,7 @@ lettaTest('carries the conversation into the request', async ({ authenticatedLet
   await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
   const status = await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
   await expectAssistantAnswer(page)
   await expect(page.locator('[data-testid="result-divider"]:visible')).toHaveCount(1)
 

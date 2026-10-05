@@ -54,7 +54,7 @@ ohMyPiTest.describe('Oh My Pi control requests', () => {
     await page.getByTestId('control-submit-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expect(visibleControlBanner(page)).toHaveCount(0)
     // The dialog reply reaches Oh My Pi, which sends the selected label to the model.
     // Read that label from the second request's tool result. The request also contains the call arguments, which include every option.

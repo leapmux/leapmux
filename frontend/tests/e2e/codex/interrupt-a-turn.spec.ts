@@ -29,7 +29,7 @@ codexTest.describe('generation progress', () => {
     const indicator = page.locator('[data-testid="thinking-indicator"]:visible')
     await expect(indicator).toContainText('tokens')
     await page.locator('[data-testid="interrupt-button"]:visible').click()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expect(assistantBubbles(page).filter({ hasText: INTERRUPTION_MARKER }).first()).toBeVisible()
     await page.reload()

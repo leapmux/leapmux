@@ -57,7 +57,7 @@ kiroTest.describe('Kiro control requests', () => {
     await page.keyboard.press('Meta+Enter')
     await expect(banner).toHaveCount(0)
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     const status = await modelScript.status()
     expect(JSON.stringify(status.requests.at(-1)?.body)).toContain('Do not create the second file.')
@@ -96,7 +96,7 @@ kiroTest.describe('Kiro control requests', () => {
 
     // The second call runs under the rule, with no request of its own.
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'Both ran.' })).toBeVisible()
     await expect(messageBubbles(page).filter({ hasText: 'Always allow in this workspace' }).first()).toBeVisible()
     expect(readFileSync(marker, 'utf8'), 'both commands ran').toBe('alwaysalways')

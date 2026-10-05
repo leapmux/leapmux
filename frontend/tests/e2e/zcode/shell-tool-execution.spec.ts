@@ -25,7 +25,7 @@ zcodeTest('a bash command renders as a tool card with its output', async ({ auth
   )
   await sendMessage(page, modelScript.prompt('Run the printf command and show me the output.'))
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
 
   await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'zcode-42' }).first()).toBeVisible()
 })

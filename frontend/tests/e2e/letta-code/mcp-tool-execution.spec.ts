@@ -38,7 +38,7 @@ lettaTest.describe('native mcp tool execution', () => {
     await modelScript.queue({ text: 'The native turn ended.' })
     await sendMessage(page, modelScript.prompt('Reply once.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     const request = status.requests.find(record => record.stepIndex === 0)
     if (!request)

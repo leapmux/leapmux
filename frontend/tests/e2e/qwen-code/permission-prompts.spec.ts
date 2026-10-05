@@ -44,7 +44,7 @@ qwenTest.describe('Qwen Code control requests', () => {
     await page.keyboard.press('Meta+Enter')
     await expect(banner).toHaveCount(0)
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect(userBubbles(page).filter({ hasText: 'Do not create the second file.' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'I will not create the second file.' })).toBeVisible()
     expect(existsSync(rejected)).toBe(false)

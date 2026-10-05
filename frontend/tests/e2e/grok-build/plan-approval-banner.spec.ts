@@ -35,7 +35,7 @@ grokTest.describe('Grok Build control requests', () => {
     await page.getByTestId('plan-approve-btn').filter({ visible: true }).click()
     await expect(banner).toHaveCount(0)
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'Plan approved; starting.' })).toBeVisible()
     await expectSettingsChip(page, 'Default')
   })

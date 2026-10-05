@@ -9,6 +9,6 @@ test.describe('Letta Code session resume', () => {
   const skip = LETTA_E2E_SKIP_REASON
   test.skip(!!skip, skip ?? '')
   test('continues a closed session chosen from the native picker', async ({ page, leapmuxServer, modelScript }) => {
-    await resumePickerScenario({ page, leapmuxServer, modelScript }, { provider, label, rules: [LETTA_TITLE_RULE], idleTimeoutMs: 180000 })
+    await resumePickerScenario({ page, leapmuxServer, modelScript }, { provider, label, rules: [LETTA_TITLE_RULE] })
   })
 })

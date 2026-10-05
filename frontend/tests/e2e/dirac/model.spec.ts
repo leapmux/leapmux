@@ -16,7 +16,7 @@ diracTest.describe('Dirac model and steering', () => {
     await modelScript.queue({ toolCalls: [diracRespondToolCall('dirac-model-answer', 'complete', 'The selected model answered.')] })
     await sendMessage(page, modelScript.prompt('Reply once with the selected model.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     const request = status.requests.find(record => record.stepIndex === 0)
     diracExpect(request?.protocol).toBe('openai-chat-completions')
     diracExpect(request?.body).toMatchObject({ model: 'gpt-6-astra' })

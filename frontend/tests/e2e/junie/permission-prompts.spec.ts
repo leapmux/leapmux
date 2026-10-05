@@ -36,7 +36,7 @@ junieTest.describe('Junie control requests', () => {
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect(messageBubbles(page).filter({ hasText: 'junie-42' }).first()).toBeVisible()
     expect(readFileSync(output, 'utf8')).toContain('junie-42')
   })
@@ -57,7 +57,7 @@ junieTest.describe('Junie control requests', () => {
 
     await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     expect(existsSync(output)).toBe(false)
     const followup = status.requests.find(record => record.stepIndex === 1)

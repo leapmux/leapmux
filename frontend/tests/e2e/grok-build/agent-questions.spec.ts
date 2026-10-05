@@ -37,7 +37,7 @@ grokTest.describe('Grok Build control requests', () => {
     await submit.click()
     await expect(banner).toHaveCount(0)
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     const body = JSON.stringify((await modelScript.status()).requests.at(-1)?.body)
     expect(body).toContain('\\"Which database?\\"=\\"Postgres\\"')

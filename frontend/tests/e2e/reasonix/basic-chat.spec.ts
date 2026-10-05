@@ -9,7 +9,7 @@ reasonixTest('send message and receive response', async ({ authenticatedReasonix
   void authenticatedReasonixWorkspace
   await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-  await waitForAgentIdle(page, 120_000)
+  await waitForAgentIdle(page)
   await expectAssistantAnswer(page)
 })
 

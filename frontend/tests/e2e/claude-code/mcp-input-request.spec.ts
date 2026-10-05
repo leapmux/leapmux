@@ -40,7 +40,7 @@ test.describe('Claude Code MCP input form', () => {
     await page.getByTestId('control-actions').getByRole('button', { name: 'Approve', exact: true }).click()
 
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     expect(JSON.stringify(status.requests.find(request => request.stepIndex === 1)?.body)).toContain('FORM_ROUND_TRIP_OK')
     await expect(messageBubbles(page).filter({ hasText: 'FORM_ROUND_TRIP_OK' }).first()).toBeVisible()
     await expect(form).toHaveCount(0)

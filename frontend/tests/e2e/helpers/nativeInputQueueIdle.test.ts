@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentInputKind, AgentInputState, WatchReplayMode } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { InnerStreamMessageSchema } from '../../../src/generated/proto/leapmux/v1/channel_pb'
 import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
-import { STEP_WAIT_REPORT_MARGIN_MS } from './modelScriptFixture'
 import { NativeInputQueueIdleCollector, waitForNativeInputQueueIdle } from './nativeInputQueueIdle'
+import { WAIT_REPORT_MARGIN_MS } from './testDeadline'
 
 const { getTestChannel } = vi.hoisted(() => ({ getTestChannel: vi.fn() }))
 vi.mock('./api', async (importOriginal) => {
@@ -229,7 +229,7 @@ function nativeStream() {
 }
 
 const server = { hubUrl: 'http://mock.invalid', adminToken: 'mock-admin', workerId: 'worker-1' }
-const testDeadline = () => Date.now() + STEP_WAIT_REPORT_MARGIN_MS + 60_000
+const testDeadline = () => Date.now() + WAIT_REPORT_MARGIN_MS + 60_000
 
 describe('waitForNativeInputQueueIdle', () => {
   it('sends the exact native subscription and cancels after acknowledged completion', async () => {
@@ -402,7 +402,7 @@ describe('waitForNativeInputQueueIdle', () => {
     vi.useFakeTimers()
     const stream = nativeStream()
     getTestChannel.mockResolvedValue(stream.channel)
-    const deadline = Date.now() + STEP_WAIT_REPORT_MARGIN_MS + 100
+    const deadline = Date.now() + WAIT_REPORT_MARGIN_MS + 100
     const waiting = waitForNativeInputQueueIdle(server, 'agent-1', () => deadline)
     const rejected = expect(waiting).rejects.toThrow('did not complete before the whole-test deadline')
     await stream.ready
@@ -428,7 +428,7 @@ describe('waitForNativeInputQueueIdle', () => {
       return opened
     })
     getTestChannel.mockResolvedValue(stream.channel)
-    const deadline = Date.now() + STEP_WAIT_REPORT_MARGIN_MS + 100
+    const deadline = Date.now() + WAIT_REPORT_MARGIN_MS + 100
     const waiting = waitForNativeInputQueueIdle(server, 'agent-1', () => deadline)
     const rejected = expect(waiting).rejects.toThrow('whole-test deadline')
     await entered

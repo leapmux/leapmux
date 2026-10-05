@@ -34,7 +34,7 @@ droidTest.describe('Factory Droid control requests', () => {
     await page.getByTestId('control-submit-btn').filter({ visible: true }).click()
 
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     const followUp = status.requests.find(request => request.stepIndex === 1)
     const nativeCallId = nativeDroidCallId(followUp, 'AskUser', 'ask-1')
     const answer = nativeToolResult(followUp, nativeCallId)
@@ -93,7 +93,7 @@ droidTest.describe('Factory Droid control requests', () => {
     await expect(banner(page)).toHaveCount(0)
 
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     const followUp = status.requests.find(request => request.stepIndex === 1)
     const answer = nativeToolResult(followUp, nativeDroidCallId(followUp, 'AskUser', 'ask-multi'))
     // Droid writes "<index>. [question] <question>", then "[answer] <answer>", for each

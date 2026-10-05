@@ -61,7 +61,7 @@ ampTest.describe('Amp permissions', () => {
     )
     await sendMessage(page, modelScript.prompt('Run the third arithmetic command.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect(visibleControlBanner(page)).toHaveCount(0)
     await expect.poll(() => chatText(page)).toContain('amp-66')

@@ -64,7 +64,7 @@ test.describe('Plan Mode', () => {
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
 
     // The rejection returns to the model, which the fallback answers.
-    await waitForAgentIdle(page, 60_000)
+    await waitForAgentIdle(page)
 
     // ── Step 4: Exit plan mode again ──
     const exitBanner2 = await exitPlanMode(page, modelScript, { testId: 'plan-mode-again' })

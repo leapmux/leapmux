@@ -78,7 +78,7 @@ junieTest.describe('Junie subagents and background tasks', () => {
     }
 
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'JUNIE_CUSTOM_CHILD_DONE' }).first()).toBeVisible()
     const rows = await messageContents(page).allTextContents()
     const promptIndex = rows.findIndex(text => text.includes(CUSTOM_TASK))

@@ -25,7 +25,7 @@ codexTest.describe('codex tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt(`Create a file called ${path} with the content "codex was here"`))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     // A native Write creates a tool row with its line count and a separate added-line diff.
     // The tool title omits the diff badge, so fileChangeRow cannot identify it.

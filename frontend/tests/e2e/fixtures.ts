@@ -1,5 +1,5 @@
 import type { BrowserContext, Page, ViewportSize } from '@playwright/test'
-import type { ModelScript } from './helpers/modelScriptFixture'
+import type { ModelScriptFixtures } from './helpers/modelScriptFixture'
 import type { WorkspaceFixture } from './helpers/workspace'
 import { writeFileSync } from 'node:fs'
 import { basename, relative } from 'node:path'
@@ -14,7 +14,7 @@ import {
 import { finishCleanup } from './helpers/cleanup'
 import { closeAllUserEventsSubscriptions } from './helpers/crdt'
 import { readMockModelDiagnostics } from './helpers/mockModelScenario'
-import { runModelScriptFixture } from './helpers/modelScriptFixture'
+import { modelScriptFixtures } from './helpers/modelScriptFixture'
 import { getGlobalState } from './helpers/server'
 import { markSuiteServerLog, readSuiteServerLog } from './helpers/suiteServerLog'
 import { clearRecordedToasts, getRecordedToasts, installToastRecorder } from './helpers/toast'
@@ -160,11 +160,9 @@ async function resetSharedPage(
 }
 
 export const test = base.extend<
-  {
+  ModelScriptFixtures & {
     activePageState: ActivePageState
-    testStartedAt: number
     hubStateReset: void
-    modelScript: ModelScript
     toastRecorder: void
     pageErrorRecorder: void
     emptyWorkspace: WorkspaceFixture
@@ -177,13 +175,7 @@ export const test = base.extend<
     leapmuxServer: ServerInfo
   }
 >({
-  // Playwright starts its deadline before fixture setup. This automatic fixture
-  // has no dependencies, so it records that start for the model-script deadline.
-  // The model script ends a stalled wait before the test deadline.
-  // eslint-disable-next-line no-empty-pattern
-  testStartedAt: [async ({}, use) => {
-    await use(Date.now())
-  }, { auto: true }],
+  ...modelScriptFixtures,
 
   // Global setup starts one dev instance for the complete run.
   // eslint-disable-next-line no-empty-pattern
@@ -276,11 +268,6 @@ export const test = base.extend<
     await resetAllUserSettingsViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken)
     await use()
   }, { auto: true }],
-
-  // Give each test one model script. A marked prompt belongs to that script.
-  // An unscripted turn fails its test. An unmarked prompt reaches the ambient
-  // scenario, which answers native title turns and refuses other content turns.
-  modelScript: async ({ testStartedAt }, use, testInfo) => runModelScriptFixture(use, testInfo, testStartedAt),
 
   // Record page errors for every test that inherits this fixture. Do not fail the test here.
   // An uncaught app exception can otherwise appear only as a timeout on an unrelated locator.

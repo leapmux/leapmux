@@ -14,7 +14,7 @@ piTest('draws the thinking of a reply as a row of its own, before the answer, al
   await modelScript.queue({ reasoning: REASONING, text: ARITHMETIC_ANSWER_TEXT })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
 
   const expectSeparateRows = async () => {
     await expectAssistantAnswer(page)

@@ -52,7 +52,7 @@ clineTest.describe('Cline control requests', () => {
     await expect(visibleControlBanner(page)).toHaveCount(0)
 
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     // The worker answered Cline's question executor, and Cline gave the answer to the
     // model as the question's result.
     const followUp = status.requests.find(request => request.stepIndex === 1)

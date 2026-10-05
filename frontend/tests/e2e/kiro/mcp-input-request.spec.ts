@@ -78,7 +78,7 @@ kiroTest.describe('Kiro control requests', () => {
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
     await expect(banner).toHaveCount(0)
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     expect(JSON.stringify((await modelScript.status()).requests.at(-1)?.body)).toContain('FORM_ROUND_TRIP_OK')
     await expect(assistantBubbles(page).filter({ hasText: 'The form came back.' })).toBeVisible()
   })

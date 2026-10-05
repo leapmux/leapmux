@@ -23,7 +23,7 @@ diracTest.describe('Dirac model and steering', () => {
       await modelScript.releaseGate(gate)
     }
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     diracExpect(JSON.stringify(status.requests.find(request => request.stepIndex === 1)?.body)).toContain(steering)
     await expectSteeredReply(page, 'STEEREDWORD', 'last')
   })

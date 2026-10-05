@@ -41,7 +41,7 @@ grokTest.describe('Grok Build control requests', () => {
     await page.keyboard.press('Meta+Enter')
     await expect(banner).toHaveCount(0)
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     // The reason reached the model inside the same turn, and the saved answer
     // shows it rather than the option's words.

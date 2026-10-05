@@ -25,7 +25,7 @@ junieTest.describe('native mcp tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Call the form_probe echo tool once.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     expect(JSON.stringify(status.requests.find(request => request.stepIndex === 1)?.body)).toContain('PERMISSION_ACCEPTED')
     await expect(page.locator('[data-testid="message-bubble"]:visible').filter({ hasText: 'The MCP call finished.' }).first()).toBeVisible()
   })

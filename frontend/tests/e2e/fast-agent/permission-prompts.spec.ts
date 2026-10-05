@@ -26,7 +26,7 @@ fastAgentTest.describe('Fast Agent control requests', () => {
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expect(banner).toHaveCount(0)
     await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'fa-shell-42' }).first()).toBeVisible()
@@ -49,7 +49,7 @@ fastAgentTest.describe('Fast Agent control requests', () => {
     await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expect(banner).toHaveCount(0)
     expect(existsSync(written)).toBe(false)
@@ -95,7 +95,7 @@ fastAgentTest.describe('Fast Agent control requests', () => {
     await expect(banner).toContainText('execute')
     await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expect(banner).toHaveCount(0)
     expect(existsSync(written)).toBe(false)
@@ -117,7 +117,7 @@ fastAgentTest.describe('Fast Agent control requests', () => {
     await expect(banner).toContainText('write_text_file')
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expect(banner).toHaveCount(0)
     expect(readFileSync(written, 'utf8')).toBe('FA_FILE_ALLOWED_MARKER')
@@ -128,7 +128,7 @@ fastAgentTest.describe('Fast Agent control requests', () => {
     const server = writeMcpPermissionServer(workingDir)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await sendMessage(page, `/mcp connect --name permission_probe ${JSON.stringify(server.command)} ${JSON.stringify(server.script)}`)
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect.poll(() => existsSync(server.ready)).toBe(true)
 
     await modelScript.queue(
@@ -142,7 +142,7 @@ fastAgentTest.describe('Fast Agent control requests', () => {
     await expect(banner).toContainText('touch')
     await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expect(banner).toHaveCount(0)
     expect(existsSync(server.called)).toBe(false)

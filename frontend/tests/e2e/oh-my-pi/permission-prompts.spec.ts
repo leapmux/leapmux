@@ -31,7 +31,7 @@ ohMyPiTest.describe('Oh My Pi control requests', () => {
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expect(visibleControlBanner(page)).toHaveCount(0)
     // The command text states no `omp-42`, so only the command's own output can
     // put it on the page.
@@ -51,7 +51,7 @@ ohMyPiTest.describe('Oh My Pi control requests', () => {
     await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expect(visibleControlBanner(page)).toHaveCount(0)
     // omp fails the call with its own words, and the command never runs.
     await expect.poll(() => chatText(page)).toContain('Tool call denied by user')

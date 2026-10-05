@@ -44,7 +44,7 @@ ampTest('starts the thread in the mode chosen before the first message, and keep
   await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
   await expectAssistantAnswer(page)
 
   // The thread started in the chosen mode.
@@ -67,7 +67,7 @@ ampTest('starts the thread in the mode chosen before the first message, and keep
   await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
   const thread = await threadIn(leapmuxServer.mockModelUrl, authenticatedAmpWorkspace.workingDir)
   expect(thread?.agentMode).toBe('high')
   expect(thread?.messageCount).toBe(4)

@@ -17,7 +17,7 @@ piTest('bash command execution renders output in chat', async ({ authenticatedPi
   )
   await sendMessage(page, modelScript.prompt('Run the arithmetic command and show me the output.'))
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
 
   await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'pi-42' }).first()).toBeVisible()
 })

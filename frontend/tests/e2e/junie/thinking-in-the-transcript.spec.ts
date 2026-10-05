@@ -15,7 +15,7 @@ junieTest.describe('Junie basic chat', () => {
     await modelScript.queue({ reasoning, toolCalls: [junieAnswerToolCall('junie-thought-answer', 'The answer is 6912.')] })
     await sendMessage(page, modelScript.prompt('Add 1234 and 5678.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     const request = status.requests.find(record => record.stepIndex === 0)
     expect(request?.path).toBe('/v1/responses')

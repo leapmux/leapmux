@@ -25,7 +25,7 @@ lettaTest.describe('Letta Code tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Run the arithmetic command.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect.poll(() => chatText(page)).toContain('letta-42')
     // The executor ran the call: its result reached the next model call.

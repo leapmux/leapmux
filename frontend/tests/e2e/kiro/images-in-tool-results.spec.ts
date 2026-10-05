@@ -29,7 +29,7 @@ kiroTest.describe('Kiro images in tool results', () => {
     )
     await sendMessage(page, modelScript.prompt(`Read the file ${name} and describe it.`))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expectToolRowWithoutImage(page, 'tool-image-kiro-58')
   })
@@ -55,7 +55,7 @@ kiroTest.describe('Kiro images in tool results', () => {
     )
     await sendMessage(page, modelScript.prompt('Call the image_probe show tool.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     expect(JSON.stringify(status.requests.find(request => request.stepIndex === 1)?.body)).toContain(`MCP image ${imageName}`)
     await expectMcpToolImage(page, imageName, callID)
   })

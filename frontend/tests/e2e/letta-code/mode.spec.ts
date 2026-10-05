@@ -85,7 +85,7 @@ lettaTest.describe('Letta Code settings', () => {
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expectAssistantAnswer(page)
 
     // A settings change reaches the running session. The chip follows the value.

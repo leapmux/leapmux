@@ -14,7 +14,7 @@ diracTest.describe('Dirac thinking and context usage', () => {
       toolCalls: [diracRespondToolCall('dirac-think', 'complete', '6912')],
     })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expect(bandRows(page, 'thought').filter({ hasText: REASONING }).first()).toBeVisible()
     // The reasoning stays out of the answer text.

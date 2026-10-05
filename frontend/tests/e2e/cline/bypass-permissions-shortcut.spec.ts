@@ -35,7 +35,7 @@ clineTest.describe('Cline control requests', () => {
     )
     await sendMessage(page, modelScript.prompt('Run the bypass command.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect(visibleControlBanner(page)).toHaveCount(0)
     expect(readFileSync(marker, 'utf8')).toBe('bypass')

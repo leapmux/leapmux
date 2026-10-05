@@ -11,7 +11,7 @@ zcodeTest('opens, sends a prompt, and receives a response', async ({ authenticat
   await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
   await expectAssistantAnswer(page)
 })
 
@@ -20,7 +20,7 @@ zcodeTest('assistant response appears in a chat bubble', async ({ authenticatedZ
   await modelScript.queue({ text: 'hello world' })
   await sendMessage(page, modelScript.prompt('Say hello world'))
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
 
   await expect(assistantBubbles(page)).not.toHaveCount(0)
   // expectAssistantAnswer, not lastAssistantBubble: a turn-end divider is an

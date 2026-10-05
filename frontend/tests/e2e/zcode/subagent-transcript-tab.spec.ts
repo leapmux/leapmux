@@ -61,7 +61,7 @@ zcodeTest('routes the prompt, tools, and final report into the child tab', async
     await modelScript.releaseGateIfHeld('zcode-child-final')
   })
   await modelScript.waitForSteps(2)
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
   await expectRowBecomesFinal(page, row)
 
   await expect(userBubbles(page).filter({ hasText: 'ZCODE_CHILD_PONG' })).toBeVisible()

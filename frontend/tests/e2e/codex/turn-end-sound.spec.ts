@@ -20,7 +20,7 @@ codexTest.describe('Codex Turn End Sound', () => {
     )
     await sendMessage(page, modelScript.prompt('Run the command `pwd` and tell me the result.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expectDoorbellCount(page, 1)
   })
@@ -37,7 +37,7 @@ codexTest.describe('Codex Turn End Sound', () => {
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expectDoorbellQuiet(page, 0, { agentId: agent.id, after })
   })

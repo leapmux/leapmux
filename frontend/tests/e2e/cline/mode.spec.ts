@@ -18,7 +18,7 @@ clineTest.describe('Cline settings', () => {
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expectAssistantAnswer(page)
 
     await chooseSettingsOption(page, 'permissionMode-plan')
@@ -28,7 +28,7 @@ clineTest.describe('Cline settings', () => {
     await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
 
     await chooseSettingsOption(page, 'permissionMode-act')
@@ -41,7 +41,7 @@ clineTest.describe('Cline settings', () => {
     await modelScript.queue({ text: 'Back in Act.' })
     await sendMessage(page, modelScript.prompt('Reply with the words: Back in Act.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     const [act, plan, actAgain] = [0, 1, 2].map(index => status.requests.find(request => request.stepIndex === index)?.body)
     // Act offers the editor. Plan offers the plan tool in its place.

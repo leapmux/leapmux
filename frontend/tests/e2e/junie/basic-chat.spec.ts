@@ -23,7 +23,7 @@ junieTest.describe('Junie basic chat', () => {
     )
     await modelScript.queue({ toolCalls: [junieAnswerToolCall('junie-answer', 'Hello from the mock model.')] })
     await sendMessage(page, modelScript.prompt('Say hello.'))
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'Hello from the mock model.' }).first()).toBeVisible()
   })
 })

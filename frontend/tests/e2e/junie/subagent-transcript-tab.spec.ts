@@ -59,7 +59,7 @@ junieTest.describe('Junie subagents and background tasks', () => {
     }
 
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'JUNIE_CHILD_DONE' }).first()).toBeVisible()
 
     await tabById(page, agentId).click()

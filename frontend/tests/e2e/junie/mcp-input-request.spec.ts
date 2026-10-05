@@ -28,7 +28,7 @@ junieTest.describe('Junie MCP input form', () => {
     )
     await sendMessage(page, modelScript.prompt('Call the form_probe ask tool once.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await junieExpect.poll(() => existsSync(receiptLog)).toBe(true)
     const receipt = readMcpServerReceipt(receiptLog)
     const refusal = nativeMcpRefusal(receipt)

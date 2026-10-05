@@ -33,7 +33,7 @@ kiroTest.describe('Kiro settings', () => {
     )
     await sendMessage(page, modelScript.prompt('Write the scripted file.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect(page.locator('[data-testid="control-banner"]')).toHaveCount(0)
     expect(existsSync(written)).toBe(true)
     await expect(assistantBubbles(page).filter({ hasText: 'WROTE_WITHOUT_ASKING' })).toBeVisible()

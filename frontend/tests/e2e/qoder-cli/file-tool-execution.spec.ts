@@ -14,7 +14,6 @@ qoderTest.describe('Qoder CLI file tool execution', () => {
     await exerciseFileEditSequence({ page, modelScript, provider: PROVIDER }, {
       workingDir: qoderWorkspace.workingDir,
       fileName,
-      idleTimeoutMs: 180_000,
       approveSeed: async (firstStepCount) => {
         await modelScript.waitForSteps(firstStepCount)
         const banner = await waitForControlBanner(page)
@@ -28,7 +27,6 @@ qoderTest.describe('Qoder CLI file tool execution', () => {
     await exerciseFileWriteSequence({ page, modelScript, provider: PROVIDER }, {
       workingDir: qoderWorkspace.workingDir,
       fileName: 'qoder-written-probe.txt',
-      idleTimeoutMs: 180_000,
     })
   })
 })

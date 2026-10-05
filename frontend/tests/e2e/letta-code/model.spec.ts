@@ -30,7 +30,7 @@ lettaTest.describe('Letta Code settings', () => {
     await modelScript.queue({ text: 'The selected model answered.' })
     await sendMessage(page, modelScript.prompt('Reply once after the model switch.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     expect(status.requests.find(request => request.stepIndex === 0)?.body).toMatchObject({ model: MOCK_MODELS.openai })
 
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedLettaWorkspace.workspaceId })

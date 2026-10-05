@@ -17,7 +17,7 @@ codebuddyTest.describe('CodeBuddy Code rate-limit state', () => {
     })
     await sendMessage(page, modelScript.prompt('Reply once.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'The turn finished near the model limit.' })).toBeVisible()
 
     const card = await openAgentInfoCard(page)

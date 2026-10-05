@@ -37,7 +37,7 @@ kiroTest.describe('Kiro tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('Run the five scripted tools, then report.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     const tools = page.locator('[data-tool-message]:visible')
     // The read reached the model as the read's result, and the row draws the file.

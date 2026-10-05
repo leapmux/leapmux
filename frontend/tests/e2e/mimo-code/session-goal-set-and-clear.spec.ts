@@ -43,7 +43,7 @@ mimoTest.describe('MiMo Code session goal', () => {
     await modelScript.queue({ text: 'GOAL_DONE' })
     await setGoal(page, modelScript.prompt('Reply with the word GOAL_DONE.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText('Reply with the word GOAL_DONE.')
     await expectGoalStatus(page, 'done')
@@ -76,7 +76,7 @@ mimoTest.describe('MiMo Code session goal', () => {
     await modelScript.queue({ text: 'FIRST_PASS' }, { text: 'SECOND_PASS' })
     await setGoal(page, modelScript.prompt('Reply with the word SECOND_PASS.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expectGoalStatus(page, 'done')
     await expect(assistantBubbles(page).filter({ hasText: 'SECOND_PASS' })).toBeVisible()

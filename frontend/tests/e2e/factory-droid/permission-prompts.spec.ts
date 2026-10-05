@@ -36,7 +36,7 @@ droidTest.describe('Factory Droid control requests', () => {
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
 
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expect(banner(page)).toHaveCount(0)
     expect(readFileSync(note, 'utf8')).toBe('b')
     const followUp = status.requests.find(request => request.stepIndex === 1)
@@ -60,7 +60,7 @@ droidTest.describe('Factory Droid control requests', () => {
 
     expect(readFileSync(note, 'utf8')).toBe('a')
     await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     await expect(banner(page)).toHaveCount(0)
     expect(readFileSync(note, 'utf8')).toBe('a')
@@ -91,7 +91,7 @@ droidTest.describe('Factory Droid control requests', () => {
     await expect(banner(page)).toHaveCount(0)
 
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     expect(readFileSync(note, 'utf8')).toBe('a')
     const followUp = status.requests.find(request => request.stepIndex === 1)
     expect(JSON.stringify(followUp?.body)).toContain('Keep the note unchanged.')

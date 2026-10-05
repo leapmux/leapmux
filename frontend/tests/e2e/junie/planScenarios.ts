@@ -117,7 +117,7 @@ export async function exerciseNativePlanReview(
   // Approve the plan and let Junie publish its delivery stages.
   await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 120_000)
+  await waitForAgentIdle(page)
   await expect(page.getByText('The plan is ready to implement.').filter({ visible: true }).first()).toBeVisible()
   await expect(goalsAndTodosSection(page)).toBeVisible()
   await expandGoalsAndTodosSection(page)

@@ -32,7 +32,7 @@ ampTest.describe('Amp permissions', () => {
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expect(visibleControlBanner(page)).toHaveCount(0)
     await expect.poll(() => chatText(page)).toContain('amp-42')
   })
@@ -54,7 +54,7 @@ ampTest.describe('Amp permissions', () => {
     await deny.click()
 
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expect(visibleControlBanner(page)).toHaveCount(0)
     // The helper refused with the reason, and Amp handed it to the model as the
     // call's result. The command never ran.
@@ -93,7 +93,7 @@ ampTest.describe('Amp permissions', () => {
     await expect(visibleControlBanner(page)).toContainText('apply_patch')
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     await expect.poll(() => readFileSync(envFile, 'utf8')).toBe('TOKEN=new\n')
   })
 })

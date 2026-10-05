@@ -33,7 +33,7 @@ test('answers a native Reasonix MCP form and preserves draft values after reload
   await expect(form.getByRole('button', { name: 'Color *', exact: true })).toHaveText('Blue')
   await page.getByTestId('control-actions').getByRole('button', { name: 'Approve', exact: true }).click()
   const status = await modelScript.waitForSteps(2)
-  await waitForAgentIdle(page, 120_000)
+  await waitForAgentIdle(page)
   expect(JSON.stringify(status.requests.find(request => request.stepIndex === 1)?.body)).toContain('FORM_ROUND_TRIP_OK')
   await expect(messageBubbles(page).filter({ hasText: 'FORM_ROUND_TRIP_OK' }).first()).toBeVisible()
   await expect(form).toHaveCount(0)

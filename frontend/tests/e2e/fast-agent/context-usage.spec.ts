@@ -12,7 +12,7 @@ fastAgentTest.describe('Fast Agent thinking and context usage', () => {
       usage: { inputTokens: 1200, outputTokens: 80, contextWindow: 8000 },
     })
     await sendMessage(page, modelScript.prompt('Finish the turn.'))
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expect(page.locator('[data-testid="agent-info-trigger"]').getByTestId('context-usage-grid')).toBeVisible()
     await expectContextUsage(page, { inputTokens: 1200, outputTokens: 80 })

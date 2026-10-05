@@ -40,7 +40,7 @@ test.describe('Claude subagent background tasks', () => {
     })
     await sendMessage(page, modelScript.prompt('Spawn one general-purpose subagent to write about the ocean, then tell me what it wrote.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     // 3. Sidebar: section + a subagent row. The spawn is scripted, so a
     //    missing row is a defect, and requireRegistryRow fails on it.
@@ -178,7 +178,7 @@ test.describe('subagent spawn has no span', () => {
     await modelScript.queue({ text: `The subagent wrote about the tide and ended with ${MARKER}.` })
     await sendMessage(page, modelScript.prompt('Spawn one general-purpose subagent to write about the tide, then tell me what it wrote.'))
     await modelScript.waitForSteps(2)
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     // Skips when the model declined to spawn.
     await requireRegistryRow(page)

@@ -35,7 +35,7 @@ fastAgentTest.describe('Fast Agent tool execution', () => {
       await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
     }
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     await expect(banner).toHaveCount(0)
 
     const tools = page.locator('[data-tool-message]:visible')

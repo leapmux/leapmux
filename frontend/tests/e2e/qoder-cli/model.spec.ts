@@ -17,7 +17,7 @@ qoderTest.describe('Qoder CLI settings', () => {
     await modelScript.queue({ text: 'The alternate model answered.' })
     await sendMessage(page, modelScript.prompt('Answer with the selected model.'))
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
 
     const request = status.requests.find(record => record.stepIndex === 0)
     expect(request?.body).toMatchObject({ model: MOCK_MODELS.qoder })

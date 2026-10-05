@@ -38,7 +38,7 @@ codexTest.describe('codex tool execution', () => {
     )
     await sendMessage(page, modelScript.prompt('First run pwd. Then, in a separate shell call, run the arithmetic command. Compare the two results and report both. Do not modify files.'))
     await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
 
     await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'codex-42' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'codex-42' }).first()).toBeVisible()

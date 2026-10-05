@@ -138,7 +138,7 @@ codexTest.describe('codex approval UI', () => {
     await allowBtn.click()
 
     // Wait for the agent to finish and verify the command ran.
-    await waitForAgentIdle(page, 120_000)
+    await waitForAgentIdle(page)
     const chatArea = messageContents(page)
     await expect.poll(async () => (await chatArea.allTextContents()).join(' '))
       .toContain('codex-approval-test-dir-nonexistent')

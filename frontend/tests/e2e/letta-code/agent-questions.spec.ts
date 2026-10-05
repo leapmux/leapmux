@@ -53,7 +53,7 @@ lettaTest.describe('Letta Code control requests', () => {
     await page.getByTestId('control-submit-btn').filter({ visible: true }).click()
 
     const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page, 180_000)
+    await waitForAgentIdle(page)
     // The call returned a receipt before the reader answered: the model saw the posted questions.
     const receipt = JSON.parse(nativeToolResult(status.requests.find(request => request.stepIndex === 1), 'ask-1'))
     expect(receipt.type).toBe('ask_user_question')

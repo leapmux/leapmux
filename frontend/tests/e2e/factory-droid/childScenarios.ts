@@ -101,7 +101,7 @@ export async function exerciseNativeChildTranscript(context: ManagedNativeScenar
   }
 
   await modelScript.waitForSteps()
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
   const row = await requireRegistryRow(page)
   await expectRowBecomesFinal(page, row)
   await expect(assistantBubbles(page).filter({ hasText: 'DROID_CHILD_FINAL' }).first()).toBeVisible()

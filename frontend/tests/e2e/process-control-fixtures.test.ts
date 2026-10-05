@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createProcessStub } from '~/test-support/childProcess'
 import { listOnlineWorkerIDsViaAPI, loginViaAPI, waitForNewOnlineWorkerViaAPI } from './helpers/api'
+import { modelScriptFixtures } from './helpers/modelScriptFixture'
 import { stopProcess, stopProcesses } from './helpers/process'
 import { spawnTestProcess } from './helpers/processRegistry'
 import { findFreePort, waitForHubReady, waitForHubStateFile, waitForServer } from './helpers/server'
@@ -82,6 +83,13 @@ beforeEach(() => {
   vi.mocked(waitForServer).mockResolvedValue(undefined)
   vi.mocked(loginViaAPI).mockResolvedValue('new-session')
   vi.mocked(listOnlineWorkerIDsViaAPI).mockResolvedValueOnce([]).mockResolvedValue(['worker'])
+})
+
+describe('processTest', () => {
+  it('registers the model script and the test deadline that the suite test base also uses', () => {
+    expect(startup.fixtures.get('testStartedAt')).toBe(modelScriptFixtures.testStartedAt)
+    expect(startup.fixtures.get('modelScript')).toBe(modelScriptFixtures.modelScript)
+  })
 })
 
 describe('process restart cleanup', () => {

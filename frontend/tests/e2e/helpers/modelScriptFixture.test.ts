@@ -5,7 +5,8 @@ import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
 import { MOCK_SESSION_TITLE, readScenarioStatus } from './mockModelScenario'
 import { MAX_SCENARIO_REQUEST_RECORDS } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
-import { startModelScript, STEP_WAIT_REPORT_MARGIN_MS } from './modelScriptFixture'
+import { modelScriptFixtures, startModelScript } from './modelScriptFixture'
+import { currentTestDeadline, WAIT_REPORT_MARGIN_MS } from './testDeadline'
 
 const servers: MockModelServer[] = []
 
@@ -34,6 +35,39 @@ async function answer(server: MockModelServer, prompt: string): Promise<string> 
   const body = await response.json() as { choices: Array<{ message: { content: string } }> }
   return body.choices[0]!.message.content
 }
+
+describe('modelScriptFixtures', () => {
+  type StartFixture = (args: object, use: (startedAt: number) => Promise<void>, testInfo: { timeout: number }) => Promise<void>
+
+  function startFixture(): StartFixture {
+    const registration = modelScriptFixtures.testStartedAt
+    if (!Array.isArray(registration) || typeof registration[0] !== 'function')
+      throw new Error('The testStartedAt fixture is not an automatic fixture with a callback.')
+    expect(registration[1]).toEqual({ auto: true })
+    return registration[0] as unknown as StartFixture
+  }
+
+  it('records the test deadline while the test runs, from the live test timeout', async () => {
+    const testInfo = { timeout: 120_000 }
+    const seen: Array<number | undefined> = []
+    await startFixture()({}, async (startedAt) => {
+      seen.push(currentTestDeadline(), startedAt + 120_000)
+      testInfo.timeout = 240_000
+      seen.push(currentTestDeadline(), startedAt + 240_000)
+    }, testInfo)
+    expect(seen[0]).toBe(seen[1])
+    expect(seen[2]).toBe(seen[3])
+    expect(currentTestDeadline()).toBeUndefined()
+  })
+
+  it('ends the record when the test fails', async () => {
+    const failure = new Error('The test body failed.')
+    await expect(startFixture()({}, async () => {
+      throw failure
+    }, { timeout: 120_000 })).rejects.toBe(failure)
+    expect(currentTestDeadline()).toBeUndefined()
+  })
+})
 
 describe('startModelScript', () => {
   it('rejects native requests that arrive immediately before an allowed queue removal', async () => {
@@ -222,7 +256,7 @@ describe('startModelScript', () => {
     let deadline: number | undefined
     const { script, finish } = await startModelScript(server.url, { testDeadline: () => deadline })
     await script.queue({ text: 'Never asked for' })
-    deadline = Date.now() + STEP_WAIT_REPORT_MARGIN_MS + 300
+    deadline = Date.now() + WAIT_REPORT_MARGIN_MS + 300
     await expect(script.requestAt(0)).rejects.toThrow(/reached 0 of 1 answers in \d+ms, before the test's own timeout: 0 of 1 queued answers consumed/)
     await finish(false)
   })
@@ -428,7 +462,7 @@ describe('startModelScript', () => {
     const { script, finish } = await startModelScript(server.url, { testDeadline: () => deadline })
     await script.queue({ text: 'Never asked for' })
 
-    deadline = Date.now() + STEP_WAIT_REPORT_MARGIN_MS + 300
+    deadline = Date.now() + WAIT_REPORT_MARGIN_MS + 300
     await expect(script.waitForSteps()).rejects.toThrow(/reached 0 of 1 answers in \d+ms, before the test's own timeout/)
     expect(Date.now()).toBeLessThan(deadline)
     await finish(false)

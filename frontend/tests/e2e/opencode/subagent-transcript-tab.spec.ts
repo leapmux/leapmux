@@ -38,7 +38,7 @@ opencodeTest('subagent spawn creates a prompt and report transcript', async ({
   await modelScript.queue({ text: 'The subagent reported PONG.' })
   await sendMessage(page, modelScript.prompt('Spawn one subagent and report what it says.'))
   await modelScript.waitForSteps(2)
-  await waitForAgentIdle(page, 180_000)
+  await waitForAgentIdle(page)
 
   // The spawn is scripted, so a missing row is a failure rather than the
   // model's discretion.

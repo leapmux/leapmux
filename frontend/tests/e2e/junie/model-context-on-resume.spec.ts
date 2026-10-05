@@ -24,7 +24,6 @@ test.describe('Junie session resume', () => {
       // Junie compresses the prior exchange into its previous_issue row; the reader
       // splits that compression back into the ordered turns the proof expects.
       conversationTurns: junieModelTurns,
-      idleTimeoutMs: 180000,
     })
   })
 })
