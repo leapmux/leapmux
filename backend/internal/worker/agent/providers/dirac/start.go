@@ -9,8 +9,11 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
 
-// diracNoAutoUpdateEnv stops the auto-updater. The worker pins it so a test
-// machine never downloads a release in the middle of a run.
+// diracNoAutoUpdateEnv turns off the update that Dirac starts from its startup
+// path: a detached process that replaces the install of Dirac itself (dist/cli.mjs
+// autoUpdateOnStartup). The ACP mode takes that path. Only the exact value `1`
+// counts. The worker pins it, after the user's profile, so no run downloads a
+// release in the middle of a session.
 const diracNoAutoUpdateEnv = "DIRAC_NO_AUTO_UPDATE=1"
 
 // Start starts a Dirac ACP process and performs the handshake.
@@ -58,6 +61,7 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 		},
 		PromptParams:               diracPromptParams,
 		ExtraMethod:                a.handleExtraMethod,
+		SessionUpdateHandler:       a.handleSessionUpdate,
 		SubagentFromToolCall:       a.subagentFromToolCall,
 		SubagentFromToolCallUpdate: a.subagentFromToolCallUpdate,
 		PromptEnded:                a.hydrateSubagentArchives,

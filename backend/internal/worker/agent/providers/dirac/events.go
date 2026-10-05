@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"log/slog"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -47,4 +49,40 @@ func (a *Agent) handleExtraMethod(line *providerkit.ParsedLine) bool {
 		return true
 	}
 	return false
+}
+
+// handleSessionUpdate reads each update of a Dirac session before the base
+// draws it. It returns true for an update that it consumes.
+//
+// Dirac 0.5.17 replays a loaded session's history after its session/load
+// reply: cli/src/acp/AcpAgent.ts subscribes the session, awaits
+// replayLoadedSessionHistory, and only then returns the response, and the
+// journal emitter flushes the replayed notifications behind the reply on the
+// wire. All of that arrives while no prompt runs. The Worker already stores the
+// transcript of the session it reopened, so an idle conversation update of the
+// current session is that replay and draws nothing. Upstream HEAD loads a
+// session without replay, so this rule and its comment retire together with
+// 0.5.17.
+//
+// Like Gemini's replay rule, this is no completion boundary: a prompt that
+// starts before the replay ends receives the rest of the replay as its own
+// output, and nothing can separate the two.
+func (a *Agent) handleSessionUpdate(sessionID string, _ agent.ProviderServices, update json.RawMessage) bool {
+	if a.PromptActive() || !a.IsCurrentSession(sessionID) {
+		return false
+	}
+	var message struct {
+		SessionUpdate string `json:"sessionUpdate"`
+	}
+	if json.Unmarshal(update, &message) != nil {
+		return false
+	}
+	switch message.SessionUpdate {
+	case contracts.ACPUpdateAgentMessageChunk, contracts.ACPUpdateAgentThoughtChunk,
+		contracts.ACPUpdateToolCall, contracts.ACPUpdateToolCallUpdate, contracts.ACPUpdatePlan:
+		slog.Debug("dirac idle replay update consumed", "agent_id", a.AgentID(), "update", message.SessionUpdate)
+		return true
+	default:
+		return false
+	}
 }

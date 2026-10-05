@@ -49,6 +49,10 @@ func TestDiracNativeOutputPathPreservesPreviewWithoutSavedText(t *testing.T) {
 
 	a, ok := started.(*Agent)
 	require.True(t, ok, "production Start must return the Dirac agent")
+	// The frames below are the output of a turn: an idle conversation update is
+	// Dirac's load replay, which the provider consumes, so the test states the
+	// turn explicitly instead of leaving the agent idle.
+	a.SetPromptActiveForTest(true)
 	sessionID := a.CurrentSessionID()
 	require.Equal(t, "dirac-test-session", sessionID, "the private ACP peer must own the supplied native frames")
 	callID := "1790904331507-2"

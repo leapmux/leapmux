@@ -2,12 +2,14 @@ package dirac
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -103,4 +105,37 @@ func TestDiracSubagentFromToolCallIgnoresOtherTools(t *testing.T) {
 		RawInput:   json.RawMessage(`{"tool":"execute_command","command":"ls"}`),
 	}))
 	assert.Nil(t, diracSubagentFromToolCall(acp.ToolCallEnvelope{ToolCallID: "bare"}))
+}
+
+// Dirac 0.5.17 replays a loaded session's history after its session/load reply,
+// while no prompt runs (cli/src/acp/AcpAgent.ts loadSession awaits
+// replayLoadedSessionHistory, and the journal emitter flushes behind the reply).
+// The Worker already stores that transcript, so an idle conversation update of
+// the current session draws nothing: before this rule the replayed answer
+// persisted beside the stored row and the resumed chat showed the old answer
+// twice.
+func TestDiracIdleReplayDrawsNothing(t *testing.T) {
+	t.Parallel()
+	a, _ := newDiracAgent(t)
+	sink := &agenttest.Sink{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+
+	// The replay of the loaded session: the old answer as text and a closed
+	// tool call, both while the agent is idle.
+	a.HandleOutput(acptest.Chunk(diracTestSession, contracts.ACPUpdateAgentMessageChunk, "OLDANSWER"))
+	a.HandleOutput(acptest.Chunk(diracTestSession, contracts.ACPUpdateAgentThoughtChunk, "OLDTHOUGHT"))
+	syncPeer(t, a)
+
+	require.NoError(t, a.SendInput("next", nil))
+	a.HandleOutput(acptest.Chunk(diracTestSession, contracts.ACPUpdateAgentMessageChunk, "NEWANSWER"))
+	require.Eventually(t, func() bool { return !a.PromptActive() }, 30*time.Second, 10*time.Millisecond)
+
+	var texts []string
+	for _, message := range sink.Messages() {
+		texts = append(texts, string(message.Content))
+	}
+	joined := strings.Join(texts, "\n")
+	assert.NotContains(t, joined, "OLDANSWER", "the replay a loaded session sent while idle draws no row")
+	assert.NotContains(t, joined, "OLDTHOUGHT", "a replayed thought draws no row either")
+	assert.Contains(t, joined, "NEWANSWER", "the live answer of the resumed turn still draws its row")
 }
