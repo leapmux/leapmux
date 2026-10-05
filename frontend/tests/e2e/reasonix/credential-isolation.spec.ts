@@ -11,8 +11,11 @@ reasonixTest('uses private provider configuration and the actual mock credential
   await exerciseCredentialIsolation({ page, modelScript, leapmuxServer, workspaceId: authenticatedReasonixWorkspace.workspaceId, provider: AgentProvider.REASONIX }, {
     expectedCredential: MODEL_KEY,
     privateDirectories: [environment.HOME!, environment.REASONIX_HOME!],
-    configurationFiles: [join(environment.REASONIX_HOME!, 'config.toml')],
-    inlineConfiguration: [environment.LEAPMUX_E2E_MODEL_API_KEY!],
-    configurationMarkers: ['LEAPMUX_E2E_MODEL_API_KEY'],
+    // Reasonix 1.38 reads the key of api_key_env only from its own credential
+    // file, $REASONIX_HOME/.env, and never from the process environment
+    // (internal/config/config.go ProviderEntry.APIKey). The key must therefore
+    // come from that private file.
+    configurationFiles: [join(environment.REASONIX_HOME!, 'config.toml'), join(environment.REASONIX_HOME!, '.env')],
+    configurationMarkers: ['api_key_env = "LEAPMUX_E2E_MODEL_API_KEY"', `LEAPMUX_E2E_MODEL_API_KEY=${MODEL_KEY}`],
   })
 })
