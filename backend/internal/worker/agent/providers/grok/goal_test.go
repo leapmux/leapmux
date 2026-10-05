@@ -7,7 +7,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 )
 
@@ -37,9 +41,28 @@ func TestGrokOffersGoalsOnlyWithTheGoalCommand(t *testing.T) {
 	assert.Equal(t, 1, sink.GoalCapabilityPublishes(), "the browser learns that the control exists")
 }
 
-func TestGrokGoalActionsBuildTheGoalCommand(t *testing.T) {
+// promptTexts returns the text of each session/prompt that the agent sent.
+func promptTexts(t *testing.T, requests []agenttest.RecordedRequest) []string {
+	t.Helper()
+	var texts []string
+	for _, request := range requestsFor(requests, "session/prompt") {
+		blocks, ok := request.Params["prompt"].([]any)
+		require.True(t, ok, "a prompt carries content blocks")
+		require.Len(t, blocks, 1)
+		block, ok := blocks[0].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "text", block["type"])
+		text, _ := block["text"].(string)
+		texts = append(texts, text)
+	}
+	return texts
+}
+
+// Each action is Grok's `/goal` command, sent to Grok's own queue at once, and
+// the worker queues nothing. An idle agent gets the command the same way.
+func TestGrokGoalActionsSendTheGoalCommand(t *testing.T) {
 	t.Parallel()
-	a, _, _ := newGrokAgent(t, agent.Options{}, nil)
+	a, _, requests := newGrokAgent(t, agent.Options{}, nil)
 	advertiseCommands(t, a, "goal")
 
 	for _, tc := range []struct {
@@ -54,13 +77,54 @@ func TestGrokGoalActionsBuildTheGoalCommand(t *testing.T) {
 	} {
 		outcome, err := a.PerformGoalAction(tc.action, tc.objective)
 		require.NoError(t, err)
-		assert.Equal(t, tc.want, outcome.QueuedInput)
+		assert.Empty(t, outcome.QueuedInput)
 	}
+	syncPeer(t, a)
+	assert.Equal(t, []string{"/goal Ship the release", "/goal clear", "/goal pause", "/goal resume"}, promptTexts(t, requests()))
+	assert.False(t, a.PromptActive(), "a goal command takes no prompt slot of the base")
+}
+
+// Grok answers a command it refuses with a JSON-RPC error. The transcript
+// states the refusal, with the cause that Grok states in the error's data.
+func TestGrokGoalCommandRefusalReachesTheTranscript(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newGrokAgent(t, agent.Options{}, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		if request.Method == acp.MethodSessionPrompt {
+			return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32603,"message":"Internal error","data":{"message":"session is closing"}}`)}
+		}
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	advertiseCommands(t, a, "goal")
+
+	_, err := a.PerformGoalAction(agent.GoalActionClear, "")
+	require.NoError(t, err, "the refusal arrives after the command left")
+	testutil.RequireEventually(t, func() bool { return len(sink.Notifications()) > 0 })
+
+	var texts []string
+	for _, notification := range sink.Notifications() {
+		if notification[contracts.NotificationFieldType] == contracts.NotificationTypeAgentError {
+			text, _ := notification[contracts.NotificationFieldError].(string)
+			texts = append(texts, text)
+		}
+	}
+	assert.Equal(t, []string{`/goal clear failed: json-rpc error -32603: Internal error: {"message":"session is closing"}`}, texts)
+}
+
+// A command that the agent cannot write fails at once and reaches the caller.
+func TestGrokGoalCommandOfAStoppedAgentFails(t *testing.T) {
+	t.Parallel()
+	a, _, requests := newGrokAgent(t, agent.Options{}, nil)
+	advertiseCommands(t, a, "goal")
+	a.SetStoppedForTest(true)
+
+	_, err := a.PerformGoalAction(agent.GoalActionPause, "")
+	require.Error(t, err)
+	assert.Empty(t, requestsFor(requests(), "session/prompt"))
 }
 
 func TestGrokGoalRefusesAnObjectiveThatGrokReadsAsACommand(t *testing.T) {
 	t.Parallel()
-	a, _, _ := newGrokAgent(t, agent.Options{}, nil)
+	a, _, requests := newGrokAgent(t, agent.Options{}, nil)
 	advertiseCommands(t, a, "goal")
 
 	providerkittest.AssertRefusesAnObjectiveThatClears(t, grokGoalRoute)
@@ -68,12 +132,18 @@ func TestGrokGoalRefusesAnObjectiveThatGrokReadsAsACommand(t *testing.T) {
 		_, err := a.PerformGoalAction(agent.GoalActionSet, objective)
 		assert.ErrorIs(t, err, agent.ErrGoalObjectiveIsCommand, objective)
 	}
+	syncPeer(t, a)
+	assert.Empty(t, requestsFor(requests(), "session/prompt"), "a refused objective sends nothing")
 	// A budget flag that is not the trailing pair stays part of the objective.
-	for _, objective := range []string{"document --budget handling", "set --budget 50 then more", "--budget 5000", "cap --budget x5"} {
-		outcome, err := a.PerformGoalAction(agent.GoalActionSet, objective)
+	objectives := []string{"document --budget handling", "set --budget 50 then more", "--budget 5000", "cap --budget x5"}
+	var want []string
+	for _, objective := range objectives {
+		_, err := a.PerformGoalAction(agent.GoalActionSet, objective)
 		require.NoError(t, err, objective)
-		assert.Equal(t, "/goal "+objective, outcome.QueuedInput)
+		want = append(want, "/goal "+objective)
 	}
+	syncPeer(t, a)
+	assert.Equal(t, want, promptTexts(t, requests()))
 }
 
 func TestGrokGoalStatusMapping(t *testing.T) {
@@ -226,4 +296,50 @@ func TestGrokGoalSetRefusesABlankObjective(t *testing.T) {
 		assert.Error(t, err, "%q", objective)
 		assert.Empty(t, outcome.QueuedInput, "a refused goal queues nothing")
 	}
+}
+
+// Grok runs the whole goal loop inside one turn: the planner, each implementer
+// round and each evaluation. A command that waits in the worker's queue for an
+// idle agent reaches Grok only after the goal stopped by itself, and Grok then
+// answers "Goal is already paused." Grok queues a prompt that arrives during a
+// turn and runs it before the next round of the goal, so the command goes to
+// Grok's own queue at once, also while a turn runs.
+func TestGrokGoalCommandReachesGrokWhileATurnRuns(t *testing.T) {
+	t.Parallel()
+	a, _, requests := newGrokAgent(t, agent.Options{}, nil)
+	advertiseCommands(t, a, "goal")
+	a.SetPromptActiveForTest(true)
+
+	outcome, err := a.PerformGoalAction(agent.GoalActionPause, "")
+	require.NoError(t, err)
+	assert.Empty(t, outcome.QueuedInput, "a command that waits for an idle agent never reaches a running goal")
+	syncPeer(t, a)
+	prompts := requestsFor(requests(), "session/prompt")
+	require.Len(t, prompts, 1)
+	assert.Equal(t, grokTestSession, prompts[0].Params["sessionId"])
+	assert.Equal(t, []any{map[string]any{"type": "text", "text": "/goal pause"}}, prompts[0].Params["prompt"])
+}
+
+// Grok answers the prompt that holds a goal loop after the command that ran
+// inside it: the pause command starts after the running round, ends, and only
+// then does the response of the goal prompt arrive. The command carries no id
+// of LeapMux's, so its turn waits behind the goal prompt and ends with it.
+func TestGrokGoalCommandThatEndsBeforeTheGoalPromptResponseEndsBothTurns(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+	goalPrompt := ownPromptID(t, a)
+	a.SetPromptActiveForTest(true)
+	a.HandleOutput(queueChanged(t, grokTestSession, goalPrompt))
+	a.HandleOutput(turnCompleted(t, goalPrompt))
+
+	a.HandleOutput(queueChanged(t, grokTestSession, "goal-pause-command"))
+	assert.False(t, a.AgentTurnActive(), "the command's turn waits for the end of the goal prompt")
+	a.HandleOutput(turnCompleted(t, "goal-pause-command"))
+	assert.True(t, a.PromptActive(), "the goal prompt has no response yet")
+
+	a.FinishPromptRequestForTest(grokTestSession, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+
+	assert.False(t, a.PromptActive(), "the response of the goal prompt ends both turns")
+	assert.False(t, a.AgentTurnActive())
+	assert.Len(t, turnEnds(sink.Messages()), 2, "each turn keeps its own end row")
 }

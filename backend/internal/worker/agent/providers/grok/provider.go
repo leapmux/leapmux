@@ -84,25 +84,31 @@ func grokReply(ctx agent.ControlResponseContext, result any) ([]byte, bool) {
 }
 
 // withheld is the resolution of an answer that Grok could not read. The service
-// refuses it and keeps the request open for another answer.
-func withheld(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
+// refuses it with the reason and keeps the request open for another answer.
+func withheld(ctx agent.ControlResponseContext, reason string) agent.ControlResponseResolution {
 	result := agent.DefaultControlResponseResolution(ctx)
-	result.Withhold = true
+	result.Refuse(reason)
 	return result
 }
 
 // decisionFor reads the neutral allow and deny envelope, and checks that it
-// answers the stored request.
-func decisionFor(ctx agent.ControlResponseContext) (behavior, message string, ok bool) {
+// answers the stored request. refusal states why the answer stands unread, for
+// the reader.
+func decisionFor(ctx agent.ControlResponseContext) (behavior, message, refusal string) {
 	requestID, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
 	if !ok {
-		return "", "", false
+		return "", "", agent.RefusalNoDecision
 	}
 	_, storedID, found := agent.ExtractJSONRPCID(ctx.RequestPayload)
-	if !found || requestID == "" || requestID != agent.StoredControlRequestID(ctx, storedID) {
-		return "", "", false
+	switch {
+	case !found:
+		return "", "", agent.RefusalUnreadableRequest
+	case requestID == "":
+		return "", "", agent.RefusalNoDecision
+	case requestID != agent.StoredControlRequestID(ctx, storedID):
+		return "", "", agent.RefusalOtherRequest
 	}
-	return behavior, message, true
+	return behavior, message, ""
 }
 
 // resolveGrokPlanApproval answers a plan approval.
@@ -115,9 +121,9 @@ func decisionFor(ctx agent.ControlResponseContext) (behavior, message string, ok
 // shared approval has no such button: a reader who wants it rejects the plan and
 // changes the mode.
 func resolveGrokPlanApproval(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
-	behavior, message, ok := decisionFor(ctx)
-	if !ok {
-		return withheld(ctx)
+	behavior, message, refusal := decisionFor(ctx)
+	if refusal != "" {
+		return withheld(ctx, refusal)
 	}
 	result := agent.DefaultControlResponseResolution(ctx)
 	reply := map[string]any{}
@@ -131,11 +137,11 @@ func resolveGrokPlanApproval(ctx agent.ControlResponseContext) agent.ControlResp
 			reply[contracts.GrokReplyFieldFeedback] = message
 		}
 	default:
-		return withheld(ctx)
+		return withheld(ctx, agent.RefusalNoDecision)
 	}
 	content, ok := grokReply(ctx, reply)
 	if !ok {
-		return withheld(ctx)
+		return withheld(ctx, agent.RefusalUnencodableReply)
 	}
 	result.Content = content
 	return result
@@ -156,17 +162,17 @@ func resolveGrokElicitation(ctx agent.ControlResponseContext) agent.ControlRespo
 	}
 	if err := json.Unmarshal(result.Content, &reply); err != nil || reply.Result == nil {
 		slog.Warn("grok elicitation reply unreadable", "error", err)
-		return withheld(ctx)
+		return withheld(ctx, agent.RefusalUnencodableReply)
 	}
 	action, found := reply.Result["action"]
 	if !found {
-		return withheld(ctx)
+		return withheld(ctx, agent.RefusalUnencodableReply)
 	}
 	delete(reply.Result, "action")
 	reply.Result[contracts.GrokReplyFieldOutcome] = action
 	content, err := json.Marshal(reply)
 	if err != nil {
-		return withheld(ctx)
+		return withheld(ctx, agent.RefusalUnencodableReply)
 	}
 	result.Content = content
 	return result
@@ -185,11 +191,11 @@ func resolveGrokElicitation(ctx agent.ControlResponseContext) agent.ControlRespo
 func resolveGrokFolderTrust(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	outcome, ok := grokFolderTrustOutcome(ctx)
 	if !ok {
-		return withheld(ctx)
+		return withheld(ctx, agent.RefusalUnreadableAnswer)
 	}
 	content, ok := grokReply(ctx, map[string]string{contracts.GrokReplyFieldOutcome: outcome})
 	if !ok {
-		return withheld(ctx)
+		return withheld(ctx, agent.RefusalUnencodableReply)
 	}
 	result := agent.DefaultControlResponseResolution(ctx)
 	result.Content = content
@@ -198,7 +204,7 @@ func resolveGrokFolderTrust(ctx agent.ControlResponseContext) agent.ControlRespo
 
 // grokFolderTrustOutcome reads the reader's choice from either envelope.
 func grokFolderTrustOutcome(ctx agent.ControlResponseContext) (string, bool) {
-	if behavior, _, ok := decisionFor(ctx); ok {
+	if behavior, _, refusal := decisionFor(ctx); refusal == "" {
 		switch behavior {
 		case agent.ControlBehaviorAllow:
 			return contracts.GrokTrustOutcomeTrust, true

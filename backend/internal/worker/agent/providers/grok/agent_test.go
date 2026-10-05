@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -168,7 +169,7 @@ func TestGrokSteerInputInlinesATextAttachment(t *testing.T) {
 	sent := requestsFor(requests(), grokInterjectMethod)
 	require.Len(t, sent, 1)
 	want := "see the log\n\n" +
-		"----- BEGIN ATTACHED FILE: build.log (text/plain) -----\nerror: boom\n----- END ATTACHED FILE: build.log -----"
+		"<attached-file name=\"build.log\" mime-type=\"text/plain\">\nerror: boom\n</attached-file>"
 	assert.Equal(t, want, sent[0].Params["text"])
 	blocks, ok := sent[0].Params["content"].([]any)
 	require.True(t, ok)
@@ -190,7 +191,7 @@ func TestGrokSteerInputWithOnlyATextAttachmentNeedsNoBlocks(t *testing.T) {
 
 	sent := requestsFor(requests(), grokInterjectMethod)
 	require.Len(t, sent, 1)
-	assert.Equal(t, "----- BEGIN ATTACHED FILE: notes.md (text/markdown) -----\n# Notes\n----- END ATTACHED FILE: notes.md -----", sent[0].Params["text"])
+	assert.Equal(t, "<attached-file name=\"notes.md\" mime-type=\"text/markdown\">\n# Notes\n</attached-file>", sent[0].Params["text"])
 	assert.NotContains(t, sent[0].Params, "content")
 }
 
@@ -313,4 +314,32 @@ func TestGrokSteerInputStatesAFreshIDEachTime(t *testing.T) {
 	sent := requestsFor(requests(), grokInterjectMethod)
 	require.Len(t, sent, 2)
 	assert.NotEqual(t, sent[0].Params["interjectionId"], sent[1].Params["interjectionId"])
+}
+
+// Grok Build 1.0.46 answers a prompt whose model request failed with an
+// internal error, and states the cause only in the error's data. The probe
+// against a mock that answered HTTP 400 read
+// {"code":-32603,"message":"Internal error","data":{"message":"API error (status 400 Bad Request): invalid_request_error: <message>","http_status":400}}.
+// The failure note states that cause, so the reader learns why the turn failed.
+func TestGrokFailedPromptStatesTheNativeCause(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newGrokAgent(t, agent.Options{}, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		if request.Method == acp.MethodSessionPrompt {
+			return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32603,"message":"Internal error","data":{"message":"API error (status 400 Bad Request): invalid_request_error: NATIVEERRORprobe123","http_status":400}}`)}
+		}
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+
+	require.NoError(t, a.SendInput("Run the native model error probe.", nil))
+	testutil.RequireEventually(t, func() bool { return !a.PromptActive() })
+
+	var texts []string
+	for _, notification := range sink.Notifications() {
+		if notification[contracts.NotificationFieldType] == contracts.NotificationTypeAgentError {
+			text, _ := notification[contracts.NotificationFieldError].(string)
+			texts = append(texts, text)
+		}
+	}
+	require.Len(t, texts, 1)
+	assert.Contains(t, texts[0], "invalid_request_error: NATIVEERRORprobe123")
 }

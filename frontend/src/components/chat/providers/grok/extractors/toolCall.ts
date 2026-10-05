@@ -116,7 +116,11 @@ function grokMcpSpec(facts: ACPToolFacts, name: string, server: string, tool: st
   }
 }
 
-/** Grok identifies each call in its `_meta`, and its titles are prose. */
+/**
+ * Grok Build hooks `_meta["x.ai/tool"].name`, because its titles are prose. When that
+ * record is absent, a title that is itself a Grok tool name identifies the tool
+ * (`grokToolName`).
+ */
 export const grokToolCallAdapter: ACPToolCallAdapter = (facts, base) => {
   const name = grokToolName(facts.tool)
   if (!name)

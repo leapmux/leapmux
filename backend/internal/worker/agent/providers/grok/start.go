@@ -16,6 +16,15 @@ var _ agent.StartFunc = Start
 // MCP servers and hooks silently stay off.
 const grokFolderTrustCapability = "x.ai/folderTrust"
 
+// grokDisableAutoUpdaterEnv turns off Grok's background update. `grok agent
+// stdio` starts `grok update --trigger=auto_background` when the running
+// executable is the managed install ($GROK_HOME/bin/grok, which the install
+// script creates), and the update rewrites that install and its symlinks in the
+// middle of the session. Any value except an empty one, `0`, `false`, `off` or `no`
+// turns it off. `--no-auto-update` cannot replace it: `agent` does not accept the
+// flag.
+const grokDisableAutoUpdaterEnv = "GROK_DISABLE_AUTOUPDATER=1"
+
 // Start starts a Grok Build ACP agent process and performs the handshake.
 //
 // `--no-leader` keeps the process to itself. Without it, a user config.toml
@@ -27,6 +36,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		Registration:  Registration(),
 		ProviderName:  "grok",
 		BaseArgs:      []string{"agent", "--no-leader", "stdio"},
+		PinnedEnv:     []string{grokDisableAutoUpdaterEnv},
 		SessionConfig: acp.SessionConfig{NewMethod: acp.MethodSessionNew, ResumeMethod: acp.MethodSessionResume},
 		NewAgent:      func() *Agent { return &Agent{} },
 		Base:          func(a *Agent) *acp.Base { return &a.Base },
