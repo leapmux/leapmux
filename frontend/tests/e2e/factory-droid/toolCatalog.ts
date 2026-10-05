@@ -68,6 +68,15 @@ export function droidCompleteToolCatalog(request: MockModelRequestRecord): Droid
   return { current, deferred }
 }
 
+/**
+ * The argument types of the Script descriptor that Droid offers the model.
+ *
+ * Droid 0.233.0 declares `script` and `inputs` there. Its parser also accepts a
+ * `waitForMs` field, but the model-facing schema (`llmInputSchema`) omits it, so a
+ * catalog never lists it. A call may still send the field.
+ */
+export const DROID_SCRIPT_ARGUMENTS = { script: 'string', inputs: 'object' } as const
+
 /** Detect execution capability from native descriptions and argument schemas. */
 export function droidScriptExecutors(catalog: readonly DroidNativeTool[]): DroidNativeTool[] {
   return catalog.filter(tool => /javascript|typescript|python|code|script|repl|interpreter/i.test(`${tool.name} ${tool.description}`)

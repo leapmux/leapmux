@@ -414,9 +414,9 @@ func (a *Agent) onAgentTurnCompleted(payload []byte, target droidOutputTarget) {
 		}
 		if json.Unmarshal(payload, &n) == nil {
 			switch n.Reason {
-			case "error":
+			case contracts.DroidTurnEndReasonError:
 				status = bgtask.StatusFailed
-			case "interrupted", "cancelled":
+			case contracts.DroidTurnEndReasonCancelled:
 				status = bgtask.StatusInterrupted
 			}
 		}

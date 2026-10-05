@@ -50,6 +50,54 @@ describe('readDroidToolResult', () => {
     expect(readDroidToolResult(scriptRequest(JSON.stringify(content)), 'call_script-1', 'Script')).toEqual({ text: JSON.stringify(content), failed: false })
   })
 
+  // Droid 0.233.0 joins the blocks of a finished Script with line breaks: the printed
+  // output, the closing line, then the snapshot. A failed run states `Error: ` and the
+  // snapshot alone. These strings are the model-facing results of a probe against the
+  // installed CLI.
+  describe('the captured native shapes', () => {
+    const closing = '[Script completed · 0 calls · 0 B in sandbox · 11 B emitted]'
+    const completed = '{"toolCallId":"call_script-1","status":"completed","result":null}'
+
+    it('reads a completed script that printed output', () => {
+      const text = `NATIVECODE42\n${closing}\n${completed}`
+      expect(readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script')).toEqual({ text, failed: false })
+    })
+
+    it('reads a completed script that printed nothing', () => {
+      const text = `${closing}\n${completed}`
+      expect(readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script')).toEqual({ text, failed: false })
+    })
+
+    it('reads a completed script whose output holds several lines', () => {
+      const text = `first\nsecond\n${closing}\n${completed}`
+      expect(readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script').failed).toBe(false)
+    })
+
+    it('reads a failed script that states its error inside the snapshot', () => {
+      const text = 'Error: {"toolCallId":"call_script-1","status":"failed","error":"Error: NATIVECODE77\\n  at: throw Error(\\"NATIVECODE77\\");"}'
+      expect(readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script')).toEqual({ text, failed: true })
+    })
+
+    it('takes the status from the last snapshot, never from printed output', () => {
+      const printed = '{"toolCallId":"call_script-1","status":"failed","error":"printed"}'
+      const text = `${printed}\n${closing}\n${completed}`
+      expect(readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script').failed).toBe(false)
+    })
+
+    it('refuses a snapshot line with no closing line before it', () => {
+      expect(() => readDroidToolResult(scriptRequest(`printed\n${completed}`), 'call_script-1', 'Script')).toThrow()
+    })
+
+    it('refuses a closing line with no snapshot after it', () => {
+      expect(() => readDroidToolResult(scriptRequest(`printed\n${closing}\nnot a snapshot`), 'call_script-1', 'Script')).toThrow()
+    })
+
+    it('refuses the snapshot of another call', () => {
+      const other = '{"toolCallId":"call_other","status":"completed","result":null}'
+      expect(() => readDroidToolResult(scriptRequest(`printed\n${closing}\n${other}`), 'call_script-1', 'Script')).toThrow('mismatched call ID')
+    })
+  })
+
   it.each([
     'plain output',
     '{"status":"completed"}',

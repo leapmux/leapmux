@@ -18,6 +18,14 @@ import (
 
 var _ agent.StartFunc = Start
 
+// droidDisableAutoUpdateEnv turns off the update that Droid starts from its TUI,
+// its daemon and `droid update`: a download that replaces its own executable.
+// `droid exec` never reaches the updater, but a `droid` that the agent's own tool
+// starts inherits the variable. Only `0` and `false` turn it off; any other value
+// takes the default of the build, which is off in the npm build and may be on in
+// another.
+const droidDisableAutoUpdateEnv = "FACTORY_DROID_AUTO_UPDATE_ENABLED=0"
+
 // Start launches `droid exec --input-format stream-jsonrpc` and opens the
 // agent's session.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
@@ -66,6 +74,7 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 		LoginShell: opts.LoginShell,
 		Launch:     launchConfig.spec,
 		BaseArgs:   args,
+		SetEnv:     []string{droidDisableAutoUpdateEnv},
 		WorkingDir: opts.WorkingDir,
 	})
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)

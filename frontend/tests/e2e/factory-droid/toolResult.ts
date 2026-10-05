@@ -28,10 +28,30 @@ function droidNativeCall(request: MockModelRequestRecord | undefined, callId: st
   return { id: call.id, arguments: fn.arguments }
 }
 
+/** The closing line that Droid writes before the snapshot of a finished Script. */
+const SCRIPT_CLOSING_LINE = /^\[Script completed · /
+
+/**
+ * Find the snapshot inside the result of a Script.
+ *
+ * Droid 0.233.0 joins the blocks of a finished Script with line breaks: the printed
+ * output, the closing line, then the snapshot, which stays on one line. A failed run
+ * states `Error: ` and the snapshot alone. The snapshot is always the last line and
+ * the closing line always precedes it, so a line that the script printed cannot take
+ * their place. A result of any other shape stays whole, and the caller reads it as
+ * a snapshot or refuses it.
+ */
+function scriptSnapshotText(text: string): string {
+  const lines = text.split('\n')
+  const closing = lines.at(-2)
+  const snapshot = lines.at(-1)
+  return closing !== undefined && snapshot !== undefined && SCRIPT_CLOSING_LINE.test(closing) ? snapshot : text
+}
+
 /** Read the final native Script snapshot. Printed output cannot supply its status. */
 function droidScriptResult(text: string, nativeId: string): NativeToolOutcome {
   const decode = (value: string): unknown => JSON.parse(value.startsWith('Error: ') ? value.slice('Error: '.length) : value)
-  let snapshotText = text
+  let snapshotText = scriptSnapshotText(text)
   let snapshot: unknown = decode(snapshotText)
   if (Array.isArray(snapshot)) {
     const final = snapshot.at(-1)

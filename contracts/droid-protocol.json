@@ -1,5 +1,5 @@
 {
-  "_readme": "Factory Droid's stream-jsonrpc vocabulary, for the tables that BOTH the Go provider and the TS renderer plugin read. The worker persists each transcript row as Droid's own notification envelope, so the browser plugin dispatches on the same `notification.type` and reads the same fields (`notifications`, `notificationFields`). `notifications` marks the frame kinds the browser dispatches on that are Droid's alone. `toolNotifications` holds Droid's `tool_call` and `tool_result` notification types WITHOUT the frameKind mark: those two literals are also LeapMux's own `MessageCategory` kinds (`tool_use` / `tool_result`), which shared chat code spells by name, so linting them as wire tokens would forbid a literal the chat model owns. `tools` holds the tool names both sides dispatch on: the worker opens a subagent row for `Task`, answers the question request of `AskUser`, and streams the output of `Execute`; the browser draws each one. `workingStates` holds the `newState` values of `droid_working_state_changed`, which both sides read as the busy/idle signal. `permissionOptions` holds the 17 `selectedOption` values of a `droid.request_permission` answer, and `confirmationTypes` the `confirmationType` words of its `toolUses[]`; the worker answers from the permission mode and the browser words the banner. `askUserFields` holds the fields of one `droid.ask_user` question that both sides read. Factory owns every value above except the `modes` and `efforts` tables and the `reply` fields: LeapMux owns `modes` (the value set of the permission-mode axis, each one mapped onto Droid's own `autonomyMode` at launch), `efforts` (the reasoning-effort axis, which maps onto `--reasoning-effort`), and `reply` (the fields of the browser's decision that carry an ask_user answer).",
+  "_readme": "Factory Droid's stream-jsonrpc vocabulary, for the tables that BOTH the Go provider and the TS renderer plugin read. The worker persists each transcript row as Droid's own notification envelope, so the browser plugin dispatches on the same `notification.type` and reads the same fields (`notifications`, `notificationFields`). `notifications` marks the frame kinds the browser dispatches on that are Droid's alone. `toolNotifications` holds Droid's `tool_call` and `tool_result` notification types WITHOUT the frameKind mark: those two literals are also LeapMux's own `MessageCategory` kinds (`tool_use` / `tool_result`), which shared chat code spells by name, so linting them as wire tokens would forbid a literal the chat model owns. `tools` holds the tool names both sides dispatch on: the worker opens a subagent row for `Task`, answers the question request of `AskUser`, and streams the output of `Execute`; the browser draws each one. `workingStates` holds the `newState` values of `droid_working_state_changed`, which both sides read as the busy/idle signal. `turnEndReasons` holds the `reason` words of an `agent_turn_completed` notification that either side reads: `cancelled` is the end that Droid states for a turn that `droid.interrupt_session` stopped, and `error` is the end of a turn that failed. Droid 0.233.0 states 16 more reasons (completed, permission_rejected, process_exit, spec_handoff and the model failures among them). No side branches on them, so they stay out of the table. `permissionOptions` holds the 16 `selectedOption` values of a `droid.request_permission` answer, and `confirmationTypes` the `confirmationType` words of its `toolUses[]`; the browser recognizes the plan review of an exit from spec mode or of a mission proposal, and the reason of a Droid Shield refusal, by them. The worker answers with `proceed_once` or `cancel`. It forwards any other option that the browser's decision states, but only an option that the request offered. The browser words the banner, and it words the saved answer from the option. `askUserFields` holds the fields of one `droid.ask_user` question and of one answer in its reply, which the browser reads. Droid identifies each answer by the `index` of its question, so the browser's decision answers each question by that `index`. `reply` holds the fields of Droid's own reply to both requests: the worker writes them, the browser reads them from the saved answer, and the browser's decision reuses the same names. `requestTypes` holds the `type` word of the control request that the worker publishes for each of the two requests: the worker writes it, and the browser recognizes the request by it. Factory owns every value above except the `modes`, `efforts` and `requestTypes` tables: LeapMux owns `modes` (the value set of the permission-mode axis, each one mapped onto Droid's own `autonomyMode` at launch), `efforts` (the reasoning-effort axis, which maps onto `--reasoning-effort`) and `requestTypes`.",
   "_unread": {
     "notifications": {
       "ToolExecutionPhaseChanged": {
@@ -23,12 +23,6 @@
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       },
       "Notification": {
-        "sides": [
-          "ts"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
-      "Reason": {
         "sides": [
           "ts"
         ],
@@ -64,115 +58,120 @@
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
       },
       "ProceedAlwaysFile": {
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
       },
       "ProceedAlwaysServer": {
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
       },
       "ProceedAlwaysTools": {
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
       },
       "ProceedAutoRun": {
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
       },
       "ProceedAutoRunHigh": {
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
       },
       "ProceedAutoRunLow": {
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
       },
       "ProceedAutoRunMedium": {
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
-      "ProceedEdit": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
       },
       "ProceedNewSession": {
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
       },
       "ProceedNewSessionHigh": {
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
       },
       "ProceedNewSessionLow": {
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
       },
       "ProceedNewSessionMedium": {
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
       },
       "ProceedReportFalsePositive": {
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
       }
     },
     "confirmationTypes": {
       "ApplyPatch": {
         "sides": [
-          "go"
+          "go",
+          "ts"
         ],
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       },
       "AskUser": {
         "sides": [
-          "go"
+          "go",
+          "ts"
         ],
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       },
       "Create": {
         "sides": [
-          "go"
+          "go",
+          "ts"
         ],
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       },
-      "Edit": {
+      "DroidShieldViolation": {
         "sides": [
           "go"
+        ],
+        "why": "the worker forwards a confirmation whole and never branches on its type; the browser reads the type of a shield refusal from the stored bytes"
+      },
+      "Edit": {
+        "sides": [
+          "go",
+          "ts"
         ],
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       },
       "Exec": {
         "sides": [
-          "go"
+          "go",
+          "ts"
         ],
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       },
@@ -180,34 +179,51 @@
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker forwards a confirmation whole and never branches on its type; the browser reads the type of a review card from the stored bytes"
       },
       "MCPTool": {
         "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "ProposeMission": {
+        "sides": [
           "go"
+        ],
+        "why": "the worker forwards a confirmation whole and never branches on its type; the browser reads the type of a review card from the stored bytes"
+      },
+      "RecommendMission": {
+        "sides": [
+          "go",
+          "ts"
         ],
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       },
       "SandboxViolation": {
         "sides": [
-          "go"
+          "go",
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "Script": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+      },
+      "StartMissionRun": {
+        "sides": [
+          "go",
+          "ts"
         ],
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       }
     },
     "askUserFields": {
-      "Answers": {
-        "sides": [
-          "ts"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
-      "Cancelled": {
-        "sides": [
-          "ts"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
       "ToolCallID": {
         "sides": [
           "ts"
@@ -220,25 +236,19 @@
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker reads and writes this field through struct tags, and contract_tags_test.go pins the spelling; the browser writes it in its decision and reads it from the saved answer"
       },
       "Cancelled": {
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
-      "Comment": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker writes this field through a struct tag, and contract_tags_test.go pins the spelling; the browser reads it from the saved answer"
       },
       "SelectedOption": {
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker reads and writes this field through struct tags, and contract_tags_test.go pins the spelling; the browser reads it from the saved answer"
       }
     }
   },
@@ -290,6 +300,7 @@
     "Skill": "Skill",
     "ToolSearch": "ToolSearch",
     "ExitSpecMode": "ExitSpecMode",
+    "ProposeMission": "ProposeMission",
     "GenerateImage": "GenerateImage"
   },
   "workingStates": {
@@ -299,6 +310,10 @@
     "WaitingForToolConfirmation": "waiting_for_tool_confirmation",
     "ExecutingTool": "executing_tool",
     "CompactingConversation": "compacting_conversation"
+  },
+  "turnEndReasons": {
+    "Cancelled": "cancelled",
+    "Error": "error"
   },
   "permissionOptions": {
     "ProceedOnce": "proceed_once",
@@ -319,23 +334,32 @@
     "Cancel": "cancel"
   },
   "confirmationTypes": {
-    "Edit": "Edit",
+    "Edit": "edit",
     "Exec": "exec",
     "Create": "create",
     "AskUser": "ask_user",
     "ExitSpecMode": "exit_spec_mode",
+    "RecommendMission": "recommend_mission",
+    "ProposeMission": "propose_mission",
+    "StartMissionRun": "start_mission_run",
     "ApplyPatch": "apply_patch",
     "MCPTool": "mcp_tool",
-    "SandboxViolation": "sandbox_violation"
+    "SandboxViolation": "sandbox_violation",
+    "DroidShieldViolation": "droid_shield_violation",
+    "Script": "script"
   },
   "askUserFields": {
     "ToolCallID": "toolCallId",
     "Questions": "questions",
+    "Index": "index",
     "Question": "question",
     "Options": "options",
     "MultiSelect": "multiSelect",
-    "Cancelled": "cancelled",
-    "Answers": "answers"
+    "Answer": "answer"
+  },
+  "requestTypes": {
+    "Permission": "permission_request",
+    "AskUser": "ask_user_request"
   },
   "modes": {
     "Default": "default",
@@ -352,7 +376,6 @@
   },
   "reply": {
     "SelectedOption": "selectedOption",
-    "Comment": "comment",
     "Answers": "answers",
     "Cancelled": "cancelled"
   },

@@ -7,6 +7,8 @@ droidTest.describe('Factory Droid attachments', () => {
   droidTest('delivers image attachment bytes to the model', async ({ authenticatedDroidWorkspace, page, modelScript }) => {
     void authenticatedDroidWorkspace
     await modelScript.rule(DROID_TITLE_RULE)
-    await exerciseAttachmentDelivery(page, modelScript, 'image', 'droid-shot.png')
+    // Droid decodes the PNG and encodes it again with pngjs before the request,
+    // so the part holds a new RGBA PNG with the same four colors.
+    await exerciseAttachmentDelivery(page, modelScript, 'image', 'droid-shot.png', { protocol: 'openai-chat-completions', transcodedImageType: 'image/png' })
   })
 })

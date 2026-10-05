@@ -5,7 +5,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { DROID_E2E_SKIP_REASON, DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { editToolCall } from '../helpers/providerToolCalls'
-import { sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, savedControlAnswer, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { nativeDroidCallId } from './toolResult'
 
 droidTest.describe('Factory Droid control requests', () => {
@@ -42,6 +42,8 @@ droidTest.describe('Factory Droid control requests', () => {
     const followUp = status.requests.find(request => request.stepIndex === 1)
     const result = nativeToolResult(followUp, nativeDroidCallId(followUp, 'Edit', 'allow-call'))
     expect(result).not.toMatch(/error|denied/i)
+    // The saved row reads Droid's own `proceed_once` reply as the button's word.
+    await expect(savedControlAnswer(page)).toHaveText('Allow')
   })
 
   droidTest('keeps the command from running after the reader denies it', async ({ askingDroidWorkspace, page, modelScript }) => {
@@ -62,5 +64,41 @@ droidTest.describe('Factory Droid control requests', () => {
 
     await expect(banner(page)).toHaveCount(0)
     expect(readFileSync(note, 'utf8')).toBe('a')
+    // The saved row reads Droid's own `cancel` reply as the button's word.
+    await expect(savedControlAnswer(page)).toHaveText('Deny')
+  })
+
+  // Droid's reply cannot carry a rejection reason to the model: Droid discards a
+  // `comment` beside `cancel`. The reason follows as the reader's next message, which
+  // opens a turn of its own.
+  droidTest('sends the reason for a denial as the next message', async ({ askingDroidWorkspace, page, modelScript }) => {
+    const note = join(askingDroidWorkspace.workingDir, 'notes.txt')
+    writeFileSync(note, 'a')
+    await modelScript.rule(DROID_TITLE_RULE)
+    // Cancellation ends the first turn without another model request. The reason
+    // opens the second turn, which answers it.
+    await modelScript.queue(
+      { toolCalls: [editToolCall(PROVIDER, 'reason-call', { path: 'notes.txt', before: 'a', after: 'b' })] },
+      { text: 'I will leave the note as it is.' },
+    )
+    await sendMessage(page, modelScript.prompt('Edit the note.'))
+    await modelScript.waitForSteps(1)
+
+    await expect(banner(page)).toContainText('Edit')
+    // The composer's send is a denial that carries the typed text as its reason.
+    await page.getByTestId('composer-editor').filter({ visible: true }).locator('.ProseMirror').fill('Keep the note unchanged.')
+    await page.keyboard.press('Meta+Enter')
+    await expect(banner(page)).toHaveCount(0)
+
+    const status = await modelScript.waitForSteps()
+    await waitForAgentIdle(page, 180_000)
+    expect(readFileSync(note, 'utf8')).toBe('a')
+    const followUp = status.requests.find(request => request.stepIndex === 1)
+    expect(JSON.stringify(followUp?.body)).toContain('Keep the note unchanged.')
+    await expect(userBubbles(page).filter({ hasText: 'Keep the note unchanged.' }).first()).toBeVisible()
+    await expect(assistantBubbles(page).filter({ hasText: 'I will leave the note as it is.' }).first()).toBeVisible()
+    // The saved row reads Droid's own `cancel` reply as the button's word. The reason
+    // is the row of the next message.
+    await expect(savedControlAnswer(page)).toHaveText('Deny')
   })
 })

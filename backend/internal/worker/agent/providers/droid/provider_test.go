@@ -80,10 +80,13 @@ func TestIsInterruptRecognizesTheRawFrame(t *testing.T) {
 
 func TestResolveControlResponseAnswersAPermissionRequest(t *testing.T) {
 	t.Parallel()
+	// The request offers the option, as Droid's own request must: the worker
+	// refuses an option that the request did not offer.
 	request, _ := json.Marshal(map[string]any{
 		"type":      "permission_request",
 		"requestId": "droid-perm-1",
 		"rpcId":     "rpc-1",
+		"options":   []string{"proceed_once", "proceed_always", "cancel"},
 	})
 	response, _ := json.Marshal(map[string]any{
 		"response": map[string]any{
@@ -111,17 +114,20 @@ func TestResolveControlResponseAnswersAPermissionRequest(t *testing.T) {
 
 func TestResolveControlResponseAnswersAQuestion(t *testing.T) {
 	t.Parallel()
+	// The request states the question with Droid's own number, and the browser
+	// answers it by that number.
 	request, _ := json.Marshal(map[string]any{
 		"type":       "ask_user_request",
 		"requestId":  "droid-ask-1",
 		"toolCallId": "call-1",
+		"questions":  []map[string]any{{"index": 1, "question": "Which color?", "options": []string{"Blue", "Red"}}},
 	})
 	response, _ := json.Marshal(map[string]any{
 		"response": map[string]any{
 			"request_id": "droid-ask-1",
 			"response": map[string]any{
 				"behavior": "allow",
-				"answers":  map[string]string{"Which color?": "Blue"},
+				"answers":  []map[string]any{{"index": 1, "answer": "Blue"}},
 			},
 		},
 	})
@@ -138,6 +144,7 @@ func TestResolveControlResponseAnswersAQuestion(t *testing.T) {
 	var result struct {
 		Cancelled bool `json:"cancelled"`
 		Answers   []struct {
+			Index    int    `json:"index"`
 			Question string `json:"question"`
 			Answer   string `json:"answer"`
 		} `json:"answers"`
@@ -145,6 +152,8 @@ func TestResolveControlResponseAnswersAQuestion(t *testing.T) {
 	require.NoError(t, json.Unmarshal(envelope.Result, &result))
 	assert.False(t, result.Cancelled)
 	require.Len(t, result.Answers, 1)
+	assert.Equal(t, 1, result.Answers[0].Index)
+	assert.Equal(t, "Which color?", result.Answers[0].Question)
 	assert.Equal(t, "Blue", result.Answers[0].Answer)
 }
 

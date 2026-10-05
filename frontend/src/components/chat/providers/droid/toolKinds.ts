@@ -28,6 +28,7 @@ const DROID_TOOL_KINDS: ReadonlyMap<string, ToolKind> = new Map<string, ToolKind
   [DROID_TOOL.Skill, 'skill'],
   [DROID_TOOL.ToolSearch, 'search'],
   [DROID_TOOL.ExitSpecMode, 'switch_mode'],
+  [DROID_TOOL.ProposeMission, 'switch_mode'],
   [DROID_TOOL.GenerateImage, 'image'],
 ])
 

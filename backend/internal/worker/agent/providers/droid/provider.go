@@ -31,9 +31,10 @@ func (droidProvider) IsInterrupt(content string) bool {
 	return isDroidRawInterrupt([]byte(content))
 }
 
-// PlanModeControl reads Droid's spec-mode exit tool.
+// PlanModeControl reads Droid's review tools: the spec-mode exit, and the
+// mission proposal, which Droid groups with it for the plan-file handoff.
 func (droidProvider) PlanModeControl(toolName string) agent.PlanModeControlKind {
-	if toolName == contracts.DroidToolExitSpecMode {
+	if toolName == contracts.DroidToolExitSpecMode || toolName == contracts.DroidToolProposeMission {
 		return agent.PlanModeControlExit
 	}
 	return agent.PlanModeControlNone

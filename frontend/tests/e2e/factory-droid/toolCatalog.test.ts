@@ -1,10 +1,29 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { describe, expect, it } from 'vitest'
-import { droidCompleteToolCatalog, droidLoadedToolSchemas, droidScriptExecutors } from './toolCatalog'
+import { nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
+import { DROID_SCRIPT_ARGUMENTS, droidCompleteToolCatalog, droidLoadedToolSchemas, droidScriptExecutors } from './toolCatalog'
 
 const descriptor = (name: string, properties: Record<string, unknown> = { command: { type: 'string' } }, description = 'Run a shell command.') => ({ type: 'function', function: { name, description, parameters: { type: 'object', properties } } })
 const request = (tools: unknown, content = ''): MockModelRequestRecord => ({ protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { tools, messages: [{ role: 'user', content }] } })
 const reminder = (names: string[]) => `<system-reminder>\nThe tools listed below are available in this environment, but their schemas may be omitted from the current tool list to save context.\nLoad a listed tool with ToolSearch: pass query "select:<name>[,<name>...]".\n\nDeferred tools:\n${names.join('\n')}\n</system-reminder>`
+
+// The Script descriptor that Droid 0.233.0 sent in a captured request.
+const CAPTURED_SCRIPT_DESCRIPTOR = {
+  type: 'function',
+  function: {
+    name: 'Script',
+    description: 'Run JavaScript to orchestrate multiple tool calls with loops, conditions, and parallelism.',
+    parameters: {
+      type: 'object',
+      properties: {
+        script: { type: 'string', description: 'Inline JavaScript source' },
+        inputs: { type: 'object', additionalProperties: { type: 'string' }, description: 'Strings the script reads as `inputs.<name>`.' },
+      },
+      required: ['script'],
+      additionalProperties: false,
+    },
+  },
+}
 
 describe('droidCompleteToolCatalog', () => {
   it('keeps native descriptions and schemas in a current-only inventory', () => {
@@ -39,25 +58,23 @@ describe('droidScriptExecutors', () => {
   })
 
   it('detects the installed native script tool and keeps its complete argument schema', () => {
-    const script = {
-      type: 'function',
-      function: {
-        name: 'Script',
-        description: 'Run JavaScript to orchestrate multiple tool calls with loops, conditions, and parallelism.',
-        parameters: {
-          type: 'object',
-          properties: { script: { type: 'string' }, waitForMs: { type: 'number', minimum: 0 } },
-          required: ['script'],
-          additionalProperties: false,
-        },
-      },
-    }
-    const catalog = droidCompleteToolCatalog(request([descriptor('Execute'), script]))
+    const catalog = droidCompleteToolCatalog(request([descriptor('Execute'), CAPTURED_SCRIPT_DESCRIPTOR]))
     expect(droidScriptExecutors(catalog.current)).toEqual([{
       name: 'Script',
-      description: script.function.description,
-      inputSchema: script.function.parameters,
+      description: CAPTURED_SCRIPT_DESCRIPTOR.function.description,
+      inputSchema: CAPTURED_SCRIPT_DESCRIPTOR.function.parameters,
     }])
+  })
+})
+
+describe('DROID_SCRIPT_ARGUMENTS', () => {
+  it('states the argument types of the descriptor that Droid sends the model', () => {
+    expect(nativeCodeExecutionSchema(request([CAPTURED_SCRIPT_DESCRIPTOR]), 'Script', DROID_SCRIPT_ARGUMENTS).required).toEqual(['script'])
+  })
+
+  // The parser of Droid accepts waitForMs, but the schema that the model sees omits it.
+  it('does not state a waitForMs field, which no catalog lists', () => {
+    expect(() => nativeCodeExecutionSchema(request([CAPTURED_SCRIPT_DESCRIPTOR]), 'Script', { script: 'string', waitForMs: 'number' })).toThrow('waitForMs has no number schema')
   })
 })
 

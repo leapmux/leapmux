@@ -11,7 +11,7 @@ import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 import { droidScriptConfiguration } from './scriptSettings'
-import { droidCompleteToolCatalog, droidScriptExecutors } from './toolCatalog'
+import { DROID_SCRIPT_ARGUMENTS, droidCompleteToolCatalog, droidScriptExecutors } from './toolCatalog'
 import { readDroidToolResult } from './toolResult'
 
 droidTest('runs native code and retains computed output and script errors after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
@@ -39,16 +39,17 @@ droidTest('runs native code and retains computed output and script errors after 
     const request = await sendNativeAnswer(context, 'Reply once while the native Script catalog remains available.', 'The actual native Script catalog turn completed.')
     expect(request.mockCredential?.accepted).toBe(true)
     expect(droidScriptExecutors(droidCompleteToolCatalog(request).current).map(tool => tool.name)).toContain('Script')
-    const schema = nativeCodeExecutionSchema(request, 'Script', { script: 'string', waitForMs: 'number' })
+    const schema = nativeCodeExecutionSchema(request, 'Script', DROID_SCRIPT_ARGUMENTS)
     expect(schema.required).toEqual(['script'])
 
     await exerciseNativeCodeExecution({ ...context, readToolResult: (request, callId) => readDroidToolResult(request, callId, 'Script') }, {
       catalogProof: (request) => {
         expect(request.mockCredential?.accepted).toBe(true)
-        nativeCodeExecutionSchema(request, 'Script', { script: 'string', waitForMs: 'number' })
+        nativeCodeExecutionSchema(request, 'Script', DROID_SCRIPT_ARGUMENTS)
       },
       scripts: marker => [
-        { label: 'output', source: `${JSON.stringify(marker)} + (40 + 2);`, expected: `${marker}42`, failed: false },
+        // Droid returns only what the script emits through text(). A bare expression ends with no output.
+        { label: 'output', source: `text(${JSON.stringify(marker)} + (40 + 2));`, expected: `${marker}42`, failed: false },
         { label: 'failure', source: `throw new Error(${JSON.stringify(marker)} + (70 + 7));`, expected: `${marker}77`, failed: true },
       ],
     })
