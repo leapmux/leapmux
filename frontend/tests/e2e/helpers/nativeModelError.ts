@@ -24,6 +24,34 @@ interface NativeModelErrorOptions {
 }
 
 /**
+ * The letters that stand for the hexadecimal digits `0` to `f` in an error marker.
+ * They are the sixteen consonants from `b` to `t`, without a vowel.
+ */
+const MARKER_LETTERS = 'bcdfghjklmnpqrst'
+
+/**
+ * Build the text that the default scripted error carries and that the chat then shows.
+ * A UUID that the caller gives replaces the random one, so a test can fix the input.
+ *
+ * The text after the prefix holds no digit and no vowel. A native client can read the
+ * message of a failed request, decide that the failure is transient, and retry the request.
+ * A run of digits can spell an HTTP status. A run of letters can spell a word.
+ * OpenCode 1.18.34 and Pi 1.0.0 retry a request when its message holds `429`, `500`, `502`,
+ * `503`, `504` or `524`, whatever the status of the response is. About one UUID in 21 holds one.
+ * The one scripted error then answers the first attempt only. Each retry gets the refusal of
+ * an unscripted request, and the text of the last refusal replaces the marker in the chat.
+ * OpenCode has no setting that turns the retry off, so the marker must avoid it.
+ * A pattern for a transient failure matches a word, and each such word holds a vowel.
+ * The map from digit to letter is one to one, so two UUIDs never give the same marker.
+ */
+export function nativeErrorMarker(uuid: string = randomUUID()): string {
+  const digits = uuid.replaceAll('-', '')
+  if (!/^[0-9a-f]{32}$/i.test(digits))
+    throw new Error(`The error marker needs a UUID of 32 hexadecimal digits, not "${uuid}".`)
+  return `NATIVEERROR${digits.replace(/[0-9a-f]/gi, digit => MARKER_LETTERS.charAt(Number.parseInt(digit, 16)))}`
+}
+
+/**
  * Select the requests that consumed the failed turn's scripted steps, in step order.
  * The steps start at `firstStep`, one for each of `attempts`.
  * A request that a rule or the fallback answered consumed no step, so it is not one of them.
@@ -48,7 +76,7 @@ export async function exerciseModelError(
 ): Promise<MockModelRequestRecord[]> {
   const attempts = options.attempts ?? 1
   await options.prepare?.()
-  const marker = `NATIVEERROR${randomUUID().replaceAll('-', '')}`
+  const marker = nativeErrorMarker()
   const error = options.error ?? { status: 400, code: 'invalid_request_error', message: marker }
   const stepIndex = (await context.modelScript.status()).stepCount
   // Validate before the turn starts, so a bad count fails here and not in a native retry loop.

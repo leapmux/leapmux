@@ -1,5 +1,4 @@
-import { randomUUID } from 'node:crypto'
-import { exerciseModelError } from '../helpers/nativeModelError'
+import { exerciseModelError, nativeErrorMarker } from '../helpers/nativeModelError'
 import { qoderTest } from '../qoder-fixtures'
 import { nativeContext } from './scenarios'
 
@@ -11,6 +10,6 @@ qoderTest('shows the native model error and runs a later valid turn', async ({ q
     // message never reaches the transcript. Qoder relays the provider's own
     // words only for a stream that fails after a partial answer, in the
     // `errors` of its `result`.
-    error: { status: 500, code: 'stream_error', message: `NATIVEERROR${randomUUID().replaceAll('-', '')}`, midStream: true },
+    error: { status: 500, code: 'stream_error', message: nativeErrorMarker(), midStream: true },
   })
 })
