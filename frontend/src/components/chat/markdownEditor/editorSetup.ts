@@ -5,7 +5,7 @@ import type { TrailingDebounced } from '~/lib/debounce'
 import type { CodeLangHandlers } from '~/lib/editor/codeLangPlugin'
 import type { PluginRefs } from '~/lib/editor/keyboardPlugins'
 import type { LinkClickHandlers } from '~/lib/editor/linkPlugin'
-import { defaultValueCtx, Editor, editorViewCtx, editorViewOptionsCtx, rootCtx } from '@milkdown/core'
+import { defaultValueCtx, Editor, editorViewOptionsCtx, rootCtx } from '@milkdown/core'
 import { clipboard } from '@milkdown/plugin-clipboard'
 import { highlight, highlightPluginConfig } from '@milkdown/plugin-highlight'
 import { history } from '@milkdown/plugin-history'
@@ -25,7 +25,6 @@ import { $prose } from '@milkdown/utils'
 import { createHighlightPlugin } from 'prosemirror-highlight'
 import { trailingDebounce } from '~/lib/debounce'
 import { createAutoDetectLanguageExtractor, createCodeLangPlugin } from '~/lib/editor/codeLangPlugin'
-import { saveDraft } from '~/lib/editor/draftPersistence'
 import { createLinkBoundaryPlugin, createListItemEnterPlugin, createMarkdownPastePlugin, createSelectionWrapPlugin } from '~/lib/editor/inputPlugins'
 import { createBulletListAfterHardBreakInputRule, createCodeBlockInputRule, createEmphasisStarInputRule, createEmphasisUnderscoreInputRule, createHrInputRule, createInlineCodeInputRule, createLinkInputRule, createOrderedListAfterHardBreakInputRule, createStrikethroughInputRule, createStrongInputRule } from '~/lib/editor/inputRules'
 import {
@@ -44,6 +43,7 @@ import {
 import { createLazyShikiParser } from '~/lib/editor/lazyShikiParser'
 import { createLinkClickPlugin, createLinkShortcutPlugin } from '~/lib/editor/linkPlugin'
 import { createLazyOnigurumaHighlighter } from '~/lib/shikiLazyHighlighter'
+import { saveDraftFromEditor } from './draftManagement'
 import { stripNeedlessEscapes } from './needlessEscapes'
 
 // One Oniguruma-backed highlighter shared across all editor mounts. Created
@@ -166,11 +166,19 @@ export interface EditorSetupOptions {
    * this point in the dispatch cycle).
    */
   onDocTransaction?: (docStats: DocStats) => void
-  /** Returns the current draft key, or undefined if drafts are disabled. */
-  getDraftKey: () => string | undefined
+  /**
+   * The key whose document the editor holds right now, or undefined when that
+   * document has no draft.
+   *
+   * NOT the key that the host's props state. A key swap reads the incoming draft
+   * asynchronously, and until the read lands the editor still holds the OUTGOING
+   * key's prose. A save under the incoming key in that window would replace the
+   * incoming key's saved draft with the outgoing document.
+   */
+  getDocumentDraftKey: () => string | undefined
   /** Mutable ref holding the debounced draft-save handle (cancellable on cleanup). */
   draftSaveDebounce: { current: TrailingDebounced | undefined }
-  /** Getter for the current editor instance (used inside the listener for cursor saving). */
+  /** Getter for the current editor instance. The debounced draft save reads its live document. */
   getEditorInstance: () => Editor | undefined
 }
 
@@ -259,32 +267,38 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
           ...(opts.ariaLabelledBy ? { 'aria-labelledby': opts.ariaLabelledBy } : {}),
         },
       }))
-      let pendingMd = ''
-      let pendingDraftKey = ''
+      // The save reads the LIVE document and the LIVE key when it comes due. It
+      // never carries a snapshot from the moment that it was scheduled, because
+      // the write comes due 700ms after the edit that it reports (200ms for
+      // Milkdown's report, then 500ms), and the editor changes in that time. A
+      // snapshot written late puts old text back under a key whose draft was
+      // just cleared or loaded:
+      //   - A send empties the composer and clears the draft, and the late write
+      //     restores the text that the send delivered.
+      //   - A key swap loads another draft, and the late write replaces it with
+      //     the outgoing document.
+      // A live read can write only what the editor holds now, under the key that
+      // owns it.
       opts.draftSaveDebounce.current = trailingDebounce(() => {
-        let cursor = -1
+        const draftKey = opts.getDocumentDraftKey()
+        const editor = opts.getEditorInstance()
+        if (!draftKey || !editor)
+          return
         try {
-          opts.getEditorInstance()?.action((c: Ctx) => {
-            cursor = c.get(editorViewCtx).state.selection.from
-          })
+          saveDraftFromEditor(editor, draftKey)
         }
-        catch { /* ignore */ }
-        saveDraft(pendingDraftKey, pendingMd.trim(), cursor)
+        catch { /* The editor is mid-teardown. Its cleanup saves the draft. */ }
       }, 500)
       ctx.get(listenerCtx).markdownUpdated((_ctx, raw) => {
         if (typeof raw !== 'string')
           return
-        const md = stripNeedlessEscapes(raw)
-        opts.onDocument(md)
-        const draftKey = opts.getDraftKey()
-        if (draftKey) {
-          pendingMd = md
-          pendingDraftKey = draftKey
+        opts.onDocument(stripNeedlessEscapes(raw))
+        if (opts.getDocumentDraftKey()) {
           opts.draftSaveDebounce.current?.()
         }
         else {
-          // Drafts disabled (or key cleared): drop any pending save so it
-          // doesn't fire with a stale draft key.
+          // The document has no draft (drafts disabled, or the key cleared): drop
+          // any pending save so that it does not write under a stale key.
           opts.draftSaveDebounce.current?.cancel()
         }
       })

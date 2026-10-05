@@ -291,6 +291,195 @@ describe('MarkdownEditor draft key swaps', () => {
   })
 })
 
+// A draft is saved by a chain of two debounces: Milkdown reports the document
+// 200ms after the last edit, and the editor writes it 500ms after that report.
+// The write happens long after the edit that caused it, so it can come due after
+// a send emptied the composer, or after the draft key moved on. Each case below
+// is one such order of events.
+//
+// The clock is fake and ONLY `setTimeout` and `Date` are faked. fake-indexeddb
+// answers on `setImmediate`, so the storage tier keeps working while the test
+// decides when each debounce comes due. No case sleeps.
+describe('MarkdownEditor draft saves', () => {
+  const AGENT_KEY = 'draft-save-agent'
+  const CONTROL_KEY = 'draft-save-agent-ctrl-1'
+  const FIRST_PART = 'Write a two-step to-do list. f2b'
+  const LAST_PART = '0100d0130'
+
+  afterEach(() => {
+    clearDraft(AGENT_KEY)
+    clearDraft(CONTROL_KEY)
+    releaseGatedDraft()
+    vi.useRealTimers()
+  })
+
+  /**
+   * Yield to the real task queue until `done` holds.
+   *
+   * The condition decides, not a duration: a swap reads storage through
+   * fake-indexeddb, which needs a few real tasks, and `waitFor` cannot be used
+   * here because `vi.waitFor` moves the fake clock that these cases place by hand.
+   */
+  async function settleUntil(done: () => boolean): Promise<void> {
+    for (let turn = 0; turn < 1000 && !done(); turn++)
+      await new Promise<void>(resolve => setImmediate(resolve))
+    expect(done()).toBe(true)
+  }
+
+  interface MountedComposer {
+    send: () => void | Promise<void>
+    /** Type into the composer, as a key press does. */
+    type: (text: string) => void
+    text: () => string
+    setKey: (key: string) => void
+    /** The draft keys that the editor finished swapping to, in order. */
+    swappedTo: Array<string | null>
+    /** Finish the send that `onSend` holds open. */
+    finishSend: () => void
+  }
+
+  /** Mount the composer on real timers, then switch the two debounces to the fake clock. */
+  async function mountComposer(initialKey: string): Promise<MountedComposer> {
+    const [key, setKey] = createSignal(initialKey)
+    const swappedTo: Array<string | null> = []
+    let send: (() => void | Promise<void>) | undefined
+    let type: ((text: string) => void) | undefined
+    let text: (() => string) | undefined
+    let finishSend = () => {}
+    render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="chat"
+          draftKey={{ key: key() }}
+          onSend={() => new Promise<void>((resolve) => { finishSend = resolve })}
+          onDraftKeyChanged={next => swappedTo.push(next)}
+          imperative={{
+            sendRef: (fn) => { send = fn },
+            insertRef: (fn) => { type = fn },
+            contentRef: (get) => { text = get },
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(send).toBeTypeOf('function'))
+    await waitFor(() => expect(type).toBeTypeOf('function'))
+    await waitFor(() => expect(text).toBeTypeOf('function'))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    return {
+      send: () => send?.(),
+      type: value => type?.(value),
+      text: () => text?.() ?? '',
+      setKey,
+      swappedTo,
+      finishSend: () => finishSend(),
+    }
+  }
+
+  /**
+   * The order of events that the E2E failure shows. A stall splits the typing, so
+   * Milkdown reports the FIRST PART alone, and the save of that report is due
+   * 500ms later. The user types the rest and sends. The send empties the
+   * composer 100ms before the save is due, and Milkdown's report of the empty
+   * document is due 200ms after the send, so 100ms after the save.
+   *
+   * Returns with the send finished and the fake clock 400ms after the first
+   * report: the save is due in 100ms and the empty report in 200ms.
+   */
+  async function sendWhileAStalePartialSaveIsPending(composer: MountedComposer): Promise<void> {
+    composer.type(FIRST_PART)
+    await vi.advanceTimersByTimeAsync(200)
+    await vi.advanceTimersByTimeAsync(300)
+    composer.type(LAST_PART)
+    const sent = composer.send()
+    await vi.advanceTimersByTimeAsync(100)
+    composer.finishSend()
+    await sent
+    expect(composer.text()).toBe('')
+  }
+
+  // A save that reads the live document must still write the typed text and the
+  // cursor, and it must not write before both debounces come due.
+  it('saves the typed text and its cursor once the debounces come due', async () => {
+    const composer = await mountComposer(AGENT_KEY)
+
+    composer.type('an unsent message')
+    await vi.advanceTimersByTimeAsync(699)
+    await flushStorageWrites()
+    // One millisecond before the save is due, nothing is stored yet.
+    expect(await loadDraft(AGENT_KEY)).toEqual({ content: '', cursor: -1 })
+
+    await vi.advanceTimersByTimeAsync(1)
+    await flushStorageWrites()
+    expect(await loadDraft(AGENT_KEY)).toEqual({ content: 'an unsent message', cursor: 1 + 'an unsent message'.length })
+  })
+
+  it('saves the text that the user types after a send', async () => {
+    const composer = await mountComposer(AGENT_KEY)
+    await sendWhileAStalePartialSaveIsPending(composer)
+
+    composer.type('the next message')
+    await vi.advanceTimersByTimeAsync(700)
+    await flushStorageWrites()
+
+    expect((await loadDraft(AGENT_KEY)).content).toBe('the next message')
+  })
+
+  it('leaves no draft behind when a save that was pending before a send comes due after it', async () => {
+    const composer = await mountComposer(AGENT_KEY)
+    await sendWhileAStalePartialSaveIsPending(composer)
+
+    // The first report's save comes due now: 100ms after the send emptied the
+    // composer and 100ms before the report of the empty document.
+    await vi.advanceTimersByTimeAsync(150)
+    await flushStorageWrites()
+
+    expect((await loadDraft(AGENT_KEY)).content).toBe('')
+  })
+
+  // The E2E failure itself. A control request moves the draft key to the
+  // request's key and moves it back when the request ends. The way back reads
+  // the draft of the agent key, so a stale write under that key reappears in the
+  // composer, and the next message is typed after the one that was already sent.
+  it('does not bring a sent message back when the draft key returns after a control request', async () => {
+    const composer = await mountComposer(AGENT_KEY)
+    await sendWhileAStalePartialSaveIsPending(composer)
+
+    composer.setKey(CONTROL_KEY)
+    await settleUntil(() => composer.swappedTo.includes(CONTROL_KEY))
+    await vi.advanceTimersByTimeAsync(100)
+
+    composer.setKey(AGENT_KEY)
+    await settleUntil(() => composer.swappedTo.at(-1) === AGENT_KEY)
+
+    expect(composer.text()).toBe('')
+  })
+
+  // The same mechanism through the other writer: the key moves while a read is
+  // open, and the user keeps typing into the document of the OUTGOING key. The
+  // save that follows must go to the key that owns that document, never to the
+  // key that is still loading.
+  it('saves the outgoing document under its own key when the user types while the next key loads', async () => {
+    saveDraft(AGENT_KEY, 'the agent document', -1)
+    saveDraft(CONTROL_KEY, 'the control document', -1)
+    await flushStorageWrites()
+    const composer = await mountComposer(AGENT_KEY)
+    await settleUntil(() => composer.text() === 'the agent document')
+    gateDraftRead(CONTROL_KEY)
+
+    composer.setKey(CONTROL_KEY)
+    await settleUntil(gatedReadStarted)
+    composer.type(' typed while the control draft loads')
+    await vi.advanceTimersByTimeAsync(200)
+    await vi.advanceTimersByTimeAsync(500)
+    releaseGatedDraft()
+    await settleUntil(() => composer.swappedTo.includes(CONTROL_KEY))
+    await flushStorageWrites()
+
+    expect((await loadDraft(CONTROL_KEY)).content).toBe('the control document')
+    expect((await loadDraft(AGENT_KEY)).content).toBe('the agent document typed while the control draft loads')
+  })
+})
+
 /**
  * The composer is one of the editor's hosts, and the session-goal dialog is
  * another. What separates them is one prop, because the two markers below are

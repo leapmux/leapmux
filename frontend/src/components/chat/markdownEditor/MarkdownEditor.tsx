@@ -612,6 +612,10 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   // Track the last valid draft key so onCleanup can save the draft even when
   // reactive getters (props.agentId) return null during unmount.
   let latestDraftKey: string | undefined
+  // The key whose document the editor holds. Undefined before the first effect
+  // run, and null when that document has no draft. It moves only when a replace
+  // lands, so the debounced save and every swap save write under the key that
+  // owns the text on screen.
   let prevDraftKey: string | null | undefined
   createEffect(() => {
     const key = getDraftKey()
@@ -675,7 +679,9 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       },
       onDocument: emitDocument,
       onDocTransaction: layout.setDocStats,
-      getDraftKey,
+      // The key of the document on screen, which `prevDraftKey` states and the
+      // key props do not: see `EditorSetupOptions.getDocumentDraftKey`.
+      getDocumentDraftKey: () => prevDraftKey ?? undefined,
       draftSaveDebounce,
       getEditorInstance: () => editorInstance,
     })
