@@ -1,15 +1,21 @@
 import type { ChatRow } from '../../../model/row'
-import type { ToolCallLifecycleFacts } from '../../../model/toolCall'
+import type { ToolCall, ToolCallEnvelope, ToolCallLifecycleFacts } from '../../../model/toolCall'
+import type { ToolKind } from '../../../model/toolKind'
+import type { ToolRequestByKind } from '../../../model/tools'
+import type { ToolRequestOverrides } from '../../defaultToolRequests'
 import type { RowExtractionInput } from '~/components/chat/rowExtractionTypes'
 import { LETTA_DELTA_FIELD, LETTA_TOOL_STATUS } from '~/generated/contracts/letta-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { leapmuxUserRow } from '../../../leapmuxRows'
 import { createToolCall } from '../../../model/createToolCall'
 import { toolCallRow } from '../../../model/row'
-import { failedResult } from '../../../model/toolCall'
+import { failedResult, isGenericKind, unparsedResult } from '../../../model/toolCall'
+import { toolRequestFor } from '../../defaultToolRequests'
 import { retainedOutcome } from '../../registry'
+import { lettaQuestionReceiptMessage, lettaQuestionsFromToolInput } from '../askUserQuestion'
 import { lettaToolKind } from '../toolKinds'
 import { isLettaToolProgress, lettaReturnedData, lettaToolPayload } from '../toolOutput'
+import { lettaTodoLists } from './todo'
 
 /**
  * Read one Letta Code row into the shared row model.
@@ -27,8 +33,8 @@ export function lettaExtractRow(input: RowExtractionInput): ChatRow | null {
       return lettaToolRow(input, category.kind === 'tool_result')
     case 'user_content':
       return leapmuxUserRow(payload)
-    case 'result_divider':
-      return { kind: 'divider', divider: { label: 'Turn ended' } }
+    // `extractDivider` reads the turn end. The shared extraction never passes a
+    // `result_divider` row here.
     default:
       return null
   }
@@ -56,9 +62,9 @@ function lettaCallId(source: Record<string, unknown> | null): string | undefined
 }
 
 function lettaArguments(source: Record<string, unknown> | null): Record<string, unknown> | null {
-  return lettaObjectArguments(source?.[LETTA_DELTA_FIELD.ToolArgs])
-    ?? lettaObjectArguments(source?.[LETTA_DELTA_FIELD.ToolInput])
-    ?? lettaObjectArguments(lettaNativeToolCall(source)?.[LETTA_DELTA_FIELD.Arguments])
+  return lettaJsonObject(source?.[LETTA_DELTA_FIELD.ToolArgs])
+    ?? lettaJsonObject(source?.[LETTA_DELTA_FIELD.ToolInput])
+    ?? lettaJsonObject(lettaNativeToolCall(source)?.[LETTA_DELTA_FIELD.Arguments])
 }
 
 /** The row one tool call becomes, with both span sides resolved. */
@@ -88,12 +94,9 @@ function lettaToolRow(
   const candidateResult = isResult ? source : lettaToolPayload(span.result?.parentObject)
   const resultSource = lettaMatchingCall(source, candidateResult) && !isLettaToolProgress(candidateResult) ? candidateResult : null
   const returned = lettaReturnedData(resultSource)
-  const nativeText = returned.kind === 'present'
-    ? (typeof returned.value === 'string' ? returned.value : JSON.stringify(returned.value))
-    : undefined
-  const resultText = nativeText
   const declared = lettaToolKind(name)
   const kind = declared === 'unspecified' ? 'other' : declared
+  const resultText = returned.kind === 'present' ? lettaResultText(kind, returned.value) : undefined
   const nativeStatus = pickString(resultSource, LETTA_DELTA_FIELD.Status, undefined) ?? (returned.kind === 'present' ? returned.status : undefined)
   const lifecycle = lettaLifecycle(completion, isResult, nativeStatus, resultText !== undefined)
   const envelope = { id, name, lifecycle }
@@ -123,16 +126,93 @@ function lettaToolRow(
     })
     return toolCallRow(call, isResult ? 'result' : 'request', span.visibleRows)
   }
-  // Other tools keep their generic result card. Native status remains independent of its text.
-  const call = createToolCall(envelope, {
-    kind: hasInput && !isResult && kind !== 'edit' && kind !== 'write' ? kind : 'other',
-    name,
-    request: hasInput && !isResult ? args : { args },
-    ...(resultText !== undefined
-      ? { result: failed ? failedResult(resultText) : { content: [{ type: 'text' as const, text: resultText }] } }
+  const facts: LettaToolFacts = { envelope, name, args, resultText, failed }
+  // A task call draws its checklist on both rows. The native answer is the saved
+  // task record, so the result row can read it without the paired request.
+  if (kind === 'todo') {
+    const lists = lettaTodoLists(name, args, returned.kind === 'present' && !failed ? returned.value : undefined)
+    if (lists) {
+      const call = createToolCall(envelope, {
+        kind: 'todo',
+        name,
+        request: lists.request,
+        ...(resultText !== undefined ? { result: failed ? failedResult(resultText) : lists.result ?? unparsedResult(resultText) } : {}),
+      })
+      return toolCallRow(call, isResult ? 'result' : 'request', span.visibleRows)
+    }
+  }
+  // A result row, a call that states no input and a call whose declared kind has
+  // no reading here keep the generic result card. Native status remains
+  // independent of its text.
+  const call = isResult || !hasInput || kind === 'todo' || kind === 'edit' || kind === 'write' || isGenericKind(kind)
+    ? lettaGenericCall(facts)
+    : lettaDeclaredCall(kind, facts)
+  return toolCallRow(call, isResult ? 'result' : 'request', span.visibleRows)
+}
+
+/**
+ * The returned data of one call as the text that its result card draws.
+ *
+ * A question call returns a receipt at once, and the card draws the sentence that
+ * the receipt states for the reader, not the JSON that holds it. Every other
+ * return stays as Letta Code wrote it.
+ */
+function lettaResultText(kind: ToolKind, value: unknown): string {
+  const text = typeof value === 'string' ? value : JSON.stringify(value)
+  return (kind === 'question' ? lettaQuestionReceiptMessage(lettaJsonObject(value)) : undefined) ?? text
+}
+
+/** Everything one tool row states, collected once. */
+interface LettaToolFacts {
+  envelope: ToolCallEnvelope
+  name: string
+  args: Record<string, unknown>
+  /** The returned data as text. Undefined when no matching answer landed. */
+  resultText: string | undefined
+  failed: boolean
+}
+
+/** The generic card: the native arguments and the native text. */
+function lettaGenericCall(facts: LettaToolFacts): ToolCall {
+  return createToolCall(facts.envelope, {
+    kind: 'other',
+    name: facts.name,
+    request: { args: facts.args },
+    ...(facts.resultText !== undefined
+      ? { result: facts.failed ? failedResult(facts.resultText) : { content: [{ type: 'text' as const, text: facts.resultText }] } }
       : {}),
   })
-  return toolCallRow(call, isResult ? 'result' : 'request', span.visibleRows)
+}
+
+/**
+ * The kinds whose Letta arguments the shared table cannot read.
+ *
+ * Every other declared kind reads the shared table: Letta spells `command`,
+ * `file_path`, `description` and `prompt` as the table does. `todo` stays out of
+ * this table, because its request needs the native answer as well as the
+ * arguments; {@link lettaTodoLists} reads it.
+ */
+export const LETTA_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<null> = {
+  // The questions and their options, whose shape is Letta's own.
+  question: (args): ToolRequestByKind['question'] => ({ questions: lettaQuestionsFromToolInput(args) }),
+}
+
+/**
+ * A call of a declared kind: the request that its arguments state, read through
+ * the shared table, and its answer as plain text.
+ *
+ * The kind renderers read their own request and result fields without a guard.
+ * The raw arguments and a generic `{content}` result therefore cannot stand in
+ * for them: a `todo` row with the raw `TaskCreate` arguments read
+ * `request.items` as undefined and took the whole page into the ErrorBoundary.
+ */
+function lettaDeclaredCall<K extends ToolKind>(kind: K, facts: LettaToolFacts): ToolCall {
+  return createToolCall(facts.envelope, {
+    kind,
+    name: facts.name,
+    request: toolRequestFor(kind, facts.args, null, LETTA_TOOL_REQUEST_OVERRIDES),
+    ...(facts.resultText !== undefined ? { result: facts.failed ? failedResult(facts.resultText) : unparsedResult(facts.resultText) } : {}),
+  })
 }
 
 function lettaMatchingCall(source: Record<string, unknown>, candidate: Record<string, unknown> | null): boolean {
@@ -150,7 +230,8 @@ function lettaNativeToolCall(source: Record<string, unknown> | null | undefined)
   return Array.isArray(calls) ? (calls.find(isObject) ?? null) : null
 }
 
-function lettaObjectArguments(raw: unknown): Record<string, unknown> | null {
+/** The object that `raw` is, or that the JSON text `raw` states. Anything else is null. */
+function lettaJsonObject(raw: unknown): Record<string, unknown> | null {
   if (isObject(raw))
     return raw
   if (typeof raw !== 'string')

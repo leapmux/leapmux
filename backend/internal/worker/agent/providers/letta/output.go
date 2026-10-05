@@ -32,7 +32,9 @@ func isLettaRawInterrupt(content []byte) bool {
 	return head.Kind == "abort_message"
 }
 
-// lettaDelta is the payload of one stream_delta.
+// lettaDelta is the payload of one stream_delta. `OTID` is the id that a
+// `user_message` repeats from its sender: Letta Code takes it from the
+// `client_message_id` of the message (see protocol.go).
 type lettaDelta struct {
 	ID               string                `json:"id"`
 	RunID            string                `json:"run_id"`
@@ -47,6 +49,7 @@ type lettaDelta struct {
 	ToolInput        json.RawMessage       `json:"tool_input"`
 	ToolReturn       json.RawMessage       `json:"tool_return"`
 	ToolReturns      json.RawMessage       `json:"tool_returns"`
+	OTID             string                `json:"otid"`
 	PromptTokens     *int64                `json:"prompt_tokens"`
 	CompletionTokens *int64                `json:"completion_tokens"`
 	TotalTokens      *int64                `json:"total_tokens"`
@@ -88,10 +91,22 @@ func (a *Agent) onStreamDelta(payload []byte, subagentID string) {
 	case contracts.LettaDeltaKindClientToolEnd:
 		a.onClientToolEnd(payload, &delta, target, subagentID)
 	case contracts.LettaDeltaKindUserMessage:
-		if subagentID == "" {
-			a.observeChildTaskNotifications(deltaText(delta.Content))
+		// Letta Code echoes a message that it queued when the message starts.
+		// LeapMux stored each message that it sent: the reader's text as a user
+		// row, and the answer to a question as a control response. An echo that
+		// states a LeapMux id therefore draws no second row. It is also no
+		// notification of a child, because the message is the reader's own text.
+		if isLeapMuxClientMessageID(delta.OTID) {
+			return
 		}
-		if subagentID == "" || deltaText(delta.Content) != a.children[subagentID].prompt {
+		text := deltaText(delta.Content)
+		if subagentID == "" {
+			a.observeChildTaskNotifications(text)
+			if isLettaQuestionNotification(text) {
+				return
+			}
+		}
+		if subagentID == "" || text != a.children[subagentID].prompt {
 			a.persistRowTo(target, payload, agent.SpanInfo{})
 		}
 	case contracts.LettaDeltaKindRetry, contracts.LettaDeltaKindLoopError:
@@ -246,6 +261,33 @@ func (a *Agent) onToolReturn(payload []byte, delta *lettaDelta, target agent.Pro
 	target.ReportProgress(agent.CompleteOutputProgress(spanID))
 	target.CloseSpan(spanID)
 	a.persistRowTo(target, payload, agent.SpanInfo{SpanID: spanID, Closing: true})
+	// A subagent runs headless, so no client answers its questions.
+	if subagentID == "" {
+		a.postQuestionRequest(tool, delta)
+	}
+}
+
+// lettaTurnFinished is the part of a `turn_finished` frame that states how the
+// turn ended. The tag is pinned to the `deltaFields` table of the contract.
+type lettaTurnFinished struct {
+	StopReason string `json:"stop_reason"`
+}
+
+// lettaTurnCompletion maps the native stop reason of a finished turn onto the
+// completion that the worker records with the turn end. Letta Code ends a turn
+// that `abort_message` stopped with `cancelled`, and a turn whose model request
+// failed with `error` or `llm_api_error`. Every other stop reason (`end_turn`,
+// `max_steps`, and any that a later release adds) describes a turn that ran to
+// its own end.
+func lettaTurnCompletion(stopReason string) agent.MessageCompletion {
+	switch stopReason {
+	case contracts.LettaStopReasonCancelled:
+		return agent.MessageCompletionInterrupted
+	case contracts.LettaStopReasonError, contracts.LettaStopReasonLLMAPIError:
+		return agent.MessageCompletionError
+	default:
+		return agent.MessageCompletionComplete
+	}
 }
 
 // onTurnFinished ends the turn. PersistTurnEnd runs before the clear.
@@ -255,7 +297,14 @@ func (a *Agent) onTurnFinished(payload []byte) {
 	toolUses := len(a.turnToolCallIDs)
 	a.turnToolCallIDs = nil
 	a.Mu.Unlock()
-	if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(agent.MessageContent{Original: payload}, toolUses), agent.SpanInfo{}); err != nil {
+	var finished lettaTurnFinished
+	if err := json.Unmarshal(payload, &finished); err != nil {
+		// A stop reason that is not text reads as no stop reason. The turn still
+		// ends, as a turn that ran to its own end.
+		slog.Debug("letta: unreadable stop reason", "agent_id", a.AgentID(), "error", err)
+	}
+	content := agent.MessageContent{Original: payload, Completion: lettaTurnCompletion(finished.StopReason)}
+	if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, toolUses), agent.SpanInfo{}); err != nil {
 		slog.Debug("letta: persist turn end failed", "agent_id", a.AgentID(), "error", err)
 	}
 	a.finishToolOutputScope("", a.sink)

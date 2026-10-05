@@ -187,12 +187,7 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	}
 
 	a.armTurn()
-	cmd := newLettaCommand("input", a.nextRequestID())
-	cmd.Runtime = &scope
-	cmd.Payload = map[string]any{
-		"kind":     "create_message",
-		"messages": payload,
-	}
+	cmd := a.createMessageCommand(scope, payload)
 	// One line per delivered input. The scope fields name the runtime the
 	// frame addresses, which is the difference between a turn and a silent
 	// drop on this protocol.
@@ -210,6 +205,20 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	return nil
 }
 
+// createMessageCommand returns the `input` command that delivers messages to the
+// conversation of scope. Each such input offers the question tool, because the
+// tool belongs to no built-in toolset (see lettaClientToolset).
+func (a *Agent) createMessageCommand(scope runtimeScope, messages []any) lettaCommand {
+	cmd := newLettaCommand("input", a.nextRequestID())
+	cmd.Runtime = &scope
+	cmd.Payload = map[string]any{
+		"kind":           "create_message",
+		"messages":       messages,
+		"client_toolset": lettaClientToolset(),
+	}
+	return cmd
+}
+
 // runtime returns the ConversationRuntimeScope of this conversation.
 func (a *Agent) runtime() runtimeScope {
 	a.Mu.Lock()
@@ -217,7 +226,9 @@ func (a *Agent) runtime() runtimeScope {
 	return runtimeScope{AgentID: a.agentID, ConversationID: a.conversationID}
 }
 
-// buildUserMessages encodes a user message as Letta's MessageCreate list.
+// buildUserMessages encodes a user message as Letta's MessageCreate list. The
+// message states a fresh id (see newLettaClientMessageID), so the worker knows
+// the echo of the message when Letta Code queues it.
 func buildUserMessages(content string, attachments []*leapmuxv1.Attachment) ([]any, error) {
 	blocks := []any{}
 	text := strings.TrimSpace(content)
@@ -246,7 +257,11 @@ func buildUserMessages(content string, attachments []*leapmuxv1.Attachment) ([]a
 	if len(blocks) == 0 {
 		blocks = append(blocks, map[string]any{"type": "text", "text": ""})
 	}
-	return []any{map[string]any{"role": "user", "content": blocks}}, nil
+	return []any{map[string]any{
+		"role":                    "user",
+		"content":                 blocks,
+		lettaClientMessageIDField: newLettaClientMessageID(),
+	}}, nil
 }
 
 // armTurn marks a turn active and publishes the flag. A repeat of the current

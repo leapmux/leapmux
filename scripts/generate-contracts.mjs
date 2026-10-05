@@ -2795,8 +2795,9 @@ export const PROVIDER_PROTOCOLS = [
     preamble: [
       'Letta owns the command, message, delta-kind, tool, subagent-state and loop-status names.',
       'LeapMux owns the permission modes and the reply fields: the worker persists each transcript',
-      'row as Letta\'s own `stream_delta` payload and answers the server\'s `can_use_tool` request',
-      'with a FLAT `approval_response` payload, and the browser draws both.',
+      'row as Letta\'s own `stream_delta` payload, answers the server\'s `can_use_tool` request',
+      'with a FLAT `approval_response` payload, answers a question with a task notification,',
+      'and the browser draws all of them.',
     ].join('\n// '),
     tables: [
       { key: 'commands', frameKind: 'name', goTable: 'Command', tsTable: 'COMMAND', tsType: 'LettaCommand', goTagPin: 'backend/internal/worker/agent/providers/letta/contract_tags_test.go', readers: ['go'], readersWhy: 'the worker dispatches a command by name; the browser draws the row the worker stores', doc: 'client->server command `kind` values' },
@@ -2809,7 +2810,9 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'subagentStates', goTable: 'SubagentState', tsTable: 'SUBAGENT_STATE', tsType: 'LettaSubagentState', goTagPin: 'backend/internal/worker/agent/providers/letta/contract_tags_test.go', readers: ['go'], readersWhy: 'the worker stores a subagent state whole; the browser words the child row from the stored bytes', doc: '`status` values of `update_subagent_state`' },
       { key: 'loopStatuses', goTable: 'LoopStatus', tsTable: 'LOOP_STATUS', tsType: 'LettaLoopStatus', readers: ['go'], readersWhy: 'the worker moves the turn flag on these states; the browser draws the row the worker stores', doc: '`update_loop_status` values' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'LettaMode', owner: 'LeapMux chose these', doc: 'permission-mode values for Letta Code' },
-      { key: 'reply', goTable: 'Reply', tsTable: 'REPLY', tsType: 'LettaReplyField', goTagPin: 'backend/internal/worker/agent/providers/letta/contract_tags_test.go', readers: ['go'], readersWhy: 'the worker writes the flat approval_response payload; the browser renders the request it answers and never spells a reply field', owner: 'LeapMux chose these', doc: 'fields of the flat approval_response payload' },
+      { key: 'reply', goTable: 'Reply', tsTable: 'REPLY', tsType: 'LettaReplyField', goTagPin: 'backend/internal/worker/agent/providers/letta/contract_tags_test.go', owner: 'LeapMux chose these', doc: 'fields of the flat approval_response payload, which the browser reads to draw the saved answer' },
+      { key: 'question', goTable: 'Question', tsTable: 'QUESTION', tsType: 'LettaQuestionWord', goTagPin: 'backend/internal/worker/agent/providers/letta/contract_tags_test.go', doc: 'words of the AskUserQuestion receipt that Letta Code returns, and of the response that the worker sends back in a task notification' },
+      { key: 'stopReasons', goTable: 'StopReason', tsTable: 'STOP_REASON', tsType: 'LettaStopReason', readers: ['go'], readersWhy: 'the worker records how a turn ended from its stop reason; the browser draws the divider from that record and never reads the word', doc: '`stop_reason` values of `turn_finished` that the worker records as an interrupted turn or a failed turn' },
     ],
   },
   {

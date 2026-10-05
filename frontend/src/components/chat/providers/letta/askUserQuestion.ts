@@ -1,30 +1,31 @@
 /**
- * Letta Code's question requests: recognize one, read its questions, and answer
- * it.
+ * Letta Code's question requests: recognize one, read its questions, and read
+ * the questions of the tool call that posted it.
  *
- * Letta asks through `AskUserQuestion`, whose `can_use_tool` control request
- * carries the tool call and its `tool_input`. The worker publishes that request
- * verbatim as the control request, so the payload the reader sees is the one
- * this module reads.
- *
- * The answer is Letta's own `approval_response` decision: the flat
- * `{kind, request_id, decision}` payload whose `updated_input` holds the
- * original questions and an `answers` map keyed by question text.
+ * Letta asks through `AskUserQuestion`, which posts its questions and returns a
+ * receipt at once. The Worker publishes that receipt as a question request: its
+ * `tool_input` holds the `questions` of the call, verbatim. The answer returns
+ * through the shared question control, which folds the answers into that input.
+ * The Worker turns the answer into the response that Letta Code reads.
  */
-import type { ControlAnswerState } from '../../controls/types'
-import type { ControlQuestion } from '../../model/question'
-import { LETTA_DELTA_FIELD } from '~/generated/contracts/letta-protocol'
+import type { ControlQuestion, QuestionPrompt } from '../../model/question'
+import { LETTA_DELTA_FIELD, LETTA_QUESTION } from '~/generated/contracts/letta-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { buildControlResponseEnvelope } from '~/utils/controlResponse'
+import { questionsFromRecords } from '../questionRecords'
 
 /** Whether a stored control payload is a question request. */
 export function lettaIsQuestionRequest(payload: Record<string, unknown>): boolean {
   return pickString(payload, 'type') === 'ask_user'
 }
 
+/** The input of the question call that a stored question request carries. */
+export function lettaQuestionToolInput(payload: Record<string, unknown>): Record<string, unknown> {
+  return pickObject(payload, LETTA_DELTA_FIELD.ToolInput) ?? {}
+}
+
 /** The questions of a stored question request, for the shared control. */
 export function lettaQuestionsFromPayload(payload: Record<string, unknown>): ControlQuestion[] {
-  const toolInput = pickObject(payload, LETTA_DELTA_FIELD.ToolInput) ?? payload
+  const toolInput = lettaQuestionToolInput(payload)
   const questions = Array.isArray(toolInput.questions) ? toolInput.questions : []
   return questions.filter(isObject).map((question) => {
     const options = Array.isArray(question.options) ? question.options : []
@@ -43,14 +44,44 @@ export function lettaQuestionsFromPayload(payload: Record<string, unknown>): Con
 }
 
 /**
- * The control response that answers one question: the option the reader picked
- * for each question, keyed by the question text.
+ * The questions of an `AskUserQuestion` TOOL CALL, for the transcript row that
+ * draws it.
+ *
+ * The arguments carry the same records as the question request, so the text
+ * and the option labels read the same here. The row also keeps the header and
+ * the description of each option, which the banner has no place for.
  */
-export function buildLettaAnswer(requestId: string, questions: ControlQuestion[], state: ControlAnswerState): Record<string, unknown> {
-  const answers: Record<string, string> = {}
-  questions.forEach((question, index) => {
-    const picked = (state.selections()[index] ?? []).find(value => question.options.some(option => option.value === value))
-    answers[question.question] = picked ?? state.customTexts()[index] ?? ''
-  })
-  return buildControlResponseEnvelope(requestId, { behavior: 'allow', answers })
+export function lettaQuestionsFromToolInput(input: Record<string, unknown>): QuestionPrompt[] {
+  return questionsFromRecords(
+    input.questions,
+    (question) => {
+      const header = pickString(question, 'header')
+      return { ...(header ? { header } : {}), question: pickString(question, 'question') }
+    },
+    (option) => {
+      const label = pickString(option, 'label')
+      if (!label)
+        return null
+      const description = pickString(option, 'description')
+      return { label, ...(description ? { description } : {}) }
+    },
+  )
+}
+
+/**
+ * The sentence that a question receipt states for the reader, or undefined when
+ * `returned` is no receipt.
+ *
+ * The receipt of an accepted `AskUserQuestion` call is a JSON object. It repeats
+ * the questions, which the request row already draws, and it adds one `message`
+ * that tells the reader that the answer arrives later. That message is the result
+ * of the call. A return that is no receipt, such as the text of a refused call,
+ * has no message here and stays as Letta Code wrote it, and so does a receipt
+ * with no usable message.
+ */
+export function lettaQuestionReceiptMessage(returned: Record<string, unknown> | null): string | undefined {
+  if (pickString(returned, LETTA_QUESTION.FieldType) !== LETTA_QUESTION.ReceiptType)
+    return undefined
+  const message = pickString(returned, LETTA_QUESTION.FieldMessage)
+  return message.trim() === '' ? undefined : message
 }

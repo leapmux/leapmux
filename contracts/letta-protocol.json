@@ -1,5 +1,5 @@
 {
-  "_readme": "Letta Code uses a protocol_v2 App Server through `letta server --listen`. Go and TypeScript read these wire values. The Worker stores native `stream_delta` payloads. A message with several tool calls produces one native payload per call. The browser plugin reads the same `message_type` and `deltaFields`.\n\n`commands` identifies client commands. `messages` identifies server messages. `deltaKinds` identifies stream message types. `tools` identifies native tools that both sides use. The Worker opens child rows for `Agent` and answers `AskUserQuestion`. The Worker streams `Bash` output, and the plugin draws the tools.\n\n`subagentStates` identifies child lifecycle values. `loopStatuses` identifies busy states. Letta owns these values except `modes` and `reply`. LeapMux owns `modes`, which maps permission choices to `runtime_start.mode`. LeapMux owns the flat browser decision fields in `reply`.\n\n`kind`, `request_id`, and `decision` stay at the top level. They never appear under `response`. Native `client_tool_start` uses serialized `tool_args`. The separate browser control payload uses `tool_input`.\n\nThe Worker preserves each original native final return. Letta can report an output file path in its native final footer. The browser shows that path beside the original preview. LeapMux reads no output file. `toolOutput.StreamIDPrefix` identifies native current-window progress. Only the exact prefix plus `tool_call_id` identifies progress. Genuine final returns also use synthetic IDs. `toolStatuses` identifies native result status. `deltaFields.ID`, `RunID`, and `ToolReturns` retain the native message, run, and composite result identities. An empty client_tool_end carries lifecycle state. Actual returned data remains present when its value is empty, zero, false, or null.",
+  "_readme": "Letta Code uses a protocol_v2 App Server through `letta server --listen`. Go and TypeScript read these wire values. The Worker stores native `stream_delta` payloads. A message with several tool calls produces one native payload per call. The browser plugin reads the same `message_type` and `deltaFields`.\n\n`commands` identifies client commands. `messages` identifies server messages. The browser reads `update_subagent_state` to draw nothing for it, because the Worker draws each child as its own rows and tab. `deltaKinds` identifies stream message types. `tools` identifies native tools that both sides use. The Worker opens child rows for `Agent`, and it posts a question request when an `AskUserQuestion` call returns its receipt. The Worker streams `Bash` output, and the plugin draws the tools.\n\n`subagentStates` identifies child lifecycle values. `loopStatuses` identifies busy states. Letta owns these values except `modes` and `reply`. LeapMux owns `modes`, which maps permission choices to `runtime_start.mode`. LeapMux owns the flat browser decision fields in `reply`.\n\n`question` identifies the receipt that an accepted `AskUserQuestion` call returns and the response that answers it. Letta Code owns these words. The Worker reads the receipt and writes the response. The browser reads the saved response to draw the answer. The browser reads the `message` of the receipt to draw the result of the call. `stopReasons` identifies the `stop_reason` words of `turn_finished` that the Worker records as an interrupted turn or a failed turn.\n\n`kind`, `request_id`, and `decision` stay at the top level. They never appear under `response`. Native `client_tool_start` uses serialized `tool_args`. The separate browser control payload uses `tool_input`.\n\nThe Worker preserves each original native final return. Letta can report an output file path in its native final footer. The browser shows that path beside the original preview. LeapMux reads no output file. `toolOutput.StreamIDPrefix` identifies native current-window progress. Only the exact prefix plus `tool_call_id` identifies progress. Genuine final returns also use synthetic IDs. `toolStatuses` identifies native result status. `deltaFields.ID`, `RunID`, and `ToolReturns` retain the native message, run, and composite result identities. An empty client_tool_end carries lifecycle state. Actual returned data remains present when its value is empty, zero, false, or null.",
   "_unread": {
     "commands": {
       "AbortMessage": {
@@ -105,12 +105,6 @@
           "ts"
         ],
         "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
-      },
-      "UpdateSubagentState": {
-        "sides": [
-          "ts"
-        ],
-        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
       }
     },
     "deltaFields": {
@@ -210,12 +204,6 @@
       }
     },
     "reply": {
-      "Answers": {
-        "sides": [
-          "go"
-        ],
-        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
-      },
       "Behavior": {
         "sides": [
           "go"
@@ -240,23 +228,58 @@
         ],
         "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
       },
-      "Questions": {
-        "sides": [
-          "go"
-        ],
-        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
-      },
       "RequestID": {
         "sides": [
-          "go"
+          "go",
+          "ts"
         ],
-        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+        "why": "The Worker writes this field through a struct tag that a reflection test pins. The browser reads the request id from the request that the Worker published."
+      }
+    },
+    "question": {
+      "StatusAnswered": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker writes this status. The browser reads only a dismissal and draws every other response from its answers."
       },
-      "UpdatedInput": {
+      "FieldType": {
         "sides": [
           "go"
         ],
-        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+        "why": "The Worker reads and writes this field through a struct tag that a reflection test pins to this table."
+      },
+      "FieldVersion": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "The Worker checks this field through a struct tag that a reflection test pins. The browser never reads the version."
+      },
+      "FieldToolCallID": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "The Worker matches this field through a struct tag that a reflection test pins. The browser reads the call from the request that the Worker published."
+      },
+      "FieldQuestions": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The browser reads the questions from the request that the Worker published, and never from the receipt or the response."
+      },
+      "FieldStatus": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker reads and writes this field through a struct tag that a reflection test pins to this table."
+      },
+      "FieldMessage": {
+        "sides": [
+          "go"
+        ],
+        "why": "The browser draws the message of the receipt as the result of the call. The Worker publishes the questions of the receipt and never reads its message."
       }
     }
   },
@@ -364,13 +387,29 @@
   },
   "reply": {
     "Kind": "kind",
+    "KindApprovalResponse": "approval_response",
     "RequestID": "request_id",
     "Decision": "decision",
     "Behavior": "behavior",
-    "Message": "message",
-    "UpdatedInput": "updated_input",
-    "Questions": "questions",
-    "Answers": "answers"
+    "Message": "message"
+  },
+  "question": {
+    "ReceiptType": "ask_user_question",
+    "ResponseType": "ask_user_question_response",
+    "StatusAnswered": "answered",
+    "StatusDismissed": "dismissed",
+    "FieldType": "type",
+    "FieldVersion": "version",
+    "FieldToolCallID": "toolCallId",
+    "FieldQuestions": "questions",
+    "FieldStatus": "status",
+    "FieldAnswers": "answers",
+    "FieldMessage": "message"
+  },
+  "stopReasons": {
+    "Cancelled": "cancelled",
+    "Error": "error",
+    "LLMAPIError": "llm_api_error"
   },
   "toolOutput": {
     "StreamIDPrefix": "synthetic-tool-return-stream-"

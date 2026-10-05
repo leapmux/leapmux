@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { messageContents, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expect, LETTA_E2E_SKIP_REASON, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
 
 lettaTest.describe('Letta Code control requests', () => {
@@ -34,6 +34,8 @@ lettaTest.describe('Letta Code control requests', () => {
     await modelScript.waitForSteps()
     await waitForAgentIdle(page, 180_000)
     await expect(banner(page)).toHaveCount(0)
+    // The saved row reads Letta's own approval_response decision, not a generic answer word.
+    await expect(savedControlAnswer(page)).toHaveText('Allow')
     await expect.poll(() => chatText(page)).toContain('letta-42')
   })
 
@@ -58,5 +60,7 @@ lettaTest.describe('Letta Code control requests', () => {
     // The command never reached the shell, so its output is nowhere on the page.
     await expect.poll(() => chatText(page)).not.toContain('letta-should-not-run')
     await expect(banner(page)).toHaveCount(0)
+    // A denial with no reason keeps the decision word alone.
+    await expect(savedControlAnswer(page)).toHaveText('Deny')
   })
 })

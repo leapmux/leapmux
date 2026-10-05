@@ -1,11 +1,10 @@
 import type { MessageCategory } from '../../messageClassifier'
-import type { NotificationEntry } from '../../model/notification'
 import type { ClassificationInput } from '../registry'
 import { LETTA_DELTA_FIELD, LETTA_DELTA_KIND, LETTA_MESSAGE } from '~/generated/contracts/letta-protocol'
 import { ASSEMBLED_MESSAGE } from '~/generated/contracts/worker-vocab'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { isNotificationThreadWrapper } from '../../messageUtils'
 import { notificationClassifierFor } from '../../notificationClassification'
+import { lettaNotificationEntry } from './extractors/notification'
 import { isLettaToolProgress, lettaReturnedData, lettaToolPayload } from './toolOutput'
 
 /**
@@ -19,7 +18,13 @@ export function classifyLettaMessage(input: ClassificationInput): MessageCategor
   const wrapper = input.wrapper
   if (wrapper && wrapper.messages.length === 0)
     return { kind: 'hidden' }
-  if (isNotificationThreadWrapper(wrapper))
+  // The Worker wraps a notice and nothing else, so every wrapper is a notification
+  // thread. The shared test `isNotificationThreadWrapper` accepts a thread only when
+  // a member has a base notification `type`, and no Letta Code notice has one (a
+  // subagent snapshot has its own `type`, a loop error has none). A thread that fails
+  // that test is read by its first member alone. A failed turn stores the snapshot
+  // first, so the error behind it would never reach the transcript.
+  if (wrapper)
     return notification(wrapper.messages, 'hidden')
 
   const parent = input.parentObject
@@ -78,12 +83,4 @@ export function classifyLettaMessage(input: ClassificationInput): MessageCategor
     return { kind: 'user_content' }
 
   return notification([parent], 'hidden')
-}
-
-/**
- * The notification entry of one provider notice. The raw payload travels whole,
- * so the row draws the provider's own words.
- */
-function lettaNotificationEntry(message: Record<string, unknown>): NotificationEntry[] {
-  return [{ kind: 'text', text: JSON.stringify(message) }]
 }

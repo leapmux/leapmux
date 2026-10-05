@@ -45,6 +45,13 @@ type fakeAppServer struct {
 // newFakeAppServer starts the server and dials the driver's socket to it.
 func newFakeAppServer(t *testing.T) (*fakeAppServer, *Agent) {
 	t.Helper()
+	return newFakeAppServerWithSink(t, &agenttest.Sink{})
+}
+
+// newFakeAppServerWithSink is newFakeAppServer for a test that reads the rows
+// that the agent stores.
+func newFakeAppServerWithSink(t *testing.T, sink *agenttest.Sink) (*fakeAppServer, *Agent) {
+	t.Helper()
 	fake := &fakeAppServer{
 		commands: make(chan map[string]any, 8),
 		replies:  make(chan []byte, 8),
@@ -85,7 +92,6 @@ func newFakeAppServer(t *testing.T) (*fakeAppServer, *Agent) {
 		cancel()
 	})
 
-	sink := &agenttest.Sink{}
 	a := &Agent{
 		Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{
 			AgentID:      "worker-agent-1",

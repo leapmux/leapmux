@@ -19,9 +19,12 @@ lettaTest.describe('Letta Code subagents', () => {
     await withCleanup(async () => {
       await modelScript.rule(LETTA_TITLE_RULE)
       const childPrompt = modelScript.prompt(CHILD_TASK)
+      // Matched on the child's own last user turn. The root's next request after the
+      // spawn carries the Agent call, and so the child prompt, in its history: a body
+      // matcher gave that root request the child's report and the child the root's.
       await modelScript.rule({
         name: 'the child reports its count',
-        when: { body: CHILD_TASK },
+        when: { user: CHILD_TASK, lastMessage: { role: 'user' } },
         respond: { gate, text: 'LETTA_CHILD_DONE' },
         once: true,
       })

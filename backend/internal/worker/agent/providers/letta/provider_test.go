@@ -61,6 +61,10 @@ func TestIsInterruptRecognizesTheRawFrame(t *testing.T) {
 
 // The approval payload is FLAT: `kind`, `request_id` and `decision` sit at the
 // top level. The nested form produces a protocol violation on the server.
+//
+// The request asks whether AskUserQuestion may run, which Strict mode asks. The
+// answer to a permission never carries a question answer: Letta Code 0.34 returns
+// the questions of an allowed call as a receipt, and the answer follows later.
 func TestResolveControlResponseWritesTheFlatApprovalPayload(t *testing.T) {
 	t.Parallel()
 	request, _ := json.Marshal(map[string]any{
@@ -72,10 +76,7 @@ func TestResolveControlResponseWritesTheFlatApprovalPayload(t *testing.T) {
 	response, _ := json.Marshal(map[string]any{
 		"response": map[string]any{
 			"request_id": "perm-call_ask_1",
-			"response": map[string]any{
-				"behavior": "allow",
-				"answers":  map[string]string{"Which color?": "Blue"},
-			},
+			"response":   map[string]any{"behavior": "allow"},
 		},
 	})
 	resolution := lettaProvider{}.ResolveControlResponse(agent.ControlResponseContext{
@@ -92,15 +93,10 @@ func TestResolveControlResponseWritesTheFlatApprovalPayload(t *testing.T) {
 	assert.Contains(t, flat, "decision", "the approval payload is flat: decision sits at the top level")
 	assert.NotContains(t, flat, "response", "the nested form is a protocol violation")
 
-	var decision struct {
-		Behavior     string          `json:"behavior"`
-		UpdatedInput json.RawMessage `json:"updated_input"`
-	}
+	var decision map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(flat["decision"], &decision))
-	assert.Equal(t, "allow", decision.Behavior)
-	var updated map[string]any
-	require.NoError(t, json.Unmarshal(decision.UpdatedInput, &updated))
-	assert.Contains(t, updated, "answers")
+	assert.JSONEq(t, `"allow"`, string(decision["behavior"]))
+	assert.NotContains(t, decision, "updated_input", "a permission answer changes no tool input")
 }
 
 // A deny must state `decision.message` as a STRING. Letta's

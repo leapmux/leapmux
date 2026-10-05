@@ -2,6 +2,7 @@ package letta
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -175,9 +176,10 @@ func TestSubagentStateStoresAReadableNotification(t *testing.T) {
 	}
 }
 
-// A live control_request opens a question control. Its discriminator is
+// A live control_request opens a permission control. Its discriminator is
 // `request.subtype`, its body sits in `request`, and the id sits at the frame
-// root.
+// root. The frame asks whether AskUserQuestion may run, which Strict mode asks
+// since Letta Code 0.34: the tool no longer waits for an answer.
 func TestControlRequestBodyLivesInTheRequestField(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
@@ -195,7 +197,7 @@ func TestControlRequestBodyLivesInTheRequestField(t *testing.T) {
 	}
 	a.Mu.Unlock()
 	assert.Equal(t, 1, pending, "the request is held as pending")
-	assert.Equal(t, lettaControlAskUser, kind, "AskUserQuestion is a question, not a permission")
+	assert.Equal(t, lettaControlPermission, kind, "a request for the question tool asks whether the tool may run")
 }
 
 // The control payload uses the contract's tool fields that the browser reads.
@@ -214,7 +216,7 @@ func TestControlPayloadUsesTheContractFieldNames(t *testing.T) {
 	require.NotEmpty(t, requests, "the control request is published")
 	var published map[string]any
 	require.NoError(t, json.Unmarshal(requests[0].Payload, &published))
-	assert.Equal(t, "ask_user", published["type"])
+	assert.Equal(t, "permission", published["type"])
 	assert.Equal(t, "AskUserQuestion", published[contracts.LettaDeltaFieldToolName], "the tool name is under tool_name")
 	assert.Equal(t, "call_ask_1", published[contracts.LettaDeltaFieldToolCallID], "the call id is under tool_call_id")
 	assert.NotNil(t, published[contracts.LettaDeltaFieldToolInput], "the tool input is under tool_input")
@@ -371,4 +373,158 @@ func TestLettaEmptyClientEndRetainsLifecycleBeforeTheActualSyntheticFinalReturn(
 	assert.False(t, rows[1].Closing, "an absent result must remain lifecycle data")
 	assert.True(t, rows[2].Closing)
 	assert.Contains(t, string(rows[2].Content), "synthetic-tool-return-native-final", "the actual synthetic final message must remain intact")
+}
+
+// The two live `turn_finished` frames below come from Letta Code 0.34.2.
+// `abort_message` ends a turn with `stop_reason: cancelled`, once the turn stops.
+// A model request that fails ends its turn with `stop_reason: error`, and the
+// frame carries the error text.
+const (
+	lettaLiveTurnFinishedCancelled = `{"type":"turn_finished","turn_id":"batch-direct-ed91f9f8-7480-429e-b8eb-978f8ed667a8","stop_reason":"cancelled","run_id":"local-run-2","runtime":{"agent_id":"agent-local-1","conversation_id":"local-conv-1"},"event_seq":26,"emitted_at":"2026-10-04T21:29:06.785Z","idempotency_key":"turn_finished:26:50f04e1f-9bc5-4c26-9716-37538c613b5c"}`
+	lettaLiveTurnFinishedError     = `{"type":"turn_finished","turn_id":"batch-direct-8c27ef5b-2295-4c29-845e-e1b1ff7fc1bc","stop_reason":"error","run_id":"local-run-1","error":"{\n  \"error\": {\n    \"error\": {\n      \"type\": \"local_backend_error\",\n      \"message\": \"400: {\\\"message\\\":\\\"NATIVEERRORMARKER\\\"}\"\n    },\n    \"run_id\": \"local-run-1\"\n  }\n}","runtime":{"agent_id":"agent-local-1","conversation_id":"local-conv-1"},"event_seq":17,"emitted_at":"2026-10-04T21:41:00.680Z","idempotency_key":"turn_finished:17:2f3e0a18-6118-4be9-9d5f-364278e7366c"}`
+)
+
+// Letta Code 0.34.2 answers a model request that fails with HTTP 400 with these
+// frames, in this order. They are verbatim from a live `letta server --listen` run
+// whose model endpoint refused the request: the `update_subagent_state` snapshot that
+// opens every turn, a non-terminal `loop_error`, an `error_message`, a `stop_reason`,
+// a terminal `loop_error`, and the `turn_finished` that states the error.
+var lettaLiveModelErrorFrames = []string{
+	// snapshot
+	`{"type":"update_subagent_state","subagents":[],"runtime":{"agent_id":"agent-local-9145b410-391b-46fd-8739-f16733a5894f","conversation_id":"local-conv-1"},"event_seq":6,"emitted_at":"2026-10-04T23:54:34.700Z","idempotency_key":"update_subagent_state:6:dfc2de1b-5808-472d-a664-d3a5e2f4f67d"}`,
+	// open loop error
+	`{"type":"stream_delta","delta":{"id":"lifecycle-db3808fb-7b10-4c86-bb1b-f6a5c4f9f980","date":"2026-10-04T23:54:35.359Z","message_type":"loop_error","run_id":"local-run-1","message":"{\n  \"error\": {\n    \"error\": {\n      \"type\": \"local_backend_error\",\n      \"message\": \"400: {\\\"type\\\":\\\"invalid_request_error\\\",\\\"code\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"NATIVEERRORMARKER\\\"}\",\n      \"detail\": \"400: {\\\"type\\\":\\\"invalid_request_error\\\",\\\"code\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"NATIVEERRORMARKER\\\"}\"\n    },\n    \"run_id\": \"local-run-1\"\n  }\n}","stop_reason":"error","is_terminal":false,"api_error":{"message_type":"error_message","message":"400: {\"type\":\"invalid_request_error\",\"code\":\"invalid_request_error\",\"message\":\"NATIVEERRORMARKER\"}","error_type":"local_backend_error","run_id":"local-run-1","detail":"400: {\"type\":\"invalid_request_error\",\"code\":\"invalid_request_error\",\"message\":\"NATIVEERRORMARKER\"}"}},"runtime":{"agent_id":"agent-local-9145b410-391b-46fd-8739-f16733a5894f","conversation_id":"local-conv-1"},"event_seq":11,"emitted_at":"2026-10-04T23:54:35.359Z","idempotency_key":"stream_delta:11:a1047cab-5d50-4698-a33e-13fafa92797e"}`,
+	// error message
+	`{"type":"stream_delta","delta":{"id":"letta-msg-1","date":"2026-10-04T23:54:35.354Z","agent_id":"agent-local-9145b410-391b-46fd-8739-f16733a5894f","conversation_id":"local-conv-1","message_type":"error_message","message":"400: {\"type\":\"invalid_request_error\",\"code\":\"invalid_request_error\",\"message\":\"NATIVEERRORMARKER\"}","detail":"400: {\"type\":\"invalid_request_error\",\"code\":\"invalid_request_error\",\"message\":\"NATIVEERRORMARKER\"}","error_type":"local_backend_error","retryable":false,"run_id":"local-run-1","seq_id":1,"type":"message"},"runtime":{"agent_id":"agent-local-9145b410-391b-46fd-8739-f16733a5894f","conversation_id":"local-conv-1"},"event_seq":12,"emitted_at":"2026-10-04T23:54:35.359Z","idempotency_key":"stream_delta:12:4ce3f538-ae02-48bb-8dad-3772b090da33"}`,
+	// stop reason
+	`{"type":"stream_delta","delta":{"message_type":"stop_reason","stop_reason":"error","run_id":"local-run-1","seq_id":2,"type":"message"},"runtime":{"agent_id":"agent-local-9145b410-391b-46fd-8739-f16733a5894f","conversation_id":"local-conv-1"},"event_seq":13,"emitted_at":"2026-10-04T23:54:35.362Z","idempotency_key":"stream_delta:13:73abed5f-79bf-4a27-b048-447a8af85a5d"}`,
+	// final loop error
+	`{"type":"stream_delta","delta":{"id":"lifecycle-71f78419-3baa-451d-b74d-eada6d09b888","date":"2026-10-04T23:54:35.364Z","message_type":"loop_error","run_id":"local-run-1","message":"{\n  \"error\": {\n    \"error\": {\n      \"type\": \"local_backend_error\",\n      \"message\": \"400: {\\\"type\\\":\\\"invalid_request_error\\\",\\\"code\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"NATIVEERRORMARKER\\\"}\",\n      \"detail\": \"400: {\\\"type\\\":\\\"invalid_request_error\\\",\\\"code\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"NATIVEERRORMARKER\\\"}\"\n    },\n    \"run_id\": \"local-run-1\"\n  }\n}","stop_reason":"error","is_terminal":true,"client_message_ids":["leapmux-message-d41dcd3f-f2ce-4bce-b60e-0eb8c550068b"],"api_error":{"message_type":"error_message","message":"400: {\"type\":\"invalid_request_error\",\"code\":\"invalid_request_error\",\"message\":\"NATIVEERRORMARKER\"}","error_type":"local_backend_error","run_id":"local-run-1","detail":"400: {\"type\":\"invalid_request_error\",\"code\":\"invalid_request_error\",\"message\":\"NATIVEERRORMARKER\"}"}},"runtime":{"agent_id":"agent-local-9145b410-391b-46fd-8739-f16733a5894f","conversation_id":"local-conv-1"},"event_seq":14,"emitted_at":"2026-10-04T23:54:35.364Z","idempotency_key":"stream_delta:14:ee060298-d235-4591-9ca9-3977e0e9b21b"}`,
+	// turn end
+	`{"type":"turn_finished","turn_id":"batch-direct-5b7597fe-01cf-4e2d-9313-92a2b013aa03","stop_reason":"error","run_id":"local-run-1","error":"{\n  \"error\": {\n    \"error\": {\n      \"type\": \"local_backend_error\",\n      \"message\": \"400: {\\\"type\\\":\\\"invalid_request_error\\\",\\\"code\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"NATIVEERRORMARKER\\\"}\",\n      \"detail\": \"400: {\\\"type\\\":\\\"invalid_request_error\\\",\\\"code\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"NATIVEERRORMARKER\\\"}\"\n    },\n    \"run_id\": \"local-run-1\"\n  }\n}","runtime":{"agent_id":"agent-local-9145b410-391b-46fd-8739-f16733a5894f","conversation_id":"local-conv-1"},"event_seq":17,"emitted_at":"2026-10-04T23:54:35.365Z","idempotency_key":"turn_finished:17:bcdb9da3-11dd-4fb7-95bf-941dc1a3de1f"}`,
+}
+
+// The stored turn end records how the turn ended. The browser draws the divider
+// from that record, so an interrupted turn must not read as an ended one.
+func TestTurnFinishedRecordsHowTheTurnEnded(t *testing.T) {
+	t.Parallel()
+	withReason := func(reason string) string {
+		return `{"type":"turn_finished","turn_id":"batch-direct-1","stop_reason":"` + reason + `","run_id":"local-run-1"}`
+	}
+	cases := []struct {
+		name  string
+		frame string
+		want  agent.MessageCompletion
+	}{
+		{"the live cancelled stop", lettaLiveTurnFinishedCancelled, agent.MessageCompletionInterrupted},
+		{"the live error stop", lettaLiveTurnFinishedError, agent.MessageCompletionError},
+		{"the live end_turn stop", lettaLiveTurnFinished, agent.MessageCompletionComplete},
+		{"an llm_api_error stop", withReason("llm_api_error"), agent.MessageCompletionError},
+		{"a max_steps stop", withReason("max_steps"), agent.MessageCompletionComplete},
+		{"a stop that Letta Code adds later", withReason("a_stop_that_does_not_exist_yet"), agent.MessageCompletionComplete},
+		{"a turn end with no stop", `{"type":"turn_finished","turn_id":"batch-direct-1"}`, agent.MessageCompletionComplete},
+		{"a stop that is not text", `{"type":"turn_finished","turn_id":"batch-direct-1","stop_reason":5}`, agent.MessageCompletionComplete},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := &Agent{sink: agent.NewProviderServices(sink)}
+
+			a.HandleOutput([]byte(tc.frame))
+
+			rows := sink.Messages()
+			require.Len(t, rows, 1)
+			assert.True(t, rows[0].TurnEnd)
+			assert.Equal(t, tc.want, rows[0].Completion)
+			assert.JSONEq(t, tc.frame, string(rows[0].Content), "the row keeps the native frame whole")
+		})
+	}
+}
+
+// A failed model request reaches the transcript as notices. The browser draws the
+// error from the two loop errors, and it draws the divider of a failed turn from the
+// completion that the turn end records. The error message and the stop reason state
+// the same error again, and the turn end repeats it, so none of them is a notice.
+func TestModelErrorFramesReachTheTranscriptAsNotices(t *testing.T) {
+	t.Parallel()
+	deltaOf := func(frame string) string {
+		var parsed struct {
+			Delta json.RawMessage `json:"delta"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(frame), &parsed))
+		return string(parsed.Delta)
+	}
+	sink := &agenttest.Sink{}
+	a := &Agent{sink: agent.NewProviderServices(sink)}
+
+	for _, frame := range lettaLiveModelErrorFrames {
+		a.HandleOutput([]byte(frame))
+	}
+
+	notices := sink.PersistedNotifications()
+	require.Len(t, notices, 3, "the snapshot and both loop errors become notices")
+	assert.JSONEq(t, lettaLiveModelErrorFrames[0], string(notices[0].Content), "the snapshot is stored whole")
+	assert.JSONEq(t, deltaOf(lettaLiveModelErrorFrames[1]), string(notices[1].Content), "the non-terminal loop error is stored as its delta")
+	assert.JSONEq(t, deltaOf(lettaLiveModelErrorFrames[4]), string(notices[2].Content), "the terminal loop error is stored as its delta")
+
+	rows := sink.Messages()
+	require.Len(t, rows, 1, "no other frame of the failed turn becomes a row")
+	assert.True(t, rows[0].TurnEnd)
+	assert.Equal(t, agent.MessageCompletionError, rows[0].Completion)
+	assert.JSONEq(t, lettaLiveModelErrorFrames[5], string(rows[0].Content), "the turn end keeps the native frame whole")
+}
+
+// Letta Code 0.34.2 queues the first message after an interrupt, and every message
+// that arrives while a turn runs. It echoes the queued message as a `user_message`
+// when the message starts, and it gives the echo the `client_message_id` of the
+// message as its `otid`: letta.js `emitDequeuedUserMessage` reads
+// `payload.otid ??= payload.client_message_id`. Letta Code's own clients match an
+// echo to their own copy of the message by this id. LeapMux stores the message
+// when the reader sends it, so the echo must draw no second row.
+//
+// The frame is verbatim from a live `letta server --listen` run of Letta Code
+// 0.34.2 (probe `interrupt-model-id`, PROMPT_C after an interrupt), except for
+// the `otid`, which the test sets to the id of the message that it sent.
+const lettaLiveQueuedMessageEcho = `{"type":"stream_delta","delta":{"type":"message","id":"user-msg-65066ea3-9a57-4d90-9c45-5720f48167ca","date":"2026-10-04T23:02:55.820Z","message_type":"user_message","content":[{"type":"text","text":"PROMPT_C"}],"otid":%q},"runtime":{"agent_id":"agent-local-1","conversation_id":"local-conv-1"},"event_seq":28,"emitted_at":"2026-10-04T23:02:55.820Z","idempotency_key":"stream_delta:28:9504d989-cddf-456d-b00e-0efc03fa796f"}`
+
+// The verbatim `input_accepted` and `update_queue` frames of the same run. Both
+// state the queue, and neither draws a row.
+const (
+	lettaLiveQueuedInputAccepted = `{"type":"input_accepted","request_id":"in-3","runtime":{"agent_id":"agent-local-1","conversation_id":"local-conv-1"},"accepted":true,"disposition":"queued"}`
+	lettaLiveQueuedUpdateQueue   = `{"type":"update_queue","queue":[{"id":"q-1","client_message_id":%q,"kind":"message","source":"user","content":[{"type":"text","text":"PROMPT_C"}],"enqueued_at":"2026-10-04T23:02:55.819Z"}],"removed":[],"runtime":{"agent_id":"agent-local-1","conversation_id":"local-conv-1"},"event_seq":27,"emitted_at":"2026-10-04T23:02:55.819Z","idempotency_key":"update_queue:27:2dcc5cd6-06b8-4a22-b820-7fac74717634"}`
+)
+
+func TestEchoOfAQueuedMessageTheReaderSentIsNotARow(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	fake, a := openedAgentWithSink(t, sink)
+
+	require.NoError(t, a.SendInput("PROMPT_C", nil))
+	id := sentClientMessageID(t, inputPayload(t, fake))
+
+	// Letta Code queues the message and echoes it when it starts.
+	a.HandleOutput([]byte(lettaLiveQueuedInputAccepted))
+	a.HandleOutput([]byte(fmt.Sprintf(lettaLiveQueuedUpdateQueue, id)))
+	a.HandleOutput([]byte(fmt.Sprintf(lettaLiveQueuedMessageEcho, id)))
+
+	assert.Empty(t, sink.Messages(), "LeapMux stored the message when the reader sent it, so its echo is no second row")
+}
+
+// A user message that LeapMux did not send keeps its row: Letta Code gives its
+// own messages a random `otid` (the verbatim frame of
+// TestQueuedQuestionAnswerEchoIsNotARow), and a frame may state none.
+func TestUserMessageThatLeapMuxDidNotSendStaysARow(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	_, a := openedAgentWithSink(t, sink)
+
+	a.HandleOutput([]byte(fmt.Sprintf(lettaLiveQueuedMessageEcho, "aa72b91d-0de8-4bde-bada-4d070e2a13f1")))
+	assert.Len(t, sink.Messages(), 1, "a message with an id of Letta Code's own is a row")
+
+	a.HandleOutput([]byte(`{"type":"stream_delta","delta":{"message_type":"user_message","content":[{"type":"text","text":"No id."}]}}`))
+	assert.Len(t, sink.Messages(), 2, "a message with no id is a row")
+
+	a.HandleOutput([]byte(fmt.Sprintf(lettaLiveQueuedMessageEcho, "")))
+	assert.Len(t, sink.Messages(), 3, "a message with an empty id is a row")
 }

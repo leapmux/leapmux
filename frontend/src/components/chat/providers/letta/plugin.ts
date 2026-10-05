@@ -3,6 +3,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { OPTION_ID_PERMISSION_MODE } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { classifyLettaMessage } from './classification'
+import { lettaNotificationEntry } from './extractors/notification'
 import { lettaOutputFilePaths } from './extractors/outputFilePaths'
 import { lettaResultDivider } from './extractors/resultDivider'
 import { lettaExtractRow } from './extractors/row'
@@ -13,6 +14,7 @@ const lettaPlugin: ProviderPlugin = {
   transcript: {
     outputFilePaths: lettaOutputFilePaths,
     classify: classifyLettaMessage,
+    notificationEntry: lettaNotificationEntry,
     extractRow: lettaExtractRow,
     extractDivider: lettaResultDivider,
     spanRole: lettaSpanRole,

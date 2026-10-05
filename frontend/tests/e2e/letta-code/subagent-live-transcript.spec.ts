@@ -26,10 +26,13 @@ lettaTest.describe('Letta Code subagents', () => {
       writeFileSync(note, `${CHILD_READ_MARKER}\n`)
       const childPrompt = modelScript.prompt(`${CHILD_READ_TASK}\nPath: ${note}`)
       await modelScript.rule(LETTA_TITLE_RULE)
+      // Matched on the child's own last user turn. The root's next request after the
+      // spawn carries the Agent call, and so the child prompt, in its history: a body
+      // matcher gave that root request the child's turn and the child the root's.
       await modelScript.rule(
         {
           name: 'the Letta child reads the marker file',
-          when: { body: CHILD_READ_TASK },
+          when: { user: CHILD_READ_TASK, lastMessage: { role: 'user' } },
           respond: {
             text: 'LETTA_CHILD_EARLY',
             toolCalls: [readToolCall(PROVIDER, 'letta-child-read', note)],
@@ -38,7 +41,7 @@ lettaTest.describe('Letta Code subagents', () => {
         },
         {
           name: 'the Letta child reports the marker',
-          when: { body: CHILD_READ_MARKER },
+          when: { user: CHILD_READ_TASK, lastMessage: { role: 'tool', text: CHILD_READ_MARKER } },
           respond: { gate: CHILD_GATE, text: 'LETTA_CHILD_FINAL' },
           once: true,
         },

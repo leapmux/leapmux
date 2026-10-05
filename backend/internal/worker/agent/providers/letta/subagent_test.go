@@ -292,6 +292,32 @@ func TestLettaChildCompletionUsesTheReportWhenTheStreamHasNoFinalMessage(t *test
 	assert.Contains(t, strings.Join(childText, "\n"), "LETTA_FINAL_ONLY_IN_REPORT")
 }
 
+// A task notification in the echo of the reader's own message is the reader's
+// text. It closes no child, although it names the task of a running child.
+func TestLettaEchoOfTheReadersMessageClosesNoChild(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	a.HandleOutput(lettaChildStateFrame(t, "running"))
+	a.HandleOutput(lettaChildTaskReceipt(t))
+
+	var echo map[string]any
+	require.NoError(t, json.Unmarshal(lettaChildTaskNotification(t, "task_1", "TYPED_BY_THE_READER"), &echo))
+	echo["delta"].(map[string]any)["otid"] = newLettaClientMessageID()
+	frame, err := json.Marshal(echo)
+	require.NoError(t, err)
+	a.HandleOutput(frame)
+
+	row, ok := sink.BackgroundTask(lettaTestChildID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+	// The same notification without the id of the reader's message is Letta Code's own.
+	a.HandleOutput(lettaChildTaskNotification(t, "task_1", "FROM_LETTA_CODE"))
+	row, ok = sink.BackgroundTask(lettaTestChildID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+}
+
 func TestLettaChildCompletionRejectsAnotherTaskID(t *testing.T) {
 	t.Parallel()
 	a, sink := newLettaChildTestAgent(t)

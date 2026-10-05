@@ -6,10 +6,11 @@ import { lettaToolKind } from './toolKinds'
 /**
  * `Provider.extractControl` for Letta Code.
  *
- * The worker publishes one request per `can_use_tool` control request. An
- * AskUserQuestion call is a question and takes its own path —
- * `askUserQuestion.isRequest` recognizes it before this reader runs — so this
- * reader answers a permission alone.
+ * The worker publishes one permission request per `can_use_tool` control request,
+ * and one question request per receipt of an `AskUserQuestion` call. A question
+ * takes its own path — `askUserQuestion.isRequest` recognizes it before this
+ * reader runs — so this reader answers a permission alone. A permission for the
+ * question tool is one of them: Strict mode asks whether the tool may run.
  */
 export function lettaExtractControl(input: ControlExtractionInput): ExtractedControlRequest | null {
   const { payload } = input

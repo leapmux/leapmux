@@ -37,10 +37,10 @@ lettaTest('replaces live native shell windows and retains one actual final resul
       await expect(live).toHaveCount(1)
       await expect(live).toBeVisible()
       // The shared publisher sends only the last 2 KiB. Native markers remain in the retained records.
-      const tail = (boundary.phase === 'first' ? 'x' : 'y').repeat(128)
+      const tail = boundary.phase === 'first' ? boundary.firstLiveTail : boundary.secondLiveTail
       await expect(live).toContainText(tail)
       if (boundary.phase === 'second')
-        await expect(live).not.toContainText('x'.repeat(128))
+        await expect(live).not.toContainText(boundary.firstLiveTail)
       const result = page.locator('[data-testid="message-bubble"][data-tool-call-id="native-progress-output"][data-tool-row-role="result"]:visible')
       await expect(result).toHaveCount(0)
       const currentSnapshot = await readNativeMessageSnapshot(context, agent.id)

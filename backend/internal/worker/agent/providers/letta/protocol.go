@@ -4,8 +4,13 @@ import (
 	"encoding/json"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 // Letta Code's App Server WebSocket vocabulary (protocol_v2) that only the
@@ -80,6 +85,57 @@ const (
 	lettaConversationsDir = "conversations"
 )
 
+// lettaClientToolset is the `client_toolset` of every `create_message` input.
+//
+// Since Letta Code 0.34 no built-in toolset holds AskUserQuestion. A client that
+// answers questions names the tool in `include` on each input, and the server
+// answers "Tool not found: AskUserQuestion" to a call that no input offered. A
+// function returns the map, so no caller shares or changes one copy.
+func lettaClientToolset() map[string]any {
+	return map[string]any{"include": []string{contracts.LettaToolAskUserQuestion}}
+}
+
+// The identity of a message that the worker sends.
+//
+// Letta Code queues a message that arrives while it is busy, and the first
+// message after an interrupt. It echoes a queued message as a `user_message`
+// when the message starts, and it states the `client_message_id` of the message
+// as the `otid` of the echo: letta.js `emitDequeuedUserMessage` sets
+// `payload.otid ??= payload.client_message_id`. The clients of Letta Code match
+// an echo to their own copy of the message by this id. The worker does the same,
+// because it stored the message when the reader sent it.
+//
+// Each id is a fresh UUID. The App Server accepts an id once: a repeat of an
+// accepted id gets the first disposition back and starts nothing
+// (`getAcceptedInputDisposition`). A counter that restarts with the worker, or a
+// hash of the text, could repeat an id.
+const (
+	// lettaClientMessageIDField is the field of one message of a `create_message`
+	// input that states the id of the message.
+	lettaClientMessageIDField = "client_message_id"
+	// lettaClientMessageIDPrefix starts each id that the worker gives a message.
+	// No id of Letta Code starts with it.
+	lettaClientMessageIDPrefix = "leapmux-message-"
+)
+
+// newLettaClientMessageID returns the id for one message that the worker sends.
+func newLettaClientMessageID() string {
+	return lettaClientMessageIDPrefix + uuid.NewString()
+}
+
+// isLeapMuxClientMessageID reports whether id is one that newLettaClientMessageID
+// returned. An id of Letta Code's own, an empty id and a text that only starts
+// with the prefix are not. The UUID must have the canonical form, because
+// uuid.Parse also reads braces, a URN and a bare hexadecimal string.
+func isLeapMuxClientMessageID(id string) bool {
+	suffix, found := strings.CutPrefix(id, lettaClientMessageIDPrefix)
+	if !found {
+		return false
+	}
+	parsed, err := uuid.Parse(suffix)
+	return err == nil && parsed.String() == suffix
+}
+
 // Approval payload shape. The `request_id` and `decision` sit FLAT on the
 // payload, never under a `response` key: the nested form produces
 // `loop_error: "Protocol violation: input.kind=approval_response requires
@@ -98,9 +154,8 @@ type approvalResponsePayload struct {
 // dropped an empty message turned every deny into a protocol violation, the
 // tool call hung, and the turn never reached the model again.
 type decisionBody struct {
-	Behavior     string          `json:"behavior"`
-	Message      string          `json:"message"`
-	UpdatedInput json.RawMessage `json:"updated_input,omitempty"`
+	Behavior string `json:"behavior"`
+	Message  string `json:"message"`
 }
 
 // lettaSeq is the event_seq counter every command carries. The server requires

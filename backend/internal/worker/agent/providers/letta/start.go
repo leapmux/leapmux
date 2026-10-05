@@ -27,6 +27,17 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 }
 
 // startServer runs the App Server and completes the protocol_v2 handshake.
+// lettaDisableAutoUpdaterEnv turns off the update that Letta Code starts from its
+// startup path: `npm install -g @letta-ai/letta-code`, which replaces the files of
+// the running CLI and the operator's global install (letta.js
+// isAutoUpdateEnabled; only the exact value `1` counts).
+//
+// `letta server` handles its subcommand before that path, so the App Server never
+// updates. A subagent is a `letta` child that takes the path, and it inherits the
+// App Server's environment (composeSubagentChildEnv), so the pin reaches it. The
+// shell wrapper states the pin after the user's profile.
+const lettaDisableAutoUpdaterEnv = "DISABLE_AUTOUPDATER=1"
+
 func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderServices, spec launch.Spec, shutdownGrace time.Duration) (agent.Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
@@ -34,6 +45,7 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 		LoginShell: opts.LoginShell,
 		Launch:     spec,
 		BaseArgs:   lettaServerArgs,
+		SetEnv:     []string{lettaDisableAutoUpdaterEnv},
 		WorkingDir: opts.WorkingDir,
 	})
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)

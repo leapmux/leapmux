@@ -31,8 +31,9 @@ func (lettaProvider) PlanModeControl(string) agent.PlanModeControlKind {
 	return agent.PlanModeControlNone
 }
 
-// ResolveControlResponse turns the browser's decision into the flat
-// approval_response payload Letta reads.
+// ResolveControlResponse turns the browser's decision into the bytes that Letta
+// Code reads: the flat approval_response payload for a permission, and the
+// question response for a question.
 func (lettaProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	return lettaResolveControlResponse(ctx)
 }

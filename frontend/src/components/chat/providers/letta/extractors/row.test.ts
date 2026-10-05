@@ -1,9 +1,10 @@
 import type { ToolSpanContext } from '~/components/chat/rowExtractionTypes'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
 import { resolveMessageForRendering } from '../../registry'
 import { classifyLettaMessage } from '../classification'
-import { lettaExtractRow } from './row'
+import { LETTA_TOOL_REQUEST_OVERRIDES, lettaExtractRow } from './row'
 
 function resolvedLettaFrame(frame: Record<string, unknown>) {
   return resolveMessageForRendering({ rawText: JSON.stringify(frame), topLevel: frame, parentObject: frame, wrapper: null }, AgentProvider.LETTA)
@@ -94,6 +95,90 @@ describe('lettaExtractRow', () => {
     expect(row.call.request).not.toHaveProperty('changes')
   })
 
+  it('builds the declared Read request from the native file_path argument', () => {
+    const row = nativeToolRow({ name: 'Read', args: JSON.stringify({ file_path: '/private/note.txt', offset: 2, limit: 5 }) })
+    expect(row.call.kind).toBe('read')
+    expect(row.call.request).toEqual({ path: '/private/note.txt', offset: 2, limit: 5 })
+  })
+
+  it('builds the declared question request from the native AskUserQuestion arguments', () => {
+    const row = nativeToolRow({
+      name: 'AskUserQuestion',
+      args: JSON.stringify({ questions: [{ header: 'Color', question: 'Which color?', options: [{ label: 'Red', description: 'The warm one' }, { label: 'Blue' }], multiSelect: false }] }),
+    })
+    expect(row.call.kind).toBe('question')
+    expect(row.call.request).toEqual({ questions: [{ header: 'Color', question: 'Which color?', options: [{ label: 'Red', description: 'The warm one' }, { label: 'Blue' }] }] })
+  })
+
+  // Letta Code 0.34 posts the questions of an AskUserQuestion call and returns a receipt at
+  // once. The receipt is JSON text. Its `message` is the one sentence for the reader: the
+  // questions already show in the request, and the answer arrives later as a control answer.
+  // Both values are verbatim from a live Letta Code 0.34.2 run (`tool_args` and `tool_return`
+  // of the `question` probe).
+  const QUESTION_ARGS = '{"questions":[{"question":"Which color do you prefer?","header":"Color","options":[{"label":"Blue","description":"The color blue"},{"label":"Red","description":"The color red"}]}]}'
+  const QUESTION_RECEIPT_MESSAGE = 'Questions posted. Answers or dismissal will arrive later in a task notification. You may continue working; do not assume an answer.'
+  const QUESTION_RECEIPT = `{"type":"ask_user_question","version":2,"toolCallId":"actual-tool","questions":[{"question":"Which color do you prefer?","header":"Color","options":[{"label":"Blue","description":"The color blue"},{"label":"Red","description":"The color red"}]}],"message":"${QUESTION_RECEIPT_MESSAGE}"}`
+
+  it('draws only the message of a question receipt on the question row', () => {
+    const row = nativeToolRow({ name: 'AskUserQuestion', args: QUESTION_ARGS, status: 'success', result: QUESTION_RECEIPT })
+    expect(row.call.kind).toBe('question')
+    expect(row.call.status).toBe('completed')
+    expect(row.call.result).toEqual({ unparsed: true, text: QUESTION_RECEIPT_MESSAGE })
+  })
+
+  it('draws only the message of a question receipt on the result row', () => {
+    const row = nativeToolRow({ name: 'AskUserQuestion', args: QUESTION_ARGS, status: 'success', result: QUESTION_RECEIPT, role: 'result' })
+    expect(row.call.status).toBe('completed')
+    expect(row.call.result).toEqual({ content: [{ type: 'text', text: QUESTION_RECEIPT_MESSAGE }] })
+  })
+
+  it('draws the message of a question receipt that arrives as an object', () => {
+    const row = nativeToolRow({ name: 'AskUserQuestion', args: QUESTION_ARGS, status: 'success', result: JSON.parse(QUESTION_RECEIPT), role: 'result' })
+    expect(row.call.result).toEqual({ content: [{ type: 'text', text: QUESTION_RECEIPT_MESSAGE }] })
+  })
+
+  it.each([
+    ['the text of a refused call', 'Tool not found: AskUserQuestion. Available tools: Bash, Monitor'],
+    ['a receipt with no message', '{"type":"ask_user_question","version":2,"toolCallId":"actual-tool","questions":[]}'],
+    ['a JSON list', '[{"type":"ask_user_question","message":"Questions posted."}]'],
+    ['JSON null', 'null'],
+  ])('keeps %s as Letta Code wrote it', (_name, result) => {
+    const row = nativeToolRow({ name: 'AskUserQuestion', args: QUESTION_ARGS, status: 'success', result, role: 'result' })
+    expect(row.call.result).toEqual({ content: [{ type: 'text', text: result }] })
+  })
+
+  it('keeps the text of a failed question call', () => {
+    const row = nativeToolRow({ name: 'AskUserQuestion', args: QUESTION_ARGS, status: 'error', result: 'The question tool failed.', role: 'result' })
+    expect(row.call.status).toBe('failed')
+    expect(row.call.result).toEqual({ failure: true, text: 'The question tool failed.' })
+  })
+
+  it('keeps the bytes that another tool returns, although they match a question receipt', () => {
+    const row = nativeToolRow({ name: 'Bash', args: JSON.stringify({ command: 'cat receipt.json' }), status: 'success', result: QUESTION_RECEIPT, role: 'result' })
+    expect(row.call.result).toEqual({ content: [{ type: 'text', text: QUESTION_RECEIPT }] })
+  })
+
+  // A kind renderer reads its own request fields without a guard. Raw arguments carry
+  // none of them for these tools, so each row reads its request through the shared table.
+  it.each([
+    ['Agent', 'agent', { description: 'Read the file', prompt: 'Read it.', subagent_type: 'general-purpose' }, { description: 'Read the file', prompt: 'Read it.' }],
+    ['SendAgentMessage', 'message', { to: 'agent-1', message: 'Hello.' }, { to: 'agent-1', text: 'Hello.' }],
+    ['TaskStop', 'task', { task_id: 'task_3' }, { action: 'other', taskId: 'task_3' }],
+    ['Monitor', 'trigger', { name: 'ci', schedule: '*/5 * * * *', command: 'make test' }, { action: 'other', name: 'ci', schedule: '*/5 * * * *' }],
+  ])('reads the declared request of a %s call', (name, kind, args, request) => {
+    const row = nativeToolRow({ name, args: JSON.stringify(args) })
+    expect(row.call.kind).toBe(kind)
+    expect(row.call.request).toEqual(request)
+  })
+
+  it('keeps a returned declared-kind answer as plain text on the request row', () => {
+    const row = nativeToolRow({ name: 'Bash', args: JSON.stringify({ command: 'printf done', description: 'Print done' }), status: 'success', result: 'done' })
+    expect(row.call.kind).toBe('execute')
+    expect(row.call.request).toEqual({ command: 'printf done', description: 'Print done' })
+    expect(row.call.status).toBe('completed')
+    expect(row.call.result).toEqual({ unparsed: true, text: 'done' })
+  })
+
   it('shows the native child Read call with its exact tool id and path', () => {
     const request = resolvedLettaFrame({
       type: 'message',
@@ -171,5 +256,137 @@ describe('letta native result boundaries', () => {
     const row = pairedLettaNativeRow({ ...request, tool_name: 'Bash', tool_args: '{"command":"native command"}' }, native, 'result')
     expect(row.call.status).toBe('incomplete')
     expect(row.call.result).toBeUndefined()
+  })
+})
+
+describe('letta native task rows', () => {
+  // The exact frames Letta Code 0.34.2 sends for TaskCreate, TaskUpdate, TaskGet,
+  // TaskList and UpdatePlan: `client_tool_start` with serialized `tool_args`, then a
+  // `tool_return_message` whose `tool_return` serializes the task record.
+  const createArgs = '{"subject":"Inspect the repository","description":"Read the repository files.","activeForm":"Inspecting the repository"}'
+  const firstRecord = { taskId: 'task_1', subject: 'Inspect the repository', description: 'Read the repository files.', activeForm: 'Inspecting the repository', status: 'pending', blocks: [], blockedBy: [], metadata: {}, createdAt: 1, updatedAt: 1 }
+  const secondRecord = { taskId: 'task_2', subject: 'List three checks', description: 'List three checks to run.', status: 'in_progress', blocks: [], blockedBy: [], metadata: {}, createdAt: 1, updatedAt: 2 }
+
+  function taskStart(name: string, args: string, callId = 'task-call') {
+    return { message_type: 'client_tool_start', tool_call_id: callId, run_id: 'local-run-1', tool_name: name, tool_args: args }
+  }
+
+  function taskReturn(toolReturn: unknown, status = 'success', callId = 'task-call') {
+    return { message_type: 'tool_return_message', tool_call_id: callId, run_id: 'local-run-1', status, tool_return: typeof toolReturn === 'string' ? toolReturn : JSON.stringify(toolReturn) }
+  }
+
+  function liveTaskRow(name: string, args: string) {
+    const request = resolvedLettaFrame(taskStart(name, args))
+    const row = lettaExtractRow({
+      resolved: request,
+      category: classifyLettaMessage({ ...request, agentProvider: AgentProvider.LETTA }),
+      span: { request, result: undefined, role: 'request', visibleRows: { request: true, result: false } },
+    })
+    if (!row || row.kind !== 'tool')
+      throw new Error('The native Letta task frame must produce a tool row.')
+    return row
+  }
+
+  it('draws the task a running TaskCreate states before its answer lands', () => {
+    const row = liveTaskRow('TaskCreate', createArgs)
+    expect(row.call.kind).toBe('todo')
+    // A native start states no status of its own, and no answer finished the call yet.
+    expect(row.call.status).toBe('unstated')
+    expect(row.call.request).toEqual({
+      items: [{ rowKey: '0:Inspect the repository', content: 'Inspect the repository', status: 'pending', activeForm: 'Inspecting the repository' }],
+      note: 'Read the repository files.',
+    })
+    expect(row.call.result).toBeUndefined()
+  })
+
+  it('reads the saved task from the native TaskCreate answer on both rows', () => {
+    const saved = { items: [{ id: 'task_1', rowKey: 'task_1', content: 'Inspect the repository', status: 'pending', activeForm: 'Inspecting the repository' }], note: 'Read the repository files.' }
+    for (const role of ['request', 'result'] as const) {
+      const row = pairedLettaNativeRow(taskStart('TaskCreate', createArgs), taskReturn(firstRecord), role)
+      expect(row.call.kind).toBe('todo')
+      expect(row.call.status).toBe('completed')
+      expect(row.call.result).toEqual(saved)
+    }
+  })
+
+  it('reads the patched task from the native TaskUpdate answer', () => {
+    const record = { ...firstRecord, status: 'completed', updatedAt: 3 }
+    const row = pairedLettaNativeRow(taskStart('TaskUpdate', '{"taskId":"task_1","status":"completed"}'), taskReturn(record), 'result')
+    expect(row.call.kind).toBe('todo')
+    expect(row.call.request).toEqual({ items: [{ id: 'task_1', rowKey: 'task_1', content: 'Inspect the repository', status: 'completed', activeForm: 'Inspecting the repository' }], note: 'Read the repository files.' })
+    expect(row.call.result).toEqual(row.call.request)
+  })
+
+  it('reads the task a TaskGet answer returns', () => {
+    const row = pairedLettaNativeRow(taskStart('TaskGet', '{"taskId":"task_2"}'), taskReturn(secondRecord), 'request')
+    expect(row.call.kind).toBe('todo')
+    expect(row.call.result).toEqual({ items: [{ id: 'task_2', rowKey: 'task_2', content: 'List three checks', status: 'in_progress', activeForm: '' }], note: 'List three checks to run.' })
+  })
+
+  it('reads the whole list from a native TaskList answer', () => {
+    const row = pairedLettaNativeRow(taskStart('TaskList', '{}'), taskReturn({ tasks: [{ ...firstRecord, status: 'completed' }, secondRecord] }), 'result')
+    expect(row.call.kind).toBe('todo')
+    expect(row.call.result).toEqual({ items: [
+      { id: 'task_1', rowKey: 'task_1', content: 'Inspect the repository', status: 'completed', activeForm: 'Inspecting the repository', description: 'Read the repository files.' },
+      { id: 'task_2', rowKey: 'task_2', content: 'List three checks', status: 'in_progress', activeForm: '', description: 'List three checks to run.' },
+    ] })
+  })
+
+  it('reads an empty native TaskList answer as an empty list', () => {
+    const row = pairedLettaNativeRow(taskStart('TaskList', '{}'), taskReturn({ tasks: [] }), 'result')
+    expect(row.call.kind).toBe('todo')
+    expect(row.call.result).toEqual({ items: [] })
+  })
+
+  it('reads the steps of an UpdatePlan call and keeps them as the saved plan', () => {
+    const args = '{"explanation":"Start with the parser.","plan":[{"step":"Read the parser","status":"completed"},{"step":"Fix the tokenizer","status":"in_progress"}]}'
+    const plan = { items: [
+      { rowKey: '0:Read the parser', content: 'Read the parser', status: 'completed', activeForm: '' },
+      { rowKey: '1:Fix the tokenizer', content: 'Fix the tokenizer', status: 'in_progress', activeForm: '' },
+    ], note: 'Start with the parser.' }
+    expect(liveTaskRow('UpdatePlan', args).call.request).toEqual(plan)
+    const row = pairedLettaNativeRow(taskStart('UpdatePlan', args), taskReturn({ message: 'Plan updated' }), 'result')
+    expect(row.call.kind).toBe('todo')
+    expect(row.call.result).toEqual(plan)
+  })
+
+  it.each([
+    ['TaskUpdate', '{"taskId":"task_1","status":"completed"}'],
+    ['TaskGet', '{"taskId":"task_1"}'],
+    ['TaskList', '{}'],
+  ])('keeps a running %s that states no task on the generic card', (name, args) => {
+    const row = liveTaskRow(name, args)
+    expect(row.call.kind).toBe('other')
+    expect(row.call.request).toEqual({ args: JSON.parse(args) })
+  })
+
+  it('keeps the native failure of a task call beside the task it asked for', () => {
+    const row = pairedLettaNativeRow(taskStart('TaskCreate', createArgs), taskReturn('TaskCreate: \'subject\' must be a non-empty string', 'error'), 'request')
+    expect(row.call.kind).toBe('todo')
+    expect(row.call.status).toBe('failed')
+    expect(row.call.result).toEqual({ failure: true, text: 'TaskCreate: \'subject\' must be a non-empty string' })
+  })
+
+  it.each([
+    ['malformed JSON', 'not JSON'],
+    ['a record with no subject', { taskId: 'task_1', status: 'pending' }],
+    ['a list that is not an array', { tasks: 'none' }],
+  ])('keeps the answer as plain text when it holds %s', (_label, answer) => {
+    const row = pairedLettaNativeRow(taskStart('TaskCreate', createArgs), taskReturn(answer), 'request')
+    expect(row.call.kind).toBe('todo')
+    expect(row.call.status).toBe('completed')
+    expect(row.call.result).toEqual({ unparsed: true, text: typeof answer === 'string' ? answer : JSON.stringify(answer) })
+  })
+})
+
+describe('LETTA_TOOL_REQUEST_OVERRIDES', () => {
+  it('deviates on exactly the one kind whose Letta arguments the shared table cannot read', () => {
+    expect(Object.keys(LETTA_TOOL_REQUEST_OVERRIDES)).toEqual(['question'])
+  })
+
+  it('keeps the questions that the shared table drops', () => {
+    const args = { questions: [{ question: 'Which color?', options: [{ label: 'Red' }, { description: 'No label' }] }, { header: 'Empty', question: '' }] }
+    expect(LETTA_TOOL_REQUEST_OVERRIDES.question?.(args, null)).toEqual({ questions: [{ question: 'Which color?', options: [{ label: 'Red' }] }] })
+    expect(DEFAULT_TOOL_REQUESTS.question(args)).toEqual({ questions: [] })
   })
 })

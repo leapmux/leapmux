@@ -16,6 +16,8 @@
     "loopStatuses",
     "modes",
     "reply",
+    "question",
+    "stopReasons",
     "toolOutput",
     "toolStatuses"
   ],
@@ -157,6 +159,12 @@
       "$ref": "#/$defs/table"
     },
     "reply": {
+      "$ref": "#/$defs/table"
+    },
+    "question": {
+      "$ref": "#/$defs/table"
+    },
+    "stopReasons": {
       "$ref": "#/$defs/table"
     },
     "toolOutput": {
