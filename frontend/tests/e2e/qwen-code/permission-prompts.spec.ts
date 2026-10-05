@@ -2,9 +2,11 @@ import { existsSync } from 'node:fs'
 
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
+import { QWEN_TOOL } from '../../../src/generated/contracts/qwen-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { expectDeclinedToolRow } from '../helpers/nativePermission'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, expectSettingsChip, openWorkspace, sendMessage, userBubbles, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, expectSettingsChip, messageBubbles, openWorkspace, sendMessage, userBubbles, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
 
 import { openQwenAgent, QWEN_E2E_SKIP_REASON, qwenTest } from '../qwen-fixtures'
 
@@ -46,5 +48,15 @@ qwenTest.describe('Qwen Code control requests', () => {
     await expect(userBubbles(page).filter({ hasText: 'Do not create the second file.' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'I will not create the second file.' })).toBeVisible()
     expect(existsSync(rejected)).toBe(false)
+    // The rejected command reads declined, and its result row states the refusal of Qwen.
+    // Qwen opens a streamed call with no input. The permission request states the command,
+    // and the Worker stores that input with the request row. So the request row states it.
+    const refusal = `Tool "${QWEN_TOOL.RunShellCommand}" was canceled by the user.`
+    const refused = messageBubbles(page).and(page.locator('[data-tool-row-role="result"]')).filter({ hasText: refusal }).first()
+    const callId = await refused.getAttribute('data-tool-call-id')
+    if (!callId)
+      throw new Error('The rejected Qwen command drew no tool row.')
+    await expectDeclinedToolRow(page, callId, refusal)
+    await expect(messageBubbles(page).and(page.locator('[data-tool-row-role="request"]')).and(page.locator(`[data-tool-call-id="${callId}"]`))).toContainText(`touch ${rejected}`)
   })
 })

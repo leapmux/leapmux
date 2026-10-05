@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerToolCall } from '~/test-support/toolCallFixture'
+import { renderToolRows } from '~/test-support/toolRowRendering'
 import { failedResult, proseResult } from '../../model/toolCall'
 import { acpTextContent, renderACPToolPair } from '../acp/testUtils'
 import { input } from '../testUtils'
@@ -282,5 +283,61 @@ describe('qwen tool rendering', () => {
       expect(leave?.request).toMatchObject({ mode: 'leave worktree' })
       expect(leave?.request).not.toHaveProperty('target')
     })
+  })
+})
+
+/**
+ * The two rows of a call that the reader refused, as a reader sees them.
+ *
+ * Qwen Code 0.24.7 opens a streamed call in its `preparing` phase with `rawInput: {}` and
+ * `locations: []`. The permission request states the input and the file. The failed update
+ * states the refusal alone. A probe captured these frames from the installed CLI against a
+ * local mock of the model, for a `write_file` and for a `run_shell_command`. The reader
+ * answered the Reject option. The Worker folds the input of the permission request into
+ * the supplement of the stored request row (`conversation.notePermissionToolCall`). The
+ * request row heads the call. A paired result row draws no header (`ToolMessageLayout`).
+ * `qwen-code/permission-prompts.spec.ts` reads these two rows by their `data-tool-row-role`.
+ */
+describe('a refused streamed call of qwen code', () => {
+  const preparing = (name: string, title: string, kind: string) => ({ sessionUpdate: 'tool_call', toolCallId: 'call_probe', status: 'pending', title, content: [], locations: [], kind, rawInput: {}, _meta: { toolName: name, provenance: 'builtin', phase: 'preparing' } })
+  const canceled = (name: string) => ({ sessionUpdate: 'tool_call_update', toolCallId: 'call_probe', status: 'failed', content: acpTextContent(`Tool "${name}" was canceled by the user.`), _meta: { toolName: name, provenance: 'builtin', durationMs: 4 } })
+  const supplementOf = (fields: Record<string, unknown>) => ({ sessionUpdate: 'tool_call', toolCallId: 'call_probe', status: 'pending', ...fields })
+
+  const write = {
+    opening: preparing('write_file', 'WriteFile', 'edit'),
+    ending: canceled('write_file'),
+    spanType: 'edit',
+    requestSupplement: supplementOf({ rawInput: { file_path: '/w/qwen-declined.txt', content: 'qwen-declined-content' }, locations: [{ path: '/w/qwen-declined.txt' }] }),
+  }
+  const shell = {
+    opening: preparing('run_shell_command', 'Shell', 'execute'),
+    ending: canceled('run_shell_command'),
+    spanType: 'execute',
+    requestSupplement: supplementOf({ rawInput: { command: 'touch /w/qwen-declined.txt', is_background: false } }),
+  }
+
+  it('heads the request row of a refused write with its file and draws no proposed text', () => {
+    const { request } = renderToolRows(AgentProvider.QWEN_CODE, write)
+    expect(request.textContent).toContain('qwen-declined.txt')
+    expect(request.textContent).not.toContain('qwen-declined-content')
+  })
+
+  it('draws the refusal of a write in the result row as declined, with no file of its own', () => {
+    const { result } = renderToolRows(AgentProvider.QWEN_CODE, write)
+    expect(result.textContent).toContain('Tool "write_file" was canceled by the user.')
+    expect(result.textContent).toContain('Declined')
+    expect(result.textContent).not.toContain('qwen-declined.txt')
+  })
+
+  it('states the command of a refused shell call in the request row', () => {
+    const { request } = renderToolRows(AgentProvider.QWEN_CODE, shell)
+    expect(request.textContent).toContain('touch /w/qwen-declined.txt')
+  })
+
+  it('draws the refusal of a shell call in the result row as declined, with no command of its own', () => {
+    const { result } = renderToolRows(AgentProvider.QWEN_CODE, shell)
+    expect(result.textContent).toContain('Tool "run_shell_command" was canceled by the user.')
+    expect(result.textContent).toContain('Declined')
+    expect(result.textContent).not.toContain('touch /w/qwen-declined.txt')
   })
 })

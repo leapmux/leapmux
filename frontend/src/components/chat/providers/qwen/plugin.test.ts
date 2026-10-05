@@ -1,7 +1,10 @@
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { providerToolCall } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
-import { describeACPProviderBasics } from '../acp/testUtils'
+import { failedResult } from '../../model/toolCall'
+import { acpTextContent, describeACPProviderBasics } from '../acp/testUtils'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 
@@ -135,5 +138,59 @@ describe('qwen provider', () => {
       response: { subtype: 'success', request_id: 'jsonrpc:5', response: { behavior: 'deny', message: 'Split step 2' } },
     })
     expect(plugin.controls?.controlFeedbackAsFollowUpMessage?.(plan)).toBe(false)
+  })
+})
+
+/**
+ * A call that the reader refused never ran.
+ *
+ * Qwen Code reads the Deny answer as the outcome `cancel`. It then sends a failed update.
+ * The update has one content block: `Tool "<name>" was canceled by the user.`
+ * (`stopAfterPermissionCancel` in its ACP session, 0.24.7). The update has no refusal
+ * field. `qwen-code/plan-approval-banner.spec.ts` reads that frame from a live session.
+ *
+ * A write that the model STREAMED opens before the arguments arrive. The preparing frame
+ * states the display name as its title, `rawInput: {}` and `locations: []`. The
+ * permission request states the arguments and the file. The worker folds them into the
+ * supplement of the stored request row (`conversation.notePermissionToolCall`).
+ */
+describe('qwen refused tool calls', () => {
+  const REFUSAL = 'Tool "write_file" was canceled by the user.'
+  const opening = { sessionUpdate: 'tool_call', toolCallId: 'call_write', status: 'pending', title: 'WriteFile', kind: 'edit', content: [], locations: [], rawInput: {}, _meta: { toolName: 'write_file', phase: 'preparing' } }
+  const supplement = { sessionUpdate: 'tool_call', toolCallId: 'call_write', status: 'pending', rawInput: { file_path: '/w/notes.txt', content: 'proposed' }, locations: [{ path: '/w/notes.txt' }] }
+  const ending = (text: string, status = 'failed') => ({ sessionUpdate: 'tool_call_update', toolCallId: 'call_write', status, content: acpTextContent(text), _meta: { toolName: 'write_file' } })
+  const stored = (frame: Record<string, unknown>, supplementalContent?: Record<string, unknown>): ParsedMessageContent => ({ rawText: '', topLevel: frame, parentObject: frame, wrapper: null, supplementalContent })
+  const refused = (text: string, status?: string) => providerToolCall(AgentProvider.QWEN_CODE, ending(text, status), { request: stored(opening, supplement), spanType: 'edit' })
+
+  it('reads a refused write as declined, with its file and the refusal as the result', () => {
+    const call = refused(REFUSAL)
+    expect(call?.degradation).toBeUndefined()
+    expect(call?.kind).toBe('write')
+    expect(call?.status).toBe('declined')
+    expect(call?.kind === 'write' ? call.request.changes.map(change => change.filePath) : []).toStrictEqual(['/w/notes.txt'])
+    expect(call?.result).toStrictEqual(failedResult(REFUSAL))
+    expect(call?.images).toStrictEqual([])
+  })
+
+  it('reads the refused request row as declined too', () => {
+    const call = providerToolCall(AgentProvider.QWEN_CODE, opening, { role: 'request', spanType: 'edit', supplementalContent: supplement, result: stored(ending(REFUSAL)) })
+    expect(call?.status).toBe('declined')
+    expect(call?.kind === 'write' ? call.request.changes.map(change => change.filePath) : []).toStrictEqual(['/w/notes.txt'])
+  })
+
+  // A refusal is the WHOLE text. The same words inside a longer text are a failure of
+  // the tool.
+  it.each([
+    ['words before the sentence', `Error: ${REFUSAL}`],
+    ['words after the sentence', `${REFUSAL} Try again.`],
+    ['a second line', `${REFUSAL}\nTry again.`],
+    ['another sentence', 'Tool call was cancelled before execution.'],
+  ])('keeps a failure with %s failed', (_case, text) => {
+    expect(refused(text)?.status).toBe('failed')
+  })
+
+  // A call that ran and PRINTED the words is a call that completed.
+  it('keeps a completed call that printed the refusal words completed', () => {
+    expect(refused(REFUSAL, 'completed')?.status).toBe('completed')
   })
 })

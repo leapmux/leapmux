@@ -6,7 +6,7 @@ import { openQwenAgent, QWEN_E2E_SKIP_REASON, qwenTest } from '../qwen-fixtures'
 qwenTest.skip(!!QWEN_E2E_SKIP_REASON, QWEN_E2E_SKIP_REASON || '')
 
 qwenTest.describe('Qwen Code settings and goal', () => {
-  // The goal card sends Qwen's native `/goal` command. Qwen starts the goal turns.
+  // The goal card changes the goal through Qwen's goal control. Qwen starts the goal turns.
   // Each turn carries the objective marker and reaches this script. A turn without progress counts toward the automatic pause.
   qwenTest('sets, follows and clears a native goal', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     await openQwenAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
@@ -28,9 +28,9 @@ qwenTest.describe('Qwen Code settings and goal', () => {
     // Qwen pauses a goal after turns that record no progress, and it states why.
     await expectGoalStatus(page, 'paused')
     // A turn Qwen started by itself ends with its own notification, which draws
-    // the same divider as a turn the reader started. The `/goal` prompt that set
-    // the goal draws the first divider, so a second one proves that a goal round
-    // drew its own.
+    // the same divider as a turn the reader started. The goal control starts no
+    // turn of the reader's, so each divider is the end of a goal round, and a
+    // second one proves that a later round drew its own.
     await expect(page.locator('[data-testid="result-divider"]:visible').nth(1)).toBeVisible()
 
     const roundsBeforeResume = (await modelScript.status()).ruleMatches['every goal turn answers DONE'] ?? 0

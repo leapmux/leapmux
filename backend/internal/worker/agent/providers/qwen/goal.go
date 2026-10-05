@@ -2,46 +2,49 @@ package qwen
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// Qwen changes its session goal through the `/goal` prompt command, and states
-// the whole goal on the `_meta.goalState` of a message after every change:
+// Qwen states the whole goal on the `_meta.goalState` of a message after every
+// change. The report is the source of truth for the card, so LeapMux does not
+// observe the actions it sends.
 //
-//	/goal set <objective> | pause | resume | clear
+// LeapMux changes the goal through Qwen's goal control, a request beside the
+// conversation: `qwen/control/session/goal/control` takes the requests that
+// Qwen's own `/goal` command hands to its goal runtime (`create`, `replace`,
+// `pause`, `resume`, `clear`), and `qwen/control/session/goal/get` reads the
+// goal that a request must name. Each action takes effect at once, also while
+// a goal round runs: Qwen cancels the running round itself.
 //
-// The report is the source of truth for the card, so LeapMux does not observe
-// the command it sends.
+// A `/goal` prompt is no route. Qwen starts the next round of a goal the moment
+// the round before it ends, so the worker never finds the agent idle while the
+// goal runs, and a prompt that waits in the worker's queue reaches Qwen only
+// after the goal stopped by itself. Qwen then refuses a pause: "Only an active
+// Goal can be paused".
 const (
-	qwenGoalCommand           = "/goal"
 	qwenGoalAdvertisedCommand = "goal"
+	qwenGoalGetMethod         = "qwen/control/session/goal/get"
+	qwenGoalControlMethod     = "qwen/control/session/goal/control"
 )
 
-// qwenGoalRoute is Qwen's user-message goal vocabulary.
-//
-// Qwen reads the FIRST word of the argument as a verb: `set` and `edit` take
-// the rest as the objective, and `pause`, `resume` and a clear word act on
-// their own. So a bare objective that starts with one of those words would not
-// reach Qwen as that objective. The route always states `set`, which makes
-// every objective safe, and needs no word reserved for it.
-var qwenGoalRoute = providerkit.GoalTextRoute{
-	Provider:   "qwen",
-	Command:    qwenGoalCommand,
-	SetVerb:    "set",
-	ClearArgs:  []string{"clear", "stop", "off", "reset", "none", "cancel"},
-	PauseArgs:  []string{"pause"},
-	ResumeArgs: []string{"resume"},
-}
+// Qwen's goal control actions.
+const (
+	qwenGoalControlCreate  = "create"
+	qwenGoalControlReplace = "replace"
+	qwenGoalControlPause   = "pause"
+	qwenGoalControlResume  = "resume"
+	qwenGoalControlClear   = "clear"
+)
 
 var _ agent.GoalWriter = (*Agent)(nil)
 
 // SupportedGoalActions reports the four verbs, and only while Qwen advertises
-// the command.
+// the `goal` command: a build without it has no goal runtime.
 func (a *Agent) SupportedGoalActions() []agent.GoalAction {
 	if !a.HasAvailableCommand(qwenGoalAdvertisedCommand) {
 		return nil
@@ -49,13 +52,113 @@ func (a *Agent) SupportedGoalActions() []agent.GoalAction {
 	return []agent.GoalAction{agent.GoalActionSet, agent.GoalActionClear, agent.GoalActionPause, agent.GoalActionResume}
 }
 
-// PerformGoalAction builds the prompt that changes Qwen's goal. The queue
-// delivers it, and the goal state then reports what Qwen did with it.
+// PerformGoalAction changes Qwen's goal through its goal control, and queues
+// nothing: the goal state then reports what Qwen did. It reads the current goal
+// first, because every request but `create` names the goal and the revision it
+// acts on, as Qwen's own `/goal` command does.
 func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (agent.GoalOutcome, error) {
 	if !a.HasAvailableCommand(qwenGoalAdvertisedCommand) {
 		return agent.GoalOutcome{}, agent.ErrGoalControlUnsupported
 	}
-	return qwenGoalRoute.Perform(action, objective)
+	objective = strings.TrimSpace(objective)
+	if action == agent.GoalActionSet && objective == "" {
+		return agent.GoalOutcome{}, fmt.Errorf("qwen goal: an objective is required")
+	}
+	err := a.WithSessionID(func(sessionID string) error {
+		current, err := a.readNativeGoal(sessionID)
+		if err != nil {
+			return err
+		}
+		request, err := qwenGoalControlRequest(action, objective, current)
+		if err != nil || request == nil {
+			return err
+		}
+		params, err := json.Marshal(map[string]any{"sessionId": sessionID, "request": request})
+		if err != nil {
+			return fmt.Errorf("marshal the Qwen goal %s: %w", request["action"], err)
+		}
+		if _, err := a.SendRequest(qwenGoalControlMethod, params, a.APITimeout()); err != nil {
+			return fmt.Errorf("qwen goal %s: %w", request["action"], err)
+		}
+		return nil
+	})
+	return agent.GoalOutcome{}, err
+}
+
+// qwenGoalVersion names one goal and the revision of it that a control request
+// expects. Qwen refuses a request whose goal changed since.
+type qwenGoalVersion struct {
+	GoalID   string `json:"goalId"`
+	Revision int64  `json:"revision"`
+}
+
+// readNativeGoal reads the goal of sessionID. It returns nil when the session
+// has no goal.
+func (a *Agent) readNativeGoal(sessionID string) (*qwenGoalVersion, error) {
+	params, err := json.Marshal(map[string]string{"sessionId": sessionID})
+	if err != nil {
+		return nil, fmt.Errorf("marshal the Qwen goal read: %w", err)
+	}
+	response, err := a.SendRequest(qwenGoalGetMethod, params, a.APITimeout())
+	if err != nil {
+		return nil, fmt.Errorf("read the Qwen goal: %w", err)
+	}
+	var reply struct {
+		Snapshot *struct {
+			Goal *qwenGoalVersion `json:"goal"`
+		} `json:"snapshot"`
+	}
+	if err := json.Unmarshal(response, &reply); err != nil || reply.Snapshot == nil {
+		return nil, fmt.Errorf("read the Qwen goal: the answer states no goal snapshot")
+	}
+	goal := reply.Snapshot.Goal
+	if goal == nil {
+		return nil, nil
+	}
+	if goal.GoalID == "" || goal.Revision < 1 {
+		return nil, fmt.Errorf("read the Qwen goal: the goal states no id or revision")
+	}
+	return goal, nil
+}
+
+// qwenGoalControlRequest builds the control request of one action, as Qwen's
+// `/goal` command builds it: a set creates a goal, or replaces the current one,
+// and every other action names the current goal. A clear with no goal needs no
+// request, and returns nil. A pause or a resume with no goal is refused, as
+// Qwen's command refuses it.
+//
+// A pause states no reason. Qwen's command states "Paused with /goal pause.",
+// which no command did here, so the goal card shows the pause with no reason.
+func qwenGoalControlRequest(action agent.GoalAction, objective string, current *qwenGoalVersion) (map[string]any, error) {
+	versioned := func(verb string) map[string]any {
+		return map[string]any{"action": verb, "expectedGoalId": current.GoalID, "expectedRevision": current.Revision}
+	}
+	switch action {
+	case agent.GoalActionSet:
+		if current == nil {
+			return map[string]any{"action": qwenGoalControlCreate, "objective": objective}, nil
+		}
+		request := versioned(qwenGoalControlReplace)
+		request["objective"] = objective
+		return request, nil
+	case agent.GoalActionClear:
+		if current == nil {
+			return nil, nil
+		}
+		return versioned(qwenGoalControlClear), nil
+	case agent.GoalActionPause:
+		if current == nil {
+			return nil, fmt.Errorf("qwen goal: there is no goal to pause")
+		}
+		return versioned(qwenGoalControlPause), nil
+	case agent.GoalActionResume:
+		if current == nil {
+			return nil, fmt.Errorf("qwen goal: there is no goal to resume")
+		}
+		return versioned(qwenGoalControlResume), nil
+	default:
+		return nil, agent.ErrGoalControlUnsupported
+	}
 }
 
 // qwenGoalSnapshot is Qwen's goal state (`GoalSnapshotV2`).

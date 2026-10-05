@@ -1,6 +1,7 @@
 package qwen
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
 // advertiseCommands delivers the command set of the test session.
@@ -45,29 +47,142 @@ func TestQwenOffersGoalsOnlyWithTheGoalCommand(t *testing.T) {
 	assert.Equal(t, 1, sink.GoalCapabilityPublishes())
 }
 
-func TestQwenGoalActionsBuildTheGoalCommand(t *testing.T) {
+// Each action is the request that Qwen's own `/goal` command hands to its goal
+// runtime, sent through the goal control, and it queues nothing. A set creates
+// a goal when the session has none, and replaces the current one otherwise.
+// The objective reaches Qwen as the user wrote it, trimmed: a request has no
+// verb to confuse with it, so "pause" and a line break stay objective text.
+func TestQwenGoalActionsUseTheGoalControl(t *testing.T) {
 	t.Parallel()
-	a, _, _ := newQwenAgent(t, nil, nil)
-	advertiseCommands(t, a, "goal")
+	const current = `{"goalId":"g-1","revision":3,"objective":"Ship","status":"paused"}`
 	for _, tc := range []struct {
+		name      string
+		goal      string
 		action    agent.GoalAction
 		objective string
-		want      string
+		want      map[string]any
 	}{
-		{action: agent.GoalActionSet, objective: "Ship the\nrelease", want: "/goal set Ship the release"},
-		// Qwen would read a bare `pause` or `set up` as a verb; the set verb
-		// keeps each of them an objective.
-		{action: agent.GoalActionSet, objective: "pause", want: "/goal set pause"},
-		{action: agent.GoalActionSet, objective: "off", want: "/goal set off"},
-		{action: agent.GoalActionSet, objective: "set up the CI", want: "/goal set set up the CI"},
-		{action: agent.GoalActionClear, want: "/goal clear"},
-		{action: agent.GoalActionPause, want: "/goal pause"},
-		{action: agent.GoalActionResume, want: "/goal resume"},
+		{name: "a set with no goal", goal: "null", action: agent.GoalActionSet, objective: "  Ship the\nrelease  ",
+			want: map[string]any{"action": "create", "objective": "Ship the\nrelease"}},
+		{name: "a set of a verb word", goal: "null", action: agent.GoalActionSet, objective: "pause",
+			want: map[string]any{"action": "create", "objective": "pause"}},
+		{name: "a set over a goal", goal: current, action: agent.GoalActionSet, objective: "Ship again",
+			want: map[string]any{"action": "replace", "objective": "Ship again", "expectedGoalId": "g-1", "expectedRevision": float64(3)}},
+		{name: "a pause", goal: current, action: agent.GoalActionPause,
+			want: map[string]any{"action": "pause", "expectedGoalId": "g-1", "expectedRevision": float64(3)}},
+		{name: "a resume", goal: current, action: agent.GoalActionResume,
+			want: map[string]any{"action": "resume", "expectedGoalId": "g-1", "expectedRevision": float64(3)}},
+		{name: "a clear", goal: current, action: agent.GoalActionClear,
+			want: map[string]any{"action": "clear", "expectedGoalId": "g-1", "expectedRevision": float64(3)}},
 	} {
-		outcome, err := a.PerformGoalAction(tc.action, tc.objective)
-		require.NoError(t, err)
-		assert.Equal(t, tc.want, outcome.QueuedInput)
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, _, requests := newQwenAgent(t, nil, qwenGoalPeer(tc.goal))
+			advertiseCommands(t, a, "goal")
+
+			outcome, err := a.PerformGoalAction(tc.action, tc.objective)
+			require.NoError(t, err)
+			assert.Empty(t, outcome.QueuedInput)
+			syncPeer(t, a)
+			reads := requestsFor(requests(), "qwen/control/session/goal/get")
+			require.Len(t, reads, 1, "the action reads the goal that it names")
+			assert.Equal(t, map[string]any{"sessionId": qwenTestSession}, reads[0].Params)
+			sent := requestsFor(requests(), "qwen/control/session/goal/control")
+			require.Len(t, sent, 1)
+			assert.Equal(t, map[string]any{"sessionId": qwenTestSession, "request": tc.want}, sent[0].Params)
+			assert.Empty(t, requestsFor(requests(), "session/prompt"), "no action is a prompt")
+		})
 	}
+}
+
+// A clear of a session with no goal has nothing to clear, as Qwen's own
+// command answers. A pause or a resume of no goal is refused, and sends nothing.
+func TestQwenGoalActionWithNoGoal(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		action  agent.GoalAction
+		wantErr string
+	}{
+		{name: "clear", action: agent.GoalActionClear},
+		{name: "pause", action: agent.GoalActionPause, wantErr: "there is no goal to pause"},
+		{name: "resume", action: agent.GoalActionResume, wantErr: "there is no goal to resume"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, _, requests := newQwenAgent(t, nil, qwenGoalPeer("null"))
+			advertiseCommands(t, a, "goal")
+
+			outcome, err := a.PerformGoalAction(tc.action, "")
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tc.wantErr)
+			}
+			assert.Empty(t, outcome.QueuedInput)
+			syncPeer(t, a)
+			assert.Empty(t, requestsFor(requests(), "qwen/control/session/goal/control"))
+		})
+	}
+}
+
+// A goal read that fails, or that states no goal snapshot, refuses the action
+// before any control request. A refused control request reaches the caller
+// with the cause that Qwen states in the error's data.
+func TestQwenGoalActionFailures(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		get         agenttest.RPCReply
+		control     agenttest.RPCReply
+		wantErr     string
+		wantControl int
+	}{
+		{name: "a failed read", get: agenttest.RPCReply{Error: json.RawMessage(`{"code":-32603,"message":"Internal error","data":{"details":"no runtime"}}`)},
+			wantErr: "read the Qwen goal: json-rpc error -32603: Internal error: {\"details\":\"no runtime\"}"},
+		{name: "a read with no snapshot", get: agenttest.RPCReply{Result: json.RawMessage(`{}`)},
+			wantErr: "the answer states no goal snapshot"},
+		{name: "a read of a goal with no revision", get: agenttest.RPCReply{Result: json.RawMessage(`{"snapshot":{"v":2,"goal":{"goalId":"g-1"}}}`)},
+			wantErr: "the goal states no id or revision"},
+		{name: "a refused control",
+			get:         agenttest.RPCReply{Result: json.RawMessage(`{"snapshot":{"v":2,"goal":{"goalId":"g-1","revision":1,"status":"active"}}}`)},
+			control:     agenttest.RPCReply{Error: json.RawMessage(`{"code":-32009,"message":"Goal version does not match the current session Goal","data":{"errorKind":"goal_conflict"}}`)},
+			wantErr:     `qwen goal pause: json-rpc error -32009: Goal version does not match the current session Goal: {"errorKind":"goal_conflict"}`,
+			wantControl: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, _, requests := newQwenAgent(t, nil, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+				switch request.Method {
+				case "qwen/control/session/goal/get":
+					return tc.get
+				case "qwen/control/session/goal/control":
+					return tc.control
+				}
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			})
+			advertiseCommands(t, a, "goal")
+
+			_, err := a.PerformGoalAction(agent.GoalActionPause, "")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+			syncPeer(t, a)
+			assert.Len(t, requestsFor(requests(), "qwen/control/session/goal/control"), tc.wantControl)
+		})
+	}
+}
+
+// An action that the provider does not list sends no control request.
+func TestQwenGoalActionRefusesAnUnknownAction(t *testing.T) {
+	t.Parallel()
+	a, _, requests := newQwenAgent(t, nil, qwenGoalPeer(`{"goalId":"g-1","revision":1,"status":"active"}`))
+	advertiseCommands(t, a, "goal")
+
+	_, err := a.PerformGoalAction(agent.GoalAction(99), "")
+
+	assert.ErrorIs(t, err, agent.ErrGoalControlUnsupported)
+	syncPeer(t, a)
+	assert.Empty(t, requestsFor(requests(), "qwen/control/session/goal/control"))
 }
 
 func TestQwenGoalStatusMapping(t *testing.T) {
@@ -171,11 +286,53 @@ func TestQwenGoalStateCountsWholeSeconds(t *testing.T) {
 
 func TestQwenGoalSetRefusesABlankObjective(t *testing.T) {
 	t.Parallel()
-	a, _, _ := newQwenAgent(t, nil, nil)
+	a, _, requests := newQwenAgent(t, nil, qwenGoalPeer("null"))
 	advertiseCommands(t, a, "goal")
 	for _, objective := range []string{"", " \n\t "} {
 		outcome, err := a.PerformGoalAction(agent.GoalActionSet, objective)
 		assert.Error(t, err, "%q", objective)
 		assert.Empty(t, outcome.QueuedInput, "a refused goal queues nothing")
 	}
+	syncPeer(t, a)
+	assert.Empty(t, requestsFor(requests(), "qwen/control/session/goal/get"), "a refused goal reads nothing")
+	assert.Empty(t, requestsFor(requests(), "qwen/control/session/goal/control"), "a refused goal sends nothing")
+}
+
+// qwenGoalPeer answers Qwen's goal control the way Qwen Code 0.24.7 does:
+// `qwen/control/session/goal/get` states the goal of the session, and
+// `qwen/control/session/goal/control` acts on it. Every other request reads `{}`.
+func qwenGoalPeer(goal string) func(agenttest.RecordedRequest) agenttest.RPCReply {
+	return func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		switch request.Method {
+		case "qwen/control/session/goal/get":
+			return agenttest.RPCReply{Result: json.RawMessage(`{"snapshot":{"v":2,"goal":` + goal + `,"activity":"running"},"active":null}`)}
+		case "qwen/control/session/goal/control", "qwen/control/session/goal/clear":
+			return agenttest.RPCReply{Result: json.RawMessage(`{"snapshot":{"v":2,"goal":null,"activity":"idle"}}`)}
+		}
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	}
+}
+
+// Qwen starts the next round of a goal the moment the round before it ends, so
+// the worker never finds the agent idle while the goal runs. A Pause that waits
+// in the queue for an idle agent reached Qwen only after the goal paused
+// itself, and Qwen then refused it: "Only an active Goal can be paused". The
+// pause must take effect while the round runs, through Qwen's own goal control.
+func TestQwenGoalPauseTakesEffectWhileAGoalRoundRuns(t *testing.T) {
+	t.Parallel()
+	a, _, requests := newQwenAgent(t, nil, qwenGoalPeer(`{"goalId":"g-1","revision":2,"objective":"Ship","status":"active"}`))
+	advertiseCommands(t, a, "goal")
+	a.HandleOutput(startTurn(t, nil, qwenTestSession, "goal"))
+	require.True(t, a.AgentTurnActive(), "a goal round runs")
+
+	outcome, err := a.PerformGoalAction(agent.GoalActionPause, "")
+	require.NoError(t, err)
+	assert.Empty(t, outcome.QueuedInput, "a pause that waits for an idle agent never reaches a running goal")
+	syncPeer(t, a)
+	sent := requestsFor(requests(), "qwen/control/session/goal/control")
+	require.Len(t, sent, 1)
+	assert.Equal(t, map[string]any{
+		"sessionId": qwenTestSession,
+		"request":   map[string]any{"action": "pause", "expectedGoalId": "g-1", "expectedRevision": float64(2)},
+	}, sent[0].Params)
 }

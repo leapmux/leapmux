@@ -119,7 +119,9 @@ describe('qwenOutputPathCommand', () => {
     expect(lines[0]).toBe(`NATIVEOUTPUTPATH-line-0:${'x'.repeat(30)}`)
     expect(lines[4000]).toBe(output.omittedMarker)
     expect(lines[8000]).toBe('NATIVEOUTPUTPATH-complete-42')
+    expect(lines[8000]).toBe(output.lastMarker)
     expect(output.command).not.toContain(output.omittedMarker)
+    expect(output.command).not.toContain(output.lastMarker)
     expect(output.omittedMarker).toBe(`NATIVEOUTPUTPATH-line-4000:${'x'.repeat(30)}-middle-77`)
   })
 

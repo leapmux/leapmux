@@ -98,9 +98,9 @@ export function qwenModelOutputPath(text: string): string {
 }
 
 /** Keep the native large-output trigger unchanged without reading its output file. */
-export function qwenOutputPathCommand(prefix: string, exitCode = 0): { source: string, command: string, omittedMarker: string } {
+export function qwenOutputPathCommand(prefix: string, exitCode = 0): { source: string, command: string, omittedMarker: string, lastMarker: string } {
   if (!/^[A-Z][A-Z0-9]{0,79}$/i.test(prefix) || !Number.isSafeInteger(exitCode) || exitCode < 0 || exitCode > 255)
     throw new Error('The controlled Qwen command requires an ASCII prefix and a valid exit code.')
   const source = `const lines = Array.from({length:8000}, (_, index) => ${JSON.stringify(prefix)} + "-line-" + index + ":" + "x".repeat(30)); lines[4000] += "-middle-" + (70 + 7); lines.push(${JSON.stringify(prefix)} + "-complete-" + (40 + 2)); process.stdout.write(lines.join("\\n")); process.exitCode = ${exitCode};`
-  return { source, command: `node -e ${quotePosixShellArgument(source)}`, omittedMarker: `${prefix}-line-4000:${'x'.repeat(30)}-middle-77` }
+  return { source, command: `node -e ${quotePosixShellArgument(source)}`, omittedMarker: `${prefix}-line-4000:${'x'.repeat(30)}-middle-77`, lastMarker: `${prefix}-complete-42` }
 }

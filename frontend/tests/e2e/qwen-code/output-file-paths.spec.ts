@@ -14,14 +14,16 @@ import { agentOpenOptions, agentSettings } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { expandNativeResultView } from '../helpers/nativeResultView'
 import { currentNativeAgent, nativeAgentById, nativeTextStep } from '../helpers/nativeScenario'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { copyNativeToolOutputPreview } from '../helpers/nativeToolOutput'
+import { nativeOutputPathsPrecedePreview } from '../helpers/nativeToolOutputFilePaths'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { openWorkspace, sendMessage } from '../helpers/ui'
+import { openWorkspace, readAttachedWithArgument, sendMessage } from '../helpers/ui'
 import { expect, qwenTest } from '../qwen-fixtures'
 import { qwenModelOutputPath, qwenOutputPathCommand, qwenOutputPathReceipt } from './outputFilePaths'
 
@@ -72,7 +74,7 @@ async function provePathsAndPreview(
   ownerId: string,
   sessionId: string,
   expected: { receipt: QwenOutputPathReceipt, message: AgentChatMessage },
-  omittedMarker: string,
+  generated: { omittedMarker: string, lastMarker: string },
 ): Promise<void> {
   const agentEnv = context.leapmuxServer.agentEnv
   const runtime = agentEnv?.QWEN_RUNTIME_DIR || agentEnv?.QWEN_HOME
@@ -86,7 +88,9 @@ async function provePathsAndPreview(
     if (!isAbsolute(path) || descendant === '' || descendant.startsWith('..') || isAbsolute(descendant))
       throw new Error('The native Qwen output path must stay inside its private runtime.')
   }
-  expect(expected.receipt.preview.includes(omittedMarker)).toBe(false)
+  expect(expected.receipt.preview.includes(generated.omittedMarker)).toBe(false)
+  // The native preview keeps the tail. The computed last line occurs only in returned output.
+  expect(expected.receipt.preview.includes(generated.lastMarker)).toBe(true)
   for (const reloaded of [false, true]) {
     if (reloaded) {
       for (const path of expected.receipt.paths)
@@ -104,6 +108,8 @@ async function provePathsAndPreview(
     await expect(paths).toBeVisible()
     expect(await paths.textContent()).toBe(expected.receipt.paths.map(path => `Output file:${path}`).join(''))
     await expect(paths.getByRole('link')).toHaveCount(0)
+    await expandNativeResultView(result)
+    expect(await readAttachedWithArgument(result, 'native output property order', nativeOutputPathsPrecedePreview, [generated.lastMarker])).toBe(true)
     await copyNativeToolOutputPreview(context.page, result, expected.receipt.preview)
   }
 }
@@ -137,7 +143,7 @@ for (const exitCode of [0, 7]) {
     expect(expected.receipt.exitCode).toBe(exitCode)
     expect(expected.receipt.status).toBe(exitCode === 0 ? 'completed' : 'failed')
     await testInfo.attach('qwen-native-output-path-receipt', { body: JSON.stringify({ agentId: owner.id, sessionId: current.agentSessionId, receipt: expected.receipt, original: messageProof(expected.message) }), contentType: 'application/json' })
-    await provePathsAndPreview(native, owner.id, current.agentSessionId, expected, generated.omittedMarker)
+    await provePathsAndPreview(native, owner.id, current.agentSessionId, expected, generated)
   })
 }
 
@@ -190,6 +196,6 @@ for (const background of [false, true]) {
     expect(expected.receipt.paths).toEqual([modelPath])
     expect(expected.receipt.status).toBe('completed')
     await testInfo.attach('qwen-native-child-output-path-receipt', { body: JSON.stringify({ rootId: root.id, childId, parentId: child.parentAgentId, spawnId, sessionId: root.agentSessionId, receipt: expected.receipt, original: messageProof(expected.message) }), contentType: 'application/json' })
-    await provePathsAndPreview(native, childId, root.agentSessionId, expected, generated.omittedMarker)
+    await provePathsAndPreview(native, childId, root.agentSessionId, expected, generated)
   })
 }

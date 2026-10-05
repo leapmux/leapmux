@@ -72,8 +72,15 @@ func resolvePlanApproval(ctx agent.ControlResponseContext) agent.ControlResponse
 	result := agent.DefaultControlResponseResolution(ctx)
 	requestID, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
 	id, storedID, found := agent.ExtractJSONRPCID(ctx.RequestPayload)
-	if !ok || !found || requestID == "" || requestID != agent.StoredControlRequestID(ctx, storedID) {
-		result.Withhold = true
+	switch {
+	case !ok || requestID == "":
+		result.Refuse(agent.RefusalNoDecision)
+		return result
+	case !found:
+		result.Refuse(agent.RefusalUnreadableRequest)
+		return result
+	case requestID != agent.StoredControlRequestID(ctx, storedID):
+		result.Refuse(agent.RefusalOtherRequest)
 		return result
 	}
 	var option string
@@ -88,7 +95,7 @@ func resolvePlanApproval(ctx agent.ControlResponseContext) agent.ControlResponse
 		option = contracts.QwenPermissionOptionCancel
 		result.Feedback = message
 	default:
-		result.Withhold = true
+		result.Refuse(agent.RefusalNoDecision)
 		return result
 	}
 	content, err := json.Marshal(struct {
@@ -99,7 +106,7 @@ func resolvePlanApproval(ctx agent.ControlResponseContext) agent.ControlResponse
 		"outcome": map[string]string{"outcome": contracts.ACPPermissionOutcomeSelected, "optionId": option},
 	}})
 	if err != nil {
-		result.Withhold = true
+		result.Refuse(agent.RefusalUnencodableReply)
 		return result
 	}
 	result.Content = content

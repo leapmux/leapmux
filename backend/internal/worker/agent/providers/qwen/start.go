@@ -31,6 +31,15 @@ const qwenNoRelaunchEnv = "QWEN_CODE_NO_RELAUNCH=1"
 // into one hold, reports on its own cadence, and is ordered with no update.
 const qwenDisableCronEnv = "QWEN_CODE_DISABLE_CRON=1"
 
+// qwenSkipUpdateCheckEnv turns off Qwen's check for a newer release, and the
+// install that follows it. Qwen starts both from its interactive UI, three
+// seconds after the first paint, and never from `--acp`; the variable reaches a
+// `qwen` that the agent's own shell tool starts (QWEN_CODE_CLI). Only the exact
+// value `true` counts, and the `_ONCE` in the name is the spelling that Qwen's own
+// relaunch step gives the same variable. It stops no `/update` command that a user
+// types.
+const qwenSkipUpdateCheckEnv = "QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true"
+
 // Start starts a Qwen Code ACP agent process and performs the handshake.
 //
 // The launch flag states the approval mode, because Qwen's own default is
@@ -41,7 +50,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		Registration:  Registration(),
 		ProviderName:  "qwen",
 		BaseArgs:      []string{"--acp", "--approval-mode", launchApprovalMode(opts.PermissionMode())},
-		PinnedEnv:     []string{qwenNoRelaunchEnv, qwenDisableCronEnv},
+		PinnedEnv:     []string{qwenNoRelaunchEnv, qwenDisableCronEnv, qwenSkipUpdateCheckEnv},
 		SessionConfig: acp.SessionConfig{NewMethod: acp.MethodSessionNew, ResumeMethod: acp.MethodSessionResume},
 		NewAgent:      func() *Agent { return &Agent{} },
 		Base:          func(a *Agent) *acp.Base { return &a.Base },

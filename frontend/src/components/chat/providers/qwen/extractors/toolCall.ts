@@ -11,7 +11,8 @@ import { questionsFromWire } from '../../../controls/types'
 import { mcpToolCallRequest, parseMcpContentItem, parseMcpToolName } from '../../../model/mcpToolCall'
 import { failedResult, isUnparsedToolResult, proseResult } from '../../../model/toolCall'
 import { acpRemapFacts, acpSpecFor } from '../../acp/extractors/toolCall'
-import { QWEN_QUESTION_ANSWERS, QWEN_SHELL_RESULT } from '../protocol'
+import { declinedToolCallSpec } from '../../declinedToolCall'
+import { isQwenCanceledToolSentence, QWEN_QUESTION_ANSWERS, QWEN_SHELL_RESULT } from '../protocol'
 import { isQwenTool, QWEN_TOOL_KINDS, QWEN_TOOL_NAME } from '../toolKinds'
 import { qwenAgentRequest, qwenAgentRun, qwenWorkflowRequest, qwenWorkflowRun } from './agent'
 import { qwenGlobResult, qwenGrepResult, qwenListResult, qwenReadResult } from './results'
@@ -95,8 +96,30 @@ function qwenArgs(name: string, input: Record<string, unknown>): Record<string, 
   return { ...input, ...(path ? { file_path: path } : {}), ...(source ? { new_string: source } : {}) }
 }
 
-/** Qwen identifies each call in `_meta.toolName`, and its titles are prose. */
-export const qwenToolCallAdapter: ACPToolCallAdapter = (facts, base) => {
+/**
+ * Qwen identifies each call in `_meta.toolName`, and its titles are prose.
+ *
+ * The refusal is a post-condition around the WHOLE build, for the reason that
+ * `providers/README.md` gives. The build has several returns, and a refused call of
+ * every tool must read `declined` with the refusal as its body.
+ */
+export const qwenToolCallAdapter: ACPToolCallAdapter = (facts, base): ToolCallSpec => {
+  const spec = qwenToolCall(facts, base)
+  return qwenRefused(facts) ? declinedToolCallSpec(spec, facts.text) : spec
+}
+
+/**
+ * Whether Qwen Code refused this call on the Deny answer of the reader.
+ *
+ * The OWN status of the frame decides, with the sentence. Only a failed update states a
+ * refusal. A call that completed and printed the same words ran.
+ */
+function qwenRefused(facts: ACPToolFacts): boolean {
+  return facts.lifecycle.frameStatus === 'failed' && isQwenCanceledToolSentence(facts.text)
+}
+
+/** One Qwen Code call, before the refusal post-condition. */
+function qwenToolCall(facts: ACPToolFacts, base: () => ToolCallSpec): ToolCallSpec {
   const name = qwenToolName(facts.tool)
   if (!name)
     return base()
