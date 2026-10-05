@@ -818,6 +818,7 @@ func (b *Base) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
 	// Comparing those snapshots could report the reader's change as ours or omit our change after a reader update.
 	// The monotonic generation detects either change and permits an idempotent broadcast of the current catalog.
 	structureGenBefore := b.options.structureGen
+	persistsBefore := b.options.persists
 	b.Mu.Unlock()
 
 	ok := true
@@ -837,10 +838,20 @@ func (b *Base) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
 	// The context-clear and handshake paths publish their own refreshes, so the model writer does not broadcast status.
 	b.Mu.Lock()
 	optionGroupsChanged := b.options.structureGen != structureGenBefore
+	refreshedDuringWrites := b.options.persists != persistsBefore
 	sessionID := b.sessionID
 	b.Mu.Unlock()
+	// A server can send config_option_update before it replies to the model write. The base then
+	// persisted the value that the server reset, and a write that restored the user's value sends
+	// no notification, so no later refresh would replace the reset value in the stored row.
+	// Persist the final state once more. The row then equals the session, as it does after a
+	// context clear (applySessionRefresh persists after the reapply). A failed batch ends in a
+	// restart, which persists its own confirmed settings.
 	// Live agents always have b.sink. Tests can create Base without a sink.
 	// Keep the nil guard so a catalog change in such a test cannot panic.
+	if ok && refreshedDuringWrites && b.sink != nil {
+		b.BroadcastSettingsRefresh()
+	}
 	if optionGroupsChanged && b.sink != nil {
 		b.sink.BroadcastStatusActive(sessionID)
 	}
@@ -2814,6 +2825,7 @@ func (b *Base) BroadcastSettingsRefresh() {
 	// also touch the options must still re-include them or the refresh would not
 	// reflect them.
 	optionValues := b.options.mergeOptionValues(primaryAgentOptions(b.currentPrimaryAgent))
+	b.options.persists++
 	b.Mu.Unlock()
 	b.sink.PersistSettingsRefresh(acpRefreshMap(model, mode, optionValues))
 }
@@ -3041,7 +3053,7 @@ func (b *Base) setConfigOption(configID, value string) error {
 // an irreducible window we deliberately do not close by holding b.Mu across an RPC. A false
 // precondition is a no-op success.
 func (b *Base) setConfigOptionGuarded(configID, value string, stillWanted func() bool) error {
-	// Check the advertised-option set (every option the server has advertised) rather than
+	// Check the advertised-option set (every option that the latest complete payload advertised) rather than
 	// the surfaced-option values (only those with a concrete current value surfaced): an option
 	// the server advertised with an empty current is pushable so its persisted preference
 	// can be re-applied, even though it isn't yet surfaced as a group.

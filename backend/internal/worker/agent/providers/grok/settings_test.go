@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
 )
 
 func TestGrokApprovalModeTableStatesEachWireForm(t *testing.T) {
@@ -198,4 +199,57 @@ func TestGrokSessionParamsFallBackToAskForAnUnknownMode(t *testing.T) {
 
 	assert.Equal(t, map[string]any{"yoloMode": false, "autoMode": false}, params["_meta"])
 	assert.Equal(t, "s", params["sessionId"])
+}
+
+// The fake server follows Grok Build's own rules (xai-grok-shell, model_switch.rs and
+// reasoning_effort.rs of Grok Build):
+//
+//   - A model switch keeps the effort without a check against the value list of the new
+//     model. The snapshot can then show a current value that its own list omits.
+//   - The server sends config_option_update with the reply to the switch.
+//   - A write of an effort that the current model lacks fails with -32602.
+//   - A model without a reasoning capability has no reasoning_effort option.
+//
+// The worker merges the stored effort into a model switch, so UpdateSettings receives
+// {model: B, reasoning_effort: X}.
+
+func newGrokSwitchServer(levelsOfB ...string) *acptest.ModelSwitchServer {
+	server := &acptest.ModelSwitchServer{
+		EffortID: contracts.GrokConfigReasoningEffort,
+		Models:   []string{"model-a", "model-b"},
+		Levels:   map[string][]string{"model-a": {"low", "medium", "high"}, "model-b": levelsOfB},
+		Reset:    func(_, previous string) string { return previous },
+	}
+	server.Start("model-a", "high")
+	return server
+}
+
+func TestGrokModelSwitchShowsTheEffortThatTheServerKeptEvenWhenTheNewListOmitsIt(t *testing.T) {
+	t.Parallel()
+	server := newGrokSwitchServer("low", "medium")
+	a, _, requests := newGrokAgent(t, agent.Options{}, server.Respond)
+	server.Seed(a, true)
+
+	result := a.UpdateSettings(map[string]string{agent.OptionIDModel: "model-b", contracts.GrokConfigReasoningEffort: "high"})
+
+	require.True(t, result.AppliedLive)
+	assert.Equal(t, []string{"model=model-b"}, acptest.ConfigWrites(requests()))
+	require.NotNil(t, result.Settlements[contracts.GrokConfigReasoningEffort].Value)
+	assert.Equal(t, "high", *result.Settlements[contracts.GrokConfigReasoningEffort].Value,
+		"the settled value is the effort that the session runs")
+}
+
+// A model without a reasoning capability has no reasoning_effort option, and the
+// server refuses a write of one. The base must not write the stored effort then.
+func TestGrokModelSwitchToAModelWithoutReasoningWritesNoEffort(t *testing.T) {
+	t.Parallel()
+	server := newGrokSwitchServer()
+	a, _, requests := newGrokAgent(t, agent.Options{}, server.Respond)
+	server.Seed(a, true)
+
+	result := a.UpdateSettings(map[string]string{agent.OptionIDModel: "model-b", contracts.GrokConfigReasoningEffort: "high"})
+
+	require.True(t, result.AppliedLive, "the server refuses an effort write for a model without reasoning")
+	assert.Equal(t, []string{"model=model-b"}, acptest.ConfigWrites(requests()))
+	assert.Nil(t, optionids.GroupByID(a.OptionGroups(), contracts.GrokConfigReasoningEffort))
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
 )
 
 func TestKiroPolicyPresetTableStartsWithTheSafeValue(t *testing.T) {
@@ -211,4 +212,51 @@ func TestKiroRegistrationStatesTheStaticGroups(t *testing.T) {
 	assert.Equal(t, "LEAPMUX_KIRO_DEFAULT_MODEL", registration.EnvModelKey)
 	assert.Equal(t, "LEAPMUX_KIRO_DEFAULT_EFFORT", registration.EnvEffortKey)
 	assert.Empty(t, registration.DefaultModels, "the account's catalog is the only source of models")
+}
+
+// The fake server follows the Kiro fixture of this package (kiroFakeConfigOptions): a
+// model write starts the effort at the default of the new model, and a model without
+// an effort has no effort option. A write of an effort that the current model lacks
+// fails with -32602. Kiro sends no config_option_update for a write.
+//
+// The worker merges the stored effort into a model switch, so UpdateSettings receives
+// {model: B, effortLevel: X}.
+
+func newKiroSwitchServer(levelsOfB ...string) *acptest.ModelSwitchServer {
+	server := &acptest.ModelSwitchServer{
+		EffortID: contracts.KiroConfigEffortLevel,
+		Models:   []string{"model-a", "model-b"},
+		Levels:   map[string][]string{"model-a": {"low", "medium", "high"}, "model-b": levelsOfB},
+		Reset:    func(string, string) string { return "high" },
+	}
+	server.Start("model-a", "low")
+	return server
+}
+
+func TestKiroModelSwitchWritesTheChosenEffortAfterTheDefaultOfTheNewModel(t *testing.T) {
+	t.Parallel()
+	server := newKiroSwitchServer("low", "medium", "high", "max")
+	a, _, requests := newKiroAgent(t, agent.Options{}, server.Respond)
+	server.Seed(a, false)
+
+	result := a.UpdateSettings(map[string]string{agent.OptionIDModel: "model-b", contracts.KiroConfigEffortLevel: "low"})
+
+	require.True(t, result.AppliedLive)
+	assert.Equal(t, []string{"model=model-b", "effortLevel=low"}, acptest.ConfigWrites(requests()))
+	assert.Equal(t, "low", agent.CurrentOptions(a.OptionGroups())[contracts.KiroConfigEffortLevel])
+}
+
+// A model without an effort has no effort option, and the server refuses a write of
+// one. The base must not write the stored effort then.
+func TestKiroModelSwitchToAModelWithoutEffortWritesNoEffort(t *testing.T) {
+	t.Parallel()
+	server := newKiroSwitchServer()
+	a, _, requests := newKiroAgent(t, agent.Options{}, server.Respond)
+	server.Seed(a, false)
+
+	result := a.UpdateSettings(map[string]string{agent.OptionIDModel: "model-b", contracts.KiroConfigEffortLevel: "low"})
+
+	require.True(t, result.AppliedLive, "the server refuses an effort write for a model without an effort")
+	assert.Equal(t, []string{"model=model-b"}, acptest.ConfigWrites(requests()))
+	assert.Nil(t, optionids.GroupByID(a.OptionGroups(), contracts.KiroConfigEffortLevel))
 }

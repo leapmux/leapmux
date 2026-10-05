@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/optionids"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
@@ -334,4 +335,48 @@ func TestOptionSessionStart_TheRecordKeepsTheGroupsOfTheSwap(t *testing.T) {
 	g.apply(effort("low"), authoritativePayload, ModeChannelUnmapped, "")
 	assert.True(t, g.foldedSinceSessionStart())
 	assert.False(t, g.groupsChangedSinceSessionStart(), "a payload that restores the groups of the swap changes nothing")
+}
+
+// A complete payload that omits an option says that the option no longer applies. The
+// option leaves the advertised set and loses its template, so no write batch targets it.
+// An option that the payload advertises with an empty current stays known, because a
+// persisted preference can still be written to it.
+func TestOptionStateApply_ACompletePayloadForgetsAnOptionThatItOmits(t *testing.T) {
+	t.Parallel()
+
+	g := &optionState{}
+	g.apply([]ConfigOption{
+		{ID: "reasoning_effort", Category: "thought_level", CurrentValue: "high", Options: []ConfigOptionValue{{Value: "low"}, {Value: "high"}}},
+	}, authoritativePayload, ModeChannelUnmapped, "")
+	require.True(t, g.known.has("reasoning_effort"))
+
+	// The next payload drops reasoning_effort and advertises autopilot with no current value.
+	g.apply([]ConfigOption{
+		{ID: "autopilot", Options: []ConfigOptionValue{{Value: "on"}, {Value: "off"}}},
+	}, authoritativePayload, ModeChannelUnmapped, "")
+
+	assert.False(t, g.known.has("reasoning_effort"), "an omitted option is no longer advertised")
+	assert.NotContains(t, g.templates, "reasoning_effort", "the template goes with the id")
+	assert.True(t, g.known.has("autopilot"), "an option advertised with an empty current stays writable")
+	assert.Contains(t, g.templates, "autopilot")
+	assert.Equal(t, optionmap.Map{"reasoning_effort": ""}, g.mergeOptionValues(nil),
+		"the stored value of the omitted option is still deleted")
+}
+
+func TestBoundedIDSet_Remove(t *testing.T) {
+	t.Parallel()
+
+	s := newBoundedIDSet()
+	s.add("a", nil)
+	s.add("b", nil)
+
+	s.remove("a")
+	s.remove("absent")
+	(*boundedIDSet)(nil).remove("x")
+
+	assert.False(t, s.has("a"))
+	assert.True(t, s.has("b"))
+	assert.Equal(t, []string{"b"}, s.keys())
+	s.add("a", nil)
+	assert.Equal(t, []string{"b", "a"}, s.keys(), "a removed id can be added again as the newest")
 }

@@ -44,8 +44,9 @@ type optionState struct {
 	// valued id could be evicted, stranding its value, its template, and its pending "" delete. nil
 	// outside apply.
 	pendingValues map[string]string
-	// known records every config option id the server has ADVERTISED this session (whether or
-	// not it surfaced a concrete value). It gates the two write paths: setConfigOption
+	// known records every config option id that the latest complete configOptions payload
+	// ADVERTISED (whether or not it surfaced a concrete value). A complete payload that omits an
+	// id removes it (forgetUnadvertised). It gates the two write paths: setConfigOption
 	// accepts a write only for an advertised id, and applyStartupOptions re-pushes a
 	// persisted preference only for one -- so an option advertised with an empty current at
 	// handshake stays writable/re-pushable. LRU-bounded (boundedIDSet) so a non-conforming
@@ -55,9 +56,10 @@ type optionState struct {
 	// When a later (complete) configOptions payload drops one -- reports a smaller option set
 	// than before -- mergeOptionValues emits the dropped id as an explicit "" so the uniform refresh
 	// merge DELETES its stale stored value instead of preserving it (an absent key is
-	// preserved). It is a strict subset of `known`: an id advertised but never valued has no
-	// stored value to delete, so emitting "" for it would be a redundant no-op (and could wipe
-	// a persisted preference awaiting re-push). LRU-bounded, like `known`.
+	// preserved). An id advertised but never valued is not in it: it has no stored value to
+	// delete, so emitting "" for it would be a redundant no-op (and could wipe a persisted
+	// preference awaiting re-push). An id that a complete payload drops leaves `known` and stays
+	// here, so its delete is still emitted. LRU-bounded, like `known`.
 	surfaced *boundedIDSet
 	// templates holds the last-advertised ConfigOption for each known id, so a write the
 	// server accepts but does NOT echo in a refreshed configOptions (off-spec) can still
@@ -76,6 +78,11 @@ type optionState struct {
 	// change happened during it (a reader-only change merely fires a harmless idempotent broadcast,
 	// as it did before). Bumped under the owning Base.Mu, like the rest of optionState.
 	structureGen uint64
+	// persists counts the settings refreshes that BroadcastSettingsRefresh persisted. A live
+	// UpdateSettings compares it before and after its writes: a difference means that a refresh
+	// persisted a value that a later write of the same span may have replaced, so the span
+	// persists its final state again. Bumped under the owning Base.Mu, like structureGen.
+	persists uint64
 	// unresolved records axes whose successful write returned no authoritative
 	// config-options snapshot. A later complete snapshot clears the set.
 	unresolved *boundedIDSet
@@ -191,6 +198,17 @@ func (s *boundedIDSet) add(id string, protected func(string) bool) (evicted stri
 	return "", false
 }
 
+// remove deletes id from the set. A nil set and an absent id are no-ops.
+func (s *boundedIDSet) remove(id string) {
+	if s == nil {
+		return
+	}
+	if e, ok := s.elems[id]; ok {
+		s.order.Remove(e)
+		delete(s.elems, id)
+	}
+}
+
 // has reports whether id is in the set.
 func (s *boundedIDSet) has(id string) bool {
 	if s == nil {
@@ -237,6 +255,24 @@ func (g *optionState) markKnown(option ConfigOption) {
 		delete(g.templates, evicted)
 	}
 	g.templates[option.ID] = option
+}
+
+// forgetUnadvertised removes every known id that the complete payload just folded does not
+// advertise, together with its template. An option that a complete payload omits no longer
+// applies (a model change dropped it), and the server refuses a write to it. The union of the
+// known ids drives every write batch, so a stale id would turn the stored value of the dropped
+// option into a refused write on the next model change, and the refusal would restart the agent.
+// The id stays in `surfaced`, so mergeOptionValues still deletes its stored value. An option
+// that the payload advertises with an empty current stays known: it is writable.
+// advertised is the winner map that apply built from this payload. Caller holds the owning
+// Base.Mu.
+func (g *optionState) forgetUnadvertised(advertised map[string]ConfigOption) {
+	for _, id := range g.known.keys() {
+		if _, ok := advertised[id]; !ok {
+			g.known.remove(id)
+			delete(g.templates, id)
+		}
+	}
 }
 
 // valued reports whether a config-option id currently carries a value (so it has a persisted
@@ -561,6 +597,8 @@ func (g *optionState) apply(options []ConfigOption, authority payloadAuthority, 
 		values[id] = current
 		g.markSurfaced(id)
 	}
+	// The payload is complete, so an id that it does not advertise no longer applies.
+	g.forgetUnadvertised(winner)
 
 	// A complete payload with no surfaced options genuinely has none now, so rebuild to the
 	// empty set -- this clears an option the latest payload dropped (and mergeOptionValues then
