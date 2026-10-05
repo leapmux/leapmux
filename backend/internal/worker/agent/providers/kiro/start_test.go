@@ -338,6 +338,11 @@ func TestFinishStartupPreservesBindingContextCancellation(t *testing.T) {
 // the probe recorded Kiro's text for a throttled model call.
 const kiroFakeDisplayError = "Too many requests, please wait before trying again. (Request ID: c791fc4e)"
 
+// kiroFakeErrorData is the `data` member of the JSON-RPC error that the fake
+// answers, as the probe recorded it. The failure note states it after the
+// message, because a JSON-RPC error can state its cause only there.
+const kiroFakeErrorData = `{"errorType":"ServiceThrottleError"}`
+
 // failFakePrompt writes Kiro's failure of one prompt, in the probed order: the
 // turn starts, Kiro states the display error, the turn ends with the stop
 // reason error, and the prompt answers a JSON-RPC error.
@@ -357,7 +362,7 @@ func failFakePrompt(writer *bufio.Writer, id json.RawMessage, message string) {
 		"kind":         kiroKindDisplayError, "message": kiroFakeDisplayError,
 	})
 	update(map[string]any{"turnEnd": map[string]any{"stopReason": kiroStopError}, "kind": contracts.KiroKindTurnEnd, "stopReason": kiroStopError})
-	failure, _ := json.Marshal(map[string]any{"code": -32000, "message": message, "data": map[string]any{"errorType": "ServiceThrottleError"}})
+	failure, _ := json.Marshal(map[string]any{"code": -32000, "message": message, "data": json.RawMessage(kiroFakeErrorData)})
 	_, _ = fmt.Fprintf(writer, `{"jsonrpc":"2.0","id":%s,"error":%s}`+"\n", id, failure)
 	_ = writer.Flush()
 }
@@ -470,12 +475,12 @@ func TestStartKiroStatesTheReasonOfAFailedPrompt(t *testing.T) {
 		{
 			name:         "the probed error",
 			promptError:  kiroFakeDisplayError,
-			wantMessages: []string{"prompt failed: json-rpc error -32000: " + kiroFakeDisplayError},
+			wantMessages: []string{"prompt failed: json-rpc error -32000: " + kiroFakeDisplayError + ": " + kiroFakeErrorData},
 		},
 		{
 			name:         "another error",
 			promptError:  "Internal error",
-			wantMessages: []string{kiroFakeDisplayError, "prompt failed: json-rpc error -32000: Internal error"},
+			wantMessages: []string{kiroFakeDisplayError, "prompt failed: json-rpc error -32000: Internal error: " + kiroFakeErrorData},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

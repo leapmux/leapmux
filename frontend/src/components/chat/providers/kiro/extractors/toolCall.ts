@@ -255,7 +255,12 @@ function kiroRemappedSpec<T extends keyof typeof KIRO_TOOL_KINDS>(facts: ACPTool
   return acpSpecFor(remapFacts, kind)
 }
 
-/** Kiro identifies each built-in call by its title, and the rest by `_meta.kiro`. */
+/**
+ * Kiro hooks two facts. The call TITLE identifies each built-in tool and each MCP call,
+ * and `_meta.kiro` identifies a subagent and a question. A shell call takes the model's
+ * description as its title, so the adapter reads every `execute` call as a command. The
+ * one exception is a `Control Process` call, which states an action.
+ */
 export const kiroToolCallAdapter: ACPToolCallAdapter = (facts, base) => {
   const meta = kiroMeta(facts.tool)
   const title = pickString(facts.tool, 'title')

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -133,15 +134,15 @@ func resolveKiroPermission(ctx agent.ControlResponseContext, shared agent.Contro
 	}
 	request := readKiroPermissionRequest(ctx.RequestPayload)
 	if !request.offers(scoped.optionID) {
-		return withheld(ctx)
+		return withheld(ctx, agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO, scoped.optionID))
 	}
 	if scoped.scope == contracts.KiroConsentScopeWorkspace && request.workspaceRoot() == "" {
-		return withheld(ctx)
+		return withheld(ctx, "the request states no workspace root for a workspace-scoped answer")
 	}
 	outcome.OptionID = scoped.optionID
 	content, err := rewriteScopedReply(reply, result, outcome, scoped.scope)
 	if err != nil {
-		return withheld(ctx)
+		return withheld(ctx, agent.RefusalUnencodableReply)
 	}
 	shared.Content = content
 	return shared
@@ -255,9 +256,10 @@ func (r kiroPermissionRequest) workspaceRoot() string {
 }
 
 // withheld is the resolution of an answer that Kiro could not read. The
-// service refuses it and keeps the request open for another answer.
-func withheld(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
+// service refuses it with the reason and keeps the request open for another
+// answer.
+func withheld(ctx agent.ControlResponseContext, reason string) agent.ControlResponseResolution {
 	result := agent.DefaultControlResponseResolution(ctx)
-	result.Withhold = true
+	result.Refuse(reason)
 	return result
 }

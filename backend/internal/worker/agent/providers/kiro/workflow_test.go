@@ -220,7 +220,8 @@ func TestKiroPausedStepStatesItsReason(t *testing.T) {
 	}))
 
 	step, _ := sink.BackgroundTask(kiroStepSession)
-	assert.Equal(t, bgtask.StatusRunning, step.Status, "a paused step can go on")
+	assert.Equal(t, bgtask.StatusPaused, step.Status, "a paused step waits, so it keeps no tab busy")
+	assert.True(t, step.EndedAt.IsZero(), "a paused step can go on")
 	assert.Equal(t, "Paused: The step asks a question.", step.ActiveForm)
 }
 
@@ -233,9 +234,9 @@ func TestKiroRunThatEndsPausedKeepsItsRowOpen(t *testing.T) {
 	a.HandleOutput(runComplete(t, kiroRunPaused, map[string]any{"status": "paused", "pauseReason": "Repeat 'goal-loop' reached maxIterations."}))
 
 	run, _ := sink.BackgroundTask(runRowKey)
-	assert.Equal(t, bgtask.StatusRunning, run.Status, "a paused run can resume")
+	assert.Equal(t, bgtask.StatusPaused, run.Status, "a paused run waits, so it keeps no tab busy")
 	assert.Equal(t, "Paused: Repeat 'goal-loop' reached maxIterations.", run.ActiveForm)
-	assert.True(t, run.EndedAt.IsZero())
+	assert.True(t, run.EndedAt.IsZero(), "a paused run can resume")
 
 	// A resume reports the start again.
 	a.HandleOutput(runStart(t, "review"))
@@ -274,6 +275,42 @@ func TestKiroRunEndClosesTheStepsItLeftOpen(t *testing.T) {
 			assert.Empty(t, a.workflows.runs, "an ended run is no longer followed")
 			a.stateMu.Unlock()
 		})
+	}
+}
+
+// A pause that the reader asks for, in the order that Kiro 2.24 sends it: the
+// step, the loop above it, the run, and a run end that states the pause. The
+// Worker counts each row that works as activity of the agent, so a row that
+// stays working keeps the tab busy for as long as the goal waits. The resume
+// starts the run and the same step session again.
+func TestKiroUserPauseLeavesNoRowWorkingUntilTheResume(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+	a.HandleOutput(runStart(t, kiroGoalWorkflowName))
+	a.HandleOutput(nodeStart(t, 0, ""))
+	a.HandleOutput(nodeStart(t, 0, kiroStepSession))
+	const reason = "Workflow paused during node 'work'."
+
+	a.HandleOutput(workflowNote(t, kiroWorkflowNodePausedMethod, map[string]any{"nodeId": "work", "nodePath": stepPath("iter-0"), "reason": reason}))
+	a.HandleOutput(workflowNote(t, kiroWorkflowNodePausedMethod, map[string]any{"nodeId": "goal-loop", "nodePath": []any{kiroRunID, "goal-loop"}, "reason": reason}))
+	a.HandleOutput(workflowNote(t, kiroWorkflowPausedMethod, map[string]any{"pauseReason": reason, "initiator": "user"}))
+	a.HandleOutput(runComplete(t, kiroRunPaused, map[string]any{"status": kiroRunPaused, "pauseReason": reason}))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 2, "the run and its step")
+	for _, row := range rows {
+		assert.Equal(t, bgtask.StatusPaused, row.Status, "row %s waits for the resume", row.RowKey)
+		assert.False(t, row.Status.IsWorking(), "row %s must not keep the tab busy", row.RowKey)
+		assert.True(t, row.EndedAt.IsZero(), "row %s stays open for the resume", row.RowKey)
+		assert.Equal(t, "Paused: "+reason, row.ActiveForm)
+	}
+
+	a.HandleOutput(runStart(t, kiroGoalWorkflowName))
+	a.HandleOutput(nodeStart(t, 0, kiroStepSession))
+	for _, key := range []string{runRowKey, kiroStepSession} {
+		row, ok := sink.BackgroundTask(key)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, row.Status, "row %s works again after the resume", key)
 	}
 }
 

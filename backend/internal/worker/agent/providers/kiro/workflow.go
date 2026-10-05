@@ -306,7 +306,11 @@ func (a *Agent) handleNodeComplete(note kiroWorkflowNotification) {
 	a.ApplySubagentObservation(obs)
 }
 
-// handleNodePaused states on its row why a step waits.
+// handleNodePaused marks the row of a step that waits, and states why. Kiro
+// pauses a step on the reader's request, for a question to the reader, and
+// after an error that a retry can fix. The step does no work until Kiro starts
+// it again with node_start, so its row is paused and keeps no tab busy. The
+// row stays open, because the start of the same session reopens it.
 func (a *Agent) handleNodePaused(note kiroWorkflowNotification) {
 	a.stateMu.Lock()
 	run := a.runForLocked(note)
@@ -317,7 +321,7 @@ func (a *Agent) handleNodePaused(note kiroWorkflowNotification) {
 	}
 	a.ApplySubagentObservation(&acp.SubagentObservation{
 		RowKey:   sessionID,
-		Status:   bgtask.StatusRunning,
+		Status:   bgtask.StatusPaused,
 		Activity: pausedActivity(note.Reason),
 	})
 }
@@ -338,15 +342,16 @@ func (a *Agent) handleLoopIteration(note kiroWorkflowNotification) {
 	a.noteGoalRound(note.WorkflowID, *note.Iteration+1)
 }
 
-// handleRunPaused states on its row why a run waits. A paused run can resume,
-// so its row stays open.
+// handleRunPaused marks the row of a run that waits, and states why. A paused
+// run does no work, so its row keeps no tab busy. The run can resume, so its
+// row stays open, and the run_start of the resume reopens it.
 func (a *Agent) handleRunPaused(note kiroWorkflowNotification) {
 	a.stateMu.Lock()
 	run := a.runForLocked(note)
 	run.status = kiroRunPaused
 	snapshot := *run
 	a.stateMu.Unlock()
-	a.upsertRunRow(note.WorkflowID, &snapshot, bgtask.StatusRunning, pausedActivity(note.PauseReason), false)
+	a.upsertRunRow(note.WorkflowID, &snapshot, bgtask.StatusPaused, pausedActivity(note.PauseReason), false)
 	a.observeGoalPause(note.WorkflowID, note.PauseReason)
 }
 
@@ -363,7 +368,8 @@ func kiroRunStatus(status string) bgtask.Status {
 }
 
 // handleRunComplete closes the row of a run that ended, and each step it left
-// open. A run that ends paused keeps its row open, because it can resume.
+// open. A run that ends paused keeps its row open and paused, as
+// handleRunPaused does, because it can resume.
 func (a *Agent) handleRunComplete(note kiroWorkflowNotification) {
 	a.stateMu.Lock()
 	run := a.runForLocked(note)
@@ -380,7 +386,7 @@ func (a *Agent) handleRunComplete(note kiroWorkflowNotification) {
 	a.stateMu.Unlock()
 
 	if note.Status == kiroRunPaused {
-		a.upsertRunRow(note.WorkflowID, &snapshot, bgtask.StatusRunning, pausedActivity(note.FinalState.PauseReason), false)
+		a.upsertRunRow(note.WorkflowID, &snapshot, bgtask.StatusPaused, pausedActivity(note.FinalState.PauseReason), false)
 		a.observeGoalPause(note.WorkflowID, note.FinalState.PauseReason)
 		return
 	}
