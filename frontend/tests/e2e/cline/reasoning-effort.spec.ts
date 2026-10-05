@@ -2,6 +2,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
+import { exerciseModelSwitchKeepsOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectSettingsChip, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 /**
@@ -44,5 +45,24 @@ clineTest.describe('Cline settings', () => {
     const restored = await sendNativeAnswer({ page, modelScript, provider: AgentProvider.CLINE }, 'Reply after restoring high effort.', 'The restored high effort answered.')
     expect(restored.body).toHaveProperty('reasoning_effort', 'high')
     expect(restored.body).toHaveProperty('model', 'deepseek-v4-pro')
+  })
+})
+
+clineTest.describe('Cline model switch', () => {
+  // Both catalog models offer high. Cline merges each field of a connection update alone, so a model switch keeps the effort.
+  clineTest('keeps the chosen effort after a model switch and a reload', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = { page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId, provider: AgentProvider.CLINE }
+    await exerciseModelSwitchKeepsOption(context, {
+      prepare: async () => {
+        await waitForSettingsHydrated(page)
+        await chooseSettingsOption(page, 'model-deepseek-v4-pro')
+        await waitForSettingsIdle(page)
+      },
+      kept: { groupId: 'effort', value: 'high' },
+      model: 'deepseek-flash',
+      nativeProof: (request) => {
+        expect(request.body).toMatchObject({ model: 'deepseek-flash', reasoning_effort: 'high' })
+      },
+    })
   })
 })

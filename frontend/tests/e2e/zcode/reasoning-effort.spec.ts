@@ -1,7 +1,8 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { MOCK_MODELS, MOCK_PROVIDER_IDS } from '../helpers/mockAgentEnvironment'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { exerciseRestoredNativeOption } from '../helpers/nativeSettings'
+import { exerciseModelSwitchKeepsOption, exerciseRestoredNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectSettingsChip, waitForSettingsIdle } from '../helpers/ui'
 import { ZCODE_E2E_SKIP_REASON, zcodeTest } from '../zcode-fixtures'
 
@@ -24,4 +25,17 @@ zcodeTest('keeps the low effort after a turn and reload', async ({ authenticated
     },
   })
   await expectSettingsChip(page, 'Low')
+})
+
+// Both mock models offer low, medium, and high. ZCode starts the new model at its own default level.
+zcodeTest('keeps the chosen effort after a model switch and a reload', async ({ authenticatedZCodeWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedZCodeWorkspace.workspaceId, provider: AgentProvider.ZCODE }
+  await exerciseModelSwitchKeepsOption(context, {
+    kept: { groupId: 'effort', value: 'low' },
+    model: `${MOCK_PROVIDER_IDS.zcode}/${MOCK_MODELS.pi}`,
+    nativeProof(request) {
+      expect(request.protocol).toBe('openai-chat-completions')
+      expect(request.body).toMatchObject({ model: MOCK_MODELS.pi, reasoning_effort: 'low' })
+    },
+  })
 })

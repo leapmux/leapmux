@@ -1,7 +1,7 @@
 import { DROID_E2E_SKIP_REASON, DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
 import { droidNativeSettingsUpdates } from '../helpers/droidNativeSettings'
 import { DROID_MOCK_MODEL_IDS } from '../helpers/mockAgentEnvironment'
-import { exerciseRestoredNativeOption } from '../helpers/nativeSettings'
+import { exerciseModelSwitchKeepsOption, exerciseRestoredNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
@@ -40,5 +40,28 @@ droidTest.describe('Factory Droid settings', () => {
 
     await chooseSettingsOption(page, `model-${DROID_MOCK_MODEL_IDS.primary}`)
     await waitForSettingsIdle(page)
+  })
+})
+
+droidTest.describe('Factory Droid model switch', () => {
+  droidTest.skip(!!DROID_E2E_SKIP_REASON, DROID_E2E_SKIP_REASON || '')
+
+  // The native session keeps the effort when the new model supports it. The two built-in models share the ladder.
+  droidTest('keeps the chosen effort after a model switch and a reload', async ({ authenticatedDroidWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDroidWorkspace.workspaceId })
+    await exerciseModelSwitchKeepsOption(context, {
+      prepare: async () => {
+        await modelScript.rule(DROID_TITLE_RULE)
+        await waitForSettingsHydrated(page)
+        await chooseSettingsOption(page, 'model-claude-fable-5.1')
+        await waitForSettingsIdle(page)
+      },
+      kept: { groupId: 'effort', value: 'low' },
+      model: 'claude-opus-5',
+      nativeProof: (request) => {
+        expect(request.path).toBe('/v1/api/llm/a/v1/messages')
+        expect(request.body).toMatchObject({ model: 'claude-opus-5', output_config: { effort: 'low' } })
+      },
+    })
   })
 })

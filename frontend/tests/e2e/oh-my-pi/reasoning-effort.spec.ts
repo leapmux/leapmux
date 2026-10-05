@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { exerciseNativeOption } from '../helpers/nativeSettings'
+import { OH_MY_PI_ALT_MODEL_ID, OH_MY_PI_ALT_MODEL_WIRE_ID } from '../helpers/mockAgentEnvironment'
+import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, openPlusMenu, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
@@ -87,4 +88,17 @@ ohMyPiTest('sends low native effort before and after reload', async ({ authentic
   await exerciseNativeOption(context, { groupId: 'effort', value: 'low', nativeProof: (request) => {
     expect(request.body).toHaveProperty('reasoning_effort', 'low')
   } })
+})
+
+// omp keeps the thinking level between reasoning models, and LeapMux folds the level that omp reports.
+ohMyPiTest('keeps the chosen effort after a model switch and a reload', async ({ authenticatedOhMyPiWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedOhMyPiWorkspace.workspaceId, provider: AgentProvider.OH_MY_PI }
+  await exerciseModelSwitchKeepsOption(context, {
+    kept: { groupId: 'effort', value: 'low' },
+    model: OH_MY_PI_ALT_MODEL_ID,
+    nativeProof: (request) => {
+      expect(JSON.stringify(request.body)).toContain(`"model":"${OH_MY_PI_ALT_MODEL_WIRE_ID}"`)
+      expect(request.body).toMatchObject({ reasoning_effort: 'low' })
+    },
+  })
 })

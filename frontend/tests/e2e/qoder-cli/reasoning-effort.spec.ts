@@ -1,4 +1,6 @@
-import { exerciseRestoredNativeOption } from '../helpers/nativeSettings'
+import { MOCK_MODELS, QODER_ALTERNATE_MODEL_ID } from '../helpers/mockAgentEnvironment'
+import { sendNativeAnswer } from '../helpers/nativeConversation'
+import { exerciseModelSwitchKeepsOption, exerciseRestoredNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { expect, QODER_E2E_SKIP_REASON, qoderTest } from '../qoder-fixtures'
 import { nativeContext } from './scenarios'
@@ -37,5 +39,27 @@ qoderTest.describe('Qoder CLI effort and session goal', () => {
       },
     })
     await expect(page.locator('[data-testid="composer-effort-trigger"]:visible')).toContainText('Low')
+  })
+})
+
+qoderTest.describe('Qoder CLI model switch', () => {
+  qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
+
+  // The effort is a launch flag that does not depend on the model, so a model switch must keep it on screen
+  // and in the Worker row, and it must restart nothing. The alternate mock model declares no reasoning, so
+  // Qoder sends no effort for it. The native proof is the model, and the kept setting comes from the helper.
+  // The native session takes the flag after its first turn, as the effort test above does.
+  qoderTest('keeps the chosen effort after a model switch and a reload', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+    await exerciseModelSwitchKeepsOption(context, {
+      prepare: async () => {
+        await sendNativeAnswer(context, 'Reply once before the effort changes.', 'The first turn answered.')
+      },
+      kept: { groupId: 'effort', value: 'low' },
+      model: QODER_ALTERNATE_MODEL_ID,
+      nativeProof: (request) => {
+        expect(request.body).toMatchObject({ model: MOCK_MODELS.qoder })
+      },
+    })
   })
 })

@@ -1,6 +1,8 @@
 import { CODEBUDDY_EFFORT_LEVEL, CODEBUDDY_MODE } from '../../../src/generated/contracts/codebuddy-protocol'
 import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, expect } from '../codebuddy-fixtures'
-import { exerciseRestoredNativeOption } from '../helpers/nativeSettings'
+import { CODEBUDDY_ALT_MODEL_ID, CODEBUDDY_ALT_MODEL_WIRE_ID } from '../helpers/mockAgentEnvironment'
+import { sendNativeAnswer } from '../helpers/nativeConversation'
+import { exerciseModelSwitchKeepsOption, exerciseRestoredNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, closeComposerMenus, expectSettingsChip, openPlusMenu, openSettingsMenu, sendMessage, settingsGroupTrigger, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
@@ -62,6 +64,28 @@ codebuddyTest.describe('CodeBuddy Code settings', () => {
       value: CODEBUDDY_EFFORT_LEVEL.Low,
       nativeProof: (request) => {
         expect(request.body).toMatchObject({ reasoning_effort: 'low' })
+      },
+    })
+  })
+})
+
+codebuddyTest.describe('CodeBuddy Code model switch', () => {
+  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
+
+  // The effort is a launch argument that does not depend on the model, so a model switch must keep it on
+  // screen and in the Worker row, and it must restart nothing. The alternate mock model declares no
+  // reasoning, so CodeBuddy sends no effort for it. The native proof is the model, and the kept setting
+  // comes from the helper. The native session takes the argument after its first turn, as the test above does.
+  codebuddyTest('keeps the chosen effort after a model switch and a reload', async ({ codebuddyWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: codebuddyWorkspace.workspaceId })
+    await exerciseModelSwitchKeepsOption(context, {
+      prepare: async () => {
+        await sendNativeAnswer(context, 'Reply once before the effort changes.', 'The first turn answered.')
+      },
+      kept: { groupId: 'effort', value: CODEBUDDY_EFFORT_LEVEL.Low },
+      model: CODEBUDDY_ALT_MODEL_ID,
+      nativeProof: (request) => {
+        expect(request.body).toMatchObject({ model: CODEBUDDY_ALT_MODEL_WIRE_ID })
       },
     })
   })
