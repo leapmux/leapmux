@@ -18,7 +18,8 @@ function storedMessage(id: string, seq: bigint, body: unknown): AgentChatMessage
     spanId: item.id,
     spanType: 'fileChange',
     agentSessionId: sessionId,
-    completion: MessageCompletion.COMPLETE,
+    // The Worker stores a native Codex item with no Worker completion.
+    completion: MessageCompletion.UNSPECIFIED,
     contentCompression: ContentCompression.NONE,
     content: encoder.encode(JSON.stringify(body)),
   })
@@ -49,6 +50,10 @@ describe('codexAppliedFileChange', () => {
     { label: 'wrong diff path', messages: [started, storedMessage('native-completed', 42n, payload({ ...item, changes: [{ path: '/another/file.txt', kind: 'add', diff: 'ACTUAL_FILE42\n' }] }))] },
   ])('refuses an absent, duplicated, failed, or unrelated applied native item: $label', ({ messages }) => {
     expect(() => codexAppliedFileChange(messages, sessionId, item.id, '/private/file.txt')).toThrow()
+  })
+  it.each([MessageCompletion.COMPLETE, MessageCompletion.INTERRUPTED, MessageCompletion.ERROR])('refuses a completed row that carries the Worker completion %s', (completion) => {
+    const finishedByWorker = create(AgentChatMessageSchema, { ...completed, completion })
+    expect(() => codexAppliedFileChange([started, finishedByWorker], sessionId, item.id, '/private/file.txt')).toThrow('did not report a completed applied change')
   })
   it('refuses native completion before the same item starts', () => {
     const earlyCompleted = create(AgentChatMessageSchema, { ...completed, seq: 40n })

@@ -4,7 +4,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest } from '../codex-fixtures'
 import { updateTodosToolCall } from '../helpers/providerToolCalls'
 import { countGoalTransitions, expandGoalsAndTodosSection, expectGoalStatus, goalAction, goalCard, listAgents, openGoalMenu } from '../helpers/subagentRegistry'
-import { sendMessage, stableBox, waitForAgentIdle } from '../helpers/ui'
+import { sendMessage, stableBox, transcriptRows, waitForAgentIdle } from '../helpers/ui'
 
 codexTest.describe('Codex session goal', () => {
   codexTest('set a goal from the panel, pause it, resume it, and clear it', async ({
@@ -203,6 +203,18 @@ codexTest.describe('Codex session goal', () => {
     // the chip is now a guarantee and its absence is a failure.
     const chip = page.locator('[data-testid="thinking-todos-chip"]:visible')
     await expect(chip).toBeVisible()
+    // The chip shows before the transcript finishes the plan rows. The transcript hides the row
+    // that holds the plan, measures it again, and reveals it. The reveal moves the thinking
+    // indicator and its chip down by about 35px. Playwright checks the click target at the first
+    // pointer event only. A click that straddles the move releases the pointer on another element,
+    // so the browser sends no click to the chip. Both failed traces show the reveal inside the
+    // click window and a chip that never toggled: `aria-expanded` stays `false` and the popover
+    // never positions itself. Wait until the result row of the plan shows and the chip stops
+    // moving. The plan row itself shows earlier, because its source code names every step. The
+    // transcript reveals rows in order, so the result row shows after the plan row.
+    await expect(transcriptRows(page).filter({ hasText: '[no output]' }).first()).toBeVisible()
+    await chip.scrollIntoViewIfNeeded()
+    await stableBox(chip)
     await chip.click()
     const popover = page.locator('[data-testid="todo-list-popover"]')
     await expect(popover).toBeVisible()

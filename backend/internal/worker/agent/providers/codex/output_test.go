@@ -3375,3 +3375,35 @@ func TestCodexRawExecRejectsForeignResultIdentity(t *testing.T) {
 		})
 	}
 }
+
+// The Worker stores a native file item as Codex sent it. The item's own status
+// is its completion, so neither row states a Worker completion, and the stored
+// completion reads UNSPECIFIED. The E2E proof of an applied file change
+// (frontend/tests/e2e/codex/appliedFileChange.ts) reads exactly this shape.
+func TestHandleCodexOutput_FileChangeRowsStoreNoWorkerCompletion(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+
+	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"fileChange","id":"patch-1","status":"inProgress","changes":[]}}}`
+	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"fileChange","id":"patch-1","status":"completed","changes":[{"path":"/work/a.txt","kind":{"type":"add"},"diff":"a\n"}]}}}`
+	handleCodexOutput(a, providerkit.ParseLine([]byte(started)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(completed)))
+
+	var rows []agenttest.Message
+	for _, message := range sink.Messages() {
+		if message.SpanID == "patch-1" {
+			rows = append(rows, message)
+		}
+	}
+	require.Len(t, rows, 2, "one started row and one completed row")
+	assert.False(t, rows[0].Closing)
+	assert.True(t, rows[1].Closing)
+	for _, row := range rows {
+		assert.Equal(t, contracts.CodexItemTypeFileChange, row.SpanType)
+		assert.Empty(t, row.Completion, "the native item states its own completion")
+		_, stored := agent.MessageMetadata(agent.MessageContent{Original: row.Content, Completion: row.Completion})
+		assert.Equal(t, leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_UNSPECIFIED, stored)
+	}
+}

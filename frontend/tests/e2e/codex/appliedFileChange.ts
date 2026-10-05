@@ -32,7 +32,11 @@ export function codexAppliedFileChange(messages: readonly AgentChatMessage[], se
   const end = completed[0]
   if (!start || !end || start.message.id === end.message.id || start.message.seq >= end.message.seq)
     throw new Error('The native Codex file item completed before its actual start.')
-  if (start.turnId !== end.turnId || end.message.completion !== MessageCompletion.COMPLETE || !Array.isArray(end.item.changes))
+  // The Worker stores each native item as Codex sent it (persistSharedItemCompleted),
+  // so the row states no Worker completion: the native `status: completed` above is
+  // the completion. Only a row that the Worker finishes itself, such as a tool
+  // that a turn left open, carries a Worker completion.
+  if (start.turnId !== end.turnId || end.message.completion !== MessageCompletion.UNSPECIFIED || !Array.isArray(end.item.changes))
     throw new Error('The native Codex file item did not report a completed applied change.')
   const changes = end.item.changes.filter(isObject).filter(change => change.path === path && codexChangeKind(change) === 'add')
   if (changes.length !== 1 || typeof changes[0]?.diff !== 'string')

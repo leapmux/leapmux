@@ -1,8 +1,8 @@
-import { expect } from '@playwright/test'
 /** Test interruption of a held native child and the next parent answer. */
+import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest } from '../codex-fixtures'
-import { HELD_CHILD_TASK, openHeldChildTab } from '../helpers/subagentRegistry'
+import { HELD_CHILD_NAME, HELD_CHILD_TASK, openHeldChildTab } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, tabById, waitForAgentIdle } from '../helpers/ui'
 
 codexTest.describe('codex subagent lifecycle', () => {
@@ -10,8 +10,8 @@ codexTest.describe('codex subagent lifecycle', () => {
     void authenticatedCodexWorkspace
     const child = await openHeldChildTab(page, modelScript, {
       provider: AgentProvider.CODEX,
-      rowTitle: 'count_to_one_hundred',
-      childTurn: { body: ['NEW_TASK', 'count_to_one_hundred', HELD_CHILD_TASK] },
+      rowTitle: HELD_CHILD_NAME,
+      childTurn: { body: ['NEW_TASK', HELD_CHILD_NAME, HELD_CHILD_TASK] },
       rootTurnsAfterSpawn: [{ text: 'The child started.' }],
     })
 
