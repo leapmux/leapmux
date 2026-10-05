@@ -5,6 +5,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { CURSOR_E2E_SKIP_REASON, cursorTest } from '../cursor-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
+import { cursorRequestContextToolCall } from '../helpers/providerToolCalls'
 
 cursorTest.skip(!!CURSOR_E2E_SKIP_REASON, CURSOR_E2E_SKIP_REASON || '')
 
@@ -16,8 +17,11 @@ cursorTest('starts and reads a private project without a workspace trust request
         writeFileSync(join(directory, 'AGENTS.md'), `# Native project configuration\nKeep ${marker} as a standing project instruction.\n`)
       },
       async prove(privateContext, { directory, marker }) {
-        const request = await sendNativeAnswer(privateContext, 'Reply once after native project configuration loads.', 'The native project configuration turn completed.')
-        expect(request.nativeRequest?.cursorRules).toEqual(expect.arrayContaining([expect.objectContaining({ path: join(directory, 'AGENTS.md'), content: expect.stringContaining(marker) })]))
+        // The Run request holds only the rules that a user attached to the message.
+        // The CLI states the rules that it loaded from the project in its answer to the
+        // request context query, which the scripted call makes before the turn ends.
+        const request = await sendNativeAnswer(privateContext, 'Reply once after native project configuration loads.', 'The native project configuration turn completed.', { toolCalls: [cursorRequestContextToolCall('native-request-context')] })
+        expect(request.nativeRequest?.contextRules).toEqual(expect.arrayContaining([expect.objectContaining({ path: join(directory, 'AGENTS.md'), content: expect.stringContaining(marker) })]))
       },
     },
   })
