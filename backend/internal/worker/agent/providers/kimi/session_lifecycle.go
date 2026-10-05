@@ -63,7 +63,11 @@ func (a *Agent) resumeSession(ctx context.Context, sessionID string, wanted kimi
 		model: status.Model, effort: status.ThinkingLevel, permission: status.Permission,
 		planMode: status.PlanMode, swarmMode: status.SwarmMode,
 	}
-	if config := a.profileConfig(wanted, &stored); len(config) > 0 {
+	config := a.profileConfig(wanted, &stored)
+	// A launch that states no model keeps the model of the stored session, so only a stated
+	// model that differs moves it. The stored level then belongs to the old model.
+	a.restateAutoThinking(config, wanted, false, wanted.model != "" && wanted.model != stored.model)
+	if len(config) > 0 {
 		if err := a.postProfile(ctx, sessionID, config); err != nil {
 			return kimiStatus{}, fmt.Errorf("configure the resumed Kimi Code session: %w", err)
 		}

@@ -300,18 +300,7 @@ func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResul
 	}
 	want := kimiSettingsFromOptions(have, valid)
 	config := a.profileConfig(want, &have)
-	if _, stated := config[kimiConfigThinking]; !stated && want.effort == agent.EffortAuto &&
-		(have.effort != agent.EffortAuto || want.model != have.model) {
-		// Auto sends no level at launch. But the server keeps the level it runs: the
-		// one the user left when the axis returns to Auto, or the previous model's
-		// when only the model changes. Restate what Auto stands for, or the stale
-		// level leaks into the requests of a model that takes none.
-		level := a.autoThinking(want.model)
-		if level == "" {
-			level = kimiThinkingOff
-		}
-		config[kimiConfigThinking] = level
-	}
+	a.restateAutoThinking(config, want, have.effort != agent.EffortAuto, want.model != have.model)
 
 	if len(config) > 0 {
 		if err := kimiCheckID("session", sessionID); err != nil {
@@ -351,6 +340,25 @@ func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResul
 	}
 	a.sink.PersistSettingsRefresh(result.SurfacedOptions)
 	return result
+}
+
+// restateAutoThinking adds to config the level that Auto stands for, when want is on Auto and the
+// server may still run another level. Auto sends no level at launch. But the server keeps the level
+// of a session across a model switch. That level is the one that the user left when the axis
+// returns to Auto (axisLeftAuto), or the one that the previous model ran when the model moves
+// (modelMoved). Without the restatement the stale level reaches the requests of a model that takes
+// none, or runs a model that thinks with the thinking of its predecessor.
+//
+// A config that states a level already wins, so an explicit level is never cleared.
+func (a *Agent) restateAutoThinking(config map[string]any, want kimiSettings, axisLeftAuto, modelMoved bool) {
+	if _, stated := config[kimiConfigThinking]; stated || want.effort != agent.EffortAuto || (!axisLeftAuto && !modelMoved) {
+		return
+	}
+	level := a.autoThinking(want.model)
+	if level == "" {
+		level = kimiThinkingOff
+	}
+	config[kimiConfigThinking] = level
 }
 
 // kimiModelTakesEffort reports whether model offers the thinking level effort.

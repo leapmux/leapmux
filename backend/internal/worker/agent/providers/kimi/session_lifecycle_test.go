@@ -92,6 +92,64 @@ func TestKimiResumeSession(t *testing.T) {
 		assert.Empty(t, fake.requestsTo("POST "+kimiSessionPath("session_stored", "/profile")))
 	})
 
+	// The server keeps the thinking level of a stored session across a model switch. A
+	// stopped agent that switched its model while it was offline resumes on Auto, and the
+	// level of the old model must not reach the new one.
+	t.Run("a resumed session on Auto states the level that Auto stands for when the model moves", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name   string
+			stored fakeKapSession
+			target string
+			want   string
+		}{
+			{
+				name:   "a model that cannot think takes no level",
+				stored: fakeKapSession{Model: "kimi-k2", Thinking: "high", Permission: "manual"},
+				target: "kimi-text", want: "off",
+			},
+			{
+				name:   "a model that thinks takes the configured level",
+				stored: fakeKapSession{Model: "kimi-text", Thinking: "off", Permission: "manual"},
+				target: "kimi-k2", want: "medium",
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				fake, server := newFakeKap(t)
+				fake.store("session_stored", tc.stored)
+				connectKimiTestRig(t, fake, server.URL, agent.Options{
+					ResumeSessionID: "session_stored",
+					Options:         options(agent.OptionIDModel, tc.target),
+				})
+				profiles := fake.requestsTo("POST " + kimiSessionPath("session_stored", "/profile"))
+				require.Len(t, profiles, 1)
+				assert.JSONEq(t, `{"agent_config":{"model":"`+tc.target+`","thinking":"`+tc.want+`"}}`, string(profiles[0].Body))
+				session, ok := fake.session("session_stored")
+				require.True(t, ok)
+				assert.Equal(t, tc.want, session.Thinking, "the level of the old model does not survive the resume")
+			})
+		}
+	})
+
+	t.Run("a resumed session on the same model keeps its level", func(t *testing.T) {
+		t.Parallel()
+		fake, server := newFakeKap(t)
+		fake.store("session_stored", fakeKapSession{Model: "kimi-k2", Thinking: "high", Permission: "manual"})
+		connectKimiTestRig(t, fake, server.URL, agent.Options{ResumeSessionID: "session_stored", Options: options(agent.OptionIDModel, "kimi-k2")})
+		assert.Empty(t, fake.requestsTo("POST "+kimiSessionPath("session_stored", "/profile")), "no model moved, so nothing needs restating")
+	})
+
+	t.Run("a resumed session whose launch states a level moves only that level", func(t *testing.T) {
+		t.Parallel()
+		fake, server := newFakeKap(t)
+		fake.store("session_stored", fakeKapSession{Model: "kimi-k2", Thinking: "high", Permission: "manual"})
+		connectKimiTestRig(t, fake, server.URL, agent.Options{ResumeSessionID: "session_stored", Options: options(agent.OptionIDEffort, "low")})
+		profiles := fake.requestsTo("POST " + kimiSessionPath("session_stored", "/profile"))
+		require.Len(t, profiles, 1)
+		assert.JSONEq(t, `{"agent_config":{"thinking":"low"}}`, string(profiles[0].Body))
+	})
+
 	t.Run("a model the catalog lacks is not written", func(t *testing.T) {
 		t.Parallel()
 		fake, server := newFakeKap(t)
