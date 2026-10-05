@@ -1078,6 +1078,188 @@ func TestPi_UpdateSettings_KeepsTheRequestedModelWhenTheStateReadFails(t *testin
 	assert.Equal(t, "openai", rig.agent.provider)
 }
 
+// piThinkingPeer answers the commands that touch Pi's thinking level the way Pi 1.0.0 does. An
+// isolated-agent-dir probe verified each rule:
+//   - set_model takes the level from settings.defaultThinkingLevel when the user configured one,
+//     and keeps the current level otherwise (AgentSession._getThinkingLevelForModelSwitch);
+//   - set_thinking_level clamps the level to what the model supports (xhigh becomes high);
+//   - get_state reports the level that results.
+//
+// settingsDefault is "" when the user configured no default. clamp maps (model, level) to the
+// level that the model runs.
+type piThinkingPeer struct {
+	mu              sync.Mutex
+	model           string
+	level           string
+	settingsDefault string
+	clamp           func(model, level string) string
+}
+
+func (p *piThinkingPeer) respond(req piRecordedRequest) (json.RawMessage, bool, string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch req.Type {
+	case CommandSetModel:
+		p.model, _ = req.Payload["modelId"].(string)
+		if p.settingsDefault != "" {
+			p.level = p.settingsDefault
+		}
+		p.level = p.clamp(p.model, p.level)
+	case CommandSetThinkingLevel:
+		level, _ := req.Payload["level"].(string)
+		p.level = p.clamp(p.model, level)
+	case CommandGetState:
+		state, _ := json.Marshal(map[string]any{
+			"model":         map[string]any{"id": p.model, "provider": "openai"},
+			"thinkingLevel": p.level,
+		})
+		return state, true, ""
+	}
+	return nil, true, ""
+}
+
+// thinkingLevelCommands returns the set_thinking_level levels that the peer received, in order.
+func thinkingLevelCommands(reqs []piRecordedRequest) []string {
+	var levels []string
+	for _, r := range reqs {
+		if r.Type == CommandSetThinkingLevel {
+			level, _ := r.Payload["level"].(string)
+			levels = append(levels, level)
+		}
+	}
+	return levels
+}
+
+func noClamp(_, level string) string { return level }
+
+// xhighClamp models a model that lacks xhigh: Pi runs it at high.
+func xhighClamp(_, level string) string {
+	if level == ThinkingXHigh {
+		return ThinkingHigh
+	}
+	return level
+}
+
+// newPiThinkingRig returns a rig whose agent runs gpt-5.4 at heldLevel against a peer that follows
+// Pi's thinking-level rules.
+func newPiThinkingRig(t *testing.T, heldLevel, settingsDefault string, clamp func(model, level string) string) (*piTestRig, *agenttest.Sink) {
+	t.Helper()
+	sink := &agenttest.Sink{}
+	rig := newPiTestRig(t, agent.NewProviderServices(sink))
+	rig.agent.model = "gpt-5.4"
+	rig.agent.provider = "openai"
+	rig.agent.thinkingLevel = heldLevel
+	peer := &piThinkingPeer{model: "gpt-5.4", level: heldLevel, settingsDefault: settingsDefault, clamp: clamp}
+	rig.setResponder(peer.respond)
+	return rig, sink
+}
+
+// TestPi_UpdateSettings_KeepsTheHeldLevelAcrossAModelSwitch is the regression guard for a model
+// switch that moves Pi's level without the user asking. The worker keeps the held level when the
+// new model offers it, so the request carries that level next to the model. Pi takes the level for
+// the new model from settings.defaultThinkingLevel before it takes the current level, so a user
+// who set that default saw the level fall to it. UpdateSettings compared the kept level with the
+// level that the agent held BEFORE the switch, found them equal, and sent nothing.
+func TestPi_UpdateSettings_KeepsTheHeldLevelAcrossAModelSwitch(t *testing.T) {
+	t.Parallel()
+
+	rig, sink := newPiThinkingRig(t, ThinkingHigh, ThinkingLow, noClamp)
+
+	result := rig.agent.UpdateSettings(map[string]string{
+		agent.OptionIDModel:  "gpt-5.5",
+		agent.OptionIDEffort: ThinkingHigh,
+	})
+	require.True(t, result.AppliedLive)
+
+	assert.Equal(t, []string{ThinkingHigh}, thinkingLevelCommands(rig.requests()), "the kept level is applied after the switch moved it")
+	rig.agent.Mu.Lock()
+	defer rig.agent.Mu.Unlock()
+	assert.Equal(t, "gpt-5.5", rig.agent.model)
+	assert.Equal(t, ThinkingHigh, rig.agent.thinkingLevel, "Pi runs the kept level")
+	assert.Equal(t, ThinkingHigh, sink.LastSettingsRefresh().Effort, "the persisted level is the kept one")
+}
+
+// TestPi_UpdateSettings_SendsNoLevelWhenTheSwitchKeepsIt covers the usual case: Pi keeps the
+// current level across a model switch, so the held level needs no command.
+func TestPi_UpdateSettings_SendsNoLevelWhenTheSwitchKeepsIt(t *testing.T) {
+	t.Parallel()
+
+	rig, sink := newPiThinkingRig(t, ThinkingHigh, "", noClamp)
+
+	result := rig.agent.UpdateSettings(map[string]string{
+		agent.OptionIDModel:  "gpt-5.5",
+		agent.OptionIDEffort: ThinkingHigh,
+	})
+	require.True(t, result.AppliedLive)
+
+	assert.Empty(t, thinkingLevelCommands(rig.requests()))
+	rig.agent.Mu.Lock()
+	defer rig.agent.Mu.Unlock()
+	assert.Equal(t, ThinkingHigh, rig.agent.thinkingLevel)
+	assert.Equal(t, ThinkingHigh, sink.LastSettingsRefresh().Effort)
+}
+
+// TestPi_UpdateSettings_TakesPisClampOfTheKeptLevel guards the other side of the same rule. The
+// catalog offers xhigh for every reasoning model, but Pi clamps xhigh to high on a model that lacks
+// it. The agent then holds the level that Pi runs, not the level that the request names.
+func TestPi_UpdateSettings_TakesPisClampOfTheKeptLevel(t *testing.T) {
+	t.Parallel()
+
+	rig, sink := newPiThinkingRig(t, ThinkingXHigh, "", xhighClamp)
+
+	result := rig.agent.UpdateSettings(map[string]string{
+		agent.OptionIDModel:  "gpt-5.5",
+		agent.OptionIDEffort: ThinkingXHigh,
+	})
+	require.True(t, result.AppliedLive)
+
+	rig.agent.Mu.Lock()
+	defer rig.agent.Mu.Unlock()
+	assert.Equal(t, ThinkingHigh, rig.agent.thinkingLevel, "Pi's level, not the request")
+	assert.Equal(t, ThinkingHigh, sink.LastSettingsRefresh().Effort)
+}
+
+// TestPi_UpdateSettings_TakesTheLevelFromPiOwnState guards a level change without a model change.
+// set_thinking_level answers no level, and Pi clamps the request, so the answer comes from Pi's own
+// state, as it does for a model switch.
+func TestPi_UpdateSettings_TakesTheLevelFromPiOwnState(t *testing.T) {
+	t.Parallel()
+
+	rig, sink := newPiThinkingRig(t, ThinkingMedium, "", xhighClamp)
+
+	result := rig.agent.UpdateSettings(map[string]string{agent.OptionIDEffort: ThinkingXHigh})
+	require.True(t, result.AppliedLive)
+
+	assert.Equal(t, []string{ThinkingXHigh}, thinkingLevelCommands(rig.requests()))
+	rig.agent.Mu.Lock()
+	defer rig.agent.Mu.Unlock()
+	assert.Equal(t, ThinkingHigh, rig.agent.thinkingLevel, "Pi clamped xhigh, and the agent holds what Pi runs")
+	assert.Equal(t, ThinkingHigh, sink.LastSettingsRefresh().Effort)
+}
+
+// A get_state that fails after an ACCEPTED set_thinking_level leaves the requested level in place,
+// as it does for set_model: the command succeeded, so the prior level is certainly wrong.
+func TestPi_UpdateSettings_KeepsTheRequestedLevelWhenTheStateReadFails(t *testing.T) {
+	t.Parallel()
+
+	rig, _ := newPiThinkingRig(t, ThinkingMedium, "", noClamp)
+	peer := &piThinkingPeer{model: "gpt-5.4", level: ThinkingMedium, clamp: noClamp}
+	// Only get_state fails. The peer answers everything else, so the responder replaces the rig's.
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		if req.Type == CommandGetState {
+			return nil, false, "state unavailable"
+		}
+		return peer.respond(req)
+	})
+
+	result := rig.agent.UpdateSettings(map[string]string{agent.OptionIDEffort: ThinkingHigh})
+	require.True(t, result.AppliedLive, "set_thinking_level landed, so the change applied live")
+
+	rig.agent.Mu.Lock()
+	defer rig.agent.Mu.Unlock()
+	assert.Equal(t, ThinkingHigh, rig.agent.thinkingLevel)
+}
+
 func TestPi_HandlePiResponse_RoutesNumericIDLeftoverFromJSONRPCMix(t *testing.T) {
 	t.Parallel()
 

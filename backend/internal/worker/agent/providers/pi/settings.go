@@ -60,17 +60,18 @@ func (a *Agent) applyModel(modelID, providerID string, timeout time.Duration) er
 	a.model = modelID
 	a.provider = providerID
 	a.Mu.Unlock()
-	stateRaw, err := a.sendPiCommand(CommandGetState, nil, timeout)
-	if err != nil {
-		slog.Warn("pi get_state after set_model failed; keeping the requested model",
-			"agent_id", a.AgentID(), "model", modelID, "error", err)
-		return nil
-	}
-	a.applyStateResponse(stateRaw)
+	a.refreshStateAfter(CommandSetModel, timeout)
 	return nil
 }
 
-// applyThinkingLevel sends set_thinking_level and updates local state.
+// applyThinkingLevel sends set_thinking_level, then reads Pi's own state back so the
+// local thinking level holds what Pi settled on.
+//
+// The request is not the answer here either. Pi clamps a level to what the model
+// supports (xhigh becomes high on a model without xhigh), and set_thinking_level
+// answers no level. The catalog offers xhigh for every reasoning model, so a request
+// can name a level that Pi runs as another one. The requested level goes in FIRST,
+// so a failed state read still moves off the prior level.
 func (a *Agent) applyThinkingLevel(level string, timeout time.Duration) error {
 	params := map[string]any{"level": level}
 	if _, err := a.sendPiCommand(CommandSetThinkingLevel, params, timeout); err != nil {
@@ -79,7 +80,22 @@ func (a *Agent) applyThinkingLevel(level string, timeout time.Duration) error {
 	a.Mu.Lock()
 	a.thinkingLevel = level
 	a.Mu.Unlock()
+	a.refreshStateAfter(CommandSetThinkingLevel, timeout)
 	return nil
+}
+
+// refreshStateAfter reads Pi's state with get_state and folds the model, the
+// provider and the thinking level into the agent. A failed read keeps the values
+// that the caller recorded from its request, because the command that precedes the
+// read already succeeded, so the prior values are certainly wrong.
+func (a *Agent) refreshStateAfter(command string, timeout time.Duration) {
+	stateRaw, err := a.sendPiCommand(CommandGetState, nil, timeout)
+	if err != nil {
+		slog.Warn("pi get_state failed; keeping the requested values",
+			"agent_id", a.AgentID(), "after", command, "error", err)
+		return
+	}
+	a.applyStateResponse(stateRaw)
 }
 
 // OptionGroups returns the model group and the thinking-level (effort) group
@@ -136,10 +152,21 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 		}
 	}
 
-	if effort := options[agent.OptionIDEffort]; effort != "" && effort != agent.EffortAuto && effort != curEffort {
-		if err := a.applyThinkingLevel(effort, timeout); err != nil {
-			slog.Warn("pi UpdateSettings set_thinking_level failed; restarting to apply", "agent_id", a.AgentID(), "level", effort, "error", err)
-			applied = false
+	if effort := options[agent.OptionIDEffort]; effort != "" && effort != agent.EffortAuto {
+		// Compare with the level that Pi holds NOW, not with curEffort. set_model can move
+		// the level: Pi takes the level for the new model from settings.defaultThinkingLevel
+		// before it takes the current level (verified against Pi 1.0.0). The worker keeps
+		// the held level when the new model offers it, so the request then equals curEffort
+		// while Pi runs another level. curEffort still serves the checks above and the
+		// rollback below, which refer to the state before this update.
+		a.Mu.Lock()
+		held := a.thinkingLevel
+		a.Mu.Unlock()
+		if effort != held {
+			if err := a.applyThinkingLevel(effort, timeout); err != nil {
+				slog.Warn("pi UpdateSettings set_thinking_level failed; restarting to apply", "agent_id", a.AgentID(), "level", effort, "error", err)
+				applied = false
+			}
 		}
 	}
 
