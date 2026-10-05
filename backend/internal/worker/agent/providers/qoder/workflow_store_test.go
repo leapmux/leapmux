@@ -241,6 +241,24 @@ func awaitQoderChildClose(t *testing.T, ctx context.Context, closed <-chan struc
 	}
 }
 
+// awaitQoderArchiveRetries waits until every archive retry of the agent
+// returned. A failed retry closes the child rows first and reports the failure
+// after that, on its own goroutine, so an assertion about the report at the
+// close signal alone races the retry.
+func awaitQoderArchiveRetries(t *testing.T, ctx context.Context, a *Agent) {
+	t.Helper()
+	settled := make(chan struct{})
+	go func() {
+		a.archiveRetries.Wait()
+		close(settled)
+	}()
+	select {
+	case <-settled:
+	case <-ctx.Done():
+		t.Fatal("a workflow archive retry did not return")
+	}
+}
+
 func TestQoderWorkflowArchiveLinksDistinctChildTranscripts(t *testing.T) {
 	t.Parallel()
 	fixture := newQoderWorkflowFixture(t)
@@ -511,6 +529,7 @@ func TestQoderWorkflowArchiveRetryUsesTheProcessClock(t *testing.T) {
 	writeQoderWorkflowFixtureFile(t, fixture.outputFile, string(output))
 	testutil.AdvanceAndAwaitStop(t, ctx, clock, delay, stopTimer)
 	awaitQoderChildClose(t, ctx, closed)
+	awaitQoderArchiveRetries(t, ctx, a)
 	first, found := sink.BackgroundTask("child-task-1")
 	require.True(t, found)
 	assert.Equal(t, bgtask.StatusCompleted, first.Status)
@@ -539,6 +558,7 @@ func TestQoderWorkflowArchiveRetryEndsAtTheDeadline(t *testing.T) {
 		elapsed += delay
 	}
 	awaitQoderChildClose(t, ctx, closed)
+	awaitQoderArchiveRetries(t, ctx, a)
 	first, found := sink.BackgroundTask("child-task-1")
 	require.True(t, found)
 	assert.Equal(t, bgtask.StatusCompleted, first.Status, "the native result survives an archive timeout")
@@ -564,6 +584,7 @@ func TestQoderWorkflowArchiveRetryStopsWhenTheProcessExits(t *testing.T) {
 	close(processDone)
 	stopTimer.MustWait(ctx).MustRelease(ctx)
 	awaitQoderChildClose(t, ctx, closed)
+	awaitQoderArchiveRetries(t, ctx, a)
 	first, found := sink.BackgroundTask("child-task-1")
 	require.True(t, found)
 	assert.Equal(t, bgtask.StatusCompleted, first.Status)
@@ -587,7 +608,7 @@ func TestQoderWorkflowArchiveRetryRefusesAnUnsafePathImmediately(t *testing.T) {
 	first, found := sink.BackgroundTask("child-task-1")
 	require.True(t, found)
 	assert.Equal(t, bgtask.StatusCompleted, first.Status)
-	assert.Empty(t, a.archiveJobs, "an unsafe path must not enter the retry queue")
+	assert.Zero(t, qoderArchiveJobCount(a), "an unsafe path must not enter the retry queue")
 	assert.NotEmpty(t, sink.LeapMuxNotifications())
 }
 

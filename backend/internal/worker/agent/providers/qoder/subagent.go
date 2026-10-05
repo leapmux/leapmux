@@ -538,7 +538,7 @@ func (a *Agent) routeChildFrame(raw []byte) bool {
 		a.handleChildStreamFrame(childID, frame.ParentToolUseID, raw)
 		return true
 	}
-	if a.persistNativeToolFrame(a.sink.ChildSink(childID), raw) {
+	if stored, _ := a.persistNativeToolFrame(a.sink.ChildSink(childID), raw); stored {
 		return true
 	}
 	if err := a.sink.PersistChildMessage(childID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, agent.SpanInfo{}); err != nil {

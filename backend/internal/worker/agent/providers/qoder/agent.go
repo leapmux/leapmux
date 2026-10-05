@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -39,6 +40,11 @@ type Agent struct {
 	archiveStopped       bool
 	archiveRetries       sync.WaitGroup
 
+	// interruptRequested records that the user stopped the RUNNING turn. The
+	// `result` that ends that turn spends the note, and a turn end without a
+	// `result` drops it. Guarded by mu. See noteInterruptRequested.
+	interruptRequested bool
+
 	pendingControlMu sync.Mutex
 	pendingControl   map[string]chan<- qoderControlResult
 }
@@ -66,6 +72,13 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 func (a *Agent) setTurnActive(active bool) {
 	a.mu.Lock()
 	a.active = active
+	if !active {
+		// The note belongs to the turn that ends now. A turn can end without a
+		// `result` that spends the note: a stop, a process exit, or a failed
+		// send. An interrupt can also arrive after handleResult read the note.
+		// The next turn must not inherit the note in any of these cases.
+		a.interruptRequested = false
+	}
 	a.activityRev++
 	seq := a.turnOrder.NextTurnSeq()
 	a.mu.Unlock()
@@ -104,11 +117,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	a.mu.Unlock()
 	a.PublishTurnActive()
 
-	msg := UserInputMessage{
-		Type:    MessageTypeUser,
-		Message: UserInputContent{Role: "user", Content: userContent},
-	}
-	raw, err := json.Marshal(msg)
+	raw, err := marshalUserFrame(userContent)
 	if err != nil {
 		a.setTurnActive(false)
 		return err
@@ -120,13 +129,40 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	return nil
 }
 
-// qoderUserContent builds the text and image blocks Qoder's stream input reads.
+// marshalUserFrame encodes one stream-json user frame that carries content.
+func marshalUserFrame(content any) ([]byte, error) {
+	return json.Marshal(UserInputMessage{
+		Type:    MessageTypeUser,
+		Message: UserInputContent{Role: "user", Content: content},
+	})
+}
+
+// qoderUserContent builds the content of one stream-json user frame. A prompt
+// without attachments stays a plain string.
+//
+// Qoder reads the LAST content block as the prompt text, and only when that
+// block is a text block. Qoder runs its per-prompt work on that text alone:
+//
+//   - The @-mention reads.
+//   - The slash-command check.
+//   - The skill listing.
+//   - The plan-mode and goal reminders.
+//   - The hook outputs.
+//   - The to-do reminders.
+//
+// Thus each attachment goes first, in the order that the user attached it,
+// and the prompt text goes last. An image last gives Qoder no prompt text,
+// and Qoder then skips all of that work on the turn. A text attachment last
+// makes Qoder read the attached file as the prompt.
+//
+// The prompt text block stays when the text is empty. Qoder then reads an
+// empty prompt text and still runs its per-prompt work.
 func qoderUserContent(content string, attachments []*leapmuxv1.Attachment) (any, error) {
 	classified := agent.ClassifyAttachments(attachments)
 	if len(classified) == 0 {
 		return content, nil
 	}
-	blocks := []any{qoderTextBlock{Type: "text", Text: content}}
+	blocks := make([]any, 0, len(classified)+1)
 	for _, attachment := range classified {
 		if err := (qoderProvider{}).ValidateAttachment(attachment); err != nil {
 			return nil, err
@@ -146,7 +182,7 @@ func qoderUserContent(content string, attachments []*leapmuxv1.Attachment) (any,
 			return nil, fmt.Errorf("qoder CLI cannot send the attachment %s", attachment.Filename)
 		}
 	}
-	return blocks, nil
+	return append(blocks, qoderTextBlock{Type: "text", Text: content}), nil
 }
 
 // SupportsSteering reports true when the runtime advertises steering. Qoder
@@ -154,10 +190,17 @@ func qoderUserContent(content string, attachments []*leapmuxv1.Attachment) (any,
 // capability is always offered once the process is up.
 func (a *Agent) SupportsSteering() bool { return true }
 
-// SteerInput injects content into the RUNNING turn as a user-steering update.
-func (a *Agent) SteerInput(content string, _ []*leapmuxv1.Attachment) error {
+// SteerInput sends one user frame during the RUNNING turn. The frame carries
+// the same content as a new prompt, attachments included. Qoder queues a user
+// frame that arrives during a turn with its content unchanged, and reads that
+// content again when the queued prompt starts a turn of its own.
+func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	if a.IsStopped() {
 		return fmt.Errorf("the Qoder process is stopped")
+	}
+	userContent, err := qoderUserContent(content, attachments)
+	if err != nil {
+		return err
 	}
 	a.mu.Lock()
 	active := a.active
@@ -165,11 +208,7 @@ func (a *Agent) SteerInput(content string, _ []*leapmuxv1.Attachment) error {
 	if !active {
 		return agent.ErrNoActiveTurn
 	}
-	msg := UserInputMessage{
-		Type:    MessageTypeUser,
-		Message: UserInputContent{Role: "user", Content: content},
-	}
-	raw, err := json.Marshal(msg)
+	raw, err := marshalUserFrame(userContent)
 	if err != nil {
 		return err
 	}
@@ -185,13 +224,52 @@ func (a *Agent) Interrupt() error {
 	sessionID := a.sessionID
 	a.mu.Unlock()
 	body, err := json.Marshal(map[string]any{
-		"subtype":    "interrupt",
+		"subtype":    contracts.QoderControlRequestSubtypeInterrupt,
 		"session_id": sessionID,
 	})
 	if err != nil {
 		return err
 	}
-	return a.sendControlFire(string(body))
+	// Take the note BEFORE the request goes out. Qoder writes the `result` of
+	// the aborted turn as soon as it reads the request, and the reader goroutine
+	// spends the note on that `result`. A note taken after the send can lose
+	// that race, and the turn then reads as the failure that its subtype states.
+	a.noteInterruptRequested()
+	if err := a.sendControlFire(string(body)); err != nil {
+		// The request never reached Qoder, so no `result` answers it.
+		a.takeInterruptRequest()
+		return err
+	}
+	return nil
+}
+
+// noteInterruptRequested records that the USER stopped the running turn, so
+// the `result` that ends it carries LeapMux's own completion.
+//
+// qodercli 1.1.65 reports an aborted turn as `subtype: error_during_execution`
+// with `is_error: true` and `errors: ["Operation aborted"]`. It uses the same
+// subtype and flag for a genuine failure, so the frame alone cannot tell the
+// two apart. LeapMux can, because LeapMux sent the stop.
+//
+// The note is taken only while a turn runs. Qoder acknowledges an interrupt
+// that arrives outside a turn and sends no `result` for it. A note taken there
+// would wait and then mislabel the outcome of the NEXT turn.
+func (a *Agent) noteInterruptRequested() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.active {
+		a.interruptRequested = true
+	}
+}
+
+// takeInterruptRequest reports whether the user stopped the turn that ends now,
+// and clears the note. One `result` ends one turn, so that `result` spends it.
+func (a *Agent) takeInterruptRequest() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	interrupted := a.interruptRequested
+	a.interruptRequested = false
+	return interrupted
 }
 
 // Stop terminates the process.

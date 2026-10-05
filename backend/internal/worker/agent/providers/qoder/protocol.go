@@ -2,8 +2,10 @@ package qoder
 
 import "encoding/json"
 
-// Qoder CLI NDJSON message types. The worker does not parse message content; it
-// forwards verbatim bytes and reads only the `type` field for lifecycle.
+// Qoder CLI NDJSON message types. The worker stores the original bytes of each
+// output line. It parses only the frames that drive its own state: the `type`
+// field for lifecycle, the init frame, plan mode, goals, child streams, and
+// control replies. On input it builds the user frame, with the prompt text last.
 
 // MessageType is the top-level `type` field of one NDJSON line.
 type MessageType string

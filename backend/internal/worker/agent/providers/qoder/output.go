@@ -46,7 +46,7 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 		a.handleInboundControlRequest(line.Raw)
 	case "user":
 		a.handleWorkflowLaunch(line.Raw)
-		if !a.persistNativeToolFrame(a.sink, line.Raw) {
+		if stored, _ := a.persistNativeToolFrame(a.sink, line.Raw); !stored {
 			a.persistRaw(line.Raw)
 		}
 		a.handleWorkflowReplayCompletion(line.Raw)
@@ -158,18 +158,50 @@ func (a *Agent) handleAssistant(raw []byte) {
 		a.mu.Unlock()
 	}
 	a.markTurnActiveFromOutput()
-	if !a.persistNativeToolFrame(a.sink, raw) {
+	stored, opened := a.persistNativeToolFrame(a.sink, raw)
+	if !stored {
 		a.persistRaw(raw)
 	}
+	// routeChildFrame takes every frame of a child agent before this handler,
+	// so each call counted here belongs to the root turn.
+	a.Mu.Lock()
+	a.TurnToolUses += opened
+	a.Mu.Unlock()
 }
 
-// handleResult ends the turn and publishes the frame verbatim.
+// handleResult ends the turn and publishes the frame verbatim, with the
+// turn's tool count as worker metadata and the user's stop as its completion.
 func (a *Agent) handleResult(raw []byte) {
-	if err := a.sink.PersistTurnEnd(agent.MessageContent{Original: raw, AgentSessionID: a.nativeSessionID()}, agent.SpanInfo{}); err != nil {
+	interrupted := a.takeInterruptRequest() && !qoderResultSucceeded(raw)
+	// Qoder's `result` carries no num_tool_uses field, so the Worker counts the
+	// tool calls of the turn itself. The count restarts here for the next turn.
+	a.Mu.Lock()
+	toolUses := a.TurnToolUses
+	a.TurnToolUses = 0
+	a.Mu.Unlock()
+	content := agent.WithToolUseCount(agent.MessageContent{Original: raw, AgentSessionID: a.nativeSessionID()}, toolUses)
+	if interrupted {
+		content.Completion = agent.MessageCompletionInterrupted
+	}
+	if err := a.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
 		slog.Error("Persist Qoder turn end", "agent_id", a.AgentID(), "error", err)
 	}
 	a.setTurnActive(false)
 	a.broadcastContextUsage(raw)
+}
+
+// qoderResultSucceeded reports whether a `result` states a turn that finished.
+// A turn that finished before Qoder read an interrupt keeps its own outcome,
+// because the stop came too late to change it.
+//
+// The `is_error` flag decides, not the subtype: qodercli 1.1.65 also writes
+// `subtype: "success"` with `is_error: true` for a failed turn. A `result`
+// that does not state the flag does not state success.
+func qoderResultSucceeded(raw []byte) bool {
+	var result struct {
+		IsError *bool `json:"is_error"`
+	}
+	return json.Unmarshal(raw, &result) == nil && result.IsError != nil && !*result.IsError
 }
 
 // markTurnActiveFromOutput starts the turn when a frame arrives while idle.
@@ -196,8 +228,11 @@ func (a *Agent) nativeSessionID() string {
 	return a.sessionID
 }
 
-// Each tool keeps its native ID and the unchanged frame that declares it.
-func (a *Agent) persistNativeToolFrame(target agent.ProviderServices, raw []byte) bool {
+// persistNativeToolFrame stores the tool calls and the tool results of one
+// frame. Each tool keeps its native ID and the unchanged frame that declares
+// it. The function reports whether it stored the frame, and how many tool calls
+// the frame opened.
+func (a *Agent) persistNativeToolFrame(target agent.ProviderServices, raw []byte) (stored bool, opened int) {
 	var frame struct {
 		Type      string `json:"type"`
 		SessionID string `json:"session_id"`
@@ -212,17 +247,17 @@ func (a *Agent) persistNativeToolFrame(target agent.ProviderServices, raw []byte
 		} `json:"message"`
 	}
 	if json.Unmarshal(raw, &frame) != nil {
-		return false
+		return false, 0
 	}
 	sessionID := frame.SessionID
 	if sessionID == "" {
 		sessionID = a.nativeSessionID()
 	}
-	stored := false
 	for _, block := range frame.Message.Content {
 		content := agent.MessageContent{Original: raw, AgentSessionID: sessionID}
 		if frame.Type == contracts.QoderFrameKindAssistant && block.Type == "tool_use" && block.ID != "" && block.Name != "" {
 			stored = true
+			opened++
 			spawns := block.Name == "Agent" || block.Name == "Workflow"
 			if err := providerkit.OpenToolSpan(target, content, block.ID, block.Name, spawns); err != nil {
 				slog.Error("Persist Qoder tool request", "agent_id", a.AgentID(), "tool_call_id", block.ID, "error", err)
@@ -244,7 +279,7 @@ func (a *Agent) persistNativeToolFrame(target agent.ProviderServices, raw []byte
 			}
 		}
 	}
-	return stored
+	return stored, opened
 }
 
 // HandleOutput processes a single NDJSON line from Qoder. It runs the same

@@ -2,11 +2,11 @@ package qoder
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -165,53 +165,166 @@ func TestUpdateSettingsSetsTheModelOnTheRunningSession(t *testing.T) {
 	assert.True(t, result.AppliedLive)
 }
 
-func sentUserContent(t *testing.T, stdin *agenttest.Stdin) []map[string]any {
+// sentUserFrame returns the one stream-json line that the agent wrote.
+func sentUserFrame(t *testing.T, stdin *agenttest.Stdin) string {
 	t.Helper()
-	var frame struct {
-		Message struct {
-			Content json.RawMessage `json:"content"`
-		} `json:"message"`
+	written := stdin.String()
+	require.True(t, strings.HasSuffix(written, "\n"), "a stream-json frame must end its line")
+	lines := strings.Split(strings.TrimSuffix(written, "\n"), "\n")
+	require.Len(t, lines, 1, "one prompt must write exactly one stream-json line")
+	return lines[0]
+}
+
+func testPNGAttachment() *leapmuxv1.Attachment {
+	return &leapmuxv1.Attachment{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89, 'P', 'N', 'G', 0x00}}
+}
+
+func testPDFAttachment() *leapmuxv1.Attachment {
+	return &leapmuxv1.Attachment{Filename: "paper.pdf", MimeType: "application/pdf", Data: []byte("%PDF-1.7")}
+}
+
+// userContentOrderCase is one prompt and the exact stream-json user frame
+// that Qoder must receive for it.
+type userContentOrderCase struct {
+	name        string
+	text        string
+	attachments []*leapmuxv1.Attachment
+	want        string
+}
+
+// userContentOrderCases pins the content order that qoderUserContent states:
+// every attachment first, in the order that the user attached it, and the
+// prompt text last, also when the prompt text is empty.
+func userContentOrderCases() []userContentOrderCase {
+	gif := &leapmuxv1.Attachment{Filename: "chart.gif", MimeType: "image/gif", Data: []byte("GIF89a")}
+	note := &leapmuxv1.Attachment{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("unique-note-42")}
+	const pngBlock = `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORwA="}}`
+	const gifBlock = `{"type":"image","source":{"type":"base64","media_type":"image/gif","data":"R0lGODlh"}}`
+	const noteBlock = `{"type":"text","text":"<attached-file name=\"notes.txt\" mime-type=\"text/plain\">\nunique-note-42\n</attached-file>"}`
+	frame := func(content string) string {
+		return `{"type":"user","message":{"role":"user","content":` + content + `}}`
 	}
-	require.NoError(t, json.Unmarshal([]byte(stdin.String()), &frame))
-	var blocks []map[string]any
-	require.NoError(t, json.Unmarshal(frame.Message.Content, &blocks))
-	return blocks
+	return []userContentOrderCase{
+		{
+			name: "text only stays a plain string",
+			text: "Describe this.",
+			want: frame(`"Describe this."`),
+		},
+		{
+			name:        "nil attachments leave a plain string",
+			text:        "Describe this.",
+			attachments: []*leapmuxv1.Attachment{nil, nil},
+			want:        frame(`"Describe this."`),
+		},
+		{
+			name:        "an image precedes the text",
+			text:        "Describe this.",
+			attachments: []*leapmuxv1.Attachment{testPNGAttachment()},
+			want:        frame(`[` + pngBlock + `,{"type":"text","text":"Describe this."}]`),
+		},
+		{
+			name:        "a text attachment precedes the text",
+			text:        "Read the note.",
+			attachments: []*leapmuxv1.Attachment{note},
+			want:        frame(`[` + noteBlock + `,{"type":"text","text":"Read the note."}]`),
+		},
+		{
+			name:        "mixed attachments keep their order before the text",
+			text:        "Compare them.",
+			attachments: []*leapmuxv1.Attachment{testPNGAttachment(), nil, note, gif},
+			want:        frame(`[` + pngBlock + `,` + noteBlock + `,` + gifBlock + `,{"type":"text","text":"Compare them."}]`),
+		},
+		{
+			name:        "images without text still end with the text block",
+			text:        "",
+			attachments: []*leapmuxv1.Attachment{testPNGAttachment(), gif},
+			want:        frame(`[` + pngBlock + `,` + gifBlock + `,{"type":"text","text":""}]`),
+		},
+	}
 }
 
-func TestSendInputCarriesTextAttachmentBytes(t *testing.T) {
+func TestSendInputPutsThePromptTextLast(t *testing.T) {
+	t.Parallel()
+	for _, tc := range userContentOrderCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := newOfflineAgent(t, &agenttest.Sink{})
+			stdin := &agenttest.Stdin{}
+			a.SetStdinForTest(stdin)
+
+			require.NoError(t, a.SendInput(tc.text, tc.attachments))
+			assert.JSONEq(t, tc.want, sentUserFrame(t, stdin))
+		})
+	}
+}
+
+// TestSteerInputPutsThePromptTextLast requires the steering frame to carry the
+// same content as a new prompt. Qoder queues a user frame that arrives during a
+// turn with its content unchanged, and reads that content again when the queued
+// prompt starts a turn of its own.
+func TestSteerInputPutsThePromptTextLast(t *testing.T) {
+	t.Parallel()
+	for _, tc := range userContentOrderCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := newOfflineAgent(t, &agenttest.Sink{})
+			stdin := &agenttest.Stdin{}
+			a.SetStdinForTest(stdin)
+			a.mu.Lock()
+			a.active = true
+			a.mu.Unlock()
+
+			require.NoError(t, a.SteerInput(tc.text, tc.attachments))
+			assert.JSONEq(t, tc.want, sentUserFrame(t, stdin))
+		})
+	}
+}
+
+func TestSendInputRejectsAnUnsupportedAttachmentBeforeTheTurnStarts(t *testing.T) {
 	t.Parallel()
 	a := newOfflineAgent(t, &agenttest.Sink{})
 	stdin := &agenttest.Stdin{}
 	a.SetStdinForTest(stdin)
 
-	require.NoError(t, a.SendInput("Read the note.", []*leapmuxv1.Attachment{{
-		Filename: "notes.txt", MimeType: "text/plain", Data: []byte("unique-note-42"),
-	}}))
-	blocks := sentUserContent(t, stdin)
-	require.Len(t, blocks, 2)
-	assert.Equal(t, map[string]any{"type": "text", "text": "Read the note."}, blocks[0])
-	assert.Equal(t, "text", blocks[1]["type"])
-	assert.Contains(t, blocks[1]["text"], "notes.txt")
-	assert.Contains(t, blocks[1]["text"], "unique-note-42")
+	err := a.SendInput("Read both.", []*leapmuxv1.Attachment{testPNGAttachment(), testPDFAttachment()})
+	require.ErrorContains(t, err, "paper.pdf")
+	assert.Empty(t, stdin.String(), "a rejected prompt must write no partial frame")
+	a.mu.Lock()
+	active := a.active
+	a.mu.Unlock()
+	assert.False(t, active, "a rejected prompt must not start a turn")
+
+	require.NoError(t, a.SendInput("Describe this.", nil), "the next prompt must not see a busy agent")
+	assert.JSONEq(t, `{"type":"user","message":{"role":"user","content":"Describe this."}}`, sentUserFrame(t, stdin))
 }
 
-func TestSendInputCarriesImageBytes(t *testing.T) {
+func TestSteerInputRejectsAnUnsupportedAttachment(t *testing.T) {
 	t.Parallel()
 	a := newOfflineAgent(t, &agenttest.Sink{})
 	stdin := &agenttest.Stdin{}
 	a.SetStdinForTest(stdin)
-	data := []byte{0x89, 'P', 'N', 'G', 0x00}
+	a.mu.Lock()
+	a.active = true
+	a.mu.Unlock()
 
-	require.NoError(t, a.SendInput("Describe this.", []*leapmuxv1.Attachment{{
-		Filename: "shot.png", MimeType: "image/png", Data: data,
-	}}))
-	blocks := sentUserContent(t, stdin)
-	require.Len(t, blocks, 2)
-	assert.Equal(t, map[string]any{"type": "text", "text": "Describe this."}, blocks[0])
-	assert.Equal(t, "image", blocks[1]["type"])
-	assert.Equal(t, map[string]any{
-		"type": "base64", "media_type": "image/png", "data": base64.StdEncoding.EncodeToString(data),
-	}, blocks[1]["source"])
+	err := a.SteerInput("Read both.", []*leapmuxv1.Attachment{testPNGAttachment(), testPDFAttachment()})
+	require.ErrorContains(t, err, "paper.pdf", "a steer must not drop an attachment that Qoder cannot read")
+	assert.Empty(t, stdin.String(), "a rejected steer must write no partial frame")
+	a.mu.Lock()
+	active := a.active
+	a.mu.Unlock()
+	assert.True(t, active, "a rejected steer must leave the running turn alone")
+}
+
+func TestSteerInputWithoutATurnWritesNothing(t *testing.T) {
+	t.Parallel()
+	a := newOfflineAgent(t, &agenttest.Sink{})
+	stdin := &agenttest.Stdin{}
+	a.SetStdinForTest(stdin)
+
+	err := a.SteerInput("Look at this too.", []*leapmuxv1.Attachment{testPNGAttachment()})
+	require.ErrorIs(t, err, agent.ErrNoActiveTurn)
+	assert.Empty(t, stdin.String())
 }
 
 func TestProviderRejectsPDFAndBinaryAttachments(t *testing.T) {

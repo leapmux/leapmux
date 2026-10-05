@@ -4,8 +4,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -102,4 +104,35 @@ func TestQoderSettingsSnapshotCarriesTheEffort(t *testing.T) {
 
 	assert.Equal(t, contracts.QoderEffortLevelXhigh, snapshot.SurfacedOptions[agent.OptionIDEffort])
 	assert.Len(t, a.OptionGroups(), 2)
+}
+
+// An agent that opens without an effort runs at Auto: the launch sends no
+// --reasoning-effort flag. The group and the snapshot must state Auto. An
+// empty current value tells the picker that the catalog is absent.
+func TestQoderEffortGroupReportsAutoWhenUnset(t *testing.T) {
+	t.Parallel()
+	a, _, _ := newGoalAgent(t)
+
+	var effortGroup *leapmuxv1.AvailableOptionGroup
+	for _, group := range a.OptionGroups() {
+		if group.Id == agent.OptionIDEffort {
+			effortGroup = group
+		}
+	}
+	require.NotNil(t, effortGroup)
+	assert.Equal(t, agent.EffortAuto, effortGroup.CurrentValue)
+	assert.Equal(t, agent.EffortAuto, a.SettingsSnapshot().SurfacedOptions[agent.OptionIDEffort])
+}
+
+// A choice of the level that the agent already runs needs no restart. The
+// agent opened without an effort runs at Auto, so a choice of Auto settles live.
+func TestQoderUpdateSettingsAcceptsTheRunningAutoEffort(t *testing.T) {
+	t.Parallel()
+	a, _, _ := newGoalAgent(t)
+
+	result := a.UpdateSettings(optionmap.Map{agent.OptionIDEffort: agent.EffortAuto})
+
+	assert.True(t, result.AppliedLive, "a choice of the running effort settles live")
+	assert.Equal(t, agent.OptionSettlementConfirmed, result.Settlements[agent.OptionIDEffort].State)
+	assert.Equal(t, agent.EffortAuto, result.SurfacedOptions[agent.OptionIDEffort])
 }

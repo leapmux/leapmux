@@ -19,7 +19,7 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	a.mu.Lock()
 	model := a.model
 	models := a.models
-	effort := a.effort
+	effort := a.runningEffortLocked()
 	mode := a.displayedModeLocked()
 	a.mu.Unlock()
 	if len(models) == 0 {
@@ -48,13 +48,25 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	values := map[string]string{
-		agent.OptionIDEffort:         a.effort,
+		agent.OptionIDEffort:         a.runningEffortLocked(),
 		agent.OptionIDPermissionMode: a.displayedModeLocked(),
 	}
 	if a.model != "" {
 		values[agent.OptionIDModel] = a.model
 	}
 	return agent.ConfirmedSettings(values)
+}
+
+// runningEffortLocked reports the effort that the process runs at. An agent
+// that opened without an effort runs at Auto, because the launch then sends no
+// --reasoning-effort flag (see qoderEffortArgs). An empty value would tell the
+// picker that the catalog is absent. Qoder reads the level only at launch, so
+// the value never changes while the process runs.
+func (a *Agent) runningEffortLocked() string {
+	if a.effort == "" {
+		return agent.EffortAuto
+	}
+	return a.effort
 }
 
 // displayedModeLocked shows Plan while Qoder's separate Plan state is active.
@@ -66,9 +78,13 @@ func (a *Agent) displayedModeLocked() string {
 }
 
 // UpdateSettings sends model and mode choices to Qoder's control channel.
-// A changed effort needs a restart because Qoder takes it at launch.
+// A changed effort needs a restart because Qoder takes it at launch. A choice
+// of the running effort needs none.
 func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
-	if effort, ok := options[agent.OptionIDEffort]; ok && effort != a.opts.Effort() {
+	a.mu.Lock()
+	runningEffort := a.runningEffortLocked()
+	a.mu.Unlock()
+	if effort, ok := options[agent.OptionIDEffort]; ok && effort != runningEffort {
 		return agent.RestartRequiredSettings(options)
 	}
 	result := agent.SettingsApplyResult{AppliedLive: true, Settlements: agent.OptionSettlements{}}
@@ -100,7 +116,7 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 	}
 	a.mu.Lock()
 	surfaced := optionmap.Map{
-		agent.OptionIDEffort:         a.effort,
+		agent.OptionIDEffort:         a.runningEffortLocked(),
 		agent.OptionIDPermissionMode: a.displayedModeLocked(),
 	}
 	if a.model != "" {

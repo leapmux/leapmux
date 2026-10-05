@@ -198,7 +198,7 @@ func (a *Agent) persistQoderChildBlock(childID, spawnID string, block *qoderChil
 		slog.Error("qoder encode child block", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	if a.persistNativeToolFrame(a.sink.ChildSink(childID), raw) {
+	if stored, _ := a.persistNativeToolFrame(a.sink.ChildSink(childID), raw); stored {
 		return
 	}
 	if err := a.sink.PersistChildMessage(childID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, agent.SpanInfo{}); err != nil {
