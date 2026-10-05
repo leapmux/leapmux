@@ -11,7 +11,14 @@ import { expectSteeredReply, queuedInputRow, steerQueuedInput } from './steer'
 import { createToolOutputControl } from './toolOutputControl'
 import { assistantBubbles, messageContents, sendMessage, userBubbles, waitForAgentIdle } from './ui'
 
-/** Steer only after a real native shell command reports that it runs. */
+/**
+ * Steer only after a real native shell command reports that it runs.
+ *
+ * `expectDisplayedOutput` states that the provider draws a running command's
+ * output. The row then shows the live tail of the first output segment, which
+ * is the end of its padding and not its marker (see `firstLiveTail`). The
+ * marker still has to reach the model, which the end of the proof checks.
+ */
 export async function exerciseSteerAfterTool(context: ManagedNativeScenarioContext, options: { expectDisplayedOutput?: boolean } = {}): Promise<void> {
   const agent = await currentNativeAgent(context)
   const output = createToolOutputControl(agent.workingDir)
@@ -27,7 +34,7 @@ export async function exerciseSteerAfterTool(context: ManagedNativeScenarioConte
     await output.waitForFirstOutput()
     await expect.poll(async () => (await nativeAgentById(context, agent.id))?.activityState).toBe(AgentActivityState.WORKING)
     if (options.expectDisplayedOutput ?? true)
-      await expect(messageContents(context.page).filter({ hasText: output.firstMarker }).first()).toBeVisible()
+      await expect(messageContents(context.page).filter({ hasText: output.firstLiveTail }).first()).toBeVisible()
     await expect(context.page.getByTestId('interrupt-button')).toBeVisible()
     await steerQueuedInput(context.page, { message: steering, match: 'Also append the word steered' })
     await output.releaseFirstOutput()

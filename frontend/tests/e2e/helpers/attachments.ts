@@ -17,7 +17,8 @@ import { waitForSettingsHydrated } from './ui'
  */
 
 const IMAGE_SIZE = 16
-const PDF_PAGE_MARKER = 'LEAPMUX_PDF_PAGE_49'
+/** The text that the PDF fixture draws on its page. A model request that holds it carries the page text, not the PDF. */
+export const PDF_PAGE_MARKER = 'LEAPMUX_PDF_PAGE_49'
 
 function pngChunk(type: string, data: Buffer): Buffer {
   const kind = Buffer.from(type, 'ascii')

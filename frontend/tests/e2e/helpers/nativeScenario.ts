@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import type { AgentInfo, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ServerInfo } from '../fixtures'
 import type { MockModelRequestRecord, MockModelStep } from './mockModelScript'
@@ -8,6 +8,7 @@ import { AgentStatus, ListAgentsRequestSchema, ListAgentsResponseSchema } from '
 import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from './api'
 import { googleFunctionDeclarations, googleLastUserText, googlePartsText } from './googleModelContent'
+import { jsonStringValues } from './jsonStringValues'
 
 /** The provider supplies any native final-answer tool through this callback. */
 export type NativeTextStep = (text: string) => MockModelStep
@@ -29,6 +30,12 @@ export interface NativeScenarioContext {
   modelScript: ModelScript
   provider: AgentProvider
   textStep?: NativeTextStep
+  /**
+   * The names of the model tool calls that deliver the provider's final answer
+   * and that its transcript shows as no tool row (Junie's `answer`). A turn
+   * that holds only such a call has no tool activity.
+   */
+  answerToolNames?: readonly string[]
   readToolResult?: NativeToolResultReader
   readModelContext?: NativeModelContextReader
 }
@@ -64,9 +71,14 @@ export async function nativeAgentById(
   return response.agents.find(agent => agent.id === agentId) ?? null
 }
 
+/** Locate the selected agent tab of the visible tab bar. The tab identifies an agent. Its state is not a Worker verdict. */
+export function selectedAgentTab(page: Page): Locator {
+  return page.locator('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]:visible').first()
+}
+
 /** Resolve the active tab to a successfully started native Worker agent. */
 export async function currentNativeAgent(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>): Promise<AgentInfo> {
-  const tab = context.page.locator('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]:visible').first()
+  const tab = selectedAgentTab(context.page)
   await expect(tab).toBeVisible()
   const agentId = await tab.getAttribute('data-tab-id')
   if (!agentId)
@@ -131,7 +143,13 @@ export function nativeModelToolNames(request: MockModelRequestRecord): string[] 
   })
 }
 
-function nativeTextBlocks(value: unknown): string[] {
+/** The text block types of a user turn. A tool result is not user text. */
+const USER_TEXT_BLOCK_TYPES: ReadonlySet<unknown> = new Set([undefined, 'text', 'input_text'])
+
+/** The text block types of an assistant turn. Reasoning is not answer text. */
+const ASSISTANT_TEXT_BLOCK_TYPES: ReadonlySet<unknown> = new Set([undefined, 'text', 'output_text'])
+
+function nativeTextBlocks(value: unknown, types: ReadonlySet<unknown> = USER_TEXT_BLOCK_TYPES): string[] {
   if (typeof value === 'string')
     return [value]
   if (!Array.isArray(value))
@@ -140,7 +158,7 @@ function nativeTextBlocks(value: unknown): string[] {
     if (typeof block !== 'object' || block === null || !('text' in block) || typeof block.text !== 'string')
       return []
     const type = 'type' in block ? block.type : undefined
-    return type === undefined || type === 'text' || type === 'input_text' ? [block.text] : []
+    return types.has(type) ? [block.text] : []
   })
 }
 
@@ -219,4 +237,108 @@ export function nativeModelInstructionText(request: MockModelRequestRecord): str
   if (text === '')
     throw new Error('The native model request contains no instruction or user text.')
   return text
+}
+
+/** One user or assistant turn of a native model request. */
+export interface NativeModelTurn {
+  readonly role: 'user' | 'assistant'
+  /**
+   * The text blocks of the turn, joined with newlines. An assistant turn also holds the string values of its
+   * tool-call arguments, because a provider can deliver its final answer through a tool. A tool result is not
+   * user text, and reasoning is not assistant text.
+   */
+  readonly text: string
+}
+
+/** Read the string values of tool-call arguments. A JSON string holds the arguments as encoded JSON. */
+export function nativeToolArgumentText(value: unknown): string {
+  if (typeof value !== 'string')
+    return jsonStringValues(value).join('\n')
+  let decoded: unknown
+  try {
+    decoded = JSON.parse(value)
+  }
+  catch {
+    // Arguments that are not JSON stay the literal text that the model wrote.
+    return value
+  }
+  return typeof decoded === 'object' && decoded !== null ? jsonStringValues(decoded).join('\n') : value
+}
+
+function turnText(parts: readonly string[]): string {
+  return parts.filter(part => part !== '').join('\n')
+}
+
+function googleConversationTurns(contents: unknown): NativeModelTurn[] {
+  if (!Array.isArray(contents))
+    throw new Error('The native Google model request contains no contents array.')
+  return contents.flatMap((row: unknown): NativeModelTurn[] => {
+    if (!isObject(row))
+      return []
+    if (row.role === 'user')
+      return [{ role: 'user', text: googlePartsText(row.parts) }]
+    if (row.role !== 'model')
+      return []
+    // A Google thought part is reasoning, not answer text.
+    const parts = Array.isArray(row.parts) ? row.parts.filter(isObject).filter(part => part.thought !== true) : []
+    const calls = parts.flatMap(part => isObject(part.functionCall) ? [nativeToolArgumentText(part.functionCall.args)] : [])
+    return [{ role: 'assistant', text: turnText([googlePartsText(parts), ...calls]) }]
+  })
+}
+
+function responsesConversationTurns(input: unknown): NativeModelTurn[] {
+  if (typeof input === 'string')
+    return [{ role: 'user', text: input }]
+  if (!Array.isArray(input))
+    throw new Error('The native Responses model request contains no input array.')
+  return input.flatMap((item: unknown): NativeModelTurn[] => {
+    if (!isObject(item))
+      return []
+    if (item.type === 'function_call')
+      return [{ role: 'assistant', text: nativeToolArgumentText(item.arguments) }]
+    if (item.type === 'custom_tool_call')
+      return [{ role: 'assistant', text: nativeToolArgumentText(item.input) }]
+    if (item.type !== undefined && item.type !== 'message')
+      return []
+    if (item.role === 'user')
+      return [{ role: 'user', text: turnText(nativeTextBlocks(item.content)) }]
+    if (item.role === 'assistant')
+      return [{ role: 'assistant', text: turnText(nativeTextBlocks(item.content, ASSISTANT_TEXT_BLOCK_TYPES)) }]
+    return []
+  })
+}
+
+/** Read Chat Completions and Anthropic Messages rows. Each API keeps its tool calls in a different field. */
+function messageConversationTurns(messages: unknown): NativeModelTurn[] {
+  if (!Array.isArray(messages))
+    throw new Error('The native model request contains no message array.')
+  return messages.flatMap((message: unknown): NativeModelTurn[] => {
+    if (!isObject(message))
+      return []
+    if (message.role === 'user')
+      return [{ role: 'user', text: turnText(nativeTextBlocks(message.content)) }]
+    if (message.role !== 'assistant')
+      return []
+    const chatCalls = Array.isArray(message.tool_calls)
+      ? message.tool_calls.filter(isObject).flatMap(call => isObject(call.function) ? [nativeToolArgumentText(call.function.arguments)] : [])
+      : []
+    const anthropicCalls = Array.isArray(message.content)
+      ? message.content.filter(isObject).flatMap(block => block.type === 'tool_use' ? [nativeToolArgumentText(block.input)] : [])
+      : []
+    return [{ role: 'assistant', text: turnText([...nativeTextBlocks(message.content, ASSISTANT_TEXT_BLOCK_TYPES), ...chatCalls, ...anthropicCalls]) }]
+  })
+}
+
+/** Read the user and assistant turns of a generic model API request. System and tool-result rows are not turns. */
+export function nativeModelConversationTurns(request: MockModelRequestRecord): NativeModelTurn[] {
+  if (request.protocol === 'aws-event-stream')
+    throw new Error('The native service must supply its own conversation turn reader.')
+  const body = request.body
+  if (!isObject(body))
+    throw new Error('The native conversation request body must be an object.')
+  if (request.protocol === 'google-generative-language')
+    return googleConversationTurns(body.contents)
+  if (request.protocol === 'openai-responses')
+    return responsesConversationTurns(body.input)
+  return messageConversationTurns(body.messages)
 }

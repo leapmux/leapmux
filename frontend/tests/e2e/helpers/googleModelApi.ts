@@ -7,6 +7,7 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { googleLastUserText, googlePartsText } from './googleModelContent'
 import { mockCredentialReceipt } from './mockCredentials'
 import { holdOpen, readJSONBody, writeMockJSON } from './mockHttp'
+import { rateLimitHeaders } from './mockRateLimitHeaders'
 import { bufferModelOutput } from './modelStream'
 import { writeResponseHeaders } from './responseHeaders'
 
@@ -107,10 +108,10 @@ async function writeGoogleResponse(response: ServerResponse, streaming: boolean,
       ...(step.text === undefined ? [] : [{ text: step.text }]),
       ...tools,
     ]
-    writeMockJSON(response, 200, googleResponse(model, parts, step))
+    writeMockJSON(response, 200, googleResponse(model, parts, step), rateLimitHeaders(step))
     return
   }
-  writeResponseHeaders(response, 200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' })
+  writeResponseHeaders(response, 200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', ...rateLimitHeaders(step) })
   const emit = (parts: Record<string, unknown>[], final?: MockModelStep) => response.write(`data: ${JSON.stringify(googleResponse(model, parts, final))}\n\n`)
   for await (const text of stream.chunks(step.reasoning))
     emit([{ text, thought: true }])

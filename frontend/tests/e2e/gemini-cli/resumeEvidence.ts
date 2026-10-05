@@ -2,8 +2,9 @@ import type { JsonValue } from '@bufbuild/protobuf'
 import type { TestInfo } from '@playwright/test'
 import type { AgentChatMessage, AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
-import type { NativeResumeEvidence } from '../helpers/nativeLifecycle'
+import type { NativeResumeEvidence, NativeResumeResult } from '../helpers/nativeLifecycle'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import type { MinuteClock } from './nativeStore'
 import { Buffer } from 'node:buffer'
 import { createHash } from 'node:crypto'
 import { readdirSync, writeFileSync } from 'node:fs'
@@ -15,9 +16,9 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from '../helpers/api'
 import { exerciseSessionResume } from '../helpers/nativeLifecycle'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
-import { nativeAgentById } from '../helpers/nativeScenario'
+import { nativeAgentById, selectedAgentTab } from '../helpers/nativeScenario'
 import { readNativeToolOutputFile } from '../helpers/nativeToolOutputFile'
-import { geminiNativeProject } from './nativeStore'
+import { geminiNativeProject, waitForGeminiArchiveMinuteToPass } from './nativeStore'
 
 interface EvidenceErrorComponent {
   id: number
@@ -308,7 +309,7 @@ export async function captureGeminiResumeEvidence(
   let readFailure: { value: unknown } | undefined
   const messages: AgentChatMessage[] = []
   try {
-    const tab = context.page.locator('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]:visible').first()
+    const tab = selectedAgentTab(context.page)
     receipt.selectedTabId = await tab.count() > 0 ? await tab.getAttribute('data-tab-id') : null
     if (receipt.selectedTabId) {
       before = await nativeAgentById(context, receipt.selectedTabId)
@@ -399,16 +400,25 @@ export async function captureGeminiResumeEvidence(
   await testInfo.attach(attachment, { path, contentType: 'application/json' })
 }
 
-/** Preserve resume failures while capturing the final observed state once. */
+/**
+ * Preserve resume failures while capturing the final observed state once.
+ *
+ * The scenario reopens the stored session in a later UTC minute than its archive,
+ * because Gemini CLI 0.62.0 cannot load a session in the minute that names its
+ * archive (see waitForGeminiArchiveMinuteToPass).
+ */
 export async function exerciseGeminiResumeWithEvidence(
   context: ManagedNativeScenarioContext,
   testInfo: Pick<TestInfo, 'attach' | 'outputPath'>,
-): Promise<MockModelRequestRecord> {
+  clock?: MinuteClock,
+): Promise<NativeResumeResult> {
   let prior: Readonly<AgentInfo> | undefined
   try {
     return await exerciseSessionResume(context, { resumeEvidence: async (evidence) => {
       prior = evidence.prior
       await captureGeminiResumeEvidence(context, testInfo, evidence)
+      if (evidence.phase === 'stored')
+        await waitForGeminiArchiveMinuteToPass(context, evidence.prior, clock)
     } })
   }
   catch (failure) {

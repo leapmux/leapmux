@@ -16,12 +16,14 @@ import {
   ARITHMETIC_ANSWER_TEXT,
   ARITHMETIC_PROMPT,
   chooseSettingsOption,
+  enterMessageText,
   isMaybeVisible,
   screenshotIfEnabled,
   SECOND_ARITHMETIC_ANSWER,
   SECOND_ARITHMETIC_ANSWER_TEXT,
   SECOND_ARITHMETIC_PROMPT,
   waitForLayoutSave,
+  waitForNativeSettingsHydrated,
 } from './ui'
 
 const native = vi.hoisted(() => ({ agent: vi.fn<typeof import('./nativeScenario').nativeAgentById>() }))
@@ -36,10 +38,6 @@ vi.mock('node:fs', async (importOriginal) => {
 vi.mock('./nativeScenario', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./nativeScenario')>()
   return { ...actual, nativeAgentById: native.agent }
-})
-vi.mock('./server', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./server')>()
-  return { ...actual, getGlobalState: () => ({ hubUrl: 'http://127.0.0.1:61616' }) }
 })
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
@@ -204,7 +202,7 @@ interface PendingSettingsRequest {
   completion: Promise<void>
 }
 
-function pageWithNativeCatalog(options: { agent?: AgentInfo, presetMenuWitness?: boolean, pendingSettings?: PendingSettingsRequest } = {}): Page {
+function pageWithNativeCatalog(options: { agent?: AgentInfo, presetMenuWitness?: boolean, pendingSettings?: PendingSettingsRequest, pageUrl?: string } = {}): Page {
   class Locator {
     readonly _apiName = 'Locator'
     constructor(private readonly matches = true, private readonly pendingSettings?: PendingSettingsRequest) {}
@@ -228,6 +226,7 @@ function pageWithNativeCatalog(options: { agent?: AgentInfo, presetMenuWitness?:
   vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ tab: { tabId: 'selected-native-agent', workerId: 'resolved-native-worker', tabType: 'TAB_TYPE_AGENT' } }), { status: 200, headers: { 'content-type': 'application/json' } }))
   return opaqueHandle<Page>({
     context: () => context,
+    url: () => options.pageUrl ?? 'http://127.0.0.1:61616/workspaces/unit-workspace',
     locator: (selector: string) => {
       if (selector.includes('aria-selected="true"'))
         return activeTab
@@ -249,8 +248,8 @@ describe('chooseSettingsOption', () => {
   it.each([
     { label: 'active catalog', settled: settingsAgent(), expected: 'The native catalog has no option group permissionPolicy.' },
     { label: 'startup failure', settled: create(AgentInfoSchema, { ...settingsAgent(), status: AgentStatus.STARTUP_FAILED, startupError: 'The native replacement refused its settings.' }), expected: 'The native settings agent failed to start: The native replacement refused its settings.' },
-    { label: 'inactive agent', settled: create(AgentInfoSchema, { ...settingsAgent(), status: AgentStatus.INACTIVE }), expected: 'The native settings agent is not active on its owning Worker.' },
-    { label: 'absent row', settled: null, expected: 'The native settings agent is not active on its owning Worker.' },
+    { label: 'inactive agent', settled: create(AgentInfoSchema, { ...settingsAgent(), status: AgentStatus.INACTIVE }), expected: 'The native settings agent is not active on its owning Worker (INACTIVE).' },
+    { label: 'absent row', settled: null, expected: 'The native settings agent is not active on its owning Worker (no row).' },
   ])('waits for the previous settings request before reading the $label', async ({ settled, expected }) => {
     const waiting = deferred<void>()
     const completed = deferred<void>()
@@ -280,6 +279,20 @@ describe('chooseSettingsOption', () => {
     expect(observed.message).toBe(expected)
     expect(native.agent).toHaveBeenCalledTimes(1)
     expect(native.agent).toHaveBeenCalledWith({ leapmuxServer: { hubUrl: 'http://127.0.0.1:61616', adminToken: 'leapmux-session=unit-native-session', workerId: 'resolved-native-worker' } }, 'selected-native-agent')
+  })
+
+  it('reads the tab and its Worker from the hub that serves the page, not the suite hub', async () => {
+    // A spec can run its own hub and Worker. That hub's session cookie is not valid on the suite hub.
+    const page = pageWithNativeCatalog({ pageUrl: 'http://127.0.0.1:52222/workspaces/private-workspace' })
+    await expect(chooseSettingsOption(page, 'permissionPolicy-ask')).rejects.toThrow('The native catalog has no option group permissionPolicy.')
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith('http://127.0.0.1:52222/leapmux.v1.WorkspaceService/LocateTab', expect.anything())
+    expect(native.agent).toHaveBeenCalledWith({ leapmuxServer: { hubUrl: 'http://127.0.0.1:52222', adminToken: 'leapmux-session=unit-native-session', workerId: 'resolved-native-worker' } }, 'selected-native-agent')
+  })
+
+  it.each(['about:blank', 'data:text/html,native'])('refuses a page that no hub serves: %s', async (pageUrl) => {
+    const page = pageWithNativeCatalog({ pageUrl })
+    await expect(chooseSettingsOption(page, 'permissionPolicy-ask')).rejects.toThrow('needs a page that a hub serves')
+    expect(vi.mocked(globalThis.fetch)).not.toHaveBeenCalled()
   })
 
   it('rejects an absent native group before opening a settings menu', async () => {
@@ -318,6 +331,160 @@ describe('applyPermissionPreset', () => {
     expect(permissionPresetAvailable(ampControls.permissionPresets?.bypass, agent.optionGroups)).toBe(true)
     const page = pageWithNativeCatalog({ agent, presetMenuWitness: true })
     await expect(applyPermissionPreset(page, 'bypass')).rejects.toThrow('The preset menu witness reached the validated native option.')
+  })
+})
+
+describe('enterMessageText', () => {
+  function keyboard() {
+    const calls: string[] = []
+    const handle = opaqueHandle<Page>({ keyboard: opaqueHandle<Page['keyboard']>({
+      type: vi.fn(async (text: string) => { calls.push(`type:${text}`) }),
+      insertText: vi.fn(async (text: string) => { calls.push(`insert:${text}`) }),
+      press: vi.fn(async (key: string) => { calls.push(`press:${key}`) }),
+    }) })
+    return { handle, calls }
+  }
+
+  it('types the whole text by default', async () => {
+    const { handle, calls } = keyboard()
+    await enterMessageText(handle, 'first\n\nsecond', 'type')
+    expect(calls).toEqual(['type:first\n\nsecond'])
+  })
+
+  // `keyboard.type` sends key events for each character, so a 144 KB prompt outlasts a test.
+  it('inserts each line at once and presses Enter between the lines', async () => {
+    const { handle, calls } = keyboard()
+    await enterMessageText(handle, 'first line\n\nsecond line', 'insert')
+    expect(calls).toEqual(['insert:first line', 'press:Enter', 'press:Enter', 'insert:second line'])
+  })
+
+  it('inserts a long line with one request', async () => {
+    const { handle, calls } = keyboard()
+    const line = 'padding '.repeat(18_000)
+    await enterMessageText(handle, line, 'insert')
+    expect(calls).toEqual([`insert:${line}`])
+  })
+
+  it('presses Enter for a leading and a trailing line break and inserts nothing for an empty line', async () => {
+    const { handle, calls } = keyboard()
+    await enterMessageText(handle, '\nbody\n', 'insert')
+    expect(calls).toEqual(['press:Enter', 'insert:body', 'press:Enter'])
+  })
+
+  it('does nothing for empty text', async () => {
+    const { handle, calls } = keyboard()
+    await enterMessageText(handle, '', 'insert')
+    expect(calls).toEqual([])
+  })
+})
+
+describe('waitForNativeSettingsHydrated', () => {
+  function fastAgentCatalog(groups: Parameters<typeof create<typeof AvailableOptionGroupSchema>>[1][]): AgentInfo {
+    return create(AgentInfoSchema, {
+      ...settingsAgent(),
+      agentProvider: AgentProvider.FAST_AGENT,
+      optionGroups: groups.map(group => create(AvailableOptionGroupSchema, group)),
+    })
+  }
+
+  const agentMode = { id: 'permissionMode', label: 'Mode', mutable: true, currentValue: 'agent', options: [{ id: 'agent', name: 'Agent' }] }
+
+  /** A page whose plus menu offers the `offered` group triggers. It records each group that the helper reads. */
+  function pageWithSettingsMenu(offered: readonly string[]): { page: Page, read: string[] } {
+    class Locator {
+      readonly _apiName = 'Locator'
+      constructor(private readonly matches: boolean) {}
+      async _expect() {
+        return { matches: this.matches, received: true, log: [], timedOut: false }
+      }
+    }
+    const read: string[] = []
+    const activeTab: PlaywrightLocator = opaqueHandle<PlaywrightLocator>({
+      first: () => activeTab,
+      getAttribute: async attribute => attribute === 'data-tab-id' ? 'selected-native-agent' : null,
+    }, new Locator(true))
+    const plus = opaqueHandle<PlaywrightLocator>({ getAttribute: async () => 'true' }, new Locator(true))
+    const context = opaqueHandle<BrowserContext>({ cookies: async () => [{ name: 'leapmux-session', value: 'unit-native-session', domain: 'localhost', path: '/', expires: -1, httpOnly: true, secure: false, sameSite: 'Lax' }] })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ tab: { tabId: 'selected-native-agent', workerId: 'resolved-native-worker', tabType: 'TAB_TYPE_AGENT' } }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const page = opaqueHandle<Page>({
+      context: () => context,
+      url: () => 'http://127.0.0.1:61616/workspaces/unit-workspace',
+      evaluate: async () => undefined,
+      locator: (selector: string) => {
+        if (selector.includes('aria-selected="true"'))
+          return activeTab
+        if (selector === '[data-testid="settings-loading-spinner"]')
+          return opaqueHandle<PlaywrightLocator>({}, new Locator(false))
+        if (selector === '[data-testid="composer-plus-trigger"]')
+          return plus
+        if (selector === '[data-testid="composer-plus-popover"]')
+          return opaqueHandle<PlaywrightLocator>({}, new Locator(true))
+        const group = /^\[data-testid="composer-group-([^"]+)"\]$/.exec(selector)?.[1]
+        if (group !== undefined) {
+          return opaqueHandle<PlaywrightLocator>({ isVisible: async () => {
+            read.push(group)
+            return offered.includes(group)
+          } })
+        }
+        throw new Error(`The settings hydration unit read an unexpected locator: ${selector}.`)
+      },
+    })
+    return { page, read }
+  }
+
+  it('waits for the live groups of an agent that has no model group', async () => {
+    const { page, read } = pageWithSettingsMenu(['permissionMode'])
+    native.agent.mockReset().mockResolvedValue(fastAgentCatalog([agentMode]))
+    await expect(waitForNativeSettingsHydrated(page)).resolves.toBeUndefined()
+    expect(read).toEqual(['permissionMode'])
+    expect(native.agent).toHaveBeenCalledWith({ leapmuxServer: { hubUrl: 'http://127.0.0.1:61616', adminToken: 'leapmux-session=unit-native-session', workerId: 'resolved-native-worker' } }, 'selected-native-agent')
+  })
+
+  it('requires every live group that the menu can draw, and skips a group with no option', async () => {
+    const { page, read } = pageWithSettingsMenu(['model', 'permissionMode'])
+    native.agent.mockReset().mockResolvedValue(fastAgentCatalog([
+      { id: 'model', label: 'Model', mutable: false, currentValue: 'gpt-4o', options: [{ id: 'gpt-4o', name: 'gpt-4o' }] },
+      { id: 'effort', label: 'Effort', mutable: true, currentValue: '', options: [] },
+      agentMode,
+    ]))
+    await expect(waitForNativeSettingsHydrated(page)).resolves.toBeUndefined()
+    expect(read).toEqual(['model', 'permissionMode'])
+  })
+
+  it('fails while the menu still lacks a group of the live catalog', async () => {
+    // The read-only model group of a starting agent is not the live catalog of a running one.
+    const { page } = pageWithSettingsMenu(['model'])
+    native.agent.mockReset().mockResolvedValue(fastAgentCatalog([agentMode]))
+    await expect(waitForNativeSettingsHydrated(page)).rejects.toThrow('the menu offers the permissionMode group')
+  })
+
+  it('reads the live catalog again in the attempt instead of the first snapshot', async () => {
+    const { page, read } = pageWithSettingsMenu(['permissionMode'])
+    native.agent.mockReset()
+      .mockResolvedValueOnce(fastAgentCatalog([{ id: 'model', label: 'Model', mutable: false, currentValue: 'gpt-4o', options: [{ id: 'gpt-4o', name: 'gpt-4o' }] }]))
+      .mockResolvedValue(fastAgentCatalog([agentMode]))
+    await expect(waitForNativeSettingsHydrated(page)).resolves.toBeUndefined()
+    expect(read).toEqual(['permissionMode'])
+    expect(native.agent).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    { label: 'no group', groups: [] },
+    { label: 'only groups without an option', groups: [{ id: 'effort', label: 'Effort', mutable: true, currentValue: '', options: [] }] },
+  ])('fails for a live catalog with $label, which the menu cannot show', async ({ groups }) => {
+    const { page, read } = pageWithSettingsMenu(['model'])
+    native.agent.mockReset().mockResolvedValue(fastAgentCatalog(groups))
+    await expect(waitForNativeSettingsHydrated(page)).rejects.toThrow('The live native catalog has no group with an option')
+    expect(read).toEqual([])
+  })
+
+  it('fails when the agent leaves the active state before the menu shows its catalog', async () => {
+    const { page, read } = pageWithSettingsMenu(['permissionMode'])
+    native.agent.mockReset()
+      .mockResolvedValueOnce(fastAgentCatalog([agentMode]))
+      .mockResolvedValue(create(AgentInfoSchema, { ...fastAgentCatalog([agentMode]), status: AgentStatus.INACTIVE }))
+    await expect(waitForNativeSettingsHydrated(page)).rejects.toThrow('The native settings agent is not active on its owning Worker (INACTIVE).')
+    expect(read).toEqual([])
   })
 })
 

@@ -1,6 +1,6 @@
-import type { Locator } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { expandNativeResultView } from './nativeResultView'
+import { expandNativeResultView, nativeResultBubble } from './nativeResultView'
 
 function strictHandle<T extends object>(methods: Partial<T>): T {
   return new Proxy(methods as T, {
@@ -69,5 +69,28 @@ describe('expandNativeResultView', () => {
 
   it('rejects a view without its actual Expand action', async () => {
     await expect(expandNativeResultView(fixture(true).result)).rejects.toThrow('no Expand action')
+  })
+})
+
+describe('nativeResultBubble', () => {
+  /** A page whose `locator` returns the selector, so a test reads the exact selector that the helper builds. */
+  function selectorPage(): Page {
+    return Object.assign({} as Page, { locator: (selector: string) => selector })
+  }
+
+  it('selects the visible result row of the exact call ID', () => {
+    expect(nativeResultBubble(selectorPage(), 'live-child-read')).toBe(
+      '[data-testid="message-bubble"][data-tool-call-id="live-child-read"][data-tool-row-role="result"]:visible',
+    )
+  })
+
+  it('escapes a quote and a backslash in the call ID for a quoted attribute value', () => {
+    expect(nativeResultBubble(selectorPage(), 'a"b\\c')).toBe(
+      '[data-testid="message-bubble"][data-tool-call-id="a\\"b\\\\c"][data-tool-row-role="result"]:visible',
+    )
+  })
+
+  it('keeps an empty call ID as an empty attribute value, so it matches no real call', () => {
+    expect(nativeResultBubble(selectorPage(), '')).toContain('[data-tool-call-id=""]')
   })
 })

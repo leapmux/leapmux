@@ -2,8 +2,8 @@ import type { ExecFileSyncOptions } from 'node:child_process'
 import { Buffer } from 'node:buffer'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
-import { delimiter, isAbsolute, join, resolve } from 'node:path'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { findBinary } from './binaryOnPath'
@@ -15,10 +15,19 @@ const setupBoundary = vi.hoisted(() => {
   return { execute: vi.fn<typeof import('node:child_process').execFileSync>(), original }
 })
 
+/**
+ * Run real subprocesses, but answer the installed Letta setup commands with no output.
+ * A real `letta` spawn depends on the installed CLI and on the machine load, and these tests check the environment only.
+ * The Letta setup test supplies its own controlled binary through mockImplementationOnce.
+ */
+function executeWithoutInstalledLetta(actual: typeof import('node:child_process').execFileSync) {
+  return (file: string, args?: readonly string[], options?: ExecFileSyncOptions) => basename(file) === 'letta' ? Buffer.alloc(0) : actual(file, args, options)
+}
+
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   setupBoundary.original.execute = actual.execFileSync
-  setupBoundary.execute.mockImplementation(actual.execFileSync)
+  setupBoundary.execute.mockImplementation(executeWithoutInstalledLetta(actual.execFileSync))
   return { ...actual, execFileSync: setupBoundary.execute }
 })
 
@@ -34,7 +43,7 @@ afterEach(() => {
   const original = setupBoundary.original.execute
   setupBoundary.execute.mockReset()
   if (original)
-    setupBoundary.execute.mockImplementation(original)
+    setupBoundary.execute.mockImplementation(executeWithoutInstalledLetta(original))
   rmSync(directory, { recursive: true, force: true })
 })
 
@@ -136,6 +145,43 @@ describe('createMockAgentEnvironment', () => {
         delete process.env.PATH
       else
         process.env.PATH = beforePath
+    }
+  })
+
+  // Letta Code runs `npm install -g` of its newest release from its startup path
+  // unless DISABLE_AUTOUPDATER is exactly "1". Both setup commands are subcommands,
+  // which exit before that path today. They run outside the worker, which pins the
+  // switch for each agent, and without the refusing proxy, so the switch is the
+  // only guard if a later release moves the update before the subcommands.
+  it('turns the Letta Code updater off for both setup commands, whatever the run inherits', async () => {
+    const binaries = join(directory, 'controlled-binaries')
+    mkdirSync(binaries)
+    const letta = join(binaries, process.platform === 'win32' ? 'letta.exe' : 'letta')
+    writeFileSync(letta, 'controlled setup boundary', { mode: 0o755 })
+    const beforePath = process.env.PATH
+    const beforeSwitch = process.env.DISABLE_AUTOUPDATER
+    const updaterSwitches: Array<string | undefined> = []
+    const capture = (_file: string, _args?: readonly string[], options?: ExecFileSyncOptions) => {
+      updaterSwitches.push(options?.env?.DISABLE_AUTOUPDATER)
+      return Buffer.alloc(0)
+    }
+    process.env.PATH = binaries
+    process.env.DISABLE_AUTOUPDATER = '0'
+    setupBoundary.execute.mockImplementationOnce(capture).mockImplementationOnce(capture)
+    try {
+      const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+      expect(updaterSwitches).toEqual(['1', '1'])
+      expect(env.DISABLE_AUTOUPDATER).toBe('1')
+    }
+    finally {
+      if (beforePath === undefined)
+        delete process.env.PATH
+      else
+        process.env.PATH = beforePath
+      if (beforeSwitch === undefined)
+        delete process.env.DISABLE_AUTOUPDATER
+      else
+        process.env.DISABLE_AUTOUPDATER = beforeSwitch
     }
   })
 
@@ -307,6 +353,9 @@ describe('createMockAgentEnvironment', () => {
     const reasonix = readFileSync(join(env.REASONIX_HOME!, 'config.toml'), 'utf8')
     expect(reasonix).toContain('base_url = "http://127.0.0.1:43210/v1"')
     expect(reasonix).toContain('api_key_env = "LEAPMUX_E2E_MODEL_API_KEY"')
+    const reasonixCredentials = join(env.REASONIX_HOME!, '.env')
+    expect(readFileSync(reasonixCredentials, 'utf8')).toBe('LEAPMUX_E2E_MODEL_API_KEY=leapmux-e2e-model-key\n')
+    expect(statSync(reasonixCredentials).mode & 0o777).toBe(0o600)
     expect(reasonix).toContain(`vision_models = ["${MOCK_MODELS.deepseek}"]`)
     expect(reasonix).toContain(`default_model = "deepseek/${MOCK_MODELS.deepseek}"`)
     expect(reasonix).toContain(`name = "${REASONIX_ALT_PROVIDER_ID}"\nkind = "openai"\nbase_url = "http://127.0.0.1:43210/v1"\nmodel = "${MOCK_MODELS.pi}"`)
@@ -1001,5 +1050,158 @@ describe('createMockAgentEnvironment', () => {
     expect(qwen.privacy.usageStatisticsEnabled).toBe(false)
     expect(env).toMatchObject({ QWEN_DISABLE_AUTO_TITLE: '1', QWEN_USAGE_STATISTICS_ENABLED: 'false', LEAPMUX_E2E_MODEL_API_KEY: 'leapmux-e2e-model-key' })
     expect(QWEN_MODEL_ID).toBe(`${MOCK_MODELS.qwen}(openai)`)
+  })
+})
+
+describe('createMockAgentEnvironment updater switches', () => {
+  /**
+   * The switch of each CLI that updates its own install, with the value that the CLI
+   * reads as "off". An update replaces the files of a running CLI, and the global
+   * install of the operator, in the middle of a run. A switch can sit in the
+   * environment only when the CLI reads an environment variable; the others live in
+   * a configuration file that the next test checks.
+   */
+  const UPDATER_SWITCHES: Record<string, string> = {
+    // Claude Code reads any of the two, and CodeBuddy Code and Letta Code read the
+    // second. Letta Code accepts only the exact value 1.
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    DISABLE_AUTOUPDATER: '1',
+    // Copilot CLI accepts only `false`, in any case. It replaces its own executable.
+    COPILOT_AUTO_UPDATE: 'false',
+    OPENCODE_DISABLE_AUTOUPDATE: 'true',
+    KILO_DISABLE_AUTOUPDATE: 'true',
+    MIMOCODE_DISABLE_AUTOUPDATE: 'true',
+    KIMI_CODE_NO_AUTO_UPDATE: '1',
+    // Qwen Code accepts only the exact value `true`.
+    QWEN_CODE_SKIP_UPDATE_CHECK_ONCE: 'true',
+    GROK_DISABLE_AUTOUPDATER: '1',
+    FACTORY_DROID_AUTO_UPDATE_ENABLED: '0',
+    CLINE_NO_AUTO_UPDATE: '1',
+    AMP_SKIP_UPDATE_CHECK: '1',
+    DIRAC_NO_AUTO_UPDATE: '1',
+    JUNIE_SKIP_UPDATE_CHECK: '1',
+    KIRO_NO_AUTO_UPDATE: '1',
+    CODEWHALE_NO_UPDATE_CHECK: '1',
+    PI_OFFLINE: '1',
+  }
+
+  it('states the updater switch of every CLI that reads an environment variable', async () => {
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    expect(Object.fromEntries(Object.keys(UPDATER_SWITCHES).map(name => [name, env[name]]))).toEqual(UPDATER_SWITCHES)
+  })
+
+  it('turns the updater off in the configuration file of each CLI that reads no variable for it', async () => {
+    const { env, homeDir, ohMyPiAgentDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    const json = (...path: string[]) => JSON.parse(readFileSync(join(...path), 'utf8')) as Record<string, Record<string, unknown>>
+    const text = (...path: string[]) => readFileSync(join(...path), 'utf8')
+
+    // omp's update notice and its plugin auto-update: no variable or flag names either key.
+    expect(json(ohMyPiAgentDir, 'config.yml')).toMatchObject({ startup: { checkUpdate: false }, marketplace: { autoUpdate: 'off' } })
+    // Qwen Code reads the key from the file that QWEN_HOME selects.
+    expect(env.QWEN_HOME).toBe(join(homeDir, '.qwen'))
+    expect(json(homeDir, '.qwen', 'settings.json').general).toMatchObject({ enableAutoUpdate: false })
+    // Cline's key and Kiro's key. Kiro's desktop app and its terminal read the key, and
+    // `acp` starts neither.
+    expect(json(homeDir, '.cline', 'data', 'settings', 'global-settings.json')).toMatchObject({ autoUpdateEnabled: false })
+    expect(json(homeDir, '.kiro', 'settings', 'cli.json')).toMatchObject({ 'app.disableAutoupdates': true })
+    // Grok, Codewhale and Codex keep the key in TOML.
+    expect(text(homeDir, '.grok', 'config.toml')).toMatch(/^\[cli\]\nauto_update = false$/m)
+    expect(text(homeDir, '.codewhale', 'config.toml')).toMatch(/^\[update\]\ncheck_for_updates = false$/m)
+    expect(text(homeDir, '.codex', 'config.toml')).toMatch(/^check_for_update_on_startup = false$/m)
+  })
+
+  it.runIf(process.platform !== 'win32')('runs a private copy of the Junie launcher script, so the CLI cannot refresh the developer\'s own', async () => {
+    // The CLI rewrites the launcher that JUNIE_SHIM_PATH names when the installed
+    // version holds a newer one, and the launcher sets that variable to its own path.
+    const installedDir = join(directory, 'junie-installed')
+    mkdirSync(installedDir)
+    const installed = join(installedDir, 'junie')
+    const script = '#!/bin/bash\n# JUNIE_MANAGED_SHIM\nexit 0\n'
+    writeFileSync(installed, script, { mode: 0o755 })
+    const before = process.env.PATH
+    process.env.PATH = installedDir
+    try {
+      await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    }
+    finally {
+      if (before === undefined)
+        delete process.env.PATH
+      else
+        process.env.PATH = before
+    }
+    const shims = join(directory, 'cli-shims')
+    const launcher = readFileSync(join(shims, 'junie'), 'utf8')
+    expect(launcher).toContain(`exec '${join(shims, 'junie-launcher')}' "$@"`)
+    expect(launcher).not.toContain(installed)
+    expect(readFileSync(join(shims, 'junie-launcher'), 'utf8')).toBe(script)
+    expect(statSync(join(shims, 'junie-launcher')).mode & 0o777).toBe(0o755)
+  })
+
+  it.runIf(process.platform !== 'win32')('runs an installed Junie that is not the launcher script in place', async () => {
+    const installedDir = join(directory, 'junie-program')
+    mkdirSync(installedDir)
+    const installed = join(installedDir, 'junie')
+    writeFileSync(installed, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    const before = process.env.PATH
+    process.env.PATH = installedDir
+    try {
+      await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    }
+    finally {
+      if (before === undefined)
+        delete process.env.PATH
+      else
+        process.env.PATH = before
+    }
+    const shims = join(directory, 'cli-shims')
+    expect(readFileSync(join(shims, 'junie'), 'utf8')).toContain(`exec '${installed}' "$@"`)
+    expect(existsSync(join(shims, 'junie-launcher'))).toBe(false)
+  })
+
+  it('stops the Qoder security plugin from downloading and running its own binaries', async () => {
+    // The plugin loads in `-p` mode unless each of its four checks is explicitly
+    // false, and then downloads `qodersec` and a pinned `qodercli` under $HOME. SDK
+    // mode, which the fixture selects, defaults them off; the explicit value does
+    // not depend on that default.
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    expect(JSON.parse(env.QODER_SECURITY_SCAN_SETTINGS_JSON!)).toEqual({
+      l1StaticCheck: false,
+      l2LightweightScan: false,
+      l3DeepScan: false,
+      gitPushScanHook: false,
+    })
+    expect(env.QODERSEC_SKIP_ASYNC_UPDATE).toBe('1')
+  })
+
+  it.runIf(process.platform !== 'win32')('gives Junie a private data directory that holds the installed version and no staged update', async () => {
+    // The Junie launcher applies `updates/pending-update.json` before it starts the
+    // CLI, swaps `versions/<v>` and flips `current`. An interactive Junie stages that
+    // file on its own, so a shared data directory lets the next test run replace the
+    // operator's install.
+    const realHomeDir = join(directory, 'real-home')
+    const installRoot = join(realHomeDir, '.local', 'share', 'junie')
+    const installed = join(installRoot, 'versions', '3419.7')
+    mkdirSync(join(installed, 'shim'), { recursive: true })
+    writeFileSync(join(installed, 'shim', 'junie.sh'), '#!/bin/bash\n# JUNIE_MANAGED_SHIM\n')
+    symlinkSync(installed, join(installRoot, 'current'))
+    mkdirSync(join(installRoot, 'updates'))
+    writeFileSync(join(installRoot, 'updates', 'pending-update.json'), '{"version":"9999.1"}\n')
+
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210', { realHomeDir })
+
+    const data = env.JUNIE_DATA!
+    expect(data.startsWith(realHomeDir)).toBe(false)
+    expect(readdirSync(join(data, 'updates'))).toEqual([])
+    expect(realpathSync(join(data, 'versions', '3419.7'))).toBe(realpathSync(installed))
+    // The link that the launcher flips lies inside the private directory.
+    expect(dirname(readlinkSync(join(data, 'current')))).toBe(join(data, 'versions'))
+    expect(realpathSync(join(data, 'current'))).toBe(realpathSync(installed))
+    expect(readFileSync(join(installRoot, 'updates', 'pending-update.json'), 'utf8')).toBe('{"version":"9999.1"}\n')
+
+    // A second environment for the same run directory builds the directory again,
+    // and leaves the installed versions as they were.
+    const again = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210', { realHomeDir })
+    expect(again.env.JUNIE_DATA).toBe(data)
+    expect(readdirSync(join(installed, 'shim'))).toEqual(['junie.sh'])
   })
 })

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { delimiter, join, resolve } from 'node:path'
+import { chmodSync, copyFileSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { basename, delimiter, join, resolve } from 'node:path'
 import process from 'node:process'
 import { agentSearchPath, agentSearchPathEnv, findBinary } from './binaryOnPath'
 import { createCommandCodeEnvironment } from './commandCodeEnvironment'
@@ -247,9 +247,14 @@ const GROK_QUIET_ENV: Readonly<Record<string, string>> = {
 
 /**
  * The switches that stop Qwen Code from calling the model outside a turn a test
- * scripts, and from sending usage statistics. The same switches are in its
- * `settings.json`; the environment is the second guard, because Qwen reads it
- * first.
+ * scripts, from sending usage statistics, and from checking for and installing an
+ * update. The same switches are in its `settings.json`; the environment is the
+ * second guard, because Qwen reads it first.
+ *
+ * Qwen starts the update check from its interactive UI, never from `--acp`, so the
+ * update switch covers a `qwen` that an agent's shell tool starts. Only the exact
+ * value `true` counts. `general.enableAutoUpdate` in `settings.json` is the same
+ * switch, and a worker cannot set it.
  */
 const QWEN_QUIET_ENV: Readonly<Record<string, string>> = {
   QWEN_DISABLE_AUTO_TITLE: '1',
@@ -333,7 +338,7 @@ export const CLINE_PROVIDER_ID = 'deepseek'
  * They replace inherited user values that could select real configuration.
  *
  * - providers.json selects the mock as the last used provider in the native cline auth format.
- * - global-settings.json disables telemetry. No environment variable can replace Cline's compiled telemetry endpoint.
+ * - global-settings.json disables telemetry and the update (`autoUpdateEnabled`). No environment variable can replace Cline's compiled telemetry endpoint.
  * - An empty feature cache prevents a native remote flag request for one hour.
  *   The refusing proxy prevents a later remote fetch.
  *
@@ -377,7 +382,10 @@ function clineEnv(clineDir: string, clineDataDir: string): Record<string, string
     // Cline's own account key. The mock provider takes its key from the settings,
     // and an empty key reaches no Cline service.
     CLINE_API_KEY: '',
-    // The npm update check. The worker sets it for the daemon as well.
+    // Every `cline` that is not the daemon asks the npm registry at its start, and
+    // starts a detached `npm update -g cline` as it exits when a newer release
+    // exists. The worker sets it for the daemon as well. Only the exact value `1`
+    // counts.
     CLINE_NO_AUTO_UPDATE: '1',
   }
 }
@@ -438,6 +446,7 @@ export async function createMockAgentEnvironment(
   const qoderHome = join(homeDir, '.qoder')
   const junieModelsDir = join(runDir, 'junie-models')
   const junieAgentsDir = join(runDir, 'junie-agents')
+  const junieDataDir = join(runDir, 'junie-data')
   const diracDir = join(homeDir, '.dirac')
   const fastAgentHome = join(homeDir, '.fast-agent')
   const cliShimsDir = join(runDir, 'cli-shims')
@@ -483,6 +492,7 @@ export async function createMockAgentEnvironment(
     mcpServers: { echo_probe: { type: 'stdio', command: process.execPath, args: [mcpEchoServer] } },
   })
   writeFileSync(join(reasonixHome, 'config.toml'), reasonixConfig(openAIBaseURL), { mode: 0o600 })
+  writeFileSync(join(reasonixHome, '.env'), reasonixCredentials(), { mode: 0o600 })
   const gooseMcpFormServer = writeMcpFormServer(gooseRoot, 'form-server.mjs')
   writeFileSync(join(gooseRoot, 'config', 'config.yaml'), gooseConfig(gooseMcpFormServer), { mode: 0o600 })
   writeFileSync(join(codewhaleHome, 'config.toml'), codewhaleConfig(openAIBaseURL), { mode: 0o600 })
@@ -578,9 +588,16 @@ export async function createMockAgentEnvironment(
       KILO_CONFIG_CONTENT: openCodeConfig,
       KILO_DISABLE_PROJECT_CONFIG: 'true',
       // Kilo sends PostHog telemetry by default. When this variable is set, Kilo
-      // sends it only for the value `all`. Kilo 7.7 reads the variable once at
+      // sends it only for the value `all`. Kilo 7.8 reads the variable once at
       // start, and the variable outranks the configuration.
       KILO_TELEMETRY_LEVEL: 'off',
+      // OpenCode and Kilo upgrade their own install from the check that their TUI
+      // starts, never from `acp`. The `autoupdate` key of the inline configuration
+      // above cannot carry the switch: the check reads only the global config files,
+      // which the isolated HOME and XDG directories leave empty. Each of the two
+      // reads `true` and `1`.
+      OPENCODE_DISABLE_AUTOUPDATE: 'true',
+      KILO_DISABLE_AUTOUPDATE: 'true',
 
       GOOSE_PROVIDER: 'openai',
       GOOSE_MODEL: MOCK_MODELS.goose,
@@ -654,6 +671,13 @@ export async function createMockAgentEnvironment(
       COPILOT_GITHUB_TOKEN: MOCK_COPILOT_GITHUB_TOKEN,
       COPILOT_HOME: copilotHome,
       GITHUB_COPILOT_API_TOKEN: MODEL_KEY,
+      // Copilot CLI starts its updater one second after every start, `--server
+      // --stdio` included. The updater downloads the newest package, and then the
+      // release executable, and renames that over the executable that runs, which is
+      // the developer's own install: an isolated HOME does not move it. The refusing
+      // proxy above only fails the download, and it ends when a run starts without
+      // it. Only the exact value `false` counts; `0` and `off` do not.
+      COPILOT_AUTO_UPDATE: 'false',
 
       GROK_HOME: grokHome,
       // Grok's leader lock keeps acquire slots under the system temporary
@@ -697,9 +721,12 @@ export async function createMockAgentEnvironment(
       CODEWHALE_ALLOW_SHELL: '1',
 
       // Kimi Code keeps its configuration, sessions, and server token here. The
-      // two switches stop the only requests that it sends to its own hosts: the
-      // telemetry upload and the update check. Kimi downloads `rg` from its host
-      // when `rg` is absent from PATH, so the run keeps the developer's PATH.
+      // two switches stop the telemetry upload and the update. `kimi web` makes no
+      // update check, so the update switch guards the swap of a staged native
+      // update, which `kimi --version` and `kimi web` both run; the TUI also checks
+      // for a release and installs it. Kimi downloads `rg` from its host when `rg` is
+      // absent from PATH, and no switch stops that, so the run keeps the developer's
+      // PATH.
       KIMI_CODE_HOME: kimiHome,
       KIMI_DISABLE_TELEMETRY: '1',
       KIMI_CODE_NO_AUTO_UPDATE: '1',
@@ -733,7 +760,7 @@ export async function createMockAgentEnvironment(
       MIMOCODE_DISABLE_COMPOSE_SKILLS: 'true',
       MIMOCODE_DISABLE_AGENTS_SKILLS: 'true',
       MIMOCODE_DISABLE_LSP_DOWNLOAD: 'true',
-      // The workflow tool is experimental in MiMo 0.1.14 and off by default. A spec
+      // The workflow tool is experimental in MiMo 0.1.15 and off by default. A spec
       // runs a workflow through it (`mimoWorkflowToolCall`).
       MIMOCODE_EXPERIMENTAL_WORKFLOW_TOOL: 'true',
 
@@ -748,12 +775,15 @@ export async function createMockAgentEnvironment(
       ...qoderEnv(qoderHome, cliShimsDir),
       QODER_CONFIG_SERVICE_URL: origin,
       QODER_SERVER_ENDPOINT: '',
-      ...junieEnv(homeDir, junieModelsDir, junieAgentsDir, origin, options.realHomeDir),
+      ...junieEnv(homeDir, junieModelsDir, junieAgentsDir, junieDataDir, origin, options.realHomeDir),
       DIRAC_PROVIDER: 'openai',
       DIRAC_BASE_URL: openAIBaseURL,
       DIRAC_API_KEY: MODEL_KEY,
       DIRAC_MODEL: MOCK_MODELS.deepseek,
       DIRAC_DIR: diracDir,
+      // Dirac starts a detached update of its own install from its startup path,
+      // `--acp` included. Only the exact value `1` counts. The worker pins it too.
+      DIRAC_NO_AUTO_UPDATE: '1',
       FAST_AGENT_HOME: fastAgentHome,
       ...createCommandCodeEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, modelID: COMMAND_CODE_MODEL_ID, alternateModelID: COMMAND_CODE_ALT_MODEL_ID, mcpServers }),
       ...createDeepseekHarnessEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, mcpServers }),
@@ -835,6 +865,12 @@ function lettaEnv(lettaHome: string, lettaBackendDir: string): Record<string, st
     DO_NOT_TRACK: '1',
     LETTA_CODE_OFFLINE: '1',
     LETTA_DISABLE_MODS: '1',
+    // Letta Code runs `npm install -g @letta-ai/letta-code` from its startup path,
+    // which replaces the operator's global install. `letta server` and the other
+    // subcommands exit before that path, but each subagent is a `letta` child that
+    // takes it, and the child inherits this environment. Only the exact value `1`
+    // counts. The worker pins it too.
+    DISABLE_AUTOUPDATER: '1',
   }
 }
 
@@ -900,8 +936,11 @@ function codebuddySettings(): Record<string, unknown> {
  * CODEBUDDY_CONFIG_DIR and a private HOME isolate that configuration.
  * The switches disable these unscripted startup requests:
  * - Telemetry and Galileo collection.
- * - Automatic updates.
  * - Trace collection.
+ *
+ * DISABLE_AUTOUPDATER also turns off CodeBuddy's updater. The `-p` mode that the
+ * worker starts never runs it, but a daemon (CODEBUDDY_SESSION_KIND=daemon) does.
+ * Claude Code and Letta Code read the same name.
  */
 function codebuddyEnv(configDir: string): Record<string, string> {
   return {
@@ -1000,6 +1039,14 @@ exec ${posixQuote(installedQoder)} "$@"
     QODER_CLI: '',
     QODERCN_CLI: '',
     QODER_REMOTE_CHILD: '',
+    // Qoder's own updater runs only in its interactive UI. A different download
+    // runs in `-p` mode: the Qoder Security plugin loads unless each of its four
+    // checks is explicitly false, and then downloads `qodersec` and a pinned
+    // `qodercli` under $HOME. SDK mode, which this fixture selects, defaults the
+    // four checks to off; this value does not depend on that default. Each key must
+    // be a literal false, and the value must be valid JSON, or Qoder ignores it.
+    QODER_SECURITY_SCAN_SETTINGS_JSON: JSON.stringify({ l1StaticCheck: false, l2LightweightScan: false, l3DeepScan: false, gitPushScanHook: false }),
+    QODERSEC_SKIP_ASYNC_UPDATE: '1',
   }
 }
 
@@ -1063,6 +1110,10 @@ Then call submit with the marker you read.
  * JUNIE_DATA selects the installed programs in versions/ or current/.
  * The private HOME has no program installation, so the fixture selects the user's installed binaries.
  * Those program directories contain no session state.
+ * See {@link junieDataDirectory} for why the directory is a private one that links them.
+ *
+ * JUNIE_SKIP_UPDATE_CHECK turns off the update check and download of the CLI itself.
+ * It does not stop the launcher, which applies a staged update before the CLI starts.
  *
  * JUNIE_CONFIG_LOCATION selects the explicit configuration file for these locations:
  * - Mock model profiles.
@@ -1073,7 +1124,7 @@ Then call submit with the marker you read.
  * Junie therefore does not scan default model or child directories, including project and JUNIE_HOME model folders.
  * The explicit fixture locations remain enabled under both flags.
  */
-function junieEnv(homeDir: string, modelsDir: string, agentsDir: string, mockOrigin: string, realHomeDir: string | undefined): Record<string, string> {
+function junieEnv(homeDir: string, modelsDir: string, agentsDir: string, dataDir: string, mockOrigin: string, realHomeDir: string | undefined): Record<string, string> {
   const junieHome = join(homeDir, '.junie')
   mkdirSync(junieHome, { recursive: true })
   const configPath = join(modelsDir, 'config.json')
@@ -1091,11 +1142,55 @@ function junieEnv(homeDir: string, modelsDir: string, agentsDir: string, mockOri
   const env: Record<string, string> = {
     JUNIE_HOME: junieHome,
     JUNIE_CONFIG_LOCATION: configPath,
+    JUNIE_SKIP_UPDATE_CHECK: '1',
   }
   const installRoot = realHomeDir === undefined ? undefined : join(realHomeDir, '.local', 'share', 'junie')
   if (installRoot !== undefined)
-    env.JUNIE_DATA = installRoot
+    env.JUNIE_DATA = junieDataDirectory(installRoot, dataDir)
   return env
+}
+
+/**
+ * The data directory that the Junie launcher runs against, or the install root when
+ * the root has no layout that a private directory can link.
+ *
+ * The launcher applies `updates/pending-update.json` before it starts the CLI: it
+ * swaps `versions/<version>` and flips the `current` link. An interactive Junie stages
+ * that file on its own, so a run that shares the operator's data directory applies the
+ * operator's update in the middle of a test run, and `--skip-update-check` does not
+ * stop it.
+ *
+ * The private directory links each installed version, points its own `current` link at
+ * the version that the install runs, and holds an empty `updates/`. The launcher then
+ * finds nothing to apply, and a swap that it makes would move only a link in the private
+ * directory. The versions stay real, so no program is copied.
+ */
+function junieDataDirectory(installRoot: string, dataDir: string): string {
+  // The launcher is a bash script, and a link to a directory needs a privilege on Windows.
+  if (process.platform === 'win32')
+    return installRoot
+  const versionsDir = join(installRoot, 'versions')
+  let installed: string[]
+  let current: string
+  try {
+    installed = readdirSync(versionsDir, { withFileTypes: true }).filter(entry => entry.isDirectory() && !entry.name.startsWith('.')).map(entry => entry.name)
+    current = basename(readlinkSync(join(installRoot, 'current')))
+  }
+  catch {
+    return installRoot
+  }
+  if (!installed.includes(current))
+    return installRoot
+  // A second call for the same run directory builds the directory again. Removing a
+  // directory of links deletes the links, never the versions that they name.
+  rmSync(dataDir, { recursive: true, force: true })
+  const privateVersions = join(dataDir, 'versions')
+  mkdirSync(privateVersions, { recursive: true })
+  mkdirSync(join(dataDir, 'updates'), { recursive: true })
+  for (const version of installed)
+    symlinkSync(join(versionsDir, version), join(privateVersions, version), 'dir')
+  symlinkSync(join(privateVersions, current), join(dataDir, 'current'), 'dir')
+  return dataDir
 }
 
 /** fast-agent's model routing: `gpt-4o` goes to this `openai` block. */
@@ -1139,9 +1234,40 @@ function credentialStoreShimEnv(shimsDir: string, searchPath: string | undefined
   }
   const realJunie = findBinary('junie')
   if (realJunie !== null) {
-    writeFileSync(join(shimsDir, 'junie'), `#!/bin/sh\nexport PATH=${posixQuote(shimsDir)}:"$PATH"\nexec ${posixQuote(realJunie)} "$@"\n`, { mode: 0o755 })
+    // The CLI refreshes the launcher that JUNIE_SHIM_PATH names, which is the file that
+    // started it, when the launcher is older than the one in the installed version. Run
+    // a private copy of the launcher script, so that refresh cannot rewrite the
+    // developer's own ~/.local/bin/junie. The launcher reads no path of its own: it
+    // takes JUNIE_DATA from the environment.
+    const launcher = junieLauncherCopy(realJunie, join(shimsDir, 'junie-launcher'))
+    writeFileSync(join(shimsDir, 'junie'), `#!/bin/sh\nexport PATH=${posixQuote(shimsDir)}:"$PATH"\nexec ${posixQuote(launcher)} "$@"\n`, { mode: 0o755 })
   }
   return { PATH: [shimsDir, searchPath ?? process.env.PATH ?? ''].join(delimiter) }
+}
+
+/** The size above which an installed `junie` is a program, not the launcher script. */
+const JUNIE_LAUNCHER_MAX_BYTES = 1 << 20
+
+/**
+ * The path that the E2E Junie launcher runs: a private copy when the installed file is the
+ * managed launcher script, and the installed file itself otherwise.
+ */
+function junieLauncherCopy(installed: string, copy: string): string {
+  let script: string
+  try {
+    // The launcher script is some 30 KB. A larger file is a program, not the script.
+    if (statSync(installed).size > JUNIE_LAUNCHER_MAX_BYTES)
+      return installed
+    script = readFileSync(installed, 'utf8')
+  }
+  catch {
+    return installed
+  }
+  if (!script.startsWith('#!') || !script.includes('JUNIE_MANAGED_SHIM'))
+    return installed
+  copyFileSync(installed, copy)
+  chmodSync(copy, 0o755)
+  return copy
 }
 
 /** Quote one value for a POSIX shell. */
@@ -1157,6 +1283,9 @@ function mockServerOrigin(value: string): string {
   return url.origin
 }
 
+// `check_for_update_on_startup` turns off the update notice of Codex's TUI. The
+// `codex app-server` that the worker starts never reads it, and never updates: only
+// the TUI and the `codex update` and `codex app-server daemon` commands do.
 function codexConfig(baseURL: string, mcpFormServer: string): string {
   return `model_provider = "leapmux-e2e"
 check_for_update_on_startup = false
@@ -1262,6 +1391,10 @@ function openCodeFamilyModel(id: string, name: string): Record<string, unknown> 
  *   scripted step.
  * - `snapshot` and `share` keep MiMo from writing git snapshots and from
  *   offering a public link.
+ *
+ * The configuration holds no `autoupdate` key. MiMo reads that key only from its
+ * global config files, never from this inline value, so MIMOCODE_DISABLE_AUTOUPDATE
+ * in the environment carries the switch.
  */
 function mimoCodeConfig(baseURL: string, mcpConfirmationServer: string, mcpEchoServer: string): Record<string, unknown> {
   const noRetry = { mode: 'bounded', maxRetries: 0 }
@@ -1279,7 +1412,6 @@ function mimoCodeConfig(baseURL: string, mcpConfirmationServer: string, mcpEchoS
       echo_probe: { type: 'local', command: [process.execPath, mcpEchoServer] },
     },
     agent: { title: { disable: true } },
-    autoupdate: false,
     share: 'disabled',
     snapshot: false,
     retry: { request: noRetry, stream: noRetry, network: noRetry, server: noRetry, rateLimit: noRetry, unknown: noRetry },
@@ -1476,6 +1608,18 @@ function piPackagePaths(realHomeDir: string | undefined): string[] {
     'pi-goal-x',
     '@juicesharp/rpiv-todo',
   ].map(packageName => join(modules, packageName))
+}
+
+/**
+ * Reasonix's credential file, which binds the variable of `api_key_env` to the mock key.
+ *
+ * Reasonix 1.38 reads that variable only from `$REASONIX_HOME/.env` and never from the
+ * process environment (internal/config/config.go ProviderEntry.APIKey). A loopback
+ * base_url needs no key, so without this file each request reaches the mock with no
+ * credential.
+ */
+function reasonixCredentials(): string {
+  return `LEAPMUX_E2E_MODEL_API_KEY=${MODEL_KEY}\n`
 }
 
 function reasonixConfig(baseURL: string): string {

@@ -100,6 +100,39 @@ describe('Google model API', () => {
     expect((await status(server, id)).nextStep).toBe(1)
   })
 
+  it.each(['streamGenerateContent', 'generateContent'])('sends the scripted quota headers with a %s answer and records them', async (operation) => {
+    const id = `google-quota-${operation}`
+    const resetsAt = 1893456000
+    const server = await scenario(id, { steps: [{ text: 'The quota answer.', rateLimits: { type: 'five_hour', status: 'allowed', utilization: 0.73, resetsAt } }] })
+    const response = await generate(server, id, operation)
+    expect(response.status).toBe(200)
+    await response.text()
+    const expected = {
+      'x-ratelimit-limit-requests': '1000',
+      'x-ratelimit-remaining-requests': '999',
+      'x-ratelimit-reset-requests': new Date(resetsAt * 1000).toUTCString(),
+      'x-leapmux-e2e-ratelimit-type': 'five_hour',
+      'x-leapmux-e2e-ratelimit-status': 'allowed',
+      'x-leapmux-e2e-ratelimit-utilization': '0.73',
+      'x-leapmux-e2e-ratelimit-resets-at': String(resetsAt),
+    }
+    for (const [name, value] of Object.entries(expected))
+      expect(response.headers.get(name), name).toBe(value)
+    const receipt = (await status(server, id)).requests[0]?.response
+    expect(receipt?.status).toBe(200)
+    expect(receipt?.headers).toMatchObject(expected)
+  })
+
+  it('sends no quota header when the step scripts none', async () => {
+    const id = 'google-no-quota'
+    const server = await scenario(id, { steps: [{ text: 'The answer without quota.' }] })
+    const response = await generate(server, id)
+    expect(response.status).toBe(200)
+    await response.text()
+    expect([...response.headers.keys()].filter(name => name.includes('ratelimit'))).toEqual([])
+    expect(Object.keys((await status(server, id)).requests[0]?.response?.headers ?? {}).filter(name => name.includes('ratelimit'))).toEqual([])
+  })
+
   it('counts tokens without consuming a model turn and handles an empty generation', async () => {
     const id = 'google-auxiliary-count'
     const server = await scenario(id, { steps: [{ text: '', usage: { inputTokens: 0, outputTokens: 0 } }] })

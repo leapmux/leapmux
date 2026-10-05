@@ -95,6 +95,20 @@ describe('nativeOutputPathsPrecedePreview', () => {
     expect(order(`<div data-tool-output-preview>earlier returned output</div>${paths}<pre data-tool-output-preview>native first</pre>`, ['native first'])).toBe(false)
   })
 
+  it('refuses output ownership that wraps the path block or sits inside it', () => {
+    expect(order(`<div data-tool-output-preview>earlier output${paths}</div><pre data-tool-output-preview>native first</pre>`, ['native first'])).toBe(false)
+    expect(order(`<div data-testid="tool-output-file-paths">Output file: /native/result.log<span data-tool-output-preview>x</span></div><pre data-tool-output-preview>native first</pre>`, ['native first'])).toBe(false)
+  })
+
+  it('does not read a marker from unmarked text beside marked output', () => {
+    expect(order(`${paths}<pre data-tool-output-preview>native first</pre><div>Agent ID: native last</div>`, ['native first', 'native last'])).toBe(false)
+    expect(order(`${paths}<pre data-tool-output-preview>native first</pre><div>Agent ID: native last</div>`, ['native first'])).toBe(true)
+  })
+
+  it('ignores an empty marked output element before the path block', () => {
+    expect(order(`<pre data-tool-output-preview></pre>${paths}<pre data-tool-output-preview>native first</pre>`, ['native first'])).toBe(true)
+  })
+
   it('owns genuine structured output without accepting unmarked metadata', () => {
     expect(order(`${paths}<div data-tool-output-preview>{"count":0,"enabled":false}</div>`, ['"count":0'])).toBe(true)
     expect(order(`${paths}<div>Structured</div><pre>{"count":0,"enabled":false}</pre>`, ['"count":0'])).toBe(false)

@@ -139,3 +139,71 @@ export function nativeMcpRefusal(receipt: McpServerReceipt): NativeMcpRefusal {
     throw new Error('The native MCP error lost its exact refused tool result.')
   return { request, reply, toolResult, reason }
 }
+
+export interface NativeMcpCancellation {
+  request: McpElicitationRequestReceipt
+  reply: Extract<McpElicitationReplyReceipt, { kind: 'result' }>
+  toolResult: McpFormToolResultReceipt
+}
+
+/** The text that the form server returns for a cancel reply. */
+const FORM_ROUND_TRIP_CANCELLED = 'FORM_ROUND_TRIP_CANCELLED'
+
+/**
+ * A negative proof for a client that declares elicitation but cancels the form without input.
+ *
+ * Such a client shows the form on a surface of its own that cannot reach the
+ * browser, for example a terminal form while stdin carries its protocol. The
+ * server receives a cancel that holds no content, and its tool result states
+ * that cancel.
+ */
+export function nativeMcpCancellation(receipt: McpServerReceipt): NativeMcpCancellation {
+  if (receipt.initializeCapabilities === null)
+    throw new Error('The MCP cancellation proof has no native initialize capabilities.')
+  if (!('elicitation' in receipt.initializeCapabilities))
+    throw new Error('A client that declares no elicitation does not prove a cancelled input request.')
+  const request = receipt.elicitationRequests.at(-1)
+  if (!request)
+    throw new Error('The MCP cancellation proof has no actual input request.')
+  const reply = receipt.elicitationReplies.findLast(value => value.id === request.id)
+  if (!reply)
+    throw new Error('The MCP input request has no matching native reply.')
+  if (reply.kind !== 'result' || reply.result.action !== 'cancel')
+    throw new Error('Only a native cancel result proves a cancelled input request.')
+  if ('content' in reply.result)
+    throw new Error('A native cancel result must hold no form content.')
+  const toolResult = receipt.toolResults.findLast(value => value.id === request.toolRequestId && value.tool === 'ask')
+  if (!toolResult)
+    throw new Error('The cancelled MCP input has no matching native tool result.')
+  if (toolResult.isError || toolResult.text !== FORM_ROUND_TRIP_CANCELLED)
+    throw new Error('The native MCP cancel lost its exact cancelled tool result.')
+  return { request, reply, toolResult }
+}
+
+export interface NativeMcpUnansweredInput {
+  request: McpElicitationRequestReceipt
+}
+
+/**
+ * A negative proof for a client that never answers an input request.
+ *
+ * Such a client declares no elicitation capability, the server records the
+ * request, and the receipt holds no reply to it. The tool call that waits on
+ * the request therefore never completes on the server side either: the client
+ * gives up on it with an error of its own, which the caller checks in the
+ * model request.
+ */
+export function nativeMcpUnansweredInput(receipt: McpServerReceipt): NativeMcpUnansweredInput {
+  if (receipt.initializeCapabilities === null)
+    throw new Error('The unanswered MCP input proof has no native initialize capabilities.')
+  if ('elicitation' in receipt.initializeCapabilities)
+    throw new Error('A client that declares elicitation does not prove an unanswered input request.')
+  const request = receipt.elicitationRequests.at(-1)
+  if (!request)
+    throw new Error('The unanswered MCP input proof has no actual input request.')
+  if (receipt.elicitationReplies.some(reply => reply.id === request.id))
+    throw new Error('The native client answered the MCP input request.')
+  if (receipt.toolResults.some(result => result.id === request.toolRequestId))
+    throw new Error('The MCP server completed the tool call whose input request has no reply.')
+  return { request }
+}

@@ -401,6 +401,44 @@ describe('createMockModelServer', () => {
       .toMatchObject({ status: 429, headers: { 'content-type': 'application/json' }, serviceError: { code: 'rate_limit_exceeded', message: 'The quota ended.' } })
   })
 
+  it('fails a chat completion stream after one partial delta when the error is mid-stream', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'mid-stream-error', { steps: [{ error: { status: 500, code: 'stream_error', message: 'The stream broke.', midStream: true } }] })
+    const response = await chat(server, mockScenarioPrompt('mid-stream-error', 'Report this error.'))
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toContain('text/event-stream')
+    const events = (await response.text()).split('\n\n').filter(Boolean).map(event => JSON.parse(event.replace(/^data: /, '')))
+    expect(events).toEqual([
+      expect.objectContaining({ choices: [{ index: 0, delta: { role: 'assistant', content: 'partial ' }, finish_reason: null }] }),
+      { error: { message: 'The stream broke.', code: 'stream_error' } },
+    ])
+    expect((await readStatus(server, 'mid-stream-error')).requests[0]?.response)
+      .toMatchObject({ status: 200, serviceError: { code: 'stream_error', message: 'The stream broke.' } })
+  })
+
+  it('refuses a mid-stream error to a request that asks for no stream', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'mid-stream-unstreamed', { steps: [{ error: { status: 500, message: 'The stream broke.', midStream: true } }] })
+    const response = await chat(server, mockScenarioPrompt('mid-stream-unstreamed', 'Report this error.'), false)
+    expect(response.status).toBe(400)
+    expect(await response.text()).toContain('only to a request that asks for a stream')
+  })
+
+  for (const path of ['/v1/responses', '/v1/messages']) {
+    it(`refuses a mid-stream error on ${path}, which has no such shape`, async () => {
+      const server = await startServer()
+      await registerScenario(server, 'mid-stream-elsewhere', { steps: [{ error: { status: 500, message: 'The stream broke.', midStream: true } }] })
+      const content = mockScenarioPrompt('mid-stream-elsewhere', 'Report this error.')
+      const response = await fetch(`${server.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'mock-model', stream: true, messages: [{ role: 'user', content }], input: [{ role: 'user', content }] }),
+      })
+      expect(response.status).toBe(400)
+      expect(await response.text()).toContain('mid-stream model error on the OpenAI Chat Completions route only')
+    })
+  }
+
   it('leaves an interrupted HTTP response without a successful delivery receipt', async () => {
     const server = await startServer()
     await registerScenario(server, 'cancel-response-receipt', { steps: [{ text: 'Do not deliver this answer.', gate: 'cancel-response' }] })
@@ -568,6 +606,66 @@ describe('createMockModelServer', () => {
       expect((await readStatus(server, id)).pendingGates).toEqual([])
     })
   }
+
+  // A model writes its tool call after the text that precedes it, so every native
+  // API streams the text first. A client that receives the complete call first can
+  // run it before the rest of the text arrives.
+  for (const protocol of ['chat', 'responses', 'anthropic'] as const) {
+    it(`sends the ${protocol} tool call only after the gated text`, async () => {
+      const server = await startServer()
+      const id = `tool-after-text-${protocol}`
+      await registerRawScenario(server, id, { steps: [{
+        text: 'FIRSTSECOND',
+        toolCalls: [{ id: 'TOOLCALLID', name: 'TOOLNAME', arguments: { value: 'TOOLARGUMENT' } }],
+        stream: { chunkChars: 5, delayMs: 0, gates: [{ afterChunk: 1, name: 'first-text' }] },
+      }] })
+      const prompt = mockScenarioPrompt(id, 'Stream the text, then call the tool.')
+      const path = protocol === 'chat' ? '/v1/chat/completions' : protocol === 'responses' ? '/v1/responses' : '/v1/messages'
+      const body = protocol === 'responses' ? { stream: true, input: [{ role: 'user', content: prompt }] } : { stream: true, messages: [{ role: 'user', content: prompt }] }
+      const response = await fetch(`${server.url}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      expect(response.status).toBe(200)
+      const reader = response.body!.getReader()
+      let prefix = ''
+      while (!prefix.includes('FIRST')) {
+        const next = await reader.read()
+        expect(next.done).toBe(false)
+        prefix += new TextDecoder().decode(next.value)
+      }
+      await waitForGate(server, id, 'first-text')
+      expect(prefix).not.toContain('TOOLCALLID')
+      expect(prefix).not.toContain('TOOLNAME')
+      expect(prefix).not.toContain('TOOLARGUMENT')
+      expect((await fetch(`${server.url}/__e2e/scenarios/${id}/gates/first-text/release`, { method: 'POST' })).status).toBe(204)
+      let rest = ''
+      for (;;) {
+        const next = await reader.read()
+        if (next.done)
+          break
+        rest += new TextDecoder().decode(next.value)
+      }
+      expect(rest).toContain('SECON')
+      expect(rest).toContain('TOOLCALLID')
+      expect(rest.indexOf('SECON')).toBeLessThan(rest.indexOf('TOOLCALLID'))
+      expect((await readStatus(server, id)).complete).toBe(true)
+    })
+  }
+
+  it('streams a chat tool call with no text as one delta that carries the role', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'tool-only-chat', { steps: [{ toolCalls: [{ id: 'ONLYCALL', name: 'only_tool', arguments: { value: 1 } }] }] })
+    const response = await chat(server, mockScenarioPrompt('tool-only-chat', 'Call the tool.'))
+    const deltas = (await responseText(response))
+      .split('\n')
+      .filter(line => line.startsWith('data: {'))
+      .map(line => JSON.parse(line.slice(6)))
+      .flatMap(chunk => chunk.choices.map((choice: { delta: Record<string, unknown>, finish_reason: string | null }) => choice))
+    expect(deltas[0]?.delta).toEqual({
+      role: 'assistant',
+      tool_calls: [{ index: 0, id: 'ONLYCALL', type: 'function', function: { name: 'only_tool', arguments: '{"value":1}' } }],
+    })
+    expect(deltas.filter(choice => choice.delta.tool_calls !== undefined)).toHaveLength(1)
+    expect(deltas.at(-1)).toMatchObject({ delta: {}, finish_reason: 'tool_calls' })
+  })
 
   it('cancels a stream gate without sending later output or a completion', async () => {
     const server = await startServer()

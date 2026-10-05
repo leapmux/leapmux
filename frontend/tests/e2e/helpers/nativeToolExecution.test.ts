@@ -1,20 +1,25 @@
 import type { Locator, Page } from '@playwright/test'
 import type { MockModelRequestRecord, MockModelScenarioStatus } from './mockModelScript'
-import type { NativeScenarioContext } from './nativeScenario'
+import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { createNativeToolDirectory } from './nativeToolDirectory'
-import { clickNativeToolApproval, nativeFileEditSequence, nativeFileReadResult, nativeFileWriteSequence, nativeToolResultAt, processNativeToolApproval, waitForNativeToolSteps } from './nativeToolExecution'
+import { clickNativeToolApproval, exerciseShellToolExecution, nativeFileEditSequence, nativeFileReadResult, nativeFileWriteSequence, nativeToolResultAt, processNativeToolApproval, waitForNativeToolSteps } from './nativeToolExecution'
 import { quotePosixShellArgument } from './shellArguments'
 
-const calls = vi.hoisted(() => ({ shell: vi.fn(), read: vi.fn(), edit: vi.fn(), write: vi.fn(), idle: vi.fn() }))
+const calls = vi.hoisted(() => ({ shell: vi.fn(), read: vi.fn(), edit: vi.fn(), write: vi.fn(), idle: vi.fn(), send: vi.fn(), agent: vi.fn() }))
 vi.mock('./ui', async importOriginal => ({
   ...await importOriginal<typeof import('./ui')>(),
   waitForAgentIdle: calls.idle,
+  sendMessage: calls.send,
+}))
+vi.mock('./nativeScenario', async importOriginal => ({
+  ...await importOriginal<typeof import('./nativeScenario')>(),
+  currentNativeAgent: calls.agent,
 }))
 vi.mock('./providerToolCalls', () => ({
   bashToolCall: calls.shell,
@@ -419,5 +424,64 @@ describe('native file sequence paths', () => {
     }
     for (const call of [calls.shell, calls.read, calls.edit, calls.write])
       expect(call).not.toHaveBeenCalled()
+  })
+})
+
+describe('exerciseShellToolExecution', () => {
+  const stop = new Error('The unit scenario stops after it queues the first command.')
+
+  /** Run the scenario until it sends its first prompt, and return the first command that it queued. */
+  async function firstQueuedCommand(options: Parameters<typeof exerciseShellToolExecution>[1]): Promise<string> {
+    const status: MockModelScenarioStatus = { complete: false, nextStep: 0, stepCount: 0, requests: [], unexpectedRequests: [], ruleMatches: {}, pendingGates: [] }
+    const context: ManagedNativeScenarioContext = {
+      page: guardedBrowserHandle<Page>({}),
+      provider: AgentProvider.MIMO_CODE,
+      leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
+      workspaceId: 'shell-unit',
+      modelScript: {
+        id: 'queued-shell-command',
+        testDeadline: () => undefined,
+        prompt: text => text,
+        queue: async () => {},
+        rule: async () => {},
+        fallback: async () => {},
+        status: async () => status,
+        waitForSteps: async () => status,
+        waitForGate: async () => status,
+        releaseGate: async () => {},
+        releaseGateIfHeld: async () => false,
+        allowUnconsumed: () => {},
+      },
+    }
+    calls.agent.mockResolvedValue({ workingDir: directory })
+    calls.send.mockRejectedValue(stop)
+    await expect(exerciseShellToolExecution(context, options)).rejects.toBe(stop)
+    const command: unknown = calls.shell.mock.calls[0]?.[2]
+    if (typeof command !== 'string')
+      throw new Error('The shell scenario queued no shell command.')
+    return command
+  }
+
+  it('queues the command as it is when no output gate is set', async () => {
+    const command = await firstQueuedCommand({ includeFailure: false })
+    expect(command).toMatch(/^printf 'SHELL[0-9a-f]{32}%s\\n' 42 > .*; cat /)
+    expect(command).not.toContain('trap')
+  })
+
+  it('queues the command behind an output gate when the option is set', async () => {
+    const command = await firstQueuedCommand({ includeFailure: false, outputGate: true })
+    expect(command).toContain('trap')
+    expect(command).toMatch(/; printf 'SHELL[0-9a-f]{32}%s\\n' 42 > .*; cat /)
+  })
+
+  it('keeps the gate file inside the literal private tool directory', async () => {
+    const command = await firstQueuedCommand({ includeFailure: false, outputGate: true })
+    const toolDirectory = readdirSync(directory).find(name => name.startsWith('native path $(touch command-expanded-marker)'))
+    if (!toolDirectory)
+      throw new Error('The shell scenario created no private tool directory.')
+    // The directory name holds shell metacharacters, so the hold must quote the release path. An unquoted path runs the marker command.
+    const quotedRelease = /\[ ! -e (.+?) \]/.exec(command)?.[1]
+    expect(quotedRelease?.startsWith(quotePosixShellArgument(join(directory, toolDirectory)).slice(0, -1))).toBe(true)
+    expect(existsSync(join(directory, 'command-expanded-marker'))).toBe(false)
   })
 })

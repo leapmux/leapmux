@@ -99,11 +99,20 @@ export async function observeSettledReceipts(page: Page): Promise<number> {
   return soundReceiptCursor(page)
 }
 
+/**
+ * Read the applied idle receipt after the boundary, without waiting for one.
+ * A receipt exists only for a settle edge: WORKING to any other state.
+ * A move from WAITING_FOR_USER to IDLE is not such an edge, so it records nothing.
+ */
+export async function currentIdleReceipt(page: Page, boundary: SoundReceiptBoundary): Promise<AgentSettledEventDetail | undefined> {
+  return selectIdleReceipt((await soundProbeSnapshot(page)).settled, boundary)
+}
+
 /** Wait until the browser applies the native idle edge and returns from its sound callback. */
 export async function waitForIdleSoundReceipt(page: Page, boundary: SoundReceiptBoundary): Promise<AgentSettledEventDetail> {
   let receipt: AgentSettledEventDetail | undefined
   await expect.poll(async () => {
-    receipt = selectIdleReceipt((await soundProbeSnapshot(page)).settled, boundary)
+    receipt = await currentIdleReceipt(page, boundary)
     return receipt !== undefined
   }).toBe(true)
   if (!receipt)

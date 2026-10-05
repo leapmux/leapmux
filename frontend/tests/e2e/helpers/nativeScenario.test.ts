@@ -1,6 +1,7 @@
+import type { Page } from '@playwright/test'
 import type { MockModelRequestRecord } from './mockModelScript'
 import { describe, expect, it, vi } from 'vitest'
-import { nativeLastStepBody, nativeModelBodiesAfter, nativeModelContextText, nativeModelInstructionText, nativeModelLastUserText, nativeModelToolNames, nativeScenarioModelContextText } from './nativeScenario'
+import { nativeLastStepBody, nativeModelBodiesAfter, nativeModelContextText, nativeModelConversationTurns, nativeModelInstructionText, nativeModelLastUserText, nativeModelToolNames, nativeScenarioModelContextText, nativeToolArgumentText, selectedAgentTab } from './nativeScenario'
 
 describe('nativeScenarioModelContextText', () => {
   it('uses the injected reader for the unchanged recorded request', () => {
@@ -289,5 +290,148 @@ describe('nativeModelLastUserText', () => {
 
   it('requires a provider-owned native service reader', () => {
     expect(() => nativeModelLastUserText({ protocol: 'aws-event-stream', path: '/', body: {} })).toThrow('own reader for the last user message')
+  })
+})
+
+describe('selectedAgentTab', () => {
+  it('locates the first visible selected agent tab', () => {
+    const first = vi.fn(() => 'FIRST_TAB')
+    const locator = vi.fn((_selector: string) => ({ first }))
+    const page = Object.assign({} as Page, { locator })
+    expect(selectedAgentTab(page)).toBe('FIRST_TAB')
+    expect(locator).toHaveBeenCalledExactlyOnceWith('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]:visible')
+    expect(first).toHaveBeenCalledOnce()
+  })
+})
+
+describe('nativeToolArgumentText', () => {
+  it('reads the string values of encoded JSON arguments without keys', () => {
+    expect(nativeToolArgumentText('{"KEY_ONLY":"first","nested":{"items":["second",3,false]}}')).toBe('first\nsecond')
+  })
+
+  it('reads the string values of decoded arguments', () => {
+    expect(nativeToolArgumentText({ answer: 'ACTUAL_ANSWER', count: 0, nested: [{ text: 'NESTED' }] })).toBe('ACTUAL_ANSWER\nNESTED')
+  })
+
+  it.each(['not JSON {', '"a JSON string"', '42', 'true', 'null', ''])('keeps the literal text of arguments that encode no object: %j', (value) => {
+    expect(nativeToolArgumentText(value)).toBe(value)
+  })
+
+  it.each([undefined, null, 0, false, {}, []])('returns no text for arguments without strings: %j', (value) => {
+    expect(nativeToolArgumentText(value)).toBe('')
+  })
+})
+
+describe('nativeModelConversationTurns', () => {
+  it('reads Google user and model turns, including model function-call arguments', () => {
+    const request: MockModelRequestRecord = { protocol: 'google-generative-language', path: '/google', body: {
+      systemInstruction: { parts: [{ text: 'SYSTEM_ONLY' }] },
+      contents: [
+        { role: 'user', parts: [{ text: '<session_context>' }] },
+        { role: 'user', parts: [{ text: 'ORIGINAL_PROMPT' }] },
+        { role: 'model', parts: [{ text: 'ORIGINAL_ANSWER' }, { functionCall: { name: 'answer', args: { text: 'CALL_ARGUMENT' } } }] },
+        { role: 'user', parts: [{ functionResponse: { name: 'answer', response: { output: 'RESULT_ONLY' } } }] },
+        { role: 'function', parts: [{ text: 'UNKNOWN_ROLE' }] },
+        'not a row',
+        { role: 'user', parts: [{ text: 'RESUMED_PROMPT' }] },
+      ],
+    } }
+    expect(nativeModelConversationTurns(request)).toEqual([
+      { role: 'user', text: '<session_context>' },
+      { role: 'user', text: 'ORIGINAL_PROMPT' },
+      { role: 'assistant', text: 'ORIGINAL_ANSWER\nCALL_ARGUMENT' },
+      { role: 'user', text: '' },
+      { role: 'user', text: 'RESUMED_PROMPT' },
+    ])
+  })
+
+  it('excludes Google thought parts and keeps a model turn without parts', () => {
+    const request: MockModelRequestRecord = { protocol: 'google-generative-language', path: '/google', body: {
+      contents: [
+        { role: 'model', parts: [{ text: 'THOUGHT_ONLY', thought: true }, { functionCall: { args: { text: 'THOUGHT_CALL' } }, thought: true }, { text: 'ANSWER_TEXT', thought: false }] },
+        { role: 'model' },
+      ],
+    } }
+    expect(nativeModelConversationTurns(request)).toEqual([
+      { role: 'assistant', text: 'ANSWER_TEXT' },
+      { role: 'assistant', text: '' },
+    ])
+  })
+
+  it('reads Responses messages and tool calls without outputs, reasoning, or instructions', () => {
+    const request: MockModelRequestRecord = { protocol: 'openai-responses', path: '/responses', body: {
+      instructions: 'INSTRUCTION_ONLY',
+      input: [
+        { role: 'developer', content: 'DEVELOPER_ONLY' },
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'ORIGINAL_PROMPT' }, { type: 'input_image', image_url: 'IMAGE_ONLY' }] },
+        { type: 'reasoning', summary: [{ type: 'summary_text', text: 'REASONING_ONLY' }] },
+        { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'ORIGINAL_ANSWER' }] },
+        { type: 'function_call', name: 'answer', arguments: '{"text":"CALL_ARGUMENT"}' },
+        { type: 'function_call_output', output: 'RESULT_ONLY' },
+        { type: 'custom_tool_call', name: 'apply_patch', input: 'CUSTOM_INPUT' },
+        { role: 'user', content: 'RESUMED_PROMPT' },
+      ],
+    } }
+    expect(nativeModelConversationTurns(request)).toEqual([
+      { role: 'user', text: 'ORIGINAL_PROMPT' },
+      { role: 'assistant', text: 'ORIGINAL_ANSWER' },
+      { role: 'assistant', text: 'CALL_ARGUMENT' },
+      { role: 'assistant', text: 'CUSTOM_INPUT' },
+      { role: 'user', text: 'RESUMED_PROMPT' },
+    ])
+    expect(nativeModelConversationTurns({ protocol: 'openai-responses', path: '/responses', body: { input: 'DIRECT_PROMPT' } })).toEqual([{ role: 'user', text: 'DIRECT_PROMPT' }])
+  })
+
+  it('reads Chat Completions assistant text and tool-call arguments without system or tool rows', () => {
+    const request: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/chat/completions', body: {
+      messages: [
+        { role: 'system', content: 'SYSTEM_ONLY' },
+        { role: 'user', content: [{ type: 'text', text: 'ORIGINAL_PROMPT' }, { type: 'image_url', image_url: { url: 'IMAGE_ONLY' } }] },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'call', type: 'function', function: { name: 'answer', arguments: '{"answer":"ORIGINAL_ANSWER"}' } }] },
+        { role: 'tool', tool_call_id: 'call', content: 'RESULT_ONLY' },
+        { role: 'assistant', content: 'FOLLOW_UP', tool_calls: [{ function: { name: 'raw', arguments: 'RAW ARGUMENTS' } }, 'not a call'] },
+        { role: 'user', content: 'RESUMED_PROMPT' },
+      ],
+    } }
+    expect(nativeModelConversationTurns(request)).toEqual([
+      { role: 'user', text: 'ORIGINAL_PROMPT' },
+      { role: 'assistant', text: 'ORIGINAL_ANSWER' },
+      { role: 'assistant', text: 'FOLLOW_UP\nRAW ARGUMENTS' },
+      { role: 'user', text: 'RESUMED_PROMPT' },
+    ])
+  })
+
+  it('reads Anthropic text and tool-use input without thinking or tool results', () => {
+    const request: MockModelRequestRecord = { protocol: 'anthropic-messages', path: '/v1/messages', body: {
+      system: [{ type: 'text', text: 'SYSTEM_ONLY' }],
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'ORIGINAL_PROMPT' }, { type: 'text', text: '실제 내용 🧪' }] },
+        { role: 'assistant', content: [{ type: 'thinking', thinking: 'THINKING_ONLY' }, { type: 'text', text: 'ORIGINAL_ANSWER' }, { type: 'tool_use', id: 'use', name: 'answer', input: { text: 'TOOL_INPUT' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'use', content: 'RESULT_ONLY' }, { type: 'text', text: 'RESUMED_PROMPT' }] },
+      ],
+    } }
+    expect(nativeModelConversationTurns(request)).toEqual([
+      { role: 'user', text: 'ORIGINAL_PROMPT\n실제 내용 🧪' },
+      { role: 'assistant', text: 'ORIGINAL_ANSWER\nTOOL_INPUT' },
+      { role: 'user', text: 'RESUMED_PROMPT' },
+    ])
+  })
+
+  it('returns no turn for an empty message array', () => {
+    expect(nativeModelConversationTurns({ protocol: 'anthropic-messages', path: '/v1/messages', body: { messages: [] } })).toEqual([])
+  })
+
+  it.each([
+    { protocol: 'google-generative-language', body: { contents: null }, message: 'no contents array' },
+    { protocol: 'openai-responses', body: {}, message: 'no input array' },
+    { protocol: 'openai-chat-completions', body: { messages: 'broken' }, message: 'no message array' },
+    { protocol: 'anthropic-messages', body: null, message: 'must be an object' },
+    { protocol: 'openai-chat-completions', body: [], message: 'must be an object' },
+  ] as const)('rejects a $protocol body without turns: $body', ({ protocol, body, message }) => {
+    expect(() => nativeModelConversationTurns({ protocol, path: '/model', body })).toThrow(message)
+  })
+
+  it('requires a provider-owned service turn reader', () => {
+    expect(() => nativeModelConversationTurns({ protocol: 'aws-event-stream', path: '/', body: { conversationState: {} } })).toThrow('own conversation turn reader')
   })
 })

@@ -44,6 +44,50 @@ export function usageMarkers(usage: MockModelUsage): string[] {
   return [formatTokenCount(usageTotal(usage))]
 }
 
+/** The Context row of the agent info card, as token counts. */
+export interface ContextRowReading {
+  tokens: number
+  window: number
+}
+
+const TOKEN_UNIT_SCALE: Readonly<Record<string, number>> = { '': 1, 'k': 1_000, 'M': 1_000_000 }
+
+/**
+ * Read a count that `formatTokenCount` wrote, such as `999`, `12.2k` or `1.0M`.
+ *
+ * The card rounds a count to one decimal of its unit. So the result is exact
+ * to within 50 tokens for a `k` count, and to within 50,000 for an `M` count.
+ */
+function parseTokenCount(value: string, unit: string): number {
+  const scale = TOKEN_UNIT_SCALE[unit]
+  if (scale === undefined)
+    throw new Error(`The Context row states an unknown unit: ${unit}`)
+  return Math.round(Number(value) * scale)
+}
+
+/**
+ * Read the Context row from the text of the agent info card.
+ *
+ * The row prints `formatTokenCount(total) / formatTokenCount(window)`. The
+ * function returns undefined when the card has no such row. A provider that
+ * reports only a percentage prints a row without counts, and that row also
+ * returns undefined.
+ */
+export function parseContextRow(cardText: string): ContextRowReading | undefined {
+  const match = /Context\s*(\d+(?:\.\d+)?)([kM]?)\s*\/\s*(\d+(?:\.\d+)?)([kM]?)/.exec(cardText)
+  if (!match)
+    return undefined
+  return { tokens: parseTokenCount(match[1]!, match[2]!), window: parseTokenCount(match[3]!, match[4]!) }
+}
+
+/** Open the agent info card, read its Context row, and close the card. */
+export async function readContextRow(page: Page): Promise<ContextRowReading | undefined> {
+  const popover = await openAgentInfoCard(page)
+  const text = await popover.textContent() ?? ''
+  await page.keyboard.press('Escape')
+  return parseContextRow(text)
+}
+
 /**
  * Open the agent info card and assert its Context row follows `usage`.
  */

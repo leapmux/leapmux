@@ -1,62 +1,95 @@
 import type { Page } from '@playwright/test'
 import type { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import type { MockModelMatcher, MockModelStep } from './mockModelScript'
+import type { MockModelMatcher, MockModelRule, MockModelStep } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import { randomUUID } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { expect } from '@playwright/test'
 import { finishCleanup, withCleanup } from './cleanup'
+import { expandNativeResultView, nativeResultBubble } from './nativeResultView'
 import { readToolCall, spawnSubagentToolCall } from './providerToolCalls'
 import { openChildTabFromRow, requireRegistryRow } from './subagentRegistry'
 import { assistantBubbles, messageContents, sendMessage, tabById, userBubbles } from './ui'
+
+/** The final child answer when the spec supplies no native final response. */
+const DEFAULT_CHILD_ANSWER = 'CHILD_LIVE_DONE'
+
+/** The call ID of the native Read that the helper scripts for the child. */
+const LIVE_CHILD_READ_CALL_ID = 'live-child-read'
 
 export interface LiveChildSpec {
   provider: AgentProvider
   childWhen: MockModelMatcher
   childTask: string
   parentTask: string
+  /**
+   * The native final response of the child. The default is the text CHILD_LIVE_DONE.
+   * The gate holds this response, with or without the earlier Read of toolProof.
+   */
   childResponse?: Omit<MockModelStep, 'gate'>
   holdParentAnswer?: boolean
   background?: boolean
   allowPaused?: boolean
-  toolProof?: { workingDir: string }
+  /**
+   * Make the child read a file with a computed marker before its final response.
+   *
+   * `expandResult` expands the result view of that Read before the helper looks for the marker.
+   * A result view shows only its first `COLLAPSED_RESULT_ROWS` rows (`~/components/chat/results/collapse`)
+   * until the reader expands it. Set `expandResult` when the native Read result puts header rows
+   * before the file text, so the marker row is not in the page while the view is collapsed.
+   * Leave it unset when the marker is in the first rows.
+   */
+  toolProof?: { workingDir: string, expandResult?: boolean }
   /** Register provider-owned report handling while the real child remains held. */
   beforeRelease?: () => Promise<void>
   /** Complete provider-owned work that starts after the native child finishes. */
   afterComplete?: () => Promise<void>
 }
 
+/** The file that the child reads, and the computed marker that only that file holds. */
+interface MarkerRead {
+  filePath: string
+  marker: string
+}
+
+/**
+ * Script the child turns: an optional native Read of the marker file, then the native final response.
+ * The gate holds only the final response.
+ * Thus the Read result reaches the child tab while the child still runs.
+ */
+function liveChildRules(spec: LiveChildSpec, gate: string, read: MarkerRead | undefined): MockModelRule[] {
+  const finalResponse: MockModelStep = { ...(spec.childResponse ?? { text: DEFAULT_CHILD_ANSWER }), gate }
+  if (!read)
+    return [{ name: 'the held child answer', when: spec.childWhen, respond: finalResponse, once: true }]
+  return [
+    {
+      name: 'the child reads its marker file',
+      when: spec.childWhen,
+      respond: { toolCalls: [readToolCall(spec.provider, LIVE_CHILD_READ_CALL_ID, read.filePath)] },
+      once: true,
+    },
+    // Only the Read result supplies the marker, so this rule answers the request that follows the Read.
+    { name: 'the held child answer after the read', when: { body: read.marker }, respond: finalResponse, once: true },
+  ]
+}
+
 /** Hold a child model answer while its prompt or tool result is visible in a running child tab. */
 export async function exerciseLiveChildTranscript(page: Page, modelScript: ModelScript, spec: LiveChildSpec): Promise<void> {
   const gate = `live-child-${spec.provider}`
   const parentGate = spec.holdParentAnswer ? `live-parent-${spec.provider}` : undefined
-  const filePath = spec.toolProof ? join(spec.toolProof.workingDir, `live-child-${spec.provider}.txt`) : undefined
-  const marker = spec.toolProof ? `CHILDREAD${randomUUID().replaceAll('-', '')}` : undefined
-  const parentTabID = spec.toolProof
+  const read: MarkerRead | undefined = spec.toolProof
+    ? { filePath: join(spec.toolProof.workingDir, `live-child-${spec.provider}.txt`), marker: `CHILDREAD${randomUUID().replaceAll('-', '')}` }
+    : undefined
+  const parentTabID = read
     ? await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().getAttribute('data-tab-id') ?? ''
     : ''
-  if (filePath && marker) {
+  if (read) {
     expect(parentTabID).not.toBe('')
-    writeFileSync(filePath, `${marker}\n`)
+    writeFileSync(read.filePath, `${read.marker}\n`)
   }
   await withCleanup(async () => {
-    await modelScript.rule({
-      name: filePath ? 'the child reads its marker file' : 'the held child answer',
-      when: spec.childWhen,
-      respond: filePath
-        ? { toolCalls: [readToolCall(spec.provider, 'live-child-read', filePath)] }
-        : { ...(spec.childResponse ?? { text: 'CHILD_LIVE_DONE' }), gate },
-      once: true,
-    })
-    if (marker) {
-      await modelScript.rule({
-        name: 'the held child answer after the read',
-        when: { body: marker },
-        respond: { text: 'CHILD_LIVE_DONE', gate },
-        once: true,
-      })
-    }
+    await modelScript.rule(...liveChildRules(spec, gate, read))
     await modelScript.queue(
       { toolCalls: [spawnSubagentToolCall(spec.provider, 'spawn-live-child', {
         description: 'Answer the live child task',
@@ -73,12 +106,14 @@ export async function exerciseLiveChildTranscript(page: Page, modelScript: Model
     await expect.poll(async () => await row.getAttribute('data-child-agent-id') ?? '').not.toBe('')
     const childTabID = await openChildTabFromRow(page, row)
     await expect(userBubbles(page).filter({ hasText: spec.childTask }).first()).toBeVisible()
-    await expect(assistantBubbles(page).filter({ hasText: 'CHILD_LIVE_DONE' })).toHaveCount(0)
-    if (filePath && marker) {
-      await expect(page.locator('[data-tool-message]:visible').filter({ hasText: basename(filePath) }).first()).toBeVisible()
-      await expect(messageContents(page).filter({ hasText: marker }).first()).toBeVisible()
+    await expect(assistantBubbles(page).filter({ hasText: DEFAULT_CHILD_ANSWER })).toHaveCount(0)
+    if (read) {
+      await expect(page.locator('[data-tool-message]:visible').filter({ hasText: basename(read.filePath) }).first()).toBeVisible()
+      if (spec.toolProof?.expandResult)
+        await expandNativeResultView(nativeResultBubble(page, LIVE_CHILD_READ_CALL_ID))
+      await expect(messageContents(page).filter({ hasText: read.marker }).first()).toBeVisible()
       await tabById(page, parentTabID).click()
-      await expect(messageContents(page).filter({ hasText: marker })).toHaveCount(0)
+      await expect(messageContents(page).filter({ hasText: read.marker })).toHaveCount(0)
       await tabById(page, childTabID).click()
     }
     await modelScript.releaseGate(gate)

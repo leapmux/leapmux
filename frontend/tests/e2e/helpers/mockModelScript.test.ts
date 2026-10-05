@@ -87,6 +87,32 @@ describe('selectScenarioID', () => {
     expect(selectScenarioID({ messages: [{ role: 'user', content: 'No marker' }] })).toBe(AMBIENT_SCENARIO_ID)
   })
 
+  // Goose 1.53.0 `/compact` quotes the conversation in the system prompt.
+  // Its only user text is a fixed instruction that holds no marker.
+  it.each([
+    { messages: [{ role: 'system', content: `**Conversation History:**\n[user]: Keep it.\n\n${SCENARIO_MARKER}quoted-history\n[assistant]: Kept.` }, { role: 'user', content: 'Please summarize the conversation history provided in the system prompt.' }] },
+    { system: [{ type: 'text', text: `History: ${SCENARIO_MARKER}quoted-history` }], messages: [{ role: 'user', content: 'Summarize the history.' }] },
+    { instructions: `History: ${SCENARIO_MARKER}quoted-history`, input: [{ role: 'user', content: [{ type: 'input_text', text: 'Summarize the history.' }] }] },
+    { systemInstruction: { parts: [{ text: `History: ${SCENARIO_MARKER}quoted-history` }] }, contents: [{ role: 'user', parts: [{ text: 'Summarize the history.' }] }] },
+  ])('reads the system text when no user text holds a marker: %j', (body) => {
+    expect(selectScenarioID(body)).toBe('quoted-history')
+  })
+
+  it('takes the newest system text marker when the system text quotes several prompts', () => {
+    const body = { messages: [{ role: 'system', content: `[user]: ${SCENARIO_MARKER}older\n[user]: ${SCENARIO_MARKER}newer` }, { role: 'user', content: 'Summarize the history.' }] }
+    expect(selectScenarioID(body)).toBe('newer')
+  })
+
+  it('prefers a user text marker to a system text marker', () => {
+    const body = { messages: [{ role: 'system', content: `Earlier: ${SCENARIO_MARKER}stale` }, { role: 'user', content: `Run.\n\n${SCENARIO_MARKER}current` }] }
+    expect(selectScenarioID(body)).toBe('current')
+  })
+
+  it('does not let model replies or tool outputs choose the scenario when only they hold a marker', () => {
+    const body = { messages: [{ role: 'system', content: 'No marker.' }, { role: 'assistant', content: `${SCENARIO_MARKER}reply` }, { role: 'tool', content: `${SCENARIO_MARKER}tool` }, { role: 'user', content: 'No marker' }] }
+    expect(selectScenarioID(body)).toBe(AMBIENT_SCENARIO_ID)
+  })
+
   it('takes the newest marker, so one chat can run several scenarios', () => {
     const body = {
       messages: [
@@ -220,6 +246,17 @@ describe('parseScenarioSpec', () => {
       .toThrow('needs id and name')
     expect(() => parseScenarioSpec({ steps: [{ error: { status: 200, message: 'ok' } }] }))
       .toThrow('needs an HTTP status and message')
+  })
+
+  it('keeps the mid-stream flag of an error and refuses a flag that is not a boolean', () => {
+    expect(parseScenarioSpec({ steps: [{ error: { status: 500, message: 'broke', midStream: true } }] }).steps[0]?.error)
+      .toEqual({ status: 500, message: 'broke', midStream: true })
+    expect(parseScenarioSpec({ steps: [{ error: { status: 500, message: 'broke', midStream: false } }] }).steps[0]?.error)
+      .toEqual({ status: 500, message: 'broke' })
+    expect(parseScenarioSpec({ steps: [{ error: { status: 500, message: 'broke' } }] }).steps[0]?.error)
+      .toEqual({ status: 500, message: 'broke' })
+    expect(() => parseScenarioSpec({ steps: [{ error: { status: 500, message: 'broke', midStream: 'yes' } }] }))
+      .toThrow('midStream must be a boolean')
   })
 
   it('takes a tool call with JSON arguments or with raw custom-tool input', () => {

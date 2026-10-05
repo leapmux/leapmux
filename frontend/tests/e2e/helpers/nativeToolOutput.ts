@@ -10,8 +10,14 @@ export interface NativeToolOutput {
   lastMarker: string
 }
 
+/** Output that computedNativeToolOutput creates. Each numbered line starts with its line marker. */
+export interface ComputedNativeToolOutput extends NativeToolOutput {
+  /** Text that every numbered line holds and that the source does not hold. Any nonempty window of whole lines contains it. */
+  lineMarker: string
+}
+
 /** Compute output in a native JavaScript process. Keep the complete markers outside its source. */
-export function computedNativeToolOutput(options: { prefix?: string, lineCount?: number, padding?: number } = {}): NativeToolOutput {
+export function computedNativeToolOutput(options: { prefix?: string, lineCount?: number, padding?: number } = {}): ComputedNativeToolOutput {
   const prefix = options.prefix ?? `NATIVETOOLOUTPUT${randomUUID().replaceAll('-', '')}`
   const lineCount = options.lineCount ?? 3000
   const padding = options.padding ?? 0
@@ -32,7 +38,7 @@ export function computedNativeToolOutput(options: { prefix?: string, lineCount?:
   lines[middle] += '-middle-77'
   const lastMarker = `${prefix}-complete-42`
   lines.push(lastMarker)
-  return { source, text: lines.join('\n'), firstMarker: lines[0]!, omittedMarker: lines[middle]!, lastMarker }
+  return { source, text: lines.join('\n'), firstMarker: lines[0]!, omittedMarker: lines[middle]!, lastMarker, lineMarker: `${prefix}-line-` }
 }
 
 /** Clear the clipboard and require the original native preview from Copy. */

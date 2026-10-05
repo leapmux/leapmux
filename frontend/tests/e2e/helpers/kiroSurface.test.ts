@@ -260,7 +260,7 @@ describe('the Kiro surface of the mock', () => {
     const catalog = kiroModelCatalog()
     const model = catalog.models.find(model => model.modelId === 'kiro-e2e-thinking')
     expect(model).toMatchObject({ additionalModelRequestFieldsSchema: { properties: {
-      thinking: { type: 'object', properties: { type: { type: 'string', enum: ['enabled', 'disabled'], default: 'disabled' } } },
+      thinking: { type: 'object', properties: { type: { type: 'string', enum: ['adaptive', 'disabled'], default: 'disabled' } } },
       output_config: { type: 'object', properties: { effort: { type: 'string', enum: ['low', 'medium', 'high'], default: 'high' } } },
     } } })
     expect(catalog.models.find(model => model.modelId === 'kiro-e2e-lite')).not.toHaveProperty('additionalModelRequestFieldsSchema')

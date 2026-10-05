@@ -2,6 +2,7 @@ import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb
 import type { MockModelRequestRecord, MockModelStep } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { NativeProcessOwnership } from './nativeProcessOwnership'
+import type { NativeResumeTexts } from './nativeResume'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { NativeStartupLaunch, NativeStartupWrapper } from './nativeStartupWrapper'
 import type { ProcessRow } from './processTree'
@@ -16,6 +17,7 @@ import { agentOpenOptions, agentSettings } from '../agentSettings'
 import { getTestChannel, openAgentViaAPI } from './api'
 import { sendNativeAnswer } from './nativeConversation'
 import { resolveNativeProcessOwnership } from './nativeProcessOwnership'
+import { countOriginalAnswerRows, expectReopenedNativeAgent, expectResumedConversation, nativeResumeTexts } from './nativeResume'
 import { currentNativeAgent, nativeAgentById, nativeScenarioModelContextText, nativeTextStep } from './nativeScenario'
 import { withNativeStartupWorker } from './nativeStartupWorker'
 import { isAlive, listProcesses } from './processTree'
@@ -23,7 +25,7 @@ import { bashToolCall } from './providerToolCalls'
 import { createTestDirectory } from './runDirectory'
 import { getGlobalState } from './server'
 import { quotePosixShellArgument } from './shellArguments'
-import { assistantBubbles, messageBubbles, openMenu, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
+import { assistantBubbles, messageBubbles, messageContents, openMenu, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
 import { closeAgentViaAPI, inspectLastTabCloseViaAPI, openNewAgentDialog, setWorkingDir, waitForWorker } from './worktree'
 
 interface LifecyclePreparation {
@@ -34,6 +36,12 @@ interface LifecyclePreparation {
 export type NativeResumeEvidence
   = | { readonly phase: 'stored' | 'opened', readonly prior: Readonly<AgentInfo> }
     | { readonly phase: 'continued', readonly prior: Readonly<AgentInfo>, readonly request: MockModelRequestRecord }
+
+/** The texts and the model request of one native resume scenario. */
+export interface NativeResumeResult extends NativeResumeTexts {
+  /** The native model request that consumed the resumed prompt. */
+  readonly request: MockModelRequestRecord
+}
 
 /** Release the native model boundary after its interrupt or close scenario. */
 export async function releaseNativeTurnGate(modelScript: Pick<ModelScript, 'releaseGateIfHeld'>, gate: string): Promise<void> {
@@ -48,16 +56,60 @@ export async function resumeInterruptedQueue(context: ManagedNativeScenarioConte
   await expect(button).toHaveText('Pause Queue')
 }
 
+/**
+ * The Node.js source of a held tool: it writes `startedFile`, then waits until
+ * `releaseFile` exists in `workingDir` and exits with 0. It exits with 1 after
+ * ten minutes, so a lost release cannot leave the process behind.
+ *
+ * The spaces keep each path in a short whitespace-separated word. Dirac 0.5.17
+ * splits a command at whitespace and refuses it when one word that holds a `/`
+ * is longer than 255 bytes (ExecuteCommandTool.validateCommands), and one word
+ * with three absolute paths is longer than that.
+ */
+export function heldToolScript(paths: { workingDir: string, startedFile: string, releaseFile: string }): string {
+  const workingDir = JSON.stringify(paths.workingDir)
+  const startedFile = JSON.stringify(paths.startedFile)
+  const releaseFile = JSON.stringify(paths.releaseFile)
+  return [
+    `const fs = require('node:fs');`,
+    `fs.writeFileSync(${startedFile}, 'started');`,
+    `fs.watch(${workingDir}, () => { if (fs.existsSync(${releaseFile})) process.exit(0) });`,
+    `if (fs.existsSync(${releaseFile})) process.exit(0);`,
+    `setTimeout(() => process.exit(1), 600000)`,
+  ].join(' ')
+}
+
+/**
+ * When the native runtime ends a turn that the reader interrupted during a held model request.
+ *
+ * - `while-held`: the runtime cancels the request and ends the turn at once.
+ * - `after-answer`: the runtime does not cancel a request that is in flight. It stops its
+ *   loop at once, but it ends the turn only when the held answer arrives, and it then
+ *   drops that answer. Letta Code 0.34.2 works this way.
+ */
+export type HeldModelTurnEnd = 'while-held' | 'after-answer'
+
 /** Verify native interruption and a usable next turn without changing the session. */
 export async function exerciseInterruptTurn(
   context: ManagedNativeScenarioContext,
   options: LifecyclePreparation & {
     kind?: 'model' | 'tool'
+    /**
+     * Where a `model` turn holds: before its response (the default), or after the
+     * first streamed text chunk. Goose 1.53.0 ends a turn on `session/cancel` only
+     * after the response stream starts. A request that still waits for its response
+     * headers runs on, and the session refuses the next prompt.
+     */
+    holdModelTurn?: 'before-response' | 'after-first-chunk'
+    /** Applies to the `model` kind only. The default is `while-held`. */
+    heldModelTurnEnd?: HeldModelTurnEnd
     prompt?: string
     divider?: RegExp
     continuation?: { prompt: string, answer: string, contextMarkers?: readonly string[] }
   } = {},
 ): Promise<void> {
+  if (options.heldModelTurnEnd !== undefined && options.kind === 'tool')
+    throw new Error('A held model turn end applies to an interrupted model request, not to an interrupted tool.')
   await options.prepare?.()
   const marker = randomUUID().replaceAll('-', '')
   await sendNativeAnswer(context, `Keep INTERRUPTCONTEXT${marker} for this session.`, `INTERRUPTANSWER${marker}`)
@@ -70,8 +122,12 @@ export async function exerciseInterruptTurn(
   const stepIndex = (await context.modelScript.status()).stepCount
   let held: MockModelStep
   if (options.kind === 'tool') {
-    const script = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(toolStarted)},'started');fs.watch(${JSON.stringify(before.workingDir)},()=>{if(fs.existsSync(${JSON.stringify(releaseFile)}))process.exit(0)});if(fs.existsSync(${JSON.stringify(releaseFile)}))process.exit(0);setTimeout(()=>process.exit(1),600000)`
+    const script = heldToolScript({ workingDir: before.workingDir, startedFile: toolStarted, releaseFile })
     held = { toolCalls: [bashToolCall(context.provider, 'held-native-tool', `${quotePosixShellArgument(process.execPath)} -e ${quotePosixShellArgument(script)}`)] }
+  }
+  else if (options.holdModelTurn === 'after-first-chunk') {
+    const text = `NEVERCOMPLETED${marker}`
+    held = { ...nativeTextStep(context, text), text, stream: { chunkChars: 16, delayMs: 0, gates: [{ afterChunk: 1, name: gate }] } }
   }
   else {
     held = { ...nativeTextStep(context, `NEVERCOMPLETED${marker}`), gate }
@@ -96,11 +152,21 @@ export async function exerciseInterruptTurn(
     await expect(interrupt).toBeVisible()
     await interrupt.click()
     await waitForAgentIdle(context.page)
+    const answerArrivesAfterStop = options.kind !== 'tool' && options.heldModelTurnEnd === 'after-answer'
+    // The runtime stopped while the request still waits. `releaseGate` fails when no
+    // request waits, so a runtime that cancels the request fails here and states that
+    // the option no longer applies.
+    if (answerArrivesAfterStop)
+      await context.modelScript.releaseGate(gate)
     const divider = context.page.locator('[data-testid="result-divider"]:visible').last()
     if (options.divider)
       await expect(divider).toHaveText(options.divider)
     else
       await expect(divider).toContainText('interrupted')
+    // The divider states that the runtime ended the turn, so it read the late answer
+    // already. That answer belongs to a cancelled turn, and no row may draw it.
+    if (answerArrivesAfterStop)
+      await expect(messageContents(context.page).filter({ hasText: `NEVERCOMPLETED${marker}` })).toHaveCount(0)
     await resumeInterruptedQueue(context)
   }
   finally {
@@ -198,22 +264,27 @@ export async function exerciseSessionReset(
   await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
 }
 
-/** Reopen a stored native session and restore the Worker transcript through the picker. */
+/**
+ * Reopen a stored native session through the picker and restore the Worker transcript. Then prove these conditions:
+ * - The Worker started the reopened agent in the stored native session.
+ * - The continued turn reached the model.
+ * - The continued turn left one copy of each original row and a separate resumed answer.
+ */
 export async function exerciseSessionResume(
   context: ManagedNativeScenarioContext,
   options: LifecyclePreparation & {
     resumeEvidence?: (evidence: NativeResumeEvidence) => Promise<void>
   } = {},
-): Promise<MockModelRequestRecord> {
+): Promise<NativeResumeResult> {
   await options.prepare?.()
-  const marker = randomUUID().replaceAll('-', '')
-  const prompt = `Keep RESUMEPROMPT${marker} for the stored session.`
-  const answer = `RESUMEANSWER${marker}`
-  await sendNativeAnswer(context, prompt, answer)
+  const texts = nativeResumeTexts()
+  await sendNativeAnswer(context, texts.originalPrompt, texts.originalAnswer)
   const before = await currentNativeAgent(context)
   expect(before.agentSessionId).not.toBe('')
   if (options.resumeEvidence)
     await options.resumeEvidence({ phase: 'stored', prior: before })
+  const originalAnswerRows = await countOriginalAnswerRows(context, before.id, texts)
+  const originalAnswerBubbles = await assistantBubbles(context.page).filter({ hasText: texts.originalAnswer }).count()
   const server = context.leapmuxServer
   const keeper = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, createTestDirectory('native-resume-keeper-'), {
     agentProvider: context.provider,
@@ -237,13 +308,21 @@ export async function exerciseSessionResume(
   await dialog.getByRole('button', { name: 'Create' }).click()
   if (options.resumeEvidence)
     await options.resumeEvidence({ phase: 'opened', prior: before })
-  await expect(userBubbles(context.page).filter({ hasText: prompt })).toHaveCount(1)
-  await expect(assistantBubbles(context.page).filter({ hasText: answer })).toHaveCount(1)
-  const resumedRequest = await sendNativeAnswer(context, 'Reply after the native picker reopens the session.', `RESUMEDNEWANSWER${marker}`)
-  expect((await currentNativeAgent(context)).agentSessionId).toBe(before.agentSessionId)
+  const reopened = await expectReopenedNativeAgent(context, before, [before.id, keeper])
+  await expect(userBubbles(context.page).filter({ hasText: texts.originalPrompt })).toHaveCount(1)
+  // The reopened transcript draws exactly the answer bubbles the live one drew
+  // before the close: an answer tool can leave the answer in several stored row
+  // kinds (Dirac's `respond` request, result and text rows), and rows that render
+  // no bubble keep the page count its own number, not the row count.
+  await expect(assistantBubbles(context.page).filter({ hasText: texts.originalAnswer })).toHaveCount(originalAnswerBubbles)
+  const resumedRequest = await sendNativeAnswer(context, texts.resumedPrompt, texts.resumedAnswer)
+  const continued = await currentNativeAgent(context)
+  expect(continued.id).toBe(reopened.id)
+  expect(continued.agentSessionId).toBe(before.agentSessionId)
   if (options.resumeEvidence)
     await options.resumeEvidence({ phase: 'continued', prior: before, request: resumedRequest })
-  return resumedRequest
+  await expectResumedConversation(context, reopened.id, texts, originalAnswerRows, originalAnswerBubbles)
+  return { ...texts, request: resumedRequest }
 }
 
 /** Prove queued startup input or a real launch failure behind a native release boundary. */

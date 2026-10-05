@@ -77,9 +77,26 @@ export interface MockModelToolCall {
 }
 
 export interface MockModelError {
+  /** The HTTP status of the error response. A `midStream` error answers 200 and does not send it. */
   status: number
   message: string
   code?: string
+  /**
+   * Send the error inside a stream that already started, instead of as an HTTP
+   * status: the stream opens, one partial text delta arrives, and an error
+   * payload ends it.
+   *
+   * Only the OpenAI Chat Completions route sends this shape, and only to a
+   * request that asks for a stream. The shared model route refuses the flag in
+   * every other case. The provider-service surfaces (Cursor, Kiro, Google) do
+   * not read it.
+   *
+   * A client can treat this failure apart from an HTTP status failure.
+   * qodercli 1.1.65 replaces an HTTP status error, and a stream error that
+   * comes before any delta, with its own generic text. It relays the
+   * provider's message of this shape in its `result`.
+   */
+  midStream?: boolean
 }
 
 export interface MockModelDeliveredError {
@@ -725,10 +742,13 @@ function parseModelError(value: unknown, label: string): MockModelError {
     throw new Error(`Model ${label} error needs an HTTP status and message`)
   if (value.code !== undefined && typeof value.code !== 'string')
     throw new Error(`Model ${label} error code must be a string`)
+  if (value.midStream !== undefined && typeof value.midStream !== 'boolean')
+    throw new Error(`Model ${label} error midStream must be a boolean`)
   return {
     status: Number(value.status),
     message: value.message,
     ...(typeof value.code === 'string' ? { code: value.code } : {}),
+    ...(value.midStream === true ? { midStream: true } : {}),
   }
 }
 
@@ -738,23 +758,26 @@ function parseModelError(value: unknown, label: string): MockModelError {
  * The newest marker in actual user text wins.
  * Replayed conversations can contain several prompt markers.
  * Native session metadata and tool replies cannot select the scenario.
+ *
+ * The system text selects the scenario only when no user text holds a marker.
+ * A native summary request can quote the conversation in its system prompt
+ * and send a fixed instruction as its only user text. Goose 1.53.0 does this
+ * for `/compact`, so its user text never holds the marker of the prompts that
+ * it summarizes.
  */
 export function selectScenarioID(body: unknown): string {
-  const markers = collectScenarioIDs(body)
-  return markers.at(-1) ?? AMBIENT_SCENARIO_ID
+  return collectScenarioIDs(body).at(-1) ?? scenarioMarkers(systemText(body)).at(-1) ?? AMBIENT_SCENARIO_ID
 }
 
 /** Read markers from user prompts in their conversation order. */
 export function collectScenarioIDs(value: unknown): string[] {
-  const found: string[] = []
-  for (const text of scenarioUserTexts(value)) {
-    const pattern = new RegExp(`${SCENARIO_MARKER}([\\w-]{1,128})`, 'g')
-    for (const match of text.matchAll(pattern)) {
-      if (match[1])
-        found.push(match[1])
-    }
-  }
-  return found
+  return scenarioUserTexts(value).flatMap(text => scenarioMarkers(text))
+}
+
+/** Read the markers of one text in their order. */
+function scenarioMarkers(text: string): string[] {
+  const pattern = new RegExp(`${SCENARIO_MARKER}([\\w-]{1,128})`, 'g')
+  return [...text.matchAll(pattern)].flatMap(match => match[1] ? [match[1]] : [])
 }
 
 function scenarioUserTexts(body: unknown): string[] {

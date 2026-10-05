@@ -12,6 +12,7 @@ import {
   CURSOR_GENERATE_IMAGE_TOOL,
   CURSOR_MCP_TOOL,
   CURSOR_MOCK_MODELS,
+  CURSOR_REQUEST_CONTEXT_TOOL,
   CURSOR_RUN_PATH,
   CURSOR_TASK_TOOL,
   cursorToolCallsFrom,
@@ -314,6 +315,18 @@ describe('cursorToolCallsFrom', () => {
   })
 })
 
+describe('cursorToolCallsFrom request context', () => {
+  it('keeps a request context query and its call identity', () => {
+    expect(cursorToolCallsFrom([{ id: 'context-1', name: CURSOR_REQUEST_CONTEXT_TOOL, arguments: {} }]))
+      .toEqual([{ kind: 'requestContext', callID: 'context-1' }])
+  })
+
+  it('refuses a request context call that carries provider-service metadata', () => {
+    expect(() => cursorToolCallsFrom([{ id: 'context-1', name: CURSOR_REQUEST_CONTEXT_TOOL, arguments: {}, completionGate: 'gate' }]))
+      .toThrow('Only a native Cursor task supports provider-service tool metadata')
+  })
+})
+
 describe('answerCursorStartup', () => {
   it('answers the model catalogue with an uncompressed protobuf body', async () => {
     const server = createServer((request, response) => {
@@ -401,6 +414,68 @@ describe('serveCursorRun', () => {
     ]))
     await runStreamBody(async () => ({ text: 'ROOT_ANSWER', toolCalls: [{ kind: 'mcp', call: { callID: 'mcp-1', server: 'form_probe', tool: 'echo', input: {} } }] }), receipts, reply)
     expect(receipts).toEqual([{ prompt: 'Say the mock word.', text: 'ROOT_ANSWER\nREAL_MCP_REPLY' }])
+  })
+
+  /** The CLI's answer to a request context query, with the rules that it states. */
+  function requestContextReply(id: number, rules: readonly { path: string, content: string }[]): Uint8Array {
+    const context = Buffer.concat(rules.map(rule => encodeLengthDelimited(2, Buffer.concat([encodeStringField(1, rule.path), encodeStringField(2, rule.content)]))))
+    return encodeLengthDelimited(2, Buffer.concat([
+      Uint8Array.from([0x08, ...encodeVarint(id)]),
+      encodeLengthDelimited(10, encodeLengthDelimited(1, encodeLengthDelimited(1, context))),
+    ]))
+  }
+
+  it('asks for the request context and hands the stated rules to the turn before its text', async () => {
+    const receipts: { prompt: string, text: string }[] = []
+    const stated: { path: string, content: string }[][] = []
+    const reply = requestContextReply(301, [{ path: '/project/AGENTS.md', content: 'NATIVE_PROJECT_CONFIG' }])
+    const body = await runStreamBody(async () => ({
+      text: 'ROOT_ANSWER',
+      toolCalls: [{ kind: 'requestContext', callID: 'context-1' }],
+      requestContextRules: rules => stated.push(rules.map(rule => ({ ...rule }))),
+    }), receipts, reply)
+    expect(stated).toEqual([[{ path: '/project/AGENTS.md', content: 'NATIVE_PROJECT_CONFIG' }]])
+    const kinds = updateKinds(body)
+    expect(kinds.indexOf('execRequest')).toBeGreaterThanOrEqual(0)
+    expect(kinds.indexOf('execRequest')).toBeLessThan(kinds.indexOf('textDelta'))
+    // The query is no tool call of the transcript, and its rules are no part of the reply text.
+    expect(kinds).not.toContain('toolStarted')
+    expect(receipts).toEqual([{ prompt: 'Say the mock word.', text: 'ROOT_ANSWER' }])
+  })
+
+  it('states an empty rule list for a project with no rules', async () => {
+    const stated: unknown[][] = []
+    await runStreamBody(async () => ({
+      text: 'ROOT_ANSWER',
+      toolCalls: [{ kind: 'requestContext', callID: 'context-1' }],
+      requestContextRules: rules => stated.push([...rules]),
+    }), undefined, requestContextReply(301, []))
+    expect(stated).toEqual([[]])
+  })
+
+  it('does not finish the turn while the CLI leaves its request context unanswered', async () => {
+    const receipts: { prompt: string, text: string }[] = []
+    const body = await runStreamBody(async () => ({
+      text: 'ROOT_ANSWER',
+      toolCalls: [{ kind: 'requestContext', callID: 'context-1' }],
+      requestContextRules: () => {},
+    }), receipts)
+    expect(updateKinds(body)).toContain('execRequest')
+    expect(updateKinds(body)).not.toContain('textDelta')
+    expect(receipts).toEqual([])
+  })
+
+  it('refuses a request context answer with another id, and one that no handler can take', async () => {
+    const errors: string[] = []
+    await expect(runStreamBody(async () => ({
+      toolCalls: [{ kind: 'requestContext', callID: 'context-1' }],
+      requestContextRules: () => {},
+    }), undefined, requestContextReply(999, []), { payload: clientMessageWithPrompt('Say the mock word.'), flags: 0, errors })).rejects.toThrow()
+    expect(errors).toEqual(['Cursor replied to request context query 301 with id 999'])
+
+    const unhandled: string[] = []
+    await expect(runStreamBody(async () => ({ toolCalls: [{ kind: 'requestContext', callID: 'context-1' }] }), undefined, requestContextReply(301, []), { payload: clientMessageWithPrompt('Say the mock word.'), flags: 0, errors: unhandled })).rejects.toThrow()
+    expect(unhandled).toEqual(['A native Cursor request context query requires a scenario handler'])
   })
 
   it('reports the actual selected option from a native interaction reply', async () => {

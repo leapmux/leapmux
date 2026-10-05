@@ -17,10 +17,10 @@ export interface NativeTurnEndSoundCase {
 }
 
 /** Reject a script that contradicts the native activity that the sound case must prove. */
-export function assertNativeSoundActivity(steps: readonly MockModelStep[], toolActivity: boolean): void {
+export function assertNativeSoundActivity(steps: readonly MockModelStep[], toolActivity: boolean, answerToolNames: readonly string[] = []): void {
   if (steps.length === 0)
     throw new Error('The native sound scenario needs a model step.')
-  const scriptedTools = steps.some(step => (step.toolCalls?.length ?? 0) > 0)
+  const scriptedTools = steps.some(step => (step.toolCalls ?? []).some(call => !answerToolNames.includes(call.name)))
   if (scriptedTools !== toolActivity)
     throw new Error('The native sound script does not match its expected tool activity.')
 }
@@ -29,7 +29,7 @@ export function assertNativeSoundActivity(steps: readonly MockModelStep[], toolA
 export async function exerciseTurnEndSound(context: ManagedNativeScenarioContext, options: NativeTurnEndSoundCase): Promise<void> {
   await options.prepare?.()
   const steps = options.steps ?? [nativeTextStep(context, 'The native sound scenario completed.')]
-  assertNativeSoundActivity(steps, options.toolActivity)
+  assertNativeSoundActivity(steps, options.toolActivity, context.answerToolNames)
   const agent = await currentNativeAgent(context)
   const server = context.leapmuxServer
   const userId = server.adminUserId ?? await getUserId(server.hubUrl, server.adminToken)

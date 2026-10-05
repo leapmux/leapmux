@@ -8,7 +8,8 @@ import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { createNativePermissionFileWrite } from './nativePermission'
+import { createNativePermissionFileWrite, exerciseNativePermissionDecision } from './nativePermission'
+import { createOutputGate } from './outputGate'
 
 const native = vi.hoisted(() => ({ directory: '', currentAgent: vi.fn() }))
 vi.mock('./nativeScenario', async (importOriginal) => {
@@ -118,5 +119,18 @@ describe('createNativePermissionFileWrite', () => {
     native.currentAgent.mockResolvedValue({ workingDir: '' })
     await expect(createNativePermissionFileWrite(context, { fileName: 'file.txt', callId: 'call', outputPrefix: 'OUTPUT' })).rejects.toThrow('requires a working directory')
     expect(readdirSync(native.directory)).toEqual([])
+  })
+})
+
+describe('exerciseNativePermissionDecision', () => {
+  it('refuses an output gate on a denial before it touches the model or the browser', async () => {
+    const outputGate = { gate: createOutputGate(native.directory), shown: vi.fn(async () => {}) }
+    await expect(exerciseNativePermissionDecision(context, {
+      toolCall: { id: 'denied-native', name: 'unit-native-shell', arguments: { command: 'true' } },
+      decision: 'deny',
+      outputGate,
+      nativeProof: () => {},
+    })).rejects.toThrow('A denied command prints no output')
+    expect(outputGate.shown).not.toHaveBeenCalled()
   })
 })

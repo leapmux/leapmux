@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { isObject } from '../../../src/lib/jsonPick'
 import { createDeepseekHarnessEnvironment, DEEPSEEK_HARNESS_MODEL_ID } from './deepseekHarnessEnvironment'
 
 const directories: string[] = []
@@ -16,6 +17,13 @@ afterEach(() => {
   for (const path of directories.splice(0))
     rmSync(path, { recursive: true, force: true })
 })
+
+/** Select every native preset registry row from a written profile. */
+function presetRows(profile: unknown): unknown[] {
+  if (!Array.isArray(profile))
+    throw new Error('The DeepSeek Harness profile must contain a row array.')
+  return profile.filter(row => isObject(row) && row.id === 'agent-preset-registry')
+}
 
 describe('createDeepseekHarnessEnvironment', () => {
   it('writes a private native profile with exact local credentials', () => {
@@ -40,6 +48,21 @@ describe('createDeepseekHarnessEnvironment', () => {
     expect(profile).toEqual(expect.arrayContaining([
       { id: 'agent-preset-registry', config: { default: agentPreset } },
     ]))
+    expect(presetRows(profile)).toHaveLength(1)
+  })
+
+  it('writes no native preset row when the caller selects no preset', () => {
+    const environment = createDeepseekHarnessEnvironment({ runDirectory: directory(), modelURL: 'http://127.0.0.1:4567', modelKey: 'key', mcpServers: [{ name: 'echo', command: '/native/node', args: [] }] })
+    const profile: unknown = JSON.parse(readFileSync(join(environment.DSH_HOME!, 'cordis.patch.yml'), 'utf8'))
+    expect(presetRows(profile)).toEqual([])
+  })
+
+  it('keeps two private profiles with different native presets independent', () => {
+    const standard = createDeepseekHarnessEnvironment({ runDirectory: directory(), modelURL: 'http://127.0.0.1:4567', modelKey: 'key', agentPreset: 'standard' })
+    const ptc = createDeepseekHarnessEnvironment({ runDirectory: directory(), modelURL: 'http://127.0.0.1:4567', modelKey: 'key', agentPreset: 'ptc' })
+    expect(standard.DSH_HOME).not.toBe(ptc.DSH_HOME)
+    expect(presetRows(JSON.parse(readFileSync(join(standard.DSH_HOME!, 'cordis.patch.yml'), 'utf8')))).toEqual([{ id: 'agent-preset-registry', config: { default: 'standard' } }])
+    expect(presetRows(JSON.parse(readFileSync(join(ptc.DSH_HOME!, 'cordis.patch.yml'), 'utf8')))).toEqual([{ id: 'agent-preset-registry', config: { default: 'ptc' } }])
   })
 
   it.each(['https://127.0.0.1:4567', 'http://example.com:4567', 'http://user:secret@127.0.0.1:4567', 'http://127.0.0.1:4567/?token=private', 'http://127.0.0.1:4567/#fragment'])('refuses the unsafe model endpoint %s', (modelURL) => {

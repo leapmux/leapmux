@@ -1,7 +1,10 @@
 import { expect, test } from '../fixtures'
-import { applyPermissionPreset } from './ui'
+import { openPermissionShortcut } from './ui'
 
-test.describe('applyPermissionPreset', () => {
+// `applyPermissionPreset` first reads the native settings of the selected agent
+// through its hub, which a static page does not have. Its menu half is
+// `openPermissionShortcut`, so this spec drives that half on a static page.
+test.describe('openPermissionShortcut', () => {
   test('reopens the menu after a permission shortcut arrives', async ({ page }) => {
     await page.setContent(`
       <button type="button" data-testid="composer-plus-trigger" aria-expanded="false">Add</button>
@@ -35,7 +38,8 @@ test.describe('applyPermissionPreset', () => {
       })
     })
 
-    await applyPermissionPreset(page, 'bypass')
+    const shortcut = await openPermissionShortcut(page, 'bypass')
+    await shortcut.click()
 
     await expect(page.locator('body')).toHaveAttribute('data-menu-opens', '2')
     await expect(page.locator('body')).toHaveAttribute('data-bypass-clicks', '1')

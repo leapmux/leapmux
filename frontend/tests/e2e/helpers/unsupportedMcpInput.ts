@@ -1,28 +1,64 @@
 import type { MockModelRequestRecord } from './mockModelScript'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { expect } from '@playwright/test'
-import { nativeMcpRefusal, readMcpServerReceipt } from './mcpServerReceipt'
+import { nativeMcpCancellation, nativeMcpRefusal, nativeMcpUnansweredInput, readMcpServerReceipt } from './mcpServerReceipt'
 import { expectNoNativeControl } from './nativeControlObservation'
 import { nativeToolResult } from './nativeToolResult'
 
+interface McpInputProbe {
+  receiptLog: string
+  callId: string
+  invoke: () => Promise<MockModelRequestRecord>
+}
+
+/** Read the native tool result of the probe call in the model request that follows it. */
+async function probeToolResult(context: ManagedNativeScenarioContext, request: MockModelRequestRecord, callId: string): Promise<string> {
+  const result = context.readToolResult
+    ? await context.readToolResult(request, callId)
+    : { text: nativeToolResult(request, callId) }
+  return result.text
+}
+
 /** Prove the actual native client refuses a form and returns that refusal to its model. */
-export async function expectUnsupportedMcpInput(
-  context: ManagedNativeScenarioContext,
-  options: {
-    receiptLog: string
-    callId: string
-    invoke: () => Promise<MockModelRequestRecord>
-  },
-): Promise<void> {
+export async function expectUnsupportedMcpInput(context: ManagedNativeScenarioContext, options: McpInputProbe): Promise<void> {
   await expectNoNativeControl(context, {
     testId: 'elicitation-form',
     relatedControl: async () => {
       const request = await options.invoke()
       const refusal = nativeMcpRefusal(readMcpServerReceipt(options.receiptLog))
-      const result = context.readToolResult
-        ? await context.readToolResult(request, options.callId)
-        : { text: nativeToolResult(request, options.callId) }
-      expect(result.text).toContain(refusal.toolResult.text)
+      expect(await probeToolResult(context, request, options.callId)).toContain(refusal.toolResult.text)
+    },
+  })
+}
+
+/** Prove the actual native client cancels a form that it cannot show, and returns that cancel to its model. */
+export async function expectCancelledMcpInput(context: ManagedNativeScenarioContext, options: McpInputProbe): Promise<void> {
+  await expectNoNativeControl(context, {
+    testId: 'elicitation-form',
+    relatedControl: async () => {
+      const request = await options.invoke()
+      const cancellation = nativeMcpCancellation(readMcpServerReceipt(options.receiptLog))
+      expect(await probeToolResult(context, request, options.callId)).toContain(cancellation.toolResult.text)
+    },
+  })
+}
+
+/**
+ * Prove the actual native client leaves a form unanswered and returns its own failure to its model.
+ *
+ * For a client that sends no reply at all, neither a refusal nor a decision. Its tool call then ends
+ * with the client's own error, and the tool result that the model reads must contain
+ * `nativeFailureText`.
+ */
+export async function expectUnansweredMcpInput(context: ManagedNativeScenarioContext, options: McpInputProbe & { nativeFailureText: string }): Promise<void> {
+  if (!options.nativeFailureText)
+    throw new Error('The unanswered MCP input proof requires the exact native failure text.')
+  await expectNoNativeControl(context, {
+    testId: 'elicitation-form',
+    relatedControl: async () => {
+      const request = await options.invoke()
+      nativeMcpUnansweredInput(readMcpServerReceipt(options.receiptLog))
+      expect(await probeToolResult(context, request, options.callId)).toContain(options.nativeFailureText)
     },
   })
 }

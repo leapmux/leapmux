@@ -18,9 +18,8 @@ import type { ModelStream } from './modelStream'
 import { createServer } from 'node:http'
 import { createServer as createHttp2Server } from 'node:http2'
 import { AMP_ACTOR_PATH_PREFIX, ampScriptOptions, createAmpSurface, isAmpPath } from './ampSurface'
-import { claudeLifecycleAnswer, claudeRateLimitHeaders, prepareClaudeMessageStep } from './claudeSurface'
-import { codexRateLimitHeaders } from './codexSurface'
-import { copilotCatalogMetadata, copilotRateLimitHeaders, copilotReasoningFields, handleCopilotHttp } from './copilotSurface'
+import { claudeLifecycleAnswer, prepareClaudeMessageStep } from './claudeSurface'
+import { copilotCatalogMetadata, copilotReasoningFields, handleCopilotHttp } from './copilotSurface'
 import { createCursorSurface } from './cursorSurface'
 import { handleDroidHttp } from './droidSurface'
 import { createDualVersionListener } from './dualVersionListener'
@@ -41,6 +40,7 @@ import {
   validateGateName,
   validateScenarioID,
 } from './mockModelScript'
+import { rateLimitHeaders } from './mockRateLimitHeaders'
 import { bufferModelOutput, createBufferedModelStream, createModelStream } from './modelStream'
 import { handleQoderHttp } from './qoderSurface'
 import { writeResponseHeaders } from './responseHeaders'
@@ -333,7 +333,7 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
       if (step.delayMs && !await holdOpen(request, response, step.delayMs))
         return
       if (step.error) {
-        writeModelError(response, protocol, step.error)
+        writeModelError(response, protocol, body, step.error)
         return
       }
       responseSequence++
@@ -822,10 +822,7 @@ async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: 
       object: 'chat.completion.chunk',
       created: 1,
       model,
-      choices: [{ index: 0, delta: {
-        ...(!emitted ? { role: 'assistant', ...(toolCalls ? { tool_calls: toolCalls } : {}) } : {}),
-        ...delta,
-      }, finish_reason: null }],
+      choices: [{ index: 0, delta: { ...(!emitted ? { role: 'assistant' } : {}), ...delta }, finish_reason: null }],
     })
     emitted = true
   }
@@ -835,7 +832,12 @@ async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: 
     emit({ content: chunk })
   if (!stream.active)
     return
-  if (!emitted)
+  // The tool calls follow the text, as in the Responses and Anthropic writers. A
+  // model writes a call after the text before it, so a native client that gets
+  // the complete call first can run it while the text still streams.
+  if (toolCalls)
+    emit({ tool_calls: toolCalls })
+  else if (!emitted)
     emit({})
   writeSSEData(response, {
     id,
@@ -1060,13 +1062,40 @@ function genericModelError(error: MockModelError): MockModelDeliveredError {
   return { code: error.code ?? 'api_error', message: error.message }
 }
 
-function writeModelError(response: ServerResponse, protocol: MockModelProtocol, error: MockModelError): void {
+function writeModelError(response: ServerResponse, protocol: MockModelProtocol, requestBody: unknown, error: MockModelError): void {
   const delivered = genericModelError(error)
+  if (error.midStream) {
+    writeMidStreamModelError(response, protocol, requestBody, delivered)
+    return
+  }
   if (protocol === 'anthropic-messages') {
     writeJSON(response, error.status, { type: 'error', error: { type: delivered.code, message: delivered.message } })
     return
   }
   writeJSON(response, error.status, { error: { type: delivered.code, code: error.code, message: delivered.message } })
+}
+
+/**
+ * Fail a Chat Completions stream after it started: one partial text delta, then
+ * the error payload, then the end of the stream. The delta is what makes the
+ * failure a mid-stream one. qodercli 1.1.65 replaces an error that comes before
+ * any delta with its own generic text, as it does for an HTTP status error.
+ */
+function writeMidStreamModelError(response: ServerResponse, protocol: MockModelProtocol, requestBody: unknown, delivered: MockModelDeliveredError): void {
+  if (protocol !== 'openai-chat-completions')
+    throw new Error(`The mock sends a mid-stream model error on the OpenAI Chat Completions route only, not on ${protocol}.`)
+  if (!streamRequested(requestBody))
+    throw new Error('The mock sends a mid-stream model error only to a request that asks for a stream.')
+  writeSSEHeaders(response)
+  writeSSEData(response, {
+    id: 'mock-mid-stream-error',
+    object: 'chat.completion.chunk',
+    created: 1,
+    model: modelFrom(requestBody),
+    choices: [{ index: 0, delta: { role: 'assistant', content: 'partial ' }, finish_reason: null }],
+  })
+  writeSSEData(response, { error: { message: delivered.message, code: delivered.code } })
+  response.end()
 }
 
 function modelFrom(body: unknown): string {
@@ -1102,44 +1131,6 @@ function responseUsage(step?: MockModelStep): Record<string, unknown> {
     output_tokens_details: { reasoning_tokens: 0 },
     total_tokens: input + output,
   }
-}
-
-/**
- * Compose standard quota headers with the provider-owned native projections.
- *
- * Every configured client receives all projections, as before this extraction.
- * The x-leapmux-e2e-* fields retain the scripted quota vocabulary for assertions.
- * Each Surface owns the header shapes that its native client reads.
- */
-function rateLimitHeaders(step: MockModelStep | undefined): Record<string, string> {
-  const rateLimits = step?.rateLimits
-  if (!rateLimits)
-    return {}
-  const allowed = rateLimits.status === 'allowed'
-  const reset = rateLimits.resetsAt === undefined
-    ? undefined
-    : String(rateLimits.resetsAt)
-  const utilization = rateLimits.utilization === undefined
-    ? undefined
-    : String(rateLimits.utilization)
-  const headers: Record<string, string> = {
-    'x-ratelimit-limit-requests': '1000',
-    'x-ratelimit-remaining-requests': allowed ? '999' : '0',
-    'x-ratelimit-limit-tokens': '1000000',
-    'x-ratelimit-remaining-tokens': allowed ? '999000' : '0',
-    'x-leapmux-e2e-ratelimit-type': rateLimits.type,
-    'x-leapmux-e2e-ratelimit-status': rateLimits.status,
-  }
-  if (reset !== undefined) {
-    const resetHttp = new Date(rateLimits.resetsAt! * 1000).toUTCString()
-    headers['x-ratelimit-reset-requests'] = resetHttp
-    headers['x-ratelimit-reset-tokens'] = resetHttp
-    headers['x-leapmux-e2e-ratelimit-resets-at'] = reset
-  }
-  if (utilization !== undefined)
-    headers['x-leapmux-e2e-ratelimit-utilization'] = utilization
-  Object.assign(headers, claudeRateLimitHeaders(rateLimits), codexRateLimitHeaders(rateLimits), copilotRateLimitHeaders(rateLimits))
-  return headers
 }
 
 function writeSSEHeaders(response: ServerResponse, step?: MockModelStep): void {

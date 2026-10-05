@@ -47,7 +47,11 @@ export async function runNativeToolOutputFilePathsProof(
   }
 }
 
-/** Require paths before actual output blocks. Read markers only from those blocks. */
+/**
+ * Require one path block before every nonempty marked output block. Read markers only from marked output blocks.
+ * Return null when no match is attached, so that the caller reads again.
+ * A marked element that wraps the path block or sits inside it fails the proof, because it can hide output before the paths.
+ */
 export function nativeOutputPathsPrecedePreview(matches: (SVGElement | HTMLElement)[], markers: readonly string[]): boolean | null {
   const result = matches.find(element => element.isConnected)
   if (!result)
@@ -56,8 +60,10 @@ export function nativeOutputPathsPrecedePreview(matches: (SVGElement | HTMLEleme
   const paths = pathBlocks.length === 1 ? pathBlocks[0] : undefined
   if (!paths || markers.length === 0 || markers.some(marker => !marker.trim()))
     return false
-  const previews = Array.from(result.querySelectorAll('[data-tool-output-preview]'))
-    .filter(element => !paths.contains(element) && !element.contains(paths) && (element.textContent?.length ?? 0) > 0)
+  const marked = Array.from(result.querySelectorAll('[data-tool-output-preview]'))
+  if (marked.some(element => element.contains(paths) || paths.contains(element)))
+    return false
+  const previews = marked.filter(element => (element.textContent?.length ?? 0) > 0)
   if (previews.length === 0 || previews.some(preview => (paths.compareDocumentPosition(preview) & Node.DOCUMENT_POSITION_FOLLOWING) === 0))
     return false
   return markers.every(marker => previews.some(preview => preview.textContent?.includes(marker)))
@@ -73,8 +79,10 @@ export async function proveNativeToolOutputFilePaths(options: NativeToolOutputFi
       await expect(result).toHaveCount(1)
       await expect(result).toHaveAttribute('data-tool-status', options.status)
       await options.prepareView?.(result)
+      // Wait for each marker inside marked output. Argument text can hold the same marker.
+      const outputs = result.locator('[data-tool-output-preview]')
       for (const marker of options.previewMarkers)
-        await expect(result).toContainText(marker)
+        await expect(outputs.filter({ hasText: marker })).not.toHaveCount(0)
       const pathList = result.getByTestId('tool-output-file-paths')
       await expect(pathList).toHaveCount(options.paths.length === 0 ? 0 : 1)
       if (options.paths.length > 0) {

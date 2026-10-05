@@ -14,7 +14,7 @@ import { DEEPSEEK_HARNESS_TOOL } from '../../../src/generated/contracts/deepseek
 import { GEMINI_TOOL } from '../../../src/generated/contracts/gemini-protocol'
 import { PI_TOOL } from '../../../src/generated/contracts/pi-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CURSOR_CREATE_PLAN_TOOL, CURSOR_GENERATE_IMAGE_TOOL, CURSOR_MCP_TOOL, CURSOR_QUESTION_TOOL, CURSOR_TASK_TOOL, CURSOR_WEB_FETCH_TOOL } from './cursorSurface'
+import { CURSOR_CREATE_PLAN_TOOL, CURSOR_GENERATE_IMAGE_TOOL, CURSOR_MCP_TOOL, CURSOR_QUESTION_TOOL, CURSOR_REQUEST_CONTEXT_TOOL, CURSOR_TASK_TOOL, CURSOR_WEB_FETCH_TOOL } from './cursorSurface'
 import { quotePosixShellArgument } from './shellArguments'
 
 /**
@@ -336,6 +336,12 @@ function addFilePatch({ path, content }: WriteRequest): string {
   const added = lines.map(line => `+${line}`).join('\n')
   return `*** Begin Patch\n*** Add File: ${path}\n${added ? `${added}\n` : ''}*** End Patch`
 }
+
+/**
+ * The largest `timeout_ms` that Amp's shell_command takes. Amp's tool description states
+ * "valid values are 0 through 60000 milliseconds" and a default of 10000.
+ */
+export const AMP_SHELL_WAIT_LIMIT_MS = 60_000
 
 function codexCommandCall(id: string, request: { cmd: string, sandbox_permissions?: string, justification?: string }): MockModelToolCall {
   return codexExecToolCall(id, `const result = await tools.exec_command(${JSON.stringify(request)})\ntext(JSON.stringify(result))`)
@@ -1057,7 +1063,11 @@ const TOOL_VOCABULARY = {
   // Those calls execute in the real agent directory.
   // The LeapMux permission helper handles their approvals.
   [AgentProvider.AMP]: {
-    bash: (id, command) => ({ id, name: AMP_SHELL_TOOL.ShellCommand, arguments: { command } }),
+    // Without timeout_ms, Amp waits 10 seconds. It then returns `running: true` and a PID,
+    // and the turn continues while the command runs on. A command that a scenario holds
+    // must stay in its call until the scenario releases it, so the call asks for Amp's
+    // largest wait. A quick command still returns when it exits.
+    bash: (id, command) => ({ id, name: AMP_SHELL_TOOL.ShellCommand, arguments: { command, timeout_ms: AMP_SHELL_WAIT_LIMIT_MS } }),
     // Amp's agent modes edit through one `*** Begin Patch` text, the format that
     // Codex reads also. The path is absolute, as Amp's own edits state it.
     edit: (id, request) => ({ id, name: AMP_TOOL_NAME.ApplyPatch, arguments: { patchText: updateFilePatch(request) } }),
@@ -1273,8 +1283,10 @@ const TOOL_VOCABULARY = {
     // Do not send that field as a model argument.
     // If the model sends that field, Dirac returns "Unsupported response parameter: tool".
     //
-    // The execute_command tool runs commands in the client's ACP terminals.
-    // Each commands entry supplies one command.
+    // The execute_command tool runs each command in a process of Dirac's own,
+    // not in an ACP client terminal: the CLI forces
+    // `vscodeTerminalExecutionMode: "backgroundExec"`. Each commands entry
+    // supplies one command.
     bash: (id, command) => ({ id, name: 'execute_command', arguments: { commands: [command] } }),
     // The edit_file tool addresses each edit with an ANCHOR§CONTENT coordinate.
     // A prior anchored native read supplies that coordinate.
@@ -1485,8 +1497,10 @@ const TOOL_VOCABULARY = {
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
-    // No questions over ACP: the `__human_input` tool has no ACP callback and
-    // raises "No elicitation input callback registered".
+    // No questions over ACP: the `__human_input` tool asks through the
+    // terminal form of Fast Agent, not through ACP. Under ACP, stdin is not a
+    // terminal. The form ends with its default cancel action, and the result
+    // reads "The Human cancelled the input request".
     askUserQuestion: null,
     // The `subagent` tool takes `message`; `task` is not in its native schema.
     spawnSubagent: (id, { description, prompt }) => {
@@ -1610,6 +1624,16 @@ export function updateTodosToolCall(provider: AgentProvider, id: string, steps: 
 /** One incremental call of Pi's native todo extension. */
 export function piTodoToolCall(callId: string, request: PiTodoRequest): MockModelToolCall {
   return { id: callId, name: PI_TOOL.Todo, arguments: { ...request } }
+}
+
+/**
+ * Ask the Cursor CLI for its request context before the turn ends.
+ *
+ * The CLI states the rules that it loaded from the project in its answer, and the
+ * mock records them as `nativeRequest.contextRules` of the same model request.
+ */
+export function cursorRequestContextToolCall(id: string): MockModelToolCall {
+  return { id, name: CURSOR_REQUEST_CONTEXT_TOOL, arguments: {} }
 }
 
 /** Run the installed Pi subagents extension with its native workflow script field. */
@@ -2102,6 +2126,13 @@ export function diracEditAnchorCapture(content: string): Record<string, string> 
 }
 
 /**
+ * The name of Junie's answer tool. Junie's transcript shows a call of this tool
+ * as the answer text and as no tool row, so a turn that holds only this call
+ * has no tool activity.
+ */
+export const JUNIE_ANSWER_TOOL = 'answer'
+
+/**
  * The native answer tool delivers the final text.
  * Its default is_terminal value ends the session task.
  * Junie refuses a model response that contains only text.
@@ -2110,7 +2141,7 @@ export function diracEditAnchorCapture(content: string): Record<string, string> 
  * The answer tool carries that response text.
  */
 export function junieAnswerToolCall(id: string, fullAnswer: string): MockModelToolCall {
-  return { id, name: 'answer', arguments: { full_answer: fullAnswer } }
+  return { id, name: JUNIE_ANSWER_TOOL, arguments: { full_answer: fullAnswer } }
 }
 
 /** The bundled Junie docs child ends its task through `submit`. */

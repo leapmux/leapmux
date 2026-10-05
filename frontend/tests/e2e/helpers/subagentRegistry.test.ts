@@ -10,7 +10,9 @@ import type { Locator, Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { openChildTabFromRow } from './subagentRegistry'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { ohMyPiYieldToolCall, spawnSubagentToolCall } from './providerToolCalls'
+import { HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, HELD_CHILD_TITLE, heldChildAnswer, openChildTabFromRow } from './subagentRegistry'
 
 const source = readFileSync(join(import.meta.dirname, 'subagentRegistry.ts'), 'utf-8')
 
@@ -108,6 +110,62 @@ describe('registry locators', () => {
       expect(locators.length, `${name} should build at least one locator`).toBeGreaterThan(0)
       expect(locators.filter(selector => selector.includes(':visible'))).toEqual([])
     }
+  })
+})
+
+/**
+ * CI runs no E2E. A provider whose registry row shows a subagent name takes that
+ * name from its spawn call, so a change to the name that a builder derives fails
+ * here, before a browser spec waits on a row title that never appears.
+ */
+describe('HELD_CHILD_NAME', () => {
+  const request = { description: HELD_CHILD_TITLE, prompt: `${HELD_CHILD_TASK}.` }
+
+  it('is the task_name that the Codex spawn call derives from the held child description', () => {
+    expect(spawnSubagentToolCall(AgentProvider.CODEX, 'spawn-held-child', request).arguments).toMatchObject({ task_name: HELD_CHILD_NAME })
+  })
+
+  it('is the task name of the Oh My Pi task call, which omp takes as the subagent ID', () => {
+    expect(spawnSubagentToolCall(AgentProvider.OH_MY_PI, 'spawn-held-child', request).arguments).toMatchObject({ tasks: [{ name: HELD_CHILD_NAME }] })
+  })
+
+  it('is the session name of the Codewhale agent start call, whose arguments hold no description', () => {
+    const args = spawnSubagentToolCall(AgentProvider.CODEWHALE, 'spawn-held-child', request).arguments
+    expect(args).toMatchObject({ action: 'start', name: HELD_CHILD_NAME })
+    expect(JSON.stringify(args)).not.toContain(HELD_CHILD_TITLE)
+  })
+
+  it('keeps the name, the description, and the task distinct, so a row title assertion identifies the field that the row shows', () => {
+    expect(HELD_CHILD_TITLE).not.toContain(HELD_CHILD_NAME)
+    expect(HELD_CHILD_TASK).not.toContain(HELD_CHILD_NAME)
+    expect(HELD_CHILD_TASK).not.toContain(HELD_CHILD_TITLE)
+  })
+})
+
+/**
+ * CI runs no E2E. The held child's answer decides whether a provider nudges its
+ * child into extra turns after the hold releases, and the composition that pins
+ * the hold gate onto a provider's own answer is checked here.
+ */
+describe('heldChildAnswer', () => {
+  const base = { provider: AgentProvider.OH_MY_PI, childTurn: { user: HELD_CHILD_TASK }, rootTurnsAfterSpawn: [] }
+
+  it('answers with the shared text under the hold gate by default', () => {
+    const answer = heldChildAnswer(base)
+    expect(answer.text).toBe('One, two, three.')
+    expect(answer.gate).toBeTruthy()
+  })
+
+  it('keeps the provider answer and applies the hold gate to it', () => {
+    const answer = heldChildAnswer({ ...base, heldAnswer: { toolCalls: [ohMyPiYieldToolCall('held-child-yield', HELD_CHILD_REPORT)] } })
+    expect(answer.toolCalls).toEqual([{ id: 'held-child-yield', name: 'yield', arguments: { data: HELD_CHILD_REPORT } }])
+    expect(answer.gate).toBe(heldChildAnswer(base).gate)
+  })
+
+  it('overrides a gate that the provider answer carries, so the hold cannot be dropped', () => {
+    const answer = heldChildAnswer({ ...base, heldAnswer: { text: 'Done.', gate: 'caller-gate' } })
+    expect(answer.text).toBe('Done.')
+    expect(answer.gate).toBe(heldChildAnswer(base).gate)
   })
 })
 

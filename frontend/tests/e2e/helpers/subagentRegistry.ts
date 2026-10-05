@@ -6,7 +6,7 @@
  * Read Worker state through the encrypted test channel, independently of the browser's optimistic tab state.
  *
  * playwright.config.ts sets the shared expect timeout.
- * ./subagentRegistry.test.ts checks the locator rules.
+ * ./subagentRegistry.test.ts checks the locator rules and the held-child answer.
  * exerciseChildInterrupt uses this registry to open and stop a native child.
  */
 import type { Locator, Page } from '@playwright/test'
@@ -298,7 +298,22 @@ export async function openChildTabFromRow(page: Page, row: Locator): Promise<str
 export const HELD_CHILD_TASK = 'Count slowly to one hundred'
 
 /** The description of that subagent, which its registry row shows. */
-const HELD_CHILD_TITLE = 'Count to one hundred'
+export const HELD_CHILD_TITLE = 'Count to one hundred'
+
+/** The report that a held Oh My Pi child yields when the hold releases. */
+export const HELD_CHILD_REPORT = 'Counted to one hundred.'
+
+/**
+ * The name that a provider derives from {@link HELD_CHILD_TITLE} when its registry
+ * row shows a subagent name instead of the description. Pass it as
+ * {@link HeldChildCase.rowTitle} for these providers:
+ *
+ * - Codex shows the `task_name` of its spawn call.
+ * - Oh My Pi shows its subagent ID, which is the task `name` of its `task` call.
+ * - Codewhale shows the session `name` of its `agent` start call, which has no
+ *   description field.
+ */
+export const HELD_CHILD_NAME = 'count_to_one_hundred'
 
 /** The name of the rule that holds the child's turn open. */
 const HELD_CHILD_RULE = 'the child counts until something stops it'
@@ -318,8 +333,26 @@ export interface HeldChildCase {
    * A broad matcher could hold the child's title request also and report two matches for one child.
    */
   childTurn: MockModelMatcher
+  /**
+   * The child's answer once the hold releases, when text alone does not end its run.
+   * The helper applies its hold gate to whatever this carries.
+   *
+   * Oh My Pi ends a child run with its `yield` tool, and it nudges a child whose
+   * turn ends with no tool call (up to three reminders). A text answer sends its
+   * child into extra turns that consume the answers scripted for the parent, so
+   * an Oh My Pi case passes a `yield` call here.
+   */
+  heldAnswer?: MockModelStep
   /** The root's turns after the turn that spawns the child, in order. */
   rootTurnsAfterSpawn: MockModelStep[]
+}
+
+/**
+ * The answer that holds the child's turn open: the provider's own ending under the
+ * hold gate, so a caller that supplies `heldAnswer` cannot drop the gate with it.
+ */
+export function heldChildAnswer(test: HeldChildCase): MockModelStep {
+  return { ...(test.heldAnswer ?? { text: 'One, two, three.' }), gate: HELD_CHILD_GATE }
 }
 
 /** The subagent that {@link openHeldChildTab} leaves working. */
@@ -365,7 +398,7 @@ export async function openHeldChildTab(page: Page, modelScript: ModelScript, tes
     await modelScript.rule({
       name: HELD_CHILD_RULE,
       when: test.childTurn,
-      respond: { text: 'One, two, three.', gate: HELD_CHILD_GATE },
+      respond: heldChildAnswer(test),
     })
     await modelScript.queue(
       {

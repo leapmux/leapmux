@@ -38,7 +38,11 @@ export function createGeminiEnvironment(options: GeminiEnvironmentOptions): Reco
     security: { auth: { selectedType: 'gemini-api-key' }, folderTrust: { enabled: false } },
     privacy: { usageStatisticsEnabled: false },
     telemetry: { enabled: false },
-    general: { disableAutoUpdate: true, disableUpdateNag: true, plan: { enabled: true, modelRouting: false } },
+    // Gemini CLI installs a release with `npm install -g` from its interactive UI unless
+    // enableAutoUpdate is false, and checks for one unless enableAutoUpdateNotification is
+    // false. `--acp` never reaches that UI. The deprecated disableAutoUpdate and
+    // disableUpdateNag keys work only through a migration that rewrites this file.
+    general: { enableAutoUpdate: false, enableAutoUpdateNotification: false, plan: { enabled: true, modelRouting: false } },
     advanced: { autoConfigureMemory: false },
     model: { name: options.modelID, skipNextSpeakerCheck: true },
     tools: { shell: { enableInteractiveShell: false } },

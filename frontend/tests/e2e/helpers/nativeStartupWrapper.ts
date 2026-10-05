@@ -15,8 +15,31 @@ export interface NativeStartupLaunch {
   binaryName: string
   executable: string
   args?: readonly string[]
+  /** The wrapper holds a launch whose arguments contain EVERY one of these words. */
   holdWhen?: readonly string[]
+  /**
+   * The wrapper runs a launch whose arguments contain ANY of these words at once, even
+   * when `holdWhen` matches it too: no hold, and no failed executable.
+   *
+   * For an auxiliary launch of the same binary before the runtime. The wrapper accepts
+   * one handshake, so a held auxiliary launch takes it, and the wrapper then refuses the
+   * real runtime launch, which exits with 125.
+   */
+  passThroughWhen?: readonly string[]
   lazy?: boolean
+}
+
+/**
+ * Copy the pass-through words. Refuse an empty word, which states no argument, and a
+ * word that is also a hold word, which would leave no launch to hold.
+ */
+function passThroughWords(launch: NativeStartupLaunch): string[] {
+  const words = [...launch.passThroughWhen ?? []]
+  if (words.includes(''))
+    throw new Error('The startup wrapper pass-through words must be nonempty.')
+  if (words.some(word => launch.holdWhen?.includes(word)))
+    throw new Error('A startup wrapper pass-through word must not also be a hold word.')
+  return words
 }
 
 /** Resolve a provider's runtime invocation through the private agent environment. */
@@ -118,6 +141,7 @@ export async function createNativeStartupWrapper(
     throw new Error('The startup wrapper requires one executable filename.')
   if (!launch.executable)
     throw new Error('The startup wrapper requires the real native executable.')
+  const passThroughWhen = passThroughWords(launch)
   const selectedKeys = observationKeys(options.observeEnvironment)
   mkdirSync(directory, { recursive: true })
   const nonce = randomUUID()
@@ -194,6 +218,7 @@ export async function createNativeStartupWrapper(
     executable: launch.executable,
     args: [...launch.args ?? []],
     holdWhen: [...launch.holdWhen ?? []],
+    passThroughWhen,
     failedExecutable: options.failRuntime ? join(directory, 'missing-native-executable') : null,
     observeEnvironment: selectedKeys ?? null,
   }
@@ -203,7 +228,7 @@ const {spawn}=require('node:child_process');
 const {connect}=require('node:net');
 const config=${JSON.stringify(configuration)};
 const argv=process.argv.slice(2);
-const runtime=!argv.some(arg=>['--version','-v','version','--help','-h','help'].includes(arg))&&config.holdWhen.every(arg=>argv.includes(arg));
+const runtime=!argv.some(arg=>['--version','-v','version','--help','-h','help'].includes(arg))&&config.holdWhen.every(arg=>argv.includes(arg))&&!config.passThroughWhen.some(arg=>argv.includes(arg));
 let child;
 function run(){
   const executable=runtime&&config.failedExecutable?config.failedExecutable:config.executable;

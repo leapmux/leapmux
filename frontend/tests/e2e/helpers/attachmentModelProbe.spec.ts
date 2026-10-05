@@ -45,6 +45,32 @@ async function webpFromFixture(probe: Page, source: string): Promise<string> {
 }
 
 test.describe('expectNativeAttachmentProof', () => {
+  test('rejects a PDF marker without exact native PDF handoff', async ({ page }) => {
+    await withProbePage(page, async (probe) => {
+      const source = writeAttachmentFixture('pdf', 'marker-only.pdf')
+      const status = scriptedStatus({ messages: [{ role: 'user', content: 'LEAPMUX_PDF_PAGE_49' }] })
+      await expect(expectNativeAttachmentProof(probe, status, 'pdf', source)).rejects.toThrow()
+    })
+  })
+
+  test('rejects an unrelated quadrant image without exact native PDF handoff', async ({ page }) => {
+    await withProbePage(page, async (probe) => {
+      const source = writeAttachmentFixture('pdf', 'image-only.pdf')
+      const image = writeAttachmentFixture('image', 'unrelated-image.png')
+      const raster = `data:image/png;base64,${readFileSync(image).toString('base64')}`
+      const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: raster } }] }] })
+      await expect(expectNativeAttachmentProof(probe, status, 'pdf', source)).rejects.toThrow()
+    })
+  })
+
+  test('rejects complete PDF bytes in plain text instead of a native PDF part', async ({ page }) => {
+    await withProbePage(page, async (probe) => {
+      const source = writeAttachmentFixture('pdf', 'plain-text-bytes.pdf')
+      const status = scriptedStatus({ messages: [{ role: 'user', content: readFileSync(source).toString('base64') }] })
+      await expect(expectNativeAttachmentProof(probe, status, 'pdf', source)).rejects.toThrow()
+    })
+  })
+
   test('accepts the complete PNG in a native user image part', async ({ page }) => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('image')
@@ -71,7 +97,7 @@ test.describe('expectNativeAttachmentProof', () => {
       const source = writeAttachmentFixture('image')
       const webp = await webpFromFixture(probe, source)
       const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: webp } }] }] })
-      await expectNativeAttachmentProof(probe, status, 'image', source)
+      await expectNativeAttachmentProof(probe, status, 'image', source, 'openai-chat-completions', { transcodedImageType: 'image/webp' })
     })
   })
 
@@ -91,15 +117,108 @@ test.describe('expectNativeAttachmentProof', () => {
       })
       const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: white } }] }] })
       await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
+      // The allowance admits a WebP, so only the decoded colors reject this image.
+      const wrongColors = expectNativeAttachmentProof(probe, status, 'image', source, 'openai-chat-completions', { transcodedImageType: 'image/webp' })
+      await expect(wrongColors).rejects.toThrow('does not carry the complete image file')
+      await expect(wrongColors).rejects.toThrow('decodes to the quadrant pixels')
     })
   })
 
-  test('accepts PDF page text and rejects a PDF header alone', async ({ page }) => {
+  test('rejects a WebP transform when the provider sends the PNG bytes unchanged', async ({ page }) => {
+    await withProbePage(page, async (probe) => {
+      const source = writeAttachmentFixture('image')
+      const webp = await webpFromFixture(probe, source)
+      const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: webp } }] }] })
+      await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
+    })
+  })
+
+  test('rejects a WebP transform that declares image/png', async ({ page }) => {
+    await withProbePage(page, async (probe) => {
+      const source = writeAttachmentFixture('image')
+      const webp = await webpFromFixture(probe, source)
+      const mislabeled = webp.replace(/^data:image\/webp;/, 'data:image/png;')
+      expect(mislabeled).not.toBe(webp)
+      const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: mislabeled } }] }] })
+      await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
+    })
+  })
+
+  test('rejects the complete PNG in non-canonical base64', async ({ page }) => {
+    await withProbePage(page, async (probe) => {
+      const source = writeAttachmentFixture('image')
+      const encoded = readFileSync(source).toString('base64')
+      const unpadded = encoded.replace(/=+$/, '')
+      expect(unpadded).not.toBe(encoded)
+      const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${unpadded}` } }] }] })
+      await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
+    })
+  })
+
+  test('rejects a quadrant-color image data URI in plain user text', async ({ page }) => {
+    await withProbePage(page, async (probe) => {
+      const source = writeAttachmentFixture('image')
+      const webp = await webpFromFixture(probe, source)
+      const status = scriptedStatus({ messages: [{ role: 'user', content: `Inspect this image: ${webp}` }] })
+      await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
+    })
+  })
+
+  test('rejects a quadrant-color image that only an earlier turn carries', async ({ page }) => {
+    await withProbePage(page, async (probe) => {
+      const source = writeAttachmentFixture('image')
+      const webp = await webpFromFixture(probe, source)
+      const status = scriptedStatus({ messages: [
+        { role: 'user', content: [{ type: 'image_url', image_url: { url: webp } }] },
+        { role: 'assistant', content: 'I read the image.' },
+        { role: 'user', content: 'Inspect the attached file.' },
+      ] })
+      await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
+    })
+  })
+
+  test('rejects a quadrant-color image inside an Anthropic tool result', async ({ page }) => {
+    await withProbePage(page, async (probe) => {
+      const source = writeAttachmentFixture('image')
+      const webp = await webpFromFixture(probe, source)
+      const data = webp.slice(webp.indexOf(',') + 1)
+      const status = scriptedStatus({ messages: [
+        { role: 'user', content: [{ type: 'text', text: 'Inspect the attached file.' }] },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: {} }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/webp', data } }] }] },
+      ] }, 'anthropic-messages')
+      await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
+    })
+  })
+
+  test('rejects a quadrant-color image in a system row', async ({ page }) => {
+    await withProbePage(page, async (probe) => {
+      const source = writeAttachmentFixture('image')
+      const webp = await webpFromFixture(probe, source)
+      const status = scriptedStatus({ messages: [
+        { role: 'user', content: 'Inspect the attached file.' },
+        { role: 'system', content: [{ type: 'image_url', image_url: { url: webp } }] },
+      ] })
+      await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
+    })
+  })
+
+  test('rejects PDF page text and a PDF header alone', async ({ page }) => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('pdf')
-      await expectNativeAttachmentProof(probe, scriptedStatus({ messages: [{ role: 'user', content: 'Page text: LEAPMUX_PDF_PAGE_49' }] }), 'pdf', source)
+      const pageText = expectNativeAttachmentProof(probe, scriptedStatus({ messages: [{ role: 'user', content: 'Page text: LEAPMUX_PDF_PAGE_49' }] }), 'pdf', source)
+      await expect(pageText).rejects.toThrow('carries no typed PDF part with the exact source bytes')
       const headerOnly = expectNativeAttachmentProof(probe, scriptedStatus({ messages: [{ role: 'user', content: '%PDF-1.4 JVBERi0' }] }), 'pdf', source)
-      await expect(headerOnly).rejects.toThrow('does not carry the complete pdf file')
+      await expect(headerOnly).rejects.toThrow('carries no typed PDF part with the exact source bytes')
+    })
+  })
+
+  test('rejects a typed PDF part that carries only the PDF header', async ({ page }) => {
+    await withProbePage(page, async (probe) => {
+      const source = writeAttachmentFixture('pdf')
+      const header = readFileSync(source).subarray(0, 8).toString('base64')
+      const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'file', file: { filename: 'doc.pdf', file_data: `data:application/pdf;base64,${header}` } }] }] })
+      await expect(expectNativeAttachmentProof(probe, status, 'pdf', source, 'openai-chat-completions')).rejects.toThrow('has 8 bytes with SHA-256')
     })
   })
 
@@ -114,13 +233,24 @@ test.describe('expectNativeAttachmentProof', () => {
     })
   })
 
-  test('accepts a PDF page that the provider rasterizes into four colors', async ({ page }) => {
+  test('accepts the complete PDF in a native Chat Completions file part', async ({ page }) => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('pdf')
-      const image = writeAttachmentFixture('image')
-      const raster = `data:image/png;base64,${readFileSync(image).toString('base64')}`
-      const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: raster } }] }] })
-      await expectNativeAttachmentProof(probe, status, 'pdf', source)
+      const fileData = `data:application/pdf;base64,${readFileSync(source).toString('base64')}`
+      const status = scriptedStatus({ messages: [
+        { role: 'system', content: 'You are a coding agent.' },
+        { role: 'user', content: [{ type: 'text', text: 'Inspect the attached file.' }, { type: 'file', file: { filename: 'doc.pdf', file_data: fileData } }] },
+      ] })
+      await expectNativeAttachmentProof(probe, status, 'pdf', source, 'openai-chat-completions')
+    })
+  })
+
+  test('accepts the complete PDF in a native Anthropic document block', async ({ page }) => {
+    await withProbePage(page, async (probe) => {
+      const source = writeAttachmentFixture('pdf')
+      const document = { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: readFileSync(source).toString('base64') } }
+      const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'text', text: 'Read the attached PDF.' }, document] }] }, 'anthropic-messages')
+      await expectNativeAttachmentProof(probe, status, 'pdf', source, 'anthropic-messages')
     })
   })
 })

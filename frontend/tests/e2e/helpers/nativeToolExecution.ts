@@ -8,8 +8,9 @@ import { expect } from '@playwright/test'
 import { currentNativeAgent, nativeTextStep } from './nativeScenario'
 import { createNativeToolDirectory } from './nativeToolDirectory'
 import { nativeToolResult } from './nativeToolResult'
+import { createOutputGate, runWithGatedOutput } from './outputGate'
 import { bashToolCall, editToolCall, readToolCall, writeToolCall } from './providerToolCalls'
-import { quotePosixShellArgument } from './shellArguments'
+import { printfMarkerCommand, quotePosixShellArgument } from './shellArguments'
 import { assistantBubbles, messageBubbles, messageContents, sendMessage, waitForAgentIdle } from './ui'
 
 interface ToolPreparation {
@@ -105,10 +106,23 @@ export async function nativeFileReadResult(
   return result.text
 }
 
+export interface ShellToolExecutionOptions extends ToolPreparation {
+  includeFailure?: boolean
+  /**
+   * Hold each command until the browser shows its output.
+   *
+   * A native shell tool can lose the output of a command that exits right after it
+   * writes (see `OutputGate`). A held command stays alive until the live view shows
+   * its output, so the tool cannot lose it. Only a provider with that defect sets
+   * this option, because the hold changes the command that the model asks for.
+   */
+  outputGate?: boolean
+}
+
 /** Verify actual shell output and a failed command through the native tool path. */
 export async function exerciseShellToolExecution(
   context: ManagedNativeScenarioContext,
-  options: ToolPreparation & { includeFailure?: boolean } = {},
+  options: ShellToolExecutionOptions = {},
 ): Promise<void> {
   await options.prepare?.()
   const agent = await currentNativeAgent(context)
@@ -117,19 +131,25 @@ export async function exerciseShellToolExecution(
   expect(existsSync(outputFile)).toBe(false)
   const marker = randomUUID().replaceAll('-', '')
   const commands = [
-    { command: `printf 'SHELL${marker}%s\\n' "$((40 + 2))" > ${quotePosixShellArgument(outputFile)}; cat ${quotePosixShellArgument(outputFile)}`, output: `SHELL${marker}42`, failed: false },
-    ...(options.includeFailure === false ? [] : [{ command: `printf 'SHELLERR${marker}%s\\n' "$((70 + 7))" >&2; exit 7`, output: `SHELLERR${marker}77`, failed: true }]),
+    { command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > ${quotePosixShellArgument(outputFile)}; cat ${quotePosixShellArgument(outputFile)}`, output: `SHELL${marker}42`, failed: false },
+    ...(options.includeFailure === false ? [] : [{ command: `${printfMarkerCommand(`SHELLERR${marker}`, 77)} >&2; exit 7`, output: `SHELLERR${marker}77`, failed: true }]),
   ]
   for (const [index, command] of commands.entries()) {
     const stepIndex = (await context.modelScript.status()).stepCount
     const answer = `The shell scenario ${index} ended.`
     const callId = `shell-${marker}-${index}`
+    const outputRow = () => messageContents(context.page).filter({ hasText: command.output }).first()
+    // The gate file lives in the literal private tool directory. A hold that quotes its path incorrectly runs the marker command, and the check of `command-expanded-marker` below finds it.
+    const gate = options.outputGate ? createOutputGate(directory) : undefined
     await context.modelScript.queue(
-      { toolCalls: [bashToolCall(context.provider, callId, command.command)] },
+      { toolCalls: [bashToolCall(context.provider, callId, gate ? gate.hold(command.command) : command.command)] },
       nativeTextStep(context, answer),
     )
     await sendMessage(context.page, context.modelScript.prompt(`Run the native shell scenario ${index}.`))
-    await waitForNativeToolSteps(context, stepIndex + 2)
+    await runWithGatedOutput(
+      gate && { gate, shown: () => expect(outputRow(), 'the live view shows the output of the held command').toBeVisible() },
+      () => waitForNativeToolSteps(context, stepIndex + 2),
+    )
     const request = requestAt((await context.modelScript.status()).requests, stepIndex + 1)
     const result = context.readToolResult
       ? await context.readToolResult(request, callId)
@@ -139,13 +159,13 @@ export async function exerciseShellToolExecution(
       expect(readFileSync(outputFile, 'utf8')).toBe(`${command.output}\n`)
       expect(existsSync(join(agent.workingDir, 'command-expanded-marker'))).toBe(false)
     }
-    await expect(messageContents(context.page).filter({ hasText: command.output }).first()).toBeVisible()
+    await expect(outputRow()).toBeVisible()
     if (command.failed) {
       if ('exitCode' in result)
         expect(result.exitCode).toBe(7)
       else
         expect(result.text).toMatch(/(?:exit(?:ed)?(?: with)?[ _]code|exitCode|exit[ _]status)[^\d-]*7\b/i)
-      await expect(messageBubbles(context.page).filter({ hasText: command.output }).first()).toContainText(/Error|failed|exit(?:ed)?(?: with)?(?: code)?\s*7/i)
+      await expect(messageBubbles(context.page).filter({ hasText: command.output }).first()).toContainText(/Error|failed|exit[^\d-]*7\b/i)
     }
     await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
   }

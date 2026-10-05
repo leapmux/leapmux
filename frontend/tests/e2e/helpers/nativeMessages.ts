@@ -5,6 +5,7 @@ import { AgentStatus, ListAgentMessagesRequestSchema, ListAgentMessagesResponseS
 import { decompressContentToString } from '../../../src/lib/decompress'
 import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from './api'
+import { jsonStringValues } from './jsonStringValues'
 import { nativeAgentById } from './nativeScenario'
 
 export interface NativeMessageSnapshot {
@@ -93,6 +94,17 @@ export function nativeMessageSupplement(message: AgentChatMessage): unknown {
   catch (cause) {
     throw new Error('The native message supplement contains invalid JSON.', { cause })
   }
+}
+
+/**
+ * Select the Worker rows that hold the exact text in one decoded string value of the content or the supplement.
+ * The search reads no provider field, so it can count every row that carries a unique marker.
+ */
+export function nativeMessagesHoldingText(messages: readonly AgentChatMessage[], text: string): AgentChatMessage[] {
+  if (text.trim() === '')
+    throw new Error('The native message search requires nonempty text.')
+  return messages.filter(message => [nativeMessageBody(message), nativeMessageSupplement(message)]
+    .some(value => jsonStringValues(value).some(item => item.includes(text))))
 }
 
 export interface NativeToolOutputRecordOptions {

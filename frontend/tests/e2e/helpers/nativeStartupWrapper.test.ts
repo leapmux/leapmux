@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'node:child_process'
+import type { NativeStartupLaunch } from './nativeStartupWrapper'
 import { Buffer } from 'node:buffer'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
@@ -37,7 +38,7 @@ interface StartupObservationFixtureOptions {
   observeEnvironment?: readonly string[]
 }
 
-async function fixture(options: StartupObservationFixtureOptions = {}, fixtureDirectory = directory) {
+async function fixture(options: StartupObservationFixtureOptions = {}, fixtureDirectory = directory, launch: Pick<NativeStartupLaunch, 'passThroughWhen'> = {}) {
   mkdirSync(fixtureDirectory, { recursive: true })
   const outputFile = join(fixtureDirectory, 'actual-native-run.json')
   const program = join(fixtureDirectory, 'real-native-fixture.cjs')
@@ -47,6 +48,7 @@ async function fixture(options: StartupObservationFixtureOptions = {}, fixtureDi
     executable: process.execPath,
     args: [program],
     holdWhen: ['runtime'],
+    ...launch,
   }, options)
   wrappers.push(wrapper)
   const start = (args: string[], input?: string, runtime: { environment?: NodeJS.ProcessEnv, workingDir?: string } = {}) => {
@@ -120,9 +122,9 @@ describe('resolveNativeStartupLaunch', () => {
   it('finds the isolated executable and retains native arguments without running it', () => {
     const executable = join(directory, 'private-native')
     writeFileSync(executable, 'This fixture must never run.\n', { mode: 0o755 })
-    const launch = { binaryName: 'private-native', args: ['native-prefix'], holdWhen: ['runtime', '--rpc'], lazy: true }
+    const launch = { binaryName: 'private-native', args: ['native-prefix'], holdWhen: ['runtime', '--rpc'], passThroughWhen: ['--probe'], lazy: true }
     expect(resolveNativeStartupLaunch({ PATH: directory }, launch)).toEqual({ ...launch, executable })
-    expect(launch).toEqual({ binaryName: 'private-native', args: ['native-prefix'], holdWhen: ['runtime', '--rpc'], lazy: true })
+    expect(launch).toEqual({ binaryName: 'private-native', args: ['native-prefix'], holdWhen: ['runtime', '--rpc'], passThroughWhen: ['--probe'], lazy: true })
   })
 
   it('rejects absent environments and executables without reading the host path', () => {
@@ -424,6 +426,48 @@ describe('createNativeStartupWrapper', () => {
     await wrapper.entry
     await wrapper.release()
     expect(await exited).toEqual([7, null])
+  })
+
+  it('runs a pass-through launch at once and still holds the runtime launch after it', async () => {
+    const { wrapper, outputFile, start } = await fixture({}, directory, { passThroughWhen: ['--probe'] })
+    const probe = start(['runtime', '--probe'])
+    expect(await once(probe, 'exit')).toEqual([0, null])
+    expect(JSON.parse(readFileSync(outputFile, 'utf8')).argv).toEqual(['runtime', '--probe'])
+    rmSync(outputFile)
+
+    const child = start(['runtime'])
+    const exited = once(child, 'exit')
+    expect(await wrapper.entry).toEqual({ pid: child.pid, argv: ['runtime'] })
+    expect(existsSync(outputFile)).toBe(false)
+    await wrapper.release()
+    expect(await exited).toEqual([0, null])
+    expect(JSON.parse(readFileSync(outputFile, 'utf8')).argv).toEqual(['runtime'])
+  })
+
+  it('preserves the real exit code of a pass-through launch', async () => {
+    const { start } = await fixture({}, directory, { passThroughWhen: ['--probe'] })
+    const probe = start(['runtime', '--probe'], undefined, { environment: { NATIVE_WRAPPER_UNIT_EXIT: '3' } })
+    expect(await once(probe, 'exit')).toEqual([3, null])
+  })
+
+  it('runs a pass-through launch with the real executable when the runtime fails', async () => {
+    const { wrapper, outputFile, start } = await fixture({ failRuntime: true }, directory, { passThroughWhen: ['--probe'] })
+    const probe = start(['runtime', '--probe'])
+    expect(await once(probe, 'exit')).toEqual([0, null])
+    expect(JSON.parse(readFileSync(outputFile, 'utf8')).argv).toEqual(['runtime', '--probe'])
+
+    const child = start(['runtime'])
+    const exited = once(child, 'exit')
+    await wrapper.entry
+    await wrapper.release()
+    expect(await exited).toEqual([127, null])
+  })
+
+  it.each([
+    { label: 'an empty word', passThroughWhen: [''] },
+    { label: 'a word that is also a hold word', passThroughWhen: ['--probe', 'runtime'] },
+  ])('rejects a pass-through list with $label', async ({ passThroughWhen }) => {
+    await expect(fixture({}, directory, { passThroughWhen })).rejects.toThrow('pass-through')
   })
 
   it('reports a missing runtime executable while discovery still works', async () => {

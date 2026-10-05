@@ -92,7 +92,10 @@ diracTest('reopens a completed native task with saved Worker rows and no prior m
   const answer = savedAnswers.join('\n').match(/\bRESUMEANSWER[a-f0-9]{32}\b/)?.[0]
   if (!prompt || !answer)
     throw new Error('The native task or saved Worker rows omitted their unique resume markers.')
-  const nextContext = nativeModelContextText(resumed)
+  // The markers belong to this scenario. They are not text from another task.
+  expect(prompt).toBe(`RESUMEPROMPT${resumed.marker}`)
+  expect(answer).toBe(resumed.originalAnswer)
+  const nextContext = nativeModelContextText(resumed.request)
   expect(nextContext).not.toContain(prompt)
   expect(nextContext).not.toContain(answer)
 })

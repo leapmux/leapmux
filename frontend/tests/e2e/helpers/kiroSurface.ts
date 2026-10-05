@@ -97,6 +97,17 @@ export const KIRO_OPERATION = {
   ListAvailableModels: 'ListAvailableModels',
 } as const
 
+/**
+ * The values of `thinking.type` that make a model's thinking switchable.
+ *
+ * Kiro 2.24 offers its `thinking` option only for a model whose schema lists both values.
+ * Its request then states `adaptive` for On and `disabled` for Off. Kiro never sends `enabled`.
+ */
+const KIRO_THINKING_TYPES = ['adaptive', 'disabled'] as const
+
+/** One value of `thinking.type` that Kiro sends. */
+type KiroThinkingType = typeof KIRO_THINKING_TYPES[number]
+
 /** One model of the catalogue, in the shape `ListAvailableModels` answers with. */
 export interface KiroMockModel {
   modelId: string
@@ -108,7 +119,7 @@ export interface KiroMockModel {
   /** The level a session starts on. Required with `effortLevels`. */
   defaultEffort?: string
   /** The independent thinking axis, when the model can switch it. */
-  thinkingDefault?: 'enabled' | 'disabled'
+  thinkingDefault?: KiroThinkingType
 }
 
 /**
@@ -195,7 +206,7 @@ export function kiroModelCatalog() {
       ...(model.thinkingDefault !== undefined
         ? { thinking: {
             type: 'object',
-            properties: { type: { type: 'string', enum: ['enabled', 'disabled'], default: model.thinkingDefault } },
+            properties: { type: { type: 'string', enum: [...KIRO_THINKING_TYPES], default: model.thinkingDefault } },
           } }
         : {}),
     }

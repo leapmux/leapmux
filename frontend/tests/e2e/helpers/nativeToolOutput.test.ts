@@ -7,6 +7,9 @@ describe('computedNativeToolOutput', () => {
     const output = computedNativeToolOutput({ prefix: 'OutputFileProbe', lineCount: 5, padding: 0 })
     expect(output.source).not.toContain(output.omittedMarker)
     expect(output.source).not.toContain(output.lastMarker)
+    expect(output.source).not.toContain(output.lineMarker)
+    expect(output.lineMarker).toBe('OutputFileProbe-line-')
+    expect(output.text.split('\n').slice(0, -1).every(line => line.startsWith(output.lineMarker))).toBe(true)
     expect(runInNewContext(`${output.source}\ncompleteOutput`, {}, { timeout: 1000 })).toBe(output.text)
     expect(output.text.split('\n')).toEqual([
       'OutputFileProbe-line-0:',

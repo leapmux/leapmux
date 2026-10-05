@@ -1,6 +1,6 @@
 import type { McpServerReceipt } from './mcpServerReceipt'
 import { describe, expect, it } from 'vitest'
-import { mcpReceiptRequestId, nativeMcpRefusal, parseMcpServerReceipt } from './mcpServerReceipt'
+import { mcpReceiptRequestId, nativeMcpCancellation, nativeMcpRefusal, nativeMcpUnansweredInput, parseMcpServerReceipt } from './mcpServerReceipt'
 
 function emptyReceipt(): McpServerReceipt {
   return { initializeCapabilities: null, toolCatalogs: [], elicitationRequests: [], elicitationReplies: [], toolResults: [] }
@@ -74,6 +74,93 @@ describe('nativeMcpRefusal', () => {
     const value = refusalReceipt()
     change(value)
     expect(() => nativeMcpRefusal(value)).toThrow()
+  })
+})
+
+describe('nativeMcpCancellation', () => {
+  function cancellationReceipt(): McpServerReceipt {
+    return {
+      ...refusalReceipt(),
+      initializeCapabilities: { elicitation: { form: {}, url: {} } },
+      elicitationReplies: [{ id: 'probe-form', kind: 'result', result: { action: 'cancel' } }],
+      toolResults: [{ id: 2, tool: 'ask', text: 'FORM_ROUND_TRIP_CANCELLED', isError: false }],
+    }
+  }
+
+  it('pairs the actual request, native cancel, and exact originating tool result', () => {
+    const value = cancellationReceipt()
+    expect(nativeMcpCancellation(value)).toEqual({ request: value.elicitationRequests[0], reply: value.elicitationReplies[0], toolResult: value.toolResults[0] })
+  })
+
+  it('accepts an empty elicitation capability', () => {
+    const value = cancellationReceipt()
+    value.initializeCapabilities = { elicitation: {} }
+    expect(nativeMcpCancellation(value).request.id).toBe('probe-form')
+  })
+
+  it('uses the last reply and the matching result of the last request', () => {
+    const value = cancellationReceipt()
+    value.elicitationRequests.unshift({ id: 'earlier-form', toolRequestId: 1, params: { mode: 'form' } })
+    value.elicitationReplies.unshift({ id: 'earlier-form', kind: 'result', result: { action: 'accept', content: { count: 0, enabled: false, color: 'b' } } })
+    value.toolResults.unshift({ id: 1, tool: 'ask', text: 'FORM_ROUND_TRIP_OK', isError: false })
+    value.toolResults.push({ id: 99, tool: 'ask', text: 'FORM_ROUND_TRIP_OK', isError: false })
+    const proof = nativeMcpCancellation(value)
+    expect(proof.request.id).toBe('probe-form')
+    expect(proof.toolResult.id).toBe(2)
+  })
+
+  it.each([
+    { label: 'no initialize', change: (value: McpServerReceipt) => { value.initializeCapabilities = null } },
+    { label: 'no declared elicitation capability', change: (value: McpServerReceipt) => { value.initializeCapabilities = {} } },
+    { label: 'no actual input request', change: (value: McpServerReceipt) => { value.elicitationRequests = [] } },
+    { label: 'an unanswered request', change: (value: McpServerReceipt) => { value.elicitationReplies = [] } },
+    { label: 'an unmatched reply ID', change: (value: McpServerReceipt) => { value.elicitationReplies[0]!.id = 'different' } },
+    { label: 'an accepted form', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: { action: 'accept', content: { count: 0, enabled: false, color: 'b' } } }] } },
+    { label: 'a user decline', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: { action: 'decline' } }] } },
+    { label: 'a result without an action', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: {} }] } },
+    { label: 'a cancel that holds form content', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: { action: 'cancel', content: {} } }] } },
+    { label: 'a native refusal error', change: (value: McpServerReceipt) => { value.elicitationReplies = refusalReceipt().elicitationReplies } },
+    { label: 'a later accept of the same request', change: (value: McpServerReceipt) => { value.elicitationReplies.push({ id: 'probe-form', kind: 'result', result: { action: 'accept', content: {} } }) } },
+    { label: 'an unrelated tool result', change: (value: McpServerReceipt) => { value.toolResults[0]!.id = 99 } },
+    { label: 'a result of another tool', change: (value: McpServerReceipt) => { value.toolResults[0]!.tool = 'echo' } },
+    { label: 'an error flag on the cancelled result', change: (value: McpServerReceipt) => { value.toolResults[0]!.isError = true } },
+    { label: 'an altered cancelled result', change: (value: McpServerReceipt) => { value.toolResults[0]!.text = 'FORM_ROUND_TRIP_DECLINED' } },
+  ])('rejects $label as cancelled-input proof', ({ change }) => {
+    const value = cancellationReceipt()
+    change(value)
+    expect(() => nativeMcpCancellation(value)).toThrow()
+  })
+})
+
+describe('nativeMcpUnansweredInput', () => {
+  function unansweredReceipt(): McpServerReceipt {
+    return { ...refusalReceipt(), elicitationReplies: [], toolResults: [] }
+  }
+
+  it('returns the actual request that the client left without a reply', () => {
+    const value = unansweredReceipt()
+    expect(nativeMcpUnansweredInput(value)).toEqual({ request: value.elicitationRequests[0] })
+  })
+
+  it('accepts a reply and a result that belong to an earlier request', () => {
+    const value = unansweredReceipt()
+    value.elicitationRequests.unshift({ id: 'earlier-form', toolRequestId: 1, params: { mode: 'form' } })
+    value.elicitationReplies.push({ id: 'earlier-form', kind: 'error', error: { code: -32601, message: 'Method not found' } })
+    value.toolResults.push({ id: 1, tool: 'ask', text: 'FORM_ROUND_TRIP_REFUSED: -32601 Method not found', isError: true })
+    expect(nativeMcpUnansweredInput(value).request.id).toBe('probe-form')
+  })
+
+  it.each([
+    { label: 'no initialize', change: (value: McpServerReceipt) => { value.initializeCapabilities = null } },
+    { label: 'a declared elicitation capability', change: (value: McpServerReceipt) => { value.initializeCapabilities = { elicitation: {} } } },
+    { label: 'no actual input request', change: (value: McpServerReceipt) => { value.elicitationRequests = [] } },
+    { label: 'a native refusal', change: (value: McpServerReceipt) => { value.elicitationReplies = refusalReceipt().elicitationReplies } },
+    { label: 'a declined form', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: { action: 'decline' } }] } },
+    { label: 'a completed tool call', change: (value: McpServerReceipt) => { value.toolResults = [{ id: 2, tool: 'ask', text: 'FORM_ROUND_TRIP_FAILED', isError: true }] } },
+  ])('rejects $label as unanswered-input proof', ({ change }) => {
+    const value = unansweredReceipt()
+    change(value)
+    expect(() => nativeMcpUnansweredInput(value)).toThrow()
   })
 })
 

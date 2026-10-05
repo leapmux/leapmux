@@ -8,7 +8,9 @@ import { openAgentViaAPI } from './api'
 import { expectNoNativeStartupControl } from './nativeControlObservation'
 import { nativeAgentById } from './nativeScenario'
 import { withNativeStartupWorker } from './nativeStartupWorker'
+import { resolveNativeStartupLaunch } from './nativeStartupWrapper'
 import { createTestDirectory } from './runDirectory'
+import { hubSpawnEnv } from './server'
 import { tabById } from './ui'
 
 export interface NativeProjectConfiguration {
@@ -31,6 +33,32 @@ interface NativeWorkspaceTrustBaseOptions {
 export type NativeWorkspaceTrustOptions = NativeWorkspaceTrustBaseOptions & (
   { startup?: 'active' } | { startup: 'failed', startupError: string }
 )
+
+/**
+ * A private Worker on which a provider loads the project configuration that the shared agent
+ * environment turns off.
+ *
+ * `helpers/mockAgentEnvironment.ts` sets `disableVariable` to `true` for every agent of the suite,
+ * so that no spec reads the configuration of the LeapMux checkout around its run directory. A
+ * workspace-trust spec exists to prove that the provider loads project configuration, so it runs
+ * its agent on a private Worker where the variable is `false`. The shared environment must
+ * disable it, which also refuses a misspelled variable that would leave the configuration off.
+ *
+ * The executable is the one that a Worker spawned with the agent environment finds
+ * (`hubSpawnEnv`), because the agent environment holds no PATH where it needs no change.
+ */
+export function projectConfigurationWorker(
+  environment: Record<string, string> | undefined,
+  launch: Omit<NativeStartupLaunch, 'executable'>,
+  disableVariable: string,
+): NonNullable<NativeWorkspaceTrustBaseOptions['worker']> {
+  if (environment?.[disableVariable] !== 'true')
+    throw new Error(`The shared agent environment does not turn off project configuration through ${disableVariable}.`)
+  return {
+    launch: resolveNativeStartupLaunch(hubSpawnEnv(environment), launch),
+    workerEnvironment: () => ({ [disableVariable]: 'false' }),
+  }
+}
 
 /** Observe actual project configuration processing from native startup through its completed turn. */
 export async function exerciseNativeWorkspaceTrustLimit(

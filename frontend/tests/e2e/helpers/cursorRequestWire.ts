@@ -1,4 +1,5 @@
 import type { CursorProtobufFields } from './cursorProtobuf'
+import type { CursorContextRule } from './cursorWire'
 import { cursorProtobufNumber, cursorProtobufString, readCursorProtobufFields } from './cursorProtobuf'
 
 export interface CursorRequestedModelWitness {
@@ -12,7 +13,13 @@ export interface CursorRunRequestWitness {
   requestedModel?: CursorRequestedModelWitness
   modelDetails?: { modelId: string, maxMode?: boolean }
   mode?: number
+  /** The rules that the user attached to the message. A project's own rules are not among them. */
   cursorRules?: Array<{ path: string, content: string }>
+  /**
+   * The rules that the CLI stated in its answer to a request context query, which is
+   * where it states the project rules it loaded. Absent until a spec asks for them.
+   */
+  contextRules?: CursorContextRule[]
 }
 
 function message(fields: CursorProtobufFields, field: number): CursorProtobufFields | undefined {

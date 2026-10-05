@@ -1,6 +1,8 @@
-import type { Locator } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import type { MockModelRequestRecord, MockModelToolCall } from './mockModelScript'
+import type { NativeMessageSnapshot } from './nativeMessages'
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
+import type { GatedOutput } from './outputGate'
 import { Buffer } from 'node:buffer'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
@@ -8,16 +10,23 @@ import { basename, join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { expectNoNativeControl } from './nativeControlObservation'
+import { readNativeMessageSnapshot } from './nativeMessages'
 import { currentNativeAgent, nativeTextStep } from './nativeScenario'
 import { waitForNativeToolSteps } from './nativeToolExecution'
 import { nativeToolResult } from './nativeToolResult'
+import { runWithGatedOutput } from './outputGate'
 import { bashToolCall } from './providerToolCalls'
 import { quotePosixShellArgument } from './shellArguments'
-import { assistantBubbles, sendMessage, waitForAgentIdle, waitForControlBanner } from './ui'
+import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner } from './ui'
 
 /** A real native operation retains its file guard and the exact result proof. */
 export interface NativePermissionOperationPlan {
   toolCall: MockModelToolCall
+  /**
+   * The gate that holds the command of `toolCall` until the browser shows its output.
+   * A provider whose shell tool can lose the output of a fast command sets it (see `OutputGate`).
+   */
+  outputGate?: GatedOutput
   beforeDecision: () => void | Promise<void>
   nativeProof: (request: MockModelRequestRecord) => void | Promise<void>
 }
@@ -54,10 +63,17 @@ export async function exerciseNativePermissionDecision(
   options: {
     toolCall: MockModelToolCall
     decision: 'allow' | 'deny'
+    /**
+     * The gate that holds the command of `toolCall`. The gate opens after the browser shows the
+     * output of the allowed command. A denied command prints nothing, so a denial cannot use it.
+     */
+    outputGate?: GatedOutput
     beforeDecision?: (banner: Locator) => void | Promise<void>
     nativeProof: (request: MockModelRequestRecord) => void | Promise<void>
   },
 ): Promise<void> {
+  if (options.outputGate && options.decision === 'deny')
+    throw new Error('A denied command prints no output, so it cannot open an output gate.')
   const start = (await context.modelScript.status()).stepCount
   const answer = 'The native permission decision reached the next turn.'
   await context.modelScript.queue({ toolCalls: [options.toolCall] }, nativeTextStep(context, answer))
@@ -67,13 +83,90 @@ export async function exerciseNativePermissionDecision(
   await options.beforeDecision?.(banner)
   await expect(context.page.locator('[data-testid="dialog-editor"]:visible')).toHaveCount(0)
   await context.page.locator(`[data-testid="control-${options.decision}-btn"]:visible`).first().click()
-  const status = await context.modelScript.waitForSteps(start + 2)
-  await waitForAgentIdle(context.page)
+  const status = await runWithGatedOutput(options.outputGate, async () => {
+    const reached = await context.modelScript.waitForSteps(start + 2)
+    await waitForAgentIdle(context.page)
+    return reached
+  })
   const request = status.requests.find(record => record.stepIndex === start + 1)
   if (!request)
     throw new Error('The native permission decision produced no next model request.')
   await options.nativeProof(request)
   await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
+}
+
+/**
+ * Require the visible result row of one tool call to state a declined call.
+ * The row carries the declined status and its heading, and it keeps the native refusal text when the caller gives one.
+ */
+export async function expectDeclinedToolRow(page: Page, renderedCallId: string, refusal?: string): Promise<void> {
+  const escaped = await page.evaluate(id => CSS.escape(id), renderedCallId)
+  const row = page.locator(`[data-testid="message-bubble"][data-tool-call-id=${escaped}][data-tool-row-role="result"]:visible`)
+  await expect(row).toHaveCount(1)
+  await expect(row).toHaveAttribute('data-tool-status', 'declined')
+  await expect(row).toContainText('Declined')
+  if (refusal !== undefined)
+    await expect(row).toContainText(refusal)
+}
+
+/**
+ * Deny an actual native permission request whose runtime ends the turn after the refusal.
+ * Such a runtime sends no further model request, so the scenario queues only the turn that asks for the tool.
+ * A model turn queued after it would stay unconsumed.
+ * After the decision and after a reload, the scenario proves the unchanged target, the same native session,
+ * the stored native refusal, and that the model received no further request.
+ */
+export async function exerciseNativePermissionRefusal(context: ManagedNativeScenarioContext, options: {
+  toolCall: MockModelToolCall
+  prompt: string
+  /** Text that identifies the operation in the native permission banner. */
+  bannerText?: string
+  /** Prove the unchanged target. The scenario calls it before the decision, after it, and after a reload. */
+  expectUnchanged: () => void
+  /** Prove the stored native refusal from a Worker snapshot of the same agent. Throw when the snapshot does not prove it. */
+  nativeRefusal: (snapshot: NativeMessageSnapshot) => void
+  /** Prove provider-owned view state after the decision and after a reload. */
+  viewProof?: () => Promise<void>
+}): Promise<void> {
+  const agent = await currentNativeAgent(context)
+  const start = (await context.modelScript.status()).stepCount
+  await context.modelScript.queue({ toolCalls: [options.toolCall] })
+  await sendMessage(context.page, context.modelScript.prompt(options.prompt))
+  await context.modelScript.waitForSteps(start + 1)
+  const banner = await waitForControlBanner(context.page)
+  if (options.bannerText !== undefined)
+    await expect(banner).toContainText(options.bannerText)
+  options.expectUnchanged()
+  await expect(context.page.locator('[data-testid="dialog-editor"]:visible')).toHaveCount(0)
+  await context.page.locator('[data-testid="control-deny-btn"]:visible').first().click()
+  await waitForAgentIdle(context.page)
+  await expect(banner.filter({ visible: true })).toHaveCount(0)
+  for (const reload of [false, true]) {
+    if (reload) {
+      await context.page.reload()
+      await openWorkspace(context.page, context.workspaceId)
+    }
+    options.expectUnchanged()
+    const current = await currentNativeAgent(context)
+    expect(current.id).toBe(agent.id)
+    expect(current.agentSessionId).toBe(agent.agentSessionId)
+    // Read until the Worker holds the refusal row. The poll reports the last reader error when it never does.
+    await expect.poll(async () => {
+      const snapshot = await readNativeMessageSnapshot(context, agent.id)
+      try {
+        options.nativeRefusal(snapshot)
+        return 'proved'
+      }
+      catch (error) {
+        return error instanceof Error ? error.message : String(error)
+      }
+    }).toBe('proved')
+    await options.viewProof?.()
+    const status = await context.modelScript.status()
+    expect(status.stepCount).toBe(start + 1)
+    expect(status.nextStep).toBe(start + 1)
+    expect(status.unexpectedRequests).toEqual([])
+  }
 }
 
 /** Require native Allow before a real file change and calculated command output. */

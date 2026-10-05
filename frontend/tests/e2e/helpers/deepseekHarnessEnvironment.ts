@@ -4,12 +4,17 @@ import { isAbsolute, join } from 'node:path'
 export const DEEPSEEK_HARNESS_PROVIDER_ID = 'deepseek-official'
 export const DEEPSEEK_HARNESS_MODEL_ID = `${DEEPSEEK_HARNESS_PROVIDER_ID}/deepseek-flash`
 export const DEEPSEEK_HARNESS_ALT_MODEL_ID = `${DEEPSEEK_HARNESS_PROVIDER_ID}/deepseek-v4-pro`
+/** The context window that the private profile states for each of its models, in tokens. */
+export const DEEPSEEK_HARNESS_CONTEXT_WINDOW = 1_000_000
 
 export interface DeepseekHarnessEnvironmentOptions {
   runDirectory: string
   modelURL: string
   modelKey: string
-  /** Native default preset for this private test profile. */
+  /**
+   * Native default preset for this private test profile.
+   * An absent value writes no registry row, so the native standard default applies.
+   */
   agentPreset?: 'standard' | 'ptc'
   /** Existing shared MCP server executable and arguments. */
   mcpServers?: readonly { name: string, command: string, args: readonly string[] }[]
@@ -35,12 +40,15 @@ export function createDeepseekHarnessEnvironment(options: DeepseekHarnessEnviron
       apiKeyEnv: 'DEEPSEEK_API_KEY',
       maxTokens: 4096,
       models: [
-        { id: 'deepseek-flash', name: 'Mock Flash', contextWindow: 1_000_000, inputModalities: ['text', 'image'] },
-        { id: 'deepseek-v4-pro', name: 'Mock Pro', contextWindow: 1_000_000, inputModalities: ['text', 'image'] },
+        { id: 'deepseek-flash', name: 'Mock Flash', contextWindow: DEEPSEEK_HARNESS_CONTEXT_WINDOW, inputModalities: ['text', 'image'] },
+        { id: 'deepseek-v4-pro', name: 'Mock Pro', contextWindow: DEEPSEEK_HARNESS_CONTEXT_WINDOW, inputModalities: ['text', 'image'] },
       ],
     } },
     { id: 'agent-default-model', config: { provider: DEEPSEEK_HARNESS_PROVIDER_ID, model: 'deepseek-flash', reasoningEffort: 'high' } },
   ]
+  // The native registry reads its default preset from this row. An absent selection keeps the shipped default.
+  if (options.agentPreset !== undefined)
+    rows.push({ id: 'agent-preset-registry', config: { default: options.agentPreset } })
   if (options.mcpServers?.length) {
     const names = new Set<string>()
     const servers = options.mcpServers.map((server) => {

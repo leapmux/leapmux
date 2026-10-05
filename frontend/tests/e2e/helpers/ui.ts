@@ -9,13 +9,14 @@ import { fromJson } from '@bufbuild/protobuf'
 import { expect, test } from '@playwright/test'
 import { permissionPresetsFor } from '../../../src/components/chat/providers/permissionPresets'
 import { permissionPresetAvailable } from '../../../src/components/chat/providerSettings'
+import { hasOptions } from '../../../src/components/chat/settingsGroups'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { LocateTabResponseSchema, TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { accountStorageKey, getTtlForKey, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT, PREFIX_FILES_SORT_ORDER } from '../../../src/lib/browserStorage'
 import { authedHeaders } from './api'
 import { solveCaptchaViaUI } from './captcha'
 import { nativeAgentById } from './nativeScenario'
-import { E2E_BROWSER_HOST, getGlobalState } from './server'
+import { E2E_BROWSER_HOST } from './server'
 import { readEntry, storageKeys, writeEntry } from './storage'
 
 /** Read immediate locator visibility. Return false when the read fails. */
@@ -92,15 +93,39 @@ export async function expectClipsLongText(label: Locator) {
 // ──────────────────────────────────────────────
 
 /**
+ * How a test enters the text of a message into the composer.
+ * `type` sends key events for each character.
+ * `insert` sends each line with one insertion, for a text that typing would take longer than the test.
+ */
+export type MessageEntry = 'type' | 'insert'
+
+/**
+ * Put the text into the focused composer. Both modes give the same composer content: `insert` presses Enter
+ * for each line break, as typing does, and inserts each line at once.
+ */
+export async function enterMessageText(page: Page, text: string, entry: MessageEntry): Promise<void> {
+  if (entry === 'type') {
+    await page.keyboard.type(text)
+    return
+  }
+  for (const [index, line] of text.split('\n').entries()) {
+    if (index > 0)
+      await page.keyboard.press('Enter')
+    if (line !== '')
+      await page.keyboard.insertText(line)
+  }
+}
+
+/**
  * Send a message through the ProseMirror editor with no inter-key delay.
  * ProseMirror handles the ordered key events synchronously. The former 100ms delay added about five seconds to each arithmetic prompt.
  * Tests of input rules, mention triggers, and slash commands retain their deliberate local typing intervals.
  */
-export async function sendMessage(page: Page, text: string) {
+export async function sendMessage(page: Page, text: string, entry: MessageEntry = 'type') {
   const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
   await expect(editor).toBeVisible()
   await editor.click()
-  await page.keyboard.type(text)
+  await enterMessageText(page, text, entry)
   await page.keyboard.press('Meta+Enter')
   // Wait for the composer to clear after it accepts the send. This prevents the caller from proceeding before that local acknowledgement.
   await expect(editor).toHaveText('')
@@ -996,8 +1021,20 @@ interface NativeSettingsAgent {
   context: Parameters<typeof nativeAgentById>[0]
 }
 
+/**
+ * Return the hub that serves the page.
+ * A spec can run its own hub and Worker, and the session cookie of that hub is not valid on the suite hub.
+ */
+function pageHubUrl(page: Page): string {
+  const url = new URL(page.url())
+  if (url.protocol !== 'http:' && url.protocol !== 'https:')
+    throw new Error(`The native settings lookup needs a page that a hub serves, not a ${url.protocol} page.`)
+  return url.origin
+}
+
 /** Resolve only the tab identity through the Hub. Read its actual settings from the owning Worker. */
 async function nativeSettingsAgent(page: Page): Promise<NativeSettingsAgent> {
+  const hubUrl = pageHubUrl(page)
   // A previous settings RPC can replace the process. Read the Worker catalog after that RPC settles.
   await waitForSettingsIdle(page)
   const activeTab = page.locator('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]:visible').first()
@@ -1005,7 +1042,6 @@ async function nativeSettingsAgent(page: Page): Promise<NativeSettingsAgent> {
   const agentId = await activeTab.getAttribute('data-tab-id')
   if (!agentId)
     throw new Error('The active settings tab contains no native agent ID.')
-  const hubUrl = getGlobalState().hubUrl
   const cookie = await readSessionCookie(page, 'The native settings lookup')
   const response = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/LocateTab`, {
     method: 'POST',
@@ -1028,8 +1064,18 @@ async function nativeSettingsAgent(page: Page): Promise<NativeSettingsAgent> {
   if (agent?.status === AgentStatus.STARTUP_FAILED)
     throw new Error(`The native settings agent failed to start: ${agent.startupError || 'The Worker supplied no startup error.'}`)
   if (!agent || agent.status !== AgentStatus.ACTIVE)
-    throw new Error('The native settings agent is not active on its owning Worker.')
+    throw notActiveSettingsAgentError(agent)
   return { agent, context }
+}
+
+/**
+ * The error for a settings agent that the owning Worker does not report as ACTIVE.
+ * It states the status that the Worker reported, or that it listed no row, because a
+ * reader needs that fact to tell a restart, a stop, and a missing tab apart.
+ */
+function notActiveSettingsAgentError(agent: AgentInfo | null | undefined): Error {
+  const reported = agent ? (AgentStatus[agent.status] ?? String(agent.status)) : 'no row'
+  return new Error(`The native settings agent is not active on its owning Worker (${reported}).`)
 }
 
 /** Reject an unavailable native group or value before any menu retry begins. */
@@ -1054,19 +1100,7 @@ export async function applyPermissionPreset(page: Page, kind: 'smart' | 'bypass'
     throw new Error(`The actual native catalog offers no mutable ${kind} permission preset.`)
   const entries = Object.entries(preset.sets)
   const active = entries.every(([groupId, value]) => snapshot.agent.optionGroups.find(group => group.id === groupId)?.currentValue === value)
-  const testId = `composer-${kind}-permissions`
-  const action = page.locator('[data-testid="composer-plus-popover"]').getByTestId(testId)
-  await closeComposerMenus(page)
-  if (await action.count() === 0) {
-    // The open menu holds its row list still. Close one probe menu so a late
-    // permission shortcut can enter the next row list.
-    await openPlusMenu(page)
-    await closeComposerMenus(page)
-  }
-  await expect(action).toHaveCount(1)
-  const menu = await openPlusMenu(page)
-  const offered = menu.getByTestId(testId)
-  await expect(offered).toBeVisible()
+  const offered = await openPermissionShortcut(page, kind)
   if (active) {
     await expect(offered).toBeDisabled()
     for (const [groupId, value] of entries) {
@@ -1086,6 +1120,27 @@ export async function applyPermissionPreset(page: Page, kind: 'smart' | 'bypass'
     const current = await nativeAgentById(snapshot.context, snapshot.agent.id)
     return entries.every(([groupId, value]) => current?.optionGroups.find(group => group.id === groupId)?.currentValue === value)
   }).toBe(true)
+}
+
+/**
+ * Open the composer's `[+]` menu with the permission shortcut for `kind`, and return that shortcut.
+ * An open menu keeps its row list, and a shortcut that arrives later enters the next row list.
+ * When the shortcut is absent, open and close one probe menu so that the next open shows it.
+ * This function reads no native settings, so a spec can drive it on a static page.
+ */
+export async function openPermissionShortcut(page: Page, kind: 'smart' | 'bypass'): Promise<Locator> {
+  const testId = `composer-${kind}-permissions`
+  const action = page.locator('[data-testid="composer-plus-popover"]').getByTestId(testId)
+  await closeComposerMenus(page)
+  if (await action.count() === 0) {
+    await openPlusMenu(page)
+    await closeComposerMenus(page)
+  }
+  await expect(action).toHaveCount(1)
+  const menu = await openPlusMenu(page)
+  const offered = menu.getByTestId(testId)
+  await expect(offered).toBeVisible()
+  return offered
 }
 
 /** Open the composer's `[+]` menu and leave it open. */
@@ -1378,21 +1433,53 @@ export async function waitForSettingsIdle(page: Page) {
 }
 
 /**
- * Wait for an option catalog through a submenu the provider offers.
- * Status-bar chips can be hidden by a preference. The plus menu remains available.
+ * Wait for an option catalog through a submenu that the provider offers.
+ * A preference can hide the status-bar chips. The plus menu stays available.
  * A submenu exists only when the agent supplies a group with at least one option.
- * Close and reopen the menu on each attempt so a previous empty menu cannot hide newly supplied options.
- * So each attempt reads the group once, without waiting. A waiting assertion there would hold an early,
- * empty menu for the whole expect timeout before the next attempt could reopen it.
+ * The default `model` group is correct only for a provider whose running agent offers a model group.
+ * A shared helper that serves every provider must call `waitForNativeSettingsHydrated` instead.
  */
 export async function waitForSettingsHydrated(page: Page, groupId = 'model') {
+  await waitForSettingsGroupsOffered(page, async () => [groupId])
+}
+
+/**
+ * Wait until the plus menu offers each option group of the live Worker catalog of the active agent.
+ * A fixed group ID is not correct for every provider:
+ * - A running Fast Agent or Amp agent has no model group, so the default wait of `waitForSettingsHydrated` never ends.
+ * - The Worker adds a read-only model group to the catalog of an agent that does not run.
+ *   A wait for the model group can thus end before the live catalog arrives.
+ * Each attempt reads the catalog again, because a provider can change its groups after its start.
+ */
+export async function waitForNativeSettingsHydrated(page: Page): Promise<void> {
+  const { agent, context } = await nativeSettingsAgent(page)
+  await waitForSettingsGroupsOffered(page, async () => {
+    const current = await nativeAgentById(context, agent.id)
+    if (current?.status !== AgentStatus.ACTIVE)
+      throw notActiveSettingsAgentError(current)
+    const offered = current.optionGroups.filter(hasOptions).map(group => group.id)
+    if (offered.length === 0)
+      throw new Error('The live native catalog has no group with an option, so the settings menu cannot show that catalog.')
+    return offered
+  })
+}
+
+/**
+ * Wait until the plus menu offers each group that `expectedGroupIds` returns.
+ * Close and reopen the menu on each attempt so a previous empty menu cannot hide newly supplied options.
+ * So each attempt reads each group once, without waiting. A waiting assertion there would hold an early,
+ * empty menu for the whole expect timeout before the next attempt could reopen it.
+ */
+async function waitForSettingsGroupsOffered(page: Page, expectedGroupIds: () => Promise<readonly string[]>): Promise<void> {
   const plus = page.locator('[data-testid="composer-plus-trigger"]')
   await expect(plus).toBeVisible()
   await expect(async () => {
+    const groupIds = await expectedGroupIds()
     await closeComposerMenus(page)
     await ensureExpanded(plus)
     await expect(page.locator('[data-testid="composer-plus-popover"]')).toBeVisible()
-    expect(await settingsGroupTrigger(page, groupId).isVisible(), `the menu offers the ${groupId} group`).toBe(true)
+    for (const groupId of groupIds)
+      expect(await settingsGroupTrigger(page, groupId).isVisible(), `the menu offers the ${groupId} group`).toBe(true)
   }).toPass()
   await closeComposerMenus(page)
 }

@@ -9,8 +9,8 @@ import { currentNativeAgent, nativeTextStep } from './nativeScenario'
 import { nativeToolResult } from './nativeToolResult'
 import { bashToolCall } from './providerToolCalls'
 import { getGlobalState } from './server'
-import { quotePosixShellArgument } from './shellArguments'
-import { applyPermissionPreset, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from './ui'
+import { printfMarkerCommand, quotePosixShellArgument } from './shellArguments'
+import { applyPermissionPreset, sendMessage, waitForAgentIdle, waitForNativeSettingsHydrated, waitForSettingsIdle } from './ui'
 
 interface NativeShortcutProof {
   settingsProof?: (agent: AgentInfo) => void | Promise<void>
@@ -40,14 +40,14 @@ async function exercisePermissionShortcut(context: ManagedNativeScenarioContext,
     assertPrivateNativePath(target, getGlobalState().tmpDir)
     if (reload) {
       await context.page.reload()
-      await waitForSettingsHydrated(context.page)
+      await waitForNativeSettingsHydrated(context.page)
     }
     await options.settingsProof?.(await currentNativeAgent(context))
     await expectNoNativeControl(context, { testId: 'control-banner', relatedControl: async () => {
       const start = (await context.modelScript.status()).stepCount
       const id = `native-${preset}-${start}`
       await context.modelScript.queue(
-        { toolCalls: [bashToolCall(context.provider, id, `rm -rf ${quotePosixShellArgument(target)}; printf '${outputPrefix}%s\n' "$((40 + 2))"`)] },
+        { toolCalls: [bashToolCall(context.provider, id, `rm -rf ${quotePosixShellArgument(target)}; ${printfMarkerCommand(outputPrefix, 42)}`)] },
         nativeTextStep(context, `The native ${preset} command completed.`),
       )
       await sendMessage(context.page, context.modelScript.prompt('Run the scripted removal under the current permission shortcut.'))

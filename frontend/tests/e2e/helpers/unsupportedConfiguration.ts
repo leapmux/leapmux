@@ -5,7 +5,7 @@ import { AgentGoalAction, AgentStatus, ListAgentMessagesRequestSchema, ListAgent
 import { getTestChannel } from './api'
 import { currentNativeAgent } from './nativeScenario'
 import { expandGoalsAndTodosSection, goalAction, goalsAndTodosSection, openGoalMenu } from './subagentRegistry'
-import { openPlusMenu, settingsGroupTrigger, waitForSettingsHydrated } from './ui'
+import { openPlusMenu, settingsGroupTrigger, waitForNativeSettingsHydrated } from './ui'
 
 interface RelatedNativeProof {
   relatedProof: () => Promise<void>
@@ -17,7 +17,7 @@ export async function expectMissingOptionGroup(
   options: RelatedNativeProof & { groupId: string },
 ): Promise<void> {
   await options.relatedProof()
-  await waitForSettingsHydrated(context.page)
+  await waitForNativeSettingsHydrated(context.page)
   const agent = await currentNativeAgent(context)
   expect(agent.status).toBe(AgentStatus.ACTIVE)
   expect(agent.optionGroups.length).toBeGreaterThan(0)
@@ -26,7 +26,7 @@ export async function expectMissingOptionGroup(
   await expect(settingsGroupTrigger(context.page, options.groupId)).toHaveCount(0)
   await context.page.keyboard.press('Escape')
   await context.page.reload()
-  await waitForSettingsHydrated(context.page)
+  await waitForNativeSettingsHydrated(context.page)
   const restored = await currentNativeAgent(context)
   expect(restored.optionGroups.map(group => group.id)).not.toContain(options.groupId)
   await openPlusMenu(context.page)
@@ -40,7 +40,7 @@ export async function expectMissingPermissionShortcut(
   options: RelatedNativeProof & { preset: 'smart' | 'bypass' },
 ): Promise<void> {
   await options.relatedProof()
-  await waitForSettingsHydrated(context.page)
+  await waitForNativeSettingsHydrated(context.page)
   const agent = await currentNativeAgent(context)
   expect(agent.status).toBe(AgentStatus.ACTIVE)
   expect(agent.optionGroups.length).toBeGreaterThan(0)
@@ -48,7 +48,7 @@ export async function expectMissingPermissionShortcut(
   await expect(menu.getByTestId(`composer-${options.preset}-permissions`)).toHaveCount(0)
   await context.page.keyboard.press('Escape')
   await context.page.reload()
-  await waitForSettingsHydrated(context.page)
+  await waitForNativeSettingsHydrated(context.page)
   const restoredMenu = await openPlusMenu(context.page)
   await expect(restoredMenu.getByTestId(`composer-${options.preset}-permissions`)).toHaveCount(0)
   await context.page.keyboard.press('Escape')

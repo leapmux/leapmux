@@ -36,6 +36,19 @@ describe('createGeminiEnvironment', () => {
     expect(JSON.stringify(settings)).not.toContain('private-key')
   })
 
+  it('turns the update check and the update off with the canonical settings keys', () => {
+    // Gemini CLI 0.62.0 installs a release with `npm install -g` from its interactive
+    // UI unless `general.enableAutoUpdate` is false, and checks for one unless
+    // `general.enableAutoUpdateNotification` is false. It honors the deprecated
+    // `disableAutoUpdate` and `disableUpdateNag` only through a migration that
+    // rewrites settings.json on each start, which a later release can drop.
+    const env = createGeminiEnvironment({ runDirectory: directory(), modelURL: 'http://127.0.0.1:4321', modelKey: 'key', modelID: 'model' })
+    const settings = JSON.parse(readFileSync(join(env.GEMINI_CLI_HOME!, '.gemini/settings.json'), 'utf8')) as { general: Record<string, unknown> }
+    expect(settings.general).toMatchObject({ enableAutoUpdate: false, enableAutoUpdateNotification: false })
+    expect(settings.general).not.toHaveProperty('disableAutoUpdate')
+    expect(settings.general).not.toHaveProperty('disableUpdateNag')
+  })
+
   it('uses the existing MCP commands and preserves their literal arguments', () => {
     const env = createGeminiEnvironment({ runDirectory: directory(), modelURL: 'http://localhost:4321', modelKey: 'key', modelID: 'model', mcpServers: [{ name: 'result_probe', command: '/private/node', args: ['/private/server file.mjs', '--literal=$HOME'] }] })
     const settings: unknown = JSON.parse(readFileSync(join(env.GEMINI_CLI_HOME!, '.gemini/settings.json'), 'utf8'))

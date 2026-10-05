@@ -8,6 +8,7 @@ import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import {
+  AMP_SHELL_WAIT_LIMIT_MS,
   askUserQuestionToolCall,
   backgroundBashToolCall,
   bashToolCall,
@@ -1781,8 +1782,9 @@ describe('the Oh My Pi tool vocabulary', () => {
   })
 
   it('spawns a subagent through a task batch, whose task name becomes the subagent\'s id', () => {
-    // Spec 136 finds the registry row by this id. omp takes no background flag in
-    // the call: its `async.enabled` setting decides, and the E2E profile turns it off.
+    // The omp specs find the registry row by this id (see HELD_CHILD_NAME in
+    // ./subagentRegistry.ts). omp takes no background flag in the call: its
+    // `async.enabled` setting decides, and the E2E profile turns it off.
     expect(spawnSubagentToolCall(omp, 'call-1', { description: 'Run the fruit task', prompt: 'List three fruits.', background: true })).toEqual({
       id: 'call-1',
       name: 'task',
@@ -1851,8 +1853,9 @@ describe('the Cline tool vocabulary', () => {
 describe('the Amp tool vocabulary', () => {
   const amp = AgentProvider.AMP
 
-  it('runs a command through shell_command, and backgrounds it with a one-second wait', () => {
-    expect(bashToolCall(amp, 'c', 'ls')).toEqual({ id: 'c', name: 'shell_command', arguments: { command: 'ls' } })
+  it('runs a command through shell_command with Amp\'s largest wait, and backgrounds it with a one-second wait', () => {
+    expect(AMP_SHELL_WAIT_LIMIT_MS).toBe(60_000)
+    expect(bashToolCall(amp, 'c', 'ls')).toEqual({ id: 'c', name: 'shell_command', arguments: { command: 'ls', timeout_ms: 60_000 } })
     expect(backgroundBashToolCall(amp, 'c', 'sleep 60')).toEqual({ id: 'c', name: 'shell_command', arguments: { command: 'sleep 60', timeout_ms: 1_000 } })
   })
 

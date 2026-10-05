@@ -6,7 +6,7 @@ import { currentNativeAgent, nativeModelContextText, nativeTextStep } from './na
 import { waitForNativeToolSteps } from './nativeToolExecution'
 import { nativeToolResult } from './nativeToolResult'
 import { bashToolCall } from './providerToolCalls'
-import { messageContents, openPlusMenu, sendMessage, waitForSettingsHydrated } from './ui'
+import { messageContents, openPlusMenu, sendMessage, waitForNativeSettingsHydrated } from './ui'
 
 /** Prove that the launched protocol carries /plan as text and offers no Plan setting. */
 export async function exerciseMissingNativePlanMode(context: ManagedNativeScenarioContext, options: { reload?: boolean } = {}): Promise<void> {
@@ -37,7 +37,7 @@ export async function exerciseMissingNativePlanMode(context: ManagedNativeScenar
   for (const reload of options.reload === false ? [false] : [false, true]) {
     if (reload) {
       await context.page.reload()
-      await waitForSettingsHydrated(context.page)
+      await waitForNativeSettingsHydrated(context.page)
     }
     const agent = await currentNativeAgent(context)
     expect(agent.optionGroups.length).toBeGreaterThan(0)

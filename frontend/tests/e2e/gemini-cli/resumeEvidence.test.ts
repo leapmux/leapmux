@@ -2,7 +2,7 @@ import type { Locator, Page, TestInfo } from '@playwright/test'
 import type { AgentInfo, ListAgentMessagesResponse } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import type { ModelScript } from '../helpers/modelScriptFixture'
-import type { NativeResumeEvidence } from '../helpers/nativeLifecycle'
+import type { NativeResumeEvidence, NativeResumeResult } from '../helpers/nativeLifecycle'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { NativeToolOutputFileIO, NativeToolOutputFileStat } from '../helpers/nativeToolOutputFile'
 import { Buffer } from 'node:buffer'
@@ -577,9 +577,17 @@ describe('captureGeminiResumeEvidence', () => {
 })
 
 describe('exerciseGeminiResumeWithEvidence', () => {
-  it('captures all three real callback phases and returns the unchanged request object', async () => {
+  it('captures all three real callback phases and returns the unchanged resume result', async () => {
     const f = fixture()
     const request: MockModelRequestRecord = { protocol: 'google-generative-language', path: '/v1beta/models/mock:streamGenerateContent', body: { contents: [] } }
+    const result: NativeResumeResult = {
+      marker: '0123456789abcdef0123456789abcdef',
+      originalPrompt: 'Keep RESUMEPROMPT0123456789abcdef0123456789abcdef for the stored session.',
+      originalAnswer: 'RESUMEANSWER0123456789abcdef0123456789abcdef',
+      resumedPrompt: 'Reply to RESUMEDPROMPT0123456789abcdef0123456789abcdef in the reopened session.',
+      resumedAnswer: 'RESUMEDNEWANSWER0123456789abcdef0123456789abcdef',
+      request,
+    }
     calls.lifecycle.mockImplementation(async (_context, options) => {
       if (!options?.resumeEvidence)
         throw new Error('The actual resume wrapper did not supply its evidence callback.')
@@ -590,13 +598,61 @@ describe('exerciseGeminiResumeWithEvidence', () => {
       ]
       for (const item of evidence)
         await options.resumeEvidence(item)
-      return request
+      return result
     })
-    expect(await exerciseGeminiResumeWithEvidence(f.context, f.testInfo)).toBe(request)
+    expect(await exerciseGeminiResumeWithEvidence(f.context, f.testInfo)).toBe(result)
     expect(f.receipt('stored').phase).toBe('stored')
     expect(f.receipt('opened').phase).toBe('opened')
     expect(f.receipt('continued').request).toEqual(request)
     expect(f.attachments.some(item => item.name.includes('-failed-'))).toBe(false)
+  })
+
+  it('reopens the session only after the minute of its newest archive ends', async () => {
+    const f = fixture()
+    // A later archive of the same session, and an archive of another session in an even later minute.
+    writeFileSync(join(f.chats, 'session-2026-10-04T01-05-1df17a24.jsonl'), f.text)
+    writeFileSync(join(f.chats, 'session-2026-10-04T01-09-0badf00d.jsonl'), f.text)
+    const log: string[] = []
+    let now = Date.parse('2026-10-04T01:05:10.000Z')
+    const clock = {
+      now: () => now,
+      sleep: async (milliseconds: number) => {
+        log.push(`sleep ${milliseconds}`)
+        now += milliseconds
+      },
+    }
+    calls.lifecycle.mockImplementation(async (_context, options) => {
+      for (const phase of ['stored', 'opened'] as const) {
+        await options?.resumeEvidence?.({ phase, prior: f.agent })
+        log.push(`${phase} done`)
+      }
+      return { marker: '', originalPrompt: '', originalAnswer: '', resumedPrompt: '', resumedAnswer: '', request: { protocol: 'google-generative-language', path: '', body: {} } }
+    })
+    await exerciseGeminiResumeWithEvidence(f.context, f.testInfo, clock)
+    expect(log).toEqual(['sleep 50000', 'stored done', 'opened done'])
+    expect(new Date(now).toISOString()).toBe('2026-10-04T01:06:00.000Z')
+  })
+
+  it('reopens at once when the minute of the archive already ended', async () => {
+    const f = fixture()
+    const sleep = vi.fn<(milliseconds: number) => Promise<void>>()
+    calls.lifecycle.mockImplementation(async (_context, options) => {
+      await options?.resumeEvidence?.({ phase: 'stored', prior: f.agent })
+      return { marker: '', originalPrompt: '', originalAnswer: '', resumedPrompt: '', resumedAnswer: '', request: { protocol: 'google-generative-language', path: '', body: {} } }
+    })
+    await exerciseGeminiResumeWithEvidence(f.context, f.testInfo, { now: () => Date.parse('2026-10-04T01:03:00.000Z'), sleep })
+    expect(sleep).not.toHaveBeenCalled()
+  })
+
+  it('refuses to reopen a stored session that has no archive, and captures the failure', async () => {
+    const f = fixture()
+    rmSync(f.archive)
+    calls.lifecycle.mockImplementation(async (_context, options) => {
+      await options?.resumeEvidence?.({ phase: 'stored', prior: f.agent })
+      throw new Error('The scenario continued without a native archive.')
+    })
+    await expect(exerciseGeminiResumeWithEvidence(f.context, f.testInfo)).rejects.toThrow('The native Gemini session has no archive to reopen.')
+    expect(f.receipt('failed').failure).toMatchObject({ message: 'The native Gemini session has no archive to reopen.' })
   })
 
   it('captures a failed native scenario once and rethrows the exact original failure', async () => {

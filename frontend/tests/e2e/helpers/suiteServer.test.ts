@@ -28,7 +28,14 @@ function scratchRoot(): string {
   return root
 }
 
-describe('startSuiteServer', () => {
+// `startSuiteServer` awaits `createMockAgentEnvironment` before it runs the (fake) hub,
+// and that call runs the real setup commands of the installed agent CLIs. Each run starts
+// operating-system processes, so a case takes 1 to 7 seconds, and vitest's default limit
+// of 5 seconds fails a correct run on a busy machine. The limit is generous because no
+// case waits on it: a case ends as soon as its start settles.
+const START_SUITE_SERVER_TEST_TIMEOUT_MS = 60_000
+
+describe('startSuiteServer', { timeout: START_SUITE_SERVER_TEST_TIMEOUT_MS }, () => {
   it('rejects when the binary does not exist', async () => {
     const root = scratchRoot()
     await expect(startSuiteServer({ binaryPath: join(root, 'no-such-leapmux'), tmpDir: root }))

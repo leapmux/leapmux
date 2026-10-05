@@ -22,7 +22,7 @@
  * createDualVersionListener serves both protocols.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { CursorExecutionCall, CursorGenerateImageCall, CursorInteractionCall, CursorInteractionReply, CursorMcpCall, CursorModel, CursorTaskCall, CursorTodoCall, CursorTodoStatus } from './cursorWire'
+import type { CursorContextRule, CursorExecutionCall, CursorGenerateImageCall, CursorInteractionCall, CursorInteractionReply, CursorMcpCall, CursorModel, CursorTaskCall, CursorTodoCall, CursorTodoStatus } from './cursorWire'
 import type { MockModelScriptHost, ModelRequestContext, SelectedModelAnswer } from './mockModelRequest'
 import type { MockModelDeliveredError, MockModelError, MockModelServerContext, MockModelToolCall, MockModelUsage } from './mockModelScript'
 import type { ModelStream } from './modelStream'
@@ -48,6 +48,8 @@ import {
   cursorMcpExec,
   cursorMcpResponseOf,
   cursorPromptOf,
+  cursorRequestContextExec,
+  cursorRequestContextResponseOf,
   cursorSetBlob,
   cursorTaskCompleted,
   cursorTaskProgress,
@@ -86,6 +88,14 @@ export const CURSOR_WEB_FETCH_TOOL = 'webFetch'
 
 /** Cursor's local MCP execution request in a Run stream. */
 export const CURSOR_MCP_TOOL = 'cursorMcp'
+
+/**
+ * Cursor's request context query in a Run stream.
+ *
+ * The backend asks the CLI for the rules that it loaded from the project, and the
+ * CLI states them in its answer. The mock records them in the Run request witness.
+ */
+export const CURSOR_REQUEST_CONTEXT_TOOL = 'cursorRequestContext'
 
 /** The three startup calls that need a real answer; see the note at the top. */
 const CURSOR_AVAILABLE_MODELS_PATH = '/aiserver.v1.AiService/AvailableModels'
@@ -187,6 +197,8 @@ export function createCursorSurface(host: MockModelScriptHost): CursorSurface {
               conversations.set(conversationID, conversation)
             }
           }
+          // The record keeps this object, so the rules that a later query states reach it.
+          const runWitness = cursorRunRequestWitness(requestFrame)
           const context: ModelRequestContext = {
             // The matcher category is OpenAI Responses. The native request remains protobuf.
             protocol: 'openai-responses',
@@ -196,7 +208,7 @@ export function createCursorSurface(host: MockModelScriptHost): CursorSurface {
             userText: prompt,
             scenarioID,
             mockCredential: mockCredentialReceipt(request.headers),
-            nativeRequest: cursorRunRequestWitness(requestFrame),
+            nativeRequest: runWitness,
             ...(conversationID && conversation ? { serverContext: { conversationId: conversationID, messages: conversation.messages.map(message => ({ ...message })) } } : {}),
           }
           const answer = host.select(context, { allowServiceToolMetadata: true })
@@ -227,6 +239,7 @@ export function createCursorSurface(host: MockModelScriptHost): CursorSurface {
             reasoning: step.reasoning,
             toolCalls,
             usage: step.usage,
+            ...(runWitness ? { requestContextRules: (rules: readonly CursorContextRule[]) => { runWitness.contextRules = rules.map(rule => ({ ...rule })) } } : {}),
             ...(step.stream ? { stream: answer.stream(response, request) } : {}),
           }
         },
@@ -369,6 +382,8 @@ export interface CursorTurnAnswer {
   usage?: MockModelUsage | undefined
   /** Scenario-owned chunk and release controller. */
   stream?: ModelStream
+  /** Receive the rules that the CLI states in its answer to a request context query. */
+  requestContextRules?: (rules: readonly CursorContextRule[]) => void
 }
 
 /** One scripted tool call in Cursor's Run stream. */
@@ -378,6 +393,7 @@ export type CursorScriptedToolCall
     | { kind: 'todo', call: CursorTodoCall }
     | { kind: 'generateImage', call: CursorGenerateImageCall }
     | { kind: 'mcp', call: CursorMcpCall }
+    | { kind: 'requestContext', callID: string }
     | CursorInteractionCall
 
 interface CursorScriptedTask extends CursorTaskCall {
@@ -449,6 +465,8 @@ export function cursorToolCallsFrom(toolCalls: readonly MockModelToolCall[] | un
         throw new Error('Cursor WebFetch needs an HTTP URL')
       return [{ kind: 'webFetch', callID: call.id, url: args.url }]
     }
+    if (call.name === CURSOR_REQUEST_CONTEXT_TOOL)
+      return [{ kind: 'requestContext', callID: call.id }]
     if (call.name === CURSOR_MCP_TOOL) {
       if (typeof args.server !== 'string' || !args.server || typeof args.tool !== 'string' || !args.tool || !isObject(args.input))
         throw new Error('Cursor MCP needs a server, tool, and object input')
@@ -543,6 +561,7 @@ export async function serveCursorRun(
   let nextInteractionId = 299
   let pendingInteraction: { id: number, call: CursorInteractionCall } | undefined
   let pendingMcp: { id: number } | undefined
+  let pendingContext: { id: number } | undefined
   let pendingExecution: CursorExecution | undefined
   let pendingSubagent: { execution: CursorSubagentExecution, callID: string, completionGate?: string } | undefined
   const replies: string[] = []
@@ -589,6 +608,10 @@ export async function serveCursorRun(
           pendingExecution = new CursorExecution(tool.call, () => ++nextExecutionId)
           response.write(Buffer.from(connectFrame(pendingExecution.started)))
           response.write(Buffer.from(connectFrame(pendingExecution.request())))
+          return 'waiting'
+        case 'requestContext':
+          pendingContext = { id: ++nextExecutionId }
+          response.write(Buffer.from(connectFrame(cursorRequestContextExec(pendingContext.id, tool.callID))))
           return 'waiting'
         case 'mcp':
           pendingMcp = { id: ++nextExecutionId }
@@ -650,6 +673,20 @@ export async function serveCursorRun(
         response.write(Buffer.from(connectFrame(result.update)))
         replies.push(result.receipt.text)
         pendingExecution = undefined
+        if (await advance() === 'finished')
+          return
+        continue
+      }
+      if (pendingContext) {
+        const reply = cursorRequestContextResponseOf(frame)
+        if (!reply)
+          continue
+        if (reply.id !== pendingContext.id)
+          throw new Error(`Cursor replied to request context query ${pendingContext.id} with id ${reply.id}`)
+        if (!answer?.requestContextRules)
+          throw new Error('A native Cursor request context query requires a scenario handler')
+        answer.requestContextRules(reply.rules)
+        pendingContext = undefined
         if (await advance() === 'finished')
           return
         continue

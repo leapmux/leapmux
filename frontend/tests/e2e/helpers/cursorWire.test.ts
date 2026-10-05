@@ -21,6 +21,8 @@ import {
   cursorMcpExec,
   cursorMcpResponseOf,
   cursorPromptOf,
+  cursorRequestContextExec,
+  cursorRequestContextResponseOf,
   cursorSetBlob,
   cursorTaskProgress,
   cursorTextDelta,
@@ -705,6 +707,59 @@ describe('cursorMcpExec and cursorMcpResponseOf', () => {
     expect(cursorMcpResponseOf(encodeLengthDelimited(1, new Uint8Array(0)))).toBeUndefined()
     expect(() => cursorMcpResponseOf(reply(undefined, encodeLengthDelimited(1, new Uint8Array(0)))))
       .toThrow('no valid execution id')
+  })
+})
+
+describe('cursorRequestContextExec and cursorRequestContextResponseOf', () => {
+  function reply(id: number | undefined, result: Uint8Array): Uint8Array {
+    return encodeLengthDelimited(2, Buffer.concat([
+      ...(id === undefined ? [] : [Uint8Array.from([0x08, ...encodeVarint(id)])]),
+      encodeLengthDelimited(10, result),
+    ]))
+  }
+  const rule = (path: string, content: string) => encodeLengthDelimited(2, Buffer.concat([encodeStringField(1, path), encodeStringField(2, content)]))
+  const success = (...rules: Uint8Array[]) => encodeLengthDelimited(1, encodeLengthDelimited(1, Buffer.concat(rules)))
+
+  it('encodes the native request context query with its id and call identity', () => {
+    const exec = descend(cursorRequestContextExec(301, 'context-1'), [2])!
+    const fields = readLengthDelimitedFields(exec)
+    expect(new TextDecoder().decode(fields.get(15)?.[0])).toBe('context-1')
+    expect(fields.get(10)?.[0]?.byteLength).toBe(0)
+    expect([...exec.subarray(0, 3)]).toEqual([0x08, ...encodeVarint(301)])
+  })
+
+  it('refuses an execution id that is not a positive uint32', () => {
+    for (const id of [0, -1, 1.5, 0x1_0000_0000])
+      expect(() => cursorRequestContextExec(id, 'context-1')).toThrow('positive uint32')
+  })
+
+  it('reads each rule that the CLI states, with its path and content', () => {
+    expect(cursorRequestContextResponseOf(reply(301, success(rule('/project/AGENTS.md', 'NATIVE_PROJECT_CONFIG'), rule('/project/.cursor/rules/empty.mdc', ''))))).toEqual({
+      id: 301,
+      rules: [
+        { path: '/project/AGENTS.md', content: 'NATIVE_PROJECT_CONFIG' },
+        { path: '/project/.cursor/rules/empty.mdc', content: '' },
+      ],
+    })
+  })
+
+  it('reads an empty rule list for a context that states no rule, and for an empty context', () => {
+    expect(cursorRequestContextResponseOf(reply(301, success()))).toEqual({ id: 301, rules: [] })
+    expect(cursorRequestContextResponseOf(reply(302, encodeLengthDelimited(1, new Uint8Array(0))))).toEqual({ id: 302, rules: [] })
+  })
+
+  it('refuses an error, a rejection, and a result with no outcome, so none reads as no rules', () => {
+    expect(() => cursorRequestContextResponseOf(reply(301, encodeLengthDelimited(2, encodeStringField(1, 'workspace unavailable')))))
+      .toThrow('refused: workspace unavailable')
+    expect(() => cursorRequestContextResponseOf(reply(301, encodeLengthDelimited(3, encodeStringField(1, 'not trusted')))))
+      .toThrow('refused: not trusted')
+    expect(() => cursorRequestContextResponseOf(reply(301, new Uint8Array(0)))).toThrow('has no outcome')
+  })
+
+  it('ignores unrelated frames and refuses a result without an execution id', () => {
+    expect(cursorRequestContextResponseOf(encodeLengthDelimited(1, new Uint8Array(0)))).toBeUndefined()
+    expect(cursorRequestContextResponseOf(encodeLengthDelimited(2, encodeLengthDelimited(11, new Uint8Array(0))))).toBeUndefined()
+    expect(() => cursorRequestContextResponseOf(reply(undefined, success()))).toThrow('no valid execution id')
   })
 })
 

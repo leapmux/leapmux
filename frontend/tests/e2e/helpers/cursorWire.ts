@@ -967,6 +967,85 @@ export function cursorMcpResponseOf(clientMessage: Uint8Array): CursorMcpReply |
   throw new Error('Cursor MCP result has no outcome')
 }
 
+/**
+ * `agent.v1.ExecServerMessage.request_context_args` and
+ * `agent.v1.ExecClientMessage.request_context_result`. Both sit at field 10 of
+ * their message, beside `mcp_args` and `mcp_result` at field 11.
+ */
+const FIELD_REQUEST_CONTEXT = 10
+/** `agent.v1.RequestContextResult.success`, `.error` and `.rejected`. */
+const FIELD_REQUEST_CONTEXT_SUCCESS = 1
+const FIELD_REQUEST_CONTEXT_ERROR = 2
+const FIELD_REQUEST_CONTEXT_REJECTED = 3
+/** `agent.v1.RequestContextSuccess.request_context`. */
+const FIELD_REQUEST_CONTEXT_VALUE = 1
+/** `agent.v1.RequestContext.rules`, each one an `agent.v1.CursorRule`. */
+const FIELD_CONTEXT_RULES = 2
+/** `agent.v1.CursorRule.full_path` and `.content`. */
+const FIELD_RULE_PATH = 1
+const FIELD_RULE_CONTENT = 2
+
+/** One rule that the CLI loaded for the project and states in its request context. */
+export interface CursorContextRule {
+  path: string
+  content: string
+}
+
+export interface CursorRequestContextReply {
+  id: number
+  rules: CursorContextRule[]
+}
+
+/**
+ * Encode the `ExecServerMessage` that asks the CLI for its request context.
+ *
+ * The backend sends this query before it builds the model's prompt. The CLI
+ * answers with the rules, skills, and environment it loaded from the project.
+ * The Run request carries none of them: its selected context holds only the
+ * rules that a user attached to the message.
+ */
+export function cursorRequestContextExec(id: number, callID: string): Uint8Array {
+  if (!Number.isInteger(id) || id <= 0 || id > 0xFFFF_FFFF)
+    throw new Error('The native Cursor request context ID must be a positive uint32.')
+  return encodeLengthDelimited(2, concat([
+    encodeVarintField(1, id),
+    encodeStringField(15, callID),
+    encodeLengthDelimited(FIELD_REQUEST_CONTEXT, new Uint8Array(0)),
+  ]))
+}
+
+/**
+ * Read the rules from the CLI's answer to a request context query.
+ *
+ * An error or a rejection throws: the proof that reads these rules must never
+ * take a refused query for a project with no rules.
+ */
+export function cursorRequestContextResponseOf(clientMessage: Uint8Array): CursorRequestContextReply | undefined {
+  const exec = descend(clientMessage, [2])
+  if (!exec)
+    return undefined
+  const result = descend(exec, [FIELD_REQUEST_CONTEXT])
+  if (!result)
+    return undefined
+  const id = readVarintField(exec, 1)
+  if (id === undefined)
+    throw new Error('Cursor request context result has no valid execution id')
+  const failure = descend(result, [FIELD_REQUEST_CONTEXT_ERROR]) ?? descend(result, [FIELD_REQUEST_CONTEXT_REJECTED])
+  if (failure)
+    throw new Error(`The native Cursor request context was refused: ${decodeField(readLengthDelimitedFields(failure), 1) ?? 'no reason'}`)
+  const success = descend(result, [FIELD_REQUEST_CONTEXT_SUCCESS])
+  if (!success)
+    throw new Error('Cursor request context result has no outcome')
+  const context = descend(success, [FIELD_REQUEST_CONTEXT_VALUE])
+  const rules = context === undefined
+    ? []
+    : (readLengthDelimitedFields(context).get(FIELD_CONTEXT_RULES) ?? []).map((rule) => {
+        const fields = readLengthDelimitedFields(rule)
+        return { path: decodeField(fields, FIELD_RULE_PATH) ?? '', content: decodeField(fields, FIELD_RULE_CONTENT) ?? '' }
+      })
+  return { id, rules }
+}
+
 /** Encode a source-backed ExecServerMessage on the native Run stream. */
 export function cursorExecutionRequest(id: number, call: CursorExecutionCall): Uint8Array {
   if (!Number.isInteger(id) || id <= 0 || id > 0xFFFF_FFFF)

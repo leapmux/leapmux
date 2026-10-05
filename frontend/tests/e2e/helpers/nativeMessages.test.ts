@@ -3,7 +3,7 @@ import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MESSAGE_PAGE_LIMIT } from '../../../src/generated/contracts/chat-history'
 import { AgentChatMessageSchema, AgentInfoSchema, AgentStatus, ContentCompression, ListAgentMessagesResponseSchema, MessagePageAnchor } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeMessageBody, nativeMessageSupplement, readNativeMessageSnapshot, readNativeToolOutputRecord } from './nativeMessages'
+import { nativeMessageBody, nativeMessagesHoldingText, nativeMessageSupplement, readNativeMessageSnapshot, readNativeToolOutputRecord } from './nativeMessages'
 
 const calls = vi.hoisted(() => ({ agent: vi.fn(), worker: vi.fn() }))
 vi.mock('./nativeScenario', () => ({ nativeAgentById: calls.agent }))
@@ -251,5 +251,44 @@ describe('readNativeToolOutputRecord', () => {
     value.messages[0]!.content = bytes
     expect(() => readNativeToolOutputRecord(value, options)).toThrow('invalid JSON')
     expect(value.messages[0]!.content).toEqual(bytes)
+  })
+})
+
+describe('nativeMessagesHoldingText', () => {
+  function withSupplement(id: string, seq: bigint, body: unknown, supplement: unknown) {
+    return create(AgentChatMessageSchema, { ...message(id, seq, body), supplementalContent: text.encode(JSON.stringify(supplement)), supplementalContentCompression: ContentCompression.NONE })
+  }
+
+  it('selects in order each row whose content or supplement holds the text in one string value', () => {
+    const rows = [
+      message('content', 1n, { message: { content: [{ type: 'text', text: 'Prefix MARKER_TEXT suffix' }] } }),
+      message('unrelated', 2n, { text: 'OTHER_TEXT' }),
+      withSupplement('supplement', 3n, { type: 'result' }, { plain: ['MARKER_TEXT'] }),
+      message('merged', 4n, { text: 'MARKER_TEXTNEXT_TEXT' }),
+    ]
+    expect(nativeMessagesHoldingText(rows, 'MARKER_TEXT').map(row => row.id)).toEqual(['content', 'supplement', 'merged'])
+  })
+
+  it('counts a row once when its content and supplement both hold the text', () => {
+    expect(nativeMessagesHoldingText([withSupplement('both', 1n, { text: 'MARKER_TEXT' }, { text: 'MARKER_TEXT' })], 'MARKER_TEXT')).toHaveLength(1)
+  })
+
+  it('does not match an object key or text split across two string values', () => {
+    const rows = [message('key', 1n, { MARKER_TEXT: 'value' }), message('split', 2n, { parts: ['MARKER_', 'TEXT'] })]
+    expect(nativeMessagesHoldingText(rows, 'MARKER_TEXT')).toEqual([])
+  })
+
+  it('returns no row for an empty history', () => {
+    expect(nativeMessagesHoldingText([], 'MARKER_TEXT')).toEqual([])
+  })
+
+  it.each(['', ' ', '\n'])('rejects the empty search text %j', (value) => {
+    expect(() => nativeMessagesHoldingText([message('row', 1n, { text: 'MARKER_TEXT' })], value)).toThrow('nonempty text')
+  })
+
+  it('refuses a row with invalid JSON instead of skipping it', () => {
+    const row = message('broken', 1n)
+    row.content = text.encode('{broken')
+    expect(() => nativeMessagesHoldingText([row], 'MARKER_TEXT')).toThrow('invalid JSON')
   })
 })

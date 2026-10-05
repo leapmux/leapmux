@@ -1,5 +1,6 @@
 import type { MockModelStep } from './mockModelScript'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
+import type { ToolOutputControl } from './toolOutputControl'
 import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { finishCleanup, withCleanup } from './cleanup'
@@ -9,6 +10,16 @@ import { createToolOutputControl } from './toolOutputControl'
 import { observeSettledReceipts, waitForIdleSoundReceipt } from './turnEndSound'
 import { assistantBubbles, messageContents, sendMessage, waitForAgentIdle, waitForControlBanner } from './ui'
 
+/** The state of the controlled output command when one of its segments holds. */
+export interface OutputBoundary {
+  phase: 'first' | 'second'
+  firstMarker: string
+  secondMarker: string
+  firstLiveTail: string
+  secondLiveTail: string
+  count: number
+}
+
 export interface NativeGenerationProgressCase {
   supported: boolean
   counter?: 'tokens' | 'bytes'
@@ -16,8 +27,31 @@ export interface NativeGenerationProgressCase {
   prepare?: () => Promise<void>
   approveTool?: boolean
   outputMarkers?: { first: string, second: string }
-  afterOutputBoundary?: (boundary: { phase: 'first' | 'second', firstMarker: string, secondMarker: string, count: number }) => Promise<void>
+  /**
+   * Resolve when the native client started the controlled command and attached to its output.
+   *
+   * When set, the command holds its first output segment until this resolves. A native
+   * client that streams a command's output live can drop what the command writes before
+   * it attached (Codex does), so the first segment of a command that writes at once can
+   * leave no live byte count. Read the start from the native client's own record.
+   */
+  waitForToolStart?: () => Promise<void>
+  /**
+   * Inspect the page while one output segment holds. The live tails are the text
+   * that a live view of each segment shows (see `ToolOutputControl.firstLiveTail`).
+   */
+  afterOutputBoundary?: (boundary: OutputBoundary) => Promise<void>
   prepareCompletedResultView?: (callId: string) => Promise<void>
+}
+
+/** The text of the controlled output command that every boundary states. */
+function outputBoundary(output: ToolOutputControl): Omit<OutputBoundary, 'phase' | 'count'> {
+  return {
+    firstMarker: output.firstMarker,
+    secondMarker: output.secondMarker,
+    firstLiveTail: output.firstLiveTail,
+    secondLiveTail: output.secondLiveTail,
+  }
 }
 
 /** Prepare the completed result before the two exact output-marker assertions. */
@@ -121,7 +155,8 @@ export async function exerciseGenerationProgress(context: ManagedNativeScenarioC
   const configuredGates: string[] = []
   await withCleanup(async () => {
     if (counter === 'bytes') {
-      const output = createToolOutputControl(agent.workingDir, options.outputMarkers)
+      const holdFirstOutput = options.waitForToolStart !== undefined
+      const output = createToolOutputControl(agent.workingDir, options.outputMarkers, { holdFirstOutput })
       releaseOutput = async () => {
         await output.releaseFirstOutput()
         await output.releaseFinalOutput()
@@ -137,13 +172,17 @@ export async function exerciseGenerationProgress(context: ManagedNativeScenarioC
         await waitForControlBanner(context.page)
         await context.page.getByTestId('control-allow-btn').filter({ visible: true }).click()
       }
+      if (options.waitForToolStart) {
+        await options.waitForToolStart()
+        await output.releaseStartOutput()
+      }
       await output.waitForFirstOutput()
       const first = options.supported ? await waitForIncreasingCounter(context, counter) : 0
-      await options.afterOutputBoundary?.({ phase: 'first', firstMarker: output.firstMarker, secondMarker: output.secondMarker, count: first })
+      await options.afterOutputBoundary?.({ ...outputBoundary(output), phase: 'first', count: first })
       await output.releaseFirstOutput()
       await output.waitForSecondOutput()
       const second = options.supported ? await waitForIncreasingCounter(context, counter, first) : 0
-      await options.afterOutputBoundary?.({ phase: 'second', firstMarker: output.firstMarker, secondMarker: output.secondMarker, count: second })
+      await options.afterOutputBoundary?.({ ...outputBoundary(output), phase: 'second', count: second })
       await output.releaseFinalOutput()
       await context.modelScript.waitForSteps(start + 2)
       await waitForAgentIdle(context.page)
