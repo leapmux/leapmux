@@ -110,6 +110,69 @@ func TestUpdateSettingsSwitchesTheModelLive(t *testing.T) {
 	assert.Equal(t, "mock/mock-model-2", r.sink.LastSettingsRefresh().Model)
 }
 
+// reasoningModels is a catalog of two models that both reason, so a switch between them moves no
+// level that the model forces.
+const reasoningModels = `{"models":[` +
+	`{"id":"mock-model","name":"Mock Model","provider":"mock","reasoning":true,"thinking":{"mode":"effort","efforts":["minimal","low","medium","high","xhigh"]},"contextWindow":128000},` +
+	`{"id":"mock-model-3","name":"Mock Model Three","provider":"mock","reasoning":true,"thinking":{"mode":"effort","efforts":["minimal","low","medium","high"]},"contextWindow":128000}]}`
+
+// omp keeps the session's thinking level across a switch between models that reason, and it
+// announces nothing, because the level did not move (omp 18.6.0, verified with an isolated-agent-dir
+// probe, also with `defaultThinkingLevel` set in the configuration). The worker has no rule that
+// resets the level of an omp agent, so the level that the request carries stays, with no command.
+func TestUpdateSettingsKeepsTheHeldLevelAcrossAModelSwitch(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.agent.applyAvailableModels(json.RawMessage(reasoningModels))
+	r.agent.Mu.Lock()
+	r.agent.thinkingLevel = "low"
+	r.agent.effectiveThinking = "low"
+	r.agent.Mu.Unlock()
+	r.respond(func(command recordedCommand) *rigReply {
+		if command.Type != CommandSetModel {
+			return nil
+		}
+		return &rigReply{
+			Before: []string{`{"type":"model_changed"}`},
+			Data:   json.RawMessage(`{"id":"mock-model-3","provider":"mock","reasoning":true}`),
+		}
+	})
+
+	result := r.agent.UpdateSettings(optionmap.Map{agent.OptionIDModel: "mock/mock-model-3", agent.OptionIDEffort: "low"})
+	require.True(t, result.AppliedLive)
+	assert.Empty(t, r.commandsOfType(CommandSetThinkingLevel), "omp kept the level, so none is sent")
+	assert.Equal(t, "mock/mock-model-3", result.ConfirmedOptions()[agent.OptionIDModel])
+	assert.Equal(t, "low", result.ConfirmedOptions()[agent.OptionIDEffort])
+	assert.Equal(t, "low", r.sink.LastSettingsRefresh().Effort)
+}
+
+// omp clamps a level that the new model lacks and announces the level that it settled on, in a
+// frame that arrives before the set_model response. The agent holds omp's answer, not the request.
+func TestUpdateSettingsTakesOmpsClampOfTheHeldLevelOnAModelSwitch(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.agent.applyAvailableModels(json.RawMessage(reasoningModels))
+	r.agent.Mu.Lock()
+	r.agent.thinkingLevel = "xhigh"
+	r.agent.effectiveThinking = "xhigh"
+	r.agent.Mu.Unlock()
+	r.respond(func(command recordedCommand) *rigReply {
+		if command.Type != CommandSetModel {
+			return nil
+		}
+		return &rigReply{
+			Before: []string{`{"type":"model_changed"}`, `{"type":"thinking_level_changed","thinkingLevel":"high"}`},
+			Data:   json.RawMessage(`{"id":"mock-model-3","provider":"mock","reasoning":true}`),
+		}
+	})
+
+	result := r.agent.UpdateSettings(optionmap.Map{agent.OptionIDModel: "mock/mock-model-3", agent.OptionIDEffort: "xhigh"})
+	require.True(t, result.AppliedLive)
+	assert.Empty(t, r.commandsOfType(CommandSetThinkingLevel), "a model switch needs no level command: omp already settled")
+	assert.Equal(t, "high", result.ConfirmedOptions()[agent.OptionIDEffort], "omp's settled level, not the request")
+	assert.Equal(t, "high", r.sink.LastSettingsRefresh().Effort)
+}
+
 func TestUpdateSettingsRecordsTheClampedLevel(t *testing.T) {
 	t.Parallel()
 	r := withCatalog(newRig(t))
