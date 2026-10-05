@@ -232,7 +232,7 @@ export function protoToAgentTabFields(
 /**
  * The tab fields that a live status event writes beside the status itself. Each
  * one states the lifecycle of the agent at the moment of the event.
- * `buildAgentStatusTabUpdate` writes exactly these, and `tab.helpers.test.ts`
+ * `buildAgentStatusTabUpdate` writes exactly these, and `useWorkspaceConnection.test.ts`
  * fails when the two lists differ.
  */
 export const LIVE_STATUS_FIELDS = [
@@ -245,6 +245,24 @@ export const LIVE_STATUS_FIELDS = [
 ] as const satisfies readonly (keyof AgentTab)[]
 
 /**
+ * The tab fields that a live event writes when it carries an option-group
+ * catalog: the groups, and the current value of each group.
+ * `deriveOptionGroupTabFields` writes exactly these, `resolveSettingsTabFields`
+ * builds on it, and `tab.helpers.test.ts` fails when the lists differ.
+ */
+export const LIVE_CATALOG_FIELDS = [
+  'optionGroups',
+  'optionValues',
+] as const satisfies readonly (keyof AgentTab)[]
+
+function withoutFields(fields: Partial<AgentTab>, owned: readonly (keyof AgentTab)[]): Partial<AgentTab> {
+  const kept = { ...fields }
+  for (const key of owned)
+    delete kept[key]
+  return kept
+}
+
+/**
  * `fields` without the lifecycle fields that a live status event owns.
  *
  * A `ListAgents` reply states the lifecycle as the worker read it before the
@@ -253,10 +271,19 @@ export const LIVE_STATUS_FIELDS = [
  * only the rest of it still applies: the identity and the settings of the tab.
  */
 export function withoutLiveStatusFields(fields: Partial<AgentTab>): Partial<AgentTab> {
-  const kept = { ...fields }
-  for (const key of LIVE_STATUS_FIELDS)
-    delete kept[key]
-  return kept
+  return withoutFields(fields, LIVE_STATUS_FIELDS)
+}
+
+/**
+ * `fields` without the option-group catalog that a live event owns.
+ *
+ * A `ListAgents` reply states the catalog as the worker read it before the reply
+ * left. When the live stream wrote a catalog in the meantime (see
+ * `TabMetadataStore.liveCatalogEpoch`), the tab holds the newer answer, and the
+ * reply keeps only the rest: the identity and the lifecycle of the tab.
+ */
+export function withoutLiveCatalogFields(fields: Partial<AgentTab>): Partial<AgentTab> {
+  return withoutFields(fields, LIVE_CATALOG_FIELDS)
 }
 
 /**
@@ -899,7 +926,7 @@ type TerminalLifecycleField = typeof TERMINAL_LIVE_STATUS_FIELDS[number]
 
 /**
  * The part of a `ListTerminals` reply that still applies after a live status
- * event landed while the reply was in flight (see
+ * event landed while the reply was pending (see
  * `TabMetadataStore.liveStatusEpoch`).
  *
  * The reply states the lifecycle as the worker read it, and the event is
@@ -913,7 +940,7 @@ type TerminalLifecycleField = typeof TERMINAL_LIVE_STATUS_FIELDS[number]
  * user who presses Enter on an EXITED tab that is hydrated. A reply that says
  * EXITED therefore applies in full.
  *
- * Another client can restart the shell while the reply is in flight. The
+ * Another client can restart the shell while the reply is pending. The
  * restart then lands between the moment when the worker reads the state and the
  * moment when the reply arrives. This guard does not cover that case.
  */

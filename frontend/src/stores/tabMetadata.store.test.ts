@@ -269,7 +269,7 @@ describe('tabMetadata', () => {
   /**
    * The count of live status events that a tab applied. A reader that fetches a
    * snapshot compares it across the request to learn whether the live stream
-   * wrote a status while the reply was in flight.
+   * wrote a status while the reply was pending.
    */
   describe('patchLiveStatus and liveStatusEpoch', () => {
     it('is zero for a tab that applied no event', () => {
@@ -292,7 +292,7 @@ describe('tabMetadata', () => {
     })
 
     // The worker re-ships its whole status on every push, so an event often
-    // repeats the status that the tab holds. A reply that was in flight is still
+    // repeats the status that the tab holds. A reply that was pending is still
     // older than that event, so the epoch counts events and not changes.
     it('counts an event that repeats the stored status', () => {
       const m = createTabMetadataStore()
@@ -346,6 +346,99 @@ describe('tabMetadata', () => {
 
       expect(m.liveStatusEpoch('removed')).toBe(0)
       expect(m.liveStatusEpoch('dropped')).toBe(0)
+      expect(m.liveStatusEpoch('kept')).toBe(1)
+    })
+  })
+
+  /**
+   * The count of live events that carried an option-group catalog. It is apart
+   * from the status count: a STARTING event carries no catalog, and a settings
+   * refresh carries a catalog and no status.
+   */
+  describe('patchLive and liveCatalogEpoch', () => {
+    const groups = () => [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })]
+
+    it('is zero for a tab that applied no catalog', () => {
+      const m = createTabMetadataStore()
+      expect(m.liveCatalogEpoch('a1')).toBe(0)
+      m.patch('a1', { optionGroups: groups() })
+      m.patchLiveStatus('a1', { agentStatus: AgentStatus.ACTIVE })
+      expect(m.liveCatalogEpoch('a1')).toBe(0)
+    })
+
+    it('writes the fields like patch does and advances only the count that it lists', () => {
+      const m = createTabMetadataStore()
+      m.patchLive('a1', { optionGroups: groups() }, ['catalog'])
+      expect(m.get('a1')?.optionGroups?.[0]?.id).toBe('model')
+      expect(m.liveCatalogEpoch('a1')).toBe(1)
+      expect(m.liveStatusEpoch('a1')).toBe(0)
+
+      m.patchLive('a1', { agentStatus: AgentStatus.ACTIVE }, ['status'])
+      expect(m.liveCatalogEpoch('a1')).toBe(1)
+      expect(m.liveStatusEpoch('a1')).toBe(1)
+    })
+
+    it('advances both counts for an event that carries a status and a catalog', () => {
+      const m = createTabMetadataStore()
+      m.patchLive('a1', { agentStatus: AgentStatus.ACTIVE, optionGroups: groups() }, ['status', 'catalog'])
+      expect(m.liveStatusEpoch('a1')).toBe(1)
+      expect(m.liveCatalogEpoch('a1')).toBe(1)
+    })
+
+    it('advances neither count for an event that lists nothing', () => {
+      const m = createTabMetadataStore()
+      m.patchLive('a1', { gitToplevel: '/repo' }, [])
+      expect(m.get('a1')?.gitToplevel).toBe('/repo')
+      expect(m.liveStatusEpoch('a1')).toBe(0)
+      expect(m.liveCatalogEpoch('a1')).toBe(0)
+    })
+
+    it('leaves the catalog count alone for patchLiveStatus', () => {
+      const m = createTabMetadataStore()
+      m.patchLiveStatus('a1', { agentStatus: AgentStatus.ACTIVE })
+      expect(m.liveStatusEpoch('a1')).toBe(1)
+      expect(m.liveCatalogEpoch('a1')).toBe(0)
+    })
+
+    // The worker re-ships the whole catalog on a status push, so an event often
+    // repeats the catalog that the tab holds. A reply that was pending is still
+    // older than that event, so the count counts events and not changes.
+    it('counts an event that repeats the stored catalog', () => {
+      const m = createTabMetadataStore()
+      m.patchLive('a1', { optionGroups: groups() }, ['catalog'])
+      m.patchLive('a1', { optionGroups: groups() }, ['catalog'])
+      expect(m.liveCatalogEpoch('a1')).toBe(2)
+    })
+
+    it('does not advance on patch, patchExisting, or patchMatching', () => {
+      const m = createTabMetadataStore()
+      m.patchLive('a1', { optionGroups: groups() }, ['catalog'])
+      m.patch('a1', { optionGroups: groups() })
+      m.patchExisting('a1', { optionGroups: groups() })
+      m.patchMatching(() => true, { optionGroups: groups() })
+      expect(m.liveCatalogEpoch('a1')).toBe(1)
+    })
+
+    it('counts each tab on its own', () => {
+      const m = createTabMetadataStore()
+      m.patchLive('a1', { optionGroups: groups() }, ['catalog'])
+      expect(m.liveCatalogEpoch('a1')).toBe(1)
+      expect(m.liveCatalogEpoch('a2')).toBe(0)
+    })
+
+    it('resets both counts when the row is removed or dropped', () => {
+      const m = createTabMetadataStore()
+      for (const id of ['removed', 'dropped', 'kept'])
+        m.patchLive(id, { agentStatus: AgentStatus.ACTIVE, optionGroups: groups() }, ['status', 'catalog'])
+
+      m.remove('removed')
+      m.dropTabs(new Set(['dropped']))
+
+      expect(m.liveCatalogEpoch('removed')).toBe(0)
+      expect(m.liveStatusEpoch('removed')).toBe(0)
+      expect(m.liveCatalogEpoch('dropped')).toBe(0)
+      expect(m.liveStatusEpoch('dropped')).toBe(0)
+      expect(m.liveCatalogEpoch('kept')).toBe(1)
       expect(m.liveStatusEpoch('kept')).toBe(1)
     })
   })

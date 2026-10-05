@@ -1,9 +1,10 @@
 /// <reference types="vitest/globals" />
+import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { GitRepoStatus } from '~/generated/proto/leapmux/v1/common_pb'
 import { create } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentActivityState, AgentStatus, AgentStatusChangeSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentStatus, AgentStatusChangeSchema, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitRepoStatusSchema, TabHydrationStatus } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus, TerminalStatusChangeSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -92,7 +93,7 @@ function terminalInfo(id: string, over: Record<string, unknown> = {}) {
 
 /**
  * A reply that the test settles by hand, so a live event can land while the
- * `ListAgents` call is in flight.
+ * `ListAgents` call is pending.
  */
 function heldReply() {
   let settle!: (reply: unknown) => void
@@ -103,13 +104,26 @@ function heldReply() {
 }
 
 /**
+ * A model group with one current choice, as the worker states it in a status event.
+ * `currentValue` is the field that the tab mapper reads into `optionValues`.
+ */
+function modelGroup(current: string, choices: string[]): AvailableOptionGroup {
+  return create(AvailableOptionGroupSchema, {
+    id: 'model',
+    label: 'Model',
+    currentValue: current,
+    options: choices.map(id => create(AvailableOptionSchema, { id, name: id })),
+  })
+}
+
+/**
  * A live status event for `agentId`, applied through the production handler:
  * the same function that the WatchEvents stream feeds.
  */
 function applyLiveStatus(
   s: Pick<ReturnType<typeof createTestTabStores>, 'view' | 'metadata' | 'selection'> & { repoGitStore: ReturnType<typeof createRepoGitStore> },
   agentId: string,
-  event: { status: AgentStatus, gitStatus?: GitRepoStatus },
+  event: { status: AgentStatus, gitStatus?: GitRepoStatus, optionGroups?: AvailableOptionGroup[] },
 ) {
   handleAgentStatusChange(
     agentId,
@@ -118,6 +132,7 @@ function applyLiveStatus(
       workerOnline: true,
       status: event.status,
       ...(event.gitStatus !== undefined ? { gitStatus: event.gitStatus } : {}),
+      ...(event.optionGroups !== undefined ? { optionGroups: event.optionGroups } : {}),
     }),
     'live',
     {
@@ -405,7 +420,7 @@ describe('useTabHydrators', () => {
   // older answer than they do, so it must not move the status back: nothing sends
   // the status again, and a tab that a stale STARTING reply reached shows "Starting"
   // and holds the file tree back for as long as the page lives.
-  describe('agent status that a live event set while the reply was in flight', () => {
+  describe('agent status that a live event set while the reply was pending', () => {
     async function mountWithHeldReply(tabIds: string[], reply: ReturnType<typeof heldReply>) {
       mockListAgents.mockReturnValue(reply.promise)
       const s = setup()
@@ -417,7 +432,7 @@ describe('useTabHydrators', () => {
       })
       await flush()
       await flush()
-      expect(mockListAgents, 'the call is in flight').toHaveBeenCalledTimes(1)
+      expect(mockListAgents, 'the call is pending').toHaveBeenCalledTimes(1)
       return { s, dispose }
     }
 
@@ -527,6 +542,150 @@ describe('useTabHydrators', () => {
       dispose()
     })
 
+    // The worker states the option catalog in the reply, and in each status event
+    // that carries one: the ACTIVE event of a startup, and a refresh that has no
+    // status. The live CLI report wins over the static fallback, so an event that
+    // landed during the call holds a newer catalog than the reply. Nothing sends the
+    // catalog again until the next settings change, and the model menu shows the
+    // older choices until then.
+    describe('a catalog that a live event wrote', () => {
+      const FALLBACK = { id: 'model', label: 'Model', currentValue: 'sonnet', options: [{ id: 'sonnet', label: 'sonnet' }] }
+
+      it('keeps the catalog of an ACTIVE event over the catalog of a STARTING reply', async () => {
+        const reply = heldReply()
+        const { s, dispose } = await mountWithHeldReply(['a1'], reply)
+
+        applyLiveStatus(s, 'a1', { status: AgentStatus.ACTIVE, optionGroups: [modelGroup('opus', ['opus', 'sonnet'])] })
+        reply.settle({
+          agents: [agentInfo('a1', { status: AgentStatus.STARTING, optionGroups: [FALLBACK] })],
+          verdicts: [],
+        })
+        await flush()
+        await flush()
+
+        const tab = s.view.getAgentTab('a1')
+        expect(tab?.optionGroups?.[0]?.options.map(option => option.id), 'the live choices').toEqual(['opus', 'sonnet'])
+        expect(tab?.optionValues?.model, 'the live selection').toBe('opus')
+        expect(tab?.agentStatus).toBe(AgentStatus.ACTIVE)
+        dispose()
+      })
+
+      it('keeps the catalog of an event that has no status, and still takes the reply status', async () => {
+        const reply = heldReply()
+        const { s, dispose } = await mountWithHeldReply(['a1'], reply)
+
+        // A settings refresh: no status, so it says nothing about the lifecycle.
+        applyLiveStatus(s, 'a1', { status: AgentStatus.UNSPECIFIED, optionGroups: [modelGroup('opus', ['opus', 'sonnet'])] })
+        reply.settle({
+          agents: [agentInfo('a1', { status: AgentStatus.ACTIVE, optionGroups: [FALLBACK] })],
+          verdicts: [],
+        })
+        await flush()
+        await flush()
+
+        const tab = s.view.getAgentTab('a1')
+        expect(tab?.optionGroups?.[0]?.options.map(option => option.id)).toEqual(['opus', 'sonnet'])
+        expect(tab?.optionValues?.model).toBe('opus')
+        expect(tab?.agentStatus, 'no status event came, so the reply status applies').toBe(AgentStatus.ACTIVE)
+        dispose()
+      })
+
+      // A STARTING event carries no catalog, and the tab holds none yet. Only the
+      // reply can supply one, so it must not be dropped.
+      it('applies the reply catalog when the live event carried no catalog', async () => {
+        const reply = heldReply()
+        const { s, dispose } = await mountWithHeldReply(['a1'], reply)
+
+        applyLiveStatus(s, 'a1', { status: AgentStatus.STARTING })
+        reply.settle({
+          agents: [agentInfo('a1', { status: AgentStatus.STARTING, optionGroups: [FALLBACK] })],
+          verdicts: [],
+        })
+        await flush()
+        await flush()
+
+        const tab = s.view.getAgentTab('a1')
+        expect(tab?.optionGroups?.[0]?.options.map(option => option.id)).toEqual(['sonnet'])
+        expect(tab?.optionValues?.model).toBe('sonnet')
+        dispose()
+      })
+
+      it('applies the reply catalog when no event came during the call', async () => {
+        const reply = heldReply()
+        const { s, dispose } = await mountWithHeldReply(['a1'], reply)
+
+        reply.settle({
+          agents: [agentInfo('a1', { optionGroups: [FALLBACK] })],
+          verdicts: [],
+        })
+        await flush()
+        await flush()
+
+        expect(s.view.getAgentTab('a1')?.optionValues?.model).toBe('sonnet')
+        dispose()
+      })
+
+      it('applies the reply catalog when the live event came before the call', async () => {
+        // The worker read the catalog after that event, so the reply is the newer answer.
+        mockListAgents.mockResolvedValue({
+          agents: [agentInfo('a1', { optionGroups: [modelGroup('sonnet', ['opus', 'sonnet'])] })],
+          verdicts: [],
+        })
+        const s = setup()
+        const dispose = createRoot((d) => {
+          s.add(TabType.AGENT, 'a1')
+          applyLiveStatus(s, 'a1', { status: AgentStatus.ACTIVE, optionGroups: [modelGroup('opus', ['opus'])] })
+          s.mount()
+          return d
+        })
+        await flush()
+        await flush()
+
+        const tab = s.view.getAgentTab('a1')
+        expect(tab?.optionGroups?.[0]?.options.map(option => option.id)).toEqual(['opus', 'sonnet'])
+        expect(tab?.optionValues?.model).toBe('sonnet')
+        dispose()
+      })
+
+      it('holds back only the tab that the live event reached', async () => {
+        const reply = heldReply()
+        const { s, dispose } = await mountWithHeldReply(['a1', 'a2'], reply)
+
+        applyLiveStatus(s, 'a1', { status: AgentStatus.UNSPECIFIED, optionGroups: [modelGroup('opus', ['opus'])] })
+        reply.settle({
+          agents: [
+            agentInfo('a1', { optionGroups: [FALLBACK] }),
+            agentInfo('a2', { optionGroups: [FALLBACK] }),
+          ],
+          verdicts: [],
+        })
+        await flush()
+        await flush()
+
+        expect(s.view.getAgentTab('a1')?.optionValues?.model).toBe('opus')
+        expect(s.view.getAgentTab('a2')?.optionValues?.model, 'a tab with no live catalog takes its reply').toBe('sonnet')
+        dispose()
+      })
+
+      it('still writes what the catalog event does not own', async () => {
+        const reply = heldReply()
+        const { s, dispose } = await mountWithHeldReply(['a1'], reply)
+
+        applyLiveStatus(s, 'a1', { status: AgentStatus.UNSPECIFIED, optionGroups: [modelGroup('opus', ['opus'])] })
+        reply.settle({
+          agents: [agentInfo('a1', { title: 'Agent Liz', workingDir: '/repo', optionGroups: [FALLBACK] })],
+          verdicts: [],
+        })
+        await flush()
+        await flush()
+
+        const tab = s.view.getAgentTab('a1')
+        expect(tab?.title).toBe('Agent Liz')
+        expect(s.metadata.get('a1')?.hydrated, 'the reply still answers for the tab').toBe(true)
+        dispose()
+      })
+    })
+
     it('holds back a re-ask reply that a live event overtook', async () => {
       const s = setup()
       const [online, setOnline] = createSignal<ReadonlySet<string>>(new Set(['w1']))
@@ -632,7 +791,7 @@ describe('useTabHydrators', () => {
   // holds an older answer must not move the status back: nothing sends the
   // status again, and a tab that a stale STARTING reply reached drops every
   // keystroke, because `handleTerminalInput` sends input to a READY tab only.
-  describe('terminal status that a live event set while the reply was in flight', () => {
+  describe('terminal status that a live event set while the reply was pending', () => {
     async function mountWithHeldReply(tabIds: string[], reply: ReturnType<typeof heldReply>, prepare?: (s: ReturnType<typeof setup>) => void) {
       mockListTerminals.mockReturnValue(reply.promise)
       const s = setup()
@@ -645,7 +804,7 @@ describe('useTabHydrators', () => {
       })
       await flush()
       await flush()
-      expect(mockListTerminals, 'the call is in flight').toHaveBeenCalledTimes(1)
+      expect(mockListTerminals, 'the call is pending').toHaveBeenCalledTimes(1)
       return { s, dispose }
     }
 
@@ -828,7 +987,7 @@ describe('useTabHydrators', () => {
         st.metadata.patch('t1', { hydrated: true, terminalStatus: TerminalStatus.DISCONNECTED })
       })
 
-      // The restart of the shell reaches the tab while the reply is in flight.
+      // The restart of the shell reaches the tab while the reply is pending.
       applyLiveTerminalStatus(s, 't1', { status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
       expect(s.view.getTerminalTab('t1')?.status, 'a STARTING event moves a DISCONNECTED tab').toBe(TerminalStatus.STARTING)
       applyLiveTerminalStatus(s, 't1', { status: TerminalStatus.READY })

@@ -12,7 +12,7 @@ import { createExponentialBackoff } from '~/lib/retry'
 import { sameKeys } from '~/lib/sameKeys'
 import { tabPayloadView } from '~/lib/tabPayload'
 import { migrateErrorHintFromForResolvedRepo, upsertRepoGitFromProtoStatus } from '~/stores/repoGit'
-import { keepLiveTerminalStatus, protoToAgentTabFields, tabKey, terminalMetadata, withoutLiveStatusFields } from '~/stores/tab.helpers'
+import { keepLiveTerminalStatus, protoToAgentTabFields, tabKey, terminalMetadata, withoutLiveCatalogFields, withoutLiveStatusFields } from '~/stores/tab.helpers'
 import { isPayloadBackedTabType } from '~/stores/tab.types'
 import { tabPayloadMetadata } from '~/stores/tabMetadata.store'
 
@@ -35,19 +35,34 @@ function hydratableTabsOf(view: TabView) {
 }
 
 /**
- * Read the live status count of each tab in `tabIds`. Call it before a snapshot
- * request leaves, and call the function that it returns when the reply lands. That
- * function says whether the live stream wrote a status to a tab meanwhile.
+ * What the live stream wrote to the tabs while a snapshot request was pending.
+ * Both functions take a tab id and answer for that tab.
+ */
+interface LiveWritesLanded {
+  /** The live stream wrote a status, so the reply holds an older lifecycle. */
+  status: (tabId: string) => boolean
+  /** The live stream wrote an option-group catalog, so the reply holds an older catalog. */
+  catalog: (tabId: string) => boolean
+}
+
+/**
+ * Read the live counts of each tab in `tabIds`. Call it before a snapshot request
+ * leaves, and call the functions that it returns when the reply lands. They say
+ * whether the live stream wrote a status or a catalog to a tab meanwhile.
  *
  * The worker builds the reply after the request leaves, and the live stream can
- * write a status to a tab while the reply is in flight. Such a status can be
- * newer than the state that the reply holds, and nothing sends it again. The
- * caller then keeps what the live stream wrote. See
- * `TabMetadataStore.liveStatusEpoch`.
+ * write to a tab while the request is pending. Such a write can be newer than the
+ * state that the reply holds, and nothing sends it again. The caller then keeps
+ * what the live stream wrote. See `TabMetadataStore.liveStatusEpoch` and
+ * `TabMetadataStore.liveCatalogEpoch`.
  */
-function watchLiveStatus(metadata: TabMetadataStore, tabIds: readonly string[]): (tabId: string) => boolean {
-  const before = new Map(tabIds.map(tabId => [tabId, metadata.liveStatusEpoch(tabId)]))
-  return tabId => metadata.liveStatusEpoch(tabId) !== before.get(tabId)
+function watchLiveWrites(metadata: TabMetadataStore, tabIds: readonly string[]): LiveWritesLanded {
+  const statusBefore = new Map(tabIds.map(tabId => [tabId, metadata.liveStatusEpoch(tabId)]))
+  const catalogBefore = new Map(tabIds.map(tabId => [tabId, metadata.liveCatalogEpoch(tabId)]))
+  return {
+    status: tabId => metadata.liveStatusEpoch(tabId) !== statusBefore.get(tabId),
+    catalog: tabId => metadata.liveCatalogEpoch(tabId) !== catalogBefore.get(tabId),
+  }
 }
 
 /**
@@ -571,7 +586,7 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
       && Boolean(tab.workerId)
       && (!isHydrated(tab.id) || reaskAgentTabIds().has(tab.id)),
     fetchBatch: async (workerId, tabs) => {
-      const liveStatusLanded = watchLiveStatus(opts.metadata, tabs.map(t => t.id))
+      const landed = watchLiveWrites(opts.metadata, tabs.map(t => t.id))
       const resp = await listAgents(workerId, { tabIds: tabs.map(t => t.id) })
       const byId = new Map(resp.agents.map(a => [a.id, a]))
       const resolved = new Set<string>()
@@ -607,15 +622,22 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
         const fields = protoToAgentTabFields(opts.repoGitStore, workerId, agent, {
           ...(migrateFrom === undefined ? {} : { migrateErrorHintFrom: migrateFrom }),
         })
-        const settingsFields = resolveSettingsTabFields(
-          opts.view.getAgentTab(tab.id),
-          agent.optionGroups,
-          opts.settingsPendingAxes?.(tab.id) ?? EMPTY_PENDING_AXES,
-        )
-        // The reply holds the lifecycle as the worker read it before the reply left. A
-        // status event that landed since is newer, and nothing sends it again, so
-        // the reply keeps what the live stream wrote and gives only the rest.
-        opts.metadata.patch(tab.id, { ...(liveStatusLanded(tab.id) ? withoutLiveStatusFields(fields) : fields), ...settingsFields })
+        // The reply holds the lifecycle and the catalog as the worker read them
+        // before the reply left. A status event or a catalog event that landed since
+        // is newer, and nothing sends it again, so the reply keeps what the live
+        // stream wrote and gives only the rest. The two kinds count apart: a STARTING
+        // event carries no catalog, so the reply catalog still applies after it.
+        const lifecycleKept = landed.status(tab.id) ? withoutLiveStatusFields(fields) : fields
+        opts.metadata.patch(tab.id, landed.catalog(tab.id)
+          ? withoutLiveCatalogFields(lifecycleKept)
+          : {
+              ...lifecycleKept,
+              ...resolveSettingsTabFields(
+                opts.view.getAgentTab(tab.id),
+                agent.optionGroups,
+                opts.settingsPendingAxes?.(tab.id) ?? EMPTY_PENDING_AXES,
+              ),
+            })
         // Hydration, not a transition, so it seeds and raises nothing. This
         // batch runs when a tab first appears and on an explicit re-ask, never
         // as a poll, so an agent that settled between the two is not news the
@@ -671,7 +693,7 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
       && Boolean(tab.workerId)
       && (!isHydrated(tab.id) || tab.status === TerminalStatus.DISCONNECTED),
     fetchBatch: async (workerId, tabs) => {
-      const liveStatusLanded = watchLiveStatus(opts.metadata, tabs.map(t => t.id))
+      const landed = watchLiveWrites(opts.metadata, tabs.map(t => t.id))
       const resp = await listTerminals(workerId, { tabIds: tabs.map(t => t.id) })
       const byId = new Map(resp.terminals.map(t => [t.terminalId, t]))
       const resolved = new Set<string>()
@@ -684,7 +706,7 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
           // the rest. A reply that says the shell exited still applies in full:
           // see `keepLiveTerminalStatus`.
           const fields = terminalMetadata(workerId, term)
-          opts.metadata.patch(tab.id, liveStatusLanded(tab.id) ? keepLiveTerminalStatus(fields) : fields)
+          opts.metadata.patch(tab.id, landed.status(tab.id) ? keepLiveTerminalStatus(fields) : fields)
           // Hoisted so the spread narrows: the option takes no explicit undefined.
           const migrateFrom = migrateErrorHintFromForResolvedRepo(workerId, tab, term.gitStatus)
           upsertRepoGitFromProtoStatus(opts.repoGitStore, workerId, term.gitStatus, {

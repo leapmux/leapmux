@@ -4,7 +4,7 @@ import type { UseWatchEventsStreamsOpts } from '~/hooks/useWatchEventsStreams'
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentStatus, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType, WatchEventsResponseSchema } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
@@ -92,6 +92,7 @@ function mountConnection(initial: AgentStatus) {
     dispose,
     status: () => view.getAgentTab('a1')?.agentStatus,
     epoch: () => metadata.liveStatusEpoch('a1'),
+    catalogEpoch: () => metadata.liveCatalogEpoch('a1'),
   }
 }
 
@@ -109,7 +110,7 @@ function controlRequest(): unknown {
 /**
  * The live writers of an agent's status, through the real hook.
  *
- * A `ListAgents` reply that is in flight holds an older answer than every status
+ * A `ListAgents` reply that is pending holds an older answer than every status
  * that the live stream writes meanwhile, and it compares
  * `TabMetadataStore.liveStatusEpoch` across the call to learn whether one landed
  * (see `useTabHydrators`). A writer that bypasses the count lets the older reply
@@ -160,6 +161,79 @@ describe('useWorkspaceConnection live status writers', () => {
   })
 })
 
+/**
+ * The live writers of an agent's option-group catalog, through the real hook.
+ *
+ * A `ListAgents` reply that is pending holds an older catalog than every catalog
+ * that the live stream writes meanwhile, and it compares
+ * `TabMetadataStore.liveCatalogEpoch` across the call to learn whether one landed
+ * (see `useTabHydrators`). The catalog count is apart from the status count: an
+ * event of one kind says nothing about the other.
+ */
+describe('useWorkspaceConnection live catalog writers', () => {
+  const catalog = () => [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })]
+
+  it('counts a catalog and a status that arrive in one event, each on its own count', () => {
+    const { dispose, status, epoch, catalogEpoch } = mountConnection(AgentStatus.STARTING)
+
+    streamOpts().onEvent(WORKER, agentEvent({
+      case: 'statusChange',
+      value: { agentId: 'a1', status: AgentStatus.ACTIVE, workerOnline: true, optionGroups: catalog() },
+    }))
+
+    expect(status()).toBe(AgentStatus.ACTIVE)
+    expect(epoch()).toBe(1)
+    expect(catalogEpoch()).toBe(1)
+    dispose()
+  })
+
+  it('counts a settings refresh that has no status as a catalog and not as a status', () => {
+    const { dispose, status, epoch, catalogEpoch } = mountConnection(AgentStatus.ACTIVE)
+
+    streamOpts().onEvent(WORKER, agentEvent({
+      case: 'statusChange',
+      value: { agentId: 'a1', status: AgentStatus.UNSPECIFIED, workerOnline: true, optionGroups: catalog() },
+    }))
+
+    expect(status()).toBe(AgentStatus.ACTIVE)
+    expect(epoch(), 'the event says nothing about the lifecycle').toBe(0)
+    expect(catalogEpoch()).toBe(1)
+    dispose()
+  })
+
+  it('counts a status event that carries no catalog as a status and not as a catalog', () => {
+    const { dispose, epoch, catalogEpoch } = mountConnection(AgentStatus.ACTIVE)
+
+    streamOpts().onEvent(WORKER, agentEvent({
+      case: 'statusChange',
+      value: { agentId: 'a1', status: AgentStatus.INACTIVE, workerOnline: true, optionGroups: [] },
+    }))
+
+    expect(epoch()).toBe(1)
+    expect(catalogEpoch(), 'an empty catalog means "unchanged"').toBe(0)
+    dispose()
+  })
+
+  it('counts a git-only event as neither', () => {
+    const { dispose, epoch, catalogEpoch } = mountConnection(AgentStatus.ACTIVE)
+
+    streamOpts().onEvent(WORKER, agentEvent({
+      case: 'statusChange',
+      value: {
+        agentId: 'a1',
+        status: AgentStatus.UNSPECIFIED,
+        workerOnline: true,
+        optionGroups: [],
+        gitStatus: { toplevel: '/repo', branch: 'main' },
+      },
+    }))
+
+    expect(epoch()).toBe(0)
+    expect(catalogEpoch()).toBe(0)
+    dispose()
+  })
+})
+
 function mountTerminalConnection(initial: TerminalStatus | undefined) {
   const harness = installTestBridge({ workspaceId: WS })
   const { view, metadata, selection } = createTestTabStores(WS)
@@ -202,7 +276,7 @@ function terminalEvent(event: NonNullable<MessageInitShape<typeof TerminalEventS
 /**
  * The live writers of a terminal's status, through the real hook.
  *
- * A `ListTerminals` reply that is in flight holds an older answer than every
+ * A `ListTerminals` reply that is pending holds an older answer than every
  * status that the live stream writes meanwhile, and it compares
  * `TabMetadataStore.liveStatusEpoch` across the call to learn whether one landed
  * (see `useTabHydrators`). A writer that bypasses the count lets the older reply

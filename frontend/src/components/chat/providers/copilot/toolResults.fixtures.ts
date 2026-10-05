@@ -112,7 +112,11 @@ const REFUSALS = {
   rejected: { code: 'rejected', message: 'The user rejected this tool call.' },
   rejectedWithFeedback: { code: 'denied', message: 'The user rejected this tool call. User feedback: Keep the file.' },
   noResponder: { code: 'denied', message: 'Permission denied and could not request permission from user' },
-  planSentBack: { code: 'rejected', message: 'Plan not approved. User feedback:\n\nSplit the migration first.' },
+  // A Reject WITHOUT feedback. A Reject that carries feedback is no refusal: the runtime
+  // answers that call with a successful result, "Plan not approved. User feedback: ...",
+  // and the model continues. Only the answer with no feedback ends the call as
+  // `rejected`. See the comment above the case in `plan-approval-banner.spec.ts`.
+  planRejectedWithoutFeedback: { code: 'rejected', message: 'User requested changes but did not provide specific feedback.' },
 } as const
 
 /** A completion that ends with one `error` object, and the outcome word the row must read. */
@@ -160,7 +164,7 @@ export const COPILOT_TOOL_RESULTS: ToolResultCheck = {
     ended('message', COPILOT_TOOL.WriteAgent, 'declined', REFUSALS.rejected),
     ended('edit', COPILOT_TOOL.Edit, 'declined', REFUSALS.rejected),
     ended('skill', COPILOT_TOOL.ExtensionsManage, 'declined', REFUSALS.rejected),
-    ended('switch_mode', COPILOT_TOOL.ExitPlanMode, 'declined', REFUSALS.planSentBack),
+    ended('switch_mode', COPILOT_TOOL.ExitPlanMode, 'declined', REFUSALS.planRejectedWithoutFeedback),
     ended('search', COPILOT_TOOL.ToolSearch, 'declined', REFUSALS.rejected),
     ended('delete', COPILOT_TOOL.Delete, 'declined', REFUSALS.rejected),
     ended('move', COPILOT_TOOL.Move, 'declined', REFUSALS.rejected),

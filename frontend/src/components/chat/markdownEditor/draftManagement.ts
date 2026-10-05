@@ -40,19 +40,28 @@ export function restoreCursor(editor: Editor, savedCursor: number): void {
 }
 
 /**
- * Serialize the current ProseMirror document and save it as a draft.
- * The saved cursor position allows {@link restoreCursor} to reconstruct
- * trailing empty paragraphs that the markdown parser strips.
+ * Serialize the current ProseMirror document and read the cursor position.
+ * The cursor position allows {@link restoreCursor} to reconstruct trailing empty
+ * paragraphs that the markdown parser strips.
+ *
+ * Throws when the editor cannot answer, for example while it is mid-teardown.
  */
-export function saveDraftFromEditor(editor: Editor, draftKey: string): void {
-  editor.action((ctx: Ctx) => {
+export function readDraftFromEditor(editor: Editor): Draft {
+  return editor.action((ctx: Ctx) => {
     const serializer = ctx.get(serializerCtx)
     const view = ctx.get(editorViewCtx)
     const raw = stripNeedlessEscapes(serializer(view.state.doc))
-    const text = typeof raw === 'string' ? raw.trim() : ''
-    const cursor = view.state.selection.from
-    saveDraft(draftKey, text, cursor)
+    return {
+      content: typeof raw === 'string' ? raw.trim() : '',
+      cursor: view.state.selection.from,
+    }
   })
+}
+
+/** Read the document of the editor with {@link readDraftFromEditor} and save it as a draft. */
+export function saveDraftFromEditor(editor: Editor, draftKey: string): void {
+  const { content, cursor } = readDraftFromEditor(editor)
+  saveDraft(draftKey, content, cursor)
 }
 
 /** The document an editor shows for a key that has no saved draft. */

@@ -56,7 +56,16 @@
  *
  * Code is the exception, and it is why this is not one regular expression. The
  * serializer writes a fenced block and an inline code span verbatim, so a backslash
- * inside them is the reader's own. The scan below skips both.
+ * inside them is the reader's own. The scan below skips both. A literal backtick of
+ * ordinary text is not code. The serializer writes it as a backslash and a backtick,
+ * and the scan does not take it for the start of a span.
+ *
+ * One case is outside what this scan can decide. The `text` handler of Milkdown
+ * (`remarkHandlers` in `@milkdown/core`) writes a text with no escape when the text
+ * ends in white space and holds no `*`, no `_` and no backslash. A literal backtick
+ * in such a text stays bare. It pairs with the next backtick, as it does for every
+ * Markdown reader, so the scan cannot tell it from the start of a span. The spans
+ * that the scan sees then differ from the spans that the reader typed.
  */
 
 /** A dot that the autolink rule escaped: one backslash, after `w`, before a word character. */
@@ -72,6 +81,31 @@ const ESCAPED_INTRAWORD_UNDERSCORES = /(?<=[\p{L}\p{N}])(?:\\_)+(?=[\p{L}\p{N}])
 /** The opening or closing line of a fenced code block, at the start of a line. */
 const FENCE_LINE = /^[ \t]{0,3}(`{3,}|~{3,})/
 
+/**
+ * Reports whether an odd number of backslashes stands directly before the character
+ * at `index`. Such a backslash escapes the character. The count never goes below
+ * `floor`, the start of the text that the scan reads now.
+ */
+function isEscapedAt(line: string, index: number, floor: number): boolean {
+  let backslashes = 0
+  while (index - backslashes > floor && line[index - backslashes - 1] === '\\')
+    backslashes += 1
+  return backslashes % 2 === 1
+}
+
+/**
+ * Returns the index of the first backtick at or after `from` that can start a code
+ * span, or -1. A backtick that a backslash escapes is a literal character of the
+ * text. It starts nothing. A backslash inside a code span is code and escapes
+ * nothing, so this search applies to the text outside a span only.
+ */
+function indexOfCodeDelimiter(line: string, from: number): number {
+  let tick = line.indexOf('`', from)
+  while (tick !== -1 && isEscapedAt(line, tick, from))
+    tick = line.indexOf('`', tick + 1)
+  return tick
+}
+
 function stripSegment(text: string): string {
   return text
     .replace(ESCAPED_DOT, '$1.')
@@ -83,13 +117,14 @@ function stripSegment(text: string): string {
  *
  * A backtick run opens a span that ends at the next run of the SAME length. This is
  * the CommonMark rule. A run with no partner opens nothing, so the rest of the line
- * is ordinary text.
+ * is ordinary text. A backtick that a backslash escapes is a literal backtick and
+ * opens nothing.
  */
 function stripLine(line: string): string {
   let out = ''
   let index = 0
   while (index < line.length) {
-    const tick = line.indexOf('`', index)
+    const tick = indexOfCodeDelimiter(line, index)
     if (tick === -1) {
       out += stripSegment(line.slice(index))
       break

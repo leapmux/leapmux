@@ -19,7 +19,7 @@ import type { ToolProgressRetry, ToolProgressUpdate } from '~/stores/chatToolPro
 import type { ControlPayloadFault, createControlStore } from '~/stores/control.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { AgentTab } from '~/stores/tab.types'
-import type { TabMetadataStore } from '~/stores/tabMetadata.store'
+import type { LiveWrite, TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { classifyAgentMessage } from '~/components/chat/messageClassifier'
@@ -931,13 +931,17 @@ function applyAgentStatusTabUpdate(
   const settingsFields = resolveSettingsTabFields(prev, sc.optionGroups, settingsLoading.pendingAxes(sc.agentId))
   // Consolidate every per-status field into one patch so the row is written once.
   //
-  // An event that carries a status is counted: a `ListAgents` reply that was in
-  // flight meanwhile holds an older answer and must not replace it. See
-  // `TabMetadataStore.liveStatusEpoch`.
+  // An event that carries a status, and an event that carries a catalog, are each
+  // counted: a `ListAgents` reply that was pending meanwhile holds an older answer
+  // and must not replace what the event wrote. See `TabMetadataStore.liveStatusEpoch`
+  // and `TabMetadataStore.liveCatalogEpoch`. A git-only event carries neither, so it
+  // counts nothing.
   const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
   const update = buildAgentStatusTabUpdate(sc, hasStatus, settingsFields)
+  const writes: LiveWrite[] = []
   if (hasStatus)
-    metadata.patchLiveStatus(sc.agentId, update)
-  else
-    metadata.patch(sc.agentId, update)
+    writes.push('status')
+  if (sc.optionGroups.length > 0)
+    writes.push('catalog')
+  metadata.patchLive(sc.agentId, update, writes)
 }

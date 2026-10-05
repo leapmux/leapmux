@@ -48,6 +48,33 @@ function touchMoveWasRefused(target: HTMLElement): boolean {
   return event.defaultPrevented
 }
 
+/**
+ * Follow the `touchmove` listeners that `el` holds.
+ *
+ * A removed listener leaves no trace in the DOM, and the recognizer resets the
+ * state that its handler reads when a gesture ends. So a handler that the end of
+ * the gesture did not remove refuses nothing, and a test that dispatches a
+ * `touchmove` cannot tell the two cases apart. This wraps the two methods on the one element and passes
+ * each call through, so the count is the number of listeners that the element
+ * would run.
+ */
+function watchTouchMoveListeners(el: HTMLElement): { count: () => number } {
+  const live = new Set<EventListenerOrEventListenerObject>()
+  const add = el.addEventListener.bind(el)
+  const remove = el.removeEventListener.bind(el)
+  vi.spyOn(el, 'addEventListener').mockImplementation((type, listener, options) => {
+    if (type === 'touchmove')
+      live.add(listener)
+    add(type, listener, options)
+  })
+  vi.spyOn(el, 'removeEventListener').mockImplementation((type, listener, options) => {
+    if (type === 'touchmove')
+      live.delete(listener)
+    remove(type, listener, options)
+  })
+  return { count: () => live.size }
+}
+
 /** Press, travel through `path`, and lift at the last point. */
 function swipe(target: HTMLElement, path: Array<{ x: number, y: number }>) {
   const start = path[0]
@@ -384,8 +411,16 @@ describe('attachHorizontalSwipe', () => {
 
     it('gives the scroll back once the finger lifts', () => {
       const h = mount()
+      const listening = watchTouchMoveListeners(h.row)
+      h.row.dispatchEvent(pointerEvent('pointerdown', { x: 200, y: 300, pointerType: 'touch' }))
+      // The press target holds the listener of the gesture while the finger is down.
+      expect(listening.count()).toBe(1)
+      h.row.dispatchEvent(pointerEvent('pointerup', { x: 200, y: 300, pointerType: 'touch' }))
+      expect(listening.count()).toBe(0)
+
       swipeTo(h.row, 200 + SWIPE_MIN_PX + 40)
       expect(touchMoveWasRefused(h.row)).toBe(false)
+      expect(listening.count()).toBe(0)
     })
 
     it('stops refusing once detached', () => {
@@ -452,41 +487,57 @@ describe('attachHorizontalSwipe', () => {
         expect(touchMoveWasRefused(h.row)).toBe(false)
       })
 
+      // The refusal itself reads the state that the end of the gesture resets, so
+      // it is `false` with or without the listener. The count of listeners on the
+      // removed target is what shows that the end of the gesture took it away.
       it('gives the scroll back once the finger lifts', () => {
         const h = mount()
+        const listening = watchTouchMoveListeners(h.row)
         h.row.dispatchEvent(pointerEvent('pointerdown', { x: 200, y: 300, pointerType: 'touch' }))
         document.body.dispatchEvent(pointerEvent('pointermove', { x: 220, y: 300, pointerType: 'touch' }))
         h.row.remove()
+        expect(listening.count()).toBe(1)
         document.body.dispatchEvent(pointerEvent('pointerup', { x: 220, y: 300, pointerType: 'touch' }))
         expect(touchMoveWasRefused(h.row)).toBe(false)
+        expect(listening.count()).toBe(0)
       })
 
       it('gives the scroll back once the browser cancels the pointer', () => {
         const h = mount()
+        const listening = watchTouchMoveListeners(h.row)
         h.row.dispatchEvent(pointerEvent('pointerdown', { x: 200, y: 300, pointerType: 'touch' }))
         document.body.dispatchEvent(pointerEvent('pointermove', { x: 220, y: 300, pointerType: 'touch' }))
         h.row.remove()
+        expect(listening.count()).toBe(1)
         document.body.dispatchEvent(pointerEvent('pointercancel', { x: 220, y: 300, pointerType: 'touch' }))
         expect(touchMoveWasRefused(h.row)).toBe(false)
+        expect(listening.count()).toBe(0)
       })
 
       it('gives the scroll back once the gesture is detached', () => {
         const h = mount()
+        const listening = watchTouchMoveListeners(h.row)
         h.row.dispatchEvent(pointerEvent('pointerdown', { x: 200, y: 300, pointerType: 'touch' }))
         document.body.dispatchEvent(pointerEvent('pointermove', { x: 220, y: 300, pointerType: 'touch' }))
         h.row.remove()
+        expect(listening.count()).toBe(1)
         h.detach()
         expect(touchMoveWasRefused(h.row)).toBe(false)
+        expect(listening.count()).toBe(0)
       })
 
       // Only the press that the recognizer took listens on its target. A press
-      // that it declined must reach no refusal at all.
+      // that it declined must reach no refusal at all. The handler returns early
+      // while no gesture is locked, so only the count shows a listener that a
+      // declined press added.
       it('refuses nothing for a press the recognizer declined', () => {
         const h = mount({ row: document.createElement('input') })
+        const listening = watchTouchMoveListeners(h.row)
         h.row.dispatchEvent(pointerEvent('pointerdown', { x: 200, y: 300, pointerType: 'touch' }))
         document.body.dispatchEvent(pointerEvent('pointermove', { x: 220, y: 300, pointerType: 'touch' }))
         h.row.remove()
         expect(touchMoveWasRefused(h.row)).toBe(false)
+        expect(listening.count()).toBe(0)
       })
 
       // The region is its own press target when the finger lands on it, and a
@@ -505,15 +556,24 @@ describe('attachHorizontalSwipe', () => {
         expect(touchMoveWasRefused(sibling)).toBe(true)
       })
 
-      // A new press must not inherit the previous press target's listener.
+      // A new press must not inherit the previous press target's listener. The
+      // second gesture locks its axis first. A listener that stayed on the old
+      // target would then refuse a move that only the old target receives.
       it('stops listening on the old target when the next press starts', () => {
         const h = mount()
         const second = document.createElement('div')
         h.root.appendChild(second)
+        const listening = watchTouchMoveListeners(h.row)
         h.row.dispatchEvent(pointerEvent('pointerdown', { x: 200, y: 300, pointerType: 'touch' }))
         document.body.dispatchEvent(pointerEvent('pointermove', { x: 220, y: 300, pointerType: 'touch' }))
+        expect(listening.count()).toBe(1)
         second.dispatchEvent(pointerEvent('pointerdown', { x: 200, y: 300, pointerType: 'touch' }))
         h.row.remove()
+        expect(touchMoveWasRefused(h.row)).toBe(false)
+        expect(listening.count()).toBe(0)
+
+        second.dispatchEvent(pointerEvent('pointermove', { x: 220, y: 300, pointerType: 'touch' }))
+        expect(touchMoveWasRefused(second)).toBe(true)
         expect(touchMoveWasRefused(h.row)).toBe(false)
       })
     })

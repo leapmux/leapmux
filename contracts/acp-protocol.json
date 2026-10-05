@@ -6,25 +6,25 @@
         "sides": [
           "ts"
         ],
-        "why": "the browser narrows the wire word into `ToolKind` through `toolKind()` in `ir/`, which owns these same seven words, and picks the renderer from the NARROWED kind -- so no call site compares against this table. Only `acpFileEditFromToolCallRawInput` compares by name, and it asks one question this table cannot answer for these four: which kinds READ a file. `Read`, `Search` and `Execute` answer yes, and these four answer no by being absent from that test"
+        "why": "the browser narrows the wire word into `ToolKind` through `toolKind()` in `ir/`, which owns these same seven words, and picks the renderer from the NARROWED kind -- so no call site compares against this table. Only `acpFileEditsFromToolCallRawInput` compares by name, and it asks one question this table cannot answer for these four: which kinds READ a file. `Read`, `Search` and `Execute` answer yes, and these four answer no by being absent from that test"
       },
       "Write": {
         "sides": [
           "ts"
         ],
-        "why": "the browser narrows the wire word into `ToolKind` through `toolKind()` in `ir/`, which owns these same seven words, and picks the renderer from the NARROWED kind -- so no call site compares against this table. Only `acpFileEditFromToolCallRawInput` compares by name, and it asks one question this table cannot answer for these four: which kinds READ a file. `Read`, `Search` and `Execute` answer yes, and these four answer no by being absent from that test"
+        "why": "the browser narrows the wire word into `ToolKind` through `toolKind()` in `ir/`, which owns these same seven words, and picks the renderer from the NARROWED kind -- so no call site compares against this table. Only `acpFileEditsFromToolCallRawInput` compares by name, and it asks one question this table cannot answer for these four: which kinds READ a file. `Read`, `Search` and `Execute` answer yes, and these four answer no by being absent from that test"
       },
       "Fetch": {
         "sides": [
           "ts"
         ],
-        "why": "the browser narrows the wire word into `ToolKind` through `toolKind()` in `ir/`, which owns these same seven words, and picks the renderer from the NARROWED kind -- so no call site compares against this table. Only `acpFileEditFromToolCallRawInput` compares by name, and it asks one question this table cannot answer for these four: which kinds READ a file. `Read`, `Search` and `Execute` answer yes, and these four answer no by being absent from that test"
+        "why": "the browser narrows the wire word into `ToolKind` through `toolKind()` in `ir/`, which owns these same seven words, and picks the renderer from the NARROWED kind -- so no call site compares against this table. Only `acpFileEditsFromToolCallRawInput` compares by name, and it asks one question this table cannot answer for these four: which kinds READ a file. `Read`, `Search` and `Execute` answer yes, and these four answer no by being absent from that test"
       },
       "Think": {
         "sides": [
           "ts"
         ],
-        "why": "the browser narrows the wire word into `ToolKind` through `toolKind()` in `ir/`, which owns these same seven words, and picks the renderer from the NARROWED kind -- so no call site compares against this table. Only `acpFileEditFromToolCallRawInput` compares by name, and it asks one question this table cannot answer for these four: which kinds READ a file. `Read`, `Search` and `Execute` answer yes, and these four answer no by being absent from that test"
+        "why": "the browser narrows the wire word into `ToolKind` through `toolKind()` in `ir/`, which owns these same seven words, and picks the renderer from the NARROWED kind -- so no call site compares against this table. Only `acpFileEditsFromToolCallRawInput` compares by name, and it asks one question this table cannot answer for these four: which kinds READ a file. `Read`, `Search` and `Execute` answer yes, and these four answer no by being absent from that test"
       }
     }
   },

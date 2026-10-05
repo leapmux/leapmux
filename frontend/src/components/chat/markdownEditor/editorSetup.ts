@@ -3,6 +3,7 @@ import type { Node, NodeType, Schema } from '@milkdown/prose/model'
 import type { EditorView } from '@milkdown/prose/view'
 import type { TrailingDebounced } from '~/lib/debounce'
 import type { CodeLangHandlers } from '~/lib/editor/codeLangPlugin'
+import type { Draft } from '~/lib/editor/draftPersistence'
 import type { PluginRefs } from '~/lib/editor/keyboardPlugins'
 import type { LinkClickHandlers } from '~/lib/editor/linkPlugin'
 import { defaultValueCtx, Editor, editorViewOptionsCtx, rootCtx } from '@milkdown/core'
@@ -25,6 +26,7 @@ import { $prose } from '@milkdown/utils'
 import { createHighlightPlugin } from 'prosemirror-highlight'
 import { trailingDebounce } from '~/lib/debounce'
 import { createAutoDetectLanguageExtractor, createCodeLangPlugin } from '~/lib/editor/codeLangPlugin'
+import { saveDraft } from '~/lib/editor/draftPersistence'
 import { createLinkBoundaryPlugin, createListItemEnterPlugin, createMarkdownPastePlugin, createSelectionWrapPlugin } from '~/lib/editor/inputPlugins'
 import { createBulletListAfterHardBreakInputRule, createCodeBlockInputRule, createEmphasisStarInputRule, createEmphasisUnderscoreInputRule, createHrInputRule, createInlineCodeInputRule, createLinkInputRule, createOrderedListAfterHardBreakInputRule, createStrikethroughInputRule, createStrongInputRule } from '~/lib/editor/inputRules'
 import {
@@ -43,7 +45,7 @@ import {
 import { createLazyShikiParser } from '~/lib/editor/lazyShikiParser'
 import { createLinkClickPlugin, createLinkShortcutPlugin } from '~/lib/editor/linkPlugin'
 import { createLazyOnigurumaHighlighter } from '~/lib/shikiLazyHighlighter'
-import { saveDraftFromEditor } from './draftManagement'
+import { readDraftFromEditor } from './draftManagement'
 import { stripNeedlessEscapes } from './needlessEscapes'
 
 // One Oniguruma-backed highlighter shared across all editor mounts. Created
@@ -284,10 +286,17 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
         const editor = opts.getEditorInstance()
         if (!draftKey || !editor)
           return
+        let draft: Draft
         try {
-          saveDraftFromEditor(editor, draftKey)
+          draft = readDraftFromEditor(editor)
         }
-        catch { /* The editor is mid-teardown. Its cleanup saves the draft. */ }
+        catch {
+          // The editor cannot answer while it is mid-teardown. Its cleanup saves
+          // the draft. The write below stays outside this guard, so a write that
+          // fails is not hidden.
+          return
+        }
+        saveDraft(draftKey, draft.content, draft.cursor)
       }, 500)
       ctx.get(listenerCtx).markdownUpdated((_ctx, raw) => {
         if (typeof raw !== 'string')

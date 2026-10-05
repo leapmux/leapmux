@@ -196,8 +196,8 @@ describe('copilot native tool rendering', () => {
 
   // The layout the transcript draws: the request card stands above, so the result row
   // states the outcome and the refusal alone. The worker stores a refused completion
-  // with NO completion column (`copilotToolCompletion` in the Go provider), so nothing
-  // draws a LeapMux error header over the row's own outcome.
+  // with NO completion column (`copilotToolCompletionData.completion` in the Go
+  // provider), so nothing draws a LeapMux error header over the row's own outcome.
   it('heads a refused shell call under its request card as declined', () => {
     const { container } = renderResult({ command: 'rm -f doomed.txt' }, COPILOT_TOOL.Bash, {
       success: false,

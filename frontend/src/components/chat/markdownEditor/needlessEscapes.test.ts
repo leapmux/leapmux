@@ -71,6 +71,65 @@ describe('stripNeedlessEscapes', () => {
       const input = '   ```\nnew\\.txt\n   ```\nafter new\\.txt'
       expect(stripNeedlessEscapes(input)).toBe('   ```\nnew\\.txt\n   ```\nafter new.txt')
     })
+
+    // The serializer escapes a literal backtick of ordinary text with a backslash. That
+    // backtick opens no code span. A scan that takes it for a delimiter pairs it with
+    // the opening backtick of a real span and treats that span as ordinary text.
+    describe('a literal backtick of ordinary text', () => {
+      it('does not open a span that swallows the next real span', () => {
+        expect(stripNeedlessEscapes('a lone \\` here, then `x\\_1` and `raw\\.json`'))
+          .toBe('a lone \\` here, then `x\\_1` and `raw\\.json`')
+      })
+
+      it('still strips the needless escapes of the text around it', () => {
+        expect(stripNeedlessEscapes('new\\.txt \\` snake\\_case `raw\\.json` and show\\.me'))
+          .toBe('new.txt \\` snake_case `raw\\.json` and show.me')
+      })
+
+      it('keeps every real span after more than one literal backtick', () => {
+        expect(stripNeedlessEscapes('\\` one \\` two `a\\_b` three `c\\.d`'))
+          .toBe('\\` one \\` two `a\\_b` three `c\\.d`')
+      })
+
+      it('lets a literal backtick sit directly before a real span', () => {
+        expect(stripNeedlessEscapes('\\``new\\.txt` and new\\.txt'))
+          .toBe('\\``new\\.txt` and new.txt')
+      })
+
+      it('lets a literal backtick sit directly after a real span', () => {
+        expect(stripNeedlessEscapes('`new\\.txt`\\` new\\.txt'))
+          .toBe('`new\\.txt`\\` new.txt')
+      })
+
+      it('lets a literal backtick sit at the end of the line', () => {
+        expect(stripNeedlessEscapes('`a\\_b` and new\\.txt \\`'))
+          .toBe('`a\\_b` and new.txt \\`')
+      })
+
+      // Two backslashes are a backslash of the reader. The backtick behind them is a
+      // delimiter, so the span that it opens stays verbatim.
+      it('treats a backtick behind a backslash of the reader as a delimiter', () => {
+        expect(stripNeedlessEscapes('a \\\\`x\\_1` and new\\.txt'))
+          .toBe('a \\\\`x\\_1` and new.txt')
+      })
+
+      it('treats a backtick behind three backslashes as a literal backtick', () => {
+        expect(stripNeedlessEscapes('a \\\\\\` b `x\\_1`'))
+          .toBe('a \\\\\\` b `x\\_1`')
+      })
+
+      // A backslash inside a span is code. It does not escape the backtick that
+      // closes the span.
+      it('lets a backslash end a span without escaping its closing backtick', () => {
+        expect(stripNeedlessEscapes('`a\\` new\\.txt and `b\\_c`'))
+          .toBe('`a\\` new.txt and `b\\_c`')
+      })
+
+      it('keeps the lines of a fenced block that follows a line with a literal backtick', () => {
+        expect(stripNeedlessEscapes('lone \\` and new\\.txt\n```\nnew\\.txt\n```\nlone \\` and new\\.txt'))
+          .toBe('lone \\` and new.txt\n```\nnew\\.txt\n```\nlone \\` and new.txt')
+      })
+    })
   })
 
   it('leaves empty input alone', () => {

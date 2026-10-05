@@ -1320,7 +1320,7 @@ describe('applyTerminalStatusChange', () => {
     })
   })
 
-  // A ListTerminals reply that is in flight compares this count across the call
+  // A ListTerminals reply that is pending compares this count across the call
   // (see TabMetadataStore.liveStatusEpoch). Only an event that WROTE the lifecycle
   // counts. The handler refuses some events, and the reply of a re-ask is what
   // heals a tab that refused one: a count for an event that wrote nothing would
@@ -2401,7 +2401,7 @@ describe('extracted handleAgentEvent branch handlers', () => {
       })
     })
 
-    // A ListAgents reply that is in flight compares this count across the call
+    // A ListAgents reply that is pending compares this count across the call
     // (see TabMetadataStore.liveStatusEpoch). The event that carries a status
     // must advance it. A status-less push must not, or the reply would lose the
     // status that no event replaced.

@@ -12,11 +12,16 @@ import { MarkdownEditor } from './MarkdownEditor'
 // The swap race this file pins needs a read that is still in flight when the
 // next key arrives, and fake-indexeddb answers inside a macrotask -- fast enough
 // that every unaided attempt to interleave the two lands after the swap already
-// applied. Only `loadDraft` is replaced, and only for the key the case names;
-// everything else is the real module, so the assertions still read real rows.
+// applied. Only `loadDraft` is held open, and only for the key the case names;
+// `saveDraft` fails for one key on demand (see `failingSaveKey`). Everything else
+// is the real module, so the assertions still read real rows.
 let gatedKey: string | null = null
 let gateResolvers: Array<() => void> = []
 let gateStarted = false
+
+// A WRITE SEAM for one draft key. `saveDraft` throws for the key that the case
+// names, as storage does when a key is not registered. Every other key writes for real.
+let failingSaveKey: string | null = null
 
 vi.mock('~/lib/editor/draftPersistence', async (importActual) => {
   const actual = await importActual<typeof import('~/lib/editor/draftPersistence')>()
@@ -32,6 +37,11 @@ vi.mock('~/lib/editor/draftPersistence', async (importActual) => {
         })
       }
       return actual.loadDraft(agentId)
+    },
+    saveDraft: (...args: Parameters<typeof actual.saveDraft>) => {
+      if (args[0] === failingSaveKey)
+        throw new Error('the storage rejected the draft')
+      return actual.saveDraft(...args)
     },
   }
 })
@@ -289,6 +299,77 @@ describe('MarkdownEditor draft key swaps', () => {
     expect((await loadDraft(KEY_B)).content).toBe('the B document')
     expect((await loadDraft(KEY_A)).content).toBe('the A document')
   })
+
+  // The unmount save is the third writer of a draft, after the debounced save and
+  // the swap save. It follows the same rule: it writes the document on screen under
+  // the key that owns that document.
+  it('saves the document on screen under its own key when the editor unmounts', async () => {
+    saveDraft(KEY_A, 'the A document', -1)
+    await flushStorageWrites()
+
+    let send: (() => void | Promise<void>) | undefined
+    let type: ((text: string) => void) | undefined
+    const { container, unmount } = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="chat"
+          draftKey={{ key: KEY_A }}
+          onSend={() => {}}
+          imperative={{
+            sendRef: (fn) => { send = fn },
+            insertRef: (fn) => { type = fn },
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(send).toBeTypeOf('function'))
+    await waitFor(() => expect(type).toBeTypeOf('function'))
+    await waitFor(() => expect(container.querySelector('.ProseMirror')).toHaveTextContent('the A document'))
+
+    // Typed text is still inside the debounce when the editor unmounts.
+    type?.(' and more')
+    unmount()
+    await flushStorageWrites()
+
+    expect((await loadDraft(KEY_A)).content).toBe('the A document and more')
+  })
+
+  // The same mechanism through the unmount: the key moves while a read is open, so
+  // the editor still shows the OUTGOING key's prose, and the host unmounts before
+  // the read lands. The prop already names the incoming key, but the document on
+  // screen belongs to the outgoing key.
+  it('does not save the outgoing document under the key of a read that never landed when the editor unmounts', async () => {
+    saveDraft(KEY_A, 'the A document', -1)
+    saveDraft(KEY_B, 'the B document', -1)
+    await flushStorageWrites()
+    gateDraftRead(KEY_B)
+
+    const [key, setKey] = createSignal(KEY_A)
+    let send: (() => void | Promise<void>) | undefined
+    const { container, unmount } = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="chat"
+          draftKey={{ key: key() }}
+          onSend={() => {}}
+          imperative={{ sendRef: (fn) => { send = fn } }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(send).toBeTypeOf('function'))
+    await waitFor(() => expect(container.querySelector('.ProseMirror')).toHaveTextContent('the A document'))
+
+    setKey(KEY_B)
+    await waitFor(() => expect(gatedReadStarted()).toBe(true))
+    unmount()
+    releaseGatedDraft()
+    await flushStorageWrites()
+
+    // B's saved draft must be untouched. The unmount save wrote the document on
+    // screen, A's prose, under the key that the prop had already moved to.
+    expect((await loadDraft(KEY_B)).content).toBe('the B document')
+    expect((await loadDraft(KEY_A)).content).toBe('the A document')
+  })
 })
 
 // A draft is saved by a chain of two debounces: Milkdown reports the document
@@ -307,6 +388,7 @@ describe('MarkdownEditor draft saves', () => {
   const LAST_PART = '0100d0130'
 
   afterEach(() => {
+    failingSaveKey = null
     clearDraft(AGENT_KEY)
     clearDraft(CONTROL_KEY)
     releaseGatedDraft()
@@ -411,6 +493,18 @@ describe('MarkdownEditor draft saves', () => {
     await vi.advanceTimersByTimeAsync(1)
     await flushStorageWrites()
     expect(await loadDraft(AGENT_KEY)).toEqual({ content: 'an unsent message', cursor: 1 + 'an unsent message'.length })
+  })
+
+  // The debounced save guards one failure: the read of the document of an editor
+  // that is mid-teardown. A write that fails is another failure, and the guard must
+  // not hide it.
+  it('does not hide a failed write behind the guard for a torn-down editor', async () => {
+    const composer = await mountComposer(AGENT_KEY)
+    composer.type('an unsent message')
+    failingSaveKey = AGENT_KEY
+    await vi.advanceTimersByTimeAsync(200)
+
+    await expect(vi.advanceTimersByTimeAsync(500)).rejects.toThrow('the storage rejected the draft')
   })
 
   it('saves the text that the user types after a send', async () => {
@@ -833,6 +927,31 @@ describe('MarkdownEditor surface', () => {
     await waitFor(() => expect(setContent).toBeTypeOf('function'))
     setContent?.('match `new\\.txt` exactly')
     await waitFor(() => expect(seen.at(-1)?.trim()).toBe('match `new\\.txt` exactly'))
+  })
+
+  /**
+   * The serializer writes a literal backtick of prose as a backslash and a backtick.
+   * That backtick opens no code span, so the spans after it keep the backslashes that
+   * the reader typed. The text before the span holds an underscore on purpose.
+   * Milkdown writes a text without any escape when the text ends in white space and
+   * holds no `*`, no `_` and no backslash. That text would carry the backtick as it is.
+   */
+  it('keeps a backslash that a code span holds after a literal backtick', async () => {
+    const seen: string[] = []
+    let setContent: ((text: string) => void) | undefined
+    render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="goal"
+          onSend={() => {}}
+          onMarkdownChange={md => seen.push(md)}
+          imperative={{ contentRef: (_get, set) => { setContent = set } }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(setContent).toBeTypeOf('function'))
+    setContent?.('a lone \\` in snake_case, then `x\\_1` and `raw\\.json`')
+    await waitFor(() => expect(seen.at(-1)?.trim()).toBe('a lone \\` in snake_case, then `x\\_1` and `raw\\.json`'))
   })
 
   /**

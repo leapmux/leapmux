@@ -16,7 +16,7 @@ import { repoKey } from './repoGit'
 // failed a 5s test on a cold Vite cache. `./tab.helpers` already pulls
 // `./repoGit` into the static graph, so nothing here forces the dynamic form.
 import { createRepoGitStore } from './repoGit.store'
-import { agentTabSupportsInterrupt, agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, keepLiveTerminalStatus, LIVE_STATUS_FIELDS, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, TERMINAL_LIVE_STATUS_FIELDS, terminalMetadata, terminalProgressBarProps, withoutLiveStatusFields } from './tab.helpers'
+import { agentTabSupportsInterrupt, agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, keepLiveTerminalStatus, LIVE_CATALOG_FIELDS, LIVE_STATUS_FIELDS, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, TERMINAL_LIVE_STATUS_FIELDS, terminalMetadata, terminalProgressBarProps, withoutLiveCatalogFields, withoutLiveStatusFields } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -1209,6 +1209,72 @@ describe('withoutLiveStatusFields', () => {
     for (const key of LIVE_STATUS_FIELDS)
       expect(key in kept, `${key} stays out`).toBe(false)
     expect(kept.title).toBe('Agent Liz')
+  })
+})
+
+describe('withoutLiveCatalogFields', () => {
+  const full: Partial<AgentTab> = {
+    workerId: 'w1',
+    workingDir: '/repo',
+    title: 'Agent Liz',
+    agentStatus: AgentStatus.ACTIVE,
+    agentSessionId: 's1',
+    optionGroups: [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })],
+    optionValues: { model: 'opus' },
+  }
+
+  it('removes the catalog and the current values that a live event owns', () => {
+    const kept = withoutLiveCatalogFields(full)
+    for (const key of LIVE_CATALOG_FIELDS)
+      expect(key in kept, `${key} stays out`).toBe(false)
+  })
+
+  it('keeps the identity and the lifecycle of the tab', () => {
+    expect(withoutLiveCatalogFields(full)).toEqual({
+      workerId: 'w1',
+      workingDir: '/repo',
+      title: 'Agent Liz',
+      agentStatus: AgentStatus.ACTIVE,
+      agentSessionId: 's1',
+    })
+  })
+
+  it('does not change its argument', () => {
+    const before = { ...full }
+    withoutLiveCatalogFields(full)
+    expect(full).toEqual(before)
+  })
+
+  it('accepts fields that carry none of them', () => {
+    expect(withoutLiveCatalogFields({})).toEqual({})
+  })
+
+  it('removes the catalog fields that protoToAgentTabFields writes from a reply', () => {
+    const fields = protoToAgentTabFields(createRepoGitStore(), 'w1', create(AgentInfoSchema, {
+      id: 'a1',
+      title: 'Agent Liz',
+      optionGroups: [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })],
+    }))
+    expect(Object.keys(fields)).toEqual(expect.arrayContaining([...LIVE_CATALOG_FIELDS]))
+
+    const kept = withoutLiveCatalogFields(fields)
+    for (const key of LIVE_CATALOG_FIELDS)
+      expect(key in kept, `${key} stays out`).toBe(false)
+    expect(kept.title).toBe('Agent Liz')
+  })
+
+  // `deriveOptionGroupTabFields` is the one producer of the catalog fields. A field
+  // that it writes and the list misses would let an older reply overwrite it.
+  it('lists exactly the fields that deriveOptionGroupTabFields writes', () => {
+    const written = new Set<string>()
+    for (const groups of [
+      [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })],
+      [create(AvailableOptionGroupSchema, { id: 'model' })],
+    ]) {
+      for (const key of Object.keys(deriveOptionGroupTabFields(groups)))
+        written.add(key)
+    }
+    expect([...written].sort()).toEqual([...LIVE_CATALOG_FIELDS].sort())
   })
 })
 

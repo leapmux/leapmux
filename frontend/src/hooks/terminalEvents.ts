@@ -33,7 +33,7 @@ import { tabKey } from '~/stores/tab.helpers'
  * this transition should not have to be found twice.
  *
  * It is a live status write, so it goes through `patchLiveStatus`: a
- * `ListTerminals` reply that was in flight holds an older answer and must not
+ * `ListTerminals` reply that was pending holds an older answer and must not
  * replace it. See `TabMetadataStore.liveStatusEpoch`.
  */
 export function markTerminalExited(metadata: TabMetadataStore, terminalId: string): void {
@@ -60,7 +60,7 @@ export function markTerminalExited(metadata: TabMetadataStore, terminalId: strin
  * is write-once and the tab was not DISCONNECTED.
  *
  * Each write of the lifecycle goes through `patchLiveStatus`, so a
- * `ListTerminals` reply that was in flight holds an older answer and must not
+ * `ListTerminals` reply that was pending holds an older answer and must not
  * replace it. See `TabMetadataStore.liveStatusEpoch`. An event that the guards
  * below refuse writes nothing and counts for nothing: the reply of a re-ask is
  * what heals a DISCONNECTED tab, and a count would hold that reply back.

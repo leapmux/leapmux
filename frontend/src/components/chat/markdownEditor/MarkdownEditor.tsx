@@ -609,19 +609,11 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   }
 
   const draftSaveDebounce: { current: TrailingDebounced | undefined } = { current: undefined }
-  // Track the last valid draft key so onCleanup can save the draft even when
-  // reactive getters (props.agentId) return null during unmount.
-  let latestDraftKey: string | undefined
   // The key whose document the editor holds. Undefined before the first effect
   // run, and null when that document has no draft. It moves only when a replace
-  // lands, so the debounced save and every swap save write under the key that
-  // owns the text on screen.
+  // lands, so the debounced save, every swap save and the save at unmount write
+  // under the key that owns the text on screen.
   let prevDraftKey: string | null | undefined
-  createEffect(() => {
-    const key = getDraftKey()
-    if (key)
-      latestDraftKey = key
-  })
 
   /**
    * Build the editor and attach everything that depends on it.
@@ -897,15 +889,15 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   onCleanup(() => {
     disposed = true
     draftSaveDebounce.current?.cancel()
-    // Save draft for the current agent/control-request before cleanup.
-    // Prefer the cached latestDraftKey over getDraftKey(): during disposal
-    // reactive getters (props.agentId) may already reflect the NEW agent
-    // (e.g. tab switch causes FocusedAgentEditorPanel to be recreated,
-    // and focusedAgentId() has already changed by cleanup time).
-    const cleanupKey = latestDraftKey ?? getDraftKey()
-    if (editorInstance && cleanupKey) {
+    // Save the document on screen under the key that owns it. `prevDraftKey`
+    // states that key. `getDraftKey()` does not: during disposal the reactive
+    // getters (props.agentId) may already reflect the NEW agent (e.g. a tab switch
+    // recreates FocusedAgentEditorPanel, and focusedAgentId() has already changed
+    // by cleanup time). A key change whose read has not landed also leaves the
+    // OUTGOING document on screen while the props name the incoming key.
+    if (editorInstance && prevDraftKey) {
       try {
-        saveDraftFromEditor(editorInstance, cleanupKey)
+        saveDraftFromEditor(editorInstance, prevDraftKey)
       }
       catch { /* editor may not be ready */ }
     }
