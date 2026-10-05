@@ -25,6 +25,27 @@ import { selectionInside } from '~/lib/textSelection'
  * anyway, because Blink decides a touch's disposition from the handler region
  * its compositor already holds.
  *
+ * The standing listener on the region is not enough when the press target
+ * leaves the document during the gesture. The app replaces the placeholder of
+ * an empty transcript, for example, when its agent finishes the startup. After
+ * the removal, Blink sends the rest of that finger's `touchmove` events to the
+ * removed element only. An event on a removed element does not bubble to the
+ * region. The region listener then never calls `preventDefault()`, the scroll
+ * starts, Blink fires `pointercancel`, and the swipe is lost. Measured in
+ * Chromium 151 with this recognizer: a removal before the second move lost the
+ * swipe. A later removal let the swipe report first, and the cancel came after
+ * it. The `pointer*` events are not affected, because Blink releases the
+ * capture of the pointer on the removal and aims the later events at the
+ * element under the finger, so they reach the document listeners below.
+ *
+ * So each press that the recognizer takes also listens for `touchmove` on its
+ * own target, for the length of the gesture. The standing listener on the
+ * region still sets the disposition of the touch. The listener on the target
+ * handles the one path that does not pass the region. While the target stays in
+ * the document, both listeners run for the same event, and the second call
+ * changes nothing. A press on the region itself adds no listener, because the
+ * standing one already serves it.
+ *
  * A standing non-passive listener makes this region's touches block on the main
  * thread before a scroll can start, which is a real cost. The handler is
  * written to pay as little of it as possible: one comparison when no gesture is
@@ -209,6 +230,13 @@ export function attachHorizontalSwipe(root: HTMLElement, opts: HorizontalSwipeOp
   /** What the press landed on, for the scroller test the axis lock runs. */
   let pressTarget: Element | null = null
   /**
+   * The element that carries this gesture's own `touchmove` listener, or `null`
+   * for none. It is NOT always `pressTarget`: a press on the region itself adds
+   * no second listener, because the standing one is already there, and the
+   * removal at the end of the gesture must never take the standing one away.
+   */
+  let moveListenerTarget: Element | null = null
+  /**
    * The direction the axis lock chose. `null` while the axis is undecided, and
    * a value means this gesture owns the finger — which is exactly what
    * `onTouchMove` suppresses the browser's scroll on.
@@ -244,6 +272,8 @@ export function attachHorizontalSwipe(root: HTMLElement, opts: HorizontalSwipeOp
   }
 
   function endGesture() {
+    moveListenerTarget?.removeEventListener('touchmove', onTouchMove)
+    moveListenerTarget = null
     pointerId = null
     pressTarget = null
     lockedDirection = null
@@ -282,6 +312,13 @@ export function attachHorizontalSwipe(root: HTMLElement, opts: HorizontalSwipeOp
     startX = e.clientX
     startY = e.clientY
     pressTarget = target
+    if (target !== root) {
+      // Non-passive, like the listener on the region. See the module doc: a press
+      // target that leaves the document receives the later `touchmove` events,
+      // and the region never does.
+      target.addEventListener('touchmove', onTouchMove, { passive: false })
+      moveListenerTarget = target
+    }
     trackPress()
   }
 
@@ -347,8 +384,12 @@ export function attachHorizontalSwipe(root: HTMLElement, opts: HorizontalSwipeOp
    *
    * `cancelable` is false for every move after a scroll has begun. Calling
    * `preventDefault()` there does nothing but log a console warning.
+   *
+   * The parameter is an `Event`, not a `TouchEvent`: the press target is an
+   * `Element`, and the DOM typings give `Element` no `touchmove` overload. The
+   * handler reads nothing that is specific to a touch event.
    */
-  const onTouchMove = (e: TouchEvent) => {
+  function onTouchMove(e: Event) {
     if (lockedDirection === null)
       return
     if (e.cancelable)

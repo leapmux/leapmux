@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { COARSE_POINTER_METRICS, touchSwipe } from './helpers/touch'
+import { COARSE_POINTER_METRICS, touchDown, touchSwipe } from './helpers/touch'
 
 /**
  * The mobile drawers, driven by a finger instead of the tab bar's toggles.
@@ -70,8 +70,7 @@ async function expectMobileShellIdle(page: Page) {
 }
 
 /**
- * The agent tab shows the agent's own details, so the network has no more work
- * for the main thread.
+ * The agent tab shows the agent's own details, so the details have arrived.
  *
  * The shell reveals the tab before the agent's details arrive. When they arrive,
  * the app renders the tab chip again and adds the model chip under the composer,
@@ -82,6 +81,14 @@ async function expectMobileShellIdle(page: Page) {
  *
  * The model chip renders only when the agent states its model, so it marks the
  * end of that work.
+ *
+ * It does NOT mark the end of the agent startup. The chip renders beside the
+ * "Starting ..." banner, and the startup ends a fraction of a second after the
+ * page opens, which can be in the middle of the swipe. The app then replaces
+ * the banner, which is the element under the finger. The recognizer must keep
+ * the swipe through that replacement, so this helper does not wait for the
+ * startup. The test 'a swipe survives the removal of the element under the
+ * finger' holds that property without a race.
  */
 async function expectTabHydrated(page: Page) {
   await expect(page.getByTestId('composer-model-trigger')).toBeVisible()
@@ -236,6 +243,70 @@ test.describe('mobile drawer swipes (phone)', () => {
     await expect(left).toBeInViewport()
 
     await swipeRight(page)
+    await expect(left).toBeInViewport()
+    await expect(right).not.toBeInViewport()
+  })
+
+  /**
+   * The element under the finger leaves the document while the finger moves.
+   *
+   * The app does this for real when the agent finishes the startup: it replaces
+   * the "Starting ..." banner, and the banner fills the empty transcript, so a
+   * finger that lands there lands on it. Chromium then sends the rest of that
+   * finger's `touchmove` events to the removed element, and they never reach the
+   * region. A recognizer that waits for them there never refuses the browser's
+   * scroll, the browser cancels the pointer, and no drawer arrives. Nothing
+   * reports the loss, and every other assertion still passes. The startup
+   * timing makes the real case a race, so this test removes the element at a
+   * fixed point instead (after the first move, when the travel is still under
+   * the swipe threshold).
+   *
+   * The element is INJECTED, like the sideways scroller in a later test but
+   * with the whole region as its extent, because the test must control the
+   * removal and the app owns the real banner.
+   */
+  test('a swipe survives the removal of the element under the finger', async ({ page, authenticatedWorkspace }) => {
+    const { left, right } = drawers(page)
+    await page.evaluate(() => {
+      const region = document.querySelector('[data-testid="mobile-drawer-left"]')!.parentElement!
+      const cover = document.createElement('div')
+      cover.dataset.testid = 'e2e-press-target'
+      Object.assign(cover.style, {
+        position: 'absolute',
+        inset: '0',
+        // Over the tiles, under the drawers (which sit at z-index 100).
+        zIndex: '2',
+        background: 'var(--card)',
+      })
+      region.appendChild(cover)
+    })
+
+    const width = page.viewportSize()!.width
+    const y = await transcriptY(page)
+    const fromX = width * 0.25
+    // The finger must land on the injected element. Any other landing proves
+    // nothing about the removal.
+    const landing = await page.evaluate(
+      ([px, py]) => document.elementFromPoint(px, py)?.getAttribute('data-testid') ?? 'nothing',
+      [fromX, y] as const,
+    )
+    expect(landing, `the press at (${Math.round(fromX)}, ${Math.round(y)})`).toBe('e2e-press-target')
+
+    const steps = 5
+    const stepX = (width * SWIPE_TRAVEL_RATIO) / steps
+    const finger = await touchDown(page, fromX, y)
+    // `finally`, for the reason `touchSwipe` states: a failed step must still
+    // lift the finger.
+    try {
+      await finger.moveTo(fromX + stepX, y)
+      await page.evaluate(() => document.querySelector('[data-testid="e2e-press-target"]')!.remove())
+      for (let step = 2; step <= steps; step++)
+        await finger.moveTo(fromX + stepX * step, y)
+    }
+    finally {
+      await finger.end()
+    }
+
     await expect(left).toBeInViewport()
     await expect(right).not.toBeInViewport()
   })
