@@ -5,11 +5,11 @@ import { expect } from '@playwright/test'
 import { fastAgentTest } from '../fastagent-fixtures'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { currentNativeAgent } from '../helpers/nativeScenario'
-import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
+import { expectCancelledMcpInput } from '../helpers/unsupportedMcpInput'
 import { connectNativeMcp, invokeNativeMcp } from './mcpScenarios'
 import { nativeContext } from './scenarios'
 
-fastAgentTest('returns the actual native MCP input refusal without a browser form', async ({ authenticatedFastAgentWorkspace, page, modelScript, leapmuxServer }) => {
+fastAgentTest('returns the actual native MCP input cancel without a browser form', async ({ authenticatedFastAgentWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedFastAgentWorkspace.workspaceId })
   const agent = await currentNativeAgent(context)
   const receiptLog = join(agent.workingDir, 'form-receipt.json')
@@ -17,7 +17,9 @@ fastAgentTest('returns the actual native MCP input refusal without a browser for
   await connectNativeMcp(context, 'form_probe', process.execPath, script)
   await expect.poll(() => existsSync(receiptLog)).toBe(true)
   const callId = 'fast-mcp-input'
-  await expectUnsupportedMcpInput(context, {
+  // Fast Agent declares MCP elicitation and answers through its terminal form.
+  // Under ACP, stdin carries the protocol, and that form ends with its default cancel action.
+  await expectCancelledMcpInput(context, {
     receiptLog,
     callId,
     invoke: () => invokeNativeMcp(context, { server: 'form_probe', tool: 'ask', input: {}, callId }),

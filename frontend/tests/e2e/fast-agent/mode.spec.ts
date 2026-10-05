@@ -12,7 +12,7 @@ fastAgentTest.describe('Fast Agent settings', () => {
   fastAgentTest('the settings menu shows the agent mode', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
     await openFastAgentAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    await waitForSettingsHydrated(page)
+    await waitForSettingsHydrated(page, 'permissionMode')
 
     const group = await openSettingsMenu(page, 'permissionMode')
     await expect(group.locator('[data-testid="permissionMode-agent"] input[type="radio"]')).toBeChecked()

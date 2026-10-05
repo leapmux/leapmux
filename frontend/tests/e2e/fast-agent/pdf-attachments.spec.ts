@@ -6,6 +6,8 @@ fastAgentTest.describe('Fast Agent attachments', () => {
 
   fastAgentTest('delivers PDF attachment bytes to the model', async ({ authenticatedFastAgentWorkspace, page, modelScript }) => {
     void authenticatedFastAgentWorkspace
-    await exerciseAttachmentDelivery(page, modelScript, 'pdf', 'fa-doc.pdf')
+    // fast-agent sends the ACP blob unchanged as a Chat Completions `file` part
+    // with a PDF data URI.
+    await exerciseAttachmentDelivery(page, modelScript, 'pdf', 'fa-doc.pdf', { protocol: 'openai-chat-completions', readyGroup: 'permissionMode' })
   })
 })

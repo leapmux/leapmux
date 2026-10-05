@@ -3,8 +3,9 @@ import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, FAST_AGENT_E2E_SKIP_REASON, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
 import { writeMcpPermissionServer } from '../helpers/mcpPermissionServer'
+import { expectDeclinedToolRow } from '../helpers/nativePermission'
 import { bashToolCall, mcpToolCall, writeToolCall } from '../helpers/providerToolCalls'
-import { messageContents, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { messageBubbles, messageContents, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 fastAgentTest.describe('Fast Agent control requests', () => {
   fastAgentTest.skip(!!FAST_AGENT_E2E_SKIP_REASON, FAST_AGENT_E2E_SKIP_REASON || '')
@@ -52,7 +53,30 @@ fastAgentTest.describe('Fast Agent control requests', () => {
 
     await expect(banner).toHaveCount(0)
     expect(existsSync(written)).toBe(false)
-    await expect(messageContents(page).filter({ hasText: 'The user has declined permission to use this tool' }).first()).toBeVisible()
+    const refusal = 'The user has declined permission to use this tool'
+    await expect(messageContents(page).filter({ hasText: refusal }).first()).toBeVisible()
+    // Fast Agent gives the call an identifier of its own, so the result row is found by
+    // its refusal.
+    const refused = messageBubbles(page).and(page.locator('[data-tool-row-role="result"]')).filter({ hasText: refusal }).first()
+    const callId = await refused.getAttribute('data-tool-call-id')
+    if (!callId)
+      throw new Error('The refused Fast Agent write drew no tool row.')
+    // The refused write reads declined, and its result row states the refusal. The request
+    // row heads the call with the file, because a paired result row draws no header. Fast
+    // Agent streams the call, so the opening frame states no path. The path reaches the
+    // client in a content diff, which the refusal replaces, and in the permission request.
+    // The Worker stores the input of the permission request with the request row. The
+    // checks hold before and after a reload.
+    const request = messageBubbles(page).and(page.locator('[data-tool-row-role="request"]')).and(page.locator(`[data-tool-call-id="${callId}"]`))
+    for (const reload of [false, true]) {
+      if (reload) {
+        await page.reload()
+        await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+      }
+      await expectDeclinedToolRow(page, callId, refusal)
+      await expect(request).toHaveAttribute('data-tool-status', 'declined')
+      await expect(request).toContainText('fa-local.txt')
+    }
   })
 
   fastAgentTest('denies a shell command before it writes a file', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

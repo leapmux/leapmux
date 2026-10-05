@@ -13,10 +13,13 @@ import (
 
 // Start starts a fast-agent ACP process and performs the handshake.
 //
-// The launch takes `acp --model <model> -x`: the ACP server entry, the model
-// string the session runs, and the local shell runtime that exposes coding
-// tools. Fast Agent's ACP permission handler asks before tool execution. The
-// model is fixed at session creation; fast-agent offers no live model switch.
+// The launch takes `--no-update-check acp --model <model> -x --subagents`: the
+// root option that turns off the PyPI release check, the ACP server entry, the
+// model string the session runs, the local shell runtime that exposes coding
+// tools, and the subagent tools. The option must come before `acp`, which swallows
+// an unknown option that follows it. Fast Agent's ACP permission handler asks
+// before tool execution. The model is fixed at session creation; fast-agent offers
+// no live model switch.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 	registration := Registration()
 	model := opts.Model()

@@ -18,7 +18,9 @@ fastAgentTest('returns the native human-input callback refusal without a questio
     )
     await sendMessage(page, modelScript.prompt('Run the native human-input tool once.'))
     const status = await modelScript.waitForSteps(start + 2)
-    expect(nativeToolResult(status.requests.find(request => request.stepIndex === start + 1), callId)).toContain('No elicitation input callback registered')
+    // Fast Agent registers its terminal form as the elicitation callback of each agent.
+    // Under ACP, stdin carries the protocol and is not a terminal. The form ends with its default cancel action.
+    expect(nativeToolResult(status.requests.find(request => request.stepIndex === start + 1), callId)).toContain('The Human cancelled the input request')
     await waitForAgentIdle(page)
     await expect(page.locator('[data-testid="control-banner"]:visible')).toHaveCount(0)
   } })
