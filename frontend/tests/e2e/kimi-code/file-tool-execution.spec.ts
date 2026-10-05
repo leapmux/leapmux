@@ -4,7 +4,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { editToolCall, readToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, assistantBubbles, expectSettingsChip, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
-import { KIMI_E2E_SKIP_REASON, kimiTest, occurrences, stepRequestBody } from '../kimi-fixtures'
+import { KIMI_E2E_SKIP_REASON, kimiTest, occurrences } from '../kimi-fixtures'
 
 kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
 
@@ -41,8 +41,8 @@ kimiTest.describe('uses Kimi Code tools', () => {
     // The edit's own arguments state the new line in every later request. So the
     // request after the read states it more often than the request before the
     // read only when the READ's result holds it.
-    const { requests } = await modelScript.status()
-    expect(occurrences(stepRequestBody(requests, 3), 'const parityAfter = 2'), 'the read returned the edited file')
-      .toBeGreaterThan(occurrences(stepRequestBody(requests, 2), 'const parityAfter = 2'))
+    const body = async (step: number) => JSON.stringify((await modelScript.requestAt(step)).body)
+    expect(occurrences(await body(3), 'const parityAfter = 2'), 'the read returned the edited file')
+      .toBeGreaterThan(occurrences(await body(2), 'const parityAfter = 2'))
   })
 })

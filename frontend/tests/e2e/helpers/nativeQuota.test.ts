@@ -117,19 +117,22 @@ async function runQuotaScenario(options: QuotaReceiptOptions = {}): Promise<void
           await lifecycle.script.queue({ text: 'The earlier real response.' })
           await send(lifecycle.script.prompt('Complete the earlier model turn.'))
         }
+        // The proxy changes the response after the mock records it, so attach the response that the client received.
+        const withReceipt = (record: MockModelRequestRecord): MockModelRequestRecord => {
+          const prompt = typeof record.body === 'object' && record.body !== null && 'messages' in record.body && Array.isArray(record.body.messages)
+            ? record.body.messages.findLast((message: unknown) => typeof message === 'object' && message !== null && 'role' in message && message.role === 'user')
+            : undefined
+          const text = typeof prompt === 'object' && prompt !== null && 'content' in prompt && typeof prompt.content === 'string' ? prompt.content : undefined
+          const receipt = text === undefined ? undefined : receipts.get(text)
+          return receipt ? { ...record, response: receipt } : record
+        }
         const script: ModelScript = {
           ...lifecycle.script,
           status: async () => {
             const status = await lifecycle.script.status()
-            return { ...status, requests: status.requests.map((record) => {
-              const prompt = typeof record.body === 'object' && record.body !== null && 'messages' in record.body && Array.isArray(record.body.messages)
-                ? record.body.messages.findLast((message: unknown) => typeof message === 'object' && message !== null && 'role' in message && message.role === 'user')
-                : undefined
-              const text = typeof prompt === 'object' && prompt !== null && 'content' in prompt && typeof prompt.content === 'string' ? prompt.content : undefined
-              const receipt = text === undefined ? undefined : receipts.get(text)
-              return receipt ? { ...record, response: receipt } : record
-            }) }
+            return { ...status, requests: status.requests.map(withReceipt) }
           },
+          requestAt: async stepIndex => withReceipt(await lifecycle.script.requestAt(stepIndex)),
         }
         // Browser adapters treat the Page as an opaque handle. No fake browser method supplies this receipt.
         const page = {} as Page

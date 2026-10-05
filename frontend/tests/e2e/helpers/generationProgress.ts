@@ -149,7 +149,6 @@ export async function exerciseGenerationProgress(context: ManagedNativeScenarioC
   const agent = await currentNativeAgent(context)
   const after = await observeSettledReceipts(context.page)
   await context.page.evaluate(installGenerationObservation)
-  const start = (await context.modelScript.status()).stepCount
   const counter = options.counter ?? 'tokens'
   let releaseOutput: (() => Promise<void>) | undefined
   const configuredGates: string[] = []
@@ -162,7 +161,7 @@ export async function exerciseGenerationProgress(context: ManagedNativeScenarioC
         await output.releaseFinalOutput()
       }
       const call = bashToolCall(context.provider, 'native-progress-output', output.command)
-      await context.modelScript.queue(
+      const start = await context.modelScript.queue(
         { toolCalls: [call] },
         nativeTextStep(context, 'The native output scenario completed.'),
       )
@@ -199,7 +198,7 @@ export async function exerciseGenerationProgress(context: ManagedNativeScenarioC
       const marker = `NATIVEPROGRESSTEXT${suffix}`
       const text = `${marker} records the actual streamed answer. `.repeat(8)
       const step = options.step ?? nativeTextStep(context, text)
-      await context.modelScript.queue({
+      const start = await context.modelScript.queue({
         ...step,
         text,
         stream: { chunkChars: 24, delayMs: 0, gates: [{ afterChunk: 1, name: firstGate }, { afterChunk: 2, name: secondGate }] },

@@ -22,10 +22,9 @@ import { assistantBubbles, messageContents, sendMessage, userBubbles, waitForAge
 export async function exerciseSteerAfterTool(context: ManagedNativeScenarioContext, options: { expectDisplayedOutput?: boolean } = {}): Promise<void> {
   const agent = await currentNativeAgent(context)
   const output = createToolOutputControl(agent.workingDir)
-  const start = (await context.modelScript.status()).stepCount
   const steering = 'Also append the word steered to your final reply.'
   await withCleanup(async () => {
-    await context.modelScript.queue(
+    const start = await context.modelScript.queue(
       { toolCalls: [bashToolCall(context.provider, 'held-native-steer-tool', output.command)] },
       nativeTextStep(context, 'finished steered'),
     )
@@ -39,13 +38,12 @@ export async function exerciseSteerAfterTool(context: ManagedNativeScenarioConte
     await steerQueuedInput(context.page, { message: steering, match: 'Also append the word steered' })
     await output.releaseFirstOutput()
     await output.releaseFinalOutput()
-    const status = await context.modelScript.waitForSteps(start + 2)
+    await context.modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(context.page)
     await expectSteeredReply(context.page, 'finished steered', 'last')
     await expect(userBubbles(context.page).filter({ hasText: steering }).first()).toBeVisible()
-    const next = status.requests.find(request => request.stepIndex === start + 1)
-    if (!next)
-      throw new Error('The native steering turn did not read its tool result.')
+    // The request after the tool step reads the tool result and the steering message.
+    const next = await context.modelScript.requestAt(start + 1)
     expect(nativeModelContextText(next)).toContain(steering)
     expect(nativeModelContextText(next)).toContain(output.firstMarker)
     await expect(context.page.locator('[data-testid="result-divider"]:visible')).toHaveCount(1)
@@ -64,11 +62,10 @@ export async function exerciseQueuedTurnWithoutSteering(context: ManagedNativeSc
   const nextPrompt = `NEXTQUEUEDPROMPT${marker}`
   const firstAnswer = `FIRSTQUEUEDANSWER${marker}`
   const nextAnswer = `NEXTQUEUEDANSWER${marker}`
-  const start = (await context.modelScript.status()).stepCount
   const server = context.leapmuxServer
   const channel = await getTestChannel(server.hubUrl, server.adminToken)
   await withCleanup(async () => {
-    await context.modelScript.queue({ ...nativeTextStep(context, firstAnswer), gate }, nativeTextStep(context, nextAnswer))
+    const start = await context.modelScript.queue({ ...nativeTextStep(context, firstAnswer), gate }, nativeTextStep(context, nextAnswer))
     await sendMessage(context.page, context.modelScript.prompt('Hold the first ordinary native turn.'))
     await context.modelScript.waitForGate(gate)
     await sendMessage(context.page, context.modelScript.prompt(nextPrompt))
@@ -86,11 +83,10 @@ export async function exerciseQueuedTurnWithoutSteering(context: ManagedNativeSc
       .toMatchObject({ source: 'rpc', code: Code.FailedPrecondition, message: 'agent provider does not support steering' })
     expect((await readQueue()).snapshot?.items.find(candidate => candidate.id === item.id)?.state).toBe(AgentInputState.QUEUED)
     await context.modelScript.releaseGate(gate)
-    const status = await context.modelScript.waitForSteps(start + 2)
+    await context.modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(context.page)
-    const next = status.requests.find(request => request.stepIndex === start + 1)
-    if (!next)
-      throw new Error('The unsupported steer did not run as its next ordinary turn.')
+    // The unsupported steer runs as the next ordinary turn.
+    const next = await context.modelScript.requestAt(start + 1)
     expect(nativeModelContextText(next)).toContain(nextPrompt)
     expect(nativeModelContextText(next)).toContain(firstAnswer)
     await expect(assistantBubbles(context.page).filter({ hasText: nextAnswer }).first()).toBeVisible()

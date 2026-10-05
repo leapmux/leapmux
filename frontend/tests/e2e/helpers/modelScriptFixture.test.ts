@@ -3,6 +3,7 @@ import type { MockModelServer } from './mockModelServer'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
 import { MOCK_SESSION_TITLE, readScenarioStatus } from './mockModelScenario'
+import { MAX_SCENARIO_REQUEST_RECORDS } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
 import { startModelScript, STEP_WAIT_REPORT_MARGIN_MS } from './modelScriptFixture'
 
@@ -157,6 +158,94 @@ describe('startModelScript', () => {
     expect(await answer(server, prompt)).toBe('First')
     expect(await answer(server, prompt)).toBe('Second')
     expect(await script.status()).toMatchObject({ complete: true, nextStep: 2, stepCount: 2 })
+    await finish(true)
+  })
+
+  it('returns the step index of the first answer that each queue call appends', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url)
+    expect(await script.queue({ text: 'First' }, { text: 'Second' })).toBe(0)
+    expect(await script.queue({ text: 'Third' })).toBe(2)
+    expect(await script.queue({ text: 'Fourth' })).toBe(3)
+    script.allowUnconsumed('the test reads only the indexes that the queue returns')
+    await finish(true)
+  })
+
+  it('appends concurrent queue calls in call order', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url)
+    const [first, second, third] = await Promise.all([
+      script.queue({ text: 'A1' }, { text: 'A2' }),
+      script.queue({ text: 'B1' }),
+      script.queue({ text: 'C1' }, { text: 'C2' }, { text: 'C3' }),
+    ])
+    expect([first, second, third]).toEqual([0, 2, 3])
+    const prompt = script.prompt('Run.')
+    const answers: string[] = []
+    for (let index = 0; index < 6; index++)
+      answers.push(await answer(server, prompt))
+    expect(answers).toEqual(['A1', 'A2', 'B1', 'C1', 'C2', 'C3'])
+    await finish(true)
+  })
+
+  it('keeps the count after a refused append, so the next call returns the true index', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url)
+    expect(await script.queue({ text: 'First' })).toBe(0)
+    // A negative delay fails the server's step validation, so the server appends nothing.
+    await expect(script.queue({ text: 'Refused', delayMs: -1 })).rejects.toThrow('Could not extend model scenario')
+    expect(await script.queue({ text: 'Second' })).toBe(1)
+    const prompt = script.prompt('Run.')
+    expect(await answer(server, prompt)).toBe('First')
+    expect(await answer(server, prompt)).toBe('Second')
+    await finish(true)
+  })
+
+  it('returns the request record of a step after the agent requests it', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url)
+    const start = await script.queue({ text: 'First' }, { text: 'Second' })
+    const first = script.prompt('The first native turn.')
+    const second = script.prompt('The second native turn.')
+    const pending = script.requestAt(start + 1)
+    expect(await answer(server, first)).toBe('First')
+    expect(await answer(server, second)).toBe('Second')
+    const request = await pending
+    expect(request.stepIndex).toBe(start + 1)
+    expect(JSON.stringify(request.body)).toContain('The second native turn.')
+    expect(JSON.stringify((await script.requestAt(start)).body)).toContain('The first native turn.')
+    await finish(true)
+  })
+
+  it('fails with the script state when the agent never requests the step', async () => {
+    const server = await startServer()
+    let deadline: number | undefined
+    const { script, finish } = await startModelScript(server.url, { testDeadline: () => deadline })
+    await script.queue({ text: 'Never asked for' })
+    deadline = Date.now() + STEP_WAIT_REPORT_MARGIN_MS + 300
+    await expect(script.requestAt(0)).rejects.toThrow(/reached 0 of 1 answers in \d+ms, before the test's own timeout: 0 of 1 queued answers consumed/)
+    await finish(false)
+  })
+
+  it('fails with the record cap when the server dropped the record of a consumed step', async () => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url)
+    const steps = Array.from({ length: MAX_SCENARIO_REQUEST_RECORDS + 1 }, (_, index) => ({ text: `Answer ${index}` }))
+    const start = await script.queue(...steps)
+    const prompt = script.prompt('Run.')
+    for (const step of steps)
+      expect(await answer(server, prompt)).toBe(step.text)
+    await expect(script.requestAt(start)).rejects.toThrow(
+      `The model script holds no request for step ${start}: the agent requested it, but the server keeps only the newest ${MAX_SCENARIO_REQUEST_RECORDS} request records`,
+    )
+    expect((await script.requestAt(start + 1)).stepIndex).toBe(start + 1)
+    await finish(true)
+  })
+
+  it.each([-1, 0.5, Number.NaN])('refuses the step index %s before any wait', async (index) => {
+    const server = await startServer()
+    const { script, finish } = await startModelScript(server.url)
+    await expect(script.requestAt(index)).rejects.toThrow('A model script step index must be a nonnegative safe integer')
     await finish(true)
   })
 

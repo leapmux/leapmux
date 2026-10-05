@@ -12,25 +12,18 @@ import { messageContents, openPlusMenu, sendMessage, waitForNativeSettingsHydrat
 export async function exerciseMissingNativePlanMode(context: ManagedNativeScenarioContext, options: { reload?: boolean } = {}): Promise<void> {
   const marker = randomUUID().replaceAll('-', '')
   await sendNativeAnswer(context, `Keep NOPLANCONTEXT${marker} for the next command.`, 'The actual native mode is ready.')
-  const start = (await context.modelScript.status()).stepCount
   const callId = `no-plan-${marker}`
   const output = `NOPLAN${marker}42`
-  await context.modelScript.queue(
+  const start = await context.modelScript.queue(
     { toolCalls: [bashToolCall(context.provider, callId, `printf 'NOPLAN${marker}%s\\n' "$((40 + 2))"`)] },
     nativeTextStep(context, 'The literal plan command reached a working native tool turn.'),
   )
   await sendMessage(context.page, '/plan')
   await waitForNativeToolSteps(context, start + 2)
-  const status = await context.modelScript.status()
-  const request = status.requests.find(value => value.stepIndex === start)
-  expect(request).toBeDefined()
-  if (!request)
-    throw new Error('The literal plan command reached no native model request.')
+  const request = await context.modelScript.requestAt(start)
   expect(nativeModelContextText(request)).toContain('/plan')
   expect(nativeModelContextText(request)).toContain(`NOPLANCONTEXT${marker}`)
-  const resultRequest = status.requests.find(value => value.stepIndex === start + 1)
-  if (!resultRequest)
-    throw new Error('The native no-plan tool result reached no follow-up request.')
+  const resultRequest = await context.modelScript.requestAt(start + 1)
   const result = context.readToolResult ? await context.readToolResult(resultRequest, callId) : { text: nativeToolResult(resultRequest, callId) }
   expect(result.text).toContain(output)
   await expect(messageContents(context.page).filter({ hasText: output }).first()).toBeVisible()

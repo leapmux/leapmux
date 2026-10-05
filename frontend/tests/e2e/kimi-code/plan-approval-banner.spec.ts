@@ -4,7 +4,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { enterPlanModeToolCall, exitPlanModeFromFileToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, expectSettingsChip, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
-import { KIMI_E2E_SKIP_REASON, KIMI_PLAN_FILE_CAPTURE, kimiTest, occurrences, stepRequestBody } from '../kimi-fixtures'
+import { KIMI_E2E_SKIP_REASON, KIMI_PLAN_FILE_CAPTURE, kimiTest, occurrences } from '../kimi-fixtures'
 
 kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
 
@@ -96,13 +96,13 @@ kimiTest.describe('reviews a Kimi Code plan', () => {
     await choosePlanChoice(page, 2)
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
 
-    const status = await modelScript.waitForSteps()
+    await modelScript.waitForSteps()
     await waitForAgentIdle(page)
     // Every request carries the tool schemas and the plan-mode reminder, and either
     // can speak of a revision. So the answer reached the model only when the request
     // after the plan review speaks of it more often than the request before it.
-    const revisions = (step: number) => occurrences(stepRequestBody(status.requests, step).toLowerCase(), 'revis')
-    expect(revisions(3), 'the plan result asks for a revision').toBeGreaterThan(revisions(2))
+    const revisions = async (step: number) => occurrences(JSON.stringify((await modelScript.requestAt(step)).body).toLowerCase(), 'revis')
+    expect(await revisions(3), 'the plan result asks for a revision').toBeGreaterThan(await revisions(2))
     await expectSettingsChip(page, 'Plan')
   })
 })

@@ -5,7 +5,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeModelBodiesAfter } from '../helpers/nativeScenario'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { expectSettingsChip, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
-import { KIMI_E2E_SKIP_REASON, kimiTest, occurrences, stepRequestBody } from '../kimi-fixtures'
+import { KIMI_E2E_SKIP_REASON, kimiTest, occurrences } from '../kimi-fixtures'
 
 kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
 
@@ -99,14 +99,15 @@ kimiTest.describe('answers Kimi Code approvals', () => {
       { text: 'The second run finished.' },
     )
     await sendMessage(page, modelScript.prompt('Run the same command again.'))
-    const status = await modelScript.waitForSteps()
+    await modelScript.waitForSteps()
     await waitForAgentIdle(page)
     await expect(page.locator('[data-testid="control-banner"]')).toHaveCount(0)
     await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'kimi-session-scope-42' })).not.toHaveCount(0)
     // The second request also contains the first run's result.
     // The second run must add another occurrence of the marker. A refusal prints no marker.
     const marker = 'kimi-session-scope-42'
-    expect(occurrences(stepRequestBody(status.requests, 3), marker), 'the second run printed the marker')
-      .toBeGreaterThan(occurrences(stepRequestBody(status.requests, 1), marker))
+    const body = async (step: number) => JSON.stringify((await modelScript.requestAt(step)).body)
+    expect(occurrences(await body(3), marker), 'the second run printed the marker')
+      .toBeGreaterThan(occurrences(await body(1), marker))
   })
 })

@@ -1,4 +1,4 @@
-import type { MockModelRule, MockModelScenarioStatus, MockModelStep } from './mockModelScript'
+import type { MockModelRequestRecord, MockModelRule, MockModelScenarioStatus, MockModelStep } from './mockModelScript'
 import { randomUUID } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
 import { withCleanup } from './cleanup'
@@ -11,7 +11,7 @@ import {
   releaseMockModelGateIfHeld,
   removeMockModelScenario,
 } from './mockModelScenario'
-import { validateGateName } from './mockModelScript'
+import { describeScenarioStatus, stepRequest, validateGateName, validateStepIndex } from './mockModelScript'
 import { getGlobalState } from './server'
 
 /** Long enough for an agent process to start and run a turn on a loaded machine. */
@@ -52,8 +52,20 @@ export interface ModelScript {
   testDeadline: () => number | undefined
   /** Mark a prompt so the requests it causes reach this test's script. */
   prompt: (text: string) => string
-  /** Append answers to the ordered queue, in the order the agent will ask. */
-  queue: (...steps: MockModelStep[]) => Promise<void>
+  /**
+   * Append answers to the ordered queue, in the order the agent will ask.
+   * Return the step index of the first appended answer. Measure each later step from that index, never from 0:
+   * an earlier turn of the same test, or a fallback, can consume steps before this one.
+   * Concurrent calls append in call order, so each call returns the index of its own first answer.
+   */
+  queue: (...steps: MockModelStep[]) => Promise<number>
+  /**
+   * Wait until the agent requests the ordered step `stepIndex`, then return the record of that request.
+   * A wait that ends before the request arrives, or a record that the server dropped, fails with the script state.
+   * A native client can add fields to a record after the mock counts its step.
+   * A caller that needs the final record calls this after the turn ends.
+   */
+  requestAt: (stepIndex: number) => Promise<MockModelRequestRecord>
   /**
    * Add a rule that answers matching requests without consuming an ordered step.
    * Use a rule when the test cannot predict a turn's position or count:
@@ -114,15 +126,30 @@ export async function startModelScript(serverURL: string, options: ModelScriptOp
   // Later queue calls add those steps.
   await registerMockModelScenario(serverURL, id, { steps: [] })
   let unconsumedReason: string | undefined
+  // Only this fixture appends steps to its scenario, so this count equals the server's step count.
   let queued = 0
+  // Append in call order. Two concurrent requests could otherwise reach the server in the other order,
+  // and each call would return the first index of the other call's steps.
+  let lastAppend: Promise<unknown> = Promise.resolve()
 
   const script: ModelScript = {
     id,
     testDeadline: () => options.testDeadline?.(),
     prompt: text => mockScenarioPrompt(id, text),
-    queue: async (...steps) => {
-      await extendMockModelScenario(serverURL, id, { steps })
-      queued += steps.length
+    queue: (...steps) => {
+      const appended = lastAppend.then(async () => {
+        const first = queued
+        await extendMockModelScenario(serverURL, id, { steps })
+        queued += steps.length
+        return first
+      })
+      // A failed append rejects its own call. A later call still runs, and it reads the unchanged count.
+      lastAppend = appended.catch(() => {})
+      return appended
+    },
+    requestAt: async (stepIndex) => {
+      validateStepIndex(stepIndex)
+      return stepRequest(await script.waitForSteps(stepIndex + 1), stepIndex)
     },
     rule: (...rules) => extendMockModelScenario(serverURL, id, { rules }),
     fallback: step => extendMockModelScenario(serverURL, id, { fallback: step }),
@@ -153,7 +180,7 @@ export async function startModelScript(serverURL: string, options: ModelScriptOp
           return
         }
         await options.attachStatus?.(status).catch(() => {})
-        throw new Error(`The model script of this test is incomplete: ${describe(status)}\n${JSON.stringify(summarize(status), null, 2)}`)
+        throw new Error(`The model script of this test is incomplete: ${describeScenarioStatus(status)}\n${JSON.stringify(summarize(status), null, 2)}`)
       }, async () => {
         if (cleanupNeeded)
           await removeMockModelScenario(serverURL, id, { force: true })
@@ -177,7 +204,7 @@ async function waitForSteps(
   let status = await readScenarioStatus(serverURL, id)
   while (status.nextStep < count) {
     if (Date.now() >= deadline)
-      throw new Error(`The model script reached ${status.nextStep} of ${count} answers in ${limit}: ${describe(status)}`)
+      throw new Error(`The model script reached ${status.nextStep} of ${count} answers in ${limit}: ${describeScenarioStatus(status)}`)
     await new Promise(resolve => setTimeout(resolve, 50))
     status = await readScenarioStatus(serverURL, id)
   }
@@ -197,7 +224,7 @@ async function waitForGate(
   let status = await readScenarioStatus(serverURL, id)
   while (!status.pendingGates.includes(gate)) {
     if (Date.now() >= deadline)
-      throw new Error(`The model script did not hold gate ${gate} in ${limit}: ${describe(status)}`)
+      throw new Error(`The model script did not hold gate ${gate} in ${limit}: ${describeScenarioStatus(status)}`)
     await new Promise(resolve => setTimeout(resolve, 50))
     status = await readScenarioStatus(serverURL, id)
   }
@@ -214,12 +241,6 @@ function waitDeadline(timeoutMs: number, testDeadline: number | undefined): { de
     ? `${Math.max(0, deadline - started)}ms, before the test's own timeout`
     : `${timeoutMs}ms`
   return { deadline, limit }
-}
-
-function describe(status: MockModelScenarioStatus): string {
-  const unexpected = status.unexpectedRequests.length
-  return `${status.nextStep} of ${status.stepCount} queued answers consumed, `
-    + `${unexpected} request${unexpected === 1 ? '' : 's'} the script did not answer`
 }
 
 /** The most entries of one list that a failure message shows. */

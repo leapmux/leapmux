@@ -122,7 +122,6 @@ export async function exerciseInterruptTurn(
   const gate = `native-interrupt-${marker}`
   const releaseFile = join(before.workingDir, `interrupt-release-${marker}`)
   const toolStarted = join(before.workingDir, `interrupt-started-${marker}`)
-  const stepIndex = (await context.modelScript.status()).stepCount
   let held: MockModelStep
   if (options.kind === 'tool') {
     const script = heldToolScript({ workingDir: before.workingDir, startedFile: toolStarted, releaseFile })
@@ -136,7 +135,7 @@ export async function exerciseInterruptTurn(
     held = { ...nativeTextStep(context, `NEVERCOMPLETED${marker}`), gate }
   }
   try {
-    await context.modelScript.queue(held)
+    const stepIndex = await context.modelScript.queue(held)
     context.modelScript.allowUnconsumed('The native interruption ends the held turn before its answer completes.')
     await sendMessage(context.page, context.modelScript.prompt(options.prompt ?? 'Run the held native interruption probe.'))
     if (options.kind === 'tool') {
@@ -204,8 +203,7 @@ export async function exerciseCloseAgent(
   const marker = randomUUID().replaceAll('-', '')
   const pidFile = join(agent.workingDir, `native-close-${marker}.pid`)
   const script = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setTimeout(()=>{},600000)`
-  const stepIndex = (await context.modelScript.status()).stepCount
-  await context.modelScript.queue({ toolCalls: [bashToolCall(context.provider, 'held-close-tool', `${quotePosixShellArgument(process.execPath)} -e ${quotePosixShellArgument(script)}`)] })
+  const stepIndex = await context.modelScript.queue({ toolCalls: [bashToolCall(context.provider, 'held-close-tool', `${quotePosixShellArgument(process.execPath)} -e ${quotePosixShellArgument(script)}`)] })
   // Some native runtimes request a cancellation continuation before their process exits.
   await context.modelScript.fallback(nativeTextStep(context, 'The native close continuation ended.'))
   await sendMessage(context.page, context.modelScript.prompt('Run the held native close probe.'))
@@ -346,9 +344,8 @@ export async function exerciseAgentStartup(
   const answer = options.answer ?? `STARTUPANSWER${marker}`
   if (!prompt.trim() || !answer.trim())
     throw new Error('The controlled startup prompt and answer must contain text.')
-  const stepIndex = (await context.modelScript.status()).stepCount
-  if (!options.failed)
-    await context.modelScript.queue(nativeTextStep(context, answer))
+  // A failed startup sends no model request, so only a successful startup queues an answer.
+  const stepIndex = options.failed ? undefined : await context.modelScript.queue(nativeTextStep(context, answer))
   await withNativeStartupWorker(context, options.launch, { failRuntime: options.failed ?? false, ...(options.workerEnvironment ? { workerEnvironment: options.workerEnvironment } : {}) }, async (workerId, wrapper) => {
     const privateContext = { ...context, leapmuxServer: { ...context.leapmuxServer, workerId } }
     const server = privateContext.leapmuxServer
@@ -393,7 +390,7 @@ export async function exerciseAgentStartup(
     expect((await context.modelScript.status()).requests.filter(request => nativeScenarioModelContextText(context, request).includes(prompt))).toEqual([])
     await wrapper.release()
     await options.onReleased?.(privateContext)
-    if (options.failed) {
+    if (stepIndex === undefined) {
       if (options.launch.lazy) {
         await waitForAgentIdle(context.page)
         await expect(visibleOnly(context.page.getByText(/Native startup failed:/)).first()).toBeVisible()
@@ -413,9 +410,7 @@ export async function exerciseAgentStartup(
     else {
       await context.modelScript.waitForSteps(stepIndex + 1)
       await waitForAgentIdle(context.page)
-      const request = (await context.modelScript.status()).requests.find(record => record.stepIndex === stepIndex)
-      if (!request)
-        throw new Error('The controlled startup input reached no native model request.')
+      const request = await context.modelScript.requestAt(stepIndex)
       expect(nativeScenarioModelContextText(context, request)).toContain(prompt)
       await expect(userBubbles(context.page).filter({ hasText: prompt }).first()).toBeVisible()
       await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()

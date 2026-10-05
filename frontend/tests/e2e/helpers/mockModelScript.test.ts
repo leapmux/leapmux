@@ -1,18 +1,23 @@
+import type { MockModelScenarioStatus } from './mockModelScript'
 import { describe, expect, it } from 'vitest'
 import {
   AMBIENT_SCENARIO_ID,
   collectScenarioIDs,
   contentText,
+  describeScenarioStatus,
   lastUserText,
   matchesRequest,
+  MAX_SCENARIO_REQUEST_RECORDS,
   MAX_STEP_DELAY_MS,
   parseScenarioSpec,
   resolveStepCaptures,
   SCENARIO_MARKER,
   selectScenarioID,
+  stepRequest,
   systemText,
   textChunks,
   validateScenarioID,
+  validateStepIndex,
 } from './mockModelScript'
 
 function request(overrides: Partial<Parameters<typeof matchesRequest>[1]> = {}) {
@@ -686,5 +691,76 @@ describe('matchesRequest lastMessage', () => {
   it('rejects invalid criteria before a model turn', () => {
     for (const criteria of [null, [], '', {}, { role: '' }, { role: 'invalid' }, { role: 1 }, { text: '' }, { text: [] }, { text: ['valid', ''] }, { text: '[' }, { text: 2 }, { role: 'system', unknown: true }])
       expect(() => parsedLastMessageMatcher(criteria)).toThrow()
+  })
+})
+
+describe('stepRequest', () => {
+  function status(overrides: Partial<MockModelScenarioStatus> = {}): MockModelScenarioStatus {
+    return {
+      complete: false,
+      nextStep: 3,
+      stepCount: 4,
+      ruleMatches: {},
+      pendingGates: [],
+      requests: [
+        { protocol: 'openai-chat-completions', path: '/v1/chat/completions', rule: 'title', body: { marker: 'rule' } },
+        { protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex: 1, body: { marker: 'one' } },
+        { protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex: 2, body: { marker: 'two' } },
+      ],
+      unexpectedRequests: [],
+      ...overrides,
+    }
+  }
+
+  it('returns the record of the requested step, not a neighbor or a rule answer', () => {
+    expect(stepRequest(status(), 1).body).toEqual({ marker: 'one' })
+    expect(stepRequest(status(), 2).body).toEqual({ marker: 'two' })
+  })
+
+  it('states that the agent did not request a later step, with the script state', () => {
+    expect(() => stepRequest(status(), 3)).toThrow(
+      'The model script holds no request for step 3: the agent did not request it; 3 of 4 queued answers consumed, 0 requests the script did not answer.',
+    )
+  })
+
+  it('states that the record cap dropped a consumed step', () => {
+    expect(() => stepRequest(status(), 0)).toThrow(
+      `step 0: the agent requested it, but the server keeps only the newest ${MAX_SCENARIO_REQUEST_RECORDS} request records`,
+    )
+  })
+
+  it('counts the unexpected requests in its message', () => {
+    const unexpected = { protocol: 'openai-chat-completions' as const, path: '/v1/chat/completions', reason: 'no answer', body: {} }
+    expect(() => stepRequest(status({ unexpectedRequests: [unexpected] }), 5)).toThrow('1 request the script did not answer')
+  })
+
+  it('fails for an empty status', () => {
+    expect(() => stepRequest(status({ nextStep: 0, stepCount: 0, requests: [] }), 0))
+      .toThrow('step 0: the agent did not request it; 0 of 0 queued answers consumed')
+  })
+
+  it.each([-1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER, Number.POSITIVE_INFINITY])('rejects the index %s, which identifies no step', (index) => {
+    expect(() => stepRequest(status(), index)).toThrow('A model script step index must be a nonnegative safe integer')
+  })
+})
+
+describe('validateStepIndex', () => {
+  it.each([0, 1, Number.MAX_SAFE_INTEGER - 1])('accepts the index %s, whose next step count stays safe', (index) => {
+    expect(() => validateStepIndex(index)).not.toThrow()
+  })
+
+  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1])('rejects the index %s', (index) => {
+    expect(() => validateStepIndex(index)).toThrow(`A model script step index must be a nonnegative safe integer, not ${index}.`)
+  })
+})
+
+describe('describeScenarioStatus', () => {
+  it('states the consumed count and the unexpected requests in one line', () => {
+    const base = { complete: false, ruleMatches: {}, pendingGates: [], requests: [] }
+    expect(describeScenarioStatus({ ...base, nextStep: 1, stepCount: 2, unexpectedRequests: [] }))
+      .toBe('1 of 2 queued answers consumed, 0 requests the script did not answer')
+    const unexpected = { protocol: 'openai-responses' as const, path: '/v1/responses', reason: 'no answer', body: {} }
+    expect(describeScenarioStatus({ ...base, nextStep: 0, stepCount: 0, unexpectedRequests: [unexpected] }))
+      .toBe('0 of 0 queued answers consumed, 1 request the script did not answer')
   })
 })

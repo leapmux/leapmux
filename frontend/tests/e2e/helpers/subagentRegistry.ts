@@ -378,8 +378,8 @@ export interface HeldChild {
  * the child's model request is open, its row is running, and its tab is active.
  */
 export async function openHeldChildTab(page: Page, modelScript: ModelScript, test: HeldChildCase): Promise<HeldChild> {
-  const start = (await modelScript.status()).stepCount
-  const target = start + 1 + test.rootTurnsAfterSpawn.length
+  // The step count after the root's turns. The queue below sets it before the prompt is sent.
+  let target = 0
   const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]:visible')
   await expect(agentTabs).toHaveCount(1)
   const rootTabId = await agentTabs.getAttribute('data-tab-id') ?? ''
@@ -400,7 +400,7 @@ export async function openHeldChildTab(page: Page, modelScript: ModelScript, tes
       when: test.childTurn,
       respond: heldChildAnswer(test),
     })
-    await modelScript.queue(
+    const start = await modelScript.queue(
       {
         toolCalls: [spawnSubagentToolCall(test.provider, 'spawn-held-child', {
           description: HELD_CHILD_TITLE,
@@ -409,6 +409,7 @@ export async function openHeldChildTab(page: Page, modelScript: ModelScript, tes
       },
       ...test.rootTurnsAfterSpawn,
     )
+    target = start + 1 + test.rootTurnsAfterSpawn.length
     await sendMessage(page, modelScript.prompt('Delegate the count to a subagent.'))
     sent = true
     await modelScript.waitForSteps(start + 1)

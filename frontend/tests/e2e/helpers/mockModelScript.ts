@@ -341,6 +341,56 @@ export interface MockModelScenarioStatus {
   unexpectedRequests: MockModelUnexpectedRequest[]
 }
 
+/**
+ * Limit the complete request records that one scenario retains.
+ *
+ * An uncapped log exhausted a 4 GB heap and stopped Playwright.
+ * The V8 stack trace did not identify a test.
+ * Requests can contain the conversation and every tool schema.
+ * Logs of complete requests can grow quadratically with the turn count.
+ *
+ * The server deletes the oldest records first.
+ * Failure reports include status.requests, so recent records stay available.
+ */
+export const MAX_SCENARIO_REQUEST_RECORDS = 500
+
+/** State the progress of a scenario in one line, for a failure message. */
+export function describeScenarioStatus(status: MockModelScenarioStatus): string {
+  const unexpected = status.unexpectedRequests.length
+  return `${status.nextStep} of ${status.stepCount} queued answers consumed, `
+    + `${unexpected} request${unexpected === 1 ? '' : 's'} the script did not answer`
+}
+
+/**
+ * Reject a step index that cannot name an ordered step.
+ * The index and the step count after it (`stepIndex + 1`) must both be safe integers.
+ */
+export function validateStepIndex(stepIndex: number): void {
+  if (!Number.isSafeInteger(stepIndex) || stepIndex < 0 || !Number.isSafeInteger(stepIndex + 1))
+    throw new Error(`A model script step index must be a nonnegative safe integer, not ${stepIndex}.`)
+}
+
+/**
+ * Return the request that consumed the ordered step `stepIndex`.
+ *
+ * A status that holds no such request fails with one message that states the cause and the script state:
+ *
+ * - The agent did not request the step yet.
+ * - The agent requested the step, but the server dropped its record at the {@link MAX_SCENARIO_REQUEST_RECORDS} cap.
+ *
+ * A caller that must wait for the step calls `ModelScript.requestAt` instead.
+ */
+export function stepRequest(status: MockModelScenarioStatus, stepIndex: number): MockModelRequestRecord {
+  validateStepIndex(stepIndex)
+  const request = status.requests.find(record => record.stepIndex === stepIndex)
+  if (request)
+    return request
+  const cause = stepIndex < status.nextStep
+    ? `the agent requested it, but the server keeps only the newest ${MAX_SCENARIO_REQUEST_RECORDS} request records`
+    : 'the agent did not request it'
+  throw new Error(`The model script holds no request for step ${stepIndex}: ${cause}; ${describeScenarioStatus(status)}.`)
+}
+
 export function validateScenarioID(id: string): void {
   if (!SCENARIO_ID_PATTERN.test(id))
     throw new Error('A model scenario ID must use 1 to 128 ASCII letters, digits, underscores, or hyphens')

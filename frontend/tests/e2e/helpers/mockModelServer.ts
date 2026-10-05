@@ -32,6 +32,7 @@ import {
   isRecord,
   lastUserText,
   matchesRequest,
+  MAX_SCENARIO_REQUEST_RECORDS,
   parseScenarioSpec,
   resolveStepCaptures,
   selectScenarioID,
@@ -47,19 +48,6 @@ import { writeResponseHeaders } from './responseHeaders'
 
 const MAX_HTTP_REQUEST_RECORDS = 10_000
 const MAX_UNMATCHED_RECORDS = 200
-
-/**
- * Limit the complete request records that one scenario retains.
- *
- * An uncapped log exhausted a 4 GB heap and stopped Playwright.
- * The V8 stack trace did not identify a test.
- * Requests can contain the conversation and every tool schema.
- * Logs of complete requests can grow quadratically with the turn count.
- *
- * Delete the oldest records first.
- * Failure reports include status.requests, so recent records stay available.
- */
-const MAX_SCENARIO_REQUEST_RECORDS = 500
 
 /**
  * Limit the number of responses that one scenario's fallback supplies.

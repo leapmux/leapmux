@@ -21,18 +21,14 @@ export async function sendNativeAnswer(
   answer: string,
   { entry = 'type', toolCalls = [] }: NativeAnswerOptions = {},
 ): Promise<MockModelRequestRecord> {
-  const stepIndex = (await context.modelScript.status()).stepCount
   const step = nativeTextStep(context, answer)
-  await context.modelScript.queue(toolCalls.length === 0 ? step : { ...step, toolCalls: [...toolCalls, ...(step.toolCalls ?? [])] })
+  const stepIndex = await context.modelScript.queue(toolCalls.length === 0 ? step : { ...step, toolCalls: [...toolCalls, ...(step.toolCalls ?? [])] })
   await sendMessage(context.page, context.modelScript.prompt(prompt), entry)
   await context.modelScript.waitForSteps(stepIndex + 1)
   await waitForAgentIdle(context.page)
   // Read the record after the turn. The mock counts a step when its request arrives, and a
   // native client states more of that request later, such as the rules of a context query.
-  const status = await context.modelScript.status()
-  const request = status.requests.find(record => record.stepIndex === stepIndex)
-  if (!request)
-    throw new Error('The scripted answer reached no native model request.')
+  const request = await context.modelScript.requestAt(stepIndex)
   expect(nativeScenarioModelContextText(context, request)).toContain(prompt)
   await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
   return request

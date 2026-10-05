@@ -5,7 +5,6 @@
  * `helpers/mockAgentEnvironment.ts` writes to `KIMI_CODE_HOME`, never a Kimi
  * account.
  */
-import type { MockModelRequestRecord } from './helpers/mockModelScript'
 import type { WorkspaceFixture } from './helpers/workspace'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
@@ -46,13 +45,6 @@ export function occurrences(text: string, needle: string): number {
   if (needle === '')
     throw new Error('occurrences needs a needle that is not empty')
   return text.split(needle).length - 1
-}
-
-/** The JSON text of the model request that one scripted step answered. The test fails when no request did. */
-export function stepRequestBody(requests: readonly MockModelRequestRecord[], step: number): string {
-  const request = requests.find(candidate => candidate.stepIndex === step)
-  expect(request, `the request that step ${step} answered`).toBeDefined()
-  return JSON.stringify(request?.body)
 }
 
 /** A workspace with one Kimi Code agent, and the directory that agent works in. */

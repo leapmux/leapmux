@@ -44,19 +44,17 @@ async function exercisePermissionShortcut(context: ManagedNativeScenarioContext,
     }
     await options.settingsProof?.(await currentNativeAgent(context))
     await expectNoNativeControl(context, { testId: 'control-banner', relatedControl: async () => {
-      const start = (await context.modelScript.status()).stepCount
-      const id = `native-${preset}-${start}`
-      await context.modelScript.queue(
+      // One agent session runs both passes, so each pass gives its tool call its own ID.
+      const id = `native-${preset}-${Number(reload)}`
+      const start = await context.modelScript.queue(
         { toolCalls: [bashToolCall(context.provider, id, `rm -rf ${quotePosixShellArgument(target)}; ${printfMarkerCommand(outputPrefix, 42)}`)] },
         nativeTextStep(context, `The native ${preset} command completed.`),
       )
       await sendMessage(context.page, context.modelScript.prompt('Run the scripted removal under the current permission shortcut.'))
-      const status = await context.modelScript.waitForSteps(start + 2)
+      await context.modelScript.waitForSteps(start + 2)
       await waitForAgentIdle(context.page)
       expect(existsSync(target)).toBe(false)
-      const request = status.requests.find(record => record.stepIndex === start + 1)
-      if (!request)
-        throw new Error('The native permission result reached no following model request.')
+      const request = await context.modelScript.requestAt(start + 1)
       const result = context.readToolResult ? await context.readToolResult(request, id) : { text: nativeToolResult(request, id) }
       expect(result.text).toContain(`${outputPrefix}42`)
     } })

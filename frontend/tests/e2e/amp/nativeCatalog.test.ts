@@ -193,7 +193,7 @@ function catalogFixture(options: {
   const unused = (): never => {
     throw new Error('The Amp catalog test called an unused model method.')
   }
-  const queue = vi.fn<ModelScript['queue']>().mockResolvedValue(undefined)
+  const queue = vi.fn<ModelScript['queue']>().mockResolvedValue(0)
   const steps = vi.fn<ModelScript['waitForSteps']>().mockImplementation(async count => status(count ?? 2))
   const release = vi.fn<ModelScript['releaseGateIfHeld']>().mockResolvedValue(false)
   const script: ModelScript = {
@@ -201,6 +201,7 @@ function catalogFixture(options: {
     testDeadline: () => 1_060_000,
     status: vi.fn<ModelScript['status']>().mockResolvedValue(status(0)),
     queue,
+    requestAt: unused,
     rule: unused,
     fallback: unused,
     waitForGate: vi.fn<ModelScript['waitForGate']>().mockResolvedValue(status(1)),

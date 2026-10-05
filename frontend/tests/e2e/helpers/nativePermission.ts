@@ -75,24 +75,19 @@ export async function exerciseNativePermissionDecision(
 ): Promise<void> {
   if (options.outputGate && options.decision === 'deny')
     throw new Error('A denied command prints no output, so it cannot open an output gate.')
-  const start = (await context.modelScript.status()).stepCount
   const answer = 'The native permission decision reached the next turn.'
-  await context.modelScript.queue({ toolCalls: [options.toolCall] }, nativeTextStep(context, answer))
+  const start = await context.modelScript.queue({ toolCalls: [options.toolCall] }, nativeTextStep(context, answer))
   await sendMessage(context.page, context.modelScript.prompt('Run the scripted permission probe.'))
   await context.modelScript.waitForSteps(start + 1)
   const banner = await waitForControlBanner(context.page)
   await options.beforeDecision?.(banner)
   await expect(context.page.locator('[data-testid="dialog-editor"]:visible')).toHaveCount(0)
   await context.page.locator(`[data-testid="control-${options.decision}-btn"]:visible`).first().click()
-  const status = await runWithGatedOutput(options.outputGate, async () => {
-    const reached = await context.modelScript.waitForSteps(start + 2)
+  await runWithGatedOutput(options.outputGate, async () => {
+    await context.modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(context.page)
-    return reached
   })
-  const request = status.requests.find(record => record.stepIndex === start + 1)
-  if (!request)
-    throw new Error('The native permission decision produced no next model request.')
-  await options.nativeProof(request)
+  await options.nativeProof(await context.modelScript.requestAt(start + 1))
   await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
 }
 
@@ -129,8 +124,7 @@ export async function exerciseNativePermissionRefusal(context: ManagedNativeScen
   viewProof?: () => Promise<void>
 }): Promise<void> {
   const agent = await currentNativeAgent(context)
-  const start = (await context.modelScript.status()).stepCount
-  await context.modelScript.queue({ toolCalls: [options.toolCall] })
+  const start = await context.modelScript.queue({ toolCalls: [options.toolCall] })
   await sendMessage(context.page, context.modelScript.prompt(options.prompt))
   await context.modelScript.waitForSteps(start + 1)
   const banner = await waitForControlBanner(context.page)
@@ -194,18 +188,14 @@ export async function exerciseNativeToolWrite(
   await options.prepare?.()
   const scenario = await nativeWriteScenario(context)
   const run = async () => {
-    const start = (await context.modelScript.status()).stepCount
-    await context.modelScript.queue({ toolCalls: [scenario.toolCall] }, nativeTextStep(context, 'The native preset write ended.'))
+    const start = await context.modelScript.queue({ toolCalls: [scenario.toolCall] }, nativeTextStep(context, 'The native preset write ended.'))
     await sendMessage(context.page, context.modelScript.prompt('Run the scripted native preset write.'))
     if (options.permission === 'native')
       await waitForNativeToolSteps(context, start + 2)
     else
       await context.modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(context.page)
-    const request = (await context.modelScript.status()).requests.find(record => record.stepIndex === start + 1)
-    if (!request)
-      throw new Error('The native preset write produced no next model request.')
-    await scenario.prove(request)
+    await scenario.prove(await context.modelScript.requestAt(start + 1))
     await expect(assistantBubbles(context.page).filter({ hasText: 'The native preset write ended.' }).first()).toBeVisible()
   }
   if (options.permission === 'absent')

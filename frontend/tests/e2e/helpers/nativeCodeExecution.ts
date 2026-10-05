@@ -8,7 +8,7 @@ import { nativeModelToolNames, nativeTextStep } from './nativeScenario'
 import { waitForNativeToolSteps } from './nativeToolExecution'
 import { nativeToolResult } from './nativeToolResult'
 import { codeExecutionToolCall } from './providerToolCalls'
-import { assistantBubbles, sendMessage, waitForAgentIdle } from './ui'
+import { assistantBubbles, sendMessage } from './ui'
 
 interface NativeScriptCase {
   label: string
@@ -45,22 +45,15 @@ export async function exerciseNativeCodeExecution(
   const cases = options.scripts(marker)
   validateNativeScriptCases(cases)
   for (const [index, script] of cases.entries()) {
-    const start = (await context.modelScript.status()).stepCount
     const scriptedCallId = `native-code-${index}`
     const call = options.toolCall?.(scriptedCallId, script.source) ?? codeExecutionToolCall(context.provider, scriptedCallId, script.source)
     const callId = call.id
-    await context.modelScript.queue({ toolCalls: [call] }, nativeTextStep(context, `The native ${script.label} script ended.`))
+    const start = await context.modelScript.queue({ toolCalls: [call] }, nativeTextStep(context, `The native ${script.label} script ended.`))
     await sendMessage(context.page, context.modelScript.prompt(`Run the native ${script.label} script.`))
+    // This wait ends after both steps and after the turn, so each record below is complete.
     await waitForNativeToolSteps(context, start + 2)
-    const status = await context.modelScript.waitForSteps(start + 2)
-    await waitForAgentIdle(context.page)
-    const request = status.requests.find(record => record.stepIndex === start + 1)
-    if (!request)
-      throw new Error('The native script result reached no next model request.')
-    const catalogRequest = status.requests.find(record => record.stepIndex === start)
-    if (!catalogRequest)
-      throw new Error('The native script has no captured tool catalog request.')
-    await options.catalogProof?.(catalogRequest)
+    const request = await context.modelScript.requestAt(start + 1)
+    await options.catalogProof?.(await context.modelScript.requestAt(start))
     const result = context.readToolResult ? await context.readToolResult(request, callId) : { text: nativeToolResult(request, callId) }
     expect(result.text).toContain(script.expected)
     if (result.failed !== undefined)

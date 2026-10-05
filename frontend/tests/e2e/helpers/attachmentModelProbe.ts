@@ -10,6 +10,7 @@ import { expect } from '@playwright/test'
 import { AMP_ACTOR_PATH_PREFIX } from './ampSurface'
 import { expectAttachmentOutcome, PDF_PAGE_MARKER, sendWithAttachment } from './attachments'
 import { CURSOR_RUN_PATH } from './cursorSurface'
+import { stepRequest } from './mockModelScript'
 import { assistantBubbles, expectUserMessage, sendMessage, waitForAgentIdle } from './ui'
 
 const CHANNEL_TOLERANCE = 48
@@ -95,9 +96,7 @@ export function nativeUserStrings(body: unknown): string[] {
 
 /** Select the native model request that consumed one ordered step of the script. */
 export function scriptedRequest(status: MockModelScenarioStatus, protocol?: MockModelProtocol, stepIndex = 0): MockModelRequestRecord {
-  const request = status.requests.find(row => row.stepIndex === stepIndex)
-  if (!request)
-    throw new Error('the scripted attachment turn reached no native model request')
+  const request = stepRequest(status, stepIndex)
   if (protocol)
     expect(request.protocol).toBe(protocol)
   return request
@@ -723,8 +722,7 @@ export async function exerciseAttachmentDelivery(
   const { protocol, transcodedImageType, ...outcome } = options
   // The step that this helper queues holds the attachment turn, also when the
   // test queued other steps first.
-  const stepIndex = (await modelScript.status()).stepCount
-  await modelScript.queue({ text: 'Attachment received.' })
+  const stepIndex = await modelScript.queue({ text: 'Attachment received.' })
   const sourcePath = await expectAttachmentOutcome(page, kind, { supported: true, fileName, ...outcome })
   await sendWithAttachment(page, modelScript.prompt('Inspect the attached file.'))
   const status = await modelScript.waitForSteps()
@@ -743,8 +741,7 @@ export async function expectRefusedAttachmentsAbsent(
   rejectedPaths: string[],
   response: MockModelStep = { text: 'The clean prompt answered.' },
 ): Promise<void> {
-  const cleanStepIndex = (await modelScript.status()).stepCount
-  await modelScript.queue(response)
+  const cleanStepIndex = await modelScript.queue(response)
   await sendMessage(page, modelScript.prompt('Reply once without attachments.'))
   const status = await modelScript.waitForSteps()
   await waitForAgentIdle(page)

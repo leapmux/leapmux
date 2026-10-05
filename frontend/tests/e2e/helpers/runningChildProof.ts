@@ -91,20 +91,15 @@ export async function openRunningNativeChild(
   if (!options.allowExistingRows)
     await expectNoRegistryRows(context.page, context.leapmuxServer)
   const previousChildIds = new Set((await readNativeSidebarSnapshot(context, parent.id)).backgroundTasks.map(task => task.childAgentId))
-  const start = (await context.modelScript.status()).stepCount
+  if (options.parentSteps?.length === 0)
+    throw new Error('The native child proof requires a parent step.')
   try {
     await context.modelScript.rule(...runningNativeChildRules(options))
-    if (options.parentSteps) {
-      if (options.parentSteps.length === 0)
-        throw new Error('The native child proof requires a parent step.')
-      await context.modelScript.queue(...options.parentSteps)
-    }
-    else if (options.singleRequest) {
-      await context.modelScript.queue({ toolCalls: [options.spawn], text: 'The native parent received its child report.' })
-    }
-    else {
-      await context.modelScript.queue({ toolCalls: [options.spawn] }, { text: 'The native parent received its child report.' })
-    }
+    const parentSteps = options.parentSteps
+      ?? (options.singleRequest
+        ? [{ toolCalls: [options.spawn], text: 'The native parent received its child report.' }]
+        : [{ toolCalls: [options.spawn] }, { text: 'The native parent received its child report.' }])
+    const start = await context.modelScript.queue(...parentSteps)
     await sendMessage(context.page, context.modelScript.prompt('Create the scripted native child for its capability proof.'))
     if (options.approveSpawn) {
       await context.modelScript.waitForSteps(start + 1)
@@ -142,7 +137,7 @@ export async function openRunningNativeChild(
       parentId: parent.id,
       finish: async () => {
         await context.modelScript.releaseGateIfHeld(options.gate)
-        await context.modelScript.waitForSteps(start + (options.parentSteps?.length ?? (options.singleRequest ? 1 : 2)))
+        await context.modelScript.waitForSteps(start + parentSteps.length)
         await tabById(context.page, parent.id).click()
         await waitForAgentIdle(context.page)
         await expectRowBecomesFinal(context.page, row)

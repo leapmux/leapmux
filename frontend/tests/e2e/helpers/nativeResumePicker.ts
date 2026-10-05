@@ -105,9 +105,9 @@ export async function resumePickerScenario(
   const texts = nativeResumeTexts()
   const answerStep = (turn: 'original' | 'resumed'): MockModelStep =>
     options.answerStep?.(texts, turn) ?? { text: turn === 'original' ? texts.originalAnswer : texts.resumedAnswer }
-  await modelScript.queue(answerStep('original'))
+  const originalStep = await modelScript.queue(answerStep('original'))
   await sendMessage(page, modelScript.prompt(texts.originalPrompt))
-  const firstStatus = await modelScript.waitForSteps(1)
+  const firstStatus = await modelScript.waitForSteps(originalStep + 1)
   await options.onFirstTurn?.(firstStatus)
   await waitForAgentIdle(page, options.idleTimeoutMs)
   if (options.assertConversationBubbles) {
@@ -152,15 +152,13 @@ export async function resumePickerScenario(
 
   await expect(userBubbles(page).filter({ hasText: texts.originalPrompt })).toHaveCount(1)
   await expect(assistantBubbles(page).filter({ hasText: texts.originalAnswer })).toHaveCount(originalAnswerBubbles)
-  await modelScript.queue(answerStep('resumed'))
+  const resumedStep = await modelScript.queue(answerStep('resumed'))
   await sendMessage(page, modelScript.prompt(texts.resumedPrompt))
-  await modelScript.waitForSteps(2)
+  await modelScript.waitForSteps(resumedStep + 1)
   await waitForAgentIdle(page, options.idleTimeoutMs)
   // Read the record after the turn. The mock counts a step when its request arrives, and a native client
   // states more of that request later, such as the rules of a context query.
-  const resumed = (await modelScript.status()).requests.find(request => request.stepIndex === 1)
-  if (!resumed)
-    throw new Error('The resumed prompt reached no native model request.')
+  const resumed = await modelScript.requestAt(resumedStep)
   if (options.resumedBodyHoldsOriginalAnswer !== false)
     expect(JSON.stringify(resumed.body)).toContain(texts.originalAnswer)
   await options.onResumedRequest?.(resumed)

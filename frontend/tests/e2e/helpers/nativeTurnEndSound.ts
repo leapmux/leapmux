@@ -37,8 +37,7 @@ export async function exerciseTurnEndSound(context: ManagedNativeScenarioContext
   await armTurnEndSound(context.page, userId, sound)
   await currentNativeAgent(context)
   let after = await soundReceiptCursor(context.page)
-  const start = (await context.modelScript.status()).stepCount
-  await context.modelScript.queue(...steps)
+  const start = await context.modelScript.queue(...steps)
   await sendMessage(context.page, context.modelScript.prompt(options.prompt ?? 'Complete the scripted sound scenario.'))
   if (options.approveTool) {
     await context.modelScript.waitForSteps(start + 1)

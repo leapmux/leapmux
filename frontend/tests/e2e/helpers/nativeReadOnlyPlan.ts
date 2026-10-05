@@ -25,16 +25,13 @@ export async function exerciseNativeReadOnlyPlan(
   const marker = 'NATIVE_READ_ONLY_PLAN_CONTEXT'
   writeFileSync(file, `${marker}\n`)
   const callId = 'native-read-only-plan'
-  const start = (await context.modelScript.status()).stepCount
-  await context.modelScript.queue(
+  const start = await context.modelScript.queue(
     { toolCalls: [readToolCall(context.provider, callId, file)] },
     { text: '# Native plan\n\n1. Inspect the file context.\n2. Implement after the user selects execution mode.' },
   )
   await sendMessage(context.page, context.modelScript.prompt('Read the supplied context and return the read-only plan.'))
   await waitForNativeToolSteps(context, start + 2)
-  const request = (await context.modelScript.status()).requests.find(record => record.stepIndex === start + 1)
+  const request = await context.modelScript.requestAt(start + 1)
   expect(nativeToolResult(request, callId)).toContain(marker)
-  if (!request)
-    throw new Error('The native plan produced no next model request.')
   await options.nativeProof(request)
 }

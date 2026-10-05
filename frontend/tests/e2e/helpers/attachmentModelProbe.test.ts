@@ -1156,12 +1156,12 @@ describe('scriptedRequest', () => {
 
   it('skips a request that a rule answered without a step', () => {
     const ruled: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/', rule: 'title', body: {} }
-    expect(() => scriptedRequest(status(ruled))).toThrow('the scripted attachment turn reached no native model request')
+    expect(() => scriptedRequest(status(ruled))).toThrow('The model script holds no request for step 0')
   })
 
   it('fails when no request consumed the step', () => {
-    expect(() => scriptedRequest(status(), undefined, 0)).toThrow('the scripted attachment turn reached no native model request')
-    expect(() => scriptedRequest(status(chat()), undefined, 1)).toThrow('the scripted attachment turn reached no native model request')
+    expect(() => scriptedRequest(status(), undefined, 0)).toThrow('The model script holds no request for step 0: the agent did not request it')
+    expect(() => scriptedRequest(status(chat()), undefined, 1)).toThrow('The model script holds no request for step 1: the agent did not request it')
   })
 
   it('fails when the request uses another protocol than the caller states', () => {

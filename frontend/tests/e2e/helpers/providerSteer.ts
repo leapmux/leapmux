@@ -15,11 +15,11 @@ interface ProviderSteerOptions {
 export async function exerciseProviderSteer(page: Page, modelScript: ModelScript, provider: AgentProvider, options: ProviderSteerOptions = {}): Promise<void> {
   const gate = `provider-steer-${provider}`
   const steering = 'Also include the word STEEREDWORD in your reply.'
+  const start = await modelScript.queue(
+    { gate, toolCalls: [bashToolCall(provider, 'steer-tool', 'printf provider-steer-ready')] },
+    { text: 'The turn ended with STEEREDWORD.' },
+  )
   try {
-    await modelScript.queue(
-      { gate, toolCalls: [bashToolCall(provider, 'steer-tool', 'printf provider-steer-ready')] },
-      { text: 'The turn ended with STEEREDWORD.' },
-    )
     await sendMessage(page, modelScript.prompt('Run the scripted shell command, then reply.'))
     await modelScript.waitForGate(gate)
     await steerQueuedInput(page, { message: steering, match: 'Also include the word' })
@@ -30,11 +30,11 @@ export async function exerciseProviderSteer(page: Page, modelScript: ModelScript
   }
   await options.approveTool?.(page)
 
-  const status = await modelScript.waitForSteps()
+  await modelScript.waitForSteps(start + 2)
   await waitForAgentIdle(page)
-  const second = status.requests.find(request => request.stepIndex === 1)
-  expect(second, 'the steered turn called the model after its tool').toBeDefined()
-  expect(JSON.stringify(second?.body).includes(steering)).toBe(true)
+  // The request after the tool step carries the steering message that the user inserted.
+  const second = await modelScript.requestAt(start + 1)
+  expect(JSON.stringify(second.body).includes(steering), 'the steered request holds the inserted message').toBe(true)
   await expectSteeredReply(page, 'STEEREDWORD', 'last')
   await expect(page.locator('[data-testid="result-divider"]:visible')).toHaveCount(options.resultDividers ?? 1)
 }

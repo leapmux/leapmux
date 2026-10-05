@@ -25,17 +25,16 @@ export async function seedManualCompactionConversation(page: Page, modelScript: 
     ['Record the current note.', 'The current note is about the tests.'],
   ] as const
   for (const [index, [prompt, answer]] of turns.entries()) {
-    await modelScript.queue({
+    const stepIndex = await modelScript.queue({
       text: answer,
       ...(reportedInputTokens !== undefined ? { usage: { inputTokens: reportedInputTokens + index * 500, outputTokens: Math.max(1, Math.ceil(answer.length / 4)) } } : {}),
     })
     await sendMessage(page, modelScript.prompt(prompt))
-    const status = await modelScript.waitForSteps()
     if (index === 1) {
-      const request = status.requests.find(request => request.stepIndex === index)
-      expect(request, 'the newer turn reached the model').toBeDefined()
-      expect(JSON.stringify(request?.body)).toContain(olderContextMarker)
+      // The newer turn carries the older context to the model.
+      expect(JSON.stringify((await modelScript.requestAt(stepIndex)).body)).toContain(olderContextMarker)
     }
+    await modelScript.waitForSteps(stepIndex + 1)
     await waitForAgentIdle(page)
   }
 }
@@ -57,13 +56,12 @@ export async function exerciseManualCompaction(page: Page, modelScript: ModelScr
   }
 
   const answer = 'The compacted session continued.'
-  await modelScript.queue({ text: answer })
+  const stepIndex = await modelScript.queue({ text: answer })
   await sendMessage(page, modelScript.prompt('Continue after the context summary.'))
-  const status = await modelScript.waitForSteps()
+  await modelScript.waitForSteps(stepIndex + 1)
   await waitForAgentIdle(page)
-  const nextRequest = status.requests.find(request => request.stepIndex === 3)
-  expect(nextRequest, 'the follow-up prompt reached the model').toBeDefined()
-  const nextBody = JSON.stringify(nextRequest?.body) ?? ''
+  // The follow-up prompt reaches the model with the summary in place of the older context.
+  const nextBody = JSON.stringify((await modelScript.requestAt(stepIndex)).body) ?? ''
   expect(nextBody).toContain(MANUAL_COMPACTION_MARKER)
   expect(nextBody).not.toContain(olderContextMarker)
   await expect(assistantBubbles(page).filter({ hasText: answer }).first()).toBeVisible()

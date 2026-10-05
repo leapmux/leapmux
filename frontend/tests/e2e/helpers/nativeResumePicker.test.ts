@@ -7,6 +7,7 @@ import type { NativeModelTurn } from './nativeScenario'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentInfoSchema, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { stepRequest } from './mockModelScript'
 import { resumePickerScenario } from './nativeResumePicker'
 
 const STORED_SESSION = 'stored-native-session'
@@ -212,8 +213,14 @@ function fakeModelScript(): ModelScript {
     testDeadline: () => undefined,
     prompt: text => `${PROMPT_MARK}${text}`,
     queue: async (...steps) => {
+      const first = picker.queued.length
       picker.queued.push(...steps)
       picker.events.push(`queue:${steps.length}`)
+      return first
+    },
+    requestAt: async (stepIndex) => {
+      picker.events.push(`request-at:${stepIndex}`)
+      return stepRequest(snapshot(), stepIndex)
     },
     rule: async (...rules) => { picker.events.push(`rule:${rules.length}`) },
     fallback: unused('fallback'),
@@ -300,7 +307,7 @@ describe('resumePickerScenario', () => {
       'send:Reply',
       'steps:2',
       'idle',
-      'status',
+      'request-at:1',
       expect.stringMatching(/^context:/),
       `conversation:${REOPENED_ID}`,
     ])
@@ -328,7 +335,7 @@ describe('resumePickerScenario', () => {
     expect(seen).toHaveLength(1)
     expect(seen[0]?.body).toMatchObject({ stated: 'after-turn:1' })
     expect(result.request).toBe(seen[0])
-    const read = picker.events.lastIndexOf('status')
+    const read = picker.events.lastIndexOf('request-at:1')
     expect(read).toBeGreaterThan(picker.events.lastIndexOf('idle'))
     expect(read).toBeGreaterThan(picker.events.lastIndexOf('steps:2'))
   })
@@ -356,7 +363,7 @@ describe('resumePickerScenario', () => {
       },
     })
     const provider = picker.events.indexOf('provider-assertion')
-    expect(provider).toBeGreaterThan(picker.events.indexOf('status'))
+    expect(provider).toBeGreaterThan(picker.events.indexOf('request-at:1'))
     expect(provider).toBeLessThan(picker.events.findIndex(event => event.startsWith('context:')))
     expect(provider).toBeLessThan(picker.events.indexOf(`conversation:${REOPENED_ID}`))
   })
@@ -389,9 +396,14 @@ describe('resumePickerScenario', () => {
   it('refuses a resumed prompt that reached no model request', async () => {
     const context = pickerContext()
     const withoutRequests = async () => ({ ...(await context.modelScript.status()), requests: [] })
-    const script: ModelScript = { ...context.modelScript, status: withoutRequests, waitForSteps: withoutRequests }
+    const script: ModelScript = {
+      ...context.modelScript,
+      status: withoutRequests,
+      waitForSteps: withoutRequests,
+      requestAt: async stepIndex => stepRequest(await withoutRequests(), stepIndex),
+    }
     const scenario = resumePickerScenario({ ...context, modelScript: script }, { provider: AgentProvider.CODEX, label: 'Unit' })
-    await expect(scenario).rejects.toThrow('The resumed prompt reached no native model request.')
+    await expect(scenario).rejects.toThrow('The model script holds no request for step 1')
     expect(picker.events).not.toContain(`conversation:${REOPENED_ID}`)
   })
 

@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { stepRequest } from './mockModelScript'
 import { createNativeToolDirectory } from './nativeToolDirectory'
 import { clickNativeToolApproval, exerciseShellToolExecution, nativeFileEditSequence, nativeFileReadResult, nativeFileWriteSequence, nativeToolResultAt, processNativeToolApproval, waitForNativeToolSteps } from './nativeToolExecution'
 import { quotePosixShellArgument } from './shellArguments'
@@ -66,7 +67,10 @@ describe('waitForNativeToolSteps', () => {
         id: 'completed-tool-wait',
         testDeadline: () => undefined,
         prompt: text => text,
-        queue: async () => {},
+        queue: async () => 0,
+        requestAt: async () => {
+          throw new Error('The native tool wait reads no request.')
+        },
         rule: async () => {},
         fallback: async () => {},
         status: async () => status,
@@ -276,9 +280,10 @@ describe('clickNativeToolApproval', () => {
 })
 
 describe('nativeToolResultAt', () => {
+  /** A script whose `requestAt` reads a fixed status through the real step lookup. */
   function modelScript(requests: MockModelRequestRecord[]) {
     const status: MockModelScenarioStatus = { complete: true, nextStep: 2, stepCount: 2, ruleMatches: {}, pendingGates: [], requests, unexpectedRequests: [] }
-    return { waitForSteps: vi.fn(async () => status) }
+    return { requestAt: vi.fn(async (stepIndex: number) => stepRequest(status, stepIndex)) }
   }
 
   it('waits for the exact queued step and reads only its exact call result', async () => {
@@ -287,17 +292,17 @@ describe('nativeToolResultAt', () => {
       { protocol: 'openai-chat-completions', path: '/chat/completions', stepIndex: 1, body: { messages: [{ role: 'assistant', tool_calls: [{ id: 'selected', function: { arguments: 'ARGUMENT_ONLY_RESULT' } }] }, { role: 'tool', tool_call_id: 'other', content: 'WRONG_CALL_RESULT' }, { role: 'tool', tool_call_id: 'selected', content: 'ACTUAL_SELECTED_RESULT' }] } },
     ])
     expect(await nativeToolResultAt(script, 1, 'selected')).toBe('ACTUAL_SELECTED_RESULT')
-    expect(script.waitForSteps).toHaveBeenCalledWith(2)
+    expect(script.requestAt).toHaveBeenCalledExactlyOnceWith(1)
   })
 
   it('retains queued step zero', async () => {
     const script = modelScript([{ protocol: 'openai-responses', path: '/responses', stepIndex: 0, body: { input: [{ type: 'function_call_output', call_id: 'zero', output: 'STEP_ZERO_RESULT' }] } }])
     expect(await nativeToolResultAt(script, 0, 'zero')).toBe('STEP_ZERO_RESULT')
-    expect(script.waitForSteps).toHaveBeenCalledWith(1)
+    expect(script.requestAt).toHaveBeenCalledExactlyOnceWith(0)
   })
 
   it('rejects an absent queued request', async () => {
-    await expect(nativeToolResultAt(modelScript([]), 1, 'selected')).rejects.toThrow('no request at step 1')
+    await expect(nativeToolResultAt(modelScript([]), 1, 'selected')).rejects.toThrow('The model script holds no request for step 1')
   })
 
   it('rejects the wrong call ID even when its text resembles the requested result', async () => {
@@ -310,29 +315,15 @@ describe('nativeToolResultAt', () => {
     await expect(nativeToolResultAt(script, 1, 'selected')).rejects.toThrow(/2 results|received 2/)
   })
 
-  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])('rejects an invalid step index before model access: %s', async (stepIndex) => {
-    const script = modelScript([])
-    await expect(nativeToolResultAt(script, stepIndex, 'selected')).rejects.toThrow('valid queued-step index')
-    expect(script.waitForSteps).not.toHaveBeenCalled()
-  })
-
   it('rejects an empty call ID before model access', async () => {
     const script = modelScript([])
     await expect(nativeToolResultAt(script, 0, '')).rejects.toThrow('tool call ID')
-    expect(script.waitForSteps).not.toHaveBeenCalled()
+    expect(script.requestAt).not.toHaveBeenCalled()
   })
 
-  it('rejects the largest safe index before its wait target becomes unsafe', async () => {
-    const script = modelScript([])
-    await expect(nativeToolResultAt(script, Number.MAX_SAFE_INTEGER, 'selected')).rejects.toThrow('valid queued-step index')
-    expect(script.waitForSteps).not.toHaveBeenCalled()
-  })
-
-  it('retains the largest index whose wait target stays safe', async () => {
-    const stepIndex = Number.MAX_SAFE_INTEGER - 1
-    const script = modelScript([{ protocol: 'openai-responses', path: '/responses', stepIndex, body: { input: [{ type: 'function_call_output', call_id: 'selected', output: 'LAST_SAFE_RESULT' }] } }])
-    expect(await nativeToolResultAt(script, stepIndex, 'selected')).toBe('LAST_SAFE_RESULT')
-    expect(script.waitForSteps).toHaveBeenCalledWith(Number.MAX_SAFE_INTEGER)
+  it('passes the step index refusal of the model script through', async () => {
+    // `ModelScript.requestAt` validates the index; its own tests cover each boundary.
+    await expect(nativeToolResultAt(modelScript([]), -1, 'selected')).rejects.toThrow('nonnegative safe integer')
   })
 })
 
@@ -442,7 +433,10 @@ describe('exerciseShellToolExecution', () => {
         id: 'queued-shell-command',
         testDeadline: () => undefined,
         prompt: text => text,
-        queue: async () => {},
+        queue: async () => 0,
+        requestAt: async () => {
+          throw new Error('The shell scenario stops before it reads a request.')
+        },
         rule: async () => {},
         fallback: async () => {},
         status: async () => status,

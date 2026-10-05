@@ -24,6 +24,7 @@ describe('runningChild', () => {
       testDeadline: () => undefined,
       prompt: text => `${text}\nSCENARIO_TEST`,
       queue: async () => rejectModelAccess(),
+      requestAt: async () => rejectModelAccess(),
       rule: async () => rejectModelAccess(),
       fallback: async () => rejectModelAccess(),
       status: async () => rejectModelAccess(),

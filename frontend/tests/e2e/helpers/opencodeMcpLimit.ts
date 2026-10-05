@@ -60,17 +60,13 @@ export async function exerciseOpencodeMcpInputLimit(
       receiptLog,
       callId,
       invoke: async () => {
-        const start = (await context.modelScript.status()).stepCount
-        await context.modelScript.queue(
+        const start = await context.modelScript.queue(
           { toolCalls: [mcpToolCall(context.provider, callId, { server: 'form_probe', tool: 'ask', input: {} })] },
           { text: 'The actual native MCP refusal returned to the model.' },
         )
         await sendMessage(context.page, context.modelScript.prompt('Call the actual local form_probe ask tool once.'))
         await waitForNativeToolSteps(privateContext, start + 2)
-        const request = (await context.modelScript.status()).requests.find(record => record.stepIndex === start + 1)
-        if (!request)
-          throw new Error('The native MCP refusal produced no next model request.')
-        return request
+        return context.modelScript.requestAt(start + 1)
       },
     })
   })

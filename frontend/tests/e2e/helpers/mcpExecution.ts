@@ -12,10 +12,9 @@ import { assistantBubbles, sendMessage, waitForAgentIdle } from './ui'
 /** Run one native MCP call and check the server's echoed value. */
 export async function exerciseMcpEcho(page: Page, modelScript: ModelScript, provider: AgentProvider, value: string, options: { receiptLog?: string, readToolResult?: NativeToolResultReader } = {}): Promise<void> {
   const receiptLog = options.receiptLog
-  const start = (await modelScript.status()).stepCount
   const callId = `mcp-${value}`
   const answer = `The ${value} MCP echo completed.`
-  await modelScript.queue(
+  const start = await modelScript.queue(
     { toolCalls: [mcpToolCall(provider, callId, { server: 'echo_probe', tool: 'echo', input: { value } })] },
     { text: answer },
   )
@@ -31,11 +30,9 @@ export async function exerciseMcpEcho(page: Page, modelScript: ModelScript, prov
     await expect(banner).toHaveCount(0)
   }
 
-  const status = await modelScript.waitForSteps(start + 2)
+  await modelScript.waitForSteps(start + 2)
   await waitForAgentIdle(page)
-  const resultRequest = status.requests.find(request => request.stepIndex === start + 1)
-  if (!resultRequest)
-    throw new Error('The native MCP result reached no following model request.')
+  const resultRequest = await modelScript.requestAt(start + 1)
   const result = options.readToolResult
     ? await options.readToolResult(resultRequest, callId)
     : { text: nativeToolResult(resultRequest, callId) }

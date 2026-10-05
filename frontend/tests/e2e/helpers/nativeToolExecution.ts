@@ -73,21 +73,11 @@ export async function waitForNativeToolSteps(context: NativeScenarioContext, tar
   await waitForAgentIdle(context.page)
 }
 
-function requestAt(requests: readonly MockModelRequestRecord[], stepIndex: number): MockModelRequestRecord {
-  const request = requests.find(record => record.stepIndex === stepIndex)
-  if (!request)
-    throw new Error(`The native tool result reached no request at step ${stepIndex}.`)
-  return request
-}
-
 /** Read one actual queued tool result. Call arguments cannot prove its returned answer. */
-export async function nativeToolResultAt(modelScript: Pick<ModelScript, 'waitForSteps'>, stepIndex: number, callId: string): Promise<string> {
-  if (!Number.isSafeInteger(stepIndex) || stepIndex < 0 || !Number.isSafeInteger(stepIndex + 1))
-    throw new Error('The native result query requires a valid queued-step index.')
+export async function nativeToolResultAt(modelScript: Pick<ModelScript, 'requestAt'>, stepIndex: number, callId: string): Promise<string> {
   if (!callId)
     throw new Error('The native result query requires a tool call ID.')
-  const status = await modelScript.waitForSteps(stepIndex + 1)
-  return nativeToolResult(requestAt(status.requests, stepIndex), callId)
+  return nativeToolResult(await modelScript.requestAt(stepIndex), callId)
 }
 
 /** Require the exact native Read output. Scripted edit arguments and earlier reads cannot prove it. */
@@ -135,13 +125,12 @@ export async function exerciseShellToolExecution(
     ...(options.includeFailure === false ? [] : [{ command: `${printfMarkerCommand(`SHELLERR${marker}`, 77)} >&2; exit 7`, output: `SHELLERR${marker}77`, failed: true }]),
   ]
   for (const [index, command] of commands.entries()) {
-    const stepIndex = (await context.modelScript.status()).stepCount
     const answer = `The shell scenario ${index} ended.`
     const callId = `shell-${marker}-${index}`
     const outputRow = () => messageContents(context.page).filter({ hasText: command.output }).first()
     // The gate file lives in the literal private tool directory. A hold that quotes its path incorrectly runs the marker command, and the check of `command-expanded-marker` below finds it.
     const gate = options.outputGate ? createOutputGate(directory) : undefined
-    await context.modelScript.queue(
+    const stepIndex = await context.modelScript.queue(
       { toolCalls: [bashToolCall(context.provider, callId, gate ? gate.hold(command.command) : command.command)] },
       nativeTextStep(context, answer),
     )
@@ -150,7 +139,7 @@ export async function exerciseShellToolExecution(
       gate && { gate, shown: () => expect(outputRow(), 'the live view shows the output of the held command').toBeVisible() },
       () => waitForNativeToolSteps(context, stepIndex + 2),
     )
-    const request = requestAt((await context.modelScript.status()).requests, stepIndex + 1)
+    const request = await context.modelScript.requestAt(stepIndex + 1)
     const result = context.readToolResult
       ? await context.readToolResult(request, callId)
       : { text: nativeToolResult(request, callId) }
@@ -235,8 +224,7 @@ export async function exerciseFileEditSequence(
   options: FileSequenceOptions & { approveSeed?: (firstStepCount: number) => Promise<void> },
 ): Promise<void> {
   const sequence = nativeFileEditSequence(context.provider, options)
-  const start = (await context.modelScript.status()).stepCount
-  await context.modelScript.queue(...sequence.steps)
+  const start = await context.modelScript.queue(...sequence.steps)
   await sendMessage(context.page, context.modelScript.prompt(sequence.prompt))
   await options.approveSeed?.(start + 1)
   await context.modelScript.waitForSteps(start + sequence.steps.length)
@@ -252,8 +240,7 @@ export async function exerciseFileEditSequence(
 /** Complete the original Write sequence and preserve its actual disk result. */
 export async function exerciseFileWriteSequence(context: NativeScenarioContext, options: FileSequenceOptions): Promise<void> {
   const sequence = nativeFileWriteSequence(context.provider, options)
-  const start = (await context.modelScript.status()).stepCount
-  await context.modelScript.queue(...sequence.steps)
+  const start = await context.modelScript.queue(...sequence.steps)
   await sendMessage(context.page, context.modelScript.prompt(sequence.prompt))
   await context.modelScript.waitForSteps(start + sequence.steps.length)
   await waitForAgentIdle(context.page, options.idleTimeoutMs)
@@ -278,8 +265,7 @@ export async function exerciseFileToolExecution(
   const written = `CREATED${marker}\n`
   writeFileSync(file, `${before}\n`)
   expect(existsSync(created)).toBe(false)
-  const stepIndex = (await context.modelScript.status()).stepCount
-  await context.modelScript.queue(
+  const stepIndex = await context.modelScript.queue(
     { toolCalls: [readToolCall(context.provider, 'native-read-before', file)] },
     options.editStep?.('native-edit', file, before, after)
     ?? { toolCalls: [options.editCall?.('native-edit', file, before, after) ?? editToolCall(context.provider, 'native-edit', { path: file, before, after })] },
@@ -289,9 +275,8 @@ export async function exerciseFileToolExecution(
   )
   await sendMessage(context.page, context.modelScript.prompt('Read the scratch file, edit it, read it again, and create the second file.'))
   await waitForNativeToolSteps(context, stepIndex + 5)
-  const status = await context.modelScript.status()
-  await nativeFileReadResult(requestAt(status.requests, stepIndex + 1), 'native-read-before', before, after, context.readToolResult)
-  await nativeFileReadResult(requestAt(status.requests, stepIndex + 3), 'native-read-after', after, before, context.readToolResult)
+  await nativeFileReadResult(await context.modelScript.requestAt(stepIndex + 1), 'native-read-before', before, after, context.readToolResult)
+  await nativeFileReadResult(await context.modelScript.requestAt(stepIndex + 3), 'native-read-after', after, before, context.readToolResult)
   expect(readFileSync(file, 'utf8')).toBe(`${after}\n`)
   expect(readFileSync(created, 'utf8')).toBe(written)
   const diff = messageBubbles(context.page).locator('[data-file-diff]').filter({ hasText: after }).first()

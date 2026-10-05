@@ -78,10 +78,9 @@ export async function exerciseModelError(
   await options.prepare?.()
   const marker = nativeErrorMarker()
   const error = options.error ?? { status: 400, code: 'invalid_request_error', message: marker }
-  const stepIndex = (await context.modelScript.status()).stepCount
-  // Validate before the turn starts, so a bad count fails here and not in a native retry loop.
-  failedTurnRequests([], stepIndex, attempts)
-  await context.modelScript.queue(...Array.from({ length: attempts }, () => ({ error })))
+  // Validate the count before the turn starts, so a bad count fails here and not in a native retry loop.
+  failedTurnRequests([], 0, attempts)
+  const stepIndex = await context.modelScript.queue(...Array.from({ length: attempts }, () => ({ error })))
   await sendMessage(context.page, context.modelScript.prompt('Run the native model error probe.'))
   const status = await context.modelScript.waitForSteps(stepIndex + attempts)
   const failed = failedTurnRequests(status.requests, stepIndex, attempts)

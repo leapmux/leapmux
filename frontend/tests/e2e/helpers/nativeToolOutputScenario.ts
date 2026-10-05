@@ -114,19 +114,10 @@ export async function captureNativeToolOutput(
     ...(options.prepare ? { prepare: options.prepare } : {}),
     ...(options.nativeCallId ? { nativeCallId: options.nativeCallId } : {}),
     ...(options.beforeIdleProof ? { earlyProof: options.beforeIdleProof } : {}),
-    queue: async (nativeCall) => {
-      const start = (await context.modelScript.status()).stepCount
-      await context.modelScript.queue({ toolCalls: [nativeCall] }, options.finalStep ?? nativeTextStep(context, 'The native large tool output ended.'))
-      return start
-    },
+    queue: nativeCall => context.modelScript.queue({ toolCalls: [nativeCall] }, options.finalStep ?? nativeTextStep(context, 'The native large tool output ended.')),
     send: () => sendMessage(context.page, context.modelScript.prompt('Run the native large output tool once.')),
     wait: (target, beforeIdle) => waitForNativeToolSteps(context, target, { beforeIdle }),
-    request: async (step) => {
-      const request = (await context.modelScript.status()).requests.find(item => item.stepIndex === step)
-      if (!request)
-        throw new Error('The native tool output tool reached no exact next model request.')
-      return request
-    },
+    request: step => context.modelScript.requestAt(step),
     agent: () => currentNativeAgent(context),
     snapshot: agent => readNativeMessageSnapshot(context, agent.id),
     attach: async capture => testInfo.attach('native-tool-output-records', {
