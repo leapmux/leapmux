@@ -656,7 +656,14 @@ func (a *Agent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
 	// StatusStopped, so the mark decides the word. takeInterrupted spends it:
 	// whichever closer (this notification or the result path) reaches the
 	// transcript first owns the wording.
-	if status == bgtask.StatusStopped && a.tasks.takeInterrupted(ev.TaskID) {
+	//
+	// Every closing notification spends the mark, whatever its status. The CLI
+	// can close a task before it reads stop_task, and it still acknowledges the
+	// request with a success. The notification then says `completed` or `failed`,
+	// the stop did not take effect, and a mark that stayed would label a later
+	// stop of a restarted run, which nobody asked LeapMux for.
+	stopRequested := a.tasks.takeInterrupted(ev.TaskID)
+	if status == bgtask.StatusStopped && stopRequested {
 		status = bgtask.StatusInterrupted
 	}
 	// Remember it BEFORE the writes: a wake for this shell's owner can follow
@@ -883,10 +890,13 @@ func (a *Agent) routeSubagentMessage(content []byte, msgType string, env *messag
 		// fallback when no task_notification arrived.
 		//
 		// A result that follows InterruptChild's stop_task is an interrupted
-		// turn, not a finished one: the divider says "Turn interrupted" and the
-		// row closes as interrupted. takeInterrupted spends the mark, so the
+		// turn, not a finished one, when the frame states the abort: the divider
+		// says "Turn interrupted" and the row closes as interrupted. A child that
+		// ended before the CLI read stop_task keeps its own outcome, as the root
+		// does. takeInterrupted spends the mark whatever the frame states, so the
 		// task_notification path and this one cannot both claim the wording.
-		interrupted := a.tasks.takeInterrupted(taskID)
+		stopRequested := a.tasks.takeInterrupted(taskID)
+		interrupted := stopRequested && env.statesAbortedTurn()
 		turnEnd := agent.MessageContent{Original: content}
 		if interrupted {
 			turnEnd.Completion = agent.MessageCompletionInterrupted

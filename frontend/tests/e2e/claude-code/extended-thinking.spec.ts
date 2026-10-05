@@ -63,34 +63,47 @@ test.describe('Agent Settings', () => {
     await expect(visibleOnly(page.getByText(/Extended Thinking \((?:.* → )?Adaptive\)/))).toHaveCount(0)
   })
 
-  test('applies thinking independently of model and effort before and after reload', async ({ authenticatedClaudeWorkspace, page, modelScript }) => {
+  // Claude Code 2.1.289 refuses to disable thinking for Sonnet 5.5, Opus 5.5 and
+  // Fable (`rejects_disabled_thinking` in its model catalog): for a disabled
+  // session it sends no `thinking` at all, and its own toggle reports "Thinking
+  // can't be turned off". So the Sonnet phase proves the enabled state with its
+  // effort, and the off state is proved on Haiku 4.5, which accepts both states.
+  // Haiku thinks with a token budget, so its enabled type is "enabled".
+  test('applies thinking to the native request independently of model and effort, before and after reload', async ({ authenticatedClaudeWorkspace, page, modelScript }) => {
     void authenticatedClaudeWorkspace
     const context = { page, modelScript, provider: AgentProvider.CLAUDE_CODE }
-    await chooseSettingsOption(page, 'model-sonnet')
-    await waitForSettingsIdle(page)
-    await chooseSettingsOption(page, 'effort-medium')
-    await waitForSettingsIdle(page)
-    let selectedModel: string | undefined
-    for (const state of ['on', 'off'] as const) {
-      await chooseSettingsOption(page, `alwaysThinkingEnabled-${state}`)
+    const phases = [
+      { model: 'model-sonnet', effort: 'effort-medium', modelPattern: /^claude-sonnet-/, states: ['on'] as const, enabledType: 'adaptive', expectedEffort: 'medium' },
+      { model: 'model-haiku', effort: undefined, modelPattern: /^claude-haiku-/, states: ['off', 'on'] as const, enabledType: 'enabled', expectedEffort: undefined },
+    ]
+    for (const phase of phases) {
+      await chooseSettingsOption(page, phase.model)
       await waitForSettingsIdle(page)
-      for (const restored of [false, true]) {
-        if (restored)
-          await page.reload()
-        await openSettingsMenu(page, 'alwaysThinkingEnabled')
-        await expect(page.locator(`[data-testid="alwaysThinkingEnabled-${state}"] input[type="radio"]`)).toBeChecked()
-        await page.keyboard.press('Escape')
-        const request = await sendNativeAnswer(context, `Reply with thinking ${state} after reload ${restored}.`, `Thinking ${state} reached the native turn after reload ${restored}.`)
-        expect(request.protocol).toBe('anthropic-messages')
-        if (!isObject(request.body) || typeof request.body.model !== 'string')
-          throw new Error('The native thinking request has no model ID.')
-        selectedModel ??= request.body.model
-        expect(request.body.model).toBe(selectedModel)
-        expect(request.body).toMatchObject({
-          model: expect.stringMatching(/^claude-sonnet-/),
-          output_config: { effort: 'medium' },
-          thinking: { type: state === 'on' ? 'adaptive' : 'disabled' },
-        })
+      if (phase.effort !== undefined) {
+        await chooseSettingsOption(page, phase.effort)
+        await waitForSettingsIdle(page)
+      }
+      let selectedModel: string | undefined
+      for (const state of phase.states) {
+        await chooseSettingsOption(page, `alwaysThinkingEnabled-${state}`)
+        await waitForSettingsIdle(page)
+        for (const restored of [false, true]) {
+          if (restored)
+            await page.reload()
+          await openSettingsMenu(page, 'alwaysThinkingEnabled')
+          await expect(page.locator(`[data-testid="alwaysThinkingEnabled-${state}"] input[type="radio"]`)).toBeChecked()
+          await page.keyboard.press('Escape')
+          const request = await sendNativeAnswer(context, `Reply with thinking ${state} on ${phase.model} after reload ${restored}.`, `Thinking ${state} reached the native ${phase.model} turn after reload ${restored}.`)
+          expect(request.protocol).toBe('anthropic-messages')
+          if (!isObject(request.body) || typeof request.body.model !== 'string')
+            throw new Error('The native thinking request has no model ID.')
+          selectedModel ??= request.body.model
+          expect(request.body.model).toBe(selectedModel)
+          expect(request.body.model).toEqual(expect.stringMatching(phase.modelPattern))
+          expect(request.body).toMatchObject({ thinking: { type: state === 'on' ? phase.enabledType : 'disabled' } })
+          if (phase.expectedEffort !== undefined)
+            expect(request.body).toMatchObject({ output_config: { effort: phase.expectedEffort } })
+        }
       }
     }
   })

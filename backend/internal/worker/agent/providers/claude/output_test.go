@@ -744,6 +744,115 @@ func TestClaudeResult_AFailureAfterAnInterruptedTurnStaysAFailure(t *testing.T) 
 	assert.Empty(t, messages[len(messages)-1].Completion, "the second turn was not interrupted")
 }
 
+// These `result` frames are real. Claude Code 2.1.289 wrote them in a probe against a
+// local mock model. Each frame keeps the fields that state its outcome (`subtype`,
+// `is_error`, `terminal_reason`, `errors`) and omits the usage objects.
+//
+// The CLI states in `terminal_reason` how the turn ended. Its `subtype` and `is_error`
+// cannot tell an abort from a failure: an abort and a failed tool both use
+// `error_during_execution`, and an API failure uses `subtype: success` with
+// `is_error: true`.
+const (
+	// The stop took effect while the model streamed.
+	claudeResultAbortedStreaming = `{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":5850,"num_turns":2,"stop_reason":null,"terminal_reason":"aborted_streaming","errors":["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"]}`
+	// The stop took effect while a tool ran.
+	claudeResultAbortedTools = `{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":3065,"num_turns":3,"stop_reason":"tool_use","terminal_reason":"aborted_tools","errors":["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"]}`
+	// The turn finished before the CLI read the stop. The probe sent the stop right
+	// after the answer frame, and the CLI acknowledged it and still ended the turn
+	// with this frame.
+	claudeResultFinished = `{"type":"result","subtype":"success","is_error":false,"duration_ms":1197,"num_turns":1,"stop_reason":"end_turn","terminal_reason":"completed","api_error_status":null,"result":"QUICK ANSWER"}`
+	// The turn failed on its own before the CLI read the stop.
+	claudeResultAPIError = `{"type":"result","subtype":"success","is_error":true,"duration_ms":52,"num_turns":1,"stop_reason":"stop_sequence","terminal_reason":"api_error","api_error_status":400,"result":"API Error: 400 NATIVE ERROR MARKER"}`
+)
+
+// A stop request marks the turn end as interrupted only when the `result` states that
+// the stop took effect. A turn that ended before the CLI read the stop keeps its own
+// outcome, because the stop came too late to change it. Before this rule, the note of
+// the stop marked each `result`, and the divider read "Turn interrupted" for a turn
+// that finished or failed on its own.
+func TestClaudeResult_ATurnThatEndedBeforeTheStopKeepsItsOutcome(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		frame string
+	}{
+		{"finished, with its reason", claudeResultFinished},
+		{"failed on its own, with its reason", claudeResultAPIError},
+		// A CLI that states no reason: `is_error` decides.
+		{"finished, without a reason", `{"type":"result","subtype":"success","is_error":false,"duration_ms":900,"result":"ok"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &outputTestSink{}
+			a := newTestAgent(agent.NewProviderServices(sink))
+
+			a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"QUICK ANSWER"}]}}`))
+			a.noteInterruptRequested()
+			a.HandleOutput([]byte(tc.frame))
+
+			messages := sink.Messages()
+			require.NotEmpty(t, messages)
+			assert.Empty(t, messages[len(messages)-1].Completion,
+				"the stop lost the race, so the turn end keeps the outcome that the frame states")
+		})
+	}
+}
+
+// A stop that took effect marks the turn end as interrupted. The frame states it in
+// `terminal_reason`, and that statement outranks `is_error` and `subtype`.
+func TestClaudeResult_AStopThatTookEffectMarksTheTurnEndInterrupted(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		frame string
+	}{
+		{"aborted while the model streamed", claudeResultAbortedStreaming},
+		{"aborted while a tool ran", claudeResultAbortedTools},
+		// The reason outranks the flag. The CLI writes this shape for an abort that
+		// keeps the last complete answer (the Remote Control bridge does).
+		{"aborted, with a success shape", `{"type":"result","subtype":"success","is_error":false,"result":"","terminal_reason":"aborted_streaming"}`},
+		// A CLI that states no reason: `is_error` decides.
+		{"aborted, without a reason", `{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":12000}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &outputTestSink{}
+			a := newTestAgent(agent.NewProviderServices(sink))
+
+			a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"PARTIAL"}]}}`))
+			a.noteInterruptRequested()
+			a.HandleOutput([]byte(tc.frame))
+
+			messages := sink.Messages()
+			require.NotEmpty(t, messages)
+			assert.Equal(t, agent.MessageCompletionInterrupted, messages[len(messages)-1].Completion)
+		})
+	}
+}
+
+// A `result` that states a finished turn spends the note, as any other `result`
+// does. The next turn must not inherit it.
+func TestClaudeResult_AFinishedTurnSpendsTheStopNote(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"QUICK ANSWER"}]}}`))
+	a.noteInterruptRequested()
+	a.HandleOutput([]byte(claudeResultFinished))
+
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"NEXT"}]}}`))
+	a.HandleOutput([]byte(claudeResultAbortedStreaming))
+
+	messages := sink.Messages()
+	require.NotEmpty(t, messages)
+	assert.Empty(t, messages[len(messages)-1].Completion,
+		"no stop was asked for during the second turn, so its abort frame alone does not mark it")
+}
+
 func TestClaudeResult_APIErrorUsesAPIErrorReason(t *testing.T) {
 	t.Parallel()
 

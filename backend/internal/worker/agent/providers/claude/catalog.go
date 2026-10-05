@@ -14,7 +14,7 @@ import (
 // derived separately (modelSupportsAdaptiveThinking) and omitted here.
 type claudeCodeModelInfo struct {
 	Value                 string   `json:"value"`                 // id passed to --model / set_model (e.g. "opus[1m]"); "default" is an alias sentinel
-	DisplayName           string   `json:"displayName"`           // e.g. "Opus (1M context)"
+	DisplayName           string   `json:"displayName"`           // e.g. "Opus", or "Sonnet (1M context)" where a 1M window is opt-in
 	Description           string   `json:"description"`           // capability blurb shown on hover
 	SupportsEffort        bool     `json:"supportsEffort"`        // false ⇒ no effort selector (e.g. Haiku)
 	SupportedEffortLevels []string `json:"supportedEffortLevels"` // CLI levels, weakest→strongest: low|medium|high|xhigh|max
@@ -74,12 +74,13 @@ func (a *Agent) ensureSettledModelListed() {
 	}
 	// Place the resolved model at its CANONICAL slot -- the position it holds in the
 	// static catalog's most->least-powerful ordering (sentinel, Fable, Opus, Sonnet,
-	// Haiku) -- rather than right after the sentinel. The CLI's own selectable list
-	// already follows that ordering, so inserting the resolved model before the first
-	// listed model that outranks it drops it exactly where the static catalog puts it:
-	// opus[1m] (which the CLI hides behind "default") lands AFTER Fable, not jammed
-	// between the sentinel and Fable. A naive "right after the sentinel" insert put a
-	// resolved Opus ahead of Fable, contradicting the picker's documented order. Models
+	// Haiku) -- rather than right after the sentinel. The insert goes before the first
+	// listed model that the resolved model outranks. In a CLI list that follows the
+	// canonical order (the 2.1.170 list did), that is exactly the static slot: opus[1m]
+	// (which that CLI hid behind "default") lands AFTER Fable, not jammed between the
+	// sentinel and Fable. A CLI list in another order (2.1.289 puts the account
+	// default's family right after the sentinel) still gets the model directly before
+	// its first weaker neighbor. Models
 	// the static catalog doesn't know (a future dynamic-only id) rank last, so the
 	// resolved static model sorts ahead of them. The inserted pointer is the shared
 	// static-catalog entry, read only exactly as effortCatalog hands out
@@ -268,23 +269,35 @@ const (
 // (old CLI, third-party provider, or parse failure). When the live CLI reports its
 // own catalog, the dynamic list (convertClaudeModels) supersedes this.
 //
+// The selectable rows and their names follow the live CLI's /model picker, so
+// the picker neither changes names nor gains or loses rows when the live catalog
+// replaces this one (TestConvertClaudeModels_ReproducesStaticCatalog guards it).
+// In an API-key session, Claude Code 2.1.289 lists Default, Opus, Fable, Sonnet
+// and Haiku: every current Opus, Sonnet and Fable model has a native 1M window,
+// so the CLI names the Opus row "Opus" and lists no separate Sonnet 1M row. The
+// CLI still lists an opt-in 1M row where a model has no native 1M window, and
+// the live catalog carries that row. The descriptions stay
+// LeapMux's own. The CLI writes the resolved model version into its descriptions
+// ("Opus 5.5 · ..."), which a static fallback cannot track.
+//
 // The leading DefaultModelSentinel entry is the IsDefault choice: a new tab (and
 // any account, including non-Opus tiers) starts on it, and buildModelEffortArgs
 // omits --model so the CLI resolves it to that account's concrete default --
 // which get_settings then reports back, so the tab settles on the real model
 // after startup. agent.AccountDefaultModelEntry states why it carries no efforts.
-// The concrete models follow in
-// most→least powerful order, matching Claude Code's own ordering ("Fable for the
+// The concrete models follow in most→least powerful order ("Fable for the
 // hardest problems, Opus for complex work, Sonnet for most tasks, Haiku for
-// quick questions").
+// quick questions"). This order is LeapMux's canonical order. The CLI orders its
+// own rows by account: 2.1.289 puts the default model's family right after the
+// sentinel.
 var claudeCodeAvailableModels = []*agent.ModelInfo{
 	agent.AccountDefaultModelEntry("Use your account's default model"),
-	// Fable 5 is 1M-context only; its canonical id carries the [1m] marker so it
+	// Fable is 1M-context only; its canonical id carries the [1m] marker so it
 	// matches the live CLI's "claude-fable-5[1m]" (normalizeClaudeCodeModel
 	// collapses every Fable spelling, bare "fable" included, to "fable[1m]"). The
 	// display name omits "(1M context)" -- there is no standard-context Fable to
-	// distinguish it from.
-	{Id: "fable[1m]", DisplayName: "Fable 5", Description: "Most powerful for the hardest problems", DefaultEffort: agent.EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeOneMillionContextWindow},
+	// distinguish it from -- and the version, as the CLI's row does.
+	{Id: "fable[1m]", DisplayName: "Fable", Description: "Most powerful for the hardest problems", DefaultEffort: agent.EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeOneMillionContextWindow},
 	// opus is the legacy standard-context alias. normalizeClaudeCodeModel now
 	// collapses every Opus spelling (bare "opus" included) to "opus[1m]", so no
 	// path resolves to this entry by id anymore -- it is retained purely as a
@@ -295,14 +308,15 @@ var claudeCodeAvailableModels = []*agent.ModelInfo{
 	// Opus -- only opus[1m] -- so the static fallback must not resurrect it as a
 	// selectable option.
 	{Id: "opus", DisplayName: "Opus", Description: "Most capable for complex work", DefaultEffort: agent.EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeStandardContextWindow, Hidden: true},
-	{Id: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Most capable for complex work", DefaultEffort: agent.EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeOneMillionContextWindow},
+	// The CLI names this row "Opus", with no "(1M context)": the 1M window is the
+	// only Opus window it offers.
+	{Id: "opus[1m]", DisplayName: "Opus", Description: "Most capable for complex work", DefaultEffort: agent.EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeOneMillionContextWindow},
 	// Sonnet carries the xhigh tiers because the live CLI reports
 	// "low,medium,high,xhigh,max" for it, and claudeDefaultEffort resolves that
 	// level set to xhigh. Declaring max-only here made the fallback disagree with
 	// the session: the effort menu opened without xhigh/ultracode and grew both
 	// the moment any settings change replaced the fallback with the live catalog.
 	{Id: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", DefaultEffort: agent.EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeStandardContextWindow},
-	{Id: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks", DefaultEffort: agent.EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeOneMillionContextWindow},
 	{Id: "haiku", DisplayName: "Haiku", Description: "Fastest for quick answers", ContextWindow: claudeStandardContextWindow},
 }
 

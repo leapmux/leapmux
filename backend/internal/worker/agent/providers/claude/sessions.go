@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -116,6 +118,10 @@ type claudeTranscriptRecord struct {
 	SessionID   string `json:"sessionId"`
 	Cwd         string `json:"cwd"`
 	IsSidechain bool   `json:"isSidechain"`
+	// IsMeta and IsCompactSummary mark a user record that the CLI wrote, not
+	// the user: a caveat, a reminder, a compaction summary.
+	IsMeta           bool `json:"isMeta"`
+	IsCompactSummary bool `json:"isCompactSummary"`
 	// Title records. `ai-title` is what a current CLI writes; `summary` is the
 	// legacy compaction record; `customTitle` is a title the user set.
 	AITitle     string `json:"aiTitle"`
@@ -193,7 +199,7 @@ func readClaudeSession(entry sessionstore.Entry, workingDir string) (agent.Store
 	var (
 		cwd         string
 		sidechain   bool
-		firstPrompt string
+		firstPrompt claudeFirstPrompt
 	)
 	var headTitle claudeTitleCandidates
 	for _, line := range head {
@@ -208,9 +214,7 @@ func readClaudeSession(entry sessionstore.Entry, workingDir string) (agent.Store
 			sidechain = true
 		}
 		headTitle.take(rec)
-		if firstPrompt == "" && rec.Type == "user" {
-			firstPrompt = sessionstore.ContentBlockText(rec.Message.Content)
-		}
+		firstPrompt.take(rec)
 	}
 	// A transcript whose recorded cwd is another directory is another
 	// directory's session. A transcript that records no cwd at all cannot be
@@ -249,9 +253,178 @@ func readClaudeSession(entry sessionstore.Entry, workingDir string) (agent.Store
 		// takes. Reading it from the name rather than from a record keeps a
 		// transcript whose records this reader could not parse usable.
 		Handle:    strings.TrimSuffix(entry.Name, ".jsonl"),
-		Title:     sessionstore.TrimTitle(tailTitle.best(firstPrompt)),
+		Title:     sessionstore.TrimTitle(tailTitle.best(firstPrompt.result())),
 		UpdatedAt: entry.ModTime,
 	}, true
+}
+
+// claudeFirstPrompt finds the first prompt of a session the way Claude Code's
+// session list does (uGe and its lister in 2.1.289). It takes the first text
+// block of a user record that holds words of the user, and it skips the
+// records and the blocks that hold none:
+//   - A meta record and a compaction summary.
+//   - A record that carries a tool result, whatever else the record holds.
+//   - A text block that opens with an XML-style tag. Claude Code and LeapMux
+//     wrap the context that they add in such a tag: a system reminder, an
+//     attached file (providerkit.BuildInlineTextAttachmentBlock).
+//   - The marker of an interrupted request.
+//
+// The CLI expands its pasted-content markers before it reads a block, so the
+// pasted text counts as the prompt. A slash command is a tagged block too. Its
+// name becomes the title only when no prompt follows it in the head of the
+// transcript. A shell command becomes the title in the CLI's own form,
+// "! <command>".
+type claudeFirstPrompt struct {
+	prompt          string
+	found           bool
+	commandFallback string
+}
+
+// claudeContextMarkup is the pattern of a block that Claude Code's title
+// readers skip (Zto and Wkn in 2.1.289): a block that opens with an XML-style
+// tag, and the marker of an interrupted request.
+var claudeContextMarkup = regexp.MustCompile(`^(?:\s*<[a-z][\w-]*[\s>]|\[Request interrupted by user[^\]]*\])`)
+
+// claudeCommandName and claudeBashInput find the slash command and the shell
+// command that the CLI records for a command that the user typed.
+var (
+	claudeCommandName = regexp.MustCompile(`<command-name>(.*?)</command-name>`)
+	claudeBashInput   = regexp.MustCompile(`<bash-input>([\s\S]*?)</bash-input>`)
+)
+
+func (p *claudeFirstPrompt) take(rec claudeTranscriptRecord) {
+	if p.found || rec.Type != "user" || rec.IsMeta || rec.IsCompactSummary {
+		return
+	}
+	blocks := sessionstore.ContentBlocks(rec.Message.Content)
+	if slices.ContainsFunc(blocks, func(block sessionstore.ContentBlock) bool { return block.Type == "tool_result" }) {
+		return
+	}
+	for _, block := range blocks {
+		if block.Type != "text" {
+			continue
+		}
+		if prompt, ok := p.read(block.Text); ok {
+			p.prompt, p.found = prompt, true
+			return
+		}
+	}
+}
+
+// read returns the prompt that one text block holds, and reports whether it
+// holds one. It keeps the first slash command that it skips as the fallback.
+func (p *claudeFirstPrompt) read(text string) (string, bool) {
+	text = strings.TrimSpace(strings.ReplaceAll(expandClaudePastedContent(text), "\n", " "))
+	if text == "" {
+		return "", false
+	}
+	if match := claudeCommandName.FindStringSubmatch(text); match != nil {
+		if p.commandFallback == "" {
+			p.commandFallback = match[1]
+		}
+		return "", false
+	}
+	if match := claudeBashInput.FindStringSubmatch(text); match != nil {
+		return "! " + strings.TrimSpace(match[1]), true
+	}
+	if claudeContextMarkup.MatchString(text) {
+		return "", false
+	}
+	return text, true
+}
+
+// result is the first prompt, or the first slash command when the head of the
+// transcript holds no prompt.
+func (p claudeFirstPrompt) result() string {
+	if p.found {
+		return p.prompt
+	}
+	return p.commandFallback
+}
+
+// claudePastedContentOpen starts the marker that Claude Code puts around pasted
+// text in a prompt. The marker is
+// `<pasted_content id="hhhh">\n<text>\n</pasted_content id="hhhh">`, where hhhh
+// is four lowercase hexadecimal digits.
+const claudePastedContentOpen = `<pasted_content id="`
+
+// expandClaudePastedContent replaces each pasted-content marker with the text
+// that it holds, as Claude Code does before its title readers see a block (Ovt
+// and Xme in 2.1.289). It also drops up to two line breaks on each side of a
+// marker. A malformed marker stays as it is. A marker that has no closing tag
+// ends the expansion, and the rest of the text stays as it is.
+func expandClaudePastedContent(text string) string {
+	var (
+		pieces  []string
+		expands bool
+		kept    int // the end of the text that a piece already holds
+		search  int
+	)
+	for {
+		at := strings.Index(text[search:], claudePastedContentOpen)
+		if at < 0 {
+			break
+		}
+		open := search + at
+		idStart := open + len(claudePastedContentOpen)
+		id := text[idStart:min(idStart+4, len(text))]
+		if !isClaudePasteID(id) || !strings.HasPrefix(text[idStart+len(id):], "\">\n") {
+			search = idStart
+			continue
+		}
+		bodyStart := idStart + len(id) + len("\">\n")
+		closeTag := `</pasted_content id="` + id + `">`
+		// The closing tag starts a line. The body can be empty, so the search
+		// starts at the line break that ends the opening tag.
+		at = strings.Index(text[bodyStart-1:], "\n"+closeTag)
+		if at < 0 {
+			break
+		}
+		closeStart := bodyStart + at
+		start := open
+		for range 2 {
+			if start <= kept || text[start-1] != '\n' {
+				break
+			}
+			start--
+		}
+		if start > kept {
+			pieces = append(pieces, text[kept:start])
+		}
+		body := ""
+		if closeStart-1 > bodyStart {
+			body = text[bodyStart : closeStart-1]
+		}
+		pieces = append(pieces, body)
+		expands = true
+		kept = closeStart + len(closeTag)
+		for range 2 {
+			if kept >= len(text) || text[kept] != '\n' {
+				break
+			}
+			kept++
+		}
+		search = kept
+	}
+	if !expands {
+		return text
+	}
+	pieces = append(pieces, text[kept:])
+	return strings.Join(pieces, "")
+}
+
+// isClaudePasteID reports whether id is the id of a pasted-content marker: four
+// lowercase hexadecimal digits.
+func isClaudePasteID(id string) bool {
+	if len(id) != 4 {
+		return false
+	}
+	for i := range len(id) {
+		if c := id[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // claudeTitleCandidates collects the title-bearing records seen so far. Each

@@ -2,6 +2,8 @@ package claude
 
 import (
 	"context"
+	"encoding/json"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -210,12 +213,162 @@ func TestClaudeStoredSessions_TitlePrecedence(t *testing.T) {
 			lines: []string{claudeUserRecord(dir, "s", "first prompt")},
 			want:  "first prompt",
 		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			home := t.TempDir()
+			projectDir := filepath.Join(home, ".claude", "projects", mangleClaudePath(dir))
+			writeClaudeTranscript(t, projectDir, "s", base, tc.lines...)
+
+			got, err := claudeStoredSessions(context.Background(), agent.StoredSessionQuery{
+				WorkingDir: dir, HomeDir: home, Getenv: agenttest.FixtureEnv(nil),
+			})
+			require.NoError(t, err)
+			require.Len(t, got, 1)
+			assert.Equal(t, tc.want, got[0].Title)
+		})
+	}
+}
+
+// claudeUserContentRecord is a `user` line whose message content is content.
+// extra adds top-level fields, such as isMeta. The JSON encoder writes the
+// record, so a text block can hold any characters.
+func claudeUserContentRecord(t *testing.T, cwd string, content any, extra map[string]any) string {
+	t.Helper()
+	record := map[string]any{
+		"type":        "user",
+		"isSidechain": false,
+		"cwd":         cwd,
+		"sessionId":   "s",
+		"message":     map[string]any{"role": "user", "content": content},
+	}
+	maps.Copy(record, extra)
+	raw, err := json.Marshal(record)
+	require.NoError(t, err)
+	return string(raw)
+}
+
+// claudeTextBlocks is a content array that holds one text block for each text.
+func claudeTextBlocks(texts ...string) []map[string]any {
+	blocks := make([]map[string]any, 0, len(texts))
+	for _, text := range texts {
+		blocks = append(blocks, map[string]any{"type": "text", "text": text})
+	}
+	return blocks
+}
+
+// TestClaudeStoredSessions_FirstPromptFollowsTheCLI pins the first-prompt title
+// to Claude Code's own reader (uGe in 2.1.289). The reader takes the first text
+// block that is not context markup, and it skips the records that carry no
+// prompt of the user.
+func TestClaudeStoredSessions_FirstPromptFollowsTheCLI(t *testing.T) {
+	t.Parallel()
+	dir := testutil.NativeAbsPath("/Users/dev/project")
+	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	notes := providerkit.BuildInlineTextAttachmentBlock(agent.ClassifiedAttachment{
+		Filename: "notes.txt", MIMEType: "text/plain", Data: []byte("line one\nline two\n"), Kind: agent.AttachmentKindText,
+	})
+	image := map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+
+	cases := []struct {
+		name  string
+		lines []string
+		want  string
+	}{
 		{
-			name: "a tool result never becomes the title",
+			name: "an attached text file before the prompt does not become the title",
 			lines: []string{
-				`{"type":"user","cwd":` + agenttest.JSONString(dir) + `,"sessionId":"s","message":{"role":"user","content":[{"type":"tool_result","content":"machine output"},{"type":"text","text":"the real prompt"}]}}`,
+				claudeUserContentRecord(t, dir, claudeTextBlocks(notes, "Summarize the notes."), nil),
+			},
+			want: "Summarize the notes.",
+		},
+		{
+			name: "two attached files and an image before the prompt do not become the title",
+			lines: []string{
+				claudeUserContentRecord(t, dir, []any{image, claudeTextBlocks(notes)[0], claudeTextBlocks(notes)[0], claudeTextBlocks("Compare them.")[0]}, nil),
+			},
+			want: "Compare them.",
+		},
+		{
+			name: "a system reminder before the prompt is skipped",
+			lines: []string{
+				claudeUserContentRecord(t, dir, claudeTextBlocks("<system-reminder>\nThe date changed.\n</system-reminder>", "fix the bug"), nil),
+			},
+			want: "fix the bug",
+		},
+		{
+			name: "the marker of an interrupted request is skipped",
+			lines: []string{
+				claudeUserContentRecord(t, dir, claudeTextBlocks("[Request interrupted by user for tool use]"), nil),
+				claudeUserRecord(dir, "s", "try again with tests"),
+			},
+			want: "try again with tests",
+		},
+		{
+			name: "a meta record is skipped",
+			lines: []string{
+				claudeUserContentRecord(t, dir, "Caveat: the messages below came from local commands.", map[string]any{"isMeta": true}),
+				claudeUserRecord(dir, "s", "the real prompt"),
 			},
 			want: "the real prompt",
+		},
+		{
+			name: "a compaction summary is skipped",
+			lines: []string{
+				claudeUserContentRecord(t, dir, "This session continues an earlier conversation.", map[string]any{"isCompactSummary": true}),
+				claudeUserRecord(dir, "s", "the real prompt"),
+			},
+			want: "the real prompt",
+		},
+		{
+			name: "a record that carries a tool result never supplies the title",
+			lines: []string{
+				claudeUserContentRecord(t, dir, []any{
+					map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "machine output"},
+					claudeTextBlocks("hook feedback")[0],
+				}, nil),
+				claudeUserRecord(dir, "s", "the real prompt"),
+			},
+			want: "the real prompt",
+		},
+		{
+			name: "an image-only record supplies no title",
+			lines: []string{
+				claudeUserContentRecord(t, dir, []any{image}, nil),
+				claudeUserRecord(dir, "s", "describe the screenshot"),
+			},
+			want: "describe the screenshot",
+		},
+		{
+			name: "a slash command supplies the title only when no prompt follows it",
+			lines: []string{
+				claudeUserContentRecord(t, dir, "<command-message>review</command-message>\n<command-name>/review</command-name>", nil),
+			},
+			want: "/review",
+		},
+		{
+			name: "a prompt after a slash command wins over the command",
+			lines: []string{
+				claudeUserContentRecord(t, dir, "<command-message>review</command-message>\n<command-name>/review</command-name>", nil),
+				claudeUserRecord(dir, "s", "explain the diff"),
+			},
+			want: "explain the diff",
+		},
+		{
+			name: "a shell command supplies the title in the CLI's form",
+			lines: []string{
+				claudeUserContentRecord(t, dir, "<bash-input>ls -la</bash-input>", nil),
+			},
+			want: "! ls -la",
+		},
+		{
+			name: "pasted content counts as the prompt",
+			lines: []string{
+				claudeUserContentRecord(t, dir, "<pasted_content id=\"1a2b\">\nhello world\n</pasted_content id=\"1a2b\">", nil),
+			},
+			want: "hello world",
 		},
 	}
 
@@ -232,6 +385,46 @@ func TestClaudeStoredSessions_TitlePrecedence(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, got, 1)
 			assert.Equal(t, tc.want, got[0].Title)
+		})
+	}
+}
+
+// TestExpandClaudePastedContent pins the port of Claude Code's expansion of its
+// pasted-content markers (Ovt and Xme in 2.1.289), edge cases included.
+func TestExpandClaudePastedContent(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "text without a marker stays", text: "plain text", want: "plain text"},
+		{name: "empty text stays empty", text: "", want: ""},
+		{name: "a marker gives its body", text: "<pasted_content id=\"1a2b\">\nhello\nworld\n</pasted_content id=\"1a2b\">", want: "hello\nworld"},
+		{
+			name: "up to two line breaks around a marker go, and the pieces join",
+			text: "fix this\n\n\n<pasted_content id=\"00ff\">\nBODY\n</pasted_content id=\"00ff\">\n\n\nthanks",
+			want: "fix this\nBODY\nthanks",
+		},
+		{name: "an empty body gives nothing", text: "a <pasted_content id=\"abcd\">\n</pasted_content id=\"abcd\"> b", want: "a  b"},
+		{
+			name: "two markers both expand",
+			text: "<pasted_content id=\"0001\">\none\n</pasted_content id=\"0001\"><pasted_content id=\"0002\">\ntwo\n</pasted_content id=\"0002\">",
+			want: "onetwo",
+		},
+		{name: "an id that is not four lowercase hexadecimal digits stays", text: "<pasted_content id=\"ABCD\">\nx\n</pasted_content id=\"ABCD\">", want: "<pasted_content id=\"ABCD\">\nx\n</pasted_content id=\"ABCD\">"},
+		{name: "an opening tag without its line break stays", text: "<pasted_content id=\"abcd\">x\n</pasted_content id=\"abcd\">", want: "<pasted_content id=\"abcd\">x\n</pasted_content id=\"abcd\">"},
+		{name: "a closing tag for another id does not close the marker", text: "<pasted_content id=\"abcd\">\nx\n</pasted_content id=\"dcba\">", want: "<pasted_content id=\"abcd\">\nx\n</pasted_content id=\"dcba\">"},
+		{
+			name: "a marker without its closing tag ends the expansion and stays",
+			text: "<pasted_content id=\"0001\">\none\n</pasted_content id=\"0001\"> then <pasted_content id=\"0002\">\nopen",
+			want: "one then <pasted_content id=\"0002\">\nopen",
+		},
+		{name: "a marker cut short at the end of the text stays", text: "see <pasted_content id=\"ab", want: "see <pasted_content id=\"ab"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, expandClaudePastedContent(tc.text))
 		})
 	}
 }

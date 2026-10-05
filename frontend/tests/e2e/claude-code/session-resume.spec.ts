@@ -4,7 +4,7 @@ import { typeAHandleLabel } from '../../../src/components/shell/resumeSession'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as fixturesTest } from '../fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI, openPinnedModeAgentViaAPI } from '../helpers/api'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAnyVisible, expectAssistantAnswer, expectSettingsChip, expectUserMessage, loginViaToken, menuOptionLabel, messageBubbles, openMenu, openSettingsMenu, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, visibleOnly, waitForAgentIdle, waitForSettingsIdle, workspaceRow } from '../helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAnyVisible, expectAssistantAnswer, expectSettingsChip, expectUserMessage, loginViaToken, menuOptionLabel, messageBubbles, openMenu, openSettingsMenu, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, sidebarLeaves, visibleOnly, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 import { closeAgentViaAPI, createGitRepo, listAgentsViaAPI, openNewAgentDialog, setWorkingDir, waitForWorker } from '../helpers/worktree'
 import { ensureWorkerOnline, restartHub, restartWorker, stopHub, stopWorker, processTest as test, waitForWorkerOffline } from '../process-control-fixtures'
 
@@ -253,8 +253,10 @@ test.describe('Full Hub+Worker Restart', () => {
       await expect(page.locator('[data-testid="agent-startup-overlay"]')).not.toBeVisible()
       await expect(agentTab).toHaveCount(1)
 
-      // Also verify the tab tree leaf is present in the sidebar
-      const treeLeaf = workspaceRow(page, workspaceId).locator('[data-testid="tab-tree-leaf"]:visible')
+      // Also verify the tab tree leaf is present in the sidebar. A leaf is not a
+      // descendant of its workspace row: the tree follows the row as a sibling,
+      // which sidebarLeaves reads.
+      const treeLeaf = sidebarLeaves(page, workspaceId).filter({ visible: true })
       await expect(treeLeaf).toHaveCount(1)
     }
     finally {

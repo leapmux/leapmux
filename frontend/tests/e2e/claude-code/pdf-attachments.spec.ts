@@ -25,6 +25,8 @@ test.describe('Attachment Support', () => {
     await expect(editor).toHaveText('')
     await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(0)
     const status = await modelScript.waitForSteps()
+    // Claude Code forwards the stream-json `document` block unchanged into the
+    // user message of its Messages request.
     await expectNativeAttachmentProof(page, status, 'pdf', sourcePath, 'anthropic-messages')
     await waitForAgentIdle(page)
   })

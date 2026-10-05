@@ -140,12 +140,16 @@ func (a *Agent) Interrupt() error {
 }
 
 // noteInterruptRequested records that the USER stopped the running turn, so the
-// `result` that ends it carries LeapMux's own completion.
+// `result` that ends it can carry LeapMux's own completion.
 //
 // The command-line interface reports an interrupted turn as
 // `subtype: error_during_execution` with `is_error: true`, which is the same shape it
 // uses for a genuine failure, and its `errors` array carries its own diagnostics. The
 // subtype therefore cannot tell the two apart. LeapMux can: it asked for the stop.
+//
+// The note does not mark the turn alone. The CLI can end the turn before it reads
+// the stop, and that turn keeps its own outcome. The `result` marks the turn only when
+// it also states the abort: see messageEnvelope.statesAbortedTurn.
 //
 // The note is taken only while a turn is running. Claude acknowledges an interrupt
 // sent outside a turn and sends no `result` for it, so a note taken there would wait
@@ -158,8 +162,9 @@ func (a *Agent) noteInterruptRequested() {
 	}
 }
 
-// takeInterruptRequest reports whether the turn that is ending was interrupted, and
-// clears the note. One `result` ends one turn, so the note is spent there.
+// takeInterruptRequest reports whether the user asked for a stop during the turn that
+// is ending, and clears the note. One `result` ends one turn, so the note is spent
+// there. The answer is not yet a statement that the stop took effect.
 func (a *Agent) takeInterruptRequest() bool {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
@@ -295,7 +300,21 @@ var _ agent.InputSteerer = (*Agent)(nil)
 // needs no handshake discovery.
 func (a *Agent) SupportsSteering() bool { return true }
 
+// SteerInput writes the input as a priority:"next" user message. Claude Code
+// folds such a message into the running turn as a queued command, and that fold
+// keeps only the text blocks and the image blocks (the queued_command
+// attachment of 2.1.289). A PDF would lose its document block there. SteerInput
+// therefore refuses an input that carries a file other than a text file or an
+// image as unsupported, and the worker sends that input as the next turn, where
+// the CLI reads every block. The refusal depends on the input alone, so it
+// comes before the turn check.
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+	for _, attachment := range agent.ClassifyAttachments(attachments) {
+		if attachment.Kind != agent.AttachmentKindText && attachment.Kind != agent.AttachmentKindImage {
+			return fmt.Errorf("%w: a steered turn of Claude Code keeps text and images only, so %q goes in the next turn",
+				agent.ErrSteeringUnsupported, attachment.Filename)
+		}
+	}
 	a.Mu.Lock()
 	active := a.turnActive
 	a.Mu.Unlock()
@@ -322,13 +341,12 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		},
 	}
 
-	if len(attachments) == 0 {
-		// Plain text uses the protocol's string content.
+	if classified := agent.ClassifyAttachments(attachments); len(classified) == 0 {
+		// Plain text uses the protocol's string content. A list that holds only
+		// nil entries carries no attachment, so it is plain text too.
 		msg.Message.Content = content
 	} else {
-		// Multimodal — build a content block array.
-		blocks := buildClaudeContentBlocks(content, agent.ClassifyAttachments(attachments))
-		msg.Message.Content = blocks
+		msg.Message.Content = buildClaudeContentBlocks(content, classified)
 	}
 
 	data, err := json.Marshal(msg)
@@ -371,45 +389,71 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	return nil
 }
 
-// buildClaudeContentBlocks converts text + classified attachments into Claude
-// Code's content block format: text blocks, image blocks (base64), and document
-// blocks (PDF).
+// buildClaudeContentBlocks converts the prompt text and the classified
+// attachments into Claude Code's content block array.
+//
+// Every attachment comes first, in the order that the user attached it, and the
+// prompt text comes last. Claude Code reads the prompt of an array message from
+// its LAST block, and only when that block is text (processUserInputBase). The
+// prompt controls this per-prompt work:
+//   - The slash-command dispatch.
+//   - The @-mention and skill-mention expansion.
+//   - The "ultrathink" keyword.
+//
+// A prompt before the attachments makes the CLI do that work incorrectly. The
+// model still receives every block. The failure depends on the last block:
+//   - An image or a document gives no prompt, so the CLI skips the work.
+//   - A text attachment makes the CLI do the work on the attached file instead
+//     of on the prompt.
+//
+// Claude Code's own producers use the same order. Its handler for inbound file
+// attachments puts the images before the text, and it adds @-path references to
+// the last text block.
+//
+// An empty prompt adds no text block. The CLI sends the blocks to the Messages
+// API, and that API refuses an empty text block.
 func buildClaudeContentBlocks(content string, classified []agent.ClassifiedAttachment) []interface{} {
-	var blocks []interface{}
+	blocks := make([]interface{}, 0, len(classified)+1)
+	for _, attachment := range classified {
+		blocks = append(blocks, claudeAttachmentBlock(attachment))
+	}
 	if content != "" {
 		blocks = append(blocks, map[string]interface{}{
 			"type": "text",
 			"text": content,
 		})
 	}
-	for _, attachment := range classified {
-		switch attachment.Kind {
-		case agent.AttachmentKindText:
-			blocks = append(blocks, map[string]interface{}{
-				"type": "text",
-				"text": providerkit.BuildInlineTextAttachmentBlock(attachment),
-			})
-		case agent.AttachmentKindPDF:
-			blocks = append(blocks, map[string]interface{}{
-				"type": "document",
-				"source": map[string]interface{}{
-					"type":       "base64",
-					"media_type": attachment.MIMEType,
-					"data":       base64.StdEncoding.EncodeToString(attachment.Data),
-				},
-			})
-		default:
-			blocks = append(blocks, map[string]interface{}{
-				"type": "image",
-				"source": map[string]interface{}{
-					"type":       "base64",
-					"media_type": attachment.MIMEType,
-					"data":       base64.StdEncoding.EncodeToString(attachment.Data),
-				},
-			})
-		}
-	}
 	return blocks
+}
+
+// claudeAttachmentBlock converts one attachment into its content block: a text
+// block for a text file, a document block for a PDF, and an image block for an
+// image. ValidateAttachment refuses a binary file before it reaches here.
+func claudeAttachmentBlock(attachment agent.ClassifiedAttachment) map[string]interface{} {
+	switch attachment.Kind {
+	case agent.AttachmentKindText:
+		return map[string]interface{}{
+			"type": "text",
+			"text": providerkit.BuildInlineTextAttachmentBlock(attachment),
+		}
+	case agent.AttachmentKindPDF:
+		return claudeBase64Block("document", attachment)
+	default:
+		return claudeBase64Block("image", attachment)
+	}
+}
+
+// claudeBase64Block carries the bytes of one attachment in a block of
+// blockType, with a base64 source.
+func claudeBase64Block(blockType string, attachment agent.ClassifiedAttachment) map[string]interface{} {
+	return map[string]interface{}{
+		"type": blockType,
+		"source": map[string]interface{}{
+			"type":       "base64",
+			"media_type": attachment.MIMEType,
+			"data":       base64.StdEncoding.EncodeToString(attachment.Data),
+		},
+	}
 }
 
 func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {

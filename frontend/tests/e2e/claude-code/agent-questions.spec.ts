@@ -11,7 +11,7 @@ import { resumeInterruptedQueue } from '../helpers/nativeLifecycle'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
-import { observeSettledReceipts, waitForIdleSoundReceipt } from '../helpers/turnEndSound'
+import { currentIdleReceipt, observeSettledReceipts } from '../helpers/turnEndSound'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, openAgentViaUI, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceChevron, workspaceRow } from '../helpers/ui'
 
 /** Click the displayed question option. Its control and label forward selection to the native input. */
@@ -439,11 +439,17 @@ claudeTest.describe('Agent Settings', () => {
     await askQuestions(page, modelScript, [COLOR_Q_2])
     const banner = await waitForControlBanner(page)
     await expect(banner).toContainText('Pick a color')
+    // The open question holds the Worker in WAITING_FOR_USER. The move into that
+    // state was the turn's settle edge (see agentActivity.store `apply`).
+    await expect.poll(async () => (await nativeAgentById(context, agent.id))?.activityState).toBe(AgentActivityState.WAITING_FOR_USER)
     const after = await observeSettledReceipts(page)
     await banner.getByTestId('control-interrupt').click()
-    await waitForIdleSoundReceipt(page, { agentId: agent.id, after })
     await expect.poll(async () => (await nativeAgentById(context, agent.id))?.activityState).toBe(AgentActivityState.IDLE)
     await expect(banner).not.toBeVisible()
+    await expect(page.locator('[data-testid="thinking-indicator"]:visible')).toHaveCount(0)
+    // WAITING_FOR_USER to IDLE is not a settle edge, because the agent was not
+    // working. The stop therefore rings no second alert and records no receipt.
+    expect(await currentIdleReceipt(page, { agentId: agent.id, after })).toBeUndefined()
     const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
     await expect.poll(async () => (await channel.callWorker(leapmuxServer.workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId: agent.id })).snapshot?.paused).toBe(true)
     await resumeInterruptedQueue(context)

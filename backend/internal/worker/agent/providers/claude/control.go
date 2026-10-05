@@ -118,6 +118,26 @@ func (a *Agent) sendApplyFlagSettings(ctx context.Context, flagSettings map[stri
 	return err
 }
 
+// sendSetMaxThinkingTokens sends set_max_thinking_tokens, the control request
+// that changes the thinking configuration of the RUNNING session. tokens is 0
+// to disable thinking, or nil to return the session to the default that
+// alwaysThinkingEnabled selects.
+//
+// The field is always present: nil marshals to an explicit null. Claude Code
+// reads an ABSENT max_thinking_tokens as "keep the current configuration", so
+// omitting it would turn the "on" request into a no-op.
+func (a *Agent) sendSetMaxThinkingTokens(ctx context.Context, tokens *int, timeout time.Duration) error {
+	body, err := json.Marshal(map[string]interface{}{
+		"subtype":             "set_max_thinking_tokens",
+		"max_thinking_tokens": tokens,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = a.sendControlAndWait(ctx, string(body), timeout)
+	return err
+}
+
 // applyStartupPermissionMode sets the agent's permission mode during startup
 // while also detecting whether auto mode is available for this session.
 // a.autoModeAvailable is updated as a side effect; the returned result

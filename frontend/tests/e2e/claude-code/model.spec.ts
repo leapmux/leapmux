@@ -14,6 +14,13 @@ function expectNativeOpus1M(request: MockModelRequestRecord | undefined): void {
   expect(request?.requestHeaders?.['anthropic-beta'].split(',')).toContain('context-1m-2025-08-07')
 }
 
+/**
+ * The name of the opus[1m] row in the native catalog.
+ * Claude Code 2.1.289 drops "(1M context)" from the Opus row, because the 1M window is the only Opus window that it offers.
+ * The native request proves the 1M selection: see expectNativeOpus1M.
+ */
+const OPUS_1M_LABEL = 'Opus'
+
 test.describe('Agent Settings', () => {
   test('switch model', async ({ authenticatedWorkspace, page, modelScript, separateHubWorker }) => {
     const trigger = settingsBar(page)
@@ -34,7 +41,7 @@ test.describe('Agent Settings', () => {
 
       // The bracketed model ID must survive shell quoting during the native restart.
       await chooseSettingsOption(page, 'model-opus[1m]')
-      await expectSettingsChip(page, 'Opus (1M context)')
+      await expectSettingsChip(page, OPUS_1M_LABEL)
       await waitForSettingsIdle(page)
 
       // The actual answer proves that the restarted native process serves a turn.
@@ -102,7 +109,7 @@ test.describe('Agent Settings', () => {
 })
 
 // Closed composer menus retain model labels. Match the notification's exact shape.
-const MODEL_CHANGE_PATTERN = /Model \(Sonnet → Opus \(1M context\)\)/
+const MODEL_CHANGE_PATTERN = /Model \(Sonnet → Opus\)/
 
 fixturesTest.describe('1m-context model', () => {
   fixturesTest('switch to opus[1m] and exchange messages', async ({ authenticatedWorkspace, page, modelScript }) => {
@@ -115,7 +122,7 @@ fixturesTest.describe('1m-context model', () => {
     // Switch to Opus[1m]
     await openSettingsMenu(page, 'model')
     await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
-    await expectSettingsChip(page, 'Opus (1M context)')
+    await expectSettingsChip(page, OPUS_1M_LABEL)
 
     // Keep the actual model-change notification.
     await expect(page.getByText(MODEL_CHANGE_PATTERN)).toBeVisible()
@@ -141,7 +148,7 @@ fixturesTest.describe('1m-context model', () => {
     await expectAssistantAnswer(page, { answer: /\b6\b/ })
 
     // Verify the model is still shown as Opus[1m] after exchanging messages
-    await expectSettingsChip(page, 'Opus (1M context)')
+    await expectSettingsChip(page, OPUS_1M_LABEL)
   })
 
   // The Default selection must resolve to a concrete model and retain its effort menu.
@@ -156,7 +163,7 @@ fixturesTest.describe('1m-context model', () => {
     // Move off the default onto a concrete non-default model.
     await openSettingsMenu(page, 'model')
     await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
-    await expectSettingsChip(page, 'Opus (1M context)')
+    await expectSettingsChip(page, OPUS_1M_LABEL)
     await waitForSettingsIdle(page)
 
     // The Worker relaunches without --model. The CLI resolves the session's concrete model.

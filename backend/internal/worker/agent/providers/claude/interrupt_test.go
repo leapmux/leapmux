@@ -230,6 +230,27 @@ func TestClaudeCodeAgent_Interrupt_TheAbortedTurnStatesTheStop(t *testing.T) {
 		"the turn end states the stop the reader asked for, not the subtype's failure")
 }
 
+// The CLI can end the turn before it reads the stop. The `result` then states a
+// finished turn (the probe in output_test.go shows this order with Claude Code 2.1.289),
+// and the divider must not read "Turn interrupted" for it. This case sends the stop
+// through Interrupt and hands the finished frame to the reader before the acknowledgement.
+func TestClaudeCodeAgent_Interrupt_ATurnThatFinishedFirstIsNotInterrupted(t *testing.T) {
+	t.Parallel()
+
+	rig := newClaudeInterruptRigWithPreamble(t, []string{claudeResultFinished})
+	rig.agent.Mu.Lock()
+	rig.agent.turnActive = true
+	rig.agent.Mu.Unlock()
+
+	require.NoError(t, rig.agent.Interrupt())
+
+	require.Eventually(t, func() bool { return len(rig.sink.Messages()) > 0 }, time.Second, 5*time.Millisecond,
+		"the finished turn stored no result")
+	messages := rig.sink.Messages()
+	assert.Empty(t, messages[len(messages)-1].Completion,
+		"the turn finished before the stop took effect, so the turn end keeps its outcome")
+}
+
 // A turn that ends with no stop behind it keeps its own outcome. The note is
 // taken only while a turn runs, because Claude Code acknowledges an interrupt
 // sent outside one and sends no `result` for it.
@@ -326,6 +347,78 @@ func TestClaudeCodeAgent_InterruptChild_TheClosingRowSaysInterrupted(t *testing.
 	require.Len(t, tasks, 1)
 	assert.Equal(t, bgtask.StatusInterrupted, tasks[0].Status,
 		"a stop InterruptChild asked for closes as interrupted, not a plain stop")
+}
+
+// The CLI can close a subagent before it reads stop_task. It still acknowledges the
+// request with a success (a probe of Claude Code 2.1.289 sent stop_task right after
+// the child's answer, and the CLI answered `success` and closed the task with
+// `status: completed`). The stop did not take effect, so the mark that InterruptChild
+// set must not outlive that closing notification. A stale mark would turn a later
+// `stopped` notification of a restarted run into "Subagent interrupted", although
+// nobody asked LeapMux for that stop.
+func TestClaudeCodeAgent_InterruptChild_AStopThatLostTheRaceLeavesNoMark(t *testing.T) {
+	t.Parallel()
+
+	rig := newClaudeInterruptRig(t)
+	a := rig.agent
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"tu-spawn","task_type":"local_agent","description":"Explore the parser","prompt":"Find every caller."}`))
+	require.NoError(t, a.InterruptChild("task-1"))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"tu-spawn","status":"completed","summary":"done"}`))
+	_, status, found, _ := rig.sink.LookupBackgroundTask("task-1")
+	require.True(t, found)
+	require.Equal(t, bgtask.StatusCompleted, status, "the child finished before the stop took effect")
+
+	// The parent restarts the child, and the child stops by itself.
+	sendMessageTo(a, "tu-send", "task-1")
+	restartTaskStarted(a, "tu-send", "Keep going.")
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"tu-send","status":"stopped"}`))
+
+	_, status, found, _ = rig.sink.LookupBackgroundTask("task-1")
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusStopped, status,
+		"the first run ended before the stop, so its mark ended with it and this stop is a plain stop")
+}
+
+// A forwarded child `result` follows the same rule as the root's: the child turn
+// end is interrupted only when the frame states that the stop took effect.
+//
+// Claude Code 2.1.289 forwards no `result` of a subagent (the probes of a
+// foreground child, a background child, and a stopped child showed a
+// `task_notification` and nothing else). The path serves a CLI that does forward
+// one, and the frames below carry the shapes of the root's `result`.
+func TestClaudeCodeAgent_InterruptChild_AChildResultThatFinishedFirstIsNotInterrupted(t *testing.T) {
+	t.Parallel()
+
+	rig := newClaudeInterruptRig(t)
+	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-r1","tool_use_id":"spawn-r1","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
+	require.NoError(t, rig.agent.InterruptChild("task-r1"))
+
+	rig.agent.HandleOutput([]byte(`{"type":"result","parent_tool_use_id":"spawn-r1","subtype":"success","is_error":false,"terminal_reason":"completed","result":"done"}`))
+
+	messages := rig.sink.Child("child-of-spawn-r1").Messages()
+	require.NotEmpty(t, messages)
+	assert.Empty(t, messages[len(messages)-1].Completion,
+		"the child finished before the stop took effect, so its turn end keeps its outcome")
+	tasks := rig.sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+}
+
+func TestClaudeCodeAgent_InterruptChild_AChildResultThatStatesTheAbortIsInterrupted(t *testing.T) {
+	t.Parallel()
+
+	rig := newClaudeInterruptRig(t)
+	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-r2","tool_use_id":"spawn-r2","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
+	require.NoError(t, rig.agent.InterruptChild("task-r2"))
+
+	rig.agent.HandleOutput([]byte(`{"type":"result","parent_tool_use_id":"spawn-r2","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","errors":["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"]}`))
+
+	messages := rig.sink.Child("child-of-spawn-r2").Messages()
+	require.NotEmpty(t, messages)
+	assert.Equal(t, agent.MessageCompletionInterrupted, messages[len(messages)-1].Completion)
+	tasks := rig.sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.StatusInterrupted, tasks[0].Status)
 }
 
 func TestClaudeCodeAgent_InterruptChild_NotificationBeforeAckSaysInterrupted(t *testing.T) {

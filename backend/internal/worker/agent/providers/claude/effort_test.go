@@ -317,7 +317,8 @@ func TestModelSupportsUltracode(t *testing.T) {
 	assert.True(t, static.supportsUltracode("opus"))
 	assert.True(t, static.supportsUltracode("opus[1m]"))
 	assert.True(t, static.supportsUltracode("sonnet"))
-	assert.True(t, static.supportsUltracode("sonnet[1m]"))
+	assert.False(t, static.supportsUltracode("sonnet[1m]"),
+		"the 2.1.289 picker lists no Sonnet 1M row, so the static catalog does not know it; only a live catalog that lists it can vouch for it")
 	assert.False(t, static.supportsUltracode(maxOnlyModelID))
 	assert.False(t, static.supportsUltracode("haiku"))
 	assert.False(t, static.supportsUltracode("claude-future-preview"), "unknown models are not trusted for ultracode")
@@ -472,7 +473,7 @@ func TestBuildModelEffortArgs(t *testing.T) {
 			expected: []string{"--model", "sonnet", "--effort", "max"},
 		},
 		{
-			name:     "sonnet[1m] with max effort unchanged",
+			name:     "sonnet[1m], which the static catalog does not list, forwards max effort",
 			model:    "sonnet[1m]",
 			effort:   "max",
 			expected: []string{"--model", "sonnet[1m]", "--effort", "max"},
@@ -496,7 +497,7 @@ func TestBuildModelEffortArgs(t *testing.T) {
 			expected: []string{"--model", "sonnet", "--effort", "xhigh"},
 		},
 		{
-			name:     "sonnet[1m] with xhigh effort",
+			name:     "sonnet[1m], which the static catalog does not list, forwards xhigh effort",
 			model:    "sonnet[1m]",
 			effort:   "xhigh",
 			expected: []string{"--model", "sonnet[1m]", "--effort", "xhigh"},

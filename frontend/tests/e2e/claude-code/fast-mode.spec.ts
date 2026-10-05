@@ -9,7 +9,9 @@ claudeTest('applies native fast speed and clears it across reloads with a fixed 
   void authenticatedClaudeWorkspace
   const context = { page, modelScript, provider: AgentProvider.CLAUDE_CODE }
   await waitForSettingsHydrated(page)
-  await chooseSettingsOption(page, 'model-opus')
+  // LeapMux offers Opus as one option, opus[1m]: the Worker collapses every Opus
+  // spelling of the native catalog, bare "opus" included, onto that ID.
+  await chooseSettingsOption(page, 'model-opus[1m]')
   await waitForSettingsIdle(page)
   let model: unknown
   for (const [index, { fast, reload }] of [{ fast: false, reload: false }, { fast: true, reload: false }, { fast: true, reload: true }, { fast: false, reload: false }, { fast: false, reload: true }].entries()) {

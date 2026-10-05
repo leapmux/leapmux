@@ -206,7 +206,7 @@ func TestClaudeCodeAvailableModels_EffortsMatchDocs(t *testing.T) {
 	// ("low,medium,high,xhigh,max"). This catalog is only the FALLBACK the live
 	// report replaces, so any model listed here with a narrower set would make
 	// the effort menu grow options the first time the live catalog arrived.
-	for _, id := range []string{"fable[1m]", "opus", "opus[1m]", "sonnet", "sonnet[1m]"} {
+	for _, id := range []string{"fable[1m]", "opus", "opus[1m]", "sonnet"} {
 		m := byID[id]
 		require.NotNil(t, m, "model %q missing", id)
 		assert.Equal(t, xhighEfforts, claudeEffortIDs(m), "xhigh effort list for %q", id)
@@ -485,7 +485,7 @@ func TestEnsureSettledModelListed_InjectsResolvedDefault(t *testing.T) {
 
 	got := agent.FindAvailableModel(a.availableModels, "opus[1m]")
 	require.NotNil(t, got, "the resolved default is added to the picker catalog")
-	assert.Equal(t, "Opus (1M context)", got.DisplayName, "named from the static fallback, not the raw id")
+	assert.Equal(t, "Opus", got.DisplayName, "named from the static fallback, not the raw id")
 	assert.Equal(t, int64(claudeOneMillionContextWindow), got.ContextWindow)
 	// The injected entry carries Opus's real effort menu (xhigh + ultracode), so the
 	// settings panel renders an effort section instead of hiding it.
@@ -630,7 +630,7 @@ func TestCanonicalModelRank(t *testing.T) {
 	assert.Equal(t, 0, canonicalModelRank(agent.DefaultModelSentinel), "the sentinel ranks first")
 	assert.Equal(t, 1, canonicalModelRank("fable[1m]"))
 	assert.Equal(t, 3, canonicalModelRank("opus[1m]"))
-	assert.Equal(t, 6, canonicalModelRank("haiku"), "the weakest catalog model ranks last among known ids")
+	assert.Equal(t, 5, canonicalModelRank("haiku"), "the weakest catalog model ranks last among known ids")
 	assert.Less(t, canonicalModelRank("fable[1m]"), canonicalModelRank("haiku"),
 		"a more powerful model out-ranks a weaker one")
 	assert.Equal(t, len(claudeCodeAvailableModels), canonicalModelRank("mystery[1m]"),
@@ -888,26 +888,48 @@ func TestConvertClaudeModels_SentinelOwnsReservedDefaultID(t *testing.T) {
 // conversion ever drift, this fails.
 func TestConvertClaudeModels_ReproducesStaticCatalog(t *testing.T) {
 	xhighLevels := []string{"low", "medium", "high", "xhigh", "max"}
+	// The rows and labels mirror the /model picker of Claude Code 2.1.289, read
+	// from the browser trace of an E2E session (API key, ANTHROPIC_BASE_URL set):
+	// Default (recommended), Opus, Fable, Sonnet, Haiku. Every current Opus,
+	// Sonnet and Fable model has a native 1M window there, so the CLI lists one
+	// Opus row without "(1M context)" and no separate Sonnet 1M row.
+	//
+	// The descriptions are NOT the CLI's. The CLI writes the resolved model
+	// version into each one ("Opus 5.5 · Best for everyday, complex tasks"), which
+	// a static fallback cannot track, so LeapMux keeps its own version-free words.
 	payload := []claudeCodeModelInfo{
-		// The live CLI reports Fable fully-qualified; it canonicalizes to the static
-		// catalog's "fable[1m]" id.
-		{Value: "claude-fable-5[1m]", DisplayName: "Fable 5", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
-		// Opus is 1M-only: the live CLI lists only the 1M variant, which canonicalizes
-		// to the static catalog's selectable "opus[1m]" entry. (The static catalog's
-		// hidden legacy "opus" entry has no convert equivalent -- convert always emits
-		// "opus[1m]" -- so it is skipped in the comparison below.)
-		{Value: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Most capable for complex work", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+		// The CLI can spell a row as an alias ("opus") or a full id
+		// ("claude-opus-5-5"). Both canonicalize to the static catalog's selectable
+		// "opus[1m]" entry. (The static catalog's hidden legacy "opus" entry has no
+		// convert equivalent -- convert always emits "opus[1m]" -- so it is skipped
+		// in the comparison below.)
+		{Value: "opus", DisplayName: "Opus", Description: "Most capable for complex work", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+		// Fable canonicalizes to the static catalog's "fable[1m]" id.
+		{Value: "claude-fable-5-1", DisplayName: "Fable", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
 		// xhighLevels, not maxLevels: this payload is meant to mirror what the live
 		// CLI reports, and it reports the same "low,medium,high,xhigh,max" for
 		// Sonnet as for Opus. Declaring maxLevels here is what let the static
 		// catalog drift away from the CLI unnoticed -- this guard compared the
 		// stale catalog against an equally stale payload and passed.
 		{Value: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
-		{Value: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
 		{Value: "haiku", DisplayName: "Haiku", Description: "Fastest for quick answers", SupportsEffort: false},
 	}
 
-	got := claudeModelsByID(convertClaudeModels(payload, nil))
+	converted := convertClaudeModels(payload, nil)
+	got := claudeModelsByID(converted)
+	// The static catalog lists no model the CLI does not, so the picker cannot
+	// shrink or grow when the live catalog replaces the fallback.
+	staticIDs := make([]string, 0, len(claudeCodeAvailableModels))
+	for _, m := range claudeCodeAvailableModels {
+		if m.Id != agent.DefaultModelSentinel && !m.Hidden {
+			staticIDs = append(staticIDs, m.Id)
+		}
+	}
+	convertedIDs := make([]string, 0, len(converted))
+	for _, m := range converted {
+		convertedIDs = append(convertedIDs, m.Id)
+	}
+	assert.ElementsMatch(t, convertedIDs, staticIDs, "the selectable static models are exactly the models the CLI lists")
 	for _, want := range claudeCodeAvailableModels {
 		// The "default" sentinel is a hand-authored placeholder (no concrete
 		// model behind it), not a convert output, so it has no equivalent here.

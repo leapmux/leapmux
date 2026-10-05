@@ -1,6 +1,8 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
+import { countOriginalAnswerRows, expectNativeResumeContext, expectResumedConversation, nativeResumeTexts } from '../helpers/nativeResume'
+import { nativeModelConversationTurns } from '../helpers/nativeScenario'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, waitForAgentIdle } from '../helpers/ui'
 import { ensureWorkerOnline, restartWorker, stopWorker, processTest as test } from '../process-control-fixtures'
 
@@ -28,11 +30,15 @@ test.describe('Agent Session Resume', () => {
   }
 
   test('should resume agent session after worker restart', async ({ separateHubWorker, page, modelScript }) => {
-    const priorAnswerMarker = 'CLAUDE_RESUME_PRIOR_ANSWER_MARKER'
+    const texts = nativeResumeTexts()
+    const priorAnswerMarker = texts.originalAnswer
+    const firstPrompt = `${ARITHMETIC_PROMPT} ${texts.originalPrompt}`
+    const secondPrompt = `${SECOND_ARITHMETIC_PROMPT} ${texts.resumedPrompt}`
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Resume Test')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    const agentId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    const server = { leapmuxServer: { hubUrl, adminToken, workerId } }
     try {
       await loginViaToken(page, adminToken)
       await openWorkspace(page, workspaceId)
@@ -44,7 +50,7 @@ test.describe('Agent Session Resume', () => {
       // Send a message and wait for response
       await editor.click()
       await modelScript.queue({ text: `${ARITHMETIC_ANSWER_TEXT} ${priorAnswerMarker}` })
-      await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
+      await page.keyboard.type(modelScript.prompt(firstPrompt))
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
       const initial = await modelScript.waitForSteps(1)
@@ -52,6 +58,7 @@ test.describe('Agent Session Resume', () => {
 
       // Wait for the assistant's response
       await expectAnswerAndTurnEnd(page)
+      const originalAnswerRows = await countOriginalAnswerRows(server, agentId, texts)
 
       // Stop the worker
       await stopWorker(separateHubWorker)
@@ -69,18 +76,24 @@ test.describe('Agent Session Resume', () => {
 
       // Send a new message to the closed (but resumable) agent
       await editor.click()
-      await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
-      await page.keyboard.type(modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
+      await modelScript.queue({ text: `${SECOND_ARITHMETIC_ANSWER_TEXT} ${texts.resumedAnswer}` })
+      await page.keyboard.type(modelScript.prompt(secondPrompt))
       await page.keyboard.press('Meta+Enter')
       const resumed = await modelScript.waitForSteps(2)
-      const nextBody = JSON.stringify(resumed.requests.find(request => request.stepIndex === 1)?.body)
+      const nextRequest = resumed.requests.find(request => request.stepIndex === 1)
+      if (!nextRequest)
+        throw new Error('The resumed prompt reached no native model request.')
+      const nextBody = JSON.stringify(nextRequest.body)
       expect(nextBody).toContain(priorAnswerMarker)
       expect(nextBody).toContain(SECOND_ARITHMETIC_PROMPT)
+      expectNativeResumeContext(nativeModelConversationTurns(nextRequest), texts)
 
-      // Wait for a response - the agent should have resumed. The answer "3333"
-      // does not occur in the first answer "6912", so this waits for the new
-      // (resumed) turn rather than matching the prior bubble.
+      // Wait for the answer of the resumed turn. The answer "3333" does not
+      // occur in the first answer "6912", so this check cannot match the
+      // earlier bubble.
       await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
+      await waitForAgentIdle(page)
+      await expectResumedConversation({ page, ...server }, agentId, texts, originalAnswerRows)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => { })

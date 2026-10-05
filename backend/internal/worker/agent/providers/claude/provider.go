@@ -47,7 +47,7 @@ func (p claudeProvider) ResolveControlResponse(ctx agent.ControlResponseContext)
 		if _, behavior, _, ok := agent.DecodeControlBehavior(res.Content); ok && behavior == agent.ControlBehaviorAllow {
 			content, err := applyClaudePlanPermission(res.Content, ctx.PlanApproval.GetPermissionMode())
 			if err != nil {
-				res.Withhold = true
+				res.Refuse(agent.RefusalUnencodableReply)
 			} else {
 				res.Content = content
 			}
