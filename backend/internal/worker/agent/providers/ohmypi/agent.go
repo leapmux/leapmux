@@ -101,6 +101,10 @@ type Agent struct {
 	shells map[string]string
 	// asks holds the question bridge's state; see ask.go.
 	asks askBridge
+	// openDialogs holds the id of each dialog that publishDialog published and omp
+	// still waits on. Interrupt answers each dialog that omp's abort leaves open.
+	// See control.go.
+	openDialogs map[string]struct{}
 
 	// startupSnapshot is true until Start returns. A goal omp reports while the
 	// session opens restates a goal the resumed session already had.
@@ -366,14 +370,17 @@ func promptPayload(content string, attachments []*leapmuxv1.Attachment) map[stri
 	return payload
 }
 
-// Interrupt stops the running turn with omp's `abort` command.
+// Interrupt stops the running turn with omp's `abort` command, then answers each
+// dialog that the abort leaves open (see settleOpenDialogs).
 //
 // It returns once the command is written. omp answers an abort only after the run
 // it stops has ended -- after the agent_end that the abort causes -- so a wait
 // here would hold the caller for the whole teardown of the run. A refusal is
 // logged.
 //
-// A no-op when no turn runs, so a script can call it without checking first.
+// When no turn runs, it sends no abort, so a script can call it without checking
+// first. It still answers each dialog that omp waits on, because no abort settles
+// one.
 func (a *Agent) Interrupt() error {
 	a.Mu.Lock()
 	if a.StoppedLocked() {
@@ -387,12 +394,17 @@ func (a *Agent) Interrupt() error {
 	}
 	a.Mu.Unlock()
 	if !active {
+		a.settleOpenDialogs()
 		return nil
 	}
 	return a.sendCommandDetached(CommandAbort, nil, func(_ json.RawMessage, err error) {
 		if err != nil && !a.IsStopped() {
 			slog.Warn("omp abort failed", "agent_id", a.AgentID(), "error", err)
 		}
+		// The read loop handles each frame before the response that follows it,
+		// so each dialog that the abort settled is withdrawn by now. A refused
+		// abort settled nothing, and its dialogs still need an answer.
+		a.settleOpenDialogs()
 	})
 }
 

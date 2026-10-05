@@ -65,7 +65,9 @@ export default function(pi) {
       await expect(editor).toHaveValue('')
     }
     if ('interrupt' in scenario) {
-      await page.locator('[data-testid="interrupt-button"]:visible').click()
+      // A pending control request hides the composer input and its Interrupt button.
+      // The control banner holds the Interrupt control while the editor waits.
+      await page.locator('[data-testid="control-banner"]:visible').getByTestId('control-interrupt').click()
     }
     else {
       const button = 'cancel' in scenario ? 'control-deny-btn' : 'control-allow-btn'

@@ -3,6 +3,8 @@ package ohmypi
 import (
 	"encoding/json"
 	"errors"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -250,6 +252,212 @@ func TestSubagentProgressShowsTheLatestActivity(t *testing.T) {
 	r.emit(`{"type":"subagent_progress","payload":{"progress":{"id":"Stranger","recentOutput":["z"]}}}`, `{"type":"subagent_progress","payload":7}`)
 	assert.Equal(t, "read src/main.go", activeForm(), "another subagent's progress and a malformed frame change nothing")
 	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning}, r.sink.BackgroundTaskStatuses(rowKey))
+}
+
+// probeTaskLine is the description that the row of "Probe" shows before omp labels
+// the task: the first line of the task that frameTaskStart states.
+const probeTaskLine = "SUBAGENT-PROBE-MARKER: reply with ok and yield the result."
+
+// labeledProgress is a subagent_progress frame of one subagent in the shape that
+// omp 18.6.0 sends. The progress object carries `description` once omp's tiny
+// model labels the task, and every later frame repeats it. omp omits the field
+// before then, which an empty description here models.
+func labeledProgress(t *testing.T, id, description string, recentOutput ...string) string {
+	t.Helper()
+	progress := map[string]any{"id": id, "status": "running", "recentTools": []any{}, "recentOutput": recentOutput}
+	if recentOutput == nil {
+		progress["recentOutput"] = []string{}
+	}
+	if description != "" {
+		progress["description"] = description
+	}
+	return mustJSON(t, map[string]any{"type": "subagent_progress", "payload": map[string]any{"index": 0, "agent": "task", "progress": progress}})
+}
+
+// registryWriteSink counts the registry writes that a provider makes, on top of
+// the recording sink, so a test can tell an unchanged frame from a repeated write.
+type registryWriteSink struct {
+	*agenttest.ControlSink
+	mu       sync.Mutex
+	upserts  []bgtask.Upsert
+	statuses int
+}
+
+func (s *registryWriteSink) UpsertBackgroundTask(task bgtask.Upsert) error {
+	s.mu.Lock()
+	s.upserts = append(s.upserts, task)
+	s.mu.Unlock()
+	return s.ControlSink.UpsertBackgroundTask(task)
+}
+
+func (s *registryWriteSink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, activeForm string) error {
+	s.mu.Lock()
+	s.statuses++
+	s.mu.Unlock()
+	return s.ControlSink.UpdateBackgroundTaskStatus(rowKey, status, activeForm)
+}
+
+// writes returns how many upserts and status updates the provider made so far.
+func (s *registryWriteSink) writes() (upserts []bgtask.Upsert, statuses int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.upserts), s.statuses
+}
+
+// newRegistryWriteRig is a rig whose registry writes a test can count.
+func newRegistryWriteRig(t *testing.T) (*rig, *registryWriteSink) {
+	t.Helper()
+	r := newRig(t)
+	sink := &registryWriteSink{ControlSink: r.sink}
+	r.agent.sink = agent.NewProviderServices(sink)
+	return r, sink
+}
+
+// omp labels a task with its tiny model after the subagent started, and states the
+// label in the next progress frame. omp's own task view then shows the label in
+// place of the assignment, and the row follows it.
+func TestATaskLabelReplacesTheRowDescription(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(frameTaskStart, frameStarted)
+	before := subagentRow(t, r, "Probe")
+	require.Equal(t, probeTaskLine, before.Description, "the row states the task until omp labels it")
+
+	r.emit(labeledProgress(t, "Probe", "Probe the subagent storage path"))
+
+	row := subagentRow(t, r, "Probe")
+	assert.Equal(t, "Probe the subagent storage path", row.Description)
+	assert.Equal(t, "Probe", row.Title, "the label replaces the description, not omp's id")
+	assert.Equal(t, before.ChildAgentID, row.ChildAgentID, "the row keeps its child transcript")
+	assert.Equal(t, bgtask.KindSubagent, row.Kind)
+	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning}, r.sink.BackgroundTaskStatuses(subagentRowKey(r.agent.sessionID, "Probe")))
+}
+
+// With no tiny model, omp never labels the task, so the first task line stays.
+func TestTheTaskLineStaysWhenNoLabelArrives(t *testing.T) {
+	t.Parallel()
+	r, sink := newRegistryWriteRig(t)
+	r.emit(frameTaskStart, frameStarted)
+	r.emit(labeledProgress(t, "Probe", ""), labeledProgress(t, "Probe", "", "Reading the tree"))
+
+	row := subagentRow(t, r, "Probe")
+	assert.Equal(t, probeTaskLine, row.Description)
+	assert.Equal(t, "Reading the tree", row.ActiveForm, "the activity still reaches the row")
+	upserts, _ := sink.writes()
+	assert.Len(t, upserts, 1, "only the start wrote the row")
+}
+
+// omp sets the label only to a nonempty title, so an empty or blank description
+// states no label. The row keeps the description that it shows.
+func TestABlankLabelKeepsTheDescription(t *testing.T) {
+	t.Parallel()
+	for name, description := range map[string]string{
+		"a blank label":               "   ",
+		"a label of blank lines":      "\n \n\t",
+		"a label of a no-break space": " ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r, sink := newRegistryWriteRig(t)
+			r.emit(frameTaskStart, frameStarted, labeledProgress(t, "Probe", description))
+
+			assert.Equal(t, probeTaskLine, subagentRow(t, r, "Probe").Description)
+			upserts, statuses := sink.writes()
+			assert.Len(t, upserts, 1, "only the start wrote the row")
+			assert.Zero(t, statuses)
+		})
+	}
+	// A description of another type states no label. The rest of the frame still
+	// counts, so the activity reaches the row.
+	t.Run("a description that is not a string", func(t *testing.T) {
+		t.Parallel()
+		r, sink := newRegistryWriteRig(t)
+		r.emit(frameTaskStart, frameStarted,
+			`{"type":"subagent_progress","payload":{"progress":{"id":"Probe","description":7,"recentOutput":["Reading the tree"]}}}`)
+
+		row := subagentRow(t, r, "Probe")
+		assert.Equal(t, probeTaskLine, row.Description)
+		assert.Equal(t, "Reading the tree", row.ActiveForm)
+		upserts, statuses := sink.writes()
+		assert.Len(t, upserts, 1, "only the start wrote the row")
+		assert.Equal(t, 1, statuses)
+	})
+}
+
+// omp repeats the label in every progress frame after it set it. The row is
+// written once for it, and the activity of the later frames still reaches it.
+func TestARepeatedLabelWritesTheRowOnce(t *testing.T) {
+	t.Parallel()
+	r, sink := newRegistryWriteRig(t)
+	r.emit(frameTaskStart, frameStarted)
+	r.emit(
+		labeledProgress(t, "Probe", "Probe the subagent storage path"),
+		labeledProgress(t, "Probe", "Probe the subagent storage path"),
+		labeledProgress(t, "Probe", "Probe the subagent storage path", "Reading the tree"),
+	)
+
+	upserts, statuses := sink.writes()
+	require.Len(t, upserts, 2, "the start and the first frame with the label")
+	assert.Equal(t, "Probe the subagent storage path", upserts[1].Description)
+	assert.Equal(t, 1, statuses, "the later activity is a status update alone")
+	row := subagentRow(t, r, "Probe")
+	assert.Equal(t, "Probe the subagent storage path", row.Description)
+	assert.Equal(t, "Reading the tree", row.ActiveForm)
+}
+
+// A label and an activity in one frame reach the row in one write, and a later
+// label that differs replaces the earlier one.
+func TestALabelAndAnActivityInOneFrameWriteTheRowOnce(t *testing.T) {
+	t.Parallel()
+	r, sink := newRegistryWriteRig(t)
+	r.emit(frameTaskStart, frameStarted)
+	r.emit(labeledProgress(t, "Probe", "Probe the subagent storage path\nand report", "Reading the tree"))
+
+	upserts, statuses := sink.writes()
+	require.Len(t, upserts, 2)
+	assert.Zero(t, statuses, "the upsert carries the activity")
+	row := subagentRow(t, r, "Probe")
+	assert.Equal(t, "Probe the subagent storage path", row.Description, "the first line of the label")
+	assert.Equal(t, "Reading the tree", row.ActiveForm)
+
+	r.emit(labeledProgress(t, "Probe", "Check the storage path", "Reading the tree"))
+	assert.Equal(t, "Check the storage path", subagentRow(t, r, "Probe").Description)
+	upserts, _ = sink.writes()
+	assert.Len(t, upserts, 3)
+}
+
+// A label that the start already stated, as a caller-supplied label does, writes
+// nothing again.
+func TestALabelThatTheStartStatedWritesNothing(t *testing.T) {
+	t.Parallel()
+	r, sink := newRegistryWriteRig(t)
+	r.emit(frameTaskStart, `{"type":"subagent_lifecycle","payload":{"id":"Probe","parentToolCallId":"call_task","status":"started","description":"Probe the subagent storage path","index":0}}`)
+	require.Equal(t, "Probe the subagent storage path", subagentRow(t, r, "Probe").Description)
+
+	r.emit(labeledProgress(t, "Probe", "Probe the subagent storage path"))
+
+	upserts, statuses := sink.writes()
+	assert.Len(t, upserts, 1)
+	assert.Zero(t, statuses)
+}
+
+// omp drops a progress frame of a subagent that did not start or that ended. A
+// label for one changes no row, and a finished row keeps its status.
+func TestALabelForAnUnknownOrFinishedSubagentChangesNothing(t *testing.T) {
+	t.Parallel()
+	r, sink := newRegistryWriteRig(t)
+	r.emit(labeledProgress(t, "Stranger", "Do something else"))
+	assert.Empty(t, r.sink.BackgroundTasks(), "a label opens no row")
+
+	r.emit(frameTaskStart, frameStarted, frameCompleted)
+	r.emit(labeledProgress(t, "Probe", "Probe the subagent storage path"))
+
+	row := subagentRow(t, r, "Probe")
+	assert.Equal(t, probeTaskLine, row.Description)
+	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	upserts, statuses := sink.writes()
+	assert.Len(t, upserts, 1, "only the start wrote the row")
+	assert.Zero(t, statuses)
 }
 
 func TestAnEventOfAnUnknownSubagentIsDropped(t *testing.T) {

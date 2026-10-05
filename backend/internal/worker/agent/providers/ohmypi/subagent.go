@@ -20,12 +20,16 @@ import (
 //
 //   - subagent_lifecycle states that a subagent started and how it ended. It
 //     carries the subagent's id and the id of the `task` call that started it.
-//   - subagent_progress states what a running subagent does now.
+//   - subagent_progress states what a running subagent does now, and the label
+//     of its task once omp has one (see handleSubagentProgress).
 //   - subagent_event carries one session event of the subagent: its messages and
 //     its tool calls, in the same frames the session's own stream uses.
 //
 // Each subagent gets a registry row and a child transcript. Its events drive a
-// conversation of its own, written to the child sink.
+// conversation of its own, written to the child sink. The row shows what omp's
+// own task view shows: omp's id for the subagent as its title, and the label of
+// the task as its description, or the first line of the task until a label
+// arrives.
 //
 // By default omp runs a subagent in the BACKGROUND: the `task` call ends at once,
 // the parent's run ends, and omp starts a new run when the subagent yields its
@@ -40,11 +44,32 @@ type subagentState struct {
 	childID string
 	title   string
 	conv    *conversation
+	// description is the description that the row shows: the label of the task
+	// once omp states one, and the first line of the task before that. An
+	// unchanged label is not written again.
+	description string
 	// activeForm is the last progress line the row showed, so an unchanged line
 	// is not written again.
 	activeForm string
 	// report is what the subagent yielded, the row's report when it ends.
 	report string
+}
+
+// rowUpsert returns the registry row of a running subagent, from what the worker
+// knows of it. The caller holds Process.Mu, or owns a state that no map holds yet.
+//
+// The row carries every field, not only the one that changed, so a write that
+// finds no row, because the start's upsert was refused, writes a whole row.
+func (s *subagentState) rowUpsert() bgtask.Upsert {
+	return bgtask.Upsert{
+		RowKey:       s.rowKey,
+		Kind:         bgtask.KindSubagent,
+		ChildAgentID: s.childID,
+		Title:        s.title,
+		Description:  s.description,
+		ActiveForm:   s.activeForm,
+		Status:       bgtask.StatusRunning,
+	}
 }
 
 // taskSpec is one entry of a `task` call's `tasks` list.
@@ -176,6 +201,9 @@ func (a *Agent) startSubagent(payload subagentLifecycle) {
 	a.Mu.Unlock()
 
 	title := payload.ID
+	// The start states a description only for a label that the caller supplied.
+	// Otherwise omp labels the task later, in a progress frame, and the row shows
+	// the first line of the task until then.
 	description := firstLine(payload.Description)
 	if description == "" {
 		description = firstLine(spec.Task)
@@ -189,24 +217,18 @@ func (a *Agent) startSubagent(payload subagentLifecycle) {
 			childID = id
 		}
 	}
-	state := &subagentState{id: payload.ID, rowKey: rowKey, childID: childID, title: title}
+	state := &subagentState{id: payload.ID, rowKey: rowKey, childID: childID, title: title, description: description}
 	if childID != "" {
 		state.conv = newConversation(a.sink.ChildSink(childID), childID)
 	}
+	row := state.rowUpsert()
 	a.Mu.Lock()
 	if a.subagents == nil {
 		a.subagents = make(map[string]*subagentState)
 	}
 	a.subagents[payload.ID] = state
 	a.Mu.Unlock()
-	providerkit.LogRegistryRefusal("ohmypi", "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
-		RowKey:       rowKey,
-		Kind:         bgtask.KindSubagent,
-		ChildAgentID: childID,
-		Title:        title,
-		Description:  description,
-		Status:       bgtask.StatusRunning,
-	}))
+	providerkit.LogRegistryRefusal("ohmypi", "upsert", a.sink.UpsertBackgroundTask(row))
 }
 
 // endSubagent closes one subagent: it persists what its transcript left
@@ -289,13 +311,29 @@ func completionForStatus(status bgtask.Status) agent.MessageCompletion {
 	return agent.MessageCompletionInterrupted
 }
 
-// handleSubagentProgress shows a running subagent's latest activity on its row.
+// handleSubagentProgress shows a running subagent's latest activity and the label
+// of its task on its row.
+//
+// omp labels a task with its tiny model, in the background, after the subagent
+// started, and sets `progress.description` once to the label. Each later frame
+// repeats it. omp omits the field before the label and when no tiny model is
+// configured, and it never sets an empty label. A label that the caller supplied
+// is in the start frame already, and each progress frame repeats it, so it writes
+// nothing again.
+//
+// omp's RPC layer drops a progress frame of a subagent that did not start or
+// that ended, so a label reaches only a running subagent. The last progress
+// frame precedes the lifecycle frame that ends the subagent, so the end states
+// no label that a progress frame did not.
 func (a *Agent) handleSubagentProgress(raw []byte) {
 	var frame struct {
 		Payload struct {
 			Progress struct {
-				ID           string   `json:"id"`
-				RecentOutput []string `json:"recentOutput"`
+				ID string `json:"id"`
+				// Description is decoded apart (see taskLabel), so a value of
+				// another type drops the label and keeps the rest of the frame.
+				Description  json.RawMessage `json:"description"`
+				RecentOutput []string        `json:"recentOutput"`
 				RecentTools  []struct {
 					Tool string `json:"tool"`
 					Args string `json:"args"`
@@ -315,16 +353,41 @@ func (a *Agent) handleSubagentProgress(raw []byte) {
 	} else if n := len(progress.RecentOutput); n > 0 {
 		activeForm = firstLine(progress.RecentOutput[n-1])
 	}
+	label := taskLabel(progress.Description)
 	a.Mu.Lock()
 	state := a.subagents[progress.ID]
-	if state == nil || activeForm == "" || activeForm == state.activeForm {
+	if state == nil {
 		a.Mu.Unlock()
 		return
 	}
-	state.activeForm = activeForm
-	rowKey := state.rowKey
+	labelChanged := label != "" && label != state.description
+	if labelChanged {
+		state.description = label
+	}
+	activityChanged := activeForm != "" && activeForm != state.activeForm
+	if activityChanged {
+		state.activeForm = activeForm
+	}
+	row := state.rowUpsert()
 	a.Mu.Unlock()
-	providerkit.LogRegistryRefusal("ohmypi", "status", a.sink.UpdateBackgroundTaskStatus(rowKey, bgtask.StatusRunning, activeForm))
+	switch {
+	case labelChanged:
+		// The row carries the activity too, so one write states both changes.
+		providerkit.LogRegistryRefusal("ohmypi", "upsert", a.sink.UpsertBackgroundTask(row))
+	case activityChanged:
+		providerkit.LogRegistryRefusal("ohmypi", "status", a.sink.UpdateBackgroundTaskStatus(row.RowKey, bgtask.StatusRunning, row.ActiveForm))
+	}
+}
+
+// taskLabel reads omp's label of a task from `progress.description`: the first
+// line of a string. An absent field, a blank string, and a value of another type
+// state no label.
+func taskLabel(raw json.RawMessage) string {
+	var description string
+	if len(raw) == 0 || json.Unmarshal(raw, &description) != nil {
+		return ""
+	}
+	return firstLine(description)
 }
 
 // handleSubagentEvent drives one subagent's conversation with one of its session

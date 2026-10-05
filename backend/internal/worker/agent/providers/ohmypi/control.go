@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -96,10 +97,12 @@ func (a *Agent) handleExtensionUIRequest(raw []byte) {
 //
 // omp answers a dialog whose deadline passes itself, with its default, and sends
 // no `cancel` for it (`requestRpcDialog`), so the worker withdraws the card when
-// that deadline passes. The deadline is armed BEFORE the publish, so an answer
-// that the reader sends at once finds it to disarm.
+// that deadline passes. The deadline is armed, and the dialog recorded as open,
+// BEFORE the publish, so an answer that the reader sends at once finds both to
+// clear.
 func (a *Agent) publishDialog(head dialogHeader, raw []byte) {
 	a.dialogDeadlines.Arm(a.Clock(), head.ID, head.deadline(), func() { a.withdrawDialog(head.ID) })
+	a.rememberOpenDialog(head.ID)
 	err := a.sink.PublishControlRequest(agent.ControlRequest{
 		RequestID: head.ID,
 		Payload:   raw,
@@ -109,8 +112,59 @@ func (a *Agent) publishDialog(head dialogHeader, raw []byte) {
 		return
 	}
 	a.dialogDeadlines.Disarm(head.ID)
+	a.forgetOpenDialog(head.ID)
 	slog.Error("omp publish dialog", "agent_id", a.AgentID(), "request_id", head.ID, "error", err)
 	a.cancelDialog(head.ID)
+}
+
+// rememberOpenDialog records a published dialog that omp waits on.
+func (a *Agent) rememberOpenDialog(id string) {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.openDialogs == nil {
+		a.openDialogs = make(map[string]struct{})
+	}
+	a.openDialogs[id] = struct{}{}
+}
+
+// forgetOpenDialog drops a dialog that omp no longer waits on: the reader answered
+// it, omp withdrew it, or the worker cancelled it.
+func (a *Agent) forgetOpenDialog(id string) {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	delete(a.openDialogs, id)
+}
+
+// settleOpenDialogs answers each dialog that omp still waits on with a
+// cancellation, and withdraws its card.
+//
+// Interrupt calls it, for a user stop and for a preemption alike. omp's abort
+// settles each dialog of the run that it stops, and withdraws each one with a
+// `cancel` frame. omp runs the handler of an extension command outside any run and
+// with no abort signal (omp's `AgentSession.#tryExecuteExtensionCommand`), so the
+// abort leaves a dialog of that handler waiting. A user stop withdraws every card
+// of the agent, and a preemption waits for the turn to end. Without this answer,
+// omp waits on a dialog that nobody can answer, the command never ends, and the
+// turn that the command armed keeps the agent busy.
+func (a *Agent) settleOpenDialogs() {
+	a.Mu.Lock()
+	if a.StoppedLocked() {
+		// A stopped process answers nothing, and its own path withdraws the cards.
+		a.Mu.Unlock()
+		return
+	}
+	ids := make([]string, 0, len(a.openDialogs))
+	for id := range a.openDialogs {
+		ids = append(ids, id)
+	}
+	clear(a.openDialogs)
+	a.Mu.Unlock()
+	// Answer in a stable order, so one interrupt always writes the same frames.
+	slices.Sort(ids)
+	for _, id := range ids {
+		a.cancelDialog(id)
+		a.withdrawDialog(id)
+	}
 }
 
 // cancelDialog answers one dialog with a cancellation.
@@ -144,14 +198,16 @@ func (a *Agent) answerDialog(id, value string) error {
 }
 
 // withdrawDialog cancels the control request of a dialog omp no longer waits for.
-// omp sends `cancel` when the run was aborted, and the dialog's deadline answers
-// a dialog that omp timed out itself (see publishDialog).
+// omp sends `cancel` when the run was aborted, the dialog's deadline answers a
+// dialog that omp timed out itself (see publishDialog), and an interrupt answers a
+// dialog that the abort left open (see settleOpenDialogs).
 func (a *Agent) withdrawDialog(targetID string) {
 	if targetID == "" {
 		return
 	}
 	a.dialogDeadlines.Disarm(targetID)
 	a.forgetAskDialog(targetID)
+	a.forgetOpenDialog(targetID)
 	a.sink.CancelControlRequest(targetID)
 }
 
@@ -216,9 +272,11 @@ func (a *Agent) SendRawInput(data []byte) error {
 		case contracts.OhMyPiAskTypeAnswer:
 			return a.answerAsk(data)
 		case contracts.OhMyPiEventExtensionUIResponse:
-			// The reader answered, so the dialog's deadline withdraws nothing.
+			// The reader answered, so the dialog's deadline withdraws nothing, and
+			// an interrupt has nothing left to answer.
 			a.dialogDeadlines.Disarm(head.ID)
 			a.forgetAskDialog(head.ID)
+			a.forgetOpenDialog(head.ID)
 		}
 	}
 	return a.Process.SendRawInput(data)

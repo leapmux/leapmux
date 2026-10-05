@@ -268,6 +268,153 @@ func TestAStoppedAgentWithdrawsNoDialogAtItsDeadline(t *testing.T) {
 	assert.Empty(t, r.sink.CanceledControls())
 }
 
+// frameCommandEditor is the editor that an extension command opens. omp runs an
+// extension command outside any run, so the dialog has no abort signal, and omp's
+// abort leaves it waiting.
+const frameCommandEditor = `{"type":"extension_ui_request","id":"e1","method":"editor","title":"Native E2E editor request","prefill":"Initial line\nSecond line"}`
+
+// armCommandTurn sends an extension command as a prompt. omp admits the command
+// before its handler runs and states no `agentInvoked:false`, so the prompt keeps
+// the turn armed while the handler waits on its dialog.
+func armCommandTurn(t *testing.T, r *rig) {
+	t.Helper()
+	require.NoError(t, r.agent.SendInput("/e2e-editor", nil))
+	active, _ := r.sink.LastTurnActive()
+	require.True(t, active, "the command's turn runs while its dialog waits")
+}
+
+// The service withdraws every card of an interrupted agent. A dialog that omp's
+// abort cannot reach must then get an answer, or omp waits on it for good: the
+// command never ends, and its armed turn keeps the agent busy.
+func TestAnInterruptCancelsADialogThatTheAbortLeavesOpen(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	armCommandTurn(t, r)
+	r.emit(frameCommandEditor)
+	require.Equal(t, 1, r.sink.PublishedControlCount())
+
+	require.NoError(t, r.agent.Interrupt())
+	r.waitForCommand(CommandAbort, 1)
+
+	answers := r.waitForCommand("extension_ui_response", 1)
+	assert.JSONEq(t, `{"type":"extension_ui_response","id":"e1","cancelled":true}`, string(answers[0].Raw))
+	waitFor(t, func() bool { return len(r.sink.CanceledControls()) == 1 })
+	assert.Equal(t, []string{"e1"}, r.sink.CanceledControls())
+}
+
+// omp's abort settles a dialog of the run that it stops, and states that with a
+// `cancel` frame before its response. The worker leaves that dialog to omp and
+// answers only the command's dialog, which the abort cannot reach.
+func TestAnInterruptLeavesTheDialogsOfTheAbortedRunToOmp(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.respond(func(command recordedCommand) *rigReply {
+		if command.Type == CommandAbort {
+			return &rigReply{Before: []string{`{"type":"extension_ui_request","id":"x","method":"cancel","targetId":"158b2ba5001bfb93"}`}}
+		}
+		return nil
+	})
+	r.emit(`{"type":"agent_start"}`, frameApprovedBashStart, frameApprovalDialog, frameCommandEditor)
+	require.Equal(t, 2, r.sink.PublishedControlCount())
+
+	require.NoError(t, r.agent.Interrupt())
+
+	answers := r.waitForCommand("extension_ui_response", 1)
+	assert.Equal(t, "e1", answers[0].Payload["id"])
+	assert.Equal(t, true, answers[0].Payload["cancelled"])
+	waitFor(t, func() bool { return len(r.sink.CanceledControls()) == 2 })
+	assert.Equal(t, []string{"158b2ba5001bfb93", "e1"}, r.sink.CanceledControls(), "omp withdrew its own dialog first")
+	assert.Len(t, r.commandsOfType("extension_ui_response"), 1, "the worker does not answer a dialog that omp settled")
+}
+
+// With no turn, no abort settles a dialog, so the interrupt answers each dialog
+// that omp still waits on at once. It skips a dialog that the reader answered and
+// a dialog that omp withdrew, and it answers in a stable order.
+func TestAnInterruptWithNoTurnAnswersOnlyTheDialogsOmpWaitsOn(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(
+		`{"type":"extension_ui_request","id":"answered","method":"confirm","title":"Proceed?"}`,
+		`{"type":"extension_ui_request","id":"withdrawn","method":"confirm","title":"Proceed?"}`,
+		`{"type":"extension_ui_request","id":"x","method":"cancel","targetId":"withdrawn"}`,
+		`{"type":"extension_ui_request","id":"open-b","method":"input","title":"Branch name"}`,
+		`{"type":"extension_ui_request","id":"open-a","method":"editor","title":"Commit message"}`,
+	)
+	require.NoError(t, r.agent.SendRawInput([]byte(`{"type":"extension_ui_response","id":"answered","confirmed":true}`)))
+	r.waitForCommand("extension_ui_response", 1)
+
+	require.NoError(t, r.agent.Interrupt())
+
+	answers := r.waitForCommand("extension_ui_response", 3)
+	require.Len(t, answers, 3)
+	for i, id := range []string{"open-a", "open-b"} {
+		assert.JSONEq(t, mustJSON(t, map[string]any{"type": "extension_ui_response", "id": id, "cancelled": true}), string(answers[i+1].Raw))
+	}
+	assert.Equal(t, []string{"withdrawn", "open-a", "open-b"}, r.sink.CanceledControls())
+	assert.Empty(t, r.commandsOfType(CommandAbort), "no turn runs, so nothing is aborted")
+
+	// A second interrupt finds nothing left to answer.
+	require.NoError(t, r.agent.Interrupt())
+	r.emit(frameCommandEditor)
+	require.NoError(t, r.agent.Interrupt())
+	answers = r.waitForCommand("extension_ui_response", 4)
+	require.Len(t, answers, 4)
+	assert.Equal(t, "e1", answers[3].Payload["id"])
+}
+
+// omp refuses an abort when it cannot stop the run. The refused abort settled no
+// dialog, and the service still withdraws every card, so the worker answers each
+// open dialog.
+func TestAnInterruptAnswersTheOpenDialogsWhenOmpRefusesTheAbort(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.respond(func(command recordedCommand) *rigReply {
+		if command.Type == CommandAbort {
+			return &rigReply{Error: "abort failed"}
+		}
+		return nil
+	})
+	armCommandTurn(t, r)
+	r.emit(frameCommandEditor)
+
+	require.NoError(t, r.agent.Interrupt())
+
+	answers := r.waitForCommand("extension_ui_response", 1)
+	assert.Equal(t, "e1", answers[0].Payload["id"])
+	assert.Equal(t, true, answers[0].Payload["cancelled"])
+}
+
+// A dialog that an interrupt answered is withdrawn once, not again at its deadline.
+func TestADialogThatAnInterruptAnsweredIsNotWithdrawnAgainAtItsDeadline(t *testing.T) {
+	t.Parallel()
+	r, ctx, clock := newDeadlineRig(t)
+	r.emit(frameTimedConfirm)
+	require.NoError(t, r.agent.Interrupt())
+	require.Equal(t, []string{"c1"}, r.sink.CanceledControls())
+
+	clock.Advance(time.Minute).MustWait(ctx)
+	assert.Equal(t, []string{"c1"}, r.sink.CanceledControls())
+}
+
+// A dialog that could not be published was answered with a cancellation already,
+// so an interrupt does not answer it again.
+func TestAnInterruptDoesNotAnswerADialogThatCouldNotBePublished(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.sink.PublicationError = errors.New("the store is gone")
+	r.emit(frameApprovalDialog)
+	r.waitForCommand("extension_ui_response", 1)
+	r.sink.PublicationError = nil
+	r.emit(frameCommandEditor)
+
+	require.NoError(t, r.agent.Interrupt())
+
+	answers := r.waitForCommand("extension_ui_response", 2)
+	require.Len(t, answers, 2)
+	assert.Equal(t, "158b2ba5001bfb93", answers[0].Payload["id"])
+	assert.Equal(t, "e1", answers[1].Payload["id"])
+}
+
 func TestExtensionNoticesPersist(t *testing.T) {
 	t.Parallel()
 	frames := []string{
