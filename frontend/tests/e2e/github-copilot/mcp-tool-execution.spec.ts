@@ -8,10 +8,9 @@ import { COPILOT_E2E_SKIP_REASON } from '../copilot-fixtures'
 import { test } from '../fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
-import { fillMcpProbeForm } from '../helpers/mcpProbeForm'
+import { fillMcpProbeForm, waitForMcpProbeFormDraft } from '../helpers/mcpProbeForm'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { readEntry, storageKeys } from '../helpers/storage'
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 test.skip(!!COPILOT_E2E_SKIP_REASON, COPILOT_E2E_SKIP_REASON || '')
@@ -30,7 +29,7 @@ test('mcp-tool-execution: submits zero and false through a native MCP form after
   }))
   try {
     const settings = agentOpenOptions(agentSettings(AgentProvider.GITHUB_COPILOT))
-    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, {
+    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, {
       agentProvider: AgentProvider.GITHUB_COPILOT,
       ...settings,
       optionValues: { ...settings.optionValues, permissionMode: COPILOT_PERMISSION_MODE.AllowAll },
@@ -52,11 +51,7 @@ test('mcp-tool-execution: submits zero and false through a native MCP form after
     await sendMessage(page, modelScript.prompt('Call form_probe ask exactly once.'))
     await modelScript.waitForSteps(2)
     const form = await fillMcpProbeForm(page)
-    await expect.poll(async () => {
-      const key = (await storageKeys(page)).find(value => value.includes(`control-state:${agentId}:`))
-      const value = key ? (await readEntry(page, key))?.v as { choices?: Record<string, string> } | undefined : undefined
-      return value?.choices
-    }).toEqual({ 'elicitation:"count"': '0', 'elicitation:"enabled"': 'false', 'elicitation:"color"': '"b"' })
+    await waitForMcpProbeFormDraft(page, leapmuxServer.adminUserId)
     await page.reload()
     await expect(form.getByLabel('Count *')).toHaveValue('0')
     await expect(form.getByRole('button', { name: 'Enabled *', exact: true })).toHaveText('No')

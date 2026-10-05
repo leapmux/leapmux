@@ -5,17 +5,16 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { test } from '../fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
-import { fillMcpProbeForm } from '../helpers/mcpProbeForm'
+import { fillMcpProbeForm, waitForMcpProbeFormDraft } from '../helpers/mcpProbeForm'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { readEntry, storageKeys } from '../helpers/storage'
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 test('mcp-tool-execution: answers a native Reasonix MCP form and preserves draft values after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const directory = createTestDirectory('reasonix-mcp-form-')
   const script = writeMcpFormServer(directory, 'form-server.mjs')
   writeFileSync(join(directory, '.mcp.json'), JSON.stringify({ mcpServers: { form_probe: { command: process.execPath, args: [script] } } }))
-  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, {
+  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, {
     agentProvider: AgentProvider.REASONIX,
     optionValues: { tool_approval: 'yolo' },
   })
@@ -26,11 +25,7 @@ test('mcp-tool-execution: answers a native Reasonix MCP form and preserves draft
   await modelScript.waitForSteps(1)
 
   const form = await fillMcpProbeForm(page)
-  await expect.poll(async () => {
-    const key = (await storageKeys(page)).find(key => key.includes(`control-state:${agentId}:`))
-    const value = key ? (await readEntry(page, key))?.v as { choices?: Record<string, string> } | undefined : undefined
-    return value?.choices
-  }).toEqual({ 'elicitation:"count"': '0', 'elicitation:"enabled"': 'false', 'elicitation:"color"': '"b"' })
+  await waitForMcpProbeFormDraft(page, leapmuxServer.adminUserId)
 
   await page.reload()
   await expect(form.getByLabel('Count *')).toHaveValue('0')

@@ -3,7 +3,7 @@ import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { GOOSE_E2E_SKIP_REASON, gooseTest } from '../goose-fixtures'
-import { fillMcpProbeForm } from '../helpers/mcpProbeForm'
+import { fillMcpProbeForm, waitForMcpProbeFormDraft } from '../helpers/mcpProbeForm'
 import { mcpToolCall, updateTodosToolCall } from '../helpers/providerToolCalls'
 import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import { messageBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -65,7 +65,7 @@ gooseTest('permission-prompts: the sidebar follows each checklist the agent writ
   await expect(list.locator('[data-task-checkbox="completed"]')).toHaveCount(2)
 })
 
-gooseTest('permission-prompts: roundtrips zero, false, and blue through native form elicitation', async ({ authenticatedGooseWorkspace, page, modelScript }) => {
+gooseTest('permission-prompts: roundtrips zero, false, and blue through native form elicitation', async ({ authenticatedGooseWorkspace, page, modelScript, leapmuxServer }) => {
   void authenticatedGooseWorkspace
   await modelScript.queue(
     { toolCalls: [mcpToolCall(AgentProvider.GOOSE, 'goose-form', { server: 'form_probe', tool: 'ask', input: {} })] },
@@ -78,6 +78,8 @@ gooseTest('permission-prompts: roundtrips zero, false, and blue through native f
   await page.getByTestId('control-actions').getByRole('button', { name: 'Allow', exact: true }).click()
 
   const form = await fillMcpProbeForm(page)
+  // The page saves the last answer through a write queue. A reload that overtakes the write drops that answer.
+  await waitForMcpProbeFormDraft(page, leapmuxServer.adminUserId)
   await page.reload()
   await expect(form.getByLabel('Count *')).toHaveValue('0')
   await expect(form.getByRole('button', { name: 'Enabled *', exact: true })).toHaveText('No')

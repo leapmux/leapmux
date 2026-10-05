@@ -1,13 +1,13 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { GOOSE_E2E_SKIP_REASON, gooseTest } from '../goose-fixtures'
-import { fillMcpProbeForm } from '../helpers/mcpProbeForm'
+import { fillMcpProbeForm, waitForMcpProbeFormDraft } from '../helpers/mcpProbeForm'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 gooseTest.skip(!!GOOSE_E2E_SKIP_REASON, GOOSE_E2E_SKIP_REASON || '')
 
-gooseTest('mcp-tool-execution: roundtrips zero, false, and blue through native form elicitation', async ({ authenticatedGooseWorkspace, page, modelScript }) => {
+gooseTest('mcp-tool-execution: roundtrips zero, false, and blue through native form elicitation', async ({ authenticatedGooseWorkspace, page, modelScript, leapmuxServer }) => {
   void authenticatedGooseWorkspace
   await modelScript.queue(
     { toolCalls: [mcpToolCall(AgentProvider.GOOSE, 'goose-form', { server: 'form_probe', tool: 'ask', input: {} })] },
@@ -20,6 +20,8 @@ gooseTest('mcp-tool-execution: roundtrips zero, false, and blue through native f
   await page.getByTestId('control-actions').getByRole('button', { name: 'Allow', exact: true }).click()
 
   const form = await fillMcpProbeForm(page)
+  // The page saves the last answer through a write queue. A reload that overtakes the write drops that answer.
+  await waitForMcpProbeFormDraft(page, leapmuxServer.adminUserId)
   await page.reload()
   await expect(form.getByLabel('Count *')).toHaveValue('0')
   await expect(form.getByRole('button', { name: 'Enabled *', exact: true })).toHaveText('No')
