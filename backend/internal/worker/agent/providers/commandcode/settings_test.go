@@ -3,6 +3,7 @@ package commandcode
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -169,3 +170,89 @@ func TestSettingsConfirmationCannotReplaceTheNativeSession(t *testing.T) {
 	assert.Equal(t, "native-session", sessionID)
 	assert.Equal(t, "native-model", model)
 }
+
+// The host applies `--effort` as a read-modify-write of its user configuration, and the first
+// state that it reports after a relaunch can still hold the previous effort, or none. Command
+// Code 1.74.1 reported effort `high` for a relaunch with `--effort low`. The launch confirms the
+// effort that it requested through `session/set_effort`, then reads the state again.
+func TestConfirmLaunchEffortSetsTheRequestedEffortWhenTheHostHoldsAnother(t *testing.T) {
+	for name, held := range map[string]*string{"the host holds another effort": ptr("high"), "the host holds no effort": nil} {
+		t.Run(name, func(t *testing.T) {
+			var calls []string
+			a := agentWithPeer(t, func(method string, params json.RawMessage) agenttest.RPCReply {
+				calls = append(calls, method)
+				switch method {
+				case methodSetEffort:
+					assert.JSONEq(t, `{"effort":"low"}`, string(params))
+					return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+				case methodSessionState:
+					return agenttest.RPCReply{Result: json.RawMessage(`{"protocolVersion":1,"session":{"id":"native-session","model":"native-model","effort":"low","permissionMode":"default"}}`)}
+				}
+				t.Errorf("unexpected native method: %s", method)
+				return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32601,"message":"the fixture rejects this method"}`)}
+			})
+			a.Mu.Lock()
+			if held != nil {
+				a.effort = *held
+			}
+			a.Mu.Unlock()
+
+			require.NoError(t, a.confirmLaunchEffort("low", time.Second))
+
+			assert.Equal(t, []string{methodSetEffort, methodSessionState}, calls)
+			a.Mu.Lock()
+			defer a.Mu.Unlock()
+			assert.Equal(t, "low", a.effort)
+		})
+	}
+}
+
+func TestConfirmLaunchEffortSendsNothingWhenTheHostHoldsTheRequestedEffortOrNoneWasRequested(t *testing.T) {
+	for name, tc := range map[string]struct{ held, want string }{
+		"the host holds the requested effort": {held: "low", want: "low"},
+		"no effort was requested":             {held: "high", want: ""},
+		"auto was requested":                  {held: "high", want: agent.EffortAuto},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := agentWithPeer(t, func(method string, _ json.RawMessage) agenttest.RPCReply {
+				t.Errorf("the confirmation must send no native request: %s", method)
+				return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32601,"message":"the fixture rejects this method"}`)}
+			})
+			a.Mu.Lock()
+			a.effort = tc.held
+			a.Mu.Unlock()
+
+			require.NoError(t, a.confirmLaunchEffort(tc.want, time.Second))
+
+			a.Mu.Lock()
+			defer a.Mu.Unlock()
+			assert.Equal(t, tc.held, a.effort)
+		})
+	}
+}
+
+// A refusal keeps the state that the host reports. The model may offer no such tier, and the
+// confirmation must never fail a startup that the host completed.
+func TestConfirmLaunchEffortKeepsTheHostStateWhenTheHostRefuses(t *testing.T) {
+	var calls []string
+	a := agentWithPeer(t, func(method string, _ json.RawMessage) agenttest.RPCReply {
+		calls = append(calls, method)
+		if method == methodSetEffort {
+			return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32602,"message":"Unknown effort: low"}`)}
+		}
+		t.Errorf("a refused effort must trigger no further native request: %s", method)
+		return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32601,"message":"the fixture rejects this method"}`)}
+	})
+	a.Mu.Lock()
+	a.effort = "high"
+	a.Mu.Unlock()
+
+	require.NoError(t, a.confirmLaunchEffort("low", time.Second))
+
+	assert.Equal(t, []string{methodSetEffort}, calls)
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Equal(t, "high", a.effort)
+}
+
+func ptr[T any](value T) *T { return &value }

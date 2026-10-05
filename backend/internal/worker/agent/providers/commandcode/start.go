@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -66,6 +68,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	reply, err := a.request(methodInitialize, nil, opts.EffectiveStartupTimeout())
 	if err == nil {
 		err = a.applyState(reply)
+	}
+	if err == nil {
+		err = a.confirmLaunchEffort(opts.Effort(), opts.EffectiveStartupTimeout())
 	}
 	if err != nil {
 		a.Stop()
@@ -167,4 +172,37 @@ func (a *Agent) Wait() error {
 	}
 	a.cleanupRuntime()
 	return err
+}
+
+// confirmLaunchEffort makes the host hold the effort that the launch requested.
+//
+// The host applies `--effort` as a read-modify-write of its user configuration, and the first
+// state that it reports after a relaunch can still hold the previous effort, or none. Command
+// Code 1.74.1 reported effort `high` for a relaunch with `--effort low`. The state of the host is
+// the answer that LeapMux surfaces, so the user would see a tier that they did not choose, and
+// the next turn would run on it. When the state differs, this asks for the effort through
+// `session/set_effort` and reads the state again.
+//
+// Effort `auto` and an empty effort request no tier, so nothing is sent. A refusal keeps the state
+// that the host reported: the model can offer no such tier, and a refusal must not fail a startup
+// that the host completed.
+func (a *Agent) confirmLaunchEffort(want string, timeout time.Duration) error {
+	if want == "" || want == agent.EffortAuto {
+		return nil
+	}
+	a.Mu.Lock()
+	held := a.effort
+	a.Mu.Unlock()
+	if held == want {
+		return nil
+	}
+	if _, err := a.request(methodSetEffort, map[string]string{"effort": want}, timeout); err != nil {
+		slog.Warn("confirm the launch effort of Command Code", "effort", want, "held", held, "error", err)
+		return nil
+	}
+	raw, err := a.request(methodSessionState, nil, timeout)
+	if err != nil {
+		return fmt.Errorf("read the Command Code state after the launch effort: %w", err)
+	}
+	return a.applyState(raw)
 }
